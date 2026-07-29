@@ -11,8 +11,8 @@ ledger RD reads monthly. **NOTHING is sent to the broker in this arc.**
 **Architecture:** Two new PURE modules under `swing/latches/` (the Phase-12 classifier convention — no DB, no
 network, no transactions): `order_intent.py` computes the prepared order + the per-field delta;
 `classification.py` turns (latch, views, intents, telemetry health) into a disposition and an execution-parity
-report. ONE new table (`latch_order_intents`) plus a `surface` column on `latch_view_events`, both in migration
-`0033` (v32 -> v33). The web layer extends the EXISTING panel VM/route/template (no new base-layout VM field)
+report. Migration `0033` (v32 -> v33) adds ONE new table (`latch_order_intents`) and REBUILDS
+`latch_view_events` to add `surface` + the two actionability columns and re-key its UNIQUE onto the bridge key. The web layer extends the EXISTING panel VM/route/template (no new base-layout VM field)
 and adds exactly one new endpoint, `POST /latches/intent`. A read-only CLI report (`swing latches parity`)
 makes the ledger a measurement rather than a table.
 
@@ -36,8 +36,9 @@ Every task's requirements implicitly include this section.
 - **Phase isolation:** **NO `swing/trades/` EDITS.** `swing/trades/equity.py` is IMPORTED read-only
   (`current_equity`, `sizing_equity`, `list_all_exitshape_via_fills` — all pure/SELECT), exactly as
   `swing/latches/reader.py` already imports `swing/trades/voided_trades.py`. The `swing/data/` additions
-  (migration `0033`, `swing/data/repos/latch_order_intents.py`, the `LatchOrderIntent` model + a
-  `surface` field on `LatchViewEvent`, and the `swing/data/db.py` version bump + backup gate) are the scoped
+  (migration `0033`, `swing/data/repos/latch_order_intents.py`, the `LatchOrderIntent` model + the `surface`
+  and `actionable_at_first_view` / `actionable_at_last_view` fields on `LatchViewEvent`, and the
+  `swing/data/db.py` version bump + backup gate) are the scoped
   addition the 21-B brief's SCHEMA TRIPWIRE authorizes — the same carve-out 21-A took for `0032`.
 - **#11 one-commit multi-mirror discipline:** every CHECK enum in `0033`, its Python frozenset in
   `swing/latches/constants.py`, and the dataclass `__post_init__` validator land in **ONE** task/commit
@@ -49,7 +50,7 @@ Every task's requirements implicitly include this section.
   only that inverted guard, which reads as the fire condition and is the opposite of it — Codex R15 MAJOR 3.)
   The canonical test oracle is the four-cell matrix `(32,33,True) / (31,33,False) / (32,32,False) /
   (33,33,False)`. Copied VERBATIM from
-  `_phase21_arc_a_backup_gate` (`swing/data/db.py:1575-1612`). NEVER `<=`. The pre-migration expected-table
+  `_phase21_arc_a_backup_gate` (`swing/data/db.py:1575-1612`). The pre-migration expected-table
   set is derived deterministically: `PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES =
   PHASE21_ARC_A_PRE_MIGRATION_EXPECTED_TABLES | {"latch_view_events"}` (0032 added exactly that one table).
 - **NO Schwab WRITE call of any kind.** This arc logs intent only. The write path is 21-C behind an
@@ -90,9 +91,9 @@ Every task's requirements implicitly include this section.
 
 ---
 
-## A. DECISIONS FOR RD (plan-stage gate). A.1 is the arc's premise problem and comes first.
+## A. DECISIONS FOR RD. A.1 was the arc's premise problem and is RULED; A.2 and A.3 remain open.
 
-### A.1 THE ACCEPTANCE TEST IS VACUOUS AS WRITTEN — and it is unstable. (RD RULING REQUIRED)
+### A.1 THE ACCEPTANCE TEST WAS VACUOUS AS WRITTEN — RULED BY RD 2026-07-28
 
 **The brief's §3 binding acceptance test:** *FTRE fired 07-20 during the operator's vacation -> the panel shows
 viewed=NO across the armed window -> it classifies AWAY, is EXCLUDED from the discipline signal, and its +1.22R
@@ -123,7 +124,7 @@ fires still in the gap was: *explicitly stamped **pre-telemetry** and excluded h
 FTRE is exactly such a gap fire. RD's own two rules decide this: **unclassifiable is LOST data, not uncertain
 data**, and **an honest instrument does not flatter its subject.**
 
-#### A.1.1 What this plan proposes (RD may overrule; nothing here silently redefines his test)
+#### A.1.1 RD's ruling, encoded
 
 **RULED BY RD 2026-07-28. This section is no longer a proposal — it is the ruling, encoded.** RD confirmed
 the acceptance test is vacuous and owned it as his own error (*"I wrote an acceptance test whose subject could
@@ -261,6 +262,35 @@ favour of this plan's direction (with one simplification — `partial_telemetry_
 - **`UNATTRIBUTABLE_DISPOSITIONS` is still DERIVED by set subtraction** (§F.3), not hand-written — the ruling
   fixes the away set's CONTENT, it does not remove the reason the derivation exists (an overlap between the
   two buckets must stay unrepresentable, not merely untested).
+
+### A.1.6 TWO BUCKET CELLS ARE UNASSIGNED — **ROUTED TO RD, NOT DECIDED HERE** (found at the coherence pass)
+
+`r_bucket_for` (§F.3) is a total function by construction: `away_r` if the disposition is in
+`AWAY_RATE_COUNTED_DISPOSITIONS`, `unattributable_r` if it is in the DERIVED remainder of the excluded set,
+else `decision_r`. That default is what makes the partition airtight — and it is also what silently assigns
+two dispositions nobody ever ruled on:
+
+| disposition | currently lands in | why that is a measurement decision, not an implementation choice |
+|---|---|---|
+| **`pending_live`** | `decision_r` | The latch is STILL LIVE and can still be acted on. Scoring it as decision evidence counts an unfinished observation as a finished one, and it moves as the window runs. |
+| **`attested_was_away`** | `decision_r` | The operator has ATTESTED he was away. Scoring a self-declared away as operator judgment is the opposite of what the away bucket exists to separate — but counting it in `away_r` puts a SELF-REPORT into the same number as the telemetry-derived `away_unseen`, and RD's whole design rests on telemetry being objective where recollection is not. |
+
+**This plan does NOT choose.** Both cells are genuinely RD's lane: the first is "when is a fire eligible to be
+scored at all", the second is "does a self-report count as evidence in a bucket built from objective
+telemetry". An implementer deciding either by leaving the default in place would be making a measurement
+ruling by omission, which is precisely the failure mode §A.1 exists to prevent.
+
+**What the plan DOES do, so nothing is decided by accident:** `r_bucket_for` REFUSES a disposition that is not
+explicitly listed in exactly one of `AWAY_RATE_COUNTED_DISPOSITIONS`, `_ALL_EXCLUDED_DISPOSITIONS` or an
+explicit `DECISION_DISPOSITIONS` set — it raises rather than falling through to a default. A test asserts every
+member of `LATCH_DISPOSITIONS` appears in exactly one of the three sets, so a future disposition added without
+a bucket ruling FAILS LOUDLY instead of being absorbed into `decision_r`. **Executing is blocked on Tasks 5
+and 9 until RD rules these two cells** (Tasks 1-4 and 6-8, 10 are unaffected).
+
+**Options, for RD's convenience, not as a recommendation:** (a) report only TERMINAL latches and exclude
+`pending_live` from every bucket with its own visible count; (b) give `attested_was_away` its own
+`self_attested_away` count reported ALONGSIDE the telemetry-derived away rate rather than inside it;
+(c) count it in `away_r` and label the mixture. Each is defensible; none is the implementer's to pick.
 
 ### A.2 Which price feeds `compute_shares` — the PIVOT or the LIMIT CAP? (RD RULING REQUESTED)
 
@@ -626,8 +656,25 @@ CREATE TABLE latch_order_intents (
     -- An audit-grade column that accepts anything is a column that will later
     -- look authoritative while holding a typo.
     CHECK (framework_duration IS NULL OR framework_duration = 'GOOD_TILL_CANCEL'),
-    CHECK (actual_duration IS NULL OR length(trim(actual_duration)) > 0),
-    CHECK (actual_order_type IS NULL OR length(trim(actual_order_type)) > 0),
+    -- CANONICALISED BEFORE PERSISTENCE (R19 MAJOR). Brokers render GTC where
+    -- the framework stores GOOD_TILL_CANCEL, so an uncanonicalised actual would
+    -- report a DURATION MISMATCH on a semantically identical order -- a false
+    -- divergence in the one metric this ledger exists to compute.
+    CHECK (actual_duration IS NULL OR actual_duration IN
+           ('GOOD_TILL_CANCEL','DAY','FILL_OR_KILL','IMMEDIATE_OR_CANCEL',
+            'END_OF_WEEK','END_OF_MONTH','NEXT_END_OF_MONTH','UNKNOWN')),
+    -- The ACTUAL order type is an ENUM, not free text, and the stop leg is
+    -- conditioned on it exactly as the framework side is. Without this an
+    -- accepted STOP_LIMIT can be stored with NO actual stop and still enter the
+    -- agreement denominator, where compute_order_delta reports the stop leg
+    -- UNKNOWN instead of a clean match; the reverse bad shape (a LIMIT carrying
+    -- a stop) is equally storable.
+    CHECK (actual_order_type IS NULL OR actual_order_type IN
+           ('STOP_LIMIT','LIMIT','UNKNOWN')),
+    CHECK (validity_outcome <> 'accepted_by_broker'
+           OR actual_order_type <> 'STOP_LIMIT' OR actual_stop_price IS NOT NULL),
+    CHECK (validity_outcome <> 'accepted_by_broker'
+           OR actual_order_type <> 'LIMIT'      OR actual_stop_price IS NULL),
     CHECK (derivation_sizing_basis IS NULL
            OR derivation_sizing_basis IN ('limit_price','pivot')),
     CHECK (derivation_zone_cap_pct IS NULL OR derivation_zone_cap_pct > 0),
@@ -661,10 +708,46 @@ CREATE TABLE latch_order_intents (
     CHECK (framework_order_type <> 'STOP_LIMIT' OR framework_stop_price IS NOT NULL),
     CHECK (framework_order_type <> 'LIMIT'      OR framework_stop_price IS NULL),
     CHECK (intent_kind <> 'attest'  OR attested_disposition IS NOT NULL),
-    -- validity is recorded ONLY on a validity row, and a validity row records
-    -- nothing else -- so the columns cannot be half-populated on a place row.
+    -- An ACCEPTED-BY-BROKER validity row must carry a COMPLETE observed order
+    -- (Codex R20 MAJOR). The agreement DENOMINATOR requires a known actual
+    -- side, and compute_order_delta returns any_difference = None (UNKNOWN)
+    -- when any field is missing -- so a row omitting actual_duration would make
+    -- FTRE's divergence UNKNOWN rather than a clean quantity mismatch, and the
+    -- arc's worked example would still miss the metric it exists to feed.
+    -- ...and "complete" means KNOWN and EXACTLY LINKED, not merely non-NULL
+    -- (R22 MAJOR). section G.4 claims exact linkage comes from validity rows and
+    -- section F.3's denominator requires a KNOWN actual side, so an accepted row
+    -- carrying a NULL broker order id or an UNKNOWN type/duration would look
+    -- authoritative while satisfying neither claim.
+    CHECK (validity_outcome <> 'accepted_by_broker' OR (
+           actual_order_type IS NOT NULL AND actual_duration IS NOT NULL
+       AND actual_limit_price IS NOT NULL AND actual_quantity IS NOT NULL
+       AND actual_broker_order_id IS NOT NULL
+       AND actual_order_type IN ('STOP_LIMIT','LIMIT')
+       AND actual_duration <> 'UNKNOWN')),
     CHECK (intent_kind <> 'validity' OR (validity_outcome IS NOT NULL
-           AND validated_place_intent_id IS NOT NULL)),
+           AND validated_place_intent_id IS NOT NULL
+           -- SNAPSHOT CONTEXT IS STRUCTURALLY REQUIRED (R19 MAJOR). The plan
+           -- SAYS the snapshot ts / branch / digest are persisted into
+           -- validity_detail; without a CHECK a row can be written with none of
+           -- it, defeating the audit claim and making the staleness gate
+           -- unverifiable after the fact. `validity_detail` carries a JSON
+           -- object; the required keys (broker_snapshot_ts,
+           -- broker_snapshot_branch, broker_snapshot_digest,
+           -- attributable_order_count, exact_framework_match_count,
+           -- indeterminate) are enforced in the repo + the dataclass validator
+           -- under #11 AND in SQL: for an append-only audit ledger "the repo
+           -- usually writes it correctly" is not enough, because a raw insert
+           -- can append a row the report cannot hydrate and whose staleness
+           -- basis is unknowable forever after.
+           AND validity_detail IS NOT NULL
+           AND json_valid(validity_detail)
+           AND json_extract(validity_detail, '$.broker_snapshot_ts') IS NOT NULL
+           AND json_extract(validity_detail, '$.broker_snapshot_branch') IS NOT NULL
+           AND json_extract(validity_detail, '$.broker_snapshot_digest') IS NOT NULL
+           AND json_type(validity_detail, '$.attributable_order_count') = 'integer'
+           AND json_type(validity_detail, '$.exact_framework_match_count') = 'integer'
+           AND json_extract(validity_detail, '$.indeterminate') IS NOT NULL)),
     -- `validated_place_intent_id` is ALSO folded into the idempotency key
     -- (section G.1), so two place intents on one latch cannot collide on an
     -- identical answer. Multiple validity rows for ONE parent stay LEGAL and
@@ -675,33 +758,31 @@ CREATE TABLE latch_order_intents (
     -- R4 MAJOR 3 defect in a smaller box.
     CHECK (intent_kind =  'validity' OR (validity_outcome IS NULL
            AND validity_detail IS NULL AND validated_place_intent_id IS NULL)),
-    -- SHAPE EXCLUSION (Codex R4 MAJOR 2, widened at R6 MAJOR 3). A non-order
-    -- row must not be able to look simultaneously like a prepared order AND a
-    -- verdict/attestation -- one row would then appear twice in the parity
-    -- report. Covered by the single CHECK below, which spans all three
-    -- non-order kinds.
-    -- SHAPE EXCLUSION, KEYED ON `place` RATHER THAN ON A LIST OF THE OTHERS
-    -- (Codex R12 MAJOR 1 -- the R6 version enumerated attest/cancel/validity
-    -- and therefore left `decline` free to carry a full prepared-order block,
-    -- which is the same one-row-two-shapes defect it was written to close.
-    -- Keying on the ONE kind that MAY carry an order is closed under future
-    -- additions: a new intent kind is excluded by default, which is the safe
-    -- direction).
-    -- `actual_broker_order_id` is DELIBERATELY exempt: a `cancel` REQUIRES it
-    -- (hazard (c)) and an `attest` for an order he placed himself may carry it.
-    -- ORDER-BEARING KINDS are `place` AND `decline` (R18 MAJOR 7): a decline is
-    -- a DECISION ABOUT A PREPARED ORDER, and erasing that order leaves RD unable
-    -- to audit WHAT was declined without recomputing it -- which contradicts
-    -- section A.3's whole reason for storing the framework side verbatim. A
-    -- decline therefore CARRIES the framework + derivation block and NO actual
-    -- params. Declines are excluded from execution-parity ORDER rows by
-    -- `intent_kind`, never by erasing their subject.
+    -- ===== SHAPE EXCLUSION: THREE CHECKS, ONE RULE =====
+    -- Each intent kind carries exactly the columns its MEANING requires, so no
+    -- row can read as two things at once and be counted twice by the report.
     --
-    -- `validity` rows are exempted for the `actual_*` columns ONLY (R17
-    -- CRITICAL / re-raised R18 CRITICAL): they must carry the OBSERVED order so
-    -- FTRE's real divergence (framework LIMIT 18.89 / 9 sh vs actual LIMIT
-    -- 18.89 / 10 sh) is persistable. Without this the ledger could record
-    -- agreements and never a DIVERGENCE -- the one thing it exists to measure.
+    --   place    -- a DECISION about a prepared order: framework + derivation,
+    --               NO actual params, NO broker order id (it observed nothing).
+    --   decline  -- also a DECISION about a prepared order, so it carries the
+    --               SAME framework + derivation block. Erasing it would leave RD
+    --               unable to audit WHAT was declined without recomputing it,
+    --               which is what section A.3 stores the framework side verbatim
+    --               to prevent. Declines are excluded from execution-parity
+    --               ORDER rows by `intent_kind`, never by erasing their subject.
+    --   validity -- an OBSERVATION: the actual params + the broker order id +
+    --               the verdict, and NO framework/derivation block. It MUST be
+    --               able to carry a DIVERGENT observed order (FTRE: framework
+    --               LIMIT 18.89 / 9 sh vs actual LIMIT 18.89 / 10 sh) or the
+    --               ledger could record agreements and never a divergence, which
+    --               is the one thing it exists to measure.
+    --   cancel / attest -- neither: no framework, no derivation, no actual order
+    --               params. `actual_broker_order_id` IS allowed (a cancel
+    --               REQUIRES it, hazard (c); an attest about a self-placed order
+    --               may carry it).
+    --
+    -- The first CHECK is keyed on the ORDER-BEARING kinds rather than on a list
+    -- of the others, so a future intent kind is excluded BY DEFAULT.
     CHECK (intent_kind IN ('place','decline','validity') OR (
            framework_order_type IS NULL AND framework_duration IS NULL
        AND framework_stop_price IS NULL AND framework_limit_price IS NULL
@@ -749,6 +830,15 @@ CREATE TABLE latch_order_intents (
     -- no by-ticker cancel path anywhere and the schema makes one unwritable.
     CHECK (intent_kind <> 'cancel'  OR (actual_broker_order_id IS NOT NULL
            AND length(trim(actual_broker_order_id)) > 0)),
+    -- ...and it is never BLANK when present, on any kind (R19 MAJOR).
+    CHECK (actual_broker_order_id IS NULL
+           OR length(trim(actual_broker_order_id)) > 0),
+    -- A broker order id is an OBSERVATION. `place` and `decline` are DECISIONS
+    -- about a prepared order and have observed nothing, so allowing them a
+    -- broker id blurs exact linkage against inference and would let a plain
+    -- accept row read as broker-confirmed (R19 MAJOR).
+    CHECK (intent_kind NOT IN ('place','decline')
+           OR actual_broker_order_id IS NULL),
     -- a `place` or `decline` records a complete order or it is not a record of
     -- a decision ABOUT an order
     CHECK (intent_kind NOT IN ('place','decline') OR (framework_order_type IS NOT NULL
@@ -757,6 +847,12 @@ CREATE TABLE latch_order_intents (
     CHECK (length(detection_date) = 10 AND date(detection_date) = detection_date),
     CHECK (length(action_session_date) = 10
            AND date(action_session_date) = action_session_date),
+    -- `recorded_ts` DRIVES THE MONTHLY REPORT'S CUTOFF AND ORDERING (section
+    -- F.3), so an unconstrained TEXT column lets a raw insert or a repo bug
+    -- silently misbucket a monthly parity read while looking authoritative
+    -- (R19 MAJOR). Local ISO seconds, exactly: YYYY-MM-DDTHH:MM:SS.
+    CHECK (length(recorded_ts) = 19
+           AND datetime(recorded_ts) = replace(recorded_ts, 'T', ' ')),
     CHECK (evaluation_run_id > 0),
     CHECK (length(trim(ticker)) > 0),
 
@@ -1007,6 +1103,16 @@ class OrderDelta:
     unknown_fields: tuple[str, ...]
 ```
 
+**DURATIONS ARE CANONICALISED BEFORE COMPARISON, NOT COMPARED RAW (Codex R19 MAJOR 8).**
+`canonical_duration(raw) -> str` maps the broker's rendering onto the framework's vocabulary
+(`GTC`/`GOOD_TILL_CANCEL`/`GOOD_TILL_CANCELLED` -> `GOOD_TILL_CANCEL`; unmapped -> `UNKNOWN`), and the
+CANONICAL form is what is PERSISTED into `actual_duration` and what `duration_differs` compares. Comparing raw
+strings would report `GTC` vs `GOOD_TILL_CANCEL` as a duration divergence on a semantically identical order —
+a manufactured mismatch in the exact metric the ledger exists to compute, and the mirror image of the R17
+CRITICAL (there the instrument could not see a real divergence; here it would invent a fake one). A parity
+test asserts `GTC` and `GOOD_TILL_CANCEL` compare EQUAL, and that an unmapped duration canonicalises to
+`UNKNOWN` and therefore compares as UNKNOWN — never as agreement.
+
 `stop_leg` values: **`both_absent`** — framework and actual both carry no stop leg; this is a MATCH and
 contributes False to `any_difference`. **`compared`** — both carry one; `stop_price_delta` holds
 `actual - framework` at 2dp. **`unknown`** — exactly one side carries one, or the actual side is not observed
@@ -1064,7 +1170,7 @@ CoverageKey = tuple[str, bool]   # (coverage, awareness_established)
 # shown a decision (-> discipline_lapse) or not (-> never_actionable).
 # Coverage answers "can we know?"; actionability answers "what was he shown?".
 
-RD_COVERAGE_TABLE: dict[CoverageKey, str] = {
+RD_COVERAGE_TABLE: dict[CoverageKey, str] = {   # values: a DISPOSITION or _CLASSIFY_NORMALLY
     ("full",    True):  _CLASSIFY_NORMALLY,   # accepted / declined / away / lapse
     ("full",    False): _CLASSIFY_NORMALLY,   # -> away_unseen or never_actionable
     ("partial", True):  _CLASSIFY_NORMALLY,   # awareness ESTABLISHED - classify on it
@@ -1076,19 +1182,31 @@ RD_COVERAGE_TABLE: dict[CoverageKey, str] = {
 }
 ```
 
+**THE TABLE IS THE ONLY PLACE COVERAGE IS DECIDED.** `resolve_coverage(...)` returns a frozen
+`CoverageVerdict(coverage, awareness_established, table_disposition)` and the §E rungs CONSUME it: no rung
+re-derives the epoch, the uncovered window or full-vs-partial, and no rung re-applies a coverage veto after
+the table has routed to `_CLASSIFY_NORMALLY`. A latch the table routes normally is classified on awareness and
+actionability alone.
+
 Three properties, each with its own test:
 
 1. **TOTALITY.** A test enumerates the full `{full, partial, none} x {True, False}` product and asserts every
    key is present — an unhandled combination cannot fall through to a default.
 2. **THE MONOTONE PROPERTY (RD ruling 2's defining consequence).** For every key, flipping
-   `awareness_established` `False -> True` never yields `away_unseen`. Written as a property test over the
-   TABLE itself, so it also constrains any future row someone adds.
-3. **NO NESTED RE-IMPLEMENTATION.** `classify_latch` consults `RD_COVERAGE_TABLE` exactly once, and a test
-   asserts the module contains no second coverage branch — the same shape as the §B.1 pin that
-   `order_intent.py` contains no independent regime comparison.
+   `awareness_established` `False -> True` never yields `away_unseen`. **Tested THROUGH `classify_latch` on
+   concrete substrates, NOT over the table's values (Codex R19 MAJOR 5).** Most table values are the
+   `_CLASSIFY_NORMALLY` sentinel, so a table-level assertion proves nothing about the FINAL disposition — a
+   broken `_CLASSIFY_NORMALLY` could still return the forbidden negative inference and pass. The test builds
+   full / partial / none substrates with actionable and withheld view rows and asserts the dispositions
+   `classify_latch` actually emits.
+3. **NO RE-DERIVATION.** `classify_latch` calls `resolve_coverage` exactly once and consumes the returned
+   `CoverageVerdict`. The test is a BEHAVIOURAL one over representative substrates (does the classifier's
+   output depend on anything the verdict does not carry?), **not a source-text search for the absence of
+   branches** — the draft's source-text form was unsatisfiable against rungs that legitimately branch on the
+   verdict's own fields, and a test that cannot pass gets watered down until it stops detecting drift.
 
-`_CLASSIFY_NORMALLY` hands off to the §E precedence rungs below; the table decides only whether the coverage
-question is answerable at all.
+`_CLASSIFY_NORMALLY` hands off to the §E rungs; the table decides only whether the coverage question is
+answerable at all.
 
 **TWO AXES, NOT ONE (Codex R1 MAJOR 3).** `LatchDisposition` answers *what did the operator DECIDE*.
 It does **NOT** answer *did the order actually work*. Collapsing them would let a broker-REJECTED placement
@@ -1184,6 +1302,15 @@ only failures and report a permanently empty success rate. So:
   pre-selected as before; when they DIVERGE the prompt says so — *"this order differs from the prepared one
   (quantity 10 vs 9); confirming records BOTH sides"* — which is the honest presentation of a divergence and
   the moment the parity metric actually gets its data.
+
+  **BOTH presence sub-cases submit `validity_outcome='accepted_by_broker'` (Codex R19 MAJOR 7).** A resting
+  broker order is positive acceptance evidence *whether or not its quantity matches* — the broker accepted an
+  order; the operator simply placed a different one from the prepared one. If the divergent row landed
+  `unknown` instead, FTRE's delta would be visible in the ledger and yet EXCLUDED from the agreement
+  denominator (§F.3 requires `accepted_by_broker` there), so the arc's own worked example would still not
+  reach the metric it exists to feed — the R17 CRITICAL surviving one layer further out. Task 7 asserts the
+  divergent FTRE row ENTERS the agreement denominator and FAILS the numerator via `quantity_delta`, which is
+  precisely what "the agreement rate" is supposed to mean.
 - **FILL SHORT-CIRCUIT — the prompt does not fire at all when the framework already knows.** If the latch's
   own terminal walk cleared it with `clear_reason='fill'` (21-A §A.6, derived from `trades`), the order was
   self-evidently accepted: `execution_outcome` is derived as `accepted_by_broker` from the FILL, with no
@@ -1206,13 +1333,21 @@ only failures and report a permanently empty success rate. So:
   `unknown` persists until he clicks. Pre-selection is a convenience on the presence branch; it is not an
   assertion, and a test asserts no `validity` row is ever written without a POST.
 - **THE BROKER SNAPSHOT IS ANCHORED AND AGE-BOUNDED (Codex R9 MAJOR 1, accepted in its STALENESS half).** The
-  fragment emits two more hidden fields — `broker_snapshot_ts` (SERVER-stamped at fragment render) and
-  `broker_snapshot_branch` (`presence` / `absence` / `unavailable`) — and `POST /latches/intent` REFUSES a
+  fragment emits **ONE canonical hidden field, `broker_snapshot_json`** (Codex R20 MAJOR — the draft named
+  two hidden fields while `validity_detail` required SIX keys, and `POST /latches/intent` is forbidden from
+  borrowing Schwab so it could not reconstruct the missing four at submit time; the audit row was therefore
+  either unwritable or populated from guesses). The envelope carries EXACTLY the keys `validity_detail`
+  requires and `broker_snapshot_digest` covers — `broker_snapshot_ts` (SERVER-stamped at fragment render),
+  `broker_snapshot_branch` (`presence`/`absence`/`unavailable`), `broker_snapshot_digest`,
+  `attributable_order_count`, `exact_framework_match_count`, `indeterminate`. The handler VALIDATES the
+  envelope (parseable, all six keys, correct value shapes — the same 4-tier ladder) and PERSISTS IT VERBATIM
+  into `validity_detail`, never synthesising a missing key; a test asserts the fragment's emitted key set
+  EQUALS the set `validity_detail` requires, so the two cannot drift. `POST /latches/intent` REFUSES a
   `validity` submission whose snapshot is not from the CURRENT action session or is older than
   `LATCH_BROKER_SNAPSHOT_MAX_AGE_SECONDS` (a named constant, default 900), with `409` + *"this broker view is
-  stale; reload to answer against the current order book."* Both fields are persisted into `validity_detail`,
-  so the row is self-describing about the snapshot it was answering — an audit-grade row must carry what it
-  was looking at, or a later reader cannot tell a fresh answer from a day-old tab.
+  stale; reload to answer against the current order book."* The WHOLE envelope is persisted into
+  `validity_detail`, so the row is self-describing about the snapshot it was answering — an audit-grade row
+  must carry what it was looking at, or a later reader cannot tell a fresh answer from a day-old tab.
 - **The FORGERY half is scoped out, with the reason recorded rather than waved.** Codex's stronger fix is a
   server-signed broker-context token. This app binds `127.0.0.1`, serves a single operator, ships no signing-
   key infrastructure, and already treats `OriginGuardMiddleware` (strict) as its trust boundary; a forged
@@ -1240,7 +1375,17 @@ agreement rate excludes `rejected_by_broker` and `not_submitted` from the numera
    agreement numerator.
 2. else `intents` contains a `decline` -> **`declined`**.
 3. else `intents` contains an `attest` -> **`attested_<disposition>`**.
-4. else if `telemetry_health.verdict != "ok"` for this latch's covered window ->
+4. else if `verdict.table_disposition` is a concrete disposition (i.e. NOT `_CLASSIFY_NORMALLY`) -> return it.
+   This is the ONLY route to `pre_telemetry`; no rung below re-decides coverage (§E.0).
+   **THE COVERAGE TABLE IS CONSUMED BEFORE TELEMETRY HEALTH (Codex R20 MAJOR).** The draft ran health first,
+   so a partially-covered latch with no view rows and a dark covered portion returned `telemetry_unhealthy`
+   instead of RD's ruled `pre_telemetry` — health PRE-EMPTING the ruling, and falsifying §E.0's own claim that
+   the table is the only place coverage is decided. Health is a statement about the INSTRUMENT'S RELIABILITY
+   and bears only on a window the table says is ANSWERABLE; where the table has already ruled the question
+   unanswerable, a health verdict adds nothing and must not overwrite the reason. A test asserts
+   partial/no-awareness with `broken` health STILL returns `pre_telemetry`.
+
+5. else if `telemetry_health.verdict != "ok"` for this latch's covered window ->
    **`telemetry_unhealthy`** (excluded from BOTH the discipline signal and the away rate).
    **`!= "ok"`, NOT `== "broken"` (Codex R18 MAJOR 5).** The draft excluded only `broken`, which let a SHORT
    fully-covered window with NO beacon witness (`indeterminate`: covered = 0, uncovered below the threshold)
@@ -1248,34 +1393,35 @@ agreement rate excludes `rejected_by_broker` and `not_submitted` from the numera
    sibling view rows to prove the beacon was alive before it will call anything away. The classifier must hold
    itself to the standard its test does. `telemetry_unhealthy` carries the verdict so the label distinguishes
    `broken` from `indeterminate` (RD's labelled-reduction coupling, §A.1.1).
-
-5. else if the covered window is EMPTY -> **`pre_telemetry`**.
 6. else if there is at least one view row with **`actionable_at_last_view = 1`** inside the covered window:
    - latch is LIVE -> **`pending_live`** (no prompt; the mandate can still be acted on)
    - latch is TERMINAL -> **`discipline_lapse`**, with `prompt_required=True`. There is no intermediate
      state — see E.1.
-7. else (no `actionable_at_last_view = 1` view row in the covered window):
-   - the uncovered window is non-empty -> **`pre_telemetry`** (RD ruling 2: absence over a partially-dark
-     window establishes nothing)
-   - the uncovered window is empty (FULL coverage):
-     - >= 1 view row (necessarily `actionable_at_last_view = 0`) -> **`never_actionable`** (he looked; the
-       panel presented no decision)
-     - no view rows at all -> **`away_unseen`**
+7. else (no `actionable_at_last_view = 1` view row in the covered window) — **coverage is NOT re-tested here;
+   reaching this rung already means the table routed to `_CLASSIFY_NORMALLY`**:
+   - `verdict.awareness_established` is True (>= 1 view row, necessarily all `actionable_at_last_view = 0`)
+     -> **`never_actionable`** — he looked, and the panel presented no decision. **This is reachable from a
+     PARTIALLY-covered window too** (R19 MAJOR 3): the instrument existed and observed, so the honest answer
+     is "nothing was shown to him", not "the instrument was absent".
+   - `verdict.awareness_established` is False -> **`away_unseen`**. Reachable ONLY from a FULLY covered
+     window, because `("partial", False)` and `("none", *)` were already returned by rung 4 as
+     `pre_telemetry`.
 
-**`never_actionable` sits BELOW the coverage rungs, and the plan's first draft had it above (Codex R11 MAJOR
-1).** Above the coverage rungs it would have CAPTURED FTRE: the first panel render after `0033` writes an
-`actionable_at_last_view = 0` row (every form is withheld today, §B.3), so the arc's headline case would flip
-from `pre_telemetry` to `never_actionable` on the very first page view — silently changing the
-outcome §A.1 is asking RD to rule on. **The ordering principle that fixes it:** un-instrumented TIME is a more
-fundamental unknown than un-actionable RENDERS, because during the uninstrumented window we cannot know what
-the panel would have presented either. Coverage is therefore evaluated FIRST, and `never_actionable` describes
-exactly what it was invented for — a latch whose window was FULLY instrumented and which still never showed a
-decision. (Codex offered two other fixes — do not persist withheld renders, or split the bit. Both discard a
-fact; a precedence reorder keeps both facts and changes only which one is REPORTED when they coincide.)
+**THE COVERAGE / ACTIONABILITY RULE, STATED ONCE.** Derived from RD's ruling-2 sentence and from nothing else:
 
-**Rung 4 above rung 5-7 is deliberate**: a broken beacon must not be laundered into `away_unseen`. Rungs 1-3
-above rung 4 are also deliberate: an explicit operator action is ground truth and does not need telemetry to
-be sound.
+> **partial + NO awareness -> `pre_telemetry`. partial + awareness + no actionable rows -> `never_actionable`.
+> FULL + no awareness -> `away_unseen`. FULL + awareness + no actionable rows -> `never_actionable`.**
+
+FTRE is `pre_telemetry` because it has NO view rows at all — not because coverage vetoes actionability.
+`never_actionable` is reachable from BOTH full and partial coverage: it says *the instrument was there, it
+observed, and what it showed him was nothing actionable*, which is true whenever awareness is established,
+regardless of how much of the window was instrumented.
+
+**Why the rung ORDER is what it is.** Rungs 1-3 (explicit operator actions) are ground truth and need no
+telemetry. Rung 4 (RD's table) decides whether the coverage question is answerable AT ALL, and nothing may
+pre-empt a ruling. Rung 5 (health) therefore bears only on a window the table says IS answerable — a broken
+beacon must not be laundered into `away_unseen`. Rungs 6-7 read actionability, a different question from
+coverage: coverage answers *can we know?*, actionability answers *what was he shown?*
 
 ### E.1 The pessimistic default is load-bearing, and collapsing the prompt state MAKES it structural
 
@@ -1337,8 +1483,13 @@ Three conjuncts, each enforced somewhere different:
    *does a dashboard glance count evidentially as a view?*). Keeping them separate means a future surface
    cannot change the away/lapse math as a side effect of being added.
 
-   Regression tests: a view row on a surface NOT in `ACTIONABLE_VIEW_SURFACES` does not flip `away_unseen` to
-   `pending_*`, does not count toward `covered_sessions`, and does not render in the panel's telemetry echo.
+   Regression tests, **exercised through the `counted_surfaces=` PARAMETER rather than by planting an invalid
+   surface row (Codex R20 MAJOR)**: today `LATCH_VIEW_SURFACES == ACTIONABLE_VIEW_SURFACES == {"latch_panel"}`
+   and both the SQL CHECK and the model validator reject any other value, so a test planting a `dashboard` row
+   could only pass by BYPASSING the very #11 mirror it exists to respect. Instead the PURE classifier and
+   health calls are invoked with `counted_surfaces=frozenset()` over a valid `latch_panel` row and must ignore
+   it — same property, no invalid fixture. Real non-counted-surface behaviour is tested when 21-F widens the
+   enum.
    A test also asserts `ACTIONABLE_VIEW_SURFACES <= LATCH_VIEW_SURFACES` (an uncounted-but-unwritable surface
    is a typo, not a design).
 3. **While LIVE** — `view_session_date` falls inside the latch's live window AND `latch_state_at_first_view`
@@ -1367,12 +1518,17 @@ uncounted surface tells us nothing about it. `actionable` filters NEITHER: a row
 beacon fired, which is the only question this check asks. The regression test asserts exactly this pair — an
 uncounted-surface row does NOT create a covered session; a fully-withheld row on a counted surface DOES.
 
-**Verdict:**
-- `covered == 0 and uncovered >= LATCH_TELEMETRY_DARK_SESSIONS_THRESHOLD` -> **`broken`**. This is exactly the
-  shape a dead beacon makes; the away rate computed from it is the one number that must not be quietly
-  trusted. (Threshold is a named constant, default 5, so a genuinely quiet week does not trip it.)
+**Verdict — the DARK count binds regardless of `covered` (Codex R19 MAJOR 6):**
+- `uncovered >= LATCH_TELEMETRY_DARK_SESSIONS_THRESHOLD` -> **`broken`**, *even when `covered > 0`*. The draft
+  keyed `broken` on `covered == 0`, so a 30-session window with ONE sibling view and 29 dark sessions verdicted
+  `ok` and could hand `away_unseen` to the away rate — manufacturing away-rate evidence out of an instrument
+  that was dark for 97% of the window. One beacon hit proves the beacon existed once; it does not make the
+  window observed. (Threshold is a named constant, default 5, so a genuinely quiet week does not trip it.)
 - `covered == 0 and 0 < uncovered < threshold` -> **`indeterminate`**.
 - otherwise -> **`ok`**, carrying the three counters.
+
+A test plants `covered = 1, uncovered >= threshold` and asserts `broken` — under the draft's rule that
+substrate verdicts `ok` and the latch reaches `away_unseen`, so the test discriminates.
 
 **Honest about what it cannot do:** this check cannot distinguish "beacon broken" from "operator away for the
 whole window" — and it does not claim to. It identifies the SHAPE and refuses the number. The stronger check
@@ -1410,15 +1566,24 @@ totals would be trustworthy. There is now exactly ONE mapping:
 
 ```python
 def r_bucket_for(disposition: str) -> str:
-    """EXACTLY ONE bucket per disposition. The three buckets PARTITION the
-    corpus: every classified fire lands in exactly one, and the three sums
-    reconcile to the total. AWAY_RATE_COUNTED_DISPOSITIONS controls ONLY the
-    away branch below -- it never creates a second, overlapping bucket."""
+    """EXACTLY ONE bucket per disposition, and NO DEFAULT (section A.1.6).
+
+    The three buckets PARTITION the corpus: every classified fire lands in
+    exactly one and the three sums reconcile to the total. A trailing
+    `return "decision_r"` would make that true while silently ASSIGNING any
+    disposition nobody ruled on -- which is how `pending_live` and
+    `attested_was_away` ended up scored as operator judgment without a ruling.
+    So membership is explicit in all three directions and an unlisted
+    disposition RAISES.
+    """
     if disposition in AWAY_RATE_COUNTED_DISPOSITIONS:
         return "away_r"
     if disposition in UNATTRIBUTABLE_DISPOSITIONS:      # the REMAINDER of the
         return "unattributable_r"                       # excluded set
-    return "decision_r"
+    if disposition in DECISION_DISPOSITIONS:
+        return "decision_r"
+    raise ValueError(
+        f"{disposition!r} has no ruled R bucket; see plan section A.1.6")
 
 UNATTRIBUTABLE_DISPOSITIONS = (
     _ALL_EXCLUDED_DISPOSITIONS - AWAY_RATE_COUNTED_DISPOSITIONS
@@ -1431,8 +1596,10 @@ _ALL_EXCLUDED_DISPOSITIONS = frozenset({
 
 `UNATTRIBUTABLE_DISPOSITIONS` is DERIVED by set subtraction, never hand-written — that is what makes the
 overlap unrepresentable rather than merely tested-against. **The partition test** asserts that every member of
-`LATCH_DISPOSITIONS` maps to exactly one bucket, that the three buckets are pairwise disjoint, and that
-`decision_r + away_r + unattributable_r` equals the corpus total.
+`LATCH_DISPOSITIONS` appears in EXACTLY ONE of the three sets, that the buckets are pairwise disjoint, that
+`decision_r + away_r + unattributable_r` equals the corpus total, **and that `r_bucket_for` RAISES on a
+disposition absent from all three** — so a future disposition cannot be absorbed into `decision_r` by a
+default (§A.1.6).
 
 `ExecutionParityReport` carries `decision_r`, `away_r` and `unattributable_r`, plus each excluded
 disposition's own count so the REASON is never lost inside the total. FTRE's +1.22R lands in
@@ -1518,31 +1685,47 @@ the step-5 comparison** — a laundering path straight through the hazard-(b) de
 keep 21-F's surface architecture open (Codex R10 MAJOR 3): without it, an identical decision taken from a
 second surface would collapse onto the first row and the ledger would lose which surface actually wrote the
 intent — the same defect §C.1 fixes on the telemetry side.
-`actual_digest` covers the operator-submitted params + reason + broker order id + (for a `validity` row) the
-`validated_place_intent_id` + the **`broker_snapshot_digest`** — and deliberately **NOT**
-`broker_snapshot_ts` (Codex R14 MAJOR 1). The timestamp is render-time data that changes on every reload, so
-keying on it would give a plain page refresh a NEW key and produce a DUPLICATE intent row — falsifying this
-section's own "a refresh followed by an identical resubmit also collapses" property for the one form that most
-needs it. **TWO DISTINCT COUNTERS, NAMED APART (Codex R18 MAJOR 6).** After the R17 change the prompt branches on LATCH
-ATTRIBUTION while the agreement text still reasons about an EXACT framework match, and reusing 21-A's single
-`matched_order_count` for both leaves an implementer with two incompatible meanings — on FTRE it would route
-the real `LIMIT 18.89 / 10 sh` order down the ABSENCE path instead of the divergence path, reintroducing the
-exact defect R17 fixed. So: **`attributable_order_count`** (21-A's frozen-price `_match_latch`) drives the
-prompt branch and the multiplicity gate; **`exact_framework_match_count`** drives the agreement wording. Both
-are persisted in the snapshot digest and both are asserted in Task 7.
+**`actual_digest` DIGESTS THE NORMALISED SUBMITTED PAYLOAD.** `normalise_submitted(payload)` runs FIRST —
+`canonical_duration(raw_duration)` (§D.4) plus display-rounding on every numeric field — because two
+semantically identical answers (`GTC` vs `GOOD_TILL_CANCEL`) must not produce different keys while persisting
+the same canonical value; that would write a duplicate ledger row on a plain reload. Normalisation is a PURE
+function of the payload and touches no server state, so the "nothing in the key depends on the re-derivation"
+property below holds exactly.
+
+**`actual_digest` covers EVERY operator-submitted SEMANTIC field for the kind** — the normalised `actual_*`
+params, `decline_reason`, `attested_disposition`, `validity_outcome`, `actual_broker_order_id`,
+`validated_place_intent_id`, and `broker_snapshot_digest`. The answer fields are named explicitly because
+omitting them lets two DIFFERENT answers for the same parent and snapshot (`rejected_by_broker` vs
+`not_submitted`) collide, so step 4 would replay the first as a `200` and the second answer would be silently
+lost. Pairwise tests differ only by `validity_outcome`, and only by `attested_disposition`, and assert
+distinct keys.
+
+It deliberately does **NOT** cover `broker_snapshot_ts`: that is render-time data changing on every reload, so
+keying on it would give a plain refresh a new key and duplicate the row — falsifying this section's own
+collapse-on-refresh property for the one form that most needs it. The timestamp still drives the staleness
+GATE (a validation, not a key input) and is still persisted in `validity_detail`.
+
+**TWO DISTINCT COUNTERS, NAMED APART.** **`attributable_order_count`** (21-A's frozen-price `_match_latch`)
+drives the prompt branch and the multiplicity gate; **`exact_framework_match_count`** drives the agreement
+wording. Reusing 21-A's single `matched_order_count` for both gives an implementer two incompatible meanings
+and routes FTRE's real `LIMIT 18.89 / 10 sh` down the ABSENCE path instead of the divergence path. Both
+counters are persisted in the snapshot envelope and both are asserted in Task 7, and a grep pin (Task 10)
+asserts the bare name `matched_order_count` appears NOWHERE in 21-B's own code or tests (21-A's field keeps
+its name on `LatchOrderJoin`; every 21-B consumer must name which question it is asking).
 
 `broker_snapshot_digest` is derived instead from the broker-book STATE the fragment showed — `resolution.kind`,
 `attributable_order_count`, `exact_framework_match_count`, `indeterminate`, **and a canonical digest of EVERY resting BUY order visible on this
 ticker** (order id, type, duration, stop, limit, quantity, status, all at display precision), sorted by order
 id — via the same `_digest` helper. **The per-order tail is load-bearing, not decoration (Codex R17 MAJOR):**
 with only the counts and the matched id, an EMPTY book and a book containing one NON-matching FTRE order hash
-identically whenever `matched_order_count == 0` — and the non-matching order is precisely the actual side the
+identically whenever `attributable_order_count == 0` — and the non-matching order is precisely the actual side the
 parity ledger needs. The digest would then fail "changes when it MUST" on the arc's own geometry. With the
 tail it is identical across reloads that show the same book and different the moment the book actually moves —
 exactly the equivalence relation an idempotency key wants. `broker_snapshot_ts` still travels in the payload,
 still drives the §F.3 staleness gate (a VALIDATION, not a key input), and is still persisted into
-`validity_detail` for audit. Both are functions of the RAW PAYLOAD ONLY — **nothing in the key depends on the
-re-derivation**, which is what makes the ordering below possible.
+`validity_detail` for audit. Every digest input is a function of the SUBMITTED PAYLOAD ALONE (normalised, but
+never enriched from server state) — **nothing in the key depends on the re-derivation**, which is what makes
+the handler ordering below possible.
 
 **The discriminating test (Task 7):** POST, then re-POST with ONE hidden field mutated. The key must CHANGE,
 so step 4 misses, step 5 runs, and the response is `409` — not a `200` replay. An implementation whose key
@@ -1554,21 +1737,29 @@ omits the framework snapshot returns `200` and FAILS.
 1. parse the form                          -> 400 on an unparseable body
 2. SHAPE-validate every field              -> 400 naming the offending field
    (types, ranges, enum membership, the intent_kind conditional requirements)
-3. derive idempotency_key from the RAW PAYLOAD
+3. NORMALISE the submitted payload, then derive idempotency_key from it
 4. SELECT ... WHERE idempotency_key = ?    -> FOUND: REPLAY. 200 + the same
                                               fragment + the same intent_id.
-                                              *** RETURN HERE. The staleness
-                                              re-derivation is NOT run. ***
-5. re-derive AS OF the submitted anchor + compare  -> 409 on any field mismatch
+                                              *** RETURN HERE. NEITHER the anchor
+                                              staleness check NOR the broker-
+                                              snapshot freshness check is run. ***
+5. FIRST-WRITE VALIDATION ONLY:
+   (a) anchor staleness (the four-tier ladder)     -> 409
+   (b) broker-snapshot freshness, for a `validity` -> 409
+   (c) re-derive AS OF the submitted anchor + compare -> 409 on any field mismatch
 6. INSERT ... ON CONFLICT(idempotency_key) DO NOTHING
 7. SELECT by idempotency_key and return THAT row   -> covers the lost race
 ```
 
 Three properties this ordering buys, each with its own test:
 
-- **A replay is never `409`'d.** Step 4 returns before step 5, so a retry of an ALREADY-RECORDED intent
-  succeeds even after the world has moved — which is the whole point of an idempotency key. Recording the
-  intent is the terminal state; once it exists, staleness is irrelevant to it.
+- **A replay is never `409`'d — and that covers the BROKER SNAPSHOT as well as the session anchor (R22
+  MAJOR).** Step 4 returns before step 5, so a retry of an ALREADY-RECORDED intent succeeds even after the
+  world has moved. Recording the intent is the terminal state; once it exists, neither a stale anchor nor a
+  snapshot older than `LATCH_BROKER_SNAPSHOT_MAX_AGE_SECONDS` is relevant to it. The freshness gates exist to
+  stop a stale view producing a NEW row, not to punish a resubmit of a row already written. A test replays a
+  `validity` submission whose snapshot is older than the bound and asserts `200` + the same `intent_id`, not
+  `409`.
 - **The concurrent race cannot 500.** Two requests can both miss step 4; `ON CONFLICT DO NOTHING` + the
   re-SELECT at step 7 means the loser returns the winner's row rather than surfacing an `IntegrityError`.
   (`ON CONFLICT DO NOTHING` is an INSERT-time no-op, NOT `INSERT OR REPLACE` — no DELETE, no new PK, no
@@ -1620,11 +1811,19 @@ grep pin covers this).
 
 ### G.4 Hazard (d) — framework-vs-operator distinguishability in the recon path
 
-`latch_order_intents` is the register: a `place` intent with `actual_broker_order_id` set says "this broker
-order came from a framework-prepared mandate". Because 21-B places nothing, the linkage is established when
-the operator attests or when the order fragment observes a resting order that matches an intent's framework
-params exactly. V1 therefore delivers **distinguishability as a QUERY, not as an order tag** — which is all
-that is available before 21-C, and it is stated as such:
+`latch_order_intents` is the register — but **EXACT linkage comes from a `validity` or `cancel` row, NEVER
+from a `place` row** (Codex R20 MAJOR). The draft said "a `place` intent with `actual_broker_order_id` set",
+which §C.2 now makes UNWRITABLE (a decision row has observed nothing, R19 MAJOR): an implementer following it
+would either write code the schema rejects or build report logic around a column state that can never exist.
+A `validity` row carries the observed `actual_broker_order_id` AND `validated_place_intent_id`, so the join
+`place -> validity -> broker order id` is exact and travels through the parent link; a `cancel` row carries
+the id directly. Because 21-B places nothing, the linkage is established when the operator answers the
+validity prompt — and that prompt fires on **LATCH ATTRIBUTION** (`_match_latch`, frozen-price based), NOT on
+an exact framework-params match (§E). The distinction is the whole reason FTRE is recordable: its actual
+`LIMIT 18.89 / 10 sh` does NOT match the framework `9 sh`, so an exact-match linkage rule would make the arc's
+central divergence unlinkable and therefore unrecordable. `exact_framework_match_count` is an input to the
+AGREEMENT WORDING and the metric — never to linkage. V1 therefore delivers **distinguishability as a QUERY,
+not as an order tag** — which is all that is available before 21-C, and it is stated as such:
 
 - `swing latches parity` reports, per resting order at the broker, an **`inferred_origin`** of
   `framework_inferred` (its params match a recorded `place` intent at display precision),
@@ -1714,7 +1913,7 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
 | path | responsibility |
 |---|---|
 | `swing/data/migrations/0033_latch_order_intents.sql` | the `latch_view_events` rebuild (+`surface`) + `latch_order_intents` + `schema_version` 32->33 |
-| `swing/data/repos/latch_order_intents.py` | `record_intent` (the §G.1 seven-step order), `list_intents_for_latch`, `list_intents_since(*, since_ts)` — filtering and ordering on `recorded_ts` (§F.3) |
+| `swing/data/repos/latch_order_intents.py` | `record_intent` — the IDEMPOTENT WRITE ONLY (§G.1 steps 4, 6, 7: SELECT-by-key, `INSERT ... ON CONFLICT DO NOTHING`, re-SELECT), under the caller's transaction, with NO HTTP parsing, NO re-derivation and NO fragment rendering. **The ROUTE owns steps 1-3 and 5 and all responses** (R22 MAJOR — the first draft assigned "the seven-step order" to the repo, which pushes web and derivation concerns into the data layer). `list_intents_for_latch`, `list_intents_since(*, since_ts)` — filtering and ordering on `recorded_ts` (§F.3) |
 | `swing/latches/order_intent.py` | `PreparedOrder`, `OrderDerivation`, `PreparedOrderResult`, `compute_prepared_order`, `OrderDelta`, `compute_order_delta` — PURE |
 | `swing/latches/classification.py` | `LatchDisposition`, `classify_latch`, `TelemetryHealth`, `assess_telemetry_health`, `AwayRateResult`, `ExecutionParityReport`, `compute_execution_parity` — PURE |
 | `swing/cli_latches.py` | `swing latches parity` — read-only report; ASCII only |
@@ -1734,7 +1933,7 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
 | `swing/data/models.py` | `LatchOrderIntent` dataclass + `__post_init__`; **`LatchViewEvent` gains `surface`, `actionable_at_first_view` and `actionable_at_last_view`** with `{0,1}` + monotonicity validation; the new enums IMPORTED from `swing/latches/constants.py`, never re-declared |
 | `swing/data/repos/latch_view_events.py` | RE-KEYED on `(candidate_id, view_session_date, surface)` (§C.1) — `get_view` / `record_view` take `candidate_id` + a REQUIRED `surface`; `_COLS` and `_row_to_model` gain `surface` + both actionability columns; `record_view` gains `actionable=`; both list helpers gain an explicit `surfaces=` filter |
 | `swing/latches/constants.py` | `LATCH_TELEMETRY_EPOCH_SESSION`, `LATCH_VIEW_SURFACES`, `ACTIONABLE_VIEW_SURFACES`, `LATCH_INTENT_KINDS`, `LATCH_ATTESTED_DISPOSITIONS`, `LATCH_VALIDITY_OUTCOMES`, `LATCH_DISPOSITIONS`, `AWAY_RATE_COUNTED_DISPOSITIONS` (the §A.1.5 branch seam), `LATCH_SIZING_BASES`, `LATCH_STOP_LEG_STATES`, `LATCH_ORDER_WITHHELD_REASONS`, `LATCH_TELEMETRY_DARK_SESSIONS_THRESHOLD` |
-| `swing/web/routes/latches.py` | **(a)** NEW `POST /latches/intent` (the §G.1 seven-step handler). **(b) `POST /latches/view` IS REWRITTEN, not merely passed a new kwarg (Codex R13 MAJOR 3):** `_parse_beacon_anchor` gains `actionable_candidate_ids` + `withheld_candidate_ids` REPLACING the single `candidate_ids` field (same rejection ladder, same 200-id cap applied to the UNION, plus a rejection when an id appears in BOTH lists); the handler intersects EACH list with the anchor-session live set and calls `record_view(..., surface="latch_panel", actionable=<which list it came from>)`. **If this route is left on the old contract every withheld render is still ingested as a plain view and the whole R7 fix never reaches the DB.** **(c)** `POST /latches/orders` gains the validity prompt + the `broker_snapshot_ts` / `broker_snapshot_branch` hidden fields (§F.3) |
+| `swing/web/routes/latches.py` | **(a)** NEW `POST /latches/intent` (the §G.1 seven-step handler). **(b) `POST /latches/view` IS REWRITTEN, not merely passed a new kwarg (Codex R13 MAJOR 3):** `_parse_beacon_anchor` gains `actionable_candidate_ids` + `withheld_candidate_ids` REPLACING the single `candidate_ids` field (same rejection ladder, same 200-id cap applied to the UNION, plus a rejection when an id appears in BOTH lists); the handler intersects EACH list with the anchor-session live set and calls `record_view(..., surface="latch_panel", actionable=<which list it came from>)`. **If this route is left on the old contract every withheld render is still ingested as a plain view and the whole R7 fix never reaches the DB.** **(c)** `POST /latches/orders` gains the validity prompt + the SINGLE `broker_snapshot_json` hidden field carrying all six envelope keys (§E) — NOT separate `broker_snapshot_ts` / `broker_snapshot_branch` inputs, which cannot satisfy the six-key contract |
 | `swing/web/view_models/latches.py` | `LatchRowVM` gains the prepared-order + disposition + prompt block; `LatchPanelVM` gains the intent-anchor payload (**and `PANEL_SPECIFIC_FIELDS` grows to match**); `all_clear_note` -> the separated claims |
 | `swing/web/templates/latches.html.j2` | include the prepared-order partial per live card; the attestation prompt on terminal cards |
 | `swing/web/templates/partials/latch_orders.html.j2` | the separated-claims render; the per-order Cancel control on stale-order rows |
@@ -1764,6 +1963,14 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
   - `UNIQUE(idempotency_key)` blocks a second row.
   - The IMMUTABILITY BARRIER: `UPDATE` and `DELETE` on `latch_order_intents` both ABORT, and the message names
     the append-only rule.
+  - A malformed `recorded_ts` (wrong length, space instead of `T`, non-datetime) is REJECTED (R19 MAJOR — this
+    column drives the monthly report's cutoff and ordering); mirrored in `LatchOrderIntent.__post_init__`.
+  - `actual_broker_order_id` blank-when-present is REJECTED on every kind, and a `place` or `decline` row
+    carrying one at all is REJECTED (R19 MAJOR — a decision row has observed nothing).
+  - A `validity` row without a non-empty, `json_valid` `validity_detail` envelope is REJECTED (R19 MAJOR); the
+    required keys are enforced in the repo + dataclass validator under #11.
+  - A `validity_outcome='accepted_by_broker'` row missing ANY of `actual_order_type` / `actual_duration` /
+    `actual_limit_price` / `actual_quantity` is REJECTED (R20 MAJOR).
   - Every PROVENANCE CHECK: a bad `framework_duration`, a bad `derivation_sizing_basis`, a regime close
     WITHOUT its session (and the reverse), and a non-positive equity / risk pct / quantity.
   - **The FK/immutability coherence test (the R13 CRITICAL, whose assertion the R16 CRITICAL then caught the
@@ -1789,9 +1996,10 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     `trg_loi_no_delete` fires first for any delete here, so a test asserting "self-referencing RESTRICT" would
     prove the wrong thing. Assert the append-only abort text; prove parent-link integrity through INVALID
     INSERTS instead.
-  - The shape exclusion, keyed on `place`: ANY non-`place` row (including **`decline`**) carrying a
-    `framework_*`, `derivation_*` or non-order-id `actual_*` value is REJECTED, while `actual_broker_order_id`
-    stays legal on all of them.
+  - The shape exclusion: ANY NON-ORDER row (`cancel` / `attest` / `validity`) carrying a `framework_*` or
+    `derivation_*` value is REJECTED. **`decline` is an ORDER-BEARING kind and MUST carry the complete
+    framework + derivation block** (R18 MAJOR 7) — the pre-R18 wording survived here and directly contradicted
+    it, which is a mutually-impossible pair of tests (R19 MAJOR).
   - The REVERSE null checks: a non-`decline` row carrying a `decline_reason`, or a non-`attest` row carrying
     an `attested_disposition`, is REJECTED.
   - The stop-leg conditional: a `STOP_LIMIT` row WITHOUT `framework_stop_price`, and a `LIMIT` row WITH one,
@@ -1838,7 +2046,11 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
   - **THE FTRE DIVERGENCE INSERT, AS RAW SQL AGAINST THE REAL MIGRATION (R18 CRITICAL):** a `place` row
     (`LIMIT` / `GOOD_TILL_CANCEL` / limit 18.8902 / qty 9 / full derivation block) plus its `validity` child
     carrying observed `actual_order_type='LIMIT'`, `actual_limit_price=18.89`, `actual_quantity=10` — both
-    rows must INSERT successfully. The R17 fix was described in prose while the CHECK still forbade it; a
+    rows must INSERT successfully — **the validity child carries `actual_duration='GOOD_TILL_CANCEL'` too**
+    (R20 MAJOR: the agreement denominator needs a COMPLETE actual side, and an omitted duration makes
+    `compute_order_delta` return `any_difference is None` (UNKNOWN) rather than a clean quantity mismatch, so
+    FTRE would still miss the metric). The test asserts the denominator gains 1 and the numerator does not.
+    The R17 fix was described in prose while the CHECK still forbade it; a
     raw-SQL migration test (not merely a repo/model test) is what makes that impossible to repeat.
   - `ACTIONABLE_VIEW_SURFACES <= LATCH_VIEW_SURFACES`, and both equal `{"latch_panel"}` today (section E.3).
 - [ ] **Step 2:** implement. Backup gate copied VERBATIM from `_phase21_arc_a_backup_gate`. Repo functions
@@ -1859,6 +2071,9 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
       `compute_order_delta` cell tests: exact match (all deltas 0/False); FTRE framework `LIMIT 18.89 / 9` vs
       actual `LIMIT 18.89 / 10` -> `quantity_delta == 1`, every other field equal, `any_difference is True`;
       a missing actual side -> `None` (UNKNOWN), never `False`; a `18.885` vs `18.89` compare -> equal at 2dp.
+      **`canonical_duration` parity (R19 MAJOR 8):** `GTC` and `GOOD_TILL_CANCEL` compare EQUAL and an
+      unmapped duration canonicalises to `UNKNOWN` and compares as UNKNOWN, never as agreement (a raw-string
+      comparison reports a duration divergence on FTRE's semantically identical order and FAILS).
       **The stop-leg tri-state, all three cells:** pullback framework with no stop leg vs an actual with no
       stop leg -> `stop_leg == 'both_absent'`, `stop_price_delta is None`, contributing MATCH to
       `any_difference` (a bare `float | None` implementation reports UNKNOWN here, and unknown is never
@@ -1868,19 +2083,26 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
 
 ### Task 3: `swing/latches/classification.py` — dispositions (PURE)
 
-- [ ] Failing tests: **the §E.0 table properties FIRST** (totality over the key product; the monotone property
-      that flipping awareness `False -> True` never yields `away_unseen`; no second coverage branch in the
-      module); then every §E precedence rung; all ELEVEN dispositions' `prompt_required` (exactly one True,
+- [ ] Failing tests: **the §E.0 properties FIRST** — totality over the key product; the monotone property
+      asserted THROUGH `classify_latch` on concrete full / partial / none substrates (NOT over the table's
+      sentinel values, which prove nothing about the final disposition — R19 MAJOR 5); and the behavioural
+      no-re-derivation check that the classifier's output depends on nothing the `CoverageVerdict` does not
+      carry. Then every §E precedence rung; all ELEVEN dispositions' `prompt_required` (exactly one True,
       and it is `discipline_lapse`); the unattested-terminal-viewed cell's
       `effective_disposition == "discipline_lapse"`; the coverage arithmetic at all four boundaries
       (anchor == epoch, anchor == epoch - 1 session, clear == epoch, clear == epoch + 1 session); a view row
       dated inside the window but recorded against a TERMINAL state is NOT evidence (§E.3).
-- [ ] **The actionability split under FULL coverage** — a latch with only `actionable_at_last_view = 0` rows
-      across a FULLY-covered armed window is `never_actionable`, NOT `discipline_lapse` and NOT `away_unseen`
-      (an implementation ignoring the column produces one of those two and FAILS, in opposite directions).
-      **And the R11 precedence** — the SAME shape over a PARTIALLY-covered window is
-      `pre_telemetry`, NOT `never_actionable`; this is the FTRE geometry, so an implementation
-      ranking actionability above coverage flips the arc's headline case on the first page view and FAILS.
+- [ ] **THE COVERAGE / ACTIONABILITY MATRIX — all four cells, exactly as §E states them once.** Each cell
+      discriminates a different wrong implementation:
+      - FULL + no awareness -> `away_unseen`.
+      - FULL + awareness + only `actionable_at_last_view = 0` rows -> `never_actionable` (an implementation
+        ignoring the column returns `discipline_lapse` or `away_unseen` and FAILS, in opposite directions).
+      - PARTIAL + awareness + only `actionable_at_last_view = 0` rows -> `never_actionable` (an implementation
+        re-applying a coverage veto after the table routed normally returns `pre_telemetry` and FAILS).
+      - PARTIAL + NO awareness -> `pre_telemetry` — the FTRE geometry (an implementation ranking actionability
+        above coverage flips the arc's headline case on the first page view and FAILS).
+- [ ] **The ordering test:** PARTIAL + no awareness with `broken` telemetry health STILL returns
+      `pre_telemetry`, NOT `telemetry_unhealthy` — health may not pre-empt RD's ruled table.
 - [ ] **The two-axis separation** — a `place` intent whose governing `validity` row says
       `rejected_by_broker` yields `disposition='accepted'` AND `execution_outcome='rejected_by_broker'`, and
       an unobserved validity yields `unknown`, never a success value (an implementation collapsing the axes
@@ -1909,7 +2131,9 @@ classifies `pre_telemetry` and its +1.22R lands in `unattributable_r`. No task i
 - [ ] Failing tests: the three counters incl. `uninstrumented_sessions`; `broken` at/above threshold and
       `indeterminate` below it; `AwayRateResult` cannot be constructed without `health`; `rate is None` and a
       populated `withheld_reason` under `broken`; the away-rate DENOMINATOR excludes `pre_telemetry`,
-      `never_actionable` and `telemetry_unhealthy`; the three R buckets, with FTRE's +1.22R landing
+      `never_actionable` and `telemetry_unhealthy`; **`covered = 1, uncovered >= threshold` verdicts `broken`,
+      not `ok`** (R19 MAJOR 6 — under the draft's `covered == 0` rule that substrate verdicts `ok` and the
+      latch reaches `away_unseen`, so the cell discriminates); the three R buckets, with FTRE's +1.22R landing
       in `unattributable_r` per RD's ruling; **the agreement rate's four counts** — a delta-clean place intent that the
       broker REJECTED is in neither the numerator nor the denominator and appears in `validity_failed`; an
       unobserved validity appears in `validity_unknown`, not in agreement.
@@ -1957,7 +2181,7 @@ step that gets absorbed and skipped.
       `accepted_by_broker` from the fill; **`resolution.kind != "ok"` renders NO validity prompt in either
       direction** (the R8 MAJOR 1 degraded branch — a prompt built on an unknown order book is a prompt whose
       answer the operator would infer from the panel's own silence); the intent path still makes ZERO
-      `borrow` calls with the prompt in play; `matched_order_count > 1` or an indeterminate status renders the
+      `borrow` calls with the prompt in play; `attributable_order_count > 1` or an indeterminate status renders the
       existing multiplicity / indeterminate note and NO validity prompt; a `validity` POST whose
       `broker_snapshot_ts` is from a prior action session or older than
       `LATCH_BROKER_SNAPSHOT_MAX_AGE_SECONDS` -> `409` with ZERO rows written;
@@ -1965,11 +2189,18 @@ step that gets absorbed and skipped.
       order is `LIMIT 18.89 / 9 sh` with an attributable resting order of `LIMIT 18.89 / 10 sh` RENDERS the
       validity prompt (an exact-match gate renders nothing and FAILS), the prompt NAMES the difference, and
       confirming writes ONE `validity` row carrying the OBSERVED `actual_*` params so `compute_order_delta`
-      yields `quantity_delta == 1` FROM THE LEDGER rather than from a fixture;
+      yields `quantity_delta == 1` FROM THE LEDGER rather than from a fixture; **that divergent row carries
+      `validity_outcome='accepted_by_broker'` and therefore ENTERS the agreement DENOMINATOR while FAILING the
+      numerator** (R19 MAJOR 7 — an `unknown` outcome leaves FTRE visible as a delta yet excluded from the
+      metric it exists to feed); a `validity` row written without the snapshot envelope in `validity_detail`
+      is REJECTED (R19 MAJOR); the fragment emits ONE `broker_snapshot_json` hidden field whose key set EQUALS
+      what `validity_detail` requires (R20 MAJOR — drift between the two makes the audit row unwritable) and
+      the handler persists it VERBATIM without synthesising any key; two validity answers differing only as
+      `GTC` vs `GOOD_TILL_CANCEL` produce the SAME idempotency key and ONE row (R20 MAJOR);
       the `broker_snapshot_digest` CHANGES when a non-matching resting order appears while
-      `matched_order_count` stays 0 (a counts-only digest is identical across those two books and FAILS) and
+      `attributable_order_count` stays 0 (a counts-only digest is identical across those two books and FAILS) and
       is UNCHANGED across a reload showing the same book; a `place`
-      intent WITH a matching resting order AND `matched_order_count == 1` AND not indeterminate renders the
+      intent WITH an ATTRIBUTABLE resting order AND `attributable_order_count == 1` AND not indeterminate renders the
       PRESENCE prompt with `accepted_by_broker` pre-selected
       and the observed `order_id` carried (the R5 CRITICAL discriminator — an absence-only implementation
       renders no prompt here and the agreement numerator stays permanently zero); no `validity` row is EVER
@@ -2016,7 +2247,9 @@ step that gets absorbed and skipped.
 - [ ] The four-part pin of the Global Constraints section: (i) the introspection-driven mutator monkeypatch
       sweep over `GET /latches`, every `POST /latches/intent` branch and `POST /latches/orders`; (ii) the
       zero-`borrow` seam assertion on the intent path; (iii) the `schwab_api_calls` row-count invariant;
-      (iv) the retained grep belt. CSS tokens under `:root` + `body.dark`, `var()`-only.
+      (iv) the retained grep belt; **(v) the R19 CRITICAL pin — the bare name `matched_order_count` appears
+      NOWHERE in 21-B's own code or tests** (21-A's `LatchOrderJoin` field keeps its name; every 21-B consumer
+      must name which of the two questions it asks). CSS tokens under `:root` + `body.dark`, `var()`-only.
 - [ ] Commit `test(latches): Task 10 — behavioural pin of ZERO Schwab writes + the panel style tokens`.
 
 ---
