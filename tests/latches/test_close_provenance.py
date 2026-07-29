@@ -71,6 +71,16 @@ _D_MINUS_1 = date(2026, 7, 23)
         # Route B: the run stamped S over a close the market had left.
         ((19.52, "2026-07-24"), {_D: 17.76}, ARCHIVE_STATUS_OK,
          "uncorroborated", True, False),
+        # AN OLDER STAMP STILL CORROBORATES WHEN THE S-DATED BAR MATCHES.
+        # The proof standard is deliberately "the judged number IS the bar
+        # dated S", not "the stamp says S" -- the whole arc exists because the
+        # stamp is only an UPPER BOUND and proves nothing on its own. So a
+        # `D < S` stamp plays no part here: what ties the close to the session
+        # is value agreement with the bar pinned to that exact date. Pinned so
+        # a future edit can neither tighten this to `D == S` (which would
+        # re-admit the stamp into the proof) nor loosen the date pinning.
+        ((17.76, "2026-07-23"), {_D: 17.76}, ARCHIVE_STATUS_OK,
+         "corroborated", False, False),
         # The alarm rung condition (1): corroborated AT ITS OWN STAMP.
         ((19.52, "2026-07-23"), {_D_MINUS_1: 19.52}, ARCHIVE_STATUS_OK,
          "uncorroborated", False, True),
