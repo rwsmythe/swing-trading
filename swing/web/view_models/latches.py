@@ -15,11 +15,17 @@ from dataclasses import dataclass, fields
 from datetime import UTC, date, datetime, timedelta
 
 from swing.evaluation.dates import PageKind, sessions_behind, topbar_session_date
-from swing.latches.constants import LATCH_PANEL_LOOKBACK_SESSIONS
+from swing.latches.constants import (
+    ARCHIVE_STATUS_OK,
+    CLOSE_PROVENANCE_FUTURE_STAMP,
+    CLOSE_PROVENANCE_UNCORROBORATED,
+    LATCH_PANEL_LOOKBACK_SESSIONS,
+)
 from swing.latches.models import Latch
 from swing.latches.reader import (
     build_latch_derivation,
     count_session_recorded_closes,
+    latest_recorded_close_stamp,
     load_last_closes,
 )
 from swing.web.view_models.journal import _base_banner_fields
@@ -487,7 +493,22 @@ _FORM_CHECK_HEADLINES = {
     "pending": "Mandate form check pending",
     "permanent": "MANDATE FORM CHECK INERT FOR THIS LATCH",
     "unknown": "MANDATE FORM CHECK NOT RUN",
+    # --- Arc 21-G ----------------------------------------------------------
+    # NEUTRAL, and for the same reason `pending` is: this renders on every live
+    # latch for ~7 hours of every trading day, and a warning-shaped label on a
+    # daily state trains the dismissal reflex.
+    "stale_regime": "Mandate form check ran from an uncorroborated close",
+    # WARNING tone: both report a real, actionable inconsistency in the
+    # operator's own data rather than a routine wait.
+    "value_conflict": "RECORDED CLOSE CONTRADICTED BY THE ARCHIVE",
+    "future_stamp": "RECORDED CLOSE IS STAMPED AFTER THIS PAGE SESSION",
 }
+
+# The severities that render as neutral STATUS rather than as a warning. Kept
+# beside the headlines so the tone and the wording cannot drift apart; the
+# template mirrors this set (no new CSS token, so the theme no-raw-hex /
+# token-contract test is untouched).
+NEUTRAL_FORM_CHECK_SEVERITIES = frozenset({"pending", "stale_regime"})
 
 
 def _as_sentence(text: str) -> str:
@@ -499,6 +520,25 @@ def _as_sentence(text: str) -> str:
     exactly as the broker does.
     """
     return text[:1].upper() + text[1:]
+
+
+def _uncorroborated_suffix(prov) -> str:
+    """The provenance clause carried by EVERY B-continuity disagreement line.
+
+    ONE helper, so the wording cannot drift between the leg lines and the
+    shape lines. It names the close's PROVEN date (the archive corroborated the
+    recorded close at that date) and the derivation session the archive holds
+    nothing for, which is exactly the claim the alarm rests on -- and exactly
+    the qualification that keeps it from over-claiming in the other direction.
+
+    NO APOSTROPHES: Jinja autoescaping renders one as `&#39;`, which is correct
+    HTML but silently breaks text assertions and operator search.
+    """
+    stamp = prov.stamp_session or "an unrecorded session"
+    return (f" [read from a close dated {stamp}, corroborated by the archive "
+            f"bar dated {stamp}; the archive holds no bar for the derivation "
+            f"session {prov.derivation_session.isoformat()}, so this is a "
+            f"labelled finding and not an all-clear]")
 
 
 def _close_provenance(quote) -> str:
@@ -563,6 +603,12 @@ class LatchOrdersFragmentVM:
     # all-clear, and a sentence that is usually absent stops being informative
     # by its absence. The display-ready sentence is `all_clear_note`.
     form_check_ran_count: int = 0
+    # Arc 21-G: how many live latches were checked from an UNCORROBORATED close
+    # (B-continuity). Deliberately NARROW -- only the sub-rung that was actually
+    # alarm-authorized is counted. B-persistent / B-unknown / B-undated are
+    # indistinguishable from rung C in what the page can claim, and counting
+    # them here would imply a check ran that did not.
+    form_check_stale_count: int = 0
 
     @property
     def all_clear_note(self) -> str:
@@ -574,6 +620,8 @@ class LatchOrdersFragmentVM:
         every form of all-clear.
         """
         skipped = len(self.mandate_form_check_skipped)
+        stale = self.form_check_stale_count
+        unchecked = skipped - stale
         if not skipped:
             return "Broker orders agree with the live latches. No alarms."
         # "FORM-checked", not "checked" (codex-auto-review MINOR). A bare
@@ -581,9 +629,20 @@ class LatchOrdersFragmentVM:
         # alarms, the cap leg, the GTC duration and the stray-order sweep all
         # ran on every evaluated latch. Only the two-form SELECTION was skipped.
         noun = "latch" if self.form_check_ran_count == 1 else "latches"
-        return (f"No alarms among the {self.form_check_ran_count} {noun} "
-                f"form-checked. {skipped} not form-checked - see the labels "
-                f"below.")
+        ran = f"No alarms among the {self.form_check_ran_count} {noun} form-checked."
+        unchecked_clause = (
+            f"{unchecked} not form-checked - see the labels below."
+            if unchecked else "")
+        if not stale:
+            return f"{ran} {unchecked_clause}".strip()
+        # LEAD WITH THE REDUCTION, NOT THE REASSURANCE (Codex R7 MINOR). A
+        # sentence beginning "No alarms" is skimmable as a page-level all-clear
+        # before the qualifying clause is read, and this is the one surface
+        # whose statements have to survive being believed.
+        stale_noun = "latch" if stale == 1 else "latches"
+        lead = (f"{stale} {stale_noun} checked from an uncorroborated close - "
+                f"no all-clear is asserted for those.")
+        return " ".join(p for p in (lead, unchecked_clause, ran) if p)
 
 
 def _resolve_schwab_environment(cfg) -> str | None:
@@ -714,6 +773,7 @@ def build_latch_orders_vm(
         MANDATE_ORDER_TYPE_PULLBACK,
     )
     from swing.latches.orders import (
+        classify_close_provenance,
         expected_mandate_order_type,
         indeterminate_order_tickers,
         join_orders_to_latches,
@@ -798,16 +858,26 @@ def build_latch_orders_vm(
     # against a number the page does not show. A read failure leaves the regime
     # UNKNOWN, which accepts either form (A6: degrade, never false-alarm).
     #
-    # IT IS SESSION-SCOPED (codex-auto-review MAJOR). `load_last_closes` returns
-    # the GLOBALLY latest close per ticker no matter how old it is, so without
-    # this gate a price from several sessions ago would decide which instrument
-    # the panel calls correct -- and on a stock that has since round-tripped
-    # through the pivot that blesses the wrong order or flags the right one. The
-    # fragment already insists every part of its picture describe ONE coherent
-    # moment (it is why a one-session-stale ANCHOR suppresses the alarms); the
-    # regime price is held to the same standard. Only a close stamped on the
-    # DERIVATION SESSION may pick a form; anything else leaves the regime
-    # unknown, where both forms are accepted and the cap leg and GTC still bind.
+    # IT IS PROVENANCE-SCOPED (Arc 21-G; 21-A's session gate COMPLETED, not
+    # reversed). `load_last_closes` returns the GLOBALLY latest close per ticker
+    # no matter how old it is, and the session it returns is only the RUN STAMP
+    # -- an UPPER BOUND on the close's own date, because the evaluator stamps
+    # the COHORT MAX bar date while each `candidates.close` comes from that
+    # ticker's OWN last bar (gotcha #30). 21-A gated both directions on that
+    # stamp because nothing could date a close per row; `classify_close_provenance`
+    # now can, using the on-disk archive the derivation already loads, so the
+    # single knob SPLITS along RD's rule:
+    #
+    #   ASSERT a match  -- rung A only: a bar dated EXACTLY the derivation
+    #                      session whose close IS the recorded close.
+    #   ALARM a mismatch-- permitted from a STALE close, but only when the
+    #                      staleness is CHARACTERISABLE (its date is PROVEN at
+    #                      its own stamp, never inferred from the stamp) and
+    #                      SELF-LIMITING (the whole system is no fresher than
+    #                      this ticker, so the gap ends at the next nightly).
+    #
+    # The archive DATES the persisted close; it never REPLACES it. The number
+    # judged is still the number the cards render (21-A shown-equals-judged).
     regime_session_iso = derivation.derivation_session.isoformat()
     regime_closes: dict = {}
     # A FAILED read is NOT an absent close (Codex R1 MINOR). Both collapse to an
@@ -825,13 +895,35 @@ def build_latch_orders_vm(
             regime_closes = {}
             regime_price_read_failed = True
 
+    # The SELF-LIMITING half of the alarm gate (plan B.2.1 condition 2), read
+    # LAZILY and at most ONCE per fragment build -- never per latch, and never
+    # at all when every live latch reached rung A. Wrapped in the A6 ladder: an
+    # unreadable `L` WITHDRAWS alarm authority (permission is not obligation)
+    # rather than granting it by default, and it does NOT change the label --
+    # that is `count_session_recorded_closes`'s job, and the two reads answer
+    # different questions (Codex R7 MINOR).
+    _stamp_read: dict = {}
+
+    def _latest_stamp() -> str | None:
+        if "value" not in _stamp_read:
+            try:
+                _stamp_read["value"] = latest_recorded_close_stamp(conn)
+            except Exception as exc:  # noqa: BLE001 -- A6: the panel never 500s
+                _log.warning("latch order latest-close-stamp read degraded: %s", exc)
+                _stamp_read["value"] = None
+        return _stamp_read["value"]
+
     disagreement_lines: list[str] = []
     multiplicity_lines: list[str] = []
-    # (ticker, quote, tail) per latch whose FORM check could not run. The
-    # pending-vs-permanent classification needs ONE more read, so it is deferred
-    # until after the loop and skipped entirely when nothing was withheld.
-    form_check_skipped: list[tuple[str, tuple | None, str]] = []
+    # (ticker, quote, tail, provenance, note_reason) per latch whose FORM check
+    # was not ASSERTIVE. EXACTLY ONE list, so the counts and the labels cannot
+    # fork (Codex R3 MINOR): a latch is appended here whenever `assertive` is
+    # False, B-continuity included. The pending-vs-permanent classification
+    # needs ONE more read, so it is deferred until after the loop and skipped
+    # entirely when nothing was withheld.
+    form_check_skipped: list[tuple[str, tuple | None, str, object, str | None]] = []
     form_check_ran_count = 0
+    form_check_stale_count = 0
     for lat in derivation.latches:
         join = joins.get(lat.identity.candidate_id)
         if not lat.is_live or join is None or join.indeterminate:
@@ -854,12 +946,48 @@ def build_latch_orders_vm(
                 f"orders match this mandate (pivot {lat.latched_pivot:.2f} / cap "
                 f"{lat.zone_cap:.2f}); only 1 is reported here - verify the "
                 f"others at the broker")
-        quote = regime_closes.get(lat.identity.ticker)
-        # quote is (close, data_asof_date); a close from any other session is
-        # not evidence about THIS moment, so it does not get to pick the form.
-        last_close = (
-            quote[0] if quote is not None and quote[1] == regime_session_iso
-            else None)
+        ticker = lat.identity.ticker
+        quote = regime_closes.get(ticker)
+        # quote is (close, RUN STAMP). The stamp is an upper bound, so the
+        # ladder DATES the close against the archive instead of trusting it.
+        prov = classify_close_provenance(
+            quote=quote,
+            derivation_session=derivation.derivation_session,
+            bars_through=lat.bars_through,
+            archive_closes=derivation.archive_closes.get(ticker, {}),
+            archive_status=derivation.archive_status.get(
+                ticker, ARCHIVE_STATUS_OK),
+        )
+        # MAY ASSERT: rung A only.
+        assertive = prov.may_assert and expected_mandate_order_type(
+            latched_pivot=lat.latched_pivot, last_close=prov.price) is not None
+        # MAY ALARM: the two RD conditions, in the order that defers the DB
+        # read to last so it is issued only when everything else already holds.
+        alarm_authorized = (
+            prov.provenance == CLOSE_PROVENANCE_UNCORROBORATED
+            # B-conflict: dated evidence CONTRADICTS this close. Alarming from
+            # the contradicted number would be a false alarm made by our own
+            # inconsistency, repeatable daily (Codex R4 MAJOR 2).
+            and not prov.has_dated_conflict
+            # B-unavailable: the archive read RAISED, so the missing witness is
+            # our ignorance (Codex R5 MAJOR 2).
+            and not prov.archive_unavailable
+            # (1) CHARACTERISABLE -- the date is PROVEN at the close's own
+            # stamp, not inferred from it (Codex R6 MAJOR).
+            and prov.dated_at_stamp
+            and prov.stamp_date is not None
+            and prov.stamp_date < derivation.derivation_session
+            # (2) SELF-LIMITING -- the gap is the CLOCK's, not the TICKER's
+            # (Codex R5 MAJOR 1). `_latest_stamp()` may be None, in which case
+            # this comparison is False and authority is withdrawn.
+            and prov.stamp_session == _latest_stamp()
+        )
+        # Every non-authorized state feeds `None` downstream, exactly as an
+        # ABSENT close does today -- so `mandate_shape_mismatch` still runs in
+        # its shipped unknown-regime mode (it catches a TRAILING_STOP_LIMIT or
+        # a DAY duration, wrong in EVERY regime) and nothing regime-derived is
+        # asserted or alarmed.
+        last_close = prov.price if (assertive or alarm_authorized) else None
         expected_type = expected_mandate_order_type(
             latched_pivot=lat.latched_pivot, last_close=last_close)
         # THE UNDETERMINABLE-REGIME LABEL (RD ruling 2026-07-27). With no usable
@@ -890,19 +1018,48 @@ def build_latch_orders_vm(
         # mismatch rendered three lines below it. Its tail describes only checks
         # that actually ran: with no resting order there is no form to accept and
         # no leg or duration was judged.
-        if expected_type is None:
-            tail = (
-                # GOOD_TILL_CANCEL is judged only when the payload CARRIES a
-                # duration -- `mandate_shape_mismatch` deliberately does not
-                # assert against an absent one, so an unconditional "GTC still
-                # applies" overclaims (Codex R3 MINOR).
-                "either form is accepted. The zone cap is still judged, and "
-                "GOOD_TILL_CANCEL whenever the broker payload carries a "
-                "duration." if join.orders
-                else "no resting order was evaluated for this mandate.")
-            form_check_skipped.append((lat.identity.ticker, quote, tail))
-        else:
+        if assertive:
             form_check_ran_count += 1
+        else:
+            if alarm_authorized:
+                form_check_stale_count += 1
+                # The form WAS selected here, from a dated-but-older close, so
+                # the shipped "either form is accepted" tail would be false.
+                tail = (
+                    "the order type, the zone cap and GOOD_TILL_CANCEL were "
+                    "judged against that close." if join.orders
+                    else "no resting order was evaluated for this mandate.")
+            else:
+                tail = (
+                    # GOOD_TILL_CANCEL is judged only when the payload CARRIES a
+                    # duration -- `mandate_shape_mismatch` deliberately does not
+                    # assert against an absent one, so an unconditional "GTC
+                    # still applies" overclaims (Codex R3 MINOR).
+                    "either form is accepted. The zone cap is still judged, and "
+                    "GOOD_TILL_CANCEL whenever the broker payload carries a "
+                    "duration." if join.orders
+                    else "no resting order was evaluated for this mandate.")
+            # THE NOTE REASON IS DECIDED HERE, ONCE, AND PASSED (Codex R6
+            # MINOR). `_build_form_check_notes` then only FORMATS -- it makes
+            # no classification decision of its own for the new branches, so
+            # the counts and the labels cannot drift apart and there is no
+            # second hidden classifier. `None` defers to the shipped four.
+            if prov.provenance == CLOSE_PROVENANCE_FUTURE_STAMP:
+                note_reason = "future_stamp"
+            elif prov.has_dated_conflict:
+                note_reason = "value_conflict"
+            elif (prov.provenance == CLOSE_PROVENANCE_UNCORROBORATED
+                    and prov.archive_unavailable):
+                note_reason = "unavailable"
+            elif alarm_authorized:
+                note_reason = "stale_regime"
+            else:
+                note_reason = None
+            form_check_skipped.append((ticker, quote, tail, prov, note_reason))
+        # EVERY line derived from a B-continuity regime carries its provenance,
+        # so the operator can weigh it. An unlabelled stale-derived alarm would
+        # be a claim the data does not support in the other direction.
+        suffix = _uncorroborated_suffix(prov) if alarm_authorized else ""
         # (a) an order matched to this mandate but priced wrong.
         #
         # WHICH LEGS THE MANDATE HAS IS REGIME-SELECTED:
@@ -924,9 +1081,21 @@ def build_latch_orders_vm(
         #
         # The CAP leg is required in EVERY regime: it is what stops the operator
         # chasing (the Codex R7 stop-only-order CRITICAL).
-        if expected_type == MANDATE_ORDER_TYPE_PULLBACK:
+        #
+        # THE RELAXATION IS RUNG-A ONLY (Arc 21-G, plan B.3.2 + B.4). Setting
+        # `stop_leg_expected = False` EXCUSES an absent stop leg -- an
+        # ASSERTION that the order's shape is right -- and RD's rule says a
+        # non-corroborated close may never assert a match. Under B-continuity
+        # the code therefore falls back to the shipped unknown-regime rule:
+        # judge a stop the order actually carries, demand none it does not.
+        # That is also the COMMISSION-NOT-OMISSION line: under a stale-derived
+        # BREAKOUT regime, demanding the missing stop leg would flag the
+        # operator's situationally-correct stopless pullback LIMIT every day,
+        # for seven hours -- a false positive by FREQUENCY, which destroys a
+        # channel exactly as reliably as a false positive by logic.
+        if assertive and expected_type == MANDATE_ORDER_TYPE_PULLBACK:
             stop_leg_expected = False
-        elif expected_type == MANDATE_ORDER_TYPE_BREAKOUT:
+        elif assertive and expected_type == MANDATE_ORDER_TYPE_BREAKOUT:
             stop_leg_expected = True
         else:
             stop_leg_expected = join.order_stop_agrees is not None
@@ -939,14 +1108,14 @@ def build_latch_orders_vm(
                     f"latched mandate (pivot {lat.latched_pivot:.2f}, zone cap "
                     f"{lat.zone_cap:.2f}); stop "
                     f"{_agreement_word(join.order_stop_agrees)}, limit "
-                    f"{_agreement_word(join.order_limit_agrees)}")
+                    f"{_agreement_word(join.order_limit_agrees)}{suffix}")
             elif expected_type == MANDATE_ORDER_TYPE_PULLBACK:
                 disagreement_lines.append(
                     f"{lat.identity.ticker}: resting order does not match the "
                     f"latched mandate (the last close is at or above the "
                     f"latched pivot {lat.latched_pivot:.2f}, so the mandate is "
                     f"a GTC LIMIT at the zone cap {lat.zone_cap:.2f}); limit "
-                    f"{_agreement_word(join.order_limit_agrees)}")
+                    f"{_agreement_word(join.order_limit_agrees)}{suffix}")
             else:
                 disagreement_lines.append(
                     f"{lat.identity.ticker}: resting order does not match the "
@@ -980,7 +1149,7 @@ def build_latch_orders_vm(
                 disagreement_lines.append(
                     f"{lat.identity.ticker}: resting BUY order {o.order_id} "
                     f"is not the mandated order shape ({shape}); the mandate is "
-                    f"{mandate_prose}")
+                    f"{mandate_prose}{suffix}")
         # (b) a STRAY order on this ticker matching NO latch. Reported per
         # order, because a correctly-priced order would otherwise mask it and
         # the page would read as all-clear with an unexplained live order at
@@ -1029,6 +1198,7 @@ def build_latch_orders_vm(
         multiplicity_notes=tuple(dict.fromkeys(multiplicity_lines)),
         mandate_form_check_skipped=form_check_notes,
         form_check_ran_count=form_check_ran_count,
+        form_check_stale_count=form_check_stale_count,
     )
 
 
@@ -1036,12 +1206,24 @@ def _build_form_check_notes(
     conn, skipped, *, derivation_session: date, regime_session_iso: str,
     close_read_failed: bool,
 ) -> tuple[MandateFormCheckVM, ...]:
-    """Classify each withheld FORM check as pending / permanent / unknown.
+    """Render each non-ASSERTIVE form check as a labelled note.
 
-    `skipped` is `(ticker, quote, tail)` per affected latch. The classification
-    needs ONE fact nothing else on this page already knows -- whether ANY usable
-    close has been recorded for the derivation session -- so the read happens
-    here, once, and ONLY when something was actually withheld.
+    `skipped` is `(ticker, quote, tail, provenance, note_reason)` per affected
+    latch, and `note_reason` was DECIDED IN THE LOOP (Codex R6 MINOR) -- this
+    function only FORMATS. There is no second classifier here, so the counts
+    and the labels cannot drift apart. A `None` reason defers to the four
+    shipped branches below.
+
+    THE COUPLING (RD's binding condition, 2026-07-28). Under-alarming is
+    acceptable ONLY BECAUSE IT IS LABELLED; an unlabelled under-alarm is a
+    silent all-clear. So EVERY state in which the check declines to alarm
+    reaches this function and renders a note saying what was not judged and
+    why. Deleting a branch here does not merely lose wording -- it converts a
+    defensible reduction into the exact defect the arc exists to eliminate.
+
+    The shipped four still need ONE fact nothing else on this page knows --
+    whether ANY usable close has been recorded for the derivation session -- so
+    that read happens here, once, and ONLY when something was withheld.
 
     That fact is deliberately about CLOSES, never about screen MEMBERSHIP (the
     Codex y1 MAJOR 1): an `evaluation_runs` row carries held open positions and
@@ -1061,9 +1243,80 @@ def _build_form_check_notes(
             recorded = None
 
     notes: list[MandateFormCheckVM] = []
-    for ticker, quote, tail in skipped:
+    for ticker, quote, tail, prov, note_reason in skipped:
         provenance = _close_provenance(quote)
-        if close_read_failed:
+        session_iso = regime_session_iso
+        stamp = (prov.stamp_session or "") if prov is not None else ""
+        if note_reason == "stale_regime":
+            # B-CONTINUITY. The form check DID run -- from a close whose date
+            # the archive PROVED, one session or more before this page's own.
+            # NEUTRAL, not a warning: this is the state of every live latch for
+            # ~7 hours of every trading day, and a warning-shaped label on a
+            # daily state trains the dismissal reflex on the one surface whose
+            # alarms have to survive being believed. It REPLACES the shipped
+            # `pending` note for this latch -- the two describe the same moment.
+            severity = "stale_regime"
+            detail = (
+                f"{ticker}: the mandate FORM check ran from an uncorroborated "
+                f"close dated {stamp} - the archive corroborates that close at "
+                f"{stamp} but holds no bar for the derivation session "
+                f"{session_iso}, so a mismatch found from it is reported and "
+                f"LABELLED while no all-clear is asserted for this latch. The "
+                f"whole system is no fresher than this ticker, so the next "
+                f"nightly run normally ends the gap. {_as_sentence(tail)}")
+        elif note_reason == "value_conflict":
+            # B-CONFLICT. Not merely un-dated: CONTRADICTED by dated evidence
+            # the panel is holding. Naming both numbers is strictly more useful
+            # than either an alarm or generic inert wording, because it reports
+            # a real data inconsistency in the operator's own system.
+            severity = "value_conflict"
+            recorded_value = "-" if prov.price is None else f"{prov.price:.2f}"
+            archive_value = (
+                "-" if prov.session_close is None else f"{prov.session_close:.2f}")
+            same_session = stamp == session_iso
+            disagreement = (
+                (f"two dated sources disagree about the same session: the "
+                 f"recorded close is {recorded_value} while the archive bar "
+                 f"dated {session_iso} closed at {archive_value}")
+                if same_session else
+                (f"the archive holds a newer close for {session_iso} "
+                 f"({archive_value}) than the recorded one ({recorded_value}, "
+                 f"stamped {stamp or 'an unrecorded session'})"))
+            detail = (
+                f"{ticker}: the mandate FORM check is INERT for this latch - "
+                f"{disagreement}. No mandate form will be picked while the two "
+                f"disagree, and no alarm is raised from the contradicted "
+                f"number. Verify the archive and the recorded close. {tail}")
+        elif note_reason == "future_stamp":
+            # RUNG F. A price that cannot be placed at-or-before this page's
+            # own moment may neither decide nor contest the regime -- the same
+            # coherent-moment discipline that makes a stale render anchor
+            # suppress the alarms.
+            severity = "future_stamp"
+            placed = (
+                f"is stamped {stamp}, LATER than the derivation session "
+                f"{session_iso} this page describes" if stamp
+                else f"carries no usable session stamp, so it cannot be placed "
+                     f"at or before the derivation session {session_iso}")
+            detail = (
+                f"{ticker}: the mandate FORM check is INERT for this latch - "
+                f"the most recent recorded close {placed}. A price belonging to "
+                f"a later moment than this page cannot say WHICH of the two "
+                f"mandate forms is correct at this price, so neither a match "
+                f"nor a mismatch is claimed from it. Reload to move this page "
+                f"forward. {tail}")
+        elif note_reason == "unavailable":
+            # B-UNAVAILABLE. The archive read RAISED, so the missing witness is
+            # OUR IGNORANCE. Alarming here would be asserting from a stale
+            # price at exactly the moment the settling evidence was unreadable.
+            severity = "unknown"
+            detail = (
+                f"{ticker}: the mandate FORM check did not run - the OHLCV "
+                f"archive read for this ticker failed, so the recorded close "
+                f"could not be dated and the panel cannot say WHICH of the two "
+                f"mandate forms is correct at this price, nor raise a mismatch "
+                f"from a price it could not place in time; {tail}")
+        elif close_read_failed:
             severity = "unknown"
             detail = (
                 f"{ticker}: the mandate FORM check did not run - the close read "

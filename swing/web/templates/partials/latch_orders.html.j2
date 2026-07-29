@@ -49,7 +49,7 @@
   {% if vm.mandate_form_check_skipped %}
   <div class="latch-form-check-skipped">
     {% for note in vm.mandate_form_check_skipped %}
-    <p class="{% if note.severity == 'pending' %}latch-form-check-pending{% else %}latch-alarm latch-alarm-warning{% endif %}">
+    <p class="{% if note.severity in ('pending', 'stale_regime') %}latch-form-check-pending{% else %}latch-alarm latch-alarm-warning{% endif %}">
       <strong>{{ note.headline }}</strong> {{ note.detail }}
     </p>
     {% endfor %}

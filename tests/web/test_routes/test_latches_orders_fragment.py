@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import date, datetime
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -49,6 +50,24 @@ def _seed_ftre(cfg):
             "pivot, initial_stop, rs_method) VALUES "
             "(121, 'FTRE', 'aplus', 17.76, 18.34, 14.88, 'universe')")
     conn.close()
+
+
+def _write_archive_bars(cfg, ticker, rows):
+    """Shape-A OHLCV archive bars for `ticker`, as `(iso_session, close)`.
+
+    THE ARCHIVE IS THE ONLY READ-SIDE SOURCE THAT DATES A CLOSE PER ROW, and
+    the derivation already loads it. Shape A (`{T}.yfinance.parquet`) is
+    deliberate: the panel reads with `migrate=False` (the A4 no-write
+    property), so a legacy `{T}.parquet` is invisible here exactly as it is in
+    production."""
+    import pandas as pd
+    cache = Path(cfg.paths.prices_cache_dir)
+    cache.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([
+        {"asof_date": session, "open": close, "high": close, "low": close,
+         "close": close, "volume": 100.0}
+        for session, close in rows
+    ]).to_parquet(cache / f"{ticker.upper()}.yfinance.parquet")
 
 
 @pytest.fixture
@@ -701,7 +720,13 @@ def _seed_close_above_the_pivot(cfg):
     pivot (the 2026-07-24 close, 19.52).
 
     A NON-aplus row, so it supplies the panel's rendered last close WITHOUT
-    adding a second fire to the derivation."""
+    adding a second fire to the derivation.
+
+    Arc 21-G: it also writes the CORROBORATING archive bar, because the run
+    stamp alone is only an UPPER BOUND on the close date. A healthy nightly
+    produces exactly this pairing -- the persisted close IS the derivation
+    session's bar -- so seeding it is what keeps these tests describing the
+    healthy system they were written for."""
     conn = connect(cfg.paths.db_path)
     with conn:
         conn.execute(
@@ -715,6 +740,7 @@ def _seed_close_above_the_pivot(cfg):
             "pivot, initial_stop, rs_method) VALUES "
             "(126, 'FTRE', 'watch', 19.52, 18.34, 14.88, 'universe')")
     conn.close()
+    _write_archive_bars(cfg, "FTRE", [("2026-07-24", 19.52)])
 
 
 def _pullback_order(**over):
@@ -926,7 +952,15 @@ def test_an_unknown_regime_still_judges_a_stop_leg_the_order_actually_carries(
 # --- codex-auto-review MAJOR: the regime price must be SESSION-SCOPED --------
 def _seed_close_at_the_derivation_session(cfg, close):
     """A close stamped on the fragment's OWN derivation session (2026-07-24 for
-    the frozen ANCHOR), so the regime selector will actually use it."""
+    the frozen ANCHOR), so the regime selector will actually use it.
+
+    Arc 21-G: it now ALSO writes the corroborating Shape-A archive bar dated
+    that session at the same close, because a run STAMP is only an upper bound
+    on the close's date and rung A demands per-bar proof. That pairing is what
+    a healthy nightly actually produces, so every shipped all-clear test keeps
+    reaching rung A through this one helper rather than through per-test edits.
+    The bar must lie within `[anchor, derivation_session]` and on a trading
+    session, or `load_bars` drops it."""
     conn = connect(cfg.paths.db_path)
     with conn:
         conn.execute(
@@ -940,6 +974,7 @@ def _seed_close_at_the_derivation_session(cfg, close):
             "pivot, initial_stop, rs_method) VALUES "
             "(127, 'FTRE', 'watch', ?, 18.34, 14.88, 'universe')", (close,))
     conn.close()
+    _write_archive_bars(cfg, "FTRE", [("2026-07-24", close)])
 
 
 def _seed_stale_close_above_the_pivot(cfg):
@@ -1503,3 +1538,211 @@ def test_a_failed_close_read_is_not_reported_as_an_absent_close(
     assert "Mandate form check pending" not in r.text
     # ...and the failure must not become an alarm or a 500.
     assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
+
+
+# ===========================================================================
+# Arc 21-G: the close-provenance asymmetry.
+#
+# ONE RULE: never act on an undated price, in EITHER direction. Assert a match
+# only from a close DATED the derivation session; raise a mismatch alarm only
+# from a close dated `D < S` that is PROVEN to be dated `D`, when the whole
+# system is no fresher than this ticker.
+# ===========================================================================
+NOW_WINDOW = datetime(2026, 7, 28, 12, 0)   # post-close, BEFORE the nightly
+ANCHOR_WINDOW = "2026-07-29"                # action_session_for_run(NOW_WINDOW)
+
+
+def _freeze(monkeypatch, when):
+    """Freeze BOTH clocks at `when` (the fragment requires the posted anchor to
+    equal the CURRENT action session, so the ROUTE clock must move too)."""
+    import swing.web.routes.latches as route_mod
+    import swing.web.view_models.latches as vm_mod
+    monkeypatch.setattr(vm_mod, "_now", lambda: when)
+    monkeypatch.setattr(route_mod, "_now", lambda: when)
+
+
+def _seed_watch_close(cfg, rid, *, asof, action, close, ticker="FTRE"):
+    """A NON-aplus `candidates` row carrying a close under the run stamp `asof`
+    -- exactly how the live corpus carries a newer close for a ticker whose
+    latch is still armed (FTRE runs 122-125 are this shape)."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(?, ?, ?, ?, 1, 0, 1, 0, 0, 0)",
+            (rid, f"{asof}T17:30:05", asof, action))
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(?, ?, 'watch', ?, 18.34, 14.88, 'universe')", (rid, ticker, close))
+    conn.close()
+
+
+def _seed_route_b_lag(cfg):
+    """THE REAL ROUTE-B GEOMETRY. Run 127 stamps 2026-07-24 over a close that
+    is actually FTRE's 2026-07-23 bar, because FTRE's evaluator fetch reached
+    only 07-23 while another cohort ticker reached 07-24 and
+    `evaluation_runs.data_asof_date` is the COHORT MAX.
+
+    Truth at 07-24 is 17.76, BELOW the latched pivot 18.34 -- so the recorded
+    19.52 would pick the WRONG mandate form."""
+    _seed_watch_close(cfg, 127, asof="2026-07-24", action="2026-07-27",
+                      close=19.52)
+    _write_archive_bars(cfg, "FTRE", [
+        ("2026-07-23", 19.52),      # the close the run actually carried
+        ("2026-07-24", 17.76),      # FTRE's REAL 07-24 close
+    ])
+
+
+def test_a_lagged_close_under_a_fresher_stamp_can_no_longer_assert_a_match(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """T2 -- THE FALSE ALL-CLEAR KILLER, and the load-bearing discriminator.
+
+    PRE-FIX: `quote = (19.52, '2026-07-24')` and the shipped gate is
+    `quote[1] == regime_session_iso`, which PASSES. 19.52 >= 18.34 -> PULLBACK
+    -> the stop leg is EXCUSED, the limit agrees, the shape matches, and the
+    page prints `Broker orders agree with the live latches. No alarms.` -- a
+    MATCH ASSERTED FROM A PRICE THE MARKET HAD ALREADY LEFT. Truth at 07-24 is
+    17.76 < 18.34, so the mandate is a STOP_LIMIT and this stopless LIMIT at
+    18.89 would fill IMMEDIATELY at ~17.76: an unintended entry below the pivot.
+
+    POST-FIX: a bar DATED 2026-07-24 exists and closed at 17.76, which
+    CONTRADICTS the recorded 19.52 -> B-conflict -> inert. No form is picked,
+    no all-clear is asserted, and the operator is told his own two dated
+    sources disagree."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_route_b_lag(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[_pullback_order()])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    # THE discriminating assertion: this string is PRESENT pre-fix.
+    assert "Broker orders agree with the live latches. No alarms." not in r.text
+    # ...and the reduction is labelled with the real inconsistency, naming BOTH
+    # numbers -- strictly more information than either the pre-fix all-clear or
+    # a generic inert wording would have given him.
+    assert "RECORDED CLOSE CONTRADICTED BY THE ARCHIVE" in r.text
+    assert "19.52" in r.text and "17.76" in r.text
+    assert "No alarms among the 0 latches form-checked. 1 not form-checked" \
+        in r.text
+
+
+def test_a_lagged_close_under_a_fresher_stamp_does_not_become_an_alarm_either(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """T2b -- the paired half. Route B's fix is, and always was, the REFUSAL TO
+    ASSERT; it is not a licence to alarm from the contradicted number.
+
+    PRE-FIX the stamp is trusted -> PULLBACK -> the panel reports the operator's
+    GTC STOP_LIMIT as the wrong shape. But that order is CORRECT for the
+    2026-07-24 bar the panel is holding (17.76 < 18.34 -> BREAKOUT), so the
+    alarm would be a FALSE alarm manufactured by our own inconsistency, and it
+    would repeat daily whenever the archive refreshes ahead of the candidate
+    rows."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_route_b_lag(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "not the mandated order shape" not in r.text      # fails pre-fix
+    assert "AT OR ABOVE" not in r.text                       # fails pre-fix
+    assert "RECORDED CLOSE CONTRADICTED BY THE ARCHIVE" in r.text
+    assert "Broker orders agree with the live latches" not in r.text
+
+
+def _seed_the_seven_hour_window(cfg):
+    """THE ~7-HOUR WINDOW, which is the state of EVERY trading day between the
+    action-session rollover (at the US close) and the nightly run at 17:30 HST.
+
+    S = 2026-07-28 and NOTHING is recorded for it. The newest recorded close
+    anywhere is 2026-07-27, and it is FTRE's -- so the staleness is the
+    CLOCK's, not the TICKER's, and the archive PROVES the close is from 07-27."""
+    _seed_watch_close(cfg, 127, asof="2026-07-27", action="2026-07-28",
+                      close=19.52)
+    _write_archive_bars(cfg, "FTRE", [
+        ("2026-07-24", 18.10),
+        ("2026-07-27", 19.52),      # W(D) == P: the date is PROVEN
+    ])                              # ...and NO bar for S == 2026-07-28
+
+
+def test_a_true_finding_survives_the_seven_hour_window(
+        seeded_db, monkeypatch):
+    """T4a -- THE ARC'S ALARM-SIDE DISCRIMINATOR. There is no other.
+
+    PRE-FIX: the close is stamped 2026-07-27 and the derivation session is
+    2026-07-28, so the shipped gate drops it -> regime UNKNOWN -> no shape check
+    -> the page prints `No alarms among the 0 latches form-checked` -- a scoped
+    all-clear over ZERO checking, with a real wrong-form order resting at the
+    broker. That is the whole cost of the current inertness: a mismatch the
+    operator saw at 18:00 Monday VANISHES at 10:30 Tuesday and does not return
+    until 17:30 Tuesday.
+
+    POST-FIX: both alarm conditions hold -- (1) CHARACTERISABLE, the archive
+    holds a 2026-07-27 bar whose close IS 19.52, so the date is PROVEN rather
+    than inferred from the stamp; (2) SELF-LIMITING, `L == D == 2026-07-27`, so
+    the system is no fresher than this ticker and the gap ENDS at the next
+    nightly. The finding is raised, LABELLED with its exact proven age."""
+    cfg, cfg_path = seeded_db
+    _freeze(monkeypatch, NOW_WINDOW)
+    _seed_ftre(cfg)
+    _seed_the_seven_hour_window(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client, anchor=ANCHOR_WINDOW)
+    assert r.status_code == 200
+    assert "not the mandated order shape" in r.text          # fails pre-fix
+    assert "AT OR ABOVE" in r.text
+    assert "No alarms" not in r.text                         # fails pre-fix
+    # ...and the finding names the close date the reading came from, so the
+    # operator can weigh it. An UNLABELLED stale-derived alarm would be a claim
+    # the data does not support in the other direction.
+    assert "read from a close dated 2026-07-27" in r.text
+    assert "2026-07-28" in r.text
+
+
+def test_the_seven_hour_window_never_produces_an_all_clear(
+        seeded_db, monkeypatch):
+    """T4b -- the paired half, and the OQ-2 COUPLING asserted as ONE pair.
+
+    RD: `under-alarming is acceptable ONLY BECAUSE IT IS LABELLED. An
+    unlabelled under-alarm is a silent all-clear.` So the suppression and the
+    label are ONE requirement with two inseparable halves, and this test
+    asserts both TOGETHER -- a future edit that deletes the label while keeping
+    the suppression cannot leave a green suite.
+
+    The order here is the operator's situationally-CORRECT stopless pullback
+    LIMIT. Under a B-continuity BREAKOUT regime the check may CONTRADICT what an
+    order SAYS but must not DEMAND what an order OMITS: flagging the missing
+    stop leg would fire every day, for seven hours -- a false positive by
+    FREQUENCY, which destroys a channel exactly as reliably as a false positive
+    by logic."""
+    cfg, cfg_path = seeded_db
+    _freeze(monkeypatch, NOW_WINDOW)
+    _seed_ftre(cfg)
+    _seed_the_seven_hour_window(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[_pullback_order()])
+    with TestClient(app) as client:
+        r = _post_orders(client, anchor=ANCHOR_WINDOW)
+    assert r.status_code == 200
+    # (i) NO all-clear of any form...
+    assert "Broker orders agree with the live latches" not in r.text
+    # (ii) ...AND the reduction is LABELLED. These two are ONE requirement.
+    assert "Mandate form check ran from an uncorroborated close" in r.text
+    assert "no all-clear is asserted for this latch" in r.text
+    assert "1 latch checked from an uncorroborated close" in r.text
+    # ...and no false alarm was invented from the omitted stop leg.
+    assert "ORDER PRICE MISMATCH" not in r.text
+    assert "not the mandated order shape" not in r.text
+    # The ANTI-DRUMBEAT lock: this state renders on every live latch for ~7
+    # hours of every trading day, so it must be NEUTRAL, never alarm-shaped.
+    assert "latch-form-check-pending" in r.text
+    stale_para = r.text.split(
+        "Mandate form check ran from an uncorroborated close")[0].rsplit(
+            "<p", 1)[-1]
+    assert "latch-alarm" not in stale_para
