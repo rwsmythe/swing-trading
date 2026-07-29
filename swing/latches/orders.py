@@ -15,9 +15,17 @@ be announced.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
+from datetime import date
 
 from swing.latches.constants import (
+    ARCHIVE_STATUS_OK,
+    ARCHIVE_STATUS_UNAVAILABLE,
     BUY_INSTRUCTIONS,
+    CLOSE_PROVENANCE_ABSENT,
+    CLOSE_PROVENANCE_CORROBORATED,
+    CLOSE_PROVENANCE_FUTURE_STAMP,
+    CLOSE_PROVENANCE_UNCORROBORATED,
     MANDATE_ORDER_DURATIONS,
     MANDATE_ORDER_TYPE_BREAKOUT,
     MANDATE_ORDER_TYPE_PULLBACK,
@@ -129,6 +137,181 @@ def expected_mandate_order_type(*, latched_pivot, last_close) -> str | None:
     if round(close, _PRICE_DP) < round(pivot, _PRICE_DP):
         return MANDATE_ORDER_TYPE_BREAKOUT
     return MANDATE_ORDER_TYPE_PULLBACK
+
+
+def _usable_price(raw) -> float | None:
+    """A price the panel may reason from, or ``None``.
+
+    Rejects ``bool`` explicitly (``True`` is not a price), non-numeric values,
+    and the non-finite shapes -- the same predicate
+    ``expected_mandate_order_type`` already applies, single-sourced here so the
+    ladder and the regime selector cannot disagree about what "usable" means.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+@dataclass(frozen=True)
+class CloseProvenance:
+    """What the panel may CLAIM about the regime close (gotcha #30).
+
+    THE WHOLE DESIGN IN ONE SENTENCE: **never act on an undated price, in
+    either direction.** Assert a match only from a close DATED the derivation
+    session; raise a mismatch alarm only from a close dated `D < S` that is
+    PROVEN to be dated `D`.
+
+    The archive is used ONLY to DATE the persisted close -- it never REPLACES
+    it. The number the check judges stays the number the cards render
+    (`load_last_closes` -> `candidates.close`), so 21-A's shown-equals-judged
+    invariant is preserved exactly. What changes is what the panel is willing
+    to claim about that number.
+
+    WHAT CORROBORATION PROVES, AND WHAT IT DOES NOT. The archive is an
+    independently DATED record, not an independently SOURCED one:
+    `candidates.close` was itself derived from an archive read at evaluation
+    time, so a match proves *the persisted close is the archive bar dated X*.
+    It does NOT prove the archive bar is a faithful record of the market. That
+    residual is out of this ladder's model and is not newly introduced by it --
+    the panel's whole price picture already rests on the archive being honest,
+    and the archive's own integrity is guarded upstream (the F6 / #24 / #26 /
+    18-A / 18-B finiteness + trailing-ragged + write-through defenses).
+    """
+
+    price: float | None
+    provenance: str                    # one of CLOSE_PROVENANCES
+    stamp_session: str | None          # the run stamp: an UPPER BOUND on the date
+    stamp_date: date | None            # the parsed stamp, or None when unplaceable
+    session_close: float | None        # W(S): the archive close dated exactly S
+    stamp_session_close: float | None  # W(D): the archive close dated exactly D
+    archive_status: str                # one of ARCHIVE_STATUSES
+    bars_through: date | None          # display/label context ONLY, never the witness
+    derivation_session: date
+
+    @property
+    def may_assert(self) -> bool:
+        """Rung A ONLY. No other rung may ever contribute to an all-clear."""
+        return self.provenance == CLOSE_PROVENANCE_CORROBORATED
+
+    @property
+    def has_dated_conflict(self) -> bool:
+        """B-conflict: a bar DATED S exists and DISAGREES with the recorded
+        close.
+
+        Inert for the regime, deliberately (Codex R4 MAJOR 2). Here the
+        persisted close is not merely un-dated -- it is CONTRADICTED by dated
+        evidence the panel is holding. Alarming from the older, contradicted
+        number against an order that is correct for the dated bar would be a
+        false alarm manufactured by our own inconsistency, and it could repeat
+        daily whenever the archive refreshes ahead of the candidate rows.
+        """
+        return (self.provenance == CLOSE_PROVENANCE_UNCORROBORATED
+                and self.session_close is not None)
+
+    @property
+    def archive_unavailable(self) -> bool:
+        """B-unavailable: the archive read RAISED, so the absence of a witness
+        is OUR IGNORANCE rather than a fact about the data."""
+        return self.archive_status == ARCHIVE_STATUS_UNAVAILABLE
+
+    @property
+    def dated_at_stamp(self) -> bool:
+        """Condition (1), CHARACTERISABLE: the close is corroborated AT ITS OWN
+        STAMP, so its date is KNOWN rather than assumed.
+
+        This is the rung-A test applied at `D` instead of `S`, and it is
+        NON-NEGOTIABLE (RD). A stamp comparison alone (`D == L`) compares two
+        RUN-LEVEL values, so a ticker that lagged INSIDE the latest cohort
+        satisfies it while its true close is a session older than `D` claims --
+        which would be gotcha #30 committed inside the fix for gotcha #30,
+        merely relocated from the assert direction to the alarm direction.
+        Requiring corroboration at `D` removes the stamp from the reasoning
+        entirely.
+        """
+        return (self.price is not None
+                and self.stamp_session_close is not None
+                and round(self.stamp_session_close, _PRICE_DP)
+                == round(self.price, _PRICE_DP))
+
+
+def classify_close_provenance(
+    *, quote, derivation_session: date, bars_through, archive_closes,
+    archive_status: str = ARCHIVE_STATUS_OK,
+) -> CloseProvenance:
+    """Place the recorded close on the provenance ladder. PURE.
+
+    `quote` is the shipped `(close, stamp_iso)` tuple from `load_last_closes`,
+    or `None`. `archive_closes` is that ticker's `{session -> close}` map
+    (possibly empty). No I/O, no exception swallowing beyond the numeric
+    coercion `expected_mandate_order_type` already does.
+
+    The rungs, in the order they are decided:
+
+      C `absent`        -- no usable price. Neither direction.
+      F `future_stamp`  -- the close is stamped AFTER the derivation session,
+                           or cannot be placed in time at all. Neither
+                           direction. This rung PRE-EMPTS rung A: the fragment
+                           insists every part of its picture describe ONE
+                           coherent moment (it is why a one-session-stale
+                           render anchor suppresses the alarms), and a
+                           future-stamped close is held to the same standard.
+                           Reachable: `load_last_closes` returns the GLOBALLY
+                           latest close per ticker while the fragment POST
+                           deliberately rebuilds an OLDER render-time anchor.
+      A `corroborated`  -- a bar dated EXACTLY S whose close IS the recorded
+                           close, to the cent. May assert.
+      B `uncorroborated`-- everything else. May alarm only under the caller's
+                           two conditions (plan B.2.1).
+
+    RUNG A IS DELIBERATELY TIGHT. Bar EXISTENCE alone is not enough: the
+    evaluation may have run before that bar landed, in which case the persisted
+    close is older than a bar that now exists. It is the VALUE agreement WITH
+    the exact date that ties the two together. Coincidental agreement (two
+    sessions closing at the identical cent) cannot fabricate a rung-A claim,
+    because the compared bar is pinned to S.
+    """
+    price = None if quote is None else _usable_price(quote[0])
+    raw_stamp = None if quote is None else quote[1]
+    stamp_session = None if raw_stamp is None else str(raw_stamp)
+    try:
+        stamp_date = (
+            None if not stamp_session else date.fromisoformat(stamp_session))
+    except (TypeError, ValueError):
+        stamp_date = None
+
+    closes = archive_closes or {}
+    session_close = _usable_price(closes.get(derivation_session))
+    stamp_session_close = (
+        None if stamp_date is None else _usable_price(closes.get(stamp_date)))
+
+    if price is None:
+        provenance = CLOSE_PROVENANCE_ABSENT
+    elif stamp_date is None or stamp_date > derivation_session:
+        provenance = CLOSE_PROVENANCE_FUTURE_STAMP
+    elif (session_close is not None
+            and round(session_close, _PRICE_DP) == round(price, _PRICE_DP)):
+        provenance = CLOSE_PROVENANCE_CORROBORATED
+    else:
+        provenance = CLOSE_PROVENANCE_UNCORROBORATED
+
+    return CloseProvenance(
+        price=price,
+        provenance=provenance,
+        stamp_session=stamp_session,
+        stamp_date=stamp_date,
+        session_close=session_close,
+        stamp_session_close=stamp_session_close,
+        archive_status=(
+            archive_status if archive_status in
+            (ARCHIVE_STATUS_OK, ARCHIVE_STATUS_UNAVAILABLE)
+            else ARCHIVE_STATUS_OK),
+        bars_through=bars_through,
+        derivation_session=derivation_session,
+    )
 
 
 def mandate_shape_mismatch(
