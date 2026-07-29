@@ -30,6 +30,8 @@ and its Wilson lower bound are REPORTED as diagnostics alongside median R and
 top-3 concentration, but do not gate the decision.
 ```
 
+**The line wrapping above is markdown presentation, NOT part of the criterion** (RD ruling 2026-07-29, answering CHARC's authoring question). The criterion is STORED AS A SINGLE LINE — wrap points become single spaces — matching the form of the `0008` value it replaces and the `0026` house style; no `decision_criteria` value in the registry has ever carried an embedded newline. The canonical stored bytes are pinned in §5.1.
+
 Nothing else on the row changes — not `statement`, not `target_sample_size` (stays 20), not `status`.
 
 ## §2 Why, and why NOW rather than later
@@ -54,13 +56,15 @@ Nothing else on the row changes — not `statement`, not `target_sample_size` (s
 ## §3 Binding requirements
 
 ### §3.1 NON-NEGOTIABLE — the original criterion must remain readable in the record
-Overwriting `decision_criteria` in place without preserving the original would destroy the evidence of what was pre-registered, defeating the entire purpose of pre-registration. **Mechanism is CHARC's call**; the cheapest path in the current schema is `status_change_reason` carrying the original text verbatim plus the amendment rationale and date, with `status_changed_at` stamped. Any mechanism that preserves the original verbatim and machine-readably is acceptable. Preservation itself is not optional.
+Overwriting `decision_criteria` in place without preserving the original would destroy the evidence of what was pre-registered, defeating the entire purpose of pre-registration. **Mechanism is CHARC's call.** Any mechanism that preserves the original verbatim and machine-readably is acceptable. Preservation itself is not optional.
+
+**SHIPPING MECHANISM (CHARC §3 pass, `d2412651` — binding mechanics live in [`docs/h1-criteria-amendment-charc-section3-pass.md`](h1-criteria-amendment-charc-section3-pass.md), not here):** one additive nullable column `preregistered_decision_criteria` holds the `0008` line-52 original verbatim on the `A+ baseline` row only; NULL on ids 2–5, with NULL DEFINED in the migration header as *never-amended* rather than *unknown*. The original also remains unconditionally preserved at `0008` line 52, which no runtime path can touch.
 
 ### §3.2 Its OWN migration, not bundled
 The amendment takes its own migration number (**next free at authoring time** — do NOT assume; `0032` is taken by 21-A and 21-B carries one of its own). Rationale: a governance amendment to a pre-registered decision rule must be independently auditable in migration history, not buried inside a feature migration.
 
-### §3.3 Data-only, additive
-This is a registry-row UPDATE in the shape of `0026` (which INSERTed hypothesis 5). No table/column changes. The standard backup gate and version-bump discipline apply as for any migration.
+### §3.3 Additive only — no destructive change
+A registry-row UPDATE in the shape of `0026` (which INSERTed hypothesis 5), **plus the one additive `ALTER TABLE ADD COLUMN` the §3.1 preservation mechanism requires**. Nothing is dropped, narrowed, or rewritten in place. The standard backup gate and version-bump discipline apply as for any migration. **Same-commit consequence (CHARC §3 pass):** `tests/data/test_db_v8.py` asserts the `hypothesis_registry` column set with EXACT set equality and fails on any added column — it is updated in the same commit.
 
 ## §4 Scope bounds — what this does NOT touch
 
@@ -72,11 +76,12 @@ This is a registry-row UPDATE in the shape of `0026` (which INSERTed hypothesis 
 
 ## §5 Verification / acceptance
 
-1. `hypothesis_registry` id 1 `decision_criteria` reads the §1 amended text byte-for-byte, INCLUDING the COHORT clause.
-2. The ORIGINAL text is recoverable verbatim from the row (§3.1).
-3. `statement`, `target_sample_size`, `status` unchanged; ids 2–5 untouched.
-4. Migration is data-only; schema tables/columns unchanged; backup gate fired.
+1. `hypothesis_registry` id 1 `decision_criteria` reads the §1 amended text **as a single line** (wrap points → single spaces), INCLUDING the COHORT clause. **Canonical referent, so the test is falsifiable: length 577, `sha256 = 6bdd723ce8a8ea1d00b8dbcfa7b50ec056a6282ee3a5110990b2f0894b7b3e73`.** Assert the digest or exact-string equality — NOT "matches §1", which is a wrapped rendering and cannot adjudicate whitespace.
+2. The ORIGINAL text is recoverable verbatim from the row via `preregistered_decision_criteria` (§3.1).
+3. `statement`, `target_sample_size`, `status` unchanged; ids 2–5 untouched (their `preregistered_decision_criteria` is NULL = never-amended, per the migration header definition).
+4. Migration is ADDITIVE only — the single new nullable column and nothing else; no table dropped, no column narrowed or rewritten; backup gate fired; `tests/data/test_db_v8.py` updated in the same commit.
 5. RD merge-blocking QA: RD reads the live row post-migration and confirms 1–3 himself.
+6. **D29 (CARRIED, not closed by this migration):** the cohort READERS omit the `entry_intent` filter the amended criterion names — `swing/metrics/cohort.py:37`/`:105` carry the predicate; `swing/metrics/tier.py:616` and `swing/web/view_models/metrics/hypothesis_progress_card.py:317` call without it, so the tool counts 3 where the criterion counts 2. RD-verified on disk 2026-07-29. It is a measurement-path change, excluded from §4 scope, and does NOT ride this migration (§3.2's independent-auditability rule). RD's QA records it CARRIED with a named owner — silence is not an option.
 
 ## §6 What this amendment does NOT establish — stated in advance, deliberately
 
