@@ -42,6 +42,26 @@ Every task's requirements implicitly include this section.
   fields on `LatchViewEvent`, and the
   `swing/data/db.py` version bump + backup gate) are the scoped
   addition the 21-B brief's SCHEMA TRIPWIRE authorizes — the same carve-out 21-A took for `0032`.
+- **NO CARDINALITIES, NO HAND-KEPT INSTANCE LISTS — STATE A ROSTER AND DERIVE FROM IT.** This plan wrote a
+  number where it could have written the rule for obtaining the number, and **a count of its own contents was
+  wrong in five consecutive review rounds** (`seven CHECKs` -> eight, `six keys` -> seven, `ten enums` ->
+  eleven, `four deltas` -> five, `two columns` -> three). That is a MECHANISM, not bad luck: naming a set by
+  cardinality-plus-inline-list in N places means every edit invalidates N-1 of them, so the artifact generates
+  review findings indefinitely and independently of whether it is CORRECT. The binding rule:
+  - **Every set gets ONE authority** — a named frozenset in `swing/latches/constants.py`, or a machine-readable
+    artifact (the migration's own DDL, the `json_remove` path list, `PRAGMA table_info`). The rosters this
+    plan names are `LATCH_DISPOSITIONS`, `R_BUCKETS`, the five bucket frozensets and their union
+    `_RULED_DISPOSITIONS`, `LATCH_BROKER_SNAPSHOT_KEYS`, `DERIVATION_NULLABLE_ON_DECISION`,
+    `LATCH_BROKER_SNAPSHOT_{RENDER,PERSISTED}_BRANCHES`, and the §C.1 rebuild-delta list.
+  - **Every other site REFERS to the roster by name and states NO count.** "Every member of X", never "all
+    eleven X".
+  - **Every test ITERATES the roster** rather than repeating its members, so a set that grows gains its cases
+    automatically instead of needing a bullet edited.
+  - **Where a number must appear for a human, it is a DATED MEASUREMENT, labelled as such** (the §J audit
+    counts), never an invariant a test asserts.
+  - **Where a list must be maintained at all, use the ANNOTATED-MANIFEST shape** (Task 1's enum manifest):
+    every parsed item must be classified, and an UNCLASSIFIED item FAILS the test. Silence is the failure
+    mode; annotation is the fix.
 - **#11 one-commit multi-mirror discipline:** every CHECK enum in `0033`, its Python frozenset in
   `swing/latches/constants.py`, and the dataclass `__post_init__` validator land in **ONE** task/commit
   (Task 1). No repo guard may re-declare an enum; `swing/data/models.py` IMPORTS the frozensets (the 21-A
@@ -377,9 +397,8 @@ DATED), because every one of those can move and a moved value silently rewrites 
 keeps the table minimal without losing anything unrecoverable.
 
 **THE CUT IS DRAWN AT WHAT THE CARD SHOWS, NOT AT WHAT THE SIZING FORMULA CONSUMES (Codex R27 MAJOR).** The
-first pass applied the rule to the sizing INPUTS and stopped, leaving THREE values that §D.3's card renders
-inside the derivation block un-anchored and unstored: `real_equity`, `equity_floor` and
-`nightly_recommendation_shares`. All three can DRIFT, so §A.4's own rule already covered them — it simply had
+first pass applied the rule to the sizing INPUTS and stopped, leaving the card-rendered values
+`real_equity`, `equity_floor` and `nightly_recommendation_shares` un-anchored and unstored. All three can DRIFT, so §A.4's own rule already covered them — it simply had
 not been applied to them. And the omission is not cosmetic: if `real_equity` moves while the floor still
 binds, `sizing_equity` is UNCHANGED, so the anchor digest is unchanged, the stale-form comparison passes, and
 the row records a derivation whose printed line — *"sizing equity $7,500.00 = max(real equity $1,2xx.xx,
@@ -638,21 +657,25 @@ against the shipped table. So the procedure is:
      compare the set of CHECK EXPRESSIONS on the pre-`0033` table against the post-`0033` table. Catches an
      ADDED or SILENTLY-ALTERED constraint, which neither of the other two can: the preservation suite only
      re-runs known rejections, and `executescript` is happy with a constraint nobody intended.
-     **The oracle is stated at the SAME granularity as the thing it measures (Codex R29 MAJOR).** "The
-     symmetric difference equals the four deltas" was not a well-defined assertion — the four deltas are at
-     FEATURE granularity and one of them (the re-keyed `UNIQUE`) is not a CHECK at all, so an implementer
-     would have had to invent grouping rules. The expected diff, expression by expression:
-     - **REMOVED (2):** the old `detection_date` CHECK, the old `view_session_date` CHECK.
-     - **ADDED (10):** the strengthened `detection_date` and `view_session_date` CHECKs (the §C.1.1 three
-       predicates); `surface IN ('latch_panel')`; the three `actionable_* IN (0,1)` CHECKs; the two
-       `actionable_ever_viewed >=` CHECKs; **and the two ISO-seconds shape guards on `first_viewed_ts` and
-       `last_viewed_ts`** (§C.1.1's fifth delta — the columns the section's "every timestamp" claim had
-       missed).
-     - **UNCHANGED:** the other six `0032` CHECKs (**`0032` declares EIGHT, not seven — counted on disk;
-       the "all seven CHECKs" figure this plan carried was simply wrong**): the two latch-state enums,
-       `view_count >= 1`, `evaluation_run_id > 0`, `length(trim(ticker)) > 0`, and
-       `last_viewed_ts >= first_viewed_ts` — the last PRESERVED beside its two new shape guards, because
-       ordering and shape are different questions and neither implies the other.
+     **THE ORACLE IS DERIVED FROM THE DELTA LIST, NOT RESTATED BESIDE IT (Codex R29 MAJOR; generalised in
+     the post-R29 editorial pass).** "The symmetric difference equals the four deltas" was not a well-defined
+     assertion — the deltas are at FEATURE granularity and one of them (the re-keyed `UNIQUE`) is not a
+     CHECK at all, so an implementer had to invent grouping rules. And restating the diff as its own
+     hand-kept list with cardinalities would just create a SECOND roster to drift against the first, which is
+     the generator this plan is retiring. So the test COMPUTES its expectation:
+
+     ```
+     expected_removed = the CHECK expressions delta (c) supersedes
+     expected_added   = the CHECK expressions deltas (a), (b), (c) and (e) introduce
+     expected_same    = parse(0032) - expected_removed
+     assert parse(0033) - parse(0032) == expected_added
+     assert parse(0032) - parse(0033) == expected_removed
+     ```
+
+     Deltas (a), (b), (c) and (e) are the CHECK-bearing ones; **delta (d) is a `UNIQUE` and contributes
+     NOTHING to a CHECK diff** — it, the three indexes and both triggers are asserted by their own
+     introspection tests. No cardinality appears in the assertion or in this bullet: add a CHECK to a delta
+     and the oracle follows it automatically, which is exactly what a hand-kept "ADDED (10)" could not do.
      The `UNIQUE` re-key, the three indexes and both triggers are asserted SEPARATELY, by their own
      introspection tests — a CHECK diff cannot speak about them.
    The trigger bodies get the same treatment — compare the post-`0033` `sqlite_master` trigger SQL against
@@ -723,9 +746,9 @@ telemetry has no downstream consumer.
 
 **Rebuild risk is bounded and stated:** the live table holds ZERO rows, so the copy is a no-op in production —
 but the copy is written anyway so a non-empty dev/test DB migrates correctly. **The two identity-coherence
-triggers and all **EIGHT** CHECKs from `0032` (counted on disk — the "seven" this plan carried for several
-rounds was wrong, and a count nobody verified is exactly the kind of figure the §C.1 CHECK-diff test replaces
-with a parse) MUST be reproduced with EXACTLY ONE intended change — the §C.1.1
+triggers and **every CHECK `0032` declares — PARSED FROM THE FILE, NEVER COUNTED IN PROSE** (this plan
+carried "seven" for several rounds; the real figure is eight, and a cardinality nobody can verify from the
+artifact itself is precisely what the §C.1 CHECK-diff oracle replaces with a parse) MUST be reproduced with EXACTLY ONE intended change — the §C.1.1
 date-CHECK correction on `detection_date` and `view_session_date`. Everything else is byte-for-byte**; a test
 asserts the post-`0033` table still rejects each of the shapes `tests/data/test_migration_0032.py` proves it
 rejects, AND additionally rejects the two shapes C.1.1 names (this is the single largest regression risk in
@@ -1084,16 +1107,18 @@ CREATE TABLE latch_order_intents (
            -- validity_detail; without a CHECK a row can be written with none of
            -- it, defeating the audit claim and making the staleness gate
            -- unverifiable after the fact. `validity_detail` carries a JSON
-           -- object; THE SEVEN REQUIRED KEYS are broker_snapshot_ts,
-           -- broker_snapshot_branch, broker_snapshot_digest,
-           -- broker_snapshot_session, attributable_order_count,
-           -- exact_framework_match_count and indeterminate. SEVEN, and the
-           -- count is stated ONCE here and referenced everywhere else rather
-           -- than restated: an earlier round added broker_snapshot_session to
-           -- the CHECK below while three other sites still said "six keys", so
-           -- the fragment's emitted set and the row's required set disagreed by
-           -- one -- which makes the audit row unwritable and is exactly what
-           -- the emitted-key-set equality test exists to catch.
+           -- object. THE ROSTER OF REQUIRED KEYS IS THE `json_remove(...)` PATH
+           -- LIST BELOW -- that call is the MACHINE-READABLE source of truth,
+           -- and `LATCH_BROKER_SNAPSHOT_KEYS` mirrors it under #11 (a test
+           -- parses the path list out of this migration and asserts exact set
+           -- equality with the constant). NO SITE IN THIS PLAN STATES THE KEY
+           -- COUNT: an earlier round added broker_snapshot_session to this
+           -- CHECK while three other sites still said "six keys", so the
+           -- fragment's emitted set and the row's required set disagreed by one
+           -- -- which makes the audit row unwritable. A cardinality is exactly
+           -- the kind of fact that goes stale when an adjacent edit lands, so
+           -- every other site says "every key in the roster" and names no
+           -- number.
            -- They are enforced in the repo + the dataclass validator
            -- under #11 AND in SQL: for an append-only audit ledger "the repo
            -- usually writes it correctly" is not enough, because a raw insert
@@ -1129,7 +1154,7 @@ CREATE TABLE latch_order_intents (
            AND CASE WHEN json_valid(validity_detail) THEN COALESCE(
                json_type(validity_detail) = 'object'
            -- EXACTLY SEVEN, NOT AT-LEAST-SEVEN (Codex R27 MAJOR). The plan says
-           -- the envelope carries EXACTLY the seven keys and is persisted
+           -- the envelope carries EXACTLY the roster keys and is persisted
            -- VERBATIM; the presence-and-shape chain below only ever enforced
            -- AT LEAST. Extra keys therefore rode along into an append-only audit
            -- row unaudited -- and since `actual_digest` covers only
@@ -1315,8 +1340,13 @@ CREATE TABLE latch_order_intents (
     --     explicit "no active risk_policy row" line rather than a blank -- an
     --     unlabelled gap would be the quiet-reduction failure section A.1.1
     --     forbids.
-    -- Every OTHER derivation column is required above. Task 1 asserts the
-    -- required set BY ENUMERATION FROM THE SCHEMA MINUS EXACTLY THESE TWO.
+    -- Every OTHER derivation column is required above. The two exempt columns
+    -- are the ROSTER `DERIVATION_NULLABLE_ON_DECISION` in
+    -- swing/latches/constants.py; Task 1 derives the required set as
+    -- {every derivation_* column in the schema} - DERIVATION_NULLABLE_ON_DECISION
+    -- and states no cardinality, so adding a derivation column extends the
+    -- required set automatically and adding an EXEMPTION is a deliberate edit
+    -- to a named constant with a reviewer.
     -- HAZARD (c) MADE STRUCTURAL: a cancel MUST name one broker order. There is
     -- no by-ticker cancel path anywhere and the schema makes one unwritable.
     CHECK (intent_kind <> 'cancel'  OR (actual_broker_order_id IS NOT NULL
@@ -1468,11 +1498,13 @@ maintainer hitting it learns the reason rather than working around it.
 
 **Column count: the DDL above is authoritative** (R23 MINOR — a hand-maintained count drifted from it and
 will again; the migration test asserts the column list, not a number). The 21-A plan's §C.2 estimated "roughly
-18 columns about a different subject"; the extra columns are the derivation block (**11** — the 8 sizing and
-regime inputs, which are B1's whole point, plus the 3 card-rendered values §A.4 adds so the row can
-reconstruct what the operator actually saw), the actual-params block (6, which is B3's whole point), the
-idempotency key, and the validity parent link. Every one is justified above; nothing is speculative.
-**CHARC's "minimal" gate should be told the derivation block grew by 3 at round 27 and why:** the alternative
+18 columns about a different subject". The extra columns fall into exactly four GROUPS, and the group is
+the unit of justification — **no per-group count is stated here, because every count this plan has stated
+about itself has gone stale, and the migration test asserts the column LIST anyway:** the derivation block
+(the sizing and regime inputs, which are B1's whole point, plus the card-rendered values §A.4 adds so the row
+can reconstruct what the operator actually saw), the actual-params block (B3's whole point), the idempotency
+key, and the validity parent link. Every one is justified above; nothing is speculative.
+**CHARC's "minimal" gate should be told the derivation block GREW during review and why:** the alternative
 was not a smaller table but a card that renders un-audited numbers inside an audited block, which is a
 different and worse kind of small. If CHARC still judges
 this past "minimal", the compressible group is the derivation block, which could collapse into one JSON
@@ -1917,8 +1949,8 @@ only failures and report a permanently empty success rate. So:
   fragment emits **ONE canonical hidden field, `broker_snapshot_json`** (Codex R20 MAJOR — the draft named
   two hidden fields while `validity_detail` required the full envelope, and `POST /latches/intent` is
   forbidden from borrowing Schwab so it could not reconstruct the missing keys at submit time; the audit row
-  was therefore either unwritable or populated from guesses). The envelope carries EXACTLY the SEVEN keys
-  `validity_detail` requires (§C.2 states the list once) — `broker_snapshot_ts` (SERVER-stamped at fragment
+  was therefore either unwritable or populated from guesses). The envelope carries EXACTLY the keys in
+  `LATCH_BROKER_SNAPSHOT_KEYS` (§C.2's `json_remove` path list is the roster; no site states a count) — `broker_snapshot_ts` (SERVER-stamped at fragment
   render), `broker_snapshot_branch` — the FRAGMENT's render vocabulary is three-valued
   (`presence`/`absence`/`unavailable`), but a PERSISTED `validity` row's is two-valued: the schema forbids
   `unavailable` (§C.2, Codex R26 MAJOR), which is not an extra rule but the same one this bullet already
@@ -1930,7 +1962,7 @@ only failures and report a permanently empty success rate. So:
   `exact_framework_match_count`, `indeterminate`. `broker_snapshot_digest` is itself one of the seven and is
   computed over the broker-book state (§G.1), NOT over the other six keys — the two are separate facts and
   conflating them was how the count drifted. The handler VALIDATES the
-  envelope (parseable, all seven keys, correct value shapes — the same 4-tier ladder) and PERSISTS IT VERBATIM
+  envelope (parseable, every roster key present, correct value shapes — the same 4-tier ladder) and PERSISTS IT VERBATIM
   into `validity_detail`, never synthesising a missing key; a test asserts the fragment's emitted key set
   EQUALS the set `validity_detail` requires, so the two cannot drift. `POST /latches/intent` REFUSES a
   `validity` submission whose snapshot is not from the CURRENT action session or is older than
@@ -2073,7 +2105,8 @@ path maps it to `away_unseen`, `pending_live` or any excluded bucket, and that i
 `pre_telemetry`, `telemetry_unhealthy`, `never_actionable`, `accepted`,
 `declined`, every `attested_*` and `pending_live`. **`never_actionable` is the newest and most important
 False**: prompting a man to attest about a decision the panel never presented is the purest form of the
-train-the-dismissal-reflex failure. A parametrised test walks all ELEVEN dispositions and asserts exactly one
+train-the-dismissal-reflex failure. A parametrised test walks **every member of `LATCH_DISPOSITIONS`** (parametrised OVER the frozenset,
+never over a copied list, and stating no count) and asserts exactly one
 True — so a future disposition added without a decision about its prompt FAILS.
 Rationale, recorded because it constrains future change: a prompt on an objectively-resolved cell trains
 dismissal, and dismissal is what eventually kills the honest answer on the cell that matters.
@@ -2218,7 +2251,7 @@ def r_bucket_for(disposition: str, *, is_terminal: bool) -> str:
     ruling 1 forbids, and it slipped in because the ruling was encoded as a
     disposition rather than as a GATE.
 
-    FIVE buckets PARTITION the corpus: every (disposition, is_terminal) pair
+    The buckets in `R_BUCKETS` PARTITION the corpus: every (disposition, is_terminal) pair
     lands in exactly one and the five sums reconcile to the total. A trailing
     `return "decision_r"` would make that true while silently ASSIGNING any
     disposition nobody ruled on -- which is how `pending_live` and
@@ -2312,6 +2345,17 @@ _RULED_DISPOSITIONS = (
     | UNATTRIBUTABLE_DISPOSITIONS | DECISION_DISPOSITIONS
     | PENDING_DISPOSITIONS
 )
+
+# THE BUCKET ROSTER -- the closed set of values r_bucket_for can RETURN, named
+# so that no site has to say "the five buckets". `ExecutionParityReport` builds
+# its per-bucket fields by ITERATING this, the partition test iterates it, and
+# the CLI report prints it -- so a sixth bucket added to the resolver cannot be
+# silently omitted from any of the three. A test asserts the set of values
+# r_bucket_for actually returns over the whole coherent cell product EQUALS
+# R_BUCKETS, which is what keeps the roster honest rather than aspirational.
+R_BUCKETS = frozenset({
+    "decision_r", "away_r", "attested_away_r", "unattributable_r", "pending_r",
+})
 ```
 
 **`_ALL_EXCLUDED_DISPOSITIONS` is defined ABOVE its use** (R23 MINOR — the draft's constant order raised
@@ -2375,8 +2419,9 @@ rates, §F.2) is `decision_r + away_r + attested_away_r` — the TERMINAL, class
 `attested_away_r` bucket is in the denominator but **NOT in the discipline signal**: it is a non-judgment
 non-action, honoured as attested (§A.1.6 ruling 2).
 
-`ExecutionParityReport` carries all FIVE buckets — `decision_r`, `away_r`, `attested_away_r`,
-`unattributable_r`, `pending_r` — plus each excluded disposition's own count so the REASON is never lost
+`ExecutionParityReport` carries **every bucket in `R_BUCKETS`** (§F.3 defines it; the report builds its
+fields BY ITERATING that frozenset rather than by listing them, so a sixth bucket cannot be added to the
+resolver and silently omitted from the report) — plus each excluded disposition's own count so the REASON is never lost
 inside a total. FTRE's +1.22R lands in `unattributable_r` on today's substrate, per RD's ruling. The report also carries
 the per-field delta totals and the **agreement rate**, whose numerator and denominator are both explicit:
 
@@ -2484,9 +2529,8 @@ have to move together.
 
 - **`place` / `decline` — UNCHANGED.** `anchor_digest` is the canonical (sorted-key, fixed-format)
   serialisation of **EVERY hidden field the form emitted** — `view_session_date`, `candidate_id`, all five
-  `framework_*` fields and **all ELEVEN `derivation_*` fields** (the eight sizing/regime inputs plus the
-  three card-rendered values §A.4 adds — a count, not a list, is what let three of them go un-anchored, so
-  the binding form of this instruction is *every `derivation_*` column on the table*) — **exactly as
+  `framework_*` fields and **EVERY `derivation_*` column the table declares** — discovered from the schema,
+  never from a list or a count here (a count is what let three of them go un-anchored) — **exactly as
   SUBMITTED**. It is NOT the session
   anchor alone (Codex R5 MAJOR 3): if the key covered only the session and the operator's answer, a tampered
   or stale form carrying a DIFFERENT framework order but the same session and answer would hit the replay
@@ -2770,8 +2814,8 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
 | `swing/data/db.py` | `EXPECTED_SCHEMA_VERSION` 32->33; `PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES`; `_create_pre_phase21_arc_b_migration_backup`; `_phase21_arc_b_backup_gate`; wire into `run_migrations` |
 | `swing/data/models.py` | `LatchOrderIntent` dataclass + `__post_init__`; **`LatchViewEvent` gains `surface` and ALL THREE of `actionable_at_first_view` / `actionable_at_last_view` / `actionable_ever_viewed`** with `{0,1}` validation on each plus the two `ever >= first` / `ever >= last` monotonicity checks (and NO first-vs-last constraint — §C.1); the new enums IMPORTED from `swing/latches/constants.py`, never re-declared |
 | `swing/data/repos/latch_view_events.py` | RE-KEYED on `(candidate_id, view_session_date, surface)` (§C.1) — `get_view` / `record_view` take `candidate_id` + a REQUIRED `surface`; `_COLS` and `_row_to_model` gain `surface` + ALL THREE actionability columns, named exactly — `actionable_at_first_view`, `actionable_at_last_view`, `actionable_ever_viewed` (a test asserts `_COLS` EQUALS the rebuilt table's PRAGMA column list, so an omitted `ever` — the one CLASSIFICATION reads — cannot ship green); `record_view` gains `actionable=`; both list helpers gain an explicit `surfaces=` filter |
-| `swing/latches/constants.py` | `LATCH_TELEMETRY_EPOCH_SESSION`, `LATCH_VIEW_SURFACES`, `ACTIONABLE_VIEW_SURFACES`, `LATCH_INTENT_KINDS`, `LATCH_ATTESTED_DISPOSITIONS`, `LATCH_VALIDITY_OUTCOMES`, `LATCH_DISPOSITIONS`, `LATCH_SIZING_BASES`, `LATCH_STOP_LEG_STATES`, `LATCH_ORDER_WITHHELD_REASONS`, `LATCH_TELEMETRY_DARK_SESSIONS_THRESHOLD`, `LATCH_BROKER_SNAPSHOT_MAX_AGE_SECONDS`, `LATCH_BROKER_SNAPSHOT_KEYS` (the SEVEN, §C.2 — imported by the fragment, the handler, the dataclass validator and the drift test, so the emitted set and the required set are ONE object), **`LATCH_BROKER_SNAPSHOT_RENDER_BRANCHES` and `LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES`** (the two vocabularies, §C.2 — the JSON-expressed enum is a schema enum and takes the #11 mirror like every other, which it had escaped purely because it is written as a `json_extract` predicate rather than a column CHECK); **and the FIVE bucket sets §F.3 defines** — `AWAY_RATE_COUNTED_DISPOSITIONS` (fixed at `{"away_unseen"}` per §A.1.5), `ATTESTED_AWAY_DISPOSITIONS`, `PENDING_DISPOSITIONS`, `DECISION_DISPOSITIONS` (written out, never derived) and the derived `UNATTRIBUTABLE_DISPOSITIONS`, plus `_RULED_DISPOSITIONS` (their union — what `r_bucket_for` validates against) |
-| `swing/web/routes/latches.py` | **(a)** NEW `POST /latches/intent` (the §G.1 seven-step handler). **(b) `POST /latches/view` IS REWRITTEN, not merely passed a new kwarg (Codex R13 MAJOR 3):** `_parse_beacon_anchor` gains `actionable_candidate_ids` + `withheld_candidate_ids` REPLACING the single `candidate_ids` field (same rejection ladder, same 200-id cap applied to the UNION, plus a rejection when an id appears in BOTH lists); the handler intersects EACH list with the anchor-session live set and calls `record_view(..., surface="latch_panel", actionable=<which list it came from>)`. **If this route is left on the old contract every withheld render is still ingested as a plain view and the whole R7 fix never reaches the DB.** **(c)** `POST /latches/orders` gains the validity prompt + the SINGLE `broker_snapshot_json` hidden field carrying all SEVEN envelope keys (§C.2 is the one place the list is stated) — NOT separate `broker_snapshot_ts` / `broker_snapshot_branch` inputs, which cannot satisfy the envelope contract |
+| `swing/latches/constants.py` | `LATCH_TELEMETRY_EPOCH_SESSION`, `LATCH_VIEW_SURFACES`, `ACTIONABLE_VIEW_SURFACES`, `LATCH_INTENT_KINDS`, `LATCH_ATTESTED_DISPOSITIONS`, `LATCH_VALIDITY_OUTCOMES`, `LATCH_DISPOSITIONS`, `LATCH_SIZING_BASES`, `LATCH_STOP_LEG_STATES`, `LATCH_ORDER_WITHHELD_REASONS`, `LATCH_TELEMETRY_DARK_SESSIONS_THRESHOLD`, `LATCH_BROKER_SNAPSHOT_MAX_AGE_SECONDS`, `LATCH_BROKER_SNAPSHOT_KEYS` (the SEVEN, §C.2 — imported by the fragment, the handler, the dataclass validator and the drift test, so the emitted set and the required set are ONE object), **`LATCH_BROKER_SNAPSHOT_RENDER_BRANCHES` and `LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES`** (the two vocabularies, §C.2 — the JSON-expressed enum is a schema enum and takes the #11 mirror like every other, which it had escaped purely because it is written as a `json_extract` predicate rather than a column CHECK); **and the FIVE bucket sets §F.3 defines** — `AWAY_RATE_COUNTED_DISPOSITIONS` (fixed at `{"away_unseen"}` per §A.1.5), `ATTESTED_AWAY_DISPOSITIONS`, `PENDING_DISPOSITIONS`, `DECISION_DISPOSITIONS` (written out, never derived) and the derived `UNATTRIBUTABLE_DISPOSITIONS`, plus `_RULED_DISPOSITIONS` (their union — what `r_bucket_for` validates against), `R_BUCKETS` (the closed set of values `r_bucket_for` RETURNS — the report, the partition test and the CLI all ITERATE it), and `DERIVATION_NULLABLE_ON_DECISION` (the two derivation columns legitimately NULL on a decision row, §C.2) |
+| `swing/web/routes/latches.py` | **(a)** NEW `POST /latches/intent` (the §G.1 seven-step handler). **(b) `POST /latches/view` IS REWRITTEN, not merely passed a new kwarg (Codex R13 MAJOR 3):** `_parse_beacon_anchor` gains `actionable_candidate_ids` + `withheld_candidate_ids` REPLACING the single `candidate_ids` field (same rejection ladder, same 200-id cap applied to the UNION, plus a rejection when an id appears in BOTH lists); the handler intersects EACH list with the anchor-session live set and calls `record_view(..., surface="latch_panel", actionable=<which list it came from>)`. **If this route is left on the old contract every withheld render is still ingested as a plain view and the whole R7 fix never reaches the DB.** **(c)** `POST /latches/orders` gains the validity prompt + the SINGLE `broker_snapshot_json` hidden field carrying every key in `LATCH_BROKER_SNAPSHOT_KEYS` (§C.2's `json_remove` path list is the roster) — NOT separate `broker_snapshot_ts` / `broker_snapshot_branch` inputs, which cannot satisfy the envelope contract |
 | `swing/web/view_models/latches.py` | `LatchRowVM` gains the prepared-order + disposition + prompt block; `LatchPanelVM` gains the intent-anchor payload (**and `PANEL_SPECIFIC_FIELDS` grows to match**); `all_clear_note` -> the separated claims |
 | `swing/web/templates/latches.html.j2` | include the prepared-order partial per live card; the attestation prompt on terminal cards |
 | `swing/web/templates/partials/latch_orders.html.j2` | the separated-claims render; the per-order Cancel control on stale-order rows |
@@ -2830,8 +2874,9 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     carrying one at all is REJECTED (R19 MAJOR — a decision row has observed nothing).
   - **THE `validity_detail` ENVELOPE — ONE REJECTION TEST PER MISSING KEY, PLUS THE DEGENERATE SHAPES (Codex
     R25 CRITICAL).** A `validity` row is REJECTED when `validity_detail` is NULL, is not `json_valid`, is a
-    JSON ARRAY, is a JSON SCALAR, is the EMPTY OBJECT `{}`, **or is missing ANY ONE of the seven keys** —
-    seven separate cases, each dropping exactly one key from an otherwise-valid envelope. **The empty-object
+    JSON ARRAY, is a JSON SCALAR, is the EMPTY OBJECT `{}`, **or is missing ANY ONE roster key** —
+    the cases are GENERATED by iterating `LATCH_BROKER_SNAPSHOT_KEYS` and dropping each in turn, so a key
+    added to the roster gains its own case automatically instead of needing this bullet edited. **The empty-object
     and missing-key cases are the discriminators and they are not theoretical:** verified empirically, the
     bare presence-and-shape CHECK chain ACCEPTS `{}`, because a missing key makes `json_extract` return NULL
     and a SQLite CHECK PASSES on NULL — the same class as §C.1.1, in JSON syntax. Also REJECT a bad
@@ -2877,11 +2922,12 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     `framework_*` / `derivation_*` value; a `place` row MUST carry the whole drift-capable derivation block
     (a `place` with NULL `derivation_sizing_equity` is REJECTED — R17 MAJOR), **including
     `derivation_real_equity` and `derivation_equity_floor`** (Codex R27 MAJOR). **The required set is
-    asserted BY ENUMERATION FROM THE SCHEMA MINUS EXACTLY TWO NAMED EXEMPTIONS, never from a hand-kept
-    list** — for every `derivation_*` column the DDL declares EXCEPT
-    `derivation_nightly_recommendation_shares` and `derivation_risk_policy_id` (§C.2 states why each is
-    exempt), a `place` row with THAT column NULL is REJECTED; **and a `place` row with EITHER exemption NULL
-    is ACCEPTED**, so the exemption list is pinned in BOTH directions and cannot quietly grow. A hand-kept
+    asserted AS A SET DIFFERENCE, never as a hand-kept list or a count** —
+    `required = {every derivation_* column in PRAGMA table_info} - DERIVATION_NULLABLE_ON_DECISION`. For
+    every column in `required`, a `place` row with THAT column NULL is REJECTED; **for every column IN
+    `DERIVATION_NULLABLE_ON_DECISION`, a `place` row with it NULL is ACCEPTED** — both loops GENERATED from
+    the two sets, so the exemption roster is pinned in BOTH directions, cannot quietly grow, and a new
+    derivation column joins `required` without this bullet being edited. A hand-kept
     list is how three of these columns went unanchored in the first place, and an un-pinned exemption list is
     the same failure one size down — Codex R28 MAJOR caught the DDL's required-block CHECK and this very
     bullet disagreeing about `derivation_risk_policy_id`.
@@ -2970,7 +3016,9 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     `intent_kind`, `surface`, `attested_disposition`, `validity_outcome`, `framework_order_type`,
     `actual_order_type`, `framework_duration`, `actual_duration`, `derivation_sizing_basis`,
     `latch_view_events.surface`, **and the JSON-expressed `validity_detail.$.broker_snapshot_branch`
-    (ELEVEN, not ten — Codex R28 MAJOR)**. That last one escaped the list for eleven rounds purely because it
+    (Codex R28 MAJOR)**. **This prose list is ILLUSTRATIVE; the MANIFEST below is the authority and no count
+    is stated anywhere** — the roster grew from four to ten to eleven across three rounds and each stated
+    cardinality went stale on the next edit. That last one escaped the list for eleven rounds purely because it
     is written as a `json_extract(...) IN (...)` predicate rather than a column `CHECK (col IN (...))` — a
     difference in SYNTAX, not in kind, and exactly the shape of hole the #11 rule exists to close. It mirrors
     `LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES`, and a SEPARATE assertion pins
@@ -2979,8 +3027,8 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     Each has a frozenset in `swing/latches/constants.py`, is validated in the
     dataclass `__post_init__`, and the test parses the migration SQL and asserts EXACT set equality for all of
     them, with `models.py`'s being the SAME OBJECT (`is`), not a copy. **Naming only a subset is how the #11
-    rule gets violated while its own test passes** (R23 MAJOR — the draft named four of ten; R28 found the
-    eleventh).
+    rule gets violated while its own test passes** (R23 MAJOR — the draft named a subset; R28 found one the
+    full list had still missed).
     **AN ANNOTATED MANIFEST, NOT A GREP AND NOT A PROSE COUNT (Codex R29 MAJOR).** "Grep every `IN (` list"
     fails in BOTH directions and the evidence is on disk: `grep -c "IN ("` on `0032` returns **0**, because
     its two latch-state enums wrap the line as `IN\n    ('armed',...)` — so the rule MISSES real enums — while
@@ -3034,7 +3082,7 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     only the four `actual_*` order fields — written literally it FAILS against the correct schema, and the
     tempting repair is to weaken the CHECKs rather than complete the fixture. So the fixture states, concretely:
     `actual_broker_order_id='1002937461'`, `action_session_date` = the parent place row's, and a
-    `validity_detail` object carrying all seven keys with valid shapes (`broker_snapshot_ts` a
+    `validity_detail` object carrying every roster key with valid shapes (`broker_snapshot_ts` a
     `T`-separated 19-char stamp, `broker_snapshot_branch='presence'`, a 64-char lowercase-hex
     `broker_snapshot_digest`, a round-trip-valid `broker_snapshot_session`,
     `attributable_order_count=1`, `exact_framework_match_count=0`, `indeterminate=false`). Note
@@ -3045,12 +3093,14 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     The R17 fix was described in prose while the CHECK still forbade it; a
     raw-SQL migration test (not merely a repo/model test) is what makes that impossible to repeat.
   - `ACTIONABLE_VIEW_SURFACES <= LATCH_VIEW_SURFACES`, and both equal `{"latch_panel"}` today (section E.3).
-**THE CONSTRAINT SET WAS EMPIRICALLY AUDITED, NOT JUST REVIEWED — 109 PROBES, ZERO GAPS (orchestrator-
-directed, post-round-29).** Both tables were BUILT AS REAL SQLITE and probed constraint by constraint:
-`latch_order_intents` extracted verbatim from §C.2's DDL (it EXECUTES — 38 columns, 48 CHECKs), and
-`latch_view_events` reconstructed exactly as §C.1's mechanical procedure directs (0032's preserved CHECKs
-plus the five deltas — it EXECUTES, and yields 16 CHECKs, matching §C.1's stated `8 - 2 + 10` diff, which is
-independent corroboration of the CHECK-diff oracle). Every constraint rejected what the plan says it rejects
+**THE CONSTRAINT SET WAS EMPIRICALLY AUDITED, NOT JUST REVIEWED — ZERO GAPS (orchestrator-directed,
+post-round-29; the probe and surface counts below are a DATED MEASUREMENT of that run, not a live invariant,
+and Task 1 REGENERATES the matrix from the schema rather than reproducing these numbers).** Both tables were BUILT AS REAL SQLITE and probed constraint by constraint:
+`latch_order_intents` extracted verbatim from §C.2's DDL (**it EXECUTES**), and `latch_view_events`
+reconstructed exactly as §C.1's mechanical procedure directs — 0032's preserved CHECKs plus the deltas —
+which **also EXECUTES, and whose CHECK set matched what §C.1's oracle computes**, independently corroborating
+that oracle. (At the time of the run: 38 columns / 48 CHECKs and 16 CHECKs respectively — recorded as
+evidence the probe was real, NOT as figures any test should assert.) Every constraint rejected what the plan says it rejects
 and accepted what the plan says it accepts, including both DELIBERATE accepts (`derivation_real_equity` at
 zero and negative; `first=1, last=0, ever=1`) and all three triggers plus `UNIQUE(idempotency_key)`.
 
@@ -3097,7 +3147,7 @@ the expensive way in this arc:
       asserted THROUGH `classify_latch` on concrete full / partial / none substrates (NOT over the table's
       sentinel values, which prove nothing about the final disposition — R19 MAJOR 5); and the behavioural
       no-re-derivation check that the classifier's output depends on nothing the `CoverageVerdict` does not
-      carry. Then every §E precedence rung; all ELEVEN dispositions' `prompt_required` (exactly one True,
+      carry. Then every §E precedence rung; `prompt_required` over every member of `LATCH_DISPOSITIONS` (exactly one True,
       and it is `discipline_lapse`); the unattested-terminal-viewed cell's
       `effective_disposition == "discipline_lapse"`; the coverage arithmetic at all four boundaries
       (anchor == epoch, anchor == epoch - 1 session, clear == epoch, clear == epoch + 1 session); a view row
