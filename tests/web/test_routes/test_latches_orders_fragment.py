@@ -996,46 +996,67 @@ def _seed_stale_close_above_the_pivot(cfg):
     conn.close()
 
 
-def test_a_stale_close_does_not_get_to_choose_the_mandate_regime(
+def test_a_stale_close_may_alarm_but_may_not_assert_a_match(
         seeded_db, monkeypatch, frozen_panel_clock):
-    """codex-auto-review MAJOR (repo-access second eye). `load_last_closes`
-    returns the GLOBALLY latest `candidates.close` per ticker regardless of how
-    old it is, and the regime selector consumed `quote[0]` while ignoring the
-    `quote[1]` provenance date. A close from four sessions ago would then decide
-    which instrument the panel calls correct -- and a stock that has since
-    round-tripped back through the pivot gets the operator's correct order
-    flagged, or his wrong one blessed, off a price the market left behind.
+    """RE-EXPRESSED IN PLACE from
+    `test_a_stale_close_does_not_get_to_choose_the_mandate_regime` (21-A) --
+    deliberately not deleted and re-added, because a deleted test looks like a
+    retreat even when it is an advance (RD, 2026-07-28). Both halves of the
+    sharpened claim are visible in ONE diff.
 
-    The fragment insists every part of its picture describe ONE coherent moment
-    (it is why a one-session-stale ANCHOR suppresses the alarms). The regime
-    price is now held to the same standard: only a close stamped on the
-    derivation session may pick the form. Anything older leaves the regime
-    UNKNOWN -- which accepts either mandated form while still enforcing the cap
-    leg and GTC.
+    THE ORIGINAL CLAIM (21-A). `load_last_closes` returns the GLOBALLY latest
+    `candidates.close` per ticker regardless of how old it is, and the regime
+    selector consumed `quote[0]` while ignoring the `quote[1]` date. So the
+    gate became: only a close stamped on the derivation session may pick a
+    form; anything older leaves the regime UNKNOWN, in BOTH directions.
 
-    Here the stale close (19.52, 2026-07-20) is ABOVE the pivot, so an ungated
-    selector would call the GTC STOP_LIMIT a wrong-regime shape mismatch.
+    WHY THAT WAS SYMMETRIC, AND WHY IT IS NOT A REVERSAL TO SPLIT IT (RD).
+    `21-A shipped SYMMETRIC behaviour because the asymmetry needed the
+    provenance ladder, which did not exist yet. 21-G builds the ladder and the
+    asymmetry becomes expressible. The ruling never changed; its
+    implementability did.` One knob was doing two jobs -- gating the ALARM
+    direction and the ASSERT direction together, and gating both on a stamp
+    that is only an UPPER BOUND. 21-G splits it:
 
-    FLIPPED 2026-07-27 (RD ruling 2, MERGE-BLOCKING). The freshness gate is
-    UNCHANGED and still binding -- a stale close still does not get to choose the
-    regime. What flipped is the all-clear: leaving the regime UNKNOWN is a real
-    reduction in what the panel checked, and an unlabelled reduction is a quiet
-    all-clear by omission. The withheld shape check is now stated on the affected
-    latch, naming the stale session it would have needed."""
+      may a stale close raise a MISMATCH ALARM?  21-A: no (the staleness could
+        not be characterised).  21-G: YES, when the staleness is
+        CHARACTERISABLE and SELF-LIMITING, labelled with its proven age.
+      may a stamp-dated close assert a MATCH?    21-A: yes (the stamp was
+        trusted).  21-G: NO -- corroboration against a dated bar is required.
+
+    So the assert direction is TIGHTENED, not merely preserved.
+
+    THE COST OF CONDITION (1), PAID VISIBLY. This fixture must now ALSO seed
+    the 2026-07-20 archive bar at 19.52. Without it the close is B-undated and
+    the latch is inert -- which is correct behaviour, but not the behaviour
+    this test is for. That extra seed IS the arc refusing to alarm from a price
+    whose date it has not proven.
+
+    Condition (2) holds on the shipped seeds unchanged: runs 121 (stamped
+    2026-07-17) and 128 (stamped 2026-07-20) both carry usable FTRE closes, so
+    `L == 2026-07-20 == D` -- a four-session SYSTEM-WIDE gap (a multi-day
+    pipeline outage), whose lifetime the outage itself bounds."""
     cfg, cfg_path = seeded_db
     _seed_ftre(cfg)
     _seed_stale_close_above_the_pivot(cfg)
+    _write_archive_bars(cfg, "FTRE", [("2026-07-20", 19.52)])
     app = _app(cfg, cfg_path, monkeypatch,
                orders=[_order(duration="GOOD_TILL_CANCEL")])
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "not the mandated order shape" not in r.text
-    assert "AT OR ABOVE" not in r.text
-    # ...but the reduction is announced, not silent, and it names both dates.
+    # THE INVERTED HALF: the mismatch IS now reported. 19.52 is above the
+    # latched pivot, so this GTC STOP_LIMIT would sit below the market and be
+    # broker-rejected -- the FTRE rejection class, and a finding the operator
+    # can act on rather than one that silently vanishes for seven hours a day.
+    assert "not the mandated order shape" in r.text
+    assert "AT OR ABOVE" in r.text
+    # THE PRESERVED (AND TIGHTENED) HALF: no all-clear is asserted from it.
     assert "Broker orders agree with the live latches" not in r.text
-    assert "WHICH of the two mandate forms is correct at this price" in r.text
-    assert "2026-07-20" in r.text and "2026-07-24" in r.text
+    # ...and the finding is LABELLED with its exact, PROVEN staleness, naming
+    # both dates exactly as the 21-A test already required.
+    assert "read from a close dated 2026-07-20" in r.text
+    assert "2026-07-24" in r.text
 
 
 def test_a_close_on_the_derivation_session_does_choose_the_regime(
@@ -2045,3 +2066,100 @@ def test_a_dated_conflict_blocks_the_alarm_even_when_both_conditions_hold(
     # The D < S wording, naming both numbers.
     assert "RECORDED CLOSE CONTRADICTED BY THE ARCHIVE" in r.text
     assert "the archive holds a newer close for 2026-07-28 (17.10) than the "         "recorded one (19.52, stamped 2026-07-27)" in r.text
+
+
+def test_a_corroborated_close_behaves_byte_identically_to_21A(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """T3 -- THE REGRESSION LOCK. Passes pre-fix AND post-fix, by design.
+
+    What it discriminates against is not the shipped code but THIS DESIGN'S OWN
+    most likely defect: RUNG A MADE UNREACHABLE. (a) the archive map never
+    surfaced on `LatchDerivation`, so `W(S)` is always None; (b) the
+    corroboration compared at full float precision, so a `17.759999` parquet
+    round-trip fails equality; (c) the ladder wired so `may_assert` is never
+    True. Any of those makes EVERY latch rung B forever, permanently kills the
+    affirmative all-clear, and would otherwise ship GREEN -- because every
+    discriminator in this arc only asserts that an all-clear is ABSENT, which
+    is exactly what an over-correcting implementation satisfies trivially.
+
+    Verified by deliberately forcing `session_close = None`: eleven tests fail,
+    including every shipped all-clear test, which inherit this protection
+    through the shared `_seed_close_at_the_derivation_session` helper."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree with the live latches. No alarms." in r.text
+    assert "not form-checked" not in r.text
+    assert "uncorroborated" not in r.text
+    assert "ORDER PRICE MISMATCH" not in r.text
+
+
+def test_a_sub_cent_archive_round_trip_still_corroborates(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The (b) half of T3's adversary, isolated. Both sides are compared at
+    DISPLAY precision (the price-precision-parity gotcha), so a parquet float
+    artifact must not demote a healthy latch to rung B and silently kill the
+    affirmative all-clear."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    _write_archive_bars(cfg, "FTRE", [("2026-07-24", 17.7599999)])
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree with the live latches. No alarms." in r.text
+
+
+def _seed_a_latch_fired_for_the_current_action_session(cfg):
+    """A latch fired on TONIGHT's nightly for TOMORROW: its anchor is the
+    current action session 2026-07-27, which is AFTER the derivation session
+    2026-07-24. The newest latch in the system, and the one the operator is
+    about to act on."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(133, '2026-07-24T17:30:05', '2026-07-24', '2026-07-27', 1, 1, 0, "
+            "0, 0, 0)")
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(133, 'FTRE', 'aplus', 17.76, 18.34, 14.88, 'universe')")
+    conn.close()
+    _write_archive_bars(cfg, "FTRE", [("2026-07-24", 17.76)])
+
+
+def test_the_freshest_latch_in_the_system_can_still_reach_the_all_clear(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """T3b -- the FRESH-LATCH reachability lock at the fragment level (Codex R4
+    MAJOR 1). The case T3 cannot see, because T3's anchor precedes its
+    derivation session.
+
+    The defect this forbids: taking the witness from the invalidation walk's
+    ELIGIBLE set. For a latch anchored at 2026-07-27 that set is
+    `{bar : 2026-07-27 <= s <= 2026-07-24}` -- EMPTY -- so `W(S)` would be None,
+    the latch would be permanently rung B, and the newest mandate in the system
+    could never print an affirmative all-clear.
+
+    The paired half -- that the widened LOAD did NOT widen the ELIGIBLE set, so
+    `bars_available` stays False and a pre-anchor bar still cannot invalidate a
+    mandate that did not yet exist -- is asserted at the reader, where those
+    fields live (`tests/latches/test_reader.py`)."""
+    cfg, cfg_path = seeded_db
+    _seed_a_latch_fired_for_the_current_action_session(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree with the live latches. No alarms." in r.text
+    assert "not form-checked" not in r.text
