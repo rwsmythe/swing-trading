@@ -17,15 +17,17 @@
 Mean R-multiple > 0; lower-bound Wilson CI on win rate > 30%
 ```
 
-**AMENDED (operator-approved verbatim 2026-07-29; do not reword):**
+**AMENDED (operator-approved verbatim 2026-07-29, COHORT clause added at the operator's explicit instruction same day; do not reword):**
 
 ```
 Mean R-multiple > 0 across the 20 closed labeled trades, AND no single trade
 contributes 50% or more of gross profit (gross profit = sum of positive
-R-multiples). If the cohort has no winners, the mean-R criterion fails and the
-decision is negative. Win rate and its Wilson lower bound are REPORTED as
-diagnostics alongside median R and top-3 concentration, but do not gate the
-decision.
+R-multiples). COHORT: the 20 are STANDARD-intent trades only, per the
+2026-06-10 training-epoch declaration; pre-epoch hypothesis_test_by_design
+trades are settled tuition and do NOT count toward the 20. If the cohort has
+no winners, the mean-R criterion fails and the decision is negative. Win rate
+and its Wilson lower bound are REPORTED as diagnostics alongside median R and
+top-3 concentration, but do not gate the decision.
 ```
 
 Nothing else on the row changes — not `statement`, not `target_sample_size` (stays 20), not `status`.
@@ -70,7 +72,7 @@ This is a registry-row UPDATE in the shape of `0026` (which INSERTed hypothesis 
 
 ## §5 Verification / acceptance
 
-1. `hypothesis_registry` id 1 `decision_criteria` reads the §1 amended text byte-for-byte.
+1. `hypothesis_registry` id 1 `decision_criteria` reads the §1 amended text byte-for-byte, INCLUDING the COHORT clause.
 2. The ORIGINAL text is recoverable verbatim from the row (§3.1).
 3. `statement`, `target_sample_size`, `status` unchanged; ids 2–5 untouched.
 4. Migration is data-only; schema tables/columns unchanged; backup gate fired.
@@ -82,4 +84,6 @@ This is a registry-row UPDATE in the shape of `0026` (which INSERTed hypothesis 
 
 Levers for a genuinely confident H1 claim, **flagged not bundled**: a larger `target_sample_size`, or corroboration from the A+ shadow cohort, which accrues at signal-pace rather than trade-pace. Both are separate operator decisions.
 
-**OPEN QUESTION FOR THE OPERATOR (not in the signed text; do not fold in without his word).** The criterion says "20 closed labeled trades" without pinning the cohort. The 2026-06-10 training-epoch declaration already settles it — the 16 pre-epoch trades are tuition, never re-read as practice, and the `standard` cohort starts empty at the epoch — so H1 should count **standard-epoch closed trades only** (currently 2, plus one pre-epoch `by_design` A+ trade that must NOT count). The doctrine is settled; the criterion text is silent. The operator may wish to add one clarifying clause pinning it while the row is open, or leave it to the epoch contract. **RD flags; the operator decides; this brief does not assume.**
+**COHORT QUESTION — RESOLVED by the operator 2026-07-29: the clarifying clause is IN (see §1).** The criterion previously said "20 closed labeled trades" without pinning the cohort; the 2026-06-10 training-epoch declaration settles it (pre-epoch trades are tuition, never re-read as practice; the `standard` cohort starts empty at the epoch) but the criterion text was silent. The operator instructed the clause be added while the row is open.
+
+**Verified live 2026-07-29 — the clause changes a real count, it is not decorative.** Three trades carry the `A+ baseline (aplus)` label: **YOU** (2026-05-04, `hypothesis_test_by_design`, pre-epoch → EXCLUDED), **VSTS** (2026-06-25, `standard`), **AMN** (2026-07-01, `standard`). Without the clause a reader could count 3/20; with it, **H1 stands at 2/20**. The acceptance check in §5 must confirm the clause is present byte-for-byte.
