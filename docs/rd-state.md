@@ -36,7 +36,7 @@
 - **Why:** the frozen leg needs **11/20 wins = 55%**, which no measured cohort approaches (broad-watch 22.1%) — **it would likely reject a genuinely profitable trend system.** My own leave-one-out proposal was stress-tested and REJECTED (fails a fat-tailed +0.45R shape — the same defect as the Wilson floor).
 - **Timing is the argument:** H1 = 2 closed standard-epoch trades, no signal → motivated by ARITHMETIC not outcome. Clean now, indefensible later.
 - **My non-negotiable:** the ORIGINAL criterion stays readable in the record. **My gate:** merge-blocking QA — I read the live row myself post-migration.
-- **Open, deliberately unfolded:** pinning the cohort to standard-epoch trades in the criterion text (epoch contract already settles it) — **operator's call; not added downstream to a text he signed.**
+- **COHORT clause RESOLVED 07-29 — operator instructed it IN** (addendum `20260729T071538Z`): the 20 are **STANDARD-intent only**, per the training-epoch declaration; pre-epoch `by_design` trades don't count. **Verified live: it is load-bearing, not decorative — YOU (05-04, by_design) would otherwise make the count read 3/20; with the clause H1 stands at 2/20.** The clause CITES the epoch contract, doesn't modify it.
 
 ## RD-owned follow-ups from the 21-G survey (deadline: BEFORE the August monthly read)
 - **THREE research-side instances of the run-level-stamp shape (gotcha #30) inside MY OWN measurement chain — survey hits 4, 5, 7 — consequences UNMEASURED.** Flagged-not-fixed per the report-do-not-authorize boundary; mine to scope. **Deadline is binding because the August read CONSUMES that chain** — producing numbers from a chain with three known unexamined instances is what I would refuse from anyone else.
