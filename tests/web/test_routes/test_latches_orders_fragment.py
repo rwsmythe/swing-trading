@@ -1738,11 +1738,13 @@ def test_the_seven_hour_window_never_produces_an_all_clear(
     the suppression cannot leave a green suite.
 
     The order here is the operator's situationally-CORRECT stopless pullback
-    LIMIT. Under a B-continuity BREAKOUT regime the check may CONTRADICT what an
-    order SAYS but must not DEMAND what an order OMITS: flagging the missing
-    stop leg would fire every day, for seven hours -- a false positive by
-    FREQUENCY, which destroys a channel exactly as reliably as a false positive
-    by logic."""
+    LIMIT, and the stale close (19.52) is ABOVE the pivot -- so the regime is
+    PULLBACK, the LIMIT is the right instrument, and there is nothing to
+    report. The BELOW-pivot half of the commission/omission line is a separate
+    fixture (see
+    `test_a_stale_below_pivot_regime_contradicts_the_type_but_demands_no_leg`);
+    saying otherwise here would describe a branch this fixture never reaches
+    (Codex R9)."""
     cfg, cfg_path = seeded_db
     _freeze(monkeypatch, NOW_WINDOW)
     _seed_ftre(cfg)
@@ -2163,3 +2165,92 @@ def test_the_freshest_latch_in_the_system_can_still_reach_the_all_clear(
     assert r.status_code == 200
     assert "Broker orders agree with the live latches. No alarms." in r.text
     assert "not form-checked" not in r.text
+
+
+def test_a_stale_below_pivot_regime_contradicts_the_type_but_demands_no_leg(
+        seeded_db, monkeypatch):
+    """THE COMMISSION/OMISSION LINE, in the branch T4b cannot reach (Codex R9).
+
+    B-continuity with the stale close BELOW the pivot -> BREAKOUT regime, and
+    the broker holds a STOPLESS GTC LIMIT at the cap. The two halves of RD's
+    calibration must BOTH hold here, and they pull in opposite directions:
+
+      COMMISSION, alarmed. The order TYPE is a positive statement and it
+        CONTRADICTS the regime. It is also a real hazard rather than pedantry:
+        a resting buy LIMIT at 18.89 while price closed at 17.76 fills
+        IMMEDIATELY at ~17.76 -- an unintended entry BELOW the pivot, which is
+        the same hazard the Route-B discriminator describes. And it is not a
+        daily event: it fires only when a crossing has moved the regime or the
+        order was already wrong, and B.2.1 bounds its lifetime to the data gap
+        that produced the staleness.
+
+      OMISSION, NOT alarmed. The absent stop LEG is not demanded. Demanding it
+        would fire on every stopless order for seven hours of every trading
+        day -- a false positive by FREQUENCY. This assertion is what locks the
+        rung-A-only leg relaxation: an implementation that let the B-continuity
+        BREAKOUT regime set `stop_leg_expected = True` fails here.
+
+    And the alarm carries its provenance, so the operator can weigh a finding
+    read from a one-session-old close."""
+    cfg, cfg_path = seeded_db
+    _freeze(monkeypatch, NOW_WINDOW)
+    _seed_ftre(cfg)
+    _seed_watch_close(cfg, 127, asof="2026-07-27", action="2026-07-28",
+                      close=17.76)                  # BELOW the 18.34 pivot
+    _write_archive_bars(cfg, "FTRE", [("2026-07-27", 17.76)])
+    app = _app(cfg, cfg_path, monkeypatch, orders=[_pullback_order()])
+    with TestClient(app) as client:
+        r = _post_orders(client, anchor=ANCHOR_WINDOW)
+    assert r.status_code == 200
+    # COMMISSION: the type contradiction IS reported...
+    assert "not the mandated order shape" in r.text
+    assert "BELOW" in r.text
+    # ...LABELLED with its proven age, never as a proven-regime finding.
+    assert "read from a close dated 2026-07-27" in r.text
+    # OMISSION: no leg was demanded of an order that does not carry one.
+    # Asserted on the LEG line's own prose, not on the shared
+    # `ORDER PRICE MISMATCH` heading -- the template puts that heading on every
+    # `disagreements` entry, so the shape line above already carries it.
+    assert "resting order does not match the latched mandate" not in r.text
+    assert "UNKNOWN (leg absent)" not in r.text
+    # ...and a finding still withholds every form of all-clear.
+    assert "Broker orders agree with the live latches" not in r.text
+    assert "No alarms" not in r.text
+
+
+def test_an_unplaceable_stamp_is_not_described_as_later_than_this_page(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """Codex R9 MINOR -- the degradation REASON must be true, not merely safe.
+
+    `data_asof_date` is a plain TEXT column, so a malformed value is reachable
+    and `classify_close_provenance` routes it to rung F for the right reason:
+    a price that cannot be placed in time cannot support a claim about a
+    moment. But a non-empty malformed stamp is UNPLACEABLE, not LATER, and a
+    label keyed on the raw string being non-empty said the wrong thing. Planted
+    via RAW conn.execute."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(134, '2026-07-24T17:30:05', 'not-a-date', '2026-07-27', 1, 0, 1, "
+            "0, 0, 0)")
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(134, 'FTRE', 'watch', 19.52, 18.34, 14.88, 'universe')")
+    conn.close()
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    # The SAFE behaviour is preserved: neither direction is claimed.
+    assert "not the mandated order shape" not in r.text
+    assert "Broker orders agree with the live latches" not in r.text
+    # ...and the REASON given is the true one.
+    assert "which is not a usable date, so it cannot be placed in time at all"         in r.text
+    assert "LATER than the derivation session" not in r.text

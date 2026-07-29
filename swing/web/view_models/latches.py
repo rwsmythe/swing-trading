@@ -266,6 +266,13 @@ def _price_asof_claim(quote, provenance) -> tuple[str, str]:
         # close IS the recorded close.
         return session_iso, f"close dated {session_iso}"
     if provenance.provenance == CLOSE_PROVENANCE_FUTURE_STAMP:
+        # TWO distinct rung-F shapes, keyed on the PARSED stamp rather than on
+        # the raw string being non-empty (Codex R9 MINOR): 'not-a-date' is
+        # non-empty but UNPLACEABLE, and calling it "later than" would state a
+        # false reason for a correct degradation.
+        if provenance.stamp_date is None:
+            return "-", (f"close carries the unusable session stamp {stamp}, so "
+                         f"it cannot be placed in time")
         return "-", (f"close stamped {stamp}, later than the session this page "
                      f"describes ({session_iso})")
     # Rung B: the stamp stated as the UPPER BOUND it actually is.
@@ -1369,18 +1376,31 @@ def _build_form_check_notes(
             # coherent-moment discipline that makes a stale render anchor
             # suppress the alarms.
             severity = "future_stamp"
-            placed = (
-                f"is stamped {stamp}, LATER than the derivation session "
-                f"{session_iso} this page describes" if stamp
-                else f"carries no usable session stamp, so it cannot be placed "
-                     f"at or before the derivation session {session_iso}")
+            # THE REASON MUST BE TRUE, NOT MERELY SAFE (Codex R9 MINOR). Rung F
+            # holds TWO distinct shapes and they are keyed on the PARSED stamp,
+            # never on the raw string being non-empty: a stamp of 'not-a-date'
+            # is non-empty but UNPLACEABLE, and calling it "later than" would
+            # state a false reason for a correct degradation.
+            if prov is not None and prov.stamp_date is not None:
+                placed = (
+                    f"is stamped {stamp}, LATER than the derivation session "
+                    f"{session_iso} this page describes, so it belongs to a "
+                    f"moment after this page")
+            elif stamp:
+                placed = (
+                    f"carries the session stamp {stamp}, which is not a usable "
+                    f"date, so it cannot be placed in time at all")
+            else:
+                placed = (
+                    f"carries no session stamp at all, so it cannot be placed "
+                    f"at or before the derivation session {session_iso}")
             detail = (
                 f"{ticker}: the mandate FORM check is INERT for this latch - "
-                f"the most recent recorded close {placed}. A price belonging to "
-                f"a later moment than this page cannot say WHICH of the two "
-                f"mandate forms is correct at this price, so neither a match "
-                f"nor a mismatch is claimed from it. Reload to move this page "
-                f"forward. {tail}")
+                f"the most recent recorded close {placed}. A price that cannot "
+                f"be placed at or before the session this page describes cannot "
+                f"say WHICH of the two mandate forms is correct at this price, "
+                f"so neither a match nor a mismatch is claimed from it. Reload "
+                f"to move this page forward. {tail}")
         elif note_reason == "unavailable":
             # B-UNAVAILABLE. The archive read RAISED, so the missing witness is
             # OUR IGNORANCE. Alarming here would be asserting from a stale
