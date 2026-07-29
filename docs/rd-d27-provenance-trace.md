@@ -14,7 +14,8 @@
 
 **The August read's chain is CLEAN on this axis, and that is now a measurement rather than an assumption.**
 
-- **D27 (the naming collision) is REAL as a readability defect and is NOT producing divergence.** The two columns agreed in **113 of 113** paired runs across the entire history — not the 25 previously sampled — and the agreement is **structural, not luck** (§3).
+- **D27 (the naming collision) is REAL as a readability defect and is NOT producing divergence.** The two columns agreed in **113 of 113** paired runs across the entire history — not the 25 previously sampled — and the agreement is **held by a code-level cap under one stated condition**, not by healthy nightlies (§3).
+- **D27's agreement and hit 7's safety share ONE sufficient condition: the run must not straddle a session close.** That single condition was measured to hold in **140 of 140** runs (§4). Treating them as two findings was my first framing and it was weaker than the truth.
 - **Hit 7 (the forward-observation gate) has ONE genuine look-ahead path, and the survey named the wrong mechanism for it.** The real path is a two-clock-read race, not a lagging archive. Measured across all 140 completed runs: **zero occurrences, provably** (§4).
 - **Hits 4 and 5 are NOT deadline-bound by the August read.** They sit in dormant harnesses the read does not run (§5). The deadline rationale was true of hit 7 only.
 
@@ -36,7 +37,13 @@ Both consumers of bar data are **capped at the clock session at fetch time**:
 - **Evaluation path** — `PriceFetcher.get` (`swing/prices.py:56-68`) resolves `effective = _resolve_asof(None) = last_completed_session(datetime.now())` and slices `df.index.date <= effective`. So `max(max_dates)` **cannot exceed** the clock session. (Note: the evaluation does *not* go through `swing/pipeline/ohlcv.py`'s `iloc[:-1]` strip — that helper is a different path. Checking this mattered: my first hypothesis named the wrong file.)
 - **Detector path** — the detector uses a **different** bars source, `OhlcvCache.get_or_fetch` (`swing/web/ohlcv_cache.py:293-310`), which strips any bar `> end` and slices `<= end`, where `end` is likewise `last_completed_session(now())`.
 
-So the bar-derived value is **clock-capped on both paths**, and the cohort max over hundreds of tickers keeps it from falling short. That is why the columns agree, and it is a property of the code rather than of healthy nightlies.
+So the bar-derived value is **clock-capped on both paths**, and the cohort max over hundreds of tickers keeps it from falling short.
+
+**CORRECTION TO MY OWN FIRST STATEMENT OF THIS — stated plainly because I policed exactly this class in others the same day.** I first wrote that bar-derived *"can never exceed clock-derived,"* full stop. That is an overstatement, and the reason is the same clock asymmetry §4 is about: the caps read the clock at **fetch** time, while the persisted `pipeline_runs` stamp read it at **lease** time. So the correct claim is:
+
+> **bar-derived can never exceed the clock session AS READ AT FETCH TIME.** It can exceed the *persisted* stamp only if the run **straddles a session close** between lease acquisition and the fetch.
+
+That is not a second hazard — **it is the SAME event as hit 7's look-ahead path** (§4), and it was measured at **0 of 140**. So D27's agreement and hit 7's safety rest on one condition, not two, which is a cleaner and stronger result than the version I first wrote. The conclusion is unchanged.
 
 **Measured:** 113 paired `pipeline_runs`↔`evaluation_runs` rows, **113 agree, 0 diverge in either direction** — including **17 runs started during US market hours** (03:00–09:59 HST), which is where the partial-bar hazard would have shown up.
 
