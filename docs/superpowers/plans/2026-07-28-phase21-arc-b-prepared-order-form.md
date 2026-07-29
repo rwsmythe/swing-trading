@@ -3045,6 +3045,24 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     The R17 fix was described in prose while the CHECK still forbade it; a
     raw-SQL migration test (not merely a repo/model test) is what makes that impossible to repeat.
   - `ACTIONABLE_VIEW_SURFACES <= LATCH_VIEW_SURFACES`, and both equal `{"latch_panel"}` today (section E.3).
+**THE CONSTRAINT SET WAS EMPIRICALLY AUDITED, NOT JUST REVIEWED — 109 PROBES, ZERO GAPS (orchestrator-
+directed, post-round-29).** Both tables were BUILT AS REAL SQLITE and probed constraint by constraint:
+`latch_order_intents` extracted verbatim from §C.2's DDL (it EXECUTES — 38 columns, 48 CHECKs), and
+`latch_view_events` reconstructed exactly as §C.1's mechanical procedure directs (0032's preserved CHECKs
+plus the five deltas — it EXECUTES, and yields 16 CHECKs, matching §C.1's stated `8 - 2 + 10` diff, which is
+independent corroboration of the CHECK-diff oracle). Every constraint rejected what the plan says it rejects
+and accepted what the plan says it accepts, including both DELIBERATE accepts (`derivation_real_equity` at
+zero and negative; `first=1, last=0, ever=1`) and all three triggers plus `UNIQUE(idempotency_key)`.
+
+**The audit matrix IS Task 1's test oracle — reproduce it, do not re-derive it.** The full per-probe table is
+in `.copowers-findings.md` under "SYSTEMATIC CHECK/TRIGGER AUDIT". Two disciplines it encodes, both learned
+the expensive way in this arc:
+- **A CHECK passes when its expression is NULL**, so any guard built from a function that returns NULL on bad
+  input silently admits exactly what it was written to reject. Probe it; never reason about it.
+- **A comment claiming a guarantee is not a guarantee.** `0032`'s comment argued carefully for round-trip
+  equality OVER `IS NOT NULL` — correct about normalisation, wrong that normalisation was the whole space
+  (§C.1.1). When a constraint's comment explains why it is sufficient, treat that as a HYPOTHESIS TO PROBE.
+
 - [ ] **Step 2:** implement. Backup gate copied VERBATIM from `_phase21_arc_a_backup_gate`. Repo functions
       issue NO BEGIN/COMMIT (the route owns `with conn:`).
 - [ ] **Step 3:** `python -m pytest tests/data -q` green; commit
