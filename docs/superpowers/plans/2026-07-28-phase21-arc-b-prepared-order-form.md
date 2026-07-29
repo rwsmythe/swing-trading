@@ -12,7 +12,8 @@ ledger RD reads monthly. **NOTHING is sent to the broker in this arc.**
 network, no transactions): `order_intent.py` computes the prepared order + the per-field delta;
 `classification.py` turns (latch, views, intents, telemetry health) into a disposition and an execution-parity
 report. Migration `0033` (v32 -> v33) adds ONE new table (`latch_order_intents`) and REBUILDS
-`latch_view_events` to add `surface` + the two actionability columns and re-key its UNIQUE onto the bridge key. The web layer extends the EXISTING panel VM/route/template (no new base-layout VM field)
+`latch_view_events` to add `surface` + the THREE actionability columns (`actionable_at_first_view`,
+`actionable_at_last_view`, `actionable_ever_viewed` — §C.1) and re-key its UNIQUE onto the bridge key. The web layer extends the EXISTING panel VM/route/template (no new base-layout VM field)
 and adds exactly one new endpoint, `POST /latches/intent`. A read-only CLI report (`swing latches parity`)
 makes the ledger a measurement rather than a table.
 
@@ -37,7 +38,8 @@ Every task's requirements implicitly include this section.
   (`current_equity`, `sizing_equity`, `list_all_exitshape_via_fills` — all pure/SELECT), exactly as
   `swing/latches/reader.py` already imports `swing/trades/voided_trades.py`. The `swing/data/` additions
   (migration `0033`, `swing/data/repos/latch_order_intents.py`, the `LatchOrderIntent` model + the `surface`
-  and `actionable_at_first_view` / `actionable_at_last_view` fields on `LatchViewEvent`, and the
+  and the three `actionable_at_first_view` / `actionable_at_last_view` / `actionable_ever_viewed`
+  fields on `LatchViewEvent`, and the
   `swing/data/db.py` version bump + backup gate) are the scoped
   addition the 21-B brief's SCHEMA TRIPWIRE authorizes — the same carve-out 21-A took for `0032`.
 - **#11 one-commit multi-mirror discipline:** every CHECK enum in `0033`, its Python frozenset in
@@ -342,7 +344,7 @@ On FTRE's live numbers (pivot 18.34, stop 14.88, sizing equity 7500, `max_risk_p
 | basis | risk/share | shares | risk if filled at the CAP |
 |---|---|---|---|
 | pivot 18.34 | 3.46 | **10** | 10 x 4.0102 = **$40.10 = 0.535% of equity — OVER the 0.5% policy cap** |
-| zone cap 18.8902 | 4.0102 | **9** | 9 x 4.0102 = $36.09 = 0.481% — within the cap in every fill outcome |
+| zone cap 18.89 (cent-quantized, §D.1) | 4.01 | **9** | 9 x 4.01 = $36.09 = 0.481% — within the cap in every fill outcome |
 
 **This plan recommends the LIMIT PRICE as the basis in BOTH regimes** (in the pullback regime it is the only
 price the order can fill at; in the breakout regime it is the worst case), because a sizing that can breach the
@@ -373,6 +375,40 @@ Everything config- or policy-derived IS stored (`zone_cap_pct`, sizing equity, `
 `position_pct_cap`, the `risk_policy_id`, the sizing basis, the regime close and the session that close is
 DATED), because every one of those can move and a moved value silently rewrites history. This is the cut that
 keeps the table minimal without losing anything unrecoverable.
+
+**THE CUT IS DRAWN AT WHAT THE CARD SHOWS, NOT AT WHAT THE SIZING FORMULA CONSUMES (Codex R27 MAJOR).** The
+first pass applied the rule to the sizing INPUTS and stopped, leaving THREE values that §D.3's card renders
+inside the derivation block un-anchored and unstored: `real_equity`, `equity_floor` and
+`nightly_recommendation_shares`. All three can DRIFT, so §A.4's own rule already covered them — it simply had
+not been applied to them. And the omission is not cosmetic: if `real_equity` moves while the floor still
+binds, `sizing_equity` is UNCHANGED, so the anchor digest is unchanged, the stale-form comparison passes, and
+the row records a derivation whose printed line — *"sizing equity $7,500.00 = max(real equity $1,2xx.xx,
+risk_equity_floor $7,500.00)"* — the operator demonstrably did not see. That falsifies this plan's central
+claim in the one place it is most load-bearing.
+
+So the rule is restated to close the CLASS rather than to patch three fields:
+
+> **EVERY value the card presents INSIDE the prepared-order derivation block is hidden-anchored, compared at
+> POST, and stored. Anything not anchored MUST NOT be rendered inside that block.** The two are one decision:
+> a number is either part of the audited derivation, or it is not shown as part of it.
+
+The three added columns are `derivation_real_equity`, `derivation_equity_floor` and
+`derivation_nightly_recommendation_shares`, each carried in `anchor_digest` and in the §G.2 field-by-field
+comparison. **EXACTLY TWO derivation columns are legitimately NULLABLE on a `place`/`decline` row, and §C.2
+names both with their reason (Codex R28 MAJOR):** the nightly count (no `daily_recommendations` row exists
+for that fire) and `derivation_risk_policy_id` (the sizing RATE comes from `cfg.risk.max_risk_pct`, NOT from
+the policy row — §D.2 — so a missing active policy does NOT withhold the form; the id is provenance, and the
+card renders an explicit *"no active risk_policy row"* line rather than a blank, because an unlabelled gap is
+the quiet reduction §A.1.1 forbids). Every other derivation column is NOT NULL on those kinds.
+**The other rendered values are DERIVED, not independent, and are deliberately NOT stored:**
+`risk_per_share`, `max_risk_dollars`, `shares_by_risk`, `shares_by_position_cap` and `binding_constraint` are
+pure functions of values that ARE stored plus `latched_initial_stop` (pinned by `candidate_id`), so storing
+them would be the denormalisation §A.3 rejects. The test that pins the distinction: recomputing all five from
+the stored row must reproduce the rendered card exactly — if any one cannot be recomputed, it belongs in the
+stored set and the rule above says so.
+
+**A test mutates ONLY `real_equity` between render and POST, with the floor still binding, and asserts a
+first-write `409`** — under the pre-fix column set that POST succeeds, so the cell discriminates.
 
 ---
 
@@ -432,28 +468,36 @@ directions, which is the tell that the fact needs to be RECORDED rather than inf
 ```sql
 actionable_at_first_view INTEGER NOT NULL CHECK (actionable_at_first_view IN (0, 1)),
 actionable_at_last_view  INTEGER NOT NULL CHECK (actionable_at_last_view  IN (0, 1)),
+actionable_ever_viewed   INTEGER NOT NULL CHECK (actionable_ever_viewed   IN (0, 1)),
 ```
 
 - `1` — the latch's mandate was rendered in a form sufficient to act on (the prepared-order form was OFFERED).
 - `0` — the latch's card rendered, but its prepared order was WITHHELD, so no decision was presented.
 
-**TWO columns, not one, and they mirror the idiom `0032` already uses (Codex R13 MAJOR 2).** A single
-`actionable` advanced by `MAX(existing, new)` would let an 18:00 offered render retroactively upgrade an 09:00
-withheld one — while the row still carries `first_viewed_ts = 09:00`, so the record would assert "first viewed
-at 09:00, with an actionable mandate", which is false. That is the stored fact depending on a LATER reload,
-which is the same class of dishonesty as the R11 downgrade in the other direction. The fix is the shape the
-table already uses for `latch_state_at_first_view` / `latch_state_at_last_view`: `..._at_first_view` is
-IMMUTABLE after insert, `..._at_last_view` advances monotonically `0 -> 1` (never back). No new grain, no new
-row, both facts preserved, and each timestamp keeps its own truthful companion.
+**THREE columns, and each answers a DIFFERENT question.** A single `actionable` advanced by
+`MAX(existing, new)` would let an 18:00 offered render retroactively upgrade an 09:00 withheld one — while the
+row still carries `first_viewed_ts = 09:00`, so the record would assert "first viewed at 09:00, with an
+actionable mandate", which is false. But naming the MAX column `..._at_last_view` commits the mirror-image
+lie: after an offered 09:00 render and a withheld 18:00 one, `last_viewed_ts` advances to 18:00 while the
+column still says the last view was actionable. Both are the stored fact depending on a LATER reload. So the
+first/last pair mirror the idiom `0032` already uses for `latch_state_at_first_view` /
+`latch_state_at_last_view` and stay literally true of their OWN view, and the monotone fact gets its own
+honestly-named column:
+
+| column | write rule | means |
+|---|---|---|
+| `actionable_at_first_view` | set at INSERT, **NEVER rewritten** | what the FIRST view of this session showed |
+| `actionable_at_last_view` | overwritten with the NEW value on every UPDATE | what the LATEST view showed |
+| `actionable_ever_viewed` | `MAX(existing, new)` — monotonic `0 -> 1`, never back | was the mandate offered AT ANY POINT this session |
 
 **Classification reads `actionable_ever_viewed = 1`** as "the mandate WAS actionably presented in this
-session" (§E.3) — the honestly-named column for that question. The `..._at_first_view` / `..._at_last_view`
-pair stay literally true of their own views and exist so the record cannot lie about either timestamp's
-companion fact.
+session" (§E.3) — the honestly-named column for that question, and the ONLY actionability column any
+classification, health or bucket rule may read. The `..._at_first_view` / `..._at_last_view` pair are audit
+companions to their own timestamps and are never a classifier input.
 
 Consumers, each distinct (§E.3, §F.1):
-- the away/lapse split counts **only rows with `actionable_at_last_view = 1`** as a view;
-- a latch with only `actionable_at_last_view = 0` rows across its whole armed window classifies
+- the away/lapse split counts **only rows with `actionable_ever_viewed = 1`** as a view;
+- a latch with only `actionable_ever_viewed = 0` rows across its whole armed window classifies
   **`never_actionable`** — a new disposition, EXCLUDED from the discipline signal and from the away rate for
   the same reason `pre_telemetry` is: the instrument never presented a decision, so there is nothing to score;
 - telemetry health counts **either kind** toward `covered_sessions` — a row of either kind proves the beacon
@@ -499,29 +543,40 @@ CREATE TABLE latch_view_events_new (
     CHECK (actionable_ever_viewed >= actionable_at_last_view),
     -- THE MONOTONIC CONTRACT, ENFORCED IN SQL AND NOT ONLY IN PYTHON (Codex
     -- R17). The prose claimed this was mirrored; the DDL only bounded each
-    -- value, so a raw INSERT could store first=1 / last=0 -- a row the dataclass
-    -- REJECTS, i.e. the DB holding a shape the read path cannot hydrate, which
-    -- is the dangerous asymmetry direction the #11 discipline exists to stop.
+    -- value, so a raw INSERT could store a row the dataclass REJECTS -- the DB
+    -- holding a shape the read path cannot hydrate, which is the dangerous
+    -- asymmetry direction the #11 discipline exists to stop. The contract runs
+    -- `ever >= first` and `ever >= last` ONLY. `first=1, last=0` is DELIBERATELY
+    -- LEGAL: it is the true record of an offered 09:00 render followed by a
+    -- withheld 18:00 one, and forbidding it would reimpose the "last means ever"
+    -- lie the third column was added to end. The R17-era pairing of first
+    -- against last is therefore NOT reproduced here.
 
-    -- Every 0032 CHECK reproduced -- WITH the R24 CRITICAL `IS NOT NULL`
-    -- correction applied to both date CHECKs. 0032 as SHIPPED writes
-    -- `date(detection_date) = detection_date` with no IS NOT NULL, which a
-    -- length-correct invalid date such as '2026-99-99' passes (a SQLite CHECK
-    -- passes on a NULL expression). This rebuild is the moment that is fixable
-    -- for `latch_view_events` at zero cost, so it is fixed here; the SHIPPED
-    -- table's exposure is a SEPARATE 21-A finding flagged to the orchestrator,
-    -- not silently patched by this arc.
-    CHECK (length(detection_date) = 10
+    -- Every 0032 CHECK reproduced -- WITH the section C.1.1 date-CHECK
+    -- CORRECTION applied to both date columns. This is a NAMED, DELIBERATE fix
+    -- riding the rebuild, not a by-product of it; see C.1.1 for the reasoning
+    -- and the two INDEPENDENT tests it requires.
+    -- THE THREE-PREDICATE DATE GUARD (C.1.1). Used VERBATIM at every date
+    -- column in this arc; if a fourth malformed shape is ever found, it is
+    -- added HERE and propagated, never patched at one site.
+    CHECK (COALESCE(length(detection_date) = 10
            AND date(detection_date) IS NOT NULL
-           AND date(detection_date) = detection_date),
-    CHECK (length(view_session_date) = 10
+           AND date(detection_date) = detection_date
+           AND CAST(substr(detection_date, 1, 4) AS INTEGER) BETWEEN 1 AND 9999, 0)),
+    CHECK (COALESCE(length(view_session_date) = 10
            AND date(view_session_date) IS NOT NULL
-           AND date(view_session_date) = view_session_date),
-    ... every remaining 0032 CHECK reproduced VERBATIM ...
+           AND date(view_session_date) = view_session_date
+           AND CAST(substr(view_session_date, 1, 4) AS INTEGER) BETWEEN 1 AND 9999, 0)),
+    -- >>> THE REMAINING 0032 CHECKS ARE REPRODUCED HERE. This is a PLACEHOLDER
+    -- >>> in the plan and MUST NOT be copied as-is (Codex R28 MAJOR: copied
+    -- >>> literally, this migration does not run). See "THE REBUILD IS
+    -- >>> MECHANICAL" below for the source-of-truth procedure and the three
+    -- >>> tests that make a hand-reconstruction detectable.
     -- The grain stays (latch, session, surface). Actionability is an ATTRIBUTE
-    -- of that row, not part of its key: within one session a card can flip from
-    -- withheld to offered when the nightly lands, so the LAST-view column
-    -- advances 0 -> 1 monotonically while the FIRST-view column never moves.
+    -- of that row, not part of its key: within one session a card can flip
+    -- between withheld and offered as the nightly lands or the regime goes
+    -- stale, and the three columns record that flip WITHOUT splitting the row
+    -- (first is frozen, last tracks the newest view, ever is the monotone OR).
     -- KEYED ON `candidate_id` -- the declared IMMUTABLE BRIDGE KEY -- not on
     -- (evaluation_run_id, ticker) (Codex R15 MAJOR 2). Those two are equivalent
     -- today (`candidates` is UNIQUE on (evaluation_run_id, ticker), and the
@@ -533,16 +588,75 @@ CREATE TABLE latch_view_events_new (
     -- here because the table is being rebuilt anyway.
     UNIQUE (candidate_id, view_session_date, surface)   -- widened + re-keyed
 );
-INSERT INTO latch_view_events_new
+-- THE COLUMN LIST IS WRITTEN OUT EXPLICITLY, never left positional. A bare
+-- `INSERT INTO t SELECT ...` binds by POSITION, so the moment a column is added
+-- to the DDL and not to the SELECT the migration fails at apply time (or, worse
+-- on a differently-ordered rebuild, silently lands values in the wrong columns).
+-- That is not hypothetical here: the THIRD actionability column was added to the
+-- DDL one round before this list, and the positional form was left at two values.
+INSERT INTO latch_view_events_new (
+    view_event_id, candidate_id, evaluation_run_id, ticker, detection_date,
+    pipeline_run_id, surface, view_session_date, first_viewed_ts, last_viewed_ts,
+    view_count, latch_state_at_first_view, latch_state_at_last_view,
+    actionable_at_first_view, actionable_at_last_view, actionable_ever_viewed)
     SELECT view_event_id, candidate_id, evaluation_run_id, ticker, detection_date,
            pipeline_run_id, 'latch_panel', view_session_date, first_viewed_ts,
            last_viewed_ts, view_count, latch_state_at_first_view, latch_state_at_last_view,
-           0, 0            -- see "the legacy backfill is 0, not 1" below
+           0, 0, 0         -- see "the legacy backfill is 0, not 1" below
     FROM latch_view_events;
 DROP TABLE latch_view_events;
 ALTER TABLE latch_view_events_new RENAME TO latch_view_events;
--- the three 0032 indexes + BOTH 0032 identity-coherence triggers recreated VERBATIM
+-- >>> the three 0032 indexes + BOTH 0032 identity-coherence triggers are
+-- >>> RECREATED here, VERBATIM apart from the table name. Also a placeholder.
 ```
+
+**THE REBUILD IS MECHANICAL, AND THE PLAN IS NOT ITS SOURCE OF TRUTH (Codex R28 MAJOR).** The SQL above is an
+ILLUSTRATION carrying two literal placeholders; copied as-is the migration does not run, and — worse — an
+instruction to "reproduce `0032` verbatim except one change" hands the single most regression-prone step in
+the arc to reconstruction from memory. Inlining the full DDL here would not fix that: it would create a
+SECOND copy of `0032` that can itself be mistyped, and the implementer would diff against the plan instead of
+against the shipped table. So the procedure is:
+
+1. **READ the shipped DDL, do not retype it** — `swing/data/migrations/0032_latch_view_telemetry.sql` is the
+   source of truth for the CHECKs, the indexes and both triggers.
+2. **Apply EXACTLY these FIVE deltas, which are a CLOSED LIST:**
+   (a) `+ surface TEXT NOT NULL` with `CHECK (surface IN ('latch_panel'))`;
+   (b) `+` the three actionability columns with their `IN (0,1)` and two `ever >=` CHECKs;
+   (c) the §C.1.1 three-predicate strengthening on `detection_date` and `view_session_date` — **the ONLY
+       change to an existing CHECK**;
+   (d) `UNIQUE (evaluation_run_id, ticker, view_session_date)` -> `UNIQUE (candidate_id, view_session_date,
+       surface)`;
+   (e) `+` the ISO-seconds SHAPE guards on `first_viewed_ts` and `last_viewed_ts` (§C.1.1), with the existing
+       `last_viewed_ts >= first_viewed_ts` ordering CHECK PRESERVED alongside them.
+   Anything else differing between the two DDLs is a mistake, not a decision.
+3. **Three tests make a hand-reconstruction detectable, and they are not substitutes for each other:**
+   - **`executescript` on a REAL v32 DB** — the migration applies without error. Catches syntax, unbalanced
+     parens and unresolvable references, which is the class a prose review cannot see.
+   - **The §C.1 0032-preservation suite** — every shape `tests/data/test_migration_0032.py` proves the old
+     table rejects, the new table still rejects. Catches a DROPPED constraint.
+   - **A CHECK-SET DIFF, parsed from both DDLs, AT EXPRESSION GRANULARITY** — normalise whitespace and
+     compare the set of CHECK EXPRESSIONS on the pre-`0033` table against the post-`0033` table. Catches an
+     ADDED or SILENTLY-ALTERED constraint, which neither of the other two can: the preservation suite only
+     re-runs known rejections, and `executescript` is happy with a constraint nobody intended.
+     **The oracle is stated at the SAME granularity as the thing it measures (Codex R29 MAJOR).** "The
+     symmetric difference equals the four deltas" was not a well-defined assertion — the four deltas are at
+     FEATURE granularity and one of them (the re-keyed `UNIQUE`) is not a CHECK at all, so an implementer
+     would have had to invent grouping rules. The expected diff, expression by expression:
+     - **REMOVED (2):** the old `detection_date` CHECK, the old `view_session_date` CHECK.
+     - **ADDED (10):** the strengthened `detection_date` and `view_session_date` CHECKs (the §C.1.1 three
+       predicates); `surface IN ('latch_panel')`; the three `actionable_* IN (0,1)` CHECKs; the two
+       `actionable_ever_viewed >=` CHECKs; **and the two ISO-seconds shape guards on `first_viewed_ts` and
+       `last_viewed_ts`** (§C.1.1's fifth delta — the columns the section's "every timestamp" claim had
+       missed).
+     - **UNCHANGED:** the other six `0032` CHECKs (**`0032` declares EIGHT, not seven — counted on disk;
+       the "all seven CHECKs" figure this plan carried was simply wrong**): the two latch-state enums,
+       `view_count >= 1`, `evaluation_run_id > 0`, `length(trim(ticker)) > 0`, and
+       `last_viewed_ts >= first_viewed_ts` — the last PRESERVED beside its two new shape guards, because
+       ordering and shape are different questions and neither implies the other.
+     The `UNIQUE` re-key, the three indexes and both triggers are asserted SEPARATELY, by their own
+     introspection tests — a CHECK diff cannot speak about them.
+   The trigger bodies get the same treatment — compare the post-`0033` `sqlite_master` trigger SQL against
+   `0032`'s, modulo the table name, and assert equality rather than merely that the triggers fire.
 
 **THE REPO NATURAL KEY MOVES WITH THE CONSTRAINT (Codex R3 MAJOR 2).** A widened `UNIQUE` is cosmetic if the
 repo still looks up on the old triple — the second surface's `record_view` would find the panel's row and
@@ -572,19 +686,27 @@ would manufacture a `never_actionable` for a mandate he was genuinely presented 
   `surface` REQUIRED and NO default (a default would re-create the bug the first time a caller forgets it —
   the default-arg-filter gotcha).
 - `record_view(..., surface=..., actionable=...)` — the SELECT-then-UPDATE-or-INSERT keys on the FOUR-tuple.
-  On INSERT both actionability columns take the passed value; on UPDATE `actionable_at_last_view` becomes
-  `MAX(existing, new)` (monotonic `0 -> 1`, never back) and `actionable_at_first_view` is **NEVER rewritten**,
-  alongside the existing monotonic `view_count` / `last_viewed_ts` advance.
+  On INSERT all THREE actionability columns take the passed value. On UPDATE, exactly the §C.1 table:
+  `actionable_at_first_view` is **NEVER rewritten**, `actionable_at_last_view` is **OVERWRITTEN with the new
+  value** (it describes the latest view and must be able to fall `1 -> 0`), and `actionable_ever_viewed`
+  becomes `MAX(existing, new)` (monotonic `0 -> 1`, never back) — alongside the existing monotonic
+  `view_count` / `last_viewed_ts` advance.
 - `list_views_for_latch(conn, *, candidate_id, surfaces=None)` /
   `list_views_for_session(conn, *, view_session_date, surfaces=None)` — `None` means ALL
   surfaces (a raw read); every CLASSIFICATION caller passes `surfaces=ACTIONABLE_VIEW_SURFACES` explicitly
   (§E.3), so no reader silently inherits a set it did not choose.
-- `_row_to_model`, `_COLS` and **`swing/data/models.py:LatchViewEvent`** carry `surface`,
-  `actionable_at_first_view` AND `actionable_at_last_view` — the model was a plain omission in the first draft
-  (Codex R15 MAJOR 1), which would have left `never_actionable`, `covered_sessions` and the beacon split with
-  no hydrated fields to read. `__post_init__` validates both against `{0, 1}` (the `Literal` hint is not
-  runtime-enforced) and rejects `actionable_at_last_view < actionable_at_first_view` (the monotonic contract,
-  mirrored from the SQL side under the #11 discipline).
+- `_row_to_model`, `_COLS` and **`swing/data/models.py:LatchViewEvent`** carry `surface` and **ALL THREE**
+  actionability columns — `actionable_at_first_view`, `actionable_at_last_view` AND
+  `actionable_ever_viewed`. The model was a plain omission in the first draft (Codex R15 MAJOR 1), which would
+  have left `never_actionable`, `covered_sessions` and the beacon split with no hydrated fields to read; the
+  `ever` column is the one CLASSIFICATION actually reads (§C.1), so omitting it would reproduce that defect
+  exactly. `__post_init__` validates all three against `{0, 1}` (the `Literal` hint is not runtime-enforced)
+  and rejects `actionable_ever_viewed < actionable_at_first_view` and
+  `actionable_ever_viewed < actionable_at_last_view` — the two monotonic contracts, mirrored from the SQL side
+  under the #11 discipline. It does **NOT** constrain `actionable_at_last_view` against
+  `actionable_at_first_view`: a `1 -> 0` fall between them is the CORRECT record of an offered render followed
+  by a withheld one, and a validator forbidding it would re-impose the very "last means ever" lie the third
+  column exists to end.
 
 Tests (Task 1): a replay on the SAME surface -> ONE row, `view_count=2`; `get_view` without `surface` raises
 `TypeError`; the UNIQUE's `surface` leg proved by DDL introspection. NO two-surface INSERT test (R18 MAJOR 4).
@@ -601,15 +723,107 @@ telemetry has no downstream consumer.
 
 **Rebuild risk is bounded and stated:** the live table holds ZERO rows, so the copy is a no-op in production —
 but the copy is written anyway so a non-empty dev/test DB migrates correctly. **The two identity-coherence
-triggers and all seven CHECKs from `0032` MUST be reproduced byte-for-byte**; a test asserts the post-`0033`
-table still rejects each of the shapes `tests/data/test_migration_0032.py` proves it rejects (this is the
-single largest regression risk in the arc and it gets its own task step).
+triggers and all **EIGHT** CHECKs from `0032` (counted on disk — the "seven" this plan carried for several
+rounds was wrong, and a count nobody verified is exactly the kind of figure the §C.1 CHECK-diff test replaces
+with a parse) MUST be reproduced with EXACTLY ONE intended change — the §C.1.1
+date-CHECK correction on `detection_date` and `view_session_date`. Everything else is byte-for-byte**; a test
+asserts the post-`0033` table still rejects each of the shapes `tests/data/test_migration_0032.py` proves it
+rejects, AND additionally rejects the two shapes C.1.1 names (this is the single largest regression risk in
+the arc and it gets its own task step). "Byte-for-byte except one named change" is the only honest form of
+that instruction: an unqualified byte-for-byte would tell an implementer to reproduce the defect.
 
 **The cheaper alternative CHARC may prefer, named for a veto:** `ALTER TABLE ... ADD COLUMN
 first_view_surface / last_view_surface` (no rebuild, grain unchanged). It is smaller, and it LOSES per-surface
 counts — you could not tell five panel opens from one dashboard glance. The plan recommends the rebuild
 because B4's stated purpose is keeping 21-F's surface architecture unconstrained, and the cheaper option
 constrains it.
+
+### C.1.1 THE `0032` DATE-CHECK DEFECT — a NAMED fix riding the rebuild (RD ruled `20260729T085410Z`)
+
+**A SQLite `CHECK` PASSES WHEN ITS EXPRESSION EVALUATES TO NULL, and `date('2026-99-99')` IS NULL.** So
+`date(x) = x` evaluates to `NULL = '2026-99-99'` -> NULL -> the CHECK passes. Reproduced empirically at this
+writing, twice, on an in-memory DB:
+
+| value | `length=10 AND date(x)=x` | `length=10 AND date(x) IS NOT NULL` | both halves |
+|---|---|---|---|
+| `'2026-99-99'` | **ACCEPTED** | rejected | rejected |
+| `'garbage123'` | **ACCEPTED** | rejected | rejected |
+| `'2026-02-30'` | rejected (normalises to `2026-03-02`, so `!= x`) | **ACCEPTED** | rejected |
+| `'2026-07-29'` | accepted | accepted | accepted |
+
+**BOTH HALVES ARE REQUIRED AND NEITHER IS SUFFICIENT.** Round-trip equality catches the NORMALISING case;
+`IS NOT NULL` catches the INVALID case. The middle column is the reason this is not a "just add IS NOT NULL"
+edit and the left column is the reason it is not a "the existing check is fine" one.
+
+**THE SCOPE IS EVERY DATE *AND EVERY TIMESTAMP*, INCLUDING THE TWO THIS SECTION ORIGINALLY MISSED (Codex R29
+MAJOR).** The section claimed "every date and timestamp CHECK" while the rebuilt `latch_view_events` kept
+`first_viewed_ts` / `last_viewed_ts` guarded ONLY by `last_viewed_ts >= first_viewed_ts` — an ORDERING
+constraint, not a SHAPE one — and the dataclass only string-compares them. A raw append could store a
+malformed or absurd view timestamp that hydrates fine and renders as authoritative telemetry, which is B4's
+own recorded fact. So the rebuild ALSO applies the full ISO-seconds guard (the `recorded_ts` form: length,
+GLOB shape, the date half's three predicates, and hour/minute/second ranges) to BOTH columns, mirrored in
+`LatchViewEvent.__post_init__`, with their own raw-insert rejection tests. **This is a fifth delta to the
+rebuild** and §C.1's delta list and CHECK-diff oracle count it: `+2` strengthened timestamp CHECKs, and the
+`last_viewed_ts >= first_viewed_ts` CHECK is PRESERVED unchanged beside them (it answers a different
+question, and the ordering guarantee is not implied by either shape guard).
+
+**AND A THIRD PREDICATE — THE YEAR RANGE (Codex R26 MAJOR).** Both halves together still ACCEPT
+`'0000-01-01'`: SQLite's `date()` round-trips year zero happily, while Python's `date.fromisoformat` raises
+*"year must be in 1..9999, not 0"* — verified both ways at this writing. That is precisely the asymmetry
+direction the #11 discipline exists to stop: **the DB holding a row the read path cannot hydrate.** The
+production writer cannot emit it (`datetime.now()` has no year zero), so this is the raw-append vector only —
+but so is everything else this section guards, and a mirror that is right for two malformed shapes and wrong
+for a third is not a mirror. Every date and timestamp CHECK therefore also carries
+`CAST(substr(x, 1, 4) AS INTEGER) BETWEEN 1 AND 9999`, mirrored in the dataclass validators (where
+`fromisoformat` already enforces it), with `'0000-01-01'` / `'0000-01-01T00:00:00'` as their own rejection
+cases. Verified: with the year predicate, `0000-01-01` rejects while `0001-01-01` and `9999-12-31` still
+pass, so the guard is not merely narrowing the useful range.
+
+**This is LIVE on the production database.** Migration `0032`'s `latch_view_events` writes the weak form on
+`detection_date` and `view_session_date` — and those are the **only two occurrences of the pattern in the
+entire `swing/data/migrations/` tree** (verified by grep at this writing; no other migration writes a
+`date(x) = x` CHECK). 21-B already REBUILDS that table, so the correction rides the rebuild at zero extra
+migration cost and zero extra risk.
+
+**Worth recording because it is the interesting part:** `0032`'s own comment argues *for* round-trip equality
+and *against* `IS NOT NULL`, and reasons correctly about normalisation the whole way — it simply concluded
+that normalisation was the entire failure space. An author reasoning carefully to the wrong conclusion is a
+harder defect to catch than an author not reasoning at all, which is exactly why the fix is pinned by tests
+rather than by a corrected comment.
+
+**RD's conditions, binding on this plan:**
+
+1. **DELIBERATE, NOT INCIDENTAL.** This section exists so the fix is a named change with its reasoning on the
+   record, rather than a silent by-product of a rebuild done for another purpose. The migration comment points
+   here; the task step names it.
+2. **BOTH HALVES TEST-PINNED INDEPENDENTLY (Task 1).** TWO separate tests per date column, never one combined:
+   - **the NORMALISING case** — `'2026-02-30'` is REJECTED. Passes with round-trip equality alone; FAILS
+     against an `IS NOT NULL`-only guard.
+   - **the INVALID case** — `'2026-99-99'` is REJECTED. Passes with `IS NOT NULL` alone; FAILS against the
+     shipped round-trip-only guard.
+   A single test asserting "a malformed date is rejected" would go green with HALF the guard missing,
+   whichever half was dropped — which is the whole reason RD required them split.
+3. **STANDING CONDITION.** If any NEW `latch_view_events` writer lands before 21-B merges, **the CHECK fix
+   lands FIRST**, on its own, ahead of that writer. The exposure is theoretical only while the write path
+   stays closed (below); a new writer is exactly what could open it.
+
+**Do NOT overstate this, and the plan is explicit about the limit.** The input space is closed TODAY — but by
+the WRITE PATH, not by provenance and not by the CHECK:
+
+- `view_session_date` reaches the writer as `anchor.isoformat()` where `anchor = date.fromisoformat(raw)` at
+  the route boundary (`swing/web/routes/latches.py:_parse_beacon_anchor`) — a **parse-and-reserialise**, so a
+  malformed posted value raises before it can reach SQL.
+- `detection_date` arrives on a `LatchIdentity`, whose `__post_init__` runs `parse_session_date` (
+  `date.fromisoformat`) — a **validating constructor**, which rejects both `'2026-99-99'` and `'2026-02-30'`.
+
+So this is **defence in depth on a currently-closed input space, not an active corruption**, and no claim is
+made that bad rows exist. What the CHECK buys is that the closure stops depending on two callers continuing
+to do the right thing — which is the same argument the immutability trigger makes in §C.2, and the same one
+`0032`'s identity-coherence trigger already makes for a writer that "cannot produce that shape".
+
+**Out of scope, flagged not fixed:** whether the SAME class exists in any OTHER shipped table's date or
+timestamp CHECKs is a `swing/data/migrations/` audit the ORCHESTRATOR owns, not this arc. The grep above
+bounds it for the `date(x) = x` pattern specifically; it does not bound near-miss variants.
 
 ### C.2 The new table: `latch_order_intents`
 
@@ -653,7 +867,26 @@ CREATE TABLE latch_order_intents (
 
     -- ===== THE EVENT =====
     idempotency_key      TEXT NOT NULL,          -- hazard (a); UNIQUE below
-    action_session_date  TEXT NOT NULL,          -- the session the form was RENDERED for
+    -- THE MANDATE'S SESSION ON EVERY KIND -- three facts, three homes (R24
+    -- MAJOR). `action_session_date` says WHICH SESSION'S MANDATE this row is
+    -- about; `recorded_ts` says WHEN THE ANSWER HAPPENED (and is the only time
+    -- axis the monthly report reads, section F.3); `broker_snapshot_session`
+    -- inside `validity_detail` says WHEN THE BROKER VIEW WAS TAKEN. Per kind:
+    --   place / decline -- the VALIDATED session anchor. The mandate was
+    --                      prepared FOR that session, so anchor and mandate
+    --                      session are the same value.
+    --   validity        -- SERVER-COPIED from the parent `place` row, NEVER
+    --                      taken from the payload and NEVER the submitted
+    --                      anchor. A validity row answers for THAT order, and
+    --                      the aged prompt is the normal case, so an anchor-
+    --                      derived value would file a July mandate under
+    --                      August. Enforced by the repo + a trigger twin of
+    --                      trg_loi_validity_parent_insert asserting
+    --                      NEW.action_session_date = parent.action_session_date.
+    --   cancel / attest -- the VALIDATED session anchor. There is no parent
+    --                      mandate row to copy from, and the operator's action
+    --                      is about the panel as of that session.
+    action_session_date  TEXT NOT NULL,
     recorded_ts          TEXT NOT NULL,          -- SERVER-STAMPED at POST, never from the payload
     surface              TEXT NOT NULL,
     intent_kind          TEXT NOT NULL,          -- place | decline | cancel | attest | validity
@@ -698,6 +931,15 @@ CREATE TABLE latch_order_intents (
     derivation_sizing_basis         TEXT,        -- limit_price | pivot
     derivation_regime_close         REAL,        -- NULL = regime was undeterminable
     derivation_regime_close_session TEXT,        -- the session that close is DATED (21-G honesty)
+    -- RENDERED ON THE CARD, THEREFORE ANCHORED AND STORED (A.4, Codex R27
+    -- MAJOR). real_equity moves with every exit and cash movement while
+    -- sizing_equity can stay pinned at the floor -- so without these the row
+    -- records a derivation line the operator never saw. The nightly count is
+    -- NULLABLE because A.2's divergence note is absent when no
+    -- daily_recommendations row exists for the fire.
+    derivation_real_equity                   REAL,
+    derivation_equity_floor                  REAL,
+    derivation_nightly_recommendation_shares INTEGER,
 
     -- ===== THE OPERATOR'S ACTUAL PARAMS (nullable) =====
     actual_order_type      TEXT,
@@ -738,6 +980,25 @@ CREATE TABLE latch_order_intents (
     -- a stop) is equally storable.
     CHECK (actual_order_type IS NULL OR actual_order_type IN
            ('STOP_LIMIT','LIMIT','UNKNOWN')),
+    -- A NON-ACCEPTED VALIDITY ROW CARRIES NO OBSERVED ORDER AT ALL (Codex R29
+    -- MAJOR). The CHECKs required a COMPLETE actual side for
+    -- `accepted_by_broker` and said nothing about the other three outcomes -- so
+    -- a raw append could store `not_submitted` BESIDE an observed broker order
+    -- id and a full actual limit/quantity. The report excludes it from the
+    -- agreement denominator, but the ROW still sits in an append-only ledger
+    -- carrying an authoritative-looking exact linkage that CONTRADICTS its own
+    -- verdict, and section G.4 tells a future reader that a broker order id on a
+    -- validity row IS the exact linkage. An outcome and its evidence must not be
+    -- able to disagree.
+    -- If a "visibly rejected order" evidence kind is ever wanted, it gets its
+    -- own outcome value with its own CHECKs and its own report bucket -- section
+    -- A.0: it would be a different KIND of evidence, not a loosening of this one.
+    CHECK (intent_kind <> 'validity'
+           OR validity_outcome = 'accepted_by_broker'
+           OR (actual_order_type IS NULL AND actual_duration IS NULL
+               AND actual_stop_price IS NULL AND actual_limit_price IS NULL
+               AND actual_quantity IS NULL
+               AND actual_broker_order_id IS NULL)),
     CHECK (validity_outcome <> 'accepted_by_broker'
            OR actual_order_type <> 'STOP_LIMIT' OR actual_stop_price IS NOT NULL),
     CHECK (validity_outcome <> 'accepted_by_broker'
@@ -745,6 +1006,13 @@ CREATE TABLE latch_order_intents (
     CHECK (derivation_sizing_basis IS NULL
            OR derivation_sizing_basis IN ('limit_price','pivot')),
     CHECK (derivation_zone_cap_pct IS NULL OR derivation_zone_cap_pct > 0),
+    -- `real_equity` may be ZERO or NEGATIVE and that is not an error -- it is
+    -- the account, and it is exactly why the floor exists. So it is bounded by
+    -- NOTHING except being present; the floor and the nightly count are bounded
+    -- positive like their siblings.
+    CHECK (derivation_equity_floor IS NULL OR derivation_equity_floor > 0),
+    CHECK (derivation_nightly_recommendation_shares IS NULL
+           OR derivation_nightly_recommendation_shares > 0),
     CHECK (derivation_sizing_equity IS NULL OR derivation_sizing_equity > 0),
     CHECK (derivation_max_risk_pct IS NULL OR derivation_max_risk_pct > 0),
     CHECK (derivation_position_pct_cap IS NULL OR derivation_position_pct_cap > 0),
@@ -753,11 +1021,27 @@ CREATE TABLE latch_order_intents (
     -- close is a claim about a price that is not there.
     CHECK ((derivation_regime_close IS NULL) = (derivation_regime_close_session IS NULL)),
     CHECK (derivation_regime_close_session IS NULL
-           OR (length(derivation_regime_close_session) = 10
+           OR COALESCE(length(derivation_regime_close_session) = 10
                AND date(derivation_regime_close_session) IS NOT NULL
                AND date(derivation_regime_close_session)
-                   = derivation_regime_close_session)),
+                   = derivation_regime_close_session
+               AND CAST(substr(derivation_regime_close_session, 1, 4) AS INTEGER)
+                   BETWEEN 1 AND 9999, 0)),
     CHECK (actual_quantity IS NULL OR actual_quantity > 0),
+    -- EVERY PRICE IS POSITIVE (Codex R28 MAJOR). The price columns were shape-
+    -- constrained (which kind may carry which leg) and never VALUE-constrained,
+    -- so a raw append could store a negative or zero framework or actual price
+    -- -- including on an `accepted_by_broker` validity row, which then enters
+    -- the agreement DENOMINATOR and reports a delta computed from a price that
+    -- cannot exist. Route-level validation is not the answer here for the same
+    -- reason it is not the answer anywhere else on this table: it is APPEND-ONLY
+    -- and audit-grade, so a bad row is permanent, and the whole posture of the
+    -- CHECK block is that raw appends are in scope.
+    CHECK (framework_limit_price IS NULL OR framework_limit_price > 0),
+    CHECK (framework_stop_price  IS NULL OR framework_stop_price  > 0),
+    CHECK (actual_limit_price    IS NULL OR actual_limit_price    > 0),
+    CHECK (actual_stop_price     IS NULL OR actual_stop_price     > 0),
+    CHECK (framework_quantity IS NULL OR framework_quantity > 0),
     CHECK (attested_disposition IS NULL OR attested_disposition IN
            ('acted_manually','chose_not_to_act','was_away')),
     CHECK (validity_outcome IS NULL OR validity_outcome IN
@@ -800,38 +1084,134 @@ CREATE TABLE latch_order_intents (
            -- validity_detail; without a CHECK a row can be written with none of
            -- it, defeating the audit claim and making the staleness gate
            -- unverifiable after the fact. `validity_detail` carries a JSON
-           -- object; the required keys (broker_snapshot_ts,
+           -- object; THE SEVEN REQUIRED KEYS are broker_snapshot_ts,
            -- broker_snapshot_branch, broker_snapshot_digest,
-           -- attributable_order_count, exact_framework_match_count,
-           -- indeterminate) are enforced in the repo + the dataclass validator
+           -- broker_snapshot_session, attributable_order_count,
+           -- exact_framework_match_count and indeterminate. SEVEN, and the
+           -- count is stated ONCE here and referenced everywhere else rather
+           -- than restated: an earlier round added broker_snapshot_session to
+           -- the CHECK below while three other sites still said "six keys", so
+           -- the fragment's emitted set and the row's required set disagreed by
+           -- one -- which makes the audit row unwritable and is exactly what
+           -- the emitted-key-set equality test exists to catch.
+           -- They are enforced in the repo + the dataclass validator
            -- under #11 AND in SQL: for an append-only audit ledger "the repo
            -- usually writes it correctly" is not enough, because a raw insert
            -- can append a row the report cannot hydrate and whose staleness
            -- basis is unknowable forever after.
            AND validity_detail IS NOT NULL
-           AND json_valid(validity_detail)
-           -- VALUE SHAPES, not merely presence (R24 MAJOR). The plan claims
-           -- "correct value shapes" are enforced; presence-only checks let a raw
-           -- append store an invalid branch, a malformed timestamp, a non-hex
-           -- digest or a non-boolean flag, and an append-only ledger keeps it
-           -- forever.
+           -- ===== THE NULL-PASS DEFENCE, AGAIN, ON JSON (Codex R25 CRITICAL).
+           -- The SAME class as C.1.1's date defect, one layer in: a MISSING key
+           -- makes json_extract() return NULL, so `length(NULL) = 19` is NULL and
+           -- a SQLite CHECK PASSES on NULL. Verified empirically at this writing:
+           -- against the presence-and-shape chain written bare, the JSON object
+           -- `{}` -- every single key absent -- was ACCEPTED. The whole audit
+           -- claim was void. That the class recurred WITHIN THIS PLAN, in a
+           -- different syntax, one round after being named, is the argument for
+           -- making the guard STRUCTURAL rather than remembering it per-site.
+           --
+           -- The fix is the two-part wrapper below and it is not optional:
+           --   * `COALESCE(<chain>, 0)` turns a NULL verdict into FALSE, so a
+           --     missing key REJECTS instead of passing.
+           --   * `CASE WHEN json_valid(...) THEN ... ELSE 0 END` gates the
+           --     json_* calls, because SQLite does NOT guarantee AND-chain
+           --     short-circuit: with a non-JSON value the bare chain raises
+           --     OperationalError('malformed JSON') instead of rejecting, so a
+           --     test asserting IntegrityError would fail against correct-
+           --     looking DDL. CASE *does* short-circuit; verified.
+           -- With the wrapper, all of `{}`, a missing single key, a JSON array,
+           -- a JSON scalar and a non-JSON string reject as IntegrityError.
+           --
+           -- VALUE SHAPES, not merely presence (R24 MAJOR). Presence-only checks
+           -- let a raw append store an invalid branch, a malformed timestamp, a
+           -- non-hex digest or a non-boolean flag, and an append-only ledger
+           -- keeps it forever.
+           AND CASE WHEN json_valid(validity_detail) THEN COALESCE(
+               json_type(validity_detail) = 'object'
+           -- EXACTLY SEVEN, NOT AT-LEAST-SEVEN (Codex R27 MAJOR). The plan says
+           -- the envelope carries EXACTLY the seven keys and is persisted
+           -- VERBATIM; the presence-and-shape chain below only ever enforced
+           -- AT LEAST. Extra keys therefore rode along into an append-only audit
+           -- row unaudited -- and since `actual_digest` covers only
+           -- `broker_snapshot_digest`, two envelopes differing ONLY by extra
+           -- content share an idempotency key, so the second is replayed and its
+           -- extra content silently dropped instead of rejected.
+           -- `json_remove` of the seven known paths must leave the EMPTY object.
+           -- BOTH HALVES ARE REQUIRED, exactly as in C.1.1: json_remove closes
+           -- EXTRA and is BLIND to MISSING (removing an absent path is a no-op,
+           -- so `{}` passes it), while the shape chain closes MISSING and is
+           -- blind to EXTRA. Verified empirically: with json_remove alone, a
+           -- seven-key object passes, an eight-key object rejects, and BOTH the
+           -- empty object and a six-key object still pass.
+           AND json_remove(validity_detail,
+                   '$.broker_snapshot_ts', '$.broker_snapshot_branch',
+                   '$.broker_snapshot_digest', '$.broker_snapshot_session',
+                   '$.attributable_order_count', '$.exact_framework_match_count',
+                   '$.indeterminate') = '{}'
            AND length(json_extract(validity_detail, '$.broker_snapshot_ts')) = 19
-           AND datetime(json_extract(validity_detail, '$.broker_snapshot_ts'))
+           AND json_extract(validity_detail, '$.broker_snapshot_ts') GLOB
+               '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+           -- ALL THREE PREDICATES AT THIS SITE TOO (Codex R27 MAJOR). The
+           -- IS NOT NULL leg was omitted here and the site leaned on the outer
+           -- COALESCE instead -- which happens to reject, but means C.1.1's
+           -- "one mechanism, three predicates, every site" was not actually
+           -- uniform, and a later edit to the wrapper would silently weaken it.
+           AND date(substr(json_extract(validity_detail,'$.broker_snapshot_ts'),1,10))
                IS NOT NULL
-           AND json_extract(validity_detail, '$.broker_snapshot_branch')
-               IN ('presence','absence','unavailable')
+           AND date(substr(json_extract(validity_detail,'$.broker_snapshot_ts'),1,10))
+               = substr(json_extract(validity_detail,'$.broker_snapshot_ts'),1,10)
+           AND CAST(substr(json_extract(validity_detail,'$.broker_snapshot_ts'),1,4)
+                    AS INTEGER) BETWEEN 1 AND 9999
+           AND CAST(substr(json_extract(validity_detail,'$.broker_snapshot_ts'),12,2)
+                    AS INTEGER) <= 23
+           AND CAST(substr(json_extract(validity_detail,'$.broker_snapshot_ts'),15,2)
+                    AS INTEGER) <= 59
+           AND CAST(substr(json_extract(validity_detail,'$.broker_snapshot_ts'),18,2)
+                    AS INTEGER) <= 59
+           -- (the branch enum is asserted ONCE, below, and it is the TWO-valued
+           -- answer vocabulary -- not the three-valued render vocabulary)
            AND length(json_extract(validity_detail, '$.broker_snapshot_digest')) = 64
            AND json_extract(validity_detail, '$.broker_snapshot_digest')
                NOT GLOB '*[^0-9a-f]*'
            AND length(json_extract(validity_detail, '$.broker_snapshot_session')) = 10
            AND date(json_extract(validity_detail, '$.broker_snapshot_session'))
                IS NOT NULL
+           -- ROUND-TRIP TOO, not IS NOT NULL alone -- the C.1.1 pair, applied
+           -- here as well: without it '2026-02-30' NORMALISES and is accepted.
+           AND date(json_extract(validity_detail, '$.broker_snapshot_session'))
+               = json_extract(validity_detail, '$.broker_snapshot_session')
+           AND CAST(substr(
+                   json_extract(validity_detail,'$.broker_snapshot_session'),1,4)
+                    AS INTEGER) BETWEEN 1 AND 9999
+           -- A `validity` ROW MAY NOT CARRY AN `unavailable` SNAPSHOT (Codex R26
+           -- MAJOR). Section E is explicit that an UNKNOWN order book renders NO
+           -- validity prompt in either direction -- so a persisted validity row
+           -- whose own snapshot says the book was unavailable is a row asserting
+           -- an execution outcome it had no evidence for, and this ledger is
+           -- append-only, so it would assert it forever. The three-valued enum
+           -- above is the FRAGMENT's render vocabulary; the ANSWER vocabulary is
+           -- two-valued. (Section A.0 again: the render status and the persisted
+           -- answer are measured differently and do not share one enum.)
+           -- MIRRORED UNDER #11 LIKE EVERY OTHER ENUM CHECK (Codex R28 MAJOR).
+           -- This is a schema enum that lived only in SQL: section I's constants
+           -- list and Task 1's "every enum CHECK" parse-and-compare test both
+           -- omitted it because it is expressed as a JSON predicate rather than
+           -- a column CHECK, which is a difference in SYNTAX and not in kind.
+           -- TWO constants, because there are two vocabularies (above):
+           --   LATCH_BROKER_SNAPSHOT_RENDER_BRANCHES    = presence/absence/unavailable
+           --   LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES = presence/absence
+           -- The fragment emits from the RENDER set, the handler + dataclass
+           -- validate against the PERSISTED set, this CHECK mirrors the
+           -- PERSISTED set, and a test asserts PERSISTED < RENDER (a strict
+           -- subset -- equality would mean the narrowing was silently undone).
+           AND json_extract(validity_detail, '$.broker_snapshot_branch')
+               IN ('presence','absence')
            AND json_type(validity_detail, '$.attributable_order_count') = 'integer'
            AND json_extract(validity_detail, '$.attributable_order_count') >= 0
            AND json_type(validity_detail, '$.exact_framework_match_count') = 'integer'
            AND json_extract(validity_detail, '$.exact_framework_match_count') >= 0
            AND json_type(validity_detail, '$.indeterminate')
-               IN ('true','false'))),
+               IN ('true','false'), 0) ELSE 0 END)),
     -- `validated_place_intent_id` is ALSO folded into the idempotency key
     -- (section G.1), so two place intents on one latch cannot collide on an
     -- identical answer. Multiple validity rows for ONE parent stay LEGAL and
@@ -876,6 +1256,8 @@ CREATE TABLE latch_order_intents (
        AND derivation_risk_policy_id IS NULL AND derivation_sizing_basis IS NULL
        AND derivation_regime_close IS NULL
        AND derivation_regime_close_session IS NULL
+       AND derivation_real_equity IS NULL AND derivation_equity_floor IS NULL
+       AND derivation_nightly_recommendation_shares IS NULL
        AND actual_order_type IS NULL AND actual_duration IS NULL
        AND actual_stop_price IS NULL AND actual_limit_price IS NULL
        AND actual_quantity IS NULL)),
@@ -895,7 +1277,9 @@ CREATE TABLE latch_order_intents (
        AND derivation_max_risk_pct IS NULL AND derivation_position_pct_cap IS NULL
        AND derivation_risk_policy_id IS NULL AND derivation_sizing_basis IS NULL
        AND derivation_regime_close IS NULL
-       AND derivation_regime_close_session IS NULL)),
+       AND derivation_regime_close_session IS NULL
+       AND derivation_real_equity IS NULL AND derivation_equity_floor IS NULL
+       AND derivation_nightly_recommendation_shares IS NULL)),
     -- R17 MAJOR: a `place` row must CARRY the whole drift-capable derivation
     -- block, not merely be permitted to. Without this a place row can ship an
     -- authoritative-looking order with NULL sizing provenance -- the "four bare
@@ -909,7 +1293,30 @@ CREATE TABLE latch_order_intents (
        AND derivation_position_pct_cap IS NOT NULL
        AND derivation_sizing_basis IS NOT NULL
        AND derivation_regime_close IS NOT NULL
-       AND derivation_regime_close_session IS NOT NULL)),
+       AND derivation_regime_close_session IS NOT NULL
+       -- the two card-rendered equity values are REQUIRED for the same reason
+       -- the rest of the block is (Codex R27 MAJOR).
+       AND derivation_real_equity IS NOT NULL
+       AND derivation_equity_floor IS NOT NULL)),
+    -- EXACTLY TWO DERIVATION COLUMNS ARE LEGITIMATELY NULLABLE ON A place OR
+    -- decline ROW, and both have a REASON rather than an omission (Codex R28
+    -- MAJOR flagged the third, `derivation_risk_policy_id`, as an inconsistency
+    -- between this CHECK and Task 1's "every derivation column is required"
+    -- enumeration -- correctly, and the resolution is to name the exemptions
+    -- here so the two can never disagree again):
+    --   derivation_nightly_recommendation_shares -- a fire with no
+    --     daily_recommendations row has none, and the card renders no
+    --     divergence note for it.
+    --   derivation_risk_policy_id -- the RATE fed to compute_shares comes from
+    --     cfg.risk.max_risk_pct, NOT from the policy row (section D.2), so a
+    --     prepared order is fully computable with no active policy row and the
+    --     form is NOT withheld for one. The id is recorded for PROVENANCE. The
+    --     card therefore renders it CONDITIONALLY and, when absent, renders an
+    --     explicit "no active risk_policy row" line rather than a blank -- an
+    --     unlabelled gap would be the quiet-reduction failure section A.1.1
+    --     forbids.
+    -- Every OTHER derivation column is required above. Task 1 asserts the
+    -- required set BY ENUMERATION FROM THE SCHEMA MINUS EXACTLY THESE TWO.
     -- HAZARD (c) MADE STRUCTURAL: a cancel MUST name one broker order. There is
     -- no by-ticker cancel path anywhere and the schema makes one unwritable.
     CHECK (intent_kind <> 'cancel'  OR (actual_broker_order_id IS NOT NULL
@@ -937,19 +1344,45 @@ CREATE TABLE latch_order_intents (
     -- round-trip equality catches the NORMALISING case ('2026-02-30' ->
     -- '2026-03-02', non-NULL but not equal) and the IS NOT NULL catches the
     -- INVALID case. Neither alone is sufficient.
-    CHECK (length(detection_date) = 10
+    CHECK (COALESCE(length(detection_date) = 10
            AND date(detection_date) IS NOT NULL
-           AND date(detection_date) = detection_date),
-    CHECK (length(action_session_date) = 10
+           AND date(detection_date) = detection_date
+           AND CAST(substr(detection_date, 1, 4) AS INTEGER) BETWEEN 1 AND 9999, 0)),
+    CHECK (COALESCE(length(action_session_date) = 10
            AND date(action_session_date) IS NOT NULL
-           AND date(action_session_date) = action_session_date),
+           AND date(action_session_date) = action_session_date
+           AND CAST(substr(action_session_date, 1, 4) AS INTEGER) BETWEEN 1 AND 9999, 0)),
     -- `recorded_ts` DRIVES THE MONTHLY REPORT'S CUTOFF AND ORDERING (section
     -- F.3), so an unconstrained TEXT column lets a raw insert or a repo bug
     -- silently misbucket a monthly parity read while looking authoritative
     -- (R19 MAJOR). Local ISO seconds, exactly: YYYY-MM-DDTHH:MM:SS.
-    CHECK (length(recorded_ts) = 19
+    --
+    -- THE `datetime(x) = replace(x,'T',' ')` FORM DOES NOT ENFORCE THAT
+    -- CONTRACT (Codex R25 MAJOR). Verified empirically at this writing, it
+    -- ACCEPTS both '2026-07-28 12:00:00' (a SPACE separator -- replace() is a
+    -- no-op, so it compares equal to itself) and '2026-07-28T24:00:00' (SQLite
+    -- does NOT normalise hour 24 away; datetime() echoes '2026-07-28 24:00:00'
+    -- and the replace matches). A space-separated stamp then sorts differently
+    -- from a T-separated one in the exact ORDER BY the monthly report uses, and
+    -- hour 24 is a stamp no clock produced. So the shape is pinned by GLOB (one
+    -- expression fixing all 19 positions, every digit, both colons and the T),
+    -- the DATE HALF gets C.1.1's BOTH-halves pair, and each time component gets
+    -- an explicit range. `datetime(x) IS NOT NULL` is kept as a belt.
+    -- Empirically: T12:00:00 and T23:59:59 accepted; the space form,
+    -- T24:00:00, T12:60:00, 2026-99-99T.., 2026-02-30T.. and non-digits all
+    -- rejected. `COALESCE(..., 0)` wraps it for the same NULL-pass reason as
+    -- the envelope CHECK above.
+    CHECK (COALESCE(
+           length(recorded_ts) = 19
+           AND recorded_ts GLOB
+               '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
            AND datetime(recorded_ts) IS NOT NULL
-           AND datetime(recorded_ts) = replace(recorded_ts, 'T', ' ')),
+           AND date(substr(recorded_ts, 1, 10)) IS NOT NULL
+           AND date(substr(recorded_ts, 1, 10)) = substr(recorded_ts, 1, 10)
+           AND CAST(substr(recorded_ts, 1, 4) AS INTEGER) BETWEEN 1 AND 9999
+           AND CAST(substr(recorded_ts, 12, 2) AS INTEGER) <= 23
+           AND CAST(substr(recorded_ts, 15, 2) AS INTEGER) <= 59
+           AND CAST(substr(recorded_ts, 18, 2) AS INTEGER) <= 59, 0)),
     CHECK (evaluation_run_id > 0),
     CHECK (length(trim(ticker)) > 0),
 
@@ -974,18 +1407,36 @@ BEFORE INSERT ON latch_order_intents
 FOR EACH ROW WHEN NEW.validated_place_intent_id IS NOT NULL
 BEGIN
     SELECT RAISE(ABORT,
-        'latch_order_intents validity parent must be a place row on the same latch')
+        'latch_order_intents validity parent must be a place row on the same latch '
+        'and the child must carry the parent''s action_session_date')
     WHERE NOT EXISTS (
         SELECT 1 FROM latch_order_intents parent
         WHERE parent.intent_id  = NEW.validated_place_intent_id
           AND parent.intent_kind = 'place'
-          AND parent.candidate_id = NEW.candidate_id);
+          AND parent.candidate_id = NEW.candidate_id
+          -- THE SERVER-COPY, ENFORCED RATHER THAN ASSERTED (Codex R25 MAJOR).
+          -- section C.2 declares that a `validity` row's action_session_date IS
+          -- the parent place row's -- and the trigger checked parent KIND and
+          -- CANDIDATE while leaving the session leg to the repo. A raw insert
+          -- (or a handler that reached for the submitted anchor, which is the
+          -- ONE mistake section G.2 names as most likely) could then file an
+          -- August answer under an August mandate date while pointing at a July
+          -- order, and every monthly read afterwards would attribute the mandate
+          -- to the wrong month. It is one predicate; the claim is worth having
+          -- enforced by the same mechanism that enforces the other two legs.
+          AND parent.action_session_date = NEW.action_session_date);
 END;
 ```
 
-with the matching `BEFORE UPDATE OF validated_place_intent_id, candidate_id` twin. Keying the coherence on
-`candidate_id` (the immutable latch surrogate) rather than on the session is deliberate: a `place` and its
-`validity` answer legitimately land in DIFFERENT sessions — that is the whole point of the aged prompt.
+with the matching `BEFORE UPDATE OF validated_place_intent_id, candidate_id, action_session_date` twin.
+Keying the LATCH coherence on `candidate_id` (the immutable latch surrogate) is deliberate — but note that
+the session leg is now an EQUALITY, not an absence, and the two are not in tension: **an aged prompt is
+answered in a LATER session, and that later session is recorded in `recorded_ts`, not in
+`action_session_date`.** The mandate session is the parent's by definition (§C.2), so requiring the copy is
+what makes the aged prompt recordable CORRECTLY rather than what blocks it. A test asserts the normal aged
+case — a `place` in session N, its `validity` child written in session N+20 carrying
+`action_session_date` = N and `recorded_ts` in N+20 — is ACCEPTED, and that the same child carrying
+`action_session_date` = N+20 is REJECTED.
 
 **Plus an IMMUTABILITY BARRIER (Codex R7 MAJOR 3).** The plan called this table append-only and audit-grade
 and then relied on convention to keep it that way — the same convention `reconciliation_corrections` relies
@@ -1017,12 +1468,18 @@ maintainer hitting it learns the reason rather than working around it.
 
 **Column count: the DDL above is authoritative** (R23 MINOR — a hand-maintained count drifted from it and
 will again; the migration test asserts the column list, not a number). The 21-A plan's §C.2 estimated "roughly
-18 columns about a different subject"; the extra 16 are the derivation-input block (8, which is B1's whole
-point), the actual-params block (6, which is B3's whole point), the idempotency key, and the validity parent
-link. Every one is justified above; nothing is speculative. If CHARC judges
-this past "minimal", the compressible group is the derivation-input block, which could collapse into one JSON
+18 columns about a different subject"; the extra columns are the derivation block (**11** — the 8 sizing and
+regime inputs, which are B1's whole point, plus the 3 card-rendered values §A.4 adds so the row can
+reconstruct what the operator actually saw), the actual-params block (6, which is B3's whole point), the
+idempotency key, and the validity parent link. Every one is justified above; nothing is speculative.
+**CHARC's "minimal" gate should be told the derivation block grew by 3 at round 27 and why:** the alternative
+was not a smaller table but a card that renders un-audited numbers inside an audited block, which is a
+different and worse kind of small. If CHARC still judges
+this past "minimal", the compressible group is the derivation block, which could collapse into one JSON
 envelope — the plan does NOT recommend that (a JSON blob defeats the CHECKs, defeats indexing, and is the
-`structural_evidence_json` shape the Phase-12 gotchas already burned us on).
+`structural_evidence_json` shape the Phase-12 gotchas already burned us on). The honest cheaper option, if
+one is wanted, is to STOP RENDERING `real_equity` and the nightly divergence note on the card — smaller
+table, smaller claim, and §A.4's restated rule permits it explicitly.
 
 ### C.3 What does NOT ride `0033`
 
@@ -1104,8 +1561,34 @@ when `SizingResult.feasible` is False, and `sizing_degenerate` if `compute_share
 | `order_type` | `expected_mandate_order_type(latched_pivot=..., last_close=...)` — the 21-A seam, never re-implemented |
 | `duration` | `GOOD_TILL_CANCEL` (the only member of `MANDATE_ORDER_DURATIONS`) |
 | `stop_price` | `latched_pivot` when `STOP_LIMIT`; `None` when `LIMIT` (a buy stop below the market is the FTRE rejection) |
-| `limit_price` | `latch.zone_cap` — already `round(pivot * 1.03, 4)` from 21-A |
+| `limit_price` | **`floor(latch.zone_cap * 100) / 100`** — the zone cap QUANTIZED DOWN to whole cents. See below; this is NOT the raw `round(pivot * 1.03, 4)` |
 | `quantity` | `compute_shares(entry=limit_price, stop=latched_initial_stop, equity=sizing_equity, max_risk_pct=..., position_pct_cap=...).shares` (A.2) |
+
+**THE LIMIT PRICE IS QUANTIZED TO WHOLE CENTS, BY FLOOR, AND THAT ONE VALUE IS USED EVERYWHERE (Codex R29
+MAJOR).** The plan carried TWO values for one field: §D.1 said `limit_price = latch.zone_cap` — FTRE's
+`round(18.34 * 1.03, 4) = 18.8902` — and the §C.2 raw fixture stored `18.8902`, while §D.3's card, §D.4's
+delta and Task 2 all say `LIMIT 18.89`. Both cannot be "the framework's order stored verbatim as the operator
+saw it", which is this arc's central claim.
+
+- **Whole cents, because that is the only price the order could actually be.** A US equity limit order is
+  penny-priced; `18.8902` is not a price the operator could enter, and this arc exists to put *the order he
+  would place* in front of him. Rendering four decimals would make the card a number he must silently
+  re-round himself — the click-through invitation §D.3 exists to prevent.
+- **FLOOR, not round-half-up, and the reason is the CAP SEMANTIC.** The zone cap is a MAXIMUM (`pivot * 1.03`
+  is the top of the buy zone), so a quantization that can move the price UP can push the order above the
+  zone. Round-half-up does that whenever the cap's third decimal is >= 5 (a cap of `18.8952` becomes
+  `18.90 > 18.8952`). **FTRE does NOT exhibit it** — `18.8902` rounds down either way — which is exactly why
+  the rule has to be stated rather than inferred from the worked example.
+- **The sizing arithmetic is UNCHANGED, verified under all three candidates.** raw `18.8902` -> risk/share
+  `4.0102`; floor `18.89` -> `4.0100`; both give `floor(37.50 / risk) = 9` shares, position-cap 59, RISK
+  binds, worst-case `$36.09 = 0.481%` of sizing equity — inside the 0.5% policy cap in every case. So this
+  fix does not disturb §A.2's recommendation or its 9-vs-10 discriminator.
+- **ONE value, used in ALL of:** `PreparedOrder.limit_price`, the card, the hidden anchor, `anchor_digest`,
+  the stored `framework_limit_price`, `compute_shares`'s entry, `compute_order_delta`, and every fixture.
+  `derivation_zone_cap_pct` plus the `candidate_id`-pinned pivot still make the un-quantized cap exactly
+  recomputable, so nothing is lost and no extra column is needed.
+- A test asserts `PreparedOrder.limit_price == 18.89` for FTRE **and** that a synthetic cap of `18.8952`
+  quantizes to `18.89`, not `18.90` — the round-half-up implementation passes the first and FAILS the second.
 
 `compute_shares` raises `ValueError` when `stop >= entry`. `Latch.__post_init__` already guarantees
 `latched_initial_stop < latched_pivot < zone_cap`, so it cannot fire — but the call is guarded anyway and a
@@ -1432,15 +1915,22 @@ only failures and report a permanently empty success rate. So:
   assertion, and a test asserts no `validity` row is ever written without a POST.
 - **THE BROKER SNAPSHOT IS ANCHORED AND AGE-BOUNDED (Codex R9 MAJOR 1, accepted in its STALENESS half).** The
   fragment emits **ONE canonical hidden field, `broker_snapshot_json`** (Codex R20 MAJOR — the draft named
-  two hidden fields while `validity_detail` required SIX keys, and `POST /latches/intent` is forbidden from
-  borrowing Schwab so it could not reconstruct the missing four at submit time; the audit row was therefore
-  either unwritable or populated from guesses). The envelope carries EXACTLY the keys `validity_detail`
-  requires and `broker_snapshot_digest` covers — `broker_snapshot_ts` (SERVER-stamped at fragment render),
-  `broker_snapshot_branch` (`presence`/`absence`/`unavailable`), `broker_snapshot_digest`,
+  two hidden fields while `validity_detail` required the full envelope, and `POST /latches/intent` is
+  forbidden from borrowing Schwab so it could not reconstruct the missing keys at submit time; the audit row
+  was therefore either unwritable or populated from guesses). The envelope carries EXACTLY the SEVEN keys
+  `validity_detail` requires (§C.2 states the list once) — `broker_snapshot_ts` (SERVER-stamped at fragment
+  render), `broker_snapshot_branch` — the FRAGMENT's render vocabulary is three-valued
+  (`presence`/`absence`/`unavailable`), but a PERSISTED `validity` row's is two-valued: the schema forbids
+  `unavailable` (§C.2, Codex R26 MAJOR), which is not an extra rule but the same one this bullet already
+  states — an unavailable book renders no prompt, so no envelope is ever submitted carrying it, and an
+  append-only row asserting an outcome against an unknown book must be unwritable rather than merely
+  unreachable — `broker_snapshot_digest`,
   `broker_snapshot_session` (the action session the BROKER VIEW came from - distinct from the row's
   `action_session_date`, which is the MANDATE's session, section C.2), `attributable_order_count`,
-  `exact_framework_match_count`, `indeterminate`. The handler VALIDATES the
-  envelope (parseable, all six keys, correct value shapes — the same 4-tier ladder) and PERSISTS IT VERBATIM
+  `exact_framework_match_count`, `indeterminate`. `broker_snapshot_digest` is itself one of the seven and is
+  computed over the broker-book state (§G.1), NOT over the other six keys — the two are separate facts and
+  conflating them was how the count drifted. The handler VALIDATES the
+  envelope (parseable, all seven keys, correct value shapes — the same 4-tier ladder) and PERSISTS IT VERBATIM
   into `validity_detail`, never synthesising a missing key; a test asserts the fragment's emitted key set
   EQUALS the set `validity_detail` requires, so the two cannot drift. `POST /latches/intent` REFUSES a
   `validity` submission whose snapshot is not from the CURRENT action session or is older than
@@ -1466,18 +1956,44 @@ only failures and report a permanently empty success rate. So:
 agreement rate excludes `rejected_by_broker` and `not_submitted` from the numerator and reports
 `validity_unknown` as its own visible count rather than folding it in either direction.
 
+**ONE ORDERING RULE, STATED ONCE, BEFORE THE RUNGS (Codex R27 MAJOR).** `latch_order_intents` is
+append-only, so a latch can legitimately accumulate SEVERAL intents of the same kind — including two `attest`
+rows carrying DIFFERENT `attested_disposition` values (he attests `was_away`, then corrects himself to
+`chose_not_to_act`; a correction is a NEW row, which is what append-only requires). The rungs below said
+"`intents` contains an `attest`" with no rule for WHICH one, so the disposition depended on the order the
+list happened to arrive in — and because `attested_was_away` and `attested_chose_not_to_act` land in
+DIFFERENT R buckets (`attested_away_r` vs `decision_r`), a nondeterministic read moves the measurement. This
+is the same "latest by what?" gap already ruled twice in this arc (R4 MAJOR 3 on validity parents, R10 MAJOR
+2 on the execution resolver), so it takes the same answer rather than a new one:
+
+> **Within each intent KIND, the GOVERNING row is the LATEST by `(recorded_ts, intent_id)`.** The tiebreak on
+> `intent_id` is load-bearing — `recorded_ts` is whole seconds, so two rows can share one — and it is the
+> same total order §F.3 uses for the report and §E's rung 3 uses for validity children. Earlier rows are
+> HISTORY, retained and readable, never silently authoritative.
+
+A test writes two conflicting `attest` rows for one latch and asserts the disposition follows the LATER one
+DETERMINISTICALLY, under both list orders (shuffle the input) — an implementation reading "the first attest
+found" passes under one order and fails under the other, which is exactly the bug.
+
 **Precedence on the DECISION axis (each rung gets its own discriminating test):**
 
-1. `intents` contains a `place` -> **`accepted`** (the most recent `place` wins; an earlier `decline` is
-   history, not the outcome). **This says he DECIDED to place, and nothing more** — a rejected order is still
-   an accepted decision, and it is `execution_outcome` that says so. A test asserts a `place` intent with
+1. `intents` contains a `place` -> **`accepted`** (the GOVERNING `place` per the rule above; an earlier
+   `decline` is history, not the outcome). **This says he DECIDED to place, and nothing more** — a rejected
+   order is still an accepted decision, and it is `execution_outcome` that says so. A test asserts a `place` intent with
    `validity_outcome='rejected_by_broker'` yields `accepted` + `rejected_by_broker` and is EXCLUDED from the
    agreement numerator.
-2. else `intents` contains a `decline` -> **`declined`**.
-3. else `intents` contains an `attest` -> **`attested_<disposition>`**. `attested_was_away` is a THIRD
-   terminal category (§A.1.6 ruling 2): counted in `classifiable_fires`, EXCLUDED from the discipline signal,
-   and included in the ATTESTED away rate only — never merged into the objective one, because testimony is not
-   telemetry (§A.0).
+2. else `intents` contains a `decline` -> **`declined`** (the GOVERNING `decline`; immaterial today since
+   every `decline` yields the same disposition, but stated so the ladder is uniform and a future
+   reason-dependent read cannot inherit an unstated order).
+3. else `intents` contains an `attest` -> **`attested_<disposition>` OF THE GOVERNING `attest` ROW** — the
+   latest by `(recorded_ts, intent_id)`. This is the rung where the ordering rule actually BITES, because the
+   attested dispositions differ from each other in R BUCKET, not just in label. `attested_was_away` is a
+   THIRD terminal category (§A.1.6 ruling 2): counted in `classifiable_fires`, EXCLUDED from the discipline
+   signal, and included in the ATTESTED away rate only — never merged into the objective one, because
+   testimony is not telemetry (§A.0). **A CORRECTION MUST WIN, and that is the point of taking the latest:**
+   if he attests `was_away` and then corrects to `chose_not_to_act`, the correction moves the fire INTO the
+   discipline signal against himself. Taking the earlier row would silently preserve the more flattering
+   answer — the one-sided bias §A.1.6 names, arriving through the ordering door instead of the default door.
 4. else if `verdict.table_disposition` is a concrete disposition (i.e. NOT `_CLASSIFY_NORMALLY`) -> return it.
    This is the ONLY route to `pre_telemetry`; no rung below re-decides coverage (§E.0).
    **THE COVERAGE TABLE IS CONSUMED BEFORE TELEMETRY HEALTH (Codex R20 MAJOR).** The draft ran health first,
@@ -1496,15 +2012,15 @@ agreement rate excludes `rejected_by_broker` and `not_submitted` from the numera
    sibling view rows to prove the beacon was alive before it will call anything away. The classifier must hold
    itself to the standard its test does. `telemetry_unhealthy` carries the verdict so the label distinguishes
    `broken` from `indeterminate` (RD's labelled-reduction coupling, §A.1.1).
-6. else if there is at least one view row with **`actionable_at_last_view = 1`** inside the covered window:
+6. else if there is at least one view row with **`actionable_ever_viewed = 1`** inside the covered window:
    - latch is LIVE -> **`pending_live`** (no prompt; the mandate can still be acted on). **Reported, never
      scored** (§A.1.6 ruling 1): it enters no denominator, because a latch that has not terminated is not an
      observation yet and its verdict would move as the window runs.
    - latch is TERMINAL -> **`discipline_lapse`**, with `prompt_required=True`. There is no intermediate
      state — see E.1.
-7. else (no `actionable_at_last_view = 1` view row in the covered window) — **coverage is NOT re-tested here;
+7. else (no `actionable_ever_viewed = 1` view row in the covered window) — **coverage is NOT re-tested here;
    reaching this rung already means the table routed to `_CLASSIFY_NORMALLY`**:
-   - `verdict.awareness_established` is True (>= 1 view row, necessarily all `actionable_at_last_view = 0`)
+   - `verdict.awareness_established` is True (>= 1 view row, necessarily all `actionable_ever_viewed = 0`)
      -> **`never_actionable`** — he looked, and the panel presented no decision. **This is reachable from a
      PARTIALLY-covered window too** (R19 MAJOR 3): the instrument existed and observed, so the honest answer
      is "nothing was shown to him", not "the instrument was absent".
@@ -1566,7 +2082,8 @@ dismissal, and dismissal is what eventually kills the honest answer on the cell 
 
 Three conjuncts, each enforced somewhere different:
 
-1. **Actionable** — the row's own `actionable_at_last_view = 1` (§C.1). NOT a write contract: the withheld
+1. **Actionable** — the row's own `actionable_ever_viewed = 1` (§C.1), and NEVER either of the
+   first/last companion columns, which describe individual views rather than the session. NOT a write contract: the withheld
    render is recorded too, as `0`, because the two silences ("he saw nothing actionable" and "he never
    looked") are wrong in OPPOSITE directions and must be told apart. A latch with only `0` rows
    across its whole armed window is **`never_actionable`**, excluded from the discipline signal and from the
@@ -1713,7 +2230,24 @@ def r_bucket_for(disposition: str, *, is_terminal: bool) -> str:
     because the next unlisted disposition will be one nobody has thought of.
     DO NOT reintroduce a default.
     """
-    # COHERENCE FIRST (R24 MAJOR). `pending_live` means "the latch is LIVE", so
+    # MEMBERSHIP FIRST -- THE TERMINALITY GATE IS A DEFAULT IN DISGUISE UNLESS
+    # IT IS (Codex R25 MAJOR). The R24 ordering ran the gate BEFORE the
+    # membership ladder, so an unlisted disposition with is_terminal=False
+    # returned "pending_r" and was silently absorbed -- the very thing the
+    # trailing `return "decision_r"` was deleted for, relocated rather than
+    # removed. It also read as deliberate: Task 5 had noticed the hole and
+    # worked AROUND it by only testing the terminal call. A guard whose test is
+    # shaped to avoid the case it misses is not a guard.
+    #
+    # THE CHECK IS AGAINST THE RULED UNION, **NOT** AGAINST LATCH_DISPOSITIONS.
+    # Membership in LATCH_DISPOSITIONS only says the CLASSIFIER can emit it; it
+    # says nothing about anyone having ruled its bucket, and a disposition added
+    # to the enum without a ruling is the exact case A.1.6 exists for. Checking
+    # the enum would let that one straight through the gate into pending_r.
+    if disposition not in _RULED_DISPOSITIONS:
+        raise ValueError(
+            f"{disposition!r} has no ruled R bucket; see plan section A.1.6")
+    # COHERENCE SECOND (R24 MAJOR). `pending_live` means "the latch is LIVE", so
     # (pending_live, is_terminal=True) is not a state the classifier can
     # legitimately produce -- and silently bucketing it as pending would hide a
     # classifier bug in the very report layer built to stop silent absorption.
@@ -1721,7 +2255,8 @@ def r_bucket_for(disposition: str, *, is_terminal: bool) -> str:
         raise ValueError(
             "incoherent cell: pending_live with is_terminal=True")
     # RULING 1, ENFORCED AS A GATE: a latch that has not terminated is not an
-    # observation yet, WHATEVER its current display disposition says.
+    # observation yet, WHATEVER its current display disposition says. Reached
+    # only for a KNOWN disposition, so it can no longer absorb an unruled one.
     if not is_terminal:
         return "pending_r"
     if disposition in AWAY_RATE_COUNTED_DISPOSITIONS:   # telemetry-derived
@@ -1732,6 +2267,9 @@ def r_bucket_for(disposition: str, *, is_terminal: bool) -> str:
         return "unattributable_r"                       # excluded set
     if disposition in DECISION_DISPOSITIONS:
         return "decision_r"
+    # UNREACHABLE while _RULED_DISPOSITIONS is the union of the five sets --
+    # kept because a defence that depends on another defence still holding is
+    # not a defence (the same reasoning as the C.2 trigger belt).
     raise ValueError(
         f"{disposition!r} has no ruled R bucket; see plan section A.1.6")
 
@@ -1741,17 +2279,53 @@ _ALL_EXCLUDED_DISPOSITIONS = frozenset({
 })
 PENDING_DISPOSITIONS       = frozenset({"pending_live"})
 ATTESTED_AWAY_DISPOSITIONS = frozenset({"attested_was_away"})
+# EXECUTABLE, NOT A COMMENT (Codex R26 MAJOR). This was left commented out as a
+# pointer to A.1.5, while r_bucket_for, UNATTRIBUTABLE_DISPOSITIONS and
+# _RULED_DISPOSITIONS all USE it -- so the block copied literally raised
+# NameError at import. The same class as the R23 MINOR two lines down. A block
+# an implementer is told to follow has to RUN.
+AWAY_RATE_COUNTED_DISPOSITIONS = frozenset({"away_unseen"})   # fixed at A.1.5
+
+# WRITTEN OUT EXPLICITLY, not derived as "everything left over". Codex R23
+# noted the partition is total/disjoint ONLY IF this set is exactly these five,
+# and the constant was USED by r_bucket_for while being defined NOWHERE -- the
+# same copy-it-literally-and-get-a-NameError class as the R23 MINOR one line
+# up. It is NOT derived by subtraction on purpose: `decision_r` is the bucket a
+# missing ruling would silently fall into, so it must be the one set that can
+# only grow by someone TYPING a disposition into it.
+DECISION_DISPOSITIONS = frozenset({
+    "accepted", "declined",
+    "attested_acted_manually", "attested_chose_not_to_act",
+    "discipline_lapse",
+})
 
 UNATTRIBUTABLE_DISPOSITIONS = (
     _ALL_EXCLUDED_DISPOSITIONS
     - AWAY_RATE_COUNTED_DISPOSITIONS
     - ATTESTED_AWAY_DISPOSITIONS
 )
+
+# THE RULED UNION -- what `r_bucket_for` validates membership against, and the
+# reason the terminality gate can no longer absorb an unruled disposition.
+_RULED_DISPOSITIONS = (
+    AWAY_RATE_COUNTED_DISPOSITIONS | ATTESTED_AWAY_DISPOSITIONS
+    | UNATTRIBUTABLE_DISPOSITIONS | DECISION_DISPOSITIONS
+    | PENDING_DISPOSITIONS
+)
 ```
 
 **`_ALL_EXCLUDED_DISPOSITIONS` is defined ABOVE its use** (R23 MINOR — the draft's constant order raised
 `NameError` if copied literally), and `ATTESTED_AWAY_DISPOSITIONS` is subtracted too, or `away_unseen`'s
 sibling would fall into `unattributable_r` as well as its own bucket.
+
+**`_RULED_DISPOSITIONS` MUST EQUAL `LATCH_DISPOSITIONS`, and that equality is its own test — but it is the
+CONCLUSION, never the CHECK.** Validating membership against `LATCH_DISPOSITIONS` would be the same hole one
+step out: the enum says only that the CLASSIFIER may emit a value, not that anyone RULED its bucket, so a
+disposition added to the enum without a ruling would pass the guard and fall through the terminality gate
+into `pending_r` — silently scored as "not an observation yet" rather than raising. Validating against the
+UNION OF THE FIVE SETS means a new disposition is unbucketable until someone adds it to one of them, which is
+the deliberate act with a reviewer that §A.1.6 asks for. The equality test then catches the reverse omission
+(a set member that is not a legal disposition — a typo, not a design).
 
 `UNATTRIBUTABLE_DISPOSITIONS` is DERIVED by set subtraction, never hand-written — that is what makes the
 overlap unrepresentable rather than merely tested-against.
@@ -1768,6 +2342,15 @@ sets"* is therefore either false or silently testing the pre-gate model. The inv
 - `decision_r + away_r + attested_away_r + unattributable_r + pending_r` equals the corpus total.
 
 No assertion may claim a disposition belongs to exactly one RUNTIME bucket independent of terminality.
+
+**THE BLOCK ABOVE WAS EXECUTED, NOT JUST READ, AND THESE ARE THE NUMBERS THE TEST SHOULD REPRODUCE.** Copied
+literally it imports cleanly, `_RULED_DISPOSITIONS == LATCH_DISPOSITIONS`, the five sets are pairwise
+disjoint, and the full `11 x 2 = 22`-cell product resolves as: **`pending_r` 11, `decision_r` 5,
+`unattributable_r` 3, `away_r` 1, `attested_away_r` 1 — 21 coherent cells — plus exactly ONE raising cell,
+`(pending_live, True)`.** An unruled disposition RAISES under BOTH terminality values. Stating the cell
+counts rather than only the property means an implementation that quietly drops the membership guard, or
+mis-populates `DECISION_DISPOSITIONS`, produces a DIFFERENT histogram and fails visibly instead of passing a
+property test that no longer means what it says.
 
 **`decision_r` KEEPS ITS EVIDENCE-KIND SUB-COUNTS (R23 MAJOR, resolved by §A.0's own text).** `decision_r`
 sums three DIFFERENT kinds of evidence — directly logged decisions (`accepted`, `declined`), self-attestation
@@ -1858,20 +2441,67 @@ def _digest(*parts: str) -> str:
     return h.hexdigest()
 
 idempotency_key = _digest(
-    "v1", str(candidate_id), action_session_date, surface, intent_kind,
+    "v1", str(candidate_id), session_component, surface, intent_kind,
     anchor_digest, actual_digest)
 ```
+
+**THE SESSION COMPONENT IS KIND-SCOPED, AND IT IS NOT ALWAYS `action_session_date` (Codex R25 MAJOR).**
+Since a `validity` row's `action_session_date` is SERVER-COPIED from its parent (§C.2), using it here would
+force a parent-row DB READ *before* the step-4 replay `SELECT` — breaking this section's load-bearing
+property that **every key input is a function of the submitted payload alone**, which is exactly what lets
+step 3 precede step 4. So:
+
+```python
+session_component = (
+    action_session_date                          # place / decline / cancel / attest:
+                                                 #   the VALIDATED anchor, which IS the
+                                                 #   value that will be stored
+    if intent_kind != "validity"
+    else f"parent:{validated_place_intent_id}")  # validity: the parent link, which is
+                                                 #   IN the payload and pins the mandate
+                                                 #   session uniquely and immutably
+```
+
+**No discriminating power is lost on the validity branch, and that has to be checked rather than assumed:**
+two answers about DIFFERENT parents differ via `validated_place_intent_id` (here AND in `actual_digest`); two
+DIFFERENT answers about the SAME parent differ via `validity_outcome` (in `actual_digest`); two IDENTICAL
+answers about the same parent are the replay this key exists to collapse. And because
+`latch_order_intents` is append-only, `validated_place_intent_id -> action_session_date` is an immutable
+function — so the parent link is a strictly BETTER stand-in for the mandate session than the anchor, which
+moves every day. A test asserts a validity answer re-submitted the NEXT SESSION (same parent, same answer,
+newer anchor) produces the SAME key and replays as `200` with the same `intent_id` — an implementation using
+the current anchor writes a SECOND row and FAILS.
 
 `anchor_digest` and `actual_digest` are built with the SAME `_digest` helper over their own component lists,
 so the property holds all the way down. A test plants a `decline_reason` containing `|`, `:` and a digit run
 and asserts two distinct decisions produce distinct keys.
 
-`anchor_digest` is the canonical (sorted-key, fixed-format) serialisation of **EVERY hidden field the form
-emitted** — `view_session_date`, `candidate_id`, all five `framework_*` fields and all eight `derivation_*`
-fields — **exactly as SUBMITTED**. It is NOT the session anchor alone (Codex R5 MAJOR 3): if the key covered
-only the session and the operator's answer, a tampered or stale form carrying a DIFFERENT framework order but
-the same session and answer would hit the replay `SELECT` at step 4 and return `200` **without ever reaching
-the step-5 comparison** — a laundering path straight through the hazard-(b) defence.
+**`anchor_digest` IS KIND-SCOPED TOO, FOR THE SAME REASON `session_component` IS (Codex R26 MAJOR).**
+Scoping only the session component was half a fix: `anchor_digest` still covered `view_session_date` *exactly
+as submitted*, so a next-session re-render changed the digest and therefore the key — and this section's own
+newly-added replay claim (and its test) would have failed against the plan as written. The two components
+have to move together.
+
+- **`place` / `decline` — UNCHANGED.** `anchor_digest` is the canonical (sorted-key, fixed-format)
+  serialisation of **EVERY hidden field the form emitted** — `view_session_date`, `candidate_id`, all five
+  `framework_*` fields and **all ELEVEN `derivation_*` fields** (the eight sizing/regime inputs plus the
+  three card-rendered values §A.4 adds — a count, not a list, is what let three of them go un-anchored, so
+  the binding form of this instruction is *every `derivation_*` column on the table*) — **exactly as
+  SUBMITTED**. It is NOT the session
+  anchor alone (Codex R5 MAJOR 3): if the key covered only the session and the operator's answer, a tampered
+  or stale form carrying a DIFFERENT framework order but the same session and answer would hit the replay
+  `SELECT` at step 4 and return `200` **without ever reaching the step-5 comparison** — a laundering path
+  straight through the hazard-(b) defence. That threat is real precisely BECAUSE these kinds submit a
+  framework anchor.
+- **`validity` / `cancel` / `attest` — `anchor_digest` is the digest of `candidate_id` ALONE.** These kinds
+  submit NO framework block at all (§C.2 makes one unwritable on them), so there is no framework anchor to
+  launder and nothing for the R5 defence to protect; what remains in the old definition is exactly the
+  render-time session, which is what breaks replay. Excluding it costs nothing: a `validity` row is already
+  pinned by `validated_place_intent_id` + `validity_outcome` + `broker_snapshot_digest` (all in
+  `actual_digest`), and `cancel`/`attest` are pinned by `session_component` (their anchor) plus their own
+  answer fields. **`view_session_date` remains fully load-bearing as a VALIDATION on every kind** — the
+  four-tier ladder still runs at step 5 — it simply stops being KEY material where it cannot discriminate.
+  This is the same distinction the section already draws for `broker_snapshot_ts`: a gate is not a key input.
 `surface` is in the key because the table makes it a first-class NOT NULL column and this arc exists partly to
 keep 21-F's surface architecture open (Codex R10 MAJOR 3): without it, an identical decision taken from a
 second surface would collapse onto the first row and the ledger would lose which surface actually wrote the
@@ -1969,7 +2599,10 @@ Two further notes:
 
 The form emits the framework computation as hidden inputs: `view_session_date`, `candidate_id`,
 `framework_order_type`, `framework_duration`, `framework_stop_price`, `framework_limit_price`,
-`framework_quantity`, plus the drift-capable derivation inputs (`derivation_*`). At POST:
+`framework_quantity`, plus **EVERY `derivation_*` column the table declares** — enumerated from the schema,
+not from a hand-kept list, so a column added to the DDL cannot be silently left out of the anchor (Codex R27
+MAJOR: three were). A test asserts the set of emitted `derivation_*` hidden inputs EQUALS the set of
+`derivation_*` columns on `latch_order_intents`. At POST:
 
 1. **The session anchor gets the SAME four-tier ladder the 21-A beacon already ships**
    (`swing/web/routes/latches.py:_parse_beacon_anchor` / `_classify_anchor`): unparseable -> `400` naming the
@@ -1981,7 +2614,21 @@ The form emits the framework computation as hidden inputs: `view_session_date`, 
    changed fields and their old/new values, and the intent is NOT recorded.** The handler never substitutes
    the fresh computation for the anchored one. The gotcha is explicit: *validate the POST against that exact
    anchor's row; don't recompute "latest" at POST time.* Re-deriving to VALIDATE is not substituting.
-4. `recorded_ts` is SERVER-STAMPED wall clock; `action_session_date` is the VALIDATED anchor. No timestamp is
+3b. **STEPS 2-3 ARE THE DECISION KINDS' VALIDATION ONLY.** Re-deriving a prepared order and comparing it
+   field by field is meaningful for `place` and `decline`, which submit one. `validity`, `cancel` and
+   `attest` submit NO framework block (§C.2 makes one unwritable on them), so there is nothing to compare and
+   the handler MUST NOT invent a comparison — it would 409 every attestation the moment the underlying
+   derivation moved, which for an aged prompt is always. Their first-write validation is: the four-tier
+   anchor ladder (step 1, unchanged), plus — for `validity` only — the broker-snapshot freshness gate (§E).
+   A test asserts an `attest` submitted a week after the latch went terminal is ACCEPTED, and that a
+   `validity` answer about a month-old `place` intent is ACCEPTED so long as its broker snapshot is current.
+4. `recorded_ts` is SERVER-STAMPED wall clock. **`action_session_date` is NOT uniformly the anchor** — it is
+   the MANDATE's session per §C.2's per-kind table: the validated anchor for `place`/`decline`/`cancel`/
+   `attest`, and SERVER-COPIED from the parent `place` row for `validity`. The handler reads the parent row
+   for that value; it never takes it from the payload on any kind. A test asserts a `validity` row answering
+   a `place` intent from session N-20 stores `action_session_date` = N-20 while `recorded_ts` is today —
+   which is also what makes §F.3's "month N report, month N-1 mandate" case true rather than merely asserted.
+   No timestamp is
    ever read from the payload (the V1 server-stamp gotcha).
 5. **Why this is strict and stays strict:** the sizing equity moves when an exit or a cash movement lands, so
    an equity change between render and click WILL force a reload. That is the correct direction. The ledger's
@@ -2121,10 +2768,10 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
 | path | change |
 |---|---|
 | `swing/data/db.py` | `EXPECTED_SCHEMA_VERSION` 32->33; `PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES`; `_create_pre_phase21_arc_b_migration_backup`; `_phase21_arc_b_backup_gate`; wire into `run_migrations` |
-| `swing/data/models.py` | `LatchOrderIntent` dataclass + `__post_init__`; **`LatchViewEvent` gains `surface`, `actionable_at_first_view` and `actionable_at_last_view`** with `{0,1}` + monotonicity validation; the new enums IMPORTED from `swing/latches/constants.py`, never re-declared |
-| `swing/data/repos/latch_view_events.py` | RE-KEYED on `(candidate_id, view_session_date, surface)` (§C.1) — `get_view` / `record_view` take `candidate_id` + a REQUIRED `surface`; `_COLS` and `_row_to_model` gain `surface` + both actionability columns; `record_view` gains `actionable=`; both list helpers gain an explicit `surfaces=` filter |
-| `swing/latches/constants.py` | `LATCH_TELEMETRY_EPOCH_SESSION`, `LATCH_VIEW_SURFACES`, `ACTIONABLE_VIEW_SURFACES`, `LATCH_INTENT_KINDS`, `LATCH_ATTESTED_DISPOSITIONS`, `LATCH_VALIDITY_OUTCOMES`, `LATCH_DISPOSITIONS`, `AWAY_RATE_COUNTED_DISPOSITIONS` (the §A.1.5 branch seam), `LATCH_SIZING_BASES`, `LATCH_STOP_LEG_STATES`, `LATCH_ORDER_WITHHELD_REASONS`, `LATCH_TELEMETRY_DARK_SESSIONS_THRESHOLD` |
-| `swing/web/routes/latches.py` | **(a)** NEW `POST /latches/intent` (the §G.1 seven-step handler). **(b) `POST /latches/view` IS REWRITTEN, not merely passed a new kwarg (Codex R13 MAJOR 3):** `_parse_beacon_anchor` gains `actionable_candidate_ids` + `withheld_candidate_ids` REPLACING the single `candidate_ids` field (same rejection ladder, same 200-id cap applied to the UNION, plus a rejection when an id appears in BOTH lists); the handler intersects EACH list with the anchor-session live set and calls `record_view(..., surface="latch_panel", actionable=<which list it came from>)`. **If this route is left on the old contract every withheld render is still ingested as a plain view and the whole R7 fix never reaches the DB.** **(c)** `POST /latches/orders` gains the validity prompt + the SINGLE `broker_snapshot_json` hidden field carrying all six envelope keys (§E) — NOT separate `broker_snapshot_ts` / `broker_snapshot_branch` inputs, which cannot satisfy the six-key contract |
+| `swing/data/models.py` | `LatchOrderIntent` dataclass + `__post_init__`; **`LatchViewEvent` gains `surface` and ALL THREE of `actionable_at_first_view` / `actionable_at_last_view` / `actionable_ever_viewed`** with `{0,1}` validation on each plus the two `ever >= first` / `ever >= last` monotonicity checks (and NO first-vs-last constraint — §C.1); the new enums IMPORTED from `swing/latches/constants.py`, never re-declared |
+| `swing/data/repos/latch_view_events.py` | RE-KEYED on `(candidate_id, view_session_date, surface)` (§C.1) — `get_view` / `record_view` take `candidate_id` + a REQUIRED `surface`; `_COLS` and `_row_to_model` gain `surface` + ALL THREE actionability columns, named exactly — `actionable_at_first_view`, `actionable_at_last_view`, `actionable_ever_viewed` (a test asserts `_COLS` EQUALS the rebuilt table's PRAGMA column list, so an omitted `ever` — the one CLASSIFICATION reads — cannot ship green); `record_view` gains `actionable=`; both list helpers gain an explicit `surfaces=` filter |
+| `swing/latches/constants.py` | `LATCH_TELEMETRY_EPOCH_SESSION`, `LATCH_VIEW_SURFACES`, `ACTIONABLE_VIEW_SURFACES`, `LATCH_INTENT_KINDS`, `LATCH_ATTESTED_DISPOSITIONS`, `LATCH_VALIDITY_OUTCOMES`, `LATCH_DISPOSITIONS`, `LATCH_SIZING_BASES`, `LATCH_STOP_LEG_STATES`, `LATCH_ORDER_WITHHELD_REASONS`, `LATCH_TELEMETRY_DARK_SESSIONS_THRESHOLD`, `LATCH_BROKER_SNAPSHOT_MAX_AGE_SECONDS`, `LATCH_BROKER_SNAPSHOT_KEYS` (the SEVEN, §C.2 — imported by the fragment, the handler, the dataclass validator and the drift test, so the emitted set and the required set are ONE object), **`LATCH_BROKER_SNAPSHOT_RENDER_BRANCHES` and `LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES`** (the two vocabularies, §C.2 — the JSON-expressed enum is a schema enum and takes the #11 mirror like every other, which it had escaped purely because it is written as a `json_extract` predicate rather than a column CHECK); **and the FIVE bucket sets §F.3 defines** — `AWAY_RATE_COUNTED_DISPOSITIONS` (fixed at `{"away_unseen"}` per §A.1.5), `ATTESTED_AWAY_DISPOSITIONS`, `PENDING_DISPOSITIONS`, `DECISION_DISPOSITIONS` (written out, never derived) and the derived `UNATTRIBUTABLE_DISPOSITIONS`, plus `_RULED_DISPOSITIONS` (their union — what `r_bucket_for` validates against) |
+| `swing/web/routes/latches.py` | **(a)** NEW `POST /latches/intent` (the §G.1 seven-step handler). **(b) `POST /latches/view` IS REWRITTEN, not merely passed a new kwarg (Codex R13 MAJOR 3):** `_parse_beacon_anchor` gains `actionable_candidate_ids` + `withheld_candidate_ids` REPLACING the single `candidate_ids` field (same rejection ladder, same 200-id cap applied to the UNION, plus a rejection when an id appears in BOTH lists); the handler intersects EACH list with the anchor-session live set and calls `record_view(..., surface="latch_panel", actionable=<which list it came from>)`. **If this route is left on the old contract every withheld render is still ingested as a plain view and the whole R7 fix never reaches the DB.** **(c)** `POST /latches/orders` gains the validity prompt + the SINGLE `broker_snapshot_json` hidden field carrying all SEVEN envelope keys (§C.2 is the one place the list is stated) — NOT separate `broker_snapshot_ts` / `broker_snapshot_branch` inputs, which cannot satisfy the envelope contract |
 | `swing/web/view_models/latches.py` | `LatchRowVM` gains the prepared-order + disposition + prompt block; `LatchPanelVM` gains the intent-anchor payload (**and `PANEL_SPECIFIC_FIELDS` grows to match**); `all_clear_note` -> the separated claims |
 | `swing/web/templates/latches.html.j2` | include the prepared-order partial per live card; the attestation prompt on terminal cards |
 | `swing/web/templates/partials/latch_orders.html.j2` | the separated-claims render; the per-order Cancel control on stale-order rows |
@@ -2149,21 +2796,62 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
   - `candidate_id` NOT NULL; deleting the referenced `candidates` row raises `IntegrityError` (RESTRICT).
   - Every CHECK: each `intent_kind`, a `decline` with a blank reason, an `attest` with no disposition, a
     **`cancel` with no `actual_broker_order_id`**, a `place` missing any framework field, a bad
-    `framework_order_type`, a bad `validity_outcome`, a malformed date (round-trip `date(x) = x`, not the
-    weaker `IS NOT NULL` — the 0032 lesson).
+    `framework_order_type`, a bad `validity_outcome`.
+  - **THE DATE/TIME GUARD, BOTH HALVES, PINNED INDEPENDENTLY (§C.1.1, RD's condition 2).** For EVERY date and
+    timestamp column carrying a `CHECK` in `0033` — `latch_order_intents.detection_date`,
+    `.action_session_date`, `.recorded_ts`, `.derivation_regime_close_session`, the
+    `validity_detail` JSON `broker_snapshot_ts` / `broker_snapshot_session`, and the rebuilt
+    `latch_view_events.detection_date` / `.view_session_date` — **TWO separate tests, never one combined**:
+    - the **NORMALISING** case (`'2026-02-30'`, and `'2026-07-28T24:00:00'` for the timestamps) is REJECTED —
+      this one FAILS against an `IS NOT NULL`-only guard;
+    - the **INVALID** case (`'2026-99-99'`, and `'2026-07-28T99:99:99'` for the timestamps) is REJECTED —
+      this one FAILS against the round-trip-equality-only guard `0032` shipped.
+    - the **YEAR-ZERO** case (`'0000-01-01'`, and `'0000-01-01T00:00:00'`) is REJECTED — this one FAILS
+      against BOTH of the above, because SQLite round-trips year zero happily while
+      `date.fromisoformat` raises on it (Codex R26 MAJOR: the DB would hold a row the read path cannot
+      hydrate). Paired with an ACCEPT of `'0001-01-01'` and `'9999-12-31'`, so the fix cannot be "reject
+      anything that looks unusual".
+    A single "a malformed date is rejected" test passes with HALF the guard missing, whichever half was
+    dropped, so it must not be written that way. **An earlier revision of this very bullet instructed the
+    round-trip form and explicitly rejected `IS NOT NULL` as "weaker" — following it would have reproduced the
+    shipped defect in the new table.**
   - `UNIQUE(idempotency_key)` blocks a second row.
   - The IMMUTABILITY BARRIER: `UPDATE` and `DELETE` on `latch_order_intents` both ABORT, and the message names
     the append-only rule.
-  - A malformed `recorded_ts` (wrong length, space instead of `T`, non-datetime) is REJECTED (R19 MAJOR — this
-    column drives the monthly report's cutoff and ordering); mirrored in `LatchOrderIntent.__post_init__`.
+  - **`recorded_ts`, EVERY REJECTION CELL SEPARATELY (R19 MAJOR + Codex R25 MAJOR — this column drives the
+    monthly report's cutoff and ordering).** ACCEPT `'2026-07-28T12:00:00'` and `'2026-07-28T23:59:59'`.
+    REJECT, each as its own case: wrong length; **`'2026-07-28 12:00:00'` (a SPACE separator)**;
+    **`'2026-07-28T24:00:00'` (hour 24)**; `'2026-07-28T12:60:00'`; `'2026-99-99T12:00:00'`;
+    `'2026-02-30T12:00:00'`; `'2026-07-28TAB:00:00'` (non-digits in the time). **The space and hour-24 cells
+    are the discriminators** — the pre-R25 CHECK `datetime(x) = replace(x,'T',' ')` ACCEPTS both, verified
+    empirically, so a test omitting them passes against the defective guard. Mirrored in
+    `LatchOrderIntent.__post_init__`.
   - `actual_broker_order_id` blank-when-present is REJECTED on every kind, and a `place` or `decline` row
     carrying one at all is REJECTED (R19 MAJOR — a decision row has observed nothing).
-  - A `validity` row without a non-empty, `json_valid` `validity_detail` envelope is REJECTED (R19 MAJOR); the
-    required keys are enforced in the repo + dataclass validator under #11.
+  - **THE `validity_detail` ENVELOPE — ONE REJECTION TEST PER MISSING KEY, PLUS THE DEGENERATE SHAPES (Codex
+    R25 CRITICAL).** A `validity` row is REJECTED when `validity_detail` is NULL, is not `json_valid`, is a
+    JSON ARRAY, is a JSON SCALAR, is the EMPTY OBJECT `{}`, **or is missing ANY ONE of the seven keys** —
+    seven separate cases, each dropping exactly one key from an otherwise-valid envelope. **The empty-object
+    and missing-key cases are the discriminators and they are not theoretical:** verified empirically, the
+    bare presence-and-shape CHECK chain ACCEPTS `{}`, because a missing key makes `json_extract` return NULL
+    and a SQLite CHECK PASSES on NULL — the same class as §C.1.1, in JSON syntax. Also REJECT a bad
+    `broker_snapshot_branch`, a 63-char or non-hex `broker_snapshot_digest`, a `broker_snapshot_ts` with a
+    space separator or hour 24, a `broker_snapshot_session` of `'2026-02-30'` (the NORMALISING case — it
+    passes an `IS NOT NULL`-only guard) and of `'2026-99-99'` (the INVALID case), a negative or non-integer
+    count, and a string `"true"` for `indeterminate`. **Also REJECT `broker_snapshot_branch='unavailable'`
+    on a `validity` row** (Codex R26 MAJOR) — §E renders no prompt against an unknown order book, so an
+    append-only row asserting an outcome with an `unavailable` snapshot must be unwritable, not merely
+    unreachable; `'presence'` and `'absence'` are ACCEPTED, so the test discriminates a narrowed enum from a
+    broken one. **Every rejection must surface as `IntegrityError`, not
+    `OperationalError`** — assert the exception TYPE, because a chain that calls `json_extract` outside a
+    `CASE WHEN json_valid(...)` gate raises `OperationalError('malformed JSON')` on a non-JSON value, and a
+    test catching bare `Exception` would go green against that weaker DDL. The same seven-key contract is
+    mirrored in the repo + dataclass validator under #11.
   - A `validity_outcome='accepted_by_broker'` row missing ANY of `actual_order_type` / `actual_duration` /
     `actual_limit_price` / `actual_quantity` is REJECTED (R20 MAJOR).
   - Every PROVENANCE CHECK: a bad `framework_duration`, a bad `derivation_sizing_basis`, a regime close
-    WITHOUT its session (and the reverse), and a non-positive equity / risk pct / quantity.
+    WITHOUT its session (and the reverse). **Positivity is specified BY COLUMN NAME in its own bullet
+    below — do NOT generalise it to "equity", which would wrongly bound `derivation_real_equity`.**
   - **The FK/immutability coherence test (the R13 CRITICAL, whose assertion the R16 CRITICAL then caught the
     DDL violating):** deleting a referenced `risk_policy` row raises `IntegrityError` (RESTRICT) rather than
     attempting a SET-NULL cascade `trg_loi_no_update` would abort with a confusing message. The test PARSES
@@ -2171,9 +2859,14 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     statement — a prose rule survived three rounds while the DDL contradicted it, so the assertion has to read
     the DDL, not the intent. It also asserts `pipeline_run_id` carries NO `REFERENCES` clause on this table
     (§C.2: the referent is legitimately pruned and the recorded identity must outlive it).
-  - The VALIDITY-PARENT TRIGGER: a `validity` row pointing at a `decline` / `cancel` / `validity` row, or at a
-    `place` row on a DIFFERENT `candidate_id`, is REJECTED; a `place` parent on the SAME candidate in a
-    DIFFERENT session is ACCEPTED (the aged prompt is the normal case and must not be blocked).
+  - The VALIDITY-PARENT TRIGGER, **all THREE legs** (kind, candidate, session — Codex R25 MAJOR): a
+    `validity` row pointing at a `decline` / `cancel` / `validity` row, or at a `place` row on a DIFFERENT
+    `candidate_id`, is REJECTED. **The SESSION leg gets its own pair, and the pair is the discriminator:**
+    the aged prompt — parent `place` in session N, child written in session N+20 carrying
+    `action_session_date` = N (the parent's) and `recorded_ts` in N+20 — is **ACCEPTED**; the SAME child
+    carrying `action_session_date` = N+20 (i.e. an implementation that reached for the submitted anchor
+    instead of copying the parent) is **REJECTED**. Without the second half the test passes against a trigger
+    with no session leg at all.
   - **Its own red test: a `validity` row with `validated_place_intent_id = NULL` is REJECTED** (Codex R16
     MAJOR 3). The parent-link TRIGGER fires only `WHEN NEW.validated_place_intent_id IS NOT NULL`, so it is
     structurally blind to the NULL case; only the CHECK catches it, and without a test aimed at the CHECK an
@@ -2182,7 +2875,46 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     `place`/`decline`/`cancel`/`attest` row carrying any of the three validity columns is REJECTED.
   - A `validity` row MAY carry the observed `actual_*` order params (R17 CRITICAL) and MAY NOT carry any
     `framework_*` / `derivation_*` value; a `place` row MUST carry the whole drift-capable derivation block
-    (a `place` with NULL `derivation_sizing_equity` is REJECTED — R17 MAJOR).
+    (a `place` with NULL `derivation_sizing_equity` is REJECTED — R17 MAJOR), **including
+    `derivation_real_equity` and `derivation_equity_floor`** (Codex R27 MAJOR). **The required set is
+    asserted BY ENUMERATION FROM THE SCHEMA MINUS EXACTLY TWO NAMED EXEMPTIONS, never from a hand-kept
+    list** — for every `derivation_*` column the DDL declares EXCEPT
+    `derivation_nightly_recommendation_shares` and `derivation_risk_policy_id` (§C.2 states why each is
+    exempt), a `place` row with THAT column NULL is REJECTED; **and a `place` row with EITHER exemption NULL
+    is ACCEPTED**, so the exemption list is pinned in BOTH directions and cannot quietly grow. A hand-kept
+    list is how three of these columns went unanchored in the first place, and an un-pinned exemption list is
+    the same failure one size down — Codex R28 MAJOR caught the DDL's required-block CHECK and this very
+    bullet disagreeing about `derivation_risk_policy_id`.
+  - **THE POSITIVITY BULLET, BY COLUMN NAME (Codex R28 MAJOR).** REJECT non-positive
+    `derivation_sizing_equity`, `derivation_equity_floor`, `derivation_zone_cap_pct`,
+    `derivation_max_risk_pct`, `derivation_position_pct_cap`, `derivation_nightly_recommendation_shares`,
+    `actual_quantity` and `framework_quantity`. **ACCEPT `derivation_real_equity = 0` AND a NEGATIVE
+    `derivation_real_equity`** — that is the account, and it is precisely why the floor exists (§C.2). A
+    bullet reading "non-positive equity is rejected" without naming the columns invites a CHECK that breaks
+    the ruled floor semantics on the one column that must not have one, so the accept-cells are as
+    load-bearing as the reject-cells here.
+  - **THE ANCHOR/RENDER/STORE CLOSURE IS SPLIT ACROSS THE TASKS THAT OWN EACH SURFACE (§A.4; Codex R27 MAJOR
+    raised the invariant, Codex R29 MAJOR corrected its PLACEMENT).** It was written entirely into Task 1,
+    whose file scope is schema / models / repos / constants — so it demanded that "the form emits" and "the
+    card renders", which live in `swing/latches/order_intent.py` (Task 2) and the VM + templates (Tasks 6
+    and 7). Followed literally it would either drag the web layer into the #11 schema commit or leave red
+    tests that cannot go green in this task's own files. The invariant is unchanged; only its home moves:
+    - **Task 1 (HERE) — the SCHEMA half:** discover the `derivation_*` column set FROM THE DDL; every one
+      except the two named exemptions is NOT NULL on `place`/`decline`; both exemptions are NULLABLE;
+      `LatchOrderIntent` round-trips all of them through the repo.
+    - **Task 2 — the RECOMPUTE half:** `risk_per_share`, `max_risk_dollars`, `shares_by_risk`,
+      `shares_by_position_cap` and `binding_constraint` are each reproduced EXACTLY from a stored row plus
+      the `candidate_id`-pinned prices — the test that proves they are legitimately DERIVED rather than
+      merely omitted from storage.
+    - **Tasks 6/7 — the CLOSURE itself:** the set of derivation values the card renders as audited EQUALS
+      the set of `derivation_*` hidden inputs the form emits EQUALS the set of `derivation_*` columns on
+      `latch_order_intents`. Three sets, asserted equal at the only layer that can see all three, so a value
+      cannot be shown without being anchored, or anchored without being stored.
+  - **The two raw-append hardening cells added at R29:** a `validity` row whose outcome is NOT
+    `accepted_by_broker` carrying ANY `actual_*` value or an `actual_broker_order_id` is REJECTED (and the
+    same row with all of them NULL is ACCEPTED); and a malformed `first_viewed_ts` / `last_viewed_ts` on the
+    rebuilt `latch_view_events` is REJECTED under the same cells as `recorded_ts` (space separator, hour 24,
+    year zero, non-digits), with `last_viewed_ts >= first_viewed_ts` still independently enforced.
   - **Deleting a parent `place` row aborts with the APPEND-ONLY message, not the FK's** (Codex R17 MINOR):
     `trg_loi_no_delete` fires first for any delete here, so a test asserting "self-referencing RESTRICT" would
     prove the wrong thing. Assert the append-only abort text; prove parent-link integrity through INVALID
@@ -2199,7 +2931,22 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     two distinct decisions share a key.
   - **THE 0032-PRESERVATION SUITE:** re-run every assertion from `tests/data/test_migration_0032.py` against
     the post-`0033` `latch_view_events` — both identity-coherence triggers (bucket, evaluation identity,
-    detection date, pipeline twin), every CHECK, the RESTRICT, and the state enum.
+    detection date, pipeline twin), every CHECK, the RESTRICT, and the state enum. **PLUS the §C.1.1
+    STRENGTHENING, which is the one place the rebuilt table is deliberately STRICTER than `0032`:** the
+    post-`0033` table REJECTS `'2026-99-99'` on `detection_date` and on `view_session_date`, where the shipped
+    `0032` table ACCEPTS it. Assert the pre-`0033` acceptance too (against a v32 fixture DB), so the test
+    proves the migration CHANGED something rather than merely that the new table is well-formed — a
+    preservation suite that only re-runs `0032`'s own assertions would pass identically whether or not the
+    correction landed.
+  - **THE OTHER TWO REBUILD TESTS (§C.1 "the rebuild is mechanical", Codex R28 MAJOR)** — the preservation
+    suite alone cannot catch the rebuild's two other failure modes: (i) `run_migrations` +
+    `executescript` against a REAL v32 DB applies `0033` without error (catches syntax / unbalanced parens /
+    unresolvable references — the class no prose review sees, and the plan's own DDL block carries
+    PLACEHOLDERS, so a literal copy MUST fail this test); (ii) a CHECK-SET DIFF parsed from both DDLs, with
+    whitespace normalised, whose symmetric difference equals EXACTLY the four enumerated deltas — catching an
+    ADDED or silently-ALTERED constraint, which the preservation suite (known rejections only) and
+    `executescript` (happy with any valid constraint) both miss. Plus the trigger-SQL equality check against
+    `0032`'s bodies modulo the table name.
   - **The telemetry UNIQUE is `(candidate_id, view_session_date, surface)`** — asserted by PRAGMA
     introspection of the rebuilt table, plus a NEGATIVE assertion that nothing keys telemetry on
     `(evaluation_run_id, ticker, ...)`. Task 1's first draft still named the OLD tuple after §C.1 was re-keyed
@@ -2210,16 +2957,46 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     multi-surface admission its own enum forbids. The `surface` leg of the UNIQUE is proved by DDL
     INTROSPECTION plus a same-surface duplicate rejection; admitting a real second surface is a deliberate
     CHECK widening under the #11 discipline and is 21-F's decision (§C.1), not a fact this arc can demonstrate.
-  - A pre-`0033` row survives the rebuild carrying `surface='latch_panel'` and both actionability columns
-    `= 0` (a backfill of `1` FAILS — R16 MAJOR 2); a raw INSERT of `first=1, last=0` is REJECTED by the SQL
-    monotonicity CHECK (R17 MAJOR).
+  - A pre-`0033` row survives the rebuild carrying `surface='latch_panel'` and ALL THREE actionability columns
+    `= 0` (a backfill of `1` FAILS — R16 MAJOR 2).
+  - **THE MONOTONICITY CHECKS PIN `ever`, AND ONLY `ever` (Codex R25 MAJOR).** Raw INSERTs:
+    `(first=1, last=0, ever=1)` is **ACCEPTED** — it is the true record of an offered render followed by a
+    withheld one (§C.1), and a test asserting it is rejected would re-impose the false invariant the third
+    column was added to remove; `(first=0, last=1, ever=1)` is ACCEPTED (the reverse order);
+    `(first=1, last=0, ever=0)` and `(first=0, last=1, ever=0)` are both **REJECTED** by
+    `ever >= first` / `ever >= last` respectively. Four cells, because a test covering only the two
+    rejections passes against a DDL that also forbids the legal pair.
   - The three-mirror agreement test, parsed from the migration SQL, for **EVERY enum CHECK in `0033`** —
     `intent_kind`, `surface`, `attested_disposition`, `validity_outcome`, `framework_order_type`,
-    `actual_order_type`, `framework_duration`, `actual_duration`, `derivation_sizing_basis`, and
-    `latch_view_events.surface`. Each has a frozenset in `swing/latches/constants.py`, is validated in the
+    `actual_order_type`, `framework_duration`, `actual_duration`, `derivation_sizing_basis`,
+    `latch_view_events.surface`, **and the JSON-expressed `validity_detail.$.broker_snapshot_branch`
+    (ELEVEN, not ten — Codex R28 MAJOR)**. That last one escaped the list for eleven rounds purely because it
+    is written as a `json_extract(...) IN (...)` predicate rather than a column `CHECK (col IN (...))` — a
+    difference in SYNTAX, not in kind, and exactly the shape of hole the #11 rule exists to close. It mirrors
+    `LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES`, and a SEPARATE assertion pins
+    `LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES < LATCH_BROKER_SNAPSHOT_RENDER_BRANCHES` as a STRICT subset —
+    equality would mean the §C.2 narrowing had been silently undone.
+    Each has a frozenset in `swing/latches/constants.py`, is validated in the
     dataclass `__post_init__`, and the test parses the migration SQL and asserts EXACT set equality for all of
     them, with `models.py`'s being the SAME OBJECT (`is`), not a copy. **Naming only a subset is how the #11
-    rule gets violated while its own test passes** (R23 MAJOR — the draft named four of ten).
+    rule gets violated while its own test passes** (R23 MAJOR — the draft named four of ten; R28 found the
+    eleventh).
+    **AN ANNOTATED MANIFEST, NOT A GREP AND NOT A PROSE COUNT (Codex R29 MAJOR).** "Grep every `IN (` list"
+    fails in BOTH directions and the evidence is on disk: `grep -c "IN ("` on `0032` returns **0**, because
+    its two latch-state enums wrap the line as `IN\n    ('armed',...)` — so the rule MISSES real enums — while
+    on `0033` it MATCHES a pile of non-enum predicates (`intent_kind IN ('place','decline','validity')` and
+    `intent_kind NOT IN (...)` are shape-exclusion subsets; `actual_order_type IN ('STOP_LIMIT','LIMIT')`
+    inside the accepted-by-broker completeness CHECK is a restatement, not its own enum;
+    `json_type(...) IN ('true','false')` is a SQLite type predicate). A prose count is no better — it was
+    wrong twice.
+    So Task 1 builds a **MANIFEST**: parse `0033` for every `IN`-list predicate (whitespace-normalised, so
+    line-wrapped ones are found), and require EVERY entry to be classified as either
+    **`MIRRORED`** — naming its Python frozenset and its dataclass validator — or **`NO_ENUM_MIRROR`** with a
+    written reason. **An unclassified predicate FAILS the test.** That is what makes a twelfth enum fail
+    rather than join the blind spot, and it is the same "annotate, never stay silent" shape the plan uses for
+    every other exemption list. The two PRESERVED `latch_view_events` latch-state enums are classified
+    `MIRRORED` against 21-A's existing `_LATCH_VIEW_STATES` constant (they are 0032's, still live in the
+    rebuilt table, and excluding them by SILENCE is exactly the hole this replaces).
   - The backup-gate boundary matrix, all four cells: `(32,33,True)`, `(31,33,False)`, `(32,32,False)`,
     `(33,33,False)`. **The `(32,33,True)` cell is required** — without it a gate whose body is an
     unconditional `return` passes the whole test (the 21-A Codex R4-2 lesson).
@@ -2227,9 +3004,14 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     {"latch_view_events"}`.
   - `record_intent` idempotency: two calls with the same key return the same `intent_id` and leave ONE row.
   - `record_view(..., surface=..., actionable=...)` and `get_view(..., surface=...)` are REQUIRED kwargs (a
-    call without raises `TypeError`); a same-surface replay -> ONE row `view_count=2`;
-    `actionable_at_last_view` advances 0 -> 1 on update and NEVER 1 -> 0 while `actionable_at_first_view`
-    never moves. **NO two-surface INSERT test at ANY level (Codex R18 MAJOR 4)** — the `surface` CHECK makes a
+    call without raises `TypeError`); a same-surface replay -> ONE row `view_count=2`. **The three
+    actionability columns, each asserted SEPARATELY across an offered-then-withheld replay** (`actionable=1`
+    then `actionable=0` in one session): `actionable_at_first_view` stays `1`, `actionable_at_last_view`
+    FALLS to `0`, `actionable_ever_viewed` stays `1`. This ordering is the discriminator — the reverse order
+    (withheld then offered) passes under BOTH the correct rule and the superseded "advance last with MAX()"
+    rule, so a test written only that way proves nothing. A second assertion in the reverse order pins that
+    `actionable_ever_viewed` rises `0 -> 1` and never falls.
+    **NO two-surface INSERT test at ANY level (Codex R18 MAJOR 4)** — the `surface` CHECK makes a
     second surface unwritable, so it cannot pass; the `surface` leg of the UNIQUE is proved by DDL
     introspection and real second-surface inserts belong to the future CHECK-widening migration (21-F's call).
   - A `validity` row requires BOTH `validity_outcome` and `validated_place_intent_id`, MAY carry the observed
@@ -2238,12 +3020,28 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     block, and MUST NOT carry `actual_*` params (R18 MAJOR 7 — a decline is a decision ABOUT a prepared order,
     and erasing that order leaves RD unable to audit what was declined).
   - **THE FTRE DIVERGENCE INSERT, AS RAW SQL AGAINST THE REAL MIGRATION (R18 CRITICAL):** a `place` row
-    (`LIMIT` / `GOOD_TILL_CANCEL` / limit 18.8902 / qty 9 / full derivation block) plus its `validity` child
+    (`LIMIT` / `GOOD_TILL_CANCEL` / **limit 18.89** — the cent-quantized cap per §D.1, NOT the raw 18.8902,
+    so the fixture matches what the card shows and what the delta compares — / qty 9 / full derivation block)
+    plus its `validity` child
     carrying observed `actual_order_type='LIMIT'`, `actual_limit_price=18.89`, `actual_quantity=10` — both
     rows must INSERT successfully — **the validity child carries `actual_duration='GOOD_TILL_CANCEL'` too**
     (R20 MAJOR: the agreement denominator needs a COMPLETE actual side, and an omitted duration makes
     `compute_order_delta` return `any_difference is None` (UNKNOWN) rather than a clean quantity mismatch, so
-    FTRE would still miss the metric). The test asserts the denominator gains 1 and the numerator does not.
+    FTRE would still miss the metric). **THE FIXTURE MUST BE COMPLETE OR IT CANNOT INSERT (Codex R25
+    MAJOR).** An `accepted_by_broker` validity row is required by §C.2 to carry a non-blank
+    `actual_broker_order_id` AND a full seven-key `validity_detail` envelope, and the child here also inherits
+    the parent's `action_session_date` (the trigger's session leg). An earlier revision of this bullet listed
+    only the four `actual_*` order fields — written literally it FAILS against the correct schema, and the
+    tempting repair is to weaken the CHECKs rather than complete the fixture. So the fixture states, concretely:
+    `actual_broker_order_id='1002937461'`, `action_session_date` = the parent place row's, and a
+    `validity_detail` object carrying all seven keys with valid shapes (`broker_snapshot_ts` a
+    `T`-separated 19-char stamp, `broker_snapshot_branch='presence'`, a 64-char lowercase-hex
+    `broker_snapshot_digest`, a round-trip-valid `broker_snapshot_session`,
+    `attributable_order_count=1`, `exact_framework_match_count=0`, `indeterminate=false`). Note
+    `exact_framework_match_count` is **0**, not 1 — that is the whole point of FTRE: the order is
+    ATTRIBUTABLE to the latch and does NOT match the framework params, and a fixture that set it to 1 would
+    quietly re-assert the exact-match gate R17 removed.
+    The test asserts the denominator gains 1 and the numerator does not.
     The R17 fix was described in prose while the CHECK still forbade it; a
     raw-SQL migration test (not merely a repo/model test) is what makes that impossible to repeat.
   - `ACTIONABLE_VIEW_SURFACES <= LATCH_VIEW_SURFACES`, and both equal `{"latch_panel"}` today (section E.3).
@@ -2289,9 +3087,9 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
 - [ ] **THE COVERAGE / ACTIONABILITY MATRIX — all four cells, exactly as §E states them once.** Each cell
       discriminates a different wrong implementation:
       - FULL + no awareness -> `away_unseen`.
-      - FULL + awareness + only `actionable_at_last_view = 0` rows -> `never_actionable` (an implementation
+      - FULL + awareness + only `actionable_ever_viewed = 0` rows -> `never_actionable` (an implementation
         ignoring the column returns `discipline_lapse` or `away_unseen` and FAILS, in opposite directions).
-      - PARTIAL + awareness + only `actionable_at_last_view = 0` rows -> `never_actionable` (an implementation
+      - PARTIAL + awareness + only `actionable_ever_viewed = 0` rows -> `never_actionable` (an implementation
         re-applying a coverage veto after the table routed normally returns `pre_telemetry` and FAILS).
       - PARTIAL + NO awareness -> `pre_telemetry` — the FTRE geometry (an implementation ranking actionability
         above coverage flips the arc's headline case on the first page view and FAILS).
@@ -2322,11 +3120,22 @@ classifies `pre_telemetry` and its +1.22R lands in `unattributable_r`. No task i
 
 ### Task 5: telemetry health + the away rate + the parity report (PURE)
 
-- [ ] **THE BUCKET PARTITION + THE GUARD RD SINGLED OUT.** Every member of `LATCH_DISPOSITIONS` maps to
-      exactly one of the FIVE buckets via `r_bucket_for`; they are pairwise disjoint; the five sums reconcile
-      to the corpus total; and **`r_bucket_for` RAISES on a disposition absent from all five sets** — a test
-      adds a fake disposition to `LATCH_DISPOSITIONS` ONLY and asserts the raise, so a future unlisted
-      disposition cannot be absorbed by a default. **Do not reintroduce a fallthrough to make this pass.**
+- [ ] **THE BUCKET PARTITION IS OVER CELLS, NOT OVER DISPOSITIONS (§F.3), + THE GUARD RD SINGLED OUT.** The
+      test walks the FULL `(disposition, is_terminal)` PRODUCT — all `2 x len(LATCH_DISPOSITIONS)` cells —
+      and asserts: every COHERENT cell maps to exactly one of the five buckets; the one INCOHERENT cell
+      `("pending_live", True)` RAISES; and the five bucket sums reconcile to the corpus total.
+      **A test phrased as "every member of `LATCH_DISPOSITIONS` appears in exactly one of the five sets" is
+      FORBIDDEN** — since the terminality gate landed, `accepted` is `decision_r` when terminal and
+      `pending_r` when not, so that assertion is either false or silently re-pinning the pre-gate model
+      (R24 MAJOR). Plus **`r_bucket_for` RAISES on a disposition absent from the RULED UNION, under BOTH
+      terminality values (Codex R25 MAJOR)** — a test adds a fake disposition to `LATCH_DISPOSITIONS` ONLY
+      (not to any bucket set) and asserts the raise for `is_terminal=True` AND for `is_terminal=False`.
+      **The `False` case is the load-bearing one and an earlier revision of this bullet explicitly skipped
+      it**, reasoning that the terminality gate would return `pending_r` first — which is not a reason to
+      omit the test, it is the DEFECT the test detects (a default relocated, not removed). Plus
+      `_RULED_DISPOSITIONS == LATCH_DISPOSITIONS` as its own assertion, so a disposition added to the enum
+      without a bucket ruling fails at import-adjacent test time rather than being scored. **Do not
+      reintroduce a fallthrough, and do not weaken the `is_terminal=False` case, to make these pass.**
 - [ ] **RULING 1 — `pending_live` is REPORTED, NEVER SCORED, and TERMINALITY IS A GATE.** It lands in
       `pending_r` with its own count and enters NO denominator (decision, away, discipline alike). Two test
       groups, because the second is the one a disposition-only implementation fails:
@@ -2363,8 +3172,15 @@ classifies `pre_telemetry` and its +1.22R lands in `unattributable_r`. No task i
       hidden-anchor payload is complete and its digest is stable; new `LatchPanelVM` fields are in
       `PANEL_SPECIFIC_FIELDS` (assert `declared_banner_fields()` is unchanged from 21-A); A6 — every new read
       degrades and the panel never 500s.
-- [ ] Also: a view row on a surface NOT in `ACTIONABLE_VIEW_SURFACES` does not appear in the panel's
-      telemetry echo and does not move any disposition (section E.3 conjunct 2); the beacon payload carries
+- [ ] Also: **the non-counted-surface property, exercised through the `counted_surfaces=` PARAMETER over a
+      VALID `latch_panel` row (§E.3 conjunct 2, Codex R26 MAJOR).** An earlier revision of this bullet asked
+      for "a view row on a surface NOT in `ACTIONABLE_VIEW_SURFACES`" — which is UNWRITABLE today
+      (`CHECK (surface IN ('latch_panel'))` plus the model validator), so a literal implementer would have to
+      bypass the very #11 mirror the test is meant to respect, or write a test that cannot pass. §E.3 already
+      ruled this and Task 6 had not been brought into line. So: call the panel's `_load_views` and the pure
+      classifier with `counted_surfaces=frozenset()` over a real `latch_panel` row and assert it appears in
+      NO telemetry echo and moves NO disposition — the same property, no invalid fixture. Real
+      second-surface rows belong to 21-F's CHECK-widening migration. Also: the beacon payload carries
       `actionable_candidate_ids` and `withheld_candidate_ids` SEPARATELY, and a withheld card's id is never in
       the actionable list (the R7 CRITICAL discriminator — on today's live substrate EVERY card is withheld,
       so a payload that lumps them records a false view for every latch); and the beacon persists the
@@ -2382,8 +3198,9 @@ step that gets absorbed and skipped.
 - [ ] Failing tests: the payload split parses; an id present in BOTH lists -> `400` naming the field; the
       200-id cap applies to the UNION; each list is intersected with the anchor-session live set INDEPENDENTLY;
       `record_view` receives `actionable=1` for actionable ids and `actionable=0` for withheld ids;
-      `actionable_at_first_view` never changes on a second POST while `actionable_at_last_view` advances
-      `0 -> 1` and never `1 -> 0`; the four-tier session-anchor ladder and the `409` stale notice still behave
+      `actionable_at_first_view` never changes on a second POST, `actionable_at_last_view` takes the SECOND
+      POST's own value (including falling `1 -> 0` on an offered-then-withheld pair), and
+      `actionable_ever_viewed` advances `0 -> 1` and never `1 -> 0`; the four-tier session-anchor ladder and the `409` stale notice still behave
       exactly as 21-A shipped them (a no-regression lock on the shipped route).
 - [ ] Implement; commit `feat(web): Task 6b — the beacon records surface + render-time actionability`.
 
@@ -2437,6 +3254,18 @@ step that gets absorbed and skipped.
       -> `409` (step 5 still binds for a first insert); (c) simulate the lost race by pre-inserting the row
       between the handler's step-4 SELECT and its step-6 INSERT (monkeypatch the seam) -> `200` returning the
       pre-inserted row, ZERO `IntegrityError`, ONE row total.
+- [ ] **THE KIND-SCOPED KEY TESTS (§G.1, Codex R25 + R26 MAJOR) — both components, both directions:**
+      (d) **the validity next-session replay** — answer a `validity` prompt, then re-render the fragment in a
+      LATER action session and resubmit the SAME answer for the SAME parent: **ONE row, `200`, the same
+      `intent_id`.** This is the test that fails against EITHER half-fix — an implementation keying the
+      session component off the current anchor writes a second row, and so does one that scopes
+      `session_component` but leaves `view_session_date` inside `anchor_digest`.
+      (e) **the discrimination that must SURVIVE the scoping** — two `validity` answers differing ONLY by
+      `validity_outcome`, and two differing ONLY by `validated_place_intent_id`, produce DISTINCT keys and
+      TWO rows. Without (e), (d) passes trivially against a key that has stopped discriminating at all.
+      (f) **the decision kinds are UNCHANGED** — the same `place` decision submitted in two different
+      sessions still produces TWO rows, and a mutated `framework_limit_price` still changes the key
+      (the R5 laundering defence is intact for the kinds that actually submit a framework anchor).
 - [ ] Also: the rendered base still carries the `htmx.config.responseHandling` 4xx-swap override (without it
       the 400/409 fragments are invisible in a browser and the endpoint silently loses its error surface).
 - [ ] Implement; commit `feat(web): Task 7 — POST /latches/intent (log-only) + the prepared-order form`.
@@ -2576,3 +3405,8 @@ step that gets absorbed and skipped.
    figure (§D.2). Pre-existing, outside this arc, flagged.
 8. **Base-break invalidation is still out of V1** (21-A §G.5). The prepared-order form inherits the
    stop-level-only qualifier and repeats it — it must not imply coverage the derivation does not have.
+9. **The `date(x) = x` CHECK class is fixed HERE and audited ELSEWHERE** (§C.1.1). This arc corrects the only
+   two occurrences in `swing/data/migrations/`, both in `0032`'s `latch_view_events`, because it rebuilds that
+   table anyway. Whether NEAR-MISS variants of the same class exist in other shipped date/timestamp CHECKs is
+   an audit the ORCHESTRATOR owns and this arc does not perform. The standing condition stands: a new
+   `latch_view_events` writer landing before 21-B means the CHECK fix ships first, separately.
