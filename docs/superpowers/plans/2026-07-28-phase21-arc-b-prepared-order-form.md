@@ -196,18 +196,39 @@ uncovered_window(latch)= [anchor, min(EPOCH, clear_or_horizon) )   # may be empt
 
 **RULING 2 — THE PARTIAL-COVERAGE RULE (RD, verbatim, and the load-bearing one):**
 
-> **A view record in the covered portion ESTABLISHES awareness; its absence over a partially-dark window
-> ESTABLISHES NOTHING.** Positive evidence is dispositive; absence of evidence from a period with no
-> instrument is not evidence of absence.
+> **An ACTIONABLE view record in the covered portion ESTABLISHES awareness; its absence over a partially-dark
+> window ESTABLISHES NOTHING.** Positive evidence is dispositive; absence of evidence from a period with no
+> instrument is not evidence of absence. **A render in which THIS latch's actionable detail was WITHHELD is a
+> THIRD thing — the instrument's silence, not his — and it establishes neither awareness nor absence.**
+
+*(RD tightened his own ruling-2 wording on 2026-07-29 after the round-30 review found "view" carrying two
+incompatible meanings across §E.0, §E.3 and §K.2. He verified both sites and confirmed the defect is
+VOCABULARY ONLY — the encoding underneath is already what he would have ruled: a latch with only withheld
+renders across its armed window is `never_actionable`, excluded from the discipline signal AND from the away
+rate, because a render in which our own instrument withheld the actionable detail is OUR silence, not his,
+and scoring it as a lapse would be the instrument flattering itself by blaming its subject. **No
+classification behaviour changes in this pass — only the words.** Preserve-the-quote is satisfied because the
+DIRECTOR edited it.)*
 
 **THE RULED TABLE — encoded LITERALLY as a lookup table, not as nested conditionals (§E.0):**
 
-| window coverage | view record in the covered portion | disposition |
+| window coverage | **`awareness_view_rows`** in the covered portion | disposition |
 |---|---|---|
 | FULLY covered | — | classify normally (accepted / declined / away / lapse) |
-| PARTIALLY covered | **YES** | awareness ESTABLISHED — classify on it |
+| PARTIALLY covered | **YES** | the instrument OBSERVED — classify on it |
 | PARTIALLY covered | **NO** | **`pre_telemetry`** |
 | FULLY pre-telemetry | — | **`pre_telemetry`** |
+
+**`awareness_view_rows` MEANS ROWS OF EITHER ACTIONABILITY, AND THAT IS WHAT MAKES RULING 2'S THIRD THING
+REACHABLE.** The column is the INSTRUMENT-PRESENCE axis: did the beacon observe this latch here at all? An
+ACTIONABLE row answers yes AND establishes awareness; a WITHHELD row answers yes and establishes NEITHER
+awareness NOR absence — RD's third thing. Both therefore leave the `pre_telemetry` row, because
+`pre_telemetry` is an ABSENCE-OF-INSTRUMENT claim and a withheld render disproves it. They then SEPARATE one
+rung later, on `actionable_view_rows`: actionable-and-unacted is `discipline_lapse`, withheld-only is
+`never_actionable`. **Requiring actionability in THIS column would collapse the third thing into
+`pre_telemetry`** — asserting the apparatus was absent when it was present and working — which is the
+conflation ruling 1 forbids and the defect Codex R18 MAJOR 2 fixed. Three states, three dispositions; the
+2026-07-29 rename gives them three NAMES.
 
 **Note RD's ruling COLLAPSES the plan's drafted `partial_telemetry_unresolved` into `pre_telemetry`.** The
 draft split them to keep the reasons distinct; RD ruled one disposition, because the reason is the SAME in
@@ -218,7 +239,7 @@ not support. The plan follows the ruling: `partial_telemetry_unresolved` is DELE
 **The property that makes the ruling correct, which the implementation MUST preserve:** the classification can
 only move from unknown toward a POSITIVE fact, never toward a negative inference drawn from a dark period.
 That is what resolves the instability §A.1 raised — **FTRE cannot flip to `away_unseen` next week because of
-something that happens after the window it describes**, since only a view record INSIDE the covered portion
+something that happens after the window it describes**, since only an `awareness_view_row` INSIDE the covered portion
 can move it, and that record establishes awareness rather than absence. A test asserts this directly:
 adding a view row to a partially-covered latch moves it OFF `pre_telemetry` only into an awareness-established
 cell, never into `away_unseen`.
@@ -355,7 +376,7 @@ this is **the number that would justify automating his entries**, the one he lea
 happens — it moves a fire INTO the discipline signal against himself. Only the flattering direction needed a
 guard.
 
-### A.2 Which price feeds `compute_shares` — the PIVOT or the LIMIT CAP? (RD RULING REQUESTED)
+### A.2 Which price feeds `compute_shares` — **RULED BY RD 2026-07-29: THE LIMIT PRICE, BOTH REGIMES**
 
 The framework's order has a limit at the zone cap (`pivot * 1.03`), so the worst fill it can produce is the
 cap. But the shipped `swing/recommendations/build.py:47` sizes the nightly `today_decision` off the **pivot**.
@@ -366,15 +387,27 @@ On FTRE's live numbers (pivot 18.34, stop 14.88, sizing equity 7500, `max_risk_p
 | pivot 18.34 | 3.46 | **10** | 10 x 4.0102 = **$40.10 = 0.535% of equity — OVER the 0.5% policy cap** |
 | zone cap 18.89 (cent-quantized, §D.1) | 4.01 | **9** | 9 x 4.01 = $36.09 = 0.481% — within the cap in every fill outcome |
 
-**This plan recommends the LIMIT PRICE as the basis in BOTH regimes** (in the pullback regime it is the only
-price the order can fill at; in the breakout regime it is the worst case), because a sizing that can breach the
-risk policy on an ordinary fill is not a mandate the operator should be shown as correct. **Flagged, not
-fixed:** this makes the latch's qty differ by one share from the same fire's persisted
-`daily_recommendations.shares` (FTRE row id 142 says 10). The plan does NOT change
-`build_recommendations` — that is a measurement-chain edit outside this arc. Instead the form renders BOTH the
-basis and the divergence explicitly (§D.3), so the operator sees why the two surfaces disagree rather than
-discovering it at the broker. If RD prefers pivot-parity, one constant flips and the divergence note is
-deleted.
+**RULED: the LIMIT PRICE is the sizing basis in BOTH regimes.** NOT pivot-parity. In the pullback regime the
+limit is the only price the order can fill at; in the breakout regime it is the worst case. RD's binding
+reason: **pivot-basis sizing produces 10 shares whose risk at an ordinary cap fill is $40.10 = 0.535% against
+a 0.5% policy cap — and in the pullback regime the cap is PRECISELY WHERE THE ORDER FILLS, so that is not a
+tail event.** *"A mandate that breaches the risk policy on the expected fill must not be rendered to the
+operator as correct."*
+
+**THE ONE-SHARE DIVERGENCE IS A DOCUMENTED LEDGER SEMANTIC, NOT AN UNRESOLVED DEFECT (RD, explicit).** The
+latch's qty will differ by one share from the same fire's persisted `daily_recommendations.shares` (FTRE row
+id 142 says 10; the mandate says 9). This arc does NOT change `build_recommendations` — that is a
+measurement-chain edit correctly out of scope. So the divergence is written into the ledger's own semantics:
+
+> **`latch_order_intents` will DISAGREE with `daily_recommendations` by one share on any fire where the zone
+> cap and the pivot round to different share counts. This is BY DESIGN and for a stated reason — the nightly
+> sizes off the PIVOT, the mandate sizes off the LIMIT, and only the latter is inside the risk policy at the
+> fill the order can actually get. It is NOT a reconciliation break, NOT a data error, and must not be
+> "fixed" by aligning the ledger to the nightly. It resolves when `build_recommendations` is revisited.**
+
+RD asked for that written down so it is not rediscovered later as an apparent defect. The form ALSO renders
+both the basis and the divergence on the card (§D.3), so the operator sees why two surfaces disagree rather
+than discovering it at the broker.
 
 ### A.3 The per-field delta is COMPUTED, not stored (RD RULING REQUESTED)
 
@@ -410,6 +443,44 @@ So the rule is restated to close the CLASS rather than to patch three fields:
 > **EVERY value the card presents INSIDE the prepared-order derivation block is hidden-anchored, compared at
 > POST, and stored. Anything not anchored MUST NOT be rendered inside that block.** The two are one decision:
 > a number is either part of the audited derivation, or it is not shown as part of it.
+
+**AND THE RULE IS CARRIED BY A MANIFEST, BECAUSE AS PROSE IT CANNOT EXECUTE (RD + CHARC, 2026-07-29).**
+Round 30 found "every `derivation_*` column the table declares, discovered from the schema" un-implementable:
+`OrderDerivation`'s attributes do NOT share the DB column names, and the nullable ones need a canonical
+encoding for the hidden input and the digest. An implementer must therefore invent a column-to-attribute
+mapping — **which is exactly the hand-kept list this rule forbids**, re-created one layer down. RD: *"an
+instruction that cannot execute is not polish."* CHARC declined a prose fix for the same reason he declined
+the split: a prose rule is *"another site in a document whose problem is site count."*
+
+```python
+# swing/latches/constants.py -- ONE row per derivation column, and the ONLY
+# place the cross-layer mapping exists.
+@dataclass(frozen=True)
+class DerivationField:
+    column: str          # the latch_order_intents column
+    attr: str            # the OrderDerivation attribute it comes from
+    encode: str          # canonical hidden-input / digest encoding:
+                         #   "price2" | "pct4" | "int" | "session" | "text"
+    nullable: bool       # legitimately NULL on a place/decline row?
+    null_reason: str     # REQUIRED iff nullable -- why, in one line
+    rendered: bool       # does the card present it INSIDE the derivation block?
+
+DERIVATION_FIELD_MANIFEST: tuple[DerivationField, ...] = (...)
+```
+
+**Four assertions make it the authority rather than a fourth copy:**
+1. `{f.column for f in MANIFEST}` EQUALS the `derivation_*` columns in `PRAGMA table_info` — a new column
+   without a manifest row FAILS, which is the annotated-manifest shape applied here.
+2. `{f.column for f in MANIFEST if f.nullable}` EQUALS `DERIVATION_NULLABLE_ON_DECISION`, and every nullable
+   row carries a non-empty `null_reason`.
+3. `{f.column for f in MANIFEST if f.rendered}` EQUALS the derivation values the card renders as audited —
+   the §A.4 closure, now checkable instead of aspirational.
+4. The form's hidden inputs, `anchor_digest`'s components and the §G.2 comparison are all GENERATED by
+   walking the manifest and applying `encode`, so the three cannot drift and no site re-lists the columns.
+
+`encode` is what makes the digest reproducible across render and POST: `price2` is the §D.1 whole-cent form,
+`pct4` fixes the policy-rate precision, `session` is ISO `YYYY-MM-DD`, and a NULL encodes as the empty string
+(distinct from `"0"`, which a float field could legitimately produce).
 
 The three added columns are `derivation_real_equity`, `derivation_equity_floor` and
 `derivation_nightly_recommendation_shares`, each carried in `anchor_digest` and in the §G.2 field-by-field
@@ -515,7 +586,7 @@ classification, health or bucket rule may read. The `..._at_first_view` / `..._a
 companions to their own timestamps and are never a classifier input.
 
 Consumers, each distinct (§E.3, §F.1):
-- the away/lapse split counts **only rows with `actionable_ever_viewed = 1`** as a view;
+- the away/lapse split counts **only `actionable_view_rows`** (`actionable_ever_viewed = 1`);
 - a latch with only `actionable_ever_viewed = 0` rows across its whole armed window classifies
   **`never_actionable`** — a new disposition, EXCLUDED from the discipline signal and from the away rate for
   the same reason `pre_telemetry` is: the instrument never presented a decision, so there is nothing to score;
@@ -1596,8 +1667,18 @@ when `SizingResult.feasible` is False, and `sizing_degenerate` if `compute_share
 | `limit_price` | **`floor(latch.zone_cap * 100) / 100`** — the zone cap QUANTIZED DOWN to whole cents. See below; this is NOT the raw `round(pivot * 1.03, 4)` |
 | `quantity` | `compute_shares(entry=limit_price, stop=latched_initial_stop, equity=sizing_equity, max_risk_pct=..., position_pct_cap=...).shares` (A.2) |
 
-**THE LIMIT PRICE IS QUANTIZED TO WHOLE CENTS, BY FLOOR, AND THAT ONE VALUE IS USED EVERYWHERE (Codex R29
-MAJOR).** The plan carried TWO values for one field: §D.1 said `limit_price = latch.zone_cap` — FTRE's
+**THE LIMIT PRICE IS QUANTIZED TO WHOLE CENTS, BY FLOOR, AND THAT ONE VALUE IS USED EVERYWHERE — RATIFIED BY
+RD 2026-07-29 (raised as Codex R29 MAJOR).** `floor(zone_cap * 100) / 100`. RD ratified the determination and
+its reasoning as given, and added two reasons of his own:
+- **The cap is what held the operator out of a +6.2% chase on FTRE's first day.** *"A cap that can drift up
+  under rounding is not a cap."* Round-half-up silently widens a stated bound, which is a different thing
+  from a rounding preference.
+- **The ledger asserts the framework's order stored VERBATIM as the operator saw it** (§A.3). Storing
+  `18.8902` against `18.89` displayed falsifies that claim **at any magnitude** — the size of the discrepancy
+  is irrelevant to whether the claim is true.
+- **The synthetic `18.8952 -> 18.89` discriminator is REQUIRED and must not be dropped as redundant.** RD was
+  explicit that FTRE alone cannot discriminate here (its cap rounds down either way), and named the risk by
+  its precedent: *"exactly the vacuous-acceptance-test trap I fell into on the FTRE telemetry fixture."* The plan carried TWO values for one field: §D.1 said `limit_price = latch.zone_cap` — FTRE's
 `round(18.34 * 1.03, 4) = 18.8902` — and the §C.2 raw fixture stored `18.8902`, while §D.3's card, §D.4's
 delta and Task 2 all say `LIMIT 18.89`. Both cannot be "the framework's order stored verbatim as the operator
 saw it", which is this arc's central claim.
@@ -1743,6 +1824,12 @@ LATCH_DISPOSITIONS = frozenset({
     "attested_chose_not_to_act", "attested_was_away", "discipline_lapse",
     "pending_live", "never_actionable",
 })
+# [KNOWN DEFECT R30 -- UNFIXED] THE `# ELEVEN` COUNT BELOW AND THIS INLINE
+# frozenset ARE THE STALE READING. AUTHORITATIVE: `swing/latches/constants.py`
+# owns LATCH_DISPOSITIONS (section I), and NO SITE STATES ITS CARDINALITY
+# (Global Constraints, the roster rule). Treat the block below as an
+# ILLUSTRATION of the members; import the constant, parametrise over it, and
+# compute non-prompt sets as `LATCH_DISPOSITIONS - {"discipline_lapse"}`.
 # ELEVEN. `partial_telemetry_unresolved` was drafted and then DELETED by RD ruling 2
 # (2026-07-28): partial-coverage-with-no-view collapses into `pre_telemetry`,
 # because the REASON is the same in both cases -- the instrument was not there --
@@ -1767,26 +1854,43 @@ branches are how a ruled table drifts silently under later edits, which is the e
 been fighting elsewhere (a prose invariant survived three review rounds while the DDL contradicted it, §C.2).
 
 ```python
-CoverageKey = tuple[str, bool]   # (coverage, awareness_established)
-#   coverage              in {"full", "partial", "none"}
-#   awareness_established = at least one view row on a COUNTED surface inside
-#                           the COVERED portion of the armed window --
-#                           REGARDLESS OF ACTIONABILITY.
+CoverageKey = tuple[str, bool]   # (coverage, observation_recorded)
+#   coverage             in {"full", "partial", "none"}
+#
+# THE TWO ROW SETS, NAMED APART (RD, 2026-07-29). Round 30 found "view"
+# carrying two incompatible meanings across E.0, E.3 and K.2; RD verified both
+# sites, confirmed the ENCODING was already correct, and ruled the fix is a
+# RENAME. Nothing below changes behaviour.
+#
+#   awareness_view_rows  = view rows on a COUNTED surface inside the COVERED
+#                          portion, OF EITHER ACTIONABILITY. "The instrument
+#                          observed this latch here." Feeds the COVERAGE table.
+#   actionable_view_rows = the SUBSET with actionable_ever_viewed = 1. "An
+#                          actionable mandate was presented." Feeds rungs 6-7.
+#                          A STRICT SUBSET: actionable_view_rows <=
+#                          awareness_view_rows, asserted by a test.
+#
+#   observation_recorded = bool(awareness_view_rows)   -- the table's axis.
+#
+# The old name `awareness_established` is GONE, and its removal is the point:
+# it read as "he became aware", which is TRUE only of an actionable row. Under
+# ruling 2 a WITHHELD render establishes NEITHER awareness NOR absence -- it is
+# the instrument's silence, not his -- so the axis it feeds is
+# INSTRUMENT-PRESENCE, not awareness.
 #
 # THE TWO AXES ARE SEPARATE, AND CONFLATING THEM MIS-IMPLEMENTS THE RULING
-# (Codex R18 MAJOR 2). RD's table turns on "a view RECORD in the covered
-# portion". A withheld-but-recorded view IS such a record: the instrument
-# existed and it observed. Requiring actionability HERE would classify that
-# latch `pre_telemetry` -- asserting the apparatus was ABSENT when it was
-# present and working -- the precise conflation ruling 1 forbids. Actionability
-# decides a DIFFERENT question one rung later: given that he looked, was he
-# shown a decision (-> discipline_lapse) or not (-> never_actionable).
+# (Codex R18 MAJOR 2). A withheld-but-recorded view IS an observation: the
+# instrument existed and it observed. Requiring actionability HERE would
+# classify that latch `pre_telemetry` -- asserting the apparatus was ABSENT
+# when it was present and working. Actionability decides a DIFFERENT question
+# one rung later: given that the instrument observed, was he shown a decision
+# (-> discipline_lapse) or not (-> never_actionable).
 # Coverage answers "can we know?"; actionability answers "what was he shown?".
 
 RD_COVERAGE_TABLE: dict[CoverageKey, str] = {   # values: a DISPOSITION or _CLASSIFY_NORMALLY
     ("full",    True):  _CLASSIFY_NORMALLY,   # accepted / declined / away / lapse
     ("full",    False): _CLASSIFY_NORMALLY,   # -> away_unseen or never_actionable
-    ("partial", True):  _CLASSIFY_NORMALLY,   # awareness ESTABLISHED - classify on it
+    ("partial", True):  _CLASSIFY_NORMALLY,   # instrument OBSERVED - classify on it
     ("partial", False): "pre_telemetry",      # cannot distinguish away from dark
     ("none",    True):  "pre_telemetry",      # unreachable (no covered portion can
                                               # hold a record); present so the table
@@ -1796,7 +1900,7 @@ RD_COVERAGE_TABLE: dict[CoverageKey, str] = {   # values: a DISPOSITION or _CLAS
 ```
 
 **THE TABLE IS THE ONLY PLACE COVERAGE IS DECIDED.** `resolve_coverage(...)` returns a frozen
-`CoverageVerdict(coverage, awareness_established, table_disposition)` and the §E rungs CONSUME it: no rung
+`CoverageVerdict(coverage, observation_recorded, table_disposition)` and the §E rungs CONSUME it: no rung
 re-derives the epoch, the uncovered window or full-vs-partial, and no rung re-applies a coverage veto after
 the table has routed to `_CLASSIFY_NORMALLY`. A latch the table routes normally is classified on awareness and
 actionability alone.
@@ -1806,7 +1910,7 @@ Three properties, each with its own test:
 1. **TOTALITY.** A test enumerates the full `{full, partial, none} x {True, False}` product and asserts every
    key is present — an unhandled combination cannot fall through to a default.
 2. **THE MONOTONE PROPERTY (RD ruling 2's defining consequence).** For every key, flipping
-   `awareness_established` `False -> True` never yields `away_unseen`. **Tested THROUGH `classify_latch` on
+   `observation_recorded` `False -> True` never yields `away_unseen`. **Tested THROUGH `classify_latch` on
    concrete substrates, NOT over the table's values (Codex R19 MAJOR 5).** Most table values are the
    `_CLASSIFY_NORMALLY` sentinel, so a table-level assertion proves nothing about the FINAL disposition — a
    broken `_CLASSIFY_NORMALLY` could still return the forbidden negative inference and pass. The test builds
@@ -1949,7 +2053,9 @@ only failures and report a permanently empty success rate. So:
   fragment emits **ONE canonical hidden field, `broker_snapshot_json`** (Codex R20 MAJOR — the draft named
   two hidden fields while `validity_detail` required the full envelope, and `POST /latches/intent` is
   forbidden from borrowing Schwab so it could not reconstruct the missing keys at submit time; the audit row
-  was therefore either unwritable or populated from guesses). The envelope carries EXACTLY the keys in
+  was therefore either unwritable or populated from guesses). **[KNOWN DEFECT R30 -- UNFIXED]** Four sites in this plan still say "seven" of the snapshot keys. **Every
+such cardinality is the STALE reading; AUTHORITATIVE is the §C.2 `json_remove` path list and its
+`LATCH_BROKER_SNAPSHOT_KEYS` mirror, which state no count.** The envelope carries EXACTLY the keys in
   `LATCH_BROKER_SNAPSHOT_KEYS` (§C.2's `json_remove` path list is the roster; no site states a count) — `broker_snapshot_ts` (SERVER-stamped at fragment
   render), `broker_snapshot_branch` — the FRAGMENT's render vocabulary is three-valued
   (`presence`/`absence`/`unavailable`), but a PERSISTED `validity` row's is two-valued: the schema forbids
@@ -2044,26 +2150,29 @@ found" passes under one order and fails under the other, which is exactly the bu
    sibling view rows to prove the beacon was alive before it will call anything away. The classifier must hold
    itself to the standard its test does. `telemetry_unhealthy` carries the verdict so the label distinguishes
    `broken` from `indeterminate` (RD's labelled-reduction coupling, §A.1.1).
-6. else if there is at least one view row with **`actionable_ever_viewed = 1`** inside the covered window:
+6. else if **`actionable_view_rows` is NON-EMPTY** inside the covered window:
    - latch is LIVE -> **`pending_live`** (no prompt; the mandate can still be acted on). **Reported, never
      scored** (§A.1.6 ruling 1): it enters no denominator, because a latch that has not terminated is not an
      observation yet and its verdict would move as the window runs.
    - latch is TERMINAL -> **`discipline_lapse`**, with `prompt_required=True`. There is no intermediate
      state — see E.1.
-7. else (no `actionable_ever_viewed = 1` view row in the covered window) — **coverage is NOT re-tested here;
+7. else (**`actionable_view_rows` is EMPTY** in the covered window) — **coverage is NOT re-tested here;
    reaching this rung already means the table routed to `_CLASSIFY_NORMALLY`**:
-   - `verdict.awareness_established` is True (>= 1 view row, necessarily all `actionable_ever_viewed = 0`)
+   - `verdict.observation_recorded` is True (>= 1 `awareness_view_row`, necessarily with EMPTY
+     `actionable_view_rows`)
      -> **`never_actionable`** — he looked, and the panel presented no decision. **This is reachable from a
      PARTIALLY-covered window too** (R19 MAJOR 3): the instrument existed and observed, so the honest answer
      is "nothing was shown to him", not "the instrument was absent".
-   - `verdict.awareness_established` is False -> **`away_unseen`**. Reachable ONLY from a FULLY covered
+   - `verdict.observation_recorded` is False -> **`away_unseen`**. Reachable ONLY from a FULLY covered
      window, because `("partial", False)` and `("none", *)` were already returned by rung 4 as
      `pre_telemetry`.
 
-**THE COVERAGE / ACTIONABILITY RULE, STATED ONCE.** Derived from RD's ruling-2 sentence and from nothing else:
+**THE COVERAGE / ACTIONABILITY RULE, STATED ONCE.** Derived from RD's ruling-2 sentence (as tightened
+2026-07-29) and from nothing else. "Observation" below means `awareness_view_rows` non-empty:
 
-> **partial + NO awareness -> `pre_telemetry`. partial + awareness + no actionable rows -> `never_actionable`.
-> FULL + no awareness -> `away_unseen`. FULL + awareness + no actionable rows -> `never_actionable`.**
+> **partial + NO observation -> `pre_telemetry`. partial + observation + EMPTY `actionable_view_rows` ->
+> `never_actionable`. FULL + no observation -> `away_unseen`. FULL + observation + EMPTY
+> `actionable_view_rows` -> `never_actionable`.**
 
 FTRE is `pre_telemetry` because it has NO view rows at all — not because coverage vetoes actionability.
 `never_actionable` is reachable from BOTH full and partial coverage: it says *the instrument was there, it
@@ -2111,12 +2220,14 @@ True — so a future disposition added without a decision about its prompt FAILS
 Rationale, recorded because it constrains future change: a prompt on an objectively-resolved cell trains
 dismissal, and dismissal is what eventually kills the honest answer on the cell that matters.
 
-### E.3 A "view" for classification means an ACTIONABLE view, ON A COUNTED SURFACE, of THIS latch while it was LIVE
+### E.3 TWO row sets, ON A COUNTED SURFACE, of THIS latch while it was LIVE
 
 Three conjuncts, each enforced somewhere different:
 
-1. **Actionable** — the row's own `actionable_ever_viewed = 1` (§C.1), and NEVER either of the
-   first/last companion columns, which describe individual views rather than the session. NOT a write contract: the withheld
+1. **Actionable** — membership in `actionable_view_rows`, i.e. the row's own `actionable_ever_viewed = 1`
+   (§C.1), and NEVER either of the first/last companion columns, which describe individual views rather
+   than the session. The COVERAGE table reads `awareness_view_rows` instead (rows of EITHER actionability,
+   §E.0) — the two sets are named apart precisely so this conjunct cannot be read as the coverage predicate. NOT a write contract: the withheld
    render is recorded too, as `0`, because the two silences ("he saw nothing actionable" and "he never
    looked") are wrong in OPPOSITE directions and must be told apart. A latch with only `0` rows
    across its whole armed window is **`never_actionable`**, excluded from the discipline signal and from the
@@ -2529,9 +2640,8 @@ have to move together.
 
 - **`place` / `decline` — UNCHANGED.** `anchor_digest` is the canonical (sorted-key, fixed-format)
   serialisation of **EVERY hidden field the form emitted** — `view_session_date`, `candidate_id`, all five
-  `framework_*` fields and **EVERY `derivation_*` column the table declares** — discovered from the schema,
-  never from a list or a count here (a count is what let three of them go un-anchored) — **exactly as
-  SUBMITTED**. It is NOT the session
+  `framework_*` fields and **one component per row of `DERIVATION_FIELD_MANIFEST`**, each encoded by its
+  `encode` (§A.4) — **exactly as SUBMITTED**. It is NOT the session
   anchor alone (Codex R5 MAJOR 3): if the key covered only the session and the operator's answer, a tampered
   or stale form carrying a DIFFERENT framework order but the same session and answer would hit the replay
   `SELECT` at step 4 and return `200` **without ever reaching the step-5 comparison** — a laundering path
@@ -2643,10 +2753,11 @@ Two further notes:
 
 The form emits the framework computation as hidden inputs: `view_session_date`, `candidate_id`,
 `framework_order_type`, `framework_duration`, `framework_stop_price`, `framework_limit_price`,
-`framework_quantity`, plus **EVERY `derivation_*` column the table declares** — enumerated from the schema,
-not from a hand-kept list, so a column added to the DDL cannot be silently left out of the anchor (Codex R27
-MAJOR: three were). A test asserts the set of emitted `derivation_*` hidden inputs EQUALS the set of
-`derivation_*` columns on `latch_order_intents`. At POST:
+`framework_quantity`, plus one hidden input **GENERATED PER ROW OF `DERIVATION_FIELD_MANIFEST`** (§A.4) —
+named by its `column` and encoded by its `encode`. The manifest carries the DB-column-to-attribute-to-encoding
+mapping that this instruction previously left an implementer to invent; nothing here re-lists the columns and
+no count appears. Manifest assertion 1 pins it against `PRAGMA table_info`, so a column added to the DDL
+without a manifest row FAILS before this form can silently omit it (Codex R27 MAJOR: three were omitted). At POST:
 
 1. **The session anchor gets the SAME four-tier ladder the 21-A beacon already ships**
    (`swing/web/routes/latches.py:_parse_beacon_anchor` / `_classify_anchor`): unparseable -> `400` naming the
@@ -2814,7 +2925,7 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
 | `swing/data/db.py` | `EXPECTED_SCHEMA_VERSION` 32->33; `PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES`; `_create_pre_phase21_arc_b_migration_backup`; `_phase21_arc_b_backup_gate`; wire into `run_migrations` |
 | `swing/data/models.py` | `LatchOrderIntent` dataclass + `__post_init__`; **`LatchViewEvent` gains `surface` and ALL THREE of `actionable_at_first_view` / `actionable_at_last_view` / `actionable_ever_viewed`** with `{0,1}` validation on each plus the two `ever >= first` / `ever >= last` monotonicity checks (and NO first-vs-last constraint — §C.1); the new enums IMPORTED from `swing/latches/constants.py`, never re-declared |
 | `swing/data/repos/latch_view_events.py` | RE-KEYED on `(candidate_id, view_session_date, surface)` (§C.1) — `get_view` / `record_view` take `candidate_id` + a REQUIRED `surface`; `_COLS` and `_row_to_model` gain `surface` + ALL THREE actionability columns, named exactly — `actionable_at_first_view`, `actionable_at_last_view`, `actionable_ever_viewed` (a test asserts `_COLS` EQUALS the rebuilt table's PRAGMA column list, so an omitted `ever` — the one CLASSIFICATION reads — cannot ship green); `record_view` gains `actionable=`; both list helpers gain an explicit `surfaces=` filter |
-| `swing/latches/constants.py` | `LATCH_TELEMETRY_EPOCH_SESSION`, `LATCH_VIEW_SURFACES`, `ACTIONABLE_VIEW_SURFACES`, `LATCH_INTENT_KINDS`, `LATCH_ATTESTED_DISPOSITIONS`, `LATCH_VALIDITY_OUTCOMES`, `LATCH_DISPOSITIONS`, `LATCH_SIZING_BASES`, `LATCH_STOP_LEG_STATES`, `LATCH_ORDER_WITHHELD_REASONS`, `LATCH_TELEMETRY_DARK_SESSIONS_THRESHOLD`, `LATCH_BROKER_SNAPSHOT_MAX_AGE_SECONDS`, `LATCH_BROKER_SNAPSHOT_KEYS` (the SEVEN, §C.2 — imported by the fragment, the handler, the dataclass validator and the drift test, so the emitted set and the required set are ONE object), **`LATCH_BROKER_SNAPSHOT_RENDER_BRANCHES` and `LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES`** (the two vocabularies, §C.2 — the JSON-expressed enum is a schema enum and takes the #11 mirror like every other, which it had escaped purely because it is written as a `json_extract` predicate rather than a column CHECK); **and the FIVE bucket sets §F.3 defines** — `AWAY_RATE_COUNTED_DISPOSITIONS` (fixed at `{"away_unseen"}` per §A.1.5), `ATTESTED_AWAY_DISPOSITIONS`, `PENDING_DISPOSITIONS`, `DECISION_DISPOSITIONS` (written out, never derived) and the derived `UNATTRIBUTABLE_DISPOSITIONS`, plus `_RULED_DISPOSITIONS` (their union — what `r_bucket_for` validates against), `R_BUCKETS` (the closed set of values `r_bucket_for` RETURNS — the report, the partition test and the CLI all ITERATE it), and `DERIVATION_NULLABLE_ON_DECISION` (the two derivation columns legitimately NULL on a decision row, §C.2) |
+| `swing/latches/constants.py` | `LATCH_TELEMETRY_EPOCH_SESSION`, `LATCH_VIEW_SURFACES`, `ACTIONABLE_VIEW_SURFACES`, `LATCH_INTENT_KINDS`, `LATCH_ATTESTED_DISPOSITIONS`, `LATCH_VALIDITY_OUTCOMES`, `LATCH_DISPOSITIONS`, `LATCH_SIZING_BASES`, `LATCH_STOP_LEG_STATES`, `LATCH_ORDER_WITHHELD_REASONS`, `LATCH_TELEMETRY_DARK_SESSIONS_THRESHOLD`, `LATCH_BROKER_SNAPSHOT_MAX_AGE_SECONDS`, `LATCH_BROKER_SNAPSHOT_KEYS` (the SEVEN, §C.2 — imported by the fragment, the handler, the dataclass validator and the drift test, so the emitted set and the required set are ONE object), **`LATCH_BROKER_SNAPSHOT_RENDER_BRANCHES` and `LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES`** (the two vocabularies, §C.2 — the JSON-expressed enum is a schema enum and takes the #11 mirror like every other, which it had escaped purely because it is written as a `json_extract` predicate rather than a column CHECK); **and the FIVE bucket sets §F.3 defines** — `AWAY_RATE_COUNTED_DISPOSITIONS` (fixed at `{"away_unseen"}` per §A.1.5), `ATTESTED_AWAY_DISPOSITIONS`, `PENDING_DISPOSITIONS`, `DECISION_DISPOSITIONS` (written out, never derived) and the derived `UNATTRIBUTABLE_DISPOSITIONS`, plus `_RULED_DISPOSITIONS` (their union — what `r_bucket_for` validates against), `R_BUCKETS` (the closed set of values `r_bucket_for` RETURNS — the report, the partition test and the CLI all ITERATE it), `DERIVATION_NULLABLE_ON_DECISION` (the two derivation columns legitimately NULL on a decision row, §C.2), and **`DERIVATION_FIELD_MANIFEST`** (§A.4 — the ONLY place the DB-column - `OrderDerivation`-attribute - encoding mapping exists; the form's hidden inputs, `anchor_digest` and the §G.2 comparison are all GENERATED from it) |
 | `swing/web/routes/latches.py` | **(a)** NEW `POST /latches/intent` (the §G.1 seven-step handler). **(b) `POST /latches/view` IS REWRITTEN, not merely passed a new kwarg (Codex R13 MAJOR 3):** `_parse_beacon_anchor` gains `actionable_candidate_ids` + `withheld_candidate_ids` REPLACING the single `candidate_ids` field (same rejection ladder, same 200-id cap applied to the UNION, plus a rejection when an id appears in BOTH lists); the handler intersects EACH list with the anchor-session live set and calls `record_view(..., surface="latch_panel", actionable=<which list it came from>)`. **If this route is left on the old contract every withheld render is still ingested as a plain view and the whole R7 fix never reaches the DB.** **(c)** `POST /latches/orders` gains the validity prompt + the SINGLE `broker_snapshot_json` hidden field carrying every key in `LATCH_BROKER_SNAPSHOT_KEYS` (§C.2's `json_remove` path list is the roster) — NOT separate `broker_snapshot_ts` / `broker_snapshot_branch` inputs, which cannot satisfy the envelope contract |
 | `swing/web/view_models/latches.py` | `LatchRowVM` gains the prepared-order + disposition + prompt block; `LatchPanelVM` gains the intent-anchor payload (**and `PANEL_SPECIFIC_FIELDS` grows to match**); `all_clear_note` -> the separated claims |
 | `swing/web/templates/latches.html.j2` | include the prepared-order partial per live card; the attestation prompt on terminal cards |
@@ -2989,7 +3100,11 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
     `executescript` against a REAL v32 DB applies `0033` without error (catches syntax / unbalanced parens /
     unresolvable references — the class no prose review sees, and the plan's own DDL block carries
     PLACEHOLDERS, so a literal copy MUST fail this test); (ii) a CHECK-SET DIFF parsed from both DDLs, with
-    whitespace normalised, whose symmetric difference equals EXACTLY the four enumerated deltas — catching an
+    whitespace normalised. **[KNOWN DEFECT R30 -- UNFIXED] The "equals EXACTLY the four enumerated deltas"
+    phrasing on this line is the STALE reading and has NO normative standing; AUTHORITATIVE is §C.1's
+    computed oracle** (`expected_added` / `expected_removed` derived from the delta list, with the `UNIQUE`
+    delta contributing nothing to a CHECK diff). Implement §C.1's four-line computation, not this clause —
+    catching an
     ADDED or silently-ALTERED constraint, which the preservation suite (known rejections only) and
     `executescript` (happy with any valid constraint) both miss. Plus the trigger-SQL equality check against
     `0032`'s bodies modulo the table name.
@@ -3104,7 +3219,11 @@ evidence the probe was real, NOT as figures any test should assert.) Every const
 and accepted what the plan says it accepts, including both DELIBERATE accepts (`derivation_real_equity` at
 zero and negative; `first=1, last=0, ever=1`) and all three triggers plus `UNIQUE(idempotency_key)`.
 
-**The audit matrix IS Task 1's test oracle — reproduce it, do not re-derive it.** The full per-probe table is
+**[KNOWN DEFECT R30 -- UNFIXED] This sentence originally read "the audit matrix IS Task 1's test oracle —
+reproduce it, do not re-derive it", which contradicts the paragraph above it and the roster rule. That
+reading is STALE and has NO normative standing. AUTHORITATIVE: the audit matrix is DATED EVIDENCE and a
+MINIMUM-COVERAGE CHECKLIST; the live tests DERIVE their cases from the DDL, `PRAGMA table_info`, the
+constants and the annotated manifests, exactly as the surrounding paragraph says.** The full per-probe table is
 in `.copowers-findings.md` under "SYSTEMATIC CHECK/TRIGGER AUDIT". Two disciplines it encodes, both learned
 the expensive way in this arc:
 - **A CHECK passes when its expression is NULL**, so any guard built from a function that returns NULL on bad
@@ -3154,12 +3273,12 @@ the expensive way in this arc:
       dated inside the window but recorded against a TERMINAL state is NOT evidence (§E.3).
 - [ ] **THE COVERAGE / ACTIONABILITY MATRIX — all four cells, exactly as §E states them once.** Each cell
       discriminates a different wrong implementation:
-      - FULL + no awareness -> `away_unseen`.
-      - FULL + awareness + only `actionable_ever_viewed = 0` rows -> `never_actionable` (an implementation
+      - FULL + no observation (`awareness_view_rows` EMPTY) -> `away_unseen`.
+      - FULL + observation + EMPTY `actionable_view_rows` -> `never_actionable` (an implementation
         ignoring the column returns `discipline_lapse` or `away_unseen` and FAILS, in opposite directions).
-      - PARTIAL + awareness + only `actionable_ever_viewed = 0` rows -> `never_actionable` (an implementation
+      - PARTIAL + observation + EMPTY `actionable_view_rows` -> `never_actionable` (an implementation
         re-applying a coverage veto after the table routed normally returns `pre_telemetry` and FAILS).
-      - PARTIAL + NO awareness -> `pre_telemetry` — the FTRE geometry (an implementation ranking actionability
+      - PARTIAL + NO observation -> `pre_telemetry` — the FTRE geometry (an implementation ranking actionability
         above coverage flips the arc's headline case on the first page view and FAILS).
 - [ ] **The ordering test:** PARTIAL + no awareness with `broken` telemetry health STILL returns
       `pre_telemetry`, NOT `telemetry_unhealthy` — health may not pre-empt RD's ruled table.
@@ -3396,7 +3515,7 @@ step that gets absorbed and skipped.
 ### K.2 The other named acceptance items (brief §3)
 
 - **Each of the four classification cells** — §E rungs 1, 2, 6-terminal, 7-full.
-- **The prompt fires ONLY on viewed=YES + no-action and never elsewhere** — the eleven-disposition parametrised
+- **The prompt fires ONLY on actionable_viewed=YES + no-action and never elsewhere** — the eleven-disposition parametrised
   sweep (§E.2).
 - **An unattested ambiguous cell defaults to LAPSE** — §E.1, asserted on `effective_disposition`.
 - **A double-click yields ONE logged intent** — Task 7, asserting the row count AND that both responses carry
@@ -3421,8 +3540,8 @@ step that gets absorbed and skipped.
 1. **RD plan-stage review — BLOCKING.** §A.1 (the acceptance-test resolution and the third bucket), §A.2 (the
    sizing basis), §A.3 (computed-not-stored delta), §C.2 (the ledger shape), §E (the classification semantics
    and the pessimistic default), §F (the telemetry-health gate). **§A.1 and §A.1.6 are RULED and no longer block** (R24 MAJOR — this
-   line contradicted §A.1.5's "nothing is gate-blocked now"); **§A.2 (the sizing basis) and §A.3
-   (computed-not-stored delta) remain OPEN and are the only RD items still outstanding.**
+   line contradicted §A.1.5's "nothing is gate-blocked now"); **§A.2 (the sizing basis) is RULED 2026-07-29 — the LIMIT PRICE, both regimes. §A.3
+   (computed-not-stored delta) is the ONLY RD item still outstanding.**
 2. **CHARC** — §C.1's rebuild-vs-ALTER choice and the 33-column table against B7's "minimal".
 3. **review-strong to convergence** + **codex-auto-review (REQUIRED, charter §2.9)** — and per the recipe,
    VERIFY the working invocation at dispatch and report which form ran. On this worktree
