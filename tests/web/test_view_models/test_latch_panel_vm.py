@@ -142,17 +142,52 @@ def test_an_in_zone_armed_latch_reads_armed_in_zone(seeded_db):
     assert _vm(cfg, price=18.60).rows[0].state_label == "ARMED - IN ZONE"
 
 
+def _write_archive_bars(cfg, ticker, rows):
+    """Shape-A archive bars as `(iso_session, close)` -- the only read-side
+    source that DATES a close per row."""
+    from pathlib import Path
+
+    import pandas as pd
+    cache = Path(cfg.paths.prices_cache_dir)
+    cache.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([
+        {"asof_date": session, "open": close, "high": close, "low": close,
+         "close": close, "volume": 100.0}
+        for session, close in rows
+    ]).to_parquet(cache / f"{ticker.upper()}.yfinance.parquet")
+
+
 def test_the_price_is_always_labelled_last_close_and_stale(seeded_db):
     """The panel GET deliberately takes NO live quote (that would write an
     audit row from a GET -- an A4 breach), so the price is the most recent
     persisted `candidates.close`. It must never pass for a live quote: the
-    source, the as-of session and the stale flag are all rendered."""
+    source, the date CLAIM and the stale flag are all rendered.
+
+    RE-EXPRESSED, NOT DELETED (Arc 21-G Task 6, RD OQ-3). The shipped assertion
+    was `price_asof == "2026-07-24"` -- the RUN STAMP, which is only an UPPER
+    BOUND on the close's own date. There is no archive bar here, so nothing
+    dates this close, and the honest claim is the bound. `price_asof` now
+    carries the date the panel can PROVE or nothing at all, so a future
+    consumer reading it can no longer be handed a stamp shaped like a per-row
+    date."""
     cfg, _ = seeded_db
     _seed(cfg, _FTRE)
     row = _vm(cfg, price=19.52).rows[0]
     assert row.price_source == "last_close"
     assert row.price_is_stale is True
+    assert row.price_asof == "-"
+    assert row.price_asof_basis == "close dated on or before 2026-07-24"
+
+
+def test_a_corroborated_close_states_its_proven_date(seeded_db):
+    """The paired half: the claim must not degrade to the upper-bound form
+    unconditionally, or the card tells the operator LESS than it knows."""
+    cfg, _ = seeded_db
+    _seed(cfg, _FTRE)
+    _write_archive_bars(cfg, "FTRE", [("2026-07-24", 19.52)])
+    row = _vm(cfg, price=19.52).rows[0]
     assert row.price_asof == "2026-07-24"
+    assert row.price_asof_basis == "close dated 2026-07-24"
 
 
 def test_an_absent_price_does_not_block_the_row(seeded_db):

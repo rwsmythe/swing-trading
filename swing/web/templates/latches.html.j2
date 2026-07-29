@@ -40,7 +40,13 @@
         <dd>
           {{ row.current_price }} ({{ row.zone_position_label }})
           <span class="muted">
-            source {{ row.price_source }}, as of {{ row.price_asof }}{% if row.price_is_stale %} [STALE]{% endif %}
+            {# `price_asof_basis` is display-ready and is the DATE CLAIM the
+               panel can actually support (Arc 21-G Task 6, RD OQ-3). The
+               shipped `as of {{ row.price_asof }}` rendered `quote[1]`, the
+               RUN STAMP, as the price's own as-of date -- an upper bound
+               presented as a per-row fact, which is gotcha #30 on the very
+               panel this arc exists to correct. #}
+            source {{ row.price_source }}, {{ row.price_asof_basis }}{% if row.price_is_stale %} [STALE]{% endif %}
           </span>
         </dd>
         <dt>Sessions to horizon</dt>

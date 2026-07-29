@@ -98,7 +98,16 @@ class LatchRowVM:
     zone_position: str
     zone_position_label: str
     price_source: str
+    # THE DATE THE PANEL CAN PROVE, or "-" (Arc 21-G Task 6, RD OQ-3). It is
+    # deliberately NOT the run stamp any more: a stamp is an UPPER BOUND on the
+    # close's date, and handing a consumer an upper bound shaped like a per-row
+    # date is exactly gotcha #30. A future consumer reading this field now gets
+    # either a PROVEN date or nothing.
     price_asof: str
+    # The display-ready claim rendered beside the price. NEW display-only field
+    # on LatchRowVM ONLY -- LatchRowVM is not a base-layout VM, so the
+    # every-base-VM-or-500 gotcha does not apply.
+    price_asof_basis: str
     price_is_stale: bool
     # horizon + state
     sessions_to_horizon: int
@@ -232,11 +241,51 @@ def _telemetry_label(views) -> str:
     return f"first viewed {first.first_viewed_ts} ({total} views)"
 
 
-def _build_row(latch: Latch, *, quote, views) -> LatchRowVM:
+def _price_asof_claim(quote, provenance) -> tuple[str, str]:
+    """`(price_asof, price_asof_basis)` -- the DATE the card may claim.
+
+    Arc 21-G Task 6 (RD's OQ-3 fold-in). `_build_row` used to render
+    `quote[1]`, the RUN STAMP, as the price's own as-of date. The card already
+    said `last_close` and `[STALE]` unconditionally, so it never claimed
+    FRESHNESS -- what it claimed wrongly is the DATE:
+
+        `a live instance of gotcha #30 sitting inside the fix for gotcha #30`
+
+    It reuses the SAME classifier the fragment uses and the SAME archive map
+    the derivation already surfaced, so it adds no read, no query and no DB
+    field: `GET /latches` still writes nothing at all (A4).
+
+    NO APOSTROPHES (Jinja autoescaping renders one as `&#39;`).
+    """
+    if quote is None or provenance is None:
+        return "-", "as of -"
+    session_iso = provenance.derivation_session.isoformat()
+    stamp = provenance.stamp_session or "an unrecorded session"
+    if provenance.may_assert:
+        # PROVEN: the archive holds a bar dated exactly this session whose
+        # close IS the recorded close.
+        return session_iso, f"close dated {session_iso}"
+    if provenance.provenance == CLOSE_PROVENANCE_FUTURE_STAMP:
+        return "-", (f"close stamped {stamp}, later than the session this page "
+                     f"describes ({session_iso})")
+    # Rung B: the stamp stated as the UPPER BOUND it actually is.
+    return "-", f"close dated on or before {stamp}"
+
+
+def _build_row(latch: Latch, *, quote, views, provenance=None) -> LatchRowVM:
     """`quote` is `(price, asof_iso)` from the READ-ONLY last-close source, or
-    `None`."""
+    `None`. `provenance` is the `CloseProvenance` for that quote, or `None`.
+
+    SCOPE BOUNDARY (RD, OQ-3): the provenance fixes the DATE the card claims.
+    It does NOT re-gate `_zone_position` or the IN ZONE / OUT OF ZONE label --
+    once the date is honest, "at the close dated X, this latch is in zone" is a
+    TRUE statement. The zone label describes the price the card shows rather
+    than asserting order coverage, so it is not a #30 instance once the date
+    beside it stops overstating.
+    """
     price = None if quote is None else quote[0]
     zone_position = _zone_position(price, latch)
+    price_asof, price_asof_basis = _price_asof_claim(quote, provenance)
     return LatchRowVM(
         ticker=latch.identity.ticker,
         fire_date=latch.anchor.isoformat(),
@@ -252,7 +301,8 @@ def _build_row(latch: Latch, *, quote, views) -> LatchRowVM:
         # from a GET (A4). Rendering the provenance keeps that honest rather
         # than passing a possibly-days-old close off as a live quote.
         price_source="-" if quote is None else "last_close",
-        price_asof="-" if quote is None or not quote[1] else quote[1],
+        price_asof=price_asof,
+        price_asof_basis=price_asof_basis,
         price_is_stale=quote is not None,
         sessions_to_horizon=latch.sessions_to_horizon,
         horizon_expiry=latch.horizon_expiry.isoformat(),
@@ -341,13 +391,32 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
 
         views_by_latch = _load_views(conn, displayed, derivation.horizon_session)
 
-        rows = [
-            _build_row(
-                latch,
-                quote=(
-                    quotes.get(latch.identity.ticker) if latch.is_live else None),
-                views=views_by_latch.get(latch.identity.candidate_id, ()),
+        # The SAME pure classifier the fragment uses, over the SAME archive map
+        # the derivation already surfaced -- no new read, no new query, no new
+        # DB field, so the panel GET stays a pure reader (A4).
+        from swing.latches.orders import classify_close_provenance
+
+        def _prov(latch: Latch, quote):
+            return classify_close_provenance(
+                quote=quote,
+                derivation_session=derivation.derivation_session,
+                bars_through=latch.bars_through,
+                archive_closes=derivation.archive_closes.get(
+                    latch.identity.ticker, {}),
+                archive_status=derivation.archive_status.get(
+                    latch.identity.ticker, ARCHIVE_STATUS_OK),
             )
+
+        def _row(latch: Latch) -> LatchRowVM:
+            quote = quotes.get(latch.identity.ticker) if latch.is_live else None
+            return _build_row(
+                latch, quote=quote,
+                views=views_by_latch.get(latch.identity.candidate_id, ()),
+                provenance=None if quote is None else _prov(latch, quote),
+            )
+
+        rows = [
+            _row(latch)
             for latch in sorted(
                 displayed,
                 key=lambda x: (not x.is_live, -x.anchor.toordinal(),

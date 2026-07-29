@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -240,3 +241,151 @@ def test_the_panel_carries_the_base_break_footnote(seeded_db, frozen_panel_clock
     with TestClient(app) as client:
         r = client.get("/latches")
     assert "Structural base-break is not implemented in V1." in r.text
+
+
+# --- Arc 21-G Task 6 (RD OQ-3): the card states a date it can PROVE ---------
+def _write_archive_bars(cfg, ticker, rows):
+    """Shape-A archive bars as `(iso_session, close)`. The panel reads Shape A
+    ONLY (`migrate=False` is the A4 no-write property)."""
+    import pandas as pd
+    cache = Path(cfg.paths.prices_cache_dir)
+    cache.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([
+        {"asof_date": session, "open": close, "high": close, "low": close,
+         "close": close, "volume": 100.0}
+        for session, close in rows
+    ]).to_parquet(cache / f"{ticker.upper()}.yfinance.parquet")
+
+
+def _seed_last_close(cfg, rid, *, asof, action, close):
+    """A NON-aplus row supplying the panel's rendered last close under the run
+    stamp `asof`, without adding a fire."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(?, ?, ?, ?, 1, 0, 1, 0, 0, 0)",
+            (rid, f"{asof}T17:30:05", asof, action))
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(?, 'FTRE', 'watch', ?, 18.34, 14.88, 'universe')", (rid, close))
+    conn.close()
+
+
+def test_the_card_renders_the_proven_close_date_when_it_is_corroborated(
+        seeded_db, frozen_panel_clock):
+    """T11a -- the LOCK half of RD's OQ-3 fold-in.
+
+    Its adversary is an implementation that degrades EVERY card to the
+    upper-bound form and thereby tells the operator LESS than it knows. When
+    the archive holds a bar dated the derivation session whose close IS the
+    recorded close, the card may -- and must -- state that date as PROVEN."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg, with_drift=False)
+    _seed_last_close(cfg, 127, asof="2026-07-24", action="2026-07-27",
+                     close=17.76)
+    _write_archive_bars(cfg, "FTRE", [("2026-07-24", 17.76)])
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/latches")
+    assert r.status_code == 200
+    assert "close dated 2026-07-24" in r.text
+    assert "on or before" not in r.text
+
+
+def test_the_card_never_renders_a_run_stamp_as_the_price_own_date(
+        seeded_db, frozen_panel_clock):
+    """T11b -- THE DISCRIMINATOR. Survey hit 3, and RD folded it into this arc
+    rather than pay a second dispatch to leave it live for a week:
+
+        `One string, same surface, same cycle, and it renders a run-level stamp
+        as a per-row date on the very panel this arc exists to correct -- a
+        live instance of gotcha #30 sitting inside the fix for gotcha #30.`
+
+    The Route-B geometry: run 127 stamps 2026-07-24 over a close that is
+    actually FTRE's 2026-07-23 bar. PRE-FIX the card renders a bare
+    `as of 2026-07-24` for a close that is NOT the 2026-07-24 close. POST-FIX
+    it renders the UPPER BOUND the stamp actually is.
+
+    The card already says `last_close` and `[STALE]` unconditionally, so it
+    never claimed FRESHNESS -- what it claimed wrongly is the DATE.
+
+    THE COUPLING (RD, OQ-2) is asserted here too: a card that silently dropped
+    to a bare price with no date claim would satisfy `no wrong date` while
+    telling the operator nothing. The reduction must be LABELLED."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg, with_drift=False)
+    _seed_last_close(cfg, 127, asof="2026-07-24", action="2026-07-27",
+                     close=19.52)
+    _write_archive_bars(cfg, "FTRE", [
+        ("2026-07-23", 19.52),      # what the recorded close ACTUALLY is
+        ("2026-07-24", 17.76),      # FTRE's real 07-24 close
+    ])
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/latches")
+    assert r.status_code == 200
+    assert "as of 2026-07-24" not in r.text          # fails pre-fix
+    assert "close dated on or before 2026-07-24" in r.text
+    # ...and the reduction is LABELLED, not silently dropped.
+    assert "19.52" in r.text
+    assert "last_close" in r.text and "[STALE]" in r.text
+
+
+def test_the_card_names_a_future_stamped_close_as_later_than_this_page(
+        seeded_db, frozen_panel_clock):
+    """Rung F on the card. A close stamped after the session this page
+    describes cannot be dated INTO this page, so the card says exactly that
+    rather than presenting a date the price does not have here."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg, with_drift=False)
+    _seed_last_close(cfg, 127, asof="2026-07-28", action="2026-07-29",
+                     close=17.76)
+    _write_archive_bars(cfg, "FTRE", [("2026-07-24", 17.76)])
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/latches")
+    assert r.status_code == 200
+    assert "as of 2026-07-28" not in r.text
+    assert "close stamped 2026-07-28, later than the session this page "         "describes (2026-07-24)" in r.text
+
+
+def test_a_card_with_no_price_still_renders_the_shipped_dash(
+        seeded_db, frozen_panel_clock):
+    """Rung C is UNCHANGED: no price, no claim, the shipped `-`."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg, with_drift=False)
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute("UPDATE candidates SET close = NULL")
+    conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/latches")
+    assert r.status_code == 200
+    assert "source -, as of -" in r.text
+
+
+def test_the_zone_label_is_not_re_gated_by_the_provenance_ladder(
+        seeded_db, frozen_panel_clock):
+    """THE SCOPE BOUNDARY, pinned so the review does not widen it. Task 6 fixes
+    the DATE the card claims for the price -- it does NOT re-gate
+    `_zone_position` or the IN ZONE / OUT OF ZONE label. Once the date is
+    honest, `at the close dated X, this latch is in zone` is a TRUE statement:
+    the zone label describes the price the card shows rather than asserting
+    order coverage, so it is not a #30 instance once the date beside it stops
+    overstating."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg, with_drift=False)
+    _seed_last_close(cfg, 127, asof="2026-07-24", action="2026-07-27",
+                     close=19.52)                    # ABOVE the 18.89 zone cap
+    _write_archive_bars(cfg, "FTRE", [("2026-07-23", 19.52)])
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/latches")
+    assert r.status_code == 200
+    assert "ABOVE ZONE - do not chase" in r.text
+    assert "close dated on or before 2026-07-24" in r.text
