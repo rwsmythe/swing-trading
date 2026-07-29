@@ -756,3 +756,48 @@ def test_a_different_pivot_refire_WITHOUT_a_fill_still_supersedes():
         fires=fires, bars_by_ticker={"SUPG": []}, entries_by_ticker={},
         horizon_session=date(2026, 7, 22), derivation_session=date(2026, 7, 21))
     assert [x.state for x in d.latches] == ["superseded", "armed"]
+
+
+# --- Arc 21-G Task 1: the derivation surfaces the archive, the Latch does not
+_SHIPPED_LATCH_FIELDS = frozenset({
+    "identity", "latched_pivot", "latched_initial_stop", "zone_cap", "anchor",
+    "horizon_expiry", "sessions_elapsed", "sessions_to_horizon", "state",
+    "clear_reason", "clear_session", "clear_trade_id", "fill_link_basis",
+    "fill_link_anomaly", "bars_available", "bars_through",
+    "reconfirmation_candidate_ids", "reconfirmation_sessions",
+})
+
+
+def test_the_latch_gains_no_provenance_field():
+    """Arc 21-G plan B.1: provenance is a FRAGMENT concern, not a latch
+    attribute. Keeping it off `Latch` is what stops the same fact being stated
+    in two places that can drift -- and it keeps every 21-A `Latch` consumer,
+    including 21-B's ledger, field-for-field unchanged."""
+    from dataclasses import fields
+
+    from swing.latches.models import Latch
+    assert frozenset(f.name for f in fields(Latch)) == _SHIPPED_LATCH_FIELDS
+
+
+def test_the_derivation_defaults_both_archive_maps_to_empty():
+    """A caller that supplies no status map (every 21-A test, and the pure
+    derivation itself) gets empty maps -- never a KeyError, never a claim."""
+    d = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": []}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 27), derivation_session=date(2026, 7, 24))
+    assert d.archive_closes == {"FTRE": {}}
+    assert d.archive_status == {}
+
+
+def test_the_derivation_surfaces_the_per_ticker_session_to_close_map():
+    """The witness the ladder DATES the persisted close against. It is built
+    from the bars the derivation already loads -- no new read."""
+    bars = [_bar("2026-07-22", 18.0, 18.5, 17.8, 18.20),
+            _bar("2026-07-23", 18.2, 19.6, 18.1, 19.52)]
+    d = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": bars}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 27), derivation_session=date(2026, 7, 24),
+        bar_status_by_ticker={"FTRE": "ok"})
+    assert d.archive_closes["FTRE"] == {
+        date(2026, 7, 22): 18.20, date(2026, 7, 23): 19.52}
+    assert d.archive_status == {"FTRE": "ok"}

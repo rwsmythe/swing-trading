@@ -11,7 +11,8 @@ space, so the reader must be able to build a FireRow for it and let
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import date
 
 from swing.latches.constants import (
@@ -219,6 +220,24 @@ class LatchDerivation:
     derivation_session: date
     horizon_session: date
     horizon_sessions: int
+    # Arc 21-G: the per-ticker `{session -> close}` map read from the on-disk
+    # OHLCV archive -- the ONLY read-side source that DATES a close per row,
+    # and one the derivation already loads for the invalidation walk.
+    #
+    # DELIBERATELY ANCHOR-INDEPENDENT, and that is load-bearing. The
+    # invalidation walk's ELIGIBLE set is `[anchor, derivation_session]`, which
+    # is EMPTY for a latch that fired tonight for tomorrow -- so a witness taken
+    # from it could never corroborate the newest latch in the system, the one
+    # the operator is about to act on. This map is keyed off the LOAD window
+    # instead, which reaches back to `min(anchor, derivation_session)`.
+    #
+    # It DATES the persisted close; it never REPLACES it. The number the check
+    # judges stays the number the cards render (21-A shown-equals-judged).
+    archive_closes: Mapping[str, Mapping[date, float]] = field(
+        default_factory=dict)
+    # Per ticker, one of ARCHIVE_STATUSES. `unavailable` = the read RAISED (our
+    # ignorance); `ok` = it completed, so an empty map is a FACT about the data.
+    archive_status: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

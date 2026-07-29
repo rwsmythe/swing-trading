@@ -102,3 +102,38 @@ MANDATE_ORDER_DURATIONS = frozenset({"GOOD_TILL_CANCEL"})
 LATCH_ORDER_ALARMS = frozenset({
     "LATCH_ARMED_NO_RESTING_ORDER", "ORDER_RESTING_LATCH_CLEARED",
 })
+
+# --- Arc 21-G: what the panel may CLAIM about the regime close (gotcha #30) --
+#
+# `evaluation_runs.data_asof_date` is the MAX bar date across the WHOLE cohort
+# while each `candidates.close` comes from that ticker's OWN last bar, so the
+# stamp is an UPPER BOUND on the close's date, never a proof of it. The ladder
+# below is the read-side treatment of that gap:
+#
+#   corroborated  -- the archive holds a bar dated EXACTLY the derivation
+#                    session whose close IS the recorded close. The only rung
+#                    that may ASSERT a match.
+#   uncorroborated-- a close exists but is not proven to be that session's. It
+#                    may ALARM only under the two conditions in the plan's
+#                    section B.2.1 (CHARACTERISABLE + SELF-LIMITING).
+#   future_stamp  -- the close belongs to a moment AFTER this page horizon, or
+#                    cannot be placed in time at all. Neither direction.
+#   absent        -- no usable price. Neither direction.
+CLOSE_PROVENANCE_CORROBORATED = "corroborated"
+CLOSE_PROVENANCE_UNCORROBORATED = "uncorroborated"
+CLOSE_PROVENANCE_FUTURE_STAMP = "future_stamp"
+CLOSE_PROVENANCE_ABSENT = "absent"
+CLOSE_PROVENANCES = frozenset({
+    CLOSE_PROVENANCE_CORROBORATED, CLOSE_PROVENANCE_UNCORROBORATED,
+    CLOSE_PROVENANCE_FUTURE_STAMP, CLOSE_PROVENANCE_ABSENT,
+})
+
+# Whether the on-disk archive READ COMPLETED, carried SEPARATELY from whether
+# it held a bar. `load_bars` swallows every archive exception and returns [],
+# so without this "the archive says there is no such bar" and "the archive
+# could not be read" collapse into one absence -- and authorizing an alarm in
+# the second case would be asserting from a stale price at exactly the moment
+# the settling evidence was unreadable.
+ARCHIVE_STATUS_OK = "ok"
+ARCHIVE_STATUS_UNAVAILABLE = "unavailable"
+ARCHIVE_STATUSES = frozenset({ARCHIVE_STATUS_OK, ARCHIVE_STATUS_UNAVAILABLE})

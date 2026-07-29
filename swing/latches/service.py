@@ -468,8 +468,16 @@ def derive_latches(
     horizon_session: date,
     derivation_session: date,
     horizon_sessions: int = DEFAULT_LATCH_HORIZON_SESSIONS,
+    bar_status_by_ticker=None,
 ) -> LatchDerivation:
     """Fold every A+ fire into latches. PURE.
+
+    ``bar_status_by_ticker`` (Arc 21-G) is the per-ticker archive READ status
+    in ``ARCHIVE_STATUSES``, carried through onto ``LatchDerivation`` alongside
+    the per-ticker ``{session -> close}`` map derived from ``bars_by_ticker``.
+    Both are pass-through display/provenance context: the FOLD, the eligible
+    set and ``_finalize`` do not consult either, so the invalidation walk,
+    ``bars_available`` and ``bars_through`` are bit-for-bit unchanged.
 
     THE OPEN-LATCH RULE (plan A.2, RD-RULED). Processing a ticker's fires in
     ``(action_session_date, run_ts, candidate_id)`` order, each row is
@@ -515,10 +523,18 @@ def derive_latches(
 
     latches.sort(key=lambda x: (x.identity.ticker, x.anchor, x.identity.candidate_id))
     degraded.sort(key=lambda x: (x.ticker, x.action_session_date, x.candidate_id))
+    # The witness map is derived HERE, from the bars the caller already passed,
+    # so it cannot drift from the bars the walk saw. It is not consulted above.
+    archive_closes = {
+        ticker: {b.session: b.close for b in (bars or ())}
+        for ticker, bars in (bars_by_ticker or {}).items()
+    }
     return LatchDerivation(
         latches=tuple(latches),
         degraded=tuple(degraded),
         derivation_session=derivation_session,
         horizon_session=horizon_session,
         horizon_sessions=horizon_sessions,
+        archive_closes=archive_closes,
+        archive_status=dict(bar_status_by_ticker or {}),
     )
