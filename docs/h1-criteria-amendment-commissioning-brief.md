@@ -66,8 +66,8 @@ This is a registry-row UPDATE in the shape of `0026` (which INSERTed hypothesis 
 
 - **H2, H3, H4** — none gate on Wilson; unchanged.
 - **H5 (broad-watch)** — REPORTS Wilson LB across censoring scenarios; it is a reported statistic there, not a gate. Unchanged.
-- **`target_sample_size`** stays 20. Whether n=20 is large enough is a SEPARATE question (§6).
-- **The training-epoch contract** is untouched (see the open question in §6).
+- **`target_sample_size`** stays 20. Whether n=20 is large enough is a SEPARATE question, flagged not bundled (§6).
+- **The training-epoch contract** is untouched — the COHORT clause CITES it as the governing doctrine, it does not modify it (§6).
 - No change to how R is computed, to the shadow engine, or to any measurement path.
 
 ## §5 Verification / acceptance
