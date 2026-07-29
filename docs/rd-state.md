@@ -36,7 +36,8 @@
 | Item | State | My gate |
 |---|---|---|
 | **H1 criteria amendment** | Commissioned; brief `docs/h1-criteria-amendment-commissioning-brief.md`; with CHARC for the architecture pass. **CHARC banked D29 (`43ca92eb`): the A+ baseline cohort READERS omit the `entry_intent` filter the amended criterion names — live DB shows 3 labeled where the criterion counts 2.** The amendment fixes the TEXT; the readers still have to be brought to it. | Merge-blocking QA — **read the live registry row MYSELF post-migration**, and confirm the D29 reader gap is either closed or explicitly carried |
-| **21-G** (provenance asymmetry) | EXECUTING in flight | Merge QA. **BINDING: 21-G merges BEFORE 21-B's ledger lands** |
+| **21-G** (provenance asymmetry) | Witnessed PASS both states; **RD merge QA CLEARED 2026-07-29 (`20260729T085318Z`)** — six rulings verified enforced STRUCTURALLY on the branch, hard stops held, 15/15 trailer-clean | **DISCHARGED.** Merged-head number owed in the merge report. **BINDING: 21-G merges BEFORE 21-B's ledger lands** |
+| **0032 date-CHECK defect** (SQLite CHECK passes on NULL) | RULED `20260729T085410Z`: CONCUR, rides 21-B's rebuild; deliberate + both halves test-pinned; **CONDITION: if any new `latch_view_events` writer lands first, the fix lands first** | Confirm at 21-B merge QA |
 | **21-B** (prepared-order form + execution-parity ledger) | writing-plans ~round 23; my two bucket rulings issued | Plan-stage review, then merge QA |
 | **21-F** (dashboard latch surfacing) | Proposed; the order cache is a PREREQUISITE (CHARC forbade a broker call on the dashboard hot path) | The telemetry contract must settle BEFORE any dashboard surface ships |
 | **21-C** (framework places/cancels orders) | Deferred behind stage-1 evidence + an operator-signed L2 endpoint diff | — |
