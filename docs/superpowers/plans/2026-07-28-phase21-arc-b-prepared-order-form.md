@@ -91,7 +91,27 @@ Every task's requirements implicitly include this section.
 
 ---
 
-## A. DECISIONS FOR RD. A.1 was the arc's premise problem and is RULED; A.2 and A.3 remain open.
+## A. DECISIONS FOR RD. A.1 and A.1.6 are RULED; A.2 and A.3 remain open.
+
+### A.0 THE GOVERNING MEASUREMENT PRINCIPLE (RD, 2026-07-28 — stated once, applied everywhere)
+
+> **DO NOT MERGE CATEGORIES THAT DIFFER IN EVIDENCE KIND, EVEN WHEN THEY AGREE IN OUTCOME.
+> Merge only what is measured the same way.**
+
+RD records this as its **THIRD application in this arc** and asks that it stop being rediscovered case by
+case. Every merge question in this plan resolves against it, so it is stated here rather than re-derived at
+each site. Its three ruled instances:
+
+| the two categories | they AGREE in outcome | they DIFFER in evidence kind — so they stay separate |
+|---|---|---|
+| `pre_telemetry` vs `away_unseen` (§A.1.1) | both exclude the fire from the discipline signal | *"the instrument did not exist"* is not *"the instrument looked and saw nothing"* |
+| `attested_was_away` vs `away_unseen` (§A.1.6) | both mean non-judgment non-action | **testimony is not telemetry** |
+| a stale-close MISMATCH vs MATCH (§B, 21-G) | same input, same price | one is an alarm you MAY raise; the other is a claim you may NOT assert |
+
+The practical test the principle gives an implementer: before collapsing two labels because they route to the
+same bucket, ask **how each was MEASURED**. If the answers differ, the labels stay — and if they must be
+summed for a reader, the sum is reported as its own explicitly-named figure rather than by erasing the
+distinction upstream.
 
 ### A.1 THE ACCEPTANCE TEST WAS VACUOUS AS WRITTEN — RULED BY RD 2026-07-28
 
@@ -263,34 +283,55 @@ favour of this plan's direction (with one simplification — `partial_telemetry_
   fixes the away set's CONTENT, it does not remove the reason the derivation exists (an overlap between the
   two buckets must stay unrepresentable, not merely untested).
 
-### A.1.6 TWO BUCKET CELLS ARE UNASSIGNED — **ROUTED TO RD, NOT DECIDED HERE** (found at the coherence pass)
+### A.1.6 THE TWO UNASSIGNED BUCKET CELLS — **RULED BY RD 2026-07-28**
 
-`r_bucket_for` (§F.3) is a total function by construction: `away_r` if the disposition is in
-`AWAY_RATE_COUNTED_DISPOSITIONS`, `unattributable_r` if it is in the DERIVED remainder of the excluded set,
-else `decision_r`. That default is what makes the partition airtight — and it is also what silently assigns
-two dispositions nobody ever ruled on:
+Both cells had been arriving by DEFAULT through a bucket fallthrough. RD ruled each, and separately commended
+the mechanism that surfaced them — *"RAISE-on-unlisted plus a test asserting every disposition appears exactly
+once means this class cannot recur by omission, and that is worth more than either ruling, because the next
+unlisted disposition will be one neither of us has thought of."* **That guard is kept exactly as built** (§F.3).
 
-| disposition | currently lands in | why that is a measurement decision, not an implementation choice |
-|---|---|---|
-| **`pending_live`** | `decision_r` | The latch is STILL LIVE and can still be acted on. Scoring it as decision evidence counts an unfinished observation as a finished one, and it moves as the window runs. |
-| **`attested_was_away`** | `decision_r` | The operator has ATTESTED he was away. Scoring a self-declared away as operator judgment is the opposite of what the away bucket exists to separate — but counting it in `away_r` puts a SELF-REPORT into the same number as the telemetry-derived `away_unseen`, and RD's whole design rests on telemetry being objective where recollection is not. |
+**RULING 1 — `pending_live`: EXCLUDED FROM EVERY RATE. Reported, never scored.**
 
-**This plan does NOT choose.** Both cells are genuinely RD's lane: the first is "when is a fire eligible to be
-scored at all", the second is "does a self-report count as evidence in a bucket built from objective
-telemetry". An implementer deciding either by leaving the default in place would be making a measurement
-ruling by omission, which is precisely the failure mode §A.1 exists to prevent.
+A latch that has not terminated **is not an observation yet**: there is no outcome, the operator can still
+act, and its value moves as the window runs. RD ties this directly to the FTRE retirement —
+*"a verdict that can flip on behaviour AFTER the window it purports to measure is not a measurement."*
 
-**What the plan DOES do, so nothing is decided by accident:** `r_bucket_for` REFUSES a disposition that is not
-explicitly listed in exactly one of `AWAY_RATE_COUNTED_DISPOSITIONS`, `_ALL_EXCLUDED_DISPOSITIONS` or an
-explicit `DECISION_DISPOSITIONS` set — it raises rather than falling through to a default. A test asserts every
-member of `LATCH_DISPOSITIONS` appears in exactly one of the three sets, so a future disposition added without
-a bucket ruling FAILS LOUDLY instead of being absorbed into `decision_r`. **Executing is blocked on Tasks 5
-and 9 until RD rules these two cells** (Tasks 1-4 and 6-8, 10 are unaffected).
+- `pending_live` is its own **reported** category, visible so the reader sees the pipeline rather than a
+  silently smaller corpus.
+- **EXCLUDED from every denominator** — decision, away and discipline alike.
+- **Rates compute over TERMINAL, CLASSIFIABLE observations only** — and this is enforced as a GATE on
+  `r_bucket_for`, NOT as one disposition among eleven (§F.3). A disposition-only encoding does not implement
+  the ruling: `pending_live` is only reached for a live latch that has actionable views AND no intent, so a
+  live latch carrying a `place` intent would score `accepted`, a live latch with no views would score
+  `away_unseen`, and a live latch with withheld-only views would score `never_actionable` — three
+  non-terminal observations in scored buckets. **Terminality gates the bucket; the disposition only names
+  what was seen.**
+- The ledger is self-completing: a latch leaves `pending_live` when it terminates and is classified THEN, on
+  complete information. Nothing is lost by waiting; something is corrupted by not waiting.
 
-**Options, for RD's convenience, not as a recommendation:** (a) report only TERMINAL latches and exclude
-`pending_live` from every bucket with its own visible count; (b) give `attested_was_away` its own
-`self_attested_away` count reported ALONGSIDE the telemetry-derived away rate rather than inside it;
-(c) count it in `away_r` and label the mixture. Each is defensible; none is the implementer's to pick.
+**RULING 2 — `attested_was_away`: NEITHER existing bucket. It gets a THIRD, and the away rate is reported in
+TWO forms.**
+
+The question RD answered is whether a self-declared away is evidence *of the same kind* as a telemetry-derived
+away. **It is not — therefore it does not belong in the same number** (§A.0). `decision_r` is clearly wrong,
+because separating exactly this is what the away bucket is for; but merging into `away_r`
+*"reintroduces, through the attestation door, the flattering path I closed at the default door"* — a
+self-report about one's own diligence is systematically biased toward the more comfortable explanation, and
+this is **the number that would justify automating his entries**, the one he least wants softenable.
+
+- `attested_was_away` is a **THIRD terminal category**, reported separately.
+- **EXCLUDED from the discipline signal** — if he was away it is not a judgment datum, and the attestation is
+  honoured rather than second-guessed.
+- The away rate is reported in **TWO FORMS over the same denominator**, so they are directly comparable:
+  - **OBJECTIVE away rate** — `away_unseen` only, telemetry-derived.
+  - **ATTESTED away rate** — `away_unseen` + `attested_was_away`.
+- **Stage-3 auto-place reads the OBJECTIVE rate as PRIMARY, with the attested rate as an explicit UPPER
+  BOUND.** The report labels them that way, so the decision cannot quietly be taken on the larger number.
+
+**The bias guard is deliberately ONE-SIDED, and a symmetric one must NOT be added.** RD's note: attesting
+*"I saw it and chose not to act"* when actually away is self-flagellating, unlikely, and **conservative** if it
+happens — it moves a fire INTO the discipline signal against himself. Only the flattering direction needed a
+guard.
 
 ### A.2 Which price feeds `compute_shares` — the PIVOT or the LIMIT CAP? (RD RULING REQUESTED)
 
@@ -405,10 +446,10 @@ table already uses for `latch_state_at_first_view` / `latch_state_at_last_view`:
 IMMUTABLE after insert, `..._at_last_view` advances monotonically `0 -> 1` (never back). No new grain, no new
 row, both facts preserved, and each timestamp keeps its own truthful companion.
 
-**Classification reads `actionable_at_last_view = 1`** as "the mandate WAS actionably presented in this
-session" (§E.3), because a later offered render in the same session is a genuine presentation. It never reads
-the first-view column for that test — that column exists so the record cannot lie about its own earliest
-timestamp.
+**Classification reads `actionable_ever_viewed = 1`** as "the mandate WAS actionably presented in this
+session" (§E.3) — the honestly-named column for that question. The `..._at_first_view` / `..._at_last_view`
+pair stay literally true of their own views and exist so the record cannot lie about either timestamp's
+companion fact.
 
 Consumers, each distinct (§E.3, §F.1):
 - the away/lapse split counts **only rows with `actionable_at_last_view = 1`** as a view;
@@ -439,18 +480,44 @@ CREATE TABLE latch_view_events_new (
     view_count                INTEGER NOT NULL,
     latch_state_at_first_view TEXT NOT NULL,
     latch_state_at_last_view  TEXT NOT NULL,
-    actionable_at_first_view  INTEGER NOT NULL,   -- NEW (R7 CRITICAL / R13 MAJOR 2)
-    actionable_at_last_view   INTEGER NOT NULL,
+    -- THREE FACTS, NAMED HONESTLY (R24 MAJOR). The draft advanced
+    -- `actionable_at_last_view` with MAX(), which makes it mean "EVER actionable
+    -- this session" while its NAME promises "actionable at the last view" -- so
+    -- a withheld render AFTER an offered one left the row asserting the last
+    -- view was actionable when it was not, beside a `last_viewed_ts` that HAD
+    -- advanced. The classifier's real question is "was it ever offered this
+    -- session", so that fact gets its own honestly-named column and the
+    -- first/last pair stay literally true of their own views.
+    actionable_at_first_view  INTEGER NOT NULL,   -- immutable after insert
+    actionable_at_last_view   INTEGER NOT NULL,   -- the LAST view's own value
+    actionable_ever_viewed    INTEGER NOT NULL,   -- MAX(), monotonic 0 -> 1
     CHECK (surface IN ('latch_panel')),        -- widened by the surface that adds itself
     CHECK (actionable_at_first_view IN (0, 1)),
     CHECK (actionable_at_last_view  IN (0, 1)),
+    CHECK (actionable_ever_viewed   IN (0, 1)),
+    CHECK (actionable_ever_viewed >= actionable_at_first_view),
+    CHECK (actionable_ever_viewed >= actionable_at_last_view),
     -- THE MONOTONIC CONTRACT, ENFORCED IN SQL AND NOT ONLY IN PYTHON (Codex
     -- R17). The prose claimed this was mirrored; the DDL only bounded each
     -- value, so a raw INSERT could store first=1 / last=0 -- a row the dataclass
     -- REJECTS, i.e. the DB holding a shape the read path cannot hydrate, which
     -- is the dangerous asymmetry direction the #11 discipline exists to stop.
-    CHECK (actionable_at_last_view >= actionable_at_first_view),
-    ... every 0032 CHECK reproduced VERBATIM ...
+
+    -- Every 0032 CHECK reproduced -- WITH the R24 CRITICAL `IS NOT NULL`
+    -- correction applied to both date CHECKs. 0032 as SHIPPED writes
+    -- `date(detection_date) = detection_date` with no IS NOT NULL, which a
+    -- length-correct invalid date such as '2026-99-99' passes (a SQLite CHECK
+    -- passes on a NULL expression). This rebuild is the moment that is fixable
+    -- for `latch_view_events` at zero cost, so it is fixed here; the SHIPPED
+    -- table's exposure is a SEPARATE 21-A finding flagged to the orchestrator,
+    -- not silently patched by this arc.
+    CHECK (length(detection_date) = 10
+           AND date(detection_date) IS NOT NULL
+           AND date(detection_date) = detection_date),
+    CHECK (length(view_session_date) = 10
+           AND date(view_session_date) IS NOT NULL
+           AND date(view_session_date) = view_session_date),
+    ... every remaining 0032 CHECK reproduced VERBATIM ...
     -- The grain stays (latch, session, surface). Actionability is an ATTRIBUTE
     -- of that row, not part of its key: within one session a card can flip from
     -- withheld to offered when the nightly lands, so the LAST-view column
@@ -687,6 +754,7 @@ CREATE TABLE latch_order_intents (
     CHECK ((derivation_regime_close IS NULL) = (derivation_regime_close_session IS NULL)),
     CHECK (derivation_regime_close_session IS NULL
            OR (length(derivation_regime_close_session) = 10
+               AND date(derivation_regime_close_session) IS NOT NULL
                AND date(derivation_regime_close_session)
                    = derivation_regime_close_session)),
     CHECK (actual_quantity IS NULL OR actual_quantity > 0),
@@ -742,12 +810,28 @@ CREATE TABLE latch_order_intents (
            -- basis is unknowable forever after.
            AND validity_detail IS NOT NULL
            AND json_valid(validity_detail)
-           AND json_extract(validity_detail, '$.broker_snapshot_ts') IS NOT NULL
-           AND json_extract(validity_detail, '$.broker_snapshot_branch') IS NOT NULL
-           AND json_extract(validity_detail, '$.broker_snapshot_digest') IS NOT NULL
+           -- VALUE SHAPES, not merely presence (R24 MAJOR). The plan claims
+           -- "correct value shapes" are enforced; presence-only checks let a raw
+           -- append store an invalid branch, a malformed timestamp, a non-hex
+           -- digest or a non-boolean flag, and an append-only ledger keeps it
+           -- forever.
+           AND length(json_extract(validity_detail, '$.broker_snapshot_ts')) = 19
+           AND datetime(json_extract(validity_detail, '$.broker_snapshot_ts'))
+               IS NOT NULL
+           AND json_extract(validity_detail, '$.broker_snapshot_branch')
+               IN ('presence','absence','unavailable')
+           AND length(json_extract(validity_detail, '$.broker_snapshot_digest')) = 64
+           AND json_extract(validity_detail, '$.broker_snapshot_digest')
+               NOT GLOB '*[^0-9a-f]*'
+           AND length(json_extract(validity_detail, '$.broker_snapshot_session')) = 10
+           AND date(json_extract(validity_detail, '$.broker_snapshot_session'))
+               IS NOT NULL
            AND json_type(validity_detail, '$.attributable_order_count') = 'integer'
+           AND json_extract(validity_detail, '$.attributable_order_count') >= 0
            AND json_type(validity_detail, '$.exact_framework_match_count') = 'integer'
-           AND json_extract(validity_detail, '$.indeterminate') IS NOT NULL)),
+           AND json_extract(validity_detail, '$.exact_framework_match_count') >= 0
+           AND json_type(validity_detail, '$.indeterminate')
+               IN ('true','false'))),
     -- `validated_place_intent_id` is ALSO folded into the idempotency key
     -- (section G.1), so two place intents on one latch cannot collide on an
     -- identical answer. Multiple validity rows for ONE parent stay LEGAL and
@@ -844,14 +928,27 @@ CREATE TABLE latch_order_intents (
     CHECK (intent_kind NOT IN ('place','decline') OR (framework_order_type IS NOT NULL
            AND framework_limit_price IS NOT NULL AND framework_quantity IS NOT NULL
            AND framework_quantity > 0 AND framework_duration IS NOT NULL)),
-    CHECK (length(detection_date) = 10 AND date(detection_date) = detection_date),
+    -- EVERY date/time CHECK CARRIES AN EXPLICIT `IS NOT NULL` (R24 CRITICAL).
+    -- A SQLite CHECK PASSES when its expression evaluates to NULL, and
+    -- date('2026-99-99') IS NULL -- so `date(x) = x` evaluates to NULL and
+    -- ACCEPTS a length-correct invalid date. Verified empirically: a table with
+    -- CHECK (length(d)=10 AND date(d)=d) accepts '2026-99-99'; adding
+    -- `date(d) IS NOT NULL` rejects it. BOTH halves are required: the
+    -- round-trip equality catches the NORMALISING case ('2026-02-30' ->
+    -- '2026-03-02', non-NULL but not equal) and the IS NOT NULL catches the
+    -- INVALID case. Neither alone is sufficient.
+    CHECK (length(detection_date) = 10
+           AND date(detection_date) IS NOT NULL
+           AND date(detection_date) = detection_date),
     CHECK (length(action_session_date) = 10
+           AND date(action_session_date) IS NOT NULL
            AND date(action_session_date) = action_session_date),
     -- `recorded_ts` DRIVES THE MONTHLY REPORT'S CUTOFF AND ORDERING (section
     -- F.3), so an unconstrained TEXT column lets a raw insert or a repo bug
     -- silently misbucket a monthly parity read while looking authoritative
     -- (R19 MAJOR). Local ISO seconds, exactly: YYYY-MM-DDTHH:MM:SS.
     CHECK (length(recorded_ts) = 19
+           AND datetime(recorded_ts) IS NOT NULL
            AND datetime(recorded_ts) = replace(recorded_ts, 'T', ' ')),
     CHECK (evaluation_run_id > 0),
     CHECK (length(trim(ticker)) > 0),
@@ -918,7 +1015,8 @@ maintainer hitting it learns the reason rather than working around it.
 
 `UPDATE schema_version SET version = 33;` inside the single explicit `BEGIN; ... COMMIT;` (gotcha #9).
 
-**Column count: 34** (the 33 above plus `validated_place_intent_id`). The 21-A plan's §C.2 estimated "roughly
+**Column count: the DDL above is authoritative** (R23 MINOR — a hand-maintained count drifted from it and
+will again; the migration test asserts the column list, not a number). The 21-A plan's §C.2 estimated "roughly
 18 columns about a different subject"; the extra 16 are the derivation-input block (8, which is B1's whole
 point), the actual-params block (6, which is B3's whole point), the idempotency key, and the validity parent
 link. Every one is justified above; nothing is speculative. If CHARC judges
@@ -1339,7 +1437,9 @@ only failures and report a permanently empty success rate. So:
   either unwritable or populated from guesses). The envelope carries EXACTLY the keys `validity_detail`
   requires and `broker_snapshot_digest` covers — `broker_snapshot_ts` (SERVER-stamped at fragment render),
   `broker_snapshot_branch` (`presence`/`absence`/`unavailable`), `broker_snapshot_digest`,
-  `attributable_order_count`, `exact_framework_match_count`, `indeterminate`. The handler VALIDATES the
+  `broker_snapshot_session` (the action session the BROKER VIEW came from - distinct from the row's
+  `action_session_date`, which is the MANDATE's session, section C.2), `attributable_order_count`,
+  `exact_framework_match_count`, `indeterminate`. The handler VALIDATES the
   envelope (parseable, all six keys, correct value shapes — the same 4-tier ladder) and PERSISTS IT VERBATIM
   into `validity_detail`, never synthesising a missing key; a test asserts the fragment's emitted key set
   EQUALS the set `validity_detail` requires, so the two cannot drift. `POST /latches/intent` REFUSES a
@@ -1374,7 +1474,10 @@ agreement rate excludes `rejected_by_broker` and `not_submitted` from the numera
    `validity_outcome='rejected_by_broker'` yields `accepted` + `rejected_by_broker` and is EXCLUDED from the
    agreement numerator.
 2. else `intents` contains a `decline` -> **`declined`**.
-3. else `intents` contains an `attest` -> **`attested_<disposition>`**.
+3. else `intents` contains an `attest` -> **`attested_<disposition>`**. `attested_was_away` is a THIRD
+   terminal category (§A.1.6 ruling 2): counted in `classifiable_fires`, EXCLUDED from the discipline signal,
+   and included in the ATTESTED away rate only — never merged into the objective one, because testimony is not
+   telemetry (§A.0).
 4. else if `verdict.table_disposition` is a concrete disposition (i.e. NOT `_CLASSIFY_NORMALLY`) -> return it.
    This is the ONLY route to `pre_telemetry`; no rung below re-decides coverage (§E.0).
    **THE COVERAGE TABLE IS CONSUMED BEFORE TELEMETRY HEALTH (Codex R20 MAJOR).** The draft ran health first,
@@ -1394,7 +1497,9 @@ agreement rate excludes `rejected_by_broker` and `not_submitted` from the numera
    itself to the standard its test does. `telemetry_unhealthy` carries the verdict so the label distinguishes
    `broken` from `indeterminate` (RD's labelled-reduction coupling, §A.1.1).
 6. else if there is at least one view row with **`actionable_at_last_view = 1`** inside the covered window:
-   - latch is LIVE -> **`pending_live`** (no prompt; the mandate can still be acted on)
+   - latch is LIVE -> **`pending_live`** (no prompt; the mandate can still be acted on). **Reported, never
+     scored** (§A.1.6 ruling 1): it enters no denominator, because a latch that has not terminated is not an
+     observation yet and its verdict would move as the window runs.
    - latch is TERMINAL -> **`discipline_lapse`**, with `prompt_required=True`. There is no intermediate
      state — see E.1.
 7. else (no `actionable_at_last_view = 1` view row in the covered window) — **coverage is NOT re-tested here;
@@ -1543,18 +1648,35 @@ this check two-sided. **Recording the limitation is the requirement; over-claimi
 ```python
 @dataclass(frozen=True)
 class AwayRateResult:
-    rate: float | None          # None when health.verdict == "broken"
-    away_fires: int
-    classifiable_fires: int     # the DENOMINATOR: excludes pre_telemetry,
-                                # never_actionable, telemetry_unhealthy
+    # TWO RATES OVER ONE DENOMINATOR (RD ruling 2, section A.1.6). Same
+    # denominator is what makes them comparable and what makes the second an
+    # UPPER BOUND on the first rather than a different statistic.
+    objective_rate: float | None   # away_unseen / classifiable -- PRIMARY
+    attested_rate: float | None    # (away_unseen + attested_was_away) / classifiable
+                                   #   -- the explicit UPPER BOUND
+    away_unseen_fires: int
+    attested_was_away_fires: int
+    # THE DENOMINATOR: TERMINAL, CLASSIFIABLE observations only (RD ruling 1).
+    # Excludes pending_live (not an observation yet), and excludes
+    # pre_telemetry / never_actionable / telemetry_unhealthy (unattributable).
+    classifiable_fires: int
+    pending_fires: int             # REPORTED, never scored -- so the reader sees
+                                   # the pipeline rather than a silently smaller corpus
     excluded_fires: int
-    health: TelemetryHealth     # NOT optional, NOT defaulted
+    health: TelemetryHealth        # NOT optional, NOT defaulted
     withheld_reason: str | None
 ```
 
-There is no function anywhere that returns a bare float away rate; `health` is a required constructor
-argument, so a caller cannot obtain the number without the verdict travelling with it. A test constructs the
-`broken` substrate and asserts `rate is None` and `withheld_reason` names the counters.
+Both rates are `None` when `health.verdict == "broken"` — the gate applies to the pair, since an unreliable
+beacon corrupts the objective numerator directly and the bound derived from it consequently. There is no
+function anywhere that returns a bare float away rate; `health` is a required constructor argument, so a caller
+cannot obtain either number without the verdict travelling with it. A test constructs the `broken` substrate
+and asserts BOTH rates are `None` and `withheld_reason` names the counters.
+
+**STAGE-3 READS THE OBJECTIVE RATE AS PRIMARY, THE ATTESTED RATE AS AN UPPER BOUND (RD ruling 2).** The CLI
+report (§ Task 9) prints them on adjacent lines with exactly those labels, so the decision that would automate
+the operator's entries cannot quietly be taken on the larger number. A test asserts the rendered report
+contains both labels and that the attested rate is `>=` the objective rate whenever both are non-`None`.
 
 ### F.3 The three R buckets (A.1.2)
 
@@ -1565,19 +1687,47 @@ could land in two buckets, or the seam could be silently ignored, and neither th
 totals would be trustworthy. There is now exactly ONE mapping:
 
 ```python
-def r_bucket_for(disposition: str) -> str:
-    """EXACTLY ONE bucket per disposition, and NO DEFAULT (section A.1.6).
+def r_bucket_for(disposition: str, *, is_terminal: bool) -> str:
+    """EXACTLY ONE bucket, and NO DEFAULT (section A.1.6).
 
-    The three buckets PARTITION the corpus: every classified fire lands in
-    exactly one and the three sums reconcile to the total. A trailing
+    `is_terminal` IS REQUIRED AND IT GATES EVERYTHING (R23 CRITICAL). RD's
+    ruling 1 is "rates compute over TERMINAL, classifiable observations only",
+    and a disposition-ONLY function cannot enforce that: `pending_live` is
+    reached at rung 6 only for a LIVE latch that HAS actionable views and NO
+    intent, so a live latch with a `place` intent scores `accepted` ->
+    decision_r, a live latch with no views scores `away_unseen` -> away_r, and a
+    live latch with withheld-only views scores `never_actionable`. All three are
+    non-terminal observations entering scored buckets -- the exact corruption
+    ruling 1 forbids, and it slipped in because the ruling was encoded as a
+    disposition rather than as a GATE.
+
+    FIVE buckets PARTITION the corpus: every (disposition, is_terminal) pair
+    lands in exactly one and the five sums reconcile to the total. A trailing
     `return "decision_r"` would make that true while silently ASSIGNING any
     disposition nobody ruled on -- which is how `pending_live` and
     `attested_was_away` ended up scored as operator judgment without a ruling.
-    So membership is explicit in all three directions and an unlisted
-    disposition RAISES.
+    So membership is explicit in all five directions and an unlisted disposition
+    RAISES.
+
+    RD singled this guard out as worth more than either ruling it produced,
+    because the next unlisted disposition will be one nobody has thought of.
+    DO NOT reintroduce a default.
     """
-    if disposition in AWAY_RATE_COUNTED_DISPOSITIONS:
+    # COHERENCE FIRST (R24 MAJOR). `pending_live` means "the latch is LIVE", so
+    # (pending_live, is_terminal=True) is not a state the classifier can
+    # legitimately produce -- and silently bucketing it as pending would hide a
+    # classifier bug in the very report layer built to stop silent absorption.
+    if disposition in PENDING_DISPOSITIONS and is_terminal:
+        raise ValueError(
+            "incoherent cell: pending_live with is_terminal=True")
+    # RULING 1, ENFORCED AS A GATE: a latch that has not terminated is not an
+    # observation yet, WHATEVER its current display disposition says.
+    if not is_terminal:
+        return "pending_r"
+    if disposition in AWAY_RATE_COUNTED_DISPOSITIONS:   # telemetry-derived
         return "away_r"
+    if disposition in ATTESTED_AWAY_DISPOSITIONS:       # ruling 2: testimony,
+        return "attested_away_r"                        # not telemetry
     if disposition in UNATTRIBUTABLE_DISPOSITIONS:      # the REMAINDER of the
         return "unattributable_r"                       # excluded set
     if disposition in DECISION_DISPOSITIONS:
@@ -1585,25 +1735,66 @@ def r_bucket_for(disposition: str) -> str:
     raise ValueError(
         f"{disposition!r} has no ruled R bucket; see plan section A.1.6")
 
-UNATTRIBUTABLE_DISPOSITIONS = (
-    _ALL_EXCLUDED_DISPOSITIONS - AWAY_RATE_COUNTED_DISPOSITIONS
-)
 _ALL_EXCLUDED_DISPOSITIONS = frozenset({
     "away_unseen", "pre_telemetry",
     "never_actionable", "telemetry_unhealthy",
 })
+PENDING_DISPOSITIONS       = frozenset({"pending_live"})
+ATTESTED_AWAY_DISPOSITIONS = frozenset({"attested_was_away"})
+
+UNATTRIBUTABLE_DISPOSITIONS = (
+    _ALL_EXCLUDED_DISPOSITIONS
+    - AWAY_RATE_COUNTED_DISPOSITIONS
+    - ATTESTED_AWAY_DISPOSITIONS
+)
 ```
 
-`UNATTRIBUTABLE_DISPOSITIONS` is DERIVED by set subtraction, never hand-written — that is what makes the
-overlap unrepresentable rather than merely tested-against. **The partition test** asserts that every member of
-`LATCH_DISPOSITIONS` appears in EXACTLY ONE of the three sets, that the buckets are pairwise disjoint, that
-`decision_r + away_r + unattributable_r` equals the corpus total, **and that `r_bucket_for` RAISES on a
-disposition absent from all three** — so a future disposition cannot be absorbed into `decision_r` by a
-default (§A.1.6).
+**`_ALL_EXCLUDED_DISPOSITIONS` is defined ABOVE its use** (R23 MINOR — the draft's constant order raised
+`NameError` if copied literally), and `ATTESTED_AWAY_DISPOSITIONS` is subtracted too, or `away_unseen`'s
+sibling would fall into `unattributable_r` as well as its own bucket.
 
-`ExecutionParityReport` carries `decision_r`, `away_r` and `unattributable_r`, plus each excluded
-disposition's own count so the REASON is never lost inside the total. FTRE's +1.22R lands in
-`unattributable_r` on today's substrate, per RD's ruling. The report also carries
+`UNATTRIBUTABLE_DISPOSITIONS` is DERIVED by set subtraction, never hand-written — that is what makes the
+overlap unrepresentable rather than merely tested-against.
+
+**THE PARTITION IS OVER CELLS, NOT OVER DISPOSITIONS (R24 MAJOR).** Since the terminality gate landed, a
+disposition no longer HAS one bucket: `accepted` is `decision_r` when terminal and `pending_r` when not. A
+set-membership assertion phrased as *"every member of `LATCH_DISPOSITIONS` appears in exactly one of the five
+sets"* is therefore either false or silently testing the pre-gate model. The invariant is:
+
+- every **COHERENT** `(disposition, is_terminal)` cell maps to exactly one bucket;
+- the **INCOHERENT** cell `(pending_live, True)` RAISES;
+- `r_bucket_for` RAISES on a disposition absent from all five sets — so a future disposition cannot be
+  absorbed into `decision_r` by a default (§A.1.6);
+- `decision_r + away_r + attested_away_r + unattributable_r + pending_r` equals the corpus total.
+
+No assertion may claim a disposition belongs to exactly one RUNTIME bucket independent of terminality.
+
+**`decision_r` KEEPS ITS EVIDENCE-KIND SUB-COUNTS (R23 MAJOR, resolved by §A.0's own text).** `decision_r`
+sums three DIFFERENT kinds of evidence — directly logged decisions (`accepted`, `declined`), self-attestation
+(`attested_acted_manually`, `attested_chose_not_to_act`), and a telemetry-INFERRED lapse
+(`discipline_lapse`) — and §A.0 forbids merging categories that differ in evidence kind. §A.0 also states the
+remedy exactly: *if they must be summed for a reader, the sum is reported as its own explicitly-named figure
+rather than by erasing the distinction upstream.* The distinction IS preserved upstream (three distinct
+dispositions), so the fix is at the REPORT: `ExecutionParityReport` carries
+`decision_r_logged` / `decision_r_attested` / `decision_r_inferred` alongside the `decision_r` total, and the
+CLI prints the three. **The bucket partition is unchanged** — this adds reporting, not a sixth bucket.
+
+**The sub-counts are REFINEMENTS OF TERMINAL `decision_r`, computed AFTER bucketing (R24 MAJOR).** Each
+observation is bucketed first via `r_bucket_for(disposition, is_terminal=...)`; **only rows whose bucket is
+`decision_r` may enter a sub-count**. Counting by disposition NAME instead would let a LIVE `accepted` into
+`decision_r_logged` while its R correctly sat in `pending_r` — so the sub-counts would stop summing to the
+total, and the tempting "fix" is to make `decision_r` wrong too. A test with a non-terminal
+accepted / declined / attested fixture asserts all three sub-counts are UNCHANGED.
+
+**WHICH BUCKETS ARE SCORED, and it is not all of them.** `classifiable_fires` (the denominator of BOTH away
+rates, §F.2) is `decision_r + away_r + attested_away_r` — the TERMINAL, classifiable observations.
+`pending_r` and `unattributable_r` are REPORTED with their own counts and enter no denominator. The
+`attested_away_r` bucket is in the denominator but **NOT in the discipline signal**: it is a non-judgment
+non-action, honoured as attested (§A.1.6 ruling 2).
+
+`ExecutionParityReport` carries all FIVE buckets — `decision_r`, `away_r`, `attested_away_r`,
+`unattributable_r`, `pending_r` — plus each excluded disposition's own count so the REASON is never lost
+inside a total. FTRE's +1.22R lands in `unattributable_r` on today's substrate, per RD's ruling. The report also carries
 the per-field delta totals and the **agreement rate**, whose numerator and denominator are both explicit:
 
 **THE REPORT'S TIME AXIS IS `recorded_ts`, NOT `action_session_date` (Codex R9 MAJOR 2).** The row carries
@@ -2022,10 +2213,13 @@ sentences with the right counts; `all_clear_note` is still unreachable from ever
   - A pre-`0033` row survives the rebuild carrying `surface='latch_panel'` and both actionability columns
     `= 0` (a backfill of `1` FAILS — R16 MAJOR 2); a raw INSERT of `first=1, last=0` is REJECTED by the SQL
     monotonicity CHECK (R17 MAJOR).
-  - The three-mirror agreement test, parsed from the migration SQL, for `intent_kind`, `surface`,
-    `attested_disposition` and `validity_outcome` — the migration CHECK, the `swing/latches/constants.py`
-    frozenset and the `swing/data/models.py` validator set must be the SAME set, and `models.py`'s must be the
-    SAME OBJECT (`is`), not a copy.
+  - The three-mirror agreement test, parsed from the migration SQL, for **EVERY enum CHECK in `0033`** —
+    `intent_kind`, `surface`, `attested_disposition`, `validity_outcome`, `framework_order_type`,
+    `actual_order_type`, `framework_duration`, `actual_duration`, `derivation_sizing_basis`, and
+    `latch_view_events.surface`. Each has a frozenset in `swing/latches/constants.py`, is validated in the
+    dataclass `__post_init__`, and the test parses the migration SQL and asserts EXACT set equality for all of
+    them, with `models.py`'s being the SAME OBJECT (`is`), not a copy. **Naming only a subset is how the #11
+    rule gets violated while its own test passes** (R23 MAJOR — the draft named four of ten).
   - The backup-gate boundary matrix, all four cells: `(32,33,True)`, `(31,33,False)`, `(32,32,False)`,
     `(33,33,False)`. **The `(32,33,True)` cell is required** — without it a gate whose body is an
     unconditional `return` passes the whole test (the 21-A Codex R4-2 lesson).
@@ -2128,15 +2322,37 @@ classifies `pre_telemetry` and its +1.22R lands in `unattributable_r`. No task i
 
 ### Task 5: telemetry health + the away rate + the parity report (PURE)
 
+- [ ] **THE BUCKET PARTITION + THE GUARD RD SINGLED OUT.** Every member of `LATCH_DISPOSITIONS` maps to
+      exactly one of the FIVE buckets via `r_bucket_for`; they are pairwise disjoint; the five sums reconcile
+      to the corpus total; and **`r_bucket_for` RAISES on a disposition absent from all five sets** — a test
+      adds a fake disposition to `LATCH_DISPOSITIONS` ONLY and asserts the raise, so a future unlisted
+      disposition cannot be absorbed by a default. **Do not reintroduce a fallthrough to make this pass.**
+- [ ] **RULING 1 — `pending_live` is REPORTED, NEVER SCORED, and TERMINALITY IS A GATE.** It lands in
+      `pending_r` with its own count and enters NO denominator (decision, away, discipline alike). Two test
+      groups, because the second is the one a disposition-only implementation fails:
+      - both away rates computed over a corpus WITH and WITHOUT an added `pending_live` latch are
+        IDENTICAL — an implementation that lets it into the denominator moves them and FAILS;
+      - **the five NON-TERMINAL cells the R23 CRITICAL named** — a LIVE latch with (a) a `place` intent,
+        (b) a `decline` intent, (c) an `attest` intent, (d) no views at all, (e) withheld-only views — each
+        buckets to `pending_r` and leaves every rate and every R total UNCHANGED. A `r_bucket_for` taking only
+        a disposition scores these as `accepted` / `declined` / `attested_*` / `away_unseen` /
+        `never_actionable` respectively and FAILS all five.
+- [ ] **RULING 2 — `attested_was_away` is a THIRD terminal category.** It lands in `attested_away_r`, NOT
+      `decision_r` and NOT `away_r`; it IS in `classifiable_fires`; it is EXCLUDED from the discipline signal.
+      The **objective** rate counts `away_unseen` only; the **attested** rate counts
+      `away_unseen + attested_was_away` over the SAME denominator; `attested_rate >= objective_rate` whenever
+      both are non-`None`. A corpus with one of each discriminates all three wrong implementations
+      (merged-into-away, left-in-decision, computed-over-different-denominators).
 - [ ] Failing tests: the three counters incl. `uninstrumented_sessions`; `broken` at/above threshold and
-      `indeterminate` below it; `AwayRateResult` cannot be constructed without `health`; `rate is None` and a
-      populated `withheld_reason` under `broken`; the away-rate DENOMINATOR excludes `pre_telemetry`,
-      `never_actionable` and `telemetry_unhealthy`; **`covered = 1, uncovered >= threshold` verdicts `broken`,
-      not `ok`** (R19 MAJOR 6 — under the draft's `covered == 0` rule that substrate verdicts `ok` and the
-      latch reaches `away_unseen`, so the cell discriminates); the three R buckets, with FTRE's +1.22R landing
-      in `unattributable_r` per RD's ruling; **the agreement rate's four counts** — a delta-clean place intent that the
-      broker REJECTED is in neither the numerator nor the denominator and appears in `validity_failed`; an
-      unobserved validity appears in `validity_unknown`, not in agreement.
+      `indeterminate` below it; `AwayRateResult` cannot be constructed without `health`; **BOTH rates are
+      `None`** and a populated `withheld_reason` under `broken`; the away-rate DENOMINATOR excludes
+      `pre_telemetry`, `never_actionable`, `telemetry_unhealthy` AND `pending_live`;
+      **`covered = 1, uncovered >= threshold` verdicts `broken`, not `ok`** (R19 MAJOR 6 — under the draft's
+      `covered == 0` rule that substrate verdicts `ok` and the latch reaches `away_unseen`, so the cell
+      discriminates); FTRE's +1.22R landing in `unattributable_r` per RD's ruling; **the agreement rate's four
+      counts** — a delta-clean place intent that the broker REJECTED is in neither the numerator nor the
+      denominator and appears in `validity_failed`; an unobserved validity appears in `validity_unknown`, not
+      in agreement.
 - [ ] Implement; commit `feat(latches): Task 5 — the telemetry-health gate + the execution-parity report`.
 
 ### Task 6: the panel VM — the prepared-order block, the disposition, the prompt
@@ -2232,24 +2448,39 @@ step that gets absorbed and skipped.
 
 ### Task 9: `swing latches parity` — the monthly read
 
+- [ ] **BOTH AWAY RATES, LABELLED, ON ADJACENT LINES** (RD ruling 2): `OBJECTIVE (primary)` and
+      `ATTESTED (upper bound)`. Stage-3 auto-place must not be able to take the decision quietly on the larger
+      number, so a report printing only one rate, or printing them unlabelled, FAILS. Both print the health
+      verdict on the SAME line and both print `WITHHELD` (with the counters) under `broken`.
+- [ ] **`pending_r` printed as its own visible line** (RD ruling 1) so the reader sees the pipeline rather
+      than a silently smaller corpus, and a test asserts it is NOT folded into any rate's denominator.
+- [ ] **`decision_r`'s three evidence-kind sub-counts printed** — `decision_r_logged` / `decision_r_attested`
+      / `decision_r_inferred` — alongside the total (§A.0: the sum may be reported, the distinction may not be
+      erased). A test asserts the three sum to `decision_r` and that all four appear in the output.
 - [ ] Failing tests: the report prints the disposition histogram, the agreement rate, the per-field delta
       totals; the `--since` cutoff filters on `recorded_ts` and NOT on `action_session_date` (the R9 MAJOR 2
-      discriminator: a validity row recorded in month N about a month-N-1 render belongs to month N); the four
-      exclusion counts (`pre_telemetry` /
-      `never_actionable` / `telemetry_unhealthy`), and `inferred_origin` per resting order — labelled as INFERRED except
-      where a captured broker order id makes it exact (a report printing a bare `origin` FAILS); the away rate prints its health verdict on the SAME line and prints
-      `WITHHELD` (with the counters) under `broken`; ASCII-only output verified through a real PowerShell
+      discriminator: a validity row recorded in month N about a month-N-1 render belongs to month N); the FIVE
+      bucket counts and the exclusion counts (`pre_telemetry` / `never_actionable` / `telemetry_unhealthy`);
+      `inferred_origin` per resting order — labelled as INFERRED except where a captured broker order id makes
+      it exact (a report printing a bare `origin` FAILS); ASCII-only output verified through a real PowerShell
       subprocess (the cp1252 gotcha — `capsys` cannot see it).
 - [ ] Implement; commit `feat(cli): Task 9 — swing latches parity, the monthly execution-parity read`.
 
 ### Task 10: the BEHAVIOURAL no-write pin + CSS + nav
 
-- [ ] The four-part pin of the Global Constraints section: (i) the introspection-driven mutator monkeypatch
-      sweep over `GET /latches`, every `POST /latches/intent` branch and `POST /latches/orders`; (ii) the
-      zero-`borrow` seam assertion on the intent path; (iii) the `schwab_api_calls` row-count invariant;
-      (iv) the retained grep belt; **(v) the R19 CRITICAL pin — the bare name `matched_order_count` appears
-      NOWHERE in 21-B's own code or tests** (21-A's `LatchOrderJoin` field keeps its name; every 21-B consumer
-      must name which of the two questions it asks). CSS tokens under `:root` + `body.dark`, `var()`-only.
+- [ ] The pin of the Global Constraints section, **in that order and with (i) FIRST because it is the
+      PRIMARY enforcement (R24 MAJOR — this task previously OPENED with the introspection sweep, which ships
+      the exact renamed-mutator hole (i) exists to close):**
+      **(i) TRANSPORT-LEVEL, DENY-BY-DEFAULT** — a stub over the session schwabdev issues requests through
+      that FAILS ON ANY NON-GET to the Schwab Trader API host, driven over `GET /latches`, every
+      `POST /latches/intent` branch and `POST /latches/orders`. Names cannot matter, so a renamed or
+      newly-added mutator is caught regardless of what it is called.
+      **(i-b)** the deny-by-default schwabdev-callable sweep against an EXPLICIT read-only allowlist
+      (secondary net). **(ii)** the zero-`borrow` seam assertion on the intent path. **(iii)** the
+      `schwab_api_calls` row-count invariant. **(iv)** the grep belt, explicitly NOT the enforcement.
+      **(v)** the bare name `matched_order_count` appears NOWHERE in 21-B's own code or tests (21-A's
+      `LatchOrderJoin` field keeps its name; every 21-B consumer must name which question it asks).
+      CSS tokens under `:root` + `body.dark`, `var()`-only.
 - [ ] Commit `test(latches): Task 10 — behavioural pin of ZERO Schwab writes + the panel style tokens`.
 
 ---
@@ -2292,8 +2523,9 @@ step that gets absorbed and skipped.
 
 1. **RD plan-stage review — BLOCKING.** §A.1 (the acceptance-test resolution and the third bucket), §A.2 (the
    sizing basis), §A.3 (computed-not-stored delta), §C.2 (the ledger shape), §E (the classification semantics
-   and the pessimistic default), §F (the telemetry-health gate). This plan does not proceed to executing until
-   §A.1 is ruled.
+   and the pessimistic default), §F (the telemetry-health gate). **§A.1 and §A.1.6 are RULED and no longer block** (R24 MAJOR — this
+   line contradicted §A.1.5's "nothing is gate-blocked now"); **§A.2 (the sizing basis) and §A.3
+   (computed-not-stored delta) remain OPEN and are the only RD items still outstanding.**
 2. **CHARC** — §C.1's rebuild-vs-ALTER choice and the 33-column table against B7's "minimal".
 3. **review-strong to convergence** + **codex-auto-review (REQUIRED, charter §2.9)** — and per the recipe,
    VERIFY the working invocation at dispatch and report which form ran. On this worktree
