@@ -24,7 +24,11 @@ from swing.evaluation.dates import (
     is_trading_session,
     session_offset,
 )
-from swing.latches.constants import latch_horizon_sessions
+from swing.latches.constants import (
+    ARCHIVE_STATUS_OK,
+    ARCHIVE_STATUS_UNAVAILABLE,
+    latch_horizon_sessions,
+)
 from swing.latches.models import DailyBar, EntryRecord, FireRow, LatchDerivation
 from swing.latches.service import derive_latches
 
@@ -152,6 +156,33 @@ def load_entry_records(conn: sqlite3.Connection, tickers) -> dict[str, list[Entr
 def load_bars(cfg, ticker: str, *, start: date, end: date) -> list[DailyBar]:
     """Daily bars for `[start, end]` from the ON-DISK archive. NO network I/O.
 
+    A thin delegate over `load_bars_with_status`, kept so its shipped signature
+    and contract are untouched. See that function for the whole docstring.
+    """
+    bars, _status = load_bars_with_status(cfg, ticker, start=start, end=end)
+    return bars
+
+
+def load_bars_with_status(
+    cfg, ticker: str, *, start: date, end: date,
+) -> tuple[list[DailyBar], str]:
+    """`load_bars`, plus WHETHER THE READ COMPLETED (Arc 21-G).
+
+    Returns `(bars, status)` where `status` is one of `ARCHIVE_STATUSES`:
+
+      `unavailable` -- the archive read RAISED. The absence of a witness is OUR
+                       IGNORANCE, so nothing downstream may reason from it.
+      `ok`          -- the read completed. An empty list is then a FACT about
+                       the data (a legacy-only Shape-A ticker, or a genuinely
+                       empty archive), not a failure.
+
+    The distinction is load-bearing and cannot be inferred from the list: the
+    shipped `load_bars` swallows every archive exception and returns `[]`, so
+    "the archive says there is no such bar" and "the archive could not be read"
+    collapse into one absence. Authorizing an alarm in the second case would be
+    asserting from a stale price at exactly the moment the settling evidence
+    was unreadable.
+
     Any failure degrades to `[]` + a warning; the derivation then reports
     `bars_available=False` so the panel says "invalidation NOT evaluated - no
     bars" rather than a silent "not invalidated".
@@ -181,9 +212,9 @@ def load_bars(cfg, ticker: str, *, start: date, end: date) -> list[DailyBar]:
         )
     except Exception as exc:  # noqa: BLE001 -- A6: an unreadable archive is not a 500
         log.warning("latch reader: archive read failed for %s: %s", ticker, exc)
-        return []
+        return [], ARCHIVE_STATUS_UNAVAILABLE
     if df is None or df.empty:
-        return []
+        return [], ARCHIVE_STATUS_OK
     bars: list[DailyBar] = []
     for rec in df.to_dict("records"):
         try:
@@ -212,7 +243,7 @@ def load_bars(cfg, ticker: str, *, start: date, end: date) -> list[DailyBar]:
             log.warning("latch reader: skipping malformed %s bar %r: %s",
                         ticker, rec.get("asof_date"), exc)
     bars.sort(key=lambda b: b.session)
-    return bars
+    return bars, ARCHIVE_STATUS_OK
 
 
 def _optional_float(value, trade_id, field: str) -> float | None:
@@ -249,6 +280,17 @@ def load_last_closes(conn: sqlite3.Connection, tickers) -> dict[str, tuple[float
     GET: a cache MISS dispatches the Schwab -> yfinance ladder, and both legs
     write audit rows (`schwab_api_calls` / `yfinance_calls`), which would make
     the panel GET a writer.
+
+    THE RETURNED SESSION IS THE RUN STAMP, NOT THE CLOSE ITS OWN DATE (gotcha
+    #30). `evaluation_runs.data_asof_date` is the MAX bar date across the WHOLE
+    cohort (`swing/evaluation/orchestration.py`, `max(max_dates)`) -- or a
+    CLI-supplied `as_of_date`, or a clock value -- while each `candidates.close`
+    comes from that ticker's OWN last bar (`swing/evaluation/evaluator.py`,
+    `closes.iloc[-1]`). A ticker whose archive lagged the cohort at evaluation
+    time is therefore persisted with an OLDER close under a FRESHER stamp. The
+    stamp is an UPPER BOUND on the close's date and nothing more; no caller may
+    treat it as proof. `swing.latches.orders.classify_close_provenance` is the
+    read-side treatment -- it DATES this close against the on-disk archive.
     """
     values = sorted({str(t) for t in (tickers or ())})
     if not values:
@@ -271,6 +313,49 @@ def load_last_closes(conn: sqlite3.Connection, tickers) -> dict[str, tuple[float
             continue
         out[str(ticker)] = (value, "" if asof is None else str(asof))
     return out
+
+
+def latest_recorded_close_stamp(conn: sqlite3.Connection) -> str | None:
+    """The NEWEST `evaluation_runs.data_asof_date` carrying a USABLE close.
+
+    THE SELF-LIMITING HALF OF THE ALARM GATE (plan B.2.1 condition 2), and the
+    property matters as much as the test. Corroborating a stale close at its
+    OWN stamp proves WHEN it is from; it does not say whether the staleness is
+    the CLOCK's fault or the TICKER's. This read answers that:
+
+      * `stamp == L` -- the system has nothing newer than this ticker has, so
+        whatever staleness remains is SYSTEM-WIDE. A system-wide gap ENDS at
+        the next nightly run, so an alarm authorised under it is SELF-LIMITING
+        and cannot become the drumbeat.
+      * `stamp <  L` -- the system moved on without this ticker. That lag may
+        be permanent, so an alarm from it would repeat forever.
+
+    Mirrors the usability predicate `load_last_closes` and
+    `count_session_recorded_closes` already share (non-NULL, numeric, finite):
+    a run whose rows carry only NULL / non-finite closes has recorded nothing
+    the form check can use, so it must not raise `L` and silence a legitimate
+    alarm.
+
+    A PURE SELECT (A4). Scanned newest-first and short-circuited on the first
+    usable row, so it does not materialise the whole `candidates` table.
+    """
+    cursor = conn.execute(
+        "SELECT e.data_asof_date, c.close FROM candidates c "
+        "JOIN evaluation_runs e ON e.id = c.evaluation_run_id "
+        "WHERE c.close IS NOT NULL AND e.data_asof_date IS NOT NULL "
+        "ORDER BY e.data_asof_date DESC")
+    try:
+        for asof, close in cursor:
+            try:
+                value = float(close)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                stamp = str(asof)
+                return stamp or None
+    finally:
+        cursor.close()
+    return None
 
 
 def count_session_recorded_closes(conn: sqlite3.Connection, session: date) -> int:
@@ -374,6 +459,7 @@ def build_latch_derivation(
     entries_by_ticker = load_entry_records(conn, tickers)
 
     bars_by_ticker: dict[str, list[DailyBar]] = {}
+    status_by_ticker: dict[str, str] = {}
     for ticker in tickers:
         anchors = [
             f.action_session_date for f in fires
@@ -387,10 +473,26 @@ def build_latch_derivation(
                 continue
             if start is None or parsed < start:
                 start = parsed
-        if start is None or start > derivation_session:
+        if start is None:
             bars_by_ticker[ticker] = []
+            status_by_ticker[ticker] = ARCHIVE_STATUS_OK
             continue
-        bars_by_ticker[ticker] = load_bars(
+        # THE LOAD WINDOW IS WIDENED TO REACH THE DERIVATION SESSION, and the
+        # shipped `start > derivation_session -> []` short-circuit is GONE
+        # (Arc 21-G, Codex R4 MAJOR 1). A latch fires on the nightly for action
+        # session T+1, so its anchor is T+1 while that same evening the
+        # derivation session is T -- the newest latch in the system, the one
+        # the operator is about to act on, loaded NO bars at all and could
+        # therefore never have its close DATED.
+        #
+        # This widens the LOAD only. `_eligible_bars` is untouched, so the
+        # invalidation walk, `bars_available` and `bars_through` are
+        # bit-for-bit identical: a fresh latch still reports "invalidation NOT
+        # evaluated - no bars", which is correct (no session has elapsed since
+        # the fire). Widening the ELIGIBLE set instead would let a pre-anchor
+        # bar invalidate a mandate that did not yet exist -- RD constraint 6.
+        start = min(start, derivation_session)
+        bars_by_ticker[ticker], status_by_ticker[ticker] = load_bars_with_status(
             cfg, ticker, start=start, end=derivation_session)
 
     return derive_latches(
@@ -400,4 +502,5 @@ def build_latch_derivation(
         horizon_session=horizon_session,
         derivation_session=derivation_session,
         horizon_sessions=horizon_sessions,
+        bar_status_by_ticker=status_by_ticker,
     )

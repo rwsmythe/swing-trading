@@ -727,3 +727,187 @@ def test_a_malformed_price_on_a_null_candidate_trade_still_refuses_to_fill(tmp_p
         assert d.latches[0].state == "armed"
     finally:
         conn.close()
+
+
+# --- Arc 21-G Task 2: the witness map, DECOUPLED from the invalidation walk --
+def _fire(conn, rid, asof, action, ticker, pivot, stop):
+    _run(conn, rid, asof, action)
+    _candidate(conn, rid, ticker, "aplus", pivot, stop)
+
+
+def test_the_derivation_surfaces_the_archive_window_and_excludes_look_ahead(
+        tmp_path):
+    """The map holds every LOADED session and stops at the derivation session.
+    A look-ahead bar the archive legitimately holds (the nightly warm writes
+    one at 17:30 for the NEXT session) is EXCLUDED, because a bar newer than
+    the page horizon cannot date a price the page is describing."""
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        with conn:
+            # anchor S-2 == 2026-07-22 (S == 2026-07-24)
+            _fire(conn, 121, "2026-07-21", "2026-07-22", "FTRE", 18.34, 14.88)
+        _write_archive(cfg.paths.prices_cache_dir, "FTRE", [
+            {"asof_date": "2026-07-22", "open": 18.0, "high": 18.5, "low": 17.8,
+             "close": 18.21, "volume": 100.0},
+            {"asof_date": "2026-07-23", "open": 18.2, "high": 19.6, "low": 18.1,
+             "close": 19.52, "volume": 100.0},
+            {"asof_date": "2026-07-24", "open": 19.5, "high": 19.7, "low": 17.5,
+             "close": 17.76, "volume": 100.0},
+            {"asof_date": "2026-07-27", "open": 17.8, "high": 18.9, "low": 17.7,
+             "close": 18.80, "volume": 100.0},        # LOOK-AHEAD
+        ])
+        d = build_latch_derivation(conn, cfg, now=datetime(2026, 7, 25, 12, 0))
+        assert d.archive_closes["FTRE"] == {
+            date(2026, 7, 22): 18.21,
+            date(2026, 7, 23): 19.52,
+            date(2026, 7, 24): 17.76,
+        }
+        assert d.archive_status["FTRE"] == "ok"
+    finally:
+        conn.close()
+
+
+def test_a_latch_fired_for_tomorrow_still_gets_its_derivation_session_witness(
+        tmp_path):
+    """Codex R4 MAJOR 1 -- the FRESH-LATCH reachability lock, in the reader.
+
+    A latch fires on the nightly for action session T+1, so its anchor is T+1
+    while that same evening the derivation session is T. The invalidation
+    walk's ELIGIBLE set [anchor, derivation_session] is therefore EMPTY --
+    correctly, no session has elapsed since the fire. If the WITNESS were taken
+    from that set (or if the shipped start-after-derivation short-circuit
+    stayed), the NEWEST latch in the system, the one the operator is about to
+    act on tonight, could never be corroborated and could never print an
+    affirmative all-clear.
+
+    Both halves are asserted TOGETHER: an implementation that fixes
+    reachability by widening `_eligible_bars` instead of the LOAD window would
+    let a pre-anchor bar invalidate a mandate that did not yet exist, and fails
+    the second half."""
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        with conn:
+            # anchor 2026-07-27 > derivation session 2026-07-24
+            _fire(conn, 140, "2026-07-24", "2026-07-27", "NEWL", 18.34, 14.88)
+        _write_archive(cfg.paths.prices_cache_dir, "NEWL", [
+            {"asof_date": "2026-07-24", "open": 17.5, "high": 17.9, "low": 17.4,
+             "close": 17.76, "volume": 90.0},
+        ])
+        d = build_latch_derivation(conn, cfg, now=datetime(2026, 7, 25, 12, 0))
+        # the WITNESS reaches the derivation session...
+        assert d.archive_closes["NEWL"] == {date(2026, 7, 24): 17.76}
+        # ...and the invalidation walk is untouched.
+        (latch,) = d.latches
+        assert latch.anchor == date(2026, 7, 27)
+        assert latch.bars_available is False
+        assert latch.bars_through is None
+        assert latch.state == "armed"
+    finally:
+        conn.close()
+
+
+def test_the_widened_load_window_does_not_move_a_normal_invalidation(tmp_path):
+    """The other half of the eligible-set lock: with the load window widened, a
+    latch whose anchor PRECEDES the derivation session must still invalidate on
+    exactly the session it did before, and a pre-anchor bar below the stop must
+    still be history rather than an invalidation."""
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        with conn:
+            _fire(conn, 121, "2026-07-21", "2026-07-22", "FTRE", 18.34, 14.88)
+        _write_archive(cfg.paths.prices_cache_dir, "FTRE", [
+            # BEFORE the anchor and below the stop -- history, not invalidation.
+            {"asof_date": "2026-07-20", "open": 15.0, "high": 15.2, "low": 14.0,
+             "close": 14.10, "volume": 100.0},
+            {"asof_date": "2026-07-22", "open": 18.0, "high": 18.5, "low": 17.8,
+             "close": 18.21, "volume": 100.0},
+            {"asof_date": "2026-07-23", "open": 15.0, "high": 15.2, "low": 14.0,
+             "close": 14.20, "volume": 100.0},
+        ])
+        d = build_latch_derivation(conn, cfg, now=datetime(2026, 7, 25, 12, 0))
+        (latch,) = d.latches
+        assert latch.state == "invalidated"
+        assert latch.clear_session == date(2026, 7, 23)
+        assert latch.bars_through == date(2026, 7, 23)
+        # The widening is `min(earliest_anchor, derivation_session)`, so it
+        # moves NOTHING for a latch whose anchor already precedes the
+        # derivation session: the pre-anchor bar is neither loaded nor walked.
+        assert date(2026, 7, 20) not in d.archive_closes["FTRE"]
+    finally:
+        conn.close()
+
+
+def test_an_unreadable_archive_is_unavailable_and_an_empty_one_is_ok(
+        tmp_path, monkeypatch):
+    """Codex R5 MAJOR 2 -- the status lock. An implementation that INFERS the
+    status from an empty close map cannot pass both halves."""
+    import swing.latches.reader as reader_mod
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        with conn:
+            _fire(conn, 121, "2026-07-17", "2026-07-20", "FTRE", 18.34, 14.88)
+        # (a) readable, genuinely empty -> "ok" + an empty map. That is a FACT
+        # about the data, not our ignorance of it.
+        d = build_latch_derivation(conn, cfg, now=datetime(2026, 7, 25, 12, 0))
+        assert d.archive_closes["FTRE"] == {}
+        assert d.archive_status["FTRE"] == "ok"
+
+        # (b) the read RAISES -> "unavailable" + the same empty map.
+        def _boom(*_a, **_k):
+            raise OSError("parquet is corrupt")
+
+        monkeypatch.setattr(
+            "swing.data.ohlcv_archive.resolve_ohlcv_window", _boom)
+        d2 = build_latch_derivation(conn, cfg, now=datetime(2026, 7, 25, 12, 0))
+        assert d2.archive_closes["FTRE"] == {}
+        assert d2.archive_status["FTRE"] == "unavailable"
+        # ...and the shipped `load_bars` signature and contract are untouched.
+        assert reader_mod.load_bars(
+            cfg, "FTRE", start=date(2026, 7, 20), end=date(2026, 7, 24)) == []
+    finally:
+        conn.close()
+
+
+def test_latest_recorded_close_stamp_is_the_newest_stamp_with_a_usable_close(
+        tmp_path):
+    """The SELF-LIMITING half of the alarm gate (plan B.2.1 condition 2): `L`
+    says whether the whole system is fresher than this ticker. It mirrors the
+    usability predicate `load_last_closes` and `count_session_recorded_closes`
+    already share -- a run whose only closes are NULL / non-finite has recorded
+    nothing the form check can use, so it must not raise `L`."""
+    from swing.latches.reader import latest_recorded_close_stamp
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        with conn:
+            _run(conn, 121, "2026-07-20", "2026-07-21")
+            _candidate(conn, 121, "FTRE", "aplus", 18.34, 14.88)
+            _run(conn, 122, "2026-07-24", "2026-07-27")
+            conn.execute(
+                "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+                "close, pivot, initial_stop, rs_method) VALUES "
+                "(122, 'AMN', 'watch', NULL, 13.0, 11.0, 'universe')")
+        assert latest_recorded_close_stamp(conn) == "2026-07-20"
+        with conn:
+            _run(conn, 123, "2026-07-23", "2026-07-24")
+            conn.execute(
+                "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+                "close, pivot, initial_stop, rs_method) VALUES "
+                "(123, 'AMN', 'watch', 12.0, 13.0, 11.0, 'universe')")
+        assert latest_recorded_close_stamp(conn) == "2026-07-23"
+    finally:
+        conn.close()
+
+
+def test_latest_recorded_close_stamp_is_none_on_an_empty_db(tmp_path):
+    """No usable close anywhere -> None, which WITHDRAWS alarm authority
+    (permission is not obligation) rather than granting it by default."""
+    from swing.latches.reader import latest_recorded_close_stamp
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        assert latest_recorded_close_stamp(conn) is None
+    finally:
+        conn.close()
