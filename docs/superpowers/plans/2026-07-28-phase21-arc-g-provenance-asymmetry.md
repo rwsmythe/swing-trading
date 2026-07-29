@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the latch panel's mandate-FORM check obey ONE binding rule — *from a stale close, as from a run-level stamp, you MAY raise a MISMATCH alarm but you may NOT assert a MATCH* — by replacing the shipped binary freshness gate with a **close-provenance ladder** whose assertive rung requires per-bar corroboration at the derivation session and whose alarm rung requires per-bar corroboration at the close's own stamp. This closes BOTH routes to the same false all-clear (the stale close and the run-level stamp) with one mechanism, and recovers the check's value in the ~7-hour daily window in which it is currently inert.
+**Goal:** Make the latch panel's mandate-FORM check obey ONE binding rule — *from a stale close, as from a run-level stamp, you MAY raise a MISMATCH alarm but you may NOT assert a MATCH* — by replacing the shipped binary freshness gate with a **close-provenance ladder** whose assertive rung requires per-bar corroboration at the derivation session and whose alarm rung requires per-bar corroboration at the close's own stamp. This closes BOTH routes to the same false all-clear (the stale close and the run-level stamp) with one mechanism, recovers the check's value in the ~7-hour daily window in which it is currently inert, and — per RD's 2026-07-28 OQ-3 ruling — retires the same defect one level down, where the latch CARD renders the run stamp as the price's own as-of date.
 
 **Architecture:** A new PURE classifier in `swing/latches/orders.py` (`classify_close_provenance`) consuming values the derivation already has; a per-ticker `{session -> close}` archive map surfaced on `LatchDerivation` (NO new `Latch` field, and decoupled from the invalidation walk); the view model consumes the classification and splits the single `expected_type` knob into an ALARM path (authorized only when the panel KNOWS it holds no dated evidence for that session and this ticker is as fresh as the whole system) and an ASSERT path (only on a corroborated close). No schema. No write-path change. No new I/O.
 
@@ -70,6 +70,14 @@ last_close = (quote[0] if quote is not None and quote[1] == regime_session_iso e
 
 A ticker whose archive lagged the cohort at evaluation time is persisted with an OLDER close under a FRESHER stamp, passes that gate, and gets a form asserted from a price the market had already left. This is gotcha **#30**, second instance.
 
+**THE NAMING COLLISION — the most consequential item in this arc for RD's lane (his assessment, 2026-07-28).** Two DIFFERENT quantities share one column name across two tables: `evaluation_runs.data_asof_date` is **bar-derived** (`max()` over per-ticker last bar dates), while `pipeline_runs.data_asof_date` is **clock-derived** (`last_completed_session(run_now)`, computed at `runner.py:610` BEFORE any bar is fetched). Measured: they agree in **25 of the last 25 paired runs** — but only because the nightlies are healthy. RD's framing, preserved because it is sharper than the plan's original:
+
+> *"worse than a latent hazard — a hazard that LOOKS CORRECT. A reader who conflates them is not being careless; the schema is telling them the two are the same thing. And they diverge precisely when the archive lags, which is the Route B condition, so the collision and the hazard fire together."*
+
+That last clause is why the collision is not an independent tidiness problem sitting beside the provenance gap: an archive lag is exactly the condition that makes the two columns disagree, and nothing in the schema will warn a reader when they do. RD is taking this into the research-side hits himself (§S).
+
+**What the measurement does and does not establish (Codex R8 MINOR — the honesty lock applied to RD's own framing, which is preserved verbatim above rather than softened).** The 25/25 agreement is an OBSERVED coincidence across sampled HEALTHY paired runs. It establishes that the two columns are computed independently and that nothing enforces their agreement. It does NOT establish that the FIRST divergence will coincide with a Route-B lag: the `as_of_date` and `last_completed_session(run_now)` branches (`orchestration.py:232-235`) can diverge from the clock-derived stamp for reasons that have nothing to do with per-ticker provenance. So read the coupling as *the archive lagging is one way — and the one this arc cares about — to make these two columns disagree*, not as a proof that a disagreement implies a lag or vice versa. The reason to fix the naming is that a reader cannot tell WHICH quantity they are holding, which is true regardless of how the two first diverge.
+
 **The two other `data_asof` branches must not be forgotten** (`orchestration.py:232-235`): `as_of_date` (a CLI-supplied date, which need not relate to ANY bar) and `last_completed_session(run_now)` (a clock value, reached only when no ticker had bars). Neither is a stronger provenance claim than the cohort max; the `as_of_date` branch is weaker. The design must therefore treat the stamp as an upper bound **regardless of which branch produced it** — which it does, because it never trusts the stamp for the assert direction at all.
 
 ### A.4 The honest empirical position (do NOT overstate this arc)
@@ -79,7 +87,13 @@ Measured read-only against the live DB + archive on 2026-07-28:
 - Across the last 12 evaluation runs, **zero** tickers were observed carrying a close older than their run stamp (per-ticker close values were matched against dated archive bars; the single apparent hit, `PK` matching a 2023 bar, is a price coincidence, not a lag).
 - Across the last 25 paired runs, `pipeline_runs.data_asof_date` (clock-derived, `runner.py:610`) and `evaluation_runs.data_asof_date` (bar-derived cohort max) **never diverged**.
 
-So **Route B is a latent structural hazard, not an observed defect.** It is worth fixing because (a) the write path guarantees nothing, so the absence of a lag today is luck, not an invariant; (b) the failure mode is silent and the loss is the operator entering — or failing to enter — on a wrong order form; and (c) **the same mechanism that closes it is the mechanism that recovers Route A, which IS observed and daily.** Route A carries this arc's cost-justification; Route B rides the same fix. The plan must not be defended with a frequency claim it cannot support.
+So **Route B is a latent structural hazard, not an observed defect.** It is worth fixing because (a) the write path guarantees nothing, so the absence of a lag today is luck, not an invariant; (b) the failure mode is silent and the loss is the operator entering — or failing to enter — on a wrong order form; and (c) **the same mechanism that closes it is the mechanism that recovers Route A, which IS observed and daily.** Route A carries this arc's cost-justification; Route B rides the same fix.
+
+**THIS FRAMING IS RD-ENDORSED AND IS NOT TO BE INFLATED BY A LATER EDIT (2026-07-28).** He asked for it carried verbatim into 21-B's scoping as well. His reason for wanting the WEAKER claim preserved rather than the stronger one written:
+
+> *"it keeps us honest that we are hardening against a shape rather than stopping a bleed."*
+
+An edit that upgrades "latent structural hazard" to an observed defect, or that cites a frequency this measurement does not support, is a regression in the plan's honesty even if every line of code stays the same. The measurement above is what the claim rests on; a future reader who wants a stronger claim must first take a stronger measurement.
 
 ---
 
@@ -115,17 +129,23 @@ Let `P` = the persisted close (`quote[0]`), `D` = the run stamp (`quote[1]`), `S
 
 **Why rung F exists (Codex R5 MAJOR 3).** The shipped `quote[1] == regime_session_iso` gate incidentally rejected a close stamped AFTER the derivation session; removing it without replacement would let a FUTURE-stamped price decide or contest the regime. That is reachable: `load_last_closes` returns the GLOBALLY latest close per ticker, and the fragment POST deliberately rebuilds an OLDER render-time anchor (`horizon_session_override`), so a newer evaluation run can exist while the fragment describes `S`. The fragment's whole discipline is that every part of its picture describes ONE coherent moment — it is why a one-session-stale render anchor SUPPRESSES the alarms (`test_a_one_session_stale_anchor_suppresses_the_order_alarms`). A future-stamped close is held to the same standard. An UNPARSEABLE or EMPTY stamp lands here too, for the same reason the reader keeps an unplaceable fire visible rather than dropping it (`reader.py:235`): a value that cannot be placed in time cannot support a claim about a moment.
 
-### B.2.1 The alarm rung: TWO independent conditions, each with one job
+### B.2.1 The alarm rung: staleness must be CHARACTERISABLE and SELF-LIMITING (RD, ratified 2026-07-28)
 
-An unbounded rung-B alarm re-creates the drumbeat this codebase has paid for twice, and — worse — a carelessly bounded one re-commits **this arc's own defect inside its own fix**. Two Codex rounds each found one of those, and the resulting gate has exactly two conditions, which answer two different questions:
+**RD's ratified principle, and it is the section's title for a reason:**
 
-> **(1) DO WE KNOW WHEN THIS PRICE IS FROM?** — `round(W(D),2) == round(P,2)`: the archive holds a bar dated `D` whose close IS the persisted close. This is **the rung-A test applied at `D` instead of `S`**.
+> **You may alarm from staleness only when the staleness is both CHARACTERISABLE and SELF-LIMITING.**
+
+An unbounded rung-B alarm re-creates the drumbeat this codebase has paid for twice, and — worse — a carelessly bounded one re-commits **this arc's own defect inside its own fix**. Two Codex rounds each found one of those. The two conditions below are those two properties, made operational:
+
+> **(1) CHARACTERISABLE — do we KNOW when this price is from?** `round(W(D),2) == round(P,2)`: the archive holds a bar dated `D` whose close IS the persisted close. This is **the rung-A test applied at `D` instead of `S`**. The date is PROVEN, never inferred from a stamp. **Non-negotiable (RD).**
 >
-> **(2) IS THE GAP THE SYSTEM'S OR THE TICKER'S?** — `D == L`, where `L` = `latest_recorded_close_stamp` = `MAX(evaluation_runs.data_asof_date)` over runs holding at least one USABLE close (the same usability predicate `load_last_closes` and `count_session_recorded_closes` already share).
+> **(2) SELF-LIMITING — is the gap the CLOCK's or the TICKER's?** Operationally `D == L`, where `L` = `latest_recorded_close_stamp` = `MAX(evaluation_runs.data_asof_date)` over runs holding at least one USABLE close (the same usability predicate `load_last_closes` and `count_session_recorded_closes` already share).
 
-**Condition (1) is what stops the arc from re-committing gotcha #30 in the alarm direction (Codex R6 MAJOR).** A stamp comparison — `D == L` — is a comparison of two RUN-LEVEL values, so a ticker that lagged INSIDE the latest cohort satisfies it while its true close is a session older than `D` claims. Alarming from that price would be the exact stamp-standing-in-for-a-row-fact defect the arc exists to close, merely relocated from the assert direction to the alarm direction. Requiring the close to be corroborated **at its own stamp** removes the stamp from the reasoning entirely: the alarm runs from a close whose date is KNOWN, just earlier than `S`. Read together with rung A the whole design is one sentence — **never act on an undated price, in either direction**; assert only from a close dated `S`, alarm only from a close dated `D < S` that is proven to be dated `D`.
+**Both halves of (2) must survive future edits (RD's explicit instruction).** `D == L` is the correct *operational test*; **self-limiting is the PROPERTY that makes it the correct test** — a system-wide gap ENDS at the next nightly run, while a per-ticker lag may be permanent, so an alarm authorised only under a self-limiting condition **cannot become the drumbeat**. Stating only the test invites a later substitution of a different plausible-looking test that is not self-limiting; stating only the property leaves nothing to implement. Keep both.
 
-**Condition (2) is what stops the drumbeat (Codex R5 MAJOR 1).** Corroboration at `D` alone is not enough: a ticker that fell out of evaluation two months ago can still have its old close corroborated by the archive, and would then alarm every day forever. `D == L` says the system has nothing newer than this ticker has, so whatever staleness remains is the CLOCK's; `D < L` says the system moved on without this ticker, so it is the TICKER's. (An earlier draft used `count_session_recorded_closes(S) == 0` for this. That was wrong and Codex found it: `recorded(S) == 0` holds during EVERY daily post-close window, so a fallen-out ticker was authorized seven hours a day.)
+**Condition (1) — CHARACTERISABLE — is what stops the arc from re-committing gotcha #30 in the alarm direction (Codex R6 MAJOR).** A stamp comparison — `D == L` — is a comparison of two RUN-LEVEL values, so a ticker that lagged INSIDE the latest cohort satisfies it while its true close is a session older than `D` claims. Alarming from that price would be the exact stamp-standing-in-for-a-row-fact defect the arc exists to close, merely relocated from the assert direction to the alarm direction. Requiring the close to be corroborated **at its own stamp** removes the stamp from the reasoning entirely: the alarm runs from a close whose date is KNOWN, just earlier than `S`. Read together with rung A the whole design is one sentence — **never act on an undated price, in either direction**; assert only from a close dated `S`, alarm only from a close dated `D < S` that is proven to be dated `D`.
+
+**Condition (2) — SELF-LIMITING — is what stops the drumbeat (Codex R5 MAJOR 1).** Corroboration at `D` alone is not enough: a ticker that fell out of evaluation two months ago can still have its old close corroborated by the archive, and would then alarm every day forever. `D == L` says the system has nothing newer than this ticker has, so whatever staleness remains is the CLOCK's; `D < L` says the system moved on without this ticker, so it is the TICKER's. (An earlier draft used `count_session_recorded_closes(S) == 0` for this. That was wrong and Codex found it: `recorded(S) == 0` holds during EVERY daily post-close window, so a fallen-out ticker was authorized seven hours a day.)
 
 | sub-rung | condition (all within rung B) | may ALARM |
 |---|---|---|
@@ -149,6 +169,8 @@ An unbounded rung-B alarm re-creates the drumbeat this codebase has paid for twi
 **B-conflict and rung F get new labelled branches**: `value_conflict` (warning tone, naming the recorded close, the archive close dated `S`, and that no mandate form will be picked while two sources disagree — with two wordings per Codex R5 MINOR: `D == S` reads as *two dated sources disagree about the same session*, `D < S` reads as *the archive holds a newer close for `S` than the recorded one*) and `future_stamp` (warning tone, naming the stamp and the derivation session).
 
 **Read as one rule:** *alarm only from a price whose date we have PROVEN, when that date is genuinely earlier than the page's session, when the archive KNOWS it has nothing for that session, and when the whole system is no fresher than this ticker.*
+
+**Every inert sub-rung above WITHHOLDS an alarm, and RD's ratification is what licenses that: PERMISSION IS NOT OBLIGATION.** His rule says you MAY raise a mismatch alarm and MAY NOT assert a match — so declining to alarm is always available, **and withholding is never a false all-clear so long as the reduction is LABELLED.** That last clause is a REQUIREMENT, not an observation: it is why every inert sub-rung in the table above has a named, rendered label, and why §B.5 couples the two.
 
 **Worked check against the production shapes** (`S` = derivation session):
 
@@ -179,13 +201,23 @@ Three consequences, all in `build_latch_orders_vm`:
 Within B-continuity the check **may contradict what an order SAYS; it does not demand what an order OMITS.**
 
 - **Commission (alarmed):** the order's own `order_type` contradicts the B-continuity regime — e.g. a `STOP_LIMIT` while the newest close sits at or above the latched pivot (a buy stop below the market, broker-rejectable — the FTRE rejection class). This is a disagreement between two positive statements, and it fires only when a crossing has actually moved the regime or the order was already wrong. It is NOT a daily event, **and §B.2.1 bounds its lifetime to the data outage that produced the staleness.**
-- **Omission (not alarmed):** an absent stop leg under a B-continuity `BREAKOUT` regime. Demanding it would flag the operator's situationally-correct stopless pullback LIMIT **every day, for seven hours**, which is precisely the drumbeat-false-RED pattern the shipped code warns about at `swing/web/view_models/latches.py:453-463` and the Phase-19 saga made expensive. The cap leg is still required in every regime (unchanged) — that is an omission check, but it already fires in the unknown regime today, so it adds no new noise.
+- **Omission (not alarmed):** an absent stop leg under a B-continuity `BREAKOUT` regime. Demanding it would flag the operator's situationally-correct stopless pullback LIMIT **every day, for seven hours** — in RD's ratification, *"a false positive by FREQUENCY, which destroys a channel exactly as reliably as a false positive by logic"* — precisely the drumbeat-false-RED pattern the shipped code warns about at `swing/web/view_models/latches.py:453-463` and the Phase-19 saga made expensive. The cap leg is still required in every regime (unchanged) — that is an omission check, but it already fires in the unknown regime today, so it adds no new noise.
+
+**THE COUPLING (RD's binding condition on upholding this calibration, 2026-07-28).**
+
+> *"under-alarming is acceptable ONLY BECAUSE IT IS LABELLED. An unlabelled under-alarm is a silent all-clear."*
+
+So this is **ONE requirement with two inseparable halves**, not two requirements that happen to co-occur:
+
+> **Every state in which the check DECLINES to alarm MUST render a note saying what was not judged and why.**
+
+The suppression is only defensible while the label stands; strip the label and the identical code becomes the exact defect the arc exists to eliminate. It is written here as a single sentence, asserted as a single pair (§H.T4b, §H.T11 each assert *no alarm* AND *the note is present* in the same test), so a future edit cannot delete one half and leave a green suite.
 
 This line is a NOISE CALIBRATION, not a logical necessity, and it is flagged to RD as **OQ-2** (§E).
 
 ### B.5 The rendering, and why the daily state must stay neutral
 
-A **B-continuity** latch that finds NOTHING renders a **neutral status note** (severity `stale_regime`, reusing the existing `.latch-form-check-pending` CSS token — no new theme token, so the CSS no-raw-hex/token contract test is untouched), saying that the form check ran from an uncorroborated close dated `X` and that no all-clear is asserted for it. It must NOT be alarm-shaped: it renders on every live latch for ~7 hours of every trading day, and a warning-shaped label on a daily state trains the dismissal reflex. **It REPLACES the shipped `pending` note for that latch** (the two describe the same moment; emitting both would double-report it).
+**The rendering obeys the §B.4 coupling: no declined check is ever silent.** A **B-continuity** latch that finds NOTHING renders a **neutral status note** (severity `stale_regime`, reusing the existing `.latch-form-check-pending` CSS token — no new theme token, so the CSS no-raw-hex/token contract test is untouched), saying that the form check ran from an uncorroborated close dated `X` and that no all-clear is asserted for it. It must NOT be alarm-shaped: it renders on every live latch for ~7 hours of every trading day, and a warning-shaped label on a daily state trains the dismissal reflex. **It REPLACES the shipped `pending` note for that latch** (the two describe the same moment; emitting both would double-report it).
 
 A **B-continuity** latch that finds a mismatch renders in the existing `disagreements` block (warning tone) with the provenance suffix, AND still emits its neutral note (the note says what was checked and from what; the disagreement says what was found). That block is a FINDING, so it already withholds every form of all-clear.
 
@@ -219,32 +251,61 @@ Sentences (display-ready, template holds no logic). Let `N = form_check_ran_coun
 
 ---
 
-## D. The deliberate reversal (RD must ratify this explicitly)
+## D. Not a reversal — a COMPLETION (RD ruling, 2026-07-28, APPROVED)
 
-**This arc REVERSES a shipped, Codex-hardened, RD-ruled 21-A behavior — in one direction only.**
+This arc changes a shipped, Codex-hardened, RD-ruled 21-A behaviour in one direction. The plan first characterised that as a **reversal** and routed it to RD as the headline item an implementer could not settle. **He approved it and rejected the characterisation**, and his reasoning is recorded here because a future reader needs it more than the outcome:
 
-21-A shipped `test_a_stale_close_does_not_get_to_choose_the_mandate_regime` (`tests/web/test_routes/test_latches_orders_fragment.py:964`), whose rule is: *only a close stamped on the derivation session may pick a form; anything older leaves the regime UNKNOWN.* That was a single knob doing two jobs — it gated the ALARM direction and the ASSERT direction together, and it gated both on a stamp that is only an upper bound.
+> *"21-A shipped SYMMETRIC behaviour because the asymmetry needed the provenance ladder, which did not exist yet. 21-G builds the ladder and the asymmetry becomes expressible. The ruling never changed; its implementability did."*
 
-21-G splits the knob:
+So nothing is being undone. 21-A's gate was a single knob doing two jobs — it gated the ALARM direction and the ASSERT direction together, and it gated both on a stamp that is only an upper bound — because with no way to date a close per row, symmetric treatment was the only *available* treatment. §B builds the dating mechanism; the asymmetry that was always the ruling becomes something the code can express.
+
+21-A shipped `test_a_stale_close_does_not_get_to_choose_the_mandate_regime` (`tests/web/test_routes/test_latches_orders_fragment.py:964`), whose rule was: *only a close stamped on the derivation session may pick a form; anything older leaves the regime UNKNOWN.* 21-G splits that knob:
 
 | direction | 21-A | 21-G |
 |---|---|---|
-| may a stale close raise a mismatch alarm? | **no** | **yes when the staleness is SYSTEM-WIDE** (§B.2.1), labelled with its exact age |
+| may a stale close raise a mismatch alarm? | **no** (no way to characterise the staleness) | **yes when the staleness is CHARACTERISABLE and SELF-LIMITING** (§B.2.1), labelled with its exact, proven age |
 | may a stamp-dated close assert a match? | **yes** (the stamp was trusted) | **no** (the stamp is an upper bound; corroboration required) |
 
-So the assert direction is **tightened**, not merely preserved, and the alarm direction is **loosened** exactly as far as RD's rule licenses. That test must be RE-EXPRESSED (§H.T5), not deleted: its subject becomes "a stale close does not get to assert a MATCH", and its stale-derived mismatch becomes an expected, labelled output.
+The assert direction is **tightened**, not merely preserved; the alarm direction becomes **expressible** exactly as far as RD's rule always licensed.
 
-**This is the one item that cannot be settled by an implementer.** It goes to RD at the plan-stage gate as the headline.
+**RE-EXPRESS the test, do not delete it (RD, specifically endorsed).** §H.T5 rewrites `test_a_stale_close_does_not_get_to_choose_the_mandate_regime` in place as `test_a_stale_close_may_alarm_but_may_not_assert_a_match`, keeping the half that survives and inverting the half that completes. His reason, which is a general discipline and not a preference about this one file:
+
+> *"a deleted test looks like a retreat even when it is an advance."*
+
+A future reader running `git log` over that test sees the claim being SHARPENED, with both halves visible in one diff. A deletion plus a new file would show a lost assertion and a new one and would require archaeology to tell which happened.
 
 ---
 
 ## E. Open questions for RD's plan-stage gate
 
-**OQ-1 — the staleness bound on the alarm rung — RESOLVED IN THE PLAN, but RD should ratify the principle.** RD's rule states no bound, and the plan's first draft implemented none. Codex round 3 constructed the failure that forced one: a latched ticker that has fallen out of evaluation has a **permanently** stale close, so an unbounded alarm fires on the operator's correct order every review, forever, with no self-correction — the drumbeat class. Two further rounds then showed that a single bound is not enough. §B.2.1 now bounds the alarm rung with TWO principles rather than a constant: **(1) the price's date must be PROVEN, not inferred from a stamp** (`dated_at_stamp` — corroboration at the close's own stamp; without this the arc re-commits gotcha #30 inside its own fix, in the alarm direction), and **(2) the staleness must be the clock's fault, not the ticker's** (`D == L`, via the new `latest_recorded_close_stamp`). System-wide gap over a proven-dated price -> alarm authorized and self-limiting; anything else -> no regime-derived alarm, and a labelled inert note renders instead. (`count_session_recorded_closes` is NOT the gate — it continues to drive only the shipped `pending`-vs-`permanent` label, exactly as in 21-A.) **RD's ruling to confirm: is "the staleness must be system-wide" the right reading of his rule's scope?** The plan's position is that his rule *permits* an alarm from a stale close and does not *require* one, and that withholding is never a false all-clear while the reduction is labelled.
+**OQ-1 — the staleness bound on the alarm rung — RATIFIED (RD, 2026-07-28), and he supplied a sharper formulation than the plan's. HIS WORDING IS NOW THE PLAN'S STATED PRINCIPLE:**
 
-**OQ-2 — the commission-vs-omission line (§B.4).** Under rung B the plan alarms on a contradicting order TYPE but does not demand an absent stop leg. This is a noise calibration, not a logical consequence of RD's rule; the alternative (demand the leg too) is strictly more faithful to "may raise a mismatch alarm" and strictly noisier — it would flag the operator's correct stopless pullback LIMIT for seven hours of every trading day whenever the newest close is below the pivot. **Plan implements the calibrated line; RD may overrule.**
+> **You may alarm from staleness only when the staleness is both CHARACTERISABLE and SELF-LIMITING.**
+>
+> - **CHARACTERISABLE** = the price's date is **PROVEN, not inferred from a stamp**. Without it the fix re-commits gotcha #30 inside itself, in the alarm direction. **Non-negotiable.**
+> - **SELF-LIMITING** = the staleness is the **clock's** fault, not the **ticker's**. A system-wide gap ENDS at the next nightly run; a per-ticker lag may be permanent. An alarm authorised only under a self-limiting condition cannot become the drumbeat.
 
-**OQ-3 — the card's `price_asof` label is the same shape, one level down, and is NOT fixed here.** `_build_row` (`view_models/latches.py:249`) renders `price_asof = quote[1]` — the run stamp — as the price's as-of date, and `_zone_position` computes IN ZONE / OUT OF ZONE from that price. It already renders `price_source="last_close"` and `price_is_stale=True` unconditionally, so it does not claim freshness the way the check did; but it does present a run-level stamp as a per-row date. The survey reports it (§S, hit 3); the plan does NOT fix it, because the brief scopes 21-G to the shape-check path and says anything beyond it comes back for scoping. It is named here because it is a one-string change on the same surface in the same cycle, and RD may fold it in at the gate rather than pay a second dispatch for it.
+**Keep BOTH halves of the second bullet — the operational test AND the property (RD's explicit instruction).** "System-wide" (`D == L`) is the correct *operational test*; "self-limiting" is *the property that makes it the correct test*. Stating only the test invites a future edit to substitute a different, plausible-looking test that is not self-limiting; stating only the property leaves nothing to implement. §B.2.1 carries both.
+
+**He also confirmed the plan's reading of his rule explicitly, and it is load-bearing for OQ-2: PERMISSION IS NOT OBLIGATION.** You MAY alarm; you MAY NOT assert a match; and **withholding an alarm is never a false all-clear so long as the reduction is LABELLED.** That is what licenses every inert sub-rung in §B.2.1 — each one withholds, and each one labels.
+
+*(Route to the resolved design: RD's rule states no bound and the plan's first draft implemented none. Codex R3 constructed the failure that forced one — a permanently stale close on a fallen-out ticker alarming forever. R5 and R6 then showed one bound was not enough. `count_session_recorded_closes` is NOT the gate; it continues to drive only the shipped `pending`-vs-`permanent` label, exactly as in 21-A.)*
+
+**OQ-2 — the commission-vs-omission line (§B.4) — NOT OVERRULED (RD, 2026-07-28). Ship the calibrated line, with ONE coupling condition now binding.** Under the alarm rung the plan alarms on a contradicting order TYPE but does not demand an absent stop leg. His reasoning for upholding the calibration:
+
+> the literal reading would flag the operator's **correct** stopless pullback LIMIT for seven hours of every trading day — a **false positive by FREQUENCY, which destroys a channel exactly as reliably as a false positive by logic.**
+
+**His binding condition, and it changes the plan's structure rather than only its prose:**
+
+> *"under-alarming is acceptable ONLY BECAUSE IT IS LABELLED. An unlabelled under-alarm is a silent all-clear."*
+
+So the calibration and the neutral note are **COUPLED, deliberately and visibly** (§B.4 and §B.5 state the coupling; §H.T4b and §H.T11 assert both halves together). A future edit that removes the label while keeping the suppression converts a defensible under-alarm into exactly the defect this arc exists to eliminate — so the coupling is written as a single requirement, not as two independent ones that happen to co-occur.
+
+**OQ-3 — FOLDED IN. This is now IN SCOPE for 21-G (RD, 2026-07-28) and is no longer flagged-not-fixed.** Survey hit 3: `_build_row` (`view_models/latches.py:249`) renders `price_asof = quote[1]` — the **run stamp** — as the price's as-of date on the latch **card**. RD:
+
+> *"One string, same surface, same cycle, and it renders a run-level stamp as a per-row date on the very panel this arc exists to correct — a live instance of gotcha #30 sitting inside the fix for gotcha #30. Paying a second dispatch to leave it there for a week would be indefensible."*
+
+Implemented as **Task 6** (§G) with test **T11** (§H). It reuses the pure classifier already built in Task 3 and the archive map already surfaced in Task 2, so it adds **no read, no query and no field** — the panel GET's write-nothing property (A4) is untouched. **Scope boundary, stated so the review does not widen it:** the fix is to the DATE the card claims for the price. `_zone_position` / the `IN ZONE` / `OUT OF ZONE` state label is NOT re-gated — once the date is honest, "at the close dated `X`, this latch is in zone" is a true statement, and the zone label is a description of the price the card shows rather than an assertion about order coverage. It is not a #30 instance once the date beside it stops overstating.
 
 ---
 
@@ -265,7 +326,7 @@ So the assert direction is **tightened**, not merely preserved, and the alarm di
 | `swing/latches/service.py` | `derive_latches` accepts `bar_status_by_ticker` and passes both maps through onto `LatchDerivation`; the fold, `_eligible_bars` and `_finalize` are UNCHANGED |
 | `swing/latches/reader.py` | (a) `build_latch_derivation` widens the bar LOAD start to `min(earliest_anchor, derivation_session)` and drops the `start > derivation_session -> []` short-circuit (`reader.py:389`); (b) NEW `load_bars_with_status(...) -> tuple[list[DailyBar], str]` returning `unavailable` on the except branch and `ok` otherwise, with the shipped `load_bars` kept as a thin delegate so its signature and its tests are untouched; (c) NEW `latest_recorded_close_stamp(conn) -> str | None` (one aggregate SELECT, the SAME usability predicate as `load_last_closes` / `count_session_recorded_closes`); (d) docstring: `load_last_closes` states that the returned session is the run STAMP (an upper bound), not the close's own date, and points at the classifier |
 | `swing/latches/orders.py` | `CloseProvenance` frozen dataclass + `classify_close_provenance(...)` — PURE, no I/O |
-| `swing/web/view_models/latches.py` | the ladder wiring: assert-gating of `stop_leg_expected` + `form_check_ran_count`, the provenance suffix on rung-B disagreements, the `stale_regime` note branch, `form_check_stale_count`, the three-term `all_clear_note` |
+| `swing/web/view_models/latches.py` | (Task 6, RD OQ-3) `_build_row` renders the price's date through the SAME classifier instead of echoing the run stamp, plus the ladder wiring: assert-gating of `stop_leg_expected` + `form_check_ran_count`, the provenance suffix on rung-B disagreements, the `stale_regime` note branch, `form_check_stale_count`, the three-term `all_clear_note` |
 | `swing/web/templates/partials/latch_orders.html.j2` | the neutral tone extends to `stale_regime` (`severity in ('pending','stale_regime')`) |
 | `tests/latches/test_orders.py` | the pure classifier truth table |
 | `tests/latches/test_service_terminal.py` | the `Latch`-is-unchanged lock + the `LatchDerivation` map defaults |
@@ -380,10 +441,24 @@ alarm_authorized = (
 - [ ] **RED/GREEN** — template: `{% if note.severity in ('pending', 'stale_regime') %}` for the neutral class (no new CSS token). Re-express `test_a_stale_close_does_not_get_to_choose_the_mandate_regime` per §H.T5 and update `_seed_close_at_the_derivation_session` to write the corroborating Shape-A archive bar (§H.T3) so the 11 shipped call sites keep reaching rung A unchanged.
 - [ ] Commit: `test(latches): Task 5 - re-express the 21-A stale-close gate as the split assert/alarm rule`
 
-### Task 6: the survey artifact
+### Task 6: the card's price date (RD OQ-3, in scope 2026-07-28)
+
+**The same defect one level down, on the same surface, in the same cycle.** `_build_row` (`view_models/latches.py:229-271`) sets `price_asof = quote[1]` — the run stamp — and the template renders it as the price's as-of date. The card already says `price_source="last_close"` and `price_is_stale=True` unconditionally, so it never claimed *freshness*; what it claims wrongly is the **DATE**.
+
+- [ ] **RED** — §H.T11: a latch whose persisted close is corroborated at the derivation session renders that session as a PROVEN date; a latch whose close is not corroborated renders an explicit upper-bound form and **never** a bare date; and (the coupling, §B.4) the uncorroborated card carries its qualifier rather than silently degrading. Build the uncorroborated case from the T2 Route-B geometry so the pre-fix card shows a bare `2026-07-24` for a close that is not the `2026-07-24` close — the pre-fix render fails the post-fix assertion.
+- [ ] **GREEN** — `_build_row` gains the already-built `CloseProvenance` (computed in `build_latch_panel_vm` from `derivation.archive_closes` — **no new read, no new query, no new field, no change to `GET /latches`'s write-nothing property**) and sets:
+  - rung A -> `price_asof = <the derivation session ISO>`, `price_asof_basis = "close dated <S>"`;
+  - rung B (any sub-rung) -> `price_asof_basis = "close dated on or before <D>"` — the stamp stated as the UPPER BOUND it is;
+  - rung F -> `price_asof_basis = "close stamped <D>, later than this page's session <S>"`;
+  - rung C -> the shipped `-`.
+  `price_asof` keeps its field name (no base-layout VM churn, no manifest churn); `price_asof_basis` is a NEW display-only field on `LatchRowVM` **only** — `LatchRowVM` is not a base-layout VM, so the every-base-VM-or-500 gotcha does not apply.
+- [ ] **SCOPE BOUNDARY, do not widen:** `_zone_position` and the `IN ZONE` / `OUT OF ZONE` state label are **NOT** re-gated. Once the date is honest, *"at the close dated `X`, this latch is in zone"* is a true statement; the zone label describes the price the card shows rather than asserting order coverage, and it is not a #30 instance once the date beside it stops overstating.
+- [ ] Commit: `fix(latches): Task 6 - the latch card states the price date it can prove, not the run stamp`
+
+### Task 7: the survey artifact
 
 - [ ] Write `docs/data-asof-date-consumer-survey-21g.md` from §S (the same content; §S stays in the plan so the plan is self-contained).
-- [ ] Commit: `docs(latches): Task 6 - the data_asof_date consumer survey (report-only; nothing beyond the shape check is fixed)`
+- [ ] Commit: `docs(latches): Task 7 - the data_asof_date consumer survey (report-only apart from hit 3, which RD folded in)`
 
 **Proposed rider, NOT a task (orchestrator/CHARC call):** CLAUDE.md gotcha #30's `Fix:` clause could gain a one-clause pointer to the shipped read-side treatment (the close-provenance ladder) now that "treat the stamp as an UPPER BOUND" has a concrete implementation to cite. Flagged, not done.
 
@@ -391,7 +466,7 @@ alarm_authorized = (
 
 ## H. The tests, with pre-fix / post-fix arithmetic
 
-**Two categories, deliberately separated (Codex R1 MAJOR).** T1, T2, T2b, T4 and T5 are **DISCRIMINATORS**: each fails under the shipped code and passes under the design, and the failing pre-fix value is stated. T3, T3b, T6, T7a/T7b, T8, T9 and T10 are **LOCKS**: they pass under the shipped code too, by design, and their adversary is a wrong POST-fix implementation (T3: rung A made unreachable; T3b: the witness taken from the invalidation eligible set, or fixed by widening that set; T6: a degradation path that raises or over-claims; **T7a+T7b: an alarm gate missing condition (2), freshness parity**; **T4a+T10: an alarm gate missing condition (1), corroboration at the close's own stamp**; T8: the shipped stamp gate dropped without replacement; T9: archive-unavailable inferred from archive-empty). The pairing is deliberate: each condition of the alarm gate has a two-test pair in which one member must alarm and the other must not, so an implementation that drops either condition fails a pair rather than silently passing. Each lock states its adversary in-line. A lock is not a weak discriminator — it defends the direction the discriminators cannot see, and every discriminator above only asserts that something is ABSENT, which is exactly the assertion an over-correcting implementation satisfies trivially.
+**Two categories, deliberately separated (Codex R1 MAJOR).** T1, T2, T2b, T4, T5 and T11b are **DISCRIMINATORS**: each fails under the shipped code and passes under the design, and the failing pre-fix value is stated. T3, T3b, T6, T7a/T7b, T8, T9, T10 and T11a are **LOCKS**: they pass under the shipped code too, by design, and their adversary is a wrong POST-fix implementation (T3: rung A made unreachable; T3b: the witness taken from the invalidation eligible set, or fixed by widening that set; T6: a degradation path that raises or over-claims; **T7a+T7b: an alarm gate missing condition (2), freshness parity**; **T4a+T10: an alarm gate missing condition (1), corroboration at the close's own stamp**; T8: the shipped stamp gate dropped without replacement; T9: archive-unavailable inferred from archive-empty). The pairing is deliberate: each condition of the alarm gate has a two-test pair in which one member must alarm and the other must not, so an implementation that drops either condition fails a pair rather than silently passing. Each lock states its adversary in-line. A lock is not a weak discriminator — it defends the direction the discriminators cannot see, and every discriminator above only asserts that something is ABSENT, which is exactly the assertion an over-correcting implementation satisfies trivially.
 
 Shared geometry (REAL, from the live corpus): FTRE, fire at evaluation run 121, `action_session_date = 2026-07-20`, **frozen** `pivot = 18.34`, `initial_stop = 14.88`; `zone_cap = round(18.34 * 1.03, 4) = 18.8902` (renders `18.89`). Frozen clock `NOW = 2026-07-25 12:00` -> `action_session = 2026-07-27`, `derivation_session = 2026-07-24` (all verified on this box). `2026-07-23`, `2026-07-24`, `2026-07-27`, `2026-07-28`, `2026-07-29` are all NYSE sessions.
 
@@ -508,6 +583,14 @@ Seed: the T4a 7-hour-window geometry (`S = 2026-07-28`, `D = L = 2026-07-27`, cl
 - **Assertions:** `"not the mandated order shape" not in r.text`; `"AT OR ABOVE" not in r.text`; no all-clear of any form; the label renders.
 - **Paired with T4a**, which differs ONLY in that its archive `2026-07-27` bar AGREES with the persisted close. **T4a and T10 together are the condition-(1) lock**; T7a and T7b together are the condition-(2) lock. An implementation carrying only one condition fails one pair.
 
+### T11 — the card states a date it can prove (RD OQ-3)
+
+Two halves in one test file, both from geometries already built:
+
+- **T11a (corroborated).** The T3 seed (close `17.76` stamped `2026-07-24`, archive `2026-07-24 = 17.76`). Post-fix the card renders `close dated 2026-07-24` as a PROVEN date. Pre-fix it renders the same string by coincidence, so **this half is a LOCK, not a discriminator** — its adversary is an implementation that degrades every card to the upper-bound form and thereby tells the operator less than it knows.
+- **T11b (uncorroborated) — the discriminator.** The T2 Route-B seed (close `19.52` stamped `2026-07-24`, archive `2026-07-23 = 19.52` and `2026-07-24 = 17.76`). **Pre-fix:** the card renders a bare `2026-07-24` for a close that is NOT the 07-24 close — a run-level stamp presented as a per-row date, live, on the panel this arc exists to correct. **Post-fix:** `close dated on or before 2026-07-24`. Assert the bare-date form is ABSENT and the upper-bound form is present; the pre-fix render fails both assertions.
+- **The §B.4 coupling half:** assert the uncorroborated card carries its qualifier. A card that silently drops to a bare price with no date claim would satisfy "no wrong date" while telling the operator nothing — an unlabelled reduction, which is the shape RD's coupling condition forbids.
+
 ### T5 — the re-expressed 21-A gate test
 
 `test_a_stale_close_does_not_get_to_choose_the_mandate_regime` (four-session-stale close 19.52 stamped 2026-07-20, derivation session 2026-07-24, `GOOD_TILL_CANCEL` `STOP_LIMIT`) is re-expressed as **`test_a_stale_close_may_alarm_but_may_not_assert_a_match`**.
@@ -530,7 +613,8 @@ A latch whose archive read fails (no parquet at all) and whose close read succee
 |---|---|
 | fix requires changing the WRITE path (per-ticker close provenance at write time) | **NOT hit.** The witness is the on-disk archive, already read by the derivation. `swing/evaluation/**` is read-only in this arc. |
 | per-row provenance needs a schema column | **NOT hit.** No migration; schema stays v32. `candidates` gains nothing (verified it carries no per-row date column: `id, evaluation_run_id, ticker, bucket, close, pivot, initial_stop, adr_pct, tight_streak, pullback_pct, prior_trend_pct, rs_rank, rs_return_12w_vs_spy, rs_method, pattern_tag, notes, sector, industry`). |
-| the survey authorizes fixing hits beyond the shape check | **NOT hit.** §S reports; nothing outside `swing/latches/**` + `swing/web/view_models/latches.py` + its template is touched. |
+| the survey authorizes fixing hits beyond the shape check | **NOT hit.** §S reports. ONE hit beyond the shape check is fixed — hit 3, the card's price date — and it is fixed on RD's explicit 2026-07-28 ruling (§E OQ-3), not on the survey's authority. It stays inside the same file set: nothing outside `swing/latches/**` + `swing/web/view_models/latches.py` + its templates is touched. |
+| **OQ-3's fold-in reaches a write path or needs a column** | **NOT hit — re-checked after the scope addition.** Task 6 is a pure VM/render change reusing the Task-3 classifier and the Task-2 map: no new read, no new query, no new DB field, no migration, and `GET /latches` still writes nothing (A4). If an implementer finds otherwise, that is a STOP-and-route, not a widening. |
 | new dependency | **NOT hit.** |
 | L2 (new Schwab endpoint) | **NOT hit.** No integration change. |
 
@@ -545,7 +629,7 @@ A latch whose archive read fails (no parquet at all) and whose close read succee
 5. Orchestrator merged-head no-false-green re-run.
 6. **RD merge-blocking QA.**
 7. **Merge BEFORE 21-B's ledger lands (binding ordering).** A stale-price regime writes a wrong order TYPE into 21-B's execution-parity ledger, so a framework-vs-actual mismatch at RD's monthly read would be the framework's own defect masquerading as operator divergence, unattributable after the fact.
-8. Operator browser witness only if a user-visible surface changes — it does (new label text + a new neutral note on the orders fragment), so a browser witness of BOTH the rung-A all-clear state and a rung-B stale state is recommended, seeded reversibly.
+8. Operator browser witness — required, because user-visible surfaces change in two places: the orders fragment (new label text + the neutral note) and, after RD's OQ-3 ruling, **the latch CARD's price-date line on the page the operator actually reads before acting**. Witness BOTH the rung-A all-clear state and a rung-B stale state, seeded reversibly.
 
 ---
 
@@ -553,7 +637,9 @@ A latch whose archive read fails (no parquet at all) and whose close read succee
 
 **RD's epistemic position, preserved verbatim and load-bearing:** *"I am not asserting it is a class — I am refusing to assume it is not."*
 
-**This survey REPORTS. It does not authorize fixing any hit.** Everything below except hit 1 comes back for scoping.
+**This survey REPORTS. It does not authorize fixing every hit.** Everything below except hits 1 and 3 comes back for scoping — **hit 3 was FOLDED IN by RD on 2026-07-28 and is now Task 6** (§E OQ-3).
+
+**Hits 4, 5 and 7 are RD-OWNED WITH A DEADLINE (2026-07-28): he will read them before the August monthly read, because that read consumes the chain they sit in.** Nothing here is for this arc to act on — but nothing here may be SOFTENED either. They are stated at the strength the evidence supports and no weaker.
 
 ### S.1 Method
 
@@ -582,7 +668,7 @@ Plus `chart_renders.data_asof_date` (per-ticker chart rows, migration 0020) and 
 
 **Hit 2 — `swing/latches/reader.py:322` `count_session_recorded_closes`.** Filters `e.data_asof_date = ?` and counts tickers with a usable close, i.e. it counts closes DATED that session by stamp, not PROVEN from it. Already labelled honestly in 21-A ("closes DATED", never "closes FOR") and the shipped docstring records the limitation. **Unchanged; the label is already correct.** It feeds only rung C.
 
-**Hit 3 — `swing/web/view_models/latches.py:249` `_build_row.price_asof`.** The card renders the run stamp as the price's as-of date and `_zone_position` derives IN ZONE / OUT OF ZONE from that price. Mitigated by `price_source="last_close"` and `price_is_stale=True` rendered unconditionally, so it does not claim freshness — but it is the same shape one level down. **REPORTED, not fixed** (see OQ-3).
+**Hit 3 — `swing/web/view_models/latches.py:249` `_build_row.price_asof`.** The card renders the run stamp as the price's as-of date and `_zone_position` derives IN ZONE / OUT OF ZONE from that price. Mitigated by `price_source="last_close"` and `price_is_stale=True` rendered unconditionally, so it does not claim freshness — but it is the same shape one level down. **FOLDED IN by RD 2026-07-28** (OQ-3); now Task 6 with test T11. It is the same shape one level down, on the panel this arc exists to correct.
 
 **Hit 4 — `research/harness/aplus_v2_ohlcv_evaluator/context_builder.py:266-290, 348` and `ohlcv_reader.py`.** The V1<->V2 parity harness reads `er.data_asof_date` per candidate and slices EVERY ticker's OHLCV to `<= data_asof_date` — i.e. it slices at the COHORT MAX while V1's own close came from that ticker's OWN last bar. For a ticker that lagged the cohort at V1-eval time, V2 sees a bar V1 never had, and the resulting criterion-level difference is attributed to the evaluator. **This is a genuine second instance in the research measurement chain**, and it composes with the existing gotchas #24 (parallel-archive freshness desync) and #26 (archive bar-content temporal mutation) — a third member of the same freshness-desync family. **REPORTED. RD's lane to scope.** No parity claim is being re-opened by this survey; it is named so a future parity result is not read as clean when this term is unaccounted for.
 
