@@ -1746,3 +1746,302 @@ def test_the_seven_hour_window_never_produces_an_all_clear(
         "Mandate form check ran from an uncorroborated close")[0].rsplit(
             "<p", 1)[-1]
     assert "latch-alarm" not in stale_para
+
+
+# --- The alarm-gate CONDITION LOCKS -----------------------------------------
+#
+# These are DESIGN locks, not pre/post discriminators: they pass under the
+# shipped code too, and their adversary is a WRONG POST-FIX implementation.
+# They are paired deliberately -- each condition of the alarm gate has a pair
+# in which one member MUST alarm and the other MUST NOT, so an implementation
+# that drops either condition fails a pair rather than silently passing.
+#
+#   condition (1) CHARACTERISABLE : T4a (must alarm) x T10 (must not)
+#   condition (2) SELF-LIMITING   : T4a (must alarm) x T7a + T7b (must not)
+#
+# Every discriminator in this arc only asserts that something is ABSENT, which
+# is exactly the assertion an over-correcting implementation satisfies
+# trivially. These are what defend the direction the discriminators cannot see.
+def _seed_the_fallen_out_ticker(cfg):
+    """A latched ticker that has dropped OUT of evaluation. Its close is
+    permanently stale (2026-07-20, ABOVE the pivot) while the system has moved
+    on to 2026-07-24 carrying a different ticker -- so `D < L` and the
+    staleness is the TICKER's, not the CLOCK's.
+
+    Condition (1) is DELIBERATELY SATISFIED here: the archive corroborates the
+    close at its own stamp. Only condition (2) stands between this latch and a
+    daily false alarm, so the pair below cannot pass an implementation that
+    dropped it."""
+    _seed_stale_close_above_the_pivot(cfg)                  # run 128, 07-20
+    _seed_recorded_closes_for_the_derivation_session(cfg)   # run 129, AMN 07-24
+    _write_archive_bars(cfg, "FTRE", [("2026-07-20", 19.52)])
+
+
+def test_a_fallen_out_ticker_does_not_alarm_after_the_nightly(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """T7a -- the STICKY-FALSE-RED lock, first half (Codex R3 MAJOR).
+
+    What this forbids: an UNBOUNDED rung-B alarm. From the 2026-07-20 close
+    (19.52, above the pivot) the regime reads PULLBACK, so the operator's
+    correct-for-market-truth GTC STOP_LIMIT would be reported as the wrong
+    shape -- and would be reported again on every review, for as long as the
+    ticker stays off the screen. That is the drumbeat this codebase has already
+    paid for twice."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_the_fallen_out_ticker(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "not the mandated order shape" not in r.text
+    assert "AT OR ABOVE" not in r.text
+    # ...and it is VISIBLY inert, not silently inert (the OQ-2 coupling).
+    assert "MANDATE FORM CHECK INERT FOR THIS LATCH" in r.text
+    assert "Broker orders agree with the live latches" not in r.text
+
+
+def test_a_fallen_out_ticker_does_not_alarm_inside_the_daily_window_either(
+        seeded_db, monkeypatch):
+    """T7b -- the second half, and the one that actually kills the drumbeat
+    (Codex R5 MAJOR 1).
+
+    The FIRST version of the B-continuity gate keyed on
+    `count_session_recorded_closes(S) == 0`. That is TRUE here -- it is true
+    during EVERY daily post-close window -- so the fallen-out ticker would have
+    been alarm-authorized seven hours a day, forever. T7a alone cannot see it:
+    T7a runs at a clock where the count is non-zero. The two together are the
+    lock; either alone is defeated by an implementation that passes the other.
+
+    DEVIATION FROM THE PLAN, RECORDED. Plan H.T7b says `assertions identical to
+    T7a`, but at this clock NOTHING is recorded for S == 2026-07-28, so the
+    shipped classifier renders `pending` rather than `permanent` -- which is
+    the honest label (it IS true that no usable close is recorded for that
+    session yet) and is what plan B.6 requires, since B-persistent is
+    indistinguishable from rung C in what the page can claim. The property
+    T7b exists to lock -- NO ALARM, and the reduction LABELLED -- is asserted
+    exactly."""
+    cfg, cfg_path = seeded_db
+    _freeze(monkeypatch, NOW_WINDOW)
+    _seed_ftre(cfg)
+    _seed_the_fallen_out_ticker(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client, anchor=ANCHOR_WINDOW)
+    assert r.status_code == 200
+    assert "not the mandated order shape" not in r.text
+    assert "AT OR ABOVE" not in r.text
+    assert "Broker orders agree with the live latches" not in r.text
+    # ...the reduction is LABELLED, and it is NOT the alarm-authorized label:
+    # this latch was never checked, so it must not claim to have been.
+    assert "Mandate form check pending" in r.text
+    assert "Mandate form check ran from an uncorroborated close" not in r.text
+    assert "1 latch checked from an uncorroborated close" not in r.text
+
+
+def test_a_ticker_lagged_inside_the_latest_cohort_does_not_alarm(
+        seeded_db, monkeypatch):
+    """T10 -- THE ARC'S OWN DEFECT, IN THE ALARM DIRECTION (Codex R6 MAJOR).
+
+    FTRE lagged INSIDE the latest cohort: the run stamps 2026-07-27 for
+    everybody, but FTRE's persisted 19.52 is actually its 2026-07-24 bar. Its
+    real 07-27 close is 17.10, which the evaluator never saw.
+
+    What this forbids: the freshness-parity gate ALONE. `D == L == 2026-07-27`
+    and `W(S) is None`, so a gate testing only stamp parity authorizes the
+    alarm, computes PULLBACK from 19.52, and reports the operator's CORRECT
+    stop-limit as the wrong shape -- daily, for as long as the ticker lags.
+    That is gotcha #30 committed INSIDE THE FIX FOR GOTCHA #30: a run-level
+    stamp standing in for a per-row fact, merely relocated from the assert
+    direction to the alarm direction.
+
+    Condition (1) is what closes it: `W(D) = 17.10 != 19.52`, so the close is
+    NOT corroborated at its own stamp, its date is not proven, and the latch is
+    B-undated and inert. Paired with T4a, which differs ONLY in that its 07-27
+    bar AGREES with the persisted close."""
+    cfg, cfg_path = seeded_db
+    _freeze(monkeypatch, NOW_WINDOW)
+    _seed_ftre(cfg)
+    _seed_watch_close(cfg, 127, asof="2026-07-27", action="2026-07-28",
+                      close=19.52)
+    _write_archive_bars(cfg, "FTRE", [
+        ("2026-07-24", 19.52),      # what the persisted close ACTUALLY is
+        ("2026-07-27", 17.10),      # FTRE's real 07-27 close, never evaluated
+    ])
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client, anchor=ANCHOR_WINDOW)
+    assert r.status_code == 200
+    assert "not the mandated order shape" not in r.text
+    assert "AT OR ABOVE" not in r.text
+    assert "Broker orders agree with the live latches" not in r.text
+    # It was NOT checked, and it must not claim to have been.
+    assert "Mandate form check ran from an uncorroborated close" not in r.text
+    assert "No alarms among the 0 latches form-checked. 1 not form-checked" \
+        in r.text
+    # ...and the reduction is labelled (the OQ-2 coupling).
+    assert "Mandate form check pending" in r.text
+
+
+def test_a_close_stamped_after_this_page_session_can_neither_assert_nor_alarm(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """T8 -- the FUTURE-STAMP lock (Codex R5 MAJOR 3).
+
+    What this forbids: dropping the shipped stamp gate without REPLACING it.
+    The archive here holds a 2026-07-24 bar at 17.76 that CORROBORATES the
+    recorded close, so a naive ladder would reach rung A, read BREAKOUT, find
+    both legs agreeing, and print the affirmative all-clear -- asserted from a
+    price belonging to a LATER moment than the page describes, breaking the
+    coherent-moment invariant the stale-render-anchor suppression exists to
+    protect.
+
+    Reachable, not hypothetical: `load_last_closes` returns the GLOBALLY latest
+    close per ticker while the fragment POST deliberately rebuilds an OLDER
+    render-time anchor, so a newer evaluation run can exist while the fragment
+    describes S."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_watch_close(cfg, 132, asof="2026-07-27", action="2026-07-28",
+                      close=17.76)
+    _write_archive_bars(cfg, "FTRE", [("2026-07-24", 17.76)])
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree with the live latches" not in r.text
+    assert "not the mandated order shape" not in r.text
+    # ...and the reduction names BOTH dates, so the operator can see why.
+    assert "RECORDED CLOSE IS STAMPED AFTER THIS PAGE SESSION" in r.text
+    assert "is stamped 2026-07-27, LATER than the derivation session " \
+        "2026-07-24" in r.text
+
+
+def test_an_unreadable_archive_withdraws_the_alarm_rather_than_assuming_it(
+        seeded_db, monkeypatch):
+    """T9 -- the UNREADABLE-WITNESS lock (Codex R5 MAJOR 2).
+
+    Identical to T4a in EVERY respect except that the archive read RAISES.
+    What this forbids: inferring the archive status from an EMPTY close map.
+    Under that inference this case is indistinguishable from T4a, the type
+    mismatch fires, and the panel asserts a regime from a stale price at
+    exactly the moment it could not check the one thing that would have settled
+    it."""
+    cfg, cfg_path = seeded_db
+    _freeze(monkeypatch, NOW_WINDOW)
+    _seed_ftre(cfg)
+    _seed_the_seven_hour_window(cfg)
+
+    def _boom(*_a, **_k):
+        raise OSError("parquet is unreadable")
+
+    monkeypatch.setattr("swing.data.ohlcv_archive.resolve_ohlcv_window", _boom)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client, anchor=ANCHOR_WINDOW)
+    assert r.status_code == 200                             # A6
+    assert "not the mandated order shape" not in r.text
+    assert "AT OR ABOVE" not in r.text
+    assert "Broker orders agree with the live latches" not in r.text
+    assert "MANDATE FORM CHECK NOT RUN" in r.text
+    assert "the OHLCV archive read for this ticker failed" in r.text
+
+
+def test_a_missing_archive_degrades_visibly_and_never_500s(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """T6 -- the A6 regression lock. No parquet at all (the production shape
+    for a legacy-only Shape-A ticker, of which 1168 exist on the operator's
+    box) plus a usable close: rung B, no raise, no all-clear, and the shipped
+    rung-C wording reproduced byte-for-byte."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)                    # a usable close, and NO archive at all
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree with the live latches" not in r.text
+    assert "Mandate form check pending" in r.text
+    assert "waiting on the nightly data for the derivation session 2026-07-24" \
+        in r.text
+    # An UNREADABLE archive and an ABSENT one are different facts, and the
+    # missing-parquet case is the readable-but-empty one.
+    assert "the OHLCV archive read for this ticker failed" not in r.text
+
+
+def test_the_stale_regime_count_equals_the_rendered_stale_notes(
+        seeded_db, monkeypatch):
+    """The counts and the labels come from ONE list, so they cannot fork
+    (Codex R3 MINOR / R6 MINOR). On a MIXED page -- one alarm-authorized latch,
+    one merely-unchecked latch -- the sentence's stale term must equal the
+    number of rendered stale_regime notes."""
+    cfg, cfg_path = seeded_db
+    _freeze(monkeypatch, NOW_WINDOW)
+    _seed_ftre(cfg)
+    _seed_the_seven_hour_window(cfg)          # FTRE -> B-continuity
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        # A second latched ticker with NO archive at all -> merely unchecked.
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(121, 'AMN', 'aplus', 12.0, 13.0, 11.0, 'universe')")
+    conn.close()
+    amn = _order(order_id="2", instrument_symbol="AMN", price=13.39,
+                 stop_price=13.0, duration="GOOD_TILL_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_pullback_order(), amn])
+    with TestClient(app) as client:
+        r = _post_orders(client, anchor=ANCHOR_WINDOW)
+    assert r.status_code == 200
+    assert r.text.count("Mandate form check ran from an uncorroborated close") == 1
+    assert "1 latch checked from an uncorroborated close - no all-clear is " \
+        "asserted for those. 1 not form-checked - see the labels below. " \
+        "No alarms among the 0 latches form-checked." in r.text
+
+
+def test_a_dated_conflict_blocks_the_alarm_even_when_both_conditions_hold(
+        seeded_db, monkeypatch):
+    """The B-CONFLICT lock, in the one geometry where it is load-bearing
+    (Codex R4 MAJOR 2).
+
+    Both alarm conditions hold here -- the close IS corroborated at its own
+    stamp 2026-07-27 (condition 1) and the system has nothing newer, `D == L`
+    (condition 2) -- so ONLY the B-conflict guard stands between the panel and
+    an alarm. And the archive is holding a bar dated the derivation session
+    that CONTRADICTS the recorded close: 17.10, which makes the operator GTC
+    STOP_LIMIT the CORRECT instrument. Alarming from the older, contradicted
+    number would be a false alarm manufactured by our own inconsistency, and it
+    would repeat daily for as long as the archive runs ahead of the candidate
+    rows.
+
+    It also pins the SECOND value_conflict wording: with `D < S` the honest
+    statement is that the archive holds a NEWER close for S than the recorded
+    one -- not that two sources disagree about the same session, which is the
+    `D == S` case."""
+    cfg, cfg_path = seeded_db
+    _freeze(monkeypatch, NOW_WINDOW)
+    _seed_ftre(cfg)
+    _seed_watch_close(cfg, 127, asof="2026-07-27", action="2026-07-28",
+                      close=19.52)
+    _write_archive_bars(cfg, "FTRE", [
+        ("2026-07-27", 19.52),      # W(D) == P: condition (1) IS satisfied
+        ("2026-07-28", 17.10),      # ...but a bar DATED S contradicts it
+    ])
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client, anchor=ANCHOR_WINDOW)
+    assert r.status_code == 200
+    assert "not the mandated order shape" not in r.text
+    assert "AT OR ABOVE" not in r.text
+    assert "Broker orders agree with the live latches" not in r.text
+    # ...and it is not counted or labelled as a check that ran.
+    assert "Mandate form check ran from an uncorroborated close" not in r.text
+    # The D < S wording, naming both numbers.
+    assert "RECORDED CLOSE CONTRADICTED BY THE ARCHIVE" in r.text
+    assert "the archive holds a newer close for 2026-07-28 (17.10) than the "         "recorded one (19.52, stamped 2026-07-27)" in r.text

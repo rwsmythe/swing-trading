@@ -970,7 +970,14 @@ def build_latch_orders_vm(
             # inconsistency, repeatable daily (Codex R4 MAJOR 2).
             and not prov.has_dated_conflict
             # B-unavailable: the archive read RAISED, so the missing witness is
-            # our ignorance (Codex R5 MAJOR 2).
+            # our ignorance (Codex R5 MAJOR 2). BELT, not braces: an unreadable
+            # archive yields an EMPTY close map, so `dated_at_stamp` below is
+            # already False and this term cannot currently change the outcome
+            # on its own. It is kept because it states the REASON independently
+            # of that coincidence -- if a future edit ever weakened condition
+            # (1), this is what would still refuse to alarm from a price whose
+            # settling evidence was unreadable. (The status ALSO drives the
+            # LABEL, which IS independently observable -- see T9.)
             and not prov.archive_unavailable
             # (1) CHARACTERISABLE -- the date is PROVEN at the close's own
             # stamp, not inferred from it (Codex R6 MAJOR).
