@@ -63,15 +63,23 @@ Do **not** hard-code. `0032` is taken (21-A). As of 2026-07-29 `0033` is free in
 - **`0008`'s own header (lines 7-12) already prescribes this route:** *"A formal amendment requires a NEW migration with an explicit version bump … not an in-place UPDATE."* The governance path was specified in advance.
 - **The original is already unconditionally preserved at the RECORD level** — `0008:52`, immutable, git-tracked, unclobberable by any runtime path. The new column adds ROW-level recoverability on top of an already-durable record; it is not the only thing standing between the project and a lost pre-registration.
 
-## §5 OPEN — must be answered before authoring
+## §5 RESOLVED — the criterion is stored SINGLE-LINE, pinned by hash
 
-**Is the line wrapping in the brief's §1 amended text part of the criterion, or markdown presentation?** §5.1 demands the row read it **byte-for-byte**, and the text is rendered as a 7-line wrapped block. An implementer transcribing literally gets embedded newlines; one following house style (`0026:19-25`, `||` concatenation with single spaces) gets one line. **Those differ byte-for-byte and the acceptance test cannot distinguish which was intended.**
+**RD ruled 2026-07-29 (incoming generation): the line wrapping in the brief's §1 block is markdown presentation, NOT criterion content.** RD performed the normalization himself, per PRESERVE-THE-QUOTE — the text is operator-signed and RD-authored, so a downstream editor never normalizes it. Derivation was **mechanical, not retyped**: read the fenced block, strip each line, join on a single space, assert no double space.
 
-**This is RD's to state, not CHARC's to normalize** — the text is operator-signed and RD-authored, and per PRESERVE-THE-QUOTE (`harness-architecture.md` §2) a downstream editor corrects surrounding text, never the quote. CHARC's recommendation is the single-line `||` form (house style; and since `tier.py:756` renders it into HTML, embedded newlines would collapse on the surface anyway). **Routed to the incoming RD generation 2026-07-29.**
+**Canonical stored value — length 577, sha256 `6bdd723ce8a8ea1d00b8dbcfa7b50ec056a6282ee3a5110990b2f0894b7b3e73`.**
+
+**CHARC independently reproduced it** from the brief's fenced block by the same mechanical derivation: 8 lines in, **577 characters, sha256 identical**. The constant is verified, not relayed — it is about to become a binding acceptance assertion, and a figure a plan builds on gets traced at the moment it is stated.
+
+**The real fix to what this section originally flagged:** RD's §5 item 1 demanded byte-for-byte equality against a referent that *did not exist as bytes*. **The acceptance test asserts the sha256 (or exact-string equality against the canonical value), never "matches brief §1".** That is what makes it falsifiable.
+
+**Grounds for the ruling (RD, traced on disk):** `0008:52` — the value being replaced — is a single SQL string literal with no embedded newline; `0026:13-25` (the governance precedent this amendment follows) assembles a single-line value via `||` with trailing spaces per fragment; and a grep for `char(10)`/`x'0a'` across every migration returns NONE. A wrapped form would make this the ONLY multi-line criterion in the registry and would differ in SHAPE from the exact text it replaces — corrupting the original-vs-amendment comparison the preservation exists to enable.
+
+**CHARC correction of record:** the HTML-collapse rationale offered in the original version of this section is **NOT load-bearing and was not verified**. RD declined to rest the ruling on a downstream renderer's behaviour — renderers change, the migration record does not. The ruling stands on the registry's own convention. (The original text also said "7-line block"; it is 8 — which is precisely why a line count was never a safe referent.)
 
 ## §6 Acceptance additions to RD's §5
 
-RD's five acceptance items stand. Add:
+RD's five acceptance items stand **with two REPLACED by his own correction (2026-07-29)**: item 1's "matches §1" referent is replaced by the **sha256/exact-string assertion** in §5 above, and item 4 ("migration is data-only; schema tables/columns unchanged") is **FALSE under this pass** — it is an acceptance criterion the correct implementation fails, and RD is correcting it in the brief by replacement. Add:
 
 6. `preregistered_decision_criteria` on the `A+ baseline` row reads the `0008:52` original **verbatim**.
 7. The column is **NULL** on ids 2–5, and the migration header documents the NULL semantic.
