@@ -2067,7 +2067,8 @@ def test_a_dated_conflict_blocks_the_alarm_even_when_both_conditions_hold(
     assert "Mandate form check ran from an uncorroborated close" not in r.text
     # The D < S wording, naming both numbers.
     assert "RECORDED CLOSE CONTRADICTED BY THE ARCHIVE" in r.text
-    assert "the archive holds a newer close for 2026-07-28 (17.10) than the "         "recorded one (19.52, stamped 2026-07-27)" in r.text
+    assert ("the archive holds a newer close for 2026-07-28 (17.10) than the "
+            "recorded one (19.52, stamped 2026-07-27)" in r.text)
 
 
 def test_a_corroborated_close_behaves_byte_identically_to_21A(
@@ -2251,6 +2252,12 @@ def test_an_unplaceable_stamp_is_not_described_as_later_than_this_page(
     # The SAFE behaviour is preserved: neither direction is claimed.
     assert "not the mandated order shape" not in r.text
     assert "Broker orders agree with the live latches" not in r.text
-    # ...and the REASON given is the true one.
-    assert "which is not a usable date, so it cannot be placed in time at all"         in r.text
+    # ...and the REASON given is the true one, in the HEADLINE as well as in
+    # the detail (Codex R10 MINOR): the headline is the bold text the operator
+    # reads first, so a true detail under a false headline is worse than
+    # neither.
+    assert "RECORDED CLOSE CANNOT BE PLACED IN TIME" in r.text
+    assert "RECORDED CLOSE IS STAMPED AFTER THIS PAGE SESSION" not in r.text
+    assert ("which is not a usable date, so it cannot be placed in time at all"
+            in r.text)
     assert "LATER than the derivation session" not in r.text

@@ -577,7 +577,13 @@ _FORM_CHECK_HEADLINES = {
     # WARNING tone: both report a real, actionable inconsistency in the
     # operator's own data rather than a routine wait.
     "value_conflict": "RECORDED CLOSE CONTRADICTED BY THE ARCHIVE",
+    # TWO headlines for the ONE rung, because the rung holds two DIFFERENT
+    # facts and the headline is the bold text the operator reads first (Codex
+    # R10 MINOR). A detail that says "cannot be placed in time" under a
+    # headline that says "stamped after this page session" is a false reason
+    # rendered more prominently than the true one.
     "future_stamp": "RECORDED CLOSE IS STAMPED AFTER THIS PAGE SESSION",
+    "unplaceable_stamp": "RECORDED CLOSE CANNOT BE PLACED IN TIME",
 }
 
 # The severities that render as neutral STATUS rather than as a warning. Kept
@@ -1375,13 +1381,17 @@ def _build_form_check_notes(
             # own moment may neither decide nor contest the regime -- the same
             # coherent-moment discipline that makes a stale render anchor
             # suppress the alarms.
-            severity = "future_stamp"
-            # THE REASON MUST BE TRUE, NOT MERELY SAFE (Codex R9 MINOR). Rung F
-            # holds TWO distinct shapes and they are keyed on the PARSED stamp,
+            # THE REASON MUST BE TRUE, NOT MERELY SAFE (Codex R9 + R10 MINOR).
+            # Rung F holds TWO distinct shapes, keyed on the PARSED stamp and
             # never on the raw string being non-empty: a stamp of 'not-a-date'
             # is non-empty but UNPLACEABLE, and calling it "later than" would
-            # state a false reason for a correct degradation.
-            if prov is not None and prov.stamp_date is not None:
+            # state a false reason for a correct degradation. The HEADLINE
+            # moves with the detail -- it is the bold text read first, so a
+            # true detail under a false headline is worse than neither.
+            severity = (
+                "future_stamp" if prov is not None and prov.stamp_date is not None
+                else "unplaceable_stamp")
+            if severity == "future_stamp":
                 placed = (
                     f"is stamped {stamp}, LATER than the derivation session "
                     f"{session_iso} this page describes, so it belongs to a "

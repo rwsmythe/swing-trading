@@ -350,7 +350,8 @@ def test_the_card_names_a_future_stamped_close_as_later_than_this_page(
         r = client.get("/latches")
     assert r.status_code == 200
     assert "as of 2026-07-28" not in r.text
-    assert "close stamped 2026-07-28, later than the session this page "         "describes (2026-07-24)" in r.text
+    assert ("close stamped 2026-07-28, later than the session this page "
+            "describes (2026-07-24)" in r.text)
 
 
 def test_a_card_with_no_price_still_renders_the_shipped_dash(
