@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import math as _math
 from dataclasses import dataclass as _dataclass
+from decimal import ROUND_FLOOR as _ROUND_FLOOR
+from decimal import Decimal as _Decimal
 
 from swing.latches.constants import (
     DERIVATION_FIELD_MANIFEST,
@@ -278,7 +280,9 @@ class SizingInputs:
 
 
 def quantize_limit_down(zone_cap: float) -> float:
-    """`floor(zone_cap * 100) / 100` -- the zone cap in WHOLE CENTS, by FLOOR.
+    """The LARGEST WHOLE-CENT PRICE THAT DOES NOT EXCEED THE CAP, evaluated
+    against the cap's DECIMAL value rather than its BINARY representation
+    (RD ruling, 2026-07-30).
 
     WHOLE CENTS because that is the only price the order could actually be: a US
     equity limit order is penny-priced, 18.8902 is not a price the operator could
@@ -293,10 +297,38 @@ def quantize_limit_down(zone_cap: float) -> float:
     that whenever the cap's third decimal is >= 5 -- a cap of 18.8952 becomes
     18.90 > 18.8952. RD: a cap that can drift up under rounding is not a cap.
 
-    FTRE does NOT exhibit it (18.8902 rounds down either way), which is exactly
-    why the rule has to be STATED rather than inferred from the worked example.
+    AND NOT `math.floor(cap * 100) / 100` EITHER, which was the shipped form: a
+    cap that IS an exact cent in decimal can be represented just BELOW it in
+    binary, so the multiply-and-floor drops a cent that the decimal value plainly
+    contains. `round(141.00 * 1.03, 4)` is `145.23`, but `145.23 * 100` evaluates
+    to `14522.999999999998` and the naive floor emits **145.22**. Incidence
+    through the production path (`zone_cap = round(pivot * 1.03, 4)`): 43 of the
+    100,000 two-decimal pivots up to $1000.
+
+    RARITY IS NOT THE ARGUMENT AND THE HARM IS NOT THE PRICE -- a limit one cent
+    below the cap is still in zone and marginally conservative. The harm is that
+    the FRAMEWORK THEN FLAGS ITS OWN OUTPUT AS A MISMATCH: 21-A's join compares a
+    resting order's limit against the latch's cap at cent precision, so a
+    145.22 order against a 145.23 cap attributes to NO latch, surfaces as a
+    STRAY, and fires LATCH_ARMED_NO_RESTING_ORDER over a mandate the operator
+    covered exactly as instructed. A false alarm we generate ourselves, on this
+    arc's primary alarm channel, is the drumbeat-erosion class.
+
+    `Decimal(str(cap))` is the mandated form rather than an epsilon or a
+    `floor(round(cap * 100, 6))`: both of those work, and both need a precision
+    constant nobody can justify to the next reader. `str()` yields the shortest
+    decimal that round-trips the double, which IS "the cap's decimal value", and
+    `ROUND_FLOOR` then states the cap semantic directly.
+
+    FTRE does NOT exhibit either defect (18.8902 floors to 18.89 under every
+    implementation), which is exactly why both rules have to be STATED rather
+    than inferred from the worked example -- and why the two pinning tests are
+    each marked NOT DROPPABLE: the round-half-up case passes under the naive
+    floor, and the representation case passes under round-half-up.
     """
-    return _math.floor(float(zone_cap) * 100) / 100
+    return float(
+        _Decimal(str(float(zone_cap))).quantize(
+            _Decimal("0.01"), rounding=_ROUND_FLOOR))
 
 
 def compute_prepared_order(

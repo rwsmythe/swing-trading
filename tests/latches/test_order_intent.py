@@ -8,6 +8,7 @@ sizing equity 7500 (the floor binds; real equity ~1.2k),
 """
 from __future__ import annotations
 
+import math as _math
 from datetime import date
 
 import pytest
@@ -75,23 +76,106 @@ def test_the_limit_is_the_zone_cap_quantized_DOWN_to_whole_cents():
 
 
 def test_a_cap_whose_third_decimal_rounds_UP_still_quantizes_DOWN():
-    """THE REQUIRED SYNTHETIC DISCRIMINATOR, and it must not be dropped as
-    redundant. FTRE alone CANNOT discriminate here -- its cap (18.8902) rounds
-    down either way -- which is exactly the vacuous-acceptance-test trap.
+    """THE ROUND-HALF-UP DISCRIMINATOR. **NOT DROPPABLE AS REDUNDANT** -- it is
+    HALF of a pair and the other half CANNOT catch what it catches.
 
-    The zone cap is a MAXIMUM, so a quantization that can move the price UP can
-    push the order ABOVE the zone. A round-half-up implementation returns 18.90
-    and FAILS this test.
+    FTRE alone cannot discriminate here (its cap 18.8902 rounds down either
+    way), which is the vacuous-acceptance-test trap. The zone cap is a MAXIMUM,
+    so a quantization that can move the price UP can push the order ABOVE the
+    zone. A round-half-up implementation returns 18.90 and FAILS this test; a
+    NAIVE binary floor PASSES it, which is precisely why its sibling below
+    (`..._not_undercut_by_binary_representation`) exists and why neither may be
+    deleted as covering the other.
     """
     assert quantize_limit_down(18.8952) == 18.89
     assert round(18.8952, 2) == 18.90, (
         "the premise, asserted inline so it cannot rot: round-half-up DOES move "
         "this cap up, which is why FLOOR is required rather than preferred")
+    assert _math.floor(18.8952 * 100) / 100 == 18.89, (
+        "and the OTHER premise: a naive binary floor passes this case, so this "
+        "test alone does not pin the quantizer -- its sibling does")
     res = compute_prepared_order(
         latch=_ftre_latch(zone_cap=18.8952), regime_order_type="LIMIT",
         regime_close=19.20, regime_close_session="2026-07-29",
         sizing_inputs=_sizing())
     assert res.order.limit_price == 18.89
+
+
+def test_a_whole_dollar_pivot_cap_is_not_undercut_by_binary_representation():
+    """THE REPRESENTATION DISCRIMINATOR (RD ruling, 2026-07-30). **NOT
+    DROPPABLE AS REDUNDANT** -- the sibling above passes under the defect this
+    one catches.
+
+    RULED SEMANTIC: the limit is the largest whole-cent price that does not
+    exceed the cap, evaluated against the cap's DECIMAL value rather than its
+    BINARY representation.
+
+    THE ARITHMETIC, UNDER BOTH PATHS, so the test provably distinguishes:
+      pivot 141.00 -> zone_cap = round(141.00 * 1.03, 4) = 145.23 exactly
+      PRE-FIX  `math.floor(145.23 * 100) / 100`:
+               145.23 * 100 == 14522.999999999998 -> floor 14522 -> **145.22**
+      POST-FIX `Decimal('145.23').quantize('0.01', ROUND_FLOOR)` -> **145.23**
+    A round-half-up implementation ALSO returns 145.23, so this case cannot
+    catch the rounding defect -- that is the sibling's job.
+
+    RARITY IS NOT THE POINT AND THE HARM IS NOT THE PRICE. A limit one cent
+    below the cap is still in zone. The harm is that the FRAMEWORK FLAGS ITS OWN
+    OUTPUT AS A MISMATCH -- see
+    `test_the_framework_never_flags_its_own_prepared_limit_as_a_mismatch`, a
+    false alarm we generate on this arc's primary alarm channel. Incidence
+    through the PRODUCTION path (`zone_cap = round(pivot * 1.03, 4)`): 43 of the
+    100,000 two-decimal pivots from $0.01 to $1000.00, incl. 35.00, 141.00 and
+    257.00.
+    """
+    cap = round(141.00 * 1.03, 4)
+    assert cap == 145.23
+    assert _math.floor(cap * 100) / 100 == 145.22, (
+        "the pre-fix premise, asserted inline so it cannot rot: the naive "
+        "binary floor DOES undercut this cap by a cent")
+    assert quantize_limit_down(cap) == 145.23
+    res = compute_prepared_order(
+        latch=_ftre_latch(latched_pivot=141.00, latched_initial_stop=120.00,
+                          zone_cap=cap),
+        regime_order_type="LIMIT", regime_close=150.00,
+        regime_close_session="2026-07-29", sizing_inputs=_sizing())
+    assert res.order.limit_price == 145.23
+
+
+def test_the_framework_never_flags_its_own_prepared_limit_as_a_mismatch():
+    """THE HARM THE FLOOR FIX ACTUALLY PREVENTS, pinned END TO END.
+
+    A resting order carrying EXACTLY the limit the framework prepared must
+    ATTRIBUTE to that latch and AGREE with it under 21-A's own comparison. Under
+    the pre-fix quantizer the prepared limit is 145.22 against a 145.23 cap, so
+    `_match_latch` finds no hit at all: the operator's order becomes a STRAY, the
+    mandate reads as NAKED, and the panel raises a mismatch the framework itself
+    manufactured. That is drumbeat erosion on the one channel whose alarms have
+    to survive being believed.
+
+    Both sides of the comparison are at cent precision, which is what keeps the
+    representation defect from simply recurring at the comparison instead of at
+    the emission.
+    """
+    from swing.latches.models import RestingOrder
+    from swing.latches.orders import join_orders_to_latches
+
+    cap = round(141.00 * 1.03, 4)
+    latch = _ftre_latch(latched_pivot=141.00, latched_initial_stop=120.00,
+                        zone_cap=cap)
+    prepared = compute_prepared_order(
+        latch=latch, regime_order_type="LIMIT", regime_close=150.00,
+        regime_close_session="2026-07-29", sizing_inputs=_sizing()).order
+    order = RestingOrder(
+        order_id="9001", ticker="FTRE", instruction="BUY", quantity=9.0,
+        order_type="LIMIT", limit_price=prepared.limit_price, stop_price=None,
+        status="WORKING", duration="GOOD_TILL_CANCEL")
+    joins, alarms = join_orders_to_latches(latches=[latch], orders=[order])
+    join = joins[latch.identity.candidate_id]
+    assert join.orders and join.unmatched_orders == (), (
+        "the framework's OWN prepared order must attribute to the latch it was "
+        "prepared for -- a stray here is a false alarm we generated")
+    assert join.order_limit_agrees is True
+    assert [a.kind for a in alarms] == []
 
 
 # --------------------------------------------------------------------------
