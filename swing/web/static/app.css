@@ -105,6 +105,12 @@
   --latch-cleared-fg: #455a64;
   --latch-degraded-bg: #fff8e1;
   --latch-degraded-fg: #8d6e00;
+  /* Phase 21 Arc 21-B — the prepared-order form + the disposition badge. */
+  --latch-order-bg: #eef4fb;
+  --latch-order-fg: #123a63;
+  --latch-order-border: #9dbedd;
+  --latch-withheld-bg: #f4f1e8;
+  --latch-withheld-fg: #5a4c2e;
 }
 
 /* Dark theme override block.
@@ -205,6 +211,12 @@ body.dark {
   --latch-cleared-fg: #b0bec5;
   --latch-degraded-bg: #3d3520;
   --latch-degraded-fg: #ffe082;
+  /* Phase 21 Arc 21-B. */
+  --latch-order-bg: #16283a;
+  --latch-order-fg: #a8ccec;
+  --latch-order-border: #33566f;
+  --latch-withheld-bg: #33301f;
+  --latch-withheld-fg: #ddd0a8;
 }
 
 * { box-sizing: border-box; }
@@ -502,4 +514,79 @@ tr.tripwire-fired td:first-child { border-left: 4px solid var(--tripwire-border)
   color: var(--latch-alarm-fg);
   padding: 0.5rem 0.75rem;
   border-radius: 4px;
+}
+
+/* ---------------------------------------------------------------------------
+   Phase 21 Arc 21-B — the prepared-order form, the disposition badge and the
+   attestation prompt. var()-only per the no-raw-hex theme-token contract
+   (every raw color lives in :root / body.dark above, and BOTH must carry it or
+   the dark theme silently falls back to the light value).
+   --------------------------------------------------------------------------- */
+.latch-prepared-order {
+  background: var(--latch-order-bg);
+  color: var(--latch-order-fg);
+  border: 1px solid var(--latch-order-border);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  margin-top: 0.5rem;
+}
+
+/* The WITHHELD branch is muted rather than alarmed: it is the DEFAULT state on
+   today's substrate, and a warning box on a state that renders every day
+   teaches the operator to dismiss the whole channel. */
+.latch-prepared-order-withheld,
+.latch-prepared-order.latch-prepared-order-withheld {
+  background: var(--latch-withheld-bg);
+  color: var(--latch-withheld-fg);
+}
+
+.latch-prepared-order-heading {
+  font-weight: 600;
+  margin: 0 0 0.25rem 0;
+}
+
+.latch-prepared-order-headline {
+  font-weight: 700;
+  font-size: 1.05rem;
+  margin: 0 0 0.5rem 0;
+}
+
+.latch-derivation {
+  font-family: monospace;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  margin: 0;
+}
+
+.latch-disposition {
+  font-weight: 600;
+}
+
+.latch-disposition-discipline_lapse {
+  color: var(--latch-alarm-fg);
+}
+
+.latch-attest-prompt {
+  background: var(--latch-degraded-bg);
+  color: var(--latch-degraded-fg);
+  border: 1px solid var(--latch-degraded-fg);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.latch-intent-result {
+  background: var(--latch-order-bg);
+  color: var(--latch-order-fg);
+  border: 1px solid var(--latch-order-border);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+}
+
+.latch-intent-stale,
+.latch-intent-error {
+  background: var(--latch-alarm-bg);
+  color: var(--latch-alarm-fg);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
 }
