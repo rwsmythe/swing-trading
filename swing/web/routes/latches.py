@@ -73,15 +73,15 @@ def _parse_id_list(form, field: str) -> list[int]:
         raise _BeaconRejectedError(field, "must be a comma-separated string")
     ids: list[int] = []
     for part in (p.strip() for p in raw_ids.split(",") if p.strip()):
-        # `str.isdigit()` rejects '-3', '1.5', 'true' and 'abc' outright; the
-        # explicit > 0 check then rejects '0'.
-        if not part.isdigit():
-            raise _BeaconRejectedError(
-                field, f"{part!r} is not a positive decimal integer")
-        value = int(part)
-        if value <= 0:
-            raise _BeaconRejectedError(field, f"{part!r} is not positive")
-        ids.append(value)
+        # THE SAME GUARDED PARSE THE INTENT ROUTE USES (codex-auto-review MINOR).
+        # This is the OTHER door into the same integer keyspace and it still held
+        # the bare `isdigit()`-then-`int()` hole -- a Unicode digit or an
+        # overlong ASCII string 500s `POST /latches/view`. Fixing one door and
+        # leaving the other is how the next reader concludes the guard exists.
+        try:
+            ids.append(_parse_positive_int(field, part))
+        except _IntentRejectedError as exc:
+            raise _BeaconRejectedError(field, exc.reason) from exc
     return ids
 
 
@@ -1036,9 +1036,20 @@ async def latches_intent(request: Request):
     }
     submitted["view_session_date"] = raw_session
     submitted["candidate_id"] = str(candidate_id)
-    anchor_digest = build_anchor_digest(
-        intent_kind=kind, candidate_id=candidate_id,
-        view_session_date=raw_session, values=submitted)
+    try:
+        anchor_digest = build_anchor_digest(
+            intent_kind=kind, candidate_id=candidate_id,
+            view_session_date=raw_session, values=submitted)
+    except (TypeError, ValueError) as exc:
+        # THE ANCHOR IS ENCODED, AND ENCODING PARSES (codex-auto-review MINOR).
+        # `framework_quantity=abc` reaches `int()` inside
+        # `encode_derivation_value`, so a malformed anchor 500d instead of being
+        # named -- the shape-validation step skipped exactly the fields the
+        # manifest generates. Named 400, like every other field.
+        log.warning("latch intent anchor could not be encoded: %s", exc)
+        return _reject_intent(
+            "anchor", "carries a value that is not the shape its field "
+                      f"declares ({exc})")
     snapshot_digest = (
         None if envelope is None else str(envelope["broker_snapshot_digest"]))
     key = build_idempotency_key(

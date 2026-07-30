@@ -250,3 +250,34 @@ def test_a_validity_key_requires_its_parent_link():
         build_idempotency_key(
             candidate_id=1, action_session_date=_SESSION, surface="latch_panel",
             intent_kind="validity", anchor_digest="a", actual_digest="b")
+
+
+def test_only_an_ACTED_MANUALLY_attestation_may_carry_a_broker_order_id():
+    """CODEX-AUTO-REVIEW MAJOR. The HTTP route rejects the contradiction, but
+    `record_intent` is reachable from anywhere, so the contract belongs on the
+    dataclass too. A row saying `was_away` while carrying an observed broker
+    order asserts two incompatible things: the classifier scores the EXCULPATORY
+    attestation -- keeping the fire out of the discipline signal -- while the
+    report's origin query names the order he says he did not place.
+
+    THE SCHEMA HALF IS NOT MIRRORED and that is FLAGGED, not hidden: adding the
+    CHECK is a migration edit this dispatch is not authorised to make.
+    """
+    import pytest
+
+    from swing.data.models import LatchOrderIntent
+
+    def _attest(disposition, order_id):
+        return LatchOrderIntent(
+            intent_id=None, candidate_id=1, evaluation_run_id=121,
+            ticker="FTRE", detection_date="2026-07-20", pipeline_run_id=None,
+            idempotency_key="k", action_session_date="2026-07-27",
+            recorded_ts="2026-07-27T09:00:00", surface="latch_panel",
+            intent_kind="attest", attested_disposition=disposition,
+            actual_broker_order_id=order_id)
+
+    for disposition in ("was_away", "chose_not_to_act"):
+        with pytest.raises(ValueError, match="acted_manually"):
+            _attest(disposition, "4242")
+        _attest(disposition, None)          # legal without the evidence
+    assert _attest("acted_manually", "4242").actual_broker_order_id == "4242"

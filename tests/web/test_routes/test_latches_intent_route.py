@@ -1437,3 +1437,41 @@ def test_only_an_ACTED_MANUALLY_attestation_may_carry_a_broker_order_id(
             "actual_broker_order_id": "4242"})
     assert ok.status_code == 200, ok.text
     assert [(r[1], r[10]) for r in _intents(cfg)] == [("attest", "4242")]
+
+
+def test_a_MALFORMED_numeric_anchor_is_a_named_400_not_a_500(
+        seeded_db, frozen_clocks):
+    """CODEX-AUTO-REVIEW MINOR. The hidden anchor is ENCODED, and encoding
+    PARSES: `framework_quantity=abc` reaches `int()` inside
+    `encode_derivation_value`, so a malformed anchor 500'd instead of being
+    named -- the shape-validation step skipped exactly the fields the manifest
+    generates."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        form = _anchor_form(cfg, cid) | {
+            "intent_kind": "place", "framework_quantity": "abc"}
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 400
+    assert "anchor" in r.text
+    assert _intents(cfg) == []
+
+
+def test_the_BEACON_id_parser_refuses_a_unicode_digit_by_name(
+        seeded_db, frozen_clocks):
+    """CODEX-AUTO-REVIEW MINOR -- the OTHER door into the same integer keyspace.
+    `POST /latches/view` still held the bare `isdigit()`-then-`int()` hole after
+    the intent route was fixed, so the same payload 500'd there. Fixing one door
+    and leaving the other is how the next reader concludes the guard exists."""
+    cfg, cfg_path = seeded_db
+    _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        for bad in ("\u00b2", "9" * 5000):
+            r = client.post("/latches/view", headers=_HX, data={
+                "view_session_date": ANCHOR,
+                "actionable_candidate_ids": bad,
+                "withheld_candidate_ids": ""})
+            assert r.status_code == 400, bad
+            assert "actionable_candidate_ids" in r.text

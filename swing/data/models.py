@@ -2784,6 +2784,26 @@ class LatchOrderIntent:
                 and self.actual_broker_order_id is not None):
             raise ValueError(
                 "a place/decline row may not carry actual_broker_order_id")
+        if (kind == "attest" and self.actual_broker_order_id is not None
+                and self.attested_disposition != "acted_manually"):
+            # A BROKER ORDER ID IS EVIDENCE OF HAVING ACTED (codex-auto-review
+            # MAJOR). A row saying `was_away` or `chose_not_to_act` while
+            # carrying an observed broker order asserts two incompatible things:
+            # the classifier scores the EXCULPATORY attestation -- which keeps
+            # the fire out of the discipline signal -- while the report's origin
+            # query simultaneously names the order he says he did not place. An
+            # outcome and its evidence must not be able to disagree, the same
+            # rule the validity row's observed side already obeys.
+            #
+            # THE ROUTE GUARD ALONE WAS ONE LAYER. `record_intent` is reachable
+            # from anywhere, so the contract belongs on the dataclass too. The
+            # SCHEMA half is deliberately NOT added here: that is a MIGRATION
+            # edit this dispatch is not authorised to make, and it is flagged
+            # upward rather than slipped in.
+            raise ValueError(
+                "only an `acted_manually` attestation may carry "
+                "actual_broker_order_id; an attestation that you did NOT act "
+                "cannot also observe the order you placed")
 
     @property
     def _derivation_cols(self) -> tuple[str, ...]:
