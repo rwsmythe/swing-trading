@@ -86,7 +86,11 @@
            value="{{ row.prior_intent_id }}">
     {% for value, label in row.attest_options %}
     <label>
-      <input type="radio" name="attested_disposition" value="{{ value }}">
+      {# REQUIRED for the same reason the validity group is: nothing is
+         pre-selected, and a submit with no selection 400s over the only
+         control. #}
+      <input type="radio" name="attested_disposition" value="{{ value }}"
+             required>
       {{ label }}
     </label>
     {% endfor %}

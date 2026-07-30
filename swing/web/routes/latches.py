@@ -44,6 +44,9 @@ _MAX_BEACON_IDS = 200
 # conversion away from Python's integer-conversion limit on an adversarial
 # payload, not to constrain any real id.
 _MAX_ROW_ID_DIGITS = 19
+# SQLite's signed-64-bit INTEGER maximum. A value above it cannot be BOUND at
+# all, so it must be refused by name rather than raising out of the driver.
+_MAX_SQLITE_INTEGER = 2 ** 63 - 1
 
 
 def _now() -> datetime:
@@ -437,8 +440,15 @@ def _parse_positive_int(field: str, text: str) -> int:
     except ValueError as exc:  # pragma: no cover -- belt behind the guard above
         raise _IntentRejectedError(
             field, f"{text!r} is not a decimal integer") from exc
-    if value <= 0:
-        raise _IntentRejectedError(field, f"{text!r} is not positive")
+    if value <= 0 or value > _MAX_SQLITE_INTEGER:
+        # THE DIGIT BOUND IS NOT THE VALUE BOUND (Codex exec R10 MAJOR).
+        # `9999999999999999999` is nineteen digits and still exceeds SQLite's
+        # signed-64-bit maximum, so BINDING it raises an uncaught `OverflowError`
+        # -- a client-reachable 500 through the very parser added to stop
+        # client-reachable 500s. The bound is now the one the database actually
+        # has.
+        raise _IntentRejectedError(
+            field, f"{text!r} is not a positive integer the ledger can store")
     return value
 
 
@@ -992,6 +1002,21 @@ async def latches_intent(request: Request):
         if kind == "attest" and not answer["attested_disposition"]:
             raise _IntentRejectedError(
                 "attested_disposition", "an attestation REQUIRES a disposition")
+        if (kind == "attest" and answer["actual_broker_order_id"]
+                and answer["attested_disposition"] != "acted_manually"):
+            # A BROKER ORDER ID IS EVIDENCE OF HAVING ACTED (Codex exec R10
+            # MAJOR). A row saying `was_away` or `chose_not_to_act` while
+            # carrying an observed broker order asserts two incompatible things
+            # at once: the classifier counts the attestation that keeps the fire
+            # OUT of the discipline signal, while the origin query simultaneously
+            # reports the order he says he did not place. An outcome and its
+            # evidence must not be able to disagree -- the same rule the validity
+            # row's observed side already obeys.
+            raise _IntentRejectedError(
+                "actual_broker_order_id",
+                "only an `acted_manually` attestation may carry a broker order "
+                "id; an attestation that you did NOT act cannot also observe "
+                "the order you placed")
         if kind == "cancel" and not answer["actual_broker_order_id"]:
             # HAZARD (c), at the FIRST of its three layers: a cancel targets a
             # SPECIFIC broker order id, never a ticker. The form does not emit a

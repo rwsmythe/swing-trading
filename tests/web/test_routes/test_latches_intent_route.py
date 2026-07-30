@@ -1390,3 +1390,50 @@ def test_a_RELOAD_then_the_SAME_answer_is_a_REPLAY_not_a_second_row(
         "the same answer twice is ONE event, however many times the page was "
         "rendered in between")
     assert "already recorded" in again.text
+
+
+def test_an_integer_ABOVE_sqlites_maximum_is_a_named_400_not_an_OverflowError(
+        seeded_db, frozen_clocks):
+    """CODEX EXEC R10 MAJOR. The DIGIT bound is not the VALUE bound:
+    `9999999999999999999` is nineteen digits and still exceeds SQLite's signed
+    64-bit maximum, so BINDING it raises an uncaught `OverflowError` -- a
+    client-reachable 500 through the very parser added to stop client-reachable
+    500s."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": "9" * 19,
+            "intent_kind": "attest", "attested_disposition": "was_away"})
+        assert r.status_code == 400 and "candidate_id" in r.text
+        assert _attest(client, cid, "was_away", "9" * 19).status_code == 400
+    assert _intents(cfg) == []
+
+
+def test_only_an_ACTED_MANUALLY_attestation_may_carry_a_broker_order_id(
+        seeded_db, frozen_clocks):
+    """CODEX EXEC R10 MAJOR. A row saying `was_away` while carrying an observed
+    broker order asserts two incompatible things at once: the classifier counts
+    the attestation that keeps the fire OUT of the discipline signal, and the
+    origin query simultaneously reports the order he says he did not place. An
+    outcome and its evidence must not be able to disagree -- the same rule the
+    validity row's observed side already obeys."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        for disposition in ("was_away", "chose_not_to_act"):
+            r = client.post("/latches/intent", headers=_HX, data={
+                "view_session_date": ANCHOR, "candidate_id": str(cid),
+                "intent_kind": "attest",
+                "attested_disposition": disposition,
+                "actual_broker_order_id": "4242"})
+            assert r.status_code == 400, disposition
+            assert "actual_broker_order_id" in r.text
+        ok = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "attest", "attested_disposition": "acted_manually",
+            "actual_broker_order_id": "4242"})
+    assert ok.status_code == 200, ok.text
+    assert [(r[1], r[10]) for r in _intents(cfg)] == [("attest", "4242")]

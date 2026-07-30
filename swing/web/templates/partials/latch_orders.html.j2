@@ -221,7 +221,13 @@
              value="{{ prompt.prior_intent_id }}">
       {% for value, label in prompt.options %}
       <label class="latch-validity-option">
-        <input type="radio" name="validity_outcome" value="{{ value }}">
+        {# REQUIRED: nothing is pre-selected (absence may not assert an answer),
+           so without it "Record this outcome" submits no outcome at all, the 400
+           swaps over the form via outerHTML, and the collector the operator
+           needs is GONE from the page. Native validation keeps the question on
+           screen. #}
+        <input type="radio" name="validity_outcome" value="{{ value }}"
+               required>
         {{ label }}
       </label>
       {% endfor %}

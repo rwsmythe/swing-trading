@@ -942,3 +942,66 @@ def test_a_DISPLACED_cycles_answer_stays_correctable_DOWNWARD(
     p1_row = next(i for i in intents if i.intent_id == p1)
     assert resolve_execution_outcome_for(latch, p1_row, intents) == (
         "not_submitted"), "the flattering acceptance no longer governs P1"
+
+
+def test_the_validity_radio_group_is_REQUIRED_so_a_blank_submit_cannot_erase_it(
+        seeded_db, monkeypatch, clocks):
+    """CODEX EXEC R10 MAJOR. Nothing is pre-selected -- absence may not assert an
+    answer -- so without native `required` validation "Record this outcome"
+    submits no outcome at all, the 400 swaps OVER the form via `outerHTML`, and
+    the collector the operator needs is GONE from the page. He then has to know
+    to reload to get the question back."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[])
+    with TestClient(app) as client:
+        _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        prompt = _prompt_html(_fragment(client, PROMPT_ANCHOR).text)
+    other = _form_html(prompt, "latch-validity-other")
+    radios = re.findall(r"<input type=\"radio\"[^>]*>", other)
+    assert radios, "the non-accepted form must offer the outcomes"
+    assert all("required" in r for r in radios)
+
+
+def test_a_CONTESTED_ticker_offers_its_stray_to_NO_latch_and_says_why(
+        seeded_db, monkeypatch, clocks):
+    """CODEX EXEC R10 MAJOR. A ticker-level stray was treated as unique WITHOUT
+    checking it was unique to ONE eligible latch, so with two latches on a
+    ticker the same unclaimed broker order was supplied to BOTH prompts and could
+    be persisted as the exact `actual_broker_order_id` of two DISTINCT latch
+    observations -- a fabricated agreement on whichever it did not belong to, and
+    no schema uniqueness prevents it."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(order_id="5150", price=12.00)])
+    with TestClient(app) as client:
+        # The place is logged BEFORE the second fire exists: the re-fire
+        # SUPERSEDES the first latch, so a fixture that seeded it first could
+        # never reach the offered form at all.
+        _log_place(client, cfg, cid)
+        conn = connect(cfg.paths.db_path)
+        with conn:
+            conn.execute(
+                "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+                "action_session_date, tickers_evaluated, aplus_count, "
+                "watch_count, skip_count, excluded_count, error_count) VALUES "
+                "(122, '2026-07-27T17:30:05', '2026-07-27', '2026-07-28', 1, 1, "
+                "0, 0, 0, 0)")
+            conn.execute(
+                "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+                "close, pivot, initial_stop, rs_method) VALUES "
+                "(122, 'FTRE', 'aplus', 19.50, 20.10, 17.20, 'universe')")
+        conn.close()
+        clocks.set(PROMPT_NOW)
+        html = _fragment(client, PROMPT_ANCHOR).text
+    # 21-A still reports the stray as a DISAGREEMENT (correctly -- an
+    # unexplained resting order is worth surfacing), and the ABSENCE prompt
+    # still renders (also correctly -- no order attributable to THIS mandate is
+    # visible). What must not happen is that the contested order is offered as
+    # EITHER latch's observed side, which is the row that would fabricate an
+    # agreement on whichever latch it did not belong to.
+    assert "latch-validity-presence" not in html
+    assert 'name="actual_broker_order_id"' not in html
+    assert "could belong to more than one mandate" in html

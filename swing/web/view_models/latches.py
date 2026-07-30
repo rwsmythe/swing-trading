@@ -2673,6 +2673,20 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
         if o.order_id in claimed:
             continue
         strays_by_ticker.setdefault(o.ticker, []).append(o)
+    # A STRAY MAY BE OFFERED TO AT MOST ONE LATCH (Codex exec R10 MAJOR). With
+    # an old cleared latch and a newer live latch on the same ticker, one
+    # unclaimed broker order was supplied to BOTH prompts and could be persisted
+    # as the exact `actual_broker_order_id` of two DISTINCT latch observations --
+    # a fabricated agreement on whichever of them it did not belong to, and no
+    # schema uniqueness prevents it. Where more than one latch on a ticker could
+    # take it, NONE does, and the ambiguity is what the prompt reports.
+    eligible: dict[str, int] = {}
+    for latch in latches:
+        if joins.get(latch.identity.candidate_id) is None:
+            continue
+        ticker = latch.identity.ticker
+        eligible[ticker] = eligible.get(ticker, 0) + 1
+    contested = {t for t, n in eligible.items() if n > 1}
     out: list[LatchValidityPromptVM] = []
     degraded: list[str] = []
     withheld_notes: list[str] = []
@@ -2691,6 +2705,18 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
         # must stop asking about the superseded one; the report discloses it as
         # a displaced cycle instead.
         place = current_cycle_place(intents)
+        # A DISPLACED CYCLE'S ANSWER MUST STAY CORRECTABLE, AND THAT IS
+        # INDEPENDENT OF WHETHER THE CURRENT CYCLE PRODUCES A PROMPT (Codex exec
+        # R9 + R10 MAJOR). Gating it behind the current prompt meant a LATER
+        # DECLINE (which makes `current_cycle_place` None), an ambiguous
+        # attribution, a same-session deferral, a fill settlement or a degraded
+        # current prompt all silently removed it -- so on several branches an
+        # erroneous, FLATTERING `accepted_by_broker` stayed browser-uncorrectable
+        # after all. It is generated FIRST, from the ledger alone.
+        out.extend(_displaced_cycle_corrections(
+            latch, intents=intents, current=place, digest=digest,
+            snapshot_ts=snapshot_ts, anchor_iso=anchor_iso,
+            prior_intent_id=_prior_intent_id(intents)))
         if place is None:
             continue
         framework = framework_side_of(place)
@@ -2724,7 +2750,15 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
                 for i in intents):
             # Settled by the FILL rather than by an answer -- nothing to correct.
             continue
-        strays = tuple(strays_by_ticker.get(latch.identity.ticker, ()))
+        strays = (
+            () if latch.identity.ticker in contested
+            else tuple(strays_by_ticker.get(latch.identity.ticker, ())))
+        if (latch.identity.ticker in contested
+                and strays_by_ticker.get(latch.identity.ticker)):
+            withheld_notes.append(
+                f"{latch.identity.ticker}: an unattributed resting BUY order "
+                "could belong to more than one mandate on this ticker, so the "
+                "framework will not offer it to any of them")
         if (not is_correction
                 and not _prompt_candidates(join, ticker_strays=strays)[0]
                 and place.action_session_date >= anchor_iso):
@@ -2745,22 +2779,6 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
             continue
         if prompt is not None:
             out.append(prompt)
-            # A DISPLACED CYCLE'S ANSWER MUST STAY CORRECTABLE (Codex exec R9
-            # MAJOR). Once P1 is displaced by P2 or by a decline, its validity
-            # answer left the panel entirely -- so an erroneous, FLATTERING
-            # `accepted_by_broker` on P1 would govern that cycle forever while
-            # the handler supported per-parent corrections all along.
-            #
-            # BOUNDED, AND THE BOUND IS HONEST: only the NON-ACCEPTED outcomes
-            # are offered, because re-asserting acceptance requires a COMPLETE
-            # observed side and nothing can reconstruct the order book as it
-            # stood for a cycle that has since been displaced. The direction that
-            # matters -- correcting a flattering acceptance DOWNWARD -- is open;
-            # the direction that would require inventing evidence is not.
-            out.extend(_displaced_cycle_corrections(
-                latch, intents=intents, current=place, digest=digest,
-                snapshot_ts=snapshot_ts, anchor_iso=anchor_iso,
-                prior_intent_id=_prior_intent_id(intents)))
         elif withheld:
             # A WITHHELD COLLECTOR IS LABELLED WITH ITS REASON. Silence here
             # reads as "there is no question about this latch", and the
