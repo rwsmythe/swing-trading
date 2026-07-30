@@ -1,12 +1,19 @@
-{# Arc 21-B: the prepared-order block. ASCII only (no glyphs / em-dash). NO
-   logic here -- every value is display-ready on `row.prepared_order`.
+{# Arc 21-B: the prepared-order block + the LOG-ONLY intent form. ASCII only
+   (no glyphs / em-dash). NO logic here -- every value is display-ready on
+   `row.prepared_order`.
 
    THE WITHHELD BRANCH IS THE DEFAULT, NOT THE EXCEPTION. On today's substrate
    the regime is undeterminable on every card, so the withheld branch is what
    renders; it states its reason and offers NO control. There is deliberately
-   NO disabled-looking ACCEPT button in that branch -- a disabled-looking button
-   that posts is worse than no button, and a test asserts the ACCEPT control is
-   ABSENT FROM THE DOM in every withheld case. #}
+   NO disabled-looking ACCEPT button there -- a disabled-looking button that
+   posts is worse than no button, and a test asserts the ACCEPT control is
+   ABSENT FROM THE DOM in every withheld case.
+
+   THE FORM CARRIES ITS OWN `hx-target="this"`. `hx-target` INHERITS from
+   ancestors, and this card sits inside `.latch-cards`, so without it a future
+   ancestor target would capture the swap and land the 200 fragment somewhere
+   unrelated. `hx-headers` with HX-Request is what keeps OriginGuard strict
+   mode from 403-ing an unsafe method. #}
 {% set po = row.prepared_order %}
 {% if po %}
 <section class="latch-prepared-order latch-prepared-order-{{ 'offered' if po.offered else 'withheld' }}">
@@ -15,9 +22,52 @@
   <p class="latch-prepared-order-headline">{{ po.headline }}</p>
   <pre class="latch-derivation">{% for line in po.derivation_lines %}{{ line }}
 {% endfor %}</pre>
+  <form class="latch-intent-form" hx-post="/latches/intent"
+        hx-target="this" hx-swap="outerHTML"
+        hx-headers='{"HX-Request": "true"}'>
+    {# THE HIDDEN ANCHOR. Every value the card presents inside the derivation
+       block travels back with the decision, so the POST validates against the
+       EXACT computation he was looking at rather than recomputing "latest" --
+       the GET/POST TOCTOU the hazard-2 gotcha forbids. #}
+    {% for name, value in po.anchor_fields %}
+    <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}
+    <button type="submit" name="intent_kind" value="place"
+            class="latch-intent-accept">ACCEPT - log this order</button>
+    <button type="submit" name="intent_kind" value="decline"
+            class="latch-intent-decline">DECLINE</button>
+    <label>reason:
+      <input type="text" name="decline_reason" maxlength="500">
+    </label>
+  </form>
   {% else %}
   <h3 class="latch-prepared-order-heading">PREPARED ORDER WITHHELD</h3>
   <p class="latch-prepared-order-withheld">{{ po.withheld_detail }}</p>
   {% endif %}
+</section>
+{% endif %}
+{% if row.prompt_required %}
+{# THE ATTESTATION PROMPT rides on the DISPOSITION, and on exactly one:
+   `discipline_lapse`. The cell has ALREADY been scored as a lapse -- attesting
+   is the operator's opportunity to CORRECT it, not a request for permission to
+   score it. Prompting anywhere else (above all on a latch whose panel never
+   presented a decision) trains the dismissal reflex, and dismissal is what
+   eventually kills the honest answer on the cell that matters. #}
+<section class="latch-attest-prompt">
+  <p>This mandate went terminal with no action recorded. If that is wrong, say
+     what happened - the ledger will believe you.</p>
+  <form hx-post="/latches/intent" hx-target="this" hx-swap="outerHTML"
+        hx-headers='{"HX-Request": "true"}'>
+    <input type="hidden" name="view_session_date" value="{{ vm.horizon_session }}">
+    <input type="hidden" name="candidate_id" value="{{ row.candidate_id }}">
+    <input type="hidden" name="intent_kind" value="attest">
+    {% for value, label in row.attest_options %}
+    <label>
+      <input type="radio" name="attested_disposition" value="{{ value }}">
+      {{ label }}
+    </label>
+    {% endfor %}
+    <button type="submit">Record this attestation</button>
+  </form>
 </section>
 {% endif %}

@@ -1,0 +1,36 @@
+{# Arc 21-B: the POST /latches/intent success / replay fragment. ASCII only.
+
+   THE ROOT IS A `section`, NEVER A `tr` -- an HTMX response leading with a
+   table row triggers makeFragment's synthetic-table-wrap, which DROPS table
+   content inside OOB section chunks (browser-only; TestClient cannot see it).
+
+   This fragment swaps into the card's own block; it deliberately does NOT
+   navigate. The 204 + HX-Redirect contract exists because htmx swallows a 303,
+   and its subject is NAVIGATION -- bouncing the operator after each per-latch
+   decision would re-render the page, re-fire the beacon and the broker
+   fragment, and lose his place. #}
+<section class="latch-intent-result latch-intent-{{ intent.intent_kind }}">
+  <p class="latch-intent-logged">
+    LOGGED (nothing was sent to the broker):
+    {{ intent.intent_kind|upper }} for {{ intent.ticker }},
+    mandate session {{ intent.action_session_date }},
+    recorded {{ intent.recorded_ts }}.
+  </p>
+  <p class="muted">
+    ledger intent {{ intent.intent_id }}
+    {%- if replayed %} - already recorded; this resubmit added nothing
+    {%- endif %}
+  </p>
+  {% if intent.decline_reason %}
+  <p class="latch-intent-reason">reason: {{ intent.decline_reason }}</p>
+  {% endif %}
+  {% if intent.attested_disposition %}
+  <p class="latch-intent-reason">attested: {{ intent.attested_disposition }}</p>
+  {% endif %}
+  {% if intent.validity_outcome %}
+  <p class="latch-intent-reason">outcome: {{ intent.validity_outcome }}</p>
+  {% endif %}
+  {% if intent.actual_broker_order_id %}
+  <p class="muted">broker order {{ intent.actual_broker_order_id }}</p>
+  {% endif %}
+</section>

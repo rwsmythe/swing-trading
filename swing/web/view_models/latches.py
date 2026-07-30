@@ -972,6 +972,37 @@ def _panel_prepared_orders(
     return out
 
 
+def rederive_prepared_order(conn, cfg, *, candidate_id: int, anchor: date):
+    """`(latch, PreparedOrderVM)` for ONE latch, AS OF `anchor`. `(None, None)`
+    when the anchor session had no such live latch.
+
+    THE POST-TIME VALIDATION SEAM. `POST /latches/intent` re-derives through
+    THIS function -- the SAME code path the GET rendered through -- and then
+    COMPARES field by field against the submitted anchor. Re-deriving to
+    VALIDATE is not substituting: the handler never swaps the fresh computation
+    in for the anchored one, because the ledger's entire value is that the
+    recorded framework order is byte-identically what the operator was looking
+    at, and a handler that quietly re-sized would record an order he never saw.
+    """
+    derivation = build_latch_derivation(
+        conn, cfg, horizon_session_override=anchor)
+    live = [lat for lat in derivation.latches if lat.is_live]
+    latch = next(
+        (lat for lat in live if lat.identity.candidate_id == candidate_id), None)
+    if latch is None:
+        return None, None
+    try:
+        quotes = load_last_closes(conn, [latch.identity.ticker])
+    except Exception as exc:  # noqa: BLE001 -- A6: a price miss never blocks
+        _log.warning("intent re-derivation last-close read degraded: %s", exc)
+        quotes = {}
+    blocks = _panel_prepared_orders(
+        conn, cfg, [latch], quotes=quotes,
+        regime_session_iso=derivation.derivation_session.isoformat(),
+        view_session_date=derivation.horizon_session.isoformat())
+    return latch, blocks.get(candidate_id)
+
+
 def _panel_dispositions(conn, latches, *, views_by_latch: dict, health) -> dict:
     """The DECISION-axis classification per displayed latch. A6 at the seam."""
     out: dict = {}

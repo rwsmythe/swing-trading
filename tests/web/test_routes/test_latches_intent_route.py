@@ -1,0 +1,812 @@
+"""POST /latches/intent -- the LOG-ONLY intent ledger write path (Task 7).
+
+NOTHING is sent to the broker on any branch. The write path is 21-C, behind an
+operator-signed L2 endpoint diff; Task 10 pins that BEHAVIOURALLY at the HTTP
+transport rather than by grepping method names.
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime
+
+import pytest
+from fastapi.testclient import TestClient
+
+from swing.data.db import connect
+from swing.latches.constants import LATCH_BROKER_SNAPSHOT_KEYS
+from swing.web.app import create_app
+
+NOW = datetime(2026, 7, 25, 12, 0)      # Saturday -> action session 2026-07-27
+ANCHOR = "2026-07-27"
+DERIVATION_SESSION = "2026-07-24"
+_HX = {"HX-Request": "true"}
+
+
+def _seed(cfg, *, regime_close=19.20):
+    """FTRE's real geometry PLUS a close DATED the derivation session.
+
+    THE CLOSE DATE IS STATED AND IT IS NOT THE DERIVATION SESSION BY ACCIDENT:
+    only a close stamped on the derivation session may pick the mandate form, so
+    without this row the form is WITHHELD and there is nothing to accept. A
+    fixture that quietly used the derivation session as the close date would be
+    the run-level-stamp error (#30) planted in a test.
+    """
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(121, '2026-07-17T17:30:05', '2026-07-17', '2026-07-20', 1, 1, 0, "
+            "0, 0, 0)")
+        cur = conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(121, 'FTRE', 'aplus', 17.76, 18.34, 14.88, 'universe')")
+        cid = int(cur.lastrowid)
+        if regime_close is not None:
+            conn.execute(
+                "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+                "action_session_date, tickers_evaluated, aplus_count, "
+                "watch_count, skip_count, excluded_count, error_count) VALUES "
+                "(900, ?, ?, ?, 1, 0, 1, 0, 0, 0)",
+                (f"{DERIVATION_SESSION}T17:30:05", DERIVATION_SESSION, ANCHOR))
+            conn.execute(
+                "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+                "close, pivot, initial_stop, rs_method) VALUES "
+                "(900, 'FTRE', 'watch', ?, 18.34, 14.88, 'universe')",
+                (regime_close,))
+    conn.close()
+    return cid
+
+
+@pytest.fixture
+def frozen_clocks(monkeypatch):
+    import swing.web.routes.latches as route_mod
+    import swing.web.view_models.latches as vm_mod
+    monkeypatch.setattr(vm_mod, "_now", lambda: NOW)
+    monkeypatch.setattr(route_mod, "_now", lambda: NOW)
+
+
+def _seed_extra_close(cfg, session, price, *, run_id):
+    """Another close, DATED `session` -- stated explicitly, never derived from
+    the render clock (#30)."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(?, ?, ?, ?, 1, 0, 1, 0, 0, 0)",
+            (run_id, f"{session}T17:30:05", session, session))
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(?, 'FTRE', 'watch', ?, 18.34, 14.88, 'universe')",
+            (run_id, price))
+    conn.close()
+
+
+def _anchor_form(cfg, cid, *, now=NOW):
+    """The hidden anchor EXACTLY as the rendered form emits it."""
+    from swing.web.view_models.latches import build_latch_panel_vm
+    conn = connect(cfg.paths.db_path)
+    try:
+        vm = build_latch_panel_vm(conn, cfg, now=now)
+    finally:
+        conn.close()
+    row = next(r for r in vm.rows if r.candidate_id == cid)
+    assert row.prepared_order.offered, "the fixture must reach the OFFERED form"
+    return dict(row.prepared_order.anchor_fields)
+
+
+def _intents(cfg):
+    conn = connect(cfg.paths.db_path)
+    try:
+        return conn.execute(
+            "SELECT intent_id, intent_kind, action_session_date, recorded_ts, "
+            "framework_order_type, framework_limit_price, framework_quantity, "
+            "decline_reason, validity_outcome, actual_quantity, "
+            "actual_broker_order_id, validated_place_intent_id "
+            "FROM latch_order_intents ORDER BY intent_id").fetchall()
+    finally:
+        conn.close()
+
+
+def _schwab_calls(cfg):
+    conn = connect(cfg.paths.db_path)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM schwab_api_calls").fetchone()[0]
+    finally:
+        conn.close()
+
+
+# --- the endpoint contract ------------------------------------------------
+def test_get_on_the_intent_path_is_405(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        assert client.get("/latches/intent").status_code == 405
+
+
+def test_a_place_intent_records_the_framework_order_verbatim(
+        seeded_db, frozen_clocks):
+    """The ledger's central claim: the recorded framework order is byte-
+    identically what the operator was looking at."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 200
+    (row,) = _intents(cfg)
+    assert row[1] == "place"
+    assert row[2] == ANCHOR
+    assert row[3].startswith("2026-07-25")      # SERVER-stamped, not from form
+    assert (row[4], row[5], row[6]) == ("LIMIT", 18.89, 9)
+
+
+def test_the_response_fragment_root_is_not_a_table_row(seeded_db, frozen_clocks):
+    """An HTMX response leading with `<tr>` triggers makeFragment's synthetic
+    table wrap, which DROPS table content inside OOB section chunks. Browser
+    only -- TestClient asserts bodies, not DOM -- so the shape is pinned here
+    and the behaviour at the GUI witness."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.text.lstrip().startswith("<section")
+    assert not r.text.lstrip().startswith("<tr")
+
+
+def test_the_form_carries_hx_headers_and_its_own_hx_target(
+        seeded_db, frozen_clocks):
+    """Two browser-only failure surfaces at once: an embedded form inside an
+    HTMX fragment needs HX-Request or OriginGuard strict mode 403s the submit,
+    and `hx-target` INHERITS from ancestors, so a card inside `.latch-cards`
+    must target itself."""
+    cfg, cfg_path = seeded_db
+    _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/latches")
+    assert 'hx-post="/latches/intent"' in r.text
+    assert 'hx-target="this"' in r.text
+    assert "HX-Request" in r.text
+
+
+def test_the_base_layout_still_carries_the_4xx_swap_override(
+        seeded_db, frozen_clocks):
+    """Without it the 400/409 fragments are INVISIBLE in a browser and the
+    endpoint silently loses its entire error surface."""
+    cfg, cfg_path = seeded_db
+    _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/latches")
+    assert "responseHandling" in r.text
+
+
+def test_a_withheld_card_renders_NO_accept_control_at_all(
+        seeded_db, frozen_clocks):
+    """A disabled-looking button that posts is worse than no button. The
+    withheld state is TODAY's live state, so this is the normal render."""
+    cfg, cfg_path = seeded_db
+    _seed(cfg, regime_close=None)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/latches")
+    assert "PREPARED ORDER WITHHELD" in r.text
+    assert "ACCEPT - log this order" not in r.text
+
+
+# --- hazard (a): the idempotency key --------------------------------------
+def test_a_double_post_yields_ONE_row_and_the_SAME_intent_id(
+        seeded_db, frozen_clocks):
+    """The key is CONTENT-derived, not a render-time nonce, so a refresh
+    followed by an identical resubmit also collapses."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        first = client.post("/latches/intent", headers=_HX, data=form)
+        second = client.post("/latches/intent", headers=_HX, data=form)
+    assert first.status_code == second.status_code == 200
+    rows = _intents(cfg)
+    assert len(rows) == 1
+    assert str(rows[0][0]) in first.text and str(rows[0][0]) in second.text
+    assert "already recorded" in second.text
+
+
+def test_a_replay_is_NEVER_409d_even_after_the_anchor_goes_stale(
+        seeded_db, monkeypatch):
+    """THE ORDERING TEST a naive handler fails. Step 4 precedes step 5, so a
+    retry of an ALREADY-RECORDED intent succeeds even after the world has
+    moved: recording the intent is the TERMINAL STATE, and the freshness gates
+    exist to stop a stale view producing a NEW row -- not to punish a resubmit
+    of a row already written."""
+    import swing.web.routes.latches as route_mod
+    import swing.web.view_models.latches as vm_mod
+    cfg, cfg_path = seeded_db
+    monkeypatch.setattr(vm_mod, "_now", lambda: NOW)
+    monkeypatch.setattr(route_mod, "_now", lambda: NOW)
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        assert client.post(
+            "/latches/intent", headers=_HX, data=form).status_code == 200
+        # ...the clock rolls several sessions forward.
+        monkeypatch.setattr(
+            route_mod, "_now", lambda: datetime(2026, 7, 31, 12, 0))
+        replay = client.post("/latches/intent", headers=_HX, data=form)
+    assert replay.status_code == 200
+    assert len(_intents(cfg)) == 1
+
+
+def test_a_NEW_intent_on_that_same_stale_anchor_is_409d(seeded_db, monkeypatch):
+    """The paired discriminator: step 5 STILL binds for a first insert. Without
+    it the replay carve-out would have disabled the staleness gate entirely."""
+    import swing.web.routes.latches as route_mod
+    import swing.web.view_models.latches as vm_mod
+    cfg, cfg_path = seeded_db
+    monkeypatch.setattr(vm_mod, "_now", lambda: NOW)
+    monkeypatch.setattr(route_mod, "_now", lambda: NOW)
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {
+        "intent_kind": "decline", "decline_reason": "too extended"}
+    monkeypatch.setattr(route_mod, "_now", lambda: datetime(2026, 7, 31, 12, 0))
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 409
+    assert "stale" in r.text.lower()
+    assert _intents(cfg) == []
+
+
+def test_the_lost_race_returns_the_winners_row_and_never_500s(
+        seeded_db, frozen_clocks, monkeypatch):
+    """Two requests can BOTH miss step 4. `ON CONFLICT DO NOTHING` plus the
+    step-7 re-SELECT means the loser returns the WINNER's row rather than
+    surfacing an IntegrityError -- and it is an INSERT-time no-op, NOT
+    `INSERT OR REPLACE`, so no DELETE, no new PK and no cascade."""
+    import swing.data.repos.latch_order_intents as repo
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        client.post("/latches/intent", headers=_HX, data=form)
+        winner_id = _intents(cfg)[0][0]
+        # Simulate the seam: the handler's step-4 SELECT misses even though the
+        # row exists, so step 6 collides.
+        real = repo.get_intent_by_key
+        calls = {"n": 0}
+
+        def _miss_once(conn, *, idempotency_key):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return None
+            return real(conn, idempotency_key=idempotency_key)
+
+        monkeypatch.setattr(repo, "get_intent_by_key", _miss_once)
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 200
+    assert len(_intents(cfg)) == 1
+    assert str(winner_id) in r.text
+
+
+# --- hazard (b): the hidden anchor ---------------------------------------
+def test_a_mutated_framework_price_is_409d_with_ZERO_rows_written(
+        seeded_db, frozen_clocks):
+    """The handler NEVER substitutes the fresh computation for the anchored one.
+    Re-deriving to VALIDATE is not substituting."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {
+        "intent_kind": "place", "framework_limit_price": "17.00"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 409
+    assert "framework_limit_price" in r.text
+    assert _intents(cfg) == []
+
+
+def test_a_mutated_anchor_CHANGES_the_key_so_step_5_actually_runs(
+        seeded_db, frozen_clocks):
+    """THE LAUNDERING DEFENCE. If the key covered only the session and the
+    answer, a tampered form carrying a DIFFERENT framework order but the same
+    session and answer would hit the replay SELECT and return 200 WITHOUT ever
+    reaching the comparison -- straight through the hidden-anchor defence. So
+    the mutated resubmit must MISS step 4 and be 409'd, not replayed as 200."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    good = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        assert client.post(
+            "/latches/intent", headers=_HX, data=good).status_code == 200
+        tampered = dict(good) | {"framework_quantity": "50"}
+        r = client.post("/latches/intent", headers=_HX, data=tampered)
+    assert r.status_code == 409
+    assert len(_intents(cfg)) == 1
+
+
+def test_a_derivation_only_mutation_is_also_caught(seeded_db, frozen_clocks):
+    """SECTION A.4's closure in anger: `real_equity` can move while the floor
+    still binds, so `sizing_equity` is UNCHANGED -- and under the pre-fix column
+    set this POST SUCCEEDED, recording a derivation line the operator
+    demonstrably did not see."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {
+        "intent_kind": "place", "derivation_real_equity": "9999.00"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 409
+    assert "derivation_real_equity" in r.text
+    assert _intents(cfg) == []
+
+
+def test_the_same_decision_in_two_sessions_writes_TWO_rows(
+        seeded_db, monkeypatch):
+    """The decision kinds are UNCHANGED by the validity kind-scoping: their
+    session component still discriminates."""
+    import swing.web.routes.latches as route_mod
+    import swing.web.view_models.latches as vm_mod
+    cfg, cfg_path = seeded_db
+    monkeypatch.setattr(vm_mod, "_now", lambda: NOW)
+    monkeypatch.setattr(route_mod, "_now", lambda: NOW)
+    cid = _seed(cfg)
+    base = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        assert client.post(
+            "/latches/intent", headers=_HX, data=base).status_code == 200
+        # The NEXT session's render needs its OWN derivation-session close, and
+        # it is seeded ONLY NOW: `load_last_closes` returns the GLOBALLY latest
+        # close per ticker, so planting it up front would have made the FIRST
+        # render's close newer than ITS derivation session and withheld that
+        # form instead -- the session-gate working correctly, on the wrong side.
+        _seed_extra_close(cfg, ANCHOR, 19.40, run_id=901)
+        # 06:00 HST is 12:00 ET -- MID-SESSION, so the action session is that
+        # same Tuesday. 12:00 HST would be post-close and roll to Wednesday,
+        # whose derivation session has no seeded close.
+        rolled = datetime(2026, 7, 28, 6, 0)
+        monkeypatch.setattr(route_mod, "_now", lambda: rolled)
+        monkeypatch.setattr(vm_mod, "_now", lambda: rolled)
+        later = _anchor_form(cfg, cid, now=rolled) | {"intent_kind": "place"}
+        assert later["view_session_date"] == "2026-07-28"
+        r = client.post("/latches/intent", headers=_HX, data=later)
+        assert r.status_code == 200, r.text
+    assert len(_intents(cfg)) == 2
+
+
+# --- the shape ladder ------------------------------------------------------
+@pytest.mark.parametrize("overrides,field", [
+    ({"intent_kind": "decline"}, "decline_reason"),
+    ({"intent_kind": "decline", "decline_reason": "   "}, "decline_reason"),
+    ({"intent_kind": "cancel"}, "actual_broker_order_id"),
+    ({"intent_kind": "attest"}, "attested_disposition"),
+    ({"intent_kind": "attest", "attested_disposition": "shrug"},
+     "attested_disposition"),
+    ({"intent_kind": "teleport"}, "intent_kind"),
+    ({"intent_kind": "place", "candidate_id": "0"}, "candidate_id"),
+    ({"intent_kind": "place", "view_session_date": "2026-7-27"},
+     "view_session_date"),
+    ({"intent_kind": "place", "view_session_date": "garbage"},
+     "view_session_date"),
+])
+def test_the_400_names_the_offending_field_and_writes_nothing(
+        seeded_db, frozen_clocks, overrides, field):
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | overrides
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 400, overrides
+    assert field in r.text
+    assert _intents(cfg) == []
+
+
+def test_a_future_session_anchor_is_rejected(seeded_db, frozen_clocks):
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {
+        "intent_kind": "place", "view_session_date": "2026-09-01"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 400
+    assert "view_session_date" in r.text
+    assert _intents(cfg) == []
+
+
+def test_a_non_session_anchor_is_rejected(seeded_db, frozen_clocks):
+    """Load-bearing and NOT implied by the proximity check: a weekend date can
+    sit one session behind and would otherwise be written as a
+    `view_session_date`, corrupting the session keyspace the ledger joins on."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {
+        "intent_kind": "place", "view_session_date": "2026-07-26"}   # Sunday
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 400
+    assert "session" in r.text
+    assert _intents(cfg) == []
+
+
+def test_a_decline_records_its_reason_and_the_framework_block_it_declined(
+        seeded_db, frozen_clocks):
+    """A decline carries the SAME framework + derivation block as a place.
+    Erasing it would leave RD unable to audit WHAT was declined without
+    recomputing it -- which is exactly what storing the framework side verbatim
+    exists to prevent. Declines are excluded from execution-parity ORDER rows by
+    `intent_kind`, never by erasing their subject."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {
+        "intent_kind": "decline", "decline_reason": "gap risk into earnings"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 200
+    (row,) = _intents(cfg)
+    assert row[1] == "decline"
+    assert row[7] == "gap risk into earnings"
+    assert (row[4], row[5], row[6]) == ("LIMIT", 18.89, 9)
+
+
+def test_a_cancel_targets_a_broker_order_id_and_never_a_ticker(
+        seeded_db, frozen_clocks):
+    """HAZARD (c), across all three layers. The form does not emit a blank one,
+    the handler 400s it (above), and the schema CHECK makes the row unwritable.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "cancel", "actual_broker_order_id": "1002"})
+    assert r.status_code == 200
+    (row,) = _intents(cfg)
+    assert row[1] == "cancel"
+    assert row[10] == "1002"
+
+
+def test_an_attestation_a_week_after_the_latch_went_terminal_is_ACCEPTED(
+        seeded_db, monkeypatch):
+    """The non-decision kinds submit NO framework block, so the handler MUST NOT
+    invent a comparison -- it would 409 every attestation the moment the
+    underlying derivation moved, which for an AGED PROMPT IS ALWAYS."""
+    import swing.web.routes.latches as route_mod
+    import swing.web.view_models.latches as vm_mod
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    later = datetime(2026, 8, 4, 12, 0)
+    monkeypatch.setattr(route_mod, "_now", lambda: later)
+    monkeypatch.setattr(vm_mod, "_now", lambda: later)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": "2026-08-05", "candidate_id": str(cid),
+            "intent_kind": "attest", "attested_disposition": "was_away"})
+    assert r.status_code == 200
+    (row,) = _intents(cfg)
+    assert row[1] == "attest"
+
+
+# --- the validity branch ---------------------------------------------------
+def _snapshot(*, branch="absence", attributable=0, exact=0, digest=None,
+              ts=None, session=ANCHOR, indeterminate=False):
+    return json.dumps({
+        "broker_snapshot_ts": ts or "2026-07-25T11:58:00",
+        "broker_snapshot_branch": branch,
+        "broker_snapshot_digest": digest or ("a" * 64),
+        "broker_snapshot_session": session,
+        "attributable_order_count": attributable,
+        "exact_framework_match_count": exact,
+        "indeterminate": indeterminate,
+    }, sort_keys=True)
+
+
+def _place(client, cfg, cid):
+    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    assert client.post(
+        "/latches/intent", headers=_HX, data=form).status_code == 200
+    return _intents(cfg)[0][0]
+
+
+def test_the_snapshot_envelope_key_set_is_the_ROSTER_and_nothing_else(
+        seeded_db, frozen_clocks):
+    """The fragment emits ONE hidden field whose key set EQUALS what
+    `validity_detail` requires. Drift between the two makes the audit row
+    UNWRITABLE, and the count is never stated anywhere -- an earlier round added
+    a key to the CHECK while three other sites still said 'six'."""
+    assert set(json.loads(_snapshot())) == set(LATCH_BROKER_SNAPSHOT_KEYS)
+
+
+def test_a_validity_answer_records_the_observed_order_against_its_parent(
+        seeded_db, frozen_clocks):
+    """THE ARC'S OWN WORKED EXAMPLE. The framework said LIMIT 18.89 / 9 sh; the
+    order actually resting is LIMIT 18.89 / 10 sh. That divergence carries
+    `accepted_by_broker`, so it ENTERS the agreement DENOMINATOR while FAILING
+    the numerator -- an `unknown` outcome would leave FTRE visible as a delta
+    yet excluded from the very metric it exists to feed."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "accepted_by_broker",
+            "actual_order_type": "LIMIT", "actual_duration": "GTC",
+            "actual_limit_price": "18.89", "actual_quantity": "10",
+            "actual_broker_order_id": "1001",
+            "broker_snapshot_json": _snapshot(branch="presence", attributable=1),
+        })
+    assert r.status_code == 200, r.text
+    rows = _intents(cfg)
+    assert len(rows) == 2
+    validity = rows[1]
+    assert validity[1] == "validity"
+    assert validity[8] == "accepted_by_broker"
+    assert validity[9] == 10                    # the OBSERVED quantity
+    assert validity[11] == place_id             # the PARENT link, not the latch
+
+
+def test_GTC_and_GOOD_TILL_CANCEL_collapse_to_ONE_row(seeded_db, frozen_clocks):
+    """Brokers render GTC where the framework stores GOOD_TILL_CANCEL. Comparing
+    them raw would report a DURATION MISMATCH on a semantically identical order
+    -- a false divergence in the one metric the ledger exists to compute -- and
+    would write a duplicate row on a plain reload."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        base = {
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "accepted_by_broker",
+            "actual_order_type": "LIMIT", "actual_limit_price": "18.89",
+            "actual_quantity": "10", "actual_broker_order_id": "1001",
+            "broker_snapshot_json": _snapshot(branch="presence", attributable=1),
+        }
+        client.post("/latches/intent", headers=_HX,
+                    data=base | {"actual_duration": "GTC"})
+        client.post("/latches/intent", headers=_HX,
+                    data=base | {"actual_duration": "GOOD_TILL_CANCEL"})
+    assert len(_intents(cfg)) == 2      # the place + ONE validity row
+
+
+def test_two_DIFFERENT_answers_about_one_parent_write_TWO_rows(
+        seeded_db, frozen_clocks):
+    """The discrimination that must SURVIVE the kind-scoping. Without it the
+    replay collapse would pass trivially against a key that had stopped
+    discriminating at all, and the second answer would be silently lost."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        base = {
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "broker_snapshot_json": _snapshot(),
+        }
+        client.post("/latches/intent", headers=_HX,
+                    data=base | {"validity_outcome": "rejected_by_broker"})
+        client.post("/latches/intent", headers=_HX,
+                    data=base | {"validity_outcome": "not_submitted"})
+    assert len(_intents(cfg)) == 3
+
+
+def test_a_validity_row_stores_the_PARENTS_mandate_session_not_the_anchor(
+        seeded_db, monkeypatch):
+    """SERVER-COPIED from the parent. A validity row answers for THAT order, and
+    the aged prompt is the NORMAL case, so an anchor-derived value would file a
+    July mandate under August -- and that is also what makes the monthly
+    report's 'month N report, month N-1 mandate' case TRUE rather than merely
+    asserted."""
+    import swing.web.routes.latches as route_mod
+    import swing.web.view_models.latches as vm_mod
+    cfg, cfg_path = seeded_db
+    monkeypatch.setattr(vm_mod, "_now", lambda: NOW)
+    monkeypatch.setattr(route_mod, "_now", lambda: NOW)
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        later = datetime(2026, 8, 4, 12, 0)
+        monkeypatch.setattr(route_mod, "_now", lambda: later)
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": "2026-08-05", "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "not_submitted",
+            "broker_snapshot_json": _snapshot(
+                ts="2026-08-04T11:58:00", session="2026-08-05"),
+        })
+    assert r.status_code == 200, r.text
+    validity = _intents(cfg)[1]
+    assert validity[2] == ANCHOR                    # the PARENT's mandate session
+    assert validity[3].startswith("2026-08-04")     # ...and TODAY's recorded_ts
+
+
+def test_a_stale_broker_snapshot_is_409d_with_ZERO_rows_written(
+        seeded_db, frozen_clocks):
+    """The gate bounds the realistic failure -- an HONEST answer about a stale
+    view. It does not defend against a forged local POST, and V1 does not
+    pretend to."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        before = len(_intents(cfg))
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "not_submitted",
+            "broker_snapshot_json": _snapshot(ts="2026-07-25T09:00:00"),
+        })
+    assert r.status_code == 409
+    assert len(_intents(cfg)) == before
+
+
+def test_a_snapshot_from_a_PRIOR_action_session_is_409d(seeded_db, frozen_clocks):
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "not_submitted",
+            "broker_snapshot_json": _snapshot(session="2026-07-24"),
+        })
+    assert r.status_code == 409
+
+
+def test_an_unavailable_book_may_NOT_answer_a_validity_prompt(
+        seeded_db, frozen_clocks):
+    """An UNKNOWN order book renders NO validity prompt in EITHER direction, so
+    a persisted row whose own snapshot says the book was unavailable would be
+    asserting an execution outcome it had no evidence for -- forever, on an
+    append-only ledger. The render vocabulary is three-valued; the ANSWER
+    vocabulary is two."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "not_submitted",
+            "broker_snapshot_json": _snapshot(branch="unavailable"),
+        })
+    assert r.status_code == 400
+    assert "broker_snapshot_json" in r.text
+
+
+def test_a_validity_row_WITHOUT_the_snapshot_envelope_is_REJECTED(
+        seeded_db, frozen_clocks):
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "not_submitted"})
+    assert r.status_code == 400
+    assert "broker_snapshot_json" in r.text
+
+
+def test_an_envelope_carrying_an_EXTRA_key_is_rejected(seeded_db, frozen_clocks):
+    """EXACTLY the roster, not AT LEAST it. `actual_digest` covers only the
+    digest, so two envelopes differing ONLY by extra content would share an
+    idempotency key -- the second replayed and its extra content silently
+    dropped instead of rejected."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    envelope = json.loads(_snapshot())
+    envelope["surprise"] = 1
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "not_submitted",
+            "broker_snapshot_json": json.dumps(envelope)})
+    assert r.status_code == 400
+    assert "broker_snapshot_json" in r.text
+
+
+def test_a_validity_answer_about_ANOTHER_latchs_place_intent_is_rejected(
+        seeded_db, frozen_clocks):
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid + 5000),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "not_submitted",
+            "broker_snapshot_json": _snapshot()})
+    assert r.status_code == 400
+
+
+# --- the LOG-ONLY guarantee, at this endpoint -----------------------------
+@pytest.mark.parametrize("kind", ["place", "decline", "cancel", "attest"])
+def test_no_schwab_row_is_written_on_any_intent_branch(
+        seeded_db, frozen_clocks, kind):
+    """The LEDGER leg of the no-write pin: `schwab_api_calls` is UNCHANGED
+    across the POST. Task 10 adds the transport-level deny-by-default net that
+    catches a renamed mutator regardless of what it is called."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {"intent_kind": kind}
+    if kind == "decline":
+        form["decline_reason"] = "not today"
+    if kind == "cancel":
+        form["actual_broker_order_id"] = "1001"
+    if kind == "attest":
+        form["attested_disposition"] = "chose_not_to_act"
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        before = _schwab_calls(cfg)
+        r = client.post("/latches/intent", headers=_HX, data=form)
+        assert r.status_code == 200, (kind, r.text)
+        assert _schwab_calls(cfg) == before
+
+
+def test_the_intent_path_never_borrows_the_schwab_client(
+        seeded_db, frozen_clocks, monkeypatch):
+    """THE SEAM assertion: the intent flow does not borrow the client AT ALL, so
+    there is no path from here to a broker write even in principle."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        holder = getattr(app.state, "schwab_client_holder", None)
+        borrows = {"n": 0}
+        if holder is not None and hasattr(holder, "borrow"):
+            real = holder.borrow
+
+            def _counted(*a, **k):
+                borrows["n"] += 1
+                return real(*a, **k)
+
+            monkeypatch.setattr(holder, "borrow", _counted)
+        assert client.post(
+            "/latches/intent", headers=_HX, data=form).status_code == 200
+        assert borrows["n"] == 0

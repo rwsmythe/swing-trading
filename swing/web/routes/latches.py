@@ -6,6 +6,7 @@ not a Schwab audit row (the broker join is the lazy `POST /latches/orders`).
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import date, datetime
@@ -20,6 +21,15 @@ from swing.evaluation.dates import (
     action_session_for_run,
     is_trading_session,
     sessions_behind,
+)
+from swing.latches.constants import (
+    LATCH_ACTUAL_ORDER_TYPES,
+    LATCH_ATTESTED_DISPOSITIONS,
+    LATCH_BROKER_SNAPSHOT_KEYS,
+    LATCH_BROKER_SNAPSHOT_MAX_AGE_SECONDS,
+    LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES,
+    LATCH_INTENT_KINDS,
+    LATCH_VALIDITY_OUTCOMES,
 )
 from swing.latches.reader import build_latch_derivation
 from swing.web.view_models.latches import build_latch_orders_vm, build_latch_panel_vm
@@ -310,3 +320,547 @@ async def latches_view_beacon(request: Request) -> Response:
     finally:
         conn.close()
     return Response(status_code=204)
+
+
+# =====================================================================
+# Arc 21-B Task 7 -- POST /latches/intent. LOG-ONLY: NOTHING is sent to the
+# broker on any branch. The write path is 21-C, behind an operator-signed L2
+# endpoint diff.
+# =====================================================================
+_INTENT_SURFACE = "latch_panel"
+
+# The kinds that submit a FRAMEWORK BLOCK and therefore get the field-by-field
+# re-derivation comparison. `validity` / `cancel` / `attest` submit none (the
+# schema makes one unwritable on them), so the handler MUST NOT invent a
+# comparison -- it would 409 every attestation the moment the derivation moved,
+# which for an aged prompt is always.
+_DECISION_KINDS = frozenset({"place", "decline"})
+
+
+class _IntentRejectedError(Exception):
+    """A 400 carrying the offending FIELD, so a rejected submit is diagnosable
+    from the response body rather than from the log."""
+
+    def __init__(self, field: str, reason: str) -> None:
+        super().__init__(f"{field}: {reason}")
+        self.field = field
+        self.reason = reason
+
+
+def _reject_intent(field: str, reason: str) -> HTMLResponse:
+    return HTMLResponse(
+        status_code=400,
+        content=(f"<section class='latch-intent-error'>intent rejected: "
+                 f"{field}: {reason}</section>"))
+
+
+def _conflict(detail: str) -> HTMLResponse:
+    """A 409 fragment. The root is a `section`, NEVER a `tr` (the
+    `makeFragment` synthetic-table-wrap gotcha), and it is only VISIBLE at all
+    because `base.html.j2` keeps the `htmx.config.responseHandling` 4xx-swap
+    override."""
+    return HTMLResponse(
+        status_code=409,
+        content=f"<section class='latch-intent-stale'>{detail}</section>")
+
+
+def _required_str(form, field: str) -> str:
+    raw = form.get(field)
+    if not isinstance(raw, str) or not raw.strip():
+        raise _IntentRejectedError(field, "missing or blank")
+    return raw.strip()
+
+
+def _positive_int(form, field: str) -> int:
+    raw = _required_str(form, field)
+    if not raw.isdigit() or int(raw) <= 0:
+        raise _IntentRejectedError(field, f"{raw!r} is not a positive integer")
+    return int(raw)
+
+
+def _optional_price(form, field: str) -> float | None:
+    raw = form.get(field)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise _IntentRejectedError(field, f"{raw!r} is not a number") from exc
+    if not (value > 0):
+        raise _IntentRejectedError(field, "must be greater than zero")
+    return round(value, 2)
+
+
+def _optional_qty(form, field: str) -> int | None:
+    raw = form.get(field)
+    if raw is None or (isinstance(raw, str) and not str(raw).strip()):
+        return None
+    if not str(raw).strip().isdigit() or int(raw) <= 0:
+        raise _IntentRejectedError(field, f"{raw!r} is not a positive integer")
+    return int(raw)
+
+
+def _enum(form, field: str, allowed, *, required: bool) -> str | None:
+    raw = form.get(field)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        if required:
+            raise _IntentRejectedError(field, "missing")
+        return None
+    value = str(raw).strip()
+    if value not in allowed:
+        raise _IntentRejectedError(
+            field, f"{value!r} is not one of {sorted(allowed)}")
+    return value
+
+
+def _normalise_submitted(form) -> dict:
+    """The submitted OPERATOR-ANSWER fields, canonicalised. PURE.
+
+    Normalisation runs BEFORE the key is derived and touches NO server state, so
+    the load-bearing property holds exactly: EVERY key input is a function of
+    the submitted payload alone, which is what lets the shape check precede the
+    replay SELECT.
+
+    DURATIONS ARE CANONICALISED, and that is not cosmetic: brokers render `GTC`
+    where the framework stores `GOOD_TILL_CANCEL`, so two semantically identical
+    answers would otherwise produce different keys AND report a duration
+    MISMATCH on an identical order -- a false divergence in the one metric this
+    ledger exists to compute, and a duplicate ledger row on a plain reload.
+    """
+    from swing.latches.order_intent import canonical_duration
+    raw_duration = form.get("actual_duration")
+    duration = (
+        None if raw_duration is None or not str(raw_duration).strip()
+        else canonical_duration(raw_duration))
+    return {
+        "actual_order_type": _enum(
+            form, "actual_order_type", LATCH_ACTUAL_ORDER_TYPES, required=False),
+        "actual_duration": duration,
+        "actual_stop_price": _optional_price(form, "actual_stop_price"),
+        "actual_limit_price": _optional_price(form, "actual_limit_price"),
+        "actual_quantity": _optional_qty(form, "actual_quantity"),
+        "actual_broker_order_id": (
+            str(form.get("actual_broker_order_id")).strip()
+            if form.get("actual_broker_order_id") else None),
+        "decline_reason": (
+            str(form.get("decline_reason")).strip()
+            if form.get("decline_reason") else None),
+        "attested_disposition": _enum(
+            form, "attested_disposition", LATCH_ATTESTED_DISPOSITIONS,
+            required=False),
+        "validity_outcome": _enum(
+            form, "validity_outcome", LATCH_VALIDITY_OUTCOMES, required=False),
+    }
+
+
+def _actual_digest(kind: str, answer: dict, *, parent_id: int | None,
+                   snapshot_digest: str | None) -> str:
+    """Every operator-SUBMITTED semantic field for the kind.
+
+    The ANSWER fields are named explicitly because omitting them lets two
+    DIFFERENT answers about the same parent and snapshot (`rejected_by_broker`
+    vs `not_submitted`) collide -- so the replay SELECT would return the FIRST
+    as a 200 and the second answer would be silently lost.
+
+    It deliberately does NOT cover `broker_snapshot_ts`: that is render-time
+    data changing on every reload, so keying on it would give a plain refresh a
+    new key and duplicate the row -- falsifying the collapse-on-refresh property
+    for the one form that most needs it. The timestamp still drives the
+    staleness GATE. A gate is not a key input.
+    """
+    from swing.latches.order_intent import _digest
+    parts = ["v1", kind]
+    for name in ("actual_order_type", "actual_duration", "actual_stop_price",
+                 "actual_limit_price", "actual_quantity",
+                 "actual_broker_order_id", "decline_reason",
+                 "attested_disposition", "validity_outcome"):
+        value = answer.get(name)
+        parts.append(name)
+        parts.append("" if value is None else str(value))
+    parts.append("validated_place_intent_id")
+    parts.append("" if parent_id is None else str(parent_id))
+    parts.append("broker_snapshot_digest")
+    parts.append(snapshot_digest or "")
+    return _digest(*parts)
+
+
+def _parse_snapshot(form) -> dict:
+    """The broker-snapshot envelope, VALIDATED and persisted VERBATIM.
+
+    ONE hidden field carrying every key in `LATCH_BROKER_SNAPSHOT_KEYS` -- not
+    separate inputs, which cannot satisfy the envelope contract. The handler
+    synthesises NO key: a row whose snapshot the report cannot hydrate would
+    make the staleness basis unknowable forever after, on an append-only ledger.
+    """
+    raw = form.get("broker_snapshot_json")
+    if not isinstance(raw, str) or not raw.strip():
+        raise _IntentRejectedError("broker_snapshot_json", "missing")
+    try:
+        envelope = json.loads(raw)
+    except ValueError as exc:
+        raise _IntentRejectedError(
+            "broker_snapshot_json", "is not valid JSON") from exc
+    if not isinstance(envelope, dict):
+        raise _IntentRejectedError("broker_snapshot_json", "must be an object")
+    if set(envelope) != set(LATCH_BROKER_SNAPSHOT_KEYS):
+        raise _IntentRejectedError(
+            "broker_snapshot_json",
+            "must carry EXACTLY the broker-snapshot roster keys; got "
+            f"{sorted(envelope)}")
+    branch = envelope.get("broker_snapshot_branch")
+    if branch not in LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES:
+        # An `unavailable` book renders NO validity prompt in EITHER direction,
+        # so a persisted row asserting an execution outcome against an unknown
+        # book would assert it forever with no evidence. The render vocabulary
+        # is three-valued; the ANSWER vocabulary is two.
+        raise _IntentRejectedError(
+            "broker_snapshot_json",
+            f"branch {branch!r} may not answer a validity prompt")
+    return envelope
+
+
+def _snapshot_is_fresh(envelope: dict, *, now: datetime, anchor: date) -> bool:
+    """The staleness GATE (a validation, never a key input).
+
+    Bounds the realistic failure -- an HONEST answer about a stale view. It does
+    NOT defend against a forged local POST, and V1 does not pretend to: on a
+    127.0.0.1 single-operator app that threat implies an attacker who can
+    already write the DB directly, where a token protects nothing.
+    """
+    try:
+        taken = datetime.fromisoformat(str(envelope["broker_snapshot_ts"]))
+        session = date.fromisoformat(str(envelope["broker_snapshot_session"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    if session != anchor:
+        return False
+    age = (now - taken).total_seconds()
+    return 0 <= age <= LATCH_BROKER_SNAPSHOT_MAX_AGE_SECONDS
+
+
+def _anchor_field_names():
+    """`(name, encoding)` for every hidden anchor field the form emits.
+
+    ONE enumeration, GENERATED from the manifest -- the handler does not re-list
+    the derivation columns any more than the form does.
+    """
+    from swing.latches.order_intent import (
+        FRAMEWORK_ANCHOR_FIELDS,
+        derivation_anchor_fields,
+    )
+    return tuple(FRAMEWORK_ANCHOR_FIELDS) + derivation_anchor_fields()
+
+
+def _compare_anchor(form, block) -> list[str]:
+    """Field-by-field, at the manifest's own encoding. Returns the DIFFERENCES.
+
+    The comparison walks the SAME manifest the form emitted from, so a
+    derivation column added to the DDL cannot be silently omitted here -- and
+    the encodings are what make render and POST agree on a float (the
+    price-precision-parity gotcha: never a raw float compare).
+    """
+    diffs: list[str] = []
+    for name, current in block.anchor_fields:
+        if name in ("view_session_date", "candidate_id"):
+            continue
+        raw = form.get(name)
+        submitted = "" if raw is None else str(raw).strip()
+        if submitted != current:
+            diffs.append(
+                f"{name} was {submitted or '(none)'}, is now "
+                f"{current or '(none)'}")
+    return diffs
+
+
+def _stored_anchor_values(form, block) -> tuple[dict, dict]:
+    """The framework + derivation columns, taken from what the FORM SUBMITTED.
+
+    Deliberately NOT from the fresh re-derivation. The re-derivation's job was
+    to VALIDATE (step 5 already 409'd on any difference); the row records what
+    the operator was LOOKING AT, and substituting a freshly computed value would
+    quietly store an order he never saw -- the exact claim this ledger exists to
+    make true.
+    """
+    from swing.latches.constants import DERIVATION_FIELD_MANIFEST
+    from swing.latches.order_intent import FRAMEWORK_ANCHOR_FIELDS
+    numeric = {"price2": float, "pct4": float, "int": int}
+
+    def _decode(encoding: str, raw):
+        text = "" if raw is None else str(raw).strip()
+        if not text:
+            return None
+        caster = numeric.get(encoding)
+        return caster(text) if caster else text
+
+    framework = {
+        name: _decode(enc, form.get(name))
+        for name, enc in FRAMEWORK_ANCHOR_FIELDS
+    }
+    derivation = {
+        f.column: _decode(f.encode, form.get(f.column))
+        for f in DERIVATION_FIELD_MANIFEST
+    }
+    return framework, derivation
+
+
+def _latch_for_identity(conn, cfg, candidate_id: int, anchor: date):
+    """The latch for `candidate_id`, LIVE OR TERMINAL, as of `anchor`.
+
+    An attestation is normally given AFTER the latch went terminal -- that is
+    the whole point of the prompt -- so a live-set lookup would refuse exactly
+    the case the prompt exists to serve.
+    """
+    derivation = build_latch_derivation(
+        conn, cfg, horizon_session_override=anchor)
+    return next(
+        (lat for lat in derivation.latches
+         if lat.identity.candidate_id == candidate_id), None)
+
+
+def _intent_fragment(request: Request, intent, *, replayed: bool) -> HTMLResponse:
+    """The success / replay fragment. Root is a section element, never a tr."""
+    return request.app.state.templates.TemplateResponse(
+        request, "partials/latch_intent_result.html.j2",
+        {"intent": intent, "replayed": replayed},
+    )
+
+
+@router.post("/latches/intent", response_class=HTMLResponse)
+async def latches_intent(request: Request):
+    """Record ONE operator decision about a prepared order. LOG ONLY.
+
+    THE SEVEN-STEP ORDER IS THE POINT, and each step buys a property with its
+    own test:
+
+      1. parse the form                        -> 400 on an unparseable body
+      2. SHAPE-validate every field            -> 400 NAMING the offending field
+      3. NORMALISE, then derive idempotency_key from the payload ALONE
+      4. SELECT by key -> FOUND: REPLAY. 200 + the same intent_id. RETURN HERE:
+         NEITHER the anchor staleness check NOR the snapshot freshness check
+         runs. Recording the intent is the TERMINAL STATE; once it exists,
+         neither a stale anchor nor an aged snapshot is relevant to it. The
+         freshness gates exist to stop a stale view producing a NEW row, not to
+         punish a resubmit of a row already written.
+      5. FIRST-WRITE VALIDATION ONLY: the anchor ladder, the snapshot freshness
+         gate (validity only), and the re-derive-and-compare (decision kinds
+         only) -> 409
+      6. INSERT ... ON CONFLICT(idempotency_key) DO NOTHING -- an INSERT-time
+         no-op, NOT INSERT OR REPLACE: no DELETE, no new PK, no cascade, so the
+         append-only property holds
+      7. re-SELECT by key and return THAT row -- the loser of a concurrent race
+         returns the winner's row rather than surfacing an IntegrityError
+
+    This ordering satisfies the SELECT-first idempotency discipline LITERALLY:
+    the terminal-state read precedes the expensive/fragile validation.
+
+    IT RETURNS MARKUP, NOT A REDIRECT, AND THAT DEPARTURE IS ARGUED. The
+    project's HTMX form contract (204 + HX-Redirect) exists because htmx
+    swallows a 303 -- its subject is NAVIGATION. This endpoint must NOT
+    navigate: the task is per-latch, there is usually more than one latch on the
+    page, and bouncing him after each decision would re-render, re-fire the
+    beacon and the broker fragment, and lose his place. So the success response
+    swaps the card's own block in place -- the shipped POST /latches/orders and
+    POST /prices/refresh shape, both browser-verified.
+
+    NO SCHWAB CALL IS MADE ON ANY BRANCH. The client is never borrowed, no
+    schwab_api_calls row is written, and Task 10 pins that BEHAVIOURALLY at the
+    HTTP transport rather than by grepping method names.
+    """
+    from swing.data.models import LatchOrderIntent
+    from swing.data.repos.latch_order_intents import (
+        get_intent,
+        get_intent_by_key,
+        record_intent,
+    )
+    from swing.latches.order_intent import (
+        build_anchor_digest,
+        build_idempotency_key,
+    )
+    from swing.web.view_models.latches import rederive_prepared_order
+
+    # --- step 1 ---------------------------------------------------------
+    try:
+        form = await request.form()
+    except Exception:  # noqa: BLE001 -- an unparseable body is a 400, not a 500
+        return _reject_intent("body", "could not be parsed as a form")
+
+    # --- step 2 ---------------------------------------------------------
+    envelope = None
+    parent_id = None
+    try:
+        kind = _enum(form, "intent_kind", LATCH_INTENT_KINDS, required=True)
+        candidate_id = _positive_int(form, "candidate_id")
+        raw_session = _required_str(form, "view_session_date")
+        if len(raw_session) != 10:
+            raise _IntentRejectedError(
+                "view_session_date",
+                "must be exactly a 10-char ISO YYYY-MM-DD date")
+        try:
+            anchor = date.fromisoformat(raw_session)
+        except ValueError as exc:
+            raise _IntentRejectedError(
+                "view_session_date", "is not a valid ISO date") from exc
+        answer = _normalise_submitted(form)
+        if kind == "validity":
+            parent_id = _positive_int(form, "validated_place_intent_id")
+            _enum(form, "validity_outcome", LATCH_VALIDITY_OUTCOMES,
+                  required=True)
+            envelope = _parse_snapshot(form)
+        if kind == "decline" and not answer["decline_reason"]:
+            raise _IntentRejectedError(
+                "decline_reason", "a decline REQUIRES a reason")
+        if kind == "attest" and not answer["attested_disposition"]:
+            raise _IntentRejectedError(
+                "attested_disposition", "an attestation REQUIRES a disposition")
+        if kind == "cancel" and not answer["actual_broker_order_id"]:
+            # HAZARD (c), at the FIRST of its three layers: a cancel targets a
+            # SPECIFIC broker order id, never a ticker. The form does not emit a
+            # blank one, this rejects it, and the schema CHECK makes the row
+            # unwritable.
+            raise _IntentRejectedError(
+                "actual_broker_order_id",
+                "a cancel REQUIRES the broker order id it targets; a cancel "
+                "may never be aimed at a ticker")
+    except _IntentRejectedError as exc:
+        return _reject_intent(exc.field, exc.reason)
+
+    # --- step 3: the key, from the SUBMITTED PAYLOAD ALONE ----------------
+    submitted = {
+        name: ("" if form.get(name) is None else str(form.get(name)).strip())
+        for name, _ in _anchor_field_names()
+    }
+    submitted["view_session_date"] = raw_session
+    submitted["candidate_id"] = str(candidate_id)
+    anchor_digest = build_anchor_digest(
+        intent_kind=kind, candidate_id=candidate_id,
+        view_session_date=raw_session, values=submitted)
+    snapshot_digest = (
+        None if envelope is None else str(envelope["broker_snapshot_digest"]))
+    key = build_idempotency_key(
+        candidate_id=candidate_id, action_session_date=raw_session,
+        surface=_INTENT_SURFACE, intent_kind=kind, anchor_digest=anchor_digest,
+        actual_digest=_actual_digest(
+            kind, answer, parent_id=parent_id,
+            snapshot_digest=snapshot_digest),
+        validated_place_intent_id=parent_id)
+
+    cfg = apply_overrides(request.app.state.cfg)
+    conn = connect(cfg.paths.db_path)
+    try:
+        # --- step 4: REPLAY. Returns BEFORE every freshness gate. ---------
+        existing = get_intent_by_key(conn, idempotency_key=key)
+        if existing is not None:
+            return _intent_fragment(request, existing, replayed=True)
+
+        # --- step 5: FIRST-WRITE VALIDATION ONLY --------------------------
+        now = _now()
+        current = action_session_for_run(now)
+        verdict = _classify_anchor(anchor, current)
+        if verdict == "future":
+            return _reject_intent("view_session_date", "is in the future")
+        if verdict == "not_a_session":
+            return _reject_intent(
+                "view_session_date", "is not an NYSE trading session")
+        if verdict == "stale":
+            return _conflict(
+                f"This page is stale (rendered for {anchor.isoformat()}; "
+                f"current session is {current.isoformat()}). Reload before "
+                "recording a decision.")
+
+        action_session_date = anchor.isoformat()
+        if kind == "validity":
+            if not _snapshot_is_fresh(envelope, now=now, anchor=anchor):
+                return _conflict(
+                    "The broker order book you answered about is no longer "
+                    "current. Reload the order fragment and answer again.")
+            parent = get_intent(conn, intent_id=parent_id)
+            if parent is None or parent.intent_kind != "place":
+                return _reject_intent(
+                    "validated_place_intent_id",
+                    "does not identify a recorded place intent")
+            if parent.candidate_id != candidate_id:
+                return _reject_intent(
+                    "validated_place_intent_id", "belongs to a different latch")
+            # SERVER-COPIED from the parent, NEVER the submitted anchor: a
+            # validity row answers for THAT order, and the aged prompt is the
+            # NORMAL case, so an anchor-derived value would file a July mandate
+            # under August.
+            action_session_date = parent.action_session_date
+
+        block = None
+        if kind in _DECISION_KINDS:
+            latch, block = rederive_prepared_order(
+                conn, cfg, candidate_id=candidate_id, anchor=anchor)
+            if latch is None:
+                return _reject_intent(
+                    "candidate_id", "was not a live latch on that session")
+            if block is None or not block.offered:
+                return _conflict(
+                    "The prepared order for this latch is now WITHHELD, so the "
+                    "order you were shown can no longer be recorded. Reload.")
+            diffs = _compare_anchor(form, block)
+            if diffs:
+                return _conflict(
+                    "The framework order changed since this form was rendered, "
+                    "so NOTHING was recorded. Reload and re-read it. Changed: "
+                    + "; ".join(diffs))
+        else:
+            latch = _latch_for_identity(conn, cfg, candidate_id, anchor)
+            if latch is None:
+                return _reject_intent(
+                    "candidate_id", "does not identify a derivable latch")
+
+        # --- steps 6 + 7 --------------------------------------------------
+        framework: dict = {}
+        derivation: dict = {}
+        if block is not None:
+            framework, derivation = _stored_anchor_values(form, block)
+        intent = LatchOrderIntent(
+            intent_id=None,
+            candidate_id=latch.identity.candidate_id,
+            evaluation_run_id=latch.identity.evaluation_run_id,
+            ticker=latch.identity.ticker,
+            detection_date=latch.identity.detection_date,
+            pipeline_run_id=latch.identity.pipeline_run_id,
+            idempotency_key=key,
+            action_session_date=action_session_date,
+            # SERVER-STAMPED wall clock. NO timestamp is ever read from the
+            # payload (the V1 server-stamp gotcha).
+            recorded_ts=now.isoformat(timespec="seconds"),
+            surface=_INTENT_SURFACE,
+            intent_kind=kind,
+            decline_reason=(
+                answer["decline_reason"] if kind == "decline" else None),
+            attested_disposition=(
+                answer["attested_disposition"] if kind == "attest" else None),
+            validated_place_intent_id=parent_id,
+            **framework, **derivation,
+            actual_order_type=(
+                answer["actual_order_type"] if kind == "validity" else None),
+            actual_duration=(
+                answer["actual_duration"] if kind == "validity" else None),
+            actual_stop_price=(
+                answer["actual_stop_price"] if kind == "validity" else None),
+            actual_limit_price=(
+                answer["actual_limit_price"] if kind == "validity" else None),
+            actual_quantity=(
+                answer["actual_quantity"] if kind == "validity" else None),
+            actual_broker_order_id=(
+                answer["actual_broker_order_id"]
+                if kind in ("cancel", "attest", "validity") else None),
+            validity_outcome=(
+                answer["validity_outcome"] if kind == "validity" else None),
+            validity_detail=(
+                None if envelope is None
+                else json.dumps(envelope, sort_keys=True)),
+        )
+        try:
+            with conn:
+                stored = record_intent(conn, intent=intent)
+        except (sqlite3.IntegrityError, ValueError) as exc:
+            log.warning("latch intent rejected by the ledger: %s", exc)
+            return _reject_intent(
+                "intent", f"was rejected by the ledger contract: {exc}")
+    finally:
+        conn.close()
+    return _intent_fragment(request, stored, replayed=False)
