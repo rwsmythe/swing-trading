@@ -36,6 +36,20 @@ _DOMAIN_TABLES = (
     "reconciliation_corrections", "account_equity_snapshots", "trade_events",
 )
 
+# THE PAGE-LEVEL ALL-CLEAR MARKER, named ONCE (Arc 21-B, B6).
+#
+# 21-A's marker was the literal "Broker orders agree with the live latches",
+# which the SEPARATED-CLAIMS construction removed: the alarm all-clear is not
+# SCOPED at all -- it is COMPLETE -- and the scoped sentence also produced a
+# VACUOUS zero-case ("No alarms among the 0 latches form-checked") in the
+# ~7-hour window when nothing has been form-checked yet.
+#
+# NAMED rather than inlined at ~26 sites, because those sites include NEGATIVE
+# assertions: if the production string changes and the test literal does not,
+# every `not in` assertion goes VACUOUSLY TRUE and stops testing anything --
+# the silent-decay failure the roster rule exists to stop.
+_ALL_CLEAR = "No alarms."
+
 
 def _seed_ftre(cfg):
     conn = connect(cfg.paths.db_path)
@@ -381,7 +395,7 @@ def test_a_mispriced_order_does_not_render_a_false_all_clear(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "ORDER PRICE MISMATCH" in r.text
     assert "18.34" in r.text and "18.89" in r.text
 
@@ -402,7 +416,7 @@ def test_a_correctly_priced_order_still_reads_as_agreeing(
     app = _app(cfg, cfg_path, monkeypatch, orders=[_order()])
     with TestClient(app) as client:
         r = _post_orders(client)
-    assert "Broker orders agree" in r.text
+    assert _ALL_CLEAR in r.text
     assert "ORDER PRICE MISMATCH" not in r.text
 
 
@@ -483,7 +497,7 @@ def test_a_correct_order_does_not_mask_an_extra_stray_order(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "ORDER PRICE MISMATCH" in r.text
     assert "stray" in r.text
     assert "matches NO latch" in r.text
@@ -505,7 +519,7 @@ def test_an_indeterminate_order_is_rendered_not_silently_all_clear(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "ORDER STATUS INDETERMINATE" in r.text
     assert "verify at the broker" in r.text
     assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
@@ -550,7 +564,7 @@ def test_a_stop_only_order_with_no_cap_is_not_read_as_agreement(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "ORDER PRICE MISMATCH" in r.text
     assert "UNKNOWN (leg absent)" in r.text
 
@@ -619,7 +633,7 @@ def test_an_indeterminate_order_on_a_cleared_only_ticker_is_still_rendered(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "ORDER STATUS INDETERMINATE" in r.text
     assert "FTRE" in r.text
 
@@ -657,7 +671,7 @@ def test_a_day_order_at_the_right_prices_is_not_an_all_clear(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "not the mandated order shape" in r.text
     assert "GOOD_TILL_CANCEL" in r.text
 
@@ -672,7 +686,7 @@ def test_a_trailing_stop_at_the_right_prices_is_not_an_all_clear(
     app = _app(cfg, cfg_path, monkeypatch, orders=[trailing])
     with TestClient(app) as client:
         r = _post_orders(client)
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "not the mandated order shape" in r.text
     assert "TRAILING_STOP_LIMIT" in r.text
 
@@ -692,7 +706,7 @@ def test_a_gtc_stop_limit_at_the_right_prices_IS_an_all_clear(
     app = _app(cfg, cfg_path, monkeypatch, orders=[mandated])
     with TestClient(app) as client:
         r = _post_orders(client)
-    assert "Broker orders agree" in r.text
+    assert _ALL_CLEAR in r.text
     assert "not the mandated order shape" not in r.text
 
 
@@ -710,7 +724,7 @@ def test_an_absent_duration_is_not_asserted_against(
     app = _app(cfg, cfg_path, monkeypatch, orders=[_order()])   # duration None
     with TestClient(app) as client:
         r = _post_orders(client)
-    assert "Broker orders agree" in r.text
+    assert _ALL_CLEAR in r.text
 
 
 # --- RD ruling 2026-07-27: the pullback form, end to end -------------------
@@ -772,7 +786,7 @@ def test_the_live_ftre_pullback_order_reads_as_a_match(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" in r.text
+    assert _ALL_CLEAR in r.text
     assert "ORDER PRICE MISMATCH" not in r.text
     assert "not the mandated order shape" not in r.text
     assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
@@ -793,7 +807,7 @@ def test_a_non_gtc_pullback_limit_is_still_not_an_all_clear(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "not the mandated order shape" in r.text
     assert "GOOD_TILL_CANCEL" in r.text
 
@@ -811,7 +825,7 @@ def test_a_stop_limit_above_the_pivot_is_flagged_as_the_wrong_regime(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "not the mandated order shape" in r.text
     assert "AT OR ABOVE" in r.text
 
@@ -829,7 +843,7 @@ def test_a_mispriced_pullback_limit_still_reports_the_price_disagreement(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "ORDER PRICE MISMATCH" in r.text
 
 
@@ -853,7 +867,7 @@ def test_the_breakout_regime_still_demands_both_legs(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "ORDER PRICE MISMATCH" in r.text
     assert "UNKNOWN (leg absent)" in r.text
 
@@ -910,7 +924,12 @@ def test_an_unknown_regime_does_not_flag_a_stopless_pullback_limit(
     # carries this clause, so the assertion pins the LABEL, not the branch (the
     # branch itself is pinned by the dedicated tests below).
     assert "WHICH of the two mandate forms is correct at this price" in r.text
-    assert "Broker orders agree with the live latches" not in r.text
+    # B6 (Arc 21-B): the ALARM all-clear IS now present and that is CORRECT --
+    # it is UNSCOPED because it is COMPLETE. Only the two-form SELECTION was
+    # skipped; alarms, the cap leg, GTC duration and the stray-order sweep all
+    # RAN on this latch. The reduction is still announced, by its OWN claim.
+    assert _ALL_CLEAR in r.text
+    assert "Mandate-form check pending for 1 latch." in r.text
     assert "FTRE" in r.text
 
 
@@ -927,7 +946,7 @@ def test_an_unknown_regime_still_requires_the_cap_leg(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "ORDER PRICE MISMATCH" in r.text
 
 
@@ -945,7 +964,7 @@ def test_an_unknown_regime_still_judges_a_stop_leg_the_order_actually_carries(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "ORDER PRICE MISMATCH" in r.text
 
 
@@ -1052,7 +1071,11 @@ def test_a_stale_close_may_alarm_but_may_not_assert_a_match(
     assert "not the mandated order shape" in r.text
     assert "AT OR ABOVE" in r.text
     # THE PRESERVED (AND TIGHTENED) HALF: no all-clear is asserted from it.
-    assert "Broker orders agree with the live latches" not in r.text
+    # Through the B6 (21-B) marker, NOT the retired literal "Broker orders agree
+    # with the live latches": that string no longer exists in production, so a
+    # `not in` against it would be VACUOUSLY true and would stop testing
+    # anything -- the silent-decay the `_ALL_CLEAR` roster rule exists to stop.
+    assert _ALL_CLEAR not in r.text
     # ...and the finding is LABELLED with its exact, PROVEN staleness, naming
     # both dates exactly as the 21-A test already required.
     assert "read from a close dated 2026-07-20" in r.text
@@ -1103,7 +1126,7 @@ def test_two_orders_on_one_mandate_withhold_the_all_clear(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" not in r.text
+    assert _ALL_CLEAR not in r.text
     assert "2 resting BUY orders match this mandate" in r.text
     assert "verify the others at the broker" in r.text
     # ...and NOT a false "no resting order" alarm: the mandate IS covered.
@@ -1123,7 +1146,7 @@ def test_a_single_matched_order_still_reaches_the_all_clear(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree with the live latches" in r.text
+    assert _ALL_CLEAR in r.text
     assert "match this mandate" not in r.text
     # ...and the shape check RAN, so it is not labelled as skipped in ANY branch.
     assert "WHICH of the two mandate forms" not in r.text
@@ -1158,7 +1181,12 @@ def test_an_undeterminable_regime_is_labelled_on_the_affected_latch(
     # The checks that DID run are named, so the label reduces the claim rather
     # than reading as a blanket failure.
     assert "GOOD_TILL_CANCEL whenever the broker payload carries" in r.text
-    assert "Broker orders agree with the live latches" not in r.text
+    # B6 (Arc 21-B): the ALARM all-clear IS now present and that is CORRECT -- it
+    # is UNSCOPED because it is COMPLETE. Only the two-form SELECTION was
+    # skipped; alarms, the cap leg, GTC duration and the stray-order sweep all
+    # RAN on every latch. The reduction is still labelled, by its OWN claim.
+    assert _ALL_CLEAR in r.text
+    assert "Mandate-form check pending for 1 latch." in r.text
 
 
 def test_the_skipped_shape_label_claims_no_check_it_did_not_perform(
@@ -1208,7 +1236,10 @@ def test_the_label_does_not_contradict_a_shape_mismatch_it_still_reports(
     # whole was skipped.
     assert "shape check did not run" not in r.text.lower()
     assert "shape check is pending" not in r.text.lower()
-    assert "Broker orders agree with the live latches" not in r.text
+    # B6 (Arc 21-B): the separated claims do NOT weaken the findings gate. A
+    # shape mismatch IS a finding, so the template's no-findings branch is never
+    # reached and NO form of all-clear renders -- including the new unscoped one.
+    assert _ALL_CLEAR not in r.text
 
 
 # --- RD ruling 2026-07-28: PENDING is not PERMANENT, and neither is an alarm -
@@ -1461,10 +1492,18 @@ def test_the_all_clear_is_scoped_by_counts_rather_than_withheld(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "No alarms among the 0 latches form-checked. 1 not form-checked - " \
-        "see the labels below." in r.text
-    # The UNSCOPED claim stays forbidden -- that is the half RD did NOT reverse.
-    assert "Broker orders agree with the live latches" not in r.text
+    # B6 (Arc 21-B): SEPARATED CLAIMS. The alarm all-clear is UNSCOPED because it
+    # is COMPLETE -- only the two-form SELECTION was skipped, and alarms, the cap
+    # leg, GTC duration and the stray-order sweep all RAN on every latch.
+    assert _ALL_CLEAR in r.text
+    # ...and the pending count is its OWN claim, carrying the severity the
+    # page-level line previously lumped together.
+    assert "Mandate-form check pending for 1 latch." in r.text
+    # THE VACUOUS ZERO-CASE IS GONE. This is the whole reason the scoped sentence
+    # was replaced: with nothing form-checked yet it read as a claim about an
+    # EMPTY SET, dressed as a result.
+    assert "among the 0" not in r.text
+    assert "form-checked" not in r.text
 
 
 def test_the_scoped_all_clear_counts_the_latches_that_were_checked(
@@ -1492,8 +1531,14 @@ def test_the_scoped_all_clear_counts_the_latches_that_were_checked(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "No alarms among the 1 latch form-checked. 1 not form-checked - " \
-        "see the labels below." in r.text
+    # B6: the PENDING-VS-PERMANENT distinction is now carried into the
+    # page-level line, which is the actual refinement. A derivation-session close
+    # exists, so AMN's skip is a question about the TICKER (permanent), not about
+    # the clock (pending) -- and the two must not read the same.
+    assert _ALL_CLEAR in r.text
+    assert "Mandate-form check inert for 1 latch - see the labels below." in r.text
+    assert "Mandate-form check pending" not in r.text
+    assert "form-checked" not in r.text
 
 
 def test_a_fully_checked_page_still_prints_the_unscoped_all_clear(
@@ -1509,8 +1554,10 @@ def test_a_fully_checked_page_still_prints_the_unscoped_all_clear(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree with the live latches. No alarms." in r.text
-    assert "not form-checked - see the labels below" not in r.text
+    # B6: the all-checked case renders the unscoped claim AND NOTHING ELSE.
+    assert _ALL_CLEAR in r.text
+    assert "Mandate-form check" not in r.text
+    assert "form-checked" not in r.text
 
 
 def test_a_real_finding_still_withholds_every_form_of_all_clear(
@@ -1527,7 +1574,7 @@ def test_a_real_finding_still_withholds_every_form_of_all_clear(
     assert r.status_code == 200
     assert "ORDER PRICE MISMATCH" in r.text
     assert "No alarms among the" not in r.text
-    assert "Broker orders agree with the live latches" not in r.text
+    assert _ALL_CLEAR not in r.text
 
 
 def test_a_failed_close_read_is_not_reported_as_an_absent_close(
@@ -1640,15 +1687,19 @@ def test_a_lagged_close_under_a_fresher_stamp_can_no_longer_assert_a_match(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    # THE discriminating assertion: this string is PRESENT pre-fix.
-    assert "Broker orders agree with the live latches. No alarms." not in r.text
+    # THE discriminating assertion, re-expressed for B6 (Arc 21-B). Pre-fix the
+    # form check RAN and MATCHED, so the page carried the alarm all-clear with
+    # NO form-check reduction beside it. Under the SEPARATED claims the alarm
+    # all-clear correctly stands -- it is COMPLETE, not scoped -- so what
+    # discriminates is the reduction that must now sit next to it.
+    assert _ALL_CLEAR in r.text
+    assert ("Mandate-form check inert for 1 latch - the recorded close is "
+            "contradicted by the archive; see the labels below.") in r.text
     # ...and the reduction is labelled with the real inconsistency, naming BOTH
     # numbers -- strictly more information than either the pre-fix all-clear or
     # a generic inert wording would have given him.
     assert "RECORDED CLOSE CONTRADICTED BY THE ARCHIVE" in r.text
     assert "19.52" in r.text and "17.76" in r.text
-    assert "No alarms among the 0 latches form-checked. 1 not form-checked" \
-        in r.text
 
 
 def test_a_lagged_close_under_a_fresher_stamp_does_not_become_an_alarm_either(
@@ -1673,7 +1724,11 @@ def test_a_lagged_close_under_a_fresher_stamp_does_not_become_an_alarm_either(
     assert "not the mandated order shape" not in r.text      # fails pre-fix
     assert "AT OR ABOVE" not in r.text                       # fails pre-fix
     assert "RECORDED CLOSE CONTRADICTED BY THE ARCHIVE" in r.text
-    assert "Broker orders agree with the live latches" not in r.text
+    # B6: no FORM-check all-clear is asserted -- and it is withheld by SAYING
+    # SO, as its own claim, rather than by suppressing the alarm claim (which
+    # does hold: every latch WAS alarm-checked).
+    assert ("Mandate-form check inert for 1 latch - the recorded close is "
+            "contradicted by the archive; see the labels below.") in r.text
 
 
 def _seed_the_seven_hour_window(cfg):
@@ -1753,12 +1808,19 @@ def test_the_seven_hour_window_never_produces_an_all_clear(
     with TestClient(app) as client:
         r = _post_orders(client, anchor=ANCHOR_WINDOW)
     assert r.status_code == 200
-    # (i) NO all-clear of any form...
-    assert "Broker orders agree with the live latches" not in r.text
+    # (i) NO FORM-check all-clear -- re-expressed for B6 (Arc 21-B). 21-G wrote
+    # this as "no all-clear of ANY form", which was right under the SCOPED
+    # sentence, where the single claim covered both. Under the SEPARATED claims
+    # the ALARM all-clear stands and is CORRECT (alarms, the cap leg, GTC
+    # duration and the stray-order sweep ran on every latch), and what is
+    # withheld is the FORM-check all-clear -- withheld by SAYING SO rather than
+    # by suppressing a claim that does hold.
+    assert _ALL_CLEAR in r.text
     # (ii) ...AND the reduction is LABELLED. These two are ONE requirement.
     assert "Mandate form check ran from an uncorroborated close" in r.text
     assert "no all-clear is asserted for this latch" in r.text
-    assert "1 latch checked from an uncorroborated close" in r.text
+    assert ("1 latch checked from an uncorroborated close - no all-clear is "
+            "asserted for those.") in r.text
     # ...and no false alarm was invented from the omitted stop leg.
     assert "ORDER PRICE MISMATCH" not in r.text
     assert "not the mandated order shape" not in r.text
@@ -1820,9 +1882,10 @@ def test_a_fallen_out_ticker_does_not_alarm_after_the_nightly(
     assert r.status_code == 200
     assert "not the mandated order shape" not in r.text
     assert "AT OR ABOVE" not in r.text
-    # ...and it is VISIBLY inert, not silently inert (the OQ-2 coupling).
+    # ...and it is VISIBLY inert, not silently inert (the OQ-2 coupling) -- at
+    # the per-latch label AND, under B6 (Arc 21-B), as its own page-level claim.
     assert "MANDATE FORM CHECK INERT FOR THIS LATCH" in r.text
-    assert "Broker orders agree with the live latches" not in r.text
+    assert "Mandate-form check inert for 1 latch - see the labels below." in r.text
 
 
 def test_a_fallen_out_ticker_does_not_alarm_inside_the_daily_window_either(
@@ -1856,9 +1919,9 @@ def test_a_fallen_out_ticker_does_not_alarm_inside_the_daily_window_either(
     assert r.status_code == 200
     assert "not the mandated order shape" not in r.text
     assert "AT OR ABOVE" not in r.text
-    assert "Broker orders agree with the live latches" not in r.text
     # ...the reduction is LABELLED, and it is NOT the alarm-authorized label:
     # this latch was never checked, so it must not claim to have been.
+    assert "Mandate-form check pending for 1 latch." in r.text
     assert "Mandate form check pending" in r.text
     assert "Mandate form check ran from an uncorroborated close" not in r.text
     assert "1 latch checked from an uncorroborated close" not in r.text
@@ -1900,12 +1963,12 @@ def test_a_ticker_lagged_inside_the_latest_cohort_does_not_alarm(
     assert r.status_code == 200
     assert "not the mandated order shape" not in r.text
     assert "AT OR ABOVE" not in r.text
-    assert "Broker orders agree with the live latches" not in r.text
     # It was NOT checked, and it must not claim to have been.
     assert "Mandate form check ran from an uncorroborated close" not in r.text
-    assert "No alarms among the 0 latches form-checked. 1 not form-checked" \
-        in r.text
-    # ...and the reduction is labelled (the OQ-2 coupling).
+    assert "1 latch checked from an uncorroborated close" not in r.text
+    # ...and the reduction is labelled (the OQ-2 coupling), per-latch AND at the
+    # page level as its own B6 (Arc 21-B) claim.
+    assert "Mandate-form check pending for 1 latch." in r.text
     assert "Mandate form check pending" in r.text
 
 
@@ -1935,8 +1998,13 @@ def test_a_close_stamped_after_this_page_session_can_neither_assert_nor_alarm(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree with the live latches" not in r.text
     assert "not the mandated order shape" not in r.text
+    # B6 (Arc 21-B): the FORM check asserted nothing, and it SAYS so as its own
+    # page-level claim. `future_stamp` and `unplaceable_stamp` are two headlines
+    # over ONE rung, so they share ONE claim; the per-latch label below is what
+    # separates them.
+    assert ("Mandate-form check inert for 1 latch - the recorded close cannot "
+            "be placed in time; see the labels below.") in r.text
     # ...and the reduction names BOTH dates, so the operator can see why.
     assert "RECORDED CLOSE IS STAMPED AFTER THIS PAGE SESSION" in r.text
     assert "is stamped 2026-07-27, LATER than the derivation session " \
@@ -1969,8 +2037,8 @@ def test_an_unreadable_archive_withdraws_the_alarm_rather_than_assuming_it(
     assert r.status_code == 200                             # A6
     assert "not the mandated order shape" not in r.text
     assert "AT OR ABOVE" not in r.text
-    assert "Broker orders agree with the live latches" not in r.text
     assert "MANDATE FORM CHECK NOT RUN" in r.text
+    assert "Mandate-form check status unknown for 1 latch." in r.text
     assert "the OHLCV archive read for this ticker failed" in r.text
 
 
@@ -1987,7 +2055,7 @@ def test_a_missing_archive_degrades_visibly_and_never_500s(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree with the live latches" not in r.text
+    assert "Mandate-form check pending for 1 latch." in r.text
     assert "Mandate form check pending" in r.text
     assert "waiting on the nightly data for the derivation session 2026-07-24" \
         in r.text
@@ -2022,9 +2090,16 @@ def test_the_stale_regime_count_equals_the_rendered_stale_notes(
         r = _post_orders(client, anchor=ANCHOR_WINDOW)
     assert r.status_code == 200
     assert r.text.count("Mandate form check ran from an uncorroborated close") == 1
-    assert "1 latch checked from an uncorroborated close - no all-clear is " \
-        "asserted for those. 1 not form-checked - see the labels below. " \
-        "No alarms among the 0 latches form-checked." in r.text
+    # THE COMPOSED LINE, verbatim (21-G's provenance claim inside B6's separated
+    # structure). The uncorroborated claim leads the REDUCTIONS -- Codex R7's
+    # lead-with-the-reduction ruling, honoured as far as the structure allows --
+    # while "No alarms." keeps the whole line, because under the separated
+    # construction it is COMPLETE and skimming it yields a TRUE belief, which is
+    # exactly what the superseded SCOPED sentence could not offer.
+    assert "No alarms. " \
+        "1 latch checked from an uncorroborated close - no all-clear is " \
+        "asserted for those. " \
+        "Mandate-form check pending for 1 latch." in r.text
 
 
 def test_a_dated_conflict_blocks_the_alarm_even_when_both_conditions_hold(
@@ -2062,9 +2137,11 @@ def test_a_dated_conflict_blocks_the_alarm_even_when_both_conditions_hold(
     assert r.status_code == 200
     assert "not the mandated order shape" not in r.text
     assert "AT OR ABOVE" not in r.text
-    assert "Broker orders agree with the live latches" not in r.text
+    assert ("Mandate-form check inert for 1 latch - the recorded close is "
+            "contradicted by the archive; see the labels below.") in r.text
     # ...and it is not counted or labelled as a check that ran.
     assert "Mandate form check ran from an uncorroborated close" not in r.text
+    assert "1 latch checked from an uncorroborated close" not in r.text
     # The D < S wording, naming both numbers.
     assert "RECORDED CLOSE CONTRADICTED BY THE ARCHIVE" in r.text
     assert ("the archive holds a newer close for 2026-07-28 (17.10) than the "
@@ -2096,8 +2173,10 @@ def test_a_corroborated_close_behaves_byte_identically_to_21A(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree with the live latches. No alarms." in r.text
-    assert "not form-checked" not in r.text
+    assert _ALL_CLEAR in r.text
+    # ...and NOTHING else on the page-level line: no reduction claim of any
+    # severity (B6, Arc 21-B -- the affirmative case emits exactly one claim).
+    assert "Mandate-form check" not in r.text
     assert "uncorroborated" not in r.text
     assert "ORDER PRICE MISMATCH" not in r.text
 
@@ -2117,7 +2196,8 @@ def test_a_sub_cent_archive_round_trip_still_corroborates(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree with the live latches. No alarms." in r.text
+    assert _ALL_CLEAR in r.text
+    assert "Mandate-form check" not in r.text
 
 
 def _seed_a_latch_fired_for_the_current_action_session(cfg):
@@ -2164,8 +2244,8 @@ def test_the_freshest_latch_in_the_system_can_still_reach_the_all_clear(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree with the live latches. No alarms." in r.text
-    assert "not form-checked" not in r.text
+    assert _ALL_CLEAR in r.text
+    assert "Mandate-form check" not in r.text
 
 
 def test_a_stale_below_pivot_regime_contradicts_the_type_but_demands_no_leg(
@@ -2214,8 +2294,10 @@ def test_a_stale_below_pivot_regime_contradicts_the_type_but_demands_no_leg(
     # `disagreements` entry, so the shape line above already carries it.
     assert "resting order does not match the latched mandate" not in r.text
     assert "UNKNOWN (leg absent)" not in r.text
-    # ...and a finding still withholds every form of all-clear.
-    assert "Broker orders agree with the live latches" not in r.text
+    # ...and a finding still withholds every form of all-clear -- asserted
+    # through the B6 marker, never the retired literal, which would go
+    # VACUOUSLY true now that the production string is gone.
+    assert _ALL_CLEAR not in r.text
     assert "No alarms" not in r.text
 
 
@@ -2251,7 +2333,8 @@ def test_an_unplaceable_stamp_is_not_described_as_later_than_this_page(
     assert r.status_code == 200
     # The SAFE behaviour is preserved: neither direction is claimed.
     assert "not the mandated order shape" not in r.text
-    assert "Broker orders agree with the live latches" not in r.text
+    assert ("Mandate-form check inert for 1 latch - the recorded close cannot "
+            "be placed in time; see the labels below.") in r.text
     # ...and the REASON given is the true one, in the HEADLINE as well as in
     # the detail (Codex R10 MINOR): the headline is the bold text the operator
     # reads first, so a true detail under a false headline is worse than
@@ -2300,7 +2383,9 @@ def test_an_unreadable_latest_stamp_says_the_alarm_was_withheld(
     # The alarm is WITHHELD...
     assert "not the mandated order shape" not in r.text
     assert "AT OR ABOVE" not in r.text
-    assert "Broker orders agree with the live latches" not in r.text
+    # ...and no FORM-check all-clear is asserted: the reduction is stated as its
+    # own B6 (Arc 21-B) claim, beside the alarm all-clear that does hold.
+    assert "Mandate-form check pending for 1 latch." in r.text
     # ...and it SAYS SO, rather than hiding behind the routine wording.
     assert "a stale-derived mismatch could not even be CONSIDERED for this "         "latch" in r.text
     assert "the newest-recorded-close-stamp read failed" in r.text

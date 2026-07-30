@@ -21,13 +21,18 @@
   </div>
   {% elif not vm.disagreements and not vm.indeterminate_tickers
           and not vm.multiplicity_notes %}
-  {# The page-level claim, SCOPED to what was actually checked (RD ruling
-     2026-07-28). A disagreement / indeterminate status / multiplicity is a
-     FINDING and still withholds it entirely; a check that did not RUN is not a
-     finding, so the claim is stated with its counts rather than suppressed --
-     the not-run label is the default state for ~7 hours of every trading day,
-     and an all-clear the operator essentially never sees stops being
-     informative by its absence. `vm.all_clear_note` is display-ready. #}
+  {# The page-level claims, SEPARATED (B6, Arc 21-B, superseding the single
+     SCOPED sentence of RD's 2026-07-28 ruling). A disagreement / indeterminate
+     status / multiplicity is a FINDING and still withholds every claim
+     entirely; a check that did not RUN is not a finding, so it is stated as its
+     OWN claim rather than by suppressing the alarm all-clear -- which is
+     COMPLETE and unscoped, because alarms, the cap leg, GTC duration and the
+     stray-order sweep run on EVERY latch. Stating the reduction beats
+     suppressing the claim: the not-run label is the default state for ~7 hours
+     of every trading day, and an all-clear the operator essentially never sees
+     stops being informative by its absence. `vm.all_clear_note` is
+     display-ready (the joined `vm.all_clear_claims`); this template holds no
+     logic. #}
   <p class="muted">{{ vm.all_clear_note }}</p>
   {% endif %}
 

@@ -615,6 +615,52 @@ _FORM_CHECK_HEADLINES = {
 # token-contract test is untouched).
 NEUTRAL_FORM_CHECK_SEVERITIES = frozenset({"pending", "stale_regime"})
 
+# The PAGE-LEVEL claim each form-check severity contributes (Arc 21-B B6 x Arc
+# 21-G), kept beside the headlines for the same reason the neutral set is: the
+# per-latch label and the page-level claim must not drift apart.
+#
+# B6 SEPARATES the claims -- the alarm all-clear is COMPLETE and unscoped, and
+# each form-check reduction states its OWN severity rather than being lumped
+# into one undifferentiated "not form-checked" count. 21-G's severities join
+# that list as FURTHER CLAIMS rather than as a competing sentence: "the check
+# ran from a close whose date could not be proved" is a DIFFERENT fact from
+# "the check did not run" (there, the check DID run -- its input could not be
+# dated), so under the separated construction it is simply another claim.
+#
+# ORDERED, and `stale_regime` LEADS THE REDUCTIONS: it is the claim that says
+# no all-clear is asserted, and Codex R7 (21-G) ruled the reduction must not
+# sit behind the reassurance. "No alarms." still leads the whole line, because
+# under the SEPARATED construction it is COMPLETE -- skimming it yields a TRUE
+# belief, which is exactly what the superseded SCOPED sentence could not offer
+# and is why RD ruled the separated form its REPLACEMENT.
+#
+# EVERY severity in `_FORM_CHECK_HEADLINES` MUST appear here: an unlabelled
+# reduction is a quiet all-clear by omission, and a severity that silently
+# fails to reach the page-level line is precisely that. A test pins the two
+# key sets equal (the #11 mirror discipline), so a new severity cannot ship
+# green while being dropped from the line.
+_FORM_CHECK_CLAIM_PHRASINGS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("stale_regime",),
+     "{n} {noun} checked from an uncorroborated close - no all-clear is "
+     "asserted for those."),
+    (("value_conflict",),
+     "Mandate-form check inert for {n} {noun} - the recorded close is "
+     "contradicted by the archive; see the labels below."),
+    # ONE claim for the ONE rung: `future_stamp` and `unplaceable_stamp` are
+    # two HEADLINES over the same rung F (a stamp AFTER this session, or a
+    # stamp that cannot be parsed at all -- two different reasons, and the
+    # per-latch label states which). The page-level fact they share is the one
+    # that matters here: the close cannot be placed at or before this page's
+    # session, so no form was picked from it.
+    (("future_stamp", "unplaceable_stamp"),
+     "Mandate-form check inert for {n} {noun} - the recorded close cannot be "
+     "placed in time; see the labels below."),
+    (("pending",), "Mandate-form check pending for {n} {noun}."),
+    (("permanent",),
+     "Mandate-form check inert for {n} {noun} - see the labels below."),
+    (("unknown",), "Mandate-form check status unknown for {n} {noun}."),
+)
+
 
 def _as_sentence(text: str) -> str:
     """Upper-case the FIRST character only.
@@ -716,38 +762,65 @@ class LatchOrdersFragmentVM:
     form_check_stale_count: int = 0
 
     @property
-    def all_clear_note(self) -> str:
-        """The page-level claim, scoped to what was actually checked.
+    def all_clear_claims(self) -> tuple[str, ...]:
+        """THE SEPARATED-CLAIMS CONSTRUCTION (B6, Arc 21-B).
 
-        Display-ready (the template holds no logic). Reachable ONLY from the
-        template's no-findings branch: a disagreement / indeterminate status /
-        multiplicity is a FINDING, not an absent check, and still withholds
-        every form of all-clear.
+        The superseded single SCOPED sentence -- *"No alarms among the {N}
+        {latch|latches} form-checked. {M} not form-checked - see the labels
+        below."* -- was wrong for TWO reasons, and RD named both:
+
+        1. IT RESTED ON A MISUNDERSTANDING. Only the two-form SELECTION is
+           skipped: alarms, the cap leg, GTC duration and the stray-order sweep
+           all RUN on every latch. So the ALARM all-clear is not scoped at all --
+           it is COMPLETE. Re-verified on disk before adopting the change: on the
+           no-findings branch (the ONLY branch that reaches this property) there
+           are no alarms, no disagreements, no indeterminate tickers and no
+           multiplicity notes, and `join_orders_to_latches` ran over
+           `derivation.latches` UNCONDITIONALLY. Every latch WAS alarm-checked.
+        2. IT PRODUCES A VACUOUS ZERO-CASE. In the ~7-hour window when
+           `form_check_ran_count == 0` it reads *"No alarms among the 0 latches
+           form-checked."* -- a claim about an empty set, dressed as a result.
+
+        So the claims are SEPARATED, each independently true and none vacuous.
+        THE PENDING-VS-PERMANENT DISTINCTION IS CARRIED INTO THE PAGE-LEVEL LINE,
+        which is the actual B6 refinement: today it is visible only in the
+        per-latch labels, so the page-level sentence LUMPS a self-resolving wait
+        together with a permanently-inert latch.
+
+        `form_check_ran_count` stays on the VM (the CLI report and the tests read
+        it) but no longer appears in the prose -- the operator does not need a
+        DENOMINATOR for a claim that is not SCOPED.
+
+        ARC 21-G COMPOSES INTO THIS, IT IS NOT REPLACED BY IT. 21-G's scoped
+        sentence led with `"{M} latches checked from an uncorroborated close -
+        no all-clear is asserted for those."` The STRUCTURE it was written into
+        is what RD retired; the FACT it carries is real provenance work and
+        survives as a claim of its own, because "the check ran from a close
+        whose date could not be proved" is a DIFFERENT statement from "the
+        check did not run". Under the separated construction the two simply
+        coexist. See `_FORM_CHECK_CLAIM_PHRASINGS` for the full roster and the
+        ordering rationale.
         """
-        skipped = len(self.mandate_form_check_skipped)
-        stale = self.form_check_stale_count
-        unchecked = skipped - stale
-        if not skipped:
-            return "Broker orders agree with the live latches. No alarms."
-        # "FORM-checked", not "checked" (codex-auto-review MINOR). A bare
-        # "checked" reads as "nothing ran on the other M", which is false: the
-        # alarms, the cap leg, the GTC duration and the stray-order sweep all
-        # ran on every evaluated latch. Only the two-form SELECTION was skipped.
-        noun = "latch" if self.form_check_ran_count == 1 else "latches"
-        ran = f"No alarms among the {self.form_check_ran_count} {noun} form-checked."
-        unchecked_clause = (
-            f"{unchecked} not form-checked - see the labels below."
-            if unchecked else "")
-        if not stale:
-            return f"{ran} {unchecked_clause}".strip()
-        # LEAD WITH THE REDUCTION, NOT THE REASSURANCE (Codex R7 MINOR). A
-        # sentence beginning "No alarms" is skimmable as a page-level all-clear
-        # before the qualifying clause is read, and this is the one surface
-        # whose statements have to survive being believed.
-        stale_noun = "latch" if stale == 1 else "latches"
-        lead = (f"{stale} {stale_noun} checked from an uncorroborated close - "
-                f"no all-clear is asserted for those.")
-        return " ".join(p for p in (lead, unchecked_clause, ran) if p)
+        by_severity: dict[str, int] = {}
+        for note in self.mandate_form_check_skipped:
+            by_severity[note.severity] = by_severity.get(note.severity, 0) + 1
+        claims = ["No alarms."]        # ALWAYS, on this branch: unscoped
+        for severities, phrasing in _FORM_CHECK_CLAIM_PHRASINGS:
+            n = sum(by_severity.get(s, 0) for s in severities)
+            if n:
+                claims.append(phrasing.format(
+                    n=n, noun="latch" if n == 1 else "latches"))
+        return tuple(claims)
+
+    @property
+    def all_clear_note(self) -> str:
+        """The separated claims, joined for display. The template holds no logic.
+
+        Reachable ONLY from the template's no-findings branch: a disagreement /
+        indeterminate status / multiplicity is a FINDING, not an absent check, and
+        still withholds every form of all-clear.
+        """
+        return " ".join(self.all_clear_claims)
 
 
 def _resolve_schwab_environment(cfg) -> str | None:
