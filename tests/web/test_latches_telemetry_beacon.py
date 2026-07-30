@@ -67,7 +67,8 @@ def test_beacon_records_one_row_per_live_latch(seeded_db, frozen_clocks):
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX,
                         data={"view_session_date": ANCHOR,
-                              "candidate_ids": str(cid)})
+                              "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": ""})
     assert r.status_code == 204
     (row,) = _rows(cfg)
     assert row[0] == cid
@@ -86,7 +87,8 @@ def test_a_second_beacon_the_same_session_updates_in_place(seeded_db, frozen_clo
         for _ in range(2):
             client.post("/latches/view", headers=_HX,
                         data={"view_session_date": ANCHOR,
-                              "candidate_ids": str(cid)})
+                              "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": ""})
     (row,) = _rows(cfg)
     assert row[8] == 2                       # ONE row, advancing count
     assert row[6] == row[7]                  # same frozen clock both times
@@ -102,7 +104,8 @@ def test_beacon_ignores_a_candidate_id_that_was_not_live_at_the_anchor(
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX,
                         data={"view_session_date": ANCHOR,
-                              "candidate_ids": "999999"})
+                              "actionable_candidate_ids": "999999",
+                              "withheld_candidate_ids": ""})
     assert r.status_code == 204
     assert _rows(cfg) == []
 
@@ -122,7 +125,8 @@ def test_beacon_ignores_a_cleared_latchs_id(seeded_db, frozen_clocks, tmp_path):
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX,
                         data={"view_session_date": ANCHOR,
-                              "candidate_ids": str(cid)})
+                              "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": ""})
     assert r.status_code == 204
     assert _rows(cfg) == []
 
@@ -147,7 +151,8 @@ def test_view_session_date_is_the_rendered_anchor_not_a_post_time_recompute(
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX,
                         data={"view_session_date": ANCHOR,
-                              "candidate_ids": str(cid)})
+                              "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": ""})
     assert r.status_code == 204
     (row,) = _rows(cfg)
     assert row[5] == ANCHOR                  # S, not S+1
@@ -165,7 +170,8 @@ def test_a_one_session_stale_anchor_is_accepted(seeded_db, monkeypatch):
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX,
                         data={"view_session_date": ANCHOR,
-                              "candidate_ids": str(cid)})
+                              "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": ""})
     assert r.status_code == 204
     assert len(_rows(cfg)) == 1
 
@@ -177,7 +183,8 @@ def test_a_future_session_anchor_is_rejected(seeded_db, frozen_clocks):
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX,
                         data={"view_session_date": "2026-09-01",
-                              "candidate_ids": str(cid)})
+                              "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": ""})
     assert r.status_code == 400
     assert "view_session_date" in r.text
     assert _rows(cfg) == []
@@ -198,7 +205,8 @@ def test_a_two_session_stale_anchor_returns_409_with_a_reload_prompt(
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX,
                         data={"view_session_date": ANCHOR,
-                              "candidate_ids": str(cid)})
+                              "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": ""})
     assert r.status_code == 409
     assert "reload" in r.text.lower()
     assert _rows(cfg) == []
@@ -214,7 +222,8 @@ def test_the_stale_response_body_names_both_sessions(seeded_db, monkeypatch):
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX,
                         data={"view_session_date": ANCHOR,
-                              "candidate_ids": str(cid)})
+                              "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": ""})
     # 12:00 Pacific/Honolulu == 18:00 ET on Thu 2026-07-30, i.e. POST-close, so
     # the CURRENT action session is Fri 2026-07-31 -- four sessions ahead of the
     # posted anchor. The notice must name BOTH.
@@ -232,7 +241,8 @@ def test_beacon_timestamps_are_server_stamped_not_client_supplied(
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX, data={
-            "view_session_date": ANCHOR, "candidate_ids": str(cid),
+            "view_session_date": ANCHOR, "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": "",
             "viewed_ts": "1999-01-01T00:00:00", "view_count": "42",
             "latch_state": "filled",
         })
@@ -249,21 +259,44 @@ def test_empty_candidate_ids_is_valid_and_writes_nothing(seeded_db, frozen_clock
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX,
-                        data={"view_session_date": ANCHOR, "candidate_ids": ""})
+                        data={"view_session_date": ANCHOR,
+                              "actionable_candidate_ids": "",
+                              "withheld_candidate_ids": ""})
     assert r.status_code == 204
     assert _rows(cfg) == []
 
 
+_A = "actionable_candidate_ids"
+_W = "withheld_candidate_ids"
+
+
 @pytest.mark.parametrize("form,field", [
-    ({"candidate_ids": "1"}, "view_session_date"),
-    ({"view_session_date": ANCHOR}, "candidate_ids"),
-    ({"view_session_date": "2026-7-27", "candidate_ids": ""}, "view_session_date"),
-    ({"view_session_date": "garbage", "candidate_ids": ""}, "view_session_date"),
-    ({"view_session_date": ANCHOR, "candidate_ids": "true"}, "candidate_ids"),
-    ({"view_session_date": ANCHOR, "candidate_ids": "0"}, "candidate_ids"),
-    ({"view_session_date": ANCHOR, "candidate_ids": "-3"}, "candidate_ids"),
-    ({"view_session_date": ANCHOR, "candidate_ids": "1.5"}, "candidate_ids"),
-    ({"view_session_date": ANCHOR, "candidate_ids": "9500,abc"}, "candidate_ids"),
+    ({_A: "1", _W: ""}, "view_session_date"),
+    # BOTH lists are REQUIRED -- an omitted list is not an empty one. A handler
+    # defaulting the missing field to "" would let a beacon that has silently
+    # regressed to the 21-A contract keep writing rows, with every render
+    # recorded on whichever leg the default picked.
+    ({"view_session_date": ANCHOR, _W: ""}, _A),
+    ({"view_session_date": ANCHOR, _A: ""}, _W),
+    # The superseded single field is NOT accepted, and the rejection names the
+    # list it is missing rather than silently ingesting a 21-A payload.
+    ({"view_session_date": ANCHOR, "candidate_ids": "1"}, _A),
+    ({"view_session_date": "2026-7-27", _A: "", _W: ""}, "view_session_date"),
+    ({"view_session_date": "garbage", _A: "", _W: ""}, "view_session_date"),
+    ({"view_session_date": ANCHOR, _A: "true", _W: ""}, _A),
+    ({"view_session_date": ANCHOR, _A: "0", _W: ""}, _A),
+    ({"view_session_date": ANCHOR, _A: "-3", _W: ""}, _A),
+    ({"view_session_date": ANCHOR, _A: "1.5", _W: ""}, _A),
+    ({"view_session_date": ANCHOR, _A: "9500,abc", _W: ""}, _A),
+    # ...and the SAME ladder on the withheld leg, which is the leg every card
+    # on today's substrate actually posts on.
+    ({"view_session_date": ANCHOR, _A: "", _W: "true"}, _W),
+    ({"view_session_date": ANCHOR, _A: "", _W: "0"}, _W),
+    ({"view_session_date": ANCHOR, _A: "", _W: "-3"}, _W),
+    # An id in BOTH lists is a render asserting two incompatible facts about one
+    # moment. Rejected, not silently resolved: picking a winner would decide,
+    # invisibly, which way the away/lapse split is biased.
+    ({"view_session_date": ANCHOR, _A: "7", _W: "7"}, _W),
 ])
 def test_beacon_rejection_ladder_and_the_400_names_the_offending_field(
         seeded_db, frozen_clocks, form, field):
@@ -287,9 +320,28 @@ def test_beacon_over_the_cap_is_rejected(seeded_db, frozen_clocks):
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX,
                         data={"view_session_date": ANCHOR,
-                              "candidate_ids": payload})
+                              "actionable_candidate_ids": payload,
+                              "withheld_candidate_ids": ""})
     assert r.status_code == 400
     assert "candidate_ids" in r.text
+
+
+def test_the_cap_applies_to_the_UNION_of_the_two_lists(seeded_db, frozen_clocks):
+    """The discriminator for a per-list cap: splitting the field must not have
+    doubled the flood ceiling as a side effect. 101 + 100 is over the 200 cap
+    while NEITHER list is."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/view", headers=_HX, data={
+            "view_session_date": ANCHOR,
+            "actionable_candidate_ids": ",".join(str(i) for i in range(1, 102)),
+            "withheld_candidate_ids": ",".join(str(i) for i in range(200, 300)),
+        })
+    assert r.status_code == 400
+    assert "both lists" in r.text
+    assert _rows(cfg) == []
 
 
 def test_beacon_without_the_hx_request_header_is_403(seeded_db, frozen_clocks):
@@ -300,7 +352,8 @@ def test_beacon_without_the_hx_request_header_is_403(seeded_db, frozen_clocks):
     with TestClient(app) as client:
         r = client.post("/latches/view",
                         data={"view_session_date": ANCHOR,
-                              "candidate_ids": str(cid)})
+                              "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": ""})
     assert r.status_code == 403
     assert _rows(cfg) == []
 
@@ -321,7 +374,8 @@ def test_the_beacon_derivation_ignores_now_entirely(seeded_db, monkeypatch):
             assert client.post(
                 "/latches/view", headers=_HX,
                 data={"view_session_date": ANCHOR,
-                      "candidate_ids": str(cid)}).status_code == 204
+                      "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": ""}).status_code == 204
         seen.append(_rows(cfg)[0][10])
     assert seen[0] == seen[1] == "armed"
     assert len(_rows(cfg)) == 1          # still ONE row for the anchor session
@@ -363,7 +417,8 @@ def test_panel_echoes_the_persisted_telemetry_for_a_live_latch(
     with TestClient(app) as client:
         assert "NOT YET RECORDED" in client.get("/latches").text
         client.post("/latches/view", headers=_HX,
-                    data={"view_session_date": ANCHOR, "candidate_ids": str(cid)})
+                    data={"view_session_date": ANCHOR, "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": ""})
         after = client.get("/latches").text
     assert "first viewed" in after
     assert "NOT YET RECORDED" not in after
@@ -385,7 +440,8 @@ def test_a_non_session_anchor_is_rejected(seeded_db, frozen_clocks, bad_anchor):
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX,
                         data={"view_session_date": bad_anchor,
-                              "candidate_ids": str(cid)})
+                              "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": ""})
     assert r.status_code == 400
     assert "view_session_date" in r.text
     assert "session" in r.text.lower()
@@ -403,7 +459,140 @@ def test_every_persisted_view_session_date_is_a_real_nyse_session(
         for anchor in (ANCHOR, "2026-07-26", "2026-07-24"):
             client.post("/latches/view", headers=_HX,
                         data={"view_session_date": anchor,
-                              "candidate_ids": str(cid)})
+                              "actionable_candidate_ids": str(cid),
+                              "withheld_candidate_ids": ""})
     persisted = {r[5] for r in _rows(cfg)}
     assert persisted
     assert all(is_trading_session(date.fromisoformat(d)) for d in persisted)
+
+
+# =====================================================================
+# Arc 21-B Task 6b -- the beacon records SURFACE + RENDER-TIME ACTIONABILITY.
+#
+# THE R7 CRITICAL. A view row that does not say whether the mandate was
+# actionably PRESENTED makes the away/lapse split uncomputable from renders
+# that showed nothing -- and on today's substrate EVERY card is withheld, so
+# that is the entire corpus rather than a corner case. Both silences are wrong
+# and they are wrong in OPPOSITE directions (a withheld render recorded as a
+# view inflates `discipline_lapse` and DEFLATES the away rate; not recording it
+# at all inflates the away rate), which is the tell that the fact has to be
+# RECORDED rather than inferred.
+# =====================================================================
+def _actionability(cfg):
+    conn = connect(cfg.paths.db_path)
+    try:
+        return conn.execute(
+            "SELECT surface, actionable_at_first_view, actionable_at_last_view, "
+            "actionable_ever_viewed FROM latch_view_events "
+            "ORDER BY view_event_id").fetchall()
+    finally:
+        conn.close()
+
+
+def _post(client, cid, *, actionable):
+    field = ("actionable_candidate_ids" if actionable
+             else "withheld_candidate_ids")
+    other = ("withheld_candidate_ids" if actionable
+             else "actionable_candidate_ids")
+    return client.post("/latches/view", headers=_HX, data={
+        "view_session_date": ANCHOR, field: str(cid), other: ""})
+
+
+def test_an_actionable_render_records_actionable_1_on_all_three_columns(
+        seeded_db, frozen_clocks):
+    cfg, cfg_path = seeded_db
+    cid = _seed_ftre(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        assert _post(client, cid, actionable=True).status_code == 204
+    assert _actionability(cfg) == [("latch_panel", 1, 1, 1)]
+
+
+def test_a_withheld_render_records_actionable_0_and_is_still_a_view(
+        seeded_db, frozen_clocks):
+    """It is STILL RECORDED, as `0`. Not recording it would make a latch whose
+    form was withheld for its whole armed window classify `away_unseen` even
+    though the operator checked the panel every day -- inflating the away rate,
+    which is the number that would justify automating his entries."""
+    cfg, cfg_path = seeded_db
+    cid = _seed_ftre(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        assert _post(client, cid, actionable=False).status_code == 204
+    assert _actionability(cfg) == [("latch_panel", 0, 0, 0)]
+
+
+def test_first_view_is_frozen_last_view_tracks_and_ever_is_monotonic(
+        seeded_db, frozen_clocks):
+    """THREE COLUMNS, THREE DIFFERENT QUESTIONS.
+
+    A single `actionable` advanced by MAX() would let an offered later render
+    retroactively upgrade an earlier withheld one -- while the row still carries
+    the EARLIER `first_viewed_ts`, so it would assert "first viewed at 09:00,
+    with an actionable mandate", which is false. Naming that MAX column
+    `..._at_last_view` commits the mirror-image lie. So `first` is frozen at
+    insert, `last` describes the LATEST view and must be able to fall 1 -> 0,
+    and the monotone fact gets its own honestly-named column.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed_ftre(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        _post(client, cid, actionable=False)      # 09:00-ish: withheld
+        assert _actionability(cfg) == [("latch_panel", 0, 0, 0)]
+        _post(client, cid, actionable=True)       # ...then offered
+        assert _actionability(cfg) == [("latch_panel", 0, 1, 1)]
+
+
+def test_an_offered_then_withheld_pair_falls_on_last_and_holds_on_ever(
+        seeded_db, frozen_clocks):
+    """The PAIRED discriminator, and the one that fails an implementation which
+    advances `last` with MAX(): after an offered render and then a withheld one
+    the LAST view genuinely was NOT actionable, while `ever` must NOT fall
+    back -- the mandate WAS offered at some point this session."""
+    cfg, cfg_path = seeded_db
+    cid = _seed_ftre(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        _post(client, cid, actionable=True)
+        _post(client, cid, actionable=False)
+    assert _actionability(cfg) == [("latch_panel", 1, 0, 1)]
+
+
+def test_both_lists_are_intersected_with_the_live_set_INDEPENDENTLY(
+        seeded_db, frozen_clocks):
+    """A forged id on EITHER leg writes nothing, and a real id on the other leg
+    is still recorded -- an implementation that rejects the whole payload when
+    any id misses would drop a genuine view."""
+    cfg, cfg_path = seeded_db
+    cid = _seed_ftre(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/view", headers=_HX, data={
+            "view_session_date": ANCHOR,
+            "actionable_candidate_ids": "999999",
+            "withheld_candidate_ids": str(cid)})
+    assert r.status_code == 204
+    assert _actionability(cfg) == [("latch_panel", 0, 0, 0)]
+
+
+def test_the_render_time_claim_survives_a_disagreeing_re_derivation(
+        seeded_db, frozen_clocks, monkeypatch, caplog):
+    """CODEX R11 MAJOR 3. `actionable` is a fact about WHAT THE OPERATOR WAS
+    SHOWN. A card that WAS offered when he looked does not stop having been
+    offered because the derivation moved a moment later, so the payload's claim
+    is PERSISTED and the disagreement is LOGGED -- never silently downgraded.
+
+    Recording "the weaker claim" sounds conservative and is a corruption: it
+    manufactures a `never_actionable` for a mandate he was genuinely presented
+    with. The re-derivation still gates EXISTENCE (the live-set intersection);
+    it does not get a vote on what he saw.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed_ftre(cfg)
+    # No close is dated the derivation session, so a POST-time re-derivation
+    # would compute a WITHHELD form for this latch -- the disagreement case.
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        assert _post(client, cid, actionable=True).status_code == 204
+    assert _actionability(cfg) == [("latch_panel", 1, 1, 1)]

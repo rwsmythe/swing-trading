@@ -46,8 +46,44 @@ class _BeaconRejectedError(Exception):
         self.reason = reason
 
 
-def _parse_beacon_anchor(form) -> tuple[date, list[int]]:
-    """The rejection ladder (plan section D). Every branch names its field."""
+def _parse_id_list(form, field: str) -> list[int]:
+    """One comma-separated positive-integer id list, or a named rejection."""
+    raw_ids = form.get(field)
+    if raw_ids is None:
+        raise _BeaconRejectedError(field, "missing")
+    if not isinstance(raw_ids, str):
+        raise _BeaconRejectedError(field, "must be a comma-separated string")
+    ids: list[int] = []
+    for part in (p.strip() for p in raw_ids.split(",") if p.strip()):
+        # `str.isdigit()` rejects '-3', '1.5', 'true' and 'abc' outright; the
+        # explicit > 0 check then rejects '0'.
+        if not part.isdigit():
+            raise _BeaconRejectedError(
+                field, f"{part!r} is not a positive decimal integer")
+        value = int(part)
+        if value <= 0:
+            raise _BeaconRejectedError(field, f"{part!r} is not positive")
+        ids.append(value)
+    return ids
+
+
+def _parse_beacon_anchor(form) -> tuple[date, list[int], list[int]]:
+    """The rejection ladder (plan section D). Every branch names its field.
+
+    ARC 21-B REWRITES THE PAYLOAD CONTRACT (Codex R13 MAJOR 3). The single
+    `candidate_ids` field is REPLACED by `actionable_candidate_ids` +
+    `withheld_candidate_ids`, and this is a rewrite rather than a new kwarg for
+    a concrete reason: left on the old contract EVERY WITHHELD RENDER IS STILL
+    INGESTED AS A PLAIN VIEW and the whole actionability fix never reaches the
+    DB. On today's substrate every card is withheld, so that is not a corner
+    case -- it is the entire corpus.
+
+    The two lists are DISJOINT BY CONSTRUCTION: one card was either offered a
+    decision or it was not, and an id in BOTH would be the render asserting two
+    incompatible facts about one moment. That is a 400, not a silent precedence
+    rule -- picking a winner would decide, invisibly, which way the away/lapse
+    split is biased.
+    """
     raw_session = form.get("view_session_date")
     if raw_session is None:
         raise _BeaconRejectedError("view_session_date", "missing")
@@ -60,27 +96,21 @@ def _parse_beacon_anchor(form) -> tuple[date, list[int]]:
         raise _BeaconRejectedError(
             "view_session_date", "is not a valid ISO date") from exc
 
-    raw_ids = form.get("candidate_ids")
-    if raw_ids is None:
-        raise _BeaconRejectedError("candidate_ids", "missing")
-    if not isinstance(raw_ids, str):
-        raise _BeaconRejectedError("candidate_ids", "must be a comma-separated string")
-    parts = [p.strip() for p in raw_ids.split(",") if p.strip()]
-    if len(parts) > _MAX_BEACON_IDS:
+    actionable = _parse_id_list(form, "actionable_candidate_ids")
+    withheld = _parse_id_list(form, "withheld_candidate_ids")
+    # THE CAP APPLIES TO THE UNION, not per list -- otherwise splitting the
+    # field would have doubled the flood ceiling as a side effect.
+    if len(actionable) + len(withheld) > _MAX_BEACON_IDS:
         raise _BeaconRejectedError(
-            "candidate_ids", f"more than {_MAX_BEACON_IDS} ids")
-    ids: list[int] = []
-    for part in parts:
-        # `str.isdigit()` rejects '-3', '1.5', 'true' and 'abc' outright; the
-        # explicit > 0 check then rejects '0'.
-        if not part.isdigit():
-            raise _BeaconRejectedError(
-                "candidate_ids", f"{part!r} is not a positive decimal integer")
-        value = int(part)
-        if value <= 0:
-            raise _BeaconRejectedError("candidate_ids", f"{part!r} is not positive")
-        ids.append(value)
-    return anchor, ids
+            "actionable_candidate_ids",
+            f"more than {_MAX_BEACON_IDS} ids across both lists")
+    overlap = sorted(set(actionable) & set(withheld))
+    if overlap:
+        raise _BeaconRejectedError(
+            "withheld_candidate_ids",
+            f"ids {overlap} appear in BOTH lists; a card was either offered a "
+            "decision or it was not")
+    return anchor, actionable, withheld
 
 
 def _classify_anchor(anchor: date, current: date) -> str:
@@ -204,7 +234,7 @@ async def latches_view_beacon(request: Request) -> Response:
     except Exception:  # noqa: BLE001 -- an unparseable body is a 400, not a 500
         return _reject("body", "could not be parsed as a form")
     try:
-        anchor, posted_ids = _parse_beacon_anchor(form)
+        anchor, actionable_ids, withheld_ids = _parse_beacon_anchor(form)
     except _BeaconRejectedError as exc:
         return _reject(exc.field, exc.reason)
 
@@ -237,17 +267,37 @@ async def latches_view_beacon(request: Request) -> Response:
             latch.identity.candidate_id: latch
             for latch in derivation.latches if latch.is_live
         }
-        matched = [live[cid] for cid in posted_ids if cid in live]
+        # EACH LIST IS INTERSECTED WITH THE LIVE SET INDEPENDENTLY. The
+        # intersection is the EXISTENCE gate 21-A already ships -- a forged id
+        # writes nothing.
+        #
+        # THE RENDER-TIME CLAIM IS THE DATUM AND THE RE-DERIVATION DOES NOT
+        # OVERRIDE IT (Codex R11 MAJOR 3). `actionable` is a fact about WHAT THE
+        # OPERATOR WAS SHOWN, and a card that WAS offered when he looked does not
+        # stop having been offered because the latch moved a moment later.
+        # Recording "the weaker claim" on disagreement sounds conservative and is
+        # actually a corruption: it would manufacture a `never_actionable` for a
+        # mandate he was genuinely presented with. So actionability comes from
+        # WHICH LIST the id arrived in. This is not a retreat from
+        # validate-do-not-trust -- the intent handler still refuses a mutated
+        # framework anchor outright, because THERE the payload asserts a
+        # computation the server owns. Here the payload reports a RENDER, which
+        # only the render can know, so the server's job is BOUNDING it.
+        matched = [
+            (live[cid], actionable)
+            for actionable, ids in ((1, actionable_ids), (0, withheld_ids))
+            for cid in ids if cid in live
+        ]
         if matched:
             viewed_ts = now.isoformat(timespec="seconds")
             try:
                 with conn:
-                    for latch in matched:
+                    for latch, actionable in matched:
                         record_view(
                             conn, identity=latch.identity,
                             view_session_date=anchor.isoformat(),
                             viewed_ts=viewed_ts, latch_state=latch.state,
-                            surface="latch_panel", actionable=0)
+                            surface="latch_panel", actionable=actionable)
             except sqlite3.Error as exc:
                 # A6: the telemetry beacon is an OBSERVER. A schema rejection
                 # (e.g. the identity-coherence trigger) must be logged loudly
