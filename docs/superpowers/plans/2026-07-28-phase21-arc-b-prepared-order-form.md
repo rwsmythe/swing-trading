@@ -196,10 +196,15 @@ uncovered_window(latch)= [anchor, min(EPOCH, clear_or_horizon) )   # may be empt
 
 **RULING 2 — THE PARTIAL-COVERAGE RULE (RD, verbatim, and the load-bearing one):**
 
-> **An ACTIONABLE view record in the covered portion ESTABLISHES awareness; its absence over a partially-dark
-> window ESTABLISHES NOTHING.** Positive evidence is dispositive; absence of evidence from a period with no
-> instrument is not evidence of absence. **A render in which THIS latch's actionable detail was WITHHELD is a
-> THIRD thing — the instrument's silence, not his — and it establishes neither awareness nor absence.**
+> **A view RECORD in the covered portion establishes that the instrument OBSERVED this latch there. That is the
+> COVERAGE axis, and a record of EITHER actionability satisfies it** — the apparatus was present and reporting.
+>
+> **Whether an observation establishes AWARENESS is a SEPARATE question, answered by actionability.** An
+> ACTIONABLE view establishes awareness. **A render in which THIS latch's actionable detail was WITHHELD
+> establishes NEITHER awareness NOR absence** — the instrument's silence, not his.
+>
+> **The absence of ANY record over a partially-dark window ESTABLISHES NOTHING.** Positive evidence is
+> dispositive; absence of evidence from a period with no instrument is not evidence of absence.
 
 *(RD tightened his own ruling-2 wording on 2026-07-29 after the round-30 review found "view" carrying two
 incompatible meanings across §E.0, §E.3 and §K.2. He verified both sites and confirmed the defect is
@@ -209,6 +214,18 @@ rate, because a render in which our own instrument withheld the actionable detai
 and scoring it as a lapse would be the instrument flattering itself by blaming its subject. **No
 classification behaviour changes in this pass — only the words.** Preserve-the-quote is satisfied because the
 DIRECTOR edited it.)*
+
+*(**RE-TIGHTENED AGAIN BY RD AT THE PLAN-STAGE GATE, 2026-07-29 — the text above is his gate-carry
+replacement, verbatim.** He adopted the three-name split (`awareness_view_rows` / `actionable_view_rows` /
+`pre_telemetry`) as AUTHORITATIVE over his own earlier wording, because that earlier version — whose first
+clause was "An ACTIONABLE view record in the covered portion ESTABLISHES awareness; its absence over a
+partially-dark window ESTABLISHES NOTHING" — read as the COVERAGE axis would have classified a withheld-only
+latch `pre_telemetry`, and thereby **violated his own PRE_TELEMETRY ruling** (ruling 1: `pre_telemetry` is an
+ABSENCE-OF-INSTRUMENT claim, and a withheld render disproves it). His words: **"my sentence would have broken
+the rule it was written to protect."** The replacement removes the hazard STRUCTURALLY — by separating the
+coverage axis from the awareness axis in the ruling text itself — instead of relying on a later clause
+(§E.0's `awareness_view_rows` note) to rescue it. Again NO classification behaviour changes: §E.0's encoding
+already implements this reading.)*
 
 **THE RULED TABLE — encoded LITERALLY as a lookup table, not as nested conditionals (§E.0):**
 
@@ -2552,6 +2569,34 @@ measurement RD reads once a month. So:
   the same frame 21-A's beacon stamps `first_viewed_ts` / `last_viewed_ts` in. The CLI's `--since` is parsed
   in that same frame and the report PRINTS it, so the two can never be compared across frames silently.
 
+### F.3.1 THE LEDGER'S UNIT IS THE LATCH (THE OPPORTUNITY), NOT THE FIRE — RD CARRY 1, 2026-07-29
+
+**Stated because it was nowhere stated, and PINNED because nothing pinned it.** RD traced the property at his
+plan-stage gate and found it **CORRECT TODAY BY CONSTRUCTION** — classification is per-latch (`classify_latch`
+takes ONE latch), the intent table is per-DECISION and append-only, and **21-A collapses same-action-session
+duplicate fires upstream** before a latch ever reaches this layer. But his ruling is about what happens next:
+
+> **"Correct by construction with no pin is exactly how a ruling silently regresses — which is the entire
+> reason I made it a ruling rather than an observation."**
+
+**THE REQUIREMENT (code, 21-B-LOCAL):** ONE assertion that **the rate denominators are keyed on DISTINCT LATCH
+IDENTITY**, so that if anything ever feeds MULTIPLE fire rows per latch into the classifier, the denominators
+do not inflate. Concretely: `compute_execution_parity` DEDUPES its observation corpus on the latch's identity
+(`candidate_id`, the §C.2 immutable bridge key) before bucketing, and a test feeds THREE observations carrying
+ONE `candidate_id` and asserts every denominator counts **1**, not 3.
+
+**Why it is load-bearing, in RD's terms:** three `latch_order_intents`-bearing observation rows for one
+opportunity would TRIPLE-COUNT that opportunity and inflate **EVERY** denominator — `classifiable_fires`, the
+per-bucket R totals, and therefore **the away rate**, the number that will justify or kill stage-3 auto-place.
+An inflated denominator DEFLATES the away rate, which argues AGAINST automating his entries on arithmetic
+rather than on evidence; an inflated numerator would argue for it. Either direction is the §B5 corruption.
+
+**SCOPE — PIN IT HERE, DO NOT PIN 21-A's COLLAPSE.** The assertion is 21-B-local: it constrains what THIS
+arc's parity computation does with whatever it is handed. 21-A's same-action-session fire collapse is 21-A's
+shipped behaviour and its own to pin; re-asserting it from here would be this arc taking a lock it does not
+own. The property this arc owns is *"my denominators cannot inflate"*, and that holds whether or not the
+upstream collapse ever changes — which is precisely what makes the pin worth having.
+
 ```
 agreement_numerator   = place intents with a KNOWN actual side, OrderDelta.any_difference is False,
                         AND execution_outcome == 'accepted_by_broker'
@@ -3349,6 +3394,12 @@ classifies `pre_telemetry` and its +1.22R lands in `unattributable_r`. No task i
       counts** — a delta-clean place intent that the broker REJECTED is in neither the numerator nor the
       denominator and appears in `validity_failed`; an unobserved validity appears in `validity_unknown`, not
       in agreement.
+- [ ] **RD CARRY 1 — THE DENOMINATORS ARE KEYED ON DISTINCT LATCH IDENTITY (§F.3.1).** A test feeds
+      `compute_execution_parity` THREE observations carrying ONE `candidate_id` and asserts every denominator
+      counts **1**, not 3 — `classifiable_fires`, `total_observations` and the per-bucket R totals alike. An
+      implementation that iterates the observation list without deduping on latch identity counts 3 and FAILS.
+      This is the pin RD required at his gate: the property is correct today by construction, and the test is
+      what stops it regressing silently if anything ever feeds multiple fire rows per latch.
 - [ ] Implement; commit `feat(latches): Task 5 — the telemetry-health gate + the execution-parity report`.
 
 ### Task 6: the panel VM — the prepared-order block, the disposition, the prompt
@@ -3542,6 +3593,19 @@ step that gets absorbed and skipped.
    and the pessimistic default), §F (the telemetry-health gate). **§A.1 and §A.1.6 are RULED and no longer block** (R24 MAJOR — this
    line contradicted §A.1.5's "nothing is gate-blocked now"); **§A.2 (the sizing basis) is RULED 2026-07-29 — the LIMIT PRICE, both regimes. §A.3
    (computed-not-stored delta) is the ONLY RD item still outstanding.**
+   **RD's GATE VERDICT: PASS, 2026-07-29** — with THREE carries, all landed in the plan before any code (the
+   executing implementer's first commit):
+   - **CARRY 1 — the ledger's UNIT is the LATCH, and one assertion must PIN it (a CODE requirement; §F.4).**
+   - **CARRY 2 — a future shadow join must tolerate a permanently-null twin for pre-2026-06-05 fires** (below).
+   - **CARRY 3 — his own ruling-2 text is REPLACED by the three-name-split version** (§A.1.1, landed verbatim).
+   **CARRY 2, stated where whoever builds the join will read it:** the LATCH corpus (`candidates`, populated
+   from 2026-04) is PERMANENTLY BROADER than the SHADOW corpus (the temporal log, from ~2026-06-05), so the
+   April/May fires have **no shadow twin and never will** — a future shadow join MUST tolerate a permanently
+   null twin for any pre-2026-06-05 fire rather than treating it as a join defect. Nothing in THIS arc consumes
+   the shadow artifact (the scoping is correct and stays), but whoever builds that join later — 21-F, or RD's
+   own August read — will see a ledger where every row carries BOTH identities (§C.2's identity block) and have
+   no reason to suspect that some of them can never resolve. Recorded now because it is cheap now and
+   archaeology later.
 2. **CHARC** — §C.1's rebuild-vs-ALTER choice and the 33-column table against B7's "minimal".
 3. **review-strong to convergence** + **codex-auto-review (REQUIRED, charter §2.9)** — and per the recipe,
    VERIFY the working invocation at dispatch and report which form ran. On this worktree
