@@ -544,3 +544,145 @@ def test_an_ATTRIBUTED_R_still_prints_the_number_and_its_basis(seeded_db):
     assert any(v > 0 for v in report.bucket_r_attributed.values())
     assert any(abs(v) > 0 for v in report.bucket_r.values())
     assert cid  # the seeded latch is the one carrying it
+
+
+# ---------------------------------------------------------------------------
+# RD RULING 4 (2026-07-30) -- THE ZERO-DATA STATE MUST BE DISTINGUISHABLE FROM
+# THE GOOD STATE, ACROSS EVERY RATE AND EVERY CLASSIFICATION THIS LEDGER REPORTS
+#
+# Imposed as a CLASS rather than defect by defect, because the class is
+# structural: every failure mode of a RECORDING instrument is SILENCE, and on
+# this instrument silence reads as "he did fine". Absent data yields no lapse
+# recorded, no mismatch flagged and no disagreement counted -- so an unlabelled
+# zero is not a neutral default, it is a favourable verdict delivered by
+# omission. It is RD's labelled-reduction rule generalised from ALARMS to RATES.
+#
+# Each test below asserts BOTH halves: the unmeasured label is PRESENT and the
+# good-state reading is ABSENT. Asserting only the label would pass against a
+# report that printed both.
+# ---------------------------------------------------------------------------
+def _lines_after(output: str, header: str, count: int) -> str:
+    lines = output.splitlines()
+    i = next(n for n, ln in enumerate(lines) if ln.startswith(header))
+    return "\n".join(lines[i:i + count])
+
+
+def test_an_empty_agreement_DENOMINATOR_renders_NOT_YET_MEASURABLE(seeded_db):
+    """The agreement rate is the arc's headline deliverable, and until a
+    validity row exists its denominator is EMPTY. `n/a (0/0)` is a rendering of
+    a number; NOT YET MEASURABLE is a statement about the measurement, and only
+    the second one keeps a reader from filing 'no disagreements recorded' as
+    'the framework and the operator agree'."""
+    cfg, cfg_path = seeded_db
+    _seed(cfg)
+    r = _run(cfg_path)
+    assert r.exit_code == 0, r.output
+    block = _lines_after(r.output, "AGREEMENT", 4)
+    assert "NOT YET MEASURABLE" in block
+    assert "%" not in block, (
+        "a percentage over an empty denominator is a measurement claim")
+    assert "n/a" not in block
+
+
+def test_a_POPULATED_agreement_denominator_still_prints_the_RATE(seeded_db):
+    """The pair. Without it, 'print NOT YET MEASURABLE' is satisfied by a report
+    that has stopped printing the agreement rate at all -- which would delete
+    the deliverable rather than label its absence."""
+    from swing.latches.classification import ExecutionParityReport
+
+    report = ExecutionParityReport(
+        bucket_counts={}, bucket_r={}, bucket_r_attributed={},
+        disposition_counts={}, away=None, decision_r_logged=0,
+        decision_r_attested=0, decision_r_inferred=0,
+        agreement_numerator=3, agreement_denominator=4, validity_unknown=0,
+        validity_failed=0, actual_side_unknown=0, delta_totals={},
+        total_observations=4)
+    from swing.cli_latches import _agreement_line
+    line = _agreement_line(report)
+    assert "75.0%" in line and "(3/4)" in line
+    assert "NOT YET MEASURABLE" not in line
+
+
+def test_a_report_over_ZERO_observations_says_so_before_any_histogram(
+        seeded_db):
+    """A histogram of zeros and a delta table of zeros both read as findings --
+    'nothing wrong was found' -- when what happened is that nothing was
+    examined."""
+    cfg, cfg_path = seeded_db
+    r = _run(cfg_path)          # NOT seeded: no latch, no observation at all
+    assert r.exit_code == 0, r.output
+    assert "NO OBSERVATIONS" in r.output
+    assert "UNMEASURED, not clean" in r.output
+
+
+def test_the_discipline_signal_with_no_terminal_observations_says_NO_OBSERVATIONS(
+        seeded_db):
+    """RD, verbatim: a discipline signal with no terminal observations renders
+    'no observations', never 'clean'. The three evidence-kind sub-counts summing
+    to zero is exactly the shape that reads as a clean record."""
+    cfg, cfg_path = seeded_db
+    _seed(cfg)
+    r = _run(cfg_path)
+    assert r.exit_code == 0, r.output
+    block = _lines_after(r.output, "DECISION EVIDENCE KINDS", 8)
+    assert "NO TERMINAL OBSERVATIONS" in block
+    assert "NOT YET MEASURABLE, not clean" in block
+
+
+def test_the_delta_totals_over_an_empty_denominator_are_LABELLED_unmeasured(
+        seeded_db):
+    """Five zeros under PER-FIELD DELTA TOTALS is the single most inviting
+    misreading in the whole report: it looks like five checks that passed."""
+    cfg, cfg_path = seeded_db
+    _seed(cfg)
+    r = _run(cfg_path)
+    assert r.exit_code == 0, r.output
+    block = _lines_after(r.output, "PER-FIELD DELTA TOTALS", 9)
+    assert "NOT YET MEASURABLE" in block
+    assert "no observation reached the delta" in block
+    assert "these zeros are absences and NOT results" in block
+
+
+def test_an_away_rate_with_no_classifiable_fire_is_NOT_YET_MEASURABLE_not_zero(
+        seeded_db):
+    """`0.0%` away over an empty corpus is the flattering reading of an
+    instrument that has not measured anything yet -- and this is the number that
+    would justify stage-3 auto-place. The verdict is `ok` here, so the label
+    must distinguish 'the beacon is broken' from 'there is nothing to score'."""
+    cfg, cfg_path = seeded_db
+    # NOT seeded, deliberately: a latch on the books makes the telemetry window
+    # non-empty and the verdict INDETERMINATE, which is the OTHER unmeasured
+    # state. This case is the empty corpus under a HEALTHY beacon.
+    r = _run(cfg_path)
+    assert r.exit_code == 0, r.output
+    block = _lines_after(r.output, "AWAY RATE", 6)
+    assert "telemetry OK" in block
+    assert "NOT YET MEASURABLE" in block
+    assert "0.0%" not in block
+    assert "WITHHELD" not in block, (
+        "nothing is being withheld here -- the corpus is empty, and conflating "
+        "the two hides a broken beacon behind a quiet start-up state")
+
+
+def test_a_BROKEN_beacon_still_says_WITHHELD_and_names_the_verdict(seeded_db):
+    """The discriminating pair for the line above: an unreliable beacon and an
+    empty corpus are DIFFERENT unmeasured states and the report may not print
+    one for the other."""
+    from swing.latches.classification import (
+        AwayRateResult,
+        TelemetryHealth,
+        compute_away_rate,
+    )
+    broken = TelemetryHealth(verdict="broken", covered_sessions=0,
+                             uncovered_sessions=9, uninstrumented_sessions=0)
+    result = compute_away_rate(bucket_counts={"away_r": 2, "decision_r": 1},
+                               health=broken)
+    assert isinstance(result, AwayRateResult)
+    assert result.unmeasured_kind == "withheld"
+    assert result.objective_rate is None
+    empty = compute_away_rate(
+        bucket_counts={}, health=TelemetryHealth(verdict="ok"))
+    assert empty.unmeasured_kind == "not_yet_measurable"
+    scored = compute_away_rate(bucket_counts={"away_r": 1, "decision_r": 1},
+                               health=TelemetryHealth(verdict="ok"))
+    assert scored.unmeasured_kind is None and scored.objective_rate == 0.5

@@ -50,8 +50,42 @@ def latches_group() -> None:
     """Entry-latch mandate reads (read-only)."""
 
 
+# RD RULING 4 (2026-07-30) -- THE ZERO-DATA STATE MUST BE DISTINGUISHABLE FROM
+# THE GOOD STATE AND MUST BE LABELLED AS UNMEASURED, for EVERY rate and EVERY
+# classification this ledger reports.
+#
+# Imposed as a CLASS rather than defect by defect, because the class is
+# structural: every failure mode of a RECORDING instrument is SILENCE, and on
+# this instrument silence reads as "he did fine". Absent data yields no lapse
+# recorded, no mismatch flagged and no disagreement counted -- so an unlabelled
+# zero is not a neutral default, it is a favourable verdict delivered by
+# omission. This is RD's labelled-reduction rule generalised from ALARMS to
+# RATES, and the same reasoning that produced "a sum over nothing is not a zero"
+# for the R buckets one round earlier.
+#
+# ONE constant, so a rate that grows a new zero-data path cannot invent a
+# private spelling the reader has to learn twice.
+_UNMEASURED = "NOT YET MEASURABLE"
+
+
 def _fmt_rate(value: float | None) -> str:
-    return "n/a" if value is None else f"{value * 100:.1f}%"
+    return _UNMEASURED if value is None else f"{value * 100:.1f}%"
+
+
+def _agreement_line(report) -> str:
+    """The agreement rate, or the LABELLED unmeasured state.
+
+    `n/a (0/0)` renders a NUMBER; `NOT YET MEASURABLE` states something about
+    the MEASUREMENT, and only the second keeps a reader from filing "no
+    disagreements recorded" as "the framework and the operator agree". This rate
+    is the arc's headline deliverable and the thing that earns stage 2, so the
+    difference between "measured at 100%" and "not measured" is the whole point.
+    """
+    if report.agreement_denominator == 0:
+        return (f"{_UNMEASURED} - no place intent yet has a broker-confirmed "
+                "outcome, so there is no denominator")
+    return (f"{_fmt_rate(report.agreement_rate)} "
+            f"({report.agreement_numerator}/{report.agreement_denominator})")
 
 
 def _framework_side(intent) -> dict | None:
@@ -291,6 +325,13 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
     click.echo("  since (recorded_ts):".ljust(_W) + (since or "the beginning"))
     click.echo("  observations (distinct latches):".ljust(_W)
                + str(report.total_observations))
+    if report.total_observations == 0:
+        # THE HEADLINE ZERO-DATA LABEL, stated BEFORE any histogram: a
+        # disposition histogram of zeros and a delta table of zeros both read as
+        # findings -- "nothing wrong was found" -- when what happened is that
+        # nothing was examined.
+        click.echo("  NO OBSERVATIONS -- every count and every rate below is")
+        click.echo("  UNMEASURED, not clean.")
     if report.duplicate_latch_observations:
         # LABELLED, never silent: an unlabelled reduction is a quiet all-clear
         # by omission.
@@ -337,10 +378,17 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
     away = report.away
     verdict = f"telemetry {health.verdict.upper()}"
     if away.withheld_reason:
-        click.echo("  OBJECTIVE (primary):".ljust(_W)
-                   + f"WITHHELD -- {verdict}")
+        # TWO UNMEASURED STATES, NAMED APART (RD ruling 4). An unreliable beacon
+        # and an empty corpus are different facts with different responses -- fix
+        # the instrument, versus wait for a fire -- so one label for both would
+        # hide a broken beacon behind a quiet start-up state. `0.0%` appears in
+        # neither, because a zero away rate over nothing measured is the
+        # flattering reading of the number that would justify stage-3 auto-place.
+        label = ("WITHHELD" if away.unmeasured_kind == "withheld"
+                 else _UNMEASURED)
+        click.echo("  OBJECTIVE (primary):".ljust(_W) + f"{label} -- {verdict}")
         click.echo("  ATTESTED (upper bound):".ljust(_W)
-                   + f"WITHHELD -- {verdict}")
+                   + f"{label} -- {verdict}")
         click.echo(f"  reason: {away.withheld_reason}")
     else:
         click.echo("  OBJECTIVE (primary):".ljust(_W)
@@ -368,6 +416,12 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
                + str(report.decision_r_inferred))
     click.echo("  decision_r:".ljust(_W)
                + str(report.bucket_counts["decision_r"]))
+    if report.bucket_counts["decision_r"] == 0:
+        # RD, verbatim: a discipline signal with NO terminal observations
+        # renders "no observations", never "clean". Three sub-counts summing to
+        # zero is precisely the shape that reads as a clean record.
+        click.echo("  NO TERMINAL OBSERVATIONS -- the discipline signal is")
+        click.echo(f"  {_UNMEASURED}, not clean.")
 
     click.echo("")
     click.echo("EXCLUSIONS (unattributable -- not scored against his judgment)")
@@ -377,10 +431,7 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
 
     click.echo("")
     click.echo("AGREEMENT (framework order vs the order actually placed)")
-    click.echo("  rate:".ljust(_W)
-               + (f"{_fmt_rate(report.agreement_rate)} "
-                  f"({report.agreement_numerator}/"
-                  f"{report.agreement_denominator})"))
+    click.echo("  rate:".ljust(_W) + _agreement_line(report))
     click.echo("  validity UNKNOWN:".ljust(_W) + str(report.validity_unknown))
     click.echo("  validity FAILED:".ljust(_W) + str(report.validity_failed))
     click.echo("  actual side unknown:".ljust(_W)
@@ -390,6 +441,11 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
 
     click.echo("")
     click.echo("PER-FIELD DELTA TOTALS")
+    if report.agreement_denominator == 0:
+        # Five zeros here is the most inviting misreading in the report: it
+        # looks like five checks that PASSED. Nothing reached the comparison.
+        click.echo(f"  {_UNMEASURED} -- no observation reached the delta")
+        click.echo("  comparison, so these zeros are absences and NOT results.")
     for field in sorted(report.delta_totals):
         click.echo(f"  {field}:".ljust(_W) + str(report.delta_totals[field]))
 

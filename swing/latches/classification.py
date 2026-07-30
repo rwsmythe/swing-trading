@@ -773,6 +773,25 @@ class AwayRateResult:
     attested_rate: float | None = None    # + attested_was_away -- the UPPER BOUND
     withheld_reason: str | None = None
 
+    @property
+    def unmeasured_kind(self) -> str | None:
+        """`withheld` | `not_yet_measurable` | `None`.
+
+        RD RULING 4 (2026-07-30): the ZERO-DATA state must be DISTINGUISHABLE
+        from the GOOD state and must be LABELLED as unmeasured. It must also be
+        distinguishable from the OTHER unmeasured state: an unreliable beacon
+        and an empty corpus are different facts with different responses (fix
+        the instrument vs wait for a fire), and printing one label for both
+        hides a broken beacon behind a quiet start-up state.
+
+        `None` means a rate is actually available.
+        """
+        if self.objective_rate is not None:
+            return None
+        if self.health.verdict != "ok":
+            return "withheld"
+        return "not_yet_measurable"
+
 
 def compute_away_rate(
     *, bucket_counts: dict[str, int], health: TelemetryHealth,

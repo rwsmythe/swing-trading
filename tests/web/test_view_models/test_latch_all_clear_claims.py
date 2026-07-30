@@ -26,10 +26,14 @@ def _note(ticker: str, severity: str) -> MandateFormCheckVM:
         headline=f"headline-{severity}", detail=f"detail-{severity}")
 
 
-def _vm(notes: tuple[MandateFormCheckVM, ...], ran: int) -> LatchOrdersFragmentVM:
+def _vm(notes: tuple[MandateFormCheckVM, ...], ran: int,
+        live: int = 3) -> LatchOrdersFragmentVM:
+    """`live` is STATED, never defaulted to zero: a page with form-check notes
+    on it had live mandates by construction, and RD ruling 4 makes the
+    zero-live-latch case say so rather than borrow the good state's words."""
     return LatchOrdersFragmentVM(
         available=True, resolution_kind="ok", resolution_detail="",
-        alarms=(), order_lines=(),
+        alarms=(), order_lines=(), live_latch_count=live,
         mandate_form_check_skipped=notes, form_check_ran_count=ran)
 
 
@@ -77,6 +81,22 @@ def test_a_fully_checked_page_emits_exactly_one_claim():
     vm = _vm((), ran=3)
     assert vm.all_clear_claims == ("No alarms.",)
     assert vm.all_clear_note == "No alarms."
+
+
+def test_a_page_with_NO_LIVE_MANDATE_does_not_borrow_the_good_states_words():
+    """RD RULING 4 (2026-07-30), applied to the panel's own alarm claim. With no
+    live mandate there was nothing to alarm ON, so "No alarms." is true, vacuous
+    and INDISTINGUISHABLE from a clean check of a real order book -- the
+    zero-data state wearing the good state's words.
+
+    This does NOT re-scope the B6 claim, which the three tests above pin: when
+    there IS a mandate the alarm all-clear stays COMPLETE and carries no
+    denominator, because every latch really was alarm-checked. This answers the
+    PRIOR question of whether anything was checked at all.
+    """
+    vm = _vm((), ran=0, live=0)
+    assert vm.all_clear_claims == ("No live latch mandates to check.",)
+    assert "No alarms." not in vm.all_clear_note
 
 
 # --- B6 (Arc 21-B) x the close-provenance ladder (Arc 21-G) ------------------

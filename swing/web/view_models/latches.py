@@ -1434,6 +1434,10 @@ class LatchOrdersFragmentVM:
     # the `stale_regime` notes, so the counts and the labels come from ONE list
     # and cannot fork. This field is what the CLI report and the 21-G tests read.
     form_check_stale_count: int = 0
+    # How many LIVE latch mandates this render had to check at all. Carried for
+    # RD ruling 4: with none, "No alarms." is a claim about an EMPTY SET dressed
+    # as a result -- the zero-data state wearing the good state's words.
+    live_latch_count: int = 0
     # The validity prompts this render is offering (plan section F.3). EMPTY is
     # the norm: a prompt fires only where a logged `place` intent still has an
     # UNRESOLVED execution outcome.
@@ -1479,6 +1483,17 @@ class LatchOrdersFragmentVM:
         coexist. See `_FORM_CHECK_CLAIM_PHRASINGS` for the full roster and the
         ordering rationale.
         """
+        if not self.live_latch_count:
+            # RD RULING 4 (2026-07-30), the same rule the ledger report now
+            # applies to every rate: the ZERO-DATA state must be
+            # DISTINGUISHABLE from the GOOD state. With no live mandate there
+            # was nothing to alarm ON, so "No alarms." is true, vacuous, and
+            # indistinguishable from a clean check of a real order book. This
+            # does NOT re-scope the B6 claim -- when there IS a mandate the
+            # alarm all-clear stays COMPLETE and unscoped, because every latch
+            # really was alarm-checked. It answers the prior question of whether
+            # anything was checked at all.
+            return ("No live latch mandates to check.",)
         by_severity: dict[str, int] = {}
         for note in self.mandate_form_check_skipped:
             by_severity[note.severity] = by_severity.get(note.severity, 0) + 1
@@ -2100,6 +2115,7 @@ def build_latch_orders_vm(
         mandate_form_check_skipped=form_check_notes,
         form_check_ran_count=form_check_ran_count,
         form_check_stale_count=form_check_stale_count,
+        live_latch_count=sum(1 for lat in derivation.latches if lat.is_live),
         validity_prompts=validity_prompts,
     )
 
