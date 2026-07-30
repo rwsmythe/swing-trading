@@ -24,15 +24,24 @@ named figure rather than by erasing the distinction upstream.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 
 from swing.latches.constants import (
+    _RULED_DISPOSITIONS,
     ACTIONABLE_VIEW_SURFACES,
+    ATTESTED_AWAY_DISPOSITIONS,
+    AWAY_RATE_COUNTED_DISPOSITIONS,
+    DECISION_DISPOSITIONS,
     LATCH_DISPOSITIONS,
     LATCH_EXECUTION_OUTCOMES,
+    LATCH_TELEMETRY_DARK_SESSIONS_THRESHOLD,
     LATCH_TELEMETRY_EPOCH_SESSION,
+    PENDING_DISPOSITIONS,
+    R_BUCKETS,
+    UNATTRIBUTABLE_DISPOSITIONS,
 )
+from swing.latches.order_intent import compute_order_delta
 
 # The LIVE latch states. A view recorded of a `filled` latch is not evidence
 # about a decision window that had already closed, so telemetry records the state
@@ -514,8 +523,413 @@ def classify_latch(
     return _out("away_unseen", "the instrument looked and saw nothing")
 
 
-@dataclass(frozen=True)
-class ClassificationCorpus:
-    """A convenience bundle for callers assembling many latches. PURE."""
+# =====================================================================
+# Task 5 -- telemetry health (B5), the away rate, and the parity report.
+# All PURE.
+# =====================================================================
 
-    dispositions: tuple[LatchDisposition, ...] = field(default_factory=tuple)
+
+def _live_on(latch, session: date) -> bool:
+    return latch.anchor <= session <= _clear_or_horizon(latch)
+
+
+def assess_telemetry_health(
+    *, sessions, latches, views,
+    counted_surfaces=ACTIONABLE_VIEW_SURFACES,
+    epoch: date = LATCH_TELEMETRY_EPOCH_SESSION,
+    dark_threshold: int = LATCH_TELEMETRY_DARK_SESSIONS_THRESHOLD,
+) -> TelemetryHealth:
+    """THE AWAY RATE MUST NOT BE CONSUMED WITHOUT THIS CHECK (B5).
+
+    A silently broken beacon makes EVERY fire look like an away-fire -- inflating
+    the exact number that would justify stage-3 auto-place. The failure mode is
+    not a wrong statistic; it is a wrong statistic POINTED AT THE BIGGEST PENDING
+    DECISION.
+
+    THE TWO FILTERS ARE DELIBERATELY DIFFERENT and the difference is not an
+    oversight:
+      * SURFACE filters BOTH counters -- the check is asking whether *the beacon
+        we measure from* fired, so a row on an uncounted surface tells us nothing
+        about it.
+      * `actionable` filters NEITHER -- a row of EITHER value proves the beacon
+        fired, which is the only question this check asks.
+
+    HONEST ABOUT WHAT IT CANNOT DO: this check cannot distinguish "beacon broken"
+    from "operator away for the whole window", and it does not claim to. It
+    identifies the SHAPE and REFUSES THE NUMBER. The stronger check (an
+    independent witness that the panel was rendered) is investigated and rejected
+    for V1: `POST /latches/orders` does write a `schwab_api_calls` row on every
+    panel render, but it is stamped `surface="trade_entry"`, which the trade-entry
+    auto-fill also writes -- so it cannot attribute a render to the panel. Banked
+    as V2: a dedicated audit surface value would make this check two-sided.
+    RECORDING THE LIMITATION IS THE REQUIREMENT; over-claiming would be the
+    failure.
+    """
+    sessions = sorted(set(sessions))
+    latches = tuple(latches)
+    counted_sessions = {
+        date.fromisoformat(r.view_session_date)
+        for r in views if r.surface in counted_surfaces
+    }
+    uninstrumented = 0
+    covered = 0
+    uncovered = 0
+    for session in sessions:
+        if session < epoch:
+            # NOT "uncovered" -- UNINSTRUMENTED. Excluded from BOTH counts below.
+            uninstrumented += 1
+            continue
+        if not any(_live_on(latch, session) for latch in latches):
+            continue
+        if session in counted_sessions:
+            covered += 1
+        else:
+            uncovered += 1
+    # THE DARK COUNT BINDS REGARDLESS OF `covered`. Keying `broken` on
+    # `covered == 0` would let a 30-session window with ONE sibling view and 29
+    # dark sessions verdict `ok` and hand `away_unseen` to the away rate --
+    # manufacturing away-rate evidence out of an instrument that was dark for 97%
+    # of the window. One beacon hit proves the beacon existed ONCE; it does not
+    # make the window OBSERVED.
+    if uncovered >= dark_threshold:
+        verdict = "broken"
+    elif covered == 0 and uncovered > 0:
+        verdict = "indeterminate"
+    else:
+        verdict = "ok"
+    return TelemetryHealth(
+        verdict=verdict, uninstrumented_sessions=uninstrumented,
+        covered_sessions=covered, uncovered_sessions=uncovered)
+
+
+# ---------------------------------------------------------------------
+# THE THREE (well, five) R BUCKETS -- a PARTITION over CELLS, computed by ONE
+# function with NO DEFAULT.
+# ---------------------------------------------------------------------
+def r_bucket_for(disposition: str, *, is_terminal: bool) -> str:
+    """EXACTLY ONE bucket, and NO DEFAULT.
+
+    `is_terminal` IS REQUIRED AND IT GATES EVERYTHING. RD's ruling is "rates
+    compute over TERMINAL, classifiable observations only", and a
+    disposition-ONLY function CANNOT enforce that: `pending_live` is reached only
+    for a LIVE latch that HAS actionable views and NO intent, so a live latch with
+    a `place` intent would score `accepted` -> decision_r, a live latch with no
+    views would score `away_unseen` -> away_r, and a live latch with withheld-only
+    views would score `never_actionable`. All three are NON-TERMINAL observations
+    entering SCORED buckets -- the exact corruption the ruling forbids, and it
+    slipped in because the ruling was encoded as a DISPOSITION rather than as a
+    GATE. TERMINALITY GATES THE BUCKET; the disposition only NAMES WHAT WAS SEEN.
+
+    MEMBERSHIP FIRST -- THE TERMINALITY GATE IS A DEFAULT IN DISGUISE UNLESS IT
+    IS. Running the gate BEFORE the membership ladder lets an unlisted disposition
+    with `is_terminal=False` return `pending_r` and be silently absorbed -- the
+    very thing the trailing `return "decision_r"` was deleted for, RELOCATED
+    rather than removed.
+
+    THE CHECK IS AGAINST THE RULED UNION, **NOT** AGAINST `LATCH_DISPOSITIONS`.
+    Membership in the enum only says the CLASSIFIER can emit it; it says nothing
+    about anyone having RULED its bucket, and a disposition added to the enum
+    without a ruling is the exact case this guard exists for. Checking the enum
+    would let that one straight through the gate into `pending_r`.
+
+    RD singled this guard out as worth more than either ruling it produced,
+    because the next unlisted disposition will be one nobody has thought of.
+    DO NOT REINTRODUCE A DEFAULT.
+    """
+    if disposition not in _RULED_DISPOSITIONS:
+        raise ValueError(
+            f"{disposition!r} has no ruled R bucket; it must be added to one of "
+            "the five bucket sets in swing/latches/constants.py -- a deliberate "
+            "act with a reviewer")
+    # COHERENCE SECOND. `pending_live` MEANS "the latch is LIVE", so
+    # (pending_live, is_terminal=True) is not a state the classifier can
+    # legitimately produce -- and silently bucketing it as pending would HIDE a
+    # classifier bug in the very report layer built to stop silent absorption.
+    if disposition in PENDING_DISPOSITIONS and is_terminal:
+        raise ValueError(
+            "incoherent cell: pending_live with is_terminal=True")
+    # THE RULING, ENFORCED AS A GATE. Reached only for a KNOWN disposition, so it
+    # can no longer absorb an unruled one.
+    if not is_terminal:
+        return "pending_r"
+    if disposition in AWAY_RATE_COUNTED_DISPOSITIONS:   # telemetry-derived
+        return "away_r"
+    if disposition in ATTESTED_AWAY_DISPOSITIONS:       # testimony, not telemetry
+        return "attested_away_r"
+    if disposition in UNATTRIBUTABLE_DISPOSITIONS:      # the REMAINDER of the
+        return "unattributable_r"                       # excluded set
+    if disposition in DECISION_DISPOSITIONS:
+        return "decision_r"
+    # UNREACHABLE while _RULED_DISPOSITIONS is the union of the five sets -- kept
+    # because a defence that depends on ANOTHER defence still holding is not a
+    # defence.
+    raise ValueError(
+        f"{disposition!r} has no ruled R bucket; see the five bucket sets")
+
+
+# The three EVIDENCE KINDS inside `decision_r`. The bucket sums three DIFFERENT
+# kinds of evidence -- directly logged decisions, self-attestation, and a
+# telemetry-INFERRED lapse -- and the governing principle forbids merging
+# categories that differ in evidence kind. The distinction IS preserved upstream
+# (three distinct dispositions), so the remedy is at the REPORT: the sum may be
+# reported, the distinction may not be erased.
+DECISION_SUBKIND: dict[str, str] = {
+    "accepted": "logged",
+    "declined": "logged",
+    "attested_acted_manually": "attested",
+    "attested_chose_not_to_act": "attested",
+    "discipline_lapse": "inferred",
+}
+
+
+@dataclass(frozen=True)
+class AwayRateResult:
+    """TWO RATES OVER ONE DENOMINATOR (RD ruling 2).
+
+    The SAME denominator is what makes them comparable and what makes the second
+    an UPPER BOUND on the first rather than a different statistic.
+
+    THE AWAY RATE CANNOT BE OBTAINED WITHOUT ITS VERDICT: `health` is a REQUIRED
+    constructor argument, so a caller cannot get either number without the verdict
+    travelling with it. There is no function anywhere that returns a bare float
+    away rate.
+    """
+
+    health: TelemetryHealth
+    away_unseen_fires: int
+    attested_was_away_fires: int
+    # THE DENOMINATOR: TERMINAL, CLASSIFIABLE observations only (RD ruling 1).
+    # Excludes pending_live (not an observation yet), and excludes pre_telemetry /
+    # never_actionable / telemetry_unhealthy (unattributable).
+    classifiable_fires: int
+    pending_fires: int             # REPORTED, never scored -- so the reader sees
+                                   # the PIPELINE rather than a silently smaller
+                                   # corpus
+    excluded_fires: int
+    objective_rate: float | None = None   # away_unseen / classifiable -- PRIMARY
+    attested_rate: float | None = None    # + attested_was_away -- the UPPER BOUND
+    withheld_reason: str | None = None
+
+
+def compute_away_rate(
+    *, bucket_counts: dict[str, int], health: TelemetryHealth,
+) -> AwayRateResult:
+    """Both rates, or BOTH `None` with a labelled reason.
+
+    The gate applies to the PAIR: an unreliable beacon corrupts the objective
+    numerator DIRECTLY and the bound derived from it CONSEQUENTLY.
+
+    STAGE-3 AUTO-PLACE READS THE OBJECTIVE RATE AS PRIMARY, WITH THE ATTESTED RATE
+    AS AN EXPLICIT UPPER BOUND. The report labels them that way, so the decision
+    that would automate the operator's entries cannot quietly be taken on the
+    LARGER number.
+
+    THE BIAS GUARD IS DELIBERATELY ONE-SIDED AND A SYMMETRIC ONE MUST NOT BE
+    ADDED: attesting "I saw it and chose not to act" when actually away is
+    self-flagellating, unlikely, and CONSERVATIVE if it happens -- it moves a fire
+    INTO the discipline signal against himself. Only the flattering direction
+    needed a guard.
+    """
+    away = bucket_counts.get("away_r", 0)
+    attested_away = bucket_counts.get("attested_away_r", 0)
+    decision = bucket_counts.get("decision_r", 0)
+    classifiable = decision + away + attested_away
+    pending = bucket_counts.get("pending_r", 0)
+    excluded = bucket_counts.get("unattributable_r", 0)
+    if health.verdict == "broken":
+        return AwayRateResult(
+            health=health, away_unseen_fires=away,
+            attested_was_away_fires=attested_away,
+            classifiable_fires=classifiable, pending_fires=pending,
+            excluded_fires=excluded, objective_rate=None, attested_rate=None,
+            withheld_reason=(
+                "telemetry verdict is BROKEN "
+                f"(covered={health.covered_sessions}, "
+                f"uncovered={health.uncovered_sessions}, "
+                f"uninstrumented={health.uninstrumented_sessions}); "
+                "a silently broken beacon makes every fire look like an "
+                "away-fire, which would inflate the exact number that would "
+                "justify stage-3 auto-place"))
+    if classifiable == 0:
+        return AwayRateResult(
+            health=health, away_unseen_fires=away,
+            attested_was_away_fires=attested_away,
+            classifiable_fires=0, pending_fires=pending,
+            excluded_fires=excluded, objective_rate=None, attested_rate=None,
+            withheld_reason=(
+                "no TERMINAL, CLASSIFIABLE observation exists yet -- the "
+                "instrument's first fully-classifiable observation is the next "
+                "A+ fire on or after the telemetry epoch"))
+    return AwayRateResult(
+        health=health, away_unseen_fires=away,
+        attested_was_away_fires=attested_away,
+        classifiable_fires=classifiable, pending_fires=pending,
+        excluded_fires=excluded,
+        objective_rate=away / classifiable,
+        attested_rate=(away + attested_away) / classifiable,
+        withheld_reason=None)
+
+
+# ---------------------------------------------------------------------
+# The parity report
+# ---------------------------------------------------------------------
+@dataclass(frozen=True)
+class ParityObservation:
+    """ONE latch's contribution to the monthly read.
+
+    `framework` / `actual` are the two ORDER SIDES the delta is computed from --
+    the framework block off the governing `place` row and the observed block off
+    its governing `validity` child. Either may be `None`.
+    """
+
+    disposition: LatchDisposition
+    framework: dict | None = None
+    actual: dict | None = None
+    r_multiple: float | None = None
+
+    @property
+    def candidate_id(self) -> int:
+        return self.disposition.candidate_id
+
+
+@dataclass(frozen=True)
+class ExecutionParityReport:
+    """What RD reads at the monthly cadence.
+
+    Every bucket in `R_BUCKETS` is carried, built BY ITERATING that frozenset
+    rather than by listing them -- so a sixth bucket added to the resolver cannot
+    be added and silently omitted from the report.
+    """
+
+    bucket_counts: dict[str, int]
+    bucket_r: dict[str, float]
+    disposition_counts: dict[str, int]
+    away: AwayRateResult
+    # `decision_r`'s three EVIDENCE-KIND sub-counts. Computed AFTER bucketing:
+    # only rows whose BUCKET is `decision_r` may enter one. Counting by
+    # disposition NAME instead would let a LIVE `accepted` into
+    # `decision_r_logged` while its R correctly sat in `pending_r`, so the
+    # sub-counts would stop summing to the total.
+    decision_r_logged: int
+    decision_r_attested: int
+    decision_r_inferred: int
+    agreement_numerator: int
+    agreement_denominator: int
+    validity_unknown: int
+    validity_failed: int
+    actual_side_unknown: int
+    delta_totals: dict[str, int]
+    total_observations: int
+    duplicate_latch_observations: int = 0
+
+    @property
+    def agreement_rate(self) -> float | None:
+        if self.agreement_denominator == 0:
+            return None
+        return self.agreement_numerator / self.agreement_denominator
+
+
+def compute_execution_parity(
+    observations, *, health: TelemetryHealth,
+) -> ExecutionParityReport:
+    """The monthly read, over DISTINCT LATCH IDENTITIES.
+
+    RD CARRY 1 (2026-07-29) -- THE LEDGER'S UNIT IS THE LATCH (THE OPPORTUNITY),
+    NOT THE FIRE. RD traced the property and found it correct today by
+    construction (classification is per-latch, the intent table is per-decision
+    and append-only, and 21-A collapses same-action-session duplicate fires
+    upstream) -- but nothing PINNED it, and *"correct by construction with no pin
+    is exactly how a ruling silently regresses, which is the entire reason I made
+    it a ruling rather than an observation."*
+
+    So the corpus is DEDUPED ON DISTINCT LATCH IDENTITY (`candidate_id`, the
+    immutable bridge key) BEFORE bucketing. If anything ever feeds MULTIPLE fire
+    rows per latch into this function, the denominators DO NOT INFLATE: three rows
+    for one opportunity would TRIPLE-COUNT that opportunity and inflate EVERY
+    denominator -- including the away rate, the number that will justify or kill
+    stage-3 auto-place.
+
+    The reduction is LABELLED, not silent: `duplicate_latch_observations` carries
+    the count, because an unlabelled reduction is a quiet all-clear by omission.
+    The FIRST observation per latch in input order is kept.
+    """
+    seen: dict[int, ParityObservation] = {}
+    duplicates = 0
+    for obs in observations:
+        if obs.candidate_id in seen:
+            duplicates += 1
+            continue
+        seen[obs.candidate_id] = obs
+    unique = tuple(seen.values())
+
+    bucket_counts = dict.fromkeys(sorted(R_BUCKETS), 0)
+    bucket_r = dict.fromkeys(sorted(R_BUCKETS), 0.0)
+    disposition_counts: dict[str, int] = {}
+    sub = {"logged": 0, "attested": 0, "inferred": 0}
+    numerator = denominator = 0
+    validity_unknown = validity_failed = actual_side_unknown = 0
+    delta_totals = {
+        "order_type_differs": 0, "duration_differs": 0,
+        "stop_price_differs": 0, "limit_price_differs": 0,
+        "quantity_differs": 0, "unknown": 0,
+    }
+    for obs in unique:
+        d = obs.disposition
+        bucket = r_bucket_for(d.disposition, is_terminal=d.is_terminal)
+        bucket_counts[bucket] += 1
+        if obs.r_multiple is not None:
+            bucket_r[bucket] = round(bucket_r[bucket] + obs.r_multiple, 6)
+        disposition_counts[d.disposition] = (
+            disposition_counts.get(d.disposition, 0) + 1)
+        # THE SUB-COUNTS ARE REFINEMENTS OF *TERMINAL* `decision_r`, computed
+        # AFTER bucketing -- only rows whose BUCKET is decision_r may enter one.
+        if bucket == "decision_r":
+            sub[DECISION_SUBKIND[d.disposition]] += 1
+        if d.disposition != "accepted":
+            continue
+        # THE AGREEMENT RATE. A place intent the broker REJECTED is a FINDING, not
+        # an agreement and not a disagreement -- the framework and the operator
+        # may have agreed perfectly on an order the market would not accept, which
+        # is precisely the FTRE class. Folding it into either the numerator or the
+        # denominator would HIDE it.
+        if d.execution_outcome == "unknown":
+            validity_unknown += 1
+            continue
+        if d.execution_outcome in ("rejected_by_broker", "not_submitted"):
+            validity_failed += 1
+            continue
+        if d.execution_outcome != "accepted_by_broker":
+            continue
+        if obs.actual is None:
+            actual_side_unknown += 1
+            continue
+        delta = compute_order_delta(obs.framework, obs.actual)
+        if delta.any_difference is None:
+            actual_side_unknown += 1
+            delta_totals["unknown"] += 1
+            continue
+        denominator += 1
+        if delta.any_difference is False:
+            numerator += 1
+        else:
+            if delta.order_type_differs:
+                delta_totals["order_type_differs"] += 1
+            if delta.duration_differs:
+                delta_totals["duration_differs"] += 1
+            if delta.stop_leg == "compared" and delta.stop_price_delta:
+                delta_totals["stop_price_differs"] += 1
+            if delta.limit_price_delta:
+                delta_totals["limit_price_differs"] += 1
+            if delta.quantity_delta:
+                delta_totals["quantity_differs"] += 1
+    away = compute_away_rate(bucket_counts=bucket_counts, health=health)
+    return ExecutionParityReport(
+        bucket_counts=bucket_counts, bucket_r=bucket_r,
+        disposition_counts=disposition_counts, away=away,
+        decision_r_logged=sub["logged"], decision_r_attested=sub["attested"],
+        decision_r_inferred=sub["inferred"],
+        agreement_numerator=numerator, agreement_denominator=denominator,
+        validity_unknown=validity_unknown, validity_failed=validity_failed,
+        actual_side_unknown=actual_side_unknown, delta_totals=delta_totals,
+        total_observations=len(unique),
+        duplicate_latch_observations=duplicates)
