@@ -415,3 +415,36 @@ def test_an_unknown_stop_leg_state_is_rejected():
                    stop_leg="maybe", stop_price_delta=None,
                    limit_price_delta=0.0, quantity_delta=0,
                    any_difference=False, unknown_fields=())
+
+
+# --- the anchor encoding must survive the browser round trip (Task 6) -----
+@pytest.mark.parametrize("encoding,raw,expected", [
+    ("price2", 18.8902, "18.89"),
+    ("price2", None, ""),
+    ("pct4", 0.005, "0.0050"),
+    ("int", 9, "9"),
+    ("int", None, ""),
+    ("session", "2026-07-24", "2026-07-24"),
+    ("text", "limit_price", "limit_price"),
+])
+def test_the_anchor_encoding_is_idempotent(encoding, raw, expected):
+    """LOAD-BEARING, not tidy. The RENDER encodes raw derivation values into
+    hidden inputs; the browser posts those STRINGS back; the handler must
+    recompute the SAME digest from what it received. If re-encoding an
+    already-encoded value did not reproduce it, the two sides could not agree --
+    and the EMPTY STRING in particular would RAISE (`float("")`), so a pullback
+    mandate, whose framework stop leg is legitimately absent, could not be
+    anchored at all."""
+    from swing.latches.order_intent import encode_derivation_value
+    once = encode_derivation_value(encoding, raw)
+    assert once == expected
+    assert encode_derivation_value(encoding, once) == once
+
+
+def test_the_empty_string_encodes_as_NULL_and_not_as_a_zero():
+    """The empty string IS the NULL encoding, deliberately distinct from "0",
+    which a float field could legitimately produce. Collapsing the two would
+    make "no stop leg" and "a stop at zero" share a digest."""
+    from swing.latches.order_intent import encode_derivation_value
+    assert encode_derivation_value("price2", "") == ""
+    assert encode_derivation_value("price2", 0) == "0.00"

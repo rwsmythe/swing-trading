@@ -1,0 +1,23 @@
+{# Arc 21-B: the prepared-order block. ASCII only (no glyphs / em-dash). NO
+   logic here -- every value is display-ready on `row.prepared_order`.
+
+   THE WITHHELD BRANCH IS THE DEFAULT, NOT THE EXCEPTION. On today's substrate
+   the regime is undeterminable on every card, so the withheld branch is what
+   renders; it states its reason and offers NO control. There is deliberately
+   NO disabled-looking ACCEPT button in that branch -- a disabled-looking button
+   that posts is worse than no button, and a test asserts the ACCEPT control is
+   ABSENT FROM THE DOM in every withheld case. #}
+{% set po = row.prepared_order %}
+{% if po %}
+<section class="latch-prepared-order latch-prepared-order-{{ 'offered' if po.offered else 'withheld' }}">
+  {% if po.offered %}
+  <h3 class="latch-prepared-order-heading">{{ po.log_only_notice }}</h3>
+  <p class="latch-prepared-order-headline">{{ po.headline }}</p>
+  <pre class="latch-derivation">{% for line in po.derivation_lines %}{{ line }}
+{% endfor %}</pre>
+  {% else %}
+  <h3 class="latch-prepared-order-heading">PREPARED ORDER WITHHELD</h3>
+  <p class="latch-prepared-order-withheld">{{ po.withheld_detail }}</p>
+  {% endif %}
+</section>
+{% endif %}

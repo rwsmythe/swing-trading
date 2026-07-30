@@ -79,7 +79,14 @@
         {% if row.is_live %}
         <dt>View telemetry</dt><dd class="muted">{{ row.telemetry_label }}</dd>
         {% endif %}
+        {% if row.disposition_label %}
+        <dt>Disposition</dt>
+        <dd class="latch-disposition latch-disposition-{{ row.disposition }}">
+          {{ row.disposition_label }}
+        </dd>
+        {% endif %}
       </dl>
+      {% include "partials/latch_prepared_order.html.j2" %}
     </section>
     {% endfor %}
   </div>

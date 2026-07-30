@@ -325,14 +325,22 @@ def test_a_superseded_latch_renders_as_a_normal_historical_terminal(seeded_db):
 def test_the_beacon_payload_carries_the_render_time_anchor_and_the_live_set(
         seeded_db):
     """The A4 seam's anchor. A payload built at POST time instead would
-    re-introduce the GET/POST TOCTOU the hazard-2 gotcha forbids."""
+    re-introduce the GET/POST TOCTOU the hazard-2 gotcha forbids.
+
+    ARC 21-B SPLITS THE ID FIELD BY ACTIONABILITY (the R7 CRITICAL). `_vm`
+    seeds no close DATED the derivation session, so the regime is
+    undeterminable and this card's prepared order is WITHHELD -- which is the
+    live state of every card today, and exactly the state a single
+    `candidate_ids` field would have recorded as a full "he saw the mandate"
+    view."""
     import json
     cfg, _ = seeded_db
     _seed(cfg, _FTRE)
     vm = _vm(cfg)
     payload = json.loads(vm.beacon_payload_json)
     assert payload["view_session_date"] == "2026-07-27" == vm.horizon_session
-    assert payload["candidate_ids"] == str(vm.rows[0].candidate_id)
+    assert payload["withheld_candidate_ids"] == str(vm.rows[0].candidate_id)
+    assert payload["actionable_candidate_ids"] == ""
 
 
 def test_the_telemetry_echo_says_not_yet_recorded_when_no_view_row_exists(seeded_db):

@@ -53,8 +53,16 @@ def encode_derivation_value(encoding: str, value) -> str:
     This is what makes the anchor digest REPRODUCIBLE across render and POST.
     A NULL encodes as the EMPTY STRING -- deliberately distinct from "0", which
     a float field could legitimately produce.
+
+    IT IS IDEMPOTENT, AND THAT IS LOAD-BEARING RATHER THAN TIDY. The render
+    encodes RAW derivation values into hidden inputs; the browser posts those
+    STRINGS back; the handler must recompute the SAME digest from what it
+    received. If encoding a already-encoded value did not reproduce it, the two
+    sides could not agree -- and the empty string in particular would raise
+    (`float("")`) rather than encode, so a pullback mandate (whose framework
+    stop leg is legitimately absent) could not be anchored at all.
     """
-    if value is None:
+    if value is None or value == "":
         return ""
     if encoding == "price2":
         return f"{float(value):.2f}"
