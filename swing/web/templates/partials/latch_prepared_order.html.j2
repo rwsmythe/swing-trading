@@ -32,6 +32,14 @@
     {% for name, value in po.anchor_fields %}
     <input type="hidden" name="{{ name }}" value="{{ value }}">
     {% endfor %}
+    {# THE RULING-3 CONTEXT ANCHOR, deliberately OUTSIDE the manifest loop: it
+       is not part of the framework DERIVATION and must not enter
+       `anchor_digest`. It carries the ledger row that GOVERNED this latch when
+       the page rendered, so an A -> B -> A correction keys differently from the
+       first answer and writes, while a double-click on one render still
+       collapses. #}
+    <input type="hidden" name="prior_intent_id"
+           value="{{ row.prior_intent_id }}">
     <button type="submit" name="intent_kind" value="place"
             class="latch-intent-accept">ACCEPT - log this order</button>
     <button type="submit" name="intent_kind" value="decline"
@@ -61,6 +69,8 @@
     <input type="hidden" name="view_session_date" value="{{ vm.horizon_session }}">
     <input type="hidden" name="candidate_id" value="{{ row.candidate_id }}">
     <input type="hidden" name="intent_kind" value="attest">
+    <input type="hidden" name="prior_intent_id"
+           value="{{ row.prior_intent_id }}">
     {% for value, label in row.attest_options %}
     <label>
       <input type="radio" name="attested_disposition" value="{{ value }}">

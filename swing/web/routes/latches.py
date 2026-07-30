@@ -438,6 +438,27 @@ def _optional_qty(form, field: str) -> int | None:
     return int(raw)
 
 
+def _canonical_optional_id(form, field: str) -> str:
+    """An optional row id as its CANONICAL decimal spelling, or `""`.
+
+    IT IS KEY MATERIAL, so it is REFUSED rather than normalised when it does not
+    round-trip: `007` and `7` name one row, and silently accepting both would
+    key ONE decision as TWO on an append-only ledger -- the same hazard the
+    canonical-session guard closes one field over, arriving through a different
+    field. A shape rejection that NAMES the field is diagnosable; a silent
+    normalisation is a second spelling nobody knows exists.
+    """
+    raw = form.get(field)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return ""
+    text = str(raw).strip()
+    if not text.isdigit() or int(text) <= 0 or str(int(text)) != text:
+        raise _IntentRejectedError(
+            field, f"{text!r} is not the canonical spelling of a positive "
+                   "row id")
+    return text
+
+
 def _enum(form, field: str, allowed, *, required: bool) -> str | None:
     raw = form.get(field)
     if raw is None or (isinstance(raw, str) and not raw.strip()):
@@ -772,8 +793,14 @@ async def latches_intent(request: Request):
     # --- step 2 ---------------------------------------------------------
     envelope = None
     parent_id = None
+    prior_intent_id = ""
     try:
         kind = _enum(form, "intent_kind", LATCH_INTENT_KINDS, required=True)
+        # THE RULING-3 CONTEXT ANCHOR: the row that governed this latch when the
+        # form was RENDERED. Validated for SHAPE only -- see
+        # `build_idempotency_key` for why the forgery half is scoped out and why
+        # a stale one writes an extra row rather than losing one.
+        prior_intent_id = _canonical_optional_id(form, "prior_intent_id")
         candidate_id = _positive_int(form, "candidate_id")
         raw_session = _required_str(form, "view_session_date")
         if len(raw_session) != 10:
@@ -840,7 +867,8 @@ async def latches_intent(request: Request):
         actual_digest=_actual_digest(
             kind, answer, parent_id=parent_id,
             snapshot_digest=snapshot_digest),
-        validated_place_intent_id=parent_id)
+        validated_place_intent_id=parent_id,
+        prior_intent_id=prior_intent_id)
 
     cfg = apply_overrides(request.app.state.cfg)
     conn = connect(cfg.paths.db_path)

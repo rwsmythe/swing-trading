@@ -230,6 +230,12 @@ class LatchRowVM:
     # eventually kills the honest answer on the cell that matters.
     prompt_required: bool = False
     attest_options: tuple[tuple[str, str], ...] = ()
+    # The RULING-3 context anchor (see `_prior_intent_id`): the ledger row that
+    # governed this latch AS THIS PAGE RENDERED IT, `""` when it had none. Every
+    # intent form on the card emits it, and it is deliberately OUTSIDE the
+    # manifest-generated hidden anchor -- it is not part of the framework
+    # DERIVATION and must not enter `anchor_digest`.
+    prior_intent_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -598,7 +604,8 @@ def _price_asof_claim(quote, provenance) -> tuple[str, str]:
 
 
 def _build_row(latch: Latch, *, quote, views, provenance=None,
-               prepared_order=None, disposition=None) -> LatchRowVM:
+               prepared_order=None, disposition=None,
+               prior_intent_id: str = "") -> LatchRowVM:
     """`quote` is `(price, asof_iso)` from the READ-ONLY last-close source, or
     `None`. `provenance` is the `CloseProvenance` for that quote, or `None`.
 
@@ -668,6 +675,7 @@ def _build_row(latch: Latch, *, quote, views, provenance=None,
                 (value, _ATTEST_OPTION_LABELS[value])
                 for value in LATCH_ATTESTED_DISPOSITIONS))
             if prompt else ()),
+        prior_intent_id=prior_intent_id,
     )
 
 
@@ -825,7 +833,7 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
         # `views_by_latch` is narrowed to THIS session for the card's telemetry
         # echo; the classifier reads the latch's whole covered window, and
         # handing it the narrowed set would discard yesterday's actionable view.
-        dispositions = _panel_dispositions(
+        dispositions, priors = _panel_dispositions(
             conn, displayed,
             views_by_latch=_load_all_views(conn, displayed), health=health)
 
@@ -853,6 +861,7 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
                 provenance=None if quote is None else _prov(latch, quote),
                 prepared_order=blocks.get(latch.identity.candidate_id),
                 disposition=dispositions.get(latch.identity.candidate_id),
+                prior_intent_id=priors.get(latch.identity.candidate_id, ""),
             )
 
         rows = [
@@ -1017,9 +1026,17 @@ def rederive_prepared_order(conn, cfg, *, candidate_id: int, anchor: date):
     return latch, blocks.get(candidate_id)
 
 
-def _panel_dispositions(conn, latches, *, views_by_latch: dict, health) -> dict:
-    """The DECISION-axis classification per displayed latch. A6 at the seam."""
+def _panel_dispositions(conn, latches, *, views_by_latch: dict, health):
+    """`(dispositions, prior_intent_ids)` per displayed latch. A6 at the seam.
+
+    BOTH come off the SAME per-latch intent read. The RULING-3 context anchor is
+    a fact about the ledger rows this function has already loaded, so re-reading
+    them would be a second read that could disagree with the first about which
+    row governs -- the classification and the anchor the form emits must describe
+    ONE moment.
+    """
     out: dict = {}
+    priors: dict = {}
     for latch in latches:
         cid = latch.identity.candidate_id
         try:
@@ -1027,6 +1044,7 @@ def _panel_dispositions(conn, latches, *, views_by_latch: dict, health) -> dict:
         except Exception as exc:  # noqa: BLE001 -- A6: a missing 0033 is not a 500
             _log.warning("latch intent read degraded for candidate %s: %s", cid, exc)
             intents = []
+        priors[cid] = _prior_intent_id(intents)
         try:
             out[cid] = classify_latch(
                 latch=latch, views=views_by_latch.get(cid, ()),
@@ -1034,7 +1052,7 @@ def _panel_dispositions(conn, latches, *, views_by_latch: dict, health) -> dict:
         except Exception as exc:  # noqa: BLE001 -- A6
             _log.warning(
                 "latch classification degraded for candidate %s: %s", cid, exc)
-    return out
+    return out, priors
 
 
 def _load_all_views(

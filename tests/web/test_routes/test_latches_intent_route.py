@@ -506,6 +506,129 @@ def test_an_attestation_a_week_after_the_latch_went_terminal_is_ACCEPTED(
     assert row[1] == "attest"
 
 
+# --- RULING 3: the SUBMISSION IN CONTEXT -----------------------------------
+def _attest(client, cid, disposition, prior):
+    return client.post("/latches/intent", headers=_HX, data={
+        "view_session_date": ANCHOR, "candidate_id": str(cid),
+        "intent_kind": "attest", "attested_disposition": disposition,
+        "prior_intent_id": prior})
+
+
+def test_an_A_to_B_to_A_CORRECTION_writes_a_THIRD_ROW_and_GOVERNS(
+        seeded_db, frozen_clocks):
+    """RD RULING 3 (2026-07-30). THE LEDGER'S UNIT IS THE EVENT, NOT THE VALUE.
+
+    A content-derived key that collapses on VALUE cannot distinguish a REPLAY
+    from a CORRECTION: the two are identical in value and differ only in
+    context. So `chose_not_to_act` -> `was_away` -> `chose_not_to_act` reused the
+    FIRST row's key, the third answer was discarded as a replay, and the
+    governing row stayed on the flattering intermediate `was_away`. That is the
+    instrument editing its subject's testimony in his favour, which this ledger
+    may never do.
+
+    THE GOVERNING ANSWER IS HIS LAST, NEVER HIS LAST DISTINCT. A correction back
+    to a prior value is a new operator act at a new time and MUST produce a new
+    row in an append-only ledger.
+
+    PRE-FIX / POST-FIX ARITHMETIC: pre-fix the third POST returns the FIRST
+    row's `intent_id` and the table holds 2 rows with `was_away` governing;
+    post-fix it returns a NEW id, the table holds 3, and `chose_not_to_act`
+    governs. The test distinguishes on all three.
+    """
+    from swing.data.repos.latch_order_intents import list_intents_for_latch
+    from swing.latches.classification import governing_intent
+
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        first = _attest(client, cid, "chose_not_to_act", "")
+        assert first.status_code == 200
+        id_a = _intents(cfg)[0][0]
+        second = _attest(client, cid, "was_away", str(id_a))
+        assert second.status_code == 200
+        id_b = _intents(cfg)[1][0]
+        assert id_b != id_a
+        third = _attest(client, cid, "chose_not_to_act", str(id_b))
+        assert third.status_code == 200
+    rows = _intents(cfg)
+    assert len(rows) == 3, (
+        "a correction back to a prior VALUE is a new operator ACT; collapsing "
+        "it onto the first row discards his actual final answer")
+    conn = connect(cfg.paths.db_path)
+    try:
+        intents = list_intents_for_latch(conn, candidate_id=cid)
+    finally:
+        conn.close()
+    assert governing_intent(intents, "attest").attested_disposition == (
+        "chose_not_to_act")
+
+
+def test_a_double_click_on_that_third_submission_STILL_collapses(
+        seeded_db, frozen_clocks):
+    """The mechanism keys on the SUBMISSION IN CONTEXT, not on the clock and not
+    on a nonce: both clicks of a double-click carry the SAME rendered prior, so
+    they still produce ONE row. Without this the A->B->A fix would have bought
+    correction-fidelity at the cost of the double-click property."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        _attest(client, cid, "chose_not_to_act", "")
+        id_a = _intents(cfg)[0][0]
+        _attest(client, cid, "was_away", str(id_a))
+        id_b = _intents(cfg)[1][0]
+        first = _attest(client, cid, "chose_not_to_act", str(id_b))
+        second = _attest(client, cid, "chose_not_to_act", str(id_b))
+    assert first.status_code == second.status_code == 200
+    rows = _intents(cfg)
+    assert len(rows) == 3
+    assert f"intent {rows[2][0]}" in first.text
+    assert f"intent {rows[2][0]}" in second.text
+    assert "already recorded" in second.text, (
+        "the second click is a REPLAY of the same row, not a second answer")
+
+
+def test_a_non_canonical_prior_spelling_is_REFUSED_not_silently_split(
+        seeded_db, frozen_clocks):
+    """The prior is KEY MATERIAL, so two spellings of one id would key as two
+    rows -- the same hazard the canonical-session guard closes one field over.
+    It is a shape rejection naming the field, never a silent normalisation."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = _attest(client, cid, "was_away", "007")
+        assert r.status_code == 400
+        assert "prior_intent_id" in r.text
+        assert _attest(client, cid, "was_away", "-1").status_code == 400
+        assert _attest(client, cid, "was_away", "abc").status_code == 400
+    assert _intents(cfg) == []
+
+
+def test_the_rendered_forms_CARRY_the_prior_intent_id(seeded_db, frozen_clocks):
+    """The anchor has to be RENDERED or the mechanism is inert -- exactly the
+    class of defect this dispatch was sent to close on the validity path. The
+    prepared-order form emits it OUTSIDE the manifest-generated hidden anchor,
+    so it never enters `anchor_digest` and the section A.4 manifest assertions
+    are untouched."""
+    import re
+    pattern = re.compile(r'name="prior_intent_id"\s+value="([^"]*)"')
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        empty = pattern.findall(client.get("/latches").text)
+        assert empty and set(empty) == {""}, (
+            "a latch with NO ledger rows renders the anchor EMPTY, which is a "
+            "distinct key component from any row id")
+        _attest(client, cid, "was_away", "")
+        first_id = _intents(cfg)[0][0]
+        rendered = pattern.findall(client.get("/latches").text)
+    assert rendered and set(rendered) == {str(first_id)}, (
+        "the form must carry the row that GOVERNED the latch when it rendered")
+
+
 # --- the validity branch ---------------------------------------------------
 def _snapshot(*, branch="absence", attributable=0, exact=0, digest=None,
               ts=None, session=ANCHOR, indeterminate=False):

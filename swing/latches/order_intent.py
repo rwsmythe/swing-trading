@@ -137,11 +137,51 @@ def build_idempotency_key(
     *, candidate_id: int, action_session_date: str, surface: str,
     intent_kind: str, anchor_digest: str, actual_digest: str,
     validated_place_intent_id: int | None = None,
+    prior_intent_id: str = "",
 ) -> str:
     """The CONTENT-DERIVED per-latch idempotency key (hazard (a)).
 
     Content-derived, NOT a render-time nonce, so a REFRESH followed by an
     identical resubmit also collapses (a nonce would not).
+
+    THE KEY IS SCOPED TO THE SUBMISSION IN CONTEXT (RD ruling 3, 2026-07-30).
+    `prior_intent_id` is the row that GOVERNED this latch when the form was
+    RENDERED -- empty when the latch had none.
+
+    WHY IT IS THERE. The ledger's unit is the EVENT, not the VALUE, and a key
+    that collapses on value cannot distinguish a REPLAY from a CORRECTION: the
+    two are identical in value and differ only in context. `chose_not_to_act` ->
+    `was_away` -> `chose_not_to_act` therefore reused the FIRST row's key, so
+    the operator's actual FINAL answer was discarded as a replay and the
+    flattering intermediate kept governing. The governing answer is his LAST,
+    never his last DISTINCT, and a correction back to a prior value is a new act
+    at a new time that MUST produce a new row in an append-only ledger.
+    Preserving a flattering intermediate over his actual final answer is the
+    instrument editing its subject's testimony in his favour.
+
+    WHY IT IS A RENDER-TIME ANCHOR RATHER THAN A POST-TIME LOOKUP. Recomputing
+    "the current governing row" at POST time would make the second click of a
+    double-click see the row the FIRST click just wrote, key differently, and
+    write a duplicate -- trading correction-fidelity for the double-click
+    property. Both clicks of one render carry the SAME prior and still collapse.
+    It also keeps the load-bearing property that EVERY key input is a function
+    of the SUBMITTED PAYLOAD ALONE, which is what lets the shape check precede
+    the replay SELECT.
+
+    IT IS LATCH-SCOPED, NOT KIND-SCOPED, and that is ONE rule rather than five:
+    the ledger is per-latch and append-only, the context IS the state of that
+    latch's ledger as he saw it, and the place/decline form is a single form
+    whose KIND is chosen at the submit button -- so a kind-scoped anchor could
+    not be rendered by it at all.
+
+    THE FORGERY HALF IS SCOPED OUT ON THE SAME GROUNDS SECTION F.3 ALREADY
+    RECORDS for the broker snapshot: this is a `127.0.0.1` single-operator app,
+    and a forged local POST implies an attacker who can already write the DB
+    directly, where validating the anchor protects nothing. The realistic
+    failure -- a STALE render, e.g. a second browser tab -- writes an EXTRA row
+    rather than losing one, which is the safe direction on an append-only
+    ledger: testimony is never destroyed, only duplicated, and the report dedupes
+    on distinct latch identity.
 
     THE SESSION COMPONENT IS KIND-SCOPED, and it is NOT always
     `action_session_date`. Since a `validity` row's `action_session_date` is
@@ -174,7 +214,7 @@ def build_idempotency_key(
         session_component = action_session_date
     return _digest(
         "v1", str(candidate_id), session_component, surface, intent_kind,
-        anchor_digest, actual_digest)
+        anchor_digest, actual_digest, "prior", prior_intent_id)
 
 
 # =====================================================================
