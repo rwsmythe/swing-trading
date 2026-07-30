@@ -866,3 +866,115 @@ def test_a_one_cent_different_price_produces_a_DIFFERENT_row(
                 "/latches/intent", headers=_HX,
                 data=base | {"actual_limit_price": spelling}).status_code == 200
     assert len(_intents(cfg)) == 3      # the place + TWO distinct validity rows
+
+
+# --- the key's field set is SCOPED BY KIND (Codex exec R2 MAJOR 2) ---------
+def test_every_intent_kind_has_an_answer_field_roster(seeded_db):
+    """The roster is indexed by kind with NO default, so a sixth kind added to
+    the CHECK enum without a roster entry would `KeyError` the endpoint rather
+    than key on the wrong fields. The coupling is pinned rather than left to a
+    reader noticing, which is the #11 one-commit mirror discipline applied to a
+    Python-side roster."""
+    from swing.latches.constants import LATCH_INTENT_KINDS
+    from swing.web.routes.latches import _ANSWER_FIELDS_BY_KIND
+    assert set(_ANSWER_FIELDS_BY_KIND) == set(LATCH_INTENT_KINDS)
+
+
+def test_a_field_the_kind_DISCARDS_does_not_fork_the_ledger_row(
+        seeded_db, frozen_clocks):
+    """CODEX EXEC R2 MAJOR 2. `place` persists no actual-side field -- the
+    schema makes them unwritable on it -- so a stray `actual_duration` on a
+    place POST is thrown away by the row. A key that digested it anyway keyed
+    two IDENTICAL decisions differently, and an append-only ledger would carry
+    the same decision twice: a duplicate the parity denominator would then
+    count twice."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        first = client.post("/latches/intent", headers=_HX, data=form)
+        second = client.post(
+            "/latches/intent", headers=_HX,
+            data=form | {"actual_duration": "DAY"})
+    assert first.status_code == second.status_code == 200
+    rows = _intents(cfg)
+    assert len(rows) == 1
+    assert "already recorded" in second.text
+    assert rows[0][1] == "place"
+
+
+def test_the_kind_scoping_does_NOT_stop_the_key_discriminating_its_OWN_fields(
+        seeded_db, frozen_clocks):
+    """The pair to the collapse above. Without it, scoping the roster would be
+    satisfied by a key that had stopped reading answers at all -- and the
+    SECOND decline reason would be silently lost. `decline_reason` IS in
+    `decline`'s roster, so two different reasons must write two rows."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    base = _anchor_form(cfg, cid) | {"intent_kind": "decline"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        a = client.post("/latches/intent", headers=_HX,
+                        data=base | {"decline_reason": "already_positioned"})
+        b = client.post("/latches/intent", headers=_HX,
+                        data=base | {"decline_reason": "risk_budget"})
+    assert a.status_code == b.status_code == 200
+    rows = _intents(cfg)
+    assert len(rows) == 2
+    assert {r[7] for r in rows} == {"already_positioned", "risk_budget"}
+
+
+# --- the validity branch DEGRADES rather than 500s (R2 MAJOR 3) ------------
+def test_an_offset_aware_snapshot_ts_is_REFUSED_not_a_500(
+        seeded_db, frozen_clocks):
+    """CODEX EXEC R2 MAJOR 3. `datetime.fromisoformat` happily accepts an
+    OFFSET-AWARE stamp, and subtracting it from the naive server clock raises
+    `TypeError` -- outside a guard that wrapped only the two parses. The render
+    emits a naive stamp, so an aware one did not come from our own fragment.
+    Any failure to ESTABLISH freshness is NOT-FRESH: the gate fails CLOSED,
+    because an unverifiable snapshot is the thing it exists to refuse."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        before = len(_intents(cfg))
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "not_submitted",
+            "broker_snapshot_json": _snapshot(ts="2026-07-25T11:58:00+00:00"),
+        })
+    assert r.status_code == 409
+    assert len(_intents(cfg)) == before
+
+
+def test_a_model_contract_violation_is_a_400_not_a_500(
+        seeded_db, frozen_clocks):
+    """The other half of R2 MAJOR 3. `LatchOrderIntent.__post_init__` mirrors
+    the migration's cross-column shape rules, and an `accepted_by_broker`
+    validity row REQUIRES a complete actual side -- so this payload is
+    refusable, not exceptional. Constructing the model OUTSIDE the guard turned
+    it into an unhandled 500 with no visible reason; the dataclass validator and
+    the schema CHECK are the SAME contract and must degrade the same way."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        before = len(_intents(cfg))
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "accepted_by_broker",
+            "actual_order_type": "LIMIT", "actual_duration": "GTC",
+            "actual_limit_price": "18.89", "actual_quantity": "10",
+            # ...and NO actual_broker_order_id, which an accepted row requires.
+            "broker_snapshot_json": _snapshot(branch="presence", attributable=1),
+        })
+    assert r.status_code == 400
+    assert "ledger contract" in r.text
+    assert len(_intents(cfg)) == before

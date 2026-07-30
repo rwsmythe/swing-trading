@@ -336,6 +336,25 @@ _INTENT_SURFACE = "latch_panel"
 # which for an aged prompt is always.
 _DECISION_KINDS = frozenset({"place", "decline"})
 
+# The SEMANTIC answer fields PER KIND -- exactly the ones that kind PERSISTS.
+#
+# THE ROSTER MIRRORS THE MIGRATION'S PER-KIND SHAPE EXCLUSIONS, and it is one
+# object rather than an inline list at each site. A key that digested a field
+# the row DISCARDS would change on input the ledger throws away, so one decision
+# could occupy two append-only rows; a key that OMITTED a field the row keeps
+# would collapse two different answers onto one row and lose the second.
+_ANSWER_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {
+    "place": (),
+    "decline": ("decline_reason",),
+    "cancel": ("actual_broker_order_id",),
+    "attest": ("attested_disposition", "actual_broker_order_id"),
+    "validity": (
+        "actual_order_type", "actual_duration", "actual_stop_price",
+        "actual_limit_price", "actual_quantity", "actual_broker_order_id",
+        "validity_outcome",
+    ),
+}
+
 
 class _IntentRejectedError(Exception):
     """A 400 carrying the offending FIELD, so a rejected submit is diagnosable
@@ -477,6 +496,17 @@ def _actual_digest(kind: str, answer: dict, *, parent_id: int | None,
     price-precision-parity gotcha arriving through the key instead of through a
     comparison, and it is exactly the class that produces either a duplicate row
     or a silent collapse.
+
+    THE FIELD SET IS SCOPED BY KIND, AND IT MATCHES WHAT THE KIND PERSISTS
+    (Codex exec R2 MAJOR 2). Digesting every optional field on every kind lets a
+    field the row will DISCARD change the key: a `place` POST carrying a stray
+    `actual_duration=DAY` -- which `place` does not store, and which the schema
+    makes unstorable on it -- would key differently from the same decision
+    without it, so an append-only ledger would gain a SECOND row for one
+    decision. The key must partition the SEMANTIC answers, and a field the row
+    does not carry is not part of its answer. `_ANSWER_FIELDS_BY_KIND` is the
+    single roster; every other site refers to it and states no count, and it
+    mirrors the per-kind shape exclusions the migration enforces.
     """
     from swing.latches.order_intent import _digest, encode_derivation_value
     encodings = {
@@ -485,10 +515,7 @@ def _actual_digest(kind: str, answer: dict, *, parent_id: int | None,
         "actual_quantity": "int",
     }
     parts = ["v1", kind]
-    for name in ("actual_order_type", "actual_duration", "actual_stop_price",
-                 "actual_limit_price", "actual_quantity",
-                 "actual_broker_order_id", "decline_reason",
-                 "attested_disposition", "validity_outcome"):
+    for name in _ANSWER_FIELDS_BY_KIND[kind]:
         value = answer.get(name)
         parts.append(name)
         parts.append(encode_derivation_value(
@@ -542,15 +569,29 @@ def _snapshot_is_fresh(envelope: dict, *, now: datetime, anchor: date) -> bool:
     NOT defend against a forged local POST, and V1 does not pretend to: on a
     127.0.0.1 single-operator app that threat implies an attacker who can
     already write the DB directly, where a token protects nothing.
+
+    THE WHOLE COMPUTATION IS INSIDE THE GUARD, NOT JUST THE PARSE (Codex exec
+    R2 MAJOR 3). `datetime.fromisoformat` happily accepts an OFFSET-AWARE
+    timestamp, and subtracting an aware datetime from the naive server clock
+    raises `TypeError` -- OUTSIDE a guard that wrapped only the two parses. So a
+    payload carrying `...T12:00:00+00:00` would 500 the endpoint instead of
+    being refused. Any failure to establish freshness is NOT-FRESH: the gate
+    fails CLOSED, because an unverifiable snapshot is exactly the thing it
+    exists to refuse.
     """
     try:
         taken = datetime.fromisoformat(str(envelope["broker_snapshot_ts"]))
         session = date.fromisoformat(str(envelope["broker_snapshot_session"]))
-    except (KeyError, TypeError, ValueError):
+        if taken.tzinfo is not None:
+            # The render emits a NAIVE server-clock stamp; an aware one did not
+            # come from our own fragment, and comparing the two would be a
+            # timezone guess dressed as a measurement.
+            return False
+        if session != anchor:
+            return False
+        age = (now - taken).total_seconds()
+    except (KeyError, TypeError, ValueError, OverflowError):
         return False
-    if session != anchor:
-        return False
-    age = (now - taken).total_seconds()
     return 0 <= age <= LATCH_BROKER_SNAPSHOT_MAX_AGE_SECONDS
 
 
@@ -831,46 +872,53 @@ async def latches_intent(request: Request):
         derivation: dict = {}
         if block is not None:
             framework, derivation = _stored_anchor_values(form, block)
-        intent = LatchOrderIntent(
-            intent_id=None,
-            candidate_id=latch.identity.candidate_id,
-            evaluation_run_id=latch.identity.evaluation_run_id,
-            ticker=latch.identity.ticker,
-            detection_date=latch.identity.detection_date,
-            pipeline_run_id=latch.identity.pipeline_run_id,
-            idempotency_key=key,
-            action_session_date=action_session_date,
-            # SERVER-STAMPED wall clock. NO timestamp is ever read from the
-            # payload (the V1 server-stamp gotcha).
-            recorded_ts=now.isoformat(timespec="seconds"),
-            surface=_INTENT_SURFACE,
-            intent_kind=kind,
-            decline_reason=(
-                answer["decline_reason"] if kind == "decline" else None),
-            attested_disposition=(
-                answer["attested_disposition"] if kind == "attest" else None),
-            validated_place_intent_id=parent_id,
-            **framework, **derivation,
-            actual_order_type=(
-                answer["actual_order_type"] if kind == "validity" else None),
-            actual_duration=(
-                answer["actual_duration"] if kind == "validity" else None),
-            actual_stop_price=(
-                answer["actual_stop_price"] if kind == "validity" else None),
-            actual_limit_price=(
-                answer["actual_limit_price"] if kind == "validity" else None),
-            actual_quantity=(
-                answer["actual_quantity"] if kind == "validity" else None),
-            actual_broker_order_id=(
-                answer["actual_broker_order_id"]
-                if kind in ("cancel", "attest", "validity") else None),
-            validity_outcome=(
-                answer["validity_outcome"] if kind == "validity" else None),
-            validity_detail=(
-                None if envelope is None
-                else json.dumps(envelope, sort_keys=True)),
-        )
+        # THE MODEL CONSTRUCTION IS INSIDE THE GUARD (Codex exec R2 MAJOR 3).
+        # `LatchOrderIntent.__post_init__` mirrors every cross-column shape rule
+        # the migration enforces and raises `ValueError` on a violation -- so
+        # building the row OUTSIDE the try turned a refusable payload (an
+        # `accepted_by_broker` validity answer with an incomplete actual side)
+        # into a 500 instead of a visible 400. The dataclass validator and the
+        # schema CHECK are the SAME contract; both must degrade the same way.
         try:
+            intent = LatchOrderIntent(
+                intent_id=None,
+                candidate_id=latch.identity.candidate_id,
+                evaluation_run_id=latch.identity.evaluation_run_id,
+                ticker=latch.identity.ticker,
+                detection_date=latch.identity.detection_date,
+                pipeline_run_id=latch.identity.pipeline_run_id,
+                idempotency_key=key,
+                action_session_date=action_session_date,
+                # SERVER-STAMPED wall clock. NO timestamp is ever read from the
+                # payload (the V1 server-stamp gotcha).
+                recorded_ts=now.isoformat(timespec="seconds"),
+                surface=_INTENT_SURFACE,
+                intent_kind=kind,
+                decline_reason=(
+                    answer["decline_reason"] if kind == "decline" else None),
+                attested_disposition=(
+                    answer["attested_disposition"] if kind == "attest" else None),
+                validated_place_intent_id=parent_id,
+                **framework, **derivation,
+                actual_order_type=(
+                    answer["actual_order_type"] if kind == "validity" else None),
+                actual_duration=(
+                    answer["actual_duration"] if kind == "validity" else None),
+                actual_stop_price=(
+                    answer["actual_stop_price"] if kind == "validity" else None),
+                actual_limit_price=(
+                    answer["actual_limit_price"] if kind == "validity" else None),
+                actual_quantity=(
+                    answer["actual_quantity"] if kind == "validity" else None),
+                actual_broker_order_id=(
+                    answer["actual_broker_order_id"]
+                    if kind in ("cancel", "attest", "validity") else None),
+                validity_outcome=(
+                    answer["validity_outcome"] if kind == "validity" else None),
+                validity_detail=(
+                    None if envelope is None
+                    else json.dumps(envelope, sort_keys=True)),
+            )
             with conn:
                 stored = record_intent(conn, intent=intent)
         except (sqlite3.IntegrityError, ValueError) as exc:
