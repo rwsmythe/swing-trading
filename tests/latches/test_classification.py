@@ -649,3 +649,43 @@ def test_the_away_rate_is_WITHHELD_on_INDETERMINATE_not_only_on_BROKEN():
         bucket_counts=counts, health=TelemetryHealth(verdict="broken"))
     assert broken.objective_rate is None
     assert "BROKEN" in broken.withheld_reason
+
+
+def test_an_UNASSESSABLE_window_RAISES_rather_than_truncating_silently():
+    """CODEX EXEC R5. The walk's hard bound is a corruption guard, and silently
+    returning its first 400 sessions recreates the exact defect the enumeration
+    was written to fix: an old post-epoch latch lying WHOLLY OUTSIDE the
+    truncated window is never assessed on any session it was live for, so health
+    returns `ok` off 0/0 coverage and the classifier scores its missing views as
+    `away_unseen` -- a fabricated away-fire out of a window nobody looked at.
+
+    An incomplete window must WITHHOLD. Asserted as the raise, plus the fact
+    that the pre-fix silent truncation WOULD have verdicted `ok`.
+    """
+    from swing.latches.classification import (
+        TelemetryWindowTooLongError,
+        telemetry_window_sessions,
+    )
+    old = _latch(anchor=date(2020, 1, 6), last=date(2020, 2, 6))
+    with pytest.raises(TelemetryWindowTooLongError):
+        telemetry_window_sessions([old], date(2026, 8, 12))
+    # The truncated window a silent cap would have produced assesses NOTHING
+    # about this latch, and `assess_telemetry_health` would call that `ok`.
+    truncated = telemetry_window_sessions(
+        [_latch(anchor=date(2026, 7, 29), last=date(2026, 8, 12))],
+        date(2026, 8, 12))
+    verdict = assess_telemetry_health(
+        sessions=truncated, latches=[old], views=[]).verdict
+    assert verdict == "ok", (
+        "this pins WHY the raise is required: a window holding no session the "
+        "latch was live for verdicts ok, and ok is a licence to score")
+
+
+def test_a_window_INSIDE_the_bound_still_returns_normally():
+    """The pair -- without it, 'raise on too long' is satisfied by a function
+    that has started refusing every window."""
+    from swing.latches.classification import telemetry_window_sessions
+    latch = _latch(anchor=date(2026, 7, 29), last=date(2026, 8, 12))
+    got = telemetry_window_sessions([latch], date(2026, 8, 12))
+    assert got and got[0] == date(2026, 8, 12)
+    assert got[-1] == date(2026, 7, 29)

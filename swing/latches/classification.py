@@ -534,6 +534,20 @@ def _live_on(latch, session: date) -> bool:
     return latch.anchor <= session <= _clear_or_horizon(latch)
 
 
+# The walk's hard bound. ~19 months of sessions -- generous for any real latch
+# window, and a corrupt anchor trips it rather than walking the calendar.
+_TELEMETRY_WINDOW_MAX_SESSIONS = 400
+
+
+class TelemetryWindowTooLongError(RuntimeError):
+    """The health window could not be enumerated COMPLETELY.
+
+    A dedicated type because the callers must be able to tell "this window is
+    unassessable" apart from an arbitrary failure, and because the ONLY safe
+    response to either is the same: withhold the verdict. Never degrade to `ok`.
+    """
+
+
 def telemetry_window_sessions(latches, through: date) -> list[date]:
     """The NYSE sessions the health check assesses -- the union of the latches'
     live windows, bounded ABOVE by `through`.
@@ -562,13 +576,24 @@ def telemetry_window_sessions(latches, through: date) -> list[date]:
         return []
     sessions: list[date] = []
     cursor = through
-    # A hard bound so a corrupt anchor cannot walk the calendar forever.
-    for _ in range(400):
+    # A hard bound so a corrupt anchor cannot walk the calendar forever -- but
+    # HITTING IT IS AN ERROR, NOT A TRUNCATION (Codex exec R5). Silently
+    # returning the first 400 sessions recreates the very defect this function
+    # was written to fix: an old post-epoch latch lying wholly OUTSIDE the
+    # truncated window is then never assessed on any session it was live for,
+    # so health returns `ok` off 0/0 coverage and the classifier scores its
+    # missing views as `away_unseen` -- a fabricated away-fire out of a window
+    # nobody looked at. An incomplete window must WITHHOLD, which is what every
+    # caller's degrade path does with this.
+    for _ in range(_TELEMETRY_WINDOW_MAX_SESSIONS):
         if cursor < start:
-            break
+            return sessions
         sessions.append(cursor)
         cursor = session_offset(cursor, -1)
-    return sessions
+    raise TelemetryWindowTooLongError(
+        f"the telemetry window from {start} through {through} exceeds "
+        f"{_TELEMETRY_WINDOW_MAX_SESSIONS} sessions; it cannot be assessed "
+        "completely, so no verdict may be asserted over it")
 
 
 def assess_telemetry_health(

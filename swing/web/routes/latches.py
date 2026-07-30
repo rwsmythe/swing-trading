@@ -570,6 +570,15 @@ def _parse_snapshot(form) -> dict:
             "must carry EXACTLY the broker-snapshot roster keys; got "
             f"{sorted(envelope)}")
     branch = envelope.get("broker_snapshot_branch")
+    if not isinstance(branch, str):
+        # MEMBERSHIP-TESTING A CLIENT-CONTROLLED VALUE REQUIRES KNOWING IT IS
+        # HASHABLE (Codex exec R5). The roster check passes only KEYS, so a
+        # roster-conformant envelope carrying `"broker_snapshot_branch": []`
+        # reaches this line and `[] in frozenset(...)` raises
+        # `TypeError: unhashable type` -- OUTSIDE the guard, so a reachable
+        # payload 500s instead of being named and refused.
+        raise _IntentRejectedError(
+            "broker_snapshot_branch", "must be a string")
     if branch not in LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES:
         # An `unavailable` book renders NO validity prompt in EITHER direction,
         # so a persisted row asserting an execution outcome against an unknown

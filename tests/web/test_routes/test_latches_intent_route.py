@@ -1030,3 +1030,31 @@ def test_an_infinite_observed_price_is_REFUSED(seeded_db, frozen_clocks):
     assert r.status_code == 400
     assert "finite" in r.text
     assert len(_intents(cfg)) == before
+
+
+def test_a_non_string_snapshot_branch_is_REFUSED_not_a_500(
+        seeded_db, frozen_clocks):
+    """CODEX EXEC R5. The roster check validates KEYS, so a roster-conformant
+    envelope carrying a LIST for `broker_snapshot_branch` reaches the membership
+    test, and `[] in frozenset(...)` raises `TypeError: unhashable type` outside
+    the guard -- a reachable payload 500ing instead of being named and refused.
+    Membership-testing a client-controlled value requires first knowing it is
+    hashable."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    envelope = json.loads(_snapshot())
+    envelope["broker_snapshot_branch"] = []
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        before = len(_intents(cfg))
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "not_submitted",
+            "broker_snapshot_json": json.dumps(envelope, sort_keys=True),
+        })
+    assert r.status_code == 400
+    assert "broker_snapshot_branch" in r.text
+    assert len(_intents(cfg)) == before

@@ -26,6 +26,8 @@ from swing.data.repos.latch_view_events import list_views_for_latch
 from swing.latches.classification import (
     LatchDisposition,
     ParityObservation,
+    TelemetryHealth,
+    TelemetryWindowTooLongError,
     assess_telemetry_health,
     classify_latch,
     governing_intent,
@@ -189,9 +191,21 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
     # `horizon_session` is `action_session_for_run`, so it is a session by
     # construction, and it is the SAME bound the panel passes: the two surfaces
     # now share the bound as well as the walk.
-    sessions = telemetry_window_sessions(latches, derivation.horizon_session)
-    health = assess_telemetry_health(
-        sessions=sessions, latches=latches, views=views)
+    #
+    # AN UNASSESSABLE WINDOW WITHHOLDS; IT NEVER DEGRADES TO `ok` (Codex exec
+    # R5). The walk is hard-bounded, and on an aging DB a genuinely old
+    # post-epoch latch can exceed it -- at which point the honest answer is that
+    # this window cannot be assessed, NOT that it was fine. Degrading to `ok`
+    # here would let the classifier score never-assessed sessions as
+    # `away_unseen`, which is the fabricated away-fire the whole gate exists to
+    # prevent. The panel's degrade path already lands on `indeterminate`; this
+    # is the same answer at the other surface.
+    try:
+        sessions = telemetry_window_sessions(latches, derivation.horizon_session)
+        health = assess_telemetry_health(
+            sessions=sessions, latches=latches, views=views)
+    except TelemetryWindowTooLongError:
+        health = TelemetryHealth(verdict="indeterminate")
 
     observations = []
     for latch in latches:
