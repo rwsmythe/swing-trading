@@ -2347,7 +2347,7 @@ def _attributable_orders(join) -> tuple:
     return tuple(o for o in join.orders if o.order_id not in stray_ids)
 
 
-def _prompt_candidates(join) -> tuple[tuple, str]:
+def _prompt_candidates(join, *, ticker_strays=()) -> tuple[tuple, str]:
     """`(candidate resting orders, ambiguity_reason)` for the presence branch.
 
     A MISPRICED ORDER IS STILL AN OBSERVATION (Codex exec R8 MAJOR). 21-A
@@ -2367,28 +2367,34 @@ def _prompt_candidates(join) -> tuple[tuple, str]:
     an arbitrary `order_id` into an audit row.
     """
     attributable = _attributable_orders(join)
-    if len(attributable) == 1 and not join.unmatched_orders:
+    # `LatchOrderJoin.unmatched_orders` is populated for LIVE latches ONLY
+    # (Codex exec R9 MAJOR), so a CLEARED opportunity's unique mispriced order
+    # was invisible here and `limit_price_differs` stayed unreachable for
+    # exactly the latches whose measurement is FINAL. `ticker_strays` supplies
+    # the same set for those, computed once by the caller from the orders that
+    # no latch claims.
+    strays = tuple(join.unmatched_orders) or tuple(ticker_strays)
+    if len(attributable) == 1 and not strays:
         return attributable, ""
     if len(attributable) > 1:
         return (), (
             f"{len(attributable)} resting orders are attributable to this "
             "mandate, so no single broker order id could be recorded against "
             "it. Resolve the duplicates at the broker.")
-    if not attributable and len(join.unmatched_orders) == 1:
-        return tuple(join.unmatched_orders), ""
-    if join.unmatched_orders:
+    if not attributable and len(strays) == 1:
+        return strays, ""
+    if strays:
         return (), (
-            f"{len(attributable) + len(join.unmatched_orders)} resting BUY "
-            "orders on this ticker could be the one you logged and none is "
-            "unambiguously it, so the framework will not guess which order id "
-            "to record.")
+            f"{len(attributable) + len(strays)} resting BUY orders on this "
+            "ticker could be the one you logged and none is unambiguously it, "
+            "so the framework will not guess which order id to record.")
     return (), ""
 
 
 def _validity_prompt_for(latch, *, join, framework, place, digest,
                          snapshot_ts: str, anchor_iso: str, prior_intent_id: str,
                          is_correction: bool = False,
-                         superseded_outcome: str = ""):
+                         superseded_outcome: str = "", ticker_strays=()):
     """`(prompt, withheld_reason)`. PURE -- every input is passed in.
 
     EVERY WITHHELD COLLECTOR CARRIES A REASON (Codex exec R8 MAJOR). Returning a
@@ -2418,7 +2424,8 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
         return None, (
             "the framework's two counts of the orders attributable to this "
             "mandate disagree, so it will not choose a branch")
-    candidates, ambiguity = _prompt_candidates(join)
+    candidates, ambiguity = _prompt_candidates(
+        join, ticker_strays=ticker_strays)
     if ambiguity:
         return None, ambiguity
     exact_matches = 0
@@ -2453,8 +2460,9 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
 
     if branch == "presence":
         order = candidates[0]
-        off_mandate = order.order_id in {
-            o.order_id for o in join.unmatched_orders}
+        off_mandate = order.order_id in (
+            {o.order_id for o in join.unmatched_orders}
+            | {o.order_id for o in ticker_strays})
         observed = observed_side_of(order)
         delta = compute_order_delta(framework, observed)
         complete = _observed_side_is_complete(observed)
@@ -2530,6 +2538,73 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
         superseded_outcome=superseded_outcome), ""
 
 
+def _displaced_cycle_corrections(latch, *, intents, current, digest,
+                                 snapshot_ts, anchor_iso, prior_intent_id):
+    """A correction control per DISPLACED place cycle that carries an answer."""
+    import json as _json
+
+    from swing.latches.classification import _order_key
+    from swing.latches.constants import (
+        LATCH_BROKER_SNAPSHOT_KEYS,
+        LATCH_VALIDITY_OUTCOMES,
+    )
+    out: list[LatchValidityPromptVM] = []
+    for place in sorted(
+            (i for i in intents if i.intent_kind == "place"), key=_order_key):
+        if current is not None and place.intent_id == current.intent_id:
+            continue
+        children = [
+            i for i in intents
+            if i.intent_kind == "validity"
+            and i.validated_place_intent_id == place.intent_id
+        ]
+        if not children:
+            continue
+        answered = max(children, key=_order_key)
+        envelope = {
+            "broker_snapshot_ts": snapshot_ts,
+            # The ABSENCE shape: this correction offers no observed order for a
+            # cycle whose order book cannot be reconstructed.
+            "broker_snapshot_branch": "absence",
+            "broker_snapshot_digest": digest,
+            "broker_snapshot_session": anchor_iso,
+            "attributable_order_count": 0,
+            "exact_framework_match_count": 0,
+            "indeterminate": False,
+        }
+        if set(envelope) != set(LATCH_BROKER_SNAPSHOT_KEYS):  # pragma: no cover
+            continue
+        out.append(LatchValidityPromptVM(
+            ticker=latch.identity.ticker,
+            candidate_id=latch.identity.candidate_id,
+            branch="absence",
+            headline=(
+                f"An EARLIER order cycle for {latch.identity.ticker} (place "
+                f"intent {place.intent_id}, logged "
+                f"{place.action_session_date}) is recorded as "
+                f"{answered.validity_outcome}. It is no longer the current "
+                "cycle, so its order book cannot be re-read -- but the answer "
+                "is still correctable DOWNWARD."),
+            divergence_note="",
+            incomplete_note=(
+                "Re-asserting ACCEPTANCE for a displaced cycle would require an "
+                "observed order side nothing can reconstruct, so only the other "
+                "outcomes are offered."),
+            parent_place_intent_id=place.intent_id,
+            prior_intent_id=prior_intent_id,
+            options=tuple(
+                (n, _VALIDITY_OPTION_LABELS[n])
+                for n in sorted(LATCH_VALIDITY_OUTCOMES
+                                - {"accepted_by_broker"})),
+            confirm_available=False, confirm_label="",
+            actual_fields=(),
+            snapshot_json=_json.dumps(envelope, sort_keys=True),
+            view_session_date=anchor_iso,
+            is_correction=True,
+            superseded_outcome=answered.validity_outcome))
+    return tuple(out)
+
+
 def _fmt_price_or_blank(value) -> str:
     return "" if value is None else f"{float(value):.2f}"
 
@@ -2587,6 +2662,17 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
     digest = _broker_book_digest(orders)
     snapshot_ts = now.isoformat(timespec="seconds")
     anchor_iso = anchor.isoformat()
+    # Resting BUY orders NO latch claims, per ticker. 21-A carries this set on
+    # the join for LIVE latches only, so it is recomputed here for the cleared
+    # ones -- whose measurement is FINAL and therefore the one that most needs
+    # its divergence captured.
+    claimed = {
+        o.order_id for j in joins.values() for o in _attributable_orders(j)}
+    strays_by_ticker: dict[str, list] = {}
+    for o in orders or ():
+        if o.order_id in claimed:
+            continue
+        strays_by_ticker.setdefault(o.ticker, []).append(o)
     out: list[LatchValidityPromptVM] = []
     degraded: list[str] = []
     withheld_notes: list[str] = []
@@ -2638,7 +2724,9 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
                 for i in intents):
             # Settled by the FILL rather than by an answer -- nothing to correct.
             continue
-        if (not is_correction and not _prompt_candidates(join)[0]
+        strays = tuple(strays_by_ticker.get(latch.identity.ticker, ()))
+        if (not is_correction
+                and not _prompt_candidates(join, ticker_strays=strays)[0]
                 and place.action_session_date >= anchor_iso):
             continue
         try:
@@ -2648,7 +2736,8 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
                 anchor_iso=anchor_iso,
                 prior_intent_id=_prior_intent_id(intents),
                 is_correction=is_correction,
-                superseded_outcome=outcome if is_correction else "")
+                superseded_outcome=outcome if is_correction else "",
+                ticker_strays=strays)
         except Exception as exc:  # noqa: BLE001 -- A6: the fragment never 500s
             _log.warning(
                 "latch validity prompt degraded for candidate %s: %s", cid, exc)
@@ -2656,6 +2745,22 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
             continue
         if prompt is not None:
             out.append(prompt)
+            # A DISPLACED CYCLE'S ANSWER MUST STAY CORRECTABLE (Codex exec R9
+            # MAJOR). Once P1 is displaced by P2 or by a decline, its validity
+            # answer left the panel entirely -- so an erroneous, FLATTERING
+            # `accepted_by_broker` on P1 would govern that cycle forever while
+            # the handler supported per-parent corrections all along.
+            #
+            # BOUNDED, AND THE BOUND IS HONEST: only the NON-ACCEPTED outcomes
+            # are offered, because re-asserting acceptance requires a COMPLETE
+            # observed side and nothing can reconstruct the order book as it
+            # stood for a cycle that has since been displaced. The direction that
+            # matters -- correcting a flattering acceptance DOWNWARD -- is open;
+            # the direction that would require inventing evidence is not.
+            out.extend(_displaced_cycle_corrections(
+                latch, intents=intents, current=place, digest=digest,
+                snapshot_ts=snapshot_ts, anchor_iso=anchor_iso,
+                prior_intent_id=_prior_intent_id(intents)))
         elif withheld:
             # A WITHHELD COLLECTOR IS LABELLED WITH ITS REASON. Silence here
             # reads as "there is no question about this latch", and the

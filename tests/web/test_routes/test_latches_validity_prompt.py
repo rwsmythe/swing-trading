@@ -195,6 +195,33 @@ def _form_fields(prompt_html: str) -> dict:
     return fields
 
 
+def _clone_place(cfg, place_id: int) -> int:
+    """A SECOND `place` row for the same latch, copied off the first.
+
+    Raw SQL rather than a second form POST: the prepared-order form is
+    legitimately WITHHELD in the prompt session, and a test that needed the form
+    to be offered would be testing the fixture rather than the displacement.
+    """
+    conn = connect(cfg.paths.db_path)
+    try:
+        cols = [r[1] for r in conn.execute(
+            "PRAGMA table_info(latch_order_intents)").fetchall()
+            if r[1] != "intent_id"]
+        row = dict(zip(cols, conn.execute(
+            f"SELECT {', '.join(cols)} FROM latch_order_intents "
+            "WHERE intent_id = ?", (place_id,)).fetchone(), strict=True))
+        row["idempotency_key"] = "cloned-place"
+        row["recorded_ts"] = "2026-07-29T23:59:59"
+        with conn:
+            cur = conn.execute(
+                f"INSERT INTO latch_order_intents ({', '.join(cols)}) VALUES "
+                f"({', '.join('?' * len(cols))})",
+                tuple(row[c] for c in cols))
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
 def _form_html(prompt_html: str, css_class: str) -> str:
     """ONE named form out of the prompt, so an assertion about the confirm form
     cannot be satisfied by the other one."""
@@ -859,3 +886,59 @@ def test_a_FRACTIONAL_broker_quantity_is_UNKNOWN_and_never_truncated(
         prompt = _prompt_html(_fragment(client, PROMPT_ANCHOR).text)
     assert "latch-validity-confirm" not in prompt
     assert "could not be read completely" in prompt
+
+
+def test_a_DISPLACED_cycles_answer_stays_correctable_DOWNWARD(
+        seeded_db, monkeypatch, clocks):
+    """CODEX EXEC R9 MAJOR. Once P1 is displaced by P2, its validity answer left
+    the panel entirely -- so an erroneous, FLATTERING `accepted_by_broker` on P1
+    would govern that cycle forever while the handler supported per-parent
+    corrections all along.
+
+    BOUNDED, AND THE BOUND IS HONEST: only the non-accepted outcomes are
+    offered, because re-asserting acceptance requires a COMPLETE observed side
+    and nothing can reconstruct the order book as it stood for a displaced
+    cycle. The direction that matters -- correcting a flattering acceptance
+    DOWNWARD -- is open; the one that would require inventing evidence is not.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[_order()])
+    with TestClient(app) as client:
+        p1 = _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        confirm = _form_fields(_form_html(
+            _prompt_html(_fragment(client, PROMPT_ANCHOR).text),
+            "latch-validity-confirm"))
+        client.post("/latches/intent", headers=_HX, data=confirm)
+        # A SECOND place cycle displaces P1. Written directly, because the
+        # prepared-order form is legitimately WITHHELD in the prompt session
+        # (no close is dated its derivation session) and the subject here is the
+        # correction control, not the second cycle's own form.
+        _clone_place(cfg, p1)
+        html = _fragment(client, PROMPT_ANCHOR).text
+        assert f"place intent {p1}" in html
+        assert "correctable DOWNWARD" in html
+        displaced = next(
+            block for block in html.split('<section class="latch-validity-prompt')
+            if f"place intent {p1}" in block)
+        fields = _form_fields(_form_html(displaced, "latch-validity-other"))
+        assert fields["validated_place_intent_id"] == str(p1)
+        assert "accepted_by_broker" not in _radio_values(displaced)
+        r = client.post("/latches/intent", headers=_HX,
+                        data=fields | {"validity_outcome": "not_submitted"})
+    assert r.status_code == 200, r.text
+    from swing.data.repos.latch_order_intents import list_intents_for_latch
+    from swing.latches.classification import resolve_execution_outcome_for
+    from swing.latches.reader import build_latch_derivation
+    conn = connect(cfg.paths.db_path)
+    try:
+        latch = next(x for x in build_latch_derivation(
+            conn, cfg, now=PROMPT_NOW).latches
+            if x.identity.candidate_id == cid)
+        intents = list_intents_for_latch(conn, candidate_id=cid)
+    finally:
+        conn.close()
+    p1_row = next(i for i in intents if i.intent_id == p1)
+    assert resolve_execution_outcome_for(latch, p1_row, intents) == (
+        "not_submitted"), "the flattering acceptance no longer governs P1"

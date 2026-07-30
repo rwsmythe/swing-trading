@@ -774,6 +774,83 @@ def _latch_for_identity(conn, cfg, candidate_id: int, anchor: date):
          if lat.identity.candidate_id == candidate_id), None)
 
 
+def _semantic_replay(conn, *, candidate_id: int, kind: str, anchor_digest: str,
+                     actual_digest: str, parent_id: int | None):
+    """The GOVERNING row when this submission says EXACTLY what it already says.
+
+    RESTORES THE REFRESH-COLLAPSE PROPERTY THAT `prior_intent_id` BROKE (Codex
+    exec R9 MAJOR). The key is content-derived precisely so a REFRESH followed by
+    an identical resubmit collapses -- but the ruling-3 context anchor made the
+    key depend on the render, so after recording A a reload renders `prior=A` and
+    resubmitting the SAME answer produced a NEW key and a duplicate row. Two
+    claims in one docstring, only one of them true.
+
+    BOTH PROPERTIES NOW HOLD, because they are about different things:
+      * A -> A (no intervening different answer) is a REPLAY -- it says what the
+        governing row already says, so it collapses onto it.
+      * A -> B -> A IS a correction -- it differs from the governing row B -- so
+        it writes, and the operator's LAST answer governs.
+    The test is SEMANTIC IDENTITY WITH THE CURRENT GOVERNOR, not the render, so
+    no reload can turn a repeat into a second event and no correction can be
+    mistaken for a repeat.
+
+    Compared through the SAME digest functions the key is built from, so
+    "identical" cannot drift from what the key means by it.
+    """
+    from swing.data.repos.latch_order_intents import list_intents_for_latch
+    from swing.latches.constants import DERIVATION_FIELD_MANIFEST
+    from swing.latches.order_intent import (
+        FRAMEWORK_ANCHOR_FIELDS,
+        build_anchor_digest,
+    )
+    try:
+        rows = [r for r in list_intents_for_latch(conn, candidate_id=candidate_id)
+                if r.intent_id is not None]
+    except sqlite3.Error as exc:
+        raise _GovernanceUnknownError from exc
+    if not rows:
+        return None
+    governor = max(rows, key=lambda r: (r.recorded_ts, r.intent_id))
+    if governor.intent_kind != kind:
+        return None
+    if (governor.validated_place_intent_id or None) != (parent_id or None):
+        return None
+    stored = {
+        name: getattr(governor, name, None)
+        for name, _ in FRAMEWORK_ANCHOR_FIELDS
+    }
+    stored.update({
+        f.column: getattr(governor, f.column, None)
+        for f in DERIVATION_FIELD_MANIFEST
+    })
+    if build_anchor_digest(
+            intent_kind=kind, candidate_id=candidate_id,
+            view_session_date=governor.action_session_date,
+            values=stored) != anchor_digest:
+        return None
+    if _stored_actual_digest(governor, kind) != actual_digest:
+        return None
+    return governor
+
+
+def _stored_actual_digest(intent, kind: str) -> str:
+    """`_actual_digest` over a STORED row -- the same function, same encodings."""
+    answer = {
+        name: getattr(intent, name, None)
+        for name in _ANSWER_FIELDS_BY_KIND[kind]
+    }
+    detail = getattr(intent, "validity_detail", None)
+    snapshot_digest = None
+    if detail:
+        try:
+            snapshot_digest = str(json.loads(detail)["broker_snapshot_digest"])
+        except (ValueError, KeyError, TypeError):
+            snapshot_digest = None
+    return _actual_digest(
+        kind, answer, parent_id=intent.validated_place_intent_id,
+        snapshot_digest=snapshot_digest)
+
+
 def _governing_intent_id(conn, candidate_id: int) -> int | None:
     """The latch's GOVERNING ledger row id right now, or `None`.
 
@@ -987,6 +1064,27 @@ async def latches_intent(request: Request):
                     "again - your latest answer wins and nothing is "
                     "overwritten.")
             return _intent_fragment(request, existing, replayed=True)
+
+        # --- step 4b: THE SEMANTIC REPLAY --------------------------------
+        # The key MISSED, which under the ruling-3 context anchor includes the
+        # plain case of a RELOAD followed by the same answer. If this submission
+        # says exactly what the governing row already says, it is a repeat and
+        # not an event.
+        try:
+            same = _semantic_replay(
+                conn, candidate_id=candidate_id, kind=kind,
+                anchor_digest=anchor_digest,
+                actual_digest=_actual_digest(
+                    kind, answer, parent_id=parent_id,
+                    snapshot_digest=snapshot_digest),
+                parent_id=parent_id)
+        except _GovernanceUnknownError:
+            return _conflict(
+                "This latch's ledger could not be read, so it cannot be shown "
+                "whether this answer is a repeat or a correction. NOTHING was "
+                "recorded. Reload and answer again; see the log.")
+        if same is not None:
+            return _intent_fragment(request, same, replayed=True)
 
         # --- step 5: FIRST-WRITE VALIDATION ONLY --------------------------
         now = _now()

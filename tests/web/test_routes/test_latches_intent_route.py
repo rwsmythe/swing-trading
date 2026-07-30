@@ -1361,3 +1361,32 @@ def test_an_UNREADABLE_ledger_REFUSES_the_replay_rather_than_waving_it_through(
     assert r.status_code == 409
     assert "could not be read" in r.text
     assert len(_intents(cfg)) == 1, "the refusal writes NOTHING"
+
+
+def test_a_RELOAD_then_the_SAME_answer_is_a_REPLAY_not_a_second_row(
+        seeded_db, frozen_clocks):
+    """CODEX EXEC R9 MAJOR. The ruling-3 context anchor made the key depend on
+    the RENDER, which broke the property the content-derived key exists for: a
+    refresh followed by an identical resubmit collapses. After recording A, a
+    reload renders `prior=A`, so the same answer keyed differently and wrote a
+    duplicate.
+
+    BOTH properties hold now, because they are about different things: an answer
+    IDENTICAL TO THE CURRENT GOVERNOR is a repeat and collapses; an answer that
+    DIFFERS from it is a correction and writes. The A -> B -> A test above is the
+    other half of this pair -- neither passes against an implementation that
+    satisfies only the other.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        first = _attest(client, cid, "was_away", "")
+        id_a = _intents(cfg)[0][0]
+        # The RELOAD: the form now renders carrying the row it just wrote.
+        again = _attest(client, cid, "was_away", str(id_a))
+    assert first.status_code == again.status_code == 200
+    assert len(_intents(cfg)) == 1, (
+        "the same answer twice is ONE event, however many times the page was "
+        "rendered in between")
+    assert "already recorded" in again.text

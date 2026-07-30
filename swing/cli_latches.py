@@ -288,16 +288,49 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
             # over evidence the ledger was holding and not showing. An
             # unanswered cycle is exactly the absence RD's ruling 4 says must be
             # labelled rather than left to read as nothing-to-see.
+            # THE OUTCOME ALONE IS NOT THE EVIDENCE (Codex exec R9 MAJOR). An
+            # earlier `accepted_by_broker` cycle carrying a PRICE or QUANTITY
+            # mismatch printed simply as "accepted_by_broker" while an exact
+            # current retry displayed 100% agreement -- so the disclosure named
+            # the cycle and still hid the divergence, which is the thing the
+            # reader is being shown it for.
             child = _governing_validity_child(latch_intents, earlier)
             superseded.append((
                 cid, latch.identity.ticker, earlier.intent_id,
                 "unknown (never answered)" if child is None
-                else child.validity_outcome))
+                else child.validity_outcome,
+                _delta_summary(earlier, child)))
         observations.append(ParityObservation(
             disposition=disposition,
             framework=_framework_side(place),
             actual=_actual_side(validity)))
     return observations, health, intents, unattached, places, tuple(superseded)
+
+
+def _delta_summary(place, validity) -> str:
+    """The earlier cycle's per-field delta, or a LABELLED unmeasured state."""
+    from swing.latches.order_intent import compute_order_delta
+    actual = _actual_side(validity)
+    if actual is None:
+        return "delta NOT YET MEASURABLE (no observed order side recorded)"
+    delta = compute_order_delta(_framework_side(place), actual)
+    if delta.any_difference is None:
+        return (f"delta NOT YET MEASURABLE (unknown: "
+                f"{', '.join(delta.unknown_fields)})")
+    if delta.any_difference is False:
+        return "delta: none (framework and actual agree)"
+    parts = []
+    if delta.order_type_differs:
+        parts.append("order_type")
+    if delta.duration_differs:
+        parts.append("duration")
+    if delta.stop_leg == "compared" and delta.stop_price_delta:
+        parts.append(f"stop {delta.stop_price_delta:+.2f}")
+    if delta.limit_price_delta:
+        parts.append(f"limit {delta.limit_price_delta:+.2f}")
+    if delta.quantity_delta:
+        parts.append(f"quantity {delta.quantity_delta:+d}")
+    return "delta: " + ", ".join(parts)
 
 
 def _governing_validity_child(intents, place):
@@ -494,9 +527,9 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
     click.echo("  is only ever set by the operator answering the prompt.")
     if superseded:
         click.echo("  EARLIER PLACE/VALIDITY CYCLES NOT IN THE NUMBERS ABOVE:")
-        for cid, ticker, place_id, outcome in superseded:
+        for cid, ticker, place_id, outcome, delta in superseded:
             click.echo(f"    {ticker} (candidate {cid}) place intent "
-                       f"{place_id}: {outcome}")
+                       f"{place_id}: {outcome}; {delta}")
         click.echo("    The ledger's UNIT is the LATCH, so one opportunity")
         click.echo("    contributes ONE observation and the agreement numbers")
         click.echo("    read its GOVERNING cycle. An earlier rejection is real")
