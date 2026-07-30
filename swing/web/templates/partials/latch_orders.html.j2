@@ -144,6 +144,15 @@
      `hx-target="this"` because hx-target INHERITS from ancestors; and
      `hx-headers` with HX-Request is what keeps OriginGuard strict mode from
      403-ing an unsafe method. ASCII only. #}
+  {# A FAILED COLLECTOR IS NOT AN ABSENT QUESTION. Without this line a prompt
+     that could not be BUILT renders identically to a latch with nothing to ask,
+     and the agreement denominator stays empty for a reason nobody can see --
+     which is this arc's own failure mode pointed at its own instrument. #}
+  {% if vm.validity_prompt_degraded %}
+  <p class="latch-alarm latch-alarm-warning latch-validity-degraded">
+    {{ vm.validity_prompt_degraded }}
+  </p>
+  {% endif %}
   {% for prompt in vm.validity_prompts %}
   <section class="latch-validity-prompt latch-validity-{{ prompt.branch }}">
     {% if prompt.is_correction %}

@@ -680,3 +680,99 @@ def test_a_replayed_identical_answer_writes_ONE_row(
         second = client.post("/latches/intent", headers=_HX, data=payload)
     assert first.status_code == second.status_code == 200
     assert len([r for r in _rows(cfg) if r[1] == "validity"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Codex exec R7 -- the CONFIRM control must mirror the ledger contract, the
+# decision family resolves once, and a failed collector is never silent.
+# ---------------------------------------------------------------------------
+def test_a_STOP_LIMIT_with_no_trigger_gets_NO_confirm_button(
+        seeded_db, monkeypatch, clocks):
+    """CODEX EXEC R7 MAJOR. The completeness predicate did not mirror the
+    accepted-row contract's STOP-LEG rule, so a STOP_LIMIT with no stop trigger
+    rendered the CONFIRM button and `LatchOrderIntent.__post_init__` then refused
+    the POST -- a control that renders and cannot be submitted, which is the
+    exact class this dispatch exists to close.
+
+    A partial mirror is worse than none: it moves the refusal from the render,
+    where it is explainable, to the click, where it is a dead end.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    # Attributable via its LIMIT leg at the zone cap, but typed STOP_LIMIT with
+    # no trigger -- a shape the accepted-row contract forbids.
+    broken = _order(order_type="STOP_LIMIT", stop_price=None, price=18.89)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[broken])
+    with TestClient(app) as client:
+        _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        prompt = _prompt_html(_fragment(client, PROMPT_ANCHOR).text)
+    assert "latch-validity-confirm" not in prompt
+    assert "could not be read completely" in prompt
+    assert _radio_values(prompt) == set(LATCH_VALIDITY_OUTCOMES) - {
+        "accepted_by_broker"}
+
+
+def test_a_LIMIT_carrying_a_stop_leg_gets_NO_confirm_button(
+        seeded_db, monkeypatch, clocks):
+    """The other half of the same contract, and the FTRE-rejected shape: an
+    accepted LIMIT must carry NO stop leg."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(order_type="LIMIT", stop_price=18.34)])
+    with TestClient(app) as client:
+        _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        prompt = _prompt_html(_fragment(client, PROMPT_ANCHOR).text)
+    assert "latch-validity-confirm" not in prompt
+
+
+def test_a_DECLINE_superseding_the_place_STOPS_the_validity_question(
+        seeded_db, monkeypatch, clocks):
+    """CODEX EXEC R7 MAJOR. The place/decline recency ruling was applied in the
+    classifier and NOT propagated here, so after `place -> later decline` the
+    panel kept asking about the order he had since declined. `place` and
+    `decline` are one question; the current cycle follows whichever he chose
+    LAST, and the displaced place becomes the report's labelled earlier cycle.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[])
+    with TestClient(app) as client:
+        _log_place(client, cfg, cid)
+        assert "latch-validity-prompt" not in _fragment(client, PLACE_ANCHOR).text
+        form = _anchor_form(cfg, cid, now=PLACE_NOW) | {
+            "intent_kind": "decline", "decline_reason": "changed my mind",
+            "prior_intent_id": str(_rows(cfg)[0][0])}
+        assert client.post(
+            "/latches/intent", headers=_HX, data=form).status_code == 200
+        clocks.set(PROMPT_NOW)
+        html = _fragment(client, PROMPT_ANCHOR).text
+    assert "latch-validity-prompt" not in html
+
+
+def test_a_FAILED_prompt_collector_SAYS_SO_instead_of_looking_like_no_question(
+        seeded_db, monkeypatch, clocks):
+    """CODEX EXEC R7 MAJOR. Every prompt seam degrades rather than 500s (A6),
+    but a SILENT degrade makes "the question could not be built" visually
+    identical to "there is no question here" -- and the consequence of the first
+    is an agreement denominator that stays empty for a reason nobody can see.
+    Degrading silently on this surface is the arc's own failure mode."""
+    import swing.web.view_models.latches as vm_mod
+
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[_order()])
+    with TestClient(app) as client:
+        _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+
+        def _boom(*a, **k):
+            raise RuntimeError("the order book row is malformed")
+
+        monkeypatch.setattr(vm_mod, "_validity_prompt_for", _boom)
+        html = _fragment(client, PROMPT_ANCHOR).text
+    assert "latch-validity-prompt" not in html
+    assert "COULD NOT BE BUILT" in html
+    assert "FTRE" in html

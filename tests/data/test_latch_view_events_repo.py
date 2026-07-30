@@ -288,3 +288,54 @@ def test_a_LOST_INSERT_RACE_merges_into_the_winner_rather_than_losing_the_claim(
         "potential discipline_lapse into never_actionable")
     assert row.actionable_at_first_view == 0, "the winner's first view stands"
     assert row.actionable_at_last_view == 1
+
+
+def test_an_OUT_OF_ORDER_loser_still_merges_its_actionable_claim(
+        conn_and_identity, monkeypatch):
+    """CODEX EXEC R7 MAJOR -- the flattering direction reached through the very
+    recovery path added to close the flattering direction.
+
+    Two requests can complete OUT OF TIMESTAMP ORDER, and the schema enforces
+    `last_viewed_ts >= first_viewed_ts`. So an EARLIER-stamped render arriving
+    second pushed `last_viewed_ts` BACKWARDS, the CHECK aborted the UPDATE, the
+    route 409'd -- and when that loser was the ACTIONABLE render,
+    `actionable_ever_viewed` stayed 0 forever and a potential `discipline_lapse`
+    was recorded as `never_actionable`.
+
+    `actionable_ever_viewed` carries NO ordering claim (it says an actionable
+    render HAPPENED, not when), so it merges either way; only the LAST-VIEW
+    fields are ordered and they advance only on a newer stamp.
+    """
+    from swing.data.repos import latch_view_events as repo
+
+    conn, identity = conn_and_identity
+    winner = repo.record_view(
+        conn, identity=identity, view_session_date="2026-07-29",
+        viewed_ts="2026-07-29T15:00:00", latch_state="armed",
+        surface="latch_panel", actionable=0)
+
+    real_get_view = repo.get_view
+    calls = {"n": 0}
+
+    def _blind_once(*a, **k):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real_get_view(*a, **k)
+
+    monkeypatch.setattr(repo, "get_view", _blind_once)
+    # EARLIER than the winner's stamp -- the ordering the previous fix assumed
+    # away.
+    loser = repo.record_view(
+        conn, identity=identity, view_session_date="2026-07-29",
+        viewed_ts="2026-07-29T09:00:00", latch_state="armed",
+        surface="latch_panel", actionable=1)
+
+    assert loser == winner
+    row = real_get_view(conn, candidate_id=identity.candidate_id,
+                        view_session_date="2026-07-29", surface="latch_panel")
+    assert row.actionable_ever_viewed == 1, (
+        "losing this claim converts a potential discipline_lapse into "
+        "never_actionable")
+    assert row.last_viewed_ts == "2026-07-29T15:00:00", (
+        "the last-view fields carry an ORDERING claim and never move backwards")
+    assert row.first_viewed_ts == "2026-07-29T15:00:00"
+    assert row.view_count == 2

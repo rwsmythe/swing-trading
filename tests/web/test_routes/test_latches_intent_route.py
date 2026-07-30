@@ -1284,3 +1284,24 @@ def test_a_double_click_is_STILL_a_replay_because_its_row_IS_the_governor(
     assert first.status_code == second.status_code == 200
     assert len(_intents(cfg)) == 1
     assert "already recorded" in second.text
+
+
+def test_a_UNICODE_DIGIT_prior_id_is_a_named_400_and_never_a_500(
+        seeded_db, frozen_clocks):
+    """CODEX EXEC R7 MAJOR, and the THIRD instance of one class: never assume a
+    client-controlled string is the shape a predicate implies.
+
+    `str.isdigit()` is TRUE for `\u00b2`, and `int('\u00b2')` then RAISES -- outside the
+    rejection path, so a reachable payload 500s instead of being named. A long
+    enough ASCII digit string trips Python's own integer-conversion limit for the
+    same reason. Both are now refused BY NAME.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        for bad in ("\u00b2", "\u0660\u0661", "9" * 5000):
+            r = _attest(client, cid, "was_away", bad)
+            assert r.status_code == 400, bad
+            assert "prior_intent_id" in r.text
+    assert _intents(cfg) == []

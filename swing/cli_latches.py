@@ -30,7 +30,7 @@ from swing.latches.classification import (
     TelemetryWindowTooLongError,
     assess_telemetry_health,
     classify_latch,
-    governing_intent,
+    current_cycle_place,
     telemetry_window_sessions,
 )
 from swing.latches.constants import (
@@ -251,7 +251,16 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
         disposition: LatchDisposition = classify_latch(
             latch=latch, views=views_by_latch.get(cid, ()),
             intents=latch_intents, telemetry_health=health)
-        place = governing_intent(latch_intents, "place")
+        # THE CURRENT-CYCLE PLACE (Codex exec R7 MAJOR). Keying on the latest
+        # place BY KIND meant a `place -> rejected validity -> later decline`
+        # sequence reported neither the rejection (the superseded place was
+        # still "the" place, so its failure was scored as the current cycle's
+        # outcome only if it happened to be the same row) nor an earlier-cycle
+        # line for it. The decision family resolves ONCE, here as in the
+        # classifier and the panel, and every DISPLACED place -- including all of
+        # them when the governing decision is a DECLINE -- enters the labelled
+        # disclosure below.
+        place = current_cycle_place(latch_intents)
         validity = _governing_validity_child(latch_intents, place)
         # EARLIER PLACE/VALIDITY CYCLES ARE LABELLED, NEVER SILENTLY DISCARDED
         # (auto-review CRITICAL 2). The resolver explicitly supports several
@@ -267,24 +276,23 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
         # earlier cycles are REPORTED beside the numbers rather than folded into
         # them: the reader sees the evidence the agreement rate does not
         # contain, instead of never learning it existed.
-        if place is not None:
-            for earlier in latch_intents:
-                if (earlier.intent_kind != "place"
-                        or earlier.intent_id == place.intent_id):
-                    continue
-                # A CHILDLESS EARLIER CYCLE IS REPORTED TOO (Codex exec R6
-                # MAJOR). Skipping it meant an UNRESOLVED first attempt followed
-                # by an accepted retry produced neither an earlier-cycle line
-                # nor an unknown count, so the governing retry could show 100%
-                # agreement over evidence the ledger was holding and not
-                # showing. An unanswered cycle is exactly the absence RD's
-                # ruling 4 says must be labelled rather than left to read as
-                # nothing-to-see.
-                child = _governing_validity_child(latch_intents, earlier)
-                superseded.append((
-                    cid, latch.identity.ticker, earlier.intent_id,
-                    "unknown (never answered)" if child is None
-                    else child.validity_outcome))
+        for earlier in latch_intents:
+            if earlier.intent_kind != "place":
+                continue
+            if place is not None and earlier.intent_id == place.intent_id:
+                continue
+            # A CHILDLESS EARLIER CYCLE IS REPORTED TOO (Codex exec R6 MAJOR).
+            # Skipping it meant an UNRESOLVED first attempt followed by an
+            # accepted retry produced neither an earlier-cycle line nor an
+            # unknown count, so the governing retry could show 100% agreement
+            # over evidence the ledger was holding and not showing. An
+            # unanswered cycle is exactly the absence RD's ruling 4 says must be
+            # labelled rather than left to read as nothing-to-see.
+            child = _governing_validity_child(latch_intents, earlier)
+            superseded.append((
+                cid, latch.identity.ticker, earlier.intent_id,
+                "unknown (never answered)" if child is None
+                else child.validity_outcome))
         observations.append(ParityObservation(
             disposition=disposition,
             framework=_framework_side(place),

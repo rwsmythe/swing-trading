@@ -126,14 +126,34 @@ def record_view(
         raise ValueError(f"actionable must be 0 or 1; got {actionable!r}")
 
     def _merge(existing) -> int:
+        # THE LAST-VIEW FIELDS ADVANCE ONLY ON A NEWER TIMESTAMP; THE MONOTONIC
+        # `ever` COLUMN MERGES UNCONDITIONALLY (Codex exec R7 MAJOR).
+        #
+        # Two requests can complete OUT OF TIMESTAMP ORDER, and the schema
+        # enforces `last_viewed_ts >= first_viewed_ts`. So an EARLIER-stamped
+        # render arriving second would push `last_viewed_ts` BACKWARDS, the CHECK
+        # would abort the UPDATE, the route would 409 -- and if that loser was
+        # the ACTIONABLE render, `actionable_ever_viewed` would stay 0 forever
+        # and a potential `discipline_lapse` would be recorded as
+        # `never_actionable`. The flattering direction, reached through the very
+        # recovery path added to close the flattering direction.
+        #
+        # `actionable_ever_viewed` is MONOTONIC and carries no ordering claim, so
+        # it merges either way: it says an actionable render HAPPENED, not when.
+        # `view_count` likewise counts views rather than ordering them.
+        newer = viewed_ts >= existing.last_viewed_ts
         conn.execute(
-            "UPDATE latch_view_events SET last_viewed_ts = ?, "
-            "latch_state_at_last_view = ?, view_count = view_count + 1, "
-            "actionable_at_last_view = ?, "
+            "UPDATE latch_view_events SET "
+            "last_viewed_ts = CASE WHEN ? THEN ? ELSE last_viewed_ts END, "
+            "latch_state_at_last_view = "
+            "    CASE WHEN ? THEN ? ELSE latch_state_at_last_view END, "
+            "actionable_at_last_view = "
+            "    CASE WHEN ? THEN ? ELSE actionable_at_last_view END, "
+            "view_count = view_count + 1, "
             "actionable_ever_viewed = MAX(actionable_ever_viewed, ?) "
             "WHERE view_event_id = ?",
-            (viewed_ts, latch_state, actionable, actionable,
-             existing.view_event_id))
+            (newer, viewed_ts, newer, latch_state, newer, actionable,
+             actionable, existing.view_event_id))
         return int(existing.view_event_id)
 
     existing = get_view(

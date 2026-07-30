@@ -40,6 +40,10 @@ log = logging.getLogger(__name__)
 
 # A trivial flood guard: the panel renders at most a handful of live latches.
 _MAX_BEACON_IDS = 200
+# A generous bound on a SQLite rowid's decimal length. It exists to keep the
+# conversion away from Python's integer-conversion limit on an adversarial
+# payload, not to constrain any real id.
+_MAX_ROW_ID_DIGITS = 19
 
 
 def _now() -> datetime:
@@ -452,7 +456,26 @@ def _canonical_optional_id(form, field: str) -> str:
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return ""
     text = str(raw).strip()
-    if not text.isdigit() or int(text) <= 0 or str(int(text)) != text:
+    # `str.isdigit()` IS NOT A SAFE GUARD FOR `int()` (Codex exec R7 MAJOR).
+    # It is TRUE for Unicode digit characters such as `²`, on which `int()`
+    # then RAISES -- outside the rejection path, so a reachable client-controlled
+    # payload 500s the endpoint instead of being named and refused. And a
+    # sufficiently long ASCII digit string trips Python's own integer-conversion
+    # limit, which raises for the same reason. So: ASCII-only, length-bounded,
+    # and the conversion itself inside the guard. Same class as the
+    # `[] in frozenset(...)` unhashable finding two rounds back -- never assume a
+    # client-controlled string is the shape a predicate implies.
+    if (not text.isascii() or not text.isdigit()
+            or len(text) > _MAX_ROW_ID_DIGITS):
+        raise _IntentRejectedError(
+            field, f"{text!r} is not the canonical spelling of a positive "
+                   "row id")
+    try:
+        value = int(text)
+    except ValueError as exc:  # pragma: no cover -- belt behind the guard above
+        raise _IntentRejectedError(
+            field, f"{text!r} is not a decimal integer") from exc
+    if value <= 0 or str(value) != text:
         raise _IntentRejectedError(
             field, f"{text!r} is not the canonical spelling of a positive "
                    "row id")

@@ -1508,6 +1508,14 @@ class LatchOrdersFragmentVM:
     # the norm: a prompt fires only where a logged `place` intent still has an
     # UNRESOLVED execution outcome.
     validity_prompts: tuple[LatchValidityPromptVM, ...] = ()
+    # A FAILED COLLECTOR MUST NOT LOOK LIKE AN ABSENT QUESTION (Codex exec R7
+    # MAJOR). Every seam that builds a prompt degrades rather than 500s (A6) --
+    # but a silent degrade makes "the prompt could not be built" visually
+    # IDENTICAL to "there is no validity question here", and the consequence of
+    # the first is that the agreement denominator stays empty for reasons nobody
+    # can see. Degrading silently on THIS surface is the arc's own failure mode.
+    # Display-ready, empty when nothing failed.
+    validity_prompt_degraded: str = ""
 
     @property
     def all_clear_claims(self) -> tuple[str, ...]:
@@ -2159,13 +2167,18 @@ def build_latch_orders_vm(
     # invites an answer the operator would infer from the panel's own silence.
     intents_by_latch = _intents_by_latch(conn, derivation.latches)
     try:
-        validity_prompts = _validity_prompts(
+        validity_prompts, validity_prompt_degraded = _validity_prompts(
             derivation.latches, joins=joins, orders=orders,
             anchor=horizon_session_override, now=_now(),
             intents_by_latch=intents_by_latch)
     except Exception as exc:  # noqa: BLE001 -- A6: the fragment never 500s
         _log.warning("latch validity prompts degraded: %s", exc)
         validity_prompts = ()
+        validity_prompt_degraded = (
+            f"THE VALIDITY QUESTION COULD NOT BE BUILT AT ALL "
+            f"({type(exc).__name__}). Until it renders, no execution outcome "
+            "can be recorded and the agreement rate stays unmeasurable. See "
+            "the log.")
     return LatchOrdersFragmentVM(
         available=True,
         resolution_kind="ok",
@@ -2203,6 +2216,7 @@ def build_latch_orders_vm(
         form_check_stale_count=form_check_stale_count,
         live_latch_count=sum(1 for lat in derivation.latches if lat.is_live),
         validity_prompts=validity_prompts,
+        validity_prompt_degraded=validity_prompt_degraded,
     )
 
 
@@ -2251,14 +2265,42 @@ def _observed_side_is_complete(side: dict) -> bool:
     over an order we could not fully read would hand the operator a click that
     the ledger then REFUSES, which is a dead end rather than a measurement. So
     the option is withheld and the reduction is LABELLED on the prompt.
+
+    IT MIRRORS THE ACCEPTED-ROW CONTRACT IN FULL, INCLUDING THE STOP-LEG SHAPE
+    (Codex exec R7 MAJOR). A partial mirror is worse than none: a `STOP_LIMIT`
+    with no stop trigger, or a `LIMIT` carrying one, passed the earlier predicate
+    and rendered the CONFIRM button, and `LatchOrderIntent.__post_init__` then
+    refused the POST -- a control that renders and cannot be submitted, which is
+    the exact class this whole dispatch exists to close. The prices and the
+    quantity are checked positive here for the same reason: the schema's `> 0`
+    CHECKs would otherwise reject the click rather than the render.
     """
-    from swing.latches.constants import MANDATE_ORDER_TYPES
-    return (
-        side.get("order_type") in MANDATE_ORDER_TYPES
-        and side.get("duration") not in (None, "UNKNOWN")
-        and side.get("limit_price") is not None
-        and side.get("quantity") is not None
+    from swing.latches.constants import (
+        MANDATE_ORDER_TYPE_BREAKOUT,
+        MANDATE_ORDER_TYPE_PULLBACK,
+        MANDATE_ORDER_TYPES,
     )
+    order_type = side.get("order_type")
+    stop = side.get("stop_price")
+    limit = side.get("limit_price")
+    quantity = side.get("quantity")
+    if order_type not in MANDATE_ORDER_TYPES:
+        return False
+    if side.get("duration") in (None, "UNKNOWN"):
+        return False
+    if limit is None or not (float(limit) > 0):
+        return False
+    if quantity is None or int(quantity) <= 0:
+        return False
+    if order_type == MANDATE_ORDER_TYPE_BREAKOUT:
+        # A STOP_LIMIT without its trigger is not the order the broker holds.
+        if stop is None or not (float(stop) > 0):
+            return False
+    elif order_type == MANDATE_ORDER_TYPE_PULLBACK and stop is not None:
+        # A LIMIT carrying a stop leg is the rejected FTRE shape, and the
+        # accepted-row contract forbids it outright.
+        return False
+    return True
 
 
 def _divergence_note(delta, framework: dict, observed: dict) -> str:
@@ -2479,7 +2521,7 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
     from the panel's own silence.
     """
     from swing.latches.classification import (
-        governing_intent,
+        current_cycle_place,
         resolve_execution_outcome_for,
     )
     from swing.latches.order_intent import framework_side_of
@@ -2488,6 +2530,7 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
     snapshot_ts = now.isoformat(timespec="seconds")
     anchor_iso = anchor.isoformat()
     out: list[LatchValidityPromptVM] = []
+    degraded: list[str] = []
     for latch in latches:
         cid = latch.identity.candidate_id
         join = joins.get(cid)
@@ -2495,8 +2538,14 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
             continue
         intents = intents_by_latch.get(cid)
         if intents is None:
+            degraded.append(latch.identity.ticker)
             continue
-        place = governing_intent(intents, "place")
+        # THE CURRENT-CYCLE PLACE, NOT MERELY THE LATEST PLACE (Codex exec R7
+        # MAJOR). `place` and `decline` are one question, so after
+        # `place -> decline` there is no current order to validate and the panel
+        # must stop asking about the superseded one; the report discloses it as
+        # a displaced cycle instead.
+        place = current_cycle_place(intents)
         if place is None:
             continue
         framework = framework_side_of(place)
@@ -2508,6 +2557,7 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
             _log.warning(
                 "latch execution-outcome read degraded for candidate %s: %s",
                 cid, exc)
+            degraded.append(latch.identity.ticker)
             continue
         # AN ANSWERED PROMPT BECOMES A CORRECTION CONTROL; IT DOES NOT VANISH
         # (Codex exec R6 MAJOR). Suppressing the form the moment ANY outcome was
@@ -2543,10 +2593,19 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
         except Exception as exc:  # noqa: BLE001 -- A6: the fragment never 500s
             _log.warning(
                 "latch validity prompt degraded for candidate %s: %s", cid, exc)
+            degraded.append(latch.identity.ticker)
             continue
         if prompt is not None:
             out.append(prompt)
-    return tuple(out)
+    note = ""
+    if degraded:
+        note = (
+            "THE VALIDITY QUESTION COULD NOT BE BUILT for "
+            + ", ".join(sorted(set(degraded)))
+            + ". That is NOT the same as there being no question to ask: until "
+              "it renders, no execution outcome can be recorded for those "
+              "latches and the agreement rate stays unmeasurable. See the log.")
+    return tuple(out), note
 
 
 def _build_form_check_notes(

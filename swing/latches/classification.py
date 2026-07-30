@@ -339,6 +339,38 @@ def governing_intent(intents, kind: str):
     return max(matching, key=_order_key)
 
 
+def governing_decision(intents):
+    """The LATEST row of the `place`/`decline` DECISION FAMILY, or None.
+
+    ONE resolution, used by the classifier, by the validity prompt and by the
+    monthly report (Codex exec R7 MAJOR). They are the two MUTUALLY EXCLUSIVE
+    answers to one question, so "the current cycle" is whichever he chose LAST --
+    and resolving that in the classifier alone left the other two consumers still
+    keyed on `governing_intent(intents, "place")`. After
+    `place -> rejected validity -> later decline`, the prompt therefore still
+    asked about the superseded place while the report neither scored its
+    rejection nor listed it as an earlier cycle: real framework-failure evidence
+    the ledger was holding and not showing.
+    """
+    family = [i for i in intents if i.intent_kind in ("place", "decline")]
+    if not family:
+        return None
+    return max(family, key=_order_key)
+
+
+def current_cycle_place(intents):
+    """The `place` row that drives the CURRENT execution cycle, or None.
+
+    `None` when the governing decision is a DECLINE: there is no current order
+    to validate, and every earlier place is a DISPLACED cycle the report must
+    disclose rather than a prompt the panel should still be asking about.
+    """
+    decision = governing_decision(intents)
+    if decision is None or decision.intent_kind != "place":
+        return None
+    return decision
+
+
 # ---------------------------------------------------------------------------
 # The EXECUTION axis -- ONE canonical resolver with an EXPLICIT precedence
 # ---------------------------------------------------------------------------
@@ -463,10 +495,7 @@ def classify_latch(
     # Resolved by the SAME total order every other "latest by what?" ruling in
     # this arc uses -- `(recorded_ts, intent_id)`, with the id tiebreak
     # load-bearing because `recorded_ts` is whole seconds.
-    decline = governing_intent(intents, "decline")
-    decision = max(
-        [i for i in (place, decline) if i is not None],
-        key=_order_key, default=None)
+    decision = governing_decision(intents)
     if decision is not None:
         if decision.intent_kind == "place":
             # This says he DECIDED to place, and NOTHING more: a rejected order

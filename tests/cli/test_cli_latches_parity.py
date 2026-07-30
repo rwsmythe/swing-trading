@@ -812,3 +812,33 @@ def test_an_UNANSWERED_earlier_cycle_is_reported_as_unknown_not_omitted(
     assert r.exit_code == 0, r.output
     assert "EARLIER PLACE/VALIDITY CYCLES" in r.output
     assert f"place intent {first}: unknown (never answered)" in r.output
+
+
+def test_a_DECLINE_superseding_the_place_moves_it_into_the_earlier_cycles(
+        seeded_db):
+    """CODEX EXEC R7 MAJOR. The place/decline recency ruling was applied in the
+    classifier and NOT propagated to the report, which still keyed on the latest
+    place BY KIND -- so `place -> rejected validity -> later decline` neither
+    scored the rejection as the current cycle nor disclosed it as an earlier one.
+    Real framework-failure evidence the ledger was holding and not showing.
+
+    The decision family resolves ONCE, in the classifier, in the panel and here.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        place = _intent(conn, cid, "plc1", "place", **_PLACE_BLOCK)
+        _intent(conn, cid, "val2", "validity",
+                validity_outcome="rejected_by_broker",
+                validated_place_intent_id=place,
+                validity_detail=_SNAPSHOT)
+        _intent(conn, cid, "dec3", "decline",
+                decline_reason="the retry is not worth it", **{
+                    k: v for k, v in _PLACE_BLOCK.items()})
+    conn.close()
+    r = _run(cfg_path)
+    assert r.exit_code == 0, r.output
+    assert "declined:" in r.output
+    assert "EARLIER PLACE/VALIDITY CYCLES" in r.output
+    assert f"place intent {place}: rejected_by_broker" in r.output
