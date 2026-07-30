@@ -30,6 +30,7 @@ except (AttributeError, _io.UnsupportedOperation):
 import click
 
 from swing.cli_config import config_group
+from swing.cli_latches import latches_group
 from swing.cli_schwab import schwab_group
 from swing.config import load as load_config
 from swing.data.db import connect, ensure_schema, open_connection
@@ -238,6 +239,7 @@ def main(ctx: click.Context, config_path: str) -> None:
 
 
 main.add_command(config_group)
+main.add_command(latches_group)
 main.add_command(schwab_group)
 
 
