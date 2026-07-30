@@ -300,9 +300,20 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
     click.echo("")
     click.echo("R BUCKETS (a partition -- every observation lands in exactly one)")
     for bucket in sorted(R_BUCKETS):
+        # A SUM OVER NOTHING IS NOT A ZERO (Codex exec R4 MAJOR 3). No V1
+        # emitter attributes an R to an observation, so every bucket summed to
+        # 0.0 and the report printed an authoritative `+0.00R` -- a confident
+        # measurement over no evidence at all, which is precisely the fabricated
+        # all-clear this arc exists to refuse. Where nothing was attributed the
+        # report says so and names the gap.
+        attributed = report.bucket_r_attributed[bucket]
+        r_text = (
+            f"{report.bucket_r[bucket]:+.2f}R (R from {attributed} of "
+            f"{report.bucket_counts[bucket]})"
+            if attributed
+            else "R UNAVAILABLE - no observation in this bucket carries one")
         click.echo(f"  {bucket}:".ljust(_W)
-                   + f"{report.bucket_counts[bucket]} fires, "
-                     f"{report.bucket_r[bucket]:+.2f}R")
+                   + f"{report.bucket_counts[bucket]} fires, " + r_text)
     click.echo("  pending_r is REPORTED, NEVER SCORED -- it is excluded from")
     click.echo("  every denominator, so the reader sees the pipeline rather")
     click.echo("  than a silently smaller corpus.")

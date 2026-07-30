@@ -498,3 +498,49 @@ def test_a_since_that_is_not_a_date_at_all_is_REFUSED(seeded_db):
         r = _run(cfg_path, "--since", bad_value)
         assert r.exit_code != 0, bad_value
         assert "YYYY-MM-DD" in r.output, bad_value
+
+
+def test_an_unattributed_R_bucket_prints_UNAVAILABLE_not_a_confident_zero(
+        seeded_db):
+    """CODEX EXEC R4 MAJOR 3. A SUM OVER NOTHING IS NOT A ZERO. No V1 emitter
+    attributes an R to an observation, so every bucket summed to 0.0 and the
+    report printed an authoritative `+0.00R` -- a confident measurement over no
+    evidence at all, which is exactly the fabricated all-clear this arc exists
+    to refuse. Where nothing was attributed the report must SAY so."""
+    cfg, cfg_path = seeded_db
+    _seed(cfg)
+    r = _run(cfg_path)
+    assert r.exit_code == 0, r.output
+    assert "R UNAVAILABLE" in r.output
+    assert "+0.00R" not in r.output
+
+
+def test_an_ATTRIBUTED_R_still_prints_the_number_and_its_basis(seeded_db):
+    """The pair. Without it, 'print UNAVAILABLE' is satisfied by a report that
+    has stopped printing R at all -- and the R total is the figure the whole
+    bucket partition exists to carry once 21-C attributes one."""
+    from swing.latches.classification import (
+        ParityObservation,
+        compute_execution_parity,
+    )
+    cfg, _ = seeded_db
+    cid = _seed(cfg)
+    conn = connect(cfg.paths.db_path)
+    try:
+        from swing.cli_latches import _observations
+        from swing.config_overrides import apply_overrides
+        obs, health, _i, _u, _p = _observations(
+            conn, apply_overrides(cfg), since_ts="", now=NOW)
+    finally:
+        conn.close()
+    assert obs, "the fixture must produce at least one observation"
+    scored = [
+        ParityObservation(
+            disposition=o.disposition, framework=o.framework, actual=o.actual,
+            r_multiple=1.5)
+        for o in obs
+    ]
+    report = compute_execution_parity(scored, health=health)
+    assert any(v > 0 for v in report.bucket_r_attributed.values())
+    assert any(abs(v) > 0 for v in report.bucket_r.values())
+    assert cid  # the seeded latch is the one carrying it

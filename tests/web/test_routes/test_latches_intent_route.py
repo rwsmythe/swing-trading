@@ -7,7 +7,7 @@ transport rather than by grepping method names.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -977,4 +977,56 @@ def test_a_model_contract_violation_is_a_400_not_a_500(
         })
     assert r.status_code == 400
     assert "ledger contract" in r.text
+    assert len(_intents(cfg)) == before
+
+
+# --- the session spelling must ROUND-TRIP (Codex exec R4 MAJOR 1) ----------
+def test_an_ISO_WEEK_session_spelling_is_REFUSED(seeded_db, frozen_clocks):
+    """CODEX EXEC R4 MAJOR 1. `date.fromisoformat` accepts the ISO WEEK form,
+    and `2026-W31-1` both parses to 2026-07-27 AND measures exactly ten
+    characters -- so the length check does not catch it. The RAW spelling feeds
+    the idempotency key while the STORED session is canonicalised, and this
+    field is deliberately exempt from the anchor comparison, so the canonical
+    form and its week-date equivalent are ONE decision that keys as TWO. That is
+    hazard (a) defeated by a spelling."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    assert date.fromisoformat("2026-W31-1").isoformat() == ANCHOR
+    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        good = client.post("/latches/intent", headers=_HX, data=form)
+        weird = client.post(
+            "/latches/intent", headers=_HX,
+            data=form | {"view_session_date": "2026-W31-1"})
+    assert good.status_code == 200
+    assert weird.status_code == 400
+    assert "view_session_date" in weird.text
+    assert len(_intents(cfg)) == 1
+
+
+def test_an_infinite_observed_price_is_REFUSED(seeded_db, frozen_clocks):
+    """CODEX EXEC R4 MAJOR 4. `float('inf')` parses, satisfies `> 0`, survives
+    `round(_, 2)`, and satisfies the model's and the schema's `> 0` CHECKs too
+    -- so an infinite OBSERVED price would persist as authoritative broker
+    evidence and the agreement report would compute a fabricated divergence off
+    it. `> 0` is not a finiteness test."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        before = len(_intents(cfg))
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "accepted_by_broker",
+            "actual_order_type": "LIMIT", "actual_duration": "GTC",
+            "actual_limit_price": "inf", "actual_quantity": "10",
+            "actual_broker_order_id": "1001",
+            "broker_snapshot_json": _snapshot(branch="presence", attributable=1),
+        })
+    assert r.status_code == 400
+    assert "finite" in r.text
     assert len(_intents(cfg)) == before

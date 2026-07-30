@@ -774,20 +774,30 @@ def compute_away_rate(
     classifiable = decision + away + attested_away
     pending = bucket_counts.get("pending_r", 0)
     excluded = bucket_counts.get("unattributable_r", 0)
-    if health.verdict == "broken":
+    if health.verdict != "ok":
+        # `!= "ok"`, NOT `== "broken"` (Codex exec R4 MAJOR 5). The CLASSIFIER's
+        # rung 5 already withholds on EVERY non-ok verdict, and this gate must
+        # hold itself to the same standard or the two disagree in the flattering
+        # direction: under `indeterminate`, explicit decisions enter at rungs
+        # 1-3 and BYPASS rung 5 entirely, while every unobserved latch is routed
+        # to `telemetry_unhealthy` and LEAVES the denominator -- so the report
+        # would publish a confident `0.0%` computed over nothing but the fires
+        # he explicitly logged. That is not a low away rate; it is the away rate
+        # measured only where he was demonstrably present, which is the one
+        # subset guaranteed to flatter him.
         return AwayRateResult(
             health=health, away_unseen_fires=away,
             attested_was_away_fires=attested_away,
             classifiable_fires=classifiable, pending_fires=pending,
             excluded_fires=excluded, objective_rate=None, attested_rate=None,
             withheld_reason=(
-                "telemetry verdict is BROKEN "
+                f"telemetry verdict is {health.verdict.upper()} "
                 f"(covered={health.covered_sessions}, "
                 f"uncovered={health.uncovered_sessions}, "
                 f"uninstrumented={health.uninstrumented_sessions}); "
-                "a silently broken beacon makes every fire look like an "
-                "away-fire, which would inflate the exact number that would "
-                "justify stage-3 auto-place"))
+                "an unreliable beacon makes every fire look like an away-fire, "
+                "which would inflate the exact number that would justify "
+                "stage-3 auto-place; only an OK verdict may be scored"))
     if classifiable == 0:
         return AwayRateResult(
             health=health, away_unseen_fires=away,
@@ -841,6 +851,11 @@ class ExecutionParityReport:
 
     bucket_counts: dict[str, int]
     bucket_r: dict[str, float]
+    # HOW MANY observations in each bucket actually CARRIED an R (Codex exec R4
+    # MAJOR 3). Without it `bucket_r` cannot distinguish "the R summed to zero"
+    # from "no R was ever attributed", and a renderer has no way to tell a
+    # measurement from its own absence.
+    bucket_r_attributed: dict[str, int]
     disposition_counts: dict[str, int]
     away: AwayRateResult
     # `decision_r`'s three EVIDENCE-KIND sub-counts. Computed AFTER bucketing:
@@ -902,6 +917,7 @@ def compute_execution_parity(
 
     bucket_counts = dict.fromkeys(sorted(R_BUCKETS), 0)
     bucket_r = dict.fromkeys(sorted(R_BUCKETS), 0.0)
+    bucket_r_attributed = dict.fromkeys(sorted(R_BUCKETS), 0)
     disposition_counts: dict[str, int] = {}
     sub = {"logged": 0, "attested": 0, "inferred": 0}
     numerator = denominator = 0
@@ -917,6 +933,7 @@ def compute_execution_parity(
         bucket_counts[bucket] += 1
         if obs.r_multiple is not None:
             bucket_r[bucket] = round(bucket_r[bucket] + obs.r_multiple, 6)
+            bucket_r_attributed[bucket] += 1
         disposition_counts[d.disposition] = (
             disposition_counts.get(d.disposition, 0) + 1)
         # THE SUB-COUNTS ARE REFINEMENTS OF *TERMINAL* `decision_r`, computed
@@ -963,6 +980,7 @@ def compute_execution_parity(
     away = compute_away_rate(bucket_counts=bucket_counts, health=health)
     return ExecutionParityReport(
         bucket_counts=bucket_counts, bucket_r=bucket_r,
+        bucket_r_attributed=bucket_r_attributed,
         disposition_counts=disposition_counts, away=away,
         decision_r_logged=sub["logged"], decision_r_attested=sub["attested"],
         decision_r_inferred=sub["inferred"],

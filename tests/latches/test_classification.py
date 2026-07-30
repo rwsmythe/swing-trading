@@ -622,3 +622,30 @@ def test_the_enumerated_window_lets_a_MOSTLY_DARK_month_verdict_BROKEN():
     enumerated = telemetry_window_sessions([latch], through)
     assert assess_telemetry_health(
         sessions=enumerated, latches=[latch], views=views).verdict == "broken"
+
+
+def test_the_away_rate_is_WITHHELD_on_INDETERMINATE_not_only_on_BROKEN():
+    """CODEX EXEC R4 MAJOR 5. The classifier's rung 5 withholds on EVERY non-ok
+    verdict; this gate withheld only on `broken`. The asymmetry runs in the
+    FLATTERING direction and that is why it is a major rather than a tidy: under
+    `indeterminate`, explicit decisions enter at rungs 1-3 and BYPASS rung 5,
+    while every unobserved latch is routed to `telemetry_unhealthy` and LEAVES
+    the denominator -- so the report published a confident rate computed over
+    nothing but the fires he explicitly logged. That is not a low away rate; it
+    is the away rate measured only where he was demonstrably present.
+    """
+    from swing.latches.classification import compute_away_rate
+    counts = {"decision_r": 3, "away_r": 0, "attested_away_r": 0}
+    ok = compute_away_rate(
+        bucket_counts=counts, health=TelemetryHealth(verdict="ok"))
+    assert ok.objective_rate == 0.0            # scored, because the beacon was OK
+    indet = compute_away_rate(
+        bucket_counts=counts,
+        health=TelemetryHealth(verdict="indeterminate"))
+    assert indet.objective_rate is None
+    assert indet.attested_rate is None
+    assert "INDETERMINATE" in indet.withheld_reason
+    broken = compute_away_rate(
+        bucket_counts=counts, health=TelemetryHealth(verdict="broken"))
+    assert broken.objective_rate is None
+    assert "BROKEN" in broken.withheld_reason

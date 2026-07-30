@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 from datetime import date, datetime
 
@@ -105,6 +106,15 @@ def _parse_beacon_anchor(form) -> tuple[date, list[int], list[int]]:
     except ValueError as exc:
         raise _BeaconRejectedError(
             "view_session_date", "is not a valid ISO date") from exc
+    if anchor.isoformat() != raw_session:
+        # THE SAME ROUND-TRIP GUARD AS THE INTENT ROUTE (Codex exec R4 MAJOR 1),
+        # applied here because the defect is a CLASS and not an instance: this
+        # is the OTHER door into the same session keyspace, and `2026-W31-1`
+        # parses AND measures ten characters. Fixing one door and leaving the
+        # other is how the next reader concludes the guard exists.
+        raise _BeaconRejectedError(
+            "view_session_date",
+            "must be the CANONICAL YYYY-MM-DD spelling of that date")
 
     actionable = _parse_id_list(form, "actionable_candidate_ids")
     withheld = _parse_id_list(form, "withheld_candidate_ids")
@@ -405,6 +415,15 @@ def _optional_price(form, field: str) -> float | None:
         value = float(raw)
     except (TypeError, ValueError) as exc:
         raise _IntentRejectedError(field, f"{raw!r} is not a number") from exc
+    if not math.isfinite(value):
+        # `> 0` IS NOT A FINITENESS TEST (Codex exec R4 MAJOR 4). `float("inf")`
+        # parses, satisfies `> 0`, survives `round(_, 2)`, and satisfies the
+        # model's and the schema's `> 0` CHECKs too -- so an infinite OBSERVED
+        # price would persist as authoritative broker evidence and the agreement
+        # report would then compute a fabricated divergence off it. The one
+        # place a measurement must refuse a number is where the number is not
+        # one.
+        raise _IntentRejectedError(field, "must be a finite number")
     if not (value > 0):
         raise _IntentRejectedError(field, "must be greater than zero")
     return round(value, 2)
@@ -757,6 +776,19 @@ async def latches_intent(request: Request):
         except ValueError as exc:
             raise _IntentRejectedError(
                 "view_session_date", "is not a valid ISO date") from exc
+        if anchor.isoformat() != raw_session:
+            # THE SPELLING MUST ROUND-TRIP, NOT MERELY PARSE (Codex exec R4
+            # MAJOR 1). `date.fromisoformat` accepts the ISO WEEK form, and
+            # `2026-W31-1` is both a valid parse AND exactly ten characters --
+            # so the length check does not catch it. The RAW spelling feeds the
+            # idempotency key while the STORED session is canonicalised, so the
+            # canonical form and its week-date equivalent are ONE decision that
+            # keys as TWO: hazard (a) defeated by a spelling. The anchor
+            # comparison cannot catch it either, because this field is
+            # deliberately exempt from it.
+            raise _IntentRejectedError(
+                "view_session_date",
+                "must be the CANONICAL YYYY-MM-DD spelling of that date")
         answer = _normalise_submitted(form)
         if kind == "validity":
             parent_id = _positive_int(form, "validated_place_intent_id")
