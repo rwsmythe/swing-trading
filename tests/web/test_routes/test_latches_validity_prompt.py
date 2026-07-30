@@ -181,11 +181,26 @@ def _form_fields(prompt_html: str) -> dict:
     text would be testing an escape artefact, not the form.
     """
     fields = {}
-    for name, value in _INPUT.findall(prompt_html):
-        if name == "validity_outcome":
+    for tag in re.findall(r"<input[^>]*>", prompt_html):
+        if 'type="radio"' in tag:
+            # A radio is an OPTION, not a submitted default: an unchecked group
+            # sends nothing, so folding one in here would fabricate an answer
+            # the browser would not have sent.
             continue
+        found = _INPUT.findall(tag)
+        if not found:
+            continue
+        name, value = found[0]
         fields[name] = unescape(value)
     return fields
+
+
+def _form_html(prompt_html: str, css_class: str) -> str:
+    """ONE named form out of the prompt, so an assertion about the confirm form
+    cannot be satisfied by the other one."""
+    start = prompt_html.index(css_class)
+    return prompt_html[prompt_html.rindex("<form", 0, start):
+                       prompt_html.index("</form>", start)]
 
 
 def _radio_values(prompt_html: str) -> set:
@@ -292,11 +307,27 @@ def test_the_DIVERGENCE_path_records_BOTH_sides_and_the_delta_comes_from_the_led
     assert delta.any_difference is True
 
 
-def test_the_presence_branch_PRESELECTS_accepted_and_offers_the_full_enum(
+def test_the_presence_branch_offers_TWO_WRITABLE_FORMS_not_one_unwritable_one(
         seeded_db, monkeypatch, clocks):
-    """Presence is DIRECT POSITIVE EVIDENCE, so the framework may pre-select the
-    answer. It is a convenience, not an assertion -- no row is written without
-    his click, which the no-POST test pins."""
+    """CODEX EXEC R6 MAJOR -- this dispatch's own signature defect reappearing
+    inside the fix for it.
+
+    The model and the migration BOTH require that a NON-accepted validity row
+    carry no observed order at all ("an outcome and its evidence must not be able
+    to disagree"). A single radio group emitting the observed side alongside all
+    four outcomes was therefore UNWRITABLE for three of them: every
+    `rejected_by_broker` / `not_submitted` / `unknown` click 400d against the
+    ledger contract, and the incomplete-observation branch -- which offers ONLY
+    those three -- was unwritable for every click it had.
+
+    So the observed side rides on its OWN confirm form and the three
+    non-accepted answers ride on a second form carrying none of it. PRESENCE is
+    still direct positive evidence, so the framework still offers a one-click
+    CONFIRM; it still asserts nothing, because nothing is written without a POST.
+
+    THE END-TO-END POST IS THE LOAD-BEARING HALF: a rendering assertion alone is
+    exactly what let the unwritable form ship.
+    """
     cfg, cfg_path = seeded_db
     cid = _seed(cfg)
     app = _app(cfg, cfg_path, monkeypatch, orders=[_order()])
@@ -304,11 +335,21 @@ def test_the_presence_branch_PRESELECTS_accepted_and_offers_the_full_enum(
         _log_place(client, cfg, cid)
         clocks.set(PROMPT_NOW)
         prompt = _prompt_html(_fragment(client, PROMPT_ANCHOR).text)
-    assert _radio_values(prompt) == set(LATCH_VALIDITY_OUTCOMES)
-    assert 'value="accepted_by_broker"' in prompt
-    checked = re.search(
-        r'value="([^"]+)"\s*\n?\s*checked', prompt)
-    assert checked is not None and checked.group(1) == "accepted_by_broker"
+        confirm = _form_html(prompt, "latch-validity-confirm")
+        other = _form_html(prompt, "latch-validity-other")
+        assert _form_fields(confirm)["validity_outcome"] == "accepted_by_broker"
+        assert _form_fields(confirm)["actual_broker_order_id"] == "1001"
+        assert _radio_values(other) == set(LATCH_VALIDITY_OUTCOMES) - {
+            "accepted_by_broker"}
+        assert "actual_broker_order_id" not in other, (
+            "a non-accepted validity row may carry NO observed order")
+        r = client.post("/latches/intent", headers=_HX,
+                        data=_form_fields(other) | {
+                            "validity_outcome": "not_submitted"})
+        assert r.status_code == 200, r.text
+    rows = [row for row in _rows(cfg) if row[1] == "validity"]
+    assert [row[2] for row in rows] == ["not_submitted"]
+    assert rows[0][5] is None, "no observed side on a non-accepted answer"
 
 
 def test_an_INCOMPLETE_observed_order_may_not_be_logged_as_accepted(
@@ -427,22 +468,58 @@ def test_a_latch_with_NO_place_intent_gets_no_prompt(
     assert "latch-validity-prompt" not in html
 
 
-def test_an_already_answered_place_intent_gets_no_second_prompt(
+def test_an_ANSWERED_prompt_becomes_a_CORRECTION_control_and_the_LATEST_governs(
         seeded_db, monkeypatch, clocks):
-    """`resolve_execution_outcome_for` has moved off `unknown`, so the question
-    is CLOSED. Re-asking it is how an instrument trains its subject to dismiss
-    it."""
+    """CODEX EXEC R6 MAJOR. Suppressing the form the moment ANY outcome was
+    recorded left an erroneous answer uncorrectable through the browser, so the
+    flattering one stayed governing -- and the append-only correction path the
+    resolver explicitly supports became a handler capability the operator could
+    never use. RD's ruling 3: the governing answer is his LAST.
+
+    It renders as a CORRECTION, not as the question asked again -- a recurring
+    question on a settled cell is what trains the dismissal reflex.
+    """
+    from swing.data.repos.latch_order_intents import list_intents_for_latch
+    from swing.latches.classification import (
+        governing_intent,
+        resolve_execution_outcome_for,
+    )
+    from swing.latches.reader import build_latch_derivation
+
     cfg, cfg_path = seeded_db
     cid = _seed(cfg)
     app = _app(cfg, cfg_path, monkeypatch, orders=[])
     with TestClient(app) as client:
         _log_place(client, cfg, cid)
         clocks.set(PROMPT_NOW)
-        fields = _form_fields(_prompt_html(_fragment(client, PROMPT_ANCHOR).text))
+        first = _form_fields(_form_html(
+            _prompt_html(_fragment(client, PROMPT_ANCHOR).text),
+            "latch-validity-other"))
         client.post("/latches/intent", headers=_HX,
-                    data=fields | {"validity_outcome": "not_submitted"})
-        html = _fragment(client, PROMPT_ANCHOR).text
-    assert "latch-validity-prompt" not in html
+                    data=first | {"validity_outcome": "not_submitted"})
+        prompt = _prompt_html(_fragment(client, PROMPT_ANCHOR).text)
+        assert "CORRECT THE RECORDED OUTCOME" in prompt
+        assert "not_submitted" in prompt, "it names what it is correcting"
+        second = _form_fields(_form_html(prompt, "latch-validity-other"))
+        assert second["prior_intent_id"] != first["prior_intent_id"], (
+            "the correction carries the row that NOW governs, which is what "
+            "keys it apart from the answer it corrects")
+        r = client.post("/latches/intent", headers=_HX,
+                        data=second | {"validity_outcome": "rejected_by_broker"})
+    assert r.status_code == 200, r.text
+    assert [row[2] for row in _rows(cfg) if row[1] == "validity"] == [
+        "not_submitted", "rejected_by_broker"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        latch = next(x for x in build_latch_derivation(
+            conn, cfg, now=PROMPT_NOW).latches
+            if x.identity.candidate_id == cid)
+        intents = list_intents_for_latch(conn, candidate_id=cid)
+    finally:
+        conn.close()
+    assert resolve_execution_outcome_for(
+        latch, governing_intent(intents, "place"), intents) == (
+        "rejected_by_broker")
 
 
 def test_a_FILL_CLEARED_latch_renders_no_prompt_and_derives_acceptance(

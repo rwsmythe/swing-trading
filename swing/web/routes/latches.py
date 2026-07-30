@@ -723,6 +723,31 @@ def _latch_for_identity(conn, cfg, candidate_id: int, anchor: date):
          if lat.identity.candidate_id == candidate_id), None)
 
 
+def _governing_intent_id(conn, candidate_id: int) -> int | None:
+    """The latch's GOVERNING ledger row id right now, or `None`.
+
+    The SAME total order the render-time anchor is built from
+    (`swing/web/view_models/latches.py:_prior_intent_id`) and the same one every
+    "latest by what?" ruling in this arc uses -- `(recorded_ts, intent_id)`,
+    with the id tiebreak load-bearing because `recorded_ts` is whole seconds.
+    Read here rather than passed, because the question is about NOW rather than
+    about the render.
+    """
+    from swing.data.repos.latch_order_intents import list_intents_for_latch
+    try:
+        rows = [r for r in list_intents_for_latch(conn, candidate_id=candidate_id)
+                if r.intent_id is not None]
+    except sqlite3.Error as exc:
+        # A read failure must not turn a REPLAY into a duplicate row, so it
+        # degrades to "cannot show that this row was superseded" and the replay
+        # proceeds -- the append-only side is unchanged either way.
+        log.warning("latch governing-intent read degraded: %s", exc)
+        return None
+    if not rows:
+        return None
+    return max(rows, key=lambda r: (r.recorded_ts, r.intent_id)).intent_id
+
+
 def _intent_fragment(request: Request, intent, *, replayed: bool) -> HTMLResponse:
     """The success / replay fragment. Root is a section element, never a tr."""
     return request.app.state.templates.TemplateResponse(
@@ -874,8 +899,33 @@ async def latches_intent(request: Request):
     conn = connect(cfg.paths.db_path)
     try:
         # --- step 4: REPLAY. Returns BEFORE every freshness gate. ---------
+        #
+        # A KEY MATCH IS A REPLAY ONLY WHILE THAT ROW STILL GOVERNS (Codex exec
+        # R6 MAJOR). Two tabs render the same prior; tab one records A then
+        # corrects to B; the stale tab later submits A. Its key equals the FIRST
+        # A, so an unconditional replay returned that old row and left the
+        # flattering B authoritative -- a genuine later correction silently
+        # discarded, which is the one direction RD's ruling 3 forbids.
+        #
+        # REFUSED, NOT SILENTLY RE-KEYED. Re-deriving the key against the
+        # CURRENT governor would make the second click of a double-click on THAT
+        # submission key differently again and write a duplicate, trading the
+        # collapse property for the correction property. A 409 loses NO
+        # testimony -- he reloads, sees what actually governs, and answers again
+        # against it -- and it is the same refuse-and-say-so posture every other
+        # stale anchor on this endpoint takes. A double-click is unaffected: the
+        # row the first click wrote IS the current governor.
         existing = get_intent_by_key(conn, idempotency_key=key)
         if existing is not None:
+            governing = _governing_intent_id(conn, candidate_id)
+            if governing is not None and governing != existing.intent_id:
+                return _conflict(
+                    "This form was rendered before a later decision was "
+                    "recorded on this latch, so replaying it would return the "
+                    "OLDER row and leave the newer one governing. NOTHING was "
+                    "recorded. Reload to see what governs now, then answer "
+                    "again - your latest answer wins and nothing is "
+                    "overwritten.")
             return _intent_fragment(request, existing, replayed=True)
 
         # --- step 5: FIRST-WRITE VALIDATION ONLY --------------------------

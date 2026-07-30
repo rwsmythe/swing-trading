@@ -236,6 +236,20 @@ class LatchRowVM:
     # manifest-generated hidden anchor -- it is not part of the framework
     # DERIVATION and must not enter `anchor_digest`.
     prior_intent_id: str = ""
+    # THE ATTESTATION CORRECTION AFFORDANCE (Codex exec R6 MAJOR). The prompt
+    # rides on `discipline_lapse` and vanishes the instant an attestation is
+    # recorded -- so `was_away` could never be corrected to `chose_not_to_act`
+    # through the browser, and the two dispositions land in DIFFERENT R buckets.
+    # RD's ruling 3 requires that a correction be possible; a control the
+    # operator cannot reach makes the append-only correction path a handler
+    # capability he can never use.
+    #
+    # DELIBERATELY NOT `prompt_required`: that flag is a PROMPT, and the plan is
+    # explicit that prompting anywhere other than a scored lapse trains the
+    # dismissal reflex. This is not a question -- it is an affordance to amend an
+    # answer he already gave, worded and styled as one.
+    attest_correction_available: bool = False
+    attested_disposition: str = ""
 
 
 @dataclass(frozen=True)
@@ -682,9 +696,24 @@ def _build_row(latch: Latch, *, quote, views, provenance=None,
             tuple(sorted(
                 (value, _ATTEST_OPTION_LABELS[value])
                 for value in LATCH_ATTESTED_DISPOSITIONS))
-            if prompt else ()),
+            if prompt or _attested(disposition) else ()),
         prior_intent_id=prior_intent_id,
+        attest_correction_available=_attested(disposition),
+        attested_disposition=(
+            "" if not _attested(disposition)
+            else disposition.disposition.removeprefix("attested_")),
     )
+
+
+def _attested(disposition) -> bool:
+    """Has an attestation already been recorded for this latch?
+
+    Read off the DISPOSITION rather than by re-reading the ledger: the
+    `attested_*` dispositions exist precisely because an attestation governs, so
+    the two can never disagree about it.
+    """
+    return bool(disposition is not None
+                and disposition.disposition.startswith("attested_"))
 
 
 def _within_display_lookback(latch: Latch, horizon_session: date) -> bool:
@@ -1376,11 +1405,36 @@ class LatchValidityPromptVM:
     # The RULING-3 context anchor: the latch's governing ledger row AS RENDERED.
     # Empty string when the latch has none.
     prior_intent_id: str
+    # The NON-ACCEPTED answers. ALWAYS exactly the enum minus
+    # `accepted_by_broker`, on BOTH branches, with nothing pre-selected.
     options: tuple[tuple[str, str], ...]
-    preselected: str                  # "" on absence -- never an assertion
+    # TWO FORMS, NOT ONE RADIO GROUP (Codex exec R6 MAJOR). The model and the
+    # migration both require that a NON-accepted validity row carry NO observed
+    # order at all -- "an outcome and its evidence must not be able to disagree"
+    # -- so a single form that emitted the observed side alongside all four
+    # options was UNWRITABLE for three of them, and the incomplete-observation
+    # branch was unwritable for all of them: every click 400d against the ledger
+    # contract. That is the arc's own signature defect (a control that renders
+    # and cannot be submitted) reappearing inside the fix for it.
+    #
+    # So the observed side rides on its OWN confirm form, and the three
+    # non-accepted answers ride on a second form that carries no observed side.
+    # This also states the asymmetry better than a pre-selected radio did:
+    # PRESENCE is direct positive evidence, so the framework offers a
+    # one-click CONFIRM; it still asserts nothing, because nothing is written
+    # without his click.
+    confirm_available: bool
+    confirm_label: str
     actual_fields: tuple[tuple[str, str], ...]
     snapshot_json: str
     view_session_date: str
+    # A CORRECTION rather than a QUESTION (Codex exec R6 MAJOR). An answer
+    # already exists and this is the affordance to amend it -- RD's ruling 3
+    # requires that a correction be possible, and a control the operator cannot
+    # reach makes the ledger's append-only correction path a handler capability
+    # he can never use.
+    is_correction: bool = False
+    superseded_outcome: str = ""
 
 
 @dataclass(frozen=True)
@@ -2252,7 +2306,9 @@ def _attributable_orders(join) -> tuple:
 
 
 def _validity_prompt_for(latch, *, join, framework, place, digest,
-                         snapshot_ts: str, anchor_iso: str, prior_intent_id: str):
+                         snapshot_ts: str, anchor_iso: str, prior_intent_id: str,
+                         is_correction: bool = False,
+                         superseded_outcome: str = ""):
     """The prompt for ONE latch, or `None`. PURE -- every input is passed in."""
     from swing.latches.constants import (
         LATCH_BROKER_SNAPSHOT_KEYS,
@@ -2337,13 +2393,16 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
                 "it cannot be logged as ACCEPTED. Answer only what you know."),
             parent_place_intent_id=place.intent_id,
             prior_intent_id=prior_intent_id,
-            options=_opt(
-                LATCH_VALIDITY_OUTCOMES if complete
-                else LATCH_VALIDITY_OUTCOMES - {"accepted_by_broker"}),
-            preselected="accepted_by_broker" if complete else "",
-            actual_fields=actual_fields,
+            options=_opt(LATCH_VALIDITY_OUTCOMES - {"accepted_by_broker"}),
+            confirm_available=complete,
+            confirm_label=(
+                f"YES - the broker accepted order {order.order_id}"
+                if complete else ""),
+            actual_fields=actual_fields if complete else (),
             snapshot_json=json.dumps(envelope, sort_keys=True),
-            view_session_date=anchor_iso)
+            view_session_date=anchor_iso,
+            is_correction=is_correction,
+            superseded_outcome=superseded_outcome)
 
     # ABSENCE. "Filled" is deliberately NOT an option: it is not in
     # LATCH_VALIDITY_OUTCOMES, so offering it would force the handler to
@@ -2363,10 +2422,12 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
         parent_place_intent_id=place.intent_id,
         prior_intent_id=prior_intent_id,
         options=_opt(LATCH_VALIDITY_OUTCOMES - {"accepted_by_broker"}),
-        preselected="",
+        confirm_available=False, confirm_label="",
         actual_fields=(),
         snapshot_json=json.dumps(envelope, sort_keys=True),
-        view_session_date=anchor_iso)
+        view_session_date=anchor_iso,
+        is_correction=is_correction,
+        superseded_outcome=superseded_outcome)
 
 
 def _fmt_price_or_blank(value) -> str:
@@ -2399,12 +2460,12 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
     A PROMPT IS OFFERED ONLY WHERE THE QUESTION IS BOTH OPEN AND ANSWERABLE:
 
       * a governing `place` intent EXISTS (nothing to validate otherwise), and
-      * `resolve_execution_outcome_for` still returns `unknown` -- which is what
-        makes the FILL SHORT-CIRCUIT structural rather than a second rule: a
-        latch cleared by fill resolves `accepted_by_broker` from the trades
-        ledger, so it never reaches a prompt. That is the one place the
-        framework may answer for itself, because the evidence is a real position
-        rather than an absence, and
+      * the outcome is not settled by a FILL -- which is what makes the fill
+        SHORT-CIRCUIT structural rather than a second rule: a latch cleared by
+        fill resolves `accepted_by_broker` from the trades ledger, so it never
+        reaches a prompt. That is the one place the framework may answer for
+        itself, because the evidence is a real position rather than an absence,
+        and it is also the one outcome NO testimony may overturn, and
       * the ticker's broker status is not INDETERMINATE (the broker's own answer
         is unknown, so the fragment renders its indeterminate note and no
         prompt), and
@@ -2442,14 +2503,33 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
         if framework is None:
             continue
         try:
-            if resolve_execution_outcome_for(latch, place, intents) != "unknown":
-                continue
+            outcome = resolve_execution_outcome_for(latch, place, intents)
         except Exception as exc:  # noqa: BLE001 -- A6
             _log.warning(
                 "latch execution-outcome read degraded for candidate %s: %s",
                 cid, exc)
             continue
-        if (not _attributable_orders(join)
+        # AN ANSWERED PROMPT BECOMES A CORRECTION CONTROL; IT DOES NOT VANISH
+        # (Codex exec R6 MAJOR). Suppressing the form the moment ANY outcome was
+        # recorded left an erroneous `accepted_by_broker` uncorrectable through
+        # the browser, so the flattering answer stayed governing -- and the
+        # append-only correction path the resolver explicitly supports was a
+        # handler capability the operator could never use. That is precisely the
+        # defect class this dispatch exists to close, and RD's ruling 3 says the
+        # governing answer must be his LAST.
+        #
+        # THE ONE OUTCOME NO TESTIMONY MAY OVERTURN IS A FILL: it is a real
+        # position in the trades ledger rather than a recollection, so a
+        # fill-settled latch still renders NOTHING. That is the fill
+        # short-circuit, unchanged.
+        is_correction = outcome != "unknown"
+        if is_correction and not any(
+                i.intent_kind == "validity"
+                and i.validated_place_intent_id == place.intent_id
+                for i in intents):
+            # Settled by the FILL rather than by an answer -- nothing to correct.
+            continue
+        if (not is_correction and not _attributable_orders(join)
                 and place.action_session_date >= anchor_iso):
             continue
         try:
@@ -2457,7 +2537,9 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
                 latch, join=join, framework=framework,
                 place=place, digest=digest, snapshot_ts=snapshot_ts,
                 anchor_iso=anchor_iso,
-                prior_intent_id=_prior_intent_id(intents))
+                prior_intent_id=_prior_intent_id(intents),
+                is_correction=is_correction,
+                superseded_outcome=outcome if is_correction else "")
         except Exception as exc:  # noqa: BLE001 -- A6: the fragment never 500s
             _log.warning(
                 "latch validity prompt degraded for candidate %s: %s", cid, exc)

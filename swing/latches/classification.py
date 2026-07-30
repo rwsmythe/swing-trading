@@ -450,15 +450,29 @@ def classify_latch(
             r_multiple=r_multiple,
             detail=detail)
 
-    # RUNG 1 -- an explicit PLACE. This says he DECIDED to place, and NOTHING
-    # more: a rejected order is still an accepted DECISION, and it is
-    # `execution_outcome` that says so.
-    if place is not None:
-        return _out("accepted", "logged a prepared-order placement")
-    # RUNG 2 -- an explicit DECLINE (the highest-information datum).
+    # RUNG 1+2 -- THE DECISION FAMILY, RESOLVED BY RECENCY RATHER THAN BY RANK
+    # (Codex exec R6 MAJOR). `place` and `decline` are the two MUTUALLY EXCLUSIVE
+    # answers to ONE question, selected by the two submit buttons of ONE form --
+    # so ranking `place` above `decline` unconditionally meant a later decline
+    # CORRECTING an earlier place was recorded and could never govern. That is
+    # RD's ruling 3 (the governing answer is his LAST, never his last DISTINCT)
+    # arriving at the DISPOSITION axis instead of at the idempotency key, and it
+    # failed in the same direction: the ledger kept reporting that he acted on a
+    # mandate he had since told it he was declining.
+    #
+    # Resolved by the SAME total order every other "latest by what?" ruling in
+    # this arc uses -- `(recorded_ts, intent_id)`, with the id tiebreak
+    # load-bearing because `recorded_ts` is whole seconds.
     decline = governing_intent(intents, "decline")
-    if decline is not None:
-        return _out("declined", decline.decline_reason or "")
+    decision = max(
+        [i for i in (place, decline) if i is not None],
+        key=_order_key, default=None)
+    if decision is not None:
+        if decision.intent_kind == "place":
+            # This says he DECIDED to place, and NOTHING more: a rejected order
+            # is still an accepted DECISION, and `execution_outcome` says so.
+            return _out("accepted", "logged a prepared-order placement")
+        return _out("declined", decision.decline_reason or "")
     # RUNG 3 -- an ATTESTATION. This is the rung where the ordering rule BITES,
     # because the attested dispositions differ from each other in R BUCKET, not
     # just in label.

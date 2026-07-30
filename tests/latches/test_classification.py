@@ -689,3 +689,46 @@ def test_a_window_INSIDE_the_bound_still_returns_normally():
     got = telemetry_window_sessions([latch], date(2026, 8, 12))
     assert got and got[0] == date(2026, 8, 12)
     assert got[-1] == date(2026, 7, 29)
+
+
+def test_a_DECLINE_correcting_an_earlier_PLACE_GOVERNS():
+    """CODEX EXEC R6 MAJOR. `place` and `decline` are the two MUTUALLY EXCLUSIVE
+    answers to ONE question, chosen by the two submit buttons of ONE form. The
+    ladder ranked `place` above `decline` unconditionally, so a later decline
+    CORRECTING an earlier place was recorded and could NEVER govern: the ledger
+    kept reporting that he acted on a mandate he had since told it he was
+    declining.
+
+    This is RD's ruling 3 -- the governing answer is his LAST, never his last
+    DISTINCT -- arriving at the DISPOSITION axis rather than at the idempotency
+    key, and it failed in the same direction.
+
+    BOTH TRANSITION DIRECTIONS, because a rank-based implementation passes one of
+    them by accident: place-then-decline yields `declined`, and
+    decline-then-place yields `accepted`.
+    """
+    latch = _latch(anchor=EPOCH, last=EPOCH, state="horizon_expired",
+                   clear_reason="horizon", clear_session=EPOCH)
+    place = _intent("place", intent_id=1, recorded_ts="2026-07-29T09:00:00")
+    decline = _intent("decline", intent_id=2, recorded_ts="2026-07-29T10:00:00",
+                      decline_reason="gap risk into earnings")
+    assert classify_latch(
+        latch=latch, intents=[place, decline]).disposition == "declined"
+    later_place = _intent(
+        "place", intent_id=3, recorded_ts="2026-07-29T11:00:00")
+    assert classify_latch(
+        latch=latch, intents=[place, decline, later_place],
+    ).disposition == "accepted"
+
+
+def test_the_decision_family_tiebreaks_on_intent_id_like_every_other_ruling():
+    """`recorded_ts` is whole SECONDS, so two rows can share one. The tiebreak is
+    the same total order every other latest-by-what ruling in this arc uses."""
+    latch = _latch(anchor=EPOCH, last=EPOCH, state="horizon_expired",
+                   clear_reason="horizon", clear_session=EPOCH)
+    same_second = "2026-07-29T09:00:00"
+    place = _intent("place", intent_id=7, recorded_ts=same_second)
+    decline = _intent("decline", intent_id=8, recorded_ts=same_second,
+                      decline_reason="second thoughts")
+    assert classify_latch(
+        latch=latch, intents=[place, decline]).disposition == "declined"

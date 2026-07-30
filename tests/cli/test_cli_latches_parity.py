@@ -788,3 +788,27 @@ def test_an_EARLIER_place_validity_cycle_is_LABELLED_not_silently_discarded(
     assert "EARLIER PLACE/VALIDITY CYCLES" in r.output
     assert "rejected_by_broker" in r.output
     assert f"place intent {first}" in r.output
+
+
+def test_an_UNANSWERED_earlier_cycle_is_reported_as_unknown_not_omitted(
+        seeded_db):
+    """CODEX EXEC R6 MAJOR. The earlier-cycles disclosure only reported cycles
+    that HAD a validity child, so an UNRESOLVED first attempt followed by an
+    accepted retry produced neither an earlier-cycle line nor an unknown count --
+    and the governing retry could show 100% agreement over evidence the ledger
+    was holding and not showing.
+
+    An unanswered cycle is exactly the absence RD's ruling 4 says must be
+    LABELLED rather than left to read as nothing-to-see.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        first = _intent(conn, cid, "plc1", "place", **_PLACE_BLOCK)
+        _intent(conn, cid, "plc3", "place", **_PLACE_BLOCK)
+    conn.close()
+    r = _run(cfg_path)
+    assert r.exit_code == 0, r.output
+    assert "EARLIER PLACE/VALIDITY CYCLES" in r.output
+    assert f"place intent {first}: unknown (never answered)" in r.output

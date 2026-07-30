@@ -1181,3 +1181,106 @@ def test_a_non_string_snapshot_branch_is_REFUSED_not_a_500(
     assert r.status_code == 400
     assert "broker_snapshot_branch" in r.text
     assert len(_intents(cfg)) == before
+
+
+# --- Codex exec R6: the correction paths must be REACHABLE, not just handled ---
+def test_the_ATTEST_form_survives_the_first_attestation_as_a_CORRECTION_control(
+        seeded_db, frozen_clocks, monkeypatch):
+    """CODEX EXEC R6 MAJOR, and it is this dispatch's signature class turned on
+    its own ruling-3 fix: the attestation form rides on `discipline_lapse`, so
+    the instant an attestation is recorded the disposition MOVES and the only
+    browser control DISAPPEARS. `was_away` could then never be corrected to
+    `chose_not_to_act` -- and those two land in DIFFERENT R buckets, so the
+    A -> B -> A capability the handler now has was one the operator could not use.
+
+    It renders as a CORRECTION rather than as the prompt again: a recurring
+    question on a settled cell is what trains the dismissal reflex.
+    """
+    import re
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        _attest(client, cid, "was_away", "")
+        html = client.get("/latches").text
+    assert "latch-attest-correction" in html
+    assert "Recorded:" in html and "was_away" in html
+    assert re.search(r'name="attested_disposition" value="chose_not_to_act"',
+                     html), "every attestation option stays offered"
+    assert re.search(r'name="prior_intent_id"\s+value="1"', html), (
+        "the correction carries the row that now governs, which is what keys "
+        "it apart from the answer it corrects")
+
+
+def test_the_ATTEST_form_can_capture_the_broker_order_id_for_exact_linkage(
+        seeded_db, frozen_clocks):
+    """CODEX EXEC R6 MAJOR. The observed-order query was widened to include
+    `attest` rows -- `acted_manually` is the ONE path that exists for an order
+    the framework did not prepare -- but the attestation UI emitted only the
+    disposition, so the browser could never supply one and the widening reached
+    nothing. Section G.4's linkage is EXACT only where a broker order id was
+    CAPTURED; without the field it can only ever be inferred from params.
+
+    Optional, deliberately: refusing the attestation for want of an id he may not
+    have to hand would lose the attestation, which is worth more.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "attest", "attested_disposition": "acted_manually",
+            "actual_broker_order_id": "778899", "prior_intent_id": ""})
+        # The lapse PROMPT and the correction CONTROL are ONE form in the
+        # template, so asserting the field on the reachable branch pins it for
+        # both -- the lapse branch needs a terminal latch plus an actionable view
+        # row and is covered by the classification suite.
+        rendered = client.get("/latches").text
+    assert r.status_code == 200, r.text
+    assert 'name="actual_broker_order_id"' in rendered
+    (row,) = _intents(cfg)
+    assert (row[1], row[10]) == ("attest", "778899")
+
+
+def test_a_STALE_TAB_replay_of_a_SUPERSEDED_answer_is_REFUSED_not_returned(
+        seeded_db, frozen_clocks):
+    """CODEX EXEC R6 MAJOR. Two tabs render the same prior; tab one records A
+    then corrects to B; the stale tab later submits A. Its key equals the FIRST
+    A, so an unconditional replay returned that OLD row and left the flattering B
+    governing -- a genuine later correction silently discarded, which is the one
+    direction ruling 3 forbids.
+
+    REFUSED rather than silently re-keyed: re-deriving the key against the
+    current governor would make the second click of a double-click on THAT
+    submission key differently again and write a duplicate, trading the collapse
+    property for the correction property. A 409 loses NO testimony -- he reloads
+    and answers against what actually governs.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        _attest(client, cid, "chose_not_to_act", "")      # A, from both tabs
+        id_a = _intents(cfg)[0][0]
+        _attest(client, cid, "was_away", str(id_a))       # B, from tab one
+        stale = _attest(client, cid, "chose_not_to_act", "")   # the stale tab
+    assert stale.status_code == 409
+    assert "Reload" in stale.text
+    assert len(_intents(cfg)) == 2, "the refusal writes NOTHING"
+
+
+def test_a_double_click_is_STILL_a_replay_because_its_row_IS_the_governor(
+        seeded_db, frozen_clocks):
+    """The pair for the test above -- without it, "refuse a superseded key" is
+    satisfied by an implementation that has stopped collapsing double-clicks at
+    all, which is the property the whole idempotency key exists for."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        first = _attest(client, cid, "was_away", "")
+        second = _attest(client, cid, "was_away", "")
+    assert first.status_code == second.status_code == 200
+    assert len(_intents(cfg)) == 1
+    assert "already recorded" in second.text

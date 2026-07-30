@@ -54,16 +54,29 @@
   {% endif %}
 </section>
 {% endif %}
-{% if row.prompt_required %}
+{% if row.prompt_required or row.attest_correction_available %}
 {# THE ATTESTATION PROMPT rides on the DISPOSITION, and on exactly one:
    `discipline_lapse`. The cell has ALREADY been scored as a lapse -- attesting
    is the operator's opportunity to CORRECT it, not a request for permission to
    score it. Prompting anywhere else (above all on a latch whose panel never
    presented a decision) trains the dismissal reflex, and dismissal is what
    eventually kills the honest answer on the cell that matters. #}
-<section class="latch-attest-prompt">
+<section class="latch-attest-prompt{% if row.attest_correction_available %} latch-attest-correction{% endif %}">
+  {% if row.attest_correction_available %}
+  {# A CORRECTION AFFORDANCE, NOT A PROMPT. An attestation already governs this
+     latch, and the ledger is append-only, so amending it means writing a NEW
+     row whose answer supersedes -- which the operator can only do if a control
+     exists. `was_away` and `chose_not_to_act` land in DIFFERENT R buckets, so
+     an uncorrectable first answer is a measurement he cannot fix. It is worded
+     and styled as an amendment rather than a question precisely because a
+     recurring QUESTION on a settled cell is what trains the dismissal reflex. #}
+  <p>Recorded: <strong>{{ row.attested_disposition }}</strong>. If that is not
+     what happened, answer again - your LATEST answer governs and nothing is
+     overwritten.</p>
+  {% else %}
   <p>This mandate went terminal with no action recorded. If that is wrong, say
      what happened - the ledger will believe you.</p>
+  {% endif %}
   <form hx-post="/latches/intent" hx-target="this" hx-swap="outerHTML"
         hx-headers='{"HX-Request": "true"}'>
     <input type="hidden" name="view_session_date" value="{{ vm.horizon_session }}">
@@ -77,6 +90,16 @@
       {{ label }}
     </label>
     {% endfor %}
+    {# THE EXACT-LINKAGE INPUT. `acted_manually` is the ONE path that exists for
+       an order the framework did not prepare, and section G.4's exact linkage
+       comes from a CAPTURED broker order id -- so without this field the
+       distinguishability query can only ever INFER his manual orders from
+       params, which is a heuristic. Optional: he may not have the id to hand,
+       and refusing the attestation for want of it would lose the attestation. #}
+    <label>broker order id (optional - makes the attribution EXACT rather than
+      inferred):
+      <input type="text" name="actual_broker_order_id" maxlength="64">
+    </label>
     <button type="submit">Record this attestation</button>
   </form>
 </section>

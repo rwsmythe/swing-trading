@@ -272,12 +272,19 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
                 if (earlier.intent_kind != "place"
                         or earlier.intent_id == place.intent_id):
                     continue
+                # A CHILDLESS EARLIER CYCLE IS REPORTED TOO (Codex exec R6
+                # MAJOR). Skipping it meant an UNRESOLVED first attempt followed
+                # by an accepted retry produced neither an earlier-cycle line
+                # nor an unknown count, so the governing retry could show 100%
+                # agreement over evidence the ledger was holding and not
+                # showing. An unanswered cycle is exactly the absence RD's
+                # ruling 4 says must be labelled rather than left to read as
+                # nothing-to-see.
                 child = _governing_validity_child(latch_intents, earlier)
-                if child is None:
-                    continue
                 superseded.append((
                     cid, latch.identity.ticker, earlier.intent_id,
-                    child.validity_outcome))
+                    "unknown (never answered)" if child is None
+                    else child.validity_outcome))
         observations.append(ParityObservation(
             disposition=disposition,
             framework=_framework_side(place),

@@ -146,8 +146,17 @@
      403-ing an unsafe method. ASCII only. #}
   {% for prompt in vm.validity_prompts %}
   <section class="latch-validity-prompt latch-validity-{{ prompt.branch }}">
+    {% if prompt.is_correction %}
+    <h4 class="latch-validity-heading">CORRECT THE RECORDED OUTCOME:
+      {{ prompt.ticker }}</h4>
+    <p class="latch-validity-correction">This latch is already recorded as
+      <strong>{{ prompt.superseded_outcome }}</strong>. If that is wrong, answer
+      again - the ledger is append-only, so a correction is a NEW row and your
+      LATEST answer governs. Nothing is overwritten.</p>
+    {% else %}
     <h4 class="latch-validity-heading">DID THIS ORDER REACH THE BROKER?
       {{ prompt.ticker }}</h4>
+    {% endif %}
     <p class="latch-validity-headline">{{ prompt.headline }}</p>
     {% if prompt.divergence_note %}
     <p class="latch-validity-divergence">{{ prompt.divergence_note }}</p>
@@ -155,8 +164,38 @@
     {% if prompt.incomplete_note %}
     <p class="latch-validity-incomplete">{{ prompt.incomplete_note }}</p>
     {% endif %}
-    <form class="latch-validity-form" hx-post="/latches/intent"
-          hx-target="this" hx-swap="outerHTML"
+
+    {# TWO FORMS, NOT ONE RADIO GROUP. The model and the migration both require
+       that a NON-accepted validity row carry NO observed order at all -- an
+       outcome and its evidence must not be able to disagree -- so a single form
+       emitting the observed side beside all four options was UNWRITABLE for
+       three of them and every click 400d against the ledger contract. The
+       observed side therefore rides on its OWN confirm form. #}
+    {% if prompt.confirm_available %}
+    <form class="latch-validity-form latch-validity-confirm"
+          hx-post="/latches/intent" hx-target="this" hx-swap="outerHTML"
+          hx-headers='{"HX-Request": "true"}'>
+      <input type="hidden" name="intent_kind" value="validity">
+      <input type="hidden" name="candidate_id" value="{{ prompt.candidate_id }}">
+      <input type="hidden" name="view_session_date"
+             value="{{ prompt.view_session_date }}">
+      <input type="hidden" name="validated_place_intent_id"
+             value="{{ prompt.parent_place_intent_id }}">
+      <input type="hidden" name="broker_snapshot_json"
+             value="{{ prompt.snapshot_json }}">
+      <input type="hidden" name="prior_intent_id"
+             value="{{ prompt.prior_intent_id }}">
+      <input type="hidden" name="validity_outcome" value="accepted_by_broker">
+      {% for name, value in prompt.actual_fields %}
+      <input type="hidden" name="{{ name }}" value="{{ value }}">
+      {% endfor %}
+      <button type="submit" class="latch-validity-submit">{{
+        prompt.confirm_label }}</button>
+    </form>
+    {% endif %}
+
+    <form class="latch-validity-form latch-validity-other"
+          hx-post="/latches/intent" hx-target="this" hx-swap="outerHTML"
           hx-headers='{"HX-Request": "true"}'>
       <input type="hidden" name="intent_kind" value="validity">
       <input type="hidden" name="candidate_id" value="{{ prompt.candidate_id }}">
@@ -171,13 +210,9 @@
              value="{{ prompt.snapshot_json }}">
       <input type="hidden" name="prior_intent_id"
              value="{{ prompt.prior_intent_id }}">
-      {% for name, value in prompt.actual_fields %}
-      <input type="hidden" name="{{ name }}" value="{{ value }}">
-      {% endfor %}
       {% for value, label in prompt.options %}
       <label class="latch-validity-option">
-        <input type="radio" name="validity_outcome" value="{{ value }}"
-               {% if value == prompt.preselected %}checked{% endif %}>
+        <input type="radio" name="validity_outcome" value="{{ value }}">
         {{ label }}
       </label>
       {% endfor %}
