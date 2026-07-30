@@ -810,3 +810,59 @@ def test_the_intent_path_never_borrows_the_schwab_client(
         assert client.post(
             "/latches/intent", headers=_HX, data=form).status_code == 200
         assert borrows["n"] == 0
+
+
+# --- Codex exec R1 MAJOR 3: the key uses the DECLARED price encoding -------
+def test_equivalent_price_spellings_produce_ONE_row(seeded_db, frozen_clocks):
+    """CODEX EXEC R1 MAJOR 3. `18.9`, `18.90` and `18.900` are the SAME price at
+    the declared display precision, so they must share an idempotency key. A key
+    built by stringifying a float reasons at Python's `repr` precision instead
+    of at the contract's, which is the price-precision-parity gotcha arriving
+    through the KEY rather than through a comparison -- and it produces either a
+    duplicate ledger row or a silent collapse, depending on which spelling
+    arrives first."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        base = {
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "accepted_by_broker",
+            "actual_order_type": "LIMIT", "actual_duration": "GTC",
+            "actual_quantity": "10", "actual_broker_order_id": "1001",
+            "broker_snapshot_json": _snapshot(branch="presence", attributable=1),
+        }
+        for spelling in ("18.9", "18.90", "18.900"):
+            r = client.post("/latches/intent", headers=_HX,
+                            data=base | {"actual_limit_price": spelling})
+            assert r.status_code == 200, (spelling, r.text)
+    assert len(_intents(cfg)) == 2      # the place + ONE validity row
+
+
+def test_a_one_cent_different_price_produces_a_DIFFERENT_row(
+        seeded_db, frozen_clocks):
+    """The PAIRED discriminator: without it the collapse above is satisfied by a
+    key that has stopped discriminating on price at all, and a genuinely
+    different observed order would be silently lost as a replay."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        place_id = _place(client, cfg, cid)
+        base = {
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity",
+            "validated_place_intent_id": str(place_id),
+            "validity_outcome": "accepted_by_broker",
+            "actual_order_type": "LIMIT", "actual_duration": "GTC",
+            "actual_quantity": "10", "actual_broker_order_id": "1001",
+            "broker_snapshot_json": _snapshot(branch="presence", attributable=1),
+        }
+        for spelling in ("18.89", "18.90"):
+            assert client.post(
+                "/latches/intent", headers=_HX,
+                data=base | {"actual_limit_price": spelling}).status_code == 200
+    assert len(_intents(cfg)) == 3      # the place + TWO distinct validity rows

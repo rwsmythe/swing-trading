@@ -467,8 +467,23 @@ def _actual_digest(kind: str, answer: dict, *, parent_id: int | None,
     new key and duplicate the row -- falsifying the collapse-on-refresh property
     for the one form that most needs it. The timestamp still drives the
     staleness GATE. A gate is not a key input.
+
+    EVERY numeric answer field goes through the SAME `encode_derivation_value`
+    encoding the framework anchor uses (Codex exec R1 MAJOR 3). Stringifying a
+    float directly makes the key depend on Python's float `repr` rather than on
+    the DECLARED display-precision contract -- `str(18.9)` is `'18.9'` while the
+    stored and compared value is the 2dp `18.90`, so the digest and the ledger
+    would be reasoning at two different precisions. That is the
+    price-precision-parity gotcha arriving through the key instead of through a
+    comparison, and it is exactly the class that produces either a duplicate row
+    or a silent collapse.
     """
-    from swing.latches.order_intent import _digest
+    from swing.latches.order_intent import _digest, encode_derivation_value
+    encodings = {
+        "actual_stop_price": "price2",
+        "actual_limit_price": "price2",
+        "actual_quantity": "int",
+    }
     parts = ["v1", kind]
     for name in ("actual_order_type", "actual_duration", "actual_stop_price",
                  "actual_limit_price", "actual_quantity",
@@ -476,9 +491,10 @@ def _actual_digest(kind: str, answer: dict, *, parent_id: int | None,
                  "attested_disposition", "validity_outcome"):
         value = answer.get(name)
         parts.append(name)
-        parts.append("" if value is None else str(value))
+        parts.append(encode_derivation_value(
+            encodings.get(name, "text"), value))
     parts.append("validated_place_intent_id")
-    parts.append("" if parent_id is None else str(parent_id))
+    parts.append(encode_derivation_value("int", parent_id))
     parts.append("broker_snapshot_digest")
     parts.append(snapshot_digest or "")
     return _digest(*parts)

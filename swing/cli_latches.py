@@ -102,13 +102,27 @@ def _inferred_origin(order_intent, place_intents) -> tuple[str, str]:
 
 
 def _observations(conn, cfg, *, since_ts: str, now: datetime):
-    """`(observations, health, intents_in_window)`. Pure reads only."""
+    """`(observations, health, intents_in_window, unattached)`. Pure reads only.
+
+    THE CORPUS IS LATCH-DRIVEN AND THE REDUCTION IS LABELLED (Codex exec R1
+    MAJOR 2). Classification is a property of a LATCH, not of an intent row, so
+    the observations are built by walking `derivation.latches` -- but that means
+    an intent whose latch the derivation does not produce would VANISH from a
+    report that claims to read the ledger window. In practice it cannot happen
+    (`candidate_id` is `NOT NULL ... ON DELETE RESTRICT`, `candidates` is
+    append-only in production, and every intent was written against a latch the
+    panel had already derived), and that is precisely why an UNLABELLED drop
+    would be dangerous: nobody would ever look. So the count is computed and
+    RENDERED. An unlabelled reduction is a quiet all-clear by omission.
+    """
     derivation = build_latch_derivation(conn, cfg, now=now)
     latches = list(derivation.latches)
     intents = list_intents_since(conn, since_ts=since_ts)
     by_latch: dict[int, list] = {}
     for row in intents:
         by_latch.setdefault(row.candidate_id, []).append(row)
+    derivable = {latch.identity.candidate_id for latch in latches}
+    unattached = sorted(cid for cid in by_latch if cid not in derivable)
 
     views: list = []
     views_by_latch: dict[int, list] = {}
@@ -147,7 +161,7 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
             disposition=disposition,
             framework=_framework_side(place),
             actual=_actual_side(validity)))
-    return observations, health, intents
+    return observations, health, intents, unattached
 
 
 @latches_group.command("parity")
@@ -165,7 +179,7 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
     since_ts = "" if since is None else f"{since}T00:00:00"
     conn = connect(cfg.paths.db_path)
     try:
-        observations, health, intents = _observations(
+        observations, health, intents, unattached = _observations(
             conn, cfg, since_ts=since_ts, now=datetime.now())
     finally:
         conn.close()
@@ -180,6 +194,14 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
         # by omission.
         click.echo("  duplicate latch rows dropped:".ljust(_W)
                    + str(report.duplicate_latch_observations))
+    if unattached:
+        # A LABELLED REDUCTION, not a silent one. These ledger rows exist in the
+        # requested window but their latch is not derivable, so no disposition
+        # could be computed for them and they are in NO bucket. That should be
+        # impossible -- which is exactly why it is printed rather than dropped.
+        click.echo("  LEDGER ROWS WITH NO DERIVABLE LATCH:".ljust(_W)
+                   + f"{len(unattached)} (candidate_id {unattached}) -- these "
+                     "are in NO bucket and NO denominator; investigate")
 
     click.echo("")
     click.echo("DISPOSITIONS")

@@ -264,3 +264,82 @@ def test_the_output_survives_a_real_powershell_stdout(seeded_db, tmp_path):
         capture_output=True, text=True, cwd=str(cfg_path.parent.parent),
         env=None, timeout=180)
     assert "UnicodeEncodeError" not in (proc.stderr or "")
+
+
+# --- Codex exec R1 adjudications ------------------------------------------
+def test_a_ledger_row_with_no_derivable_latch_is_LABELLED_not_dropped(seeded_db):
+    """CODEX EXEC R1 MAJOR 2. Classification is a property of a LATCH, so the
+    corpus is latch-driven -- which means an intent whose latch the derivation
+    does not produce would VANISH from a report that claims to read the ledger
+    window. It should be impossible (candidate_id is NOT NULL ON DELETE
+    RESTRICT, candidates is append-only, and every intent was written against an
+    already-derived latch), and THAT is why an unlabelled drop would be
+    dangerous: nobody would ever look. So the count is rendered."""
+    cfg, cfg_path = seeded_db
+    _seed(cfg)
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        # An A+ fire dated BEYOND the derivation horizon, so it produces NO
+        # latch at `now` while still satisfying the identity-coherence trigger
+        # (which requires `bucket = 'aplus'` and a matching run / ticker /
+        # detection date). Planted via raw SQL: the route could not create it,
+        # and that is the point -- the guard exists for the shape nobody
+        # predicted, so its test must reach one the writers cannot produce.
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(777, '2099-01-04T17:30:05', '2099-01-04', '2099-01-05', 1, 1, 0, "
+            "0, 0, 0)")
+        cur = conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(777, 'AMN', 'aplus', 12.0, 13.0, 11.0, 'universe')")
+        orphan = int(cur.lastrowid)
+        conn.execute(
+            "INSERT INTO latch_order_intents (candidate_id, evaluation_run_id, "
+            "ticker, detection_date, idempotency_key, action_session_date, "
+            "recorded_ts, surface, intent_kind, actual_broker_order_id) VALUES "
+            "(?, 777, 'AMN', '2099-01-05', 'orphan', '2099-01-05', "
+            "'2026-07-27T09:00:00', 'latch_panel', 'cancel', '9001')",
+            (orphan,))
+    conn.close()
+    r = _run(cfg_path)
+    assert r.exit_code == 0, r.output
+    assert "LEDGER ROWS WITH NO DERIVABLE LATCH" in r.output
+    assert "in NO bucket and NO denominator" in r.output
+
+
+def test_the_health_window_and_the_classified_corpus_are_the_SAME_latches(
+        seeded_db):
+    """CODEX EXEC R1 MAJOR 1, adjudicated. The finding assumed the telemetry
+    health window is built over a WIDER set than the one being classified, so a
+    stale terminal latch could withhold a verdict about a live one. Both are
+    built from the SAME list, and this pins it rather than leaving the claim to
+    a code reading -- if they ever diverge, health would start describing a
+    corpus nobody is scoring."""
+    import swing.cli_latches as mod
+    cfg, cfg_path = seeded_db
+    _seed(cfg)
+    seen = {}
+    real = mod.assess_telemetry_health
+
+    def _capture(*, sessions, latches, **kw):
+        seen["health"] = [x.identity.candidate_id for x in latches]
+        return real(sessions=sessions, latches=latches, **kw)
+
+    real_classify = mod.classify_latch
+    classified: list[int] = []
+
+    def _capture_classify(**kw):
+        classified.append(kw["latch"].identity.candidate_id)
+        return real_classify(**kw)
+
+    mod.assess_telemetry_health = _capture
+    mod.classify_latch = _capture_classify
+    try:
+        assert _run(cfg_path).exit_code == 0
+    finally:
+        mod.assess_telemetry_health = real
+        mod.classify_latch = real_classify
+    assert seen["health"] == classified
