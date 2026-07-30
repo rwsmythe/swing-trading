@@ -9,8 +9,24 @@ with Task 1 because the ledger's UNIQUE key is derived from them.
 from __future__ import annotations
 
 import hashlib
+import math as _math
+from dataclasses import dataclass as _dataclass
 
-from swing.latches.constants import DERIVATION_FIELD_MANIFEST
+from swing.latches.constants import (
+    DERIVATION_FIELD_MANIFEST,
+    LATCH_ORDER_WITHHELD_REASONS,
+    LATCH_STOP_LEG_STATES,
+    LATCH_ZONE_CAP_PCT,
+    MANDATE_ORDER_DURATIONS,
+    MANDATE_ORDER_TYPE_BREAKOUT,
+)
+from swing.recommendations.sizing import compute_shares
+
+# The ONLY member of MANDATE_ORDER_DURATIONS -- resolved FROM the frozenset so no
+# site re-types the literal. GTC-ness is required of BOTH mandate forms: a DAY
+# order expires tonight and leaves the operator uncovered tomorrow, which is how
+# FTRE was lost.
+(MANDATE_ORDER_DURATION,) = tuple(MANDATE_ORDER_DURATIONS)
 
 
 def _digest(*parts: str) -> str:
@@ -149,3 +165,478 @@ def build_idempotency_key(
     return _digest(
         "v1", str(candidate_id), session_component, surface, intent_kind,
         anchor_digest, actual_digest)
+
+
+# =====================================================================
+# Task 2 -- the PREPARED ORDER and the PER-FIELD DELTA. Both PURE.
+# =====================================================================
+
+
+@_dataclass(frozen=True)
+class OrderDerivation:
+    """Every input that produced the four numbers, carried WITH them.
+
+    The D25 lesson made structural: a human gate only helps if the human can SEE
+    that a computation is wrong, and four bare numbers invite click-through. The
+    renderer cannot show the numbers without this, because it travels on
+    `PreparedOrder`.
+    """
+
+    latched_pivot: float
+    latched_initial_stop: float
+    zone_cap_pct: float
+    fire_evaluation_run_id: int
+    fire_session: str          # the FIRE's action_session_date
+    fire_candidate_id: int
+    regime_order_type: str | None
+    regime_close: float | None
+    regime_close_session: str | None
+    sizing_basis: str          # limit_price (RD ruling) | pivot
+    sizing_basis_price: float
+    sizing_equity: float
+    sizing_equity_source: str
+    real_equity: float
+    equity_floor: float
+    max_risk_pct: float
+    position_pct_cap: float
+    risk_policy_id: int | None
+    risk_per_share: float
+    max_risk_dollars: float
+    shares_by_risk: int
+    shares_by_position_cap: int
+    binding_constraint: str    # SizingResult.constraint
+    nightly_recommendation_shares: int | None
+
+
+@_dataclass(frozen=True)
+class PreparedOrder:
+    order_type: str            # STOP_LIMIT | LIMIT
+    duration: str              # GOOD_TILL_CANCEL
+    stop_price: float | None   # the frozen pivot in breakout; None in pullback
+    limit_price: float         # the zone cap, cent-quantized DOWN
+    quantity: int
+    derivation: OrderDerivation
+
+
+@_dataclass(frozen=True)
+class PreparedOrderResult:
+    """EXACTLY ONE of `order` / `withheld_reason` is non-None.
+
+    A bare `PreparedOrder | None` return CANNOT carry the withheld reason the
+    panel is required to render -- and the withheld branch is the CURRENT live
+    state (the regime is undeterminable on today's substrate), so it is the
+    branch that must be EXPRESSIVE, not the afterthought.
+    """
+
+    order: PreparedOrder | None
+    withheld_reason: str | None
+    withheld_detail: str
+
+    def __post_init__(self) -> None:
+        if (self.order is None) == (self.withheld_reason is None):
+            raise ValueError(
+                "EXACTLY ONE of order / withheld_reason must be set; got "
+                f"order={self.order is not None}, "
+                f"withheld_reason={self.withheld_reason!r}")
+        if self.withheld_reason is not None:
+            if self.withheld_reason not in LATCH_ORDER_WITHHELD_REASONS:
+                raise ValueError(
+                    "withheld_reason must be in "
+                    f"{sorted(LATCH_ORDER_WITHHELD_REASONS)}, got "
+                    f"{self.withheld_reason!r}")
+            if not self.withheld_detail.strip():
+                raise ValueError(
+                    "a withheld form MUST carry display-ready detail -- an "
+                    "unlabelled reduction is a quiet all-clear by omission")
+        elif self.withheld_detail:
+            raise ValueError(
+                "withheld_detail must be '' when an order is present")
+
+
+@_dataclass(frozen=True)
+class SizingInputs:
+    """The config- and policy-derived sizing context, gathered by the CALLER.
+
+    Passed in rather than read, so `compute_prepared_order` stays PURE.
+    """
+
+    real_equity: float
+    equity_floor: float
+    sizing_equity: float
+    max_risk_pct: float
+    position_pct_cap: float
+    risk_policy_id: int | None = None
+    nightly_recommendation_shares: int | None = None
+
+
+def quantize_limit_down(zone_cap: float) -> float:
+    """`floor(zone_cap * 100) / 100` -- the zone cap in WHOLE CENTS, by FLOOR.
+
+    WHOLE CENTS because that is the only price the order could actually be: a US
+    equity limit order is penny-priced, 18.8902 is not a price the operator could
+    enter, and this arc exists to put *the order he would place* in front of him.
+    Rendering four decimals would make the card a number he must silently
+    re-round himself -- the click-through invitation the derivation block exists
+    to prevent.
+
+    FLOOR, not round-half-up, and the reason is the CAP SEMANTIC: the zone cap is
+    a MAXIMUM (pivot x 1.03 is the top of the buy zone), so a quantization that
+    can move the price UP can push the order ABOVE the zone. Round-half-up does
+    that whenever the cap's third decimal is >= 5 -- a cap of 18.8952 becomes
+    18.90 > 18.8952. RD: a cap that can drift up under rounding is not a cap.
+
+    FTRE does NOT exhibit it (18.8902 rounds down either way), which is exactly
+    why the rule has to be STATED rather than inferred from the worked example.
+    """
+    return _math.floor(float(zone_cap) * 100) / 100
+
+
+def compute_prepared_order(
+    *, latch, regime_order_type: str | None, regime_close: float | None,
+    regime_close_session: str | None, sizing_inputs: SizingInputs,
+) -> PreparedOrderResult:
+    """The framework's computed entry order for `latch`, or a WITHHELD result.
+
+    The regime is consumed through the EXISTING 21-A seam
+    (`expected_mandate_order_type`) and NEVER re-implemented here, so whatever
+    21-G does to make the close sound flows through automatically. When the
+    regime is UNDETERMINABLE the form is WITHHELD: a form that guessed the type
+    would write the WRONG TYPE into the parity ledger. That is the asymmetry rule
+    again -- from a stale close you may raise a mismatch alarm, but you may not
+    assert a match, and a prepared order IS an assertion.
+    """
+    if regime_order_type is None:
+        return PreparedOrderResult(
+            order=None, withheld_reason="regime_undeterminable",
+            withheld_detail=(
+                "No prepared order: the price regime is undeterminable, so the "
+                "framework cannot tell a breakout stop-limit from a pullback "
+                "limit. The mandate facts are shown; no order is offered."))
+
+    limit_price = quantize_limit_down(latch.zone_cap)
+    stop_price = (
+        float(latch.latched_pivot)
+        if regime_order_type == MANDATE_ORDER_TYPE_BREAKOUT else None)
+
+    # RULED BY RD 2026-07-29: the LIMIT PRICE is the sizing basis in BOTH
+    # regimes, NOT pivot-parity. In the pullback regime the limit is the only
+    # price the order can fill at; in the breakout regime it is the worst case.
+    # Pivot-basis sizing produces an order whose risk at an ordinary cap fill
+    # BREACHES the policy cap -- and in the pullback regime the cap is PRECISELY
+    # WHERE THE ORDER FILLS, so that is not a tail event. A mandate that breaches
+    # the risk policy on the expected fill must not be rendered to the operator
+    # as correct.
+    sizing_basis_price = limit_price
+    try:
+        sizing = compute_shares(
+            entry=sizing_basis_price, stop=float(latch.latched_initial_stop),
+            equity=sizing_inputs.sizing_equity,
+            max_risk_pct=sizing_inputs.max_risk_pct,
+            position_pct_cap=sizing_inputs.position_pct_cap)
+    except ValueError as exc:
+        # `Latch.__post_init__` already guarantees
+        # latched_initial_stop < latched_pivot < zone_cap, so this cannot fire --
+        # but the call is guarded anyway and a raise DEGRADES VISIBLY (A6).
+        return PreparedOrderResult(
+            order=None, withheld_reason="sizing_degenerate",
+            withheld_detail=(
+                "No prepared order: the sizing computation is degenerate "
+                f"({exc}). This is a framework defect, not a market state."))
+    if not sizing.feasible:
+        return PreparedOrderResult(
+            order=None, withheld_reason="sizing_infeasible",
+            withheld_detail=(
+                "No prepared order: position sizing is infeasible at this "
+                f"geometry (constraint: {sizing.constraint}). At limit "
+                f"{limit_price:.2f} against the fire-time stop "
+                f"{float(latch.latched_initial_stop):.2f}, no whole-share "
+                "position fits inside the risk policy."))
+
+    risk_per_share = sizing_basis_price - float(latch.latched_initial_stop)
+    max_risk_dollars = sizing_inputs.sizing_equity * sizing_inputs.max_risk_pct
+    shares_by_risk = (
+        _math.floor(max_risk_dollars / risk_per_share) if risk_per_share > 0
+        else 0)
+    shares_by_position_cap = _math.floor(
+        (sizing_inputs.sizing_equity * sizing_inputs.position_pct_cap)
+        / sizing_basis_price)
+    floor_binds = sizing_inputs.sizing_equity != sizing_inputs.real_equity
+    derivation = OrderDerivation(
+        latched_pivot=float(latch.latched_pivot),
+        latched_initial_stop=float(latch.latched_initial_stop),
+        zone_cap_pct=LATCH_ZONE_CAP_PCT,
+        fire_evaluation_run_id=latch.identity.evaluation_run_id,
+        fire_session=latch.identity.detection_date,
+        fire_candidate_id=latch.identity.candidate_id,
+        regime_order_type=regime_order_type,
+        regime_close=None if regime_close is None else float(regime_close),
+        regime_close_session=regime_close_session,
+        sizing_basis="limit_price",
+        sizing_basis_price=sizing_basis_price,
+        sizing_equity=sizing_inputs.sizing_equity,
+        sizing_equity_source=(
+            "max(real equity, risk_equity_floor)" if floor_binds
+            else "real equity (above the risk_equity_floor)"),
+        real_equity=sizing_inputs.real_equity,
+        equity_floor=sizing_inputs.equity_floor,
+        max_risk_pct=sizing_inputs.max_risk_pct,
+        position_pct_cap=sizing_inputs.position_pct_cap,
+        risk_policy_id=sizing_inputs.risk_policy_id,
+        risk_per_share=risk_per_share,
+        max_risk_dollars=max_risk_dollars,
+        shares_by_risk=shares_by_risk,
+        shares_by_position_cap=shares_by_position_cap,
+        binding_constraint=sizing.constraint,
+        nightly_recommendation_shares=(
+            sizing_inputs.nightly_recommendation_shares),
+    )
+    return PreparedOrderResult(
+        order=PreparedOrder(
+            order_type=regime_order_type,
+            duration=MANDATE_ORDER_DURATION,
+            stop_price=stop_price,
+            limit_price=limit_price,
+            quantity=sizing.shares,
+            derivation=derivation),
+        withheld_reason=None, withheld_detail="")
+
+
+def derivation_column_values(derivation: OrderDerivation) -> dict:
+    """`{latch_order_intents column: value}` for EVERY manifest row.
+
+    GENERATED by walking `DERIVATION_FIELD_MANIFEST`, so the form's hidden
+    inputs, the anchor digest, the POST-time comparison and the persisted row all
+    read the SAME mapping and no site re-lists the columns.
+    """
+    return {
+        f.column: getattr(derivation, f.attr) for f in DERIVATION_FIELD_MANIFEST
+    }
+
+
+def framework_column_values(order: PreparedOrder) -> dict:
+    """`{latch_order_intents column: value}` for the framework-order block."""
+    return {
+        "framework_order_type": order.order_type,
+        "framework_duration": order.duration,
+        "framework_stop_price": order.stop_price,
+        "framework_limit_price": order.limit_price,
+        "framework_quantity": order.quantity,
+    }
+
+
+def recompute_derived_display_values(row) -> dict:
+    """Reproduce the card's DERIVED lines from a STORED ledger row.
+
+    `risk_per_share`, `max_risk_dollars`, `shares_by_risk`,
+    `shares_by_position_cap` and `binding_constraint` are NOT stored: they are
+    pure functions of values that ARE stored plus `latched_initial_stop` (pinned
+    exactly by `candidate_id`), so storing them would be the denormalisation a
+    computed delta rejects. This function is what makes that claim CHECKABLE
+    rather than asserted -- if any one of the five could not be recomputed, it
+    would belong in the stored set.
+
+    `row` carries the stored columns plus `latched_initial_stop`.
+    """
+    entry = float(row["framework_limit_price"])
+    stop = float(row["latched_initial_stop"])
+    equity = float(row["derivation_sizing_equity"])
+    risk_per_share = entry - stop
+    max_risk_dollars = equity * float(row["derivation_max_risk_pct"])
+    shares_by_risk = (
+        _math.floor(max_risk_dollars / risk_per_share) if risk_per_share > 0
+        else 0)
+    shares_by_position_cap = _math.floor(
+        (equity * float(row["derivation_position_pct_cap"])) / entry)
+    return {
+        "risk_per_share": risk_per_share,
+        "max_risk_dollars": max_risk_dollars,
+        "shares_by_risk": shares_by_risk,
+        "shares_by_position_cap": shares_by_position_cap,
+        "binding_constraint": (
+            "risk" if shares_by_risk <= shares_by_position_cap
+            else "position_cap"),
+    }
+
+
+# ---------------------------------------------------------------------
+# The PER-FIELD DELTA -- computed, never stored (plan section A.3).
+# ---------------------------------------------------------------------
+_PRICE_DP = 2
+
+_DURATION_ALIASES = {
+    "GTC": "GOOD_TILL_CANCEL",
+    "GOOD_TILL_CANCEL": "GOOD_TILL_CANCEL",
+    "GOOD_TILL_CANCELLED": "GOOD_TILL_CANCEL",
+    "GOOD_TILL_CANCELED": "GOOD_TILL_CANCEL",
+    "DAY": "DAY",
+    "FILL_OR_KILL": "FILL_OR_KILL",
+    "FOK": "FILL_OR_KILL",
+    "IMMEDIATE_OR_CANCEL": "IMMEDIATE_OR_CANCEL",
+    "IOC": "IMMEDIATE_OR_CANCEL",
+    "END_OF_WEEK": "END_OF_WEEK",
+    "END_OF_MONTH": "END_OF_MONTH",
+    "NEXT_END_OF_MONTH": "NEXT_END_OF_MONTH",
+}
+
+
+def canonical_duration(raw) -> str:
+    """Map a broker's duration rendering onto the framework's vocabulary.
+
+    Comparing RAW strings would report `GTC` vs `GOOD_TILL_CANCEL` as a duration
+    divergence on a SEMANTICALLY IDENTICAL order -- a manufactured mismatch in
+    the exact metric the ledger exists to compute, and the mirror image of the
+    instrument being unable to see a REAL divergence. The CANONICAL form is what
+    is PERSISTED and what `duration_differs` compares.
+
+    An unmapped duration canonicalises to `UNKNOWN`, and unknown is NEVER
+    agreement.
+    """
+    if raw is None:
+        return "UNKNOWN"
+    return _DURATION_ALIASES.get(str(raw).strip().upper(), "UNKNOWN")
+
+
+@_dataclass(frozen=True)
+class OrderDelta:
+    """Framework-vs-actual, per field, at DISPLAY precision.
+
+    `None` means ONE SIDE IS UNKNOWN -- never `False`. Unknown is never
+    agreement (the rule 21-A's `_agreement_word` already enforces).
+    """
+
+    order_type_differs: bool | None
+    duration_differs: bool | None
+    # THE STOP LEG IS TRI-STATE, not `float | None`. With a bare `float | None`,
+    # "both sides correctly have no stop leg" (the PULLBACK regime's RIGHT
+    # answer) and "one side is unknown" both collapse to None -- so a legitimate
+    # EXACT MATCH would be reported as unknown, and unknown is never agreement,
+    # so the CORRECT order would be scored as a non-match.
+    stop_leg: str                        # both_absent | compared | unknown
+    stop_price_delta: float | None       # set IFF stop_leg == 'compared'
+    limit_price_delta: float | None
+    quantity_delta: int | None
+    any_difference: bool | None          # None when ANY field is unknown
+    unknown_fields: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.stop_leg not in LATCH_STOP_LEG_STATES:
+            raise ValueError(
+                f"stop_leg must be in {sorted(LATCH_STOP_LEG_STATES)}, "
+                f"got {self.stop_leg!r}")
+        if (self.stop_price_delta is not None) != (self.stop_leg == "compared"):
+            raise ValueError(
+                "stop_price_delta is set IFF stop_leg == 'compared'; got "
+                f"stop_leg={self.stop_leg!r}, delta={self.stop_price_delta!r}")
+
+
+_ORDER_FIELDS = (
+    "order_type", "duration", "stop_price", "limit_price", "quantity")
+
+
+def _round2(value) -> float | None:
+    return None if value is None else round(float(value), _PRICE_DP)
+
+
+def _as_order_mapping(side) -> dict:
+    if side is None:
+        return dict.fromkeys(_ORDER_FIELDS)
+    if isinstance(side, dict):
+        return {f: side.get(f) for f in _ORDER_FIELDS}
+    return {f: getattr(side, f, None) for f in _ORDER_FIELDS}
+
+
+def _resolve_stop_leg(fw: dict, ac: dict) -> tuple[str, float | None]:
+    """`both_absent` | `compared` | `unknown`, and the delta iff `compared`.
+
+    `unknown` covers BOTH "exactly one side carries a stop leg" and "the actual
+    side is not observed at all" -- the two are indistinguishable in evidence
+    terms from here, and both must contribute `None` rather than agreement.
+    """
+    ac_type = ac.get("order_type")
+    fw_stop = _round2(fw.get("stop_price"))
+    ac_stop = _round2(ac.get("stop_price"))
+    if ac_type is None:
+        # nothing observed -- not even the shape that would say whether a stop
+        # leg was expected
+        return "unknown", None
+    if fw_stop is None and ac_stop is None:
+        return "both_absent", None
+    if fw_stop is None or ac_stop is None:
+        return "unknown", None
+    return "compared", round(ac_stop - fw_stop, _PRICE_DP)
+
+
+def compute_order_delta(framework, actual) -> OrderDelta:
+    """The execution-parity metric, computed at read time from BOTH sides.
+
+    `framework` and `actual` are mappings/objects carrying `order_type`,
+    `duration`, `stop_price`, `limit_price`, `quantity`. Either may be `None`
+    (not observed), and any individual field may be `None`.
+
+    Prices compare at DISPLAY precision (`round(a, 2) != round(b, 2)`), never as
+    a raw float compare: at execution grain a sub-cent artifact would falsely
+    flip an identical order to "operator edited".
+    """
+    fw = _as_order_mapping(framework)
+    ac = _as_order_mapping(actual)
+    unknown: list[str] = []
+
+    fw_type, ac_type = fw.get("order_type"), ac.get("order_type")
+    if fw_type is None or ac_type is None:
+        unknown.append("order_type")
+        order_type_differs = None
+    else:
+        order_type_differs = fw_type != ac_type
+
+    # DURATIONS ARE CANONICALISED BEFORE COMPARISON, NOT COMPARED RAW.
+    fw_dur = canonical_duration(fw.get("duration"))
+    ac_dur = canonical_duration(ac.get("duration"))
+    if "UNKNOWN" in (fw_dur, ac_dur):
+        unknown.append("duration")
+        duration_differs = None
+    else:
+        duration_differs = fw_dur != ac_dur
+
+    limit_a, limit_b = _round2(fw.get("limit_price")), _round2(ac.get("limit_price"))
+    if limit_a is None or limit_b is None:
+        unknown.append("limit_price")
+        limit_price_delta = None
+    else:
+        limit_price_delta = round(limit_b - limit_a, _PRICE_DP)
+
+    qty_a, qty_b = fw.get("quantity"), ac.get("quantity")
+    if qty_a is None or qty_b is None:
+        unknown.append("quantity")
+        quantity_delta = None
+    else:
+        quantity_delta = int(qty_b) - int(qty_a)
+
+    stop_leg, stop_price_delta = _resolve_stop_leg(fw, ac)
+    if stop_leg == "unknown":
+        unknown.append("stop_price")
+
+    differences = [
+        order_type_differs, duration_differs,
+        None if limit_price_delta is None else limit_price_delta != 0,
+        None if quantity_delta is None else quantity_delta != 0,
+    ]
+    if stop_leg == "both_absent":
+        # BOTH SIDES CORRECTLY HAVE NO STOP LEG -- this is a MATCH.
+        differences.append(False)
+    elif stop_leg == "compared":
+        differences.append(stop_price_delta != 0)
+    else:
+        differences.append(None)
+
+    any_difference = (
+        None if any(d is None for d in differences) else any(differences))
+    return OrderDelta(
+        order_type_differs=order_type_differs,
+        duration_differs=duration_differs,
+        stop_leg=stop_leg,
+        stop_price_delta=stop_price_delta,
+        limit_price_delta=limit_price_delta,
+        quantity_delta=quantity_delta,
+        any_difference=any_difference,
+        unknown_fields=tuple(sorted(set(unknown))),
+    )
