@@ -549,6 +549,7 @@ def join_orders_to_latches(*, latches, orders):
                 severity=(
                     "critical" if reason in _CRITICAL_STALE_CLEAR_REASONS
                     else "warning"),
+                broker_order_id=order.order_id,
             ))
 
     return joins, tuple(alarms)

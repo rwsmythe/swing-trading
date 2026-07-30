@@ -235,3 +235,56 @@ def test_actionable_view_surfaces_is_a_subset_of_the_writable_enum():
     )
     assert ACTIONABLE_VIEW_SURFACES <= LATCH_VIEW_SURFACES
     assert ACTIONABLE_VIEW_SURFACES == LATCH_VIEW_SURFACES == {"latch_panel"}
+
+
+def test_a_LOST_INSERT_RACE_merges_into_the_winner_rather_than_losing_the_claim(
+        conn_and_identity, monkeypatch):
+    """CODEX EXEC R5 MAJOR 2. `record_view` was SELECT-then-INSERT with no
+    conflict recovery: two concurrent first beacons both observe no row, and the
+    loser hits the UNIQUE constraint. The route turns that into a 409 and the
+    loser's render is never merged -- so if a WITHHELD render wins and an
+    ACTIONABLE render loses, `actionable_ever_viewed` stays 0 permanently and a
+    potential `discipline_lapse` becomes `never_actionable`. It fails in the
+    flattering direction.
+
+    The loser must MERGE, which for this table means taking the UPDATE path it
+    would have taken had it seen the row -- so `actionable_ever_viewed` still
+    advances monotonically and the immutable first-view facts stay the winner's.
+
+    THE RACE IS SIMULATED AT THE SEAM: `get_view` is monkeypatched to return
+    None ONCE after the winner's row already exists, which is exactly the state
+    the loser observes. A test that merely called `record_view` twice would take
+    the ordinary UPDATE path and prove nothing.
+    """
+    from swing.data.repos import latch_view_events as repo
+
+    conn, identity = conn_and_identity
+    winner = repo.record_view(
+        conn, identity=identity, view_session_date="2026-07-29",
+        viewed_ts="2026-07-29T09:00:00", latch_state="armed",
+        surface="latch_panel", actionable=0)
+
+    real_get_view = repo.get_view
+    calls = {"n": 0}
+
+    def _blind_once(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None          # the loser's stale read
+        return real_get_view(*a, **k)
+
+    monkeypatch.setattr(repo, "get_view", _blind_once)
+    loser = repo.record_view(
+        conn, identity=identity, view_session_date="2026-07-29",
+        viewed_ts="2026-07-29T09:00:01", latch_state="armed",
+        surface="latch_panel", actionable=1)
+
+    assert loser == winner, "the loser must return the WINNER's row, not raise"
+    row = real_get_view(conn, candidate_id=identity.candidate_id,
+                        view_session_date="2026-07-29", surface="latch_panel")
+    assert row.view_count == 2
+    assert row.actionable_ever_viewed == 1, (
+        "the loser's ACTIONABLE claim must survive; losing it converts a "
+        "potential discipline_lapse into never_actionable")
+    assert row.actionable_at_first_view == 0, "the winner's first view stands"
+    assert row.actionable_at_last_view == 1

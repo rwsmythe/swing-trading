@@ -689,7 +689,7 @@ def _stored_anchor_values(form, block) -> tuple[dict, dict]:
     """
     from swing.latches.constants import DERIVATION_FIELD_MANIFEST
     from swing.latches.order_intent import FRAMEWORK_ANCHOR_FIELDS
-    numeric = {"price2": float, "pct4": float, "int": int}
+    numeric = {"price2": float, "pct6": float, "int": int}
 
     def _decode(encoding: str, raw):
         text = "" if raw is None else str(raw).strip()

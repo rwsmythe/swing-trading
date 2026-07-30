@@ -602,6 +602,18 @@ tr.tripwire-fired td:first-child { border-left: 4px solid var(--tripwire-border)
   display: block;
 }
 
+/* The per-order cancel control rides INSIDE an alarm block, so it takes no box
+   of its own -- a second bordered box inside an alarm reads as a second alarm.
+   var()-only. */
+.latch-cancel-form {
+  margin: 0.25rem 0 0.5rem 0;
+}
+
+.latch-cancel-unavailable {
+  color: var(--latch-alarm-fg);
+  margin: 0.25rem 0 0.5rem 0;
+}
+
 .latch-intent-result {
   background: var(--latch-order-bg);
   color: var(--latch-order-fg);

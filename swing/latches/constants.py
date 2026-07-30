@@ -363,11 +363,22 @@ R_BUCKETS = frozenset({
 #      `encode`, so the three cannot drift and no site re-lists the columns
 #
 # `encode` is what makes the digest REPRODUCIBLE across render and POST:
-# `price2` is the whole-cent form, `pct4` fixes the policy-rate precision,
+# `price2` is the whole-cent form, `pct6` fixes the policy-rate precision,
 # `session` is ISO YYYY-MM-DD, and a NULL encodes as the EMPTY STRING --
 # distinct from "0", which a float field could legitimately produce.
+#
+# `pct6` IS SIX DECIMALS OF FRACTION AND IT REPLACED A FOUR-DECIMAL `pct4`
+# (auto-review CRITICAL 3): the card renders a policy rate as `{rate*100:.3f}%`,
+# which is FIVE decimals of fraction, so a four-decimal anchor was COARSER THAN
+# THE DISPLAY -- 0.00504 and 0.00505 render 0.504% and 0.505% and both encoded
+# `0.0050`. Two consequences, both real: the POST-time comparison could not
+# detect a changed VISIBLE derivation, and `_stored_anchor_values` decodes the
+# SUBMITTED text, so the ledger persisted a provenance different from the card
+# the operator was shown -- on the ledger whose entire claim is that those two
+# are identical. The rule is DIRECTIONAL: the anchor must be at least as fine as
+# the display, never the reverse.
 # ---------------------------------------------------------------------
-DERIVATION_ENCODINGS = frozenset({"price2", "pct4", "int", "session", "text"})
+DERIVATION_ENCODINGS = frozenset({"price2", "pct6", "int", "session", "text"})
 
 
 @_dataclass(frozen=True)
@@ -395,13 +406,13 @@ class DerivationField:
 
 
 DERIVATION_FIELD_MANIFEST: tuple[DerivationField, ...] = (
-    DerivationField("derivation_zone_cap_pct", "zone_cap_pct", "pct4",
+    DerivationField("derivation_zone_cap_pct", "zone_cap_pct", "pct6",
                     False, "", True),
     DerivationField("derivation_sizing_equity", "sizing_equity", "price2",
                     False, "", True),
-    DerivationField("derivation_max_risk_pct", "max_risk_pct", "pct4",
+    DerivationField("derivation_max_risk_pct", "max_risk_pct", "pct6",
                     False, "", True),
-    DerivationField("derivation_position_pct_cap", "position_pct_cap", "pct4",
+    DerivationField("derivation_position_pct_cap", "position_pct_cap", "pct6",
                     False, "", True),
     DerivationField(
         "derivation_risk_policy_id", "risk_policy_id", "int", True,

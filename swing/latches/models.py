@@ -307,6 +307,16 @@ class OrderAlarm:
     latch_candidate_id: int | None
     detail: str
     severity: str
+    # THE BROKER ORDER THIS ALARM IS ABOUT, STRUCTURALLY (auto-review MAJOR).
+    # The stale-order alarm names an order id in its PROSE, and prose is not a
+    # field: without this the panel cannot offer the per-order Cancel control the
+    # plan's file manifest requires, so a `cancel` intent -- the row that carries
+    # section G.4's EXACT linkage -- is unreachable in a browser and cancellation
+    # decisions never enter the measurement ledger at all.
+    #
+    # `None` on LATCH_ARMED_NO_RESTING_ORDER, which is an alarm about the ABSENCE
+    # of an order and has no id to carry.
+    broker_order_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in LATCH_ORDER_ALARMS:

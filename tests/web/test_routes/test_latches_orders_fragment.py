@@ -2412,3 +2412,111 @@ def test_a_readable_latest_stamp_adds_no_suppression_clause(
     assert r.status_code == 200
     assert "not the mandated order shape" in r.text          # T4a alarms
     assert "could not even be CONSIDERED" not in r.text
+
+
+# ---------------------------------------------------------------------------
+# The per-order CANCEL control (plan file manifest; auto-review MAJOR)
+# ---------------------------------------------------------------------------
+def _invalidate(cfg):
+    """A close BELOW the frozen 14.88 stop, which clears the latch by
+    INVALIDATION and leaves the resting order stale -- the operator's one manual
+    duty and the only state that earns a cancel control."""
+    import pandas as pd
+    cfg.paths.prices_cache_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([
+        {"asof_date": "2026-07-21", "open": 15.0, "high": 15.2, "low": 14.0,
+         "close": 14.00, "volume": 100.0},
+    ]).to_parquet(cfg.paths.prices_cache_dir / "FTRE.yfinance.parquet")
+
+
+def test_a_stale_order_alarm_offers_a_CANCEL_control_bound_to_THAT_order_id(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """AUTO-REVIEW MAJOR, and the SAME CLASS as the missing validity prompt: the
+    plan's file manifest requires "the per-order Cancel control on stale-order
+    rows", and without it `intent_kind='cancel'` is unreachable in a browser --
+    so the row carrying section G.4's EXACT linkage (a captured broker order id)
+    never enters the measurement ledger and cancellation decisions are invisible.
+
+    The alarm named the order id in PROSE only, and prose is not a field, so the
+    control could not be bound to a specific order. `OrderAlarm` now carries it
+    STRUCTURALLY. The control targets a SPECIFIC broker order id and never a
+    ticker -- hazard (c), which the schema CHECK also makes unwritable.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _invalidate(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[_order(order_id="4242")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    import re
+    assert "ORDER_RESTING_LATCH_CLEARED" in r.text
+    start = r.text.index('<form class="latch-cancel-form"')
+    form = r.text[start:r.text.index("</form>", start)]
+    fields = dict(re.findall(r'name="([^"]+)" *\n? *value="([^"]*)"', form))
+    assert fields["intent_kind"] == "cancel"
+    assert fields["actual_broker_order_id"] == "4242"
+    assert fields["view_session_date"] == ANCHOR
+    assert 'hx-post="/latches/intent"' in form
+    assert 'hx-headers=\'{"HX-Request": "true"}\'' in form
+    assert 'hx-target="this"' in form
+
+
+def test_the_cancel_control_actually_writes_the_cancel_row_end_to_end(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """Rendered is not the same as REACHABLE. This posts exactly what the form
+    emits and asserts the ledger row, which is the property the validity-prompt
+    finding proved a rendering test alone does not establish."""
+    import re
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _invalidate(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[_order(order_id="4242")])
+    with TestClient(app) as client:
+        html = _post_orders(client).text
+        start = html.index('<form class="latch-cancel-form"')
+        form = html[start:html.index("</form>", start)]
+        fields = dict(re.findall(
+            r'name="([^"]+)" *\n? *value="([^"]*)"', form))
+        r = client.post("/latches/intent", headers=_HX, data=fields)
+    assert r.status_code == 200, r.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT intent_kind, actual_broker_order_id FROM "
+            "latch_order_intents").fetchall()
+    finally:
+        conn.close()
+    assert rows == [("cancel", "4242")]
+
+
+def test_an_UNATTRIBUTABLE_stale_order_LABELS_the_gap_instead_of_hiding_it(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """A `cancel` row carries the FULL latch identity block, so an order matching
+    NO latch cannot be logged against one. A control that is simply ABSENT reads
+    as "nothing to do here" -- and the operator still has to cancel it at the
+    broker. So the gap is LABELLED, which is the same rule the arc applies to
+    every other reduction."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _invalidate(cfg)
+    stray = _order(order_id="9999", stop_price=99.00, price=99.50)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[stray])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert "ORDER_RESTING_LATCH_CLEARED" in r.text
+    assert "latch-cancel-form" not in r.text, (
+        "no cancel control may be bound to an unattributable order")
+    assert "no mandate to log a cancel against" in r.text
+
+
+def test_the_absent_order_alarm_carries_NO_order_id_and_NO_control(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """LATCH_ARMED_NO_RESTING_ORDER is an alarm about the ABSENCE of an order.
+    There is no id to cancel, and a cancel control there would be nonsense."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert "LATCH_ARMED_NO_RESTING_ORDER" in r.text
+    assert "latch-cancel-form" not in r.text

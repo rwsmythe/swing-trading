@@ -68,8 +68,12 @@ def encode_derivation_value(encoding: str, value) -> str:
         return ""
     if encoding == "price2":
         return f"{float(value):.2f}"
-    if encoding == "pct4":
-        return f"{float(value):.4f}"
+    if encoding == "pct6":
+        # SIX decimals of FRACTION, i.e. four of PERCENT -- one digit FINER than
+        # the card's `{rate*100:.3f}%`. The anchor must be at least as fine as
+        # the display or two visibly-different rates share one hidden anchor and
+        # the ledger stores a provenance the operator never saw.
+        return f"{float(value):.6f}"
     if encoding == "int":
         return str(int(value))
     if encoding == "session":

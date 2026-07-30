@@ -505,7 +505,7 @@ def test_an_unknown_stop_leg_state_is_rejected():
 @pytest.mark.parametrize("encoding,raw,expected", [
     ("price2", 18.8902, "18.89"),
     ("price2", None, ""),
-    ("pct4", 0.005, "0.0050"),
+    ("pct6", 0.005, "0.005000"),
     ("int", 9, "9"),
     ("int", None, ""),
     ("session", "2026-07-24", "2026-07-24"),
@@ -532,3 +532,52 @@ def test_the_empty_string_encodes_as_NULL_and_not_as_a_zero():
     from swing.latches.order_intent import encode_derivation_value
     assert encode_derivation_value("price2", "") == ""
     assert encode_derivation_value("price2", 0) == "0.00"
+
+
+def test_the_rate_encoding_is_FINER_than_the_card_renders_the_same_rate():
+    """AUTO-REVIEW CRITICAL 3 -- the price-precision-parity gotcha arriving at a
+    PERCENTAGE field, and it arrives the wrong way round.
+
+    The rule that family states is that the ANCHOR and the DISPLAY must agree.
+    The card renders a policy rate as `{rate * 100:.3f}%` -- THREE decimals of
+    percent, i.e. FIVE decimals of fraction -- while the anchor encoded FOUR
+    decimals of fraction. The anchor was therefore COARSER than the display, so
+    two configs the operator can plainly see apart shared one hidden anchor:
+
+      0.00504 renders 0.504%   and encoded pct4 -> '0.0050'
+      0.00505 renders 0.505%   and encoded pct4 -> '0.0050'
+
+    Consequences, both real: the POST-time comparison cannot detect a changed
+    VISIBLE derivation (the hidden-anchor defence has a hole exactly the width of
+    the display's extra digit), and `_stored_anchor_values` decodes the SUBMITTED
+    text, so the ledger persists 0.0050 as the provenance of a card that said
+    0.504% -- a stored derivation that is not the one he was shown, on the ledger
+    whose entire claim is that those two are identical.
+
+    The fix is directional: the anchor must be at least as fine as the display,
+    never the reverse. Six decimals of fraction is four decimals of percent, one
+    digit finer than the card renders.
+    """
+    from swing.latches.order_intent import encode_derivation_value
+    assert encode_derivation_value("pct6", 0.00504) != (
+        encode_derivation_value("pct6", 0.00505))
+    assert f"{0.00504 * 100:.3f}" != f"{0.00505 * 100:.3f}", (
+        "the premise, inline so it cannot rot: the CARD does distinguish them")
+    assert encode_derivation_value("pct6", 0.005) == "0.005000"
+    assert encode_derivation_value("pct6", None) == ""
+    assert encode_derivation_value(
+        "pct6", encode_derivation_value("pct6", 0.00504)) == "0.005040", (
+        "idempotent across the browser round trip, like every other encoding")
+
+
+def test_the_manifest_carries_NO_encoding_coarser_than_its_rendered_display():
+    """The CLASS, pinned rather than the instance: every manifest field the card
+    RENDERS must anchor at least as finely as the card shows it. Stated as an
+    executable check over the manifest so a field added later cannot quietly
+    reintroduce the hole."""
+    from swing.latches.constants import DERIVATION_FIELD_MANIFEST
+    assert {f.encode for f in DERIVATION_FIELD_MANIFEST} <= {
+        "price2", "pct6", "int", "session", "text"}
+    assert "pct4" not in {f.encode for f in DERIVATION_FIELD_MANIFEST}, (
+        "pct4 is four decimals of FRACTION against a display of three decimals "
+        "of PERCENT -- coarser than what the operator can see")

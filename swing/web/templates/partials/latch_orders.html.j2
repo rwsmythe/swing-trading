@@ -17,6 +17,33 @@
       <strong>{{ alarm.kind }}</strong> ({{ alarm.severity }}) {{ alarm.ticker }}:
       {{ alarm.detail }}
     </p>
+    {# THE PER-ORDER CANCEL CONTROL on a stale-order alarm. LOG-ONLY: nothing is
+       sent to the broker on any branch -- the operator still cancels at the
+       broker, and this records that he decided to. Without it a `cancel` intent
+       is unreachable in a browser, so the row that carries section G.4's EXACT
+       linkage (a captured broker order id) never enters the ledger.
+
+       It targets a SPECIFIC broker order id, never a ticker: hazard (c), and
+       the schema CHECK makes a ticker-aimed cancel unwritable. #}
+    {% if alarm.broker_order_id and alarm.latch_candidate_id %}
+    <form class="latch-cancel-form" hx-post="/latches/intent"
+          hx-target="this" hx-swap="outerHTML"
+          hx-headers='{"HX-Request": "true"}'>
+      <input type="hidden" name="intent_kind" value="cancel">
+      <input type="hidden" name="candidate_id"
+             value="{{ alarm.latch_candidate_id }}">
+      <input type="hidden" name="view_session_date"
+             value="{{ vm.view_session_date }}">
+      <input type="hidden" name="actual_broker_order_id"
+             value="{{ alarm.broker_order_id }}">
+      <input type="hidden" name="prior_intent_id"
+             value="{{ alarm.prior_intent_id }}">
+      <button type="submit" class="latch-cancel-submit">Log that I cancelled
+        order {{ alarm.broker_order_id }}</button>
+    </form>
+    {% elif alarm.cancel_unavailable_note %}
+    <p class="latch-cancel-unavailable">{{ alarm.cancel_unavailable_note }}</p>
+    {% endif %}
     {% endfor %}
   </div>
   {% elif not vm.disagreements and not vm.indeterminate_tickers

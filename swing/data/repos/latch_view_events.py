@@ -124,10 +124,8 @@ def record_view(
     """
     if actionable not in (0, 1):
         raise ValueError(f"actionable must be 0 or 1; got {actionable!r}")
-    existing = get_view(
-        conn, candidate_id=identity.candidate_id,
-        view_session_date=view_session_date, surface=surface)
-    if existing is not None:
+
+    def _merge(existing) -> int:
         conn.execute(
             "UPDATE latch_view_events SET last_viewed_ts = ?, "
             "latch_state_at_last_view = ?, view_count = view_count + 1, "
@@ -137,16 +135,48 @@ def record_view(
             (viewed_ts, latch_state, actionable, actionable,
              existing.view_event_id))
         return int(existing.view_event_id)
-    cur = conn.execute(
-        "INSERT INTO latch_view_events (candidate_id, evaluation_run_id, ticker, "
-        "detection_date, pipeline_run_id, surface, view_session_date, "
-        "first_viewed_ts, last_viewed_ts, view_count, "
-        "latch_state_at_first_view, latch_state_at_last_view, "
-        "actionable_at_first_view, actionable_at_last_view, "
-        "actionable_ever_viewed) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)",
-        (identity.candidate_id, identity.evaluation_run_id, identity.ticker,
-         identity.detection_date, identity.pipeline_run_id, surface,
-         view_session_date, viewed_ts, viewed_ts, latch_state, latch_state,
-         actionable, actionable, actionable))
+
+    existing = get_view(
+        conn, candidate_id=identity.candidate_id,
+        view_session_date=view_session_date, surface=surface)
+    if existing is not None:
+        return _merge(existing)
+    try:
+        cur = conn.execute(
+            "INSERT INTO latch_view_events (candidate_id, evaluation_run_id, "
+            "ticker, detection_date, pipeline_run_id, surface, "
+            "view_session_date, first_viewed_ts, last_viewed_ts, view_count, "
+            "latch_state_at_first_view, latch_state_at_last_view, "
+            "actionable_at_first_view, actionable_at_last_view, "
+            "actionable_ever_viewed) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)",
+            (identity.candidate_id, identity.evaluation_run_id, identity.ticker,
+             identity.detection_date, identity.pipeline_run_id, surface,
+             view_session_date, viewed_ts, viewed_ts, latch_state, latch_state,
+             actionable, actionable, actionable))
+    except sqlite3.IntegrityError:
+        # THE LOST INSERT RACE (Codex exec R5 MAJOR 2). Two concurrent FIRST
+        # beacons both observe no row; the loser hits the UNIQUE constraint. Left
+        # to propagate it becomes a 409 at the route and the loser's render is
+        # NEVER MERGED -- so when a WITHHELD render wins and an ACTIONABLE render
+        # loses, `actionable_ever_viewed` stays 0 permanently and a potential
+        # `discipline_lapse` is recorded as `never_actionable`. That is the
+        # flattering direction, which is the one direction this ledger may not
+        # fail in.
+        #
+        # The loser therefore takes the UPDATE path it WOULD have taken had it
+        # seen the row: `actionable_ever_viewed` still advances monotonically and
+        # the immutable first-view facts remain the winner's. A statement-level
+        # constraint violation rolls back only that STATEMENT, so the caller's
+        # transaction is intact and the re-read is valid.
+        #
+        # STILL NOT `INSERT OR REPLACE`: that is DELETE + INSERT -- a new PK and
+        # a rewrite of the immutable first-view facts, which is the thing this
+        # module exists to refuse.
+        existing = get_view(
+            conn, candidate_id=identity.candidate_id,
+            view_session_date=view_session_date, surface=surface)
+        if existing is None:
+            raise
+        return _merge(existing)
     return int(cur.lastrowid)

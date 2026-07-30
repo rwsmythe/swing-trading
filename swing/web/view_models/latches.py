@@ -260,6 +260,14 @@ class LatchAlarmVM:
     latch_candidate_id: int | None
     detail: str
     severity: str
+    # The per-order CANCEL control's anchors (plan file manifest: "the per-order
+    # Cancel control on stale-order rows"). Present together or not at all: a
+    # `cancel` row needs BOTH the broker order it targets and the latch identity
+    # block, so an alarm about an order attributable to NO latch cannot offer the
+    # control -- see `cancel_unavailable_note`.
+    broker_order_id: str | None = None
+    prior_intent_id: str = ""
+    cancel_unavailable_note: str = ""
 
 
 @dataclass(frozen=True)
@@ -1434,6 +1442,10 @@ class LatchOrdersFragmentVM:
     # the `stale_regime` notes, so the counts and the labels come from ONE list
     # and cannot fork. This field is what the CLI report and the 21-G tests read.
     form_check_stale_count: int = 0
+    # The RENDER-TIME session anchor, carried so the embedded cancel form posts
+    # the same anchor the fragment derived against rather than the browser's idea
+    # of "now" (the GET/POST TOCTOU the hazard-2 gotcha forbids).
+    view_session_date: str = ""
     # How many LIVE latch mandates this render had to check at all. Carried for
     # RD ruling 4: with none, "No alarms." is a claim about an EMPTY SET dressed
     # as a result -- the zero-data state wearing the good state's words.
@@ -2091,10 +2103,12 @@ def build_latch_orders_vm(
     # branch returned above -- which IS the R8 MAJOR 1 rule: an unknown order
     # book renders no prompt in either direction, because a prompt built on it
     # invites an answer the operator would infer from the panel's own silence.
+    intents_by_latch = _intents_by_latch(conn, derivation.latches)
     try:
         validity_prompts = _validity_prompts(
-            conn, derivation.latches, joins=joins, orders=orders,
-            anchor=horizon_session_override, now=_now())
+            derivation.latches, joins=joins, orders=orders,
+            anchor=horizon_session_override, now=_now(),
+            intents_by_latch=intents_by_latch)
     except Exception as exc:  # noqa: BLE001 -- A6: the fragment never 500s
         _log.warning("latch validity prompts degraded: %s", exc)
         validity_prompts = ()
@@ -2103,11 +2117,29 @@ def build_latch_orders_vm(
         resolution_kind="ok",
         resolution_detail=resolution.detail,
         alarms=tuple(
-            LatchAlarmVM(kind=a.kind, ticker=a.ticker,
-                         latch_candidate_id=a.latch_candidate_id,
-                         detail=a.detail, severity=a.severity)
+            LatchAlarmVM(
+                kind=a.kind, ticker=a.ticker,
+                latch_candidate_id=a.latch_candidate_id,
+                detail=a.detail, severity=a.severity,
+                broker_order_id=a.broker_order_id,
+                prior_intent_id=_prior_intent_id(
+                    intents_by_latch.get(a.latch_candidate_id, ())),
+                # A `cancel` row carries the FULL latch identity block, so an
+                # order attributable to NO latch cannot be logged against one.
+                # The gap is LABELLED rather than left as a silently missing
+                # button: the operator still has to cancel it at the broker, and
+                # a control that is simply absent reads as "nothing to do here".
+                cancel_unavailable_note=(
+                    "" if a.broker_order_id is None
+                    or a.latch_candidate_id is not None else
+                    "This order matches no latch, so there is no mandate to log "
+                    "a cancel against. Cancel it at the broker; the ledger "
+                    "cannot record a decision about an order it cannot "
+                    "attribute."),
+            )
             for a in sorted(alarms, key=lambda a: (a.severity != "critical", a.kind))
         ),
+        view_session_date=horizon_session_override.isoformat(),
         order_lines=order_lines,
         disagreements=disagreements,
         indeterminate_tickers=indeterminate_tickers,
@@ -2341,7 +2373,27 @@ def _fmt_price_or_blank(value) -> str:
     return "" if value is None else f"{float(value):.2f}"
 
 
-def _validity_prompts(conn, latches, *, joins, orders, anchor: date, now):
+def _intents_by_latch(conn, latches) -> dict[int, list]:
+    """Every ledger row per latch, read ONCE per fragment render. A6 at the seam.
+
+    ONE read because two consumers need it -- the validity prompts and the
+    per-order cancel control's context anchor -- and two reads could disagree
+    about which row governs, so one render would emit two different answers to
+    the same question.
+    """
+    from swing.data.repos.latch_order_intents import list_intents_for_latch
+    out: dict[int, list] = {}
+    for latch in latches:
+        cid = latch.identity.candidate_id
+        try:
+            out[cid] = list(list_intents_for_latch(conn, candidate_id=cid))
+        except Exception as exc:  # noqa: BLE001 -- A6: a pre-0033 DB is not a 500
+            _log.warning("latch intent read degraded for candidate %s: %s", cid, exc)
+    return out
+
+
+def _validity_prompts(latches, *, joins, orders, anchor: date, now,
+                      intents_by_latch: dict):
     """Every validity prompt this render offers. A6 at every seam.
 
     A PROMPT IS OFFERED ONLY WHERE THE QUESTION IS BOTH OPEN AND ANSWERABLE:
@@ -2365,7 +2417,6 @@ def _validity_prompts(conn, latches, *, joins, orders, anchor: date, now):
     built on an unknown order book invites an answer the operator would infer
     from the panel's own silence.
     """
-    from swing.data.repos.latch_order_intents import list_intents_for_latch
     from swing.latches.classification import (
         governing_intent,
         resolve_execution_outcome_for,
@@ -2381,10 +2432,8 @@ def _validity_prompts(conn, latches, *, joins, orders, anchor: date, now):
         join = joins.get(cid)
         if join is None or join.indeterminate:
             continue
-        try:
-            intents = list_intents_for_latch(conn, candidate_id=cid)
-        except Exception as exc:  # noqa: BLE001 -- A6: a pre-0033 DB is not a 500
-            _log.warning("latch intent read degraded for candidate %s: %s", cid, exc)
+        intents = intents_by_latch.get(cid)
+        if intents is None:
             continue
         place = governing_intent(intents, "place")
         if place is None:
