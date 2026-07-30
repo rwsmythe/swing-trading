@@ -12,13 +12,16 @@ bypasses the OS encoder, so a byte test cannot see it -- the subprocess test can
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 import click
 
 from swing.config_overrides import apply_overrides
 from swing.data.db import connect
-from swing.data.repos.latch_order_intents import list_intents_since
+from swing.data.repos.latch_order_intents import (
+    list_intents_for_latch,
+    list_intents_since,
+)
 from swing.data.repos.latch_view_events import list_views_for_latch
 from swing.latches.classification import (
     LatchDisposition,
@@ -103,7 +106,9 @@ def _inferred_origin(order_intent, place_intents) -> tuple[str, str]:
 
 
 def _observations(conn, cfg, *, since_ts: str, now: datetime):
-    """`(observations, health, intents_in_window, unattached)`. Pure reads only.
+    """`(observations, health, intents_in_window, unattached, places)`.
+
+    Pure reads only.
 
     THE CORPUS IS LATCH-DRIVEN AND THE REDUCTION IS LABELLED (Codex exec R1
     MAJOR 2). Classification is a property of a LATCH, not of an intent row, so
@@ -115,6 +120,19 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
     panel had already derived), and that is precisely why an UNLABELLED drop
     would be dangerous: nobody would ever look. So the count is computed and
     RENDERED. An unlabelled reduction is a quiet all-clear by omission.
+
+    THE WINDOW SELECTS ROWS TO REPORT; IT MUST NOT TRUNCATE THE EVIDENCE THE
+    CLASSIFIER REASONS FROM (Codex exec R3 MAJOR 1). Those are two different
+    questions and they were being answered by one read. The arc's own worked
+    case is a JULY mandate ANSWERED in August, so an August-onward read holds
+    the validity row while its parent `place` sits before the cutoff: with a
+    windowed intent set `governing_intent(..., "place")` returns None, rung 1
+    never fires, and a latch the operator demonstrably ACCEPTED is reclassified
+    as a lapse or an away -- the instrument losing evidence it is holding and
+    scoring the loss against its subject. A latch's disposition is not a
+    function of the calendar window someone asked about, so classification reads
+    the latch's WHOLE history while `intents_in_window` stays the windowed read
+    the report's ledger sections are computed from.
     """
     derivation = build_latch_derivation(conn, cfg, now=now)
     latches = list(derivation.latches)
@@ -124,6 +142,26 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
         by_latch.setdefault(row.candidate_id, []).append(row)
     derivable = {latch.identity.candidate_id for latch in latches}
     unattached = sorted(cid for cid in by_latch if cid not in derivable)
+
+    # The FULL per-latch history -- the classifier's evidence, never the
+    # report's window.
+    history: dict[int, list] = {
+        latch.identity.candidate_id: list_intents_for_latch(
+            conn, candidate_id=latch.identity.candidate_id)
+        for latch in latches
+    }
+    # THE PARENT LOOKUP IS NOT A WINDOW QUESTION EITHER, and this is the same
+    # defect one function over: `_inferred_origin` resolves an observed broker
+    # order back to the `place` that mandated it, so a cancel recorded this
+    # month against a place recorded last month would read `unattributed` --
+    # reporting "we cannot attribute this order" about an order the ledger CAN
+    # attribute. The observed-orders LIST stays windowed; only the parent map
+    # it resolves against is complete.
+    places = {
+        row.intent_id: row
+        for rows in history.values()
+        for row in rows if row.intent_kind == "place"
+    }
 
     views: list = []
     views_by_latch: dict[int, list] = {}
@@ -158,7 +196,7 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
     observations = []
     for latch in latches:
         cid = latch.identity.candidate_id
-        latch_intents = by_latch.get(cid, [])
+        latch_intents = history.get(cid, [])
         disposition: LatchDisposition = classify_latch(
             latch=latch, views=views_by_latch.get(cid, ()),
             intents=latch_intents, telemetry_health=health)
@@ -177,12 +215,46 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
             disposition=disposition,
             framework=_framework_side(place),
             actual=_actual_side(validity)))
-    return observations, health, intents, unattached
+    return observations, health, intents, unattached, places
+
+
+def _canonical_since(since: str) -> str:
+    """`--since` as a CANONICAL `YYYY-MM-DD`, or a refusal (Codex exec R3
+    MAJOR 2).
+
+    THE WINDOW IS A LEXICOGRAPHIC COMPARISON OVER A TEXT COLUMN, so a
+    plausible typo does not merely look untidy -- it silently measures the wrong
+    month. `recorded_ts` is TEXT and the filter is `recorded_ts >= ?`, so an
+    unpadded `2026-8-1` yields the cutoff `2026-8-1T00:00:00`, which sorts ABOVE
+    every `2026-0X` and `2026-1X` stamp: the read excludes almost the whole year
+    and reports a confident number over a window nobody asked for. A monthly
+    measurement that can be corrupted by a shell typo must FAIL CLOSED.
+
+    The 10-char check is load-bearing ON TOP of the parse: `date.fromisoformat`
+    accepts the BASIC form `20260801` on 3.11+, which would then compare wrong
+    for exactly the same reason.
+    """
+    text = (since or "").strip()
+    error = click.ClickException(
+        f"--since must be a canonical ISO date of the form YYYY-MM-DD "
+        f"(zero-padded); got {since!r}. The ledger window is a text "
+        f"comparison, so a non-canonical date silently measures the wrong "
+        f"period rather than failing.")
+    if len(text) != 10:
+        raise error
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError:
+        raise error from None
+    if parsed.isoformat() != text:
+        raise error
+    return text
 
 
 @latches_group.command("parity")
 @click.option("--since", "since", default=None,
-              help="ISO date; include intents RECORDED at or after it.")
+              help="Canonical ISO date YYYY-MM-DD; include intents RECORDED "
+                   "at or after it.")
 @click.pass_context
 def parity_cmd(ctx: click.Context, since: str | None) -> None:
     """Print the execution-parity read over the latch ledger."""
@@ -192,10 +264,10 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
     # recorded in month N ABOUT a month-N-1 render belongs to month N, and a
     # post-month-end CORRECTION must not drop out of the current read. Both are
     # silent misbucketings of a measurement read once a month.
-    since_ts = "" if since is None else f"{since}T00:00:00"
+    since_ts = "" if since is None else f"{_canonical_since(since)}T00:00:00"
     conn = connect(cfg.paths.db_path)
     try:
-        observations, health, intents, unattached = _observations(
+        observations, health, intents, unattached, places = _observations(
             conn, cfg, since_ts=since_ts, now=datetime.now())
     finally:
         conn.close()
@@ -298,7 +370,6 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
 
     click.echo("")
     click.echo("OBSERVED BROKER ORDERS")
-    places = {i.intent_id: i for i in intents if i.intent_kind == "place"}
     observed = [
         i for i in intents
         if i.actual_broker_order_id and i.intent_kind in ("validity", "cancel")

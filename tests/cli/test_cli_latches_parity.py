@@ -391,3 +391,110 @@ def test_the_CLI_health_window_ENUMERATES_the_silent_sessions(
     assert sessions == telemetry_window_sessions(seen["latches"], max(sessions))
     assert len(sessions) > len({x.anchor for x in seen["latches"]})
     assert all(is_trading_session(s) for s in sessions)
+
+
+def _seed_place(cfg, cid, *, key, recorded_ts, intent_id=None):
+    """A `place` row carrying the framework side the schema requires of one."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO latch_order_intents (candidate_id, evaluation_run_id, "
+            "ticker, detection_date, idempotency_key, action_session_date, "
+            "recorded_ts, surface, intent_kind, framework_order_type, "
+            "framework_duration, framework_limit_price, framework_quantity, "
+            "derivation_zone_cap_pct, derivation_sizing_equity, "
+            "derivation_max_risk_pct, derivation_position_pct_cap, "
+            "derivation_sizing_basis, derivation_regime_close, "
+            "derivation_regime_close_session, derivation_real_equity, "
+            "derivation_equity_floor) "
+            "VALUES (?, 121, 'FTRE', '2026-07-20', ?, '2026-07-27', ?, "
+            "'latch_panel', 'place', 'LIMIT', 'GOOD_TILL_CANCEL', 18.89, 9, "
+            "3.0, 7500.0, 1.25, 25.0, 'limit_price', 19.20, '2026-07-24', 1300.0, "
+            "7500.0)",
+            (cid, key, recorded_ts))
+        out = int(cur.lastrowid)
+    conn.close()
+    return out
+
+
+def test_a_windowed_read_classifies_from_the_latchs_WHOLE_intent_history(
+        seeded_db):
+    """CODEX EXEC R3 MAJOR 1. `--since` selects which LEDGER ROWS the report
+    covers; it must NOT truncate the evidence the CLASSIFIER reasons from.
+
+    The arc's own worked case is a JULY mandate answered in AUGUST -- so a
+    August-onward read sees the validity row but, under a truncated intent set,
+    NOT its parent `place`. `governing_intent(..., 'place')` then returns None,
+    rung 1 never fires, and a latch the operator demonstrably ACCEPTED is
+    reclassified as a lapse or an away: the instrument losing evidence it holds
+    and scoring the loss against its subject.
+
+    Classification is a property of a LATCH (the round-1 ruling), and a latch's
+    disposition is not a function of the calendar window someone asked about.
+    """
+    from swing.cli_latches import _observations
+    from swing.config_overrides import apply_overrides
+    cfg, _ = seeded_db
+    cid = _seed(cfg)
+    _seed_place(cfg, cid, key="p-july", recorded_ts="2026-07-27T09:00:00")
+    conn = connect(cfg.paths.db_path)
+    try:
+        obs, _health, intents, _unattached, _places = _observations(
+            conn, apply_overrides(cfg), since_ts="2026-08-01T00:00:00",
+            now=NOW)
+    finally:
+        conn.close()
+    # The WINDOW is still honoured: the July row is not a row of this month.
+    assert intents == []
+    # ...but the DISPOSITION still knows the operator placed the order.
+    assert [o.disposition.disposition for o in obs] == ["accepted"]
+
+
+def test_the_window_still_EXCLUDES_the_out_of_window_row_from_the_ledger_read(
+        seeded_db):
+    """The pair to the above, and the reason the fix is two reads rather than
+    one widened read. If classifying from full history also widened the reported
+    LEDGER WINDOW, `--since` would stop meaning anything and a month's report
+    would silently restate every prior month."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO latch_order_intents (candidate_id, evaluation_run_id, "
+            "ticker, detection_date, idempotency_key, action_session_date, "
+            "recorded_ts, surface, intent_kind, actual_broker_order_id) VALUES "
+            "(?, 121, 'FTRE', '2026-07-20', 'k-july', '2026-07-27', "
+            "'2026-07-27T09:00:00', 'latch_panel', 'cancel', '1001')", (cid,))
+    conn.close()
+    assert "order 1001" not in _run(cfg_path, "--since", "2026-09-01").output
+
+
+def test_a_non_canonical_since_is_REFUSED_not_silently_mis_windowed(seeded_db):
+    """CODEX EXEC R3 MAJOR 2. `recorded_ts` is TEXT and the window is a
+    LEXICOGRAPHIC `>=`, so an unpadded `2026-8-1` does not merely look untidy:
+    the string `2026-8-1T00:00:00` sorts ABOVE every `2026-0X` and `2026-1X`
+    stamp, so the cutoff silently excludes almost the whole year and the monthly
+    measurement is computed over the wrong window with no visible sign.
+
+    A measurement window that can be corrupted by a plausible typo must fail
+    CLOSED. The message names the expected form so the recovery is obvious.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    _seed_place(cfg, cid, key="p1", recorded_ts="2026-07-27T09:00:00")
+    bad = _run(cfg_path, "--since", "2026-8-1")
+    assert bad.exit_code != 0
+    assert "YYYY-MM-DD" in bad.output
+    # ...and the canonical spelling of the SAME date is accepted.
+    assert _run(cfg_path, "--since", "2026-08-01").exit_code == 0
+
+
+def test_a_since_that_is_not_a_date_at_all_is_REFUSED(seeded_db):
+    """The unconstrained-input half: `--since` is free text from a shell."""
+    cfg, cfg_path = seeded_db
+    _seed(cfg)
+    for bad_value in ("last month", "2026-13-01", "20260801", ""):
+        r = _run(cfg_path, "--since", bad_value)
+        assert r.exit_code != 0, bad_value
+        assert "YYYY-MM-DD" in r.output, bad_value
