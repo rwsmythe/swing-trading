@@ -102,6 +102,64 @@
   </div>
   {% endif %}
 
+  {# THE VALIDITY PROMPT (Arc 21-B, plan section F.3). This fragment is the ONLY
+     surface that can ask it: the presence/absence branch needs the LIVE broker
+     book, `GET /latches` has none and must not acquire any (A4), and
+     `POST /latches/intent` is forbidden from borrowing the Schwab client -- so
+     the prompt is rendered HERE and the intent route merely RECORDS the answer.
+
+     `vm.validity_prompts` is EMPTY on an unavailable book, because this whole
+     branch is inside `vm.available` -- a prompt built on an unknown order book
+     invites an answer the operator would infer from the panel's own silence.
+
+     EVERY VALUE IS DISPLAY-READY. The form root is a `section`, never a `tr`
+     (the makeFragment synthetic-table-wrap gotcha); it carries its OWN
+     `hx-target="this"` because hx-target INHERITS from ancestors; and
+     `hx-headers` with HX-Request is what keeps OriginGuard strict mode from
+     403-ing an unsafe method. ASCII only. #}
+  {% for prompt in vm.validity_prompts %}
+  <section class="latch-validity-prompt latch-validity-{{ prompt.branch }}">
+    <h4 class="latch-validity-heading">DID THIS ORDER REACH THE BROKER?
+      {{ prompt.ticker }}</h4>
+    <p class="latch-validity-headline">{{ prompt.headline }}</p>
+    {% if prompt.divergence_note %}
+    <p class="latch-validity-divergence">{{ prompt.divergence_note }}</p>
+    {% endif %}
+    {% if prompt.incomplete_note %}
+    <p class="latch-validity-incomplete">{{ prompt.incomplete_note }}</p>
+    {% endif %}
+    <form class="latch-validity-form" hx-post="/latches/intent"
+          hx-target="this" hx-swap="outerHTML"
+          hx-headers='{"HX-Request": "true"}'>
+      <input type="hidden" name="intent_kind" value="validity">
+      <input type="hidden" name="candidate_id" value="{{ prompt.candidate_id }}">
+      <input type="hidden" name="view_session_date"
+             value="{{ prompt.view_session_date }}">
+      <input type="hidden" name="validated_place_intent_id"
+             value="{{ prompt.parent_place_intent_id }}">
+      {# ONE canonical hidden field carrying the WHOLE snapshot envelope, never
+         separate per-key inputs: `validity_detail` requires the full envelope
+         and the handler is forbidden from reconstructing a missing key. #}
+      <input type="hidden" name="broker_snapshot_json"
+             value="{{ prompt.snapshot_json }}">
+      <input type="hidden" name="prior_intent_id"
+             value="{{ prompt.prior_intent_id }}">
+      {% for name, value in prompt.actual_fields %}
+      <input type="hidden" name="{{ name }}" value="{{ value }}">
+      {% endfor %}
+      {% for value, label in prompt.options %}
+      <label class="latch-validity-option">
+        <input type="radio" name="validity_outcome" value="{{ value }}"
+               {% if value == prompt.preselected %}checked{% endif %}>
+        {{ label }}
+      </label>
+      {% endfor %}
+      <button type="submit" class="latch-validity-submit">Record this
+        outcome</button>
+    </form>
+  </section>
+  {% endfor %}
+
   {% if vm.order_lines %}
   <details class="latch-order-list">
     <summary>Resting BUY orders ({{ vm.order_lines | length }})</summary>

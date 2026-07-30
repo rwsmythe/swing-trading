@@ -575,6 +575,33 @@ tr.tripwire-fired td:first-child { border-left: 4px solid var(--tripwire-border)
   margin-top: 0.5rem;
 }
 
+/* The validity prompt. It asks a QUESTION, so it takes the same neutral
+   question-shaped treatment as the attestation prompt rather than an alarm box:
+   the operator is being asked what happened, not warned. var()-only. */
+.latch-validity-prompt {
+  background: var(--latch-degraded-bg);
+  color: var(--latch-degraded-fg);
+  border: 1px solid var(--latch-degraded-fg);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.latch-validity-heading {
+  font-weight: 700;
+  margin: 0 0 0.25rem 0;
+}
+
+.latch-validity-divergence,
+.latch-validity-incomplete {
+  font-weight: 600;
+  margin: 0 0 0.5rem 0;
+}
+
+.latch-validity-option {
+  display: block;
+}
+
 .latch-intent-result {
   background: var(--latch-order-bg);
   color: var(--latch-order-fg);

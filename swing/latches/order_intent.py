@@ -536,6 +536,43 @@ def canonical_duration(raw) -> str:
     return _DURATION_ALIASES.get(str(raw).strip().upper(), "UNKNOWN")
 
 
+def framework_side_of(intent) -> dict | None:
+    """The FRAMEWORK order side of a stored ledger row, or `None`.
+
+    ONE mapper, because the CLI report and the validity prompt must reason about
+    the same five fields in the same shape: the prompt's divergence note and the
+    monthly agreement rate are the SAME comparison asked at two moments, and two
+    hand-kept copies of the mapping is how they would stop agreeing.
+    """
+    if intent is None or getattr(intent, "framework_order_type", None) is None:
+        return None
+    return {
+        "order_type": intent.framework_order_type,
+        "duration": intent.framework_duration,
+        "stop_price": intent.framework_stop_price,
+        "limit_price": intent.framework_limit_price,
+        "quantity": intent.framework_quantity,
+    }
+
+
+def observed_side_of(order) -> dict:
+    """The ACTUAL order side of a live resting broker order.
+
+    `duration` is CANONICALISED here for the same reason `compute_order_delta`
+    canonicalises it: brokers render `GTC` where the framework stores
+    `GOOD_TILL_CANCEL`, and comparing them raw reports a duration divergence on
+    a semantically identical order.
+    """
+    quantity = getattr(order, "quantity", None)
+    return {
+        "order_type": (getattr(order, "order_type", "") or "").upper() or None,
+        "duration": canonical_duration(getattr(order, "duration", None)),
+        "stop_price": getattr(order, "stop_price", None),
+        "limit_price": getattr(order, "limit_price", None),
+        "quantity": None if quantity is None else int(quantity),
+    }
+
+
 @_dataclass(frozen=True)
 class OrderDelta:
     """Framework-vs-actual, per field, at DISPLAY precision.

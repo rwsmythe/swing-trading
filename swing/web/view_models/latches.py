@@ -313,6 +313,41 @@ def _fmt_money(value) -> str:
 # ---------------------------------------------------------------------------
 # Arc 21-B Task 6 -- the prepared-order block.
 # ---------------------------------------------------------------------------
+def _prior_intent_id(intents) -> str:
+    """The latch's GOVERNING ledger row as this render saw it, or `""`.
+
+    THE RULING-3 CONTEXT ANCHOR (RD, 2026-07-30). The ledger's unit is the
+    EVENT, not the VALUE: a content-derived idempotency key that collapses on
+    value cannot tell a REPLAY from a CORRECTION, because the two are identical
+    in value and differ only in context. A -> B -> A therefore reused A's key and
+    the third answer -- his actual final answer -- was discarded as a replay,
+    leaving the flattering intermediate governing. That is the instrument
+    editing its subject's testimony in his favour, which this ledger may never
+    do.
+
+    So the key is scoped to the SUBMISSION IN CONTEXT: the form carries the row
+    that governed the latch WHEN IT WAS RENDERED. A -> B -> A carries `prior=B`
+    on the third submission, so its key differs from the first (`prior=none`)
+    and it writes; a double-click on that third submission carries the SAME
+    prior and still collapses.
+
+    LATCH-SCOPED, NOT KIND-SCOPED, and that is one rule rather than five: the
+    ledger is per-latch and append-only, "the context" is the state of that
+    latch's ledger as he saw it, and the place/decline form is ONE form whose
+    kind is chosen at the submit button -- so a kind-scoped anchor could not be
+    rendered by it at all.
+
+    `(recorded_ts, intent_id)` is the same total order every other "latest by
+    what?" ruling in this arc uses; the `intent_id` tiebreak is load-bearing
+    because `recorded_ts` is whole seconds.
+    """
+    rows = [i for i in intents or () if getattr(i, "intent_id", None) is not None]
+    if not rows:
+        return ""
+    latest = max(rows, key=lambda i: (i.recorded_ts, i.intent_id))
+    return str(latest.intent_id)
+
+
 def _withheld_block(reason: str | None, detail: str) -> PreparedOrderVM:
     """A withheld block carries the REASON and NOTHING that reads as a mandate.
 
@@ -1270,6 +1305,59 @@ def _close_provenance(quote) -> str:
 
 
 @dataclass(frozen=True)
+class LatchValidityPromptVM:
+    """ONE latch's validity prompt -- display-ready, no logic in the template.
+
+    THIS FRAGMENT IS THE ONLY SURFACE THAT CAN ASK THE QUESTION (plan section
+    F.3, Codex R8 MAJOR 1). The presence/absence branch needs the LIVE broker
+    book; `GET /latches` has no broker knowledge and must not acquire any (A4),
+    and `POST /latches/intent` is forbidden from borrowing the Schwab client at
+    all -- so the prompt is rendered HERE, by the fragment that already owns the
+    borrow and already holds the resting-order set the presence test needs, and
+    the intent route merely RECORDS the answer this fragment offered.
+
+    THE PROMPT FIRES IN BOTH DIRECTIONS, and that is not symmetry for its own
+    sake (Codex R5 CRITICAL). An absence-only prompt leaves the POSITIVE case --
+    an order the broker plainly accepted -- permanently `unknown`, so the
+    agreement NUMERATOR (which requires `accepted_by_broker`) could never be
+    populated by anything and the report would measure only failures.
+
+    The ASYMMETRY that survives: PRESENCE is direct positive evidence, so the
+    framework may PRE-SELECT the answer; ABSENCE is equally consistent with a
+    rejection, a cancel and a never-submitted order, so the framework may raise
+    the QUESTION and may NOT pre-select an ANSWER. That is *you may raise a
+    mismatch alarm but you may not assert a match*, applied to an execution
+    outcome instead of to an order shape.
+    """
+
+    ticker: str
+    candidate_id: int
+    branch: str                       # presence | absence
+    headline: str
+    # NAMES THE DIFFERENCE (Codex R17 CRITICAL, the arc's own worked example).
+    # Attribution is to the LATCH, never to the framework order's exact params:
+    # FTRE's real resting order is LIMIT 18.89 / 10 sh against a framework
+    # LIMIT 18.89 / 9 sh, so an exact-match gate would fire NO prompt on the one
+    # case the ledger exists to measure and the +1 quantity delta could never
+    # reach it. So the prompt fires on 21-A's latch attribution, pre-fills the
+    # OBSERVED params whether or not they match, and SAYS SO when they diverge.
+    divergence_note: str
+    # Rendered when the observed order cannot be read completely enough to
+    # support an `accepted_by_broker` row (the schema requires a COMPLETE
+    # observed side). Empty otherwise.
+    incomplete_note: str
+    parent_place_intent_id: int
+    # The RULING-3 context anchor: the latch's governing ledger row AS RENDERED.
+    # Empty string when the latch has none.
+    prior_intent_id: str
+    options: tuple[tuple[str, str], ...]
+    preselected: str                  # "" on absence -- never an assertion
+    actual_fields: tuple[tuple[str, str], ...]
+    snapshot_json: str
+    view_session_date: str
+
+
+@dataclass(frozen=True)
 class LatchOrdersFragmentVM:
     """The order-awareness fragment. `available` False means the order book is
     UNKNOWN, and an unknown order book fires NO alarm (a false all-clear and a
@@ -1323,7 +1411,15 @@ class LatchOrdersFragmentVM:
     # alarm-authorized is counted. B-persistent / B-unknown / B-undated are
     # indistinguishable from rung C in what the page can claim, and counting
     # them here would imply a check ran that did not.
+    #
+    # NOT the source of the page-level uncorroborated CLAIM: that is counted off
+    # the `stale_regime` notes, so the counts and the labels come from ONE list
+    # and cannot fork. This field is what the CLI report and the 21-G tests read.
     form_check_stale_count: int = 0
+    # The validity prompts this render is offering (plan section F.3). EMPTY is
+    # the norm: a prompt fires only where a logged `place` intent still has an
+    # UNRESOLVED execution outcome.
+    validity_prompts: tuple[LatchValidityPromptVM, ...] = ()
 
     @property
     def all_clear_claims(self) -> tuple[str, ...]:
@@ -1958,6 +2054,17 @@ def build_latch_orders_vm(
         f"[{o.status}]"
         for o in orders
     )
+    # THE VALIDITY PROMPTS. Reached ONLY on the `ok` resolution -- every other
+    # branch returned above -- which IS the R8 MAJOR 1 rule: an unknown order
+    # book renders no prompt in either direction, because a prompt built on it
+    # invites an answer the operator would infer from the panel's own silence.
+    try:
+        validity_prompts = _validity_prompts(
+            conn, derivation.latches, joins=joins, orders=orders,
+            anchor=horizon_session_override, now=_now())
+    except Exception as exc:  # noqa: BLE001 -- A6: the fragment never 500s
+        _log.warning("latch validity prompts degraded: %s", exc)
+        validity_prompts = ()
     return LatchOrdersFragmentVM(
         available=True,
         resolution_kind="ok",
@@ -1975,7 +2082,306 @@ def build_latch_orders_vm(
         mandate_form_check_skipped=form_check_notes,
         form_check_ran_count=form_check_ran_count,
         form_check_stale_count=form_check_stale_count,
+        validity_prompts=validity_prompts,
     )
+
+
+_VALIDITY_OPTION_LABELS = {
+    "accepted_by_broker": "Yes - the broker accepted this order",
+    "rejected_by_broker": "It was REJECTED by the broker",
+    "not_submitted": "I never submitted it",
+    "unknown": "I do not know",
+}
+
+
+def _broker_book_digest(orders) -> str:
+    """A digest over the BROKER-BOOK STATE, not over the envelope's other keys.
+
+    The two are separate facts and conflating them is how the key roster drifted
+    once already. The property this must have (plan Task 7): it CHANGES when a
+    non-matching resting order appears while `attributable_order_count` stays 0
+    -- a counts-only digest is identical across those two books and cannot tell
+    the operator's answer apart from an answer about a different book -- and it
+    is UNCHANGED across a reload showing the same book, so a plain refresh does
+    not duplicate the ledger row.
+
+    It therefore digests the ORDER SET ITSELF, ordered by `order_id` so the
+    broker's response ordering cannot change it, and carries NO timestamp.
+    """
+    from swing.latches.order_intent import _digest, encode_derivation_value
+    parts = ["latch_broker_book_v1"]
+    for o in sorted(orders or (), key=lambda x: str(x.order_id)):
+        parts.extend([
+            str(o.order_id), str(o.ticker), str(o.instruction),
+            str(o.order_type), str(o.status), str(o.duration or ""),
+            encode_derivation_value("price2", o.limit_price),
+            encode_derivation_value("price2", o.stop_price),
+            encode_derivation_value("price2", o.quantity),
+        ])
+    return _digest(*parts)
+
+
+def _observed_side_is_complete(side: dict) -> bool:
+    """Can this observed order support an `accepted_by_broker` row AT ALL?
+
+    The migration requires a COMPLETE observed side on an accepted row -- known
+    type, known duration, a limit, a quantity and the broker order id -- because
+    the agreement DENOMINATOR requires a known actual side and section G.4's
+    exact-linkage claim rests on the captured id. Offering `accepted_by_broker`
+    over an order we could not fully read would hand the operator a click that
+    the ledger then REFUSES, which is a dead end rather than a measurement. So
+    the option is withheld and the reduction is LABELLED on the prompt.
+    """
+    from swing.latches.constants import MANDATE_ORDER_TYPES
+    return (
+        side.get("order_type") in MANDATE_ORDER_TYPES
+        and side.get("duration") not in (None, "UNKNOWN")
+        and side.get("limit_price") is not None
+        and side.get("quantity") is not None
+    )
+
+
+def _divergence_note(delta, framework: dict, observed: dict) -> str:
+    """The prompt's own statement of HOW the observed order differs.
+
+    Named field by field rather than as a bare "differs": confirming an order
+    the operator can see is not the same as confirming one described to him
+    only as non-matching.
+    """
+    parts: list[str] = []
+    if delta.order_type_differs:
+        parts.append(f"order type {observed['order_type']} vs "
+                     f"{framework['order_type']}")
+    if delta.duration_differs:
+        parts.append(f"duration {observed['duration']} vs "
+                     f"{framework['duration']}")
+    if delta.stop_leg == "compared" and delta.stop_price_delta:
+        parts.append(f"stop {_fmt_price(observed['stop_price'])} vs "
+                     f"{_fmt_price(framework['stop_price'])}")
+    elif delta.stop_leg == "unknown":
+        parts.append("the stop leg cannot be compared")
+    if delta.limit_price_delta:
+        parts.append(f"limit {_fmt_price(observed['limit_price'])} vs "
+                     f"{_fmt_price(framework['limit_price'])}")
+    if delta.quantity_delta:
+        parts.append(f"quantity {observed['quantity']} vs "
+                     f"{framework['quantity']}")
+    if not parts:
+        return ""
+    return ("This order DIFFERS from the one you logged (" + "; ".join(parts)
+            + "). Confirming records BOTH sides, which is how the divergence "
+              "reaches the parity measurement.")
+
+
+def _attributable_orders(join) -> tuple:
+    """The resting orders 21-A attributed to THIS latch.
+
+    Derived from the documented invariant -- `orders` is the attributed set plus
+    the strays, and `unmatched_orders` IS the stray subset -- rather than by
+    slicing `orders` positionally, which would silently mis-partition the moment
+    21-A changed its concatenation order.
+    """
+    stray_ids = {o.order_id for o in join.unmatched_orders}
+    return tuple(o for o in join.orders if o.order_id not in stray_ids)
+
+
+def _validity_prompt_for(latch, *, join, framework, place, digest,
+                         snapshot_ts: str, anchor_iso: str, prior_intent_id: str):
+    """The prompt for ONE latch, or `None`. PURE -- every input is passed in."""
+    from swing.latches.constants import (
+        LATCH_BROKER_SNAPSHOT_KEYS,
+        LATCH_VALIDITY_OUTCOMES,
+    )
+    from swing.latches.order_intent import compute_order_delta, observed_side_of
+
+    attributable = _attributable_orders(join)
+    if len(attributable) != join.matched_order_count:
+        # The two ways of counting the attributed set disagree, so the branch
+        # gate cannot be trusted -- and the branch decides WHICH question the
+        # operator is asked. An unexplainable disagreement withholds.
+        _log.warning(
+            "latch validity prompt withheld for candidate %s: attributed set "
+            "size %s disagrees with the join count %s",
+            latch.identity.candidate_id, len(attributable),
+            join.matched_order_count)
+        return None
+    exact_matches = 0
+    for o in attributable:
+        delta = compute_order_delta(framework, observed_side_of(o))
+        if delta.any_difference is False:
+            exact_matches += 1
+
+    branch = "presence" if len(attributable) == 1 else "absence"
+    if len(attributable) > 1:
+        # With two attributable orders there is no unique `order_id`, so the
+        # one carried into `actual_broker_order_id` would be arbitrary. The
+        # fragment already renders the multiplicity note; it renders NO prompt.
+        return None
+    envelope = {
+        "broker_snapshot_ts": snapshot_ts,
+        "broker_snapshot_branch": branch,
+        "broker_snapshot_digest": digest,
+        "broker_snapshot_session": anchor_iso,
+        "attributable_order_count": len(attributable),
+        "exact_framework_match_count": exact_matches,
+        "indeterminate": bool(join.indeterminate),
+    }
+    if set(envelope) != set(LATCH_BROKER_SNAPSHOT_KEYS):
+        # The emitted set and the set `validity_detail` REQUIRES are ONE object;
+        # a drift makes the audit row unwritable, so it fails here rather than
+        # at the operator's click.
+        _log.warning("latch broker-snapshot roster drift: %s vs %s",
+                     sorted(envelope), sorted(LATCH_BROKER_SNAPSHOT_KEYS))
+        return None
+
+    def _opt(names):
+        return tuple((n, _VALIDITY_OPTION_LABELS[n]) for n in sorted(names))
+
+    if branch == "presence":
+        order = attributable[0]
+        observed = observed_side_of(order)
+        delta = compute_order_delta(framework, observed)
+        complete = _observed_side_is_complete(observed)
+        actual_fields = (
+            ("actual_order_type", str(observed["order_type"] or "UNKNOWN")),
+            ("actual_duration", str(observed["duration"])),
+            ("actual_stop_price", _fmt_price_or_blank(observed["stop_price"])),
+            ("actual_limit_price", _fmt_price_or_blank(observed["limit_price"])),
+            ("actual_quantity", (
+                "" if observed["quantity"] is None else str(observed["quantity"]))),
+            ("actual_broker_order_id", str(order.order_id)),
+        )
+        headline = (
+            f"Your logged {framework['order_type']} "
+            f"{_fmt_price(framework['limit_price'])} / "
+            f"{framework['quantity']} sh order for {latch.identity.ticker} has a "
+            f"resting order at the broker (order {order.order_id}: "
+            f"{observed['order_type']} {_fmt_price(observed['limit_price'])} / "
+            f"{'' if observed['quantity'] is None else observed['quantity']} sh). "
+            "Confirm what happened to it.")
+        return LatchValidityPromptVM(
+            ticker=latch.identity.ticker,
+            candidate_id=latch.identity.candidate_id,
+            branch=branch, headline=headline,
+            divergence_note=_divergence_note(delta, framework, observed),
+            incomplete_note=(
+                "" if complete else
+                "The broker's copy of this order could not be read completely "
+                "(its type or duration is not one the framework can record), so "
+                "it cannot be logged as ACCEPTED. Answer only what you know."),
+            parent_place_intent_id=place.intent_id,
+            prior_intent_id=prior_intent_id,
+            options=_opt(
+                LATCH_VALIDITY_OUTCOMES if complete
+                else LATCH_VALIDITY_OUTCOMES - {"accepted_by_broker"}),
+            preselected="accepted_by_broker" if complete else "",
+            actual_fields=actual_fields,
+            snapshot_json=json.dumps(envelope, sort_keys=True),
+            view_session_date=anchor_iso)
+
+    # ABSENCE. "Filled" is deliberately NOT an option: it is not in
+    # LATCH_VALIDITY_OUTCOMES, so offering it would force the handler to
+    # mislabel or discard the answer -- and it does not need to be offered,
+    # because the fill short-circuit already covers that case from data the
+    # framework owns.
+    headline = (
+        f"You logged a {framework['order_type']} "
+        f"{_fmt_price(framework['limit_price'])} / {framework['quantity']} sh "
+        f"order for {latch.identity.ticker} on {place.action_session_date}. NO "
+        "matching resting order is visible at the broker. Was it rejected, "
+        "never submitted, or do you not know?")
+    return LatchValidityPromptVM(
+        ticker=latch.identity.ticker,
+        candidate_id=latch.identity.candidate_id,
+        branch=branch, headline=headline, divergence_note="", incomplete_note="",
+        parent_place_intent_id=place.intent_id,
+        prior_intent_id=prior_intent_id,
+        options=_opt(LATCH_VALIDITY_OUTCOMES - {"accepted_by_broker"}),
+        preselected="",
+        actual_fields=(),
+        snapshot_json=json.dumps(envelope, sort_keys=True),
+        view_session_date=anchor_iso)
+
+
+def _fmt_price_or_blank(value) -> str:
+    return "" if value is None else f"{float(value):.2f}"
+
+
+def _validity_prompts(conn, latches, *, joins, orders, anchor: date, now):
+    """Every validity prompt this render offers. A6 at every seam.
+
+    A PROMPT IS OFFERED ONLY WHERE THE QUESTION IS BOTH OPEN AND ANSWERABLE:
+
+      * a governing `place` intent EXISTS (nothing to validate otherwise), and
+      * `resolve_execution_outcome_for` still returns `unknown` -- which is what
+        makes the FILL SHORT-CIRCUIT structural rather than a second rule: a
+        latch cleared by fill resolves `accepted_by_broker` from the trades
+        ledger, so it never reaches a prompt. That is the one place the
+        framework may answer for itself, because the evidence is a real position
+        rather than an absence, and
+      * the ticker's broker status is not INDETERMINATE (the broker's own answer
+        is unknown, so the fragment renders its indeterminate note and no
+        prompt), and
+      * for the ABSENCE branch, the place intent is from an EARLIER session --
+        prompting the same evening he logged the order would be asking him about
+        something he has not had a session to do yet.
+
+    `resolution.kind != "ok"` never reaches here at all: the caller returns the
+    degraded VM before any join exists, which is the R8 MAJOR 1 rule -- a prompt
+    built on an unknown order book invites an answer the operator would infer
+    from the panel's own silence.
+    """
+    from swing.data.repos.latch_order_intents import list_intents_for_latch
+    from swing.latches.classification import (
+        governing_intent,
+        resolve_execution_outcome_for,
+    )
+    from swing.latches.order_intent import framework_side_of
+
+    digest = _broker_book_digest(orders)
+    snapshot_ts = now.isoformat(timespec="seconds")
+    anchor_iso = anchor.isoformat()
+    out: list[LatchValidityPromptVM] = []
+    for latch in latches:
+        cid = latch.identity.candidate_id
+        join = joins.get(cid)
+        if join is None or join.indeterminate:
+            continue
+        try:
+            intents = list_intents_for_latch(conn, candidate_id=cid)
+        except Exception as exc:  # noqa: BLE001 -- A6: a pre-0033 DB is not a 500
+            _log.warning("latch intent read degraded for candidate %s: %s", cid, exc)
+            continue
+        place = governing_intent(intents, "place")
+        if place is None:
+            continue
+        framework = framework_side_of(place)
+        if framework is None:
+            continue
+        try:
+            if resolve_execution_outcome_for(latch, place, intents) != "unknown":
+                continue
+        except Exception as exc:  # noqa: BLE001 -- A6
+            _log.warning(
+                "latch execution-outcome read degraded for candidate %s: %s",
+                cid, exc)
+            continue
+        if (not _attributable_orders(join)
+                and place.action_session_date >= anchor_iso):
+            continue
+        try:
+            prompt = _validity_prompt_for(
+                latch, join=join, framework=framework,
+                place=place, digest=digest, snapshot_ts=snapshot_ts,
+                anchor_iso=anchor_iso,
+                prior_intent_id=_prior_intent_id(intents))
+        except Exception as exc:  # noqa: BLE001 -- A6: the fragment never 500s
+            _log.warning(
+                "latch validity prompt degraded for candidate %s: %s", cid, exc)
+            continue
+        if prompt is not None:
+            out.append(prompt)
+    return tuple(out)
 
 
 def _build_form_check_notes(
