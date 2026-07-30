@@ -58,7 +58,7 @@ from pathlib import Path
 #   the immutable 21-A <-> 21-B bridge key -- plus evaluation_run_id / ticker /
 #   detection_date / pipeline_run_id nullable ON DELETE SET NULL). NO existing
 #   table touched. Atomic BEGIN/COMMIT.
-EXPECTED_SCHEMA_VERSION = 32
+EXPECTED_SCHEMA_VERSION = 33
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -289,6 +289,13 @@ PHASE18_ARC_H6_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 # provenance.
 PHASE21_ARC_A_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     PHASE18_ARC_H6_PRE_MIGRATION_EXPECTED_TABLES
+)
+
+# Phase 21 Arc 21-B (0033) pre-migration table set. 0032 added exactly ONE
+# table, `latch_view_events`, so the v32 set is the 21-A set plus that one.
+# Derived deterministically for auditable provenance -- never hand-listed.
+PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    PHASE21_ARC_A_PRE_MIGRATION_EXPECTED_TABLES | {"latch_view_events"}
 )
 
 
@@ -879,6 +886,27 @@ def _create_pre_phase21_arc_a_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-phase21-arc-a-migration-{timestamp}.db"
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
+def _create_pre_phase21_arc_b_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """Phase 21 Arc 21-B (0033) mirror. SQLite-native Connection.backup()
+    before the 0033 migration. Backup file
+    ``swing-pre-phase21-arc-b-migration-<ISO>.db``."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-phase21-arc-b-migration-{timestamp}.db"
     src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
@@ -1612,6 +1640,46 @@ def _phase21_arc_a_backup_gate(
         ) from exc
 
 
+def _phase21_arc_b_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """Phase 21 Arc 21-B (0033) backup-before-migrate gate.
+
+    Fires ONLY when ``current_version == 32 AND target_version >= 33`` -- a real
+    production v32 DB about to cross v33 (migration 0033: the
+    latch_view_events rebuild + the latch_order_intents ledger). STRICT EQUALITY
+    on pre_version per the ``pre_version == (target - 1)`` gotcha (NOT ``<=``);
+    multi-version jumps from pre-v32 baselines bypass this gate by design.
+    """
+    if target_version < 33 or current_version != 32:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-phase21-arc-b backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_phase21_arc_b_migration_backup(
+            src_path, dest_dir=backup_dir)
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-phase21-arc-b backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -1733,6 +1801,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _phase21_arc_a_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _phase21_arc_b_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,

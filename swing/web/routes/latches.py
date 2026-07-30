@@ -246,7 +246,8 @@ async def latches_view_beacon(request: Request) -> Response:
                         record_view(
                             conn, identity=latch.identity,
                             view_session_date=anchor.isoformat(),
-                            viewed_ts=viewed_ts, latch_state=latch.state)
+                            viewed_ts=viewed_ts, latch_state=latch.state,
+                            surface="latch_panel", actionable=0)
             except sqlite3.Error as exc:
                 # A6: the telemetry beacon is an OBSERVER. A schema rejection
                 # (e.g. the identity-coherence trigger) must be logged loudly

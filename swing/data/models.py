@@ -1,9 +1,34 @@
 """Dataclass representations of DB rows."""
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import date
+from typing import ClassVar
+
+# Phase 21 Arc 21-B: the migration-0033 enums, IMPORTED under the same rule.
+from swing.latches.constants import (
+    DERIVATION_FIELD_MANIFEST,
+    DERIVATION_NULLABLE_ON_DECISION,
+)
+from swing.latches.constants import (
+    LATCH_ACTUAL_DURATIONS as _LATCH_ACTUAL_DURATIONS,
+)
+from swing.latches.constants import (
+    LATCH_ACTUAL_ORDER_TYPES as _LATCH_ACTUAL_ORDER_TYPES,
+)
+from swing.latches.constants import (
+    LATCH_ATTESTED_DISPOSITIONS as _LATCH_ATTESTED_DISPOSITIONS,
+)
+from swing.latches.constants import (
+    LATCH_BROKER_SNAPSHOT_KEYS as _LATCH_BROKER_SNAPSHOT_KEYS,
+)
+from swing.latches.constants import (
+    LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES as _LATCH_SNAPSHOT_BRANCHES,
+)
+from swing.latches.constants import LATCH_INTENT_KINDS as _LATCH_INTENT_KINDS
+from swing.latches.constants import LATCH_SIZING_BASES as _LATCH_SIZING_BASES
 
 # ONE declaration, IMPORTED -- never a re-declared copy. `swing/latches/
 # constants.py` is a pure-constants module with ZERO swing imports and is the
@@ -12,6 +37,14 @@ from datetime import date
 # to put the home in the domain package.) A three-way test pins this against
 # the migration-0032 CHECK enum as well (the #11 multi-mirror discipline).
 from swing.latches.constants import LATCH_STATES as _LATCH_VIEW_STATES
+from swing.latches.constants import (
+    LATCH_VALIDITY_OUTCOMES as _LATCH_VALIDITY_OUTCOMES,
+)
+from swing.latches.constants import LATCH_VIEW_SURFACES as _LATCH_VIEW_SURFACES
+from swing.latches.constants import (
+    MANDATE_ORDER_DURATIONS as _MANDATE_ORDER_DURATIONS,
+)
+from swing.latches.constants import MANDATE_ORDER_TYPES as _MANDATE_ORDER_TYPES
 
 # ============================================================================
 # Phase 13 v20 — schema enum constants (per plan §A.14 constant placement LOCK).
@@ -2417,6 +2450,44 @@ class YfinanceCall:
             )
 
 
+_ISO_SECONDS_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+
+
+def _require_iso_session_date(name: str, value) -> None:
+    """The C.1.1 three-predicate date guard, Python side.
+
+    Mirrors the SQL `length = 10 AND date() IS NOT NULL AND round-trip AND
+    year BETWEEN 1 AND 9999`. `date.fromisoformat` already rejects year zero and
+    normalising shapes like '2026-02-30', so the mirror is exact.
+    """
+    if not isinstance(value, str) or len(value) != 10:
+        raise ValueError(f"{name} must be an ISO YYYY-MM-DD str; got {value!r}")
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} is not a valid ISO date: {value!r}") from exc
+
+
+def _require_iso_seconds_ts(name: str, value) -> None:
+    """LOCAL ISO SECONDS, exactly: YYYY-MM-DDTHH:MM:SS.
+
+    Mirrors the SQL GLOB + range CHECK under #11. A SPACE separator and hour 24
+    are the two shapes the naive `datetime(x) = replace(x,'T',' ')` form ACCEPTS
+    -- a space-separated stamp sorts differently from a T-separated one in the
+    exact ORDER BY the monthly report uses, and hour 24 is a stamp no clock
+    produced.
+    """
+    if not isinstance(value, str) or not _ISO_SECONDS_RE.match(value):
+        raise ValueError(
+            f"{name} must be local ISO seconds 'YYYY-MM-DDTHH:MM:SS'; "
+            f"got {value!r}")
+    _require_iso_session_date(name, value[:10])
+    hh, mm, ss = int(value[11:13]), int(value[14:16]), int(value[17:19])
+    if hh > 23 or mm > 59 or ss > 59:
+        raise ValueError(f"{name} carries an out-of-range time: {value!r}")
+
+
 @dataclass(frozen=True)
 class LatchViewEvent:
     """One (latch, action-session) view-telemetry record (migration 0032).
@@ -2432,14 +2503,48 @@ class LatchViewEvent:
     ticker: str
     detection_date: str
     pipeline_run_id: int | None
+    # 21-B: the surface (B4) + the THREE actionability facts. `surface` and the
+    # three columns are REQUIRED, not defaulted -- a default would silently
+    # hydrate a row as `latch_panel` / not-actionable and reproduce the very
+    # omission the R15 finding caught (a model missing the columns leaves
+    # `never_actionable`, `covered_sessions` and the beacon split with no
+    # hydrated fields to read).
+    surface: str
     view_session_date: str
     first_viewed_ts: str
     last_viewed_ts: str
     view_count: int
     latch_state_at_first_view: str
     latch_state_at_last_view: str
+    actionable_at_first_view: int
+    actionable_at_last_view: int
+    actionable_ever_viewed: int
 
     def __post_init__(self) -> None:
+        if self.surface not in _LATCH_VIEW_SURFACES:
+            raise ValueError(
+                f"surface must be in {sorted(_LATCH_VIEW_SURFACES)}, "
+                f"got {self.surface!r}")
+        for fname in ("actionable_at_first_view", "actionable_at_last_view",
+                      "actionable_ever_viewed"):
+            val = getattr(self, fname)
+            if isinstance(val, bool) or not isinstance(val, int) or val not in (0, 1):
+                raise ValueError(f"{fname} must be 0 or 1 (int); got {val!r}")
+        # THE MONOTONE CONTRACT, mirrored from SQL under #11: `ever >= first`
+        # and `ever >= last` ONLY. It deliberately does NOT constrain
+        # `actionable_at_last_view` against `actionable_at_first_view`: a
+        # 1 -> 0 fall between them is the CORRECT record of an offered render
+        # followed by a withheld one, and a validator forbidding it would
+        # re-impose the very "last means ever" lie the third column exists to
+        # end.
+        if self.actionable_ever_viewed < self.actionable_at_first_view:
+            raise ValueError(
+                "actionable_ever_viewed must be >= actionable_at_first_view")
+        if self.actionable_ever_viewed < self.actionable_at_last_view:
+            raise ValueError(
+                "actionable_ever_viewed must be >= actionable_at_last_view")
+        for fname in ("first_viewed_ts", "last_viewed_ts"):
+            _require_iso_seconds_ts(fname, getattr(self, fname))
         for fname in ("latch_state_at_first_view", "latch_state_at_last_view"):
             val = getattr(self, fname)
             if val not in _LATCH_VIEW_STATES:
@@ -2478,3 +2583,353 @@ class LatchViewEvent:
                     f"{fname} is not a valid ISO date: {val!r}") from exc
         if self.last_viewed_ts < self.first_viewed_ts:
             raise ValueError("last_viewed_ts must be >= first_viewed_ts")
+
+
+@dataclass(frozen=True)
+class LatchOrderIntent:
+    """One operator DECISION about a prepared order (migration 0033, 21-B).
+
+    APPEND-ONLY and audit-grade. Defense-in-depth mirroring the SQL CHECKs under
+    the #11 discipline: every enum comes from `swing/latches/constants.py` (the
+    SAME objects, never copies), and every cross-column shape rule the migration
+    enforces is mirrored here -- because the dangerous asymmetry direction is the
+    DB holding a shape the read path cannot hydrate, and on an append-only
+    ledger a bad row is permanent.
+    """
+
+    intent_id: int | None
+    # ===== LATCH IDENTITY BLOCK (BOTH id spaces, RD finding 4) =====
+    candidate_id: int
+    evaluation_run_id: int
+    ticker: str
+    detection_date: str
+    pipeline_run_id: int | None
+    # ===== THE EVENT =====
+    idempotency_key: str
+    action_session_date: str
+    recorded_ts: str
+    surface: str
+    intent_kind: str
+    decline_reason: str | None = None
+    attested_disposition: str | None = None
+    validated_place_intent_id: int | None = None
+    # ===== THE FRAMEWORK'S COMPUTED ORDER (stored VERBATIM) =====
+    framework_order_type: str | None = None
+    framework_duration: str | None = None
+    framework_stop_price: float | None = None
+    framework_limit_price: float | None = None
+    framework_quantity: int | None = None
+    # ===== THE DERIVATION INPUTS THAT CAN DRIFT =====
+    derivation_zone_cap_pct: float | None = None
+    derivation_sizing_equity: float | None = None
+    derivation_max_risk_pct: float | None = None
+    derivation_position_pct_cap: float | None = None
+    derivation_risk_policy_id: int | None = None
+    derivation_sizing_basis: str | None = None
+    derivation_regime_close: float | None = None
+    derivation_regime_close_session: str | None = None
+    derivation_real_equity: float | None = None
+    derivation_equity_floor: float | None = None
+    derivation_nightly_recommendation_shares: int | None = None
+    # ===== THE OPERATOR'S ACTUAL PARAMS =====
+    actual_order_type: str | None = None
+    actual_duration: str | None = None
+    actual_stop_price: float | None = None
+    actual_limit_price: float | None = None
+    actual_quantity: int | None = None
+    actual_broker_order_id: str | None = None
+    # ===== ORDER-VALIDITY OUTCOME =====
+    validity_outcome: str | None = None
+    validity_detail: str | None = None
+
+    # the shape exclusions, mirrored from the migration's three CHECKs
+    _FRAMEWORK_COLS: ClassVar[tuple[str, ...]] = (
+        "framework_order_type", "framework_duration", "framework_stop_price",
+        "framework_limit_price", "framework_quantity",
+    )
+    _ACTUAL_ORDER_COLS: ClassVar[tuple[str, ...]] = (
+        "actual_order_type", "actual_duration", "actual_stop_price",
+        "actual_limit_price", "actual_quantity",
+    )
+    # EVERY PRICE IS POSITIVE. `derivation_real_equity` is DELIBERATELY ABSENT:
+    # it may be ZERO or NEGATIVE and that is not an error -- it IS the account,
+    # and it is exactly why the floor exists.
+    _POSITIVE_REAL_COLS: ClassVar[tuple[str, ...]] = (
+        "framework_stop_price", "framework_limit_price",
+        "actual_stop_price", "actual_limit_price",
+        "derivation_zone_cap_pct", "derivation_sizing_equity",
+        "derivation_max_risk_pct", "derivation_position_pct_cap",
+        "derivation_equity_floor",
+    )
+    _POSITIVE_INT_COLS: ClassVar[tuple[str, ...]] = (
+        "intent_id", "candidate_id", "evaluation_run_id", "pipeline_run_id",
+        "validated_place_intent_id", "framework_quantity", "actual_quantity",
+        "derivation_risk_policy_id",
+        "derivation_nightly_recommendation_shares",
+    )
+
+    def __post_init__(self) -> None:
+        self._validate_enums()
+        self._validate_scalars()
+        self._validate_dates()
+        self._validate_kind_conditionals()
+        self._validate_shape_exclusion()
+        self._validate_validity_columns()
+
+    def _validate_enums(self) -> None:
+        if self.intent_kind not in _LATCH_INTENT_KINDS:
+            raise ValueError(
+                f"intent_kind must be in {sorted(_LATCH_INTENT_KINDS)}, "
+                f"got {self.intent_kind!r}")
+        if self.surface not in _LATCH_VIEW_SURFACES:
+            raise ValueError(
+                f"surface must be in {sorted(_LATCH_VIEW_SURFACES)}, "
+                f"got {self.surface!r}")
+        for fname, allowed in (
+            ("framework_order_type", _MANDATE_ORDER_TYPES),
+            ("framework_duration", _MANDATE_ORDER_DURATIONS),
+            ("actual_order_type", _LATCH_ACTUAL_ORDER_TYPES),
+            ("actual_duration", _LATCH_ACTUAL_DURATIONS),
+            ("derivation_sizing_basis", _LATCH_SIZING_BASES),
+            ("attested_disposition", _LATCH_ATTESTED_DISPOSITIONS),
+            ("validity_outcome", _LATCH_VALIDITY_OUTCOMES),
+        ):
+            val = getattr(self, fname)
+            if val is not None and val not in allowed:
+                raise ValueError(
+                    f"{fname} must be None or in {sorted(allowed)}, got {val!r}")
+
+    def _validate_scalars(self) -> None:
+        for fname in self._POSITIVE_INT_COLS:
+            val = getattr(self, fname)
+            if val is None:
+                continue
+            if isinstance(val, bool) or not isinstance(val, int):
+                raise ValueError(
+                    f"{fname} must be None or int (not bool), "
+                    f"got {type(val).__name__}")
+            if val <= 0:
+                raise ValueError(f"{fname} must be positive; got {val!r}")
+        if self.candidate_id is None or self.evaluation_run_id is None:
+            raise ValueError("candidate_id and evaluation_run_id are NOT NULL")
+        if not isinstance(self.ticker, str) or not self.ticker.strip():
+            raise ValueError("ticker must be non-blank")
+        if not isinstance(self.idempotency_key, str) or not self.idempotency_key:
+            raise ValueError("idempotency_key must be a non-empty str")
+        for fname in self._POSITIVE_REAL_COLS:
+            val = getattr(self, fname)
+            if val is not None and not float(val) > 0:
+                raise ValueError(
+                    f"{fname} must be > 0 when present; got {val!r}")
+
+    def _validate_dates(self) -> None:
+        for fname in ("detection_date", "action_session_date"):
+            _require_iso_session_date(fname, getattr(self, fname))
+        _require_iso_seconds_ts("recorded_ts", self.recorded_ts)
+        if self.derivation_regime_close_session is not None:
+            _require_iso_session_date(
+                "derivation_regime_close_session",
+                self.derivation_regime_close_session)
+        # PAIRED NULL: a close without the session it is DATED is a
+        # provenance-free number; a session without a close is a claim about a
+        # price that is not there.
+        if ((self.derivation_regime_close is None)
+                != (self.derivation_regime_close_session is None)):
+            raise ValueError(
+                "derivation_regime_close and derivation_regime_close_session "
+                "are a PAIRED NULL -- both or neither")
+
+    def _validate_kind_conditionals(self) -> None:
+        kind = self.intent_kind
+        # the three-state contract, enforced in BOTH DIRECTIONS: a required
+        # field that is merely "required on its own kind" still lets every
+        # OTHER kind carry it, so a place row could ship a decline_reason and
+        # read as both.
+        if kind == "decline":
+            if not (self.decline_reason or "").strip():
+                raise ValueError(
+                    "a decline REQUIRES a non-blank decline_reason")
+        elif self.decline_reason is not None:
+            raise ValueError(
+                "decline_reason is only legal on a decline row; got "
+                f"kind={kind!r}")
+        if kind == "attest":
+            if self.attested_disposition is None:
+                raise ValueError("an attest REQUIRES an attested_disposition")
+        elif self.attested_disposition is not None:
+            raise ValueError(
+                "attested_disposition is only legal on an attest row; got "
+                f"kind={kind!r}")
+        # THE STOP LEG IS CONDITIONED ON THE ORDER TYPE.
+        if (self.framework_order_type == "STOP_LIMIT"
+                and self.framework_stop_price is None):
+            raise ValueError(
+                "a STOP_LIMIT framework order REQUIRES framework_stop_price")
+        if (self.framework_order_type == "LIMIT"
+                and self.framework_stop_price is not None):
+            raise ValueError(
+                "a LIMIT framework order must carry NO stop leg (the rejected "
+                "FTRE shape)")
+        # HAZARD (c): a cancel names ONE broker order.
+        if (self.actual_broker_order_id is not None
+                and not self.actual_broker_order_id.strip()):
+            raise ValueError("actual_broker_order_id must never be blank")
+        if kind == "cancel" and self.actual_broker_order_id is None:
+            raise ValueError(
+                "a cancel REQUIRES actual_broker_order_id -- there is no "
+                "by-ticker cancel path")
+        # A broker order id is an OBSERVATION; place/decline are DECISIONS and
+        # have observed nothing.
+        if (kind in ("place", "decline")
+                and self.actual_broker_order_id is not None):
+            raise ValueError(
+                "a place/decline row may not carry actual_broker_order_id")
+
+    @property
+    def _derivation_cols(self) -> tuple[str, ...]:
+        return tuple(f.column for f in DERIVATION_FIELD_MANIFEST)
+
+    def _validate_shape_exclusion(self) -> None:
+        kind = self.intent_kind
+        # Keyed on the ORDER-BEARING kinds, so a future intent kind is excluded
+        # BY DEFAULT rather than by being added to a list of the others.
+        if kind not in ("place", "decline", "validity"):
+            for fname in (self._FRAMEWORK_COLS + self._derivation_cols
+                          + self._ACTUAL_ORDER_COLS):
+                if getattr(self, fname) is not None:
+                    raise ValueError(
+                        f"a {kind} row carries no order block; {fname} must be "
+                        "None")
+        if kind in ("place", "decline"):
+            for fname in self._ACTUAL_ORDER_COLS:
+                if getattr(self, fname) is not None:
+                    raise ValueError(
+                        f"a {kind} row is a DECISION, not an observation; "
+                        f"{fname} must be None")
+            # A place/decline row must CARRY the whole drift-capable derivation
+            # block, not merely be permitted to. The required set is DERIVED,
+            # never hand-listed: {every manifest column} - the exemption roster.
+            for fname in self._derivation_cols:
+                if fname in DERIVATION_NULLABLE_ON_DECISION:
+                    continue
+                if getattr(self, fname) is None:
+                    raise ValueError(
+                        f"a {kind} row REQUIRES {fname} -- the 'four bare "
+                        "numbers' B1 exists to prevent, one layer down")
+            for fname in ("framework_order_type", "framework_limit_price",
+                          "framework_quantity", "framework_duration"):
+                if getattr(self, fname) is None:
+                    raise ValueError(
+                        f"a {kind} row REQUIRES {fname}: it records a complete "
+                        "order or it is not a record of a decision ABOUT an "
+                        "order")
+        if kind == "validity":
+            for fname in self._FRAMEWORK_COLS + self._derivation_cols:
+                if getattr(self, fname) is not None:
+                    raise ValueError(
+                        "a validity row reports an OBSERVATION, never a "
+                        f"prepared order; {fname} must be None")
+
+    def _validate_validity_columns(self) -> None:
+        kind = self.intent_kind
+        if kind != "validity":
+            for fname in ("validity_outcome", "validity_detail",
+                          "validated_place_intent_id"):
+                if getattr(self, fname) is not None:
+                    raise ValueError(
+                        f"{fname} is only legal on a validity row; got "
+                        f"kind={kind!r}")
+            return
+        if (self.validity_outcome is None
+                or self.validated_place_intent_id is None):
+            raise ValueError(
+                "a validity row REQUIRES both validity_outcome and "
+                "validated_place_intent_id -- the parent-link trigger fires "
+                "only WHEN the link IS NOT NULL, so this is the only guard on "
+                "the orphan case")
+        if self.validity_outcome == "accepted_by_broker":
+            # "Complete" means KNOWN and EXACTLY LINKED, not merely non-NULL:
+            # the agreement DENOMINATOR requires a known actual side and exact
+            # linkage comes from validity rows, so an accepted row carrying a
+            # NULL broker order id or an UNKNOWN type/duration would look
+            # authoritative while satisfying neither claim.
+            for fname in ("actual_order_type", "actual_duration",
+                          "actual_limit_price", "actual_quantity",
+                          "actual_broker_order_id"):
+                if getattr(self, fname) is None:
+                    raise ValueError(
+                        f"an accepted_by_broker validity row REQUIRES {fname}")
+            for fname in ("actual_order_type", "actual_duration"):
+                if getattr(self, fname) == "UNKNOWN":
+                    raise ValueError(
+                        "an accepted_by_broker validity row cannot carry an "
+                        f"UNKNOWN {fname}")
+            if (self.actual_order_type == "STOP_LIMIT"
+                    and self.actual_stop_price is None):
+                raise ValueError(
+                    "an accepted STOP_LIMIT REQUIRES actual_stop_price")
+            if (self.actual_order_type == "LIMIT"
+                    and self.actual_stop_price is not None):
+                raise ValueError("an accepted LIMIT must carry NO stop leg")
+        else:
+            # A NON-ACCEPTED VALIDITY ROW CARRIES NO OBSERVED ORDER AT ALL: an
+            # outcome and its evidence must not be able to disagree.
+            for fname in (self._ACTUAL_ORDER_COLS
+                          + ("actual_broker_order_id",)):
+                if getattr(self, fname) is not None:
+                    raise ValueError(
+                        f"a {self.validity_outcome} validity row observed no "
+                        f"order; {fname} must be None")
+        _require_broker_snapshot_envelope(self.validity_detail)
+
+
+def _require_broker_snapshot_envelope(raw) -> None:
+    """The `validity_detail` envelope, mirroring migration 0033's JSON CHECK.
+
+    EXACTLY the `LATCH_BROKER_SNAPSHOT_KEYS` roster -- not at-least. Both halves
+    are required: an exact-set comparison closes EXTRA (extra keys otherwise
+    ride into an append-only audit row unaudited, and since `actual_digest`
+    covers only `broker_snapshot_digest`, two envelopes differing ONLY by extra
+    content share an idempotency key) and closes MISSING (a missing key makes
+    SQL's `json_extract` return NULL, and a SQLite CHECK PASSES on NULL).
+    """
+    if raw is None:
+        raise ValueError("a validity row REQUIRES validity_detail")
+    if not isinstance(raw, str):
+        raise ValueError(
+            f"validity_detail must be a JSON str; got {type(raw).__name__}")
+    try:
+        env = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"validity_detail is not valid JSON: {raw!r}") from exc
+    if not isinstance(env, dict):
+        raise ValueError("validity_detail must be a JSON OBJECT")
+    if set(env) != set(_LATCH_BROKER_SNAPSHOT_KEYS):
+        raise ValueError(
+            "validity_detail must carry EXACTLY the broker-snapshot roster "
+            f"{sorted(_LATCH_BROKER_SNAPSHOT_KEYS)}; got {sorted(env)}")
+    _require_iso_seconds_ts("broker_snapshot_ts", env["broker_snapshot_ts"])
+    _require_iso_session_date(
+        "broker_snapshot_session", env["broker_snapshot_session"])
+    digest = env["broker_snapshot_digest"]
+    if (not isinstance(digest, str) or len(digest) != 64
+            or any(ch not in "0123456789abcdef" for ch in digest)):
+        raise ValueError(
+            "broker_snapshot_digest must be 64 lowercase hex chars")
+    if env["broker_snapshot_branch"] not in _LATCH_SNAPSHOT_BRANCHES:
+        raise ValueError(
+            "broker_snapshot_branch must be in "
+            f"{sorted(_LATCH_SNAPSHOT_BRANCHES)} on a PERSISTED validity row "
+            "(an `unavailable` book renders no prompt, so a row asserting an "
+            "outcome against one must be unwritable); got "
+            f"{env['broker_snapshot_branch']!r}")
+    for fname in ("attributable_order_count", "exact_framework_match_count"):
+        val = env[fname]
+        if isinstance(val, bool) or not isinstance(val, int) or val < 0:
+            raise ValueError(
+                f"{fname} must be a non-negative int; got {val!r}")
+    if not isinstance(env["indeterminate"], bool):
+        raise ValueError(
+            "indeterminate must be a JSON boolean; got "
+            f"{env['indeterminate']!r}")

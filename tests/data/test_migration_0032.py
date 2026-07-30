@@ -12,12 +12,23 @@ from swing.data.db import (
 )
 from swing.latches.identity import LATCH_IDENTITY_COLUMNS
 
+# NOTE (Arc 21-B): migration 0033 REBUILT this table, adding `surface` and the
+# three actionability columns (all NOT NULL) and re-keying the UNIQUE onto
+# (candidate_id, view_session_date, surface). This suite is the 0032-PRESERVATION
+# suite -- every shape it proves the OLD table rejects, the NEW table must still
+# reject -- so the raw INSERT is widened to the rebuilt column list and nothing
+# else about what it asserts changes. The one place the rebuilt table is
+# DELIBERATELY STRICTER than 0032 (the C.1.1 three-predicate date guard) is
+# asserted in tests/data/test_migration_0033.py, against a REAL v32 fixture DB,
+# so that the correction is proved to have CHANGED something.
 _INSERT = (
     "INSERT INTO latch_view_events (candidate_id, evaluation_run_id, ticker, "
-    "detection_date, pipeline_run_id, view_session_date, first_viewed_ts, "
-    "last_viewed_ts, view_count, latch_state_at_first_view, "
-    "latch_state_at_last_view) VALUES (?, 99, 'VSTS', ?, NULL, ?, "
-    "'2026-06-25T10:00:00', '2026-06-25T10:00:00', 1, ?, 'armed')")
+    "detection_date, pipeline_run_id, surface, view_session_date, "
+    "first_viewed_ts, last_viewed_ts, view_count, latch_state_at_first_view, "
+    "latch_state_at_last_view, actionable_at_first_view, "
+    "actionable_at_last_view, actionable_ever_viewed) "
+    "VALUES (?, 99, 'VSTS', ?, NULL, 'latch_panel', ?, "
+    "'2026-06-25T10:00:00', '2026-06-25T10:00:00', 1, ?, 'armed', 1, 1, 1)")
 
 
 def _fresh(tmp_path):
@@ -36,8 +47,13 @@ def _fresh(tmp_path):
     return conn, int(cur.lastrowid)
 
 
-def test_expected_schema_version_is_32():
-    assert EXPECTED_SCHEMA_VERSION == 32
+def test_expected_schema_version_is_current():
+    """Bumped in lockstep by every schema migration (the project convention).
+
+    0033 (Arc 21-B) took it to 33; the EXACT value is owned by the newest
+    migration's own test (tests/data/test_migration_0033.py), and this
+    assertion exists so a bump that misses a mirror fails loudly here too."""
+    assert EXPECTED_SCHEMA_VERSION == 33
 
 
 def test_table_exists_with_identity_block_first(tmp_path):
@@ -138,8 +154,8 @@ def test_a_view_event_round_trips_with_superseded_in_both_state_fields(tmp_path)
             conn.execute(
                 "UPDATE latch_view_events SET latch_state_at_last_view "
                 "= 'superseded'")
-        row = get_view(conn, evaluation_run_id=99, ticker="VSTS",
-                       view_session_date="2026-06-25")
+        row = get_view(conn, candidate_id=cid,
+                       view_session_date="2026-06-25", surface="latch_panel")
         assert row.latch_state_at_first_view == "superseded"
         assert row.latch_state_at_last_view == "superseded"
     finally:
@@ -342,7 +358,11 @@ def test_the_identity_trigger_requires_the_pipeline_twin_to_be_this_runs(tmp_pat
                 "evaluation_run_id) VALUES "
                 "(500, '2026-06-01T17:00:00', 'manual', 'complete', 'lease-500', "
                 "'2026-06-01', '2026-06-02', 77)")
-        bad_twin = _INSERT.replace("NULL, ?,", "500, ?,")
+        bad_twin = _INSERT.replace("NULL, 'latch_panel',", "500, 'latch_panel',")
+        assert "500, 'latch_panel'," in bad_twin, (
+            "the pipeline_run_id substitution must actually land -- the 21-B "
+            "rebuild widened the INSERT column list, and a replace() that "
+            "silently misses would leave this test asserting NOTHING")
         with pytest.raises(sqlite3.IntegrityError, match="twin"):
             conn.execute(bad_twin, (cid, "2026-06-25", "2026-06-25", "armed"))
         # NULL twin is fine.

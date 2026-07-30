@@ -477,8 +477,21 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
             banner, reason="latch derivation unavailable", session_date=session_date)
 
 
-def _load_views(conn, latches, horizon_session: date) -> dict[int, tuple]:
-    """The persisted view telemetry for THIS session, per latch. Read-only."""
+def _load_views(
+    conn, latches, horizon_session: date, *,
+    counted_surfaces: frozenset[str] | None = None,
+) -> dict[int, tuple]:
+    """The persisted view telemetry for THIS session, per latch. Read-only.
+
+    `counted_surfaces` is EXPLICIT (21-B, plan section E.3 conjunct 2): the
+    moment 21-F adds a second surface, a non-panel row must not silently satisfy
+    the panel's "viewed" predicate and move a disposition. `None` here means
+    "the measurement default", which is `ACTIONABLE_VIEW_SURFACES` -- callers
+    that want a raw read say so.
+    """
+    from swing.latches.constants import ACTIONABLE_VIEW_SURFACES
+    if counted_surfaces is None:
+        counted_surfaces = ACTIONABLE_VIEW_SURFACES
     out: dict[int, tuple] = {}
     try:
         from swing.data.repos.latch_view_events import list_views_for_latch
@@ -489,8 +502,8 @@ def _load_views(conn, latches, horizon_session: date) -> dict[int, tuple]:
     for latch in latches:
         try:
             rows = list_views_for_latch(
-                conn, evaluation_run_id=latch.identity.evaluation_run_id,
-                ticker=latch.identity.ticker)
+                conn, candidate_id=latch.identity.candidate_id,
+                surfaces=counted_surfaces)
         except Exception as exc:  # noqa: BLE001 -- A6
             _log.warning("latch panel telemetry read degraded: %s", exc)
             continue

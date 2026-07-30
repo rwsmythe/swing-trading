@@ -9,6 +9,9 @@ from here without a cycle.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass as _dataclass
+from datetime import date as _date
+
 
 # RD constraint 2, RULED at the plan-stage gate: the horizon is DERIVED from
 # the shadow engine's ENTRY window, never hard-coded. See plan section A.4.
@@ -137,3 +140,289 @@ CLOSE_PROVENANCES = frozenset({
 ARCHIVE_STATUS_OK = "ok"
 ARCHIVE_STATUS_UNAVAILABLE = "unavailable"
 ARCHIVE_STATUSES = frozenset({ARCHIVE_STATUS_OK, ARCHIVE_STATUS_UNAVAILABLE})
+
+# =====================================================================
+# Phase 21 Arc 21-B -- the prepared-order form + the execution-parity ledger.
+#
+# EVERY schema enum migration 0033 declares has its ONE authority here; the
+# dataclass validators in swing/data/models.py IMPORT these frozensets rather
+# than re-declaring them (the #11 one-commit multi-mirror discipline, pinned by
+# `is`-identity tests), and tests/data/test_migration_0033.py parses the
+# migration SQL and asserts exact set equality.
+#
+# NO SITE STATES A CARDINALITY. Every set has ONE authority; every other site
+# refers to it by NAME and every test ITERATES it, so a set that grows gains its
+# cases automatically instead of needing a bullet edited.
+# =====================================================================
+
+# THE TELEMETRY EPOCH -- the first action session for which a latch_view_events
+# row could exist. Migration 0032 applied to the live DB at 2026-07-28T11:14:53
+# (backup swing-20260728T111453.db) and the beacon writes
+# action_session_for_run(now), which at that instant was 2026-07-29.
+#
+# A HISTORICAL FACT, not a derived quantity, and deliberately NOT
+# MIN(view_session_date): with zero rows that is undefined, and once rows exist
+# it would drift FORWARD every time the operator goes quiet -- so a genuinely
+# away fire would be re-labelled "uninstrumented" precisely BECAUSE he was away.
+# That is the flattering direction. In-tree precedent: the 18-D research monitor
+# baselines check #1 on the hard-coded date(2026, 6, 13) 18-A boundary.
+LATCH_TELEMETRY_EPOCH_SESSION = _date(2026, 7, 29)
+
+# The schema CHECK enum for `surface` on BOTH 0033 tables.
+LATCH_VIEW_SURFACES = frozenset({"latch_panel"})
+# Which surfaces COUNT as a view for MEASUREMENT purposes.
+#
+# DELIBERATELY SEPARATE FROM, AND DELIBERATELY EQUAL TO, LATCH_VIEW_SURFACES
+# TODAY. Adding a surface to the CHECK enum is a SCHEMA decision; adding it here
+# is a MEASUREMENT decision and RD's (it is exactly the 21-F question -- does a
+# dashboard glance count evidentially as a view?). Keeping them separate means a
+# future surface cannot change the away/lapse math as a side effect of being
+# added. A test asserts ACTIONABLE_VIEW_SURFACES <= LATCH_VIEW_SURFACES: an
+# uncounted-but-unwritable surface is a typo, not a design.
+ACTIONABLE_VIEW_SURFACES = frozenset({"latch_panel"})
+
+LATCH_INTENT_KINDS = frozenset({
+    "place", "decline", "cancel", "attest", "validity",
+})
+LATCH_ATTESTED_DISPOSITIONS = frozenset({
+    "acted_manually", "chose_not_to_act", "was_away",
+})
+LATCH_VALIDITY_OUTCOMES = frozenset({
+    "accepted_by_broker", "rejected_by_broker", "not_submitted", "unknown",
+})
+LATCH_SIZING_BASES = frozenset({"limit_price", "pivot"})
+# The tri-state stop-leg comparison result (plan section D.4). `both_absent` is
+# the pullback regime's RIGHT answer and is a MATCH; with a bare `float | None`
+# it would collapse into `unknown`, and unknown is never agreement, so the
+# CORRECT order would score as a non-match.
+LATCH_STOP_LEG_STATES = frozenset({"both_absent", "compared", "unknown"})
+LATCH_ORDER_WITHHELD_REASONS = frozenset({
+    "regime_undeterminable", "sizing_infeasible", "sizing_degenerate",
+})
+# The `actual_order_type` / `actual_duration` vocabularies. The framework side
+# reuses 21-A's MANDATE_ORDER_TYPES / MANDATE_ORDER_DURATIONS unchanged; the
+# ACTUAL side additionally admits UNKNOWN, because an unmapped broker rendering
+# must canonicalise to something that compares as UNKNOWN rather than as
+# agreement.
+LATCH_ACTUAL_ORDER_TYPES = MANDATE_ORDER_TYPES | {"UNKNOWN"}
+LATCH_ACTUAL_DURATIONS = frozenset({
+    "GOOD_TILL_CANCEL", "DAY", "FILL_OR_KILL", "IMMEDIATE_OR_CANCEL",
+    "END_OF_WEEK", "END_OF_MONTH", "NEXT_END_OF_MONTH", "UNKNOWN",
+})
+
+# The DECISION axis. `partial_telemetry_unresolved` was drafted and DELETED by
+# RD's ruling 2: partial-coverage-with-no-observation collapses into
+# `pre_telemetry`, because the REASON is the same in both cases -- the
+# instrument was not there -- and a second name would imply a distinction the
+# evidence does not support. A `pending_attestation` state was ALSO drafted and
+# deleted: it required a persisted prompt-shown bit nothing writes, so it was
+# uncomputable from the classifier's pure inputs, AND it made the pessimistic
+# default depend on the instrument having rendered a prompt (the instrument
+# flattering its subject through inaction).
+LATCH_DISPOSITIONS = frozenset({
+    "pre_telemetry", "telemetry_unhealthy",
+    "away_unseen", "accepted", "declined", "attested_acted_manually",
+    "attested_chose_not_to_act", "attested_was_away", "discipline_lapse",
+    "pending_live", "never_actionable",
+})
+# The EXECUTION axis -- a SECOND, independent question. Collapsing the two would
+# let a broker-REJECTED placement classify as a clean `accepted` and contribute
+# to the agreement rate, which is the FTRE failure mode itself.
+LATCH_EXECUTION_OUTCOMES = LATCH_VALIDITY_OUTCOMES | {"not_applicable"}
+
+# How many DARK instrumented sessions make the beacon `broken`. Named so a
+# genuinely quiet week does not trip it.
+LATCH_TELEMETRY_DARK_SESSIONS_THRESHOLD = 5
+# How old a broker-book snapshot may be and still answer a validity prompt.
+LATCH_BROKER_SNAPSHOT_MAX_AGE_SECONDS = 900
+
+# The broker-snapshot envelope persisted VERBATIM into
+# latch_order_intents.validity_detail. THE ROSTER IS THE MIGRATION'S OWN
+# `json_remove(...)` PATH LIST -- that call is the machine-readable source of
+# truth and this frozenset mirrors it under #11 (a test parses the path list out
+# of the migration and asserts exact set equality). No site states the count: an
+# earlier round added broker_snapshot_session to the CHECK while three other
+# sites still said "six keys", so the fragment's emitted set and the row's
+# required set disagreed by one -- which makes the audit row unwritable.
+#
+# `broker_snapshot_digest` is itself one of the roster keys and is computed over
+# the broker-book STATE, NOT over the other keys; the two are separate facts and
+# conflating them is how the count drifted.
+LATCH_BROKER_SNAPSHOT_KEYS = frozenset({
+    "broker_snapshot_ts", "broker_snapshot_branch", "broker_snapshot_digest",
+    "broker_snapshot_session", "attributable_order_count",
+    "exact_framework_match_count", "indeterminate",
+})
+# TWO VOCABULARIES, because the render status and the persisted answer are
+# MEASURED DIFFERENTLY and do not share one enum (the governing principle). The
+# FRAGMENT emits from the RENDER set; the handler and the dataclass validate
+# against the PERSISTED set; the migration CHECK mirrors the PERSISTED set. A
+# test asserts PERSISTED < RENDER as a STRICT subset -- equality would mean the
+# narrowing had been silently undone.
+#
+# An `unavailable` book renders NO validity prompt in either direction, so an
+# append-only row asserting an outcome against an unknown book must be
+# UNWRITABLE rather than merely unreachable.
+LATCH_BROKER_SNAPSHOT_RENDER_BRANCHES = frozenset({
+    "presence", "absence", "unavailable",
+})
+LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES = frozenset({"presence", "absence"})
+
+
+# ---------------------------------------------------------------------
+# THE FIVE R BUCKETS (plan section F.3). `r_bucket_for` validates membership
+# against the UNION of these five, NOT against LATCH_DISPOSITIONS: the enum says
+# only that the CLASSIFIER may emit a value, not that anyone RULED its bucket,
+# so a disposition added to the enum without a ruling would pass a
+# LATCH_DISPOSITIONS check and fall through the terminality gate into
+# `pending_r` -- silently scored as "not an observation yet" rather than raising.
+# ---------------------------------------------------------------------
+_ALL_EXCLUDED_DISPOSITIONS = frozenset({
+    "away_unseen", "pre_telemetry",
+    "never_actionable", "telemetry_unhealthy",
+})
+PENDING_DISPOSITIONS = frozenset({"pending_live"})
+# RD ruling 2 (2026-07-28): testimony is not telemetry, so a self-declared away
+# does NOT belong in the same number as a telemetry-derived one. Merging it into
+# away_r would reintroduce, through the attestation door, the flattering path
+# closed at the default door.
+ATTESTED_AWAY_DISPOSITIONS = frozenset({"attested_was_away"})
+# FIXED at the closed gate (plan section A.1.5): the objective away rate counts
+# `away_unseen` and nothing else.
+AWAY_RATE_COUNTED_DISPOSITIONS = frozenset({"away_unseen"})
+# WRITTEN OUT EXPLICITLY, never derived by subtraction -- ON PURPOSE.
+# `decision_r` is the bucket a missing ruling would silently fall into, so it
+# must be the one set that can only grow by someone TYPING a disposition into
+# it.
+DECISION_DISPOSITIONS = frozenset({
+    "accepted", "declined",
+    "attested_acted_manually", "attested_chose_not_to_act",
+    "discipline_lapse",
+})
+# DERIVED by set subtraction, never hand-written -- that is what makes an
+# overlap between the buckets UNREPRESENTABLE rather than merely tested-against.
+# ATTESTED_AWAY_DISPOSITIONS is subtracted too, or away_unseen's sibling would
+# fall into unattributable_r as well as its own bucket.
+UNATTRIBUTABLE_DISPOSITIONS = (
+    _ALL_EXCLUDED_DISPOSITIONS
+    - AWAY_RATE_COUNTED_DISPOSITIONS
+    - ATTESTED_AWAY_DISPOSITIONS
+)
+# THE RULED UNION -- what `r_bucket_for` validates membership against, and the
+# reason the terminality gate can no longer absorb an unruled disposition.
+# `_RULED_DISPOSITIONS == LATCH_DISPOSITIONS` is a CONCLUSION with its own test,
+# never the CHECK.
+_RULED_DISPOSITIONS = (
+    AWAY_RATE_COUNTED_DISPOSITIONS | ATTESTED_AWAY_DISPOSITIONS
+    | UNATTRIBUTABLE_DISPOSITIONS | DECISION_DISPOSITIONS
+    | PENDING_DISPOSITIONS
+)
+# The closed set of values `r_bucket_for` can RETURN, named so no site has to
+# say "the five buckets". ExecutionParityReport builds its per-bucket fields by
+# ITERATING this, the partition test iterates it, and the CLI report prints it --
+# so a sixth bucket added to the resolver cannot be silently omitted from any of
+# the three.
+R_BUCKETS = frozenset({
+    "decision_r", "away_r", "attested_away_r", "unattributable_r", "pending_r",
+})
+
+
+# ---------------------------------------------------------------------
+# THE DERIVATION-FIELD MANIFEST (plan section A.4) -- the ONLY place the
+# DB-column <-> OrderDerivation-attribute <-> encoding mapping exists.
+#
+# The rule it carries: EVERY value the card presents INSIDE the prepared-order
+# derivation block is hidden-anchored, compared at POST, and stored. Anything
+# not anchored MUST NOT be rendered inside that block. The two are ONE decision:
+# a number is either part of the audited derivation, or it is not shown as part
+# of it.
+#
+# As PROSE that rule cannot execute -- an implementer would have to invent the
+# column-to-attribute mapping, which is exactly the hand-kept list the roster
+# rule forbids, re-created one layer down. So it is a manifest, and four
+# assertions make it the AUTHORITY rather than a fourth copy:
+#   1. {f.column} EQUALS the derivation_* columns in PRAGMA table_info
+#   2. {f.column if f.nullable} EQUALS DERIVATION_NULLABLE_ON_DECISION, and
+#      every nullable row carries a non-empty null_reason
+#   3. {f.column if f.rendered} EQUALS the derivation values the card renders
+#      as audited (the section A.4 closure, checkable instead of aspirational)
+#   4. the form's hidden inputs, anchor_digest's components and the POST-time
+#      comparison are all GENERATED by walking the manifest and applying
+#      `encode`, so the three cannot drift and no site re-lists the columns
+#
+# `encode` is what makes the digest REPRODUCIBLE across render and POST:
+# `price2` is the whole-cent form, `pct4` fixes the policy-rate precision,
+# `session` is ISO YYYY-MM-DD, and a NULL encodes as the EMPTY STRING --
+# distinct from "0", which a float field could legitimately produce.
+# ---------------------------------------------------------------------
+DERIVATION_ENCODINGS = frozenset({"price2", "pct4", "int", "session", "text"})
+
+
+@_dataclass(frozen=True)
+class DerivationField:
+    column: str          # the latch_order_intents column
+    attr: str            # the OrderDerivation attribute it comes from
+    encode: str          # canonical hidden-input / digest encoding
+    nullable: bool       # legitimately NULL on a place/decline row?
+    null_reason: str     # REQUIRED iff nullable -- why, in one line
+    rendered: bool       # does the card present it INSIDE the derivation block?
+
+    def __post_init__(self) -> None:
+        if self.encode not in DERIVATION_ENCODINGS:
+            raise ValueError(
+                f"{self.column}: encode must be in {sorted(DERIVATION_ENCODINGS)}, "
+                f"got {self.encode!r}")
+        if self.nullable and not self.null_reason.strip():
+            raise ValueError(
+                f"{self.column}: a nullable derivation field REQUIRES a "
+                "null_reason -- an unexplained exemption is the hand-kept list "
+                "this manifest replaces")
+        if not self.nullable and self.null_reason:
+            raise ValueError(
+                f"{self.column}: a non-nullable field must carry NO null_reason")
+
+
+DERIVATION_FIELD_MANIFEST: tuple[DerivationField, ...] = (
+    DerivationField("derivation_zone_cap_pct", "zone_cap_pct", "pct4",
+                    False, "", True),
+    DerivationField("derivation_sizing_equity", "sizing_equity", "price2",
+                    False, "", True),
+    DerivationField("derivation_max_risk_pct", "max_risk_pct", "pct4",
+                    False, "", True),
+    DerivationField("derivation_position_pct_cap", "position_pct_cap", "pct4",
+                    False, "", True),
+    DerivationField(
+        "derivation_risk_policy_id", "risk_policy_id", "int", True,
+        "the sizing RATE comes from cfg.risk.max_risk_pct, NOT from the policy "
+        "row, so a prepared order is fully computable with no active policy row "
+        "and the form is NOT withheld for one; the id is PROVENANCE, and the "
+        "card renders an explicit 'no active risk_policy row' line rather than "
+        "a blank",
+        True),
+    DerivationField("derivation_sizing_basis", "sizing_basis", "text",
+                    False, "", True),
+    DerivationField("derivation_regime_close", "regime_close", "price2",
+                    False, "", True),
+    DerivationField("derivation_regime_close_session", "regime_close_session",
+                    "session", False, "", True),
+    DerivationField("derivation_real_equity", "real_equity", "price2",
+                    False, "", True),
+    DerivationField("derivation_equity_floor", "equity_floor", "price2",
+                    False, "", True),
+    DerivationField(
+        "derivation_nightly_recommendation_shares",
+        "nightly_recommendation_shares", "int", True,
+        "a fire with no daily_recommendations row has none, and the card "
+        "renders no sizing-divergence note for it",
+        True),
+)
+
+# The ROSTER of derivation columns legitimately NULL on a place/decline row.
+# DERIVED from the manifest so it cannot disagree with it; the migration's
+# required-block CHECK mirrors the complement, and the tests derive the required
+# set as {every derivation_* column in PRAGMA table_info} - this set, stating no
+# cardinality. Adding a derivation column extends the required set
+# automatically; adding an EXEMPTION is a deliberate edit with a reviewer.
+DERIVATION_NULLABLE_ON_DECISION = frozenset(
+    f.column for f in DERIVATION_FIELD_MANIFEST if f.nullable
+)
