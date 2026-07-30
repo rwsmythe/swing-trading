@@ -1305,3 +1305,59 @@ def test_a_UNICODE_DIGIT_prior_id_is_a_named_400_and_never_a_500(
             assert r.status_code == 400, bad
             assert "prior_intent_id" in r.text
     assert _intents(cfg) == []
+
+
+def test_EVERY_integer_field_refuses_a_unicode_digit_by_name(
+        seeded_db, frozen_clocks):
+    """CODEX EXEC R8 MAJOR -- THE CLASS, NOT THE INSTANCE. R7 fixed the
+    `str.isdigit()`-then-`int()` hole on `prior_intent_id` ALONE, and R8 found
+    `candidate_id`, `validated_place_intent_id` and `actual_quantity` still
+    holding it. Every integer field now routes through ONE guarded parser, so a
+    new integer field cannot reintroduce it by being written the obvious way."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": "\u00b2",
+            "intent_kind": "attest", "attested_disposition": "was_away"})
+        assert r.status_code == 400 and "candidate_id" in r.text
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity", "validated_place_intent_id": "\u0661",
+            "validity_outcome": "unknown"})
+        assert r.status_code == 400 and "validated_place_intent_id" in r.text
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": "validity", "validated_place_intent_id": "1",
+            "validity_outcome": "accepted_by_broker",
+            "actual_quantity": "9" * 5000})
+        assert r.status_code == 400 and "actual_quantity" in r.text
+    assert _intents(cfg) == []
+
+
+def test_an_UNREADABLE_ledger_REFUSES_the_replay_rather_than_waving_it_through(
+        seeded_db, frozen_clocks, monkeypatch):
+    """CODEX EXEC R8 MAJOR. The superseded-key safeguard FAILED OPEN: a read
+    failure returned `None` and the caller replayed the old row as though it
+    still governed, restoring the flattering lost-correction defect the
+    safeguard exists to close. A guard that cannot establish its fact must
+    REFUSE, not wave through -- and `None` legitimately means "no rows yet", so
+    the failure needed its own signal rather than sharing that one."""
+    import sqlite3
+
+    import swing.web.routes.latches as route_mod
+
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        _attest(client, cid, "was_away", "")
+        monkeypatch.setattr(
+            route_mod, "_governing_intent_id",
+            lambda *a, **k: (_ for _ in ()).throw(
+                route_mod._GovernanceUnknownError()))
+        r = _attest(client, cid, "was_away", "")
+    assert r.status_code == 409
+    assert "could not be read" in r.text
+    assert len(_intents(cfg)) == 1, "the refusal writes NOTHING"

@@ -2347,11 +2347,58 @@ def _attributable_orders(join) -> tuple:
     return tuple(o for o in join.orders if o.order_id not in stray_ids)
 
 
+def _prompt_candidates(join) -> tuple[tuple, str]:
+    """`(candidate resting orders, ambiguity_reason)` for the presence branch.
+
+    A MISPRICED ORDER IS STILL AN OBSERVATION (Codex exec R8 MAJOR). 21-A
+    attributes an order to a latch by its FROZEN PRICES, so a real resting
+    `LIMIT 18.88` against an `18.89` mandate matches NO latch and travelled only
+    as a STRAY -- which routed the prompt down the ABSENCE branch, where no
+    `accepted_by_broker` row can be written and no `actual_limit_price` is ever
+    captured. The consequence is precise and bad: the ledger could record a
+    QUANTITY divergence (21-A does not match on quantity, so the arc's worked
+    example survives) and could NEVER record a PRICE divergence -- the one the
+    instrument most exists to catch. `limit_price_differs` was unreachable.
+
+    So a UNIQUE stray on this latch's ticker is offered as the candidate, and
+    the prompt says plainly that it matches no mandate's frozen prices. Anything
+    AMBIGUOUS -- attributable orders alongside strays, or several of either --
+    yields no candidate and a REASON, because picking one arbitrarily would put
+    an arbitrary `order_id` into an audit row.
+    """
+    attributable = _attributable_orders(join)
+    if len(attributable) == 1 and not join.unmatched_orders:
+        return attributable, ""
+    if len(attributable) > 1:
+        return (), (
+            f"{len(attributable)} resting orders are attributable to this "
+            "mandate, so no single broker order id could be recorded against "
+            "it. Resolve the duplicates at the broker.")
+    if not attributable and len(join.unmatched_orders) == 1:
+        return tuple(join.unmatched_orders), ""
+    if join.unmatched_orders:
+        return (), (
+            f"{len(attributable) + len(join.unmatched_orders)} resting BUY "
+            "orders on this ticker could be the one you logged and none is "
+            "unambiguously it, so the framework will not guess which order id "
+            "to record.")
+    return (), ""
+
+
 def _validity_prompt_for(latch, *, join, framework, place, digest,
                          snapshot_ts: str, anchor_iso: str, prior_intent_id: str,
                          is_correction: bool = False,
                          superseded_outcome: str = ""):
-    """The prompt for ONE latch, or `None`. PURE -- every input is passed in."""
+    """`(prompt, withheld_reason)`. PURE -- every input is passed in.
+
+    EVERY WITHHELD COLLECTOR CARRIES A REASON (Codex exec R8 MAJOR). Returning a
+    bare `None` made "the question was withheld" indistinguishable from "there
+    was no question", and the multiplicity note that would have explained it is
+    generated only for LIVE latches -- so a CLEARED latch with two matched stale
+    orders lost its collector in total silence. On this instrument an unexplained
+    absence reads as nothing-to-see, which is the failure mode the whole arc is
+    built against.
+    """
     from swing.latches.constants import (
         LATCH_BROKER_SNAPSHOT_KEYS,
         LATCH_VALIDITY_OUTCOMES,
@@ -2368,19 +2415,19 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
             "size %s disagrees with the join count %s",
             latch.identity.candidate_id, len(attributable),
             join.matched_order_count)
-        return None
+        return None, (
+            "the framework's two counts of the orders attributable to this "
+            "mandate disagree, so it will not choose a branch")
+    candidates, ambiguity = _prompt_candidates(join)
+    if ambiguity:
+        return None, ambiguity
     exact_matches = 0
     for o in attributable:
         delta = compute_order_delta(framework, observed_side_of(o))
         if delta.any_difference is False:
             exact_matches += 1
 
-    branch = "presence" if len(attributable) == 1 else "absence"
-    if len(attributable) > 1:
-        # With two attributable orders there is no unique `order_id`, so the
-        # one carried into `actual_broker_order_id` would be arbitrary. The
-        # fragment already renders the multiplicity note; it renders NO prompt.
-        return None
+    branch = "presence" if candidates else "absence"
     envelope = {
         "broker_snapshot_ts": snapshot_ts,
         "broker_snapshot_branch": branch,
@@ -2396,13 +2443,18 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
         # at the operator's click.
         _log.warning("latch broker-snapshot roster drift: %s vs %s",
                      sorted(envelope), sorted(LATCH_BROKER_SNAPSHOT_KEYS))
-        return None
+        return None, (
+            "the broker-snapshot envelope this answer would carry does not "
+            "match what the ledger requires, so the audit row would be "
+            "unwritable")
 
     def _opt(names):
         return tuple((n, _VALIDITY_OPTION_LABELS[n]) for n in sorted(names))
 
     if branch == "presence":
-        order = attributable[0]
+        order = candidates[0]
+        off_mandate = order.order_id in {
+            o.order_id for o in join.unmatched_orders}
         observed = observed_side_of(order)
         delta = compute_order_delta(framework, observed)
         complete = _observed_side_is_complete(observed)
@@ -2428,11 +2480,17 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
             candidate_id=latch.identity.candidate_id,
             branch=branch, headline=headline,
             divergence_note=_divergence_note(delta, framework, observed),
-            incomplete_note=(
+            incomplete_note=" ".join(x for x in (
                 "" if complete else
                 "The broker's copy of this order could not be read completely "
-                "(its type or duration is not one the framework can record), so "
-                "it cannot be logged as ACCEPTED. Answer only what you know."),
+                "(its type, duration or share count is not one the framework "
+                "can record), so it cannot be logged as ACCEPTED. Answer only "
+                "what you know.",
+                "This order matches NO mandate's frozen prices, so the "
+                "framework is offering it as the only candidate rather than "
+                "recognising it. Confirm only if it IS the order you logged."
+                if off_mandate else "",
+            ) if x),
             parent_place_intent_id=place.intent_id,
             prior_intent_id=prior_intent_id,
             options=_opt(LATCH_VALIDITY_OUTCOMES - {"accepted_by_broker"}),
@@ -2444,7 +2502,7 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
             snapshot_json=json.dumps(envelope, sort_keys=True),
             view_session_date=anchor_iso,
             is_correction=is_correction,
-            superseded_outcome=superseded_outcome)
+            superseded_outcome=superseded_outcome), ""
 
     # ABSENCE. "Filled" is deliberately NOT an option: it is not in
     # LATCH_VALIDITY_OUTCOMES, so offering it would force the handler to
@@ -2469,7 +2527,7 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
         snapshot_json=json.dumps(envelope, sort_keys=True),
         view_session_date=anchor_iso,
         is_correction=is_correction,
-        superseded_outcome=superseded_outcome)
+        superseded_outcome=superseded_outcome), ""
 
 
 def _fmt_price_or_blank(value) -> str:
@@ -2531,6 +2589,7 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
     anchor_iso = anchor.isoformat()
     out: list[LatchValidityPromptVM] = []
     degraded: list[str] = []
+    withheld_notes: list[str] = []
     for latch in latches:
         cid = latch.identity.candidate_id
         join = joins.get(cid)
@@ -2579,11 +2638,11 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
                 for i in intents):
             # Settled by the FILL rather than by an answer -- nothing to correct.
             continue
-        if (not is_correction and not _attributable_orders(join)
+        if (not is_correction and not _prompt_candidates(join)[0]
                 and place.action_session_date >= anchor_iso):
             continue
         try:
-            prompt = _validity_prompt_for(
+            prompt, withheld = _validity_prompt_for(
                 latch, join=join, framework=framework,
                 place=place, digest=digest, snapshot_ts=snapshot_ts,
                 anchor_iso=anchor_iso,
@@ -2597,15 +2656,28 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
             continue
         if prompt is not None:
             out.append(prompt)
-    note = ""
+        elif withheld:
+            # A WITHHELD COLLECTOR IS LABELLED WITH ITS REASON. Silence here
+            # reads as "there is no question about this latch", and the
+            # multiplicity note that would otherwise explain it is generated for
+            # LIVE latches only -- so a CLEARED latch with two stale matched
+            # orders lost its collector in total silence.
+            withheld_notes.append(f"{latch.identity.ticker}: {withheld}")
+    parts: list[str] = []
     if degraded:
-        note = (
+        parts.append(
             "THE VALIDITY QUESTION COULD NOT BE BUILT for "
             + ", ".join(sorted(set(degraded)))
             + ". That is NOT the same as there being no question to ask: until "
               "it renders, no execution outcome can be recorded for those "
               "latches and the agreement rate stays unmeasurable. See the log.")
-    return tuple(out), note
+    if withheld_notes:
+        parts.append(
+            "THE VALIDITY QUESTION IS WITHHELD -- "
+            + "; ".join(sorted(set(withheld_notes)))
+            + ". No execution outcome can be recorded for these until it is "
+              "resolved.")
+    return tuple(out), " ".join(parts)
 
 
 def _build_form_check_notes(

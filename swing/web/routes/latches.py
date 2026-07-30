@@ -370,6 +370,15 @@ _ANSWER_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {
 }
 
 
+class _GovernanceUnknownError(Exception):
+    """The latch's governing row could not be established.
+
+    A DISTINCT signal rather than `None`, because `None` legitimately means
+    "this latch has no rows yet" -- and collapsing the two is exactly how the
+    superseded-key safeguard failed open.
+    """
+
+
 class _IntentRejectedError(Exception):
     """A 400 carrying the offending FIELD, so a rejected submit is diagnosable
     from the response body rather than from the log."""
@@ -404,11 +413,37 @@ def _required_str(form, field: str) -> str:
     return raw.strip()
 
 
+def _parse_positive_int(field: str, text: str) -> int:
+    """The ONE guarded decimal-integer parse. Every integer field routes here.
+
+    `str.isdigit()` IS NOT A SAFE GUARD FOR `int()` (Codex exec R7 + R8 MAJOR).
+    It is TRUE for Unicode digit characters such as `²` and `١`, on which `int()`
+    RAISES; a sufficiently long ASCII digit string trips Python's own
+    integer-conversion limit and raises for the same reason. Either way a
+    reachable client-controlled payload 500s instead of being named and refused.
+
+    THE CLASS, NOT THE INSTANCE. R7 fixed this on `prior_intent_id` ALONE and R8
+    found `candidate_id`, `validated_place_intent_id` and `actual_quantity`
+    still holding it -- so the parse lives in ONE function every integer field
+    calls, and a new integer field cannot reintroduce it by being written the
+    obvious way.
+    """
+    if (not text.isascii() or not text.isdigit()
+            or len(text) > _MAX_ROW_ID_DIGITS):
+        raise _IntentRejectedError(
+            field, f"{text!r} is not a positive decimal integer")
+    try:
+        value = int(text)
+    except ValueError as exc:  # pragma: no cover -- belt behind the guard above
+        raise _IntentRejectedError(
+            field, f"{text!r} is not a decimal integer") from exc
+    if value <= 0:
+        raise _IntentRejectedError(field, f"{text!r} is not positive")
+    return value
+
+
 def _positive_int(form, field: str) -> int:
-    raw = _required_str(form, field)
-    if not raw.isdigit() or int(raw) <= 0:
-        raise _IntentRejectedError(field, f"{raw!r} is not a positive integer")
-    return int(raw)
+    return _parse_positive_int(field, _required_str(form, field))
 
 
 def _optional_price(form, field: str) -> float | None:
@@ -437,9 +472,7 @@ def _optional_qty(form, field: str) -> int | None:
     raw = form.get(field)
     if raw is None or (isinstance(raw, str) and not str(raw).strip()):
         return None
-    if not str(raw).strip().isdigit() or int(raw) <= 0:
-        raise _IntentRejectedError(field, f"{raw!r} is not a positive integer")
-    return int(raw)
+    return _parse_positive_int(field, str(raw).strip())
 
 
 def _canonical_optional_id(form, field: str) -> str:
@@ -465,17 +498,12 @@ def _canonical_optional_id(form, field: str) -> str:
     # and the conversion itself inside the guard. Same class as the
     # `[] in frozenset(...)` unhashable finding two rounds back -- never assume a
     # client-controlled string is the shape a predicate implies.
-    if (not text.isascii() or not text.isdigit()
-            or len(text) > _MAX_ROW_ID_DIGITS):
-        raise _IntentRejectedError(
-            field, f"{text!r} is not the canonical spelling of a positive "
-                   "row id")
-    try:
-        value = int(text)
-    except ValueError as exc:  # pragma: no cover -- belt behind the guard above
-        raise _IntentRejectedError(
-            field, f"{text!r} is not a decimal integer") from exc
-    if value <= 0 or str(value) != text:
+    value = _parse_positive_int(field, text)
+    if str(value) != text:
+        # CANONICAL SPELLING, on top of the parse: this field is KEY MATERIAL,
+        # so `007` and `7` would key ONE decision as TWO on an append-only
+        # ledger. A shape rejection that NAMES the field is diagnosable; a
+        # silent normalisation is a second spelling nobody knows exists.
         raise _IntentRejectedError(
             field, f"{text!r} is not the canonical spelling of a positive "
                    "row id")
@@ -761,11 +789,13 @@ def _governing_intent_id(conn, candidate_id: int) -> int | None:
         rows = [r for r in list_intents_for_latch(conn, candidate_id=candidate_id)
                 if r.intent_id is not None]
     except sqlite3.Error as exc:
-        # A read failure must not turn a REPLAY into a duplicate row, so it
-        # degrades to "cannot show that this row was superseded" and the replay
-        # proceeds -- the append-only side is unchanged either way.
+        # IT FAILS CLOSED (Codex exec R8 MAJOR). Degrading to "cannot tell" and
+        # replaying anyway restores the exact defect this safeguard exists to
+        # close: the OLD row comes back, the newer one keeps governing, and the
+        # operator's later correction is lost -- the flattering direction. A
+        # guard that cannot establish its fact must REFUSE, not wave through.
         log.warning("latch governing-intent read degraded: %s", exc)
-        return None
+        raise _GovernanceUnknownError from exc
     if not rows:
         return None
     return max(rows, key=lambda r: (r.recorded_ts, r.intent_id)).intent_id
@@ -940,7 +970,14 @@ async def latches_intent(request: Request):
         # row the first click wrote IS the current governor.
         existing = get_intent_by_key(conn, idempotency_key=key)
         if existing is not None:
-            governing = _governing_intent_id(conn, candidate_id)
+            try:
+                governing = _governing_intent_id(conn, candidate_id)
+            except _GovernanceUnknownError:
+                return _conflict(
+                    "This latch's ledger could not be read, so it cannot be "
+                    "shown that the row your form matches still governs. "
+                    "NOTHING was recorded. Reload and answer again; see the "
+                    "log.")
             if governing is not None and governing != existing.intent_id:
                 return _conflict(
                     "This form was rendered before a later decision was "

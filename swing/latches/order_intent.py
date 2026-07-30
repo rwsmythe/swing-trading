@@ -607,14 +607,38 @@ def observed_side_of(order) -> dict:
     `GOOD_TILL_CANCEL`, and comparing them raw reports a duration divergence on
     a semantically identical order.
     """
-    quantity = getattr(order, "quantity", None)
     return {
         "order_type": (getattr(order, "order_type", "") or "").upper() or None,
         "duration": canonical_duration(getattr(order, "duration", None)),
         "stop_price": getattr(order, "stop_price", None),
         "limit_price": getattr(order, "limit_price", None),
-        "quantity": None if quantity is None else int(quantity),
+        "quantity": _integral_quantity(getattr(order, "quantity", None)),
     }
+
+
+def _integral_quantity(raw) -> int | None:
+    """A broker quantity as a whole number of shares, or `None` (UNKNOWN).
+
+    `int(10.9)` TRUNCATES to 10 (Codex exec R8 MAJOR), and a framework quantity
+    of 10 would then AGREE with a 10.9-share order -- the instrument fabricating
+    an agreement out of a divergence, in the one metric it exists to compute.
+    Truncating measurement evidence is never the conservative choice.
+
+    UNKNOWN is: a non-integral quantity, a non-finite one, or an unreadable one.
+    Unknown is never agreement (the rule 21-A's `_agreement_word` enforces), so
+    `compute_order_delta` reports the quantity leg as unknown and
+    `_observed_side_is_complete` withholds the CONFIRM control -- which is the
+    honest reading of a share count the framework cannot represent.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not _math.isfinite(value) or value != int(value):
+        return None
+    return int(value)
 
 
 @_dataclass(frozen=True)

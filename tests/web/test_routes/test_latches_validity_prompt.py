@@ -776,3 +776,86 @@ def test_a_FAILED_prompt_collector_SAYS_SO_instead_of_looking_like_no_question(
     assert "latch-validity-prompt" not in html
     assert "COULD NOT BE BUILT" in html
     assert "FTRE" in html
+
+
+# ---------------------------------------------------------------------------
+# Codex exec R8
+# ---------------------------------------------------------------------------
+def test_a_MISPRICED_resting_order_reaches_the_PRESENCE_branch(
+        seeded_db, monkeypatch, clocks):
+    """CODEX EXEC R8 MAJOR, and the sharpest finding of the chain: the ledger
+    could record a QUANTITY divergence and could NEVER record a PRICE one.
+
+    21-A attributes an order to a latch by its FROZEN PRICES, so a real resting
+    `LIMIT 18.88` against an `18.89` mandate matched NO latch, travelled only as
+    a stray, and routed the prompt down the ABSENCE branch -- where no
+    `accepted_by_broker` row can be written and no `actual_limit_price` is ever
+    captured. `limit_price_differs` was therefore unreachable through the UI, in
+    the one metric this instrument most exists to compute.
+
+    A UNIQUE stray is now offered as the candidate, and the prompt SAYS it
+    matches no mandate's frozen prices rather than pretending to recognise it.
+    """
+    from swing.latches.order_intent import compute_order_delta
+
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    mispriced = _order(order_id="2002", price=18.88, quantity=9.0)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[mispriced])
+    with TestClient(app) as client:
+        place_id = _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        prompt = _prompt_html(_fragment(client, PROMPT_ANCHOR).text)
+        assert "latch-validity-presence" in prompt
+        assert "matches NO mandate" in prompt
+        assert "limit 18.88 vs 18.89" in prompt, "it NAMES the price difference"
+        confirm = _form_fields(_form_html(prompt, "latch-validity-confirm"))
+        r = client.post("/latches/intent", headers=_HX, data=confirm)
+    assert r.status_code == 200, r.text
+    row = [x for x in _rows(cfg) if x[1] == "validity"][0]
+    assert row[2] == "accepted_by_broker" and row[4] == 18.88
+    assert row[6] == place_id
+    delta = compute_order_delta(
+        {"order_type": "LIMIT", "duration": "GOOD_TILL_CANCEL",
+         "stop_price": None, "limit_price": 18.89, "quantity": 9},
+        {"order_type": "LIMIT", "duration": "GOOD_TILL_CANCEL",
+         "stop_price": None, "limit_price": row[4], "quantity": 9})
+    assert delta.limit_price_delta == -0.01 and delta.any_difference is True
+
+
+def test_AMBIGUOUS_attribution_WITHHOLDS_the_prompt_WITH_a_visible_reason(
+        seeded_db, monkeypatch, clocks):
+    """CODEX EXEC R8 MAJOR. Withholding is right -- putting an arbitrary
+    `order_id` into an audit row is not -- but a bare withholding was
+    INDISTINGUISHABLE from there being no question at all, and the multiplicity
+    note that would have explained it is generated for LIVE latches only."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[
+        _order(order_id="3001", price=18.88),
+        _order(order_id="3002", price=18.70)])
+    with TestClient(app) as client:
+        _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        html = _fragment(client, PROMPT_ANCHOR).text
+    assert "latch-validity-prompt" not in html
+    assert "THE VALIDITY QUESTION IS WITHHELD" in html
+    assert "none is unambiguously it" in html
+
+
+def test_a_FRACTIONAL_broker_quantity_is_UNKNOWN_and_never_truncated(
+        seeded_db, monkeypatch, clocks):
+    """CODEX EXEC R8 MAJOR. `int(10.9)` truncates to 10, and a framework
+    quantity of 10 would then AGREE with a 10.9-share order -- the instrument
+    fabricating an agreement out of a divergence, in the metric it exists to
+    compute. Truncating measurement evidence is never the conservative choice,
+    and unknown is never agreement, so the CONFIRM control is withheld."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[_order(quantity=10.9)])
+    with TestClient(app) as client:
+        _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        prompt = _prompt_html(_fragment(client, PROMPT_ANCHOR).text)
+    assert "latch-validity-confirm" not in prompt
+    assert "could not be read completely" in prompt
