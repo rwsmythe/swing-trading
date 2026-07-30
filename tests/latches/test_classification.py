@@ -17,6 +17,7 @@ from swing.latches.classification import (
     LatchDisposition,
     TelemetryHealth,
     actionable_view_rows,
+    assess_telemetry_health,
     awareness_view_rows,
     classify_latch,
     governing_intent,
@@ -572,3 +573,52 @@ def test_an_unknown_disposition_or_execution_outcome_is_rejected():
 def test_an_unknown_telemetry_verdict_is_rejected():
     with pytest.raises(ValueError, match="verdict must be in"):
         TelemetryHealth(verdict="fine")
+
+
+# --------------------------------------------------------------------------
+# the health WINDOW -- Codex exec R2 MAJOR 4
+# --------------------------------------------------------------------------
+def test_the_window_ENUMERATES_the_silent_sessions_not_only_the_ones_with_rows():
+    """CODEX EXEC R2 MAJOR 4. A window COLLECTED from the sessions that already
+    HAVE a view row can never contain a dark session, so `uncovered` stays at
+    zero by construction and the dark-count branch is unreachable. The window
+    must be WALKED.
+
+    The assertion is against the NYSE session walk, not against a count: the
+    sessions between the anchor and `through` are the sessions the beacon was
+    supposed to speak on, and every one of them must be offered to the check.
+    """
+    from swing.evaluation.dates import session_offset
+    from swing.latches.classification import telemetry_window_sessions
+    anchor = date(2026, 7, 29)
+    through = date(2026, 8, 12)
+    latch = _latch(anchor=anchor, last=through)
+    got = telemetry_window_sessions([latch], through)
+    expected = []
+    cursor = through
+    while cursor >= anchor:
+        expected.append(cursor)
+        cursor = session_offset(cursor, -1)
+    assert got == expected
+    assert len(got) > 2                     # not just {anchor, through}
+
+
+def test_the_enumerated_window_lets_a_MOSTLY_DARK_month_verdict_BROKEN():
+    """The consequence, and the reason MAJOR 4 was a major rather than a tidy.
+    One beacon hit proves the beacon existed ONCE; it does not make the window
+    OBSERVED. Under a collected window this same fixture verdicts `ok` and hands
+    `away_unseen` straight to the away rate -- manufacturing away-rate evidence
+    out of an instrument that was dark.
+    """
+    from swing.latches.classification import telemetry_window_sessions
+    anchor = date(2026, 7, 29)
+    through = date(2026, 8, 12)
+    latch = _latch(anchor=anchor, last=through)
+    views = [_view(anchor)]                 # exactly ONE beacon hit
+    collected = sorted({date.fromisoformat(v.view_session_date) for v in views}
+                       | {latch.anchor})
+    assert assess_telemetry_health(
+        sessions=collected, latches=[latch], views=views).verdict == "ok"
+    enumerated = telemetry_window_sessions([latch], through)
+    assert assess_telemetry_health(
+        sessions=enumerated, latches=[latch], views=views).verdict == "broken"

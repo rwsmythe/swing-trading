@@ -398,3 +398,82 @@ def test_every_new_read_degrades_and_the_panel_never_500s(
     vm = _vm(cfg)
     assert vm.available is True
     assert vm.rows
+
+
+# --- the classifier's corpus vs the card's echo ---------------------------
+def test_the_classifier_gets_the_WHOLE_covered_window_not_only_this_session(
+        seeded_db, monkeypatch):
+    """CODEX EXEC R2 MAJOR 1. `_load_views` narrows to the render session
+    because the card's telemetry label is a claim about THIS visit -- but
+    `classify_latch` reads the latch's WHOLE covered window, so handing it the
+    narrowed set silently discards a PRIOR session's actionable view. A latch he
+    demonstrably acted under would then fall out of `discipline_lapse` into
+    `away_unseen` or `never_actionable`: the instrument losing its own evidence
+    and scoring the loss against its subject.
+
+    The capture is on the ARGUMENT rather than on a resulting disposition
+    because the epoch gates the disposition ladder independently -- pinning the
+    corpus is the claim being made, and it distinguishes: under the narrowed set
+    the prior-session row is absent from what the classifier is handed.
+    """
+    from swing.data.repos.latch_view_events import record_view
+    from swing.latches.reader import build_latch_derivation
+    import swing.web.view_models.latches as vm_mod
+    cfg, _ = seeded_db
+    _seed_fire(cfg)
+    prior = "2026-07-21"      # inside the covered window, NOT the horizon
+    conn = connect(cfg.paths.db_path)
+    try:
+        derivation = build_latch_derivation(conn, cfg, now=NOW)
+        latch = derivation.latches[0]
+        assert prior != derivation.horizon_session.isoformat()
+        assert latch.anchor.isoformat() <= prior
+        with conn:
+            record_view(
+                conn, identity=latch.identity, view_session_date=prior,
+                viewed_ts=f"{prior}T09:00:00", latch_state=latch.state,
+                surface="latch_panel", actionable=1)
+    finally:
+        conn.close()
+
+    seen: dict = {}
+    real = vm_mod.classify_latch
+
+    def _capture(**kw):
+        seen[kw["latch"].identity.candidate_id] = tuple(kw["views"])
+        return real(**kw)
+
+    monkeypatch.setattr(vm_mod, "classify_latch", _capture)
+    vm = _vm(cfg)
+    assert vm.rows
+    cid = vm.rows[0].candidate_id
+    assert [r.view_session_date for r in seen[cid]] == [prior]
+
+
+def test_the_cards_own_telemetry_echo_STAYS_narrowed_to_this_session(
+        seeded_db):
+    """The other half of R2 MAJOR 1, and the reason the fix is two readers
+    rather than one widened reader: the card's label answers 'was this panel
+    opened THIS session'. Widening it would make a card claim a view it did not
+    receive today."""
+    from swing.data.repos.latch_view_events import record_view
+    from swing.latches.reader import build_latch_derivation
+    from swing.web.view_models.latches import _load_all_views, _load_views
+    cfg, _ = seeded_db
+    _seed_fire(cfg)
+    conn = connect(cfg.paths.db_path)
+    try:
+        derivation = build_latch_derivation(conn, cfg, now=NOW)
+        latch = derivation.latches[0]
+        cid = latch.identity.candidate_id
+        with conn:
+            record_view(
+                conn, identity=latch.identity, view_session_date="2026-07-21",
+                viewed_ts="2026-07-21T09:00:00", latch_state=latch.state,
+                surface="latch_panel", actionable=1)
+        echo = _load_views(conn, [latch], derivation.horizon_session)
+        whole = _load_all_views(conn, [latch])
+    finally:
+        conn.close()
+    assert echo[cid] == ()
+    assert [r.view_session_date for r in whole[cid]] == ["2026-07-21"]

@@ -343,3 +343,51 @@ def test_the_health_window_and_the_classified_corpus_are_the_SAME_latches(
         mod.assess_telemetry_health = real
         mod.classify_latch = real_classify
     assert seen["health"] == classified
+
+
+def test_the_CLI_health_window_ENUMERATES_the_silent_sessions(
+        seeded_db, monkeypatch):
+    """CODEX EXEC R2 MAJOR 4, at the CLI. The report's window was built from
+    `{view dates} | {latch anchors}` -- only sessions that ALREADY have a row --
+    so `assess_telemetry_health` could never SEE a dark session and a mostly
+    dark month with one beacon hit would verdict `ok`, letting `away_unseen`
+    into the away rate rather than withholding it.
+
+    THE CLOCK IS FROZEN TO A SATURDAY, and that is the second half of the test.
+    The walk steps with `session_offset`, which REFUSES a non-session, so a
+    window bounded by a raw `now.date()` CRASHES the command outright every
+    weekend and market holiday -- and a monthly report is exactly the thing run
+    at a weekend. Bounding by the derivation's `horizon_session` is a session by
+    construction, and it is the same bound the panel passes.
+    """
+    import swing.cli_latches as mod
+    from swing.evaluation.dates import is_trading_session
+    from swing.latches.classification import telemetry_window_sessions
+    cfg, cfg_path = seeded_db
+    _seed(cfg)
+    saturday = datetime(2026, 8, 8, 12, 0)
+    assert not is_trading_session(saturday.date())
+
+    class _Clock:
+        @staticmethod
+        def now():
+            return saturday
+
+    monkeypatch.setattr(mod, "datetime", _Clock)
+    seen = {}
+    real = mod.assess_telemetry_health
+
+    def _capture(*, sessions, latches, **kw):
+        seen["sessions"] = list(sessions)
+        seen["latches"] = list(latches)
+        return real(sessions=sessions, latches=latches, **kw)
+
+    monkeypatch.setattr(mod, "assess_telemetry_health", _capture)
+    result = _run(cfg_path)
+    assert result.exit_code == 0, result.output
+
+    sessions = seen["sessions"]
+    # A contiguous NYSE WALK, not the anchors it would collapse to pre-fix.
+    assert sessions == telemetry_window_sessions(seen["latches"], max(sessions))
+    assert len(sessions) > len({x.anchor for x in seen["latches"]})
+    assert all(is_trading_session(s) for s in sessions)

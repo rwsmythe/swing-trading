@@ -12,7 +12,7 @@ bypasses the OS encoder, so a byte test cannot see it -- the subprocess test can
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import datetime
 
 import click
 
@@ -26,6 +26,7 @@ from swing.latches.classification import (
     assess_telemetry_health,
     classify_latch,
     governing_intent,
+    telemetry_window_sessions,
 )
 from swing.latches.constants import (
     ACTIONABLE_VIEW_SURFACES,
@@ -133,9 +134,24 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
         views_by_latch[cid] = rows
         views.extend(rows)
 
-    sessions = sorted({
-        date.fromisoformat(r.view_session_date) for r in views
-    } | {latch.anchor for latch in latches})
+    # THE WINDOW MUST ENUMERATE THE SILENT SESSIONS (Codex exec R2 MAJOR 4).
+    # Building it from `{view dates} | {anchors}` supplies only sessions that
+    # ALREADY have a row, so `assess_telemetry_health` can never SEE a dark
+    # session and `uncovered` stays near zero: a mostly-dark month with one
+    # beacon hit would verdict `ok` and hand `away_unseen` straight to the away
+    # rate -- manufacturing away-rate evidence out of an instrument that was
+    # dark, which is the exact corruption the health gate exists to prevent.
+    # The full NYSE session walk is shared with the panel so the two surfaces
+    # cannot answer the same question differently.
+    #
+    # BOUNDED BY THE DERIVATION'S SESSION ANCHOR, NEVER BY `now.date()`. The
+    # walk steps with `session_offset`, which REFUSES a non-session, so a raw
+    # calendar date crashes the command outright every Saturday, Sunday and
+    # market holiday -- a monthly report is exactly the thing run at a weekend.
+    # `horizon_session` is `action_session_for_run`, so it is a session by
+    # construction, and it is the SAME bound the panel passes: the two surfaces
+    # now share the bound as well as the walk.
+    sessions = telemetry_window_sessions(latches, derivation.horizon_session)
     health = assess_telemetry_health(
         sessions=sessions, latches=latches, views=views)
 

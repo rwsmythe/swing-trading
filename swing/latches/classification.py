@@ -27,6 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+from swing.evaluation.dates import session_offset
 from swing.latches.constants import (
     _RULED_DISPOSITIONS,
     ACTIONABLE_VIEW_SURFACES,
@@ -531,6 +532,43 @@ def classify_latch(
 
 def _live_on(latch, session: date) -> bool:
     return latch.anchor <= session <= _clear_or_horizon(latch)
+
+
+def telemetry_window_sessions(latches, through: date) -> list[date]:
+    """The NYSE sessions the health check assesses -- the union of the latches'
+    live windows, bounded ABOVE by `through`.
+
+    THE SILENT SESSIONS ARE THE POINT (Codex exec R2 MAJOR 4). Building the
+    window from the sessions that already HAVE a view row supplies only sessions
+    the beacon spoke on, so `assess_telemetry_health` could never SEE a dark
+    session and `uncovered` would stay near zero: a mostly-dark month with one
+    beacon hit would verdict `ok` and hand `away_unseen` to the away rate --
+    manufacturing away-rate evidence out of an instrument that was dark. The
+    window must therefore be ENUMERATED, not collected.
+
+    Bounded BELOW by the earliest anchor rather than by the epoch: the epoch
+    exclusion belongs to `assess_telemetry_health`, which counts those sessions
+    as UNINSTRUMENTED rather than uncovered. Doing it here instead would hide
+    the uninstrumented count, and that count is the honest part of the answer.
+
+    SHARED BY THE PANEL AND THE CLI so the two surfaces cannot answer the same
+    question differently.
+    """
+    starts = [latch.anchor for latch in latches]
+    if not starts:
+        return []
+    start = min(starts)
+    if start > through:
+        return []
+    sessions: list[date] = []
+    cursor = through
+    # A hard bound so a corrupt anchor cannot walk the calendar forever.
+    for _ in range(400):
+        if cursor < start:
+            break
+        sessions.append(cursor)
+        cursor = session_offset(cursor, -1)
+    return sessions
 
 
 def assess_telemetry_health(

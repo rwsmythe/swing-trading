@@ -18,13 +18,13 @@ from swing.data.repos.latch_order_intents import list_intents_for_latch
 from swing.data.repos.risk_policy import get_active_policy
 from swing.evaluation.dates import (
     PageKind,
-    session_offset,
     sessions_behind,
     topbar_session_date,
 )
 from swing.latches.classification import (
     assess_telemetry_health,
     classify_latch,
+    telemetry_window_sessions,
 )
 from swing.latches.constants import (
     ARCHIVE_STATUS_OK,
@@ -709,32 +709,6 @@ def _nightly_shares(conn, latch: Latch) -> int | None:
     return int(row[0])
 
 
-def _telemetry_window_sessions(latches, horizon_session: date) -> list[date]:
-    """The NYSE sessions the health check assesses -- the union of the displayed
-    latches' live windows, bounded ABOVE by the render session.
-
-    Bounded BELOW by the earliest anchor rather than by the epoch: the epoch
-    exclusion belongs to `assess_telemetry_health`, which counts those sessions
-    as UNINSTRUMENTED rather than uncovered. Doing it here instead would hide the
-    uninstrumented count, and that count is the honest part of the answer.
-    """
-    starts = [latch.anchor for latch in latches]
-    if not starts:
-        return []
-    start = min(starts)
-    if start > horizon_session:
-        return []
-    sessions: list[date] = []
-    cursor = horizon_session
-    # A hard bound so a corrupt anchor cannot walk the calendar forever (A6).
-    for _ in range(400):
-        if cursor < start:
-            break
-        sessions.append(cursor)
-        cursor = session_offset(cursor, -1)
-    return sessions
-
-
 _TELEMETRY_HEALTH_LABELS = {
     "ok": "view telemetry: OK",
     "indeterminate": (
@@ -812,8 +786,13 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
         blocks = _panel_prepared_orders(
             conn, cfg, live, quotes=quotes, regime_session_iso=regime_session_iso,
             view_session_date=derivation.horizon_session.isoformat())
+        # THE CLASSIFIER TAKES THE UNFILTERED VIEW SET (Codex exec R2 MAJOR 1).
+        # `views_by_latch` is narrowed to THIS session for the card's telemetry
+        # echo; the classifier reads the latch's whole covered window, and
+        # handing it the narrowed set would discard yesterday's actionable view.
         dispositions = _panel_dispositions(
-            conn, displayed, views_by_latch=views_by_latch, health=health)
+            conn, displayed,
+            views_by_latch=_load_all_views(conn, displayed), health=health)
 
         # The SAME pure classifier the fragment uses, over the SAME archive map
         # the derivation already surfaced -- no new read, no new query, no new
@@ -921,7 +900,7 @@ def _panel_telemetry_health(conn, latches, horizon_session: date):
                 conn, candidate_id=latch.identity.candidate_id,
                 surfaces=ACTIONABLE_VIEW_SURFACES))
         return assess_telemetry_health(
-            sessions=_telemetry_window_sessions(latches, horizon_session),
+            sessions=telemetry_window_sessions(latches, horizon_session),
             latches=latches, views=views)
     except Exception as exc:  # noqa: BLE001 -- A6, and NEVER degrade to `ok`
         _log.warning("latch panel telemetry health degraded: %s", exc)
@@ -1023,11 +1002,50 @@ def _panel_dispositions(conn, latches, *, views_by_latch: dict, health) -> dict:
     return out
 
 
+def _load_all_views(
+    conn, latches, *, counted_surfaces: frozenset[str] | None = None,
+) -> dict[int, tuple]:
+    """EVERY persisted view row per latch, UNFILTERED BY SESSION. Read-only.
+
+    THIS IS THE CLASSIFIER'S INPUT AND `_load_views` IS NOT (Codex exec R2
+    MAJOR 1). `_load_views` narrows to the CURRENT session because the card's
+    telemetry ECHO is a claim about this visit -- but `classify_latch` reads the
+    latch's WHOLE covered window, so feeding it the narrowed set silently
+    discards yesterday's actionable view. A terminal latch he demonstrably acted
+    under would then fall out of `discipline_lapse` into `away_unseen` or
+    `never_actionable`: the instrument losing its own evidence and scoring the
+    loss against its subject, which is the one direction RD's rules forbid
+    absolutely.
+    """
+    from swing.latches.constants import ACTIONABLE_VIEW_SURFACES
+    if counted_surfaces is None:
+        counted_surfaces = ACTIONABLE_VIEW_SURFACES
+    out: dict[int, tuple] = {}
+    try:
+        from swing.data.repos.latch_view_events import list_views_for_latch
+    except Exception as exc:  # noqa: BLE001 -- pre-0032 DB: no telemetry, no 500
+        _log.warning("latch panel telemetry read unavailable: %s", exc)
+        return out
+    for latch in latches:
+        try:
+            out[latch.identity.candidate_id] = tuple(list_views_for_latch(
+                conn, candidate_id=latch.identity.candidate_id,
+                surfaces=counted_surfaces))
+        except Exception as exc:  # noqa: BLE001 -- A6
+            _log.warning("latch panel telemetry read degraded: %s", exc)
+    return out
+
+
 def _load_views(
     conn, latches, horizon_session: date, *,
     counted_surfaces: frozenset[str] | None = None,
 ) -> dict[int, tuple]:
     """The persisted view telemetry for THIS session, per latch. Read-only.
+
+    THE SESSION FILTER IS FOR THE ECHO, NOT FOR THE CLASSIFIER. The card's
+    telemetry label answers "was this panel opened THIS session", which is a
+    claim about this visit; `classify_latch` asks a different question over the
+    latch's WHOLE covered window and takes `_load_all_views` instead.
 
     `counted_surfaces` is EXPLICIT (21-B, plan section E.3 conjunct 2): the
     moment 21-F adds a second surface, a non-panel row must not silently satisfy
