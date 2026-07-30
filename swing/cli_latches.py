@@ -35,6 +35,7 @@ from swing.latches.classification import (
 )
 from swing.latches.constants import (
     ACTIONABLE_VIEW_SURFACES,
+    LATCH_BROKER_ORDER_ID_KINDS,
     LATCH_DISPOSITIONS,
     R_BUCKETS,
 )
@@ -142,7 +143,8 @@ def _inferred_origin(order_intent, place_intents) -> tuple[str, str]:
 
 
 def _observations(conn, cfg, *, since_ts: str, now: datetime):
-    """`(observations, health, intents_in_window, unattached, places)`.
+    """`(observations, health, intents_in_window, unattached, places,
+    superseded_cycles)`.
 
     Pure reads only.
 
@@ -242,6 +244,7 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
         health = TelemetryHealth(verdict="indeterminate")
 
     observations = []
+    superseded: list[tuple] = []
     for latch in latches:
         cid = latch.identity.candidate_id
         latch_intents = history.get(cid, [])
@@ -249,21 +252,56 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
             latch=latch, views=views_by_latch.get(cid, ()),
             intents=latch_intents, telemetry_health=health)
         place = governing_intent(latch_intents, "place")
-        validity = None
+        validity = _governing_validity_child(latch_intents, place)
+        # EARLIER PLACE/VALIDITY CYCLES ARE LABELLED, NEVER SILENTLY DISCARDED
+        # (auto-review CRITICAL 2). The resolver explicitly supports several
+        # cycles on one latch -- he places, it is rejected, he re-places -- but
+        # the observation reads the GOVERNING place intent only, so an initial
+        # REJECTION followed by an accepted retry reported validity_failed = 0
+        # and up to 100% agreement over incomplete evidence.
+        #
+        # THE FIX IS NOT A SECOND OBSERVATION. RD CARRY 1 fixes the ledger's
+        # UNIT as the LATCH (the opportunity), and a second row for one
+        # opportunity would inflate EVERY denominator -- including the away
+        # rate, the number that will justify or kill stage-3 auto-place. So the
+        # earlier cycles are REPORTED beside the numbers rather than folded into
+        # them: the reader sees the evidence the agreement rate does not
+        # contain, instead of never learning it existed.
         if place is not None:
-            children = [
-                i for i in latch_intents
-                if i.intent_kind == "validity"
-                and i.validated_place_intent_id == place.intent_id
-            ]
-            if children:
-                validity = max(
-                    children, key=lambda i: (i.recorded_ts, i.intent_id or 0))
+            for earlier in latch_intents:
+                if (earlier.intent_kind != "place"
+                        or earlier.intent_id == place.intent_id):
+                    continue
+                child = _governing_validity_child(latch_intents, earlier)
+                if child is None:
+                    continue
+                superseded.append((
+                    cid, latch.identity.ticker, earlier.intent_id,
+                    child.validity_outcome))
         observations.append(ParityObservation(
             disposition=disposition,
             framework=_framework_side(place),
             actual=_actual_side(validity)))
-    return observations, health, intents, unattached, places
+    return observations, health, intents, unattached, places, tuple(superseded)
+
+
+def _governing_validity_child(intents, place):
+    """The LATEST validity row FOR THAT PARENT, or `None`.
+
+    Per-parent and never "the latest validity row for this latch", which would
+    let a second place/validity cycle retroactively rewrite the first one's
+    reported outcome -- the same ruling `resolve_execution_outcome` carries.
+    """
+    if place is None:
+        return None
+    children = [
+        i for i in intents
+        if i.intent_kind == "validity"
+        and i.validated_place_intent_id == place.intent_id
+    ]
+    if not children:
+        return None
+    return max(children, key=lambda i: (i.recorded_ts, i.intent_id or 0))
 
 
 def _canonical_since(since: str) -> str:
@@ -315,7 +353,8 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
     since_ts = "" if since is None else f"{_canonical_since(since)}T00:00:00"
     conn = connect(cfg.paths.db_path)
     try:
-        observations, health, intents, unattached, places = _observations(
+        (observations, health, intents, unattached, places,
+         superseded) = _observations(
             conn, cfg, since_ts=since_ts, now=datetime.now())
     finally:
         conn.close()
@@ -438,6 +477,16 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
                + str(report.actual_side_unknown))
     click.echo("  validity_unknown will DOMINATE the first months: the outcome")
     click.echo("  is only ever set by the operator answering the prompt.")
+    if superseded:
+        click.echo("  EARLIER PLACE/VALIDITY CYCLES NOT IN THE NUMBERS ABOVE:")
+        for cid, ticker, place_id, outcome in superseded:
+            click.echo(f"    {ticker} (candidate {cid}) place intent "
+                       f"{place_id}: {outcome}")
+        click.echo("    The ledger's UNIT is the LATCH, so one opportunity")
+        click.echo("    contributes ONE observation and the agreement numbers")
+        click.echo("    read its GOVERNING cycle. An earlier rejection is real")
+        click.echo("    evidence that those numbers do not contain, so it is")
+        click.echo("    printed here rather than dropped.")
 
     click.echo("")
     click.echo("PER-FIELD DELTA TOTALS")
@@ -451,9 +500,19 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
 
     click.echo("")
     click.echo("OBSERVED BROKER ORDERS")
+    # EVERY KIND THE SCHEMA LETS CARRY A BROKER ORDER ID (Codex exec R5 MAJOR
+    # 5). `attest` was omitted, yet the writer and the schema both PERMIT
+    # `actual_broker_order_id` on one -- `acted_manually` is precisely the case
+    # where the operator names the order he placed by hand, which is the ONE
+    # path that exists for orders the framework did not prepare. Filtering it
+    # out dropped that order from the distinguishability query entirely, so
+    # framework-versus-operator attribution did not survive the attestation
+    # path. Derived from the ROSTER rather than re-listed, so a kind that gains
+    # the column cannot be silently omitted here.
     observed = [
         i for i in intents
-        if i.actual_broker_order_id and i.intent_kind in ("validity", "cancel")
+        if i.actual_broker_order_id
+        and i.intent_kind in LATCH_BROKER_ORDER_ID_KINDS
     ]
     if not observed:
         click.echo("  none recorded in this window.")

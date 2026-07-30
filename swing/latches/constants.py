@@ -184,6 +184,18 @@ ACTIONABLE_VIEW_SURFACES = frozenset({"latch_panel"})
 LATCH_INTENT_KINDS = frozenset({
     "place", "decline", "cancel", "attest", "validity",
 })
+# WHICH KINDS MAY CARRY AN OBSERVED BROKER ORDER ID. DERIVED BY SUBTRACTION,
+# mirroring the migration's own EXCLUSION shape verbatim
+# (`intent_kind NOT IN ('place','decline') OR actual_broker_order_id IS NULL`):
+# a broker order id is an OBSERVATION, and `place`/`decline` are DECISIONS about
+# a prepared order that have observed nothing.
+#
+# DERIVED rather than re-listed so a kind added to the enum joins this set
+# automatically. The CLI's distinguishability query reads it: the shipped query
+# hand-listed `validity` and `cancel`, which silently dropped every `attest`
+# row's broker order -- and the attestation path is the ONE path that exists for
+# orders the framework did not prepare (Codex exec R5 MAJOR 5).
+LATCH_BROKER_ORDER_ID_KINDS = LATCH_INTENT_KINDS - {"place", "decline"}
 LATCH_ATTESTED_DISPOSITIONS = frozenset({
     "acted_manually", "chose_not_to_act", "was_away",
 })

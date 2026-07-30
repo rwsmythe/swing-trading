@@ -439,7 +439,7 @@ def test_a_windowed_read_classifies_from_the_latchs_WHOLE_intent_history(
     _seed_place(cfg, cid, key="p-july", recorded_ts="2026-07-27T09:00:00")
     conn = connect(cfg.paths.db_path)
     try:
-        obs, _health, intents, _unattached, _places = _observations(
+        obs, _health, intents, _unattached, _places, _sc = _observations(
             conn, apply_overrides(cfg), since_ts="2026-08-01T00:00:00",
             now=NOW)
     finally:
@@ -529,7 +529,7 @@ def test_an_ATTRIBUTED_R_still_prints_the_number_and_its_basis(seeded_db):
     try:
         from swing.cli_latches import _observations
         from swing.config_overrides import apply_overrides
-        obs, health, _i, _u, _p = _observations(
+        obs, health, _i, _u, _p, _sc = _observations(
             conn, apply_overrides(cfg), since_ts="", now=NOW)
     finally:
         conn.close()
@@ -686,3 +686,105 @@ def test_a_BROKEN_beacon_still_says_WITHHELD_and_names_the_verdict(seeded_db):
     scored = compute_away_rate(bucket_counts={"away_r": 1, "decision_r": 1},
                                health=TelemetryHealth(verdict="ok"))
     assert scored.unmeasured_kind is None and scored.objective_rate == 0.5
+
+
+# ---------------------------------------------------------------------------
+# The remaining OPEN review findings (Codex exec R5 MAJOR 5; auto-review
+# CRITICAL 2)
+# ---------------------------------------------------------------------------
+def _intent(conn, cid, key, kind, **cols):
+    names = ", ".join(cols)
+    marks = ", ".join("?" for _ in cols)
+    conn.execute(
+        "INSERT INTO latch_order_intents (candidate_id, evaluation_run_id, "
+        "ticker, detection_date, idempotency_key, action_session_date, "
+        f"recorded_ts, surface, intent_kind{', ' + names if cols else ''}) "
+        "VALUES (?, 121, 'FTRE', '2026-07-20', ?, '2026-07-27', "
+        f"?, 'latch_panel', ?{', ' + marks if cols else ''})",
+        (cid, key, f"2026-07-27T09:00:0{key[-1]}", kind, *cols.values()))
+    return int(conn.execute(
+        "SELECT intent_id FROM latch_order_intents WHERE idempotency_key = ?",
+        (key,)).fetchone()[0])
+
+
+# The FULL framework + derivation block a `place` row structurally requires.
+# Written out here rather than trimmed to the fields under test, because the
+# migration's required-block CHECK is the point: a `place` row that could be
+# written without its derivation would be an unauditable mandate.
+_SNAPSHOT = '{"attributable_order_count": 0, "broker_snapshot_branch": "absence", "broker_snapshot_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "broker_snapshot_session": "2026-07-27", "broker_snapshot_ts": "2026-07-27T09:00:00", "exact_framework_match_count": 0, "indeterminate": false}'
+
+_PLACE_BLOCK = dict(
+    framework_order_type="LIMIT", framework_duration="GOOD_TILL_CANCEL",
+    framework_limit_price=18.89, framework_quantity=9,
+    derivation_zone_cap_pct=3.0, derivation_sizing_equity=7500.0,
+    derivation_max_risk_pct=0.005, derivation_position_pct_cap=0.15,
+    derivation_sizing_basis="limit_price", derivation_regime_close=19.20,
+    derivation_regime_close_session="2026-07-24",
+    derivation_real_equity=1234.56, derivation_equity_floor=7500.0,
+)
+
+
+def test_an_ATTEST_row_carrying_a_broker_order_id_reaches_the_origin_query(
+        seeded_db):
+    """CODEX EXEC R5 MAJOR 5. The writer and the schema both PERMIT
+    `actual_broker_order_id` on an `attest` row -- `acted_manually` is precisely
+    the case where the operator names the order he placed by hand -- but the
+    origin report filtered observed orders to `validity` and `cancel`, so that
+    broker order vanished from the distinguishability query entirely.
+
+    Framework-versus-operator attribution has to survive the ATTESTATION path,
+    which is the one path that exists for orders the framework did not prepare.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        _intent(conn, cid, "att1", "attest",
+                attested_disposition="acted_manually",
+                actual_broker_order_id="5150")
+    conn.close()
+    r = _run(cfg_path)
+    assert r.exit_code == 0, r.output
+    assert "order 5150" in r.output
+    assert "inferred_origin=" in r.output
+    # The roster is DERIVED from the enum by the same EXCLUSION the migration
+    # states, so a kind added later joins it without an edit here.
+    from swing.latches.constants import (
+        LATCH_BROKER_ORDER_ID_KINDS,
+        LATCH_INTENT_KINDS,
+    )
+    assert LATCH_BROKER_ORDER_ID_KINDS == LATCH_INTENT_KINDS - {
+        "place", "decline"}
+
+
+def test_an_EARLIER_place_validity_cycle_is_LABELLED_not_silently_discarded(
+        seeded_db):
+    """AUTO-REVIEW CRITICAL 2. The resolver explicitly supports SEVERAL
+    place/validity cycles on one latch -- he places, it is rejected, he
+    re-places -- but the report reads the GOVERNING place intent and its
+    validity child ONLY. An initial REJECTION followed by an accepted retry
+    therefore reported `validity_failed=0` and up to 100% agreement, discarding
+    the rejection: a flattering measurement over incomplete evidence.
+
+    RD CARRY 1 fixes the ledger's UNIT as the LATCH, so the fix is NOT a second
+    observation for the same opportunity -- that would inflate every denominator
+    including the away rate. It is a LABELLED REDUCTION: the earlier cycles and
+    their outcomes are printed, so the reader sees the evidence the agreement
+    numbers do not contain instead of never learning it existed.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        first = _intent(conn, cid, "plc1", "place", **_PLACE_BLOCK)
+        _intent(conn, cid, "val2", "validity",
+                validity_outcome="rejected_by_broker",
+                validated_place_intent_id=first,
+                validity_detail=_SNAPSHOT)
+        _intent(conn, cid, "plc3", "place", **_PLACE_BLOCK)
+    conn.close()
+    r = _run(cfg_path)
+    assert r.exit_code == 0, r.output
+    assert "EARLIER PLACE/VALIDITY CYCLES" in r.output
+    assert "rejected_by_broker" in r.output
+    assert f"place intent {first}" in r.output
