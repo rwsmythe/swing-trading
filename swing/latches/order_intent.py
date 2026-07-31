@@ -640,6 +640,21 @@ def _as_order_mapping(side) -> dict:
     return {f: getattr(side, f, None) for f in _ORDER_FIELDS}
 
 
+def _leg_absence_established(order_type, stop) -> bool:
+    """Is "this side has NO stop leg" a FACT, or merely a missing value?
+
+    It is a fact only when the side's own declared order type is the plain
+    `LIMIT`, which provably carries no trigger. A `STOP_LIMIT` with no stop
+    price is an order whose TRIGGER WE FAILED TO READ; an `UNKNOWN` broker
+    rendering establishes nothing at all; an unobserved framework side (type
+    `None`) likewise. Broker payloads are UNCONSTRAINED input and reach
+    `compute_order_delta` at prompt-render time, so the schema CHECKs that
+    forbid these shapes on a PERSISTED `accepted_by_broker` row do not cover
+    this vector.
+    """
+    return stop is None and order_type == MANDATE_ORDER_TYPE_PULLBACK
+
+
 def _resolve_stop_leg(fw: dict, ac: dict) -> tuple[str, float | None]:
     """`both_absent` | `compared` | `one_sided` | `unknown`; delta iff `compared`.
 
@@ -679,17 +694,26 @@ def _resolve_stop_leg(fw: dict, ac: dict) -> tuple[str, float | None]:
         # leg was expected
         return "unknown", None
     if fw_stop is None and ac_stop is None:
-        return "both_absent", None
+        # BOTH absences must be ESTABLISHED before this is a MATCH (Codex R2
+        # MINOR). A framework LIMIT against a broker STOP_LIMIT whose trigger
+        # was unreadable also lands here with two `None`s, and calling that an
+        # agreement about leg presence is a fabricated match -- the same defect
+        # as the one-sided branch below, reached by a different door.
+        if (_leg_absence_established(fw_type, fw_stop)
+                and _leg_absence_established(ac_type, ac_stop)):
+            return "both_absent", None
+        return "unknown", None
     if fw_stop is None or ac_stop is None:
         # Exactly one side carries a trigger. The OTHER side's absence is a
         # determinable fact only if its declared type is the one that PROVABLY
         # has no stop leg; anything else (a STOP_LIMIT missing its trigger, an
         # UNKNOWN broker rendering, an unobserved framework side) is a failure
         # to observe.
-        absent_type = ac_type if ac_stop is None else fw_type
-        if absent_type != MANDATE_ORDER_TYPE_PULLBACK:
-            return "unknown", None
-        return "one_sided", None
+        if _leg_absence_established(
+                ac_type if ac_stop is None else fw_type,
+                ac_stop if ac_stop is None else fw_stop):
+            return "one_sided", None
+        return "unknown", None
     return "compared", round(ac_stop - fw_stop, _PRICE_DP)
 
 

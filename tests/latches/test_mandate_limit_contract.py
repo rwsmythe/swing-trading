@@ -191,6 +191,64 @@ def test_a_PLAIN_BUY_STOP_carries_no_cap_and_does_not_cover_the_mandate():
     assert "LATCH_ARMED_NO_RESTING_ORDER" in {a.kind for a in alarms}
 
 
+def test_an_UNREAD_order_type_cannot_ASSERT_coverage():
+    """CODEX R2 MAJOR. `SchwabOrderResponse.order_type` is EXPLICITLY allowed to
+    be empty ("must be empty or in ...") and the mapper defaults a missing
+    `orderType` to `""`, so this is a reachable production payload -- not a
+    hypothetical.
+
+    Coverage is an ASSERTION OF A MATCH, and the project's asymmetry rule says
+    you may not assert a match from an unknown. With no type there is no
+    evidence the resting order is a mandate form at all, so letting it stand as
+    coverage prints an affirmative all-clear over an instrument nobody read.
+    """
+    live = _latch(9404, cap=VSTS_CAP)
+    typeless = RestingOrder(
+        order_id="7014", ticker="VSTS", instruction="BUY", quantity=40.0,
+        order_type="", limit_price=VSTS_LIMIT, stop_price=None,
+        status="WORKING", duration="GOOD_TILL_CANCEL")
+    _, alarms = join_orders_to_latches(latches=[live], orders=[typeless])
+    assert "LATCH_ARMED_NO_RESTING_ORDER" in {a.kind for a in alarms}
+
+
+def test_a_LIMIT_CARRYING_A_STOP_LEG_does_not_cover_the_mandate():
+    """CODEX R2 MAJOR -- the sharpest of this pass, because it reached an
+    AFFIRMATIVE ALL-CLEAR.
+
+    A `LIMIT` carrying a stop trigger at the frozen pivot attributes to the
+    latch ON ITS STOP LEG, so it used to be counted as coverage -- and in the
+    PULLBACK regime the fragment expects no stop leg at all, so nothing else
+    inspected it either: `mandate_shape_mismatch` sees the right type, the leg
+    check is disabled, and the panel reads clean over a malformed order.
+
+    The rule applied is the one migration 0033 ALREADY enforces on the FRAMEWORK
+    side (`framework_order_type <> 'LIMIT' OR framework_stop_price IS NULL`),
+    turned on the OBSERVED order.
+    """
+    live = _latch(9405, cap=VSTS_CAP)
+    malformed = RestingOrder(
+        order_id="7015", ticker="VSTS", instruction="BUY", quantity=40.0,
+        order_type="LIMIT", limit_price=VSTS_LIMIT, stop_price=VSTS_PIVOT,
+        status="WORKING", duration="GOOD_TILL_CANCEL")
+    joins, alarms = join_orders_to_latches(latches=[live], orders=[malformed])
+    assert "LATCH_ARMED_NO_RESTING_ORDER" in {a.kind for a in alarms}
+    assert joins[live.identity.candidate_id].orders, (
+        "the malformed order is still REPORTED against the mandate -- it is "
+        "removed from COVERAGE, not from the panel")
+
+
+def test_a_STOP_LIMIT_MISSING_its_trigger_does_not_cover_the_mandate():
+    """The mirror image: a stop-limit with no trigger cannot fire at the pivot,
+    so it does not implement the breakout mandate either."""
+    live = _latch(9406, cap=VSTS_CAP)
+    malformed = RestingOrder(
+        order_id="7016", ticker="VSTS", instruction="BUY", quantity=40.0,
+        order_type="STOP_LIMIT", limit_price=VSTS_LIMIT, stop_price=None,
+        status="WORKING", duration="GOOD_TILL_CANCEL")
+    _, alarms = join_orders_to_latches(latches=[live], orders=[malformed])
+    assert "LATCH_ARMED_NO_RESTING_ORDER" in {a.kind for a in alarms}
+
+
 def test_an_ABSENT_duration_is_NOT_asserted_against():
     """`mandate_shape_mismatch` deliberately does not assert against a payload
     that simply does not carry a duration -- unknown is not wrong -- and the

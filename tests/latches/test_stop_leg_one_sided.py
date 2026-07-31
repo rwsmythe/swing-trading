@@ -107,6 +107,24 @@ def test_an_UNOBSERVED_actual_side_is_still_UNKNOWN():
     assert delta.any_difference is None
 
 
+def test_both_absent_requires_BOTH_absences_to_be_ESTABLISHED():
+    """CODEX R2 MINOR -- the round-1 fix reached by a different door.
+
+    A framework `LIMIT` (correctly no stop leg) against a broker `STOP_LIMIT`
+    whose trigger was UNREADABLE lands here with two `None`s, and calling that
+    an AGREEMENT about leg presence is a fabricated match: the stop field would
+    be scored as an observed match and omitted from `unknown_fields`, hiding the
+    unreadable trigger entirely.
+    """
+    delta = compute_order_delta(
+        {"order_type": "LIMIT", "duration": "GOOD_TILL_CANCEL",
+         "stop_price": None, "limit_price": 18.89, "quantity": 9},
+        {"order_type": "STOP_LIMIT", "duration": "GOOD_TILL_CANCEL",
+         "stop_price": None, "limit_price": 18.89, "quantity": 9})
+    assert delta.stop_leg == "unknown"
+    assert "stop_price" in delta.unknown_fields
+
+
 def test_both_absent_is_STILL_a_MATCH():
     """The ruled tri-state semantic that must not regress: the pullback
     regime's RIGHT answer is a determinable AGREEMENT."""

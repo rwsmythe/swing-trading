@@ -432,6 +432,49 @@ def _pick_reference_order(orders: list[RestingOrder], latch: Latch) -> RestingOr
     return orders[0]
 
 
+def _implements_mandate_shape(order: RestingOrder) -> bool:
+    """Could this order be a mandate order AT ALL, ignoring price and regime?
+
+    THE REGIME-INDEPENDENT HALF ONLY. The pure join holds no last close, so it
+    cannot select between the two mandate forms; what it CAN say is that an
+    order is neither of them, or is internally incoherent.
+
+    COVERAGE IS AN ASSERTION OF A MATCH, so it needs POSITIVE evidence. An
+    ABSENT order type therefore does NOT support coverage: `order_type` is
+    explicitly allowed to be empty by `SchwabOrderResponse` and the mapper
+    defaults a missing `orderType` to `""` (Codex R2 MAJOR), and without it
+    there is no evidence the resting order is a mandate form at all -- letting
+    it stand as coverage prints an affirmative all-clear over an instrument
+    nobody read.
+
+    AN ABSENT DURATION IS TREATED DIFFERENTLY, ON PURPOSE, AND THE ASYMMETRY IS
+    STATED RATHER THAN LEFT TO BE INFERRED: the type IS the instrument, while a
+    duration is a MODIFIER on an already-identified mandate form, and 21-A
+    explicitly ruled an absent duration unknown-but-not-wrong so the panel does
+    not become permanently noisy on shapes it cannot see. `mandate_shape_
+    mismatch` carries the same posture for the same reason.
+
+    STOP-LEG COHERENCE WITH THE DECLARED TYPE (Codex R2 MAJOR): a `LIMIT`
+    carrying a stop trigger, or a `STOP_LIMIT` missing one, is not a mandate
+    order in either regime. This is the exact rule migration 0033 already
+    enforces on the FRAMEWORK side (`framework_order_type <> 'LIMIT' OR
+    framework_stop_price IS NULL`), applied to the OBSERVED order. Without it a
+    `LIMIT` carrying a stop at the frozen pivot attributes to the latch on its
+    stop leg, covers the mandate, and -- in the pullback regime, where the
+    fragment expects no stop leg at all -- reads as an affirmative all-clear.
+    """
+    order_type = (order.order_type or "").upper()
+    if order_type not in MANDATE_ORDER_TYPES:
+        return False
+    duration = (order.duration or "").upper()
+    if duration and duration not in MANDATE_ORDER_DURATIONS:
+        return False
+    # The stop leg is REQUIRED by the breakout form and FORBIDDEN by the
+    # pullback form, so coherence is exactly "carries a trigger iff STOP_LIMIT".
+    return (order.stop_price is not None) == (
+        order_type == MANDATE_ORDER_TYPE_BREAKOUT)
+
+
 def _covers_mandate(order: RestingOrder, latch: Latch, *, attributed) -> bool:
     """Is there an order IMPLEMENTING this mandate? PRESENCE + SHAPE ONLY.
 
@@ -462,27 +505,22 @@ def _covers_mandate(order: RestingOrder, latch: Latch, *, attributed) -> bool:
         does not cover the new 20.19 latch, and the naked live mandate is still
         announced.
 
-    ORDER TYPE AND DURATION ARE KEYS TOO, and they are enforced (Codex R1 MAJOR
-    on the ruling pass). They are named in the ruling, and the harm is the
-    FTRE failure mode itself: a DAY stop-limit expires tonight and leaves the
-    operator uncovered tomorrow, and a plain BUY `STOP` carries no cap at all --
-    neither implements the mandate, yet either used to SUPPRESS the critical
-    presence alarm merely by existing. Only the REGIME-INDEPENDENT half is
-    judged here (the pure join holds no price, so it cannot know which of the
-    two mandate forms applies): the type must be one of the two forms, and the
-    duration must be GTC. An ABSENT duration is not asserted against, exactly as
-    `mandate_shape_mismatch` documents -- unknown is not wrong.
+    ORDER TYPE, DURATION AND STOP-LEG COHERENCE ARE KEYS TOO, and they are
+    enforced (Codex R1 + R2 MAJORs on the ruling pass). They are named in the
+    ruling, and the harm is the FTRE failure mode itself: a DAY stop-limit
+    expires tonight and leaves the operator uncovered tomorrow, and a plain BUY
+    `STOP` carries no cap at all -- neither implements the mandate, yet either
+    used to SUPPRESS the critical presence alarm merely by existing. Only the
+    REGIME-INDEPENDENT half is judged here, because the pure join holds no price
+    and so cannot know which of the two mandate forms applies; see
+    `_implements_mandate_shape`.
 
     THE ALARM'S DETAIL IS WRITTEN BY THE CALLER FROM `covering` VS THE ORDER
     COUNT, so it never claims "NO resting BUY order" about a ticker that has
     one. An alarm that fires on a true condition with a false explanation is
     the same defect this ruling exists to remove.
     """
-    order_type = (order.order_type or "").upper()
-    if order_type and order_type not in MANDATE_ORDER_TYPES:
-        return False
-    duration = (order.duration or "").upper()
-    if duration and duration not in MANDATE_ORDER_DURATIONS:
+    if not _implements_mandate_shape(order):
         return False
     if attributed is latch or attributed is None:
         return True
