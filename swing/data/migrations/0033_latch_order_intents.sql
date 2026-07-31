@@ -426,6 +426,26 @@ CREATE TABLE latch_order_intents (
            AND length(trim(decline_reason)) > 0)),
     CHECK (intent_kind =  'decline' OR decline_reason IS NULL),
     CHECK (intent_kind =  'attest'  OR attested_disposition IS NULL),
+    -- ONLY AN `acted_manually` ATTESTATION MAY NAME A BROKER ORDER
+    -- (codex-auto-review MAJOR; ruled into the SCHEMA by CHARC + RD
+    -- 2026-07-30). An outcome and its evidence must not be able to disagree: a
+    -- `was_away` or `chose_not_to_act` row carrying actual_broker_order_id
+    -- asserts two incompatible things at once -- the classifier scores the
+    -- EXCULPATORY attestation, which keeps the fire out of the discipline
+    -- signal, while the report's origin query simultaneously names the order he
+    -- says he did not place. It is the same rule the validity row's observed
+    -- side already obeys one CHECK below.
+    --
+    -- THE ROUTE AND THE DATACLASS ALREADY CARRY IT; THIS IS THE THIRD MIRROR
+    -- AND THE AUTHORITATIVE ONE. `record_intent` -- and a bare `conn.execute`
+    -- -- are reachable from anywhere, and the project's adjudication rule (a
+    -- finding premised on a schema-prevented value is out of scope, CITE the
+    -- constraint) is only sound when the cited constraint actually exists.
+    -- `acted_manually` is deliberately ADMITTED: it is the one path by which an
+    -- order the framework did not prepare reaches the distinguishability query.
+    CHECK (intent_kind <> 'attest'
+           OR attested_disposition = 'acted_manually'
+           OR actual_broker_order_id IS NULL),
     -- THE STOP LEG IS CONDITIONED ON THE ORDER TYPE. A STOP_LIMIT without its
     -- stop trigger is not the mandate; a LIMIT carrying one is the rejected
     -- FTRE shape. Neither should be storable.
