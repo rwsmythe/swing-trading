@@ -83,6 +83,44 @@ def test_the_emitter_and_the_comparator_call_THE_SAME_function():
         "name the next reader can re-implement behind")
 
 
+def test_BOTH_call_sites_actually_INVOKE_the_shared_function(monkeypatch):
+    """CODEX-AUTO-REVIEW MINOR. A binding is not a call.
+
+    The identity assertions above prove only that both modules still IMPORT a
+    name; either call site could reintroduce a local calculation and leave the
+    now-unused import in place, and the test would keep passing -- as would any
+    behavioural geometry, for as long as the two calculations happen to agree.
+    That is EXACTLY the drift this ruling exists to make impossible, so the
+    single-source property is pinned by SUBSTITUTION: a sentinel replaces the
+    shared function in each module and the observable output must move with it.
+    """
+    # ABOVE the latched stop so sizing stays FEASIBLE (a degenerate sentinel
+    # would withhold the order and prove nothing), and distinct from BOTH the
+    # floored mandate limit (17.40) and the old round-based one (17.41).
+    sentinel = 17.33
+
+    monkeypatch.setattr(
+        _orders, "mandate_limit_price", lambda cap: sentinel)
+    latch = _latch(9501, cap=VSTS_CAP)
+    joins, _ = join_orders_to_latches(
+        latches=[latch], orders=[_limit_order(sentinel)])
+    assert joins[latch.identity.candidate_id].order_limit_agrees is True, (
+        "the COMPARATOR must obtain the mandate limit from the shared function "
+        "-- an order at the sentinel price agrees only if it actually called it")
+    monkeypatch.undo()
+
+    monkeypatch.setattr(
+        _order_intent, "mandate_limit_price", lambda cap: sentinel)
+    prepared = _order_intent.compute_prepared_order(
+        latch=latch, regime_order_type="LIMIT", regime_close=17.20,
+        regime_close_session="2026-07-29",
+        sizing_inputs=_order_intent.SizingInputs(
+            real_equity=1234.56, equity_floor=7500.0, sizing_equity=7500.0,
+            max_risk_pct=0.005, position_pct_cap=0.15)).order
+    assert prepared.limit_price == sentinel, (
+        "the EMITTER must obtain it from the same shared function")
+
+
 def test_the_comparator_agrees_with_the_price_the_framework_ACTUALLY_EMITTED():
     """THE MERGE-BLOCKING DISCRIMINATOR, on the live VSTS geometry.
 
@@ -205,6 +243,37 @@ def test_a_PLAIN_BUY_STOP_carries_no_cap_and_does_not_cover_the_mandate():
         status="WORKING", duration="GOOD_TILL_CANCEL")
     _, alarms = join_orders_to_latches(latches=[live], orders=[stop_only])
     assert "LATCH_ARMED_NO_RESTING_ORDER" in {a.kind for a in alarms}
+
+
+def test_an_order_with_NO_LIMIT_LEG_does_not_cover_the_mandate():
+    """CODEX-AUTO-REVIEW MAJOR, and it is the same class as the stop-only order
+    the R7 CRITICAL named -- on the other leg.
+
+    The CAP is what stops the operator chasing; it is the whole reason the
+    breakout mandate is a `STOP_LIMIT` rather than a plain `STOP`.
+    `SchwabOrderResponse` permits `price=None` and `to_resting_orders`
+    propagates it as `limit_price=None`, so a WORKING GTC `LIMIT` with no limit
+    at all -- or a `STOP_LIMIT` with a trigger and no cap -- used to COVER the
+    mandate and suppress the critical alarm. An order incapable of enforcing the
+    zone read as implementing it.
+    """
+    from swing.latches.orders import mandate_shape_mismatch
+
+    live = _latch(9407, cap=VSTS_CAP)
+    for order_type, stop, close in (
+            ("LIMIT", None, VSTS_PIVOT + 1.0),        # pullback regime
+            ("STOP_LIMIT", VSTS_PIVOT, VSTS_PIVOT - 1.0)):  # breakout regime
+        capless = RestingOrder(
+            order_id=f"702-{order_type}", ticker="VSTS", instruction="BUY",
+            quantity=40.0, order_type=order_type, limit_price=None,
+            stop_price=stop, status="WORKING", duration="GOOD_TILL_CANCEL")
+        _, alarms = join_orders_to_latches(latches=[live], orders=[capless])
+        assert "LATCH_ARMED_NO_RESTING_ORDER" in {a.kind for a in alarms}, (
+            f"a {order_type} with no cap does not implement the mandate")
+        # ...and the explanation agrees with the alarm, per the R3 MINOR.
+        reason = mandate_shape_mismatch(
+            capless, latched_pivot=VSTS_PIVOT, last_close=close)
+        assert reason is not None and "NO limit price" in reason
 
 
 def test_an_UNREAD_order_type_cannot_ASSERT_coverage():

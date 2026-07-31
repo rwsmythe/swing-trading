@@ -367,6 +367,9 @@ def mandate_shape_mismatch(
     duration = (order.duration or "").upper()
     if duration and duration not in MANDATE_ORDER_DURATIONS:
         return f"duration is {duration}, not GOOD_TILL_CANCEL"
+    if order_type in MANDATE_ORDER_TYPES and order.limit_price is None:
+        return ("it carries NO limit price, so nothing caps the fill at the "
+                "zone; the cap is what stops the operator chasing")
     if order_type == MANDATE_ORDER_TYPE_BREAKOUT and order.stop_price is None:
         return (f"order type is {MANDATE_ORDER_TYPE_BREAKOUT} but it carries NO "
                 "stop trigger, so it cannot fire at the latched pivot")
@@ -484,6 +487,17 @@ def _implements_mandate_shape(order: RestingOrder) -> bool:
         return False
     duration = (order.duration or "").upper()
     if duration and duration not in MANDATE_ORDER_DURATIONS:
+        return False
+    # THE LIMIT LEG IS REQUIRED BY *BOTH* FORMS (codex-auto-review MAJOR). The
+    # cap is what stops the operator chasing -- it is the whole reason the
+    # breakout mandate is a STOP_LIMIT rather than a plain STOP -- and
+    # `SchwabOrderResponse` permits `price=None`, which `to_resting_orders`
+    # propagates as `limit_price=None`. Without this, a WORKING GTC `LIMIT` with
+    # no limit at all, or a `STOP_LIMIT` with a trigger and no cap, covered the
+    # mandate and suppressed the critical alarm: an order incapable of enforcing
+    # the zone would have read as implementing it. Same class as the stop-only
+    # order the R7 CRITICAL named, on the other leg.
+    if order.limit_price is None:
         return False
     # The stop leg is REQUIRED by the breakout form and FORBIDDEN by the
     # pullback form, so coherence is exactly "carries a trigger iff STOP_LIMIT".

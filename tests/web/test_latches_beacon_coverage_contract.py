@@ -116,6 +116,34 @@ def test_the_emitter_builds_its_payload_THROUGH_the_named_contract(
     assert reported == {cid}
 
 
+def test_the_emitter_actually_INVOKES_the_contract_helper(
+        seeded_db, frozen_clocks, monkeypatch):
+    """CODEX-AUTO-REVIEW MINOR. Inspecting the RESULT does not establish that
+    the emitter went THROUGH the contract.
+
+    Replacing the helper call with a hand-built dict using the same current
+    strings keeps every key/value assertion green -- and the round-trip test too
+    -- so the exact duplicated-contract implementation CHARC's ruling forbids
+    could be reintroduced without any test failing. Pinned by SUBSTITUTION: a
+    sentinel replaces the helper in the view model's namespace and the emitted
+    payload must move with it.
+    """
+    import swing.web.view_models.latches as vm_mod
+
+    cfg, cfg_path = seeded_db
+    _seed(cfg, "FTRE", 18.34, 14.88)
+    monkeypatch.setattr(
+        vm_mod, "build_beacon_payload",
+        lambda **kw: {"sentinel": "the emitter called the contract"})
+    conn = connect(cfg.paths.db_path)
+    try:
+        vm = vm_mod.build_latch_panel_vm(conn, cfg)
+    finally:
+        conn.close()
+    assert json.loads(vm.beacon_payload_json) == {
+        "sentinel": "the emitter called the contract"}
+
+
 def test_the_contract_helper_is_the_ONE_place_the_field_names_are_spelled():
     built = build_beacon_payload(
         view_session_date=ANCHOR, actionable_ids=[3, 1], withheld_ids=[2])
