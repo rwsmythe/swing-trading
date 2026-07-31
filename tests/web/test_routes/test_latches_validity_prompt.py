@@ -41,6 +41,26 @@ DERIVATION_SESSION = "2026-07-24"
 _HX = {"HX-Request": "true"}
 
 
+def _write_archive_bars(cfg, rows, ticker="FTRE"):
+    """Shape-A OHLCV archive bars for `ticker`, as `(iso_session, close)`.
+
+    THE ARCHIVE IS THE ONLY READ-SIDE SOURCE THAT DATES A CLOSE PER ROW, and
+    only a close it dates to the derivation session may pick the mandate form --
+    a run stamp is an upper bound, not a proof (#30). Without the bar the form
+    is correctly WITHHELD and there is no prepared order to validate.
+    """
+    from pathlib import Path
+
+    import pandas as pd
+    cache = Path(cfg.paths.prices_cache_dir)
+    cache.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([
+        {"asof_date": session, "open": close, "high": close, "low": close,
+         "close": close, "volume": 100.0}
+        for session, close in rows
+    ]).to_parquet(cache / f"{ticker.upper()}.yfinance.parquet")
+
+
 def _seed(cfg):
     """FTRE's real geometry: pivot 18.34, stop 14.88, cap 18.8902 -> limit 18.89
     with a pullback-regime close, which is the 9-share prepared order."""
@@ -68,6 +88,7 @@ def _seed(cfg):
             "pivot, initial_stop, rs_method) VALUES "
             "(900, 'FTRE', 'watch', 19.20, 18.34, 14.88, 'universe')")
     conn.close()
+    _write_archive_bars(cfg, [(DERIVATION_SESSION, 19.20)])
     return cid
 
 

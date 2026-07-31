@@ -182,6 +182,15 @@ def _seed(cfg):
             "pivot, initial_stop, rs_method) VALUES "
             "(900, 'FTRE', 'watch', 19.20, 18.34, 14.88, 'universe')")
     conn.close()
+    # A run stamp is an UPPER BOUND on a close's date, not a proof of it (#30),
+    # so the derivation-session bar is what lets the panel offer the form at all.
+    import pandas as pd
+    cache = pathlib.Path(cfg.paths.prices_cache_dir)
+    cache.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{
+        "asof_date": DERIVATION_SESSION, "open": 19.20, "high": 19.20,
+        "low": 19.20, "close": 19.20, "volume": 100.0,
+    }]).to_parquet(cache / "FTRE.yfinance.parquet")
     return cid
 
 

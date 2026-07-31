@@ -855,16 +855,16 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
         views_by_latch = _load_views(conn, displayed, derivation.horizon_session)
 
         # ===== Arc 21-B: the prepared order, the disposition and the prompt ==
-        # The REGIME PRICE is session-gated exactly as the order fragment gates
-        # it: only a close DATED the derivation session may pick the mandate
-        # form. Anything older leaves the regime undeterminable and the form
-        # WITHHELD -- from a stale close you may raise a mismatch alarm, but you
-        # may not assert a match, and a prepared order IS an assertion (#30).
-        regime_session_iso = derivation.derivation_session.isoformat()
+        # The REGIME PRICE is PROVENANCE-gated, exactly as the order fragment
+        # gates its all-clear: only a close the archive dates to the derivation
+        # session may pick the mandate form. On any other rung the regime is
+        # undeterminable and the form is WITHHELD -- from an undated close you
+        # may raise a mismatch alarm, but you may not assert a match, and a
+        # prepared order IS an assertion (#30).
         health = _panel_telemetry_health(
             conn, displayed, derivation.horizon_session)
         blocks = _panel_prepared_orders(
-            conn, cfg, live, quotes=quotes, regime_session_iso=regime_session_iso,
+            conn, cfg, live, quotes=quotes, derivation=derivation,
             view_session_date=derivation.horizon_session.isoformat())
         # THE CLASSIFIER TAKES THE UNFILTERED VIEW SET (Codex exec R2 MAJOR 1).
         # `views_by_latch` is narrowed to THIS session for the card's telemetry
@@ -874,28 +874,14 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
             conn, displayed,
             views_by_latch=_load_all_views(conn, displayed), health=health)
 
-        # The SAME pure classifier the fragment uses, over the SAME archive map
-        # the derivation already surfaced -- no new read, no new query, no new
-        # DB field, so the panel GET stays a pure reader (A4).
-        from swing.latches.orders import classify_close_provenance
-
-        def _prov(latch: Latch, quote):
-            return classify_close_provenance(
-                quote=quote,
-                derivation_session=derivation.derivation_session,
-                bars_through=latch.bars_through,
-                archive_closes=derivation.archive_closes.get(
-                    latch.identity.ticker, {}),
-                archive_status=derivation.archive_status.get(
-                    latch.identity.ticker, ARCHIVE_STATUS_OK),
-            )
-
         def _row(latch: Latch) -> LatchRowVM:
             quote = quotes.get(latch.identity.ticker) if latch.is_live else None
             return _build_row(
                 latch, quote=quote,
                 views=views_by_latch.get(latch.identity.candidate_id, ()),
-                provenance=None if quote is None else _prov(latch, quote),
+                provenance=(
+                    None if quote is None
+                    else _close_provenance_for(derivation, latch, quote)),
                 prepared_order=blocks.get(latch.identity.candidate_id),
                 disposition=dispositions.get(latch.identity.candidate_id),
                 prior_intent_id=priors.get(latch.identity.candidate_id, ""),
@@ -964,6 +950,30 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
             banner, reason="latch derivation unavailable", session_date=session_date)
 
 
+def _close_provenance_for(derivation, latch: Latch, quote):
+    """This latch's `CloseProvenance` for `quote`. ONE quantity, ONE rule.
+
+    Every panel-side consumer of "what may this card claim about its close"
+    comes through here: the card's as-of date AND the prepared order. They read
+    the same classifier over the same archive map the derivation already
+    surfaced, so no new read, no new query and no new DB field -- the panel GET
+    stays a pure reader (A4).
+
+    THE SHARING IS THE POINT, not a tidy-up. While the prepared order kept its
+    own stamp-equality gate, one card could render `close dated on or before X`
+    on its price line and assert `dated X` two lines below it, in one render.
+    """
+    from swing.latches.orders import classify_close_provenance
+    return classify_close_provenance(
+        quote=quote,
+        derivation_session=derivation.derivation_session,
+        bars_through=latch.bars_through,
+        archive_closes=derivation.archive_closes.get(latch.identity.ticker, {}),
+        archive_status=derivation.archive_status.get(
+            latch.identity.ticker, ARCHIVE_STATUS_OK),
+    )
+
+
 def _panel_telemetry_health(conn, latches, horizon_session: date):
     """The beacon's reliability over the displayed window. A6 at every seam.
 
@@ -990,27 +1000,39 @@ def _panel_telemetry_health(conn, latches, horizon_session: date):
 
 
 def _panel_prepared_orders(
-    conn, cfg, live, *, quotes: dict, regime_session_iso: str,
-    view_session_date: str,
+    conn, cfg, live, *, quotes: dict, derivation, view_session_date: str,
 ) -> dict[int, PreparedOrderVM]:
     """The prepared-order block per LIVE latch. A6: any failure WITHHELDS."""
     out: dict[int, PreparedOrderVM] = {}
     if not live:
         return out
-    # THE 21-A SEAM, NEVER RE-IMPLEMENTED. Whatever 21-G does to make the close
-    # sound flows through automatically, and a test pins that
-    # `swing/latches/order_intent.py` contains no independent pivot-vs-close
-    # comparison.
+    # TWO DECISIONS, AND ONLY ONE OF THEM IS A SEAM.
+    #
+    # `expected_mandate_order_type` owns the pivot-vs-close COMPARISON and is
+    # never re-implemented here (a test pins that `swing/latches/order_intent.py`
+    # carries no independent comparison of its own). It does NOT own the
+    # question of whether a price may be handed to it at all -- that is the
+    # CALLER's decision, it is made right here, and it is made on the 21-G
+    # provenance ladder rather than on a run stamp.
+    #
+    # A run stamp is only an UPPER BOUND on a close's date (#30), so stamp
+    # equality proved nothing and offered a placeable order asserting a date the
+    # panel could not stand behind. `may_assert` is rung A: the archive holds a
+    # bar dated EXACTLY this session whose close IS the recorded close. Off that
+    # rung the price is withheld from the seam, the seam returns no regime, and
+    # `compute_prepared_order` withholds the form with its labelled reason --
+    # so nothing unproven reaches the operator OR the parity ledger.
     from swing.latches.orders import expected_mandate_order_type
+    regime_session_iso = derivation.derivation_session.isoformat()
     for latch in live:
         cid = latch.identity.candidate_id
         try:
             quote = quotes.get(latch.identity.ticker)
-            # SESSION-GATED. A close from any other session is not evidence
-            # about this moment, so it does not get to pick the mandate form.
+            prov = (
+                None if quote is None
+                else _close_provenance_for(derivation, latch, quote))
             regime_close = (
-                quote[0] if quote is not None and quote[1] == regime_session_iso
-                else None)
+                prov.price if prov is not None and prov.may_assert else None)
             regime_type = expected_mandate_order_type(
                 latched_pivot=latch.latched_pivot, last_close=regime_close)
             sizing = _sizing_inputs(
@@ -1018,6 +1040,11 @@ def _panel_prepared_orders(
             result = compute_prepared_order(
                 latch=latch, regime_order_type=regime_type,
                 regime_close=regime_close,
+                # THE COLUMN THAT MADE THIS MERGE-BLOCKING. It is written as
+                # FACT into an append-only ledger, and it is now only ever
+                # written from a rung-A close -- one the archive dates to
+                # EXACTLY this session. A display defect is recoverable; a
+                # ledger write is not.
                 regime_close_session=(
                     regime_session_iso if regime_close is not None else None),
                 sizing_inputs=sizing)
@@ -1058,8 +1085,7 @@ def rederive_prepared_order(conn, cfg, *, candidate_id: int, anchor: date):
         _log.warning("intent re-derivation last-close read degraded: %s", exc)
         quotes = {}
     blocks = _panel_prepared_orders(
-        conn, cfg, [latch], quotes=quotes,
-        regime_session_iso=derivation.derivation_session.isoformat(),
+        conn, cfg, [latch], quotes=quotes, derivation=derivation,
         view_session_date=derivation.horizon_session.isoformat())
     return latch, blocks.get(candidate_id)
 

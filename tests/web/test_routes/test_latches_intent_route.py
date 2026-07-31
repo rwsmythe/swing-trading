@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,14 +23,45 @@ DERIVATION_SESSION = "2026-07-24"
 _HX = {"HX-Request": "true"}
 
 
+def _write_archive_bars(cfg, rows, ticker="FTRE"):
+    """Shape-A OHLCV archive bars for `ticker`, as `(iso_session, close)`.
+
+    THE ARCHIVE IS THE ONLY READ-SIDE SOURCE THAT DATES A CLOSE PER ROW. Shape A
+    (`{T}.yfinance.parquet`) is deliberate: the panel reads with `migrate=False`
+    (the A4 no-write property), so a legacy `{T}.parquet` is invisible here
+    exactly as it is in production.
+    """
+    import pandas as pd
+    cache = Path(cfg.paths.prices_cache_dir)
+    cache.mkdir(parents=True, exist_ok=True)
+    path = cache / f"{ticker.upper()}.yfinance.parquet"
+    frame = pd.DataFrame([
+        {"asof_date": session, "open": close, "high": close, "low": close,
+         "close": close, "volume": 100.0}
+        for session, close in rows
+    ])
+    # MERGES rather than clobbers, exactly as `write_window` does. A helper that
+    # replaced the file would silently un-date bars an earlier seed proved.
+    if path.exists():
+        frame = pd.concat([pd.read_parquet(path), frame], ignore_index=True)
+        frame = frame.drop_duplicates(subset="asof_date", keep="last")
+    frame.to_parquet(path)
+
+
 def _seed(cfg, *, regime_close=19.20):
-    """FTRE's real geometry PLUS a close DATED the derivation session.
+    """FTRE's real geometry PLUS a close the archive DATES to the derivation
+    session.
 
     THE CLOSE DATE IS STATED AND IT IS NOT THE DERIVATION SESSION BY ACCIDENT:
-    only a close stamped on the derivation session may pick the mandate form, so
-    without this row the form is WITHHELD and there is nothing to accept. A
+    only a close PROVEN to be the derivation session's may pick the mandate
+    form, so without this the form is WITHHELD and there is nothing to accept. A
     fixture that quietly used the derivation session as the close date would be
     the run-level-stamp error (#30) planted in a test.
+
+    The run stamp alone is NOT that proof -- it is an upper bound -- so the
+    matching archive bar is seeded with it. That is the seed the pre-fix code
+    did not need, and its absence is why no test covered a stamp the archive
+    contradicts.
     """
     conn = connect(cfg.paths.db_path)
     with conn:
@@ -57,6 +89,8 @@ def _seed(cfg, *, regime_close=19.20):
                 "(900, 'FTRE', 'watch', ?, 18.34, 14.88, 'universe')",
                 (regime_close,))
     conn.close()
+    if regime_close is not None:
+        _write_archive_bars(cfg, [(DERIVATION_SESSION, regime_close)])
     return cid
 
 
@@ -85,6 +119,9 @@ def _seed_extra_close(cfg, session, price, *, run_id):
             "(?, 'FTRE', 'watch', ?, 18.34, 14.88, 'universe')",
             (run_id, price))
     conn.close()
+    # ...and the archive bar that PROVES that date. The stamp alone is an upper
+    # bound (#30); without the bar the later render withholds its form.
+    _write_archive_bars(cfg, [(session, price)])
 
 
 def _anchor_form(cfg, cid, *, now=NOW):
@@ -145,6 +182,33 @@ def test_a_place_intent_records_the_framework_order_verbatim(
     assert row[2] == ANCHOR
     assert row[3].startswith("2026-07-25")      # SERVER-stamped, not from form
     assert (row[4], row[5], row[6]) == ("LIMIT", 18.89, 9)
+
+
+def test_a_close_the_archive_CONTRADICTS_writes_NOTHING_to_the_ledger(
+        seeded_db, frozen_clocks):
+    """`derivation_regime_close_session` is written as FACT into an APPEND-ONLY
+    ledger, so an unproven date recorded there is not recoverable by fixing a
+    render. This is the ledger half of the provenance gate.
+
+    The form is captured against a CORROBORATED render and the true archive bar
+    then lands -- the realistic GET->POST window. The POST re-derives through
+    the SAME path the GET rendered through, finds the form now WITHHELD, and
+    writes nothing at all.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)                        # rung A: 19.20, corroborated at S
+    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    assert form["derivation_regime_close_session"] == DERIVATION_SESSION
+    # The archive lands FTRE's true 2026-07-24 bar: 17.76, BELOW the pivot, so
+    # the recorded 19.20 is not merely undated -- it is contradicted, and it
+    # picked the wrong instrument.
+    _write_archive_bars(cfg, [(DERIVATION_SESSION, 17.76)])
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 409
+    assert "WITHHELD" in r.text
+    assert _intents(cfg) == []
 
 
 def test_the_response_fragment_root_is_not_a_table_row(seeded_db, frozen_clocks):

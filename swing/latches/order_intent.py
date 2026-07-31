@@ -330,12 +330,17 @@ def compute_prepared_order(
     """The framework's computed entry order for `latch`, or a WITHHELD result.
 
     The regime is consumed through the EXISTING 21-A seam
-    (`expected_mandate_order_type`) and NEVER re-implemented here, so whatever
-    21-G does to make the close sound flows through automatically. When the
-    regime is UNDETERMINABLE the form is WITHHELD: a form that guessed the type
-    would write the WRONG TYPE into the parity ledger. That is the asymmetry rule
-    again -- from a stale close you may raise a mismatch alarm, but you may not
-    assert a match, and a prepared order IS an assertion.
+    (`expected_mandate_order_type`) and the pivot-vs-close COMPARISON is never
+    re-implemented here. That seam does NOT decide whether the close is SOUND --
+    a run stamp is only an upper bound on a close's date (#30), so whether a
+    price may be handed in at all is the CALLER's decision, made against the
+    21-G provenance ladder in `swing/web/view_models/latches.py`. This function
+    is downstream of that decision, not a substitute for it.
+
+    When the regime is UNDETERMINABLE the form is WITHHELD: a form that guessed
+    the type would write the WRONG TYPE into the parity ledger. That is the
+    asymmetry rule again -- from an undated close you may raise a mismatch
+    alarm, but you may not assert a match, and a prepared order IS an assertion.
     """
     if regime_order_type is None:
         return PreparedOrderResult(

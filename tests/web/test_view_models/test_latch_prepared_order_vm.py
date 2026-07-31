@@ -9,7 +9,8 @@ by seeding a derivation-session close.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +28,7 @@ from swing.web.view_models.latches import (
     PANEL_SPECIFIC_FIELDS,
     build_latch_panel_vm,
     declared_banner_fields,
+    rederive_prepared_order,
 )
 
 NOW = datetime(2026, 7, 25, 12, 0)      # Saturday -> action session 2026-07-27
@@ -52,24 +54,60 @@ def _seed_fire(cfg, *, close=17.76):
     conn.close()
 
 
-def _seed_derivation_session_close(cfg, price):
-    """A close DATED the derivation session -- the only close allowed to pick
-    the regime. The sample card in the plan is stamped this way for exactly this
-    reason: writing the derivation-session date onto a close that does not carry
-    it is the run-level-stamp error (#30)."""
+def _seed_close(cfg, price, *, session=DERIVATION_SESSION, run_id=900):
+    """A recorded close carrying `session` as its RUN STAMP.
+
+    The stamp is an UPPER BOUND on the close's own date, never a proof of it
+    (#30), so this helper only plants the recorded number -- what the panel is
+    allowed to CLAIM about it is decided by the archive bars seeded alongside.
+    """
     conn = connect(cfg.paths.db_path)
     with conn:
         conn.execute(
             "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
             "action_session_date, tickers_evaluated, aplus_count, watch_count, "
             "skip_count, excluded_count, error_count) VALUES "
-            "(900, ?, ?, '2026-07-27', 1, 0, 1, 0, 0, 0)",
-            (f"{DERIVATION_SESSION}T17:30:05", DERIVATION_SESSION))
+            "(?, ?, ?, '2026-07-27', 1, 0, 1, 0, 0, 0)",
+            (run_id, f"{session}T17:30:05", session))
         conn.execute(
             "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
             "pivot, initial_stop, rs_method) VALUES "
-            "(900, 'FTRE', 'watch', ?, 18.34, 14.88, 'universe')", (price,))
+            "(?, 'FTRE', 'watch', ?, 18.34, 14.88, 'universe')",
+            (run_id, price))
     conn.close()
+
+
+def _write_archive_bars(cfg, rows, ticker="FTRE"):
+    """Shape-A OHLCV archive bars for `ticker`, as `(iso_session, close)`.
+
+    THE ARCHIVE IS THE ONLY READ-SIDE SOURCE THAT DATES A CLOSE PER ROW. Shape A
+    (`{T}.yfinance.parquet`) is deliberate: the panel reads with `migrate=False`
+    (the A4 no-write property), so a legacy `{T}.parquet` is invisible here
+    exactly as it is in production. (Mirrors the order-fragment test helper.)
+    """
+    import pandas as pd
+    cache = Path(cfg.paths.prices_cache_dir)
+    cache.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([
+        {"asof_date": session, "open": close, "high": close, "low": close,
+         "close": close, "volume": 100.0}
+        for session, close in rows
+    ]).to_parquet(cache / f"{ticker.upper()}.yfinance.parquet")
+
+
+def _seed_derivation_session_close(cfg, price):
+    """A close the archive PROVES is the derivation session's -- rung A, the
+    only rung a prepared order may be asserted from.
+
+    THE ARCHIVE BAR IS NOT DECORATION. A run stamp is only an upper bound on a
+    close's date (#30), so seeding the recorded close alone would leave the
+    panel unable to prove the date it renders and the form correctly WITHHELD.
+    Corroborating it at the derivation session is what makes this the OFFERED
+    fixture, and it is the seed the pre-fix code did not need -- which is why no
+    test covered the contradicted geometry.
+    """
+    _seed_close(cfg, price)
+    _write_archive_bars(cfg, [(DERIVATION_SESSION, price)])
 
 
 def _vm(cfg, *, now=NOW):
@@ -105,6 +143,89 @@ def test_a_withheld_form_presents_NO_order_numbers_as_a_mandate(seeded_db):
     assert block.derivation_lines == ()
     assert block.anchor_fields == ()
     assert block.anchor_digest == ""
+
+
+# --- the PROVENANCE gate on the prepared order ----------------------------
+def test_a_close_the_archive_CONTRADICTS_withholds_the_prepared_order(seeded_db):
+    """THE ROUTE-B GEOMETRY, and the card must agree with itself on it.
+
+    `candidates.close = 19.52` stamped 2026-07-24 while the archive holds a bar
+    dated 2026-07-24 that closed 17.76. The stamp is only an UPPER BOUND on the
+    close's own date (#30), so the panel cannot prove the recorded number is the
+    derivation session's -- and 19.52 sits ABOVE the latched pivot 18.34 while
+    the dated bar sits BELOW it, so the two answers are not even the same
+    instrument.
+
+    Gating on stamp equality offered a placeable LIMIT and asserted the date
+    `2026-07-24` for it, two lines under a price line that said `close dated ON
+    OR BEFORE 2026-07-24`. One card, one quantity, two claims.
+    """
+    cfg, _ = seeded_db
+    _seed_fire(cfg)
+    _seed_close(cfg, 19.52)
+    _write_archive_bars(cfg, [(DERIVATION_SESSION, 17.76)])
+    row = _vm(cfg).rows[0]
+    block = row.prepared_order
+    assert block.offered is False
+    assert block.withheld_reason == "regime_undeterminable"
+    assert block.withheld_detail.strip()            # RD ruling 4: LABELLED
+    # ...and the price line makes the SAME claim about what is known. Asserted
+    # as ONE pair so a future edit cannot restore the contradiction and keep a
+    # green suite.
+    assert row.price_asof == "-"
+    assert "on or before" in row.price_asof_basis
+
+
+def test_an_unassertable_close_never_reaches_the_parity_ledger(seeded_db):
+    """CHARC's decisive reason for treating this as merge-blocking rather than
+    cosmetic: `regime_close_session` is WRITTEN AS FACT into the append-only
+    record this arc exists to create. A display defect is recoverable; a ledger
+    write is not.
+
+    Both the GET emit and the POST-time re-derivation seam are asserted, because
+    those are the only two doors the column can come through.
+    """
+    cfg, _ = seeded_db
+    _seed_fire(cfg)
+    _seed_close(cfg, 19.52)
+    _write_archive_bars(cfg, [(DERIVATION_SESSION, 17.76)])
+    row = _vm(cfg).rows[0]
+    assert row.prepared_order.anchor_fields == ()
+    assert "derivation_regime_close_session" not in dict(
+        row.prepared_order.anchor_fields)
+    conn = connect(cfg.paths.db_path)
+    try:
+        _latch, block = rederive_prepared_order(
+            conn, cfg, candidate_id=row.candidate_id, anchor=date(2026, 7, 27))
+    finally:
+        conn.close()
+    assert block.offered is False
+    assert block.withheld_reason == "regime_undeterminable"
+
+
+@pytest.mark.parametrize("recorded,bars,offered,why", [
+    (19.20, [(DERIVATION_SESSION, 19.20)], True, "rung A: corroborated at S"),
+    (19.52, [(DERIVATION_SESSION, 17.76)], False, "B-conflict: contradicted"),
+    (19.20, [("2026-07-20", 19.20)], False, "B-undated: no bar dated S"),
+    (19.20, [], False, "B-undated: the archive holds nothing"),
+])
+def test_the_prepared_order_is_offered_IFF_the_close_may_be_ASSERTED(
+        seeded_db, recorded, bars, offered, why):
+    """THE CALLER-SIDE OBLIGATION, pinned behaviourally across the ladder.
+
+    `expected_mandate_order_type` is a seam for the pivot-vs-close COMPARISON
+    only. Whether a price may be handed to it at all is a decision only the
+    CALLER can make, and this is the test that pins it: the form is offered on
+    rung A and on no other rung. A caller that re-introduced a stamp comparison
+    passes the rung-A row and fails all three others.
+    """
+    cfg, _ = seeded_db
+    _seed_fire(cfg)
+    _seed_close(cfg, recorded)
+    if bars:
+        _write_archive_bars(cfg, bars)
+    block = _vm(cfg).rows[0].prepared_order
+    assert block.offered is offered, why
 
 
 # --- the OFFERED branch ---------------------------------------------------
@@ -262,7 +383,14 @@ def test_the_anchor_digest_MOVES_when_the_framework_order_moves(seeded_db):
         conn.execute("UPDATE candidates SET close = 17.00 "
                      "WHERE evaluation_run_id = 900")
     conn.close()
-    assert _vm(cfg).rows[0].prepared_order.anchor_digest != first
+    # THE ARCHIVE BAR MOVES WITH IT, or this stops being a digest test. Leaving
+    # the 19.20 bar in place would make the moved close UNCORROBORATED, withhold
+    # the form and pass this assertion on an empty digest -- a green test that
+    # no longer discriminates.
+    _write_archive_bars(cfg, [(DERIVATION_SESSION, 17.00)])
+    second = _vm(cfg).rows[0].prepared_order
+    assert second.offered is True
+    assert second.anchor_digest != first
 
 
 # --- the DISPOSITION + the PROMPT ----------------------------------------

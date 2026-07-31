@@ -323,9 +323,19 @@ def test_an_unknown_withheld_reason_is_rejected():
 # --------------------------------------------------------------------------
 def test_order_intent_contains_no_independent_pivot_vs_close_comparison():
     """`swing/latches/orders.py:expected_mandate_order_type` is the ONLY source
-    of the mandate form in this arc, so whatever 21-G does to make the close
-    sound flows through automatically. A module that re-derived the regime would
-    silently keep the pre-21-G behaviour."""
+    of the mandate form in this arc. A module that re-derived the regime would
+    silently keep its own copy of the comparison.
+
+    THIS PINS ONE HALF, AND SAYING SO IS THE POINT. The seam covers the
+    pivot-vs-close COMPARISON; it does not cover the SOUNDNESS of the close,
+    which is the caller's decision about whether to pass a price at all. That
+    half was assumed to flow through automatically and did not: the panel kept
+    its own retired stamp-equality gate and offered a placeable order asserting
+    a date it could not prove. The caller-side obligation is pinned
+    BEHAVIOURALLY, where it lives --
+    `tests/web/test_view_models/test_latch_prepared_order_vm.py::
+    test_the_prepared_order_is_offered_IFF_the_close_may_be_ASSERTED`.
+    """
     from pathlib import Path
     src = Path("swing/latches/order_intent.py").read_text(encoding="utf-8")
     body = "\n".join(
