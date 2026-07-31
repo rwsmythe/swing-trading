@@ -270,7 +270,25 @@ LATCH_SIZING_BASES = frozenset({"limit_price", "pivot"})
 # the pullback regime's RIGHT answer and is a MATCH; with a bare `float | None`
 # it would collapse into `unknown`, and unknown is never agreement, so the
 # CORRECT order would score as a non-match.
-LATCH_STOP_LEG_STATES = frozenset({"both_absent", "compared", "unknown"})
+# THE STOP-LEG CELL OF THE PER-FIELD DELTA. FOUR states, not three (RD ruling,
+# 2026-07-30):
+#   both_absent -- neither side carries a stop leg. The pullback regime's RIGHT
+#                  answer, and a determinable AGREEMENT.
+#   compared    -- both carry one; the signed delta is set.
+#   one_sided   -- EXACTLY ONE carries one, and BOTH SIDES WERE OBSERVED. A
+#                  framework STOP_LIMIT against an actual LIMIT is NOT unknown:
+#                  we can see both sides, so it is a fully observed
+#                  DISAGREEMENT. RD's consistency check: `both_absent` is
+#                  already ruled a determinable agreement, so the symmetric
+#                  one-present-one-absent case is the determinable
+#                  DISAGREEMENT. Scoring one and calling the other unknown is
+#                  exactly the asymmetry that produces a flattering metric --
+#                  it deleted a real disagreement from the agreement rate.
+#   unknown     -- the INSTRUMENT COULD NOT OBSERVE (no actual side at all).
+#                  That is what `unknown` means and it keeps meaning it.
+LATCH_STOP_LEG_STATES = frozenset({
+    "both_absent", "compared", "one_sided", "unknown",
+})
 LATCH_ORDER_WITHHELD_REASONS = frozenset({
     "regime_undeterminable", "sizing_infeasible", "sizing_degenerate",
 })

@@ -603,7 +603,9 @@ class OrderDelta:
     # answer) and "one side is unknown" both collapse to None -- so a legitimate
     # EXACT MATCH would be reported as unknown, and unknown is never agreement,
     # so the CORRECT order would be scored as a non-match.
-    stop_leg: str                        # both_absent | compared | unknown
+    # `one_sided` is a DIFFERENCE, not an unknown: both sides were observed and
+    # they disagree about whether the mandate has a stop leg at all.
+    stop_leg: str                        # both_absent|compared|one_sided|unknown
     stop_price_delta: float | None       # set IFF stop_leg == 'compared'
     limit_price_delta: float | None
     quantity_delta: int | None
@@ -638,11 +640,25 @@ def _as_order_mapping(side) -> dict:
 
 
 def _resolve_stop_leg(fw: dict, ac: dict) -> tuple[str, float | None]:
-    """`both_absent` | `compared` | `unknown`, and the delta iff `compared`.
+    """`both_absent` | `compared` | `one_sided` | `unknown`; delta iff `compared`.
 
-    `unknown` covers BOTH "exactly one side carries a stop leg" and "the actual
-    side is not observed at all" -- the two are indistinguishable in evidence
-    terms from here, and both must contribute `None` rather than agreement.
+    `unknown` MEANS THE INSTRUMENT COULD NOT OBSERVE, and nothing else (RD
+    ruling, 2026-07-30). It used to ALSO cover "exactly one side carries a stop
+    leg", which was a flattering omission: a framework `STOP_LIMIT` against an
+    actual `LIMIT` is not unknown -- BOTH SIDES ARE OBSERVED and they DISAGREE
+    about whether the mandate has a stop leg. Filing that as unknown excluded it
+    from the agreement DENOMINATOR instead of failing the NUMERATOR, deleting a
+    real disagreement from the arc's headline metric.
+
+    The consistency argument, which is why this is a semantics fix and not a
+    tolerance tweak: `both_absent` is ALREADY ruled a MATCH -- a determinable
+    AGREEMENT about leg presence. One-present-one-absent is the symmetric
+    determinable DISAGREEMENT. Scoring one and withholding on the other is the
+    asymmetry that flatters.
+
+    `one_sided` carries NO numeric delta: there is no arithmetic difference
+    between a price and an absent leg. The `stop_price_delta is set IFF
+    compared` invariant is therefore unchanged.
     """
     ac_type = ac.get("order_type")
     fw_stop = _round2(fw.get("stop_price"))
@@ -654,7 +670,7 @@ def _resolve_stop_leg(fw: dict, ac: dict) -> tuple[str, float | None]:
     if fw_stop is None and ac_stop is None:
         return "both_absent", None
     if fw_stop is None or ac_stop is None:
-        return "unknown", None
+        return "one_sided", None
     return "compared", round(ac_stop - fw_stop, _PRICE_DP)
 
 
@@ -717,6 +733,11 @@ def compute_order_delta(framework, actual) -> OrderDelta:
         differences.append(False)
     elif stop_leg == "compared":
         differences.append(stop_price_delta != 0)
+    elif stop_leg == "one_sided":
+        # BOTH SIDES OBSERVED AND THEY DISAGREE ABOUT LEG PRESENCE -- a
+        # determinable DIFFERENCE (RD ruling, 2026-07-30). It FAILS the
+        # numerator; it does not leave the denominator.
+        differences.append(True)
     else:
         differences.append(None)
 

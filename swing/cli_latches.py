@@ -326,6 +326,11 @@ def _delta_summary(place, validity) -> str:
         parts.append("duration")
     if delta.stop_leg == "compared" and delta.stop_price_delta:
         parts.append(f"stop {delta.stop_price_delta:+.2f}")
+    elif delta.stop_leg == "one_sided":
+        # NAMED, not numeric: one side has a stop leg and the other does not, so
+        # there is no signed delta to print -- but it is a DIFFERENCE and must
+        # not read as a silent zero.
+        parts.append("stop leg present on one side only")
     if delta.limit_price_delta:
         parts.append(f"limit {delta.limit_price_delta:+.2f}")
     if delta.quantity_delta:

@@ -1058,7 +1058,12 @@ def compute_execution_parity(
                 delta_totals["order_type_differs"] += 1
             if delta.duration_differs:
                 delta_totals["duration_differs"] += 1
-            if delta.stop_leg == "compared" and delta.stop_price_delta:
+            # `one_sided` COUNTS HERE TOO (RD ruling, 2026-07-30). It fails the
+            # numerator, so the per-field table must NAME the field that failed
+            # it -- otherwise the reader sees a failed agreement with every
+            # attributed cause reading zero.
+            if delta.stop_leg == "one_sided" or (
+                    delta.stop_leg == "compared" and delta.stop_price_delta):
                 delta_totals["stop_price_differs"] += 1
             if delta.limit_price_delta:
                 delta_totals["limit_price_differs"] += 1

@@ -471,13 +471,19 @@ def test_the_stop_leg_compared_cell_carries_the_signed_delta():
     assert d.any_difference is True
 
 
-def test_the_stop_leg_unknown_cell_fires_when_exactly_one_side_has_a_stop():
+def test_the_stop_leg_ONE_SIDED_cell_fires_when_exactly_one_side_has_a_stop():
+    """RE-RULED BY RD 2026-07-30. This cell used to be `unknown`, which
+    EXCLUDED a fully observed disagreement from the agreement denominator
+    instead of failing the numerator. Both order types are known here, so the
+    instrument DID observe; it is `one_sided`, and it is a DIFFERENCE. The full
+    argument + the report-level discriminator live in
+    `tests/latches/test_stop_leg_one_sided.py`."""
     fw = {"order_type": "STOP_LIMIT", "duration": "GOOD_TILL_CANCEL",
           "stop_price": 18.34, "limit_price": 18.89, "quantity": 9}
     d = compute_order_delta(fw, dict(fw, stop_price=None))
-    assert d.stop_leg == "unknown"
+    assert d.stop_leg == "one_sided"
     assert d.stop_price_delta is None
-    assert d.any_difference is None
+    assert d.any_difference is True
 
 
 def test_the_delta_type_pins_stop_price_delta_IFF_compared():

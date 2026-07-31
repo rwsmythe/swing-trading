@@ -2320,6 +2320,15 @@ def _divergence_note(delta, framework: dict, observed: dict) -> str:
     if delta.stop_leg == "compared" and delta.stop_price_delta:
         parts.append(f"stop {_fmt_price(observed['stop_price'])} vs "
                      f"{_fmt_price(framework['stop_price'])}")
+    elif delta.stop_leg == "one_sided":
+        # BOTH SIDES OBSERVED AND THEY DISAGREE ABOUT THE LEG ITSELF (RD ruling,
+        # 2026-07-30). It is a difference the operator is being asked to
+        # confirm, so it is NAMED -- an order carrying a stop trigger the
+        # mandate does not have, or missing one it does, is exactly the FTRE
+        # shape divergence.
+        parts.append(
+            f"stop leg {_fmt_price(observed['stop_price'])} vs "
+            f"{_fmt_price(framework['stop_price'])} (present on one side only)")
     elif delta.stop_leg == "unknown":
         parts.append("the stop leg cannot be compared")
     if delta.limit_price_delta:
