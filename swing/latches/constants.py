@@ -143,6 +143,18 @@ ARCHIVE_STATUS_OK = "ok"
 ARCHIVE_STATUS_UNAVAILABLE = "unavailable"
 ARCHIVE_STATUSES = frozenset({ARCHIVE_STATUS_OK, ARCHIVE_STATUS_UNAVAILABLE})
 
+# THE NAMED CATEGORY FOR A DISPLACED PLACE CYCLE THAT CARRIES NO ANSWER
+# (RD ruling, 2026-07-30). A failed first attempt that goes permanently
+# unmeasured while its ACCEPTED RETRY supplies the scored agreement is not a
+# null -- it is a SUBSTITUTION OF A SUCCESS FOR A FAILURE, which is worse than
+# silence. So the cycle is REPRESENTED: the panel offers a first-answer form
+# while the latch is still rendered, and every cycle that is still unanswered is
+# counted under this name in the report AND disclosed beside the agreement rate
+# it was excluded from. It is a NAME rather than prose so the report can count
+# it and a reader can grep it.
+DISPLACED_UNANSWERABLE = "displaced_unanswerable"
+
+
 # =====================================================================
 # THE VIEW-BEACON PAYLOAD CONTRACT -- ONE named object, consumed by BOTH the
 # emitter (the panel view model) and the reader (POST /latches/view).

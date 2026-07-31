@@ -800,7 +800,13 @@ def test_an_UNANSWERED_earlier_cycle_is_reported_as_unknown_not_omitted(
 
     An unanswered cycle is exactly the absence RD's ruling 4 says must be
     LABELLED rather than left to read as nothing-to-see.
+
+    THE LABEL IS NOW A NAMED CATEGORY (RD ruling, 2026-07-30). "unknown (never
+    answered)" was prose; `displaced_unanswerable` is a NAME the report also
+    COUNTS and discloses beside the agreement rate it was excluded from. The
+    counting half lives in `tests/cli/test_latches_displaced_unanswerable.py`.
     """
+    from swing.latches.constants import DISPLACED_UNANSWERABLE
     cfg, cfg_path = seeded_db
     cid = _seed(cfg)
     conn = connect(cfg.paths.db_path)
@@ -811,7 +817,7 @@ def test_an_UNANSWERED_earlier_cycle_is_reported_as_unknown_not_omitted(
     r = _run(cfg_path)
     assert r.exit_code == 0, r.output
     assert "EARLIER PLACE/VALIDITY CYCLES" in r.output
-    assert f"place intent {first}: unknown (never answered)" in r.output
+    assert f"place intent {first}: {DISPLACED_UNANSWERABLE}" in r.output
 
 
 def test_a_DECLINE_superseding_the_place_moves_it_into_the_earlier_cycles(

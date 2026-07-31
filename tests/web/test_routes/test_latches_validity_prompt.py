@@ -944,6 +944,92 @@ def test_a_DISPLACED_cycles_answer_stays_correctable_DOWNWARD(
         "not_submitted"), "the flattering acceptance no longer governs P1"
 
 
+def test_a_CHILDLESS_displaced_cycle_gets_a_FIRST_ANSWER_form(
+        seeded_db, monkeypatch, clocks):
+    """ITEM 2 -- RD's ruling, 2026-07-30. The displaced cycle MAY NOT VANISH.
+
+    PRE-FIX the displaced-cycle control was emitted only for a cycle that
+    ALREADY carried an answer, so a place with NO validity child was skipped
+    entirely: nothing on any surface could ever answer it. A FAILED FIRST
+    ATTEMPT therefore stayed permanently unmeasured while its ACCEPTED RETRY
+    supplied the scored agreement -- a SUBSTITUTION OF A SUCCESS FOR A FAILURE,
+    which is worse than a null, and it fails in the flattering direction.
+
+    THE FORM IS DRIVEN END TO END: parsed from the rendered fragment, posted
+    exactly as emitted, and the resolver is asked what now governs P1. A test
+    building its own POST would re-create the blind spot this file exists for --
+    the handler ALWAYS accepted a first answer for an earlier parent; what was
+    missing was any way to reach it.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[])
+    with TestClient(app) as client:
+        p1 = _log_place(client, cfg, cid)
+        # NO validity answer for P1 at all -- it is displaced while childless.
+        _clone_place(cfg, p1)
+        clocks.set(PROMPT_NOW)
+        html = _fragment(client, PROMPT_ANCHOR).text
+        assert f"place intent {p1}" in html
+        assert "NEVER ANSWERED" in html
+        displaced = next(
+            block for block in html.split('<section class="latch-validity-prompt')
+            if f"place intent {p1}" in block)
+        assert "CORRECT THE RECORDED OUTCOME" not in displaced, (
+            "there is no recorded outcome to correct -- this is a FIRST answer")
+        fields = _form_fields(_form_html(displaced, "latch-validity-other"))
+        assert fields["validated_place_intent_id"] == str(p1)
+        r = client.post("/latches/intent", headers=_HX,
+                        data=fields | {"validity_outcome": "rejected_by_broker"})
+    assert r.status_code == 200, r.text
+    from swing.data.repos.latch_order_intents import list_intents_for_latch
+    from swing.latches.classification import resolve_execution_outcome_for
+    from swing.latches.reader import build_latch_derivation
+    conn = connect(cfg.paths.db_path)
+    try:
+        latch = next(x for x in build_latch_derivation(
+            conn, cfg, now=PROMPT_NOW).latches
+            if x.identity.candidate_id == cid)
+        intents = list_intents_for_latch(conn, candidate_id=cid)
+    finally:
+        conn.close()
+    p1_row = next(i for i in intents if i.intent_id == p1)
+    assert resolve_execution_outcome_for(latch, p1_row, intents) == (
+        "rejected_by_broker"), (
+        "the failed first attempt is now MEASURED rather than substituted for")
+
+
+def test_a_place_DECLINED_gets_NO_first_answer_form_only_the_report_category(
+        seeded_db, monkeypatch, clocks):
+    """THE RULING BOUNDARY BETWEEN ITEM 2 AND THE EARLIER R7 RULING, pinned so
+    neither can be silently widened over the other.
+
+    RD's item-2 harm is a failed first attempt going unmeasured WHILE ITS
+    ACCEPTED RETRY SUPPLIES THE SCORED AGREEMENT -- a success standing in for a
+    failure. After `place -> decline` there is no current place, so nothing is
+    standing in for it, and R7 is explicit that `place` and `decline` are ONE
+    question: the panel must stop asking about the order he has since declined.
+
+    Representation for THIS cycle is therefore the report's named
+    `displaced_unanswerable` count, not a panel control. Silence on the panel is
+    permitted here ONLY because the report is not silent.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[])
+    with TestClient(app) as client:
+        _log_place(client, cfg, cid)
+        form = _anchor_form(cfg, cid, now=PLACE_NOW) | {
+            "intent_kind": "decline", "decline_reason": "changed my mind",
+            "prior_intent_id": str(_rows(cfg)[0][0])}
+        assert client.post(
+            "/latches/intent", headers=_HX, data=form).status_code == 200
+        clocks.set(PROMPT_NOW)
+        html = _fragment(client, PROMPT_ANCHOR).text
+    assert "latch-validity-prompt" not in html
+    assert "NEVER ANSWERED" not in html
+
+
 def test_the_validity_radio_group_is_REQUIRED_so_a_blank_submit_cannot_erase_it(
         seeded_db, monkeypatch, clocks):
     """CODEX EXEC R10 MAJOR. Nothing is pre-selected -- absence may not assert an

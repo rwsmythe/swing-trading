@@ -2548,9 +2548,29 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
         superseded_outcome=superseded_outcome), ""
 
 
-def _displaced_cycle_corrections(latch, *, intents, current, digest,
-                                 snapshot_ts, anchor_iso, prior_intent_id):
-    """A correction control per DISPLACED place cycle that carries an answer."""
+def _displaced_cycle_prompts(latch, *, intents, current, digest,
+                             snapshot_ts, anchor_iso, prior_intent_id):
+    """One control per DISPLACED place cycle -- ANSWERED OR NOT.
+
+    A CHILDLESS DISPLACED CYCLE MAY NOT VANISH (RD ruling, 2026-07-30). It used
+    to be skipped outright, so a FAILED FIRST ATTEMPT stayed permanently
+    unmeasured while its ACCEPTED RETRY supplied the scored agreement. That is
+    not a null -- it is a SUBSTITUTION OF A SUCCESS FOR A FAILURE, which is
+    worse than silence, and it fails in the flattering direction.
+
+    So the same absence-branch control is offered with NO recorded answer to
+    correct: `is_correction` is False, the heading asks the question rather than
+    offering a correction, and the row it writes is that cycle's FIRST answer.
+    The intent route already accepts it -- it validates that the parent is a
+    `place` on THIS latch, never that the parent is the CURRENT cycle -- and the
+    idempotency key is scoped to the submission in context, so a first answer
+    for an earlier parent cannot collide with the current cycle's.
+
+    THE REPORT-SIDE HALF IS NOT REDUNDANT WITH THIS. An affordance nobody uses
+    is exactly the silence the ruling forbids, so every still-unanswered cycle
+    is ALSO counted as `displaced_unanswerable` and disclosed beside the
+    agreement rate (`swing/cli_latches.py`).
+    """
     import json as _json
 
     from swing.latches.classification import _order_key
@@ -2568,9 +2588,20 @@ def _displaced_cycle_corrections(latch, *, intents, current, digest,
             if i.intent_kind == "validity"
             and i.validated_place_intent_id == place.intent_id
         ]
-        if not children:
+        answered = max(children, key=_order_key) if children else None
+        if answered is None and current is None:
+            # THE FIRST-ANSWER FORM IS SCOPED TO THE SUBSTITUTION CASE, and the
+            # boundary is a RULING boundary, not a convenience. RD's item-2 harm
+            # is a failed first attempt going unmeasured WHILE ITS ACCEPTED
+            # RETRY SUPPLIES THE SCORED AGREEMENT -- a success standing in for a
+            # failure. When the decision family resolved to a DECLINE there is
+            # no current place and so nothing is standing in for it, and the
+            # earlier R7 ruling is explicit that `place` and `decline` are ONE
+            # question: the panel must stop asking about the order he has since
+            # declined. Representation for that cycle is therefore the report's
+            # NAMED `displaced_unanswerable` category, which still counts it and
+            # still discloses it beside the agreement rate.
             continue
-        answered = max(children, key=_order_key)
         envelope = {
             "broker_snapshot_ts": snapshot_ts,
             # The ABSENCE shape: this correction offers no observed order for a
@@ -2594,7 +2625,14 @@ def _displaced_cycle_corrections(latch, *, intents, current, digest,
                 f"{place.action_session_date}) is recorded as "
                 f"{answered.validity_outcome}. It is no longer the current "
                 "cycle, so its order book cannot be re-read -- but the answer "
-                "is still correctable DOWNWARD."),
+                "is still correctable DOWNWARD."
+                if answered is not None else
+                f"An EARLIER order cycle for {latch.identity.ticker} (place "
+                f"intent {place.intent_id}, logged "
+                f"{place.action_session_date}) was NEVER ANSWERED, and it is "
+                "no longer the current cycle. Until you answer it, it stays "
+                "OUT of the agreement rate while the later cycle supplies the "
+                "measured one. What happened to that order?"),
             divergence_note="",
             incomplete_note=(
                 "Re-asserting ACCEPTANCE for a displaced cycle would require an "
@@ -2610,8 +2648,9 @@ def _displaced_cycle_corrections(latch, *, intents, current, digest,
             actual_fields=(),
             snapshot_json=_json.dumps(envelope, sort_keys=True),
             view_session_date=anchor_iso,
-            is_correction=True,
-            superseded_outcome=answered.validity_outcome))
+            is_correction=answered is not None,
+            superseded_outcome=(
+                "" if answered is None else answered.validity_outcome)))
     return tuple(out)
 
 
@@ -2723,7 +2762,11 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
         # current prompt all silently removed it -- so on several branches an
         # erroneous, FLATTERING `accepted_by_broker` stayed browser-uncorrectable
         # after all. It is generated FIRST, from the ledger alone.
-        out.extend(_displaced_cycle_corrections(
+        #
+        # AND A CHILDLESS DISPLACED CYCLE GETS A FIRST-ANSWER FORM (RD ruling,
+        # 2026-07-30): skipping it left a failed first attempt permanently
+        # unmeasured while its accepted retry supplied the scored agreement.
+        out.extend(_displaced_cycle_prompts(
             latch, intents=intents, current=place, digest=digest,
             snapshot_ts=snapshot_ts, anchor_iso=anchor_iso,
             prior_intent_id=_prior_intent_id(intents)))

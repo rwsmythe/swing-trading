@@ -35,6 +35,7 @@ from swing.latches.classification import (
 )
 from swing.latches.constants import (
     ACTIONABLE_VIEW_SURFACES,
+    DISPLACED_UNANSWERABLE,
     LATCH_BROKER_ORDER_ID_KINDS,
     LATCH_DISPOSITIONS,
     R_BUCKETS,
@@ -294,10 +295,18 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
             # current retry displayed 100% agreement -- so the disclosure named
             # the cycle and still hid the divergence, which is the thing the
             # reader is being shown it for.
+            # AN UNANSWERED DISPLACED CYCLE CARRIES A NAMED CATEGORY, NOT PROSE
+            # (RD ruling, 2026-07-30). "unknown (never answered)" was a
+            # sentence; `displaced_unanswerable` is a NAME, which is what lets
+            # the report COUNT it and disclose the count beside the agreement
+            # rate it was excluded from. The bias it guards is the dangerous
+            # kind: a failed first attempt going permanently unmeasured while
+            # its accepted retry supplies the scored agreement is a SUBSTITUTION
+            # OF A SUCCESS FOR A FAILURE, not a missing datum.
             child = _governing_validity_child(latch_intents, earlier)
             superseded.append((
                 cid, latch.identity.ticker, earlier.intent_id,
-                "unknown (never answered)" if child is None
+                DISPLACED_UNANSWERABLE if child is None
                 else child.validity_outcome,
                 _delta_summary(earlier, child)))
         observations.append(ParityObservation(
@@ -524,6 +533,19 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
     click.echo("")
     click.echo("AGREEMENT (framework order vs the order actually placed)")
     click.echo("  rate:".ljust(_W) + _agreement_line(report))
+    # THE RATE DISCLOSES ITS OWN EXCLUSIONS, ON THE LINE UNDER IT (RD ruling,
+    # 2026-07-30). A count printed twenty lines below is not a disclosure OF THE
+    # RATE -- it is a separate fact the reader has to think to connect. It is
+    # CONDITIONAL: a permanent caveat on a clean report is noise the reader
+    # learns to skip, which is how a real one gets missed.
+    unanswerable = sum(
+        1 for row in superseded if row[3] == DISPLACED_UNANSWERABLE)
+    click.echo(f"  {DISPLACED_UNANSWERABLE}:".ljust(_W) + str(unanswerable))
+    if unanswerable:
+        click.echo(f"  the rate above EXCLUDES {unanswerable} displaced place")
+        click.echo("  cycle(s) with NO recorded outcome. A failed first attempt")
+        click.echo("  whose accepted retry supplies the scored agreement would")
+        click.echo("  otherwise read as a clean measurement.")
     click.echo("  validity UNKNOWN:".ljust(_W) + str(report.validity_unknown))
     click.echo("  validity FAILED:".ljust(_W) + str(report.validity_failed))
     click.echo("  actual side unknown:".ljust(_W)
