@@ -143,6 +143,53 @@ ARCHIVE_STATUS_OK = "ok"
 ARCHIVE_STATUS_UNAVAILABLE = "unavailable"
 ARCHIVE_STATUSES = frozenset({ARCHIVE_STATUS_OK, ARCHIVE_STATUS_UNAVAILABLE})
 
+# =====================================================================
+# THE VIEW-BEACON PAYLOAD CONTRACT -- ONE named object, consumed by BOTH the
+# emitter (the panel view model) and the reader (POST /latches/view).
+#
+# CHARC's ruling, 2026-07-30: a payload contract enforced BY CONVENTION at two
+# ends is a drift hazard in a different costume -- the same argument that
+# single-sourced the mandate limit price. So the field names live here, the
+# emitter BUILDS through `build_beacon_payload`, and the reader PARSES the same
+# names and measures coverage with `beacon_coverage_gap`.
+#
+# RD's binding requirement: SILENT UNDER-REPORTING MUST NOT BE POSSIBLE.
+# Under-reporting views pushes latches toward `away`, inflating the number that
+# would justify stage-3 auto-place, so the difference between what was RENDERED
+# and what was REPORTED must be DETECTABLE rather than assumed equal.
+# =====================================================================
+BEACON_FIELD_SESSION = "view_session_date"
+BEACON_FIELD_ACTIONABLE = "actionable_candidate_ids"
+BEACON_FIELD_WITHHELD = "withheld_candidate_ids"
+BEACON_ID_FIELDS = (BEACON_FIELD_ACTIONABLE, BEACON_FIELD_WITHHELD)
+BEACON_PAYLOAD_FIELDS = (BEACON_FIELD_SESSION, *BEACON_ID_FIELDS)
+
+
+def build_beacon_payload(*, view_session_date: str, actionable_ids,
+                         withheld_ids) -> dict[str, str]:
+    """THE payload the panel posts. The ONLY place these names are spelled."""
+    return {
+        BEACON_FIELD_SESSION: view_session_date,
+        BEACON_FIELD_ACTIONABLE: ",".join(str(int(i)) for i in actionable_ids),
+        BEACON_FIELD_WITHHELD: ",".join(str(int(i)) for i in withheld_ids),
+    }
+
+
+def beacon_coverage_gap(*, reported_ids, live_ids) -> tuple[int, ...]:
+    """Live latches the payload did NOT report -- the SILENT UNDER-REPORT.
+
+    Measured against the handler's OWN re-derivation of the live set, never
+    against a total the client also supplies: the emitter builds all three
+    fields from one source, so a client-supplied total could only ever agree
+    with itself -- a tautology dressed as a check.
+
+    AN EXTRA id is NOT a shortfall. The existence gate already ignores an id
+    that is not live, and treating one as a defect would reject a
+    stale-but-honest render in the direction that loses views.
+    """
+    return tuple(sorted(set(live_ids) - set(reported_ids)))
+
+
 def mandate_limit_price(zone_cap: float) -> float:
     """THE mandate's limit price: the LARGEST WHOLE-CENT PRICE THAT DOES NOT
     EXCEED THE CAP, evaluated against the cap's DECIMAL value rather than its

@@ -24,6 +24,9 @@ from swing.evaluation.dates import (
     sessions_behind,
 )
 from swing.latches.constants import (
+    BEACON_FIELD_ACTIONABLE,
+    BEACON_FIELD_SESSION,
+    BEACON_FIELD_WITHHELD,
     LATCH_ACTUAL_ORDER_TYPES,
     LATCH_ATTESTED_DISPOSITIONS,
     LATCH_BROKER_SNAPSHOT_KEYS,
@@ -31,6 +34,7 @@ from swing.latches.constants import (
     LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES,
     LATCH_INTENT_KINDS,
     LATCH_VALIDITY_OUTCOMES,
+    beacon_coverage_gap,
 )
 from swing.latches.reader import build_latch_derivation
 from swing.web.view_models.latches import build_latch_orders_vm, build_latch_panel_vm
@@ -102,17 +106,18 @@ def _parse_beacon_anchor(form) -> tuple[date, list[int], list[int]]:
     rule -- picking a winner would decide, invisibly, which way the away/lapse
     split is biased.
     """
-    raw_session = form.get("view_session_date")
+    raw_session = form.get(BEACON_FIELD_SESSION)
     if raw_session is None:
-        raise _BeaconRejectedError("view_session_date", "missing")
+        raise _BeaconRejectedError(BEACON_FIELD_SESSION, "missing")
     if not isinstance(raw_session, str) or len(raw_session) != 10:
         raise _BeaconRejectedError(
-            "view_session_date", "must be exactly a 10-char ISO YYYY-MM-DD date")
+            BEACON_FIELD_SESSION,
+            "must be exactly a 10-char ISO YYYY-MM-DD date")
     try:
         anchor = date.fromisoformat(raw_session)
     except ValueError as exc:
         raise _BeaconRejectedError(
-            "view_session_date", "is not a valid ISO date") from exc
+            BEACON_FIELD_SESSION, "is not a valid ISO date") from exc
     if anchor.isoformat() != raw_session:
         # THE SAME ROUND-TRIP GUARD AS THE INTENT ROUTE (Codex exec R4 MAJOR 1),
         # applied here because the defect is a CLASS and not an instance: this
@@ -120,21 +125,21 @@ def _parse_beacon_anchor(form) -> tuple[date, list[int], list[int]]:
         # parses AND measures ten characters. Fixing one door and leaving the
         # other is how the next reader concludes the guard exists.
         raise _BeaconRejectedError(
-            "view_session_date",
+            BEACON_FIELD_SESSION,
             "must be the CANONICAL YYYY-MM-DD spelling of that date")
 
-    actionable = _parse_id_list(form, "actionable_candidate_ids")
-    withheld = _parse_id_list(form, "withheld_candidate_ids")
+    actionable = _parse_id_list(form, BEACON_FIELD_ACTIONABLE)
+    withheld = _parse_id_list(form, BEACON_FIELD_WITHHELD)
     # THE CAP APPLIES TO THE UNION, not per list -- otherwise splitting the
     # field would have doubled the flood ceiling as a side effect.
     if len(actionable) + len(withheld) > _MAX_BEACON_IDS:
         raise _BeaconRejectedError(
-            "actionable_candidate_ids",
+            BEACON_FIELD_ACTIONABLE,
             f"more than {_MAX_BEACON_IDS} ids across both lists")
     overlap = sorted(set(actionable) & set(withheld))
     if overlap:
         raise _BeaconRejectedError(
-            "withheld_candidate_ids",
+            BEACON_FIELD_WITHHELD,
             f"ids {overlap} appear in BOTH lists; a card was either offered a "
             "decision or it was not")
     return anchor, actionable, withheld
@@ -294,6 +299,37 @@ async def latches_view_beacon(request: Request) -> Response:
             latch.identity.candidate_id: latch
             for latch in derivation.latches if latch.is_live
         }
+        # THE SHORTFALL BETWEEN RENDERED AND REPORTED IS DETECTED, NOT ASSUMED
+        # AWAY (RD's binding requirement, 2026-07-30). The beacon used to accept
+        # ANY SUBSET of the live set, so a truncated payload returned 204 while
+        # the omitted latches -- carrying no view evidence of their own -- were
+        # classified `away_unseen`. That silently inflates the away rate, which
+        # is the number that would justify stage-3 auto-place, out of an
+        # incomplete instrument.
+        #
+        # MEASURED AGAINST THE HANDLER'S OWN RE-DERIVATION, never against a
+        # total the client also supplies: the emitter builds every field from
+        # one source, so a client-supplied count could only agree with itself.
+        #
+        # IT REFUSES RATHER THAN INGESTING WHAT IT GOT, and the direction is the
+        # point: a partial write leaves the omitted latches looking `away`,
+        # while a refusal leaves the whole session dark -- which
+        # `assess_telemetry_health` reports as unhealthy and the classifier
+        # WITHHOLDS on. Loud and unmeasured beats quiet and flattering. The
+        # rejection body names the missing ids so a broken emitter is
+        # diagnosable from the echo rather than from the logs alone.
+        gap = beacon_coverage_gap(
+            reported_ids=[*actionable_ids, *withheld_ids], live_ids=live)
+        if gap:
+            log.warning(
+                "latch view beacon UNDER-REPORTED: anchor=%s missing=%s "
+                "reported=%s", anchor.isoformat(), list(gap),
+                sorted({*actionable_ids, *withheld_ids}))
+            return _reject(
+                BEACON_FIELD_WITHHELD,
+                f"does not cover every live latch rendered for "
+                f"{anchor.isoformat()}; missing candidate ids "
+                f"{list(gap)}. NOTHING was recorded -- reload the panel")
         # EACH LIST IS INTERSECTED WITH THE LIVE SET INDEPENDENTLY. The
         # intersection is the EXISTENCE gate 21-A already ships -- a forged id
         # writes nothing.

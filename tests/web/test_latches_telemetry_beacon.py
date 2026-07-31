@@ -97,17 +97,24 @@ def test_a_second_beacon_the_same_session_updates_in_place(seeded_db, frozen_clo
 def test_beacon_ignores_a_candidate_id_that_was_not_live_at_the_anchor(
         seeded_db, frozen_clocks):
     """Server RE-DERIVES against the ANCHOR session: a forged id writes
-    nothing."""
+    nothing.
+
+    THE REAL LATCH IS REPORTED ALONGSIDE IT (item 5, 2026-07-30). The payload
+    must now COVER every live latch the server re-derives, so omitting the live
+    FTRE latch would exercise the under-report refusal rather than the forged-id
+    gate this test is about. The forged id is still ignored; what is asserted is
+    that it wrote NO row of its own.
+    """
     cfg, cfg_path = seeded_db
-    _seed_ftre(cfg)
+    cid = _seed_ftre(cfg)
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX,
                         data={"view_session_date": ANCHOR,
                               "actionable_candidate_ids": "999999",
-                              "withheld_candidate_ids": ""})
+                              "withheld_candidate_ids": str(cid)})
     assert r.status_code == 204
-    assert _rows(cfg) == []
+    assert [row[0] for row in _rows(cfg)] == [cid]
 
 
 def test_beacon_ignores_a_cleared_latchs_id(seeded_db, frozen_clocks, tmp_path):
@@ -254,8 +261,16 @@ def test_beacon_timestamps_are_server_stamped_not_client_supplied(
 
 
 def test_empty_candidate_ids_is_valid_and_writes_nothing(seeded_db, frozen_clocks):
+    """WITH NOTHING LIVE, deliberately (item 5, 2026-07-30). An empty payload
+    over an empty live set is the honest report of a panel with no mandates --
+    a race in which the last latch cleared between render and beacon lands
+    exactly here, and it must not be refused.
+
+    An empty payload while a latch IS live is now a DETECTED SHORTFALL, not a
+    valid empty report; that is pinned in
+    `tests/web/test_latches_beacon_coverage_contract.py`.
+    """
     cfg, cfg_path = seeded_db
-    _seed_ftre(cfg)
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         r = client.post("/latches/view", headers=_HX,

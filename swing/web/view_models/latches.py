@@ -32,6 +32,7 @@ from swing.latches.constants import (
     CLOSE_PROVENANCE_UNCORROBORATED,
     LATCH_ATTESTED_DISPOSITIONS,
     LATCH_PANEL_LOOKBACK_SESSIONS,
+    build_beacon_payload,
 )
 from swing.latches.models import Latch
 from swing.latches.order_intent import (
@@ -801,9 +802,8 @@ _TELEMETRY_HEALTH_LABELS = {
 
 
 def _empty_panel(banner: dict, *, reason: str | None, session_date: str) -> LatchPanelVM:
-    payload = json.dumps({
-        "view_session_date": "",
-        "actionable_candidate_ids": "", "withheld_candidate_ids": ""})
+    payload = json.dumps(build_beacon_payload(
+        view_session_date="", actionable_ids=(), withheld_ids=()))
     banner = dict(banner)
     banner["session_date"] = session_date
     return LatchPanelVM(
@@ -933,11 +933,12 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
             if (blocks.get(cid) is not None and blocks[cid].offered)
         ]
         withheld_ids = [cid for cid in live_ids if cid not in set(actionable_ids)]
-        payload = json.dumps({
-            "view_session_date": derivation.horizon_session.isoformat(),
-            "actionable_candidate_ids": ",".join(str(i) for i in actionable_ids),
-            "withheld_candidate_ids": ",".join(str(i) for i in withheld_ids),
-        })
+        # BUILT THROUGH THE NAMED CONTRACT, never hand-spelled (CHARC ruling,
+        # 2026-07-30): the reader parses the same names and measures coverage
+        # against the same field set, so the two ends cannot drift apart.
+        payload = json.dumps(build_beacon_payload(
+            view_session_date=derivation.horizon_session.isoformat(),
+            actionable_ids=actionable_ids, withheld_ids=withheld_ids))
         banner = dict(banner)
         banner["session_date"] = session_date
         return LatchPanelVM(
