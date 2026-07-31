@@ -211,6 +211,36 @@ def test_a_close_the_archive_CONTRADICTS_writes_NOTHING_to_the_ledger(
     assert _intents(cfg) == []
 
 
+def test_a_PROVEN_place_intent_STORES_the_close_and_its_proven_session(
+        seeded_db, frozen_clocks):
+    """The POSITIVE half of the ledger claim (codex-auto-review P3).
+
+    Asserting only that an unproven close writes NOTHING leaves the stored
+    provenance itself unasserted: those two columns could be NULL, or carry the
+    wrong session, and the negative test would still pass. `_intents` does not
+    select them, so this reads them directly.
+
+    NOT a pre-fix/post-fix discriminator and not claimed as one -- this fixture
+    is rung A, which both gates offer. It is coverage of WHAT gets stored on the
+    one path that is allowed to store anything.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)                        # rung A: 19.20, corroborated at S
+    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 200
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT derivation_regime_close, derivation_regime_close_session "
+            "FROM latch_order_intents ORDER BY intent_id").fetchall()
+    finally:
+        conn.close()
+    assert rows == [(19.20, DERIVATION_SESSION)]
+
+
 def test_the_response_fragment_root_is_not_a_table_row(seeded_db, frozen_clocks):
     """An HTMX response leading with `<tr>` triggers makeFragment's synthetic
     table wrap, which DROPS table content inside OOB section chunks. Browser
