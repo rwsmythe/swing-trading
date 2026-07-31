@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass as _dataclass
 from datetime import date as _date
+from decimal import ROUND_FLOOR as _ROUND_FLOOR
+from decimal import Decimal as _Decimal
 
 
 # RD constraint 2, RULED at the plan-stage gate: the horizon is DERIVED from
@@ -140,6 +142,67 @@ CLOSE_PROVENANCES = frozenset({
 ARCHIVE_STATUS_OK = "ok"
 ARCHIVE_STATUS_UNAVAILABLE = "unavailable"
 ARCHIVE_STATUSES = frozenset({ARCHIVE_STATUS_OK, ARCHIVE_STATUS_UNAVAILABLE})
+
+def mandate_limit_price(zone_cap: float) -> float:
+    """THE mandate's limit price: the LARGEST WHOLE-CENT PRICE THAT DOES NOT
+    EXCEED THE CAP, evaluated against the cap's DECIMAL value rather than its
+    BINARY representation (RD ruling, 2026-07-30).
+
+    IT IS SINGLE-SOURCED AND THAT IS THE POINT (CHARC ruling, 2026-07-30). This
+    function is called by BOTH 21-B's emitter (`compute_prepared_order`) and
+    21-A's comparator (`swing/latches/orders.py`, at every site that judges a
+    resting order's limit against a latch). It lives here, in the module that
+    imports nothing from `swing`, so both layers can reach it without a cycle.
+
+    THE SECOND DEFINITION IS DELETED, NOT TAUGHT TO FLOOR. 21-A's comparator
+    used to derive the mandate limit itself, as `round(zone_cap, 2)` -- a second
+    independently-plausible rounding of one quantity, which is the D6 class: a
+    parallel copy that agrees most of the time and drifts in production. On the
+    live VSTS geometry (cap 17.407) it emitted 17.40 and expected 17.41, so the
+    framework attributed the operator's CORRECT order to no latch at all. 49.5%
+    of two-decimal pivots produce a cap whose third decimal is non-zero, so the
+    disagreement was the ordinary case. The comparator must compare a resting
+    order against THE VALUE THE FRAMEWORK ACTUALLY EMITTED.
+
+    AND `round` WAS WRONG ON ITS OWN TERMS: `round(17.407, 2)` is 17.41, which
+    EXCEEDS the cap of 17.407 -- the comparator was blessing a price OUTSIDE the
+    buy zone, which is exactly what the floor ruling exists to prevent.
+
+    WHOLE CENTS because that is the only price the order could actually be: a US
+    equity limit order is penny-priced, 18.8902 is not a price the operator could
+    enter, and this arc exists to put *the order he would place* in front of him.
+
+    FLOOR, not round-half-up, and the reason is the CAP SEMANTIC: the zone cap is
+    a MAXIMUM (pivot x 1.03 is the top of the buy zone), so a quantization that
+    can move the price UP can push the order ABOVE the zone. Round-half-up does
+    that whenever the cap's third decimal is >= 5 -- a cap of 18.8952 becomes
+    18.90 > 18.8952. RD: a cap that can drift up under rounding is not a cap.
+
+    AND NOT `math.floor(cap * 100) / 100` EITHER, which was the originally
+    shipped form: a cap that IS an exact cent in decimal can be represented just
+    BELOW it in binary, so the multiply-and-floor drops a cent that the decimal
+    value plainly contains. `round(141.00 * 1.03, 4)` is `145.23`, but
+    `145.23 * 100` evaluates to `14522.999999999998` and the naive floor emits
+    **145.22**. Incidence through the production path
+    (`zone_cap = round(pivot * 1.03, 4)`): 43 of the 100,000 two-decimal pivots
+    up to $1000.
+
+    `Decimal(str(cap))` is the mandated form rather than an epsilon or a
+    `floor(round(cap * 100, 6))`: both of those work, and both need a precision
+    constant nobody can justify to the next reader. `str()` yields the shortest
+    decimal that round-trips the double, which IS "the cap's decimal value", and
+    `ROUND_FLOOR` then states the cap semantic directly.
+
+    FTRE does NOT exhibit either defect (18.8902 floors to 18.89 under every
+    implementation), which is exactly why both rules have to be STATED rather
+    than inferred from the worked example -- and why the two pinning tests are
+    each marked NOT DROPPABLE: the round-half-up case passes under the naive
+    floor, and the representation case passes under round-half-up.
+    """
+    return float(
+        _Decimal(str(float(zone_cap))).quantize(
+            _Decimal("0.01"), rounding=_ROUND_FLOOR))
+
 
 # =====================================================================
 # Phase 21 Arc 21-B -- the prepared-order form + the execution-parity ledger.

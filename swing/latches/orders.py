@@ -30,6 +30,7 @@ from swing.latches.constants import (
     MANDATE_ORDER_TYPE_BREAKOUT,
     MANDATE_ORDER_TYPE_PULLBACK,
     MANDATE_ORDER_TYPES,
+    mandate_limit_price,
 )
 from swing.latches.models import Latch, LatchOrderJoin, OrderAlarm, RestingOrder
 
@@ -361,18 +362,38 @@ def mandate_shape_mismatch(
 
 
 def _agrees(order_price, latch_price) -> bool | None:
-    """`None` (UNKNOWN) when either side is absent -- never `False`."""
+    """`None` (UNKNOWN) when either side is absent -- never `False`.
+
+    IT COMPARES TWO PRICES; IT DOES NOT DERIVE ONE. The mandate's limit price
+    comes from `mandate_limit_price` at every call site below -- see
+    `_mandate_limit_of`. This function must never grow a rounding RULE of its
+    own: that is precisely the second definition CHARC's ruling deleted.
+    """
     if order_price is None or latch_price is None:
         return None
     return round(float(order_price), _PRICE_DP) == round(float(latch_price), _PRICE_DP)
+
+
+def _mandate_limit_of(latch: Latch) -> float:
+    """The limit price THIS latch's mandate carries -- the single-sourced one.
+
+    THE ONLY WAY THE COMPARATOR MAY OBTAIN A MANDATE LIMIT (CHARC ruling,
+    2026-07-30). Reading `latch.zone_cap` straight into `_agrees` re-derives the
+    mandate limit by a SECOND rule (`round`), and two independently-plausible
+    roundings of one quantity is the D6 class. On the live VSTS cap of 17.407
+    the two rules disagreed -- 17.40 emitted, 17.41 expected -- and the panel
+    called the operator's correct order a stray.
+    """
+    return mandate_limit_price(latch.zone_cap)
 
 
 def _match_latch(order: RestingOrder, ticker_latches: list[Latch]) -> Latch | None:
     """The latch whose FROZEN prices this order matches, or ``None``.
 
     STOP-family orders match on the trigger vs the latched pivot; a LIMIT-only
-    order (no stop) matches on the limit vs the zone cap. Ties break to the most
-    recent anchor.
+    order (no stop) matches on the limit vs THE MANDATE'S LIMIT PRICE -- the
+    value the framework actually emits, not a second rounding of the cap. Ties
+    break to the most recent anchor.
     """
     if order.stop_price is not None:
         hits = [
@@ -382,7 +403,7 @@ def _match_latch(order: RestingOrder, ticker_latches: list[Latch]) -> Latch | No
     elif order.limit_price is not None:
         hits = [
             x for x in ticker_latches
-            if _agrees(order.limit_price, x.zone_cap) is True
+            if _agrees(order.limit_price, _mandate_limit_of(x)) is True
         ]
     else:
         return None
@@ -406,9 +427,50 @@ def _pick_reference_order(orders: list[RestingOrder], latch: Latch) -> RestingOr
         return None
     for o in orders:
         if (_agrees(o.stop_price, latch.latched_pivot) is True
-                and _agrees(o.limit_price, latch.zone_cap) is True):
+                and _agrees(o.limit_price, _mandate_limit_of(latch)) is True):
             return o
     return orders[0]
+
+
+def _covers_mandate(order: RestingOrder, latch: Latch, *, attributed) -> bool:
+    """Is there an order IMPLEMENTING this mandate? PRESENCE + SHAPE ONLY.
+
+    RD's ruling, 2026-07-30: **`LATCH_ARMED_NO_RESTING_ORDER` keys on PRESENCE
+    and SHAPE -- order type, duration, stop leg, side -- NEVER on exact limit
+    equality.** An order one cent from the cap DOES implement the mandate: it is
+    a GTC buy limit at the zone edge. Calling that "no resting order" is not a
+    threshold problem, it is a FALSE STATEMENT, and it is the loudest alarm on
+    the panel firing against the operator's own correct behaviour. A limit-price
+    difference is a per-field DELTA, which is what the execution-parity ledger
+    exists to record; routing it into a presence alarm destroys an alarm channel
+    to report something the ledger already reports better.
+
+    `attributed` is the latch this order was price-attributed to (or `None`),
+    computed ONCE by the caller so the joins and the alarms cannot disagree.
+
+      * attributed to THIS latch                 -> coverage.
+      * attributed to NO latch                   -> coverage (plan A.9,
+        unchanged: a plausibly-mispriced attempt surfaces through the agreement
+        flags rather than a factually false "no order" alarm).
+      * attributed to ANOTHER latch              -> coverage IFF this order
+        carries NO STOP LEG. A limit-only order can only ever have been
+        attributed by LIMIT EQUALITY, and the limit may never key this alarm.
+        An order that DOES carry a stop trigger was attributed by that trigger
+        -- the stop leg is one of RD's named SHAPE keys -- so it genuinely
+        belongs to the other mandate and is not coverage of this one. That is
+        what preserves the post-supersede geometry: the old 18.34 stop-limit
+        does not cover the new 20.19 latch, and the naked live mandate is still
+        announced.
+
+    THE RULE ONLY EVER ADDS COVERAGE, never removes it, so it can only silence
+    FALSE alarms. Order-type and duration divergences are NOT routed here on
+    purpose: this alarm's own detail asserts that NO resting BUY order exists,
+    so firing it over a DAY order would manufacture a second false statement --
+    those travel as their own `mandate_shape_mismatch` line, which names them.
+    """
+    if attributed is latch or attributed is None:
+        return True
+    return order.stop_price is None
 
 
 def join_orders_to_latches(*, latches, orders):
@@ -460,7 +522,7 @@ def join_orders_to_latches(*, latches, orders):
                 else _agrees(reference.stop_price, latch.latched_pivot)),
             order_limit_agrees=(
                 None if reference is None
-                else _agrees(reference.limit_price, latch.zone_cap)),
+                else _agrees(reference.limit_price, _mandate_limit_of(latch))),
             indeterminate=ticker in indeterminate_tickers,
             # The size of the MATCHED set only (never the strays, which travel
             # separately and are already reported one by one). It is what lets
@@ -490,7 +552,7 @@ def join_orders_to_latches(*, latches, orders):
             continue
         covering = [
             o for o in resting_by_ticker.get(ticker, [])
-            if matched.get(o.order_id) is latch or matched.get(o.order_id) is None
+            if _covers_mandate(o, latch, attributed=matched.get(o.order_id))
         ]
         if covering:
             continue

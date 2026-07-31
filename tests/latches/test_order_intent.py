@@ -15,6 +15,7 @@ import pytest
 
 from swing.latches.identity import LatchIdentity
 from swing.latches.models import Latch
+from swing.latches.constants import mandate_limit_price
 from swing.latches.order_intent import (
     OrderDelta,
     PreparedOrderResult,
@@ -23,7 +24,6 @@ from swing.latches.order_intent import (
     compute_order_delta,
     compute_prepared_order,
     derivation_column_values,
-    quantize_limit_down,
     recompute_derived_display_values,
 )
 
@@ -70,7 +70,7 @@ def test_the_limit_is_the_zone_cap_quantized_DOWN_to_whole_cents():
     """ONE value, used in PreparedOrder.limit_price, the card, the hidden
     anchor, the anchor digest, the stored framework_limit_price,
     compute_shares's entry, compute_order_delta and every fixture."""
-    assert quantize_limit_down(FTRE_ZONE_CAP) == FTRE_LIMIT
+    assert mandate_limit_price(FTRE_ZONE_CAP) == FTRE_LIMIT
     res = _prepared()
     assert res.order.limit_price == FTRE_LIMIT
 
@@ -87,7 +87,7 @@ def test_a_cap_whose_third_decimal_rounds_UP_still_quantizes_DOWN():
     (`..._not_undercut_by_binary_representation`) exists and why neither may be
     deleted as covering the other.
     """
-    assert quantize_limit_down(18.8952) == 18.89
+    assert mandate_limit_price(18.8952) == 18.89
     assert round(18.8952, 2) == 18.90, (
         "the premise, asserted inline so it cannot rot: round-half-up DOES move "
         "this cap up, which is why FLOOR is required rather than preferred")
@@ -132,7 +132,7 @@ def test_a_whole_dollar_pivot_cap_is_not_undercut_by_binary_representation():
     assert _math.floor(cap * 100) / 100 == 145.22, (
         "the pre-fix premise, asserted inline so it cannot rot: the naive "
         "binary floor DOES undercut this cap by a cent")
-    assert quantize_limit_down(cap) == 145.23
+    assert mandate_limit_price(cap) == 145.23
     res = compute_prepared_order(
         latch=_ftre_latch(latched_pivot=141.00, latched_initial_stop=120.00,
                           zone_cap=cap),
