@@ -480,7 +480,11 @@ def test_the_stop_leg_ONE_SIDED_cell_fires_when_exactly_one_side_has_a_stop():
     `tests/latches/test_stop_leg_one_sided.py`."""
     fw = {"order_type": "STOP_LIMIT", "duration": "GOOD_TILL_CANCEL",
           "stop_price": 18.34, "limit_price": 18.89, "quantity": 9}
-    d = compute_order_delta(fw, dict(fw, stop_price=None))
+    # THE ACTUAL SIDE IS A PLAIN `LIMIT`, and that is load-bearing: an absence
+    # is a determinable fact only when that side's own order type establishes
+    # it. A `STOP_LIMIT` carrying no trigger is an unreadable leg, not an absent
+    # one, and is `unknown` -- pinned in `test_stop_leg_one_sided.py`.
+    d = compute_order_delta(fw, dict(fw, order_type="LIMIT", stop_price=None))
     assert d.stop_leg == "one_sided"
     assert d.stop_price_delta is None
     assert d.any_difference is True

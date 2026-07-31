@@ -462,12 +462,28 @@ def _covers_mandate(order: RestingOrder, latch: Latch, *, attributed) -> bool:
         does not cover the new 20.19 latch, and the naked live mandate is still
         announced.
 
-    THE RULE ONLY EVER ADDS COVERAGE, never removes it, so it can only silence
-    FALSE alarms. Order-type and duration divergences are NOT routed here on
-    purpose: this alarm's own detail asserts that NO resting BUY order exists,
-    so firing it over a DAY order would manufacture a second false statement --
-    those travel as their own `mandate_shape_mismatch` line, which names them.
+    ORDER TYPE AND DURATION ARE KEYS TOO, and they are enforced (Codex R1 MAJOR
+    on the ruling pass). They are named in the ruling, and the harm is the
+    FTRE failure mode itself: a DAY stop-limit expires tonight and leaves the
+    operator uncovered tomorrow, and a plain BUY `STOP` carries no cap at all --
+    neither implements the mandate, yet either used to SUPPRESS the critical
+    presence alarm merely by existing. Only the REGIME-INDEPENDENT half is
+    judged here (the pure join holds no price, so it cannot know which of the
+    two mandate forms applies): the type must be one of the two forms, and the
+    duration must be GTC. An ABSENT duration is not asserted against, exactly as
+    `mandate_shape_mismatch` documents -- unknown is not wrong.
+
+    THE ALARM'S DETAIL IS WRITTEN BY THE CALLER FROM `covering` VS THE ORDER
+    COUNT, so it never claims "NO resting BUY order" about a ticker that has
+    one. An alarm that fires on a true condition with a false explanation is
+    the same defect this ruling exists to remove.
     """
+    order_type = (order.order_type or "").upper()
+    if order_type and order_type not in MANDATE_ORDER_TYPES:
+        return False
+    duration = (order.duration or "").upper()
+    if duration and duration not in MANDATE_ORDER_DURATIONS:
+        return False
     if attributed is latch or attributed is None:
         return True
     return order.stop_price is None
@@ -550,20 +566,38 @@ def join_orders_to_latches(*, latches, orders):
             continue
         if ticker in indeterminate_tickers:
             continue
+        ticker_orders = resting_by_ticker.get(ticker, [])
         covering = [
-            o for o in resting_by_ticker.get(ticker, [])
+            o for o in ticker_orders
             if _covers_mandate(o, latch, attributed=matched.get(o.order_id))
         ]
         if covering:
             continue
+        # THE DETAIL MUST STAY TRUE IN BOTH CASES. "NO resting BUY order at the
+        # broker" is a FACT about the order book and it is FALSE when orders
+        # exist but none implements the mandate -- and an alarm that fires on a
+        # true condition with a false explanation is the same defect the
+        # presence/price ruling exists to remove. So the absence case keeps the
+        # original wording (which the operator has been reading since 21-A) and
+        # the shape case gets its own, naming what IS resting.
+        if ticker_orders:
+            detail = (
+                f"latch armed at pivot {latch.latched_pivot:.2f} "
+                f"(zone cap {latch.zone_cap:.2f}) with NO resting BUY order "
+                f"IMPLEMENTING it; {len(ticker_orders)} resting BUY order(s) on "
+                f"{ticker} are the wrong shape (mandate: a GTC "
+                f"{MANDATE_ORDER_TYPE_BREAKOUT} or {MANDATE_ORDER_TYPE_PULLBACK}"
+                f"); expires {latch.horizon_expiry.isoformat()}")
+        else:
+            detail = (
+                f"latch armed at pivot {latch.latched_pivot:.2f} "
+                f"(zone cap {latch.zone_cap:.2f}) with NO resting BUY order at "
+                f"the broker; expires {latch.horizon_expiry.isoformat()}")
         alarms.append(OrderAlarm(
             kind="LATCH_ARMED_NO_RESTING_ORDER",
             ticker=ticker,
             latch_candidate_id=latch.identity.candidate_id,
-            detail=(
-                f"latch armed at pivot {latch.latched_pivot:.2f} "
-                f"(zone cap {latch.zone_cap:.2f}) with NO resting BUY order at "
-                f"the broker; expires {latch.horizon_expiry.isoformat()}"),
+            detail=detail,
             severity="critical",
         ))
 

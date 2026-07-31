@@ -66,6 +66,38 @@ def test_the_symmetric_case_actual_carries_the_stop_and_framework_does_not():
     assert delta.any_difference is True
 
 
+def test_a_STOP_LIMIT_MISSING_its_trigger_is_UNKNOWN_not_one_sided():
+    """CODEX R1 MAJOR on the ruling pass. An absence is a FACT only when that
+    side's own order type establishes it.
+
+    A broker `STOP_LIMIT` carrying no stop price is not an order without a stop
+    leg -- it is an order whose TRIGGER WE FAILED TO READ. The broker payload is
+    unconstrained input and reaches `compute_order_delta` at prompt-render time,
+    so the schema CHECK that forbids persisting this shape on an
+    `accepted_by_broker` row does NOT cover the vector. Scoring it as a
+    determinable disagreement is the same error the ruling fixed, pointed the
+    other way: asserting an observation the instrument never made.
+    """
+    delta = compute_order_delta(
+        _FW_STOP_LIMIT,
+        {"order_type": "STOP_LIMIT", "duration": "GOOD_TILL_CANCEL",
+         "stop_price": None, "limit_price": 18.89, "quantity": 9})
+    assert delta.stop_leg == "unknown"
+    assert "stop_price" in delta.unknown_fields
+    assert delta.any_difference is None
+
+
+def test_an_UNKNOWN_broker_rendering_missing_a_trigger_is_also_UNKNOWN():
+    """The same rule at the other unmapped shape: `UNKNOWN` is precisely the
+    canonicalisation for a broker order type the framework could not read, so it
+    cannot establish that the order has no stop leg."""
+    delta = compute_order_delta(
+        _FW_STOP_LIMIT,
+        {"order_type": "UNKNOWN", "duration": "GOOD_TILL_CANCEL",
+         "stop_price": None, "limit_price": 18.89, "quantity": 9})
+    assert delta.stop_leg == "unknown"
+
+
 def test_an_UNOBSERVED_actual_side_is_still_UNKNOWN():
     """THE LINE RD DREW. `unknown` keeps its meaning -- the instrument could
     not observe -- and this case must NOT be swept into the numerator."""

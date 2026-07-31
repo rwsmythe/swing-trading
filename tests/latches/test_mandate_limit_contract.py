@@ -155,6 +155,56 @@ def test_a_one_cent_limit_difference_is_a_DELTA_and_NOT_a_PRESENCE_ALARM():
     assert delta.any_difference is True
 
 
+def test_a_DAY_order_does_NOT_cover_the_mandate_and_the_alarm_stays_TRUTHFUL():
+    """CODEX R1 MAJOR on the ruling pass. Duration and order type are NAMED
+    shape keys in RD's ruling, and the harm is the FTRE failure mode itself: a
+    DAY order expires tonight and leaves the operator uncovered tomorrow, yet it
+    used to SUPPRESS the critical presence alarm merely by existing.
+
+    AND THE ALARM MUST NOT LIE WHILE FIXING IT: the detail may not claim "NO
+    resting BUY order at the broker" about a ticker that plainly has one. An
+    alarm firing on a true condition with a false explanation is the same defect
+    the presence/price half of this ruling removes.
+    """
+    live = _latch(9401, cap=VSTS_CAP)
+    day = RestingOrder(
+        order_id="7011", ticker="VSTS", instruction="BUY", quantity=40.0,
+        order_type="LIMIT", limit_price=VSTS_LIMIT, stop_price=None,
+        status="WORKING", duration="DAY")
+    _, alarms = join_orders_to_latches(latches=[live], orders=[day])
+    presence = [a for a in alarms if a.kind == "LATCH_ARMED_NO_RESTING_ORDER"]
+    assert len(presence) == 1
+    assert "NO resting BUY order at the broker" not in presence[0].detail
+    assert "wrong shape" in presence[0].detail
+
+
+def test_a_PLAIN_BUY_STOP_carries_no_cap_and_does_not_cover_the_mandate():
+    """The stop-only order the R7 CRITICAL named: it has no limit leg at all, so
+    nothing stops the operator chasing. It is not one of the two mandate forms
+    and therefore is not coverage."""
+    live = _latch(9402, cap=VSTS_CAP)
+    stop_only = RestingOrder(
+        order_id="7012", ticker="VSTS", instruction="BUY", quantity=40.0,
+        order_type="STOP", limit_price=None, stop_price=VSTS_PIVOT,
+        status="WORKING", duration="GOOD_TILL_CANCEL")
+    _, alarms = join_orders_to_latches(latches=[live], orders=[stop_only])
+    assert "LATCH_ARMED_NO_RESTING_ORDER" in {a.kind for a in alarms}
+
+
+def test_an_ABSENT_duration_is_NOT_asserted_against():
+    """`mandate_shape_mismatch` deliberately does not assert against a payload
+    that simply does not carry a duration -- unknown is not wrong -- and the
+    coverage rule must not disagree with it, or an older payload shape would
+    make the panel permanently noisy."""
+    live = _latch(9403, cap=VSTS_CAP)
+    no_duration = RestingOrder(
+        order_id="7013", ticker="VSTS", instruction="BUY", quantity=40.0,
+        order_type="LIMIT", limit_price=VSTS_LIMIT, stop_price=None,
+        status="WORKING", duration=None)
+    _, alarms = join_orders_to_latches(latches=[live], orders=[no_duration])
+    assert "LATCH_ARMED_NO_RESTING_ORDER" not in {a.kind for a in alarms}
+
+
 def test_a_STOP_LEG_still_keys_the_presence_alarm_the_post_supersede_geometry():
     """THE PROTECTION THAT MAY NOT REGRESS. The stop leg is a NAMED SHAPE key
     in RD's ruling, and it is what 21-A's post-supersede case rests on: an old

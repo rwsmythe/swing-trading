@@ -138,14 +138,25 @@ def test_the_dataclass_admits_the_acted_manually_row():
 # MIRROR 3 -- the ROUTE guard (`POST /latches/intent`).
 # --------------------------------------------------------------------------
 def test_the_route_guard_is_present_and_names_the_same_contract():
-    """THE THIRD MIRROR, pinned by SOURCE PRESENCE rather than re-driven through
-    a browser here (the route's own rejection is exercised in
-    `tests/web/test_routes/test_latches_intent_route.py`). What this asserts is
-    the #11 property the other two tests cannot: that all THREE layers exist,
-    so a future reader deleting one is told which siblings it had."""
+    """THE THIRD MIRROR. The route's BEHAVIOUR is driven end to end in
+    `tests/web/test_routes/test_latches_intent_route.py`
+    (`test_only_an_ACTED_MANUALLY_attestation_may_carry_a_broker_order_id`);
+    what THIS
+    asserts is the #11 property neither of the other two tests can -- that all
+    THREE layers exist, so a reader deleting one is told which siblings it had.
+
+    IT PINS THE GUARD'S EXACT PREDICATE, not two tokens that appear all over the
+    file (Codex R1 MINOR on the ruling pass). Searching for `acted_manually`
+    anywhere in a module that also builds the attest roster would keep passing
+    with the conditional deleted and only its message left behind -- a test that
+    cannot fail is not a mirror.
+    """
     from pathlib import Path
 
     src = Path(__file__).resolve().parents[2] / "swing/web/routes/latches.py"
     text = src.read_text(encoding="utf-8")
-    assert "acted_manually" in text
-    assert "actual_broker_order_id" in text
+    assert 'answer["attested_disposition"] != "acted_manually"' in text, (
+        "the route-side half of the contract is GONE; the schema and the "
+        "dataclass still hold, but the operator now gets a 500-shaped failure "
+        "instead of a named 400")
+    assert 'kind == "attest" and answer["actual_broker_order_id"]' in text

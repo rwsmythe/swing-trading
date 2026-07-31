@@ -19,6 +19,7 @@ from swing.latches.constants import (
     LATCH_ZONE_CAP_PCT,
     MANDATE_ORDER_DURATIONS,
     MANDATE_ORDER_TYPE_BREAKOUT,
+    MANDATE_ORDER_TYPE_PULLBACK,
     mandate_limit_price,
 )
 from swing.recommendations.sizing import compute_shares
@@ -659,7 +660,17 @@ def _resolve_stop_leg(fw: dict, ac: dict) -> tuple[str, float | None]:
     `one_sided` carries NO numeric delta: there is no arithmetic difference
     between a price and an absent leg. The `stop_price_delta is set IFF
     compared` invariant is therefore unchanged.
+
+    AN ABSENCE IS ONLY A FACT WHEN THAT SIDE'S OWN ORDER TYPE ESTABLISHES IT
+    (Codex R1 MAJOR on this pass). A `STOP_LIMIT` carrying no stop price is not
+    an order without a stop leg -- it is an order whose TRIGGER WE FAILED TO
+    READ, and the broker payload is unconstrained input, so it is reachable at
+    the prompt-render path even though the schema forbids persisting it on an
+    `accepted_by_broker` row. Scoring that as a determinable disagreement is the
+    same error as the one this ruling fixed, pointed the other way: it asserts
+    an observation the instrument did not make.
     """
+    fw_type = fw.get("order_type")
     ac_type = ac.get("order_type")
     fw_stop = _round2(fw.get("stop_price"))
     ac_stop = _round2(ac.get("stop_price"))
@@ -670,6 +681,14 @@ def _resolve_stop_leg(fw: dict, ac: dict) -> tuple[str, float | None]:
     if fw_stop is None and ac_stop is None:
         return "both_absent", None
     if fw_stop is None or ac_stop is None:
+        # Exactly one side carries a trigger. The OTHER side's absence is a
+        # determinable fact only if its declared type is the one that PROVABLY
+        # has no stop leg; anything else (a STOP_LIMIT missing its trigger, an
+        # UNKNOWN broker rendering, an unobserved framework side) is a failure
+        # to observe.
+        absent_type = ac_type if ac_stop is None else fw_type
+        if absent_type != MANDATE_ORDER_TYPE_PULLBACK:
+            return "unknown", None
         return "one_sided", None
     return "compared", round(ac_stop - fw_stop, _PRICE_DP)
 
