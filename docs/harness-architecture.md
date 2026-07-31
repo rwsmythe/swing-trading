@@ -108,6 +108,23 @@ A commissioning/dispatch brief routes through CHARC for a pre-dispatch architect
 
 Everything else dispatches without CHARC. The orchestrator **self-certifies** "no tripwire crossed" in the brief; false negatives are caught at phase audit and feed back as a process lesson. **Rationale:** the tripwires are the *mechanism* of the swimlane design — they route exactly the cross-scope judgments a scope-limited role can't make (§4) UP to the role that can. A per-brief gate was rejected as process bloat; the tripwire gate + phase audit is the balance.
 
+## 5.1 THE REVIEW LADDER — what each instrument STRUCTURALLY cannot see (adopted 2026-07-30; every rung demonstrated in one week on Phase 21)
+
+§5 routes *what* gets reviewed. This bounds *what a review can be credited for*. Each rung has a blind spot that is a property of the instrument, not of the reviewer's care — so **no rung may be credited as coverage for the rung below it.**
+
+| Instrument | Reads | STRUCTURALLY cannot see | Demonstrated |
+|---|---|---|---|
+| **Prose / coherence review** (adversarial rounds) | the document against **ITSELF** | fidelity to an EXTERNAL authority — it has no access to the authority being checked. **And it has no correctness floor:** its stopping condition is a reviewer running out of things to say about N lines, which is not a property of the artifact | 21-B: 30 rounds, cascade to 67%; the view-conflation against an RD ruling found only by accident at R30 because both statements happened to sit in one document |
+| **Ruling-fidelity sweep** | the encoding against the **AUTHORITY** | **whether the encoding is WRITABLE.** It verifies MATCH, never implementability. Terminates on the ruling list (its advantage over prose review) | 21-B: the sweep checked §E.3 against the partial-coverage ruling and found it faithful — *which it was* — while three of four options in that same feature returned 400 |
+| **Byte tests** | code against **inputs they construct** | that **no human path reaches the feature.** Every validity test built its own POST, *which is exactly why they all passed* over an unreachable prompt | 21-B: `intent_kind=validity` reachable only by handcrafted HTTP; the handler was correct, the only missing thing was the sole path a human could use |
+| **Operator witness** | the running system, **by executing it** | (the backstop — but only what the script actually drives) | 21-B: the validity prompt and the cancel control were BOTH inert affordances that every other rung passed |
+
+**The load-bearing consequences:**
+
+- **Only execution finds an unimplementable spec or an unreachable feature.** A clause its own schema forbids is not a specification, it is a defect in the plan — and no amount of reading finds it, because reading is what produced it.
+- **The witness is the load-bearing gate, not the ceremonial one.** Twice in one week it was the only rung that could have caught the defect (RD's phrasing, on his own instrument). A witness script written to a stale brief inherits every blind spot above it, so **when affordances change late, the script is rewritten, not re-run** — and it must drive the ZERO-DATA state too, since a flattering null is invisible to every rung that does not look at a screen.
+- **A defect found at one rung generalises to a question for the whole manifest.** The cancel control was found only because someone asked *"what else was in the manifest and is missing in the same way?"* — the right response to a defect is that question, not a patch to the instance.
+
 ## 6. Director current-state pointer (cold-start findability)
 
 Each director keeps a single **`docs/<role>-state.md`** (e.g. `charc-state.md`, `rd-state.md`) — the **current-state pointer**, **OVERWRITTEN each session, never appended**. The director **bootstrap reads it FIRST** (deterministic, cheap), then the role charter for stable role/rules context.
