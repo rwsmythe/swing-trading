@@ -317,6 +317,7 @@ def classify_close_provenance(
 
 def mandate_shape_mismatch(
     order: RestingOrder, *, latched_pivot=None, last_close=None,
+    zone_cap=None,
 ) -> str | None:
     """Why this order is not the MANDATED order shape, or None.
 
@@ -373,9 +374,17 @@ def mandate_shape_mismatch(
     if order_type == MANDATE_ORDER_TYPE_BREAKOUT and order.stop_price is None:
         return (f"order type is {MANDATE_ORDER_TYPE_BREAKOUT} but it carries NO "
                 "stop trigger, so it cannot fire at the latched pivot")
+    # GATED ON THE MANDATE'S OWN GEOMETRY, exactly as `_covers_mandate` is
+    # (Codex R6 MAJOR): cent-flooring collapses the zone on a sub-dollar pivot,
+    # where the framework itself emits stop == limit. An ungated rule would
+    # declare the framework's OWN order malformed. `zone_cap` ABSENT means the
+    # caller cannot say, and an absent value is never asserted against here.
     if (order_type == MANDATE_ORDER_TYPE_BREAKOUT
             and order.stop_price is not None
             and order.limit_price is not None
+            and zone_cap is not None
+            and latched_pivot is not None
+            and mandate_limit_price(zone_cap) > latched_pivot
             and order.limit_price <= order.stop_price):
         return (f"its limit {order.limit_price:.2f} is not ABOVE its stop "
                 f"trigger {order.stop_price:.2f}, so no zone cap was observed "
@@ -458,7 +467,9 @@ def _pick_reference_order(orders: list[RestingOrder], latch: Latch) -> RestingOr
     return orders[0]
 
 
-def _implements_mandate_shape(order: RestingOrder) -> bool:
+def _implements_mandate_shape(
+    order: RestingOrder, *, mandate_has_room: bool,
+) -> bool:
     """Could this order be a mandate order AT ALL, ignoring price and regime?
 
     THE REGIME-INDEPENDENT HALF ONLY. The pure join holds no last close, so it
@@ -511,12 +522,20 @@ def _implements_mandate_shape(order: RestingOrder) -> bool:
     # SUBSTITUTES the trigger into `price` (mappers.py:317-320), and
     # `to_resting_orders` then reads that back as `limit_price` because
     # STOP_LIMIT is limit-bearing -- so the `is None` guard above never sees the
-    # missing cap. The breakout mandate's cap is pivot x 1.03, STRICTLY ABOVE
-    # its trigger, so a limit that is not above the stop is either the collapsed
-    # value or a degenerate order; neither implements the mandate. This is a
-    # statement about the MANDATE SHAPE, so it does not depend on recognising
-    # the mapper's fallback.
-    if (order_type == MANDATE_ORDER_TYPE_BREAKOUT
+    # missing cap.
+    #
+    # IT IS GATED ON `mandate_has_room`, AND THAT GATE IS THE WHOLE POINT
+    # (Codex R6 MAJOR). "The cap is above the trigger" is true of the mandate
+    # only while cent-flooring leaves room: at pivot 0.25 the cap is 0.2575 and
+    # the framework ITSELF emits stop 0.25 / limit 0.25, and neither
+    # `candidates.pivot` nor `Latch` imposes a price floor that prevents it. An
+    # ungated rule therefore fires `LATCH_ARMED_NO_RESTING_ORDER` against THE
+    # EXACT ORDER THE FRAMEWORK INSTRUCTED -- the self-flagging class this whole
+    # pass exists to eliminate, re-created inside the fix for it. So the caller
+    # supplies whether THIS mandate's own cap clears its own trigger, and the
+    # check runs only then. It is a REQUIRED argument: a default would silently
+    # re-create the bug at the next call site.
+    if (mandate_has_room and order_type == MANDATE_ORDER_TYPE_BREAKOUT
             and order.stop_price is not None
             and order.limit_price <= order.stop_price):
         return False
@@ -524,6 +543,19 @@ def _implements_mandate_shape(order: RestingOrder) -> bool:
     # pullback form, so coherence is exactly "carries a trigger iff STOP_LIMIT".
     return (order.stop_price is not None) == (
         order_type == MANDATE_ORDER_TYPE_BREAKOUT)
+
+
+def _mandate_has_room(latch: Latch) -> bool:
+    """Does THIS mandate's own cap clear its own trigger?
+
+    Cent-flooring can collapse the 3% zone to nothing on a sub-dollar
+    pivot -- at 0.25 the cap is 0.2575 and the framework emits stop 0.25 /
+    limit 0.25 -- so 'the cap is above the trigger' is a property of the
+    GEOMETRY, not a universal truth about the mandate form. Read through
+    the single-sourced `mandate_limit_price`, so the comparison is against
+    the value the framework ACTUALLY EMITS rather than the raw cap.
+    """
+    return _mandate_limit_of(latch) > latch.latched_pivot
 
 
 def _covers_mandate(order: RestingOrder, latch: Latch, *, attributed) -> bool:
@@ -571,7 +603,8 @@ def _covers_mandate(order: RestingOrder, latch: Latch, *, attributed) -> bool:
     one. An alarm that fires on a true condition with a false explanation is
     the same defect this ruling exists to remove.
     """
-    if not _implements_mandate_shape(order):
+    if not _implements_mandate_shape(
+            order, mandate_has_room=_mandate_has_room(latch)):
         return False
     if attributed is latch or attributed is None:
         return True

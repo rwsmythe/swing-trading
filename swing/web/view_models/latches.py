@@ -2124,7 +2124,12 @@ def build_latch_orders_vm(
                 "the cap once price is at or above it")
         for o in join.orders:
             shape = mandate_shape_mismatch(
-                o, latched_pivot=lat.latched_pivot, last_close=last_close)
+                o, latched_pivot=lat.latched_pivot, last_close=last_close,
+                # The mandate's OWN geometry, so the collapsed-zone case (a
+                # sub-dollar pivot where cent-flooring leaves cap == pivot) is
+                # not reported as a malformed order -- it is what the framework
+                # itself emits there.
+                zone_cap=lat.zone_cap)
             if shape is not None:
                 disagreement_lines.append(
                     f"{lat.identity.ticker}: resting BUY order {o.order_id} "

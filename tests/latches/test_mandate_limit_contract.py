@@ -272,7 +272,8 @@ def test_an_order_with_NO_LIMIT_LEG_does_not_cover_the_mandate():
             f"a {order_type} with no cap does not implement the mandate")
         # ...and the explanation agrees with the alarm, per the R3 MINOR.
         reason = mandate_shape_mismatch(
-            capless, latched_pivot=VSTS_PIVOT, last_close=close)
+            capless, latched_pivot=VSTS_PIVOT, last_close=close,
+            zone_cap=VSTS_CAP)
         assert reason is not None and "NO limit price" in reason
 
 
@@ -400,7 +401,7 @@ def test_the_shape_EXPLANATION_agrees_with_the_shape_ALARM():
         status="WORKING", duration="GOOD_TILL_CANCEL")
     reason = mandate_shape_mismatch(
         stop_limit_no_trigger, latched_pivot=VSTS_PIVOT,
-        last_close=VSTS_PIVOT - 1.0)
+        last_close=VSTS_PIVOT - 1.0, zone_cap=VSTS_CAP)
     assert reason is not None and "NO stop trigger" in reason
 
 
@@ -439,3 +440,48 @@ def test_a_STOP_LEG_still_keys_the_presence_alarm_the_post_supersede_geometry():
     kinds = {a.kind for a in alarms}
     assert "LATCH_ARMED_NO_RESTING_ORDER" in kinds
     assert "ORDER_RESTING_LATCH_CLEARED" in kinds
+
+
+def test_a_COLLAPSED_ZONE_mandate_never_flags_the_framework_OWN_order():
+    """CODEX R6 MAJOR -- the self-flagging class, re-created inside the fix for
+    it, and caught by an executable probe rather than by reasoning.
+
+    Cent-flooring collapses the 3% zone on a sub-dollar pivot: at 0.25 the cap
+    is 0.2575 and `mandate_limit_price` floors it to 0.25, so THE FRAMEWORK
+    ITSELF emits a GTC STOP_LIMIT with stop 0.25 and limit 0.25. Neither
+    `candidates.pivot` nor `Latch` imposes a price floor that prevents that
+    geometry, so an ungated "the limit must be ABOVE the stop" rule fires the
+    critical presence alarm against THE EXACT ORDER THE FRAMEWORK INSTRUCTED.
+
+    That is the drumbeat-erosion class this entire pass exists to eliminate, so
+    the rule is gated on whether THIS mandate's own cap clears its own trigger.
+    """
+    from swing.latches.orders import mandate_shape_mismatch
+
+    penny = _latch(9701, cap=round(0.25 * 1.03, 4), pivot=0.25)
+    penny = Latch(
+        identity=penny.identity, latched_pivot=0.25, latched_initial_stop=0.20,
+        zone_cap=round(0.25 * 1.03, 4), anchor=penny.anchor,
+        horizon_expiry=penny.horizon_expiry, sessions_elapsed=1,
+        sessions_to_horizon=29, state="armed")
+    prepared = _order_intent.compute_prepared_order(
+        latch=penny, regime_order_type="STOP_LIMIT", regime_close=0.24,
+        regime_close_session="2026-07-29",
+        sizing_inputs=_order_intent.SizingInputs(
+            real_equity=1234.56, equity_floor=7500.0, sizing_equity=7500.0,
+            max_risk_pct=0.005, position_pct_cap=0.15)).order
+    assert prepared.stop_price == prepared.limit_price == 0.25, (
+        "the premise, asserted inline: flooring leaves the zone with NO room "
+        "here, so the framework's own order has limit == stop")
+
+    resting = RestingOrder(
+        order_id="7041", ticker="VSTS", instruction="BUY",
+        quantity=float(prepared.quantity), order_type=prepared.order_type,
+        limit_price=prepared.limit_price, stop_price=prepared.stop_price,
+        status="WORKING", duration=prepared.duration)
+    _, alarms = join_orders_to_latches(latches=[penny], orders=[resting])
+    assert [a.kind for a in alarms] == [], (
+        "the framework must never flag its own emitted order")
+    assert mandate_shape_mismatch(
+        resting, latched_pivot=penny.latched_pivot, last_close=0.24,
+        zone_cap=penny.zone_cap) is None
