@@ -337,6 +337,15 @@ def mandate_shape_mismatch(
     not become permanently noisy on shapes it cannot see (real Schwab payloads
     DO carry `duration`), and an absent/unusable price leaves the regime unknown
     so BOTH forms are accepted.
+
+    STOP-LEG COHERENCE IS REPORTED HERE TOO, so this and
+    `_implements_mandate_shape` cannot say different things about the same order
+    (Codex R3 MINOR). Without it a `LIMIT` carrying a stop trigger produced a
+    critical "wrong shape" presence alarm while the operator-facing shape line
+    said nothing at all about it -- an alarm with no explanation beside it, which
+    is how an alarm stops being believed. It is REGIME-INDEPENDENT: the leg is
+    required by the breakout form and forbidden by the pullback form, so an
+    order that disagrees with ITS OWN declared type is wrong in either regime.
     """
     order_type = (order.order_type or "").upper()
     expected = expected_mandate_order_type(
@@ -358,6 +367,13 @@ def mandate_shape_mismatch(
     duration = (order.duration or "").upper()
     if duration and duration not in MANDATE_ORDER_DURATIONS:
         return f"duration is {duration}, not GOOD_TILL_CANCEL"
+    if order_type == MANDATE_ORDER_TYPE_BREAKOUT and order.stop_price is None:
+        return (f"order type is {MANDATE_ORDER_TYPE_BREAKOUT} but it carries NO "
+                "stop trigger, so it cannot fire at the latched pivot")
+    if order_type == MANDATE_ORDER_TYPE_PULLBACK and order.stop_price is not None:
+        return (f"order type is {MANDATE_ORDER_TYPE_PULLBACK} but it CARRIES a "
+                f"stop trigger ({order.stop_price:.2f}); a pullback mandate has "
+                "no stop leg")
     return None
 
 

@@ -141,9 +141,14 @@ def test_a_one_cent_limit_difference_is_a_DELTA_and_NOT_a_PRESENCE_ALARM():
     assert "LATCH_ARMED_NO_RESTING_ORDER" not in {a.kind for a in alarms}, (
         "an order one cent from the cap DOES implement the mandate; calling it "
         "'no resting order' is a false statement, not a threshold problem")
-    assert joins[live.identity.candidate_id] is not None
+    # THE ORDER IS NOT SILENTLY DROPPED: it is still reported, on the channel
+    # that describes it truthfully -- it does match the CLEARED mandate's price
+    # exactly, and that latch is cleared.
+    assert "ORDER_RESTING_LATCH_CLEARED" in {a.kind for a in alarms}
 
-    # ... and the difference IS reported, through the delta channel.
+    # ... and the one-cent difference is a DELTA by construction: the same
+    # comparison the parity ledger performs, over the SINGLE-SOURCED mandate
+    # limit, yields a per-field difference rather than an absence.
     delta = compute_order_delta(
         {"order_type": "LIMIT", "duration": "GOOD_TILL_CANCEL",
          "stop_price": None, "limit_price": mandate_limit_price(live.zone_cap),
@@ -153,6 +158,17 @@ def test_a_one_cent_limit_difference_is_a_DELTA_and_NOT_a_PRESENCE_ALARM():
          "quantity": int(order.quantity)})
     assert delta.limit_price_delta == -0.01
     assert delta.any_difference is True
+    # WHAT THIS TEST DOES *NOT* CLAIM, STATED SO THE NEXT READER IS NOT MISLED
+    # (Codex R3 MAJOR): in THIS two-latch geometry the order stays attributed to
+    # the CLEARED latch, so the LIVE latch's join carries no order and the panel
+    # routes no limit delta to it. The `compute_order_delta` call above is the
+    # ledger's comparison performed directly, NOT a demonstration that the panel
+    # delivers it here. Whether a limit-only order should re-attribute to the
+    # LIVE mandate is an ATTRIBUTION-SEMANTICS question (21-A settled attribution
+    # by director ruling) and is FLAGGED UPWARD, not decided here.
+    assert joins[live.identity.candidate_id].orders == (), (
+        "pinning the KNOWN residual rather than asserting something vacuous: "
+        "if attribution is later re-ruled, this test must be revisited")
 
 
 def test_a_DAY_order_does_NOT_cover_the_mandate_and_the_alarm_stays_TRUTHFUL():
@@ -247,6 +263,35 @@ def test_a_STOP_LIMIT_MISSING_its_trigger_does_not_cover_the_mandate():
         status="WORKING", duration="GOOD_TILL_CANCEL")
     _, alarms = join_orders_to_latches(latches=[live], orders=[malformed])
     assert "LATCH_ARMED_NO_RESTING_ORDER" in {a.kind for a in alarms}
+
+
+def test_the_shape_EXPLANATION_agrees_with_the_shape_ALARM():
+    """CODEX R3 MINOR. `mandate_shape_mismatch` writes the operator-facing
+    explanation; `_implements_mandate_shape` decides the critical presence
+    alarm. They must not disagree about the same order, or the panel raises an
+    alarm with no explanation beside it -- which is how an alarm stops being
+    believed.
+    """
+    from swing.latches.orders import mandate_shape_mismatch
+
+    limit_with_stop = RestingOrder(
+        order_id="7017", ticker="VSTS", instruction="BUY", quantity=40.0,
+        order_type="LIMIT", limit_price=VSTS_LIMIT, stop_price=VSTS_PIVOT,
+        status="WORKING", duration="GOOD_TILL_CANCEL")
+    # In the PULLBACK regime the expected type IS `LIMIT`, so the type check
+    # passes and only the leg coherence can catch it.
+    reason = mandate_shape_mismatch(
+        limit_with_stop, latched_pivot=VSTS_PIVOT, last_close=VSTS_PIVOT + 1.0)
+    assert reason is not None and "stop trigger" in reason
+
+    stop_limit_no_trigger = RestingOrder(
+        order_id="7018", ticker="VSTS", instruction="BUY", quantity=40.0,
+        order_type="STOP_LIMIT", limit_price=VSTS_LIMIT, stop_price=None,
+        status="WORKING", duration="GOOD_TILL_CANCEL")
+    reason = mandate_shape_mismatch(
+        stop_limit_no_trigger, latched_pivot=VSTS_PIVOT,
+        last_close=VSTS_PIVOT - 1.0)
+    assert reason is not None and "NO stop trigger" in reason
 
 
 def test_an_ABSENT_duration_is_NOT_asserted_against():

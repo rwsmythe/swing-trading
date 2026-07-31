@@ -2796,10 +2796,16 @@ class LatchOrderIntent:
             # rule the validity row's observed side already obeys.
             #
             # THE ROUTE GUARD ALONE WAS ONE LAYER. `record_intent` is reachable
-            # from anywhere, so the contract belongs on the dataclass too. The
-            # SCHEMA half is deliberately NOT added here: that is a MIGRATION
-            # edit this dispatch is not authorised to make, and it is flagged
-            # upward rather than slipped in.
+            # from anywhere, so the contract belongs on the dataclass too.
+            #
+            # ALL THREE MIRRORS NOW HOLD (CHARC + RD, 2026-07-30). The SCHEMA
+            # half was added to migration `0033` while it was still UNAPPLIED --
+            # a text edit then, a new migration plus a full table rebuild after
+            # it ships, because SQLite cannot add a CHECK to an existing table.
+            # A raw INSERT is therefore constrained too, which is what makes the
+            # project's cite-the-constraint adjudication rule SOUND for this
+            # column. All three are pinned together in
+            # `tests/data/test_attest_broker_order_id_contract.py`.
             raise ValueError(
                 "only an `acted_manually` attestation may carry "
                 "actual_broker_order_id; an attestation that you did NOT act "
