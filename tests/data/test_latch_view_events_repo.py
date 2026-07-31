@@ -339,3 +339,67 @@ def test_an_OUT_OF_ORDER_loser_still_merges_its_actionable_claim(
         "the last-view fields carry an ORDERING claim and never move backwards")
     assert row.first_viewed_ts == "2026-07-29T15:00:00"
     assert row.view_count == 2
+
+
+def test_the_NEWER_decision_is_made_IN_SQL_against_the_CURRENT_row(
+        conn_and_identity, monkeypatch):
+    """ITEM 4 -- the documented CLAUDE.md SELECT-then-INSERT family, closed at
+    the last remaining seam (RD + CHARC, 2026-07-30).
+
+    `_merge` decided "is this stamp newer?" in PYTHON, from a row it had read
+    EARLIER. Between that SELECT and the UPDATE another writer can advance the
+    row, and the stale comparison then moves `last_viewed_ts`,
+    `latch_state_at_last_view` and `actionable_at_last_view` BACKWARDS onto an
+    older render.
+
+    THE MEASUREMENT STAKE (RD): a lost or duplicated view row moves a
+    classification between LAPSE and AWAY, so this is not cosmetic.
+
+    THE INTERLEAVING IS SIMULATED AT THE EXACT SEAM: `get_view` returns the row
+    as it was at T1 while the DB has already advanced to T3 -- which is what a
+    concurrent writer landing between the read and the write looks like from
+    inside `_merge`. The submitted stamp T2 is NEWER than the stale snapshot and
+    OLDER than the current row.
+
+    PRE-FIX: `newer = T2 >= T1` is True -> the UPDATE writes T2 -> the row goes
+             BACKWARDS from T3 and reports `withheld` as its last view state.
+    POST-FIX: the CASE evaluates `? >= last_viewed_ts` against the CURRENT row
+             (T3) -> False -> nothing moves. `view_count` and
+             `actionable_ever_viewed` still merge, because neither carries an
+             ordering claim.
+    """
+    from swing.data.repos import latch_view_events as repo
+
+    conn, identity = conn_and_identity
+    with conn:
+        repo.record_view(
+            conn, identity=identity, view_session_date="2026-07-29",
+            viewed_ts="2026-07-29T09:00:00", latch_state="armed",
+            surface="latch_panel", actionable=1)
+    stale = repo.get_view(conn, candidate_id=identity.candidate_id,
+                          view_session_date="2026-07-29",
+                          surface="latch_panel")
+    # The concurrent writer lands: the row is now at T3 / order_resting.
+    with conn:
+        conn.execute(
+            "UPDATE latch_view_events SET last_viewed_ts = ?, "
+            "latch_state_at_last_view = ?, actionable_at_last_view = ? "
+            "WHERE view_event_id = ?",
+            ("2026-07-29T15:00:00", "order_resting", 1, stale.view_event_id))
+
+    monkeypatch.setattr(repo, "get_view", lambda *a, **k: stale)
+    with conn:
+        repo.record_view(
+            conn, identity=identity, view_session_date="2026-07-29",
+            viewed_ts="2026-07-29T12:00:00", latch_state="armed",
+            surface="latch_panel", actionable=0)
+
+    monkeypatch.undo()
+    row = repo.get_view(conn, candidate_id=identity.candidate_id,
+                        view_session_date="2026-07-29", surface="latch_panel")
+    assert row.last_viewed_ts == "2026-07-29T15:00:00", (
+        "the stale snapshot must not be allowed to decide 'newer'")
+    assert row.latch_state_at_last_view == "order_resting"
+    assert row.actionable_at_last_view == 1
+    assert row.view_count == 2, "the count carries no ordering claim"
+    assert row.actionable_ever_viewed == 1

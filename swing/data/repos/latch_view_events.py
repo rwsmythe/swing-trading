@@ -141,19 +141,33 @@ def record_view(
         # `actionable_ever_viewed` is MONOTONIC and carries no ordering claim, so
         # it merges either way: it says an actionable render HAPPENED, not when.
         # `view_count` likewise counts views rather than ordering them.
-        newer = viewed_ts >= existing.last_viewed_ts
+        #
+        # THE `newer` TEST LIVES IN SQL, EVALUATED AGAINST THE ROW BEING UPDATED
+        # (RD + CHARC, 2026-07-30 -- the documented CLAUDE.md SELECT-then-INSERT
+        # family). Deciding it in Python from `existing` compares against a row
+        # read EARLIER: another writer can advance `last_viewed_ts` in between,
+        # and the stale comparison then pushes the last-view fields BACKWARDS
+        # onto an older render. The measurement stake is not cosmetic -- a lost
+        # or duplicated view row moves a classification between LAPSE and AWAY.
+        #
+        # SQLite evaluates EVERY `SET` expression against the ORIGINAL row, so
+        # all three `CASE`s see the same pre-update `last_viewed_ts` and cannot
+        # disagree with each other about which render won.
         conn.execute(
             "UPDATE latch_view_events SET "
-            "last_viewed_ts = CASE WHEN ? THEN ? ELSE last_viewed_ts END, "
+            "last_viewed_ts = "
+            "    CASE WHEN ? >= last_viewed_ts THEN ? ELSE last_viewed_ts END, "
             "latch_state_at_last_view = "
-            "    CASE WHEN ? THEN ? ELSE latch_state_at_last_view END, "
+            "    CASE WHEN ? >= last_viewed_ts THEN ? "
+            "         ELSE latch_state_at_last_view END, "
             "actionable_at_last_view = "
-            "    CASE WHEN ? THEN ? ELSE actionable_at_last_view END, "
+            "    CASE WHEN ? >= last_viewed_ts THEN ? "
+            "         ELSE actionable_at_last_view END, "
             "view_count = view_count + 1, "
             "actionable_ever_viewed = MAX(actionable_ever_viewed, ?) "
             "WHERE view_event_id = ?",
-            (newer, viewed_ts, newer, latch_state, newer, actionable,
-             actionable, existing.view_event_id))
+            (viewed_ts, viewed_ts, viewed_ts, latch_state, viewed_ts,
+             actionable, actionable, existing.view_event_id))
         return int(existing.view_event_id)
 
     existing = get_view(
