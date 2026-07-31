@@ -276,6 +276,47 @@ def test_an_order_with_NO_LIMIT_LEG_does_not_cover_the_mandate():
         assert reason is not None and "NO limit price" in reason
 
 
+def test_a_capless_STOP_LIMIT_FROM_THE_REAL_MAPPER_does_not_cover_the_mandate():
+    """CODEX R5 MAJOR -- and the reason it survived the fix above is the
+    synthetic-fixture-vs-real-emitter class, caught here by DRIVING THE
+    PRODUCTION CHAIN instead of constructing the value being asserted.
+
+    When Schwab omits `price` but supplies `stopPrice`,
+    `map_orders_to_fill_candidates` SUBSTITUTES the trigger into `price`
+    (`mappers.py:317-320`), and `to_resting_orders` reads it back as
+    `limit_price` because STOP_LIMIT is limit-bearing. So the raw payload has NO
+    cap while the mapped order APPEARS to have one -- the `limit_price is None`
+    guard never sees it, and a hand-built `RestingOrder(limit_price=None)` never
+    reproduces it.
+
+    The rule applied is about the MANDATE, not about the mapper: the breakout
+    cap is pivot x 1.03, STRICTLY above the trigger.
+    """
+    from swing.integrations.schwab.mappers import map_orders_to_fill_candidates
+
+    raw = [{
+        "orderId": 7031, "status": "WORKING", "orderType": "STOP_LIMIT",
+        "duration": "GOOD_TILL_CANCEL", "stopPrice": VSTS_PIVOT,
+        "enteredTime": "2026-07-27T13:30:00+0000",
+        "orderLegCollection": [{
+            "instruction": "BUY", "quantity": 40,
+            "instrument": {"symbol": "VSTS"}}],
+    }]
+    mapped = map_orders_to_fill_candidates(raw)
+    resting = _orders.to_resting_orders(mapped)
+    assert len(resting) == 1
+    assert resting[0].limit_price == VSTS_PIVOT, (
+        "the PREMISE, asserted inline so it cannot rot: the mapper INVENTS a "
+        "cap equal to the trigger, which is exactly why an is-None guard is "
+        "not enough")
+
+    live = _latch(9601, cap=VSTS_CAP)
+    _, alarms = join_orders_to_latches(latches=[live], orders=list(resting))
+    assert "LATCH_ARMED_NO_RESTING_ORDER" in {a.kind for a in alarms}, (
+        "an order with no observed cap cannot enforce the zone, so it does not "
+        "implement the mandate no matter what the mapper substituted")
+
+
 def test_an_UNREAD_order_type_cannot_ASSERT_coverage():
     """CODEX R2 MAJOR. `SchwabOrderResponse.order_type` is EXPLICITLY allowed to
     be empty ("must be empty or in ...") and the mapper defaults a missing

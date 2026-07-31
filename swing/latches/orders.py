@@ -373,6 +373,13 @@ def mandate_shape_mismatch(
     if order_type == MANDATE_ORDER_TYPE_BREAKOUT and order.stop_price is None:
         return (f"order type is {MANDATE_ORDER_TYPE_BREAKOUT} but it carries NO "
                 "stop trigger, so it cannot fire at the latched pivot")
+    if (order_type == MANDATE_ORDER_TYPE_BREAKOUT
+            and order.stop_price is not None
+            and order.limit_price is not None
+            and order.limit_price <= order.stop_price):
+        return (f"its limit {order.limit_price:.2f} is not ABOVE its stop "
+                f"trigger {order.stop_price:.2f}, so no zone cap was observed "
+                "(the broker payload may have carried no limit at all)")
     if order_type == MANDATE_ORDER_TYPE_PULLBACK and order.stop_price is not None:
         return (f"order type is {MANDATE_ORDER_TYPE_PULLBACK} but it CARRIES a "
                 f"stop trigger ({order.stop_price:.2f}); a pullback mandate has "
@@ -498,6 +505,20 @@ def _implements_mandate_shape(order: RestingOrder) -> bool:
     # the zone would have read as implementing it. Same class as the stop-only
     # order the R7 CRITICAL named, on the other leg.
     if order.limit_price is None:
+        return False
+    # ...AND AN INVENTED CAP IS NOT A CAP (Codex R5 MAJOR). When Schwab omits
+    # `price` but supplies `stopPrice`, `map_orders_to_fill_candidates`
+    # SUBSTITUTES the trigger into `price` (mappers.py:317-320), and
+    # `to_resting_orders` then reads that back as `limit_price` because
+    # STOP_LIMIT is limit-bearing -- so the `is None` guard above never sees the
+    # missing cap. The breakout mandate's cap is pivot x 1.03, STRICTLY ABOVE
+    # its trigger, so a limit that is not above the stop is either the collapsed
+    # value or a degenerate order; neither implements the mandate. This is a
+    # statement about the MANDATE SHAPE, so it does not depend on recognising
+    # the mapper's fallback.
+    if (order_type == MANDATE_ORDER_TYPE_BREAKOUT
+            and order.stop_price is not None
+            and order.limit_price <= order.stop_price):
         return False
     # The stop leg is REQUIRED by the breakout form and FORBIDDEN by the
     # pullback form, so coherence is exactly "carries a trigger iff STOP_LIMIT".
