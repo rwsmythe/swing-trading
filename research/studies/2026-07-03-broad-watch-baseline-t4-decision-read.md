@@ -77,7 +77,10 @@ The Phase-19 shadow-engine fix (risk-unit floor / ambiguous-entry gating; CHARC-
 
 ---
 
-## §8 CONFIRMATORY RE-READ — 2026-07-05 (the pre-committed §6 follow-up; VERDICT FINAL)
+## §8 CONFIRMATORY RE-READ — 2026-07-05 (the pre-committed §6 follow-up)
+
+> **WITHDRAWN 2026-08-01. THE VERDICT BELOW IS NO LONGER SUPPORTED.** A fixed-cohort longitudinal series (the June detections measured against successive nightly artifacts) shows this same cohort moving **−1.0000 → +0.2129 purely by aging**, with the −0.6370 below sitting on that curve at **58.8% closure**. Both §4 and §8 were measuring **how fast losers resolve**, not expectancy. **T4 is UNDETERMINED**; the replacement estimate is positive but not bankable. See [`2026-08-01-t4-maturity-withdrawal/README.md`](2026-08-01-t4-maturity-withdrawal/README.md). The text below is PRESERVED as the historical record of what was read on 2026-07-05 and why — it is not a live verdict.
+
 
 **Artifact:** `exports/research/shadow-expectancy-20260704T223859Z/` — the first full-corpus run on the 19-D-hardened engine (merged `f1add34c`; risk-unit floor 0.15 ADR-ratio, epsilon reader-clamp 1.0%, RD-ruled constants verified shipped). Same frozen 0026 criteria, same method as §2.
 
