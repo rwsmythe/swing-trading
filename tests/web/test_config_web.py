@@ -159,23 +159,28 @@ def test_web_config_ohlcv_fields_parsed_from_toml(tmp_path: Path):
     assert cfg.web.max_concurrent_ohlcv_fetches == 4
 
 
-def test_config_web_chase_factor_default_is_one_percent():
-    """Spec §3.1 — Config.web.chase_factor default = 0.01 (1%).
+def test_config_web_chase_factor_default_is_the_latch_zone_cap():
+    """Config.web.chase_factor's default IS the latch buy-zone cap.
 
-    Sourced from the 2026-04-25 entry-discipline framing: 'wait for pivot,
-    don't chase >1% above pivot'. The hyp-recs trade-prep expansion's
-    buy_limit = pivot × (1 + chase_factor). Phase 5 surfaces an editor;
-    this dispatch ships the storage + read path only.
+    SUPERSEDES the 0.01 assertion this test shipped with. That value came from
+    the 2026-04-25 entry-discipline framing ("wait for pivot, don't chase >1%
+    above pivot"), which the operator RETIRED on 2026-08-03 knowing it is a
+    loosening: arc 21-A freezes every entry mandate at pivot x 1.03 and the
+    latch panel prints that limit, so a 1% pad made the framework state two
+    different entry prices for one setup.
 
-    Discriminating-test: asserts both attribute existence AND the specific
-    0.01 value, so a default of 0.0 or 0.02 would fail.
+    Discriminating in BOTH directions. It fails on the retired 0.01, and it
+    fails on a hand-typed 0.03 that has drifted from LATCH_ZONE_CAP_PCT --
+    which is the whole point: a second constant that happens to equal the first
+    is the drift class this change removes.
     """
     from swing.config import Web
+    from swing.latches.constants import LATCH_ZONE_CAP_FRACTION
 
     web = Web()
-    assert hasattr(web, "chase_factor"), (
-        "spec §3.1 requires Config.web.chase_factor field"
+    assert hasattr(web, "chase_factor")
+    assert web.chase_factor == LATCH_ZONE_CAP_FRACTION, (
+        f"chase_factor default must BE the latch zone cap; got "
+        f"{web.chase_factor}"
     )
-    assert web.chase_factor == 0.01, (
-        f"chase_factor default must be 0.01 (1%); got {web.chase_factor}"
-    )
+    assert web.chase_factor != 0.01, "the retired pure-trigger default"

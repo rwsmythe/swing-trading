@@ -25,6 +25,7 @@ from swing.data.repos.watchlist import list_active_watchlist
 from swing.data.repos.weather import get_latest
 from swing.evaluation.dates import PageKind, action_session_for_run, topbar_session_date
 from swing.journal.stats import HypothesisProgress
+from swing.latches.constants import mandate_limit_price, zone_cap_for_pivot
 from swing.metrics.equity_resolver import (
     resolve_live_capital_denominator_dollars,
 )
@@ -833,7 +834,15 @@ def build_hyp_recs_expanded(
     return HypRecsExpandedVM(
         ticker=ticker,
         buy_stop=candidate.pivot,
-        buy_limit=candidate.pivot * (1.0 + cfg.web.chase_factor),
+        # THE SAME SINGLE SOURCE THE LATCH MANDATE USES (operator ruling,
+        # 2026-08-03): `zone_cap_for_pivot` is the latch derivation's own
+        # arithmetic and `mandate_limit_price` is the quantization the prepared
+        # order emits, so this surface cannot state an entry limit the framework
+        # would refuse to order. Neither is re-implemented here -- a second
+        # expression that agrees today is the item-6 drift class.
+        buy_limit=mandate_limit_price(
+            zone_cap_for_pivot(
+                candidate.pivot, cap_fraction=cfg.web.chase_factor)),
         sell_stop=candidate.initial_stop,
         chase_factor=cfg.web.chase_factor,
         current_balance=current_balance,

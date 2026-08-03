@@ -24,7 +24,10 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 
 from swing.evaluation.dates import session_offset, sessions_behind
-from swing.latches.constants import DEFAULT_LATCH_HORIZON_SESSIONS, LATCH_ZONE_CAP_PCT
+from swing.latches.constants import (
+    DEFAULT_LATCH_HORIZON_SESSIONS,
+    zone_cap_for_pivot,
+)
 from swing.latches.identity import LatchIdentity, parse_session_date
 from swing.latches.models import (
     DailyBar,
@@ -66,9 +69,10 @@ class _Draft:
 
     @property
     def zone_cap(self) -> float:
-        """The frozen buy-zone limit cap. Single-sourced here so the fill
-        heuristic and the finalized `Latch` cannot drift apart."""
-        return round(self.pivot * (1.0 + LATCH_ZONE_CAP_PCT / 100.0), 4)
+        """The frozen buy-zone limit cap. Single-sourced in
+        `swing/latches/constants.py` so the fill heuristic, the finalized
+        `Latch` and the dashboard's buy limit cannot drift apart."""
+        return zone_cap_for_pivot(self.pivot)
 
 
 @dataclass(frozen=True)

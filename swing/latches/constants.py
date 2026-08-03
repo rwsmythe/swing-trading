@@ -41,6 +41,38 @@ DEFAULT_LATCH_HORIZON_SESSIONS = 30
 
 # The settled latch semantics: buy-zone limit cap = pivot x 1.03.
 LATCH_ZONE_CAP_PCT = 3.0
+# The same quantity as a FRACTION, because that is the shape every consumer
+# outside this module actually wants (`Web.chase_factor` is a fraction, and so
+# is `zone_cap_for_pivot`'s parameter). Derived rather than typed a second time:
+# `0.03` written out anywhere else is the item-6 drift class -- a second
+# constant that happens to equal the first.
+LATCH_ZONE_CAP_FRACTION = LATCH_ZONE_CAP_PCT / 100.0
+
+
+def zone_cap_for_pivot(pivot, *, cap_fraction: float = LATCH_ZONE_CAP_FRACTION):
+    """THE buy-zone cap for a pivot -- the ONE place the arithmetic is written.
+
+    Extracted from `swing/latches/service.py:_Draft.zone_cap` (which now calls
+    it) so the dashboard's hypothesis-recommendation buy limit can derive from
+    the SAME expression the frozen latch cap derives from. A private copy in
+    each caller agrees today and drifts on the next edit; that is exactly how
+    21-A's comparator and 21-B's emitter came to disagree about VSTS.
+
+    THIS IS THE CAP, NOT THE ORDERABLE PRICE. It is a 4-decimal quantity and a
+    US equity limit order is penny-priced, so every DISPLAY and every ORDER puts
+    it through `mandate_limit_price` (which floors -- a cap that can drift up is
+    not a cap). Splitting the two is deliberate: the zone comparison wants the
+    true cap, the operator wants the price he can actually type.
+
+    `cap_fraction` exists for `cfg.web.chase_factor`, the operator's editable
+    pad. Its DEFAULT is the latch semantics, so an untouched config makes the
+    dashboard and the latch panel state one number for one pivot.
+
+    The 4-decimal rounding is 21-A's, preserved verbatim: it clips the binary
+    artifact of `pivot * 1.03` without pretending to more precision than the
+    inputs carry.
+    """
+    return round(float(pivot) * (1.0 + float(cap_fraction)), 4)
 
 # How far back the PANEL displays cleared latches (display filter only -- the
 # derivation always folds every fire so the re-confirmation chain is exact).

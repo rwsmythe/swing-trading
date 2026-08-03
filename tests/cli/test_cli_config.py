@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from swing.cli import main
 from swing.config_user import load_user_overrides, write_user_overrides
+from swing.latches.constants import LATCH_ZONE_CAP_FRACTION
 from tests.web.test_config_web import _write_cfg
 
 
@@ -29,8 +30,9 @@ def test_show_lists_three_fields_default_source(runner_env):
     assert "Watchlist chart count" in r.output
     assert "Risk floor" in r.output
     assert "default" in r.output
-    # Default values present
-    assert "0.01" in r.output
+    # Default values present. `chase_factor`'s default is DERIVED from the
+    # latch buy-zone cap (2026-08-03), so the expectation is derived too.
+    assert str(LATCH_ZONE_CAP_FRACTION) in r.output
     assert "10" in r.output
     assert "7500" in r.output
 

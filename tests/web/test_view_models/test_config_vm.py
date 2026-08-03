@@ -7,6 +7,7 @@ import pytest
 
 from swing.config import load
 from swing.config_user import write_user_overrides
+from swing.latches.constants import LATCH_ZONE_CAP_FRACTION
 from swing.web.view_models.config import build_config_vm
 from tests.web.test_config_web import _write_cfg
 
@@ -69,7 +70,9 @@ def test_vm_override_source_after_user_config_write(base_cfg):
 def test_vm_default_value_per_row(base_cfg):
     vm = build_config_vm(base_cfg)
     by_path = {r.path: r for r in vm.rows}
-    assert by_path["web.chase_factor"].default_value == 0.01
+    # DERIVED: the chase factor's default IS the latch buy-zone cap
+    # (2026-08-03), so the page's "Default" column tracks it.
+    assert by_path["web.chase_factor"].default_value == LATCH_ZONE_CAP_FRACTION
     assert by_path["pipeline.chart_top_n_watch"].default_value == 10
     assert by_path["account.risk_equity_floor"].default_value == 7500.0
 

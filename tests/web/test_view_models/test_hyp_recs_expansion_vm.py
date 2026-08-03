@@ -177,9 +177,16 @@ def test_happy_path_full_vm(seeded_db):
 def test_buy_limit_arithmetic(seeded_db):
     from swing.web.view_models.dashboard import build_hyp_recs_expanded
 
+    from swing.latches.constants import (
+        LATCH_ZONE_CAP_FRACTION,
+        mandate_limit_price,
+        zone_cap_for_pivot,
+    )
+
     cfg, _ = seeded_db
-    # Default chase_factor is 0.01. pivot=100.0 → buy_limit=101.0.
-    assert cfg.web.chase_factor == 0.01
+    # The default chase factor IS the latch buy-zone cap (2026-08-03), so it is
+    # asserted derived rather than as a literal.
+    assert cfg.web.chase_factor == LATCH_ZONE_CAP_FRACTION
     _seed_complete_pipeline(cfg, candidates=[
         {"ticker": "AAPL", "pivot": 100.0, "initial_stop": 95.0},
     ])
@@ -193,8 +200,10 @@ def test_buy_limit_arithmetic(seeded_db):
 
     assert vm is not None
     assert vm.buy_stop == 100.0
-    # buy_limit = 100.0 × (1 + 0.01) = 101.0 (exact float arithmetic).
-    assert vm.buy_limit == 101.0
+    # buy_limit = the whole-cent price the framework would ORDER at the zone
+    # cap for this pivot -- the same single source the latch mandate uses.
+    assert vm.buy_limit == mandate_limit_price(zone_cap_for_pivot(100.0))
+    assert vm.buy_limit == 103.0
 
 
 # ---------------------------------------------------------------------------
@@ -218,8 +227,8 @@ def test_chase_factor_threading_from_config(seeded_db):
 
     assert vm is not None
     assert vm.chase_factor == 0.02
-    # buy_limit = 100.0 × 1.02 = 102.0; this discriminates against a
-    # hardcoded 0.01 (which would yield 101.0).
+    # buy_limit = the orderable price at 100.0 x 1.02 = 102.0; this
+    # discriminates against a hardcoded default (which would yield 103.0).
     assert vm.buy_limit == 102.0
 
 
@@ -446,9 +455,9 @@ def test_initial_stop_none_returns_none(seeded_db):
 #
 # This is the unit-level safety harness for the route-level wiring change:
 # every web route now reads `cfg = apply_overrides(request.app.state.cfg)`.
-# We prove the discriminator (chase_factor 0.01 → 0.025 yields buy_limit
-# 101.0 → 102.5 for pivot=100) at the VM layer that the routes call into.
-# Pre-fix path: route reads raw state.cfg → buy_limit = 100*(1+0.01) = 101.0.
+# We prove the discriminator (the default chase factor → 0.025 yields buy_limit
+# 103.0 → 102.5 for pivot=100) at the VM layer that the routes call into.
+# Pre-fix path: route reads raw state.cfg → buy_limit at the default cap.
 # Post-fix path: route reads apply_overrides(state.cfg) → 100*(1+0.025) = 102.5.
 # This test exercises the post-fix code path directly via apply_overrides().
 # ---------------------------------------------------------------------------
@@ -466,8 +475,9 @@ def test_apply_overrides_chase_factor_propagates_to_buy_limit(
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
-    # Sanity: base cfg defaults to chase_factor=0.01 (101.0 buy_limit).
-    assert cfg.web.chase_factor == 0.01
+    # Sanity: base cfg defaults to the latch buy-zone cap (103.0 buy_limit).
+    from swing.latches.constants import LATCH_ZONE_CAP_FRACTION
+    assert cfg.web.chase_factor == LATCH_ZONE_CAP_FRACTION
 
     # Write a user-config override for chase_factor=0.025.
     write_user_overrides({"web": {"chase_factor": 0.025}})
@@ -488,13 +498,12 @@ def test_apply_overrides_chase_factor_propagates_to_buy_limit(
         conn.close()
 
     assert vm is not None
-    # Discriminating: pre-wiring (raw cfg) yields buy_limit=101.0;
-    # post-wiring (apply_overrides) yields buy_limit=102.5.
-    # pytest.approx absorbs IEEE-754 float-rep noise (1.025 isn't exact).
+    # Discriminating: pre-wiring (raw cfg) yields the DEFAULT-cap buy_limit
+    # 103.0; post-wiring (apply_overrides) yields 102.5.
     assert vm.chase_factor == 0.025
     assert vm.buy_limit == pytest.approx(102.5)
-    # Also explicitly distinguish from the no-override default (101.0).
-    assert vm.buy_limit != pytest.approx(101.0)
+    # Also explicitly distinguish from the no-override default (103.0).
+    assert vm.buy_limit != pytest.approx(103.0)
 
 
 # ---------------------------------------------------------------------------

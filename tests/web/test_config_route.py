@@ -8,6 +8,7 @@ from starlette.testclient import TestClient
 
 from swing.config import load
 from swing.config_user import load_user_overrides, write_user_overrides
+from swing.latches.constants import LATCH_ZONE_CAP_FRACTION
 from swing.web.app import create_app
 from tests.web.test_config_web import _write_cfg
 
@@ -252,12 +253,15 @@ def test_post_unchanged_submit_does_not_create_overrides(client: TestClient):
     (source='tracked'). Posting 7500.0 != 5000.0 would WRITE per merge
     invariant (b), failing this test. We post 5000.0 (the actual current
     effective) to verify the no-op-unchanged scenario the test means to
-    cover. Verified: web.chase_factor=0.01 and pipeline.chart_top_n_watch=10
+    cover. Verified: web.chase_factor and pipeline.chart_top_n_watch=10
     both ARE the registry defaults AND the current effective in this fixture
-    (TOML doesn't override them).
+    (TOML doesn't override them). The chase factor is posted DERIVED from
+    LATCH_ZONE_CAP_FRACTION (2026-08-03) rather than as a literal, so this test
+    keeps meaning "unchanged" if the cap ever moves.
     """
     r = client.post("/config", data={
-        "web.chase_factor": "0.01",            # == registry default == current effective
+        # == registry default == current effective
+        "web.chase_factor": str(LATCH_ZONE_CAP_FRACTION),
         "pipeline.chart_top_n_watch": "10",    # == registry default == current effective
         "account.risk_equity_floor": "5000.0", # == current effective (tracked, fixture sets 5000)
     }, headers={"HX-Request": "true"}, follow_redirects=False)

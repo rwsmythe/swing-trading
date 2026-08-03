@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from swing.latches.constants import LATCH_ZONE_CAP_FRACTION
+
 
 @dataclass(frozen=True)
 class FieldSpec:
@@ -44,13 +46,26 @@ FIELD_REGISTRY: tuple[FieldSpec, ...] = (
     FieldSpec(
         path="web.chase_factor",
         label="Chase factor",
+        # `default` MIRRORS `Web.chase_factor` and the mirror is load-bearing,
+        # not tidy: `config_overrides.get_field_source` decides "default" vs
+        # "tracked" by comparing the live value against THIS, so a stale copy
+        # labels an untouched field as operator-set. Both derive from
+        # LATCH_ZONE_CAP_FRACTION, so neither can be edited alone.
+        #
+        # The soft-warn ceiling is the LATCH ZONE CAP, not the retired
+        # 2026-04-25 "don't chase >1% above pivot" rule (operator ruling,
+        # 2026-08-03). A fixed 0.02 would have warned against the framework's
+        # OWN default, and re-typing the tighter preference here would encode a
+        # second framework rule where a ledger delta belongs.
         description=(
-            "Buy-limit pad above pivot. 0.01 = 1% above pivot. "
-            "Operator's pure-trigger discipline favors values <= 0.02."
+            "Buy-limit pad above pivot, as a fraction. The default is the latch "
+            "buy-zone cap, so the dashboard and the latch panel state one entry "
+            "limit for one pivot. Above the cap the framework's own mandate no "
+            "longer covers the fill."
         ),
-        type=float, default=0.01,
+        type=float, default=LATCH_ZONE_CAP_FRACTION,
         hard_refuse_min=0.0, hard_refuse_max=0.10,
-        soft_warn_min=None, soft_warn_max=0.02,
+        soft_warn_min=None, soft_warn_max=LATCH_ZONE_CAP_FRACTION,
     ),
     FieldSpec(
         path="pipeline.chart_top_n_watch",

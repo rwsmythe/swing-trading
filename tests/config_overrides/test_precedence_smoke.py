@@ -8,6 +8,7 @@ import pytest
 from swing.config import load
 from swing.config_overrides import apply_overrides, get_field_source
 from swing.config_user import write_user_overrides
+from swing.latches.constants import LATCH_ZONE_CAP_FRACTION
 from tests.web.test_config_web import _write_cfg
 
 
@@ -24,7 +25,9 @@ def test_chase_factor_precedence_default(isolated: Path):
     cfg_path = _write_cfg(isolated / "project", isolated / "home")
     base = load(cfg_path)
     eff = apply_overrides(base)
-    assert eff.web.chase_factor == 0.01  # registry default
+    # DERIVED, not typed: the default IS the latch buy-zone cap (2026-08-03),
+    # so a literal here would be the second constant that ruling removed.
+    assert eff.web.chase_factor == LATCH_ZONE_CAP_FRACTION
     assert get_field_source(base, "web.chase_factor") == "default"
 
 

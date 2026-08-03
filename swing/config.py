@@ -7,6 +7,11 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# The ONE authority for the buy-zone cap (`Web.chase_factor` mirrors it).
+# `swing.latches.constants` imports NOTHING from `swing` by construction, so
+# this cannot cycle back into the config loader.
+from swing.latches.constants import LATCH_ZONE_CAP_FRACTION
+
 
 @dataclass(frozen=True)
 class Paths:
@@ -519,14 +524,25 @@ class Web:
     # Operator dials up after operational experience reveals which confidence
     # bands map to chart-validated flags.
     flag_pattern_display_threshold: float = 0.0
-    # Spec §3.1 (hyp-recs trade-prep expansion 2026-04-29): chase factor
-    # used by HypRecsExpandedVM.buy_limit = pivot × (1 + chase_factor).
-    # Operator's pure-trigger discipline (2026-04-25): wait for pivot,
-    # don't chase >1% above pivot. Phase 5 surfaces an editor; this
-    # dispatch ships the storage + read path. Toml-shadowing audit
-    # (Q-F resolution): no row in swing.config.toml — the field is
-    # CODE-ONLY in V1.
-    chase_factor: float = 0.01
+    # The buy-limit pad above the pivot on the hypothesis-recommendation
+    # expansion (HypRecsExpandedVM.buy_limit).
+    #
+    # ITS DEFAULT IS THE LATCH ZONE CAP AND THAT IS THE POINT (operator ruling,
+    # 2026-08-03). Arc 21-A froze every entry mandate at pivot x 1.03 and the
+    # latch panel prints that price; this surface printed a DIFFERENT limit for
+    # the same setup, so the framework stated two entry prices and the operator
+    # had to pick one. The default is therefore DERIVED from
+    # LATCH_ZONE_CAP_PCT, never re-typed: `0.03` written here would be a second
+    # constant that happens to equal the first, which is the drift class 21-B
+    # already met on the mandate limit.
+    #
+    # IT STAYS AN OPERATOR-EDITABLE KNOB (config_validation FIELD_REGISTRY,
+    # config_overrides, POST /config). A tighter personal preference is recorded
+    # as a ledger delta, not re-encoded as a second framework rule.
+    #
+    # Toml-shadowing audit (Q-F resolution): no row in swing.config.toml -- the
+    # field is CODE-ONLY plus the user-override path.
+    chase_factor: float = LATCH_ZONE_CAP_FRACTION
 
 
 _LEVEL_NAMES = {
