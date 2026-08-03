@@ -14,13 +14,13 @@ That is not a theme chosen for tidiness — it is what the August monthly read c
 
 ---
 
-## 1. ENTRY-LIMIT CANONICAL PRICE — may need to land BEFORE 21-B merges
+## 1. ENTRY-LIMIT DISPLAY + SHADOW EMIT — the ORDER half is SETTLED and closed
 
-Three surfaces compute the entry limit and disagree: dashboard `pivot × 1.01` (`chase_factor`), latch `pivot × 1.03` (`LATCH_ZONE_CAP_PCT`), shadow engine **uncapped** (`max(pivot, open)`). Neither live surface is a bug — each implements an operator rule, from 2026-04-25 and 2026-07-23 respectively; the newer superseded the older for A+ latch fires and the older was never retired.
+**RESOLVED 2026-08-03 (operator ruling, put to him in RD's terms):** the canonical framework order price is the **zone cap, everywhere, one source**. The operator explicitly RETIRED his 2026-04-25 one-percent pure-trigger discipline, knowing it is a loosening — RD's explicit-call condition met. `chase_factor` aligns to the cap via a CHARC-dispatched rider (single-source over a second constant; comment replaced not annotated; full suite; at-or-after the 21-B merge). The one-canonical-price-at-merge constraint is satisfied.
 
-**Why it may not be deferrable:** once 21-B's prepared-order form ships, its limit becomes "the framework's order" in the parity ledger. Following the dashboard would be recorded as an operator deviation **for obeying another framework surface**. The DECISION can defer; **exactly one canonical framework order price must exist at 21-B's merge.**
-
-Operator's lean: match `chase_factor` to the zone cap. RD position: **display and order are different questions** — the order must be single-valued at the cap; the display may legitimately render the zone as a RANGE; and the operator's tighter preference should be a **recorded ledger delta**, not a second framework constant. Also flagged: matching to 3% retires his stated 04-25 pure-trigger discipline and should be an explicit call, not a byproduct.
+**What remains for Phase 22 — display and measurement only:**
+- **The zone-range render:** the dashboard may render the buy zone as a RANGE (pivot → cap) rather than a single number — the zone IS a range in the doctrine, and one number implies precision the method does not claim. Design question for the surface, no longer coupled to any order semantics.
+- **Emit `entry_fill` and `pivot` in the shadow engine's `results.csv`** (values the simulator already holds). Makes the uncapped-fill divergence measurable and enables the curve surface (§3). **Do NOT change the engine's fill rule** — that touches the measurement chain and breaks T4 comparability. Measure first.
 
 ## 2. CAPTURE-BASIS — a SECOND immutable log set (operator's design, adopted over mine)
 
