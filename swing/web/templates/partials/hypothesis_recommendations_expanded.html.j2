@@ -30,8 +30,11 @@
     <h4>Order parameters</h4>
     <ul class="order-params">
       <li>Buy stop:  ${{ '%.2f' | format(expanded.buy_stop) }} <span class="muted">(pivot)</span></li>
+      {#- The formula must MATCH the arithmetic (Codex R1 MINOR): the value is
+          pivot x (1 + chase_factor), floored to whole cents, and the old
+          "(pivot x 3.0%)" said something mathematically different. -#}
       <li>Buy limit: ${{ '%.2f' | format(expanded.buy_limit) }}
-          <span class="muted">(pivot × {{ '%.1f' | format(expanded.chase_factor * 100) }}%)</span></li>
+          <span class="muted">(pivot × {{ '%.3f' | format(1 + expanded.chase_factor) }} zone cap, floored to whole cents)</span></li>
       <li>Sell stop: {% if expanded.sell_stop is not none %}${{ '%.2f' | format(expanded.sell_stop) }}
                      {% else %}—{% endif %}
           <span class="muted">(framework initial stop)</span></li>

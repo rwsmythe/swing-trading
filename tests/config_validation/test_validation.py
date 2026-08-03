@@ -32,7 +32,9 @@ def test_registry_has_expected_v1_fields():
     }
 
 
-# --- chase_factor: hard-refuse [0, 0.10]; soft-warn > 0.02 ---
+# --- chase_factor: hard-refuse [0, 0.10]; soft-warn above the latch buy-zone
+# cap (LATCH_ZONE_CAP_FRACTION, 2026-08-03 -- the retired 0.02 ceiling came
+# from the pure-trigger discipline the operator withdrew) ---
 
 def test_chase_factor_hard_refuse_negative():
     r = validate_field("web.chase_factor", "-0.01")
@@ -44,7 +46,7 @@ def test_chase_factor_hard_refuse_above_max():
     assert r.hard_errors and not r.soft_warnings
 
 
-def test_chase_factor_inside_hard_bound_soft_warn_above_2pct():
+def test_chase_factor_inside_hard_bound_soft_warn_above_the_zone_cap():
     r = validate_field("web.chase_factor", "0.05")
     assert not r.hard_errors and r.soft_warnings
 

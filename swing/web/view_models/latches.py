@@ -558,14 +558,29 @@ def _build_prepared_order_vm(
 
 
 def _zone_position(price, latch: Latch) -> str:
-    """The buy zone is the CLOSED interval [latched_pivot, zone_cap], compared
-    at display precision."""
+    """The buy zone is the CLOSED interval [latched_pivot, THE ORDERABLE CAP],
+    compared at display precision.
+
+    THE UPPER BOUND IS `mandate_limit_price`, NOT `round(zone_cap, 2)` (Codex
+    R1 MAJOR on the 2026-08-03 display fix). Fixing the DISPLAYED cap while
+    leaving this comparison on the rounded raw cap put a contradiction in two
+    adjacent fields of the same card: for AMN both 37.36 and the cap 37.3581
+    round to 37.36, so a 37.36 print read as IN ZONE beside a rendered
+    `Zone cap 37.35`.
+
+    And the classifier's own claim is the reason the mandate limit is the right
+    bound rather than the tidy one: the latch's resting order caps at 37.35, so
+    a 37.36 print CANNOT fill it. "In the buy zone" means "a price this mandate
+    could still transact at", and that is bounded by the price the framework can
+    actually order -- the same asymmetry as the cap itself (a bound that can
+    drift up is not a bound).
+    """
     if price is None:
         return "unknown"
     p = round(float(price), _PRICE_DP)
     if p < round(latch.latched_pivot, _PRICE_DP):
         return "below_pivot"
-    if p > round(latch.zone_cap, _PRICE_DP):
+    if p > mandate_limit_price(latch.zone_cap):
         return "above_zone"
     return "in_zone"
 

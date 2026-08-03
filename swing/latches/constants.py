@@ -13,6 +13,7 @@ from dataclasses import dataclass as _dataclass
 from datetime import date as _date
 from decimal import ROUND_FLOOR as _ROUND_FLOOR
 from decimal import Decimal as _Decimal
+from math import isfinite as _isfinite
 
 
 # RD constraint 2, RULED at the plan-stage gate: the horizon is DERIVED from
@@ -71,8 +72,31 @@ def zone_cap_for_pivot(pivot, *, cap_fraction: float = LATCH_ZONE_CAP_FRACTION):
     The 4-decimal rounding is 21-A's, preserved verbatim: it clips the binary
     artifact of `pivot * 1.03` without pretending to more precision than the
     inputs carry.
+
+    NON-FINITE INPUT RAISES `ValueError` HERE, at the shared helper (Codex R1
+    MAJOR). `cap_fraction` carries `cfg.web.chase_factor`, and
+    `config_validation.validate_field` bounds it with ORDERED COMPARISONS ONLY
+    -- every comparison against `nan` is False, so `nan` passes both the hard
+    refusal and the soft warning; a TOML `chase_factor = inf` bypasses the
+    registry altogether through `Web(**raw)`. Downstream,
+    `Decimal("Infinity").quantize(...)` raises `decimal.InvalidOperation`, which
+    is NOT the `ValueError` the dashboard's degenerate-sizing guard catches, so
+    an unguarded non-finite value turned a rendering surface into a 500.
+    `ValueError` is the deliberate type: it joins the existing degenerate-input
+    contract instead of inventing a second one.
     """
-    return round(float(pivot) * (1.0 + float(cap_fraction)), 4)
+    p = float(pivot)
+    f = float(cap_fraction)
+    if not _isfinite(p) or not _isfinite(f):
+        raise ValueError(
+            f"zone_cap_for_pivot requires finite inputs; got pivot={pivot!r}, "
+            f"cap_fraction={cap_fraction!r}")
+    cap = round(p * (1.0 + f), 4)
+    if not _isfinite(cap):
+        raise ValueError(
+            f"zone_cap_for_pivot overflowed to {cap!r} for pivot={pivot!r}, "
+            f"cap_fraction={cap_fraction!r}")
+    return cap
 
 # How far back the PANEL displays cleared latches (display filter only -- the
 # derivation always folds every fire so the re-confirmation chain is exact).

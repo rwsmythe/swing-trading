@@ -723,6 +723,23 @@ def build_hyp_recs_expanded(
         real_equity=current_balance, floor=cfg.account.risk_equity_floor,
     )
     try:
+        # THE SAME SINGLE SOURCE THE LATCH MANDATE USES (operator ruling,
+        # 2026-08-03): `zone_cap_for_pivot` is the latch derivation's own
+        # arithmetic and `mandate_limit_price` is the quantization the prepared
+        # order emits, so this surface cannot state an entry limit the framework
+        # would refuse to order. Neither is re-implemented here -- a second
+        # expression that agrees today is the item-6 drift class.
+        #
+        # COMPUTED INSIDE THE DEGENERATE-INPUT GUARD (Codex R1 MAJOR).
+        # `cfg.web.chase_factor` can reach here non-finite -- the registry's
+        # bounds are ORDERED COMPARISONS, which `nan` passes, and a TOML value
+        # bypasses the registry entirely -- and the shared helper refuses that
+        # with `ValueError`. Rendering `nan` was the old behaviour; a 500 would
+        # be a new one, so it degrades to the same unavailable partial as a
+        # degenerate stop.
+        buy_limit = mandate_limit_price(
+            zone_cap_for_pivot(
+                candidate.pivot, cap_fraction=cfg.web.chase_factor))
         sizing_risk = compute_shares(
             entry=candidate.pivot, stop=candidate.initial_stop,
             equity=risk_equity,
@@ -736,9 +753,9 @@ def build_hyp_recs_expanded(
             position_pct_cap=cfg.sizing.position_pct_cap,
         )
     except ValueError:
-        # Degenerate sizing parameters (stop >= entry). Defensive-at-
-        # boundary acceptance — the route handler renders 404 with the
-        # operator-facing message; spec §3.5.3 last paragraph.
+        # Degenerate sizing parameters (stop >= entry) or a non-finite chase
+        # factor. Defensive-at-boundary acceptance — the route handler renders
+        # 404 with the operator-facing message; spec §3.5.3 last paragraph.
         return None
 
     # 3e.4 — Fetch the ticker price via the batch `get_many` path so the
@@ -834,15 +851,7 @@ def build_hyp_recs_expanded(
     return HypRecsExpandedVM(
         ticker=ticker,
         buy_stop=candidate.pivot,
-        # THE SAME SINGLE SOURCE THE LATCH MANDATE USES (operator ruling,
-        # 2026-08-03): `zone_cap_for_pivot` is the latch derivation's own
-        # arithmetic and `mandate_limit_price` is the quantization the prepared
-        # order emits, so this surface cannot state an entry limit the framework
-        # would refuse to order. Neither is re-implemented here -- a second
-        # expression that agrees today is the item-6 drift class.
-        buy_limit=mandate_limit_price(
-            zone_cap_for_pivot(
-                candidate.pivot, cap_fraction=cfg.web.chase_factor)),
+        buy_limit=buy_limit,
         sell_stop=candidate.initial_stop,
         chase_factor=cfg.web.chase_factor,
         current_balance=current_balance,

@@ -409,32 +409,139 @@ def test_the_NO_RESTING_ORDER_control_a_cap_that_rounds_DOWN_is_unchanged():
 
 
 # ---------------------------------------------------------------------------
+# THE ZONE LABEL -- the card may not contradict itself
+# ---------------------------------------------------------------------------
+def test_a_price_above_the_displayed_cap_is_NOT_labelled_IN_ZONE(
+        seeded_db, frozen_panel_clock):
+    """CODEX R1 MAJOR. Fixing the DISPLAYED cap without fixing the zone
+    CLASSIFIER left the card contradicting itself in adjacent fields:
+    `Zone cap 37.35` beside `37.36 - IN ZONE`.
+
+    `_zone_position` compared against `round(zone_cap, 2)` = 37.36, so 37.36
+    read as inside the zone -- but the mandate's resting limit is 37.35, so a
+    37.36 print cannot fill it. The buy zone is bounded by the price the
+    framework can actually order, not by a rounding of the cap.
+    """
+    from swing.web.view_models.latches import _zone_position
+
+    latch = _amn_latch()
+    exact = mandate_limit_price(AMN_CAP)
+    assert _zone_position(exact, latch) == "in_zone"
+    assert _zone_position(exact + 0.01, latch) == "above_zone", (
+        "one cent above the orderable cap is OUT of the buy zone")
+    assert _zone_position(AMN_PIVOT, latch) == "in_zone"
+    assert _zone_position(AMN_PIVOT - 0.01, latch) == "below_pivot"
+
+
+def test_the_card_never_shows_a_price_ABOVE_its_own_cap_as_IN_ZONE(
+        seeded_db, frozen_panel_clock):
+    """The same defect through the real render, because the contradiction is
+    what the operator actually sees."""
+    from swing.web.view_models.latches import build_latch_panel_vm
+
+    cfg, cfg_path = seeded_db
+    _seed_amn(cfg)
+    # The panel's rendered last close, one cent above the orderable cap.
+    _seed_derivation_session_close(
+        cfg, "AMN", float(_fmt(AMN_CAP)), run_id=143, pivot=AMN_PIVOT,
+        stop=AMN_STOP)
+    conn = connect(cfg.paths.db_path)
+    try:
+        vm = build_latch_panel_vm(conn, cfg, now=NOW)
+    finally:
+        conn.close()
+    row = next(r for r in vm.rows if r.ticker == "AMN")
+    assert row.current_price == _fmt(AMN_CAP)          # 37.36, the premise
+    assert row.zone_cap == _fmt(mandate_limit_price(AMN_CAP))
+    assert row.zone_position == "above_zone", (
+        f"card shows current {row.current_price} against cap {row.zone_cap} "
+        "and must not call that IN ZONE")
+
+
+def test_the_zone_label_control_a_cap_that_rounds_DOWN_is_unchanged():
+    """THE CONTROL on the classifier. FTRE's cap floors and rounds to the same
+    18.89, so the boundary must not move."""
+    from swing.web.view_models.latches import _zone_position
+
+    latch = _ftre_latch()
+    assert _zone_position(18.89, latch) == "in_zone"
+    assert _zone_position(18.90, latch) == "above_zone"
+    assert _zone_position(FTRE_PIVOT, latch) == "in_zone"
+
+
+# ---------------------------------------------------------------------------
 # THE ROSTER BELT -- the "did the fix reach ALL the sites" question, asked of
 # the source rather than of the reviewer's memory.
 # ---------------------------------------------------------------------------
-_RAW_CAP_FORMAT = re.compile(r"\bzone_cap:\.\d+f")
+# BOTH shapes, because the pre-fix card used the SECOND one (Codex R1 MINOR).
+# A belt that only knew about `{zone_cap:.2f}` would have missed the very line
+# the operator read.
+_RAW_CAP_PATTERNS = (
+    re.compile(r"\bzone_cap:\.\d+f"),              # f-string format spec
+    re.compile(r"_fmt_price\(\s*[\w.]*zone_cap\s*\)"),   # the card's old form
+    re.compile(r"format\(\s*[\w.]*zone_cap\s*\)"),       # a Jinja filter form
+)
+# Sites that legitimately name a raw cap WITHOUT rendering it at price
+# precision. Each is a PASS-THROUGH to a function that quantizes for itself.
+_ALLOWED_RAW_CAP_SOURCES = ("mandate_limit_price", "zone_cap_for_pivot")
 
 
-def test_no_module_formats_a_RAW_zone_cap_for_display():
+def _swing_sources():
+    root = Path(__file__).resolve().parents[3] / "swing"
+    for path in sorted(root.rglob("*.py")):
+        yield path
+    for path in sorted(root.rglob("*.j2")):
+        yield path
+
+
+def test_NO_production_file_formats_a_RAW_zone_cap_for_display():
     """A NEW render site is the way this defect comes back, and no behavioural
     test can cover a line nobody has written yet.
 
-    So the belt is structural: `{...zone_cap:.2f}` -- formatting the RAW cap --
-    may not appear in any production module. The orderable value comes from
-    `mandate_limit_price`, and a site that wants to SHOW a cap has to go
-    through it.
+    So the belt is structural and it walks the WHOLE `swing/` tree -- modules
+    AND templates -- rather than the two modules this change happened to touch
+    (Codex R1 MINOR: the original belt inspected only its own neighbourhood,
+    which is precisely the blindness the roster rule exists to remove).
 
-    Scoped to a FORMAT SPEC, not to the identifier: `zone_cap` is passed around
-    freely (to `mandate_shape_mismatch`, into the derivation), and only the act
-    of rendering it at price precision is the defect.
+    Scoped to RENDERING, not to the identifier: `zone_cap` is passed around
+    freely (to `mandate_shape_mismatch`, into the derivation, into
+    `mandate_limit_price` itself), and only the act of showing it at price
+    precision is the defect.
     """
-    from swing.latches import orders as orders_mod
-    from swing.web.view_models import latches as vm_mod
+    offenders = []
+    for path in _swing_sources():
+        source = path.read_text(encoding="utf-8")
+        if "zone_cap" not in source:
+            continue
+        for pattern in _RAW_CAP_PATTERNS:
+            for match in pattern.finditer(source):
+                if any(a in match.group(0) for a in _ALLOWED_RAW_CAP_SOURCES):
+                    continue
+                line = source[:match.start()].count("\n") + 1
+                offenders.append(f"{path.name}:{line} {match.group(0)!r}")
+    assert offenders == [], (
+        "these sites render a RAW zone cap; route them through "
+        f"mandate_limit_price -- round-half-up can state a price ABOVE the "
+        f"cap, which is the whole defect: {offenders}")
 
-    for module in (vm_mod, orders_mod):
-        source = inspect.getsource(module)
-        hits = _RAW_CAP_FORMAT.findall(source)
-        assert hits == [], (
-            f"{module.__name__} formats a raw zone_cap for display ({hits}); "
-            "route it through mandate_limit_price -- round-half-up can state a "
-            "price ABOVE the cap, which is the whole defect")
+
+def test_the_belt_would_have_caught_the_ORIGINAL_defect():
+    """THE BELT'S OWN DISCRIMINATOR. A structural test that never matches
+    anything is indistinguishable from a broken regex, so both shapes are
+    exercised against the exact pre-fix text.
+    """
+    pre_fix = [
+        'zone_cap=_fmt_price(latch.zone_cap),',
+        'f"{lat.zone_cap:.2f}); stop "',
+        "{{ '%.2f' | format(row.zone_cap) }}",
+    ]
+    for text in pre_fix:
+        assert any(p.search(text) for p in _RAW_CAP_PATTERNS), text
+    # ...and it does NOT match the post-fix forms.
+    for text in ('zone_cap=_fmt_cap(latch.zone_cap),',
+                 'mandate_limit_price(latch.zone_cap)',
+                 'zone_cap=lat.zone_cap)'):
+        assert not any(
+            p.search(text) and not any(
+                a in p.search(text).group(0) for a in _ALLOWED_RAW_CAP_SOURCES)
+            for p in _RAW_CAP_PATTERNS), text

@@ -79,6 +79,127 @@ def test_zone_cap_for_pivot_IS_the_latch_derivations_own_arithmetic():
                 == round(pivot * (1.0 + LATCH_ZONE_CAP_PCT / 100.0), 4))
 
 
+def test_the_LATCH_DERIVATION_actually_INVOKES_the_shared_helper(monkeypatch):
+    """CODEX R1 MINOR: a BINDING IS NOT A CALL.
+
+    The identity assertion above proves only that `service.py` still imports
+    the name. It could reintroduce a local expression and leave the unused
+    import in place, and every value test would keep passing for as long as the
+    two happened to agree -- exactly the drift this ruling exists to make
+    impossible. So the property is pinned by SUBSTITUTION (the in-tree
+    precedent: tests/latches/test_mandate_limit_contract.py).
+    """
+    import swing.latches.service as service_mod
+
+    sentinel = 99.9999
+    monkeypatch.setattr(
+        service_mod, "zone_cap_for_pivot", lambda *a, **k: sentinel)
+    draft = service_mod._Draft(
+        fire=None, anchor=None, pivot=WITNESSED_PIVOT, stop=33.00,
+        horizon_expiry=None)
+    assert draft.zone_cap == sentinel, (
+        "_Draft.zone_cap must OBTAIN the cap from the shared helper")
+
+
+def test_the_DASHBOARD_actually_INVOKES_both_shared_functions(
+        seeded_db, monkeypatch):
+    """The same substitution pin on the other side of the seam: the buy limit
+    must come from `zone_cap_for_pivot` AND from `mandate_limit_price`, not
+    from a local expression that agrees with them today."""
+    import swing.web.view_models.dashboard as dash_mod
+
+    cfg, _ = seeded_db
+    _seed_complete_pipeline(cfg, candidates=[
+        {"ticker": "AMN", "pivot": WITNESSED_PIVOT, "initial_stop": 33.00},
+    ])
+    monkeypatch.setattr(dash_mod, "zone_cap_for_pivot", lambda *a, **k: 41.1111)
+    assert _expanded(cfg).buy_limit == 41.11
+
+    monkeypatch.undo()
+    monkeypatch.setattr(dash_mod, "mandate_limit_price", lambda cap: 12.34)
+    assert _expanded(cfg).buy_limit == 12.34
+
+
+def test_the_DEFAULTS_are_written_as_the_NAME_not_as_a_copied_literal():
+    """CODEX R1 MINOR, and it is the finding that matters most here.
+
+    A float comparison cannot tell `LATCH_ZONE_CAP_FRACTION` from a hand-typed
+    `0.03` -- both equal 0.03 -- so every value assertion in this file would
+    pass a copied literal, which IS the drift class the change exists to
+    remove. The only way to pin DERIVATION rather than AGREEMENT is to read the
+    source: the two defaults must be the NAME.
+    """
+    import ast
+    import inspect
+
+    import swing.config as config_mod
+    import swing.config_validation as validation_mod
+
+    def _default_expr(module, class_or_call: str, field: str) -> str:
+        tree = ast.parse(inspect.getsource(module))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.AnnAssign)
+                    and isinstance(node.target, ast.Name)
+                    and node.target.id == field
+                    and node.value is not None):
+                return ast.unparse(node.value)
+            if isinstance(node, ast.keyword) and node.arg == field:
+                return ast.unparse(node.value)
+        raise AssertionError(f"{field} not found in {module.__name__}")
+
+    assert _default_expr(config_mod, "Web", "chase_factor") == (
+        "LATCH_ZONE_CAP_FRACTION"), (
+        "Web.chase_factor's default must BE the shared name, not a literal "
+        "that happens to equal it")
+    # The registry's `default=` and `soft_warn_max=` keywords, in FIELD_REGISTRY
+    # source order -- `web.chase_factor` is the first entry.
+    registry_src = inspect.getsource(validation_mod)
+    chase_block = registry_src.split('path="web.chase_factor"')[1].split(
+        "FieldSpec(")[0]
+    assert "default=LATCH_ZONE_CAP_FRACTION" in chase_block
+    assert "soft_warn_max=LATCH_ZONE_CAP_FRACTION" in chase_block
+
+
+# ---------------------------------------------------------------------------
+# CODEX R1 MAJOR -- a non-finite chase factor must not become a 500
+# ---------------------------------------------------------------------------
+def test_a_non_finite_chase_factor_is_REFUSED_not_crashed(seeded_db):
+    """`validate_field` performs ORDERED comparisons only, and every comparison
+    against `nan` is False, so `nan` passes both the hard bounds and the soft
+    warning and reaches `Web.chase_factor`. A TOML `chase_factor = inf` bypasses
+    the registry entirely (`Web(**raw)`).
+
+    PRE-FIX the multiplication produced `nan`/`inf` and the card rendered the
+    word. POST-FIX the value reaches `Decimal(...).quantize`, which raises
+    `decimal.InvalidOperation` -- NOT the `ValueError` the builder's degenerate
+    -sizing guard catches -- so the expansion route 500s. That is a REGRESSION
+    introduced by the single-sourcing, so the guard belongs at the shared
+    helper and the builder degrades exactly as it does for degenerate sizing.
+    """
+    import pytest
+
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError):
+            zone_cap_for_pivot(WITNESSED_PIVOT, cap_fraction=bad)
+        with pytest.raises(ValueError):
+            zone_cap_for_pivot(bad)
+
+    cfg, _ = seeded_db
+    cfg = replace(cfg, web=replace(cfg.web, chase_factor=float("inf")))
+    _seed_complete_pipeline(cfg, candidates=[
+        {"ticker": "AMN", "pivot": WITNESSED_PIVOT, "initial_stop": 33.00},
+    ])
+    assert _expanded(cfg) is None, (
+        "the builder must degrade to its unavailable partial, not raise")
+
+
+def test_the_finiteness_guard_does_not_move_any_ORDINARY_value():
+    """The control on the guard: rejecting non-finite input must not perturb a
+    single real cap."""
+    for pivot in (0.25, 1.0, 18.34, 36.27, 141.00, 999.99):
+        assert zone_cap_for_pivot(pivot) == round(pivot * 1.03, 4)
+
+
 def test_the_chase_factor_DEFAULT_is_derived_from_the_latch_zone_cap():
     """PRE-FIX this was 0.01 -- the retired pure-trigger discipline, encoded as
     a framework default and diverging from the latch cap by two whole points."""
@@ -94,6 +215,8 @@ def test_the_registry_default_MIRRORS_the_dataclass_default():
 
     This passes both pre-fix and post-fix BY DESIGN -- it is the pin that fails
     a HALF-done fix (one of the two moved), which is the realistic defect here.
+    It pins AGREEMENT only; DERIVATION is pinned at the source level by
+    `test_the_DEFAULTS_are_written_as_the_NAME_not_as_a_copied_literal`.
     """
     assert get_spec("web.chase_factor").default == Web().chase_factor
 
