@@ -6,7 +6,9 @@
 
 ---
 
-## #1 — PHASE 21 IS LIVE AND MID-FLIGHT. Two arcs merged, two in flight, one proposed.
+## #0 — 2026-08-03: PHASE 21 PRODUCTION ARCS ALL MERGED. Schema **v33 LIVE** (migrated + verified: `latch_order_intents` present 0 rows, row parity exact, the 2 FK violations pre-existing 19-F). 21-B merged `d5d03bb9`, merged-head **10080/7/0 ON MAIN**, trailer obligation DISCHARGED (tree-byte-identical proof), five-path witness ALL PASS, RD merge QA PASS. **The one-pass rider LANDED `e56856f3`** (tier repoint + model/effort recalibration; CHARC QA'd ON DISK — discriminating rule verbatim at recipe:50, banner assertion now names gpt-5.6-sol as binding, orchestrator-context + memory + sonnet-med cell all verified; ONE minor residual: recipe:83's dated entry says "alongside review-strong" in live voice — self-catching via the banner assertion, fix at next recipe touch). **REMAINING BEFORE CLOSE: (1) the display-cap + chase-factor single-source rider — RD's BINDING condition: lands before the next live latch fire writes a real parity row (the live ledger is EMPTY; A+ fires ~1/week); fallback if a fire beats it: the display-caused delta (+1 cent, third decimal ≥5, order at displayed value) is annotated at read time, never scored against the operator. (2) THEN the phase close ritual + CHARC close audit — MINE to sequence.** Close-boundary queue: criteria_lapsed §3 pass · the 2 cancel questions (RD's recording-vs-alarming principle: the affordance to record must not be gated on the alarm that detects) · D9 ambient sweep (scheduled) · prescriptiveness audit · D31+A-4 arc (before the Aug read) · D27 provenance arc · Phase-22 demand decomposition · **D32** backups retention · orchestrator-context compaction (ATTENTION firing at 121,180 — remedy OPERATOR-SCHEDULED into the close; RD already fixed his own: 132,769→34,859 at `7a1486f3`).
+
+## #1 — PHASE 21 arc record (historical detail below; #0 above is current).
 
 **Theme:** take memory and arithmetic out of the entry loop **without taking the human out of it.** Driver: the FTRE entry-window miss (**+1.22R** shadow-vs-live, RD-quantified) and the A+ LATCH posture the operator adopted 07-23.
 
