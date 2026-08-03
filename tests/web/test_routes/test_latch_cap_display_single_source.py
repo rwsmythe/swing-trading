@@ -511,8 +511,12 @@ _ALLOWED_RAW_CAP_SOURCES = ("mandate_limit_price", "zone_cap_for_pivot")
 # would unlink exactly the fills the display defect caused (the operator placed
 # at the over-rounded price BECAUSE the panel showed it). Escalated to the
 # directors on 2026-08-03 rather than decided by this rider.
+# KEYED BY REPO-RELATIVE PATH AND COUNTED, NOT A BARE SET (Codex R3 MINOR): a
+# set keyed on the file's BASE NAME would silently exempt a SECOND
+# `round(draft.zone_cap,` -- in this file or in any other `service.py` -- which
+# is the opposite of what the exemption is for.
 _KNOWN_RESIDUAL_RAW_CAPS = {
-    ("service.py", "round(draft.zone_cap,"),
+    ("latches/service.py", "round(draft.zone_cap,"): 1,
 }
 
 
@@ -531,6 +535,10 @@ def _code_only(path: Path, source: str) -> str:
     docstring and `_zone_position`'s both QUOTE `round(zone_cap, 2)` while
     explaining why it is wrong. A belt that fires on the explanation of the
     defect is a belt nobody can keep green.
+
+    BLANKS THE STRING'S OWN COLUMN SPAN, NOT THE WHOLE LINE (Codex R3 NIT): a
+    line-granular blank would erase real code sharing a line with a docstring
+    (`def f(x): "doc"; return f"{x.zone_cap:.2f}"`), hiding an actual offender.
     """
     if path.suffix != ".py":
         return source
@@ -538,29 +546,35 @@ def _code_only(path: Path, source: str) -> str:
     import io
     import tokenize
 
-    lines = source.splitlines(keepends=True)
-    blanked = list(lines)
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
+    rows = source.splitlines(keepends=True)
+
+    def _blank(start_row, start_col, end_row, end_col):
+        if start_row == end_row:
+            r = rows[start_row]
+            rows[start_row] = r[:start_col] + " " * (end_col - start_col) + r[end_col:]
+            return
+        rows[start_row] = rows[start_row][:start_col] + "\n"
+        for i in range(start_row + 1, end_row):
+            rows[i] = "\n"
+        rows[end_row] = " " * end_col + rows[end_row][end_col:]
+
+    for node in ast.walk(ast.parse(source)):
         if (isinstance(node, ast.Expr)
                 and isinstance(node.value, ast.Constant)
                 and isinstance(node.value.value, str)):
-            for i in range(node.lineno - 1, node.end_lineno):
-                blanked[i] = "\n"
-    text = "".join(blanked)
-    out = []
-    for line in text.splitlines(keepends=True):
-        out.append(line)
+            _blank(node.lineno - 1, node.col_offset,
+                   node.end_lineno - 1, node.end_col_offset)
+    text = "".join(rows)
+    rows = text.splitlines(keepends=True)
     try:
         toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
     except (tokenize.TokenError, IndentationError, SyntaxError):
         return text
     for tok in toks:
-        if tok.type != tokenize.COMMENT:
-            continue
-        row = tok.start[0] - 1
-        out[row] = out[row][:tok.start[1]] + "\n"
-    return "".join(out)
+        if tok.type == tokenize.COMMENT:
+            row = tok.start[0] - 1
+            rows[row] = rows[row][:tok.start[1]] + "\n"
+    return "".join(rows)
 
 
 def test_NO_production_file_formats_a_RAW_zone_cap_for_display():
@@ -585,31 +599,68 @@ def test_NO_production_file_formats_a_RAW_zone_cap_for_display():
     it. It catches the shapes this defect has actually worn and the obvious
     neighbours; the BEHAVIOURAL tests above are what pin the shipped sites.
     """
+    from collections import Counter
+
+    root = Path(__file__).resolve().parents[3] / "swing"
     offenders = []
-    residuals_seen = set()
+    residuals_seen: Counter = Counter()
     for path in _swing_sources():
         raw = path.read_text(encoding="utf-8")
         if "zone_cap" not in raw:
             continue
+        rel = path.relative_to(root).as_posix()
         source = _code_only(path, raw)
         for pattern in _RAW_CAP_PATTERNS:
             for match in pattern.finditer(source):
                 if any(a in match.group(0) for a in _ALLOWED_RAW_CAP_SOURCES):
                     continue
-                key = (path.name, match.group(0))
-                if key in _KNOWN_RESIDUAL_RAW_CAPS:
-                    residuals_seen.add(key)
-                    continue
+                key = (rel, match.group(0))
                 line = source[:match.start()].count("\n") + 1
-                offenders.append(f"{path.name}:{line} {match.group(0)!r}")
-    assert residuals_seen == _KNOWN_RESIDUAL_RAW_CAPS, (
-        "a KNOWN residual is no longer present -- delete its exemption rather "
-        "than leaving a stale allowance that could silently cover a NEW site: "
-        f"{_KNOWN_RESIDUAL_RAW_CAPS - residuals_seen}")
+                if key in _KNOWN_RESIDUAL_RAW_CAPS:
+                    residuals_seen[key] += 1
+                    if residuals_seen[key] <= _KNOWN_RESIDUAL_RAW_CAPS[key]:
+                        continue
+                offenders.append(f"{rel}:{line} {match.group(0)!r}")
+    assert dict(residuals_seen) == _KNOWN_RESIDUAL_RAW_CAPS, (
+        "the KNOWN-residual roster no longer matches what is on disk -- update "
+        "it deliberately rather than leaving a stale allowance that could "
+        f"silently cover a NEW site. expected {_KNOWN_RESIDUAL_RAW_CAPS}, "
+        f"found {dict(residuals_seen)}")
     assert offenders == [], (
         "these sites render a RAW zone cap; route them through "
         f"mandate_limit_price -- round-half-up can state a price ABOVE the "
         f"cap, which is the whole defect: {offenders}")
+
+
+def test_the_docstring_stripper_does_not_hide_code_sharing_a_line(tmp_path):
+    """CODEX R3 NIT, pinned rather than asserted in prose.
+
+    Blanking whole LINES touched by a docstring would erase real code on the
+    same line -- and that code could be the offender the belt exists to find.
+    """
+    src = 'def f(x): "doc"; return f"{x.zone_cap:.2f}"\n'
+    path = tmp_path / "shared_line.py"
+    path.write_text(src, encoding="utf-8")
+    stripped = _code_only(path, src)
+    assert '"doc"' not in stripped, "the docstring must still be blanked"
+    assert any(p.search(stripped) for p in _RAW_CAP_PATTERNS), (
+        "the offender sharing the docstring's line must survive the strip")
+
+
+def test_a_SECOND_occurrence_of_a_known_residual_is_NOT_exempted(tmp_path):
+    """CODEX R3 MINOR. The exemption is a COUNT, so it covers the one residual
+    that was escalated and not a copy of it.
+
+    Exercised on the roster's own data rather than by planting a file in
+    `swing/`, which the belt walks for real.
+    """
+    key = ("latches/service.py", "round(draft.zone_cap,")
+    assert _KNOWN_RESIDUAL_RAW_CAPS[key] == 1
+    # The belt's own accounting: a second hit exceeds the allowance and is
+    # therefore reported, and the roster comparison also fails on the count.
+    seen = {key: 2}
+    assert seen != _KNOWN_RESIDUAL_RAW_CAPS
+    assert seen[key] > _KNOWN_RESIDUAL_RAW_CAPS[key]
 
 
 def test_the_belt_would_have_caught_the_ORIGINAL_defect():

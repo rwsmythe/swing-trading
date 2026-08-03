@@ -603,8 +603,11 @@ class HypRecsExpandedVM:
     """Per-ticker hyp-recs expansion VM (spec §3.5.2).
 
     Carries the order parameters (buy_stop = pivot; buy_limit = the whole-cent
-    price the framework would ORDER at the buy-zone cap for this pivot, NOT a
-    bare multiplication -- see `mandate_limit_price`; sell_stop = initial_stop),
+    price the operator's configured chase factor implies for this pivot, floored
+    by `mandate_limit_price` rather than multiplied out -- it equals the latch
+    mandate's own limit at the DEFAULT chase factor and `mandate_buy_limit`
+    carries that mandate price so an override can be disclosed rather than
+    silently presented as the framework's; sell_stop = initial_stop),
     the dual sizing regimes (`sizing_risk` uses `sizing_equity(real, floor)`;
     `sizing_cash` uses real balance directly), context (sector/industry), the
     chart-scope reason for the same pipeline-run binding, and the freshness
@@ -617,7 +620,7 @@ class HypRecsExpandedVM:
     # Order params.
     buy_stop: float                       # = candidate.pivot
     # = mandate_limit_price(zone_cap_for_pivot(pivot, cfg.web.chase_factor))
-    buy_limit: float
+    buy_limit: float                      # NOT the mandate's when overridden
     sell_stop: float | None               # = candidate.initial_stop
     chase_factor: float                   # echo for footer / tooltip
     # Sizing (two regimes).
@@ -657,8 +660,8 @@ class HypRecsExpandedVM:
     # spec §2.2 OQ-12 disposition.
     pattern_evaluation_id: int | None = None
     pipeline_run_id: int | None = None
-    # THE DISCLOSURE PAIR (codex-auto-review MAJOR, 2026-08-03). `chase_factor`
-    # stays operator-editable, so an override ABOVE the latch buy-zone cap makes
+    # THE DISCLOSURE (codex-auto-review MAJOR, 2026-08-03). `chase_factor` stays
+    # operator-editable, so an override ABOVE the latch buy-zone cap makes
     # `buy_limit` a price the framework's own latch mandate would refuse to
     # order -- for pivot 36.27 the card says 38.08 while the latch orders 37.35.
     # Whether the knob should exist at all is the directors' open question and
@@ -666,10 +669,25 @@ class HypRecsExpandedVM:
     # the price the framework WOULD order, and the card shows both whenever they
     # differ, because an unlabelled divergence is a quiet all-clear by omission.
     #
+    # ONE FIELD, AND THE FLAG IS DERIVED (Codex R3 MINOR). A stored boolean
+    # BESIDE the price is a second source that a direct constructor can set
+    # inconsistently -- and this VM has direct constructors: an in-tree one
+    # already passes limit 210 at a 5% factor, whose mandate is 206, and a
+    # defaulted `False` would have rendered that as agreement. A property cannot
+    # disagree with the number it is derived from.
+    #
+    # `None` means THE BUILDER DID NOT COMPUTE IT, which is a different fact
+    # from "they agree", so it discloses nothing rather than guessing.
+    #
     # Defaulted and placed LAST because every field above `current_price` is
     # positionally required and a defaulted field may not precede them.
-    mandate_buy_limit: float = 0.0
-    chase_factor_diverges_from_mandate: bool = False
+    mandate_buy_limit: float | None = None
+
+    @property
+    def chase_factor_diverges_from_mandate(self) -> bool:
+        """Does this card's buy limit differ from the latch mandate's?"""
+        return (self.mandate_buy_limit is not None
+                and self.buy_limit != self.mandate_buy_limit)
 
 
 def build_hyp_recs_expanded(
@@ -889,7 +907,6 @@ def build_hyp_recs_expanded(
         pattern_evaluation_id=resolved_pattern_evaluation_id,
         pipeline_run_id=binding.run_id,
         mandate_buy_limit=mandate_buy_limit,
-        chase_factor_diverges_from_mandate=(buy_limit != mandate_buy_limit),
     )
 
 

@@ -36,8 +36,15 @@
           contradict it -- at chase_factor 0.0255 a 3-decimal "× 1.026" implies
           $1026.00 against a rendered $1025.50. A name cannot disagree with the
           number it labels. -#}
+      {#- ...and under an override the label must not say "the buy-zone cap"
+          either (Codex R3 MINOR): that would name $38.08 as the cap on the very
+          line above a disclosure identifying $37.35 as the framework's cap. -#}
       <li>Buy limit: ${{ '%.2f' | format(expanded.buy_limit) }}
-          <span class="muted">(the buy-zone cap for this pivot, floored to whole cents)</span></li>
+          {% if expanded.chase_factor_diverges_from_mandate %}
+          <span class="muted">(your configured chase factor, floored to whole cents)</span>
+          {% else %}
+          <span class="muted">(the buy-zone cap for this pivot, floored to whole cents)</span>
+          {% endif %}</li>
       {#- THE DIVERGENCE DISCLOSURE (codex-auto-review MAJOR). chase_factor is
           operator-editable, so an override can make the limit above a price the
           latch mandate would actually order. The knob is not removed here --

@@ -416,6 +416,74 @@ def test_the_divergence_DISCLOSURE_reaches_the_rendered_card(seeded_db):
     assert "37.35" in clean
 
 
+def test_the_divergence_flag_is_DERIVED_not_a_second_stored_field():
+    """CODEX R3 MINOR. A stored boolean beside the price is a second source a
+    DIRECT constructor can set inconsistently -- and this VM has direct
+    constructors in-tree (one passes limit 210 at a 5% factor, whose mandate is
+    206, and a defaulted `False` rendered that as agreement).
+
+    So the flag is a PROPERTY. This test builds the VM by hand, deliberately
+    bypassing the builder, and a re-introduced stored field fails it.
+    """
+    from dataclasses import fields as dc_fields
+
+    from swing.recommendations.sizing import SizingResult
+    from swing.web.view_models.dashboard import HypRecsExpandedVM
+
+    names = {f.name for f in dc_fields(HypRecsExpandedVM)}
+    assert "chase_factor_diverges_from_mandate" not in names, (
+        "the flag must be DERIVED; a stored field can contradict the price")
+
+    sizing = SizingResult(
+        feasible=True, shares=10, notional=2000.0, risk_dollars=100.0,
+        risk_pct=1.0, notional_pct=20.0, constraint="ok")
+
+    def _vm(**over):
+        base = dict(
+            ticker="UCTT", buy_stop=200.0, buy_limit=210.0, sell_stop=190.0,
+            chase_factor=0.05, current_balance=10_000.0, risk_equity=10_000.0,
+            sizing_risk=sizing, sizing_cash=sizing, sector="Technology",
+            industry="Semiconductors", data_asof_date="2026-04-28",
+            chart_reason=None, chart_reason_message=None,
+            pipeline_finished_at="2026-04-29T16:00:00")
+        base.update(over)
+        return HypRecsExpandedVM(**base)
+
+    # NOT COMPUTED is not AGREEMENT, but it is also not a claim: the card says
+    # nothing rather than guessing.
+    assert _vm().mandate_buy_limit is None
+    assert _vm().chase_factor_diverges_from_mandate is False
+    # Computed and different -> disclosed, with no way to say otherwise.
+    assert _vm(mandate_buy_limit=206.0).chase_factor_diverges_from_mandate
+    # Computed and equal -> silent.
+    assert _vm(mandate_buy_limit=210.0).chase_factor_diverges_from_mandate is False
+
+
+def test_the_card_does_not_call_an_OVERRIDE_the_buy_zone_cap(seeded_db):
+    """CODEX R3 MINOR. Under an override the annotation used to name 38.08 as
+    "the buy-zone cap for this pivot" on the line directly above a disclosure
+    identifying 37.35 as the framework's cap -- the disclosure fixed the
+    silence but the label was still false."""
+    from swing.web.app import _build_templates, _templates_dir
+
+    cfg, _ = seeded_db
+    _seed_complete_pipeline(cfg, candidates=[
+        {"ticker": "AMN", "pivot": WITNESSED_PIVOT, "initial_stop": 33.00},
+    ])
+    templates = _build_templates(_templates_dir())
+    template = templates.env.get_template(
+        "partials/hypothesis_recommendations_expanded.html.j2")
+
+    over = replace(cfg, web=replace(cfg.web, chase_factor=0.05))
+    text = template.render(expanded=_expanded(over), watchlist_entry=None)
+    assert "your configured chase factor" in text
+    assert "the buy-zone cap for this pivot" not in text
+
+    clean = template.render(expanded=_expanded(cfg), watchlist_entry=None)
+    assert "the buy-zone cap for this pivot" in clean
+    assert "your configured chase factor" not in clean
+
+
 def test_a_LARGE_FINITE_chase_factor_degrades_instead_of_500(seeded_db):
     """CODEX R2 MAJOR / codex-auto-review MINOR. `zone_cap_for_pivot`'s
     finiteness guard does not catch a large FINITE value: `1e25` yields a finite
