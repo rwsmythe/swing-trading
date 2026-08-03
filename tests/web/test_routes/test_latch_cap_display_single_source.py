@@ -528,6 +528,19 @@ def _swing_sources():
         yield path
 
 
+def _physical_lines(text: str) -> list[str]:
+    """Split on the PHYSICAL newline only, keeping it.
+
+    NOT `splitlines()` (Codex R7 NIT): it also breaks on U+2028, U+2029, form
+    feed and friends, which `ast` and the tokenizer do NOT count as line breaks
+    -- so the row list would desynchronise from AST line numbers and the
+    blanking would cut the wrong row.
+    """
+    parts = text.split("\n")
+    tail = [parts[-1]] if parts[-1] else []
+    return [p + "\n" for p in parts[:-1]] + tail
+
+
 def _code_only(path: Path, source: str) -> str:
     """`source` with DOCSTRINGS and COMMENTS blanked (same line count).
 
@@ -546,7 +559,7 @@ def _code_only(path: Path, source: str) -> str:
     import io
     import tokenize
 
-    original = source.splitlines(keepends=True)
+    original = _physical_lines(source)
     rows = list(original)
 
     def _chars(row: int, byte_col: int) -> int:
@@ -591,7 +604,7 @@ def _code_only(path: Path, source: str) -> str:
     for span in sorted(spans, reverse=True):
         _blank(*span)
     text = "".join(rows)
-    rows = text.splitlines(keepends=True)
+    rows = _physical_lines(text)
     try:
         toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
     except (tokenize.TokenError, IndentationError, SyntaxError):
@@ -694,7 +707,7 @@ def test_the_docstring_stripper_survives_NON_ASCII(tmp_path):
     path = tmp_path / "non_ascii.py"
     path.write_text(src, encoding="utf-8")
     stripped = _code_only(path, src)
-    assert len(stripped.splitlines()) == len(src.splitlines())
+    assert len(_physical_lines(stripped)) == len(_physical_lines(src))
     assert "§" not in stripped, "both docstrings must be blanked"
     assert any(p.search(stripped) for p in _RAW_CAP_PATTERNS), (
         "the real offender must survive a non-ASCII docstring")
@@ -719,7 +732,7 @@ def test_the_stripper_does_not_CORRUPT_code_after_a_non_ascii_string(tmp_path):
     path.write_text(src, encoding="utf-8")
     stripped = _code_only(path, src)
 
-    assert len(stripped.splitlines()) == len(src.splitlines())
+    assert len(_physical_lines(stripped)) == len(_physical_lines(src))
     # The three that DISCRIMINATE -- each was verified to FAIL under the
     # mutating-rows implementation, which left `§` behind, mangled `return`
     # into `eturn` and produced text that no longer tokenizes.
@@ -740,7 +753,7 @@ def test_the_stripper_preserves_LINE_COUNT_on_every_real_swing_file():
             continue
         raw = path.read_text(encoding="utf-8")
         stripped = _code_only(path, raw)
-        assert len(stripped.splitlines()) == len(raw.splitlines()), path
+        assert len(_physical_lines(stripped)) == len(_physical_lines(raw)), path
 
 
 def test_a_SECOND_occurrence_of_a_known_residual_is_NOT_exempted(tmp_path):

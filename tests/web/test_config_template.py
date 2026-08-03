@@ -38,7 +38,8 @@ def test_template_source_badge_default_when_no_overrides(client: TestClient):
     The shared `_write_cfg` fixture sets `account.risk_equity_floor = 5000.0`
     in the project config, which differs from the FIELD_REGISTRY default
     (7500.0). So with no user overrides applied:
-      - web.chase_factor (0.01)              -> source-default (matches default)
+      - web.chase_factor (the latch buy-zone cap, 2026-08-03; NOT the retired
+        0.01) -> source-default (matches default)
       - pipeline.chart_top_n_watch (10)      -> source-default (matches default)
       - account.risk_equity_floor (5000.0)   -> source-tracked (project-config override)
     Adjusted from the plan's `>= 3` to reflect actual fixture state.
