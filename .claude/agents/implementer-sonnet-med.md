@@ -1,6 +1,6 @@
 ---
 name: implementer-sonnet-med
-description: Genuinely mechanical / large-but-simple-volume implementer — low-judgment repetitive edits, boilerplate, bulk renames where the pattern is fixed. Sonnet at medium effort. Select by TASK, not by phase.
+description: Mechanical-to-moderately-involved implementer — repetitive edits, boilerplate, bulk renames, and multi-file changes whose pattern is settled. Sonnet 5 at medium effort, which maps to roughly Sonnet 4.6 at high, so its task ceiling sits a notch above the old sonnet-med. Select by TASK, not by phase.
 tools: Read, Edit, Write, Bash, Glob, Grep, TodoWrite
 model: sonnet
 effort: med
