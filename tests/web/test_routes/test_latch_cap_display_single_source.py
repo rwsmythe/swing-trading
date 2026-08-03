@@ -548,7 +548,20 @@ def _code_only(path: Path, source: str) -> str:
 
     rows = source.splitlines(keepends=True)
 
+    def _chars(row: int, byte_col: int) -> int:
+        """`ast` column offsets are UTF-8 BYTE offsets, not character indexes
+        (Codex R4 NIT). This tree contains non-ASCII inside docstrings -- the
+        `S` section sign in `swing/data/models.py` -- so applying a byte offset
+        as a character index cut the wrong place, dropped a newline and broke
+        tokenization for the whole file. Silent, and it would have degraded the
+        belt to blindness on that file.
+        """
+        return len(rows[row].encode("utf-8")[:byte_col].decode(
+            "utf-8", errors="ignore"))
+
     def _blank(start_row, start_col, end_row, end_col):
+        start_col = _chars(start_row, start_col)
+        end_col = _chars(end_row, end_col)
         if start_row == end_row:
             r = rows[start_row]
             rows[start_row] = r[:start_col] + " " * (end_col - start_col) + r[end_col:]
@@ -645,6 +658,45 @@ def test_the_docstring_stripper_does_not_hide_code_sharing_a_line(tmp_path):
     assert '"doc"' not in stripped, "the docstring must still be blanked"
     assert any(p.search(stripped) for p in _RAW_CAP_PATTERNS), (
         "the offender sharing the docstring's line must survive the strip")
+
+
+def test_the_docstring_stripper_survives_NON_ASCII(tmp_path):
+    """CODEX R4 NIT, and it was live on this tree.
+
+    `ast` reports column offsets in UTF-8 BYTES while Python strings index by
+    CHARACTER, so a non-ASCII glyph inside a docstring -- the section sign in
+    `swing/data/models.py` -- made the blanking cut the wrong place, drop a
+    newline and break tokenization for the entire file. Silently: the belt would
+    have gone blind on that file while still reporting green.
+
+    The contract this pins is LINE COUNT PRESERVED plus the offender surviving,
+    which is exactly what the byte/character confusion broke.
+    """
+    src = (
+        '"""Spec § 3.1 -- a docstring with a non-ASCII glyph."""\n'
+        'def f(x):\n'
+        '    """Another § one."""\n'
+        '    return f"{x.zone_cap:.2f}"\n'
+    )
+    path = tmp_path / "non_ascii.py"
+    path.write_text(src, encoding="utf-8")
+    stripped = _code_only(path, src)
+    assert len(stripped.splitlines()) == len(src.splitlines())
+    assert "§" not in stripped, "both docstrings must be blanked"
+    assert any(p.search(stripped) for p in _RAW_CAP_PATTERNS), (
+        "the real offender must survive a non-ASCII docstring")
+
+
+def test_the_stripper_preserves_LINE_COUNT_on_every_real_swing_file():
+    """The same property asserted against the ACTUAL tree rather than a fixture
+    -- the byte-offset defect was invisible to an ASCII-only fixture and only
+    a real file carried the glyph that exposed it."""
+    for path in _swing_sources():
+        if path.suffix != ".py":
+            continue
+        raw = path.read_text(encoding="utf-8")
+        stripped = _code_only(path, raw)
+        assert len(stripped.splitlines()) == len(raw.splitlines()), path
 
 
 def test_a_SECOND_occurrence_of_a_known_residual_is_NOT_exempted(tmp_path):

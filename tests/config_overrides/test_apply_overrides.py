@@ -8,6 +8,7 @@ import pytest
 from swing.config import load
 from swing.config_overrides import apply_overrides, get_field_source
 from swing.config_user import write_user_overrides
+from swing.latches.constants import LATCH_ZONE_CAP_FRACTION
 from tests.web.test_config_web import _write_cfg  # reuse helper
 
 
@@ -86,8 +87,8 @@ def test_apply_re_reads_user_config_each_call(base_cfg):
 def test_get_field_source_default(base_cfg, tmp_path, monkeypatch):
     """No tracked-toml override + no user-config → 'default'.
 
-    Uses a CFG built from the registry default (web.chase_factor=0.01),
-    NOT a tracked-toml override. Helper _write_cfg omits a [web] block,
+    Uses a CFG built from the registry default (web.chase_factor =
+    LATCH_ZONE_CAP_FRACTION), NOT a tracked-toml override. Helper _write_cfg omits a [web] block,
     so cfg.web.chase_factor falls back to the dataclass default.
     """
     assert get_field_source(base_cfg, "web.chase_factor") == "default"
@@ -118,7 +119,11 @@ def test_get_field_source_override_even_when_value_equals_default(base_cfg):
     Operator's intent to lock the value is preserved by reporting the
     source as 'override'.
     """
-    write_user_overrides({"web": {"chase_factor": 0.01}})  # == default
+    # DERIVED, not a literal (Codex R4 MINOR): this test's whole contract is
+    # "the written value EQUALS the default", so a hard-coded 0.01 stopped
+    # testing it the moment the default moved -- it kept passing while proving
+    # only the ordinary not-equal-to-default case the test above already covers.
+    write_user_overrides({"web": {"chase_factor": LATCH_ZONE_CAP_FRACTION}})
     assert get_field_source(base_cfg, "web.chase_factor") == "override"
 
 

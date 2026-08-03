@@ -453,6 +453,18 @@ def test_the_divergence_flag_is_DERIVED_not_a_second_stored_field():
     # nothing rather than guessing.
     assert _vm().mandate_buy_limit is None
     assert _vm().chase_factor_diverges_from_mandate is False
+
+    # ...and the CARD must not fall back to the agreement label either (Codex
+    # R4 MINOR): with no mandate computed it makes NO source claim at all, or a
+    # direct constructor at limit 210 / factor 5% would be told 210 is the cap
+    # when the mandate is 206.
+    from swing.web.app import _build_templates, _templates_dir
+    template = _build_templates(_templates_dir()).env.get_template(
+        "partials/hypothesis_recommendations_expanded.html.j2")
+    uncomputed = template.render(expanded=_vm(), watchlist_entry=None)
+    assert "the buy-zone cap for this pivot" not in uncomputed
+    assert "your configured chase factor" not in uncomputed
+    assert "floored to whole cents" in uncomputed
     # Computed and different -> disclosed, with no way to say otherwise.
     assert _vm(mandate_buy_limit=206.0).chase_factor_diverges_from_mandate
     # Computed and equal -> silent.

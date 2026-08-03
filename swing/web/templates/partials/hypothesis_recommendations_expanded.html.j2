@@ -39,8 +39,13 @@
       {#- ...and under an override the label must not say "the buy-zone cap"
           either (Codex R3 MINOR): that would name $38.08 as the cap on the very
           line above a disclosure identifying $37.35 as the framework's cap. -#}
+      {#- THREE branches, not two (Codex R4 MINOR). `mandate_buy_limit is none`
+          means the mandate was NOT COMPUTED, so the card may not claim this is
+          the buy-zone cap either -- it makes no source claim at all. -#}
       <li>Buy limit: ${{ '%.2f' | format(expanded.buy_limit) }}
-          {% if expanded.chase_factor_diverges_from_mandate %}
+          {% if expanded.mandate_buy_limit is none %}
+          <span class="muted">(floored to whole cents)</span>
+          {% elif expanded.chase_factor_diverges_from_mandate %}
           <span class="muted">(your configured chase factor, floored to whole cents)</span>
           {% else %}
           <span class="muted">(the buy-zone cap for this pivot, floored to whole cents)</span>
