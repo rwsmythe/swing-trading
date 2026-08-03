@@ -546,22 +546,29 @@ def _code_only(path: Path, source: str) -> str:
     import io
     import tokenize
 
-    rows = source.splitlines(keepends=True)
+    original = source.splitlines(keepends=True)
+    rows = list(original)
 
     def _chars(row: int, byte_col: int) -> int:
         """`ast` column offsets are UTF-8 BYTE offsets, not character indexes
         (Codex R4 NIT). This tree contains non-ASCII inside docstrings -- the
-        `S` section sign in `swing/data/models.py` -- so applying a byte offset
-        as a character index cut the wrong place, dropped a newline and broke
+        section sign in `swing/data/models.py` -- so applying a byte offset as a
+        character index cut the wrong place, dropped a newline and broke
         tokenization for the whole file. Silent, and it would have degraded the
         belt to blindness on that file.
+
+        CONVERTED AGAINST THE IMMUTABLE ORIGINAL (Codex R5 NIT). Reading the
+        MUTATING `rows` meant that once an earlier non-ASCII string on a line
+        had been blanked, its replacement had fewer UTF-8 bytes and every later
+        offset on that line converted wrong -- which corrupted an identifier
+        (`x.zone_cap` -> `one_cap`) while leaving the text tokenizable and the
+        line count intact, so BOTH new invariants passed while the belt lost the
+        offender. Exactly the shape of failure the belt exists to prevent.
         """
-        return len(rows[row].encode("utf-8")[:byte_col].decode(
+        return len(original[row].encode("utf-8")[:byte_col].decode(
             "utf-8", errors="ignore"))
 
     def _blank(start_row, start_col, end_row, end_col):
-        start_col = _chars(start_row, start_col)
-        end_col = _chars(end_row, end_col)
         if start_row == end_row:
             r = rows[start_row]
             rows[start_row] = r[:start_col] + " " * (end_col - start_col) + r[end_col:]
@@ -571,12 +578,18 @@ def _code_only(path: Path, source: str) -> str:
             rows[i] = "\n"
         rows[end_row] = " " * end_col + rows[end_row][end_col:]
 
-    for node in ast.walk(ast.parse(source)):
+    # Collected FIRST, converted against the original, then applied in REVERSE
+    # source order so an earlier span's replacement cannot shift a later one.
+    spans = [
+        (node.lineno - 1, _chars(node.lineno - 1, node.col_offset),
+         node.end_lineno - 1, _chars(node.end_lineno - 1, node.end_col_offset))
+        for node in ast.walk(ast.parse(source))
         if (isinstance(node, ast.Expr)
-                and isinstance(node.value, ast.Constant)
-                and isinstance(node.value.value, str)):
-            _blank(node.lineno - 1, node.col_offset,
-                   node.end_lineno - 1, node.end_col_offset)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str))
+    ]
+    for span in sorted(spans, reverse=True):
+        _blank(*span)
     text = "".join(rows)
     rows = text.splitlines(keepends=True)
     try:
@@ -685,6 +698,37 @@ def test_the_docstring_stripper_survives_NON_ASCII(tmp_path):
     assert "§" not in stripped, "both docstrings must be blanked"
     assert any(p.search(stripped) for p in _RAW_CAP_PATTERNS), (
         "the real offender must survive a non-ASCII docstring")
+
+
+def test_the_stripper_does_not_CORRUPT_code_after_a_non_ascii_string(tmp_path):
+    """CODEX R5 NIT -- and the reason it needed its own test is that the two
+    existing invariants could not see it.
+
+    Converting byte offsets against the MUTATING rows meant an earlier
+    non-ASCII string's replacement (fewer UTF-8 bytes) shifted every later
+    offset on the same line, corrupting an identifier -- `x.zone_cap` became
+    `one_cap` -- while the output stayed tokenizable with an identical line
+    count. Both new invariants passed and the belt silently lost the offender:
+    the precise failure shape the belt exists to prevent, re-created inside it.
+    """
+    import io
+    import tokenize
+
+    src = 'def f(x): "§§§"; "§"; return f"{x.zone_cap:.2f}"\n'
+    path = tmp_path / "two_strings.py"
+    path.write_text(src, encoding="utf-8")
+    stripped = _code_only(path, src)
+
+    assert len(stripped.splitlines()) == len(src.splitlines())
+    # The three that DISCRIMINATE -- each was verified to FAIL under the
+    # mutating-rows implementation, which left `§` behind, mangled `return`
+    # into `eturn` and produced text that no longer tokenizes.
+    assert "§" not in stripped, "a blanked string leaked through"
+    assert "return f" in stripped, "the code after the strings was mangled"
+    list(tokenize.generate_tokens(io.StringIO(stripped).readline))
+
+    assert "x.zone_cap" in stripped
+    assert any(p.search(stripped) for p in _RAW_CAP_PATTERNS)
 
 
 def test_the_stripper_preserves_LINE_COUNT_on_every_real_swing_file():
