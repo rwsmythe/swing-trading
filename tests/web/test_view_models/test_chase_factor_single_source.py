@@ -112,12 +112,16 @@ def test_the_DASHBOARD_actually_INVOKES_both_shared_functions(
     _seed_complete_pipeline(cfg, candidates=[
         {"ticker": "AMN", "pivot": WITNESSED_PIVOT, "initial_stop": 33.00},
     ])
-    monkeypatch.setattr(dash_mod, "zone_cap_for_pivot", lambda *a, **k: 41.1111)
-    assert _expanded(cfg).buy_limit == 41.11
-
-    monkeypatch.undo()
-    monkeypatch.setattr(dash_mod, "mandate_limit_price", lambda cap: 12.34)
-    assert _expanded(cfg).buy_limit == 12.34
+    # `monkeypatch.context()` rather than `monkeypatch.undo()` (Codex R2 NIT):
+    # `undo()` reverts EVERY patch on the fixture, including the autouse
+    # HOME/USERPROFILE redirection that keeps this test off the operator's real
+    # user-config -- a scoped context reverts only what it set.
+    with monkeypatch.context() as m:
+        m.setattr(dash_mod, "zone_cap_for_pivot", lambda *a, **k: 41.1111)
+        assert _expanded(cfg).buy_limit == 41.11
+    with monkeypatch.context() as m:
+        m.setattr(dash_mod, "mandate_limit_price", lambda cap: 12.34)
+        assert _expanded(cfg).buy_limit == 12.34
 
 
 def test_the_DEFAULTS_are_written_as_the_NAME_not_as_a_copied_literal():
@@ -321,6 +325,15 @@ def test_an_OPERATOR_OVERRIDE_still_reaches_the_buy_limit(seeded_db):
     """The knob STAYS LIVE. Single-sourcing the DEFAULT must not quietly turn
     an operator-facing tunable into a decoration that no longer moves anything
     -- a knob that lies is worse than a knob that is gone.
+
+    WHAT THIS TEST DOES NOT BLESS (codex-auto-review MAJOR, 2026-08-03): at an
+    override the dashboard states a limit the latch mandate would NOT order --
+    38.08 against the mandate's 37.35 -- so the "one entry limit for one pivot"
+    property holds at the DEFAULT and not above it. That residual is REAL and it
+    is FLAGGED UPWARD as the directors' open question the brief reserved (should
+    the knob exist at all). What is fixed here is the SILENCE: the card no
+    longer presents an operator override as the framework's own price. See
+    `test_an_override_is_DISCLOSED_as_a_divergence_from_the_mandate`.
     """
     cfg, _ = seeded_db
     cfg = replace(cfg, web=replace(cfg.web, chase_factor=0.05))
@@ -335,3 +348,89 @@ def test_an_OPERATOR_OVERRIDE_still_reaches_the_buy_limit(seeded_db):
     assert vm.buy_limit == 38.08
     assert vm.buy_limit != mandate_limit_price(
         zone_cap_for_pivot(WITNESSED_PIVOT))
+
+
+def test_an_override_is_DISCLOSED_as_a_divergence_from_the_mandate(seeded_db):
+    """CODEX-AUTO-REVIEW MAJOR. An override above the latch cap makes this card
+    state a price the framework would refuse to order -- the exact defect the
+    arc exists to remove, relocated behind a knob.
+
+    Removing the knob is the directors' call and is NOT taken here. What IS
+    taken is the project's standing posture: an unlabelled reduction is a quiet
+    all-clear by omission. So the divergence is NAMED on the card, with both
+    numbers, rather than presented as the framework's own limit.
+    """
+    cfg, _ = seeded_db
+    _seed_complete_pipeline(cfg, candidates=[
+        {"ticker": "AMN", "pivot": WITNESSED_PIVOT, "initial_stop": 33.00},
+    ])
+
+    at_default = _expanded(cfg)
+    assert at_default.chase_factor_diverges_from_mandate is False
+    assert at_default.mandate_buy_limit == at_default.buy_limit
+
+    over = replace(cfg, web=replace(cfg.web, chase_factor=0.05))
+    vm = _expanded(over)
+    assert vm.chase_factor_diverges_from_mandate is True
+    assert vm.mandate_buy_limit == mandate_limit_price(
+        zone_cap_for_pivot(WITNESSED_PIVOT))
+    assert vm.mandate_buy_limit == 37.35
+    assert vm.buy_limit == 38.08
+
+
+def test_the_divergence_DISCLOSURE_reaches_the_rendered_card(seeded_db):
+    """Through the REAL template, because a VM flag nobody renders discloses
+    nothing.
+
+    The VM is built by the production builder and then handed to the production
+    partial directly (the in-tree pattern from
+    tests/web/templates/test_expanded_chart_suppress_banner.py) rather than
+    driven through `create_app` + TestClient: the route path pulls in the price
+    cache and its executor, which makes a pure template assertion depend on a
+    live fetch and on worker-shared app state.
+    """
+    from swing.web.app import _build_templates, _templates_dir
+
+    cfg, _ = seeded_db
+    _seed_complete_pipeline(cfg, candidates=[
+        {"ticker": "AMN", "pivot": WITNESSED_PIVOT, "initial_stop": 33.00},
+    ])
+
+    def _render(effective):
+        vm = _expanded(effective)
+        assert vm is not None
+        templates = _build_templates(_templates_dir())
+        template = templates.env.get_template(
+            "partials/hypothesis_recommendations_expanded.html.j2")
+        return template.render(expanded=vm, watchlist_entry=None)
+
+    over = replace(cfg, web=replace(cfg.web, chase_factor=0.05))
+    text = _render(over)
+    assert "38.08" in text
+    assert "37.35" in text, "the mandate's own limit must be shown beside it"
+    assert "does not match the latch mandate" in text
+
+    clean = _render(cfg)
+    assert "does not match the latch mandate" not in clean, (
+        "the disclosure must be SILENT at the default, or it is noise")
+    assert "37.35" in clean
+
+
+def test_a_LARGE_FINITE_chase_factor_degrades_instead_of_500(seeded_db):
+    """CODEX R2 MAJOR / codex-auto-review MINOR. `zone_cap_for_pivot`'s
+    finiteness guard does not catch a large FINITE value: `1e25` yields a finite
+    cap that `Decimal.quantize` then refused at the default 28-digit precision,
+    so the route 500'd where the old multiplication rendered a number.
+
+    Fixed at `mandate_limit_price` (a precision context), so this asserts the
+    surface RENDERS rather than raising -- the guard is not what saves it.
+    """
+    cfg, _ = seeded_db
+    _seed_complete_pipeline(cfg, candidates=[
+        {"ticker": "AMN", "pivot": WITNESSED_PIVOT, "initial_stop": 33.00},
+    ])
+    for factor in (1e25, 1e300):
+        over = replace(cfg, web=replace(cfg.web, chase_factor=factor))
+        vm = _expanded(over)
+        assert vm is not None, f"chase_factor={factor} must not raise"
+        assert vm.buy_limit > WITNESSED_PIVOT

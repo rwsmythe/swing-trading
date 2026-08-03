@@ -12,8 +12,15 @@ from __future__ import annotations
 from dataclasses import dataclass as _dataclass
 from datetime import date as _date
 from decimal import ROUND_FLOOR as _ROUND_FLOOR
+from decimal import Context as _Context
 from decimal import Decimal as _Decimal
 from math import isfinite as _isfinite
+
+# Enough precision that `mandate_limit_price` is TOTAL over finite floats --
+# `sys.float_info.max` needs 309 integer digits plus the 2 fractional ones, and
+# the default 28-digit context raised `InvalidOperation` instead of answering.
+# See `mandate_limit_price`'s docstring for why this is the right fix.
+_QUANTIZE_CONTEXT = _Context(prec=400)
 
 
 # RD constraint 2, RULED at the plan-stage gate: the horizon is DERIVED from
@@ -313,10 +320,28 @@ def mandate_limit_price(zone_cap: float) -> float:
     than inferred from the worked example -- and why the two pinning tests are
     each marked NOT DROPPABLE: the round-half-up case passes under the naive
     floor, and the representation case passes under round-half-up.
+
+    AND IT IS TOTAL OVER FINITE FLOATS (Codex R2 MAJOR + codex-auto-review,
+    2026-08-03). `quantize` raises `InvalidOperation` when the RESULT needs more
+    digits than the ambient context carries -- 28 by default -- so
+    `mandate_limit_price(1e26)` used to RAISE. Harmless while every caller was
+    latch-internal with a validated price; NOT harmless once the display fix
+    routed the dashboard's buy limit and every cap render through here, because
+    `candidates.pivot` carries no schema CHECK (migration 0001) and
+    `cfg.web.chase_factor` reaches `Web(**raw)` unvalidated from TOML. A
+    rendering surface must not 500 on a number.
+
+    THE PRECISION CONTEXT IS THE FIX, NOT A `try/except` AT EACH CALLER: the
+    contract is "the largest whole-cent price that does not exceed the cap", and
+    for 1e26 that answer plainly exists -- the default context was the only
+    thing refusing to compute it. 400 digits covers `sys.float_info.max` (309
+    integer digits + 2 fractional) with room, and the widening is EXACTLY
+    output-preserving on every value that already worked: a larger precision
+    cannot change a result that already fit.
     """
     return float(
         _Decimal(str(float(zone_cap))).quantize(
-            _Decimal("0.01"), rounding=_ROUND_FLOOR))
+            _Decimal("0.01"), rounding=_ROUND_FLOOR, context=_QUANTIZE_CONTEXT))
 
 
 # =====================================================================

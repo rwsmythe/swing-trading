@@ -254,13 +254,24 @@ def test_the_rendered_page_never_shows_a_cap_above_the_mandate(
 # ---------------------------------------------------------------------------
 # SITES 2-5 -- the order-fragment alarm prose
 # ---------------------------------------------------------------------------
-def _assert_cap_prose(text, *, expect_present=True):
+def _assert_cap_prose(text, *, marker):
+    """Assert the cap on THE TARGET LINE, not anywhere on the page.
+
+    CODEX R2 MINOR: the earlier form searched the whole fragment, and these
+    tests seed a CORRECT order at 37.35 which the fragment independently lists
+    -- so deleting the cap from the prose under test would still have passed.
+    `marker` is a substring unique to the line being pinned.
+    """
     over = _fmt(AMN_CAP)
     exact = _fmt(mandate_limit_price(AMN_CAP))
-    if expect_present:
-        assert exact in text
+    lines = [ln for ln in text.splitlines() if marker in ln]
+    assert lines, f"no rendered line contains {marker!r}"
+    for line in lines:
+        assert exact in line, f"{marker!r} line omits the mandate cap: {line}"
+        assert over not in line, (
+            f"{marker!r} line stated the cap as {over}, which is ABOVE it")
     assert over not in text, (
-        f"an alarm line stated the cap as {over}, which is ABOVE it")
+        f"the over-rounded cap {over} must appear NOWHERE in the fragment")
 
 
 def test_the_ORDER_PRICE_MISMATCH_line_states_the_mandate_limit(
@@ -277,7 +288,7 @@ def test_the_ORDER_PRICE_MISMATCH_line_states_the_mandate_limit(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "ORDER PRICE MISMATCH" in r.text
-    _assert_cap_prose(r.text)
+    _assert_cap_prose(r.text, marker="resting order does not match")
 
 
 def test_the_PULLBACK_disagreement_line_states_the_mandate_limit(
@@ -295,7 +306,7 @@ def test_the_PULLBACK_disagreement_line_states_the_mandate_limit(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "a GTC LIMIT at the zone cap" in r.text
-    _assert_cap_prose(r.text)
+    _assert_cap_prose(r.text, marker="a GTC LIMIT at the zone cap")
 
 
 def test_the_UNKNOWN_REGIME_disagreement_line_states_the_mandate_limit(
@@ -312,7 +323,7 @@ def test_the_UNKNOWN_REGIME_disagreement_line_states_the_mandate_limit(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "only the cap is judged" in r.text
-    _assert_cap_prose(r.text)
+    _assert_cap_prose(r.text, marker="only the cap is judged")
 
 
 def test_the_MULTIPLICITY_line_states_the_mandate_limit(
@@ -329,7 +340,8 @@ def test_the_MULTIPLICITY_line_states_the_mandate_limit(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "2 resting BUY orders match this mandate" in r.text
-    _assert_cap_prose(r.text)
+    _assert_cap_prose(
+        r.text, marker="resting BUY orders match this mandate")
 
 
 def test_the_STRAY_ORDER_line_states_the_mandate_limit(
@@ -346,7 +358,7 @@ def test_the_STRAY_ORDER_line_states_the_mandate_limit(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "matches NO latch" in r.text
-    _assert_cap_prose(r.text)
+    _assert_cap_prose(r.text, marker="matches NO latch")
 
 
 # ---------------------------------------------------------------------------
@@ -473,17 +485,35 @@ def test_the_zone_label_control_a_cap_that_rounds_DOWN_is_unchanged():
 # THE ROSTER BELT -- the "did the fix reach ALL the sites" question, asked of
 # the source rather than of the reviewer's memory.
 # ---------------------------------------------------------------------------
-# BOTH shapes, because the pre-fix card used the SECOND one (Codex R1 MINOR).
-# A belt that only knew about `{zone_cap:.2f}` would have missed the very line
-# the operator read.
+# EVERY SHAPE THIS DEFECT HAS ACTUALLY WORN, plus the near neighbours (Codex R1
+# + R2 MINOR). The pre-fix card used `_fmt_price(...)`, NOT a format spec, so a
+# belt that knew only `{zone_cap:.2f}` would have missed the very line the
+# operator read; `round(zone_cap, 2)` is the shape the zone CLASSIFIER wore.
 _RAW_CAP_PATTERNS = (
-    re.compile(r"\bzone_cap:\.\d+f"),              # f-string format spec
+    re.compile(r"\bzone_cap:[,\d.]*\.\d+f"),             # f-string format spec
     re.compile(r"_fmt_price\(\s*[\w.]*zone_cap\s*\)"),   # the card's old form
-    re.compile(r"format\(\s*[\w.]*zone_cap\s*\)"),       # a Jinja filter form
+    re.compile(r"format\(\s*[\w.]*zone_cap\s*[,)]"),     # Jinja filter / builtin
+    re.compile(r"%\s*[\w.]*zone_cap\b"),                 # printf-style
+    re.compile(r"\bround\(\s*[\w.]*zone_cap\s*,"),       # the classifier's form
 )
 # Sites that legitimately name a raw cap WITHOUT rendering it at price
 # precision. Each is a PASS-THROUGH to a function that quantizes for itself.
 _ALLOWED_RAW_CAP_SOURCES = ("mandate_limit_price", "zone_cap_for_pivot")
+
+# THE ONE KNOWN, DELIBERATE RESIDUAL -- named here so it is CHECKED rather than
+# merely mentioned in a return report nobody re-reads, and so that adding a
+# SECOND one fails loudly.
+#
+# `_price_in_executable_zone` decides whether an unlinked fill could have come
+# from this mandate, and it compares against the ROUNDED raw cap -- so a fill one
+# cent above the mandate limit still links. That is a FILL-ATTRIBUTION rule
+# feeding the execution-parity ledger, not a display path, and tightening it
+# would unlink exactly the fills the display defect caused (the operator placed
+# at the over-rounded price BECAUSE the panel showed it). Escalated to the
+# directors on 2026-08-03 rather than decided by this rider.
+_KNOWN_RESIDUAL_RAW_CAPS = {
+    ("service.py", "round(draft.zone_cap,"),
+}
 
 
 def _swing_sources():
@@ -492,6 +522,45 @@ def _swing_sources():
         yield path
     for path in sorted(root.rglob("*.j2")):
         yield path
+
+
+def _code_only(path: Path, source: str) -> str:
+    """`source` with DOCSTRINGS and COMMENTS blanked (same line count).
+
+    Without this the belt reports its own prose: `mandate_limit_price`'s
+    docstring and `_zone_position`'s both QUOTE `round(zone_cap, 2)` while
+    explaining why it is wrong. A belt that fires on the explanation of the
+    defect is a belt nobody can keep green.
+    """
+    if path.suffix != ".py":
+        return source
+    import ast
+    import io
+    import tokenize
+
+    lines = source.splitlines(keepends=True)
+    blanked = list(lines)
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            for i in range(node.lineno - 1, node.end_lineno):
+                blanked[i] = "\n"
+    text = "".join(blanked)
+    out = []
+    for line in text.splitlines(keepends=True):
+        out.append(line)
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return text
+    for tok in toks:
+        if tok.type != tokenize.COMMENT:
+            continue
+        row = tok.start[0] - 1
+        out[row] = out[row][:tok.start[1]] + "\n"
+    return "".join(out)
 
 
 def test_NO_production_file_formats_a_RAW_zone_cap_for_display():
@@ -507,18 +576,36 @@ def test_NO_production_file_formats_a_RAW_zone_cap_for_display():
     freely (to `mandate_shape_mismatch`, into the derivation, into
     `mandate_limit_price` itself), and only the act of showing it at price
     precision is the defect.
+
+    WHAT THIS BELT CANNOT DO, STATED SO IT IS NOT MISREAD AS MORE THAN IT IS
+    (Codex R2 + auto-review MINOR; and gotcha #31 -- a comment that promises
+    more than the code enforces is worse than none). It is a TEXT SEARCH for the
+    identifier `zone_cap`. An alias (`cap = latch.zone_cap` then `f"{cap:.2f}"`),
+    a cap re-derived under another name, or a formatter it does not know all pass
+    it. It catches the shapes this defect has actually worn and the obvious
+    neighbours; the BEHAVIOURAL tests above are what pin the shipped sites.
     """
     offenders = []
+    residuals_seen = set()
     for path in _swing_sources():
-        source = path.read_text(encoding="utf-8")
-        if "zone_cap" not in source:
+        raw = path.read_text(encoding="utf-8")
+        if "zone_cap" not in raw:
             continue
+        source = _code_only(path, raw)
         for pattern in _RAW_CAP_PATTERNS:
             for match in pattern.finditer(source):
                 if any(a in match.group(0) for a in _ALLOWED_RAW_CAP_SOURCES):
                     continue
+                key = (path.name, match.group(0))
+                if key in _KNOWN_RESIDUAL_RAW_CAPS:
+                    residuals_seen.add(key)
+                    continue
                 line = source[:match.start()].count("\n") + 1
                 offenders.append(f"{path.name}:{line} {match.group(0)!r}")
+    assert residuals_seen == _KNOWN_RESIDUAL_RAW_CAPS, (
+        "a KNOWN residual is no longer present -- delete its exemption rather "
+        "than leaving a stale allowance that could silently cover a NEW site: "
+        f"{_KNOWN_RESIDUAL_RAW_CAPS - residuals_seen}")
     assert offenders == [], (
         "these sites render a RAW zone cap; route them through "
         f"mandate_limit_price -- round-half-up can state a price ABOVE the "
@@ -531,9 +618,15 @@ def test_the_belt_would_have_caught_the_ORIGINAL_defect():
     exercised against the exact pre-fix text.
     """
     pre_fix = [
+        # The three shapes this defect ACTUALLY wore in the shipped code...
         'zone_cap=_fmt_price(latch.zone_cap),',
         'f"{lat.zone_cap:.2f}); stop "',
+        'if p > round(latch.zone_cap, _PRICE_DP):',
+        # ...and the near neighbours a next author could reach for.
         "{{ '%.2f' | format(row.zone_cap) }}",
+        'f"{lat.zone_cap:,.2f}"',
+        'format(latch.zone_cap, ".2f")',
+        '"%.2f" % latch.zone_cap',
     ]
     for text in pre_fix:
         assert any(p.search(text) for p in _RAW_CAP_PATTERNS), text

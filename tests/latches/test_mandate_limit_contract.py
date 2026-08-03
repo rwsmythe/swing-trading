@@ -442,6 +442,40 @@ def test_a_STOP_LEG_still_keys_the_presence_alarm_the_post_supersede_geometry():
     assert "ORDER_RESTING_LATCH_CLEARED" in kinds
 
 
+def test_mandate_limit_price_is_TOTAL_over_finite_floats():
+    """CODEX R2 MAJOR / codex-auto-review MINOR, 2026-08-03.
+
+    `Decimal.quantize` raises `InvalidOperation` when the RESULT would need more
+    digits than the ambient context carries -- 28 by default -- so
+    `mandate_limit_price(1e26)` USED TO RAISE. That was harmless while the only
+    callers were latch-internal, but the display fix routes the dashboard's
+    `buy_limit` and every cap render through here, and an unconstrained
+    `candidates.pivot` (migration 0001 puts no CHECK on it) or a TOML
+    `chase_factor` reaches those. A rendering surface must not 500 on a number.
+
+    THE FIX IS A PRECISION CONTEXT, NOT A TRY/EXCEPT AT EACH CALLER: the
+    function's contract is "the largest whole-cent price that does not exceed
+    the cap", and for 1e26 that answer plainly exists -- the default context was
+    the only thing refusing to compute it. Widening it is EXACTLY
+    behaviour-preserving on every value that already worked (the four pinned
+    cases below are the ones the docstring's rules rest on).
+    """
+    import math
+    import sys
+
+    # The pinned semantics, UNCHANGED by the context widening.
+    assert mandate_limit_price(17.407) == 17.40      # floor, not round-half-up
+    assert mandate_limit_price(18.8952) == 18.89     # the cap-drift case
+    assert mandate_limit_price(145.23) == 145.23     # the binary-repr case
+    assert mandate_limit_price(18.8902) == 18.89     # FTRE, the control
+
+    # ...and the values that used to raise now answer.
+    for huge in (1e26, 1e300, sys.float_info.max):
+        out = mandate_limit_price(huge)
+        assert math.isfinite(out)
+        assert out <= huge, "the floor semantic holds at every magnitude"
+
+
 def test_a_COLLAPSED_ZONE_mandate_never_flags_the_framework_OWN_order():
     """CODEX R6 MAJOR -- the self-flagging class, re-created inside the fix for
     it, and caught by an executable probe rather than by reasoning.

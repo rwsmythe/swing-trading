@@ -602,11 +602,12 @@ def build_hyp_recs_section(
 class HypRecsExpandedVM:
     """Per-ticker hyp-recs expansion VM (spec §3.5.2).
 
-    Carries the order parameters (buy_stop = pivot, buy_limit = pivot ×
-    (1 + chase_factor), sell_stop = initial_stop), the dual sizing
-    regimes (`sizing_risk` uses `sizing_equity(real, floor)`; `sizing_cash`
-    uses real balance directly), context (sector/industry), the chart-
-    scope reason for the same pipeline-run binding, and the freshness
+    Carries the order parameters (buy_stop = pivot; buy_limit = the whole-cent
+    price the framework would ORDER at the buy-zone cap for this pivot, NOT a
+    bare multiplication -- see `mandate_limit_price`; sell_stop = initial_stop),
+    the dual sizing regimes (`sizing_risk` uses `sizing_equity(real, floor)`;
+    `sizing_cash` uses real balance directly), context (sector/industry), the
+    chart-scope reason for the same pipeline-run binding, and the freshness
     timestamp from the COMPLETED pipeline run the helper resolved.
 
     Returned by `build_hyp_recs_expanded`; the route handler renders it
@@ -615,7 +616,8 @@ class HypRecsExpandedVM:
     ticker: str
     # Order params.
     buy_stop: float                       # = candidate.pivot
-    buy_limit: float                      # = pivot × (1 + chase_factor)
+    # = mandate_limit_price(zone_cap_for_pivot(pivot, cfg.web.chase_factor))
+    buy_limit: float
     sell_stop: float | None               # = candidate.initial_stop
     chase_factor: float                   # echo for footer / tooltip
     # Sizing (two regimes).
@@ -655,6 +657,19 @@ class HypRecsExpandedVM:
     # spec §2.2 OQ-12 disposition.
     pattern_evaluation_id: int | None = None
     pipeline_run_id: int | None = None
+    # THE DISCLOSURE PAIR (codex-auto-review MAJOR, 2026-08-03). `chase_factor`
+    # stays operator-editable, so an override ABOVE the latch buy-zone cap makes
+    # `buy_limit` a price the framework's own latch mandate would refuse to
+    # order -- for pivot 36.27 the card says 38.08 while the latch orders 37.35.
+    # Whether the knob should exist at all is the directors' open question and
+    # is NOT decided here; what is fixed is the SILENCE. `mandate_buy_limit` is
+    # the price the framework WOULD order, and the card shows both whenever they
+    # differ, because an unlabelled divergence is a quiet all-clear by omission.
+    #
+    # Defaulted and placed LAST because every field above `current_price` is
+    # positionally required and a defaulted field may not precede them.
+    mandate_buy_limit: float = 0.0
+    chase_factor_diverges_from_mandate: bool = False
 
 
 def build_hyp_recs_expanded(
@@ -740,6 +755,11 @@ def build_hyp_recs_expanded(
         buy_limit = mandate_limit_price(
             zone_cap_for_pivot(
                 candidate.pivot, cap_fraction=cfg.web.chase_factor))
+        # What the LATCH mandate would order for this same pivot, so an
+        # operator override can be DISCLOSED rather than silently presented as
+        # the framework's own price (codex-auto-review MAJOR).
+        mandate_buy_limit = mandate_limit_price(
+            zone_cap_for_pivot(candidate.pivot))
         sizing_risk = compute_shares(
             entry=candidate.pivot, stop=candidate.initial_stop,
             equity=risk_equity,
@@ -868,6 +888,8 @@ def build_hyp_recs_expanded(
         ticker_detail_chart_svg_bytes=ticker_detail_chart_svg_bytes,
         pattern_evaluation_id=resolved_pattern_evaluation_id,
         pipeline_run_id=binding.run_id,
+        mandate_buy_limit=mandate_buy_limit,
+        chase_factor_diverges_from_mandate=(buy_limit != mandate_buy_limit),
     )
 
 

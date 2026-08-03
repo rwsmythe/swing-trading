@@ -30,11 +30,24 @@
     <h4>Order parameters</h4>
     <ul class="order-params">
       <li>Buy stop:  ${{ '%.2f' | format(expanded.buy_stop) }} <span class="muted">(pivot)</span></li>
-      {#- The formula must MATCH the arithmetic (Codex R1 MINOR): the value is
-          pivot x (1 + chase_factor), floored to whole cents, and the old
-          "(pivot x 3.0%)" said something mathematically different. -#}
+      {#- The annotation NAMES THE SOURCE rather than restating arithmetic
+          (Codex R1 + R2 MINOR). The old "(pivot × 3.0%)" was mathematically
+          false, and any rounded multiplier printed beside an exact price can
+          contradict it -- at chase_factor 0.0255 a 3-decimal "× 1.026" implies
+          $1026.00 against a rendered $1025.50. A name cannot disagree with the
+          number it labels. -#}
       <li>Buy limit: ${{ '%.2f' | format(expanded.buy_limit) }}
-          <span class="muted">(pivot × {{ '%.3f' | format(1 + expanded.chase_factor) }} zone cap, floored to whole cents)</span></li>
+          <span class="muted">(the buy-zone cap for this pivot, floored to whole cents)</span></li>
+      {#- THE DIVERGENCE DISCLOSURE (codex-auto-review MAJOR). chase_factor is
+          operator-editable, so an override can make the limit above a price the
+          latch mandate would actually order. The knob is not removed here --
+          that is a directors' question -- but the card must not present an
+          override as the framework's own price. Silent at the default. -#}
+      {% if expanded.chase_factor_diverges_from_mandate %}
+      <li class="stale">Your chase factor does not match the latch mandate:
+          it would order ${{ '%.2f' | format(expanded.mandate_buy_limit) }}
+          at the framework buy-zone cap.</li>
+      {% endif %}
       <li>Sell stop: {% if expanded.sell_stop is not none %}${{ '%.2f' | format(expanded.sell_stop) }}
                      {% else %}—{% endif %}
           <span class="muted">(framework initial stop)</span></li>
