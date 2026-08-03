@@ -702,19 +702,28 @@ def join_orders_to_latches(*, latches, orders):
         # presence/price ruling exists to remove. So the absence case keeps the
         # original wording (which the operator has been reading since 21-A) and
         # the shape case gets its own, naming what IS resting.
+        #
+        # AND THE CAP IS RENDERED THROUGH `_mandate_limit_of`, NOT `:.2f` ON THE
+        # RAW CAP (operator witness, 2026-08-03). Round-half-up states a price
+        # ABOVE the cap whenever the cap's third decimal is >= 5 -- this alarm
+        # is the loudest thing on the panel and the number beside it is the one
+        # the operator types at the broker, so it must be the number the
+        # framework would order.
         if ticker_orders:
             detail = (
                 f"latch armed at pivot {latch.latched_pivot:.2f} "
-                f"(zone cap {latch.zone_cap:.2f}) with NO resting BUY order "
-                f"IMPLEMENTING it; {len(ticker_orders)} resting BUY order(s) on "
+                f"(zone cap {_mandate_limit_of(latch):.2f}) with NO resting BUY "
+                f"order IMPLEMENTING it; {len(ticker_orders)} resting BUY "
+                f"order(s) on "
                 f"{ticker} are the wrong shape (mandate: a GTC "
                 f"{MANDATE_ORDER_TYPE_BREAKOUT} or {MANDATE_ORDER_TYPE_PULLBACK}"
                 f"); expires {latch.horizon_expiry.isoformat()}")
         else:
             detail = (
                 f"latch armed at pivot {latch.latched_pivot:.2f} "
-                f"(zone cap {latch.zone_cap:.2f}) with NO resting BUY order at "
-                f"the broker; expires {latch.horizon_expiry.isoformat()}")
+                f"(zone cap {_mandate_limit_of(latch):.2f}) with NO resting BUY "
+                f"order at the broker; expires "
+                f"{latch.horizon_expiry.isoformat()}")
         alarms.append(OrderAlarm(
             kind="LATCH_ARMED_NO_RESTING_ORDER",
             ticker=ticker,

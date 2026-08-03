@@ -33,6 +33,7 @@ from swing.latches.constants import (
     LATCH_ATTESTED_DISPOSITIONS,
     LATCH_PANEL_LOOKBACK_SESSIONS,
     build_beacon_payload,
+    mandate_limit_price,
 )
 from swing.latches.models import Latch
 from swing.latches.order_intent import (
@@ -333,6 +334,31 @@ def _safe_base_banner_fields(conn, cfg) -> dict:
 
 def _fmt_price(value) -> str:
     return "-" if value is None else f"{float(value):.2f}"
+
+
+def _fmt_cap(zone_cap) -> str:
+    """THE ONLY WAY THIS MODULE RENDERS A ZONE CAP.
+
+    IT RENDERS THE PRICE THE FRAMEWORK WOULD ACTUALLY ORDER, not the raw cap
+    (operator witness, 2026-08-03). `mandate_limit_price` FLOORS to whole cents
+    -- RD's ruling that a cap which can drift up is not a cap -- while `:.2f`
+    rounds HALF-UP, so on any cap whose third decimal is >= 5 the two disagree
+    by exactly one cent and the DISPLAY states a price ABOVE the cap.
+
+    That is not cosmetic. The panel showed `Zone cap 37.36` for AMN beside its
+    own prepared order at `limit 37.35`; the operator placed 37.36 because it
+    was the number in front of him, and 21-B's parity ledger records the
+    difference between the framework's price and his as HIS deviation. So the
+    surface may never show a price the framework would refuse to order.
+
+    SAME FUNCTION AS THE MANDATE, NOT A SECOND FLOORING EXPRESSION (CHARC,
+    2026-07-30): a parallel copy that agrees today is the D6 drift class, which
+    is exactly how the comparator and the emitter diverged on VSTS.
+
+    `None` degrades to `_fmt_price`'s dash. `Latch.zone_cap` is validated finite
+    at construction, so this is a belt for a caller holding something else.
+    """
+    return "-" if zone_cap is None else _fmt_price(mandate_limit_price(zone_cap))
 
 
 def _fmt_money(value) -> str:
@@ -647,7 +673,7 @@ def _build_row(latch: Latch, *, quote, views, provenance=None,
         ticker=latch.identity.ticker,
         fire_date=latch.anchor.isoformat(),
         latched_pivot=_fmt_price(latch.latched_pivot),
-        zone_cap=_fmt_price(latch.zone_cap),
+        zone_cap=_fmt_cap(latch.zone_cap),
         invalidation_level=_fmt_price(latch.latched_initial_stop),
         invalidation_label=INVALIDATION_LABEL,
         current_price=_fmt_price(price),
@@ -1923,8 +1949,8 @@ def build_latch_orders_vm(
             multiplicity_lines.append(
                 f"{lat.identity.ticker}: {join.matched_order_count} resting BUY "
                 f"orders match this mandate (pivot {lat.latched_pivot:.2f} / cap "
-                f"{lat.zone_cap:.2f}); only 1 is reported here - verify the "
-                f"others at the broker")
+                f"{_fmt_cap(lat.zone_cap)}); only 1 is reported here - verify "
+                f"the others at the broker")
         ticker = lat.identity.ticker
         quote = regime_closes.get(ticker)
         # quote is (close, RUN STAMP). The stamp is an upper bound, so the
@@ -2112,7 +2138,7 @@ def build_latch_orders_vm(
                 disagreement_lines.append(
                     f"{lat.identity.ticker}: resting order does not match the "
                     f"latched mandate (pivot {lat.latched_pivot:.2f}, zone cap "
-                    f"{lat.zone_cap:.2f}); stop "
+                    f"{_fmt_cap(lat.zone_cap)}); stop "
                     f"{_agreement_word(join.order_stop_agrees)}, limit "
                     f"{_agreement_word(join.order_limit_agrees)}{suffix}")
             elif expected_type == MANDATE_ORDER_TYPE_PULLBACK:
@@ -2120,12 +2146,14 @@ def build_latch_orders_vm(
                     f"{lat.identity.ticker}: resting order does not match the "
                     f"latched mandate (the last close is at or above the "
                     f"latched pivot {lat.latched_pivot:.2f}, so the mandate is "
-                    f"a GTC LIMIT at the zone cap {lat.zone_cap:.2f}); limit "
+                    f"a GTC LIMIT at the zone cap {_fmt_cap(lat.zone_cap)}); "
+                    f"limit "
                     f"{_agreement_word(join.order_limit_agrees)}{suffix}")
             else:
                 disagreement_lines.append(
                     f"{lat.identity.ticker}: resting order does not match the "
-                    f"latched mandate (zone cap {lat.zone_cap:.2f}); this order "
+                    f"latched mandate (zone cap {_fmt_cap(lat.zone_cap)}); this "
+                    f"order "
                     f"carries no stop leg and the last close is unavailable, so "
                     f"only the cap is judged -- limit "
                     f"{_agreement_word(join.order_limit_agrees)}")
@@ -2171,7 +2199,7 @@ def build_latch_orders_vm(
                 f"(stop {_fmt_price(stray.stop_price)}, limit "
                 f"{_fmt_price(stray.limit_price)}) matches NO latch on this "
                 f"ticker; the mandate is pivot {lat.latched_pivot:.2f} / cap "
-                f"{lat.zone_cap:.2f}")
+                f"{_fmt_cap(lat.zone_cap)}")
     disagreements = tuple(dict.fromkeys(disagreement_lines))
     # Computed from the ORDER SET via the SAME predicate the suppression uses,
     # NOT from the latches. Deriving it from LIVE latches only left a hole: the
