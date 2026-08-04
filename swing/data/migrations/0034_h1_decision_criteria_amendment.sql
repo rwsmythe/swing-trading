@@ -77,8 +77,51 @@
 -- seed order. Nothing else on the row changes: not statement, not
 -- target_sample_size (stays 20), not status. Rows 2-5 are untouched -- H2/H3/H4
 -- do not gate on Wilson, and H5 only REPORTS it as a diagnostic.
+--
+-- ================= WHY THIS MIGRATION REFUSES TO FAIL OPEN =============
+-- UNIQUE on `name` guarantees AT MOST one match, not EXACTLY one. A bare
+-- `UPDATE ... WHERE name = 'A+ baseline'` that matches zero rows is not an
+-- error in SQL: it would commit, bump the version to 34, and report success
+-- having amended nothing. Worse, if the live `decision_criteria` had drifted
+-- from the pre-registered text by any route, the bare form would overwrite it
+-- AND write this file's hard-coded copy into the preservation column --
+-- MANUFACTURING a pre-registration record that never existed and concealing
+-- the drift in the same stroke. On a governance record whose entire value is
+-- being trustworthy about what was registered before the data arrived, that
+-- silent outcome is worse than a failed migration.
+--
+-- So the amendment is bracketed by two guards. SQLite has no procedural
+-- ABORT outside a trigger, so each is expressed as a single-row insert into a
+-- temp table with a named CHECK; a violation raises IntegrityError, and
+-- _apply_migration rolls the whole script back and re-raises, leaving the DB
+-- untouched at v33. The constraint NAMES are the operator-facing error text.
+--
+--   PRE  -- refuses unless EXACTLY ONE 'A+ baseline' row exists AND its
+--           decision_criteria is still, byte for byte, the 0008 original.
+--           This migration amends exactly one known text; anything else is a
+--           condition to stop and investigate, not to overwrite.
+--   POST -- refuses to commit a row it did not write correctly: the criterion
+--           must be 577 characters, the preservation column must hold the
+--           original, and the two must differ. 577 is the length a dropped or
+--           doubled space at any of the seven || joins would change. The full
+--           sha256 is asserted in the test suite, where a real digest is
+--           available.
 
 BEGIN;
+
+CREATE TEMP TABLE _h1_amendment_preflight (
+  ok INTEGER NOT NULL
+    CONSTRAINT h1_amendment_refuses_unless_exactly_one_unamended_a_plus_baseline_row
+    CHECK (ok = 1)
+);
+INSERT INTO _h1_amendment_preflight (ok)
+SELECT CASE WHEN (
+    SELECT COUNT(*) FROM hypothesis_registry
+    WHERE name = 'A+ baseline'
+      AND decision_criteria =
+          'Mean R-multiple > 0; lower-bound Wilson CI on win rate > 30%'
+  ) = 1 THEN 1 ELSE 0 END;
+DROP TABLE _h1_amendment_preflight;
 
 ALTER TABLE hypothesis_registry
   ADD COLUMN preregistered_decision_criteria TEXT;
@@ -101,6 +144,22 @@ SET decision_criteria =
   || 'and its Wilson lower bound are REPORTED as diagnostics alongside median R and '
   || 'top-3 concentration, but do not gate the decision.'
 WHERE name = 'A+ baseline';
+
+CREATE TEMP TABLE _h1_amendment_postcheck (
+  ok INTEGER NOT NULL
+    CONSTRAINT h1_amendment_refuses_to_commit_a_row_it_did_not_write_correctly
+    CHECK (ok = 1)
+);
+INSERT INTO _h1_amendment_postcheck (ok)
+SELECT CASE WHEN (
+    SELECT COUNT(*) FROM hypothesis_registry
+    WHERE name = 'A+ baseline'
+      AND length(decision_criteria) = 577
+      AND preregistered_decision_criteria =
+          'Mean R-multiple > 0; lower-bound Wilson CI on win rate > 30%'
+      AND decision_criteria <> preregistered_decision_criteria
+  ) = 1 THEN 1 ELSE 0 END;
+DROP TABLE _h1_amendment_postcheck;
 
 UPDATE schema_version SET version = 34;
 COMMIT;

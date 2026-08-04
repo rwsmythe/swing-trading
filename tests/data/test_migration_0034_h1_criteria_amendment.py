@@ -19,6 +19,7 @@ the executable form of why that mechanism was rejected.
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from pathlib import Path
 
@@ -384,11 +385,42 @@ def test_the_status_history_table_gains_no_row(tmp_path):
 # --------------------------------------------------------------------------
 # Re-runnability
 # --------------------------------------------------------------------------
-def test_running_the_migration_twice_is_a_no_op(tmp_path):
-    """CHARC acceptance 9. The preservation UPDATE writes a hard-coded
-    LITERAL, not `SET preregistered = decision_criteria` -- the latter is
-    idempotent-looking but on a second pass would preserve the AMENDED text
-    and destroy the original. This test is what distinguishes them."""
+def _amendment_updates(src: str) -> list[str]:
+    """The two `UPDATE hypothesis_registry` statements, lifted from the REAL
+    migration file rather than retyped.
+
+    Split on a semicolon that ENDS A LINE: both criterion texts contain an
+    interior '; ' (mid-line, followed by a space), so a naive split on ';'
+    would tear the literals apart. The count assertion below is the safety --
+    a mis-parse fails the test loudly instead of silently testing nothing.
+    """
+    body = src.split("BEGIN;", 1)[1].rsplit("COMMIT;", 1)[0]
+    stmts = []
+    for chunk in re.split(r";\s*\n", body):
+        # Drop the leading full-line `--` comments each statement carries.
+        # Safe here: neither criterion literal contains a double hyphen.
+        lines = [ln for ln in chunk.splitlines()
+                 if not ln.strip().startswith("--")]
+        s = "\n".join(lines).strip()
+        if s:
+            stmts.append(s)
+    updates = [
+        s + ";" for s in stmts
+        if s.upper().startswith("UPDATE HYPOTHESIS_REGISTRY")
+    ]
+    assert len(updates) == 2, f"expected 2 registry UPDATEs, parsed {updates}"
+    return updates
+
+
+def test_running_the_migration_twice_through_the_runner_is_a_no_op(tmp_path):
+    """The RUNNER-level property only: a second walk to 34 applies no SQL and
+    leaves the row alone.
+
+    This is deliberately NOT claimed as proof that the amendment DML is
+    idempotent -- the runner skips an already-applied migration, so zero SQL
+    executes and this would pass against almost any migration body. The DML
+    itself is exercised by the replay test below.
+    """
     conn = _v34(tmp_path)
     try:
         run_migrations(conn, target_version=34, backup_dir=tmp_path)
@@ -401,6 +433,119 @@ def test_running_the_migration_twice_is_a_no_op(tmp_path):
         assert row[1] == PREREGISTERED_H1_DECISION_CRITERIA
         assert conn.execute(
             "SELECT COUNT(*) FROM hypothesis_registry").fetchone()[0] == 5
+    finally:
+        conn.close()
+
+
+def test_replaying_the_amendment_dml_does_not_destroy_the_original(tmp_path):
+    """CHARC acceptance 9, as a test that can actually FAIL.
+
+    The preservation UPDATE writes a hard-coded LITERAL. The tempting
+    alternative, `SET preregistered_decision_criteria = decision_criteria`,
+    is correct on first application and CATASTROPHIC on any replay: it would
+    preserve the ALREADY-AMENDED text and destroy the original -- silently,
+    since both columns would then read plausibly. Replaying the real DML from
+    the real file against an already-amended row is what distinguishes the
+    two implementations; the runner-level test above cannot, because it
+    executes no SQL at all.
+    """
+    conn = _v34(tmp_path)
+    try:
+        for stmt in _amendment_updates(
+                _MIGRATION_PATH.read_text(encoding="utf-8")):
+            conn.execute(stmt)
+        conn.commit()
+        row = conn.execute(
+            "SELECT decision_criteria, preregistered_decision_criteria "
+            "FROM hypothesis_registry WHERE name = 'A+ baseline'").fetchone()
+        assert row[1] == PREREGISTERED_H1_DECISION_CRITERIA
+        assert row[0] == AMENDED_H1_DECISION_CRITERIA
+    finally:
+        conn.close()
+
+
+def test_the_preservation_update_never_reads_the_column_it_is_replacing():
+    """The structural companion to the replay test. The preservation SET
+    clause must not mention `decision_criteria` at all -- reading it is the
+    whole defect."""
+    src = _MIGRATION_PATH.read_text(encoding="utf-8")
+    preservation = next(
+        s for s in _amendment_updates(src)
+        if "SET preregistered_decision_criteria" in s
+    )
+    set_clause = preservation.split("SET", 1)[1].split("WHERE", 1)[0]
+    assert "decision_criteria" not in set_clause.replace(
+        "preregistered_decision_criteria", "")
+
+
+# --------------------------------------------------------------------------
+# The guards: this migration REFUSES to fail open
+# --------------------------------------------------------------------------
+def test_the_migration_aborts_when_the_criterion_has_already_drifted(tmp_path):
+    """The worst outcome this arc can produce is a FABRICATED preservation:
+    a live row whose criterion had drifted, silently overwritten while this
+    file's hard-coded copy is written in as the 'original'. The migration
+    must refuse and leave v33 intact rather than manufacture the record."""
+    conn = _v33(tmp_path)
+    try:
+        conn.execute(
+            "UPDATE hypothesis_registry SET decision_criteria = 'tampered' "
+            "WHERE name = 'A+ baseline'")
+        conn.commit()
+        with pytest.raises(sqlite3.IntegrityError) as exc:
+            run_migrations(conn, target_version=34, backup_dir=tmp_path)
+        assert "h1_amendment_refuses_unless_exactly_one" in str(exc.value)
+        assert conn.execute(
+            "SELECT version FROM schema_version").fetchone()[0] == 33
+        assert _criteria(conn) == "tampered"
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(hypothesis_registry)")}
+        assert "preregistered_decision_criteria" not in cols, (
+            "the ALTER must have rolled back with the rest of the script")
+    finally:
+        conn.close()
+
+
+def test_the_migration_aborts_when_the_governance_row_is_missing(tmp_path):
+    """UNIQUE(name) guarantees AT MOST one row, not exactly one. A zero-row
+    UPDATE is not a SQL error, so without the guard this migration would
+    report success having amended nothing."""
+    conn = _v33(tmp_path)
+    try:
+        conn.execute(
+            "DELETE FROM hypothesis_status_history WHERE hypothesis_id IN "
+            "(SELECT id FROM hypothesis_registry WHERE name = 'A+ baseline')")
+        conn.execute(
+            "DELETE FROM hypothesis_registry WHERE name = 'A+ baseline'")
+        conn.commit()
+        with pytest.raises(sqlite3.IntegrityError) as exc:
+            run_migrations(conn, target_version=34, backup_dir=tmp_path)
+        assert "h1_amendment_refuses_unless_exactly_one" in str(exc.value)
+        assert conn.execute(
+            "SELECT version FROM schema_version").fetchone()[0] == 33
+    finally:
+        conn.close()
+
+
+def test_the_post_write_guard_would_catch_a_mis_joined_criterion(tmp_path):
+    """The POST guard pins length 577 -- the value a dropped or doubled space
+    at any of the seven `||` joins would change. Proved by mutating the real
+    migration source (one join's trailing space removed) and running it: the
+    script must abort rather than commit a 576-character criterion."""
+    src = _MIGRATION_PATH.read_text(encoding="utf-8")
+    broken = src.replace(
+        "|| 'contributes 50% or more of gross profit (gross profit = sum of positive '",
+        "|| 'contributes 50% or more of gross profit (gross profit = sum of positive'",
+    )
+    assert broken != src, "the mutation anchor did not match the migration"
+    conn = _v33(tmp_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError) as exc:
+            conn.executescript(broken)
+        assert "did_not_write_correctly" in str(exc.value)
+        conn.rollback()
+        assert conn.execute(
+            "SELECT version FROM schema_version").fetchone()[0] == 33
     finally:
         conn.close()
 
