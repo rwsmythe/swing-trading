@@ -59,6 +59,7 @@ from swing.metrics.cohort import (
     filter_trades_without_unresolved_material_discrepancies,
     list_closed_trades_for_cohort,
 )
+from swing.metrics.cohort_intent import cohort_entry_intent
 from swing.metrics.honesty import (
     BootstrapCI,
     HonestyBadges,
@@ -613,7 +614,15 @@ def compute_tier_comparison(
     cohorts: list[CohortStatistics] = []
     total_excluded = 0
     for name in TAXONOMY_COHORTS:
-        trades = list_closed_trades_for_cohort(conn, hypothesis_label=name)
+        # D29: the cohort's intent-facet predicate, grounded per hypothesis
+        # in its OWN authority (H1 = criterion text; the rest = the epoch
+        # contract). See swing/metrics/cohort_intent.py -- do NOT inline a
+        # literal here, or the two authorities collapse into one.
+        trades = list_closed_trades_for_cohort(
+            conn,
+            hypothesis_label=name,
+            entry_intent=cohort_entry_intent(name),
+        )
         if exclude_unresolved_discrepancies:
             pre_filter_n = len(trades)
             trades = filter_trades_without_unresolved_material_discrepancies(

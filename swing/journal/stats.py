@@ -348,6 +348,7 @@ def compute_hypothesis_progress_breakdown(
         list_closed_trades,
         list_open_trades,
     )
+    from swing.metrics.cohort_intent import trade_counts_toward_cohort
     from swing.recommendations.hypothesis import (
         _label_matches_hypothesis,
         compute_tripwire_status,
@@ -367,15 +368,24 @@ def compute_hypothesis_progress_breakdown(
 
     rows: list[HypothesisProgress] = []
     for h in hypotheses:
-        matched = [
-            t for t in closed
-            if _label_matches_hypothesis(t.hypothesis_label, h.name)
-        ]
+        # D29 — cohort membership is label AND intent. The intent half is
+        # grounded per hypothesis in its OWN authority (H1 = its amended
+        # criterion's COHORT clause; every other cohort = the 2026-06-10
+        # training-epoch contract), so a future criterion amendment cannot
+        # silently change what the JOURNAL counts. See
+        # swing/metrics/cohort_intent.py.
+        def _in_cohort(t, *, name: str = h.name) -> bool:
+            return _label_matches_hypothesis(
+                t.hypothesis_label, name,
+            ) and trade_counts_toward_cohort(
+                entry_intent=t.entry_intent, hypothesis_name=name,
+            )
+
+        matched = [t for t in closed if _in_cohort(t)]
         n = len(matched)
-        in_flight = sum(
-            1 for t in open_trades
-            if _label_matches_hypothesis(t.hypothesis_label, h.name)
-        )
+        # The in-flight decoration is the SAME cohort-membership question
+        # asked of open trades, so it takes the same predicate.
+        in_flight = sum(1 for t in open_trades if _in_cohort(t))
         if n > 0:
             rs = []
             for t in matched:

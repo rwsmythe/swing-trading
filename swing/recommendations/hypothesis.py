@@ -173,7 +173,9 @@ class TripwireStatus:
     """Output of `compute_tripwire_status`. All fields derived from
     closed trades whose `hypothesis_label` matches the hypothesis's
     canonical name (case-insensitive prefix; see
-    `_label_matches_hypothesis`).
+    `_label_matches_hypothesis`) AND which satisfy that cohort's
+    intent-facet predicate (D29; see
+    :mod:`swing.metrics.cohort_intent`).
 
     `current_sample` counts closed trades only — open trades have no
     realized R-multiple and so cannot contribute to either tripwire.
@@ -479,7 +481,15 @@ def compute_tripwire_status(
 
     Sample inclusion: a closed trade with non-NULL `hypothesis_label`
     contributes when `_label_matches_hypothesis(label, hypothesis.name)`
-    holds.
+    holds AND `trade_counts_toward_cohort` accepts its `entry_intent`.
+
+    D29 -- the intent half is NOT optional here: this function drives both
+    `current_sample` (the `swing hypothesis list` "N/TARGET" column) and
+    the TRIPWIRE arithmetic beside it, so a trade the cohort's own
+    authority excludes must not reach either. The predicate is grounded
+    per hypothesis (H1 = its amended criterion's COHORT clause; every
+    other cohort = the 2026-06-10 training-epoch contract) -- see
+    :mod:`swing.metrics.cohort_intent`.
 
     Consecutive-max-loss streak: walk matched closed trades by
     (entry_date DESC, id DESC) and count trailing trades whose
@@ -495,6 +505,7 @@ def compute_tripwire_status(
     # matcher / prioritizer tests don't pull in repo modules.
     from swing.data.repos.hypothesis import get_hypothesis
     from swing.data.repos.trades import list_closed_trades
+    from swing.metrics.cohort_intent import trade_counts_toward_cohort
     from swing.trades.voided_trades import voided_trade_ids
 
     h = get_hypothesis(conn, hypothesis_id)
@@ -507,6 +518,10 @@ def compute_tripwire_status(
     matched = [
         t for t in closed
         if _label_matches_hypothesis(t.hypothesis_label, h.name)
+        # D29 — the cohort's own authority decides which intents count.
+        and trade_counts_toward_cohort(
+            entry_intent=t.entry_intent, hypothesis_name=h.name,
+        )
     ]
     # C.10: migrated off ``list_all_exits`` shim. The local helper sources
     # ExitLike rows from non-entry fills, deriving realized_pnl/r_multiple

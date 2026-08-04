@@ -32,6 +32,7 @@ from swing.data.repos.hypothesis_status_history import (
 )
 from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.metrics.cohort import list_closed_trades_for_cohort
+from swing.metrics.cohort_intent import cohort_entry_intent
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
@@ -313,8 +314,16 @@ def _list_cohort_trades_sorted(
     + cumulative_R series reflect chronological close order. Falls back
     to ``entry_date, ticker, id`` (cohort.list_closed_trades_for_cohort
     ordering) when last_fill_at is NULL.
+
+    D29: the cohort's intent-facet predicate is grounded per hypothesis in
+    its OWN authority (H1 = criterion text; the rest = the epoch contract)
+    -- see ``swing/metrics/cohort_intent.py``.
     """
-    trades = list_closed_trades_for_cohort(conn, hypothesis_label=cohort_name)
+    trades = list_closed_trades_for_cohort(
+        conn,
+        hypothesis_label=cohort_name,
+        entry_intent=cohort_entry_intent(cohort_name),
+    )
     return sorted(
         trades,
         key=lambda t: (t.last_fill_at or "9999", t.id or 0),
