@@ -1,0 +1,133 @@
+"""D29 Task 1 — the per-hypothesis intent-facet predicate + its AUTHORITY.
+
+RD's binding design note (ruling ``20260804T053603Z``): the filter's
+justification differs by hypothesis. H1's is CRITERION-mandated; every
+other cohort's follows from the EPOCH CONTRACT. These tests pin BOTH
+groundings separately so a future criterion amendment cannot silently
+change what the journal counts.
+"""
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from swing.data.db import ensure_schema
+from swing.data.models import ENTRY_INTENTS
+from swing.metrics.cohort_intent import (
+    APLUS_BASELINE_COHORT,
+    H1_COHORT_CLAUSE,
+    INTENT_AUTHORITY_CRITERION,
+    INTENT_AUTHORITY_EPOCH_CONTRACT,
+    cohort_entry_intent,
+    cohort_intent_authority,
+    trade_counts_toward_cohort,
+)
+
+
+@pytest.fixture
+def conn(tmp_path: Path) -> sqlite3.Connection:
+    return ensure_schema(tmp_path / "cohort_intent.db")
+
+
+_NON_H1 = (
+    "Near-A+ defensible: extension test",
+    "Sub-A+ VCP-not-formed",
+    "Capital-blocked: smaller-position test",
+    "Broad-watch baseline",
+)
+
+
+# ---------------------------------------------------------------------------
+# The CRITERION-mandated half (H1)
+# ---------------------------------------------------------------------------
+
+def test_h1_predicate_is_standard_intent_only():
+    assert cohort_entry_intent(APLUS_BASELINE_COHORT) == "standard"
+
+
+def test_h1_predicate_is_grounded_in_the_criterion():
+    assert cohort_intent_authority(APLUS_BASELINE_COHORT) == (
+        INTENT_AUTHORITY_CRITERION
+    )
+
+
+def test_h1_clause_the_mapping_encodes_is_still_in_the_live_criterion(
+    conn: sqlite3.Connection,
+):
+    """The tripwire against a SILENT re-amendment.
+
+    The H1 predicate is criterion-mandated, so the criterion text must
+    keep saying so. If a future amendment drops the COHORT clause, this
+    fails and forces a deliberate re-grounding rather than leaving a
+    filter whose stated authority no longer says what it claims.
+    """
+    (criterion,) = conn.execute(
+        "SELECT decision_criteria FROM hypothesis_registry WHERE name = ?",
+        (APLUS_BASELINE_COHORT,),
+    ).fetchone()
+    assert H1_COHORT_CLAUSE in criterion
+
+
+def test_h1_counts_standard_intent_only():
+    assert trade_counts_toward_cohort(
+        entry_intent="standard", hypothesis_name=APLUS_BASELINE_COHORT,
+    )
+    # The live pre-epoch tuition trade (YOU, trade 4) — excluded by the
+    # criterion's own COHORT clause.
+    assert not trade_counts_toward_cohort(
+        entry_intent="hypothesis_test_by_design",
+        hypothesis_name=APLUS_BASELINE_COHORT,
+    )
+    # NULL is a DISTINCT third facet, never coerced to 'standard'
+    # (swing/data/models.py ENTRY_INTENTS note) — so an unclassified
+    # trade is not a STANDARD-intent trade and does not count.
+    assert not trade_counts_toward_cohort(
+        entry_intent=None, hypothesis_name=APLUS_BASELINE_COHORT,
+    )
+
+
+# ---------------------------------------------------------------------------
+# The EPOCH-CONTRACT half (every other registered hypothesis)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", _NON_H1)
+def test_non_h1_cohorts_apply_no_intent_predicate(name: str):
+    assert cohort_entry_intent(name) is None
+
+
+@pytest.mark.parametrize("name", _NON_H1)
+def test_non_h1_cohorts_are_grounded_in_the_epoch_contract(name: str):
+    assert cohort_intent_authority(name) == INTENT_AUTHORITY_EPOCH_CONTRACT
+
+
+@pytest.mark.parametrize("name", _NON_H1)
+def test_non_h1_cohorts_count_by_design_program_fires(name: str):
+    """The forward intent contract names H2/H4 narrow-cohort fires as the
+    ONLY legitimate ``by_design`` entries remaining — they are the
+    DESIGNED samples of those cohorts, not retired tuition."""
+    for intent in ("standard", "hypothesis_test_by_design", None):
+        assert trade_counts_toward_cohort(
+            entry_intent=intent, hypothesis_name=name,
+        )
+
+
+def test_an_unregistered_label_falls_to_the_epoch_contract_default():
+    assert cohort_entry_intent("(unregistered cohort)") is None
+    assert cohort_intent_authority("(unregistered cohort)") == (
+        INTENT_AUTHORITY_EPOCH_CONTRACT
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shape guards
+# ---------------------------------------------------------------------------
+
+def test_every_mandated_value_is_a_real_schema_enum_member():
+    """The mapping never emits the ``'__unclassified__'`` SQL sentinel —
+    the cohort selector's sentinel is a caller-side convention, not a
+    value this policy module produces."""
+    for name in (APLUS_BASELINE_COHORT, *_NON_H1):
+        value = cohort_entry_intent(name)
+        assert value is None or value in ENTRY_INTENTS
