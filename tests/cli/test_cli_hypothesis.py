@@ -5,6 +5,7 @@ Per backend brief §4.6 + §5 watch items.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -293,8 +294,10 @@ def test_hypothesis_list_counts_h1_at_2_of_20_on_the_live_shape(
     aplus_line = next(
         ln for ln in r.output.splitlines() if ln.rstrip().endswith("A+ baseline")
     )
-    assert "2/20" in aplus_line, aplus_line
-    assert "3/20" not in aplus_line, (
+    # Codex R8: digit-boundary, not substring -- "2/20" in a bare `in`
+    # check is also satisfied by "12/20".
+    assert re.search(r"(?<!\d)2/20(?!\d)", aplus_line), aplus_line
+    assert not re.search(r"(?<!\d)3/20(?!\d)", aplus_line), (
         "pre-fix value still rendered -- the intent filter is not reaching "
         f"the CLI path: {aplus_line}"
     )

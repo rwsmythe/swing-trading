@@ -320,7 +320,8 @@ def test_sql_and_in_memory_predicates_select_the_SAME_trades(  # noqa: N802
     )
     assert len(all_labeled) == 4  # standard x2, by_design, unclassified
 
-    for registered in ([APLUS_COHORT], []):
+    selections: dict[str, set[int | None]] = {}
+    for key, registered in (("registered", [APLUS_COHORT]), ("orphan", [])):
         sql_selected = {
             t.id for t in list_closed_trades_for_cohort(
                 conn,
@@ -338,17 +339,13 @@ def test_sql_and_in_memory_predicates_select_the_SAME_trades(  # noqa: N802
                 registered_names=registered,
             )
         }
-        assert sql_selected == python_selected, registered
+        assert sql_selected == python_selected, key
+        selections[key] = sql_selected
 
-    # And the two states are genuinely DIFFERENT, so the parity above is
-    # not two identical trivial answers.
-    registered_ids = {
-        t.id for t in list_closed_trades_for_cohort(
-            conn,
-            hypothesis_label=APLUS_COHORT,
-            entry_intent=cohort_entry_intent(
-                APLUS_COHORT, registered_names=[APLUS_COHORT],
-            ),
-        )
-    }
-    assert len(registered_ids) == 2
+    # Codex R8: pin the EXACT sets, not just their sizes / inequality --
+    # both paths could have been wrong in the same way and still agreed.
+    # Registered: only the two 'standard' trades. Orphan: no criterion, so
+    # no narrowing, so all four.
+    assert selections["registered"] == {1, 2}
+    assert selections["orphan"] == {1, 2, 3, 4}
+    assert selections["registered"] != selections["orphan"]

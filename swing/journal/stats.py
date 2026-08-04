@@ -320,12 +320,14 @@ class HypothesisProgress:
     absolute_tripwire_fired: bool
     tripwire_fired: bool
     consecutive_loss_tripwire_threshold: int
-    # Display-only count of OPEN trades whose hypothesis_label prefix-matches
-    # this hypothesis. Does NOT count toward `current_sample` (which is
-    # closed-trade evidence) or any tripwire arithmetic — open trades have
-    # no realized R-multiple. Surfaces on the dashboard as "(+K in flight)"
-    # decoration so the operator can see in-flight attribution. Default 0
-    # for hand-constructed sites that omit the kwarg.
+    # Display-only count of OPEN trades satisfying the SAME cohort predicate
+    # as `current_sample` — the 3-rule delimiter-aware label match AND the
+    # cohort's intent-facet predicate (D29; see swing/metrics/cohort_intent).
+    # Does NOT count toward `current_sample` (which is closed-trade evidence)
+    # or any tripwire arithmetic — open trades have no realized R-multiple.
+    # Surfaces on the dashboard as "(+K in flight)" decoration so the
+    # operator can see in-flight attribution. Default 0 for hand-constructed
+    # sites that omit the kwarg.
     in_flight_sample: int = 0
 
 
