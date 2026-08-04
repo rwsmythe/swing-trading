@@ -46,18 +46,24 @@ def _seed_trade(
     initial_stop: float = 9.0,
     initial_shares: int = 100,
     last_fill_at: str = "2026-04-08T15:30:00",
+    # D29: cohort membership is label AND intent. These fixtures stand
+    # for POST-EPOCH practice, so they default to 'standard' -- the
+    # A+ baseline criterion's COHORT clause counts standard-intent
+    # trades only (see swing/metrics/cohort_intent.py).
+    entry_intent: str | None = "standard",
 ) -> None:
     exit_price = entry_price + (realized_pnl_dollars / initial_shares)
     conn.execute(
         "INSERT INTO trades (id, ticker, entry_date, entry_price, "
         "initial_shares, initial_stop, current_stop, state, sector, "
         "industry, trade_origin, pre_trade_locked_at, current_size, "
-        "hypothesis_label, last_fill_at) VALUES "
+        "hypothesis_label, entry_intent, last_fill_at) VALUES "
         "(?, ?, '2026-04-01', ?, ?, ?, ?, 'closed', 'S', 'I', "
-        "'manual_off_pipeline', '2026-04-01T09:30:00', ?, ?, ?)",
+        "'manual_off_pipeline', '2026-04-01T09:30:00', ?, ?, ?, ?)",
         (
             trade_id, ticker, entry_price, initial_shares, initial_stop,
-            initial_stop, initial_shares, hypothesis_label, last_fill_at,
+            initial_stop, initial_shares, hypothesis_label, entry_intent,
+            last_fill_at,
         ),
     )
     conn.execute(

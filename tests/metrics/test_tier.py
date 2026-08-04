@@ -65,6 +65,11 @@ def _seed_closed_trade(
     state: str = "closed",
     risk_policy_id_at_lock: int | None = 1,
     last_fill_at: str = "2026-04-08T15:30:00",
+    # D29: cohort membership is label AND intent. These fixtures stand
+    # for POST-EPOCH practice, so they default to 'standard' -- the
+    # A+ baseline criterion's COHORT clause counts standard-intent
+    # trades only (see swing/metrics/cohort_intent.py).
+    entry_intent: str | None = "standard",
 ) -> None:
     """Seed a closed trade. Exit price computed so net P&L matches the target.
 
@@ -76,13 +81,14 @@ def _seed_closed_trade(
         "INSERT INTO trades (id, ticker, entry_date, entry_price, "
         "initial_shares, initial_stop, current_stop, state, sector, "
         "industry, trade_origin, pre_trade_locked_at, current_size, "
-        "hypothesis_label, risk_policy_id_at_lock, last_fill_at) VALUES "
+        "hypothesis_label, entry_intent, risk_policy_id_at_lock, "
+        "last_fill_at) VALUES "
         "(?, ?, '2026-04-01', ?, ?, ?, ?, ?, 'S', 'I', "
-        "'manual_off_pipeline', '2026-04-01T09:30:00', ?, ?, ?, ?)",
+        "'manual_off_pipeline', '2026-04-01T09:30:00', ?, ?, ?, ?, ?)",
         (
             trade_id, ticker, entry_price, initial_shares, initial_stop,
             initial_stop, state, initial_shares, hypothesis_label,
-            risk_policy_id_at_lock, last_fill_at,
+            entry_intent, risk_policy_id_at_lock, last_fill_at,
         ),
     )
     conn.execute(
