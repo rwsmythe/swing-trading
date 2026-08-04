@@ -30,6 +30,11 @@ import pytest
 from swing.config import load as load_config
 from swing.data.db import ensure_schema
 from swing.journal.stats import compute_hypothesis_progress_breakdown
+from swing.metrics.cohort import list_closed_trades_for_cohort
+from swing.metrics.cohort_intent import (
+    cohort_entry_intent,
+    trade_counts_toward_cohort,
+)
 from swing.metrics.tier import APLUS_COHORT, compute_tier_comparison
 from swing.recommendations.hypothesis import compute_tripwire_status
 from swing.web.view_models.metrics.hypothesis_progress_card import (
@@ -182,12 +187,18 @@ def test_journal_progress_breakdown_excludes_by_design_from_h1(
 def test_journal_in_flight_count_excludes_by_design_from_h1(
     conn: sqlite3.Connection,
 ):
+    """Codex R7: seeds BOTH intents. With only the excluded trade present,
+    an implementation that dropped every open H1 trade would also have
+    passed -- the assertion has to separate the two, not just count zero."""
     _seed(conn, trade_id=10, ticker="OPN", label=APLUS_COHORT,
           entry_intent="hypothesis_test_by_design", pnl=0.0,
           entry_date="2026-04-05", state="managing")
+    _seed(conn, trade_id=11, ticker="OPS", label=APLUS_COHORT,
+          entry_intent="standard", pnl=0.0,
+          entry_date="2026-04-06", state="managing")
     rows = compute_hypothesis_progress_breakdown(conn, starting_equity=7500.0)
     aplus = next(r for r in rows if r.name == APLUS_COHORT)
-    assert aplus.in_flight_sample == 0  # pre-fix: 1
+    assert aplus.in_flight_sample == 1  # pre-fix: 2
 
 
 # ---------------------------------------------------------------------------
@@ -287,3 +298,57 @@ def test_tier_applies_no_narrowing_when_the_h1_row_is_not_registered(
     # criterion, so nothing mandates the standard-only cohort clause.
     assert aplus.n_closed == 3
     assert aplus.decision_criteria == ""
+
+
+def test_sql_and_in_memory_predicates_select_the_SAME_trades(  # noqa: N802
+    conn: sqlite3.Connection,
+):
+    """Codex R7 -- parity asserted through the PRODUCTION SELECT, not just
+    between two policy return values.
+
+    Two readers narrow in SQL (``list_closed_trades_for_cohort``) and two
+    narrow in Python (``trade_counts_toward_cohort``). The module claims
+    they cannot drift; this runs both over the same seeded rows and
+    compares trade ids, in BOTH the registered and unregistered states.
+    """
+    _seed_h1_shape(conn)
+    _seed(conn, trade_id=4, ticker="NUL", label=APLUS_COHORT,
+          entry_intent=None, pnl=50.0, entry_date="2026-04-04")
+
+    all_labeled = list_closed_trades_for_cohort(
+        conn, hypothesis_label=APLUS_COHORT,
+    )
+    assert len(all_labeled) == 4  # standard x2, by_design, unclassified
+
+    for registered in ([APLUS_COHORT], []):
+        sql_selected = {
+            t.id for t in list_closed_trades_for_cohort(
+                conn,
+                hypothesis_label=APLUS_COHORT,
+                entry_intent=cohort_entry_intent(
+                    APLUS_COHORT, registered_names=registered,
+                ),
+            )
+        }
+        python_selected = {
+            t.id for t in all_labeled
+            if trade_counts_toward_cohort(
+                entry_intent=t.entry_intent,
+                hypothesis_name=APLUS_COHORT,
+                registered_names=registered,
+            )
+        }
+        assert sql_selected == python_selected, registered
+
+    # And the two states are genuinely DIFFERENT, so the parity above is
+    # not two identical trivial answers.
+    registered_ids = {
+        t.id for t in list_closed_trades_for_cohort(
+            conn,
+            hypothesis_label=APLUS_COHORT,
+            entry_intent=cohort_entry_intent(
+                APLUS_COHORT, registered_names=[APLUS_COHORT],
+            ),
+        )
+    }
+    assert len(registered_ids) == 2

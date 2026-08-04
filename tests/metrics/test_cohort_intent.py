@@ -25,6 +25,9 @@ from swing.metrics.cohort_intent import (
     cohort_intent_authority,
     trade_counts_toward_cohort,
 )
+from tests.data.test_migration_0034_h1_criteria_amendment import (
+    AMENDED_H1_DECISION_CRITERIA,
+)
 
 
 @pytest.fixture
@@ -63,12 +66,19 @@ def test_h1_clause_the_mapping_encodes_is_still_in_the_live_criterion(
     keep saying so. If a future amendment drops the COHORT clause, this
     fails and forces a deliberate re-grounding rather than leaving a
     filter whose stated authority no longer says what it claims.
+
+    Codex R7: containment is NOT enough even with the whole clause pinned
+    -- a later sentence could contradict it and leave the assertion green.
+    So the WHOLE criterion is pinned by equality against the canonical
+    amended value, and the clause is separately asserted to be part of it
+    (which is what makes the constant the code reads honest).
     """
     (criterion,) = conn.execute(
         "SELECT decision_criteria FROM hypothesis_registry WHERE name = ?",
         (APLUS_BASELINE_COHORT,),
     ).fetchone()
-    assert H1_COHORT_CLAUSE in criterion
+    assert criterion == AMENDED_H1_DECISION_CRITERIA
+    assert H1_COHORT_CLAUSE in AMENDED_H1_DECISION_CRITERIA
 
 
 def test_the_mapping_key_still_names_a_real_registry_row(
@@ -190,26 +200,3 @@ def test_every_mandated_value_is_a_real_schema_enum_member():
     for name in (APLUS_BASELINE_COHORT, *_NON_H1):
         value = cohort_entry_intent(name)
         assert value is None or value in ENTRY_INTENTS
-
-
-def test_sql_and_in_memory_halves_agree_for_an_unregistered_cohort():
-    """Codex R6 -- the module claims the SQL predicate and the in-memory
-    predicate cannot drift, so they must agree in the unregistered case too.
-
-    Both accept ``registered_names`` and resolve through the same helper.
-    A branch living in ONE caller (which is how the R5 fix was first
-    written) would have made that claim false exactly here.
-    """
-    for intent in ("standard", "hypothesis_test_by_design", None):
-        sql_half = cohort_entry_intent(
-            APLUS_BASELINE_COHORT, registered_names=[],
-        )
-        memory_half = trade_counts_toward_cohort(
-            entry_intent=intent,
-            hypothesis_name=APLUS_BASELINE_COHORT,
-            registered_names=[],
-        )
-        # SQL half: no predicate at all -> the SELECT narrows nothing.
-        assert sql_half is None
-        # In-memory half must therefore admit every intent.
-        assert memory_half is True
