@@ -1,6 +1,6 @@
 # The `data_asof_date` consumer survey (Arc 21-G)
 
-**Commissioned by:** the 21-G brief §2.4 (`docs/provenance-asymmetry-21g-commissioning-brief.md`). **Performed:** 2026-07-28, at writing-plans, against main `1955aa59` (schema v32) and the live DB + prices cache, read-only. **Duplicated verbatim as §S of** [`docs/superpowers/plans/2026-07-28-phase21-arc-g-provenance-asymmetry.md`](superpowers/plans/2026-07-28-phase21-arc-g-provenance-asymmetry.md) so the plan is self-contained; this file exists because a plan is archived after execution and a director needs a stable thing to cite.
+**Commissioned by:** the 21-G brief §2.4 (`docs/archive/phase21/provenance-asymmetry-21g-commissioning-brief.md`). **Performed:** 2026-07-28, at writing-plans, against main `1955aa59` (schema v32) and the live DB + prices cache, read-only. **Duplicated verbatim as §S of** [`docs/superpowers/plans/2026-07-28-phase21-arc-g-provenance-asymmetry.md`](superpowers/plans/2026-07-28-phase21-arc-g-provenance-asymmetry.md) so the plan is self-contained; this file exists because a plan is archived after execution and a director needs a stable thing to cite.
 
 **RD's epistemic position, preserved verbatim and load-bearing:** *"I am not asserting it is a class — I am refusing to assume it is not."*
 
