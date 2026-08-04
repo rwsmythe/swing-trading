@@ -140,9 +140,11 @@ def count_per_cohort(conn: sqlite3.Connection) -> dict[str, int]:
     D29 -- DELIBERATELY carries NO intent-facet predicate, unlike the four
     hypothesis-PROGRESS readers. This helper feeds the trade-process card's
     cohort TABS: an OBSERVATIONAL navigation count over every labeled trade,
-    including orphan labels that have no registered hypothesis and therefore
-    no cohort authority at all. Filtering it would hide trades from the tab
-    that lists them, and the process card already exposes intent as an
+    including orphan labels, which match no registered hypothesis and are
+    therefore governed by neither cohort authority
+    (``cohort_intent.INTENT_AUTHORITY_NONE``). Filtering it would hide
+    trades from the very tab that lists them, and the process card already
+    exposes intent as an
     operator-selected facet (``swing/metrics/process.py``, spec §7.1). The
     governance predicate lives in ``swing/metrics/cohort_intent.py`` and is
     applied by the progress readers only.

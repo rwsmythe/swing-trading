@@ -45,6 +45,8 @@ D29 exists to remove.
 """
 from __future__ import annotations
 
+from collections.abc import Collection
+
 # The registered cohort whose criterion mandates an intent predicate.
 APLUS_BASELINE_COHORT: str = "A+ baseline"
 
@@ -53,6 +55,11 @@ APLUS_BASELINE_COHORT: str = "A+ baseline"
 # (and testable) at every call site rather than living only in prose.
 INTENT_AUTHORITY_CRITERION: str = "criterion"
 INTENT_AUTHORITY_EPOCH_CONTRACT: str = "epoch_contract"
+# An ORPHAN label -- free text matching no registered hypothesis. It has no
+# criterion and is not a program cohort, so NEITHER authority speaks to it.
+# Saying "epoch_contract" here would be a positive claim about a row the
+# epoch contract never addressed (Codex R3 Minor 2).
+INTENT_AUTHORITY_NONE: str = "none"
 
 # The exact clause of the migration-0034 amended H1 criterion that
 # _CRITERION_MANDATED_INTENT encodes. Asserted against the live
@@ -84,16 +91,36 @@ def cohort_entry_intent(hypothesis_name: str) -> str | None:
     return _CRITERION_MANDATED_INTENT.get(hypothesis_name)
 
 
-def cohort_intent_authority(hypothesis_name: str) -> str:
+def cohort_intent_authority(
+    hypothesis_name: str,
+    *,
+    registered_names: Collection[str] | None = None,
+) -> str:
     """Return which authority grounds ``hypothesis_name``'s predicate.
 
     :data:`INTENT_AUTHORITY_CRITERION` when the cohort's own
     ``decision_criteria`` names the cohort clause;
-    :data:`INTENT_AUTHORITY_EPOCH_CONTRACT` otherwise (including for
-    unregistered / orphan labels, which have no criterion at all).
+    :data:`INTENT_AUTHORITY_EPOCH_CONTRACT` for a registered program
+    hypothesis whose criterion does not.
+
+    ``registered_names`` -- pass the live ``hypothesis_registry`` names to
+    have an ORPHAN label (free text matching no registered hypothesis)
+    answer :data:`INTENT_AUTHORITY_NONE` instead. This module is pure and
+    holds no DB handle, so it cannot decide registration on its own; when
+    the argument is omitted the caller is asserting the name IS registered,
+    which every production caller can (they read it from the registry or
+    from the fixed ``TAXONOMY_COHORTS`` tuple).
+
+    The distinction matters because the epoch contract is a claim about the
+    PROGRAM's cohorts. Answering ``epoch_contract`` for an arbitrary label
+    would assert an authority that never addressed it -- and orphan labels
+    do exist: ``swing.metrics.cohort.count_per_cohort`` surfaces them by
+    design (and deliberately applies no intent predicate of its own).
     """
     if hypothesis_name in _CRITERION_MANDATED_INTENT:
         return INTENT_AUTHORITY_CRITERION
+    if registered_names is not None and hypothesis_name not in registered_names:
+        return INTENT_AUTHORITY_NONE
     return INTENT_AUTHORITY_EPOCH_CONTRACT
 
 

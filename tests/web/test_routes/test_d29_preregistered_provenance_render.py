@@ -83,8 +83,12 @@ def test_surface_exposes_the_original_behind_a_collapsed_affordance(
 
 @pytest.mark.parametrize("path", _SURFACES)
 def test_surface_renders_exactly_one_provenance_block(seeded_db, path: str):
-    """Only the AMENDED cohort gets one. Three of the four registered
-    cohorts have never been amended, and a block reading "(none)" would
-    be noise on every one of them."""
+    """Only the AMENDED cohort gets one. Every OTHER registered cohort
+    has never been amended (H1 is the sole row migration 0034 touched),
+    and a block reading "(none)" would be noise on all of them.
+
+    Codex R3 Minor 1: stated registry-neutrally -- the tier surfaces show
+    the 4-cohort taxonomy while the progress card renders all 5 registry
+    rows, so "three of four" was wrong for one of the three surfaces."""
     html = _fetch(seeded_db, path)
     assert html.count(f'class="{_PROVENANCE_CLASS}"') == 1

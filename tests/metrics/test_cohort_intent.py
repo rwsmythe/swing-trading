@@ -20,6 +20,7 @@ from swing.metrics.cohort_intent import (
     H1_COHORT_CLAUSE,
     INTENT_AUTHORITY_CRITERION,
     INTENT_AUTHORITY_EPOCH_CONTRACT,
+    INTENT_AUTHORITY_NONE,
     cohort_entry_intent,
     cohort_intent_authority,
     trade_counts_toward_cohort,
@@ -134,11 +135,30 @@ def test_non_h1_cohorts_count_by_design_program_fires(name: str):
         )
 
 
-def test_an_unregistered_label_falls_to_the_epoch_contract_default():
+def test_an_orphan_label_is_narrowed_by_nobody(conn: sqlite3.Connection):
+    """Codex R3 Minor 2 -- an ORPHAN label (free text matching no registered
+    hypothesis) is governed by NEITHER authority.
+
+    Two separate properties: it is never silently NARROWED (no predicate),
+    and it is not falsely attributed to the epoch contract, which is a claim
+    about the program's own cohorts. Orphan labels really do occur --
+    ``count_per_cohort`` surfaces them by design.
+    """
+    registered = [
+        r[0] for r in conn.execute("SELECT name FROM hypothesis_registry")
+    ]
+    assert "(unregistered cohort)" not in registered
+
     assert cohort_entry_intent("(unregistered cohort)") is None
-    assert cohort_intent_authority("(unregistered cohort)") == (
-        INTENT_AUTHORITY_EPOCH_CONTRACT
-    )
+    assert cohort_intent_authority(
+        "(unregistered cohort)", registered_names=registered,
+    ) == INTENT_AUTHORITY_NONE
+    # A REGISTERED non-H1 cohort still answers epoch_contract under the
+    # same call shape -- so the orphan answer is about registration, not
+    # about passing the argument.
+    assert cohort_intent_authority(
+        _NON_H1[0], registered_names=registered,
+    ) == INTENT_AUTHORITY_EPOCH_CONTRACT
 
 
 # ---------------------------------------------------------------------------
