@@ -653,22 +653,24 @@ def compute_tier_comparison(
         # contract). See swing/metrics/cohort_intent.py -- do NOT inline a
         # literal here, or the two authorities collapse into one.
         #
-        # Codex R5: this is the ONE reader that iterates a FIXED tuple rather
-        # than live registry rows (the other three take their names from the
-        # registry itself, so registration holds by construction). A criterion
-        # is a property of a registry ROW, so if the row is absent the
-        # criterion is absent with it and no narrowing applies -- the same
-        # answer `cohort_intent_authority` gives for an unregistered name.
-        # Not reachable through any production write path: the sole runtime
-        # writer is swing/trades/hypothesis.py:270, which UPDATEs status /
-        # status_changed_at / status_change_reason only -- never `name`, never
-        # DELETE. Kept because it costs one branch and removes a state in
-        # which two halves of this module could disagree.
-        entry_intent = (
-            cohort_entry_intent(name) if name in registered_names else None
-        )
+        # Codex R5/R6: this is the ONE reader that iterates a FIXED tuple
+        # rather than live registry rows (the other three take their names
+        # from the registry itself, so registration holds by construction).
+        # A criterion is a property of a registry ROW, so if the row is
+        # absent the criterion is absent with it and no narrowing applies --
+        # the same answer `cohort_intent_authority` gives for an unregistered
+        # name. Expressed by passing `registered_names` to the policy module
+        # rather than by branching here, so the SQL and in-memory halves stay
+        # a single resolution. Not reachable through any production write
+        # path: the sole runtime writer is swing/trades/hypothesis.py:270,
+        # which UPDATEs status / status_changed_at / status_change_reason
+        # only -- never `name`, never DELETE.
         trades = list_closed_trades_for_cohort(
-            conn, hypothesis_label=name, entry_intent=entry_intent,
+            conn,
+            hypothesis_label=name,
+            entry_intent=cohort_entry_intent(
+                name, registered_names=registered_names,
+            ),
         )
         if exclude_unresolved_discrepancies:
             pre_filter_n = len(trades)

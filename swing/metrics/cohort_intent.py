@@ -61,10 +61,20 @@ INTENT_AUTHORITY_EPOCH_CONTRACT: str = "epoch_contract"
 # epoch contract never addressed (Codex R3 Minor 2).
 INTENT_AUTHORITY_NONE: str = "none"
 
-# The exact clause of the migration-0034 amended H1 criterion that
-# _CRITERION_MANDATED_INTENT encodes. Asserted against the live
+# The COMPLETE clause of the migration-0034 amended H1 criterion that
+# _CRITERION_MANDATED_INTENT encodes, verbatim. Asserted against the live
 # hypothesis_registry row by the companion test.
-H1_COHORT_CLAUSE: str = "the 20 are STANDARD-intent trades only"
+#
+# The WHOLE sentence, not a phrase from it (Codex R6): a later amendment
+# could keep "the 20 are STANDARD-intent trades only" while qualifying or
+# negating it in the same breath, and a substring pin would stay green
+# while the predicate it grounds became mis-grounded. Pinning the full
+# clause forces any semantic amendment through a deliberate test change.
+H1_COHORT_CLAUSE: str = (
+    "COHORT: the 20 are STANDARD-intent trades only, per the 2026-06-10 "
+    "training-epoch declaration; pre-epoch hypothesis_test_by_design "
+    "trades are settled tuition and do NOT count toward the 20."
+)
 
 # Hypothesis name -> the ``entry_intent`` value its OWN CRITERION TEXT
 # requires. Membership in this mapping IS the criterion grounding; absence
@@ -77,17 +87,30 @@ _CRITERION_MANDATED_INTENT: dict[str, str] = {
 }
 
 
-def cohort_entry_intent(hypothesis_name: str) -> str | None:
+def cohort_entry_intent(
+    hypothesis_name: str,
+    *,
+    registered_names: Collection[str] | None = None,
+) -> str | None:
     """Return the ``entry_intent`` predicate for ``hypothesis_name``.
 
     ``None`` means NO intent predicate applies (the epoch-contract
     default). A non-None value is an ``ENTRY_INTENTS`` member required by
     that cohort's own decision criteria.
 
+    ``registered_names`` behaves exactly as in
+    :func:`cohort_intent_authority` -- an unregistered name has no
+    criterion, so it gets no predicate. Both this function and
+    :func:`trade_counts_toward_cohort` accept it and resolve through the
+    SAME helper, so the SQL path and the in-memory path answer identically
+    for identical arguments (Codex R6).
+
     Pair every use with :func:`cohort_intent_authority` when the grounding
     needs to be stated; the two are deliberately separate so a reader
     cannot take "there is a filter" as evidence of WHY.
     """
+    if registered_names is not None and hypothesis_name not in registered_names:
+        return None
     return _CRITERION_MANDATED_INTENT.get(hypothesis_name)
 
 
@@ -131,16 +154,23 @@ def cohort_intent_authority(
 
 
 def trade_counts_toward_cohort(
-    *, entry_intent: str | None, hypothesis_name: str,
+    *,
+    entry_intent: str | None,
+    hypothesis_name: str,
+    registered_names: Collection[str] | None = None,
 ) -> bool:
     """Python-side mirror of :func:`cohort_entry_intent` for readers that
     filter an already-loaded trade list rather than issuing a SELECT.
 
     The SQL half lives in ``swing.metrics.cohort.list_trades_for_cohort``
-    (``entry_intent=`` parameter); both sides consume the SAME mapping, so
-    the two paths cannot drift.
+    (``entry_intent=`` parameter). Both sides resolve through
+    :func:`cohort_entry_intent` and accept the SAME ``registered_names``
+    argument, so the two paths cannot drift -- including in the
+    unregistered-cohort case, where both answer "no predicate".
     """
-    required = cohort_entry_intent(hypothesis_name)
+    required = cohort_entry_intent(
+        hypothesis_name, registered_names=registered_names,
+    )
     if required is None:
         return True
     return entry_intent == required

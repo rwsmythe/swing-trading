@@ -190,3 +190,26 @@ def test_every_mandated_value_is_a_real_schema_enum_member():
     for name in (APLUS_BASELINE_COHORT, *_NON_H1):
         value = cohort_entry_intent(name)
         assert value is None or value in ENTRY_INTENTS
+
+
+def test_sql_and_in_memory_halves_agree_for_an_unregistered_cohort():
+    """Codex R6 -- the module claims the SQL predicate and the in-memory
+    predicate cannot drift, so they must agree in the unregistered case too.
+
+    Both accept ``registered_names`` and resolve through the same helper.
+    A branch living in ONE caller (which is how the R5 fix was first
+    written) would have made that claim false exactly here.
+    """
+    for intent in ("standard", "hypothesis_test_by_design", None):
+        sql_half = cohort_entry_intent(
+            APLUS_BASELINE_COHORT, registered_names=[],
+        )
+        memory_half = trade_counts_toward_cohort(
+            entry_intent=intent,
+            hypothesis_name=APLUS_BASELINE_COHORT,
+            registered_names=[],
+        )
+        # SQL half: no predicate at all -> the SELECT narrows nothing.
+        assert sql_half is None
+        # In-memory half must therefore admit every intent.
+        assert memory_half is True
