@@ -490,18 +490,21 @@ def _derivation_block(latch: Latch, order) -> tuple[tuple[str, ...], frozenset[s
         f"sh ({_fmt_money(d.sizing_equity * d.position_pct_cap)} / "
         f"{order.limit_price:.2f}) - "
         f"{'RISK BINDS' if d.binding_constraint == 'risk' else 'POSITION CAP BINDS'}"))
-    if d.nightly_recommendation_shares is None:
-        nightly = ("                  NOTE: no daily_recommendations row exists "
-                   "for this fire, so there is no nightly share count to "
-                   "compare against.")
-    else:
-        nightly = (
-            f"                  NOTE: the nightly briefing sized this fire at "
-            f"{d.nightly_recommendation_shares} sh off the PIVOT; this form "
-            f"sizes off the LIMIT so a fill at the cap cannot breach the risk "
-            f"cap. BY DESIGN - not a reconciliation break.")
-    lines.append((
-        frozenset({"derivation_nightly_recommendation_shares"}), nightly))
+    # THE SECTION-D.3 DIVERGENCE NOTE IS GONE (RD 2026-08-04) -- a guard that
+    # outlived its condition. It existed because the nightly briefing sized off
+    # the PIVOT while this form sized off the LIMIT, so the operator needed both
+    # numbers and the reason in front of him at the point of action. The nightly
+    # now sizes off the limit too (`swing/recommendations/build.py:_sizing_entry`
+    # and `swing/web/view_models/dashboard.py`), the surfaces agree, and prose
+    # explaining a divergence that no longer exists reads as an active warning.
+    #
+    # `derivation_nightly_recommendation_shares` ITSELF STAYS: it is a real
+    # column on the append-only `latch_order_intents` table (migration 0033),
+    # still gathered, hidden-anchored, digested and persisted, so the ledger
+    # keeps what the nightly said for each recorded mandate and a FUTURE
+    # divergence stays detectable. Only the CARD's note was retired; the
+    # manifest row is declared `rendered=False` to keep the section-A.4 closure
+    # assertion honest rather than merely satisfied.
     lines.append((
         frozenset(),
         f"Invalidation {d.latched_initial_stop:.2f} ({INVALIDATION_LABEL})"))

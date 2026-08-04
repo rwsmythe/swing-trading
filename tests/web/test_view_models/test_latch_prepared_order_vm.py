@@ -304,6 +304,60 @@ def test_the_derivation_shows_the_inputs_that_produced_every_number(seeded_db):
     assert "stop level only" in text                   # the V1 invalidation limit
 
 
+def test_the_nightly_SIZING_DIVERGENCE_NOTE_is_GONE(seeded_db):
+    """A GUARD OUTLIVING ITS CONDITION (RD 2026-08-04).
+
+    The section-D.3 note existed because the nightly sized off the PIVOT and
+    this form off the LIMIT, so the operator needed the two numbers and the
+    reason side by side at the point of action. The nightly now sizes off the
+    limit too -- the surfaces AGREE -- and a note explaining a divergence that
+    no longer exists is dead prose that reads as an active warning.
+
+    Pinned on the NO-ROW branch as well: `_seed_fire` writes no
+    `daily_recommendations` row, so pre-fix this fixture rendered the "no
+    nightly share count to compare against" variant. Both branches are gone.
+    """
+    cfg, _ = seeded_db
+    _seed_fire(cfg)
+    _seed_derivation_session_close(cfg, 19.20)
+    block = _vm(cfg).rows[0].prepared_order
+    text = "\n".join(block.derivation_lines)
+    assert block.offered is True
+    assert "NOTE:" not in text
+    assert "off the PIVOT" not in text
+    assert "nightly" not in text.lower()
+    assert "reconciliation break" not in text
+
+
+def test_the_PERSISTED_nightly_column_survives_the_notes_removal(seeded_db):
+    """THE LINE BETWEEN THE RENDER AND THE LEDGER.
+
+    `derivation_nightly_recommendation_shares` is a real column on the
+    append-only `latch_order_intents` table (migration 0033). Only the CARD's
+    note was retired; the value is still gathered, still hidden-anchored, still
+    folded into `anchor_digest` and still persisted -- so the ledger keeps the
+    provenance of what the nightly said for each recorded mandate, which is
+    what makes a future divergence detectable at all.
+
+    A removal that also dropped the anchor field would pass every assertion in
+    the test above and silently reduce the ledger.
+    """
+    cfg, _ = seeded_db
+    _seed_fire(cfg)
+    _seed_derivation_session_close(cfg, 19.20)
+    block = _vm(cfg).rows[0].prepared_order
+    names = {name for name, _ in block.anchor_fields}
+    assert "derivation_nightly_recommendation_shares" in names
+    assert "derivation_nightly_recommendation_shares" in {
+        c for c, _ in derivation_anchor_fields()}
+    # ...and it is declared UNRENDERED, which is what keeps the section-A.4
+    # closure assertion above honest rather than merely satisfied.
+    field = next(f for f in DERIVATION_FIELD_MANIFEST
+                 if f.column == "derivation_nightly_recommendation_shares")
+    assert field.rendered is False
+    assert field.nullable is True and field.null_reason.strip()
+
+
 def test_a_missing_active_risk_policy_row_labels_the_gap_and_still_offers(
         seeded_db, monkeypatch):
     """The sizing RATE comes from `cfg.risk.max_risk_pct`, NOT from the policy

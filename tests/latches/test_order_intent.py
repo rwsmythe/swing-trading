@@ -241,13 +241,21 @@ def test_the_position_cap_leg_is_recorded_even_when_risk_binds():
     assert d.binding_constraint == "risk"
 
 
-def test_the_one_share_divergence_from_the_nightly_is_SURFACED(
-):
-    """A DOCUMENTED LEDGER SEMANTIC, not an unresolved defect. The nightly sizes
-    off the PIVOT (10 sh) and the mandate off the LIMIT (9 sh); only the latter
-    is inside the risk policy at the fill the order can actually get. The card
-    renders the divergence so the operator sees WHY two surfaces disagree rather
-    than discovering it at the broker."""
+def test_the_nightly_share_count_is_CARRIED_as_ledger_provenance():
+    """THE COLUMN OUTLIVES THE NOTE (RD 2026-08-04).
+
+    This used to pin a DISCLOSED divergence: the nightly sized off the PIVOT
+    (10 sh) and the mandate off the LIMIT (9 sh), and the card rendered the gap
+    so the operator saw it before the broker did. The nightly now sizes off the
+    limit too, so the note came out with the sizing-basis fix -- but the
+    derivation still CARRIES the nightly's count, because the append-only
+    ledger records what each surface said at the time and that is what keeps a
+    FUTURE divergence detectable from the rows themselves.
+
+    The hand-fed 10 here is deliberately NOT the 9 the limit basis produces:
+    the pure function must pass through whatever the caller measured, not
+    assume the surfaces agree.
+    """
     res = _prepared()
     d = res.order.derivation
     assert d.nightly_recommendation_shares == 10

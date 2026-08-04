@@ -653,12 +653,18 @@ DERIVATION_FIELD_MANIFEST: tuple[DerivationField, ...] = (
                     False, "", True),
     DerivationField("derivation_equity_floor", "equity_floor", "price2",
                     False, "", True),
+    # NOT RENDERED since 2026-08-04 (RD): the nightly briefing now sizes off
+    # the LIMIT too, so the section-D.3 divergence note it fed was a guard
+    # outliving its condition and came out with the sizing-basis fix. The
+    # COLUMN stays -- still gathered, anchored, digested and persisted -- so the
+    # append-only ledger keeps what the nightly said for each recorded mandate
+    # and a FUTURE divergence remains detectable from the rows themselves.
     DerivationField(
         "derivation_nightly_recommendation_shares",
         "nightly_recommendation_shares", "int", True,
-        "a fire with no daily_recommendations row has none, and the card "
-        "renders no sizing-divergence note for it",
-        True),
+        "a fire with no daily_recommendations row has none; the value is "
+        "recorded for PROVENANCE and the card renders nothing from it",
+        False),
 )
 
 # The ROSTER of derivation columns legitimately NULL on a place/decline row.

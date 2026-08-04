@@ -609,7 +609,9 @@ class HypRecsExpandedVM:
     carries that mandate price so an override can be disclosed rather than
     silently presented as the framework's; sell_stop = initial_stop),
     the dual sizing regimes (`sizing_risk` uses `sizing_equity(real, floor)`;
-    `sizing_cash` uses real balance directly), context (sector/industry), the
+    `sizing_cash` uses real balance directly -- BOTH sized off `buy_limit`,
+    the worst price the order can fill at, never off `buy_stop`), context
+    (sector/industry), the
     chart-scope reason for the same pipeline-run binding, and the freshness
     timestamp from the COMPLETED pipeline run the helper resolved.
 
@@ -714,8 +716,12 @@ def build_hyp_recs_expanded(
       run's evaluation (operator's expansion request races a candidate
       rotation).
     - `candidate.pivot` is None (degenerate evaluator output).
-    - `compute_shares` raises ValueError (degenerate sizing — `stop >=
-      entry`; spec §3.5.3 last paragraph).
+    - `candidate.initial_stop` is at or above the pivot (degenerate
+      geometry — see the upfront guard; this used to arrive as
+      `compute_shares`'s `stop >= entry` refusal and no longer can, because
+      the sizing entry is now the LIMIT).
+    - `compute_shares` raises ValueError (degenerate sizing; spec §3.5.3
+      last paragraph).
 
     Spec §3.5.3. Phase 2 carve-out: candidate lookup uses
     `fetch_candidates_for_run` + Python-side ticker filter rather than a
@@ -739,10 +745,21 @@ def build_hyp_recs_expanded(
     # ValueError the surrounding try/except catches — and the route
     # 500s instead of returning the intended unavailable partial. Guard
     # at the same upfront barrier as `pivot is None`.
+    #
+    # ...and the STOP-BELOW-THE-PIVOT gate is now EXPLICIT (the sizing-basis
+    # change, 2026-08-04). While the sizing entry was the pivot,
+    # `compute_shares`'s `stop >= entry` refusal doubled as that gate. The
+    # entry is now the buy LIMIT, which is strictly wider, so a stop sitting
+    # ABOVE the pivot but below the limit would newly pass and the card would
+    # render a setup whose stop is above its own buy stop. The latch
+    # derivation carries the same invariant (`Latch.__post_init__`:
+    # stop < pivot < zone_cap); this preserves it here rather than loosening
+    # it by side effect.
     if (
         candidate is None
         or candidate.pivot is None
         or candidate.initial_stop is None
+        or candidate.initial_stop >= candidate.pivot
     ):
         return None
 
@@ -778,14 +795,32 @@ def build_hyp_recs_expanded(
         # the framework's own price (codex-auto-review MAJOR).
         mandate_buy_limit = mandate_limit_price(
             zone_cap_for_pivot(candidate.pivot))
+        # THE SIZING BASIS IS `buy_limit` -- THE PRICE THIS CARD STATES (RD
+        # 2026-07-30, applied here 2026-08-04). The pivot is the TRIGGER, not
+        # the fill: an order triggered at the pivot fills anywhere up to the
+        # limit, and in the pullback regime the limit is PRECISELY where it
+        # fills, so a pivot-basis count breaches the operator's own risk cap at
+        # an ordinary fill rather than in a tail. AMN, 2026-08-03: 6 sh off the
+        # pivot risks $39.00 = 0.520% against a 0.500% cap; 5 sh off the limit
+        # risks $32.50.
+        #
+        # `buy_limit`, NOT `mandate_buy_limit`, and the distinction is the
+        # ruling applied rather than a preference: `chase_factor` stays
+        # operator-editable, so sizing off the mandate while DISPLAYING an
+        # override would state a count that breaches the cap at the price this
+        # very card tells him to enter. Passing the SAME OBJECT the card
+        # renders also makes the basis an identity rather than a second
+        # derivation that agrees today (the item-6 drift class). At the default
+        # chase factor -- derived from the latch zone cap -- the two are one
+        # number, so the dashboard, the nightly and the latch mandate agree.
         sizing_risk = compute_shares(
-            entry=candidate.pivot, stop=candidate.initial_stop,
+            entry=buy_limit, stop=candidate.initial_stop,
             equity=risk_equity,
             max_risk_pct=cfg.risk.max_risk_pct,
             position_pct_cap=cfg.sizing.position_pct_cap,
         )
         sizing_cash = compute_shares(
-            entry=candidate.pivot, stop=candidate.initial_stop,
+            entry=buy_limit, stop=candidate.initial_stop,
             equity=current_balance,
             max_risk_pct=cfg.risk.max_risk_pct,
             position_pct_cap=cfg.sizing.position_pct_cap,

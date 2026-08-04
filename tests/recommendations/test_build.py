@@ -26,9 +26,16 @@ def _wl(ticker: str, target: float = 100.5, last_close: float = 100.0) -> Watchl
 
 
 def test_aplus_becomes_today_decision():
+    # EQUITY 7500, not 1200 (the sizing-basis change, RD 2026-08-04). This test
+    # asserts the STRUCTURE of an A+ row -- that it is sized at all -- and the
+    # old $1,200 context was already marginal: at the buy LIMIT 103.51 the
+    # $6.00 budget buys no whole share of a $8.51-wide setup, so the row would
+    # be infeasible for a reason that has nothing to do with what is under
+    # test. 7500 is the live sizing equity (`sizing_equity` floors there) and
+    # `test_infeasible_sizing_...` below still pins the infeasible branch.
     ctx = BuildContext(
         evaluation_run_id=1, data_asof_date="2026-04-15",
-        action_session_date="2026-04-16", current_equity=1200.0,
+        action_session_date="2026-04-16", current_equity=7500.0,
         max_risk_pct=0.005, position_pct_cap=0.15,
     )
     recs = build_recommendations(
@@ -49,9 +56,15 @@ def test_aplus_action_text_does_not_say_limit():
     # The persisted recommendation carries only a stop price; "Buy-stop limit"
     # implied a two-price broker order we never produce. Regression test for
     # Tranche B-ops session 1 spec §1.
+    #
+    # EQUITY 7500 for the same reason as the test above: the assertion needs
+    # the FEASIBLE branch's text, and the infeasible branch says neither
+    # "Buy-stop" nor "limit". The sizing basis moving to the limit did NOT put
+    # the word "limit" into the action text -- the row still reports the
+    # buy-stop TRIGGER -- which is exactly what this test still pins.
     ctx = BuildContext(
         evaluation_run_id=1, data_asof_date="2026-04-15",
-        action_session_date="2026-04-16", current_equity=1200.0,
+        action_session_date="2026-04-16", current_equity=7500.0,
         max_risk_pct=0.005, position_pct_cap=0.15,
     )
     recs = build_recommendations(

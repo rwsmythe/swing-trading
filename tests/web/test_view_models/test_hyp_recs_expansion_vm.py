@@ -394,8 +394,17 @@ def test_sizing_twins_discriminate_below_floor(seeded_db):
 
     cfg, _ = seeded_db
     # cfg.account.risk_equity_floor = 7500.0 from _minimal_config.
-    # Use the same inputs as the Task 5.1 sizing-twin pair: pivot=$25,
-    # stop=$24.50 → discriminating shares 45 (risk@floor) vs 7 (cash).
+    # Same inputs as the Task 5.1 sizing-twin pair: pivot=$25, stop=$24.50.
+    #
+    # THE COUNTS MOVED 45/7 -> 30/4 WITH THE SIZING BASIS (RD 2026-08-04): the
+    # twins are sized off the buy LIMIT, and pivot 25.00 -> cap 25.75 -> rps
+    # $1.25 instead of the pivot-basis $0.50. What this test pins is the
+    # DIVERGENCE between the twins when balance < floor, which is untouched;
+    # the numerics are re-derived below so they cannot silently rot.
+    #   risk @ eq 7500: by_risk floor(37.50/1.25) = 30
+    #                   by_cap  floor(1125/25.75) = 43  -> 30 (risk binds)
+    #   cash @ eq 1200: by_risk floor( 6.00/1.25) =  4
+    #                   by_cap  floor( 180/25.75) =  6  ->  4 (risk binds)
     cfg = replace(cfg, risk=replace(cfg.risk, max_risk_pct=0.005))
     _seed_complete_pipeline(cfg, candidates=[
         {"ticker": "AAPL", "pivot": 25.0, "initial_stop": 24.50},
@@ -413,9 +422,10 @@ def test_sizing_twins_discriminate_below_floor(seeded_db):
     assert vm.risk_equity == 7500.0  # floor wins (1200 < 7500).
     # Sizing twins must DIVERGE strictly — the core hyp-recs contract.
     assert vm.sizing_risk.shares > vm.sizing_cash.shares
-    # Pin the actual numerics (matches Task 5.1 hand-derivation).
-    assert vm.sizing_risk.shares == 45
-    assert vm.sizing_cash.shares == 7
+    # Pin the actual numerics (the limit-basis hand-derivation above).
+    assert vm.buy_limit == 25.75
+    assert vm.sizing_risk.shares == 30
+    assert vm.sizing_cash.shares == 4
 
 
 # ---------------------------------------------------------------------------

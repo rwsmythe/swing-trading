@@ -3,6 +3,10 @@
 Precedence: ticker classified as A+ today wins → today_decision (skip near_trigger to avoid double).
 Watchlist tickers near pivot → near_trigger.
 Watchlist tickers in watch state → watchlist_watch (informational).
+
+Sizing basis: the LIMIT, never the pivot — see `_sizing_entry`. The pivot stays
+the TRIGGER the row reports (`entry_target`, the action text); only the price
+the share count is computed against moved.
 """
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from swing.data.models import Candidate, DailyRecommendation, WatchlistEntry
+from swing.latches.constants import mandate_limit_price, zone_cap_for_pivot
 from swing.recommendations.near_trigger import is_near_trigger
 from swing.recommendations.sizing import compute_shares
 
@@ -24,6 +29,41 @@ class BuildContext:
     position_pct_cap: float
     near_trigger_above_pct: float = 0.5
     near_trigger_below_pct: float = 1.0
+
+
+def _sizing_entry(pivot: float, stop: float) -> float:
+    """THE ENTRY BASIS FOR SIZING: the LIMIT, not the pivot (RD 2026-07-30,
+    applied to this path 2026-08-04).
+
+    The pivot is the TRIGGER, not the fill. An order triggered at the pivot can
+    fill anywhere up to the buy-zone cap, and in the pullback regime the cap is
+    PRECISELY where it fills -- so a count sized off the pivot risks more than
+    the policy allows at an ordinary fill, not only in a tail. The latch mandate
+    (`swing/latches/order_intent.py:compute_prepared_order`) has sized off the
+    limit since 21-B; this is the same rule reaching the nightly briefing, so
+    the two surfaces state one share count for one setup.
+
+    NEITHER ARITHMETIC IS RE-IMPLEMENTED HERE. `zone_cap_for_pivot` is the
+    latch derivation's own cap expression and `mandate_limit_price` is the
+    quantization the prepared order emits; a private copy would agree today and
+    drift on the next edit (the item-6 class this project has already paid for).
+    The FRAMEWORK cap fraction is used, deliberately and not
+    `cfg.web.chase_factor`: that knob is a WEB display pad on the dashboard
+    expansion, and the nightly's order is the framework's own.
+
+    THE PIVOT-VS-STOP PRECONDITION IS ENFORCED HERE rather than left to
+    `compute_shares`. With entry = the pivot, `compute_shares`'s `stop >= entry`
+    refusal doubled as the "the stop must sit below the trigger" sanity gate;
+    widening the entry to the limit would silently let a stop ABOVE the pivot
+    through and ship a recommendation whose stop is above its own trigger. The
+    latch derivation carries the same invariant (`Latch.__post_init__`:
+    stop < pivot < zone_cap), so this preserves a guard rather than inventing
+    one. Degenerate geometry still fails LOUDLY, exactly as it did before.
+    """
+    if stop >= pivot:
+        raise ValueError(
+            f"stop must be < pivot; got pivot={pivot}, stop={stop}")
+    return mandate_limit_price(zone_cap_for_pivot(pivot))
 
 
 def _format_action(shares: int, entry: float, risk_dollars: float, infeasible: bool) -> str:
@@ -45,7 +85,8 @@ def build_recommendations(
     # 1. A+ names → today_decision (with sizing)
     for c in aplus_list:
         sizing = compute_shares(
-            entry=c.pivot, stop=c.initial_stop, equity=ctx.current_equity,
+            entry=_sizing_entry(c.pivot, c.initial_stop),
+            stop=c.initial_stop, equity=ctx.current_equity,
             max_risk_pct=ctx.max_risk_pct, position_pct_cap=ctx.position_pct_cap,
         )
         infeasible = not sizing.feasible
@@ -73,8 +114,12 @@ def build_recommendations(
             below_pct=ctx.near_trigger_below_pct,
         ):
             continue
+        # BOTH sizing call sites move, not just the A+ one: a fix applied to
+        # one leaves the other stating a pivot-basis count for the same
+        # geometry (the completeness lesson).
         sizing = compute_shares(
-            entry=w.entry_target, stop=w.initial_stop_target or 0.0,
+            entry=_sizing_entry(w.entry_target, w.initial_stop_target or 0.0),
+            stop=w.initial_stop_target or 0.0,
             equity=ctx.current_equity, max_risk_pct=ctx.max_risk_pct,
             position_pct_cap=ctx.position_pct_cap,
         ) if w.initial_stop_target else None

@@ -80,11 +80,17 @@
               hx-headers='{"HX-Request": "true"}'>Take this trade</button>
     </p>
 
-    <h4>Sizing</h4>
+    {#- THE MULTIPLICAND IS THE BUY LIMIT, because that is what the counts are
+        SIZED off (RD 2026-07-30, applied to this surface 2026-08-04). Leaving
+        the buy STOP here after the basis moved would print an arithmetic
+        falsehood -- `5 sh × $36.27 = $186.75` -- and the D25 lesson is that a
+        human gate only works if the numbers he can check actually check out. -#}
+    <h4>Sizing <span class="muted">(off the buy limit — the worst price the
+        order can fill at)</span></h4>
     <ul class="sizing-twins">
       <li>Risk-based <span class="muted">(eq ${{ '%.0f' | format(expanded.risk_equity) }})</span>:
         {% if expanded.sizing_risk.feasible %}
-          {{ expanded.sizing_risk.shares }} sh × ${{ '%.2f' | format(expanded.buy_stop) }}
+          {{ expanded.sizing_risk.shares }} sh × ${{ '%.2f' | format(expanded.buy_limit) }}
             = ${{ '%.2f' | format(expanded.sizing_risk.notional) }}
             <span class="muted">(constraint: {{ expanded.sizing_risk.constraint }})</span>
         {% else %}
@@ -93,7 +99,7 @@
       </li>
       <li>Cash-feasible <span class="muted">(eq ${{ '%.0f' | format(expanded.current_balance) }})</span>:
         {% if expanded.sizing_cash.feasible %}
-          {{ expanded.sizing_cash.shares }} sh × ${{ '%.2f' | format(expanded.buy_stop) }}
+          {{ expanded.sizing_cash.shares }} sh × ${{ '%.2f' | format(expanded.buy_limit) }}
             = ${{ '%.2f' | format(expanded.sizing_cash.notional) }}
             <span class="muted">(constraint: {{ expanded.sizing_cash.constraint }})</span>
         {% else %}

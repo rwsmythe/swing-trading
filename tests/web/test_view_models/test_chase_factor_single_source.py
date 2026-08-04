@@ -105,7 +105,14 @@ def test_the_DASHBOARD_actually_INVOKES_both_shared_functions(
         seeded_db, monkeypatch):
     """The same substitution pin on the other side of the seam: the buy limit
     must come from `zone_cap_for_pivot` AND from `mandate_limit_price`, not
-    from a local expression that agrees with them today."""
+    from a local expression that agrees with them today.
+
+    BOTH SENTINELS SIT ABOVE THE SEEDED STOP OF 33.00, and that is now a
+    REQUIREMENT rather than an accident: since 2026-08-04 the card sizes off
+    `buy_limit`, so a sentinel below the stop makes the sizing degenerate and
+    the builder correctly returns its unavailable partial -- the substitution
+    would then be un-observable. (The original 12.34 did exactly that.)
+    """
     import swing.web.view_models.dashboard as dash_mod
 
     cfg, _ = seeded_db
@@ -120,8 +127,8 @@ def test_the_DASHBOARD_actually_INVOKES_both_shared_functions(
         m.setattr(dash_mod, "zone_cap_for_pivot", lambda *a, **k: 41.1111)
         assert _expanded(cfg).buy_limit == 41.11
     with monkeypatch.context() as m:
-        m.setattr(dash_mod, "mandate_limit_price", lambda cap: 12.34)
-        assert _expanded(cfg).buy_limit == 12.34
+        m.setattr(dash_mod, "mandate_limit_price", lambda cap: 42.34)
+        assert _expanded(cfg).buy_limit == 42.34
 
 
 def test_the_DEFAULTS_are_written_as_the_NAME_not_as_a_copied_literal():
