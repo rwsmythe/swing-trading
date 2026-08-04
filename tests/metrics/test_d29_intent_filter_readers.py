@@ -258,3 +258,32 @@ def test_h1_unclassified_intent_does_not_count_at_ANY_of_the_four(  # noqa: N802
     vm = build_hypothesis_progress_card_vm(cfg=cfg, conn=conn)
     card_aplus = next(c for c in vm.cohorts if c.cohort_name == APLUS_COHORT)
     assert card_aplus.n_closed == 0  # pre-fix: 1
+
+
+def test_tier_applies_no_narrowing_when_the_h1_row_is_not_registered(
+    conn: sqlite3.Connection,
+):
+    """Codex R5 -- `tier.py` is the one reader iterating a FIXED cohort tuple
+    rather than live registry rows, so it is the only place the criterion
+    mapping could outlive the row that justifies it.
+
+    A criterion is a property of a registry ROW. With the row gone the
+    criterion is gone with it and no narrowing applies -- the same answer
+    `cohort_intent_authority` gives for an unregistered name. Unreachable
+    through any production write path (the sole runtime writer,
+    `swing/trades/hypothesis.py:270`, UPDATEs status columns only), so the
+    row is removed here by RAW SQL, exactly as a detection test plants
+    historical bad data.
+    """
+    _seed_h1_shape(conn)
+    conn.execute(
+        "DELETE FROM hypothesis_registry WHERE name = ?", (APLUS_COHORT,),
+    )
+    conn.commit()
+
+    result = compute_tier_comparison(conn)
+    aplus = next(c for c in result.cohorts if c.cohort_name == APLUS_COHORT)
+    # All three labeled trades count: with no registry row there is no
+    # criterion, so nothing mandates the standard-only cohort clause.
+    assert aplus.n_closed == 3
+    assert aplus.decision_criteria == ""

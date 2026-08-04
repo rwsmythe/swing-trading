@@ -646,15 +646,29 @@ def compute_tier_comparison(
 
     cohorts: list[CohortStatistics] = []
     total_excluded = 0
+    registered_names = set(cohort_meta)
     for name in TAXONOMY_COHORTS:
         # D29: the cohort's intent-facet predicate, grounded per hypothesis
         # in its OWN authority (H1 = criterion text; the rest = the epoch
         # contract). See swing/metrics/cohort_intent.py -- do NOT inline a
         # literal here, or the two authorities collapse into one.
+        #
+        # Codex R5: this is the ONE reader that iterates a FIXED tuple rather
+        # than live registry rows (the other three take their names from the
+        # registry itself, so registration holds by construction). A criterion
+        # is a property of a registry ROW, so if the row is absent the
+        # criterion is absent with it and no narrowing applies -- the same
+        # answer `cohort_intent_authority` gives for an unregistered name.
+        # Not reachable through any production write path: the sole runtime
+        # writer is swing/trades/hypothesis.py:270, which UPDATEs status /
+        # status_changed_at / status_change_reason only -- never `name`, never
+        # DELETE. Kept because it costs one branch and removes a state in
+        # which two halves of this module could disagree.
+        entry_intent = (
+            cohort_entry_intent(name) if name in registered_names else None
+        )
         trades = list_closed_trades_for_cohort(
-            conn,
-            hypothesis_label=name,
-            entry_intent=cohort_entry_intent(name),
+            conn, hypothesis_label=name, entry_intent=entry_intent,
         )
         if exclude_unresolved_discrepancies:
             pre_filter_n = len(trades)
