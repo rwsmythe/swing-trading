@@ -426,6 +426,24 @@ def test_deviation_outcome_renders_decision_criteria_seed_text(seeded_db):
     assert "defensibility of smaller-position approach" in body
 
 
+def test_criterion_surfaces_do_not_claim_the_text_is_frozen_at_0008(seeded_db):
+    """Both criterion pages used to caption the value "frozen at migration
+    0008". For A+ baseline that became FALSE the moment migration 0034 landed
+    -- the displayed bytes are 0034's. Mislabelling a rule's provenance is a
+    real defect on a surface whose entire purpose is anti-rationalization, so
+    the claim is pinned as ABSENT and the accurate one as present."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        deviation = client.get("/metrics/deviation-outcome").text
+        tier = client.get("/metrics/tier-comparison").text
+    for body in (deviation, tier):
+        assert "frozen at migration 0008" not in body
+        assert "criterion text from migration 0008" not in body
+    assert "amended by migration 0034" in tier
+    assert "amended by migration 0034" in deviation
+
+
 def test_deviation_outcome_decision_criterion_text_has_no_automated_evaluation(
     seeded_db,
 ):

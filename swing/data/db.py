@@ -309,8 +309,19 @@ PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 # `latch_order_intents`, so the v33 set is the 21-B set plus that one. 0034
 # itself adds NO table -- it is one ALTER ADD COLUMN plus two row UPDATEs.
 # Derived deterministically for auditable provenance -- never hand-listed.
+#
+# `hypothesis_registry` is added EXPLICITLY. These expected-table sets are a
+# PRESENCE subset, not an exhaustive manifest, and the chain they derive from
+# (PHASE7_EXPECTED_TABLES, the v13 set) never listed it -- so every gate to
+# date could approve a backup missing it. That is tolerable for a gate whose
+# migration does not touch the table; it is not tolerable HERE, where the
+# backup exists specifically to preserve the pre-amendment governance row.
+# A gate that does not require the one table its migration amends is not a
+# fail-closed belt. Scoped to this gate deliberately: retrofitting the shared
+# chain is a separate change across 18 gates.
 H1_AMENDMENT_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
-    PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES | {"latch_order_intents"}
+    PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES
+    | {"latch_order_intents", "hypothesis_registry"}
 )
 
 

@@ -663,9 +663,49 @@ def test_expected_schema_version_is_34():
 def test_pre_migration_expected_tables_is_the_v33_set_derived():
     """0033 added exactly one table (`latch_order_intents`) on top of the
     21-B set, which already includes `latch_view_events`. DERIVED, never
-    hand-listed."""
+    hand-listed -- plus `hypothesis_registry`, added explicitly."""
     assert H1_AMENDMENT_PRE_MIGRATION_EXPECTED_TABLES == (
-        PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES | {"latch_order_intents"})
+        PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES
+        | {"latch_order_intents", "hypothesis_registry"})
+
+
+def test_the_backup_gate_requires_the_table_it_exists_to_preserve():
+    """These expected-table sets are a PRESENCE subset, not a manifest, and
+    the inherited chain never listed `hypothesis_registry` -- so this gate
+    would have approved a backup missing the very governance row the backup
+    is taken to preserve. A belt that does not check the one table its
+    migration amends is not fail-closed."""
+    assert "hypothesis_registry" in H1_AMENDMENT_PRE_MIGRATION_EXPECTED_TABLES
+    assert ("hypothesis_registry"
+            not in PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES), (
+        "this test documents an inherited gap; if the shared chain is ever "
+        "fixed, drop the explicit add rather than leaving both")
+
+
+def test_a_backup_missing_the_governance_table_is_REJECTED(tmp_path):
+    """The constant is only a belt if `_verify_backup_integrity` enforces it.
+    Build a structurally valid v33 backup, drop `hypothesis_registry` from it,
+    and require verification to refuse."""
+    from swing.data import db as db_mod
+
+    conn = _v33(tmp_path)
+    try:
+        backup = tmp_path / "b.db"
+        dest = sqlite3.connect(str(backup))
+        try:
+            conn.backup(dest)
+            dest.execute("DROP TABLE hypothesis_registry")
+            dest.commit()
+        finally:
+            dest.close()
+        with pytest.raises(Exception) as exc:
+            db_mod._verify_backup_integrity(
+                backup,
+                expected_tables=H1_AMENDMENT_PRE_MIGRATION_EXPECTED_TABLES,
+            )
+        assert "hypothesis_registry" in str(exc.value), exc.value
+    finally:
+        conn.close()
 
 
 @pytest.mark.parametrize("current,target,should_fire", [

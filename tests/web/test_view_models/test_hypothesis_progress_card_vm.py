@@ -156,8 +156,10 @@ def test_vm_consecutive_loss_run_at_zero_trades_is_0(cfg) -> None:
 
 
 def test_vm_decision_criteria_renders_seed_text_verbatim(cfg) -> None:
-    """Decision-criteria seed text from migration 0008 is rendered verbatim
-    on the cohort VM (no canonicalization, no truncation)."""
+    """The registry's decision-criteria text is rendered verbatim on the
+    cohort VM (no canonicalization, no truncation). A+ baseline's text is
+    migration 0034's AMENDED criterion; the other three are still their 0008
+    seed text -- verbatim is verbatim either way."""
     vm = build_hypothesis_progress_card_vm(cfg=cfg)
     by_name = {c.cohort_name: c for c in vm.cohorts}
     assert by_name["A+ baseline"].decision_criteria == (
