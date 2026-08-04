@@ -321,6 +321,82 @@ def test_an_UNORDERABLE_geometry_is_INFEASIBLE_not_an_ABORT():
     assert by_ticker["AMN"].shares == 5
 
 
+@pytest.mark.parametrize("pivot,why", [
+    (float("inf"), "SQLite REAL stores infinity and no CHECK excludes it; the "
+                   "pivot basis absorbed it as floor(budget / inf) = 0, so "
+                   "this one is a REGRESSION the change introduced"),
+    (1.79e308, "finite, but pivot x 1.03 OVERFLOWS to inf inside the cap -- "
+               "the same regression"),
+    (float("nan"), "NOT a regression: the pivot basis reached math.floor(nan) "
+                   "and aborted too. Pinned anyway, because the ordering gate "
+                   "is `stop >= pivot` rather than `not stop < pivot` "
+                   "PRECISELY so nan falls through to the per-row refusal"),
+])
+def test_a_NON_FINITE_pivot_cannot_suppress_the_REST_of_the_batch(pivot, why):
+    """CODEX R5 MAJOR -- the R3 class one step earlier.
+
+    `zone_cap_for_pivot` refuses a non-finite or overflowing pivot with
+    `ValueError`, and nothing caught it before `_step_recommendations` reached
+    its write phase, so ONE such candidate lost the whole night.
+    """
+    recs = _recs(today_aplus=[_candidate("BAD", pivot=pivot, stop=30.85),
+                              _candidate()])
+    by_ticker = {r.ticker: r for r in recs}
+    assert by_ticker["BAD"].shares == 0, why
+    assert "infeasible" in (by_ticker["BAD"].action_text or "").lower()
+    assert "$" not in (by_ticker["BAD"].action_text or "")
+    # ...and the ordinary row is still written, which is the whole point.
+    assert by_ticker["AMN"].shares == 5
+
+
+def test_the_repr_FALLBACK_is_EXACT_when_the_precision_loop_runs_OUT():
+    """CODEX R5 MINOR. `_equation`'s docstring calls the `repr` fallback the
+    correctness guarantee, so the guarantee has to be EXECUTED -- every
+    parametrised geometry above exits the loop at 2, 4 or 6 decimals, so none
+    of them reached it.
+
+    `repr` is the shortest decimal that ROUND-TRIPS a float, so the emitted
+    operands parse back to the very floats the subtraction used and the
+    equation reproduces the risk bit for bit. That is asserted here directly:
+    the operands are compared to the ORIGINAL floats, not merely to each other.
+    """
+    from swing.recommendations.build import _equation
+
+    basis, stop, shares = 0.02, 0.010000001, 500_000_050
+    risk = shares * (basis - stop)
+    # The widest FIXED precision the loop tries is not enough at this scale...
+    assert round(shares * (float(f"{basis:.8f}") - float(f"{stop:.8f}")), 2) \
+        != round(risk, 2)
+    text = _equation(shares, basis, stop, risk)
+    cap_text, stop_text = text.split("$")[1].split()[0], text.split("$")[2]
+    stop_text = stop_text.split()[0]
+    assert float(cap_text) == basis and float(stop_text) == stop
+    assert round(shares * (float(cap_text) - float(stop_text)), 2) \
+        == round(risk, 2)
+
+
+def test_the_fallback_is_a_TOTALITY_guarantee_not_a_live_path():
+    """...and the reachability is stated rather than left to a reader.
+
+    Through the production builder the fallback CANNOT be reached at any
+    realistic equity: the position cap bounds the share count at
+    `floor(equity x 0.15 / basis)`, an 8-decimal operand carries at most 5e-9
+    of residual each, and at the $7,500 sizing floor the widest possible count
+    is 112,500 shares against the smallest orderable basis of $0.01 -- a
+    maximum displacement of about a tenth of a cent, which cannot move the
+    cent-rounded product. The branch is what makes `_equation` TOTAL; it is not
+    a hot path, and a future reader must not mistake it for one.
+    """
+    from swing.latches.constants import mandate_limit_price
+
+    smallest_orderable_basis = 0.01
+    assert mandate_limit_price(0.0199) == smallest_orderable_basis
+    widest_count = math.floor(
+        SIZING_EQUITY * POSITION_PCT_CAP / smallest_orderable_basis)
+    assert widest_count == 112_500
+    assert widest_count * 2 * 5e-9 < 0.005
+
+
 def test_the_unorderable_refusal_does_NOT_swallow_a_stop_ABOVE_the_pivot():
     """THE PAIRED DISCRIMINATOR. Degenerate DATA (a stop at or above the
     trigger) aborted the step before this change too and must stay LOUD; a
