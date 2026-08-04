@@ -467,26 +467,41 @@ def test_the_repr_FALLBACK_is_EXACT_when_the_precision_loop_runs_OUT():
         == round(risk, 2)
 
 
-def test_the_fallback_is_a_TOTALITY_guarantee_not_a_live_path():
-    """...and the reachability is stated rather than left to a reader.
+def test_the_repr_FALLBACK_is_REACHED_through_the_PRODUCTION_builder():
+    """CODEX R9 MINOR, and the finding was that MY OWN CLAIM WAS FALSE.
 
-    Through the production builder the fallback CANNOT be reached at any
-    realistic equity: the position cap bounds the share count at
-    `floor(equity x 0.15 / basis)`, an 8-decimal operand carries at most 5e-9
-    of residual each, and at the $7,500 sizing floor the widest possible count
-    is 112,500 shares against the smallest orderable basis of $0.01 -- a
-    maximum displacement of about a tenth of a cent, which cannot move the
-    cent-rounded product. The branch is what makes `_equation` TOTAL; it is not
-    a hot path, and a future reader must not mistake it for one.
+    This test previously asserted the fallback could not be reached at any
+    realistic equity, arguing from an error BOUND: at the $7,500 floor the
+    position cap allows at most 112,500 shares and an 8-decimal operand
+    carries at most 5e-9 of residual, so the displacement is under a tenth
+    of a cent. THE BOUND IS TRUE AND THE CONCLUSION DOES NOT FOLLOW -- a
+    displacement smaller than half a cent still crosses a cent-rounding
+    BOUNDARY when the true value sits near one.
+
+    The counterexample is an ordinary production path at the ordinary
+    sizing equity: pivot $0.01, stop 0.0099999555. The limit is $0.01, the
+    position cap binds at 112,500 shares, the true risk is $0.00500625
+    which DISPLAYS as $0.01 -- and every fixed precision through 8 decimals
+    collapses the operands to the same number and states $0.00. So the
+    fallback is a LIVE PATH, not merely a totality guarantee, and with an
+    unconstrained REAL stop its unreachability cannot be proven at all.
     """
-    from swing.latches.constants import mandate_limit_price
-
-    smallest_orderable_basis = 0.01
-    assert mandate_limit_price(0.0199) == smallest_orderable_basis
-    widest_count = math.floor(
-        SIZING_EQUITY * POSITION_PCT_CAP / smallest_orderable_basis)
-    assert widest_count == 112_500
-    assert widest_count * 2 * 5e-9 < 0.005
+    rec = _recs(today_aplus=[
+        _candidate('BOUNDARY', pivot=0.01, stop=0.0099999555)])[0]
+    assert rec.shares == 112_500
+    assert round(rec.risk_dollars, 2) == 0.01
+    # Every FIXED precision the loop tries states the wrong number...
+    for places in (2, 4, 6, 8):
+        assert round(rec.shares * (
+            float(f'{0.01:.{places}f}')
+            - float(f'{0.0099999555:.{places}f}')), 2) != 0.01
+    # ...so the emitted operands are the ROUND-TRIPPING ones, and the
+    # equation they state evaluates to the risk the line states.
+    parsed = _parse_equation(rec.action_text or '')
+    assert parsed is not None, rec.action_text
+    risk, shares, cap, stop_shown = parsed
+    assert (cap, stop_shown) == (0.01, 0.0099999555)
+    assert round(shares * (cap - stop_shown), 2) == risk == 0.01
 
 
 def test_the_unorderable_refusal_does_NOT_swallow_a_stop_ABOVE_the_pivot():
