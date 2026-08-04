@@ -249,3 +249,18 @@ def test_an_ORDINARY_geometry_still_renders(seeded_db):
     cfg, _ = seeded_db
     _seed_amn(cfg)
     assert _expanded(cfg) is not None
+
+
+def test_a_ZERO_PRICED_quantized_limit_returns_None_instead_of_500(seeded_db):
+    """CODEX R7 MAJOR, the dashboard half. At pivot 1e-305 the limit
+    quantizes to $0.00 and the sizing raises **OverflowError** against a
+    negative stop -- which the builder's `except ValueError` does NOT
+    catch, so the expansion route 500'd where the old pivot basis rendered
+    a card. It degrades to the same unavailable partial as a degenerate
+    stop.
+    """
+    cfg, _ = seeded_db
+    _seed_complete_pipeline(cfg, candidates=[
+        {'ticker': 'TINY', 'pivot': 1e-305, 'initial_stop': -1e-307},
+    ])
+    assert _expanded(cfg, ticker='TINY') is None

@@ -813,6 +813,18 @@ def build_hyp_recs_expanded(
         # derivation that agrees today (the item-6 drift class). At the default
         # chase factor -- derived from the latch zone cap -- the two are one
         # number, so the dashboard, the nightly and the latch mandate agree.
+        # A NON-POSITIVE LIMIT IS UNAVAILABLE, NOT A 500 (Codex R7). At a
+        # pivot of 1e-305 the cap rounds to 0.0 and the limit quantizes to
+        # $0.00; against a NEGATIVE stop the sizing then evaluates
+        # `floor(37.5 / 1e-307)` and raises OverflowError -- which is NOT
+        # the ValueError this block catches, so the route 500'd where the
+        # old pivot basis rendered a (nonsensical) card. `candidates.pivot`
+        # and `initial_stop` are bare REALs with no CHECK, so nothing at the
+        # write boundary excludes either value. Degrades to the SAME
+        # unavailable partial as a degenerate stop; the nightly refuses the
+        # same geometry per-row in `build.py:_sizing_result`.
+        if buy_limit <= 0:
+            return None
         sizing_risk = compute_shares(
             entry=buy_limit, stop=candidate.initial_stop,
             equity=risk_equity,

@@ -129,6 +129,20 @@ def _sizing_result(pivot: float | None, stop: float | None,
     kind -- it reached `compute_shares` and raised before this change and
     still does.
 
+    A NON-POSITIVE BASIS IS REFUSED TOO, AND `<= stop` DOES NOT COVER IT
+    (Codex R7). At pivot 1e-305 the cap rounds to 0.0 and the limit
+    quantizes to $0.00; against a NEGATIVE stop, `0.0 <= -1e-307` is False,
+    so the row fell through to `compute_shares(entry=0.0, ...)` whose risk
+    leg evaluates `floor(37.5 / 1e-307)` and raises **OverflowError** --
+    which is NOT the `ValueError` either surface guards, so the nightly
+    lost the batch and the dashboard 500'd. The pivot basis produced finite
+    quotients for the same geometry, so this too is a regression.
+    Refusing a non-positive basis closes the overflow at its source rather
+    than widening a shared `except`: a POSITIVE basis is a whole-cent price,
+    hence at least $0.01, so `equity x cap / basis` is bounded and the risk
+    leg cannot overflow either (float spacing near $0.01 is ~1.7e-18, so no
+    representable stop puts `basis - stop` inside the ~2e-307 needed).
+
     A NULL PIVOT OR STOP IS THE SAME CLASS AND IS REFUSED THE SAME WAY
     (Codex R6). `Candidate.pivot` and `Candidate.initial_stop` are both
     `float | None` and the schema declares both REAL without NOT NULL, and
@@ -160,7 +174,7 @@ def _sizing_result(pivot: float | None, stop: float | None,
         basis = _sizing_entry(pivot)
     except ValueError:
         return None, infeasible
-    if basis <= stop:
+    if basis <= 0 or basis <= stop:
         return None, infeasible
     return basis, compute_shares(
         entry=basis, stop=stop, equity=ctx.current_equity,

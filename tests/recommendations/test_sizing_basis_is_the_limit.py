@@ -376,6 +376,37 @@ def test_a_NULL_pivot_or_stop_cannot_suppress_the_REST_of_the_batch(
     assert by_ticker["AMN"].shares == 5
 
 
+def test_a_ZERO_PRICED_quantized_limit_cannot_suppress_the_REST_of_the_batch():
+    """CODEX R7 MAJOR, and `basis <= stop` does NOT cover it.
+
+    At pivot 1e-305 the cap rounds to 0.0 and the limit quantizes to $0.00.
+    Against a NEGATIVE stop, `0.0 <= -1e-307` is False, so the row fell
+    THROUGH the unorderable refusal into
+    `compute_shares(entry=0.0, stop=-1e-307)`, whose risk leg evaluates
+    `floor(37.5 / 1e-307)` and raises **OverflowError** -- NOT the
+    `ValueError` either surface guards. The pivot basis produced finite
+    quotients for the same geometry, so this is a regression.
+
+    Both prices are bare REALs with no schema CHECK, so nothing at the
+    write boundary excludes the pair.
+    """
+    recs = _recs(today_aplus=[
+        _candidate('TINY', pivot=1e-305, stop=-1e-307), _candidate()])
+    by_ticker = {r.ticker: r for r in recs}
+    assert by_ticker['TINY'].shares == 0
+    assert by_ticker['AMN'].shares == 5
+
+
+def test_the_zero_basis_refusal_is_NOT_reachable_through_the_stop_check():
+    """THE DISCRIMINATOR. A fix written as `basis <= stop` alone
+    passes every other test in this file and still loses the batch here,
+    because a NEGATIVE stop is strictly below a zero basis.
+    """
+    basis = mandate_limit_price(zone_cap_for_pivot(1e-305))
+    assert basis == 0.0
+    assert not (basis <= -1e-307)
+
+
 def test_the_repr_FALLBACK_is_EXACT_when_the_precision_loop_runs_OUT():
     """CODEX R5 MINOR. `_equation`'s docstring calls the `repr` fallback the
     correctness guarantee, so the guarantee has to be EXECUTED -- every
