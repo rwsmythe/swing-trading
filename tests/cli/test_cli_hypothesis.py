@@ -224,3 +224,77 @@ def test_hypothesis_update_identity_returns_info_not_error(tmp_path: Path):
     assert r.exit_code == 0, r.output
     assert "already active" in r.output
     assert "info:" in r.output
+
+
+# ---------------------------------------------------------------------------
+# D29 acceptance anchor (Codex R1 Minor 3)
+# ---------------------------------------------------------------------------
+
+def _seed_live_h1_shape(db_path: Path) -> None:
+    """Reproduce the LIVE defect shape on the A+ baseline label.
+
+    Two post-epoch ``standard`` trades (VSTS 06-25, AMN 07-01) plus one
+    PRE-EPOCH ``hypothesis_test_by_design`` trade (YOU 05-04) -- exactly
+    the three rows carrying the ``A+ baseline`` label on the production
+    v34 DB, which made ``swing hypothesis list`` report H1 at 3/20 where
+    the amended criterion counts 2.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        for tid, ticker, entry_date, intent in (
+            (1, "YOU", "2026-05-04", "hypothesis_test_by_design"),
+            (2, "VSTS", "2026-06-25", "standard"),
+            (3, "AMN", "2026-07-01", "standard"),
+        ):
+            conn.execute(
+                "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+                "initial_shares, initial_stop, current_stop, state, sector, "
+                "industry, trade_origin, pre_trade_locked_at, current_size, "
+                "hypothesis_label, entry_intent, last_fill_at) VALUES "
+                "(?, ?, ?, 10.0, 100, 9.0, 9.0, 'closed', 'S', 'I', "
+                "'manual_off_pipeline', ?, 100, 'A+ baseline (aplus)', ?, ?)",
+                (tid, ticker, entry_date, entry_date + "T09:30:00", intent,
+                 entry_date + "T15:30:00"),
+            )
+            conn.execute(
+                "INSERT INTO fills (trade_id, fill_datetime, action, "
+                "quantity, price, reconciliation_status) VALUES "
+                "(?, ?, 'entry', 100, 10.0, 'unreconciled')",
+                (tid, entry_date + "T09:30:00"),
+            )
+            conn.execute(
+                "INSERT INTO fills (trade_id, fill_datetime, action, "
+                "quantity, price, reconciliation_status) VALUES "
+                "(?, ?, 'exit', 100, 11.0, 'unreconciled')",
+                (tid, entry_date + "T15:30:00"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_hypothesis_list_counts_h1_at_2_of_20_on_the_live_shape(
+    tmp_path: Path, monkeypatch,
+):
+    """THE D29 ACCEPTANCE ANCHOR, in the CLI's own rendering path.
+
+    Pre-fix this command printed ``3/20`` -- the pre-epoch by_design trade
+    counted -- against a criterion whose COHORT clause excludes it in its
+    own words. Both the post-fix value and the ABSENCE of the pre-fix
+    value are asserted, so the test distinguishes.
+    """
+    runner, cfg = _setup(tmp_path, monkeypatch)
+    _seed_live_h1_shape(tmp_path / "home" / "swing-data" / "swing.db")
+
+    r = runner.invoke(main, ["--config", str(cfg), "hypothesis", "list"])
+    assert r.exit_code == 0, r.output
+    aplus_line = next(
+        ln for ln in r.output.splitlines() if ln.rstrip().endswith("A+ baseline")
+    )
+    assert "2/20" in aplus_line, aplus_line
+    assert "3/20" not in aplus_line, (
+        "pre-fix value still rendered -- the intent filter is not reaching "
+        f"the CLI path: {aplus_line}"
+    )

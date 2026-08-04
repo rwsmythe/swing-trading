@@ -63,8 +63,10 @@
           {#- D29 rider: the preserved pre-registered original is PROVENANCE
               DETAIL -- a collapsed secondary affordance, never inline prose
               beside the live criterion. Absent entirely when the row has
-              never been amended (the migration-0034 NULL semantic). -#}
-          {% if row.preregistered_decision_criteria %}
+              never been amended -- tested `is not none`, NOT truthiness,
+              because NULL is the DEFINED never-amended state and an empty
+              string would be a corrupt preservation, not an absent one. -#}
+          {% if row.preregistered_decision_criteria is not none %}
           <details class="preregistered-criterion">
             <summary>Pre-registered criterion (superseded)</summary>
             <p class="muted">{{ row.preregistered_decision_criteria }}</p>

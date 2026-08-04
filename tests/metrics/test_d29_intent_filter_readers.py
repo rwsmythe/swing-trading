@@ -228,13 +228,33 @@ def test_non_h1_cohorts_still_count_their_by_design_program_fires(
     assert h2_card.n_closed == 2
 
 
-def test_h1_unclassified_intent_does_not_count(conn: sqlite3.Connection):
+def test_h1_unclassified_intent_does_not_count_at_ANY_of_the_four(  # noqa: N802
+    conn: sqlite3.Connection, cfg,
+):
     """NULL entry_intent is a distinct third facet, never coerced to
     'standard' -- so it is not a STANDARD-intent trade under the
-    criterion's cohort clause."""
+    criterion's cohort clause.
+
+    Codex R1 Minor 4: asserted at ALL FOUR readers, not just the tripwire
+    one. The repaired fixtures default to 'standard', so this is where the
+    NULL case keeps its coverage at each surface.
+    """
     _seed(conn, trade_id=30, ticker="NUL", label=APLUS_COHORT,
           entry_intent=None, pnl=100.0, entry_date="2026-04-01")
+
     tw = compute_tripwire_status(
         conn, hypothesis_id=_h1_id(conn), starting_equity=7500.0,
     )
     assert tw.current_sample == 0  # pre-fix: 1
+
+    tier = compute_tier_comparison(conn)
+    aplus = next(c for c in tier.cohorts if c.cohort_name == APLUS_COHORT)
+    assert aplus.n_closed == 0  # pre-fix: 1
+
+    rows = compute_hypothesis_progress_breakdown(conn, starting_equity=7500.0)
+    journal_aplus = next(r for r in rows if r.name == APLUS_COHORT)
+    assert journal_aplus.current_sample == 0  # pre-fix: 1
+
+    vm = build_hypothesis_progress_card_vm(cfg=cfg, conn=conn)
+    card_aplus = next(c for c in vm.cohorts if c.cohort_name == APLUS_COHORT)
+    assert card_aplus.n_closed == 0  # pre-fix: 1

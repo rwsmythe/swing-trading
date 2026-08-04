@@ -70,6 +70,27 @@ def test_h1_clause_the_mapping_encodes_is_still_in_the_live_criterion(
     assert H1_COHORT_CLAUSE in criterion
 
 
+def test_the_mapping_key_still_names_a_real_registry_row(
+    conn: sqlite3.Connection,
+):
+    """Codex R1 Minor 1 — an unknown name falls through to the epoch-contract
+    default, so a RENAME of the H1 row would silently drop its filter.
+
+    The check for that belongs against the LIVE registry, not against a
+    second hardcoded list of the five names (which would itself be a mirror
+    free to drift). If the row is ever renamed, this fails loudly with the
+    mapping still legible, which is the outcome the finding wanted.
+    """
+    (n,) = conn.execute(
+        "SELECT COUNT(*) FROM hypothesis_registry WHERE name = ?",
+        (APLUS_BASELINE_COHORT,),
+    ).fetchone()
+    assert n == 1, (
+        f"cohort_intent keys its criterion-mandated predicate on "
+        f"{APLUS_BASELINE_COHORT!r}, which matches {n} registry rows"
+    )
+
+
 def test_h1_counts_standard_intent_only():
     assert trade_counts_toward_cohort(
         entry_intent="standard", hypothesis_name=APLUS_BASELINE_COHORT,
