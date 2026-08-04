@@ -67,29 +67,35 @@ def _sizing_entry(pivot: float, stop: float) -> float:
 
 
 def _format_action(shares: int, entry: float, risk_dollars: float,
-                   infeasible: bool, basis: float | None = None) -> str:
-    """The row's one-line action.
+                   infeasible: bool, basis: float | None = None,
+                   stop: float | None = None) -> str:
+    """The row's one-line action, SELF-CHECKABLE.
 
-    THE SIZING BASIS IS NAMED (Codex R1 MAJOR). The row reports the TRIGGER
-    in `entry_target` and the LIMIT-basis risk in `risk_dollars`, so from
-    2026-08-04 a reader recomputing `shares x (entry_target - stop_target)`
-    gets a DIFFERENT number from the risk the row states -- for AMN, $27.10
-    against the stated $32.50. Naming the basis makes the figure
-    reproducible from the line itself, which is the same reason the
-    dashboard card's sizing line multiplies by the price it sized off rather
-    than by the buy stop.
+    THE WHOLE RISK EQUATION IS ON THE LINE (Codex R1 MAJOR, completed at R2).
+    The row reports the TRIGGER in `entry_target` and the LIMIT-basis risk in
+    `risk_dollars`, so from 2026-08-04 a reader recomputing
+    `shares x (entry_target - stop_target)` gets a DIFFERENT number from the
+    risk the row states -- for AMN, $27.10 against the stated $32.50. Naming
+    the basis alone did not close that: NEITHER the markdown briefing nor the
+    HTML one renders `stop_target` for a decision, so the operator had no
+    route to the figure at all. Both consumers render `action_text`, so
+    stating the equation here fixes both at one site.
+
+    THE RISK FIGURE IS TWO DECIMALS for the same reason: at `.0f` the exact
+    $32.50 printed as $32 and the equation the line states would not have
+    evaluated to the number beside it.
 
     IT DOES NOT SAY "LIMIT", deliberately: the Tranche-B spec retired
     "Buy-stop limit" because it implied a two-price BROKER ORDER this row
     never produces, and that contract is still pinned by
-    `test_aplus_action_text_does_not_say_limit`. "Buy-zone cap" names the
-    SIZING price without describing a second order leg.
+    `test_aplus_action_text_does_not_say_limit`. "Cap" names the SIZING
+    price without describing a second order leg.
     """
     if infeasible:
         return "Risk infeasible at current sizing — skip or wait for tighter setup"
-    text = f"Buy-stop ${entry:.2f} \u00b7 {shares} sh \u00b7 ${risk_dollars:.0f} risk"
-    if basis is not None:
-        text += f" (sized at the ${basis:.2f} buy-zone cap)"
+    text = f"Buy-stop ${entry:.2f} \u00b7 {shares} sh \u00b7 ${risk_dollars:.2f} risk"
+    if basis is not None and stop is not None:
+        text += (f" = {shares} x (${basis:.2f} cap - ${stop:.2f} stop)")
     return text
 
 
@@ -119,7 +125,7 @@ def build_recommendations(
             ticker=c.ticker, recommendation="today_decision",
             action_text=_format_action(
                 sizing.shares, c.pivot, sizing.risk_dollars, infeasible,
-                basis=basis),
+                basis=basis, stop=c.initial_stop),
             entry_target=c.pivot, stop_target=c.initial_stop,
             shares=sizing.shares,
             risk_dollars=sizing.risk_dollars, risk_pct=sizing.risk_pct,
@@ -158,7 +164,7 @@ def build_recommendations(
                 _format_action(
                     sizing.shares, w.entry_target,
                     sizing.risk_dollars, not sizing.feasible,
-                    basis=basis,
+                    basis=basis, stop=w.initial_stop_target,
                 )
                 if sizing else "Pivot reached — review setup"
             ),

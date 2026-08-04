@@ -117,11 +117,18 @@ def test_the_CASH_twin_moves_to_the_limit_basis_too(seeded_db):
 def test_the_card_SIZES_off_the_limit_it_DISPLAYS(seeded_db, monkeypatch):
     """IDENTITY, not agreement. The sized price must BE `buy_limit` -- the
     number the card renders -- not a second derivation that happens to equal
-    it today (the item-6 drift class). Pinned by SUBSTITUTION: replacing the
-    quantizer moves the displayed limit AND the share count together.
+    it today (the item-6 drift class).
 
-    limit 40.85 -> rps 10.00 -> floor(37.50 / 10.00) = 3, which no other basis
-    in this builder produces (pivot -> 6, mandate -> 5).
+    TWO HALVES, BECAUSE ONE CANNOT DO IT (Codex R2 MINOR). The substitution
+    half proves the basis is not the pivot and not a private expression:
+    replacing the quantizer moves the displayed limit AND the count together
+    (limit 40.85 -> rps 10.00 -> floor(37.50/10.00) = 3, which neither the
+    pivot basis (6) nor the mandate basis (5) produces). But under a
+    constant-returning substitute `buy_limit` and `mandate_buy_limit` COLLAPSE
+    to the same number, so that half alone cannot tell the two apart -- an
+    implementation sizing off `mandate_buy_limit` passes it. The second half
+    separates them at an operator override, where the two limits are genuinely
+    different prices, and asserts the count follows the DISPLAYED one.
     """
     import swing.web.view_models.dashboard as dash_mod
 
@@ -133,6 +140,16 @@ def test_the_card_SIZES_off_the_limit_it_DISPLAYS(seeded_db, monkeypatch):
         assert vm.buy_limit == 40.85
         assert vm.sizing_risk.shares == 3
         assert vm.sizing_risk.notional == 3 * 40.85
+
+    over = replace(cfg, web=replace(cfg.web, chase_factor=0.10))
+    vm = _expanded(over)
+    assert vm.buy_limit == 39.89 and vm.mandate_buy_limit == AMN_LIMIT
+    assert vm.sizing_risk.shares == math.floor(
+        RISK_BUDGET / (vm.buy_limit - AMN_STOP)) == 4
+    assert vm.sizing_risk.shares != math.floor(
+        RISK_BUDGET / (vm.mandate_buy_limit - AMN_STOP)), (
+        "sizing must follow the limit the card DISPLAYS, not the mandate's")
+    assert vm.sizing_risk.notional == vm.sizing_risk.shares * vm.buy_limit
 
 
 def test_an_OPERATOR_OVERRIDE_sizes_off_the_OVERRIDDEN_limit(seeded_db):
