@@ -441,6 +441,24 @@ def test_a_LIMIT_BELOW_THE_TRIGGER_is_refused_and_the_batch_survives():
     assert by_ticker['AMN'].shares == 5
 
 
+def test_a_COLLAPSED_buy_zone_is_still_ORDERABLE_and_is_NOT_refused():
+    """THE BOUNDARY OF THE R8 REFUSAL, named by codex-auto-review.
+
+    At pivot $0.25 the cap 0.2575 floors to exactly $0.25, so the buy zone
+    COLLAPSES to a single price. That is still a coherent order -- buy-stop
+    at 0.25 with a 0.25 limit -- so the refusal is written `basis < pivot`
+    and NOT `basis <= pivot`. A one-character tightening would silently
+    delete every recommendation at a collapsed zone, and nothing else in
+    this file would notice.
+    """
+    assert mandate_limit_price(zone_cap_for_pivot(0.25)) == 0.25
+    rec = _recs(today_aplus=[_candidate('COLLAPSE', pivot=0.25,
+                                        stop=0.20)])[0]
+    assert rec.shares > 0
+    assert rec.shares == math.floor(RISK_BUDGET / (0.25 - 0.20))
+    assert 'infeasible' not in (rec.action_text or '').lower()
+
+
 def test_the_repr_FALLBACK_is_EXACT_when_the_precision_loop_runs_OUT():
     """CODEX R5 MINOR. `_equation`'s docstring calls the `repr` fallback the
     correctness guarantee, so the guarantee has to be EXECUTED -- every
