@@ -264,3 +264,36 @@ def test_a_ZERO_PRICED_quantized_limit_returns_None_instead_of_500(seeded_db):
         {'ticker': 'TINY', 'pivot': 1e-305, 'initial_stop': -1e-307},
     ])
     assert _expanded(cfg, ticker='TINY') is None
+
+
+def test_a_LIMIT_BELOW_THE_TRIGGER_returns_None(seeded_db):
+    """CODEX R8 MAJOR, the dashboard half. The whole-cent floor puts
+    the limit UNDER the pivot at 0.019 (cap 0.0196 -> $0.01), and sizing off
+    a limit below the trigger UNDER-states risk per share -- so the card
+    would recommend a count that breaches the policy at its own buy stop.
+    """
+    cfg, _ = seeded_db
+    assert mandate_limit_price(zone_cap_for_pivot(0.019)) < 0.019
+    _seed_complete_pipeline(cfg, candidates=[
+        {'ticker': 'SUBCENT', 'pivot': 0.019, 'initial_stop': 0.001},
+    ])
+    assert _expanded(cfg, ticker='SUBCENT') is None
+
+
+def test_a_ZERO_CHASE_FACTOR_on_a_SUB_CENT_pivot_also_returns_None(seeded_db):
+    """The operator-reachable half of the same hole. `chase_factor`
+    is registry-bounded at `hard_refuse_min=0.0`, so 0.0 is a SUPPORTED
+    value -- and live pivots carry sub-cent precision (WTTR, 20.445), so at
+    a zero pad the orderable limit 20.44 sits BELOW the 20.445 trigger. The
+    card cannot state a coherent order and must not size off a price the
+    order can never fill at.
+    """
+    cfg, _ = seeded_db
+    zero = replace(cfg, web=replace(cfg.web, chase_factor=0.0))
+    _seed_complete_pipeline(cfg, candidates=[
+        {'ticker': 'SUBC', 'pivot': 20.445, 'initial_stop': 17.32},
+    ])
+    assert _expanded(zero, ticker='SUBC') is None
+    # ...and at the DEFAULT pad the same candidate renders normally, so the
+    # guard is not quietly eating ordinary cards.
+    assert _expanded(cfg, ticker='SUBC') is not None

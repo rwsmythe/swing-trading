@@ -129,6 +129,32 @@ def _sizing_result(pivot: float | None, stop: float | None,
     kind -- it reached `compute_shares` and raised before this change and
     still does.
 
+    A LIMIT BELOW THE TRIGGER IS REFUSED, AND THAT IS THE STRONGEST OF THE
+    REFUSALS (Codex R8). The whole-cent FLOOR can put the limit UNDER the
+    pivot whenever `pivot x 0.03` is worth less than a cent -- at pivot
+    0.019 the cap 0.0196 floors to $0.01. Such a row is non-null, finite,
+    positive and above the stop, so it slipped every other guard, and the
+    consequence is the WORST kind: sizing off $0.01 against a $0.001 stop
+    recommends 4166 shares and reports $37.49 of risk, while the order
+    TRIGGERS at $0.019 and therefore risks $74.99 -- twice the policy cap,
+    which is the exact defect this whole change exists to remove, running
+    in the opposite direction. An order cannot fill below its own trigger,
+    so a limit under the pivot is not an order at all.
+
+    A SEPARATE `basis <= stop` CHECK IS NOW REDUNDANT and was removed
+    rather than kept as reassurance: `stop >= pivot` is refused above, so
+    `basis >= pivot > stop` follows. Both of the earlier geometries still
+    land here -- pivot 0.009 floors to $0.00 and pivot 1e-305 to $0.00,
+    each below its own pivot -- and their tests still pin them.
+
+    OUT OF SCOPE, FLAGGED: `compute_prepared_order` has the SAME hole. Its
+    breakout branch emits `stop = latched_pivot` with
+    `limit = mandate_limit_price(zone_cap)`, so on this geometry it would
+    offer a stop-limit whose limit sits below its own trigger.
+    `Latch.__post_init__` guarantees `pivot < zone_cap` on the RAW cap and
+    says nothing about the quantized one. That is 21-B's emitter, not this
+    arc's scope.
+
     A NON-POSITIVE BASIS IS REFUSED TOO, AND `<= stop` DOES NOT COVER IT
     (Codex R7). At pivot 1e-305 the cap rounds to 0.0 and the limit
     quantizes to $0.00; against a NEGATIVE stop, `0.0 <= -1e-307` is False,
@@ -174,7 +200,7 @@ def _sizing_result(pivot: float | None, stop: float | None,
         basis = _sizing_entry(pivot)
     except ValueError:
         return None, infeasible
-    if basis <= 0 or basis <= stop:
+    if basis <= 0 or basis < pivot:
         return None, infeasible
     return basis, compute_shares(
         entry=basis, stop=stop, equity=ctx.current_equity,

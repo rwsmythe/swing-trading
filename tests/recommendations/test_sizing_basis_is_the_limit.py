@@ -407,6 +407,40 @@ def test_the_zero_basis_refusal_is_NOT_reachable_through_the_stop_check():
     assert not (basis <= -1e-307)
 
 
+def test_a_LIMIT_BELOW_THE_TRIGGER_is_refused_and_the_batch_survives():
+    """CODEX R8 MAJOR -- the strongest of the refusals, because the
+    consequence runs the WRONG WAY.
+
+    The whole-cent FLOOR can put the limit UNDER the pivot whenever the pad
+    is worth less than a cent: at pivot 0.019 the cap 0.0196 floors to
+    $0.01. That row is non-null, finite, positive and above the stop, so it
+    slipped every other guard -- and sizing off $0.01 against a $0.001 stop
+    recommends 4166 shares reporting $37.49 of risk while the order TRIGGERS
+    at $0.019 and therefore risks $74.99, twice the policy cap. That is this
+    change's own defect running backwards, which is why it is refused rather
+    than merely disclosed.
+    """
+    unguarded_basis = mandate_limit_price(zone_cap_for_pivot(0.019))
+    assert unguarded_basis == 0.01
+    # It escapes every OTHER refusal, which is what made it invisible:
+    assert unguarded_basis > 0 and unguarded_basis > 0.001
+    assert unguarded_basis < 0.019
+    # ...and the count it WOULD have produced breaches the cap at the
+    # trigger, twice over.
+    would_have_been = math.floor(RISK_BUDGET / (unguarded_basis - 0.001))
+    assert would_have_been == 4166
+    risk_at_the_trigger = would_have_been * (0.019 - 0.001)
+    assert round(risk_at_the_trigger, 2) == 74.99
+    assert risk_at_the_trigger > 1.99 * RISK_BUDGET
+
+    recs = _recs(today_aplus=[
+        _candidate('SUBCENT', pivot=0.019, stop=0.001), _candidate()])
+    by_ticker = {r.ticker: r for r in recs}
+    assert by_ticker['SUBCENT'].shares == 0
+    assert 'infeasible' in (by_ticker['SUBCENT'].action_text or '').lower()
+    assert by_ticker['AMN'].shares == 5
+
+
 def test_the_repr_FALLBACK_is_EXACT_when_the_precision_loop_runs_OUT():
     """CODEX R5 MINOR. `_equation`'s docstring calls the `repr` fallback the
     correctness guarantee, so the guarantee has to be EXECUTED -- every
@@ -498,15 +532,18 @@ def test_the_builder_actually_INVOKES_both_shared_functions(monkeypatch):
     """
     import swing.recommendations.build as build_mod
 
+    # BOTH SENTINELS SIT ABOVE THE PIVOT 36.27, and that is a REQUIREMENT
+    # rather than an accident since Codex R8: a limit BELOW the trigger is
+    # refused as unorderable, so a lower sentinel would make the row
+    # infeasible and the substitution un-observable.
     with monkeypatch.context() as m:
-        # A cap whose mandate limit gives an exactly-computable count:
-        # rps = 33.85 - 30.85 = 3.00 -> floor(37.50 / 3.00) = 12.
-        m.setattr(build_mod, "zone_cap_for_pivot", lambda *a, **k: 33.8500)
-        assert _recs()[0].shares == 12
+        # rps = 43.85 - 30.85 = 13.00 -> floor(37.50 / 13.00) = 2.
+        m.setattr(build_mod, "zone_cap_for_pivot", lambda *a, **k: 43.8500)
+        assert _recs()[0].shares == 2
     with monkeypatch.context() as m:
-        # rps = 34.85 - 30.85 = 4.00 -> floor(37.50 / 4.00) = 9.
-        m.setattr(build_mod, "mandate_limit_price", lambda cap: 34.85)
-        assert _recs()[0].shares == 9
+        # rps = 42.85 - 30.85 = 12.00 -> floor(37.50 / 12.00) = 3.
+        m.setattr(build_mod, "mandate_limit_price", lambda cap: 42.85)
+        assert _recs()[0].shares == 3
 
 
 def test_the_basis_is_the_WHOLE_CENT_ORDERABLE_price_not_the_raw_cap():

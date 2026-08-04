@@ -823,7 +823,16 @@ def build_hyp_recs_expanded(
         # write boundary excludes either value. Degrades to the SAME
         # unavailable partial as a degenerate stop; the nightly refuses the
         # same geometry per-row in `build.py:_sizing_result`.
-        if buy_limit <= 0:
+        # ...AND A LIMIT BELOW THE TRIGGER IS REFUSED TOO (Codex R8). The
+        # whole-cent floor can put the limit UNDER the pivot whenever the
+        # pad is worth less than a cent (pivot 0.019 -> cap 0.0196 -> $0.01),
+        # and an operator override at or near a 0.0 chase factor does the
+        # same to any sub-cent pivot. Sizing off a limit below the trigger
+        # UNDER-states risk per share, so the card would recommend a count
+        # that breaches the policy at its own trigger -- this change's own
+        # defect, running backwards. An order cannot fill below its trigger,
+        # so there is no coherent card to render.
+        if buy_limit <= 0 or buy_limit < candidate.pivot:
             return None
         sizing_risk = compute_shares(
             entry=buy_limit, stop=candidate.initial_stop,
