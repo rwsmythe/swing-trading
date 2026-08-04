@@ -21,6 +21,9 @@ from swing.web.view_models.metrics.hypothesis_progress_card import (
     build_hypothesis_progress_card_vm,
 )
 from swing.web.view_models.metrics.shared import BaseLayoutVM
+from tests.data.test_migration_0034_h1_criteria_amendment import (
+    AMENDED_H1_DECISION_CRITERIA,
+)
 
 
 @pytest.fixture
@@ -158,7 +161,7 @@ def test_vm_decision_criteria_renders_seed_text_verbatim(cfg) -> None:
     vm = build_hypothesis_progress_card_vm(cfg=cfg)
     by_name = {c.cohort_name: c for c in vm.cohorts}
     assert by_name["A+ baseline"].decision_criteria == (
-        "Mean R-multiple > 0; lower-bound Wilson CI on win rate > 30%"
+        AMENDED_H1_DECISION_CRITERIA
     )
     assert by_name["Near-A+ defensible: extension test"].decision_criteria == (
         "Mean R-multiple within 25% of A+ baseline mean"

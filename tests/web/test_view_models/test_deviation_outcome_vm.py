@@ -20,6 +20,9 @@ from swing.web.view_models.metrics.deviation_outcome import (
     build_deviation_outcome_vm,
 )
 from swing.web.view_models.metrics.shared import BaseLayoutVM
+from tests.data.test_migration_0034_h1_criteria_amendment import (
+    AMENDED_H1_DECISION_CRITERIA,
+)
 
 
 @pytest.fixture
@@ -130,7 +133,7 @@ def test_vm_decision_criterion_text_is_seed_text_verbatim(cfg) -> None:
     assert vm.result is not None
     by_name = {r.cohort_name: r for r in vm.result.rows}
     assert by_name[APLUS_COHORT].decision_criterion_evaluation_text == (
-        "Mean R-multiple > 0; lower-bound Wilson CI on win rate > 30%"
+        AMENDED_H1_DECISION_CRITERIA
     )
     assert by_name[SUB_APLUS_COHORT].decision_criterion_evaluation_text == (
         "Confirm negative mean R-multiple"

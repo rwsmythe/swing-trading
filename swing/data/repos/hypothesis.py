@@ -37,13 +37,20 @@ def _row_to_entry(row: tuple) -> HypothesisRegistryEntry:
         status_changed_at=row[9],
         status_change_reason=row[10],
         notes=row[11],
+        preregistered_decision_criteria=row[12],
     )
 
 
+# Migration 0034 added `preregistered_decision_criteria`. The read-path mapper
+# is widened in the SAME commit as the schema (gotcha #11): a dataclass field
+# added without widening this column list reads None forever, and nothing
+# downstream notices -- which on a PRE-REGISTRATION record is the one failure
+# mode that must not be silent.
 _SELECT_COLUMNS = (
     "id, name, statement, target_sample_size, decision_criteria, status, "
     "consecutive_loss_tripwire, absolute_loss_tripwire_pct, created_at, "
-    "status_changed_at, status_change_reason, notes"
+    "status_changed_at, status_change_reason, notes, "
+    "preregistered_decision_criteria"
 )
 
 

@@ -58,7 +58,13 @@ from pathlib import Path
 #   the immutable 21-A <-> 21-B bridge key -- plus evaluation_run_id / ticker /
 #   detection_date / pipeline_run_id nullable ON DELETE SET NULL). NO existing
 #   table touched. Atomic BEGIN/COMMIT.
-EXPECTED_SCHEMA_VERSION = 33
+# h1 decision-criteria amendment (migration 0034): a V2.1 section VII.F
+#   governance amendment to a PRE-REGISTERED decision rule. ONE additive
+#   nullable column, hypothesis_registry.preregistered_decision_criteria
+#   (NULL DEFINED as "never amended", NOT "unknown"), plus two UPDATEs on the
+#   'A+ baseline' row only. NO new table; rows 2-5 untouched. Atomic
+#   BEGIN/COMMIT.
+EXPECTED_SCHEMA_VERSION = 34
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -296,6 +302,15 @@ PHASE21_ARC_A_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 # Derived deterministically for auditable provenance -- never hand-listed.
 PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     PHASE21_ARC_A_PRE_MIGRATION_EXPECTED_TABLES | {"latch_view_events"}
+)
+
+# H1 decision-criteria amendment (0034) pre-migration table set. 0033 REBUILT
+# latch_view_events (already in the 21-B set) and added exactly ONE new table,
+# `latch_order_intents`, so the v33 set is the 21-B set plus that one. 0034
+# itself adds NO table -- it is one ALTER ADD COLUMN plus two row UPDATEs.
+# Derived deterministically for auditable provenance -- never hand-listed.
+H1_AMENDMENT_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES | {"latch_order_intents"}
 )
 
 
@@ -907,6 +922,31 @@ def _create_pre_phase21_arc_b_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-phase21-arc-b-migration-{timestamp}.db"
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
+def _create_pre_h1_amendment_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """H1 decision-criteria amendment (0034) mirror. SQLite-native
+    Connection.backup() before the 0034 migration. Backup file
+    ``swing-pre-h1-amendment-migration-<ISO>.db``.
+
+    This snapshot is the belt on the record-level preservation: it captures the
+    live v33 row while `decision_criteria` still reads the pre-registered
+    text."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-h1-amendment-migration-{timestamp}.db"
     src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
@@ -1680,6 +1720,47 @@ def _phase21_arc_b_backup_gate(
         ) from exc
 
 
+def _h1_amendment_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """H1 decision-criteria amendment (0034) backup-before-migrate gate.
+
+    Fires ONLY when ``current_version == 33 AND target_version >= 34`` -- a real
+    production v33 DB about to cross v34 (migration 0034: the additive
+    ``preregistered_decision_criteria`` column plus the amendment UPDATEs on the
+    'A+ baseline' row). STRICT EQUALITY on pre_version per the
+    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps
+    from pre-v33 baselines bypass this gate by design.
+    """
+    if target_version < 34 or current_version != 33:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-h1-amendment backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_h1_amendment_migration_backup(
+            src_path, dest_dir=backup_dir)
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=H1_AMENDMENT_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-h1-amendment backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -1807,6 +1888,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _phase21_arc_b_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _h1_amendment_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,

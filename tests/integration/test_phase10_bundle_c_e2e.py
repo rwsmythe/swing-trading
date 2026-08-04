@@ -33,6 +33,9 @@ from swing.metrics.tier import (
     compute_tier_comparison,
 )
 from swing.web.app import create_app
+from tests.data.test_migration_0034_h1_criteria_amendment import (
+    AMENDED_H1_DECISION_CRITERIA,
+)
 
 
 # Cohort-name aliases for readability.
@@ -248,7 +251,7 @@ def test_e2e_deviation_outcome_renders_row_suppression_correctly(
     assert aplus.row_suppressed is False
     assert aplus.expectancy_relative_to_aplus_pct is None
     assert aplus.decision_criterion_evaluation_text == (
-        "Mean R-multiple > 0; lower-bound Wilson CI on win rate > 30%"
+        AMENDED_H1_DECISION_CRITERIA
     )
 
     # Near-A+ row: n=4 < 5 → row_suppressed=True; criterion text still
@@ -324,8 +327,11 @@ def test_e2e_deviation_outcome_browser_rendering_smoke(cfg_and_path) -> None:
     # Sub-A+ delta-pct rendered with explicit "%" unit (per dispatch brief
     # §0.9 LOCK).
     assert "%" in body
-    # Decision-criterion seed text verbatim for each registered cohort.
-    assert "lower-bound Wilson CI on win rate" in body
+    # Decision-criterion registry text verbatim for each registered cohort.
+    # A+ baseline now carries the migration-0034 AMENDED criterion; these
+    # substrings are chosen to survive HTML escaping of `>`.
+    assert "contributes 50% or more of gross profit" in body
+    assert "COHORT: the 20 are STANDARD-intent trades only" in body
 
 
 # ---------------------------------------------------------------------------

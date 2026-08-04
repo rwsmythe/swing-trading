@@ -18,12 +18,17 @@ def test_migration_0008_creates_hypothesis_registry_table(tmp_db: Path):
     try:
         cols = conn.execute("PRAGMA table_info(hypothesis_registry)").fetchall()
         names = {c[1] for c in cols}
-        # All required columns present
+        # All required columns present. EXACT set equality, so any added
+        # column must be declared here deliberately. Migration 0034 (the H1
+        # decision-criteria amendment, V2.1 §VII.F) added
+        # `preregistered_decision_criteria`; the amendment's own acceptance
+        # suite is tests/data/test_migration_0034_h1_criteria_amendment.py.
         assert names == {
             "id", "name", "statement", "target_sample_size",
             "decision_criteria", "status",
             "consecutive_loss_tripwire", "absolute_loss_tripwire_pct",
             "created_at", "status_changed_at", "status_change_reason", "notes",
+            "preregistered_decision_criteria",
         }
         # name UNIQUE
         idx_rows = conn.execute(
@@ -110,4 +115,4 @@ def test_migration_0008_idempotent_on_re_apply(tmp_db: Path):
 
 
 def test_expected_schema_version_is_19():
-    assert EXPECTED_SCHEMA_VERSION == 33
+    assert EXPECTED_SCHEMA_VERSION == 34

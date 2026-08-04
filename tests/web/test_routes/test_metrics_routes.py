@@ -240,8 +240,10 @@ def test_hypothesis_progress_renders_decision_criteria_text(seeded_db):
     with TestClient(app) as client:
         r = client.get("/metrics/hypothesis-progress")
     body = r.text
-    # HTML-escaped `>` → `&gt;`; check segments that survive escaping.
-    assert "lower-bound Wilson CI on win rate" in body
+    # HTML-escaped `>` -> `&gt;`; check segments that survive escaping.
+    # A+ baseline now carries the migration-0034 AMENDED criterion.
+    assert "contributes 50% or more of gross profit" in body
+    assert "COHORT: the 20 are STANDARD-intent trades only" in body
     assert "Mean R-multiple within 25% of A+ baseline mean" in body
     assert "Confirm negative mean R-multiple" in body
     assert "defensibility of smaller-position approach" in body
@@ -415,8 +417,10 @@ def test_deviation_outcome_renders_decision_criteria_seed_text(seeded_db):
     with TestClient(app) as client:
         r = client.get("/metrics/deviation-outcome")
     body = r.text
-    # `>` is HTML-escaped to `&gt;` — check substrings that survive escaping.
-    assert "lower-bound Wilson CI on win rate" in body
+    # HTML-escaped `>` -> `&gt;`; check segments that survive escaping.
+    # A+ baseline now carries the migration-0034 AMENDED criterion.
+    assert "contributes 50% or more of gross profit" in body
+    assert "COHORT: the 20 are STANDARD-intent trades only" in body
     assert "Mean R-multiple within 25% of A+ baseline mean" in body
     assert "Confirm negative mean R-multiple" in body
     assert "defensibility of smaller-position approach" in body

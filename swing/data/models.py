@@ -596,6 +596,13 @@ class HypothesisRegistryEntry:
     migration. CLI may flip `status` and record `status_change_reason`;
     everything else is mutated only via a NEW migration with explicit
     version bump (anti-rationalization discipline; brief §3 + §5).
+
+    `preregistered_decision_criteria` (migration 0034) holds the ORIGINAL
+    pre-registered text of a row whose `decision_criteria` has since been
+    amended under V2.1 §VII.F. NULL is DEFINED as "this row has never been
+    amended; its `decision_criteria` IS the pre-registered text" — NOT
+    "unknown". Nothing writes it at runtime, which is the point: it survives
+    every status transition, unlike `status_change_reason`.
     """
     id: int | None
     name: str
@@ -609,6 +616,7 @@ class HypothesisRegistryEntry:
     status_changed_at: str | None = None
     status_change_reason: str | None = None
     notes: str | None = None
+    preregistered_decision_criteria: str | None = None
 
 
 @dataclass(frozen=True)

@@ -12,7 +12,7 @@ def test_expected_schema_version_unchanged() -> None:
     # B-7 (Phase 15) arc subsequently bumped HEAD to v24 (migration 0024 adds the
     # nullable failure_mode column); this guard tracks the current HEAD so the
     # schwabdev-arc invariant (it added nothing of its own) stays auditable.
-    assert EXPECTED_SCHEMA_VERSION == 33
+    assert EXPECTED_SCHEMA_VERSION == 34
 
 
 def test_no_new_migration_file_added() -> None:
@@ -24,7 +24,8 @@ def test_no_new_migration_file_added() -> None:
     # adds 0030 (yfinance_calls audit); Phase 18 Arc 18-H.6 adds 0031
     # (untracked_broker_position enum widen); Phase 21 Arc 21-A adds 0032
     # (latch_view_events view telemetry) and Arc 21-B adds 0033
-    # (latch_order_intents + the telemetry surface column), so the ceiling is
-    # now 33.
+    # (latch_order_intents + the telemetry surface column); the H1
+    # decision-criteria amendment adds 0034 (the V2.1 §VII.F governance
+    # amendment), so the ceiling is now 34.
     versions = sorted(int(p.name[:4]) for p in MIG.glob("[0-9][0-9][0-9][0-9]_*.sql"))
-    assert versions[-1] <= 33, f"a new migration file was added: {versions[-1]} (L3 violation)"
+    assert versions[-1] <= 34, f"a new migration file was added: {versions[-1]} (L3 violation)"

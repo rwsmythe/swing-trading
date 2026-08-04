@@ -5,8 +5,9 @@ Covers spec §3.3 + §3.7 computation behavior + the binding LOCKs:
 - spec §3.3 R1 M3 LOCK: ``cohort_ci_overlap_descriptor`` is TEXT, NOT a
   boolean significance flag (verbatim format pinned).
 - spec §3.7 R1 M4 LOCK: ``cohort_decision_criterion_evaluation_text``
-  renders seed text from migration 0008 verbatim — NO automated
-  evaluation in V1.
+  renders the ``hypothesis_registry`` text verbatim — NO automated
+  evaluation in V1. (A+ baseline's text is the migration-0034 AMENDED
+  criterion; the other three are still their 0008 seed text.)
 - dispatch brief §0.9 LOCK: ``cohort_relative_to_aplus_pct`` is PERCENT
   raw ratio (``cohort/aplus * 100``); ``cohort_expectancy_relative_to_aplus_pct``
   is PERCENT delta (``(cohort - aplus) / aplus * 100``).
@@ -37,6 +38,9 @@ from swing.metrics.tier import (
     compute_tier_comparison,
 )
 from swing.metrics.honesty import BootstrapCI, SuppressedMetric, WilsonCI
+from tests.data.test_migration_0034_h1_criteria_amendment import (
+    AMENDED_H1_DECISION_CRITERIA,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -494,12 +498,16 @@ def test_deviation_outcome_decision_criterion_text_renders_seed_text_verbatim(
     conn: sqlite3.Connection,
 ) -> None:
     """Spec §3.7 R1 M4 LOCK + dispatch brief §0.11 LOCK: each row's
-    ``decision_criterion_evaluation_text`` is the migration 0008 seed
-    text verbatim — NO automated evaluation, NO append, NO truncate."""
+    ``decision_criterion_evaluation_text`` is the registry text verbatim —
+    NO automated evaluation, NO append, NO truncate.
+
+    A+ baseline's text is the migration-0034 AMENDED criterion (V2.1 §VII.F);
+    the other three are still their 0008 seed text. The LOCK is unchanged —
+    verbatim is verbatim whichever text the registry holds."""
     result = compute_deviation_outcome(conn)
     by_name = {r.cohort_name: r for r in result.rows}
     assert by_name["A+ baseline"].decision_criterion_evaluation_text == (
-        "Mean R-multiple > 0; lower-bound Wilson CI on win rate > 30%"
+        AMENDED_H1_DECISION_CRITERIA
     )
     assert by_name["Near-A+ defensible: extension test"].decision_criterion_evaluation_text == (
         "Mean R-multiple within 25% of A+ baseline mean"
@@ -522,10 +530,10 @@ def test_deviation_outcome_decision_criterion_text_unchanged_after_aggregating_t
                    starting_trade_id=1)
     result = compute_deviation_outcome(conn)
     aplus = next(r for r in result.rows if r.cohort_name == APLUS_COHORT)
-    # The seed text MUST be the entire content (no appended "current: ..."
+    # The registry text MUST be the entire content (no appended "current: ..."
     # block which would indicate automated evaluation drift).
     assert aplus.decision_criterion_evaluation_text == (
-        "Mean R-multiple > 0; lower-bound Wilson CI on win rate > 30%"
+        AMENDED_H1_DECISION_CRITERIA
     )
     # Discriminating check: no leaked statistic strings appended.
     for forbidden in ("current:", "mean R =", "win rate Wilson", "Pass:", "Fail:"):

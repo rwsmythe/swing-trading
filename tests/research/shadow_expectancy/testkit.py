@@ -4,13 +4,24 @@ import json
 import sqlite3
 from pathlib import Path
 
-from swing.data.db import run_migrations
+from swing.data.db import EXPECTED_SCHEMA_VERSION, run_migrations
 
 
 def make_db(tmp_path: Path) -> sqlite3.Connection:
+    """A fixture DB at HEAD, NOT at a frozen version number.
+
+    This was pinned at v27 -- the value that happened to be current when
+    migration 0027 landed -- and rotted there for six migrations. `run_harness`
+    calls the PRODUCTION repo (`list_hypotheses`), whose column list tracks
+    HEAD, and production `connect()` refuses a non-current schema by design; so
+    a frozen fixture version is a divergence from every DB this code can
+    actually meet, and it fails the moment a migration touches a table the
+    harness reads (0034 added `hypothesis_registry.preregistered_decision_
+    criteria`). Tracking EXPECTED_SCHEMA_VERSION is what stops it re-rotting.
+    """
     c = sqlite3.connect(tmp_path / "t.db")
     c.execute("PRAGMA foreign_keys=ON")
-    run_migrations(c, target_version=27, backup_dir=tmp_path)
+    run_migrations(c, target_version=EXPECTED_SCHEMA_VERSION, backup_dir=tmp_path)
     return c
 
 
