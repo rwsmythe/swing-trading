@@ -117,10 +117,16 @@ def cohort_intent_authority(
     do exist: ``swing.metrics.cohort.count_per_cohort`` surfaces them by
     design (and deliberately applies no intent predicate of its own).
     """
-    if hypothesis_name in _CRITERION_MANDATED_INTENT:
-        return INTENT_AUTHORITY_CRITERION
+    # REGISTRATION IS CHECKED FIRST, and the order is load-bearing (Codex
+    # R4). This mapping is a local constant; the registry is the authority.
+    # If H1's row were renamed or lost, the stale key would still be in the
+    # mapping, and a criterion-first check would answer `criterion` for a
+    # name that no longer HAS a criterion -- exactly the case
+    # INTENT_AUTHORITY_NONE was added to report.
     if registered_names is not None and hypothesis_name not in registered_names:
         return INTENT_AUTHORITY_NONE
+    if hypothesis_name in _CRITERION_MANDATED_INTENT:
+        return INTENT_AUTHORITY_CRITERION
     return INTENT_AUTHORITY_EPOCH_CONTRACT
 
 

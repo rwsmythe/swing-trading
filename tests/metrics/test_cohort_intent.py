@@ -161,6 +161,24 @@ def test_an_orphan_label_is_narrowed_by_nobody(conn: sqlite3.Connection):
     ) == INTENT_AUTHORITY_EPOCH_CONTRACT
 
 
+def test_a_stale_h1_key_answers_none_not_criterion():
+    """Codex R4 -- registration is checked BEFORE the criterion mapping.
+
+    The mapping is a local constant; the registry is the authority. If H1's
+    row were renamed or lost, the stale key would still sit in the mapping,
+    and a criterion-first check would answer ``criterion`` for a name that
+    no longer HAS a criterion -- the precise case INTENT_AUTHORITY_NONE
+    exists to report, defeated exactly when it matters.
+    """
+    assert cohort_intent_authority(
+        APLUS_BASELINE_COHORT, registered_names=[],
+    ) == INTENT_AUTHORITY_NONE
+    # ... and it is still `criterion` while the row IS registered.
+    assert cohort_intent_authority(
+        APLUS_BASELINE_COHORT, registered_names=[APLUS_BASELINE_COHORT],
+    ) == INTENT_AUTHORITY_CRITERION
+
+
 # ---------------------------------------------------------------------------
 # Shape guards
 # ---------------------------------------------------------------------------
