@@ -655,10 +655,22 @@ DERIVATION_FIELD_MANIFEST: tuple[DerivationField, ...] = (
                     False, "", True),
     # NOT RENDERED since 2026-08-04 (RD): the nightly briefing now sizes off
     # the LIMIT too, so the section-D.3 divergence note it fed was a guard
-    # outliving its condition and came out with the sizing-basis fix. The
-    # COLUMN stays -- still gathered, anchored, digested and persisted -- so the
-    # append-only ledger keeps what the nightly said for each recorded mandate
-    # and a FUTURE divergence remains detectable from the rows themselves.
+    # outliving its condition and came out with the sizing-basis fix.
+    #
+    # THE COLUMN STAYS, AND THE REASON IS PROVENANCE, NOT MIGRATION COST (RD,
+    # 2026-08-04). This field is PER-ROW PROVENANCE: it records what the nightly
+    # surface said AT INTENT TIME. The two numbers will now typically AGREE, and
+    # the column keeps recording that agreement -- which is the point. What came
+    # out is the RENDER that explained a by-design divergence that will no
+    # longer exist. An append-only ledger losing a provenance field to a display
+    # cleanup is the anti-provenance move this phase was spent fighting, and it
+    # would be worse than the defect the sizing fix removed.
+    #
+    # RD'S GENERALIZATION, recorded here because the next reader will meet it:
+    # in any ruling of his, "the machinery comes out" means THE CLAIMS AND THEIR
+    # RENDERS -- never a persisted column -- unless he names the column
+    # explicitly and the migration cost with it. A display's lifecycle and a
+    # ledger field's lifecycle are different objects.
     DerivationField(
         "derivation_nightly_recommendation_shares",
         "nightly_recommendation_shares", "int", True,

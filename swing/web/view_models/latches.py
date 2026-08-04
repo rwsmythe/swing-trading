@@ -498,13 +498,19 @@ def _derivation_block(latch: Latch, order) -> tuple[tuple[str, ...], frozenset[s
     # and `swing/web/view_models/dashboard.py`), the surfaces agree, and prose
     # explaining a divergence that no longer exists reads as an active warning.
     #
-    # `derivation_nightly_recommendation_shares` ITSELF STAYS: it is a real
-    # column on the append-only `latch_order_intents` table (migration 0033),
-    # still gathered, hidden-anchored, digested and persisted, so the ledger
-    # keeps what the nightly said for each recorded mandate and a FUTURE
-    # divergence stays detectable. Only the CARD's note was retired; the
-    # manifest row is declared `rendered=False` to keep the section-A.4 closure
-    # assertion honest rather than merely satisfied.
+    # `derivation_nightly_recommendation_shares` ITSELF STAYS, AND THE REASON IS
+    # PROVENANCE (RD, 2026-08-04). The column is PER-ROW PROVENANCE -- what the
+    # nightly surface said AT INTENT TIME -- so it is still gathered,
+    # hidden-anchored, digested and written to the append-only
+    # `latch_order_intents` ledger. The two counts will now typically AGREE and
+    # the column keeps recording that agreement; what was retired is the RENDER
+    # that explained a by-design divergence which no longer exists. An
+    # append-only ledger losing a provenance field to a display cleanup is the
+    # anti-provenance move, not a tidy-up. The manifest row is declared
+    # `rendered=False` so the section-A.4 closure assertion stays honest rather
+    # than merely satisfied. Full rationale + RD's generalization
+    # ("the machinery comes out" = the CLAIMS and their RENDERS, never a
+    # persisted column): `swing/latches/constants.py`, the manifest row.
     lines.append((
         frozenset(),
         f"Invalidation {d.latched_initial_stop:.2f} ({INVALIDATION_LABEL})"))
