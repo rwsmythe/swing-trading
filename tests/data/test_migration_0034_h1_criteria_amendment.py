@@ -211,15 +211,34 @@ def test_the_column_is_null_on_every_other_row(tmp_path):
         conn.close()
 
 
+def _header_prose(src: str) -> str:
+    """The migration's comment header as one whitespace-normalized line.
+
+    Strips only the LEADING `--` of each line (the header uses `--` inline as
+    a dash too) and collapses runs of whitespace, so an assertion can span the
+    header's line wrapping without depending on where it wraps.
+    """
+    head = src.split("BEGIN;", 1)[0]
+    lines = [re.sub(r"^\s*--\s?", "", ln) for ln in head.splitlines()]
+    return re.sub(r"\s+", " ", " ".join(lines)).strip()
+
+
 def test_the_migration_header_defines_the_null_semantic():
     """CHARC acceptance 7's second half. The NULL semantic is only safe
-    BECAUSE it is written down; an undocumented NULL is 'unknown', which is
-    the reading that would make rows 2-5 ambiguous."""
-    header = _MIGRATION_PATH.read_text(encoding="utf-8").split("BEGIN;")[0]
-    lowered = header.lower()
-    assert "never been amended" in lowered
-    assert "unknown" in lowered
-    assert "preregistered_decision_criteria" in lowered
+    BECAUSE it is written down; an undocumented NULL reads as 'unknown',
+    which is what would make rows 2-5 ambiguous.
+
+    Asserted as anchored PROPOSITIONS, not as loose substrings. Checking that
+    the words "never been amended" and "unknown" merely APPEAR would pass on a
+    header asserting the exact opposite -- "NULL means unknown; whether it was
+    ever amended cannot be inferred" -- so the test has to pin what the header
+    SAYS, not which words it contains.
+    """
+    prose = _header_prose(_MIGRATION_PATH.read_text(encoding="utf-8"))
+    assert re.search(
+        r"NULL means:? this row has never been amended", prose), prose
+    assert re.search(r'NULL does NOT mean "unknown"', prose), prose
+    assert "preregistered_decision_criteria" in prose
 
 
 def test_the_preserved_original_survives_a_status_transition(tmp_path):
