@@ -53,6 +53,10 @@ def test_hypothesis_list_shows_all_seeded(tmp_path: Path):
         "Near-A+ defensible: extension test",
         "Sub-A+ VCP-not-formed",
         "Capital-blocked: smaller-position test",
+        # codex-auto-review: the registry has held FIVE rows since migration
+        # 0026 added the broad-watch baseline. Checking only four meant this
+        # test would still pass if that row disappeared.
+        "Broad-watch baseline",
     ]:
         assert name in out
     # Each row shows the n/N progress against the seeded targets.
@@ -64,8 +68,10 @@ def test_hypothesis_list_shows_status(tmp_path: Path):
     runner, cfg = _setup(tmp_path)
     r = runner.invoke(main, ["--config", str(cfg), "hypothesis", "list"])
     assert r.exit_code == 0, r.output
-    # All 4 are seeded as active — output mentions `active` for each.
-    assert r.output.lower().count("active") >= 4
+    # All FIVE registered hypotheses are seeded active — output mentions
+    # `active` for each (codex-auto-review: was "All 4" against a five-row
+    # registry).
+    assert r.output.lower().count("active") >= 5
 
 
 def test_hypothesis_status_command_dumps_one_hypothesis_detail(tmp_path: Path):
@@ -301,3 +307,35 @@ def test_hypothesis_list_counts_h1_at_2_of_20_on_the_live_shape(
         "pre-fix value still rendered -- the intent filter is not reaching "
         f"the CLI path: {aplus_line}"
     )
+
+
+def test_hypothesis_status_shows_the_preserved_original_for_h1(
+    tmp_path: Path, monkeypatch,
+):
+    """D29 rider (codex-auto-review) -- `hypothesis status` is the FOURTH
+    criterion-rendering surface and the only CLI one.
+
+    The preserved pre-registered original must be reachable there too, as a
+    SEPARATE labelled line below the live criterion rather than spliced into
+    it, and it must be ABSENT on a never-amended row.
+    """
+    runner, cfg = _setup(tmp_path, monkeypatch)
+
+    r = runner.invoke(main, ["--config", str(cfg), "hypothesis", "status", "1"])
+    assert r.exit_code == 0, r.output
+    assert "Pre-registered criteria (superseded):" in r.output
+    assert (
+        "Mean R-multiple > 0; lower-bound Wilson CI on win rate > 30%"
+        in r.output
+    )
+    # Secondary, not spliced: the live criterion's own line does not carry it.
+    live_line = next(
+        ln for ln in r.output.splitlines()
+        if ln.strip().startswith("Decision criteria:")
+    )
+    assert "lower-bound Wilson CI" not in live_line
+
+    # A never-amended row renders NO such line (the 0034 NULL semantic).
+    r3 = runner.invoke(main, ["--config", str(cfg), "hypothesis", "status", "3"])
+    assert r3.exit_code == 0, r3.output
+    assert "Pre-registered criteria (superseded):" not in r3.output

@@ -48,7 +48,10 @@
       </p>
 
       <details class="cohort-decision-criteria">
-        <summary>Decision criteria</summary>
+        {#- The 0034 marker the sibling surfaces already carry
+            (codex-auto-review): this card rendered the amended criterion
+            with no indication it HAD been amended. -#}
+        <summary>Decision criteria (registry-frozen; H1 amended by migration 0034)</summary>
         <p>{{ cohort.decision_criteria }}</p>
         {#- D29 rider: the preserved pre-registered original is PROVENANCE
             DETAIL -- a collapsed secondary affordance nested inside (not

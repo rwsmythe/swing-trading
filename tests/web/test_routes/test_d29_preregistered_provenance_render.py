@@ -92,3 +92,22 @@ def test_surface_renders_exactly_one_provenance_block(seeded_db, path: str):
     rows, so "three of four" was wrong for one of the three surfaces."""
     html = _fetch(seeded_db, path)
     assert html.count(f'class="{_PROVENANCE_CLASS}"') == 1
+
+
+@pytest.mark.parametrize("path", _SURFACES)
+def test_surface_marks_the_criterion_as_amended_by_migration_0034(
+    seeded_db, path: str,
+):
+    """codex-auto-review: the progress card rendered the AMENDED criterion
+    with no indication it had been amended, while its two sibling surfaces
+    both carried the 0034 marker.
+
+    The marker is half of the ruling's presentation story -- the amended
+    text renders WITH its provenance marker, the original behind the
+    collapsed affordance. A test that checked only the collapsed original
+    passed while the other half was missing on one of three surfaces.
+    """
+    html = _fetch(seeded_db, path)
+    assert "migration 0034" in html, (
+        f"{path} renders the amended criterion without naming the amendment"
+    )

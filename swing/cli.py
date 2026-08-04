@@ -4200,6 +4200,16 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
     click.echo(f"  Target sample:    {h.target_sample_size}")
     click.echo(f"  Current sample:   {tw.current_sample}")
     click.echo(f"  Decision criteria:{h.decision_criteria}")
+    # D29 rider (codex-auto-review): this is the FOURTH criterion-rendering
+    # surface and the only CLI one. The preserved pre-registered original is
+    # PROVENANCE DETAIL -- a separate labelled line BELOW the live criterion,
+    # never spliced into it. Absent entirely on a never-amended row (the
+    # migration-0034 NULL semantic: never-amended, not unknown).
+    if h.preregistered_decision_criteria is not None:
+        click.echo(
+            f"  Pre-registered criteria (superseded): "
+            f"{h.preregistered_decision_criteria}"
+        )
     click.echo(
         f"  Consecutive -1R tripwire: streak {tw.consecutive_max_loss_streak} "
         f"of {h.consecutive_loss_tripwire}"
