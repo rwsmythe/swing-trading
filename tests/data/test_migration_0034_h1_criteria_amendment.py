@@ -527,25 +527,63 @@ def test_the_migration_aborts_when_the_governance_row_is_missing(tmp_path):
         conn.close()
 
 
-def test_the_post_write_guard_would_catch_a_mis_joined_criterion(tmp_path):
-    """The POST guard pins length 577 -- the value a dropped or doubled space
-    at any of the seven `||` joins would change. Proved by mutating the real
-    migration source (one join's trailing space removed) and running it: the
-    script must abort rather than commit a 576-character criterion."""
+_REGISTRY_SNAPSHOT_COLUMNS = (
+    "id, name, statement, target_sample_size, decision_criteria, status, "
+    "consecutive_loss_tripwire, absolute_loss_tripwire_pct, created_at, "
+    "status_changed_at, status_change_reason, notes"
+)
+
+
+def test_a_post_guard_failure_rolls_back_the_ENTIRE_script(tmp_path):
+    """The POST guard aborting is only half the property. The half that
+    matters is that NOTHING survives it.
+
+    Asserting merely "schema_version is still 33" would pass against exactly
+    the dangerous shape this migration exists to prevent: the ADD COLUMN and
+    the two UPDATEs committed while the version bump did not -- a live row
+    silently amended, at a version that says it was not. So this drives a
+    mutated migration (one `||` join's trailing space removed, giving a
+    576-character criterion) through the PRODUCTION apply path, and then
+    asserts the whole world is untouched.
+    """
+    from swing.data.db import _apply_migration
+
     src = _MIGRATION_PATH.read_text(encoding="utf-8")
     broken = src.replace(
         "|| 'contributes 50% or more of gross profit (gross profit = sum of positive '",
         "|| 'contributes 50% or more of gross profit (gross profit = sum of positive'",
     )
     assert broken != src, "the mutation anchor did not match the migration"
+    mutated = tmp_path / "0034_mutated.sql"
+    mutated.write_text(broken, encoding="utf-8")
+
     conn = _v33(tmp_path)
     try:
+        before = conn.execute(
+            f"SELECT {_REGISTRY_SNAPSHOT_COLUMNS} FROM hypothesis_registry "
+            "ORDER BY id").fetchall()
         with pytest.raises(sqlite3.IntegrityError) as exc:
-            conn.executescript(broken)
-        assert "did_not_write_correctly" in str(exc.value)
-        conn.rollback()
+            _apply_migration(conn, mutated)
+        assert "wrong_length_or_a_lost_preservation" in str(exc.value)
+
+        # The production apply path owns the rollback; nothing left open.
+        assert not conn.in_transaction
+        # The ADD COLUMN is gone.
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(hypothesis_registry)")}
+        assert "preregistered_decision_criteria" not in cols
+        # No row was amended -- H1 still holds the pre-registered text.
+        assert _criteria(conn) == PREREGISTERED_H1_DECISION_CRITERIA
+        assert conn.execute(
+            f"SELECT {_REGISTRY_SNAPSHOT_COLUMNS} FROM hypothesis_registry "
+            "ORDER BY id").fetchall() == before
+        # The version did NOT move.
         assert conn.execute(
             "SELECT version FROM schema_version").fetchone()[0] == 33
+        # Neither guard's temp table survived.
+        temp = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_temp_master WHERE type='table'")}
+        assert not {t for t in temp if t.startswith("_h1_amendment")}, temp
     finally:
         conn.close()
 
@@ -570,14 +608,30 @@ def test_the_migration_targets_by_name_not_by_id():
     assert "WHERE id =" not in src
 
 
+def _executable_statements(src: str) -> list[str]:
+    """The migration's statements with all full-line `--` comments removed."""
+    lines = [ln for ln in src.splitlines()
+             if not ln.strip().startswith("--")]
+    return [s.strip() for s in "\n".join(lines).split(";") if s.strip()]
+
+
 def test_the_migration_is_wrapped_in_an_explicit_transaction():
     """Gotcha #9: executescript runs in autocommit and _apply_migration does
     not open its own transaction, so a mid-script failure would leave the
-    ADD COLUMN applied and the UPDATEs missing."""
+    ADD COLUMN applied and the UPDATEs missing.
+
+    Asserting only that `BEGIN;` appears SOMEWHERE is not enough -- that
+    accepts an ALTER TABLE placed before it, or an early COMMIT that lets the
+    version bump land outside the transaction. So pin the FIRST and LAST
+    executable statements, and pin that COMMIT occurs exactly once.
+    """
     src = _MIGRATION_PATH.read_text(encoding="utf-8")
-    body = src.split("BEGIN;", 1)[1]
-    assert body.rstrip().endswith("COMMIT;")
-    assert "UPDATE schema_version SET version = 34;" in body
+    stmts = _executable_statements(src)
+    assert stmts[0].upper() == "BEGIN", stmts[0]
+    assert stmts[-1].upper() == "COMMIT", stmts[-1]
+    assert sum(1 for s in stmts if s.upper() == "COMMIT") == 1
+    assert sum(1 for s in stmts if s.upper() == "BEGIN") == 1
+    assert "UPDATE schema_version SET version = 34" in stmts[-2]
 
 
 # --------------------------------------------------------------------------

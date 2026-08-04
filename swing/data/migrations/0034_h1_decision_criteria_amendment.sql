@@ -100,12 +100,16 @@
 --           decision_criteria is still, byte for byte, the 0008 original.
 --           This migration amends exactly one known text; anything else is a
 --           condition to stop and investigate, not to overwrite.
---   POST -- refuses to commit a row it did not write correctly: the criterion
---           must be 577 characters, the preservation column must hold the
---           original, and the two must differ. 577 is the length a dropped or
---           doubled space at any of the seven || joins would change. The full
---           sha256 is asserted in the test suite, where a real digest is
---           available.
+--   POST -- a LENGTH-AND-PRESERVATION check, and no more than that. It
+--           requires the criterion to be 577 characters, the preservation
+--           column to hold the original, and the two to differ -- which is
+--           enough to catch the UPDATE matching zero rows, a preservation
+--           that never landed, and the realistic || failure of one dropped or
+--           doubled join space. It is NOT proof that the bytes are correct: a
+--           BALANCED corruption (one space dropped, another doubled) holds
+--           length at 577 and would pass. SQLite has no sha256, so the
+--           byte-level proof lives in the test suite, which asserts the real
+--           digest. The constraint is named for what it actually checks.
 
 BEGIN;
 
@@ -147,7 +151,7 @@ WHERE name = 'A+ baseline';
 
 CREATE TEMP TABLE _h1_amendment_postcheck (
   ok INTEGER NOT NULL
-    CONSTRAINT h1_amendment_refuses_to_commit_a_row_it_did_not_write_correctly
+    CONSTRAINT h1_amendment_refuses_a_criterion_of_the_wrong_length_or_a_lost_preservation
     CHECK (ok = 1)
 );
 INSERT INTO _h1_amendment_postcheck (ok)
