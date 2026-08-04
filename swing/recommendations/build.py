@@ -96,97 +96,60 @@ def _equation(shares: int, basis: float, stop: float,
 
 def _sizing_result(pivot: float | None, stop: float | None,
                    ctx: BuildContext):
-    """`(basis, SizingResult)` for one row -- INFEASIBLE, never an
-    abort, when the geometry is not orderable.
+    """`(basis, SizingResult)` for one row.
 
-    CODEX R3 MAJOR -- THE UNORDERABLE LIMIT. The whole-cent floor can put
-    the limit AT OR BELOW the stop for a sub-cent pivot: at pivot 0.009 /
-    stop 0.001 the cap 0.0093 floors to 0.00, and `compute_shares` then
-    raises `stop >= entry`. That exception is uncaught in this builder, so
-    ONE such candidate would abort the whole nightly step and NO
-    recommendation would be written -- a geometry the pivot basis accepted.
+    THE CONTRACT, in the order the checks run:
+      1. a NULL pivot or stop        -> per-row INFEASIBLE, no basis
+      2. `stop >= pivot`             -> RAISES (degenerate DATA, stays loud)
+      3. a non-finite/overflowing pivot -> per-row INFEASIBLE, no basis
+      4. a basis <= 0, or a basis BELOW the pivot -> per-row INFEASIBLE
+      5. otherwise                   -> `compute_shares` off the LIMIT
 
-    CODEX R5 MAJOR -- THE NON-FINITE PIVOT, the same class one step
-    earlier. `zone_cap_for_pivot` refuses a non-finite pivot and an
-    overflowing one (1.79e308 x 1.03 is `inf`), and `candidates.pivot` is a
-    bare REAL: no CHECK excludes either, and SQLite stores infinity
-    happily. The PIVOT basis absorbed both silently -- `floor(budget / inf)`
-    is 0 -- so the change turned a quiet infeasible row into a lost batch.
-    The derivation is therefore caught and reported as infeasible with NO
-    basis, so the line states no price it could not compute.
-
-    An unorderable geometry is exactly what `infeasible` means, and the
+    ONE RULE RUNS THROUGH 1, 3 AND 4: a single degenerate candidate must
+    never lose the whole nightly batch. Every one of them was found by a
+    separate adversarial round, all raising a `ValueError`/`TypeError`/
+    `OverflowError` that nothing caught before `_step_recommendations`
+    reached its write phase, so ONE bad row wrote NO recommendations at all.
+    `candidates.pivot` and `candidates.initial_stop` are bare REALs with no
+    CHECK, so none of these values is prevented at the write boundary.
+    An unorderable geometry is exactly what `infeasible` MEANS, and the
     today_decision snapshot is specified to LIST infeasible names rather
-    than drop them (`test_infeasible_sizing_still_produces_today_decision`),
-    so the row is emitted with zero shares and no price.
+    than drop them (`test_infeasible_sizing_still_produces_today_decision`).
 
-    A STOP AT OR ABOVE THE PIVOT STILL RAISES. That is degenerate DATA, not
+    WHY 4 IS THE LOAD-BEARING ONE. The whole-cent FLOOR can put the limit
+    UNDER the pivot whenever the pad is worth less than a cent -- at pivot
+    0.019 the cap 0.0196 floors to $0.01 -- and that row is non-null,
+    finite, positive and above the stop, so it slips every other check. Its
+    consequence runs BACKWARDS: sizing off $0.01 against a $0.001 stop
+    recommends 4166 shares reporting $37.49 of risk while the order TRIGGERS
+    at $0.019 and therefore risks $74.99, twice the policy cap. An order
+    cannot fill below its own trigger, so a limit under the pivot is not an
+    order at all. `basis >= pivot` also SUBSUMES `basis > stop` (check 2
+    guarantees `pivot > stop`), which is why no separate `basis <= stop`
+    clause remains -- and it closes the `OverflowError` at pivot 1e-305 too,
+    whose cap quantizes to $0.00: a POSITIVE whole-cent basis is at least
+    $0.01, so `equity x cap / basis` is bounded and no representable stop
+    puts `basis - stop` inside the ~2e-307 the risk leg would need.
+
+    WHY 2 STAYS LOUD. A stop at or above the pivot is degenerate DATA, not
     an unreachable price: it aborted the step before this change too, and
     while the entry was the pivot it doubled as the "stop below the trigger"
     gate that the wider basis would otherwise have loosened. The latch
     derivation carries the same invariant (`Latch.__post_init__`:
-    stop < pivot < zone_cap). A NON-FINITE STOP is likewise unchanged in
-    kind -- it reached `compute_shares` and raised before this change and
-    still does.
+    stop < pivot < zone_cap).
+    IT IS WRITTEN `stop >= pivot`, NOT `not stop < pivot`, AND THE
+    DIFFERENCE IS `nan`: every comparison against `nan` is False, so a `nan`
+    pivot falls THROUGH to check 3 and becomes a per-row infeasible instead
+    of a lost batch. The strict form would re-create the abort while reading
+    like a tightening.
 
-    A LIMIT BELOW THE TRIGGER IS REFUSED, AND THAT IS THE STRONGEST OF THE
-    REFUSALS (Codex R8). The whole-cent FLOOR can put the limit UNDER the
-    pivot whenever `pivot x 0.03` is worth less than a cent -- at pivot
-    0.019 the cap 0.0196 floors to $0.01. Such a row is non-null, finite,
-    positive and above the stop, so it slipped every other guard, and the
-    consequence is the WORST kind: sizing off $0.01 against a $0.001 stop
-    recommends 4166 shares and reports $37.49 of risk, while the order
-    TRIGGERS at $0.019 and therefore risks $74.99 -- twice the policy cap,
-    which is the exact defect this whole change exists to remove, running
-    in the opposite direction. An order cannot fill below its own trigger,
-    so a limit under the pivot is not an order at all.
-
-    A SEPARATE `basis <= stop` CHECK IS NOW REDUNDANT and was removed
-    rather than kept as reassurance: `stop >= pivot` is refused above, so
-    `basis >= pivot > stop` follows. Both of the earlier geometries still
-    land here -- pivot 0.009 floors to $0.00 and pivot 1e-305 to $0.00,
-    each below its own pivot -- and their tests still pin them.
-
-    OUT OF SCOPE, FLAGGED: `compute_prepared_order` has the SAME hole. Its
-    breakout branch emits `stop = latched_pivot` with
-    `limit = mandate_limit_price(zone_cap)`, so on this geometry it would
-    offer a stop-limit whose limit sits below its own trigger.
+    OUT OF SCOPE, FLAGGED: `compute_prepared_order` has the SAME hole as
+    check 4. Its breakout branch pairs `stop = latched_pivot` with
+    `limit = mandate_limit_price(zone_cap)`, so on that geometry it offers a
+    stop-limit whose limit sits below its own trigger;
     `Latch.__post_init__` guarantees `pivot < zone_cap` on the RAW cap and
     says nothing about the quantized one. That is 21-B's emitter, not this
     arc's scope.
-
-    A NON-POSITIVE BASIS IS REFUSED TOO, AND `<= stop` DOES NOT COVER IT
-    (Codex R7). At pivot 1e-305 the cap rounds to 0.0 and the limit
-    quantizes to $0.00; against a NEGATIVE stop, `0.0 <= -1e-307` is False,
-    so the row fell through to `compute_shares(entry=0.0, ...)` whose risk
-    leg evaluates `floor(37.5 / 1e-307)` and raises **OverflowError** --
-    which is NOT the `ValueError` either surface guards, so the nightly
-    lost the batch and the dashboard 500'd. The pivot basis produced finite
-    quotients for the same geometry, so this too is a regression.
-    Refusing a non-positive basis closes the overflow at its source rather
-    than widening a shared `except`: a POSITIVE basis is a whole-cent price,
-    hence at least $0.01, so `equity x cap / basis` is bounded and the risk
-    leg cannot overflow either (float spacing near $0.01 is ~1.7e-18, so no
-    representable stop puts `basis - stop` inside the ~2e-307 needed).
-
-    A NULL PIVOT OR STOP IS THE SAME CLASS AND IS REFUSED THE SAME WAY
-    (Codex R6). `Candidate.pivot` and `Candidate.initial_stop` are both
-    `float | None` and the schema declares both REAL without NOT NULL, and
-    `_step_recommendations` passes every A+ candidate through unfiltered.
-    A `None` reaching the ordering comparison raises `TypeError` OUTSIDE
-    any guard, so one degenerate evaluator row lost the whole batch. That
-    is PRE-EXISTING -- `compute_shares(entry=None, ...)` raised the same
-    way before this change -- but it is the same batch-loss class as the
-    two above, in the same function, and the dashboard's own builder has
-    guarded the null pair since Phase 2.
-
-    THE ORDERING TEST IS `stop >= pivot`, NOT `not stop < pivot`, AND THE
-    DIFFERENCE IS `nan`. Every comparison against `nan` is False, so a
-    `nan` PIVOT falls through this gate and is caught one line below as a
-    derivation failure -- a per-row infeasible instead of a lost batch.
-    That is strictly better than the pivot basis, which reached
-    `math.floor(nan)` and aborted; the strict form would have re-created
-    the abort while reading like a tightening.
     """
     infeasible = SizingResult(
         shares=0, risk_dollars=0.0, risk_pct=0.0, notional=0.0,
