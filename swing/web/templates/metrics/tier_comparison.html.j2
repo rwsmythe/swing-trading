@@ -94,7 +94,19 @@
       <tr class="metric-row tier-comparison-decision-criteria">
         <td>Decision criteria (registry-frozen; H1 amended by migration 0034)</td>
         {% for cohort in vm.result.cohorts %}
-        <td><span class="muted">{{ cohort.decision_criteria }}</span></td>
+        <td>
+          <span class="muted">{{ cohort.decision_criteria }}</span>
+          {#- D29 rider: the preserved pre-registered original is PROVENANCE
+              DETAIL -- a collapsed secondary affordance, never inline prose
+              beside the live criterion. Absent entirely when the row has
+              never been amended (the migration-0034 NULL semantic). -#}
+          {% if cohort.preregistered_decision_criteria %}
+          <details class="preregistered-criterion">
+            <summary>Pre-registered criterion (superseded)</summary>
+            <p class="muted">{{ cohort.preregistered_decision_criteria }}</p>
+          </details>
+          {% endif %}
+        </td>
         {% endfor %}
       </tr>
     </tbody>

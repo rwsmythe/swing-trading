@@ -11,8 +11,12 @@ C view-models:
 - **§3.7 deviation-outcome** (``compute_deviation_outcome``): per-cohort
   ``cohort_doctrine_deviation_class`` enum + ``expectancy_relative_to_aplus_pct``
   (percent delta, sign-preserving) + ``decision_criterion_evaluation_text``
-  rendered from migration 0008 ``decision_criteria`` seed text verbatim
+  rendered from the LIVE ``hypothesis_registry.decision_criteria`` verbatim
   (manual-only in V1 per spec §3.7 R1 M4 LOCK; NO automated evaluation).
+  That text is the migration-0008 seed for three of the four cohorts; the
+  ``A+ baseline`` row carries the migration-0034 AMENDED criterion (V2.1
+  §VII.F), whose pre-registered original is preserved on the same row in
+  ``preregistered_decision_criteria``.
 
 Per spec §4.3 + §4.7 + dispatch brief §0.5 #4 BINDING: both surfaces are
 TAXONOMY-LOCKED to the 4 registered hypothesis_registry cohorts. Orphan-
@@ -227,6 +231,12 @@ class CohortStatistics:
     badges: HonestyBadges
     decision_criteria: str
     target_sample_size: int
+    # D29 rider: the row's ORIGINAL pre-registered criterion when it has
+    # been amended (migration 0034 preserved H1's); ``None`` when the row
+    # has NEVER been amended -- the 0034 NULL semantic, defined not
+    # incidental. PROVENANCE DETAIL only: rendered behind a collapsed
+    # affordance, never inline beside the live criterion.
+    preregistered_decision_criteria: str | None = None
 
     def __post_init__(self) -> None:
         # Phase 9 forward-binding lesson #1: validate every new dataclass.
@@ -350,10 +360,21 @@ class TierComparisonResult:
 class DeviationOutcomeRow:
     """One row in the §4.7 deviation-outcome table (one per registered cohort).
 
-    ``decision_criterion_evaluation_text`` is the seed text from
-    ``hypothesis_registry.decision_criteria`` (migration 0008) verbatim
-    per spec §3.7 R1 M4 LOCK — V1 has NO automated pass/fail evaluation;
-    operator reads the seed text + judges manually.
+    ``decision_criterion_evaluation_text`` is the LIVE
+    ``hypothesis_registry.decision_criteria`` verbatim per spec §3.7 R1 M4
+    LOCK — V1 has NO automated pass/fail evaluation; operator reads the
+    text + judges manually. For ``A+ baseline`` that is the migration-0034
+    amended criterion, NOT the 0008 seed; the other three cohorts are
+    still their 0008 seed text.
+
+    ``preregistered_decision_criteria`` carries the row's ORIGINAL
+    pre-registered text when it has been amended, and ``None`` when it
+    never has (the migration-0034 NULL semantic: never-amended, NOT
+    unknown). It is PROVENANCE DETAIL — rendered as a secondary,
+    collapsed affordance, never inline beside the live criterion (RD
+    ruling 2026-08-04: a superseded 60-char criterion inlined beside a
+    577-char amendment clutters a surface that exists to be read at a
+    glance).
 
     ``expectancy_relative_to_aplus_pct`` is percent delta
     ``(cohort - aplus) / aplus * 100`` per dispatch brief §0.9 LOCK,
@@ -376,6 +397,7 @@ class DeviationOutcomeRow:
     expectancy_relative_to_aplus_pct: float | None
     row_suppressed: bool
     target_sample_size: int
+    preregistered_decision_criteria: str | None = None
 
     def __post_init__(self) -> None:
         if not self.cohort_name:
@@ -449,25 +471,34 @@ class DeviationOutcomeResult:
 def _load_cohort_meta(
     conn: sqlite3.Connection,
 ) -> dict[str, dict[str, object]]:
-    """Read ``decision_criteria`` + ``target_sample_size`` from
-    ``hypothesis_registry`` keyed on cohort name.
+    """Read ``decision_criteria`` + ``target_sample_size`` +
+    ``preregistered_decision_criteria`` from ``hypothesis_registry`` keyed
+    on cohort name.
 
-    Spec §3.7 R1 M4 LOCK + dispatch brief §0.11 LOCK: the seed text is
-    rendered verbatim on the deviation-outcome surface. Schema-locked
-    at migration 0008 (FROZEN per migration header — "CLI mutations may
-    flip status (and record the reason) but cannot edit
-    target_sample_size, consecutive_loss_tripwire,
+    Spec §3.7 R1 M4 LOCK + dispatch brief §0.11 LOCK: the criterion text
+    is rendered verbatim on the deviation-outcome surface. It is
+    registry-frozen against CLI mutation per the migration-0008 header —
+    "CLI mutations may flip status (and record the reason) but cannot
+    edit target_sample_size, consecutive_loss_tripwire,
     absolute_loss_tripwire_pct, or decision_criteria. A formal amendment
-    requires a NEW migration with an explicit version bump.").
+    requires a NEW migration with an explicit version bump." That freeze
+    has now been EXERCISED rather than merely asserted: migration 0034
+    amended the ``A+ baseline`` criterion by exactly that route (V2.1
+    §VII.F) and preserved the pre-registered original in
+    ``preregistered_decision_criteria``, which is NULL on every
+    never-amended row.
     """
     rows = conn.execute(
-        "SELECT name, decision_criteria, target_sample_size "
-        "FROM hypothesis_registry",
+        "SELECT name, decision_criteria, target_sample_size, "
+        "preregistered_decision_criteria FROM hypothesis_registry",
     ).fetchall()
     return {
         str(r[0]): {
             "decision_criteria": str(r[1]),
             "target_sample_size": int(r[2]),
+            "preregistered_decision_criteria": (
+                str(r[3]) if r[3] is not None else None
+            ),
         }
         for r in rows
     }
@@ -481,6 +512,7 @@ def _compute_cohort_stats(
     target_sample_size: int,
     live_policy: RiskPolicy,
     trades: list[Trade],
+    preregistered_decision_criteria: str | None = None,
 ) -> CohortStatistics:
     """Build :class:`CohortStatistics` for a pre-filtered trade list.
 
@@ -551,6 +583,7 @@ def _compute_cohort_stats(
         badges=badges_for_n(n=n_closed, policy=live_policy),
         decision_criteria=decision_criteria,
         target_sample_size=target_sample_size,
+        preregistered_decision_criteria=preregistered_decision_criteria,
     )
 
 
@@ -636,9 +669,12 @@ def compute_tier_comparison(
             # criterion to keep the surface renderable.
             decision_criteria = ""
             target_sample_size = 1
+            preregistered: str | None = None
         else:
             decision_criteria = str(meta["decision_criteria"])
             target_sample_size = int(meta["target_sample_size"])
+            raw_prereg = meta["preregistered_decision_criteria"]
+            preregistered = str(raw_prereg) if raw_prereg is not None else None
         cohorts.append(
             _compute_cohort_stats(
                 conn,
@@ -647,6 +683,7 @@ def compute_tier_comparison(
                 target_sample_size=target_sample_size,
                 live_policy=live_policy,
                 trades=trades,
+                preregistered_decision_criteria=preregistered,
             ),
         )
 
@@ -709,8 +746,9 @@ def compute_deviation_outcome(
     A+ row n on deviation-outcome).
 
     Per spec §3.7 R1 M4 LOCK: ``decision_criterion_evaluation_text``
-    renders ``hypothesis_registry.decision_criteria`` seed text verbatim
-    (NO automated pass/fail evaluation in V1).
+    renders the LIVE ``hypothesis_registry.decision_criteria`` verbatim
+    (NO automated pass/fail evaluation in V1) — the 0008 seed for three
+    cohorts, the 0034 amended criterion for ``A+ baseline``.
 
     Per spec §4.7 SURFACE LOCK: cohort row stays VISIBLE at n<5 (showing
     deviation_class + decision-criterion text) — the relative-expectancy
@@ -766,6 +804,9 @@ def compute_deviation_outcome(
                 expectancy_relative_to_aplus_pct=rel,
                 row_suppressed=row_suppressed,
                 target_sample_size=c.target_sample_size,
+                preregistered_decision_criteria=(
+                    c.preregistered_decision_criteria
+                ),
             ),
         )
 

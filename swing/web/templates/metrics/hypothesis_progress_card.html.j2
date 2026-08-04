@@ -48,6 +48,16 @@
       <details class="cohort-decision-criteria">
         <summary>Decision criteria</summary>
         <p>{{ cohort.decision_criteria }}</p>
+        {#- D29 rider: the preserved pre-registered original is PROVENANCE
+            DETAIL -- a collapsed secondary affordance nested inside (not
+            beside) the live criterion. Absent entirely when the row has
+            never been amended (the migration-0034 NULL semantic). -#}
+        {% if cohort.preregistered_decision_criteria %}
+        <details class="preregistered-criterion">
+          <summary>Pre-registered criterion (superseded)</summary>
+          <p class="muted">{{ cohort.preregistered_decision_criteria }}</p>
+        </details>
+        {% endif %}
       </details>
 
       {% if cohort.transition_timeline %}

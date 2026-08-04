@@ -127,6 +127,13 @@ class CohortProgressVM:
     latest_status_changed_at: str | None
     latest_status_change_reason: str | None
 
+    # D29 rider: the row's ORIGINAL pre-registered criterion when it has
+    # been amended (migration 0034 preserved H1's); ``None`` when the row
+    # has NEVER been amended -- the 0034 NULL semantic, defined not
+    # incidental. PROVENANCE DETAIL only: rendered behind a collapsed
+    # affordance, never inline beside the live criterion.
+    preregistered_decision_criteria: str | None = None
+
     def __post_init__(self) -> None:
         if self.n_closed < 0:
             raise ValueError(
@@ -340,6 +347,7 @@ def _build_cohort_vm(
         hyp_id, name, statement, target_sample_size, decision_criteria,
         status, consecutive_loss_tripwire, absolute_loss_tripwire_pct,
         status_changed_at, status_change_reason,
+        preregistered_decision_criteria,
     ) = row
 
     trades = _list_cohort_trades_sorted(conn, name)
@@ -407,6 +415,7 @@ def _build_cohort_vm(
         transition_timeline=timeline,
         latest_status_changed_at=status_changed_at,
         latest_status_change_reason=status_change_reason,
+        preregistered_decision_criteria=preregistered_decision_criteria,
     )
 
 
@@ -429,7 +438,8 @@ def build_hypothesis_progress_card_vm(
             "SELECT id, name, statement, target_sample_size, "
             "decision_criteria, status, consecutive_loss_tripwire, "
             "absolute_loss_tripwire_pct, status_changed_at, "
-            "status_change_reason FROM hypothesis_registry ORDER BY id",
+            "status_change_reason, preregistered_decision_criteria "
+            "FROM hypothesis_registry ORDER BY id",
         ).fetchall()
         cohorts = tuple(_build_cohort_vm(conn, row=r) for r in rows)
     finally:
