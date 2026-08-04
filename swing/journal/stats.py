@@ -335,8 +335,10 @@ def compute_hypothesis_progress_breakdown(
     """Return one `HypothesisProgress` per registered hypothesis.
 
     Includes paused/closed hypotheses (status carries over) so the
-    journal review surfaces all four — operator can see at a glance
-    which hypotheses are running, paused, or closed. Tripwire signals
+    journal review surfaces every registered hypothesis — operator can
+    see at a glance which are running, paused, or closed. (The registry
+    has held FIVE rows since migration 0026 added the broad-watch
+    baseline; this prose used to say "all four".) Tripwire signals
     are computed for ALL hypotheses (even closed ones); the CLI render
     layer chooses how to display "tripwire fired but hypothesis closed."
     """

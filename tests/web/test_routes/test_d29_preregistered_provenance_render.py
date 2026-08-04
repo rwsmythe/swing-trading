@@ -67,7 +67,18 @@ def test_surface_exposes_the_original_behind_a_collapsed_affordance(
     )
     # Compare against the PRODUCTION escaper's output (markupsafe is what
     # Jinja autoescaping uses), not the raw text -- '>' renders as '&gt;'.
-    assert str(escape(PREREGISTERED_H1_DECISION_CRITERIA)) in block.group(1)
+    rendered_original = str(escape(PREREGISTERED_H1_DECISION_CRITERIA))
+    assert rendered_original in block.group(1)
+
+    # Codex R2 Minor 1: presence-inside-<details> is only a PROXY for the
+    # ruling, which says NOT INLINE PROSE. A duplicate inline render would
+    # satisfy the proxy. So excise the affordance and assert the original
+    # appears nowhere in what remains.
+    without_affordance = html.replace(block.group(0), "")
+    assert rendered_original not in without_affordance, (
+        f"{path}: the superseded criterion also renders OUTSIDE the "
+        "collapsed affordance -- that is the inline prose the ruling forbids"
+    )
 
 
 @pytest.mark.parametrize("path", _SURFACES)
