@@ -329,25 +329,43 @@ def test_the_nightly_SIZING_DIVERGENCE_NOTE_is_GONE(seeded_db):
     assert "reconciliation break" not in text
 
 
+def _seed_nightly_recommendation(cfg, shares: int):
+    """The nightly's row FOR THIS FIRE -- the fire's own evaluation run and its
+    own action session, which is exactly the pair `_nightly_shares` keys on."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO daily_recommendations (evaluation_run_id, "
+            "data_asof_date, action_session_date, ticker, recommendation, "
+            "action_text, entry_target, stop_target, shares, risk_dollars, "
+            "risk_pct, rationale) VALUES (?, ?, ?, 'FTRE', 'today_decision', "
+            "'seeded', 18.34, 14.88, ?, 36.0, 0.48, 'seed')",
+            (_FTRE[0], _FTRE[1], _FTRE[2], shares))
+    conn.close()
+
+
 def test_the_PERSISTED_nightly_column_survives_the_notes_removal(seeded_db):
     """THE LINE BETWEEN THE RENDER AND THE LEDGER.
 
-    `derivation_nightly_recommendation_shares` is a real column on the
-    append-only `latch_order_intents` table (migration 0033). Only the CARD's
-    note was retired; the value is still gathered, still hidden-anchored, still
-    folded into `anchor_digest` and still persisted -- so the ledger keeps the
-    provenance of what the nightly said for each recorded mandate, which is
-    what makes a future divergence detectable at all.
+    `derivation_nightly_recommendation_shares` is PER-ROW PROVENANCE on the
+    append-only `latch_order_intents` table (migration 0033): what the nightly
+    surface said AT INTENT TIME. Only the CARD's note was retired; the value is
+    still gathered, still hidden-anchored with its real VALUE, still folded
+    into `anchor_digest` and still persisted -- and an append-only ledger
+    losing a provenance field to a display cleanup would be the anti-provenance
+    move (RD, 2026-08-04).
 
-    A removal that also dropped the anchor field would pass every assertion in
-    the test above and silently reduce the ledger.
+    A REAL NON-NULL VALUE IS SEEDED (Codex R1 MINOR). Asserting only that the
+    field NAME appears would pass against a render that anchored a constant
+    None, which is the reduction this test exists to catch.
     """
     cfg, _ = seeded_db
     _seed_fire(cfg)
     _seed_derivation_session_close(cfg, 19.20)
+    _seed_nightly_recommendation(cfg, 7)
     block = _vm(cfg).rows[0].prepared_order
-    names = {name for name, _ in block.anchor_fields}
-    assert "derivation_nightly_recommendation_shares" in names
+    emitted = dict(block.anchor_fields)
+    assert emitted["derivation_nightly_recommendation_shares"] == "7"
     assert "derivation_nightly_recommendation_shares" in {
         c for c, _ in derivation_anchor_fields()}
     # ...and it is declared UNRENDERED, which is what keeps the section-A.4
@@ -356,6 +374,31 @@ def test_the_PERSISTED_nightly_column_survives_the_notes_removal(seeded_db):
                  if f.column == "derivation_nightly_recommendation_shares")
     assert field.rendered is False
     assert field.nullable is True and field.null_reason.strip()
+
+
+def test_the_anchor_DIGEST_still_moves_with_the_nightly_share_count(seeded_db):
+    """THE PAIRED DISCRIMINATOR (Codex R1 MINOR). A field carried in
+    `anchor_fields` but dropped from the digest would be un-audited: a stale
+    form laundering a DIFFERENT nightly provenance would hit the replay SELECT
+    and never reach the field-by-field comparison. Un-rendering the value must
+    not un-audit it.
+    """
+    cfg, _ = seeded_db
+    _seed_fire(cfg)
+    _seed_derivation_session_close(cfg, 19.20)
+    _seed_nightly_recommendation(cfg, 7)
+    first = _vm(cfg).rows[0].prepared_order.anchor_digest
+
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute("UPDATE daily_recommendations SET shares = 8")
+    conn.close()
+    second = _vm(cfg).rows[0].prepared_order
+    assert second.anchor_digest != first
+    assert dict(second.anchor_fields)[
+        "derivation_nightly_recommendation_shares"] == "8"
+    # ...and the card still says NOTHING about either number.
+    assert "nightly" not in "\n".join(second.derivation_lines).lower()
 
 
 def test_a_missing_active_risk_policy_row_labels_the_gap_and_still_offers(

@@ -138,15 +138,54 @@ def test_the_persisted_risk_figures_are_the_LIMIT_basis_ones():
     assert rec.risk_dollars != pytest.approx(32.52)
 
 
-def test_the_TRIGGER_price_and_the_action_text_still_state_the_PIVOT():
+def test_the_TRIGGER_price_stays_the_PIVOT():
     """SCOPE PIN. Only the sizing BASIS moved. `entry_target` is the buy-stop
     trigger, not the fill, and a change there would silently redefine what the
     nightly is telling the operator to place."""
     rec = _recs()[0]
     assert rec.entry_target == AMN_PIVOT
     assert rec.stop_target == AMN_STOP
-    assert f"{AMN_PIVOT:.2f}" in (rec.action_text or "")
-    assert f"{AMN_LIMIT:.2f}" not in (rec.action_text or "")
+    assert f"Buy-stop ${AMN_PIVOT:.2f}" in (rec.action_text or "")
+
+
+def test_the_action_text_NAMES_the_basis_so_the_stated_risk_RECOMPUTES():
+    """CODEX R1 MAJOR. The row reports the TRIGGER in `entry_target` and the
+    LIMIT-basis risk in `risk_dollars`, so a reader recomputing
+    `shares x (entry_target - stop_target)` gets $27.10 against the stated
+    $32.50. Without the basis on the line the row is not self-checkable -- the
+    same rendered-arithmetic defect the dashboard's sizing line had.
+    """
+    rec = _recs()[0]
+    text = rec.action_text or ""
+    assert f"${AMN_LIMIT:.2f} buy-zone cap" in text
+    # The stated risk RECOMPUTES from the numbers on the line...
+    assert round(rec.shares * (AMN_LIMIT - AMN_STOP)) == round(rec.risk_dollars)
+    # ...and does NOT from the trigger, which is exactly why it is named.
+    assert round(rec.shares * (AMN_PIVOT - AMN_STOP)) != round(rec.risk_dollars)
+
+
+def test_the_action_text_still_does_not_say_LIMIT():
+    """THE TRANCHE-B CONTRACT SURVIVES THE DISCLOSURE. "Buy-stop limit" was
+    retired because it implied a two-price BROKER ORDER this row never
+    produces; naming the SIZING price must not reintroduce it."""
+    for rec in _recs(prior_watchlist=[_watchlist("MSFT")]):
+        assert "limit" not in (rec.action_text or "").lower()
+
+
+def test_the_NEAR_TRIGGER_action_text_names_its_basis_too():
+    """Both `_format_action` call sites, per the completeness lesson."""
+    recs = _recs(today_aplus=[],
+                 prior_watchlist=[_watchlist(last_close=AMN_PIVOT)])
+    assert f"${AMN_LIMIT:.2f} buy-zone cap" in (recs[0].action_text or "")
+
+
+def test_the_INFEASIBLE_action_text_names_no_basis():
+    """An infeasible row recommends nothing, so it states no price at all --
+    appending a cap to "Risk infeasible" would read as an order."""
+    rec = _recs(today_aplus=[_candidate("WIDE", pivot=100.0, stop=50.0)])[0]
+    assert rec.shares == 0
+    assert "infeasible" in (rec.action_text or "").lower()
+    assert "buy-zone cap" not in (rec.action_text or "")
 
 
 def test_the_NEAR_TRIGGER_path_sizes_off_the_limit_TOO():

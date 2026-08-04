@@ -66,10 +66,31 @@ def _sizing_entry(pivot: float, stop: float) -> float:
     return mandate_limit_price(zone_cap_for_pivot(pivot))
 
 
-def _format_action(shares: int, entry: float, risk_dollars: float, infeasible: bool) -> str:
+def _format_action(shares: int, entry: float, risk_dollars: float,
+                   infeasible: bool, basis: float | None = None) -> str:
+    """The row's one-line action.
+
+    THE SIZING BASIS IS NAMED (Codex R1 MAJOR). The row reports the TRIGGER
+    in `entry_target` and the LIMIT-basis risk in `risk_dollars`, so from
+    2026-08-04 a reader recomputing `shares x (entry_target - stop_target)`
+    gets a DIFFERENT number from the risk the row states -- for AMN, $27.10
+    against the stated $32.50. Naming the basis makes the figure
+    reproducible from the line itself, which is the same reason the
+    dashboard card's sizing line multiplies by the price it sized off rather
+    than by the buy stop.
+
+    IT DOES NOT SAY "LIMIT", deliberately: the Tranche-B spec retired
+    "Buy-stop limit" because it implied a two-price BROKER ORDER this row
+    never produces, and that contract is still pinned by
+    `test_aplus_action_text_does_not_say_limit`. "Buy-zone cap" names the
+    SIZING price without describing a second order leg.
+    """
     if infeasible:
         return "Risk infeasible at current sizing — skip or wait for tighter setup"
-    return f"Buy-stop ${entry:.2f} \u00b7 {shares} sh \u00b7 ${risk_dollars:.0f} risk"
+    text = f"Buy-stop ${entry:.2f} \u00b7 {shares} sh \u00b7 ${risk_dollars:.0f} risk"
+    if basis is not None:
+        text += f" (sized at the ${basis:.2f} buy-zone cap)"
+    return text
 
 
 def build_recommendations(
@@ -84,8 +105,9 @@ def build_recommendations(
 
     # 1. A+ names → today_decision (with sizing)
     for c in aplus_list:
+        basis = _sizing_entry(c.pivot, c.initial_stop)
         sizing = compute_shares(
-            entry=_sizing_entry(c.pivot, c.initial_stop),
+            entry=basis,
             stop=c.initial_stop, equity=ctx.current_equity,
             max_risk_pct=ctx.max_risk_pct, position_pct_cap=ctx.position_pct_cap,
         )
@@ -95,7 +117,9 @@ def build_recommendations(
             data_asof_date=ctx.data_asof_date,
             action_session_date=ctx.action_session_date,
             ticker=c.ticker, recommendation="today_decision",
-            action_text=_format_action(sizing.shares, c.pivot, sizing.risk_dollars, infeasible),
+            action_text=_format_action(
+                sizing.shares, c.pivot, sizing.risk_dollars, infeasible,
+                basis=basis),
             entry_target=c.pivot, stop_target=c.initial_stop,
             shares=sizing.shares,
             risk_dollars=sizing.risk_dollars, risk_pct=sizing.risk_pct,
@@ -117,12 +141,14 @@ def build_recommendations(
         # BOTH sizing call sites move, not just the A+ one: a fix applied to
         # one leaves the other stating a pivot-basis count for the same
         # geometry (the completeness lesson).
+        basis = (
+            _sizing_entry(w.entry_target, w.initial_stop_target)
+            if w.initial_stop_target else None)
         sizing = compute_shares(
-            entry=_sizing_entry(w.entry_target, w.initial_stop_target or 0.0),
-            stop=w.initial_stop_target or 0.0,
+            entry=basis, stop=w.initial_stop_target,
             equity=ctx.current_equity, max_risk_pct=ctx.max_risk_pct,
             position_pct_cap=ctx.position_pct_cap,
-        ) if w.initial_stop_target else None
+        ) if basis is not None else None
         recs.append(DailyRecommendation(
             id=None, evaluation_run_id=ctx.evaluation_run_id,
             data_asof_date=ctx.data_asof_date,
@@ -132,6 +158,7 @@ def build_recommendations(
                 _format_action(
                     sizing.shares, w.entry_target,
                     sizing.risk_dollars, not sizing.feasible,
+                    basis=basis,
                 )
                 if sizing else "Pivot reached — review setup"
             ),
