@@ -207,6 +207,72 @@ def test_the_NEAR_TRIGGER_action_text_carries_the_equation_too():
     assert f"= 5 x (${AMN_LIMIT:.2f} cap - ${AMN_STOP:.2f} stop)" in text
 
 
+def test_the_equation_is_TRUE_for_a_SUB_CENT_STOP():
+    """CODEX R3 MAJOR, and it is LIVE DATA, not a hypothetical.
+
+    `candidates.initial_stop` is a bare REAL with no cent-precision
+    constraint: 1105 of the 11753 live candidate rows carry a sub-cent stop,
+    and ADPT's 2026-08-04 recommendation is one of them (pivot 23.15, stop
+    19.771). Printing that stop at 2dp inside the equation makes the equation
+    FALSE -- 9 x (23.84 - 19.77) is $36.63 beside a stated $36.62.
+    """
+    import re
+
+    rec = _recs(today_aplus=[_candidate("ADPT", pivot=23.15, stop=19.771)])[0]
+    text = rec.action_text or ""
+    assert "$19.7710 stop" in text, text
+    assert "$19.77 stop" not in text
+    m = re.search(
+        r"\$([0-9.]+) risk = (\d+) x \(\$([0-9.]+) cap - \$([0-9.]+) stop\)",
+        text)
+    assert m is not None, text
+    risk, shares, cap, stop = (
+        float(m[1]), int(m[2]), float(m[3]), float(m[4]))
+    assert (shares, cap) == (9, 23.84)
+    # THE EQUATION EVALUATES TO THE STATED RISK -- which it does NOT at 2dp.
+    assert round(shares * (cap - stop), 2) == risk
+    assert round(shares * (cap - 19.77), 2) != risk
+
+
+def test_a_CENT_EXACT_stop_still_prints_at_TWO_decimals():
+    """The control on `_price`: adding precision where it is needed must not
+    add noise where it is not."""
+    text = _recs()[0].action_text or ""
+    assert f"${AMN_STOP:.2f} stop" in text
+    assert f"${AMN_STOP:.4f} stop" not in text
+
+
+def test_an_UNORDERABLE_geometry_is_INFEASIBLE_not_an_ABORT():
+    """CODEX R3 MAJOR. The whole-cent floor can put the limit AT OR BELOW the
+    stop for a sub-cent pivot -- cap 0.0093 floors to 0.00 -- and
+    `compute_shares` then raises `stop >= entry`. Uncaught in this builder that
+    exception aborts the WHOLE nightly step, so ONE such candidate would leave
+    the operator with NO recommendations at all. The pivot basis accepted this
+    geometry, and `candidates.pivot` carries no schema CHECK.
+
+    The today_decision snapshot is specified to LIST infeasible names rather
+    than drop them, so an unorderable row is emitted with zero shares.
+    """
+    assert mandate_limit_price(zone_cap_for_pivot(0.009)) <= 0.001
+    recs = _recs(today_aplus=[_candidate("PENNY", pivot=0.009, stop=0.001),
+                              _candidate()])
+    by_ticker = {r.ticker: r for r in recs}
+    assert by_ticker["PENNY"].shares == 0
+    assert by_ticker["PENNY"].risk_dollars == 0.0
+    assert "infeasible" in (by_ticker["PENNY"].action_text or "").lower()
+    # ...and the REST OF THE BATCH still gets written, which is the point.
+    assert by_ticker["AMN"].shares == 5
+
+
+def test_the_unorderable_refusal_does_NOT_swallow_a_stop_ABOVE_the_pivot():
+    """THE PAIRED DISCRIMINATOR. Degenerate DATA (a stop at or above the
+    trigger) aborted the step before this change too and must stay LOUD; a
+    blanket try/except around the sizing would pass the test above and silently
+    ship a setup whose stop is above its own trigger."""
+    with pytest.raises(ValueError):
+        _recs(today_aplus=[_candidate("DEGEN", pivot=100.0, stop=101.5)])
+
+
 def test_the_INFEASIBLE_action_text_states_no_price_at_all():
     """An infeasible row recommends nothing, so it states no price -- appending
     a cap to "Risk infeasible" would read as an order."""

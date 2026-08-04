@@ -40,8 +40,13 @@ def render_briefing_md(vm: BriefingViewModel) -> str:
     else:
         for d in vm.todays_decisions:
             parts.append(f"### {d.ticker} \u2014 {d.action_text}")
+            # TWO DECIMALS (Codex R3 MAJOR). The action line above now states
+            # the risk EXACTLY and the equation that produces it, and `.0f`
+            # ties-to-even -- so an exact $32.50 printed `$32` on the very next
+            # line and the briefing contradicted itself in two adjacent rows.
+            # The HTML renderer carries the same fix at the same place.
             parts.append(
-                f"Risk ${d.risk_dollars:.0f} ({d.risk_pct:.2f}%) \u00b7 "
+                f"Risk ${d.risk_dollars:.2f} ({d.risk_pct:.2f}%) \u00b7 "
                 f"TT {d.tt_score} \u00b7 VCP {d.vcp_score}"
             )
             parts.append(f"_{d.rationale}_\n")

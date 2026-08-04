@@ -55,3 +55,24 @@ def test_self_contained_no_external_links():
 def test_action_session_date_in_title():
     html = render_briefing_html(_vm())
     assert "2026-04-16" in html
+
+
+def test_the_risk_line_does_NOT_contradict_an_exact_action_line():
+    """CODEX R3 MAJOR, the HTML half. The markdown and the HTML renderer print
+    the same secondary risk figure and both had to move to two decimals; a fix
+    applied to one leaves the other contradicting the action line."""
+    vm = _vm(decisions=[
+        TodaysDecisionVM(
+            ticker="AMN",
+            action_text=(
+                "Buy-stop $36.27 · 5 sh · $32.50 risk "
+                "= 5 x ($37.35 cap - $30.85 stop)"),
+            entry_target=36.27, stop_target=30.85, shares=5,
+            risk_dollars=32.50, risk_pct=0.4333, rationale="A+ setup",
+            tt_score="8/8", vcp_score="9/10", chart_b64=None,
+        ),
+    ])
+    out = render_briefing_html(vm)
+    assert "$32.50 risk" in out
+    assert "Risk $32.50" in out
+    assert "Risk $32 " not in out

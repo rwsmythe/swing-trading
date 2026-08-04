@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from swing.data.models import Candidate, DailyRecommendation, WatchlistEntry
 from swing.latches.constants import mandate_limit_price, zone_cap_for_pivot
 from swing.recommendations.near_trigger import is_near_trigger
-from swing.recommendations.sizing import compute_shares
+from swing.recommendations.sizing import SizingResult, compute_shares
 
 
 @dataclass(frozen=True)
@@ -66,6 +66,55 @@ def _sizing_entry(pivot: float, stop: float) -> float:
     return mandate_limit_price(zone_cap_for_pivot(pivot))
 
 
+def _price(value: float) -> str:
+    """A price at the precision it actually carries, 2dp or 4dp.
+
+    CODEX R3 MAJOR. `candidates.initial_stop` is a bare REAL with no
+    cent-precision constraint, and 1105 of the 11753 live candidate rows
+    carry a sub-cent stop (ADPT, 2026-08-04: 19.771). Printing such a stop
+    at 2dp inside an EQUATION makes the equation FALSE -- 9 x (23.84 -
+    19.77) is $36.63 beside a stated $36.62 -- and a "self-checkable" line
+    that fails its own check is worse than one that never invited the check.
+
+    The cap needs no such treatment (`mandate_limit_price` returns a
+    whole-cent value by construction), but it goes through the same helper
+    so a future basis that is not cent-exact cannot silently reintroduce the
+    defect.
+    """
+    return (f"{value:.2f}" if round(value, 2) == round(value, 4)
+            else f"{value:.4f}")
+
+
+def _sizing_result(pivot: float, stop: float, ctx: BuildContext):
+    """`(basis, SizingResult)` for one row -- INFEASIBLE, never an abort,
+    when the geometry is not orderable.
+
+    CODEX R3 MAJOR. The whole-cent floor can put the limit AT OR BELOW the
+    stop for a sub-cent pivot: at pivot 0.009 / stop 0.001 the cap 0.0093
+    floors to 0.00, and `compute_shares` then raises `stop >= entry`. That
+    exception is uncaught here, so ONE such candidate would abort the whole
+    nightly step and NO recommendation would be written -- a geometry the
+    pivot basis accepted. `candidates.pivot` carries no schema CHECK, so
+    this cannot be dismissed at the read boundary.
+
+    An unorderable geometry is exactly what `infeasible` means, and the
+    today_decision snapshot is specified to list infeasible names rather
+    than drop them (`test_infeasible_sizing_still_produces_today_decision`),
+    so the row is emitted with zero shares and no price. A stop AT OR ABOVE
+    the PIVOT still raises -- that is degenerate DATA, it aborted the step
+    before this change too, and it must stay loud.
+    """
+    basis = _sizing_entry(pivot, stop)
+    if basis <= stop:
+        return basis, SizingResult(
+            shares=0, risk_dollars=0.0, risk_pct=0.0, notional=0.0,
+            notional_pct=0.0, feasible=False, constraint="infeasible")
+    return basis, compute_shares(
+        entry=basis, stop=stop, equity=ctx.current_equity,
+        max_risk_pct=ctx.max_risk_pct,
+        position_pct_cap=ctx.position_pct_cap)
+
+
 def _format_action(shares: int, entry: float, risk_dollars: float,
                    infeasible: bool, basis: float | None = None,
                    stop: float | None = None) -> str:
@@ -95,7 +144,8 @@ def _format_action(shares: int, entry: float, risk_dollars: float,
         return "Risk infeasible at current sizing — skip or wait for tighter setup"
     text = f"Buy-stop ${entry:.2f} \u00b7 {shares} sh \u00b7 ${risk_dollars:.2f} risk"
     if basis is not None and stop is not None:
-        text += (f" = {shares} x (${basis:.2f} cap - ${stop:.2f} stop)")
+        text += (f" = {shares} x (${_price(basis)} cap"
+                 f" - ${_price(stop)} stop)")
     return text
 
 
@@ -111,12 +161,7 @@ def build_recommendations(
 
     # 1. A+ names → today_decision (with sizing)
     for c in aplus_list:
-        basis = _sizing_entry(c.pivot, c.initial_stop)
-        sizing = compute_shares(
-            entry=basis,
-            stop=c.initial_stop, equity=ctx.current_equity,
-            max_risk_pct=ctx.max_risk_pct, position_pct_cap=ctx.position_pct_cap,
-        )
+        basis, sizing = _sizing_result(c.pivot, c.initial_stop, ctx)
         infeasible = not sizing.feasible
         recs.append(DailyRecommendation(
             id=None, evaluation_run_id=ctx.evaluation_run_id,
@@ -147,14 +192,9 @@ def build_recommendations(
         # BOTH sizing call sites move, not just the A+ one: a fix applied to
         # one leaves the other stating a pivot-basis count for the same
         # geometry (the completeness lesson).
-        basis = (
-            _sizing_entry(w.entry_target, w.initial_stop_target)
-            if w.initial_stop_target else None)
-        sizing = compute_shares(
-            entry=basis, stop=w.initial_stop_target,
-            equity=ctx.current_equity, max_risk_pct=ctx.max_risk_pct,
-            position_pct_cap=ctx.position_pct_cap,
-        ) if basis is not None else None
+        basis, sizing = (
+            _sizing_result(w.entry_target, w.initial_stop_target, ctx)
+            if w.initial_stop_target else (None, None))
         recs.append(DailyRecommendation(
             id=None, evaluation_run_id=ctx.evaluation_run_id,
             data_asof_date=ctx.data_asof_date,

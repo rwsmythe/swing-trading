@@ -54,7 +54,11 @@
       {% for d in vm.todays_decisions %}
         <div style="margin-bottom: 1em;">
           <strong>{{ d.ticker }}</strong> — {{ d.action_text }}<br>
-          <small>Risk ${{ "%.0f"|format(d.risk_dollars) }} ({{ "%.2f"|format(d.risk_pct) }}%) · TT {{ d.tt_score }} · VCP {{ d.vcp_score }}</small><br>
+          {#- TWO DECIMALS (Codex R3 MAJOR): the action line above states the
+              risk EXACTLY plus the equation that produces it, and "%.0f"
+              ties-to-even -- an exact $32.50 printed $32 immediately beneath
+              it. Mirrors swing/rendering/briefing_md.py. -#}
+          <small>Risk ${{ "%.2f"|format(d.risk_dollars) }} ({{ "%.2f"|format(d.risk_pct) }}%) · TT {{ d.tt_score }} · VCP {{ d.vcp_score }}</small><br>
           <em>{{ d.rationale }}</em>
           {% if d.chart_b64 %}<img class="chart" src="{{ d.chart_b64 }}" alt="{{ d.ticker }} chart">
           {% elif d.chart_href %}<a class="chart-link" href="{{ d.chart_href }}">{{ d.ticker }} chart (linked)</a>
