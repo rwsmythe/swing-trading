@@ -66,23 +66,39 @@ def _sizing_entry(pivot: float, stop: float) -> float:
     return mandate_limit_price(zone_cap_for_pivot(pivot))
 
 
-def _price(value: float) -> str:
-    """A price at the precision it actually carries, 2dp or 4dp.
+def _equation(shares: int, basis: float, stop: float,
+              risk_dollars: float) -> str:
+    """The risk equation, at whatever precision makes it TRUE.
 
-    CODEX R3 MAJOR. `candidates.initial_stop` is a bare REAL with no
-    cent-precision constraint, and 1105 of the 11753 live candidate rows
-    carry a sub-cent stop (ADPT, 2026-08-04: 19.771). Printing such a stop
-    at 2dp inside an EQUATION makes the equation FALSE -- 9 x (23.84 -
-    19.77) is $36.63 beside a stated $36.62 -- and a "self-checkable" line
-    that fails its own check is worse than one that never invited the check.
+    CODEX R3 MAJOR, GENERALISED AT R4. `candidates.initial_stop` is a bare
+    REAL with NO precision constraint, and 1105 of the 11753 live candidate
+    rows already carry a sub-cent stop (ADPT, 2026-08-04: 19.771). A FIXED
+    display precision cannot serve every one of them, because the residual
+    is MULTIPLIED BY THE SHARE COUNT: at pivot 0.5001 / stop 0.500049 the
+    position cap binds at 2205 shares and a 4-decimal stop states an
+    equation worth $22.05 beside a risk of $21.94. A self-checkable line
+    that fails its own check is worse than one that never invited the
+    check, so THE PRECISION IS DERIVED FROM THE CHECK rather than guessed.
 
-    The cap needs no such treatment (`mandate_limit_price` returns a
-    whole-cent value by construction), but it goes through the same helper
-    so a future basis that is not cent-exact cannot silently reintroduce the
-    defect.
+    Two decimals are tried first because that is what every ordinary
+    geometry needs and extra digits are noise; the search widens only when
+    the printed equation would not round to the printed risk.
+
+    THE FALLBACK IS EXACT, NOT A LAST GUESS. `repr` of a float is the
+    shortest decimal that ROUND-TRIPS it, so the operands parse back to the
+    very floats `compute_shares` subtracted and the equation reproduces
+    `risk_dollars` bit for bit. The loop above it is a readability
+    preference, never a correctness dependency.
     """
-    return (f"{value:.2f}" if round(value, 2) == round(value, 4)
-            else f"{value:.4f}")
+    target = round(risk_dollars, 2)
+    for places in (2, 4, 6, 8):
+        cap_text = f'{basis:.{places}f}'
+        stop_text = f'{stop:.{places}f}'
+        if round(shares * (float(cap_text) - float(stop_text)), 2) == target:
+            break
+    else:
+        cap_text, stop_text = repr(float(basis)), repr(float(stop))
+    return f' = {shares} x (${cap_text} cap - ${stop_text} stop)'
 
 
 def _sizing_result(pivot: float, stop: float, ctx: BuildContext):
@@ -144,8 +160,7 @@ def _format_action(shares: int, entry: float, risk_dollars: float,
         return "Risk infeasible at current sizing — skip or wait for tighter setup"
     text = f"Buy-stop ${entry:.2f} \u00b7 {shares} sh \u00b7 ${risk_dollars:.2f} risk"
     if basis is not None and stop is not None:
-        text += (f" = {shares} x (${_price(basis)} cap"
-                 f" - ${_price(stop)} stop)")
+        text += _equation(shares, basis, stop, risk_dollars)
     return text
 
 

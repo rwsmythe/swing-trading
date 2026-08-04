@@ -235,11 +235,68 @@ def test_the_equation_is_TRUE_for_a_SUB_CENT_STOP():
 
 
 def test_a_CENT_EXACT_stop_still_prints_at_TWO_decimals():
-    """The control on `_price`: adding precision where it is needed must not
+    """The control on `_equation`: adding precision where it is needed must not
     add noise where it is not."""
     text = _recs()[0].action_text or ""
     assert f"${AMN_STOP:.2f} stop" in text
     assert f"${AMN_STOP:.4f} stop" not in text
+
+
+def _parse_equation(text: str):
+    """`(risk, shares, cap, stop)` off the action line, or None."""
+    import re
+
+    m = re.search(
+        r"\$([0-9.]+) risk = (\d+) x \(\$([0-9.eE+-]+) cap "
+        r"- \$([0-9.eE+-]+) stop\)", text)
+    return None if m is None else (
+        float(m[1]), int(m[2]), float(m[3]), float(m[4]))
+
+
+@pytest.mark.parametrize("pivot,stop,why", [
+    (36.27, 30.85, "AMN live -- cent-exact, needs 2dp"),
+    (23.15, 19.771, "ADPT live -- 3dp stop, needs 4dp"),
+    (0.5001, 0.500049, "R4: the position cap binds at 2205 sh, so a 4dp "
+                       "stop states $22.05 against a $21.94 risk"),
+    (0.5001, 0.5000499999, "one digit past the widest fixed precision"),
+    (250.0, 249.0000001, "a large share-count amplifier on a tiny residual"),
+])
+def test_the_printed_equation_EVALUATES_at_every_reachable_precision(
+        pivot, stop, why):
+    """CODEX R4 MAJOR. A FIXED display precision cannot serve every stop,
+    because the residual is MULTIPLIED BY THE SHARE COUNT: `_price`'s 4-decimal
+    ceiling passed the ADPT case and still printed a false equation at
+    0.5001 / 0.500049. `candidates.initial_stop` is a bare REAL with no
+    precision constraint, so the precision must be DERIVED FROM THE CHECK.
+
+    This is the PROPERTY, asserted over the geometries that break each
+    candidate implementation in turn -- 2dp, 4dp, and the `repr` fallback.
+    """
+    recs = _recs(today_aplus=[_candidate("EQN", pivot=pivot, stop=stop)])
+    rec = recs[0]
+    if rec.shares == 0:
+        pytest.skip("infeasible geometry states no equation")
+    parsed = _parse_equation(rec.action_text or "")
+    assert parsed is not None, rec.action_text
+    risk, shares, cap, parsed_stop = parsed
+    assert shares == rec.shares
+    assert cap == mandate_limit_price(zone_cap_for_pivot(pivot))
+    assert round(shares * (cap - parsed_stop), 2) == round(rec.risk_dollars, 2), (
+        f"{why}: the printed equation does not evaluate to the printed risk")
+    assert risk == round(rec.risk_dollars, 2)
+
+
+def test_the_R4_geometry_needed_MORE_than_four_decimals():
+    """The DISCRIMINATOR behind the property test above -- without it, a
+    reviewer cannot tell whether the parametrised rows exercise anything the
+    previous fixed-4dp implementation did not."""
+    rec = _recs(today_aplus=[
+        _candidate("EQN", pivot=0.5001, stop=0.500049)])[0]
+    text = rec.action_text or ""
+    assert rec.shares == 2205
+    assert "$0.500049 stop" in text, text
+    # The retired 4-decimal form printed this, and it is FALSE:
+    assert round(2205 * (0.51 - 0.5000), 2) != round(rec.risk_dollars, 2)
 
 
 def test_an_UNORDERABLE_geometry_is_INFEASIBLE_not_an_ABORT():
