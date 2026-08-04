@@ -94,7 +94,8 @@ def _equation(shares: int, basis: float, stop: float,
     return f' = {shares} x (${cap_text} cap - ${stop_text} stop)'
 
 
-def _sizing_result(pivot: float, stop: float, ctx: BuildContext):
+def _sizing_result(pivot: float | None, stop: float | None,
+                   ctx: BuildContext):
     """`(basis, SizingResult)` for one row -- INFEASIBLE, never an
     abort, when the geometry is not orderable.
 
@@ -128,6 +129,17 @@ def _sizing_result(pivot: float, stop: float, ctx: BuildContext):
     kind -- it reached `compute_shares` and raised before this change and
     still does.
 
+    A NULL PIVOT OR STOP IS THE SAME CLASS AND IS REFUSED THE SAME WAY
+    (Codex R6). `Candidate.pivot` and `Candidate.initial_stop` are both
+    `float | None` and the schema declares both REAL without NOT NULL, and
+    `_step_recommendations` passes every A+ candidate through unfiltered.
+    A `None` reaching the ordering comparison raises `TypeError` OUTSIDE
+    any guard, so one degenerate evaluator row lost the whole batch. That
+    is PRE-EXISTING -- `compute_shares(entry=None, ...)` raised the same
+    way before this change -- but it is the same batch-loss class as the
+    two above, in the same function, and the dashboard's own builder has
+    guarded the null pair since Phase 2.
+
     THE ORDERING TEST IS `stop >= pivot`, NOT `not stop < pivot`, AND THE
     DIFFERENCE IS `nan`. Every comparison against `nan` is False, so a
     `nan` PIVOT falls through this gate and is caught one line below as a
@@ -136,12 +148,14 @@ def _sizing_result(pivot: float, stop: float, ctx: BuildContext):
     `math.floor(nan)` and aborted; the strict form would have re-created
     the abort while reading like a tightening.
     """
-    if stop >= pivot:
-        raise ValueError(
-            f'stop must be < pivot; got pivot={pivot}, stop={stop}')
     infeasible = SizingResult(
         shares=0, risk_dollars=0.0, risk_pct=0.0, notional=0.0,
         notional_pct=0.0, feasible=False, constraint='infeasible')
+    if pivot is None or stop is None:
+        return None, infeasible
+    if stop >= pivot:
+        raise ValueError(
+            f'stop must be < pivot; got pivot={pivot}, stop={stop}')
     try:
         basis = _sizing_entry(pivot)
     except ValueError:

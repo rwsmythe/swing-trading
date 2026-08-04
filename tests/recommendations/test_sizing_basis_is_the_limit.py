@@ -43,7 +43,8 @@ RISK_BUDGET = 37.50             # 7500 * 0.005
 
 def _candidate(ticker="AMN", *, pivot=AMN_PIVOT, stop=AMN_STOP) -> Candidate:
     return Candidate(
-        ticker=ticker, bucket="aplus", close=pivot - 0.5, pivot=pivot,
+        ticker=ticker, bucket="aplus",
+        close=None if pivot is None else pivot - 0.5, pivot=pivot,
         initial_stop=stop, adr_pct=5.0, tight_streak=3, pullback_pct=10.0,
         prior_trend_pct=30.0, rs_rank=85, rs_return_12w_vs_spy=0.20,
         rs_method="universe", pattern_tag=None, notes=None, criteria=(),
@@ -346,6 +347,32 @@ def test_a_NON_FINITE_pivot_cannot_suppress_the_REST_of_the_batch(pivot, why):
     assert "infeasible" in (by_ticker["BAD"].action_text or "").lower()
     assert "$" not in (by_ticker["BAD"].action_text or "")
     # ...and the ordinary row is still written, which is the whole point.
+    assert by_ticker["AMN"].shares == 5
+
+
+@pytest.mark.parametrize("pivot,stop", [
+    (None, AMN_STOP),
+    (AMN_PIVOT, None),
+    (None, None),
+])
+def test_a_NULL_pivot_or_stop_cannot_suppress_the_REST_of_the_batch(
+        pivot, stop):
+    """CODEX R6 MAJOR, and it is PRE-EXISTING rather than a regression --
+    `compute_shares(entry=None, ...)` raised `TypeError` the same way before
+    this change. It is fixed here because it is the SAME batch-loss class as
+    the unorderable limit and the non-finite pivot, in the same function, and
+    the dashboard's builder has guarded the null pair since Phase 2.
+
+    `Candidate.pivot` and `Candidate.initial_stop` are both `float | None`, the
+    schema declares both REAL without NOT NULL, and `_step_recommendations`
+    passes every A+ candidate through unfiltered -- so ONE degenerate evaluator
+    row lost the whole night.
+    """
+    recs = _recs(today_aplus=[_candidate("NULLS", pivot=pivot, stop=stop),
+                              _candidate()])
+    by_ticker = {r.ticker: r for r in recs}
+    assert by_ticker["NULLS"].shares == 0
+    assert "infeasible" in (by_ticker["NULLS"].action_text or "").lower()
     assert by_ticker["AMN"].shares == 5
 
 
