@@ -1137,9 +1137,29 @@ def rederive_prepared_order(conn, cfg, *, candidate_id: int, anchor: date):
     """
     derivation = build_latch_derivation(
         conn, cfg, horizon_session_override=anchor)
-    live = [lat for lat in derivation.latches if lat.is_live]
+    # LIVE, OR TERMINATED BY THE OPERATOR'S OWN DECISION (item 3a).
+    #
+    # Once a `decline` TERMINATES the mandate (RD OQ-4), a liveness-only filter
+    # here makes the decision UNAMENDABLE -- and that contradicts a shipped,
+    # RD-ruled property of the ledger this feeds. `build_idempotency_key` carries
+    # `prior_intent_id` precisely so a CORRECTION keys differently from a REPLAY,
+    # on the stated ground that "the governing answer is his LAST, never his last
+    # DISTINCT" (ruling 3), and the key is deliberately LATCH-scoped rather than
+    # kind-scoped -- ONE rule, not five. `governing_decision` resolves the
+    # place/decline family by RECENCY for the same reason. Refusing to RECORD the
+    # later member of a family whose resolution rule is "the latest wins" is
+    # incoherent: it would let him end a mandate but never take it back.
+    #
+    # Scoped to `declined` ALONE. A fill, an invalidation, a supersede and an
+    # expiry are all authored by the WORLD, and none of them is his to amend --
+    # so those still refuse, exactly as before.
+    openable = [
+        lat for lat in derivation.latches
+        if lat.is_live or lat.clear_reason == "declined"
+    ]
     latch = next(
-        (lat for lat in live if lat.identity.candidate_id == candidate_id), None)
+        (lat for lat in openable
+         if lat.identity.candidate_id == candidate_id), None)
     if latch is None:
         return None, None
     try:

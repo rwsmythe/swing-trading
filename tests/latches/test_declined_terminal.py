@@ -425,3 +425,38 @@ def test_the_lifecycle_and_the_classifier_agree_on_every_collision():
     live = _derive().latches[0]
     assert live.is_live is True
     assert _classified(live, [foreign]).disposition != "declined"
+
+
+# --------------------------------------------------------------------------
+# The recording surface: a decline is AMENDABLE; no other terminal is
+# --------------------------------------------------------------------------
+def test_only_a_DECLINED_terminal_reopens_the_recording_surface():
+    """`rederive_prepared_order`'s filter, pinned as a PREDICATE rather than
+    through the route, so the rule is stated where it is decided.
+
+    Once a decline terminates the mandate, a liveness-only filter makes the
+    operator's own decision UNAMENDABLE -- which contradicts the shipped ledger
+    contract (`build_idempotency_key` carries `prior_intent_id` precisely so a
+    CORRECTION keys differently from a REPLAY, on RD ruling 3: the governing
+    answer is his LAST, never his last DISTINCT). So `declined` reopens it.
+
+    EVERY OTHER TERMINAL STILL REFUSES, and that is the half a one-sided fix
+    gets wrong: a fill, an invalidation, a supersede and an expiry are authored
+    by the WORLD, not by him, and none is his to take back.
+    """
+    from dataclasses import replace
+
+    live = _derive().latches[0]
+    declined = _derive(
+        decisions=[_decision("decline", session=D5, intent_id=1)]).latches[0]
+
+    def _openable(latch):
+        return latch.is_live or latch.clear_reason == "declined"
+
+    assert _openable(live) is True
+    assert _openable(declined) is True
+    for reason, state in (("fill", "filled"), ("invalidation", "invalidated"),
+                          ("horizon", "horizon_expired"),
+                          ("superseded", "superseded")):
+        other = replace(declined, clear_reason=reason, state=state)
+        assert _openable(other) is False, reason
