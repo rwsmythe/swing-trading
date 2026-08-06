@@ -67,7 +67,7 @@ def test_locked_constants():
         "armed", "order_resting", "filled", "invalidated", "horizon_expired",
         "superseded"})
     assert LATCH_CLEAR_REASONS == frozenset({
-        "fill", "invalidation", "horizon", "superseded"})
+        "fill", "invalidation", "horizon", "superseded", "declined"})
 
 
 def test_horizon_is_derived_from_the_observe_window_not_hard_coded():
@@ -95,3 +95,41 @@ def test_zone_escape_is_not_a_clear_reason():
     A future contributor adding it here would clear latches whose resting
     orders are still valid and would desynchronize the panel from the broker."""
     assert not {r for r in LATCH_CLEAR_REASONS if "zone" in r}
+
+
+# --- Item 3a: the `declined` clear reason (RD OQ-4). The #11 mirror locks. ---
+def test_every_clear_reason_maps_to_a_non_live_state():
+    """T1.2(a). Iterating the frozenset, so a SIXTH reason gains this lock
+    automatically rather than needing someone to remember the map."""
+    from swing.latches.models import _LIVE_STATES
+    from swing.latches.service import _STATE_BY_CLEAR_REASON
+
+    assert set(_STATE_BY_CLEAR_REASON) == set(LATCH_CLEAR_REASONS)
+    for reason, state in _STATE_BY_CLEAR_REASON.items():
+        assert state in LATCH_STATES, reason
+        assert state not in _LIVE_STATES, reason
+
+
+def test_declined_maps_to_horizon_expired_exactly():
+    """T1.2(b) -- residual R1, pinned as a LITERAL.
+
+    OQ-2 ruled Option B for `criteria_lapsed`: the state enum is a mechanism and
+    the REASON carries every distinction. R1 applies that same principle to
+    `declined`. Without this literal the reason could map to `filled` or
+    `invalidated` and still satisfy the generic non-live assertion above -- which
+    is exactly how an INFERRED mirror ships wrong.
+    """
+    from swing.latches.service import _STATE_BY_CLEAR_REASON
+
+    assert _STATE_BY_CLEAR_REASON["declined"] == "horizon_expired"
+
+
+def test_critical_stale_clear_reasons_are_pinned_as_literals():
+    """T1.4(a). OQ-1's ruling is that severity encodes the operator's outstanding
+    DUTY, not fault -- so `declined` joins the set (residual R2): an order resting
+    behind a mandate he DECLINED carries the identical duty to cancel it, and the
+    identical consequence if he does not."""
+    from swing.latches.orders import _CRITICAL_STALE_CLEAR_REASONS
+
+    assert _CRITICAL_STALE_CLEAR_REASONS == frozenset({
+        "invalidation", "superseded", "declined"})

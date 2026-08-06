@@ -322,6 +322,40 @@ def test_a_superseded_latch_renders_as_a_normal_historical_terminal(seeded_db):
     assert sup.latched_pivot == "18.34"      # its OWN frozen value kept
 
 
+def test_a_declined_latch_never_renders_as_HORIZON_EXPIRED():
+    """T1.3 render half. Option B (OQ-2, applied to `declined` per residual R1)
+    puts THREE reasons behind one state, so the label must branch on the REASON
+    the way `superseded` already does -- otherwise the card tells the operator
+    his own decision was a deadline expiring.
+
+    Called directly rather than through the panel because at this commit no
+    emitter produces the terminal: the vocabulary is legal and simply never
+    occurs yet, which is the #11 property Task 1 exists to establish.
+    """
+    from dataclasses import replace as _replace
+    from datetime import date
+
+    from swing.latches.identity import LatchIdentity
+    from swing.latches.models import Latch
+    from swing.web.view_models.latches import _state_label
+
+    expired = Latch(
+        identity=LatchIdentity(
+            candidate_id=9276, evaluation_run_id=103, ticker="FTRE",
+            detection_date="2026-07-01", pipeline_run_id=116),
+        latched_pivot=18.34, latched_initial_stop=15.00, zone_cap=18.89,
+        anchor=date(2026, 7, 1), horizon_expiry=date(2026, 8, 13),
+        sessions_elapsed=30, sessions_to_horizon=0,
+        state="horizon_expired", clear_reason="horizon",
+        clear_session=date(2026, 8, 13))
+    declined = _replace(expired, clear_reason="declined",
+                        clear_session=date(2026, 7, 30))
+    assert _state_label(expired, "unknown") == "HORIZON EXPIRED"
+    label = _state_label(declined, "unknown")
+    assert label == "DECLINED - operator declined on 2026-07-30"
+    assert "HORIZON" not in label
+
+
 def test_the_beacon_payload_carries_the_render_time_anchor_and_the_live_set(
         seeded_db):
     """The A4 seam's anchor. A payload built at POST time instead would

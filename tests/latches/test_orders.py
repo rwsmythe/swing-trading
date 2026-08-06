@@ -164,6 +164,44 @@ def test_horizon_cleared_latch_with_a_resting_order_is_warning_not_critical():
     assert "horizon" in alarms[0].detail
 
 
+def test_a_declined_latch_alarms_CRITICAL_although_it_shares_horizons_state():
+    """T1.3 + T1.4(b) -- THE CALLER-SIDE OBLIGATION (gotcha #31), and the ONLY
+    consumer that can discriminate it.
+
+    Option B (OQ-2) gives `declined` and `horizon` the SAME `state`
+    (`horizon_expired`), so the mitigation for the two collapsing cannot be a
+    comment -- it has to be a test whose output DIFFERS between them. The two
+    latches here are byte-identical apart from `clear_reason`, which is what
+    makes the discriminator exact: an implementation that selected severity off
+    `latch.state` returns the same answer for both and fails.
+
+    (The execution resolver at `classification.py:401` was the other candidate
+    and does NOT qualify -- it keys on `clear_reason == "fill"`, so a
+    state-keyed defect gives the same answer for a declined and a horizon latch
+    and the assertion would pass under the very bug it claims to catch.)
+    """
+    from dataclasses import replace
+
+    old = FireRow(candidate_id=9276, evaluation_run_id=103, ticker="FTRE",
+                  pivot=18.34, initial_stop=15.00,
+                  action_session_date="2026-07-01",
+                  run_ts="2026-07-01T06:30:23", pipeline_run_id=116)
+    expired = derive_latches(
+        fires=[old], bars_by_ticker={"FTRE": []}, entries_by_ticker={},
+        horizon_session=date(2026, 8, 13),
+        derivation_session=date(2026, 8, 13)).latches[0]
+    declined = replace(expired, clear_reason="declined")
+    assert declined.state == expired.state == "horizon_expired"
+
+    _, horizon_alarms = join_orders_to_latches(
+        latches=(expired,), orders=(_order(),))
+    _, declined_alarms = join_orders_to_latches(
+        latches=(declined,), orders=(_order(),))
+    assert horizon_alarms[0].severity == "warning"
+    assert declined_alarms[0].severity == "critical"
+    assert "declined" in declined_alarms[0].detail
+
+
 # --- Codex R1-2: PER-ORDER attribution, not per-ticker liveness ------------
 def _two_latches_one_cleared_one_live():
     """The live VSTS geometry: an earlier latch INVALIDATED (its GTC order is

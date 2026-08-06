@@ -43,11 +43,19 @@ from swing.latches.models import (
 # latch or flip an agreement flag.
 _PRICE_DP = 2
 
+# `declined` REUSES `horizon_expired` (RD OQ-2's Option B, applied to this
+# reason as residual R1). The state enum is a MECHANISM -- everything that must
+# tell a decline apart from a horizon expiry keys on the REASON, which is
+# first-class: the stale-order severity (`orders.py`
+# `_CRITICAL_STALE_CLEAR_REASONS`) and the panel's `_state_label` branch. The
+# alternative -- a new `LATCH_STATES` member -- is FOUR persisted CHECK clauses
+# across migrations 0032 and 0033 and buys nothing the reason does not carry.
 _STATE_BY_CLEAR_REASON = {
     "fill": "filled",
     "invalidation": "invalidated",
     "horizon": "horizon_expired",
     "superseded": "superseded",
+    "declined": "horizon_expired",
 }
 
 

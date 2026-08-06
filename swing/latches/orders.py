@@ -53,7 +53,18 @@ _LIMIT_BEARING_ORDER_TYPES = frozenset({
 # level. `superseded` is here on RD's gate ruling: "the panel must LOUDLY show
 # that any resting order placed against the old level no longer matches the new
 # mandate."
-_CRITICAL_STALE_CLEAR_REASONS = frozenset({"invalidation", "superseded"})
+#
+# `declined` joins on RD's OQ-1 reasoning (2026-08-06), which he ruled for
+# `criteria_lapsed` and which reaches here identically: THE ALARM CHANNEL
+# ENCODES DUTY, NOT FAULT -- blame lives in the DISPOSITION. The duty behind a
+# declined mandate (cancel the resting order) and the consequence of ignoring it
+# (an unmandated fill on a rally through a pivot nobody is standing behind) are
+# the same as the invalidation case, so the severity is the same.
+#
+# `horizon` is deliberately ABSENT and stays absent: a mandate that simply ran
+# out its window carries no act the operator left undone.
+_CRITICAL_STALE_CLEAR_REASONS = frozenset({
+    "invalidation", "superseded", "declined"})
 
 
 def to_resting_orders(schwab_orders) -> tuple[RestingOrder, ...]:

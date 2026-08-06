@@ -606,6 +606,13 @@ def _state_label(latch: Latch, zone_position: str) -> str:
     if latch.state == "superseded":
         session = latch.clear_session.isoformat() if latch.clear_session else "-"
         return f"SUPERSEDED - re-fired at a new pivot {session}"
+    # THE REASON BRANCH COMES BEFORE THE STATE MAP, and it has to (OQ-2's
+    # Option B): `declined` shares `horizon_expired` with `horizon`, so falling
+    # through to `_TERMINAL_STATE_LABELS` would tell the operator that his OWN
+    # recorded decision was a deadline running out.
+    if latch.clear_reason == "declined":
+        session = latch.clear_session.isoformat() if latch.clear_session else "-"
+        return f"DECLINED - operator declined on {session}"
     if latch.state in _TERMINAL_STATE_LABELS:
         return _TERMINAL_STATE_LABELS[latch.state]
     base = "ORDER RESTING" if latch.state == "order_resting" else "ARMED"

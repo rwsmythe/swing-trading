@@ -120,8 +120,14 @@ LATCH_STATES = frozenset({
 # in the ledger denominators. NOT produced by the bar walk -- stamped by the
 # section A.2 fold. There is NO zone-escape clear reason: zone escape is a
 # RENDER attribute of the armed state (plan section A.7.1).
+# `declined`: the OPERATOR recorded a `decline` decision against this latch's
+# candidate family while the mandate was still live, so it ends by HIS act
+# rather than by a framework event (RD OQ-4, 2026-08-06: V1-B, UNIFORM -- a
+# decline is a decline, on-screen or off). It is pure Python like every other
+# member here: the `decline` INTENT that authors it is persisted
+# (`latch_order_intents.intent_kind`), but the derived REASON never is.
 LATCH_CLEAR_REASONS = frozenset({
-    "fill", "invalidation", "horizon", "superseded",
+    "fill", "invalidation", "horizon", "superseded", "declined",
 })
 LATCH_FILL_LINK_BASES = frozenset({"candidate_id", "windowed"})
 LATCH_DEGRADED_REASONS = frozenset({
