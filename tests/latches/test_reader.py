@@ -911,3 +911,109 @@ def test_latest_recorded_close_stamp_is_none_on_an_empty_db(tmp_path):
         assert latest_recorded_close_stamp(conn) is None
     finally:
         conn.close()
+
+
+# --- Item 3a: the decision-intent load, and the fold it feeds --------------
+def _decline_row(conn, *, candidate_id, run_id, ticker, detection, session,
+                 kind="decline", intent_id=None, recorded_ts=None):
+    """Written through the PRODUCTION dataclass + repo, so the row shape is the
+    emitter's rather than a hand-built approximation of it."""
+    from swing.data.models import LatchOrderIntent
+    from swing.data.repos.latch_order_intents import record_intent
+    intent = LatchOrderIntent(
+        intent_id=None, candidate_id=candidate_id, evaluation_run_id=run_id,
+        ticker=ticker, detection_date=detection, pipeline_run_id=None,
+        idempotency_key=f"key-{candidate_id}-{session}-{kind}",
+        action_session_date=session,
+        recorded_ts=recorded_ts or f"{session}T10:00:00",
+        surface="latch_panel", intent_kind=kind,
+        decline_reason="off the screen" if kind == "decline" else None,
+        framework_order_type="STOP_LIMIT", framework_duration="GOOD_TILL_CANCEL",
+        framework_stop_price=18.34, framework_limit_price=18.89,
+        framework_quantity=9, derivation_zone_cap_pct=3.0,
+        derivation_sizing_equity=7500.0, derivation_max_risk_pct=0.005,
+        derivation_position_pct_cap=0.15, derivation_sizing_basis="limit_price",
+        derivation_regime_close=17.76, derivation_regime_close_session=detection,
+        derivation_real_equity=1300.0, derivation_equity_floor=7500.0)
+    with conn:
+        return record_intent(conn, intent=intent)
+
+
+def test_load_decision_intents_keeps_the_family_and_drops_everything_else(
+        ftre_db):
+    """The place/decline FAMILY, keyed by candidate id. An `attest` is not a
+    decision and must not reach the resolver -- it would make the latest
+    non-decision look like the governing answer."""
+    from swing.latches.reader import load_decision_intents
+    fire_id = load_fire_rows(ftre_db)[0].candidate_id
+    _decline_row(ftre_db, candidate_id=fire_id, run_id=121, ticker="FTRE",
+                 detection="2026-07-20", session="2026-07-22")
+    _decline_row(ftre_db, candidate_id=fire_id, run_id=121, ticker="FTRE",
+                 detection="2026-07-20", session="2026-07-23", kind="place")
+    got = load_decision_intents(ftre_db, [fire_id])
+    assert set(got) == {fire_id}
+    assert [i.intent_kind for i in got[fire_id]] == ["decline", "place"]
+
+
+def test_load_decision_intents_returns_empty_for_no_candidates(ftre_db):
+    """The empty IN () gotcha, and the honest answer for a latch-free DB."""
+    from swing.latches.reader import load_decision_intents
+    assert load_decision_intents(ftre_db, []) == {}
+
+
+def test_load_decision_intents_degrades_rather_than_raising(tmp_path):
+    """A6: an older DB with no 0033 table must not 500 the panel. Degrading to
+    {} keeps every mandate ALIVE, which is the conservative direction."""
+    import sqlite3
+
+    from swing.latches.reader import load_decision_intents
+    conn = sqlite3.connect(tmp_path / "bare.db")
+    try:
+        assert load_decision_intents(conn, [1, 2]) == {}
+    finally:
+        conn.close()
+
+
+def test_the_derivation_terminates_a_declined_latch_END_TO_END(ftre_db,
+                                                               tmp_path):
+    """The PRODUCTION path: the reader loads the intent, the fold consumes it,
+    the latch comes back `declined`. Every pure test above could pass while the
+    SQL fed the fold nothing at all."""
+    fire_id = load_fire_rows(ftre_db)[0].candidate_id
+    before = build_latch_derivation(
+        ftre_db, _cfg(tmp_path), now=datetime(2026, 7, 27, 12, 0))
+    assert before.latches[0].is_live is True
+
+    _decline_row(ftre_db, candidate_id=fire_id, run_id=121, ticker="FTRE",
+                 detection="2026-07-20", session="2026-07-23")
+    after = build_latch_derivation(
+        ftre_db, _cfg(tmp_path), now=datetime(2026, 7, 27, 12, 0))
+    latch = after.latches[0]
+    assert latch.clear_reason == "declined"
+    assert latch.clear_session == date(2026, 7, 23)
+
+
+def test_one_tickers_two_latches_do_not_share_a_decline_END_TO_END(tmp_path):
+    """T4.21(m), and it is DB-backed on purpose: a hand-built per-latch mapping
+    cannot exhibit this defect at all, because the hand-building is the very step
+    a ticker-keyed implementation gets wrong.
+
+    Discriminator: a ticker-keyed load terminates the SECOND mandate too -- one
+    the operator never declined -- and silences its no-resting-order alarm.
+    """
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        with conn:
+            _run(conn, 99, "2026-06-24", "2026-06-25", pipeline_run_id=112)
+            first = _candidate(conn, 99, "VSTS", "aplus", 13.56, 11.62)
+            _run(conn, 126, "2026-07-24", "2026-07-27", pipeline_run_id=140)
+            second = _candidate(conn, 126, "VSTS", "aplus", 16.90, 13.40)
+        _decline_row(conn, candidate_id=first, run_id=99, ticker="VSTS",
+                     detection="2026-06-25", session="2026-06-26")
+        d = build_latch_derivation(
+            conn, _cfg(tmp_path), now=datetime(2026, 7, 28, 12, 0))
+        by_id = {x.identity.candidate_id: x for x in d.latches}
+        assert by_id[first].clear_reason == "declined"
+        assert by_id[second].is_live is True
+    finally:
+        conn.close()

@@ -153,6 +153,57 @@ def load_entry_records(conn: sqlite3.Connection, tickers) -> dict[str, list[Entr
     return out
 
 
+def load_decision_intents(conn: sqlite3.Connection, candidate_ids) -> dict:
+    """The operator's `place`/`decline` ledger, keyed by CANDIDATE ID.
+
+    THE WHOLE DECISION FAMILY, NOT JUST THE DECLINES. `governing_decision`
+    resolves `place` and `decline` together because they are the two mutually
+    exclusive answers to ONE question; loading declines alone would re-create the
+    exact defect the design exists to prevent -- `decline(D5)` then `place(D6)`
+    would terminate the mandate, because the correcting place was filtered out
+    before the resolver could ever see it.
+
+    KEYED BY CANDIDATE ID, NOT BY TICKER. A ticker carries many historical
+    latches, and a ticker-keyed map hands an old mandate's decline to a newer
+    latch. The pure fold applies the per-latch candidate-family rule.
+
+    A6 AT THE SEAM, in TWO layers, because they fail differently:
+
+      * the whole read degrades to `{}` -- a missing 0033 table on an older DB
+        must not 500 the panel, and no decision evidence simply means no latch
+        terminates by decline;
+      * a SINGLE unhydratable row degrades to a skip of THAT CANDIDATE'S rows --
+        `_row_to_model` runs the dataclass validator, so one malformed row would
+        otherwise take the whole read down with it.
+
+    In both directions the degradation is toward KEEPING MANDATES ALIVE, which
+    is the conservative outcome: a latch the framework cannot prove was declined
+    stays armed and keeps alarming, rather than going quiet on evidence it could
+    not read.
+    """
+    ids = sorted({int(c) for c in (candidate_ids or ())})
+    if not ids:
+        return {}
+    try:
+        from swing.data.repos.latch_order_intents import list_intents_for_latch
+    except Exception as exc:  # noqa: BLE001 -- A6
+        log.warning("latch reader: decision-intent repo unavailable: %s", exc)
+        return {}
+    out: dict[int, tuple] = {}
+    for candidate_id in ids:
+        try:
+            rows = list_intents_for_latch(conn, candidate_id=candidate_id)
+        except Exception as exc:  # noqa: BLE001 -- A6
+            log.warning(
+                "latch reader: decision-intent read degraded for candidate "
+                "%s: %s", candidate_id, exc)
+            continue
+        family = tuple(r for r in rows if r.intent_kind in ("place", "decline"))
+        if family:
+            out[candidate_id] = family
+    return out
+
+
 def load_bars(cfg, ticker: str, *, start: date, end: date) -> list[DailyBar]:
     """Daily bars for `[start, end]` from the ON-DISK archive. NO network I/O.
 
@@ -457,6 +508,11 @@ def build_latch_derivation(
     )
     tickers = sorted({f.ticker for f in fires})
     entries_by_ticker = load_entry_records(conn, tickers)
+    # Scoped to the AS-OF FIRE SET, so a beacon POST carrying yesterday's anchor
+    # cannot pick up a decision recorded against a fire that did not exist in the
+    # world that anchor describes.
+    decisions_by_candidate = load_decision_intents(
+        conn, [f.candidate_id for f in fires])
 
     bars_by_ticker: dict[str, list[DailyBar]] = {}
     status_by_ticker: dict[str, str] = {}
@@ -503,4 +559,5 @@ def build_latch_derivation(
         derivation_session=derivation_session,
         horizon_sessions=horizon_sessions,
         bar_status_by_ticker=status_by_ticker,
+        decision_intents_by_candidate_id=decisions_by_candidate,
     )

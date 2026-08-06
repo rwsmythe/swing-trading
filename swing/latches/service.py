@@ -24,6 +24,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 
 from swing.evaluation.dates import session_offset, sessions_behind
+from swing.latches.classification import admissible_decisions, governing_decision
 from swing.latches.constants import (
     DEFAULT_LATCH_HORIZON_SESSIONS,
     zone_cap_for_pivot,
@@ -83,12 +84,49 @@ class _Draft:
         return zone_cap_for_pivot(self.pivot)
 
 
+# THE PRECEDENCE LADDER, PROJECTED ONTO THE LIVE VOCABULARY (RD's R6 ruling,
+# 2026-08-06). His ladder reads
+#
+#     fill > declined > superseded > invalidation > criteria_lapsed > horizon
+#
+# and its AUTHORITY is that ruling, not this table. What the table holds is the
+# ladder RESTRICTED to the reasons this resolver can actually produce today --
+# every key here has a producer, and a rung for a reason with no writer would be
+# a guard preceding its condition. The domain is pinned against
+# `LATCH_CLEAR_REASONS` by test, so the vocabulary and its precedence cannot
+# drift apart: adding a reason without ranking it fails immediately.
+#
+# RANK BREAKS SAME-SESSION TIES AND NOTHING ELSE. A terminal is an event with a
+# DATE and the EARLIEST one ends the mandate; nothing later can un-happen it
+# (L10). A resolver that scanned for one reason before considering another would
+# rewrite a terminal that had already resolved -- and would then compare the
+# fill against the wrong date, attributing a buy to a mandate the framework had
+# already retired.
+#
+# The reasoning behind the order is RD's: operator FACTS (a fill) beat operator
+# DECISIONS (a decline) beat framework EVENTS (a re-fire, which is an
+# affirmative CURRENT fact) beat framework EVIDENCE of decay (an invalidation)
+# beat DEADLINES (the horizon).
+_CLEAR_REASON_RANK = {
+    "fill": 0,
+    "declined": 1,
+    "superseded": 2,
+    "invalidation": 3,
+    "horizon": 4,
+}
+
+
 @dataclass(frozen=True)
 class _Terminal:
     reason: str
     session: date
     trade_id: int | None = None
     fill_link_basis: str | None = None
+
+    @property
+    def order_key(self) -> tuple[date, int]:
+        """Earliest date first; rank only on a tie."""
+        return (self.session, _CLEAR_REASON_RANK[self.reason])
 
 
 def _validate_fire(fire: FireRow) -> tuple[date | None, str | None]:
@@ -230,6 +268,40 @@ def _has_fill_link_anomaly(draft: _Draft, entries: list[EntryRecord]) -> bool:
     )
 
 
+def _resolve_decline(
+    draft: _Draft, decisions, *, upper: date,
+) -> _Terminal | None:
+    """The ``declined`` terminal for this draft, or ``None`` (RD OQ-4).
+
+    THE CROSS-KIND RESOLVER, NOT "THE LATEST DECLINE". ``governing_decision``
+    resolves the ``place``/``decline`` FAMILY together because they are the two
+    mutually exclusive answers to ONE question -- so ``decline(D5)`` followed by
+    ``place(D6)`` yields a PLACE and this latch does not terminate. Keying on the
+    latest DECLINE instead would withdraw a mandate the operator had corrected
+    himself and re-placed, while the classifier went on scoring it ``accepted``:
+    one latch, two contradictory answers. Sharing the resolver is the only thing
+    that makes them agree.
+
+    The family and window scoping live in ``admissible_decisions``, which BOTH
+    this resolver and ``classify_latch`` call -- and the filter runs BEFORE the
+    winner is chosen, never after (see that function).
+
+    ``upper`` is the caller's as-of bound already capped at ``horizon_expiry``:
+    an intent that has not happened yet as of a liveness probe must not decide
+    it, and one recorded after the mandate lapsed is not a withdrawal OF it.
+    """
+    governing = governing_decision(admissible_decisions(
+        decisions, candidate_set=draft.candidate_set,
+        lower=draft.anchor, upper=upper))
+    if governing is None or governing.intent_kind != "decline":
+        return None
+    try:
+        session = date.fromisoformat(str(governing.action_session_date))
+    except (TypeError, ValueError):        # pragma: no cover -- filtered above
+        return None
+    return _Terminal("declined", session)
+
+
 def _resolve_terminal(
     draft: _Draft,
     *,
@@ -241,16 +313,26 @@ def _resolve_terminal(
     fill_bound: date,
     horizon_sessions: int,
     dry_run: bool,
+    decisions=(),
 ) -> _Terminal | None:
     """Resolve this latch's terminal, or ``None`` when it is still live.
 
     Three passes (plan A.6 c), which is what removes the circularity between
     "the fill bounds the terminal" and "the terminal bounds the fill":
 
-    1. the NON-FILL terminal -- the invalidation bar walk, then the horizon;
+    1. the NON-FILL candidates -- the invalidation bar walk, the operator's
+       governing decline, and the horizon -- resolved EARLIEST-DATE-FIRST with
+       ``_CLEAR_REASON_RANK`` breaking a same-session tie only;
     2. the fill search, bounded by that non-fill terminal;
-    3. the precedence ``fill > invalidation > horizon`` (RD gate G.4: facts
-       beat signals beat deadlines).
+    3. the fill's own rung, which is the same ranked comparison: rank 0 means a
+       fill AT OR BEFORE the winning non-fill terminal takes it.
+
+    So the precedence is ``fill > declined > invalidation > horizon`` (RD gate
+    G.4 as extended by his OQ-4 and R6 rulings: operator facts beat operator
+    decisions beat framework evidence beats deadlines). ``superseded`` is stamped
+    by the FOLD rather than here -- it is authored by the arrival of the NEXT
+    fire, which this function cannot see -- and it carries its rank for the one
+    comparison the fold makes.
 
     THREE SEPARATE BOUNDS, because they answer different questions:
 
@@ -267,7 +349,7 @@ def _resolve_terminal(
     ``dry_run`` makes this a read-only probe, so a probe never consumes a trade
     the real resolution must see.
     """
-    nonfill: _Terminal | None = None
+    candidates: list[_Terminal] = []
     # The walk stops at the HORIZON EXPIRY as well as at `bar_bound`: once the
     # mandate is dead, a later close below the stop is not an invalidation OF
     # IT. Without the cap a post-expiry break would overwrite `horizon_expired`
@@ -287,12 +369,26 @@ def _resolve_terminal(
         # Rounding is conservative in the SAFE direction: it keeps a marginal
         # mandate armed rather than silently killing it.
         if round(bar.close, _PRICE_DP) < round(draft.stop, _PRICE_DP):
-            nonfill = _Terminal("invalidation", bar.session)
+            candidates.append(_Terminal("invalidation", bar.session))
             break
-    if nonfill is None and sessions_behind(horizon_ref, draft.anchor) >= horizon_sessions:
+    # THE OPERATOR'S OWN DECISION, capped at the expiry like every other walk.
+    decline = _resolve_decline(
+        draft, decisions, upper=min(fill_bound, draft.horizon_expiry))
+    if decline is not None:
+        candidates.append(decline)
+    if sessions_behind(horizon_ref, draft.anchor) >= horizon_sessions:
         # Inclusive-expire, matching the in-tree observe-window precedent
         # (`swing/pipeline/runner.py` `sessions_since_detection >= max_pending`).
-        nonfill = _Terminal("horizon", draft.horizon_expiry)
+        #
+        # THE HORIZON IS A RANKED CANDIDATE, NOT A FALLBACK, and the outcome is
+        # identical: both other walks are capped AT the expiry, so any date they
+        # produce is at-or-before it, and on the boundary session their ranks
+        # win. Expressing it as a candidate is what makes `horizon`'s place in
+        # the ladder a fact the table decides rather than one the control flow
+        # implies.
+        candidates.append(_Terminal("horizon", draft.horizon_expiry))
+
+    nonfill = min(candidates, key=lambda t: t.order_key) if candidates else None
 
     effective_end = (
         draft.horizon_expiry if nonfill is None
@@ -306,8 +402,15 @@ def _resolve_terminal(
         # An accepted match is definitively THIS latch's trade, so it is
         # consumed either way -- rule (b), one trade fills at most one latch.
         consumed.add(entry.trade_id)
-    if entry is not None and (nonfill is None or entry.entry_date <= nonfill.session):
-        return _Terminal("fill", entry.entry_date, entry.trade_id, basis)
+    if entry is not None:
+        fill = _Terminal("fill", entry.entry_date, entry.trade_id, basis)
+        # THE SAME RANKED COMPARISON as the non-fill candidates, so the fill's
+        # place in the ladder is decided by the table too. Rank 0 is what makes
+        # a fill dated exactly ON the winning terminal's session take it --
+        # "you cannot decline a filled mandate", and the same for an
+        # invalidation or an expiry landing that day.
+        if nonfill is None or fill.order_key <= nonfill.order_key:
+            return fill
     return nonfill
 
 
@@ -361,6 +464,7 @@ def _fold_ticker(
     horizon_session: date,
     derivation_session: date,
     horizon_sessions: int,
+    decisions=(),
 ) -> tuple[list[Latch], list[DegradedFire]]:
     """The per-ticker fold implementing the OPEN-LATCH rule (plan A.2).
 
@@ -374,14 +478,21 @@ def _fold_ticker(
     consumed: set[int] = set()
     open_draft: _Draft | None = None
 
-    def _close(draft: _Draft, *, superseded_session: date | None = None) -> Latch:
-        if superseded_session is not None:
-            terminal: _Terminal | None = _Terminal("superseded", superseded_session)
+    def _close(draft: _Draft, *, forced: _Terminal | None = None) -> Latch:
+        """`forced` is a terminal the FOLD authored rather than the resolver.
+
+        `superseded` is the only such reason: it is created by the ARRIVAL of
+        the next fire, which `_resolve_terminal` cannot see. The R6 branch below
+        passes the winner of `declined` vs `superseded` through the same
+        parameter, so the fold has exactly ONE stamping path.
+        """
+        if forced is not None:
+            terminal: _Terminal | None = forced
         else:
             terminal = _resolve_terminal(
                 draft, bars=bars, entries=entries, consumed=consumed,
                 horizon_ref=horizon_session, bar_bound=derivation_session,
-                fill_bound=horizon_session,
+                fill_bound=horizon_session, decisions=decisions,
                 horizon_sessions=horizon_sessions, dry_run=False)
         closed = _finalize(
             draft, terminal=terminal, bars=bars,
@@ -416,7 +527,7 @@ def _fold_ticker(
                 open_draft, bars=bars, entries=entries, consumed=consumed,
                 horizon_ref=anchor,
                 bar_bound=min(prior, derivation_session),
-                fill_bound=prior,
+                fill_bound=prior, decisions=decisions,
                 horizon_sessions=horizon_sessions, dry_run=True)
             # THE FINAL RESOLUTION CAN REVERSE THE PROBE, AND THAT REVERSAL
             # OUTRANKS BOTH BRANCHES BELOW.
@@ -432,7 +543,7 @@ def _fold_ticker(
             final_probe = _resolve_terminal(
                 open_draft, bars=bars, entries=entries, consumed=consumed,
                 horizon_ref=horizon_session, bar_bound=derivation_session,
-                fill_bound=horizon_session,
+                fill_bound=horizon_session, decisions=decisions,
                 horizon_sessions=horizon_sessions, dry_run=True)
             if (final_probe is not None
                     and final_probe.reason == "fill"
@@ -457,7 +568,22 @@ def _fold_ticker(
                     open_draft.reconfirmation_sessions.append(
                         fire.action_session_date)
                     continue
-                _close(open_draft, superseded_session=anchor)     # branch (b)
+                # branch (b) -- R6 (RD, 2026-08-06): `declined` OUTRANKS
+                # `superseded`. If the operator had already declined this
+                # mandate it was not live to be re-based, and stamping
+                # `superseded` would overwrite his own recorded decision with a
+                # framework inference. The fold must consult the decline HERE
+                # because the liveness probe deliberately stops short of the
+                # re-fire's own session, so a same-session decline is invisible
+                # to it. Resolved by the SAME ranked comparison the resolver
+                # uses -- one ladder, not a second hand-written rule.
+                declined = _resolve_decline(
+                    open_draft, decisions,
+                    upper=min(anchor, open_draft.horizon_expiry))
+                supersede = _Terminal("superseded", anchor)
+                _close(open_draft, forced=min(
+                    [t for t in (declined, supersede) if t is not None],
+                    key=lambda t: t.order_key))
             else:                                                 # clause (iii)
                 _close(open_draft)
             open_draft = None
@@ -481,8 +607,23 @@ def derive_latches(
     derivation_session: date,
     horizon_sessions: int = DEFAULT_LATCH_HORIZON_SESSIONS,
     bar_status_by_ticker=None,
+    decision_intents_by_candidate_id=None,
 ) -> LatchDerivation:
     """Fold every A+ fire into latches. PURE.
+
+    ``decision_intents_by_candidate_id`` (item 3a) is the operator's
+    ``place``/``decline`` ledger keyed by CANDIDATE ID, the way ``bars`` and
+    ``entries`` already arrive -- loaded by ``reader.py``, never read from a DB
+    in here (L8).
+
+    BOTH HALVES OF THAT NAME ARE LOAD-BEARING. ``decision``, not ``decline``:
+    the resolver needs the whole family or a decline the operator CORRECTED by
+    re-placing would still withdraw his mandate. ``by_candidate_id``, not
+    ``by_ticker``: a ticker carries many historical latches, and a ticker-keyed
+    mapping hands an old mandate's decline to a NEWER latch. Each latch selects
+    the intents in its OWN candidate family -- the opening fire plus its
+    re-confirmations, the identity rule the fill ladder's exact rung already
+    uses.
 
     ``bar_status_by_ticker`` (Arc 21-G) is the per-ticker archive READ status
     in ``ARCHIVE_STATUSES``, carried through onto ``LatchDerivation`` alongside
@@ -504,9 +645,12 @@ def derive_latches(
          row's session:
            (a) SAME frozen pivot  -> RE-CONFIRMATION (no new latch, no
                re-freeze; the count and the session list grow);
-           (b) DIFFERENT pivot    -> the old latch CLEARS with
-               ``clear_reason='superseded'`` stamped at this row's session, and
-               a NEW latch ARMS at the new frozen values.
+           (b) DIFFERENT pivot    -> the old latch CLEARS at this row's session
+               and a NEW latch ARMS at the new frozen values. The reason is
+               ``superseded`` UNLESS the operator had already recorded a
+               governing ``decline`` for that same session or earlier, in which
+               case it is ``declined`` (R6: his decision outranks the framework's
+               inference about a mandate he had already ended).
     (iii) otherwise the row opens a new latch normally.
 
     The hazard constraint 1 guards is not re-freezing as such -- it is
@@ -521,7 +665,16 @@ def derive_latches(
     latches: list[Latch] = []
     degraded: list[DegradedFire] = []
 
+    decisions_by_candidate = dict(decision_intents_by_candidate_id or {})
     for ticker in sorted(by_ticker):
+        # Flattened per TICKER here; `admissible_decisions` then applies the
+        # per-LATCH candidate-family rule inside the fold, so the family
+        # predicate is stated once rather than duplicated at the assembly site.
+        ticker_decisions = tuple(
+            intent
+            for fire in by_ticker[ticker]
+            for intent in decisions_by_candidate.get(fire.candidate_id, ())
+        )
         ticker_latches, ticker_degraded = _fold_ticker(
             by_ticker[ticker],
             bars=list(bars_by_ticker.get(ticker) or ()),
@@ -529,6 +682,7 @@ def derive_latches(
             horizon_session=horizon_session,
             derivation_session=derivation_session,
             horizon_sessions=horizon_sessions,
+            decisions=ticker_decisions,
         )
         latches.extend(ticker_latches)
         degraded.extend(ticker_degraded)
