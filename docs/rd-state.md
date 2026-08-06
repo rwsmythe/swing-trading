@@ -22,6 +22,8 @@
 
 **Posture: STOP-ENGINEERING + MARKET TIME.** Both measurement chains are forensically hardened and witnessed (research chain Phase 19; trading ledger Phase 20 / D25). The weeknight scheduler runs unattended at 17:30 HST.
 
+**Health 2026-08-06: RED adjudicated FALSE POSITIVE** (Calibration-C gap #3, mine: the 08-04 whole-session miss × the no-bar cohort — clause 1 tests OBSERVED where moved-past evidence is OBSERVED-OR-SKIP-EXPLAINED; 55 gaps = CNTA 40/CPRX 5/NSA 5/SKYT 5 exactly; NEVER self-heals, fix flagged to CHARC `20260806T112340Z`; truncate-at-last-bar = the V2 that kills the class). `invalid_ohlc` 23→38 WATCH. **Item 3 (criteria_lapsed) plan STOPPED at a ratification seam — TWELVE questions MINE at plan review** (incl. critical-stale severity + the LATCH_STATES member which decides the tripwire; plan `f1ed4b0c`, 928 lines; re-dispatch the same implementer after my rulings). Prior health note:
+
 **Health 2026-07-29:** research-health ALL SEVEN GREEN post-v32; `invalid_ohlc` still exactly baseline 23; drumbeat artifact 0 days old; 730 signals; unattributed 0.
 
 ## 2. LIVE TRADING STATE
