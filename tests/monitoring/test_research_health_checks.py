@@ -1496,6 +1496,234 @@ def test_calibration_c_partition_trailing_whole_session_miss_stays_gated() -> No
     assert residual == {"2026-06-15"}
 
 
+# ---------------------------------------------------------------------------
+# CLAUSE-1 WIDENING (RD adjudication 2026-08-06): clause 1's "the drumbeat
+# provably moved PAST the hole" evidence is OBSERVED **or** SKIP-EXPLAINED.
+# The live defect: 2026-08-04 was a WHOLE-SESSION MISS (scheduler never fired);
+# for normal detections 08-05 was OBSERVED so the 08-04 hole was clause-2a
+# accepted, but for the NO-BAR cohort (CNTA/CPRX/NSA/SKYT) a later session is
+# only ever SKIP-WARNED, never observed -> clause 1 returned False -> their
+# 08-04 hole counted -> a PERMANENT false RED (their expected windows never
+# close, so it never self-heals). Runs 147/148 emitted proper `no bar for
+# observation_date` skip-warnings for those very detections on 08-05, which IS
+# the moved-past evidence.
+#
+# Live shape mapped onto the _NOW calendar (last_completed == 2026-06-12):
+#   2026-06-11 == the whole-session miss (live 08-04): no completed run named
+#                 it, zero observations anywhere.
+#   2026-06-12 == the later session the drumbeat DID run (live 08-05): observed
+#                 by normal detections, only SKIP-WARNED for the no-bar cohort.
+# ---------------------------------------------------------------------------
+
+_CL1_NO_BAR_TICKERS = ("CNTA", "CPRX", "NSA", "SKYT")
+# The last real bars before the tickers go no-bar (delisted/acquired).
+_CL1_OBSERVED = ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10")
+_CL1_MISSED = "2026-06-11"   # the whole-session miss (live 2026-08-04)
+_CL1_LATER = "2026-06-12"    # the later session that DID run (live 2026-08-05)
+# 3 detections per ticker == 12 mature detections, so the pre-fix count (one
+# uncounted-then-counted _CL1_MISSED hole each) is 12 > _COVERAGE_RED_GAPS(10)
+# -> the live RED reproduces rather than a mere yellow.
+_CL1_DETECTION_DATES = ("2026-06-05", "2026-06-08", "2026-06-09")
+
+
+def _seed_no_bar_cohort(conn: sqlite3.Connection) -> list[int]:
+    """The no-bar cohort: 3 mature detections per live ticker, each observed
+    through its last real bar (06-10) and never again (no bars exist after)."""
+    det_ids: list[int] = []
+    for ticker in _CL1_NO_BAR_TICKERS:
+        for det_date in _CL1_DETECTION_DATES:
+            det = _seed_detection(
+                conn, ticker=ticker, detection_date=det_date,
+                data_asof_date="2026-06-04")
+            for d in _CL1_OBSERVED:
+                _seed_observation(conn, det, observation_date=d, status="pending")
+            det_ids.append(det)
+    return det_ids
+
+
+def _seed_no_bar_skip_run(conn: sqlite3.Connection, session: str, token: str) -> None:
+    """A COMPLETED run for `session` carrying the per-ticker `no bar for
+    observation_date` skip-warnings for the whole no-bar cohort (the real
+    run-147/148 shape: observation_date == data_asof_date)."""
+    _seed_pipeline_run(
+        conn, data_asof_date=session, lease_token=token,
+        warnings=[{"step": "pattern_observe", "ticker": t,
+                   "observation_date": session,
+                   "reason": "no bar for observation_date"}
+                  for t in _CL1_NO_BAR_TICKERS])
+
+
+def test_coverage_clause1_skip_explained_later_session_accepts_missed_session(
+    tmp_path: Path,
+) -> None:
+    # BINDING RED->GREEN (the live 08-04 x no-bar-cohort defect). The whole-
+    # session miss at 06-11 is accepted ONLY when clause 1 admits the
+    # SKIP-EXPLAINED later session 06-12 as moved-past evidence.
+    #
+    # Pre-fix: clause1 = max(observed)=06-10 > 06-11 -> FALSE for all 12
+    #          detections -> 2a never consulted -> 12 counted -> RED.
+    # Post-fix: clause1 = max(observed U skip-sessions for the ticker)
+    #          = 06-12 > 06-11 -> TRUE; 06-11 is a whole-session miss (zero
+    #          observations anywhere AND no completed run named it) -> 2a
+    #          accepts -> 0 counted -> GREEN.
+    conn = _schema_conn(tmp_path)
+    dets = _seed_no_bar_cohort(conn)
+    # A NORMAL detection: observed through 06-12, missing only the 06-11
+    # whole-session miss (RD's "for normal detections 08-05 was observed, so
+    # 08-04 is ACCEPTED" -- true pre- AND post-fix; it is here so 06-12 is
+    # globally observed exactly as it is live).
+    nrm = _seed_detection(conn, ticker="NRM", data_asof_date="2026-06-04")
+    for d in (*_CL1_OBSERVED, _CL1_LATER):
+        _seed_observation(conn, nrm, observation_date=d, status="pending")
+    # The run ledger: completed runs for every session EXCEPT 06-11 (the
+    # scheduler never fired that evening), and the 06-12 run carries the
+    # cohort's no-bar skip-warnings.
+    _seed_all_sessions_runs(conn, _CL1_OBSERVED, "tok-cl1")
+    _seed_no_bar_skip_run(conn, _CL1_LATER, "tok-cl1-skip")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"
+    assert "0 observation-coverage gaps" in check.summary
+    # EXACT accepted count (over-acceptance negative control): 12 cohort
+    # detections x {06-11 via clause-1+2a, 06-12 via 2b} + NRM's single 06-11.
+    assert "25 accepted historical" in check.summary
+    assert "accepted" in (check.detail or "")
+    assert len(dets) == 12
+
+
+def test_coverage_clause1_dead_drumbeat_after_hole_still_red(tmp_path: Path) -> None:
+    # STILL-RED #1 -- a genuinely DEAD/behind drumbeat. Identical fixture to the
+    # binding test EXCEPT the later session never ran: no completed run for
+    # 06-11 or 06-12 and therefore NO skip-warnings for them either (nothing
+    # runs -> nothing warns). The widened clause 1 must find NO moved-past
+    # evidence and the outage must stay RED.
+    #
+    # Pre-fix AND correct post-fix: max(observed U skip)=06-10, so clause1 is
+    #          False for both 06-11 and 06-12 -> nothing accepted -> 12 x 2 = 24
+    #          counted -> RED. A "clause1 always true" / "accept any hole"
+    #          mutant would 2a-accept both holes (neither session is globally
+    #          observed nor in the run ledger) -> GREEN -> FAILS here.
+    conn = _schema_conn(tmp_path)
+    _seed_no_bar_cohort(conn)
+    _seed_all_sessions_runs(conn, _CL1_OBSERVED, "tok-cl1dead")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "red"
+    assert "24 observation-coverage gap(s)" in check.summary
+    assert "accepted historical" not in check.summary
+
+
+def test_coverage_clause1_run_named_session_wrote_nothing_still_red(
+    tmp_path: Path,
+) -> None:
+    # STILL-RED #2 (the 4b lock) -- a run that NAMES the session and writes
+    # nothing WITH NO WARNING stays RED even though clause 1 is now satisfied.
+    # Same fixture as the binding test plus a completed run for 06-11 carrying
+    # no warnings at all (the zero-observation observe FAILURE).
+    #
+    # Post-fix: clause1 TRUE (06-12 skip-explained) but 2a requires 06-11 NOT in
+    #          run_observed_sessions -- it IS -> not accepted -> 12 counted ->
+    #          RED. A mutant that drops the run-ledger half of 2a (or that lets
+    #          clause-1 evidence accept on its own) flips this GREEN -> FAILS.
+    conn = _schema_conn(tmp_path)
+    _seed_no_bar_cohort(conn)
+    _seed_all_sessions_runs(conn, _CL1_OBSERVED, "tok-cl1nam")
+    _seed_pipeline_run(conn, data_asof_date=_CL1_MISSED, lease_token="tok-cl1-named")
+    _seed_no_bar_skip_run(conn, _CL1_LATER, "tok-cl1nam-skip")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "red"
+    assert "12 observation-coverage gap(s)" in check.summary
+
+
+def test_coverage_clause1_hole_at_globally_observed_session_still_red(
+    tmp_path: Path,
+) -> None:
+    # STILL-RED #3 (the global half of 2a) -- an unexplained hole at a session
+    # another detection WAS observed stays RED even though clause 1 is now
+    # satisfied. Same fixture as the binding test plus a sibling OTH observed on
+    # EVERY session including 06-11, and still no run-ledger row for 06-11.
+    #
+    # Post-fix: clause1 TRUE (06-12 skip-explained) but 2a requires 06-11 NOT in
+    #          global_observed_sessions -- OTH observed it -> not accepted -> 12
+    #          counted -> RED. A mutant dropping the global half flips this GREEN.
+    conn = _schema_conn(tmp_path)
+    _seed_no_bar_cohort(conn)
+    oth = _seed_detection(conn, ticker="OTH", data_asof_date="2026-06-04")
+    for d in (*_CL1_OBSERVED, _CL1_MISSED, _CL1_LATER):
+        _seed_observation(conn, oth, observation_date=d, status="pending")
+    _seed_all_sessions_runs(conn, _CL1_OBSERVED, "tok-cl1glb")
+    _seed_no_bar_skip_run(conn, _CL1_LATER, "tok-cl1glb-skip")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "red"
+    assert "12 observation-coverage gap(s)" in check.summary
+
+
+def test_calibration_c_partition_clause1_admits_later_skip_explained_session() -> None:
+    # Direct partition unit (calendar-independent): with EMPTY observed, a
+    # SKIP-EXPLAINED later session is sufficient clause-1 evidence.
+    # Pre-fix: observed empty -> clause1 False -> accepted == set().
+    # Post-fix: skip evidence at 06-12 > 06-10 -> clause1 True; 06-10 is a whole-
+    #          session miss -> accepted == {"2026-06-10"}.
+    from swing.monitoring.research_health import _calibration_c_partition
+    accepted, residual = _calibration_c_partition(
+        missing_set={"2026-06-10"},
+        observed=set(),
+        ticker="X",
+        global_observed_sessions=set(),
+        run_observed_sessions={"2026-06-05", "2026-06-12"},
+        skip_index={("X", "2026-06-12")},
+    )
+    assert accepted == {"2026-06-10"}
+    assert residual == set()
+
+
+def test_calibration_c_partition_clause1_earlier_skip_is_not_moved_past() -> None:
+    # ORDERING lock: a skip-warning EARLIER than the hole is not moved-past
+    # evidence. Kills a "clause1 = the ticker has any skip entry" mutant.
+    from swing.monitoring.research_health import _calibration_c_partition
+    accepted, residual = _calibration_c_partition(
+        missing_set={"2026-06-15"},
+        observed=set(),
+        ticker="X",
+        global_observed_sessions=set(),
+        run_observed_sessions={"2026-06-05"},
+        skip_index={("X", "2026-06-05")},
+    )
+    assert accepted == set()
+    assert residual == {"2026-06-15"}
+
+
+def test_calibration_c_partition_clause1_other_tickers_skip_is_not_evidence() -> None:
+    # TICKER lock: another ticker's later skip-warning is not THIS detection's
+    # moved-past evidence. Kills a mutant that ignores the ticker half of the
+    # existing _observe_skip_index (ticker, session) admission rule.
+    from swing.monitoring.research_health import _calibration_c_partition
+    accepted, residual = _calibration_c_partition(
+        missing_set={"2026-06-10"},
+        observed=set(),
+        ticker="X",
+        global_observed_sessions=set(),
+        run_observed_sessions={"2026-06-05", "2026-06-12"},
+        skip_index={("Y", "2026-06-12")},
+    )
+    assert accepted == set()
+    assert residual == {"2026-06-10"}
+
+
+def test_calibration_c_partition_clause1_skip_evidence_still_needs_ledger() -> None:
+    # CONSERVATIVE-DEGRADE lock: the None run-ledger sentinel blocks clause 2a
+    # even when the widened clause 1 is satisfied by skip evidence.
+    from swing.monitoring.research_health import _calibration_c_partition
+    accepted, residual = _calibration_c_partition(
+        missing_set={"2026-06-10"},
+        observed=set(),
+        ticker="X",
+        global_observed_sessions=set(),
+        run_observed_sessions=None,
+        skip_index={("X", "2026-06-12")},
+    )
+    assert accepted == set()
+    assert residual == {"2026-06-10"}
+
+
 def test_coverage_calib_c_null_warnings_json_skipped(tmp_path: Path) -> None:
     # Degradation variant (plan Task 6): a present pipeline_runs with a NULL /
     # non-JSON / non-list warnings_json row is skipped gracefully (no crash).

@@ -1058,7 +1058,8 @@ _TERMINAL_STATUSES = (
 # hole, or a zero-observation observe failure). ACCEPT (surface in detail, do
 # NOT drive red) a hole that is benign-explained by EITHER:
 #   (2a) a WHOLE-SESSION MISSED RUN, ACCEPTED ONLY when the drumbeat has
-#        provably moved PAST it (a later session for THAT detection IS observed):
+#        provably moved PAST it (a later session for THAT detection is OBSERVED
+#        **or** SKIP-EXPLAINED -- see _latest_moved_past_session):
 #        the session has ZERO observations anywhere AND no completed
 #        pipeline_runs row named it (keyed on the RUN LEDGER's data_asof_date,
 #        NOT the mere absence of observations -- runner.py writes
@@ -1226,6 +1227,49 @@ def _run_observed_sessions(conn: sqlite3.Connection) -> set[str] | None:
     return sessions or None
 
 
+def _latest_moved_past_session(
+    observed: set[str],
+    ticker: str | None,
+    skip_index: set[tuple[str, str]],
+) -> str | None:
+    """The LATEST session at which the drumbeat provably RAN this detection --
+    clause-1's "moved PAST the hole" evidence. None when there is none.
+
+    OBSERVED **or** SKIP-EXPLAINED (RD adjudication 2026-08-06, CALIBRATION-C
+    refinement #3). The original clause 1 tested OBSERVED only. That is the
+    right evidence for a normal detection, but a NO-BAR detection (a delisted /
+    acquired ticker whose expected window never closes because no bar will ever
+    terminate it) is only ever SKIP-WARNED at a later session and NEVER observed
+    -- so an OBSERVED-only clause 1 can never see the drumbeat move past it. The
+    live instance: 2026-08-04 was a whole-session miss (the scheduler did not
+    fire); runs 147/148 ran on 08-05 and emitted proper `no bar for
+    observation_date` skip-warnings for CNTA/CPRX/NSA/SKYT, which IS proof the
+    drumbeat ran beyond the hole -- yet their 08-04 hole counted, a PERMANENT
+    false RED (55 gaps that never self-heal) on the primary substrate channel.
+
+    The skip half REUSES the existing `_observe_skip_index` admission rule -- a
+    `pattern_observe` skip-warning of a known reason, in a state='complete' run,
+    whose observation_date equals that run's data_asof_date -- so there is ONE
+    admission rule, never a second forked predicate. Both halves are canonical
+    YYYY-MM-DD, so the lexical max IS the chronological max.
+
+    WHY THIS DOES NOT WIDEN THE STILL-RED SET: a skip-warning at L can only
+    exist because a COMPLETED run named L, so it is genuine moved-past evidence.
+    A dead/behind drumbeat runs nothing after the hole and therefore warns
+    nothing -> no later evidence -> clause 1 stays False -> the outage stays RED.
+    And clause 1 only GATES clause-2a: the whole-session-miss test (zero
+    observations anywhere AND no completed run named the session) is unchanged,
+    so a run that named the session and wrote nothing without a warning, and an
+    unexplained hole at a session another detection was observed, both stay RED.
+    """
+    latest = max(observed) if observed else None
+    if isinstance(ticker, str):
+        for skip_ticker, skip_session in skip_index:
+            if skip_ticker == ticker and (latest is None or skip_session > latest):
+                latest = skip_session
+    return latest
+
+
 def _calibration_c_partition(
     missing_set: set[str],
     observed: set[str],
@@ -1245,9 +1289,11 @@ def _calibration_c_partition(
                 TRAILING -- it is NOT gated by clause1 (19-A: the delisting fix;
                 a trailing OR never-observed hole is accepted when, and only
                 when, it is skip-warning-explained).
-      clause1 = bool(observed) and max(observed) > S  (the drumbeat moved PAST
-                the hole; a TRAILING/never-observed hole has no later
-                observation -> clause1 False). clause1 gates ONLY clause-2a: a
+      clause1 = _latest_moved_past_session(observed, ticker, skip_index) > S
+                (the drumbeat moved PAST the hole -- a later session for THIS
+                detection is OBSERVED **or** SKIP-EXPLAINED; RD adjudication
+                2026-08-06. A TRAILING hole with no later run at all has
+                neither -> clause1 False). clause1 gates ONLY clause-2a: a
                 trailing whole-session miss with NO skip-warning stays COUNTED
                 (a real drumbeat-behind failure -- the T2/T3 safety locks).
       clause-2a = is_whole_session_miss, requiring BOTH (S not in
@@ -1259,8 +1305,9 @@ def _calibration_c_partition(
     on the residual). A non-str ticker simply never matches skip_index -> the
     hole falls through to COUNTED (defensive)."""
     accepted: set[str] = set()
-    has_later = bool(observed)
-    latest_observed = max(observed) if observed else None
+    # The clause-1 evidence, computed ONCE per detection: the latest session the
+    # drumbeat provably RAN this detection (observed OR skip-explained).
+    latest_moved_past = _latest_moved_past_session(observed, ticker, skip_index)
     for session in missing_set:
         # clause-2b (skip-warning-explained): DIRECT per-(ticker, session)
         # evidence of a benign no-bar (delisting / no-quote), legitimate whether
@@ -1274,10 +1321,11 @@ def _calibration_c_partition(
             accepted.add(session)
             continue
         # clause-2a (whole-session missed run) STAYS clause-1-gated: a trailing
-        # whole-session miss (no later observation) is a real drumbeat-behind
-        # failure and must stay COUNTED (RED). clause1 = the drumbeat moved PAST
-        # this hole (a later session for THIS detection is observed).
-        clause1 = has_later and latest_observed is not None and latest_observed > session
+        # whole-session miss with NO later evidence at all is a real
+        # drumbeat-behind failure and must stay COUNTED (RED). clause1 = the
+        # drumbeat moved PAST this hole (a later session for THIS detection is
+        # OBSERVED or SKIP-EXPLAINED).
+        clause1 = latest_moved_past is not None and latest_moved_past > session
         if not clause1:
             continue
         is_whole_session_miss = (
