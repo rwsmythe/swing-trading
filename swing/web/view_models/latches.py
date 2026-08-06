@@ -24,6 +24,7 @@ from swing.evaluation.dates import (
 from swing.latches.classification import (
     assess_telemetry_health,
     classify_latch,
+    decision_bounds_for,
     telemetry_window_sessions,
 )
 from swing.latches.constants import (
@@ -929,7 +930,12 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
         # handing it the narrowed set would discard yesterday's actionable view.
         dispositions, priors = _panel_dispositions(
             conn, displayed,
-            views_by_latch=_load_all_views(conn, displayed), health=health)
+            views_by_latch=_load_all_views(conn, displayed), health=health,
+            # The resolver's as-of bound on the production path (`service.py`
+            # `_close` passes `fill_bound=horizon_session`), so the classifier's
+            # decision window is the resolver's own rather than a second
+            # derivation of it.
+            fill_bound=derivation.horizon_session)
 
         def _row(latch: Latch) -> LatchRowVM:
             quote = quotes.get(latch.identity.ticker) if latch.is_live else None
@@ -1147,7 +1153,9 @@ def rederive_prepared_order(conn, cfg, *, candidate_id: int, anchor: date):
     return latch, blocks.get(candidate_id)
 
 
-def _panel_dispositions(conn, latches, *, views_by_latch: dict, health):
+def _panel_dispositions(
+    conn, latches, *, views_by_latch: dict, health, fill_bound=None,
+):
     """`(dispositions, prior_intent_ids)` per displayed latch. A6 at the seam.
 
     BOTH come off the SAME per-latch intent read. The RULING-3 context anchor is
@@ -1169,7 +1177,13 @@ def _panel_dispositions(conn, latches, *, views_by_latch: dict, health):
         try:
             out[cid] = classify_latch(
                 latch=latch, views=views_by_latch.get(cid, ()),
-                intents=intents, telemetry_health=health)
+                intents=intents, telemetry_health=health,
+                # THE SAME WINDOW THE RESOLVER USED. Without it the disposition
+                # and the lifecycle can disagree about one latch -- a mandate
+                # cleared by `fill` scored in `decision_r` as a decline.
+                decision_bounds=(
+                    None if fill_bound is None
+                    else decision_bounds_for(latch, fill_bound=fill_bound)))
         except Exception as exc:  # noqa: BLE001 -- A6
             _log.warning(
                 "latch classification degraded for candidate %s: %s", cid, exc)

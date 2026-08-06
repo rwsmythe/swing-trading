@@ -17,9 +17,12 @@ from swing.latches.classification import (
     LatchDisposition,
     TelemetryHealth,
     actionable_view_rows,
+    admissible_decisions,
     assess_telemetry_health,
     awareness_view_rows,
     classify_latch,
+    decision_bounds_for,
+    governing_decision,
     governing_intent,
     resolve_coverage,
 )
@@ -732,3 +735,184 @@ def test_the_decision_family_tiebreaks_on_intent_id_like_every_other_ruling():
                       decline_reason="second thoughts")
     assert classify_latch(
         latch=latch, intents=[place, decline]).disposition == "declined"
+
+
+# --------------------------------------------------------------------------
+# Item 3a: THE ADMISSIBILITY FILTER, shared by the lifecycle and the classifier
+# --------------------------------------------------------------------------
+def test_admissible_decisions_filters_by_family_and_window_before_the_winner():
+    """THE FILTER RUNS FIRST, AND THAT ORDER IS THE POINT (T4.21(l)).
+
+    decline(D5) + place(D10), window ending D6. Filtering first leaves the D5
+    DECLINE as the only admissible member, so `governing_decision` returns it.
+    An implementation that resolved the winner over ALL intents and rejected it
+    afterwards picks the D10 place, drops it as out of bounds, and returns
+    NOTHING -- so the decline VANISHES from a window that should see it.
+    """
+    decline = _intent("decline", intent_id=1, recorded_ts="2026-08-05T10:00:00",
+                      action_session_date="2026-08-05")
+    place = _intent("place", intent_id=2, recorded_ts="2026-08-10T10:00:00",
+                    action_session_date="2026-08-10")
+    admissible = admissible_decisions(
+        [decline, place], candidate_set=frozenset({11261}),
+        lower=date(2026, 8, 3), upper=date(2026, 8, 6))
+    assert [i.intent_id for i in admissible] == [1]
+    assert governing_decision(admissible).intent_kind == "decline"
+    # ... and the UNFILTERED resolution gives the other answer, which is the bug.
+    assert governing_decision([decline, place]).intent_id == 2
+
+
+def test_admissible_decisions_excludes_another_latchs_candidate_family():
+    """A ticker carries MANY historical latches. Keying on the ticker -- or on
+    nothing -- hands an old mandate's decline to a NEWER latch and terminates a
+    mandate the operator never declined."""
+    mine = _intent("decline", intent_id=1, recorded_ts="2026-08-05T10:00:00",
+                   action_session_date="2026-08-05", candidate_id=11261)
+    other = _intent("decline", intent_id=2, recorded_ts="2026-08-05T11:00:00",
+                    action_session_date="2026-08-05", candidate_id=99999)
+    got = admissible_decisions(
+        [mine, other], candidate_set=frozenset({11261}),
+        lower=date(2026, 8, 3), upper=date(2026, 8, 6))
+    assert [i.intent_id for i in got] == [1]
+
+
+def test_admissible_decisions_admits_a_RECONFIRMATION_candidate_id():
+    """The family is the opening fire PLUS its re-confirmations -- the same
+    identity rule the fill ladder's exact rung already uses. A filter keyed on
+    the FIRE id alone would drop a decision recorded against a re-confirmation
+    row."""
+    reconf = _intent("decline", intent_id=3, recorded_ts="2026-08-05T10:00:00",
+                     action_session_date="2026-08-05", candidate_id=11262)
+    got = admissible_decisions(
+        [reconf], candidate_set=frozenset({11261, 11262}),
+        lower=date(2026, 8, 3), upper=date(2026, 8, 6))
+    assert [i.intent_id for i in got] == [3]
+
+
+def test_admissible_decisions_keeps_ONLY_the_decision_family():
+    """`attest`, `cancel` and `validity` are NOT decisions. They must survive in
+    the caller's UNFILTERED view, which is what the classifier keeps for every
+    other consumer (T6.14)."""
+    place = _intent("place", intent_id=1, recorded_ts="2026-08-05T09:00:00",
+                    action_session_date="2026-08-05")
+    attest = _intent("attest", intent_id=2, recorded_ts="2026-08-05T10:00:00",
+                     action_session_date="2026-08-05",
+                     attested_disposition="was_away")
+    cancel = _intent("cancel", intent_id=3, recorded_ts="2026-08-05T11:00:00",
+                     action_session_date="2026-08-05")
+    got = admissible_decisions(
+        [place, attest, cancel], candidate_set=frozenset({11261}),
+        lower=date(2026, 8, 3), upper=date(2026, 8, 6))
+    assert [i.intent_id for i in got] == [1]
+
+
+def test_admissible_decisions_upper_exclusive_drops_a_boundary_dated_decision():
+    """The ONE asymmetric boundary. An inclusive `upper` does not deliver
+    "a fill at or before the decline session wins" on a SAME-SESSION tie, so the
+    fill case -- and only the fill case -- makes that boundary strict."""
+    decline = _intent("decline", intent_id=1, recorded_ts="2026-08-05T10:00:00",
+                      action_session_date="2026-08-05")
+    assert admissible_decisions(
+        [decline], candidate_set=frozenset({11261}),
+        lower=date(2026, 8, 3), upper=date(2026, 8, 5))
+    assert not admissible_decisions(
+        [decline], candidate_set=frozenset({11261}),
+        lower=date(2026, 8, 3), upper=date(2026, 8, 5), upper_exclusive=True)
+
+
+def test_admissible_decisions_skips_an_unparseable_action_session():
+    """A6 at the seam: a malformed session cannot be PLACED in the window, and a
+    decision that cannot be placed must never withdraw a mandate. Planted by
+    raw attribute write because the dataclass validator refuses it at
+    construction -- this tests the READ of a bad row, not the write path."""
+    bad = _intent("decline", intent_id=1, recorded_ts="2026-08-05T10:00:00",
+                  action_session_date="2026-08-05")
+    object.__setattr__(bad, "action_session_date", "not-a-date")
+    assert admissible_decisions(
+        [bad], candidate_set=frozenset({11261}),
+        lower=date(2026, 8, 3), upper=date(2026, 8, 6)) == ()
+
+
+def test_decision_bounds_for_is_capped_by_the_latchs_ACTUAL_terminal():
+    """Not merely by the horizon. A decision recorded AFTER the mandate ended
+    cannot be a decision ABOUT it, and the TERMINAL is what ended it -- so a
+    filled latch's window closes at the fill, never at its nominal expiry."""
+    filled = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14),
+                    state="filled", clear_reason="fill",
+                    clear_session=date(2026, 8, 4))
+    assert decision_bounds_for(filled, fill_bound=date(2026, 8, 20)) == (
+        date(2026, 8, 3), date(2026, 8, 4))
+    live = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14))
+    assert decision_bounds_for(live, fill_bound=date(2026, 8, 6)) == (
+        date(2026, 8, 3), date(2026, 8, 6))
+    assert decision_bounds_for(live, fill_bound=date(2026, 12, 1)) == (
+        date(2026, 8, 3), date(2026, 9, 14))
+
+
+def test_classify_latch_bounds_BOTH_the_decision_and_the_place_it_resolves():
+    """T6.14. The filtered view feeds `governing_decision` AND the `place` that
+    drives the execution outcome -- otherwise an out-of-bound place still becomes
+    `governing_place_intent_id` and drives EXECUTION while a different, in-bound
+    decision drives the DISPOSITION.
+
+    Everything else keeps the FULL set: replacing `intents` wholesale would make
+    attestations and validity evidence vanish, which the second half asserts.
+    """
+    latch = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14),
+                   state="horizon_expired", clear_reason="horizon",
+                   clear_session=date(2026, 8, 6))
+    late_place = _intent("place", intent_id=1, recorded_ts="2026-08-10T09:00:00",
+                         action_session_date="2026-08-10")
+    attest = _intent("attest", intent_id=2, recorded_ts="2026-08-10T10:00:00",
+                     action_session_date="2026-08-10",
+                     attested_disposition="chose_not_to_act")
+    got = classify_latch(
+        latch=latch, views=[], intents=[late_place, attest],
+        decision_bounds=decision_bounds_for(latch, fill_bound=date(2026, 8, 20)))
+    # the out-of-bound place drove NEITHER axis ...
+    assert got.governing_place_intent_id is None
+    assert got.execution_outcome == "not_applicable"
+    # ... while the attestation, which is NOT a decision, still governs.
+    assert got.disposition == "attested_chose_not_to_act"
+
+
+def test_the_forward_guard_is_scoped_to_the_SAME_view_the_place_came_from():
+    """A defect the bounding introduces if the guard is left unscoped.
+
+    `resolve_execution_outcome_for`'s FORWARD guard asks "is this the LATEST
+    place?" so an earlier cycle cannot borrow a later fill. Once the classifier
+    selects its place from the ADMISSIBLE view, a place that is latest IN WINDOW
+    but not latest OVERALL (an out-of-bound later place) fails a guard computed
+    over the full set -- and loses its own fill's vouching, reporting `unknown`
+    for an order that demonstrably filled.
+
+    Discriminator: with the guard unscoped this returns `unknown`.
+    """
+    latch = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14),
+                   state="filled", clear_reason="fill",
+                   clear_session=date(2026, 8, 4))
+    in_window = _intent("place", intent_id=1, recorded_ts="2026-08-03T09:00:00",
+                        action_session_date="2026-08-03")
+    later_out = _intent("place", intent_id=2, recorded_ts="2026-08-10T09:00:00",
+                        action_session_date="2026-08-10")
+    got = classify_latch(
+        latch=latch, views=[], intents=[in_window, later_out],
+        decision_bounds=decision_bounds_for(latch, fill_bound=date(2026, 8, 20)))
+    assert got.governing_place_intent_id == 1
+    assert got.execution_outcome == "accepted_by_broker"
+
+
+def test_classify_latch_without_bounds_is_todays_behaviour_unchanged():
+    """`decision_bounds=None` is the shipped path, so every existing caller and
+    fixture is untouched and the new keyword cannot silently rewrite history."""
+    latch = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14),
+                   state="horizon_expired", clear_reason="horizon",
+                   clear_session=date(2026, 8, 6))
+    late = _intent("decline", intent_id=1, recorded_ts="2026-08-10T09:00:00",
+                   action_session_date="2026-08-10")
+    assert classify_latch(
+        latch=latch, views=[], intents=[late]).disposition == "declined"
+    assert classify_latch(
+        latch=latch, views=[], intents=[late],
+        decision_bounds=decision_bounds_for(latch, fill_bound=date(2026, 8, 20)),
+    ).disposition != "declined"

@@ -31,6 +31,7 @@ from swing.latches.classification import (
     assess_telemetry_health,
     classify_latch,
     current_cycle_place,
+    decision_bounds_for,
     telemetry_window_sessions,
 )
 from swing.latches.constants import (
@@ -251,7 +252,13 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
         latch_intents = history.get(cid, [])
         disposition: LatchDisposition = classify_latch(
             latch=latch, views=views_by_latch.get(cid, ()),
-            intents=latch_intents, telemetry_health=health)
+            intents=latch_intents, telemetry_health=health,
+            # THE SAME WINDOW THE RESOLVER USED, as on the panel. The monthly
+            # read and the lifecycle must not disagree about which decision
+            # governs a latch; `fill_bound` is the derivation's forward anchor,
+            # which is what `service.py` `_close` passes on the production path.
+            decision_bounds=decision_bounds_for(
+                latch, fill_bound=derivation.horizon_session))
         # THE CURRENT-CYCLE PLACE (Codex exec R7 MAJOR). Keying on the latest
         # place BY KIND meant a `place -> rejected validity -> later decline`
         # sequence reported neither the rejection (the superseded place was

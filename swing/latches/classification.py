@@ -358,6 +358,82 @@ def governing_decision(intents):
     return max(family, key=_order_key)
 
 
+def admissible_decisions(
+    intents, *, candidate_set, lower, upper, upper_exclusive: bool = False,
+) -> tuple:
+    """The `place`/`decline` DECISION FAMILY that can be ABOUT one latch. PURE.
+
+    A decision is about a latch when it names that latch's CANDIDATE FAMILY and
+    was recorded for a session inside the latch's live window. Both halves are
+    load-bearing and each fails in its own direction:
+
+    * **the family** -- a ticker carries many historical latches, so a
+      ticker-scoped (or unscoped) resolution hands an OLD mandate's decline to a
+      NEWER latch and withdraws a mandate the operator never declined. The set is
+      the opening fire PLUS its re-confirmations, the same identity rule the fill
+      ladder's exact rung uses.
+    * **the window** -- a decision recorded after the mandate ended is not a
+      decision about it, and one recorded after an as-of probe's bound has not
+      happened yet as of that probe.
+
+    THE FILTER RUNS BEFORE THE WINNER IS CHOSEN, NEVER AFTER, and that order is
+    the whole point. `governing_decision` returns the LATEST of the family, so
+    resolving first and rejecting the winner afterwards does not fall back to the
+    earlier in-bound decision -- it yields nothing. With `decline(D5)` and
+    `place(D10)` under a bound of D6, filter-first sees the decline (correct)
+    while resolve-first sees the place, drops it, and reports NO decision at all.
+
+    `upper_exclusive` makes that one boundary strict, and it exists for exactly
+    one case: a fill and a decline on the SAME session. The lifecycle ranks the
+    fill above the decline ("you cannot decline a filled mandate"), and an
+    INCLUSIVE bound cannot deliver that on its own -- the decline would still be
+    admissible and rung 1 would return `declined` for a FILLED latch. Every other
+    terminal keeps the inclusive bound.
+
+    An intent whose `action_session_date` will not parse is SKIPPED: it cannot be
+    placed in the window, and a decision that cannot be placed must never
+    withdraw a mandate (A6, and the safe direction is keep-alive).
+    """
+    out = []
+    for intent in intents or ():
+        if intent.intent_kind not in ("place", "decline"):
+            continue
+        if intent.candidate_id not in candidate_set:
+            continue
+        try:
+            session = date.fromisoformat(str(intent.action_session_date))
+        except (TypeError, ValueError):
+            continue
+        if session < lower:
+            continue
+        if session > upper or (upper_exclusive and session == upper):
+            continue
+        out.append(intent)
+    return tuple(out)
+
+
+def decision_bounds_for(latch, *, fill_bound: date) -> tuple[date, date]:
+    """The `(lower, upper)` window `admissible_decisions` applies to `latch`.
+
+    SINGLE-SOURCED so the panel and the monthly report cannot derive it two ways
+    -- the drift class this phase has spent itself closing.
+
+    `upper` is bounded by the latch's ACTUAL TERMINAL, not merely by its nominal
+    horizon: with a fill on D4 and a decline on D5, a horizon-bounded classifier
+    returns `declined` while the lifecycle returns `fill`, putting a FILLED latch
+    into `decision_r` as a decline. This is the classifier READING the
+    lifecycle's answer rather than re-deriving it.
+
+    `fill_bound` is the caller's as-of bound; on the production path it is the
+    derivation's `horizon_session`, which every caller already holds. The fold's
+    pulled-back probe bound applies INSIDE the fold only and never reaches here.
+    """
+    return (
+        latch.anchor,
+        min(latch.clear_session or latch.horizon_expiry, fill_bound),
+    )
+
+
 def current_cycle_place(intents):
     """The `place` row that drives the CURRENT execution cycle, or None.
 
@@ -414,15 +490,30 @@ def resolve_execution_outcome(latch, governing_place, validity_rows) -> str:
     return "unknown"
 
 
-def resolve_execution_outcome_for(latch, place_intent, intents) -> str:
+def resolve_execution_outcome_for(
+    latch, place_intent, intents, *, place_view=None,
+) -> str:
     """`resolve_execution_outcome` for ONE named place intent.
 
     The fill rung applies ONLY when `place_intent` IS the latch's LATEST place
     intent -- the FORWARD guard.
+
+    `place_view` scopes THAT GUARD ONLY, and it must be the same view
+    `place_intent` was selected from or the guard asks a question about a
+    different population than the candidate came from. Item 3a's caller selects
+    the place from the ADMISSIBLE decisions, so without this a place that is
+    latest-in-window but not latest-overall (an out-of-bound later place) would
+    fail the guard and lose its own fill's vouching -- reporting `unknown` for an
+    order that demonstrably filled.
+
+    `validity_rows` always come from the FULL `intents`: `place_view` carries the
+    decision family only, and reading the children out of it would delete every
+    validity answer on the latch.
     """
     if place_intent is None:
         return "not_applicable"
-    latest_place = governing_intent(intents, "place")
+    latest_place = governing_intent(
+        intents if place_view is None else place_view, "place")
     validity_rows = [i for i in intents if i.intent_kind == "validity"]
     if latest_place is not None and place_intent.intent_id == latest_place.intent_id:
         return resolve_execution_outcome(latch, place_intent, validity_rows)
@@ -443,6 +534,7 @@ def classify_latch(
     counted_surfaces=ACTIONABLE_VIEW_SURFACES,
     epoch: date = LATCH_TELEMETRY_EPOCH_SESSION,
     r_multiple: float | None = None,
+    decision_bounds: tuple[date, date] | None = None,
 ) -> LatchDisposition:
     """The section E precedence ladder. Each rung has its own discriminating test.
 
@@ -464,8 +556,34 @@ def classify_latch(
     actionable = tuple(r for r in aware if r.actionable_ever_viewed == 1)
     is_terminal = not latch.is_live
 
-    place = governing_intent(intents, "place")
-    execution_outcome = resolve_execution_outcome_for(latch, place, intents)
+    # TWO VIEWS OF THE LEDGER, NAMED APART. `admissible` is the DECISION FAMILY
+    # this latch's window can contain; `intents` stays the FULL set. Only the
+    # decision axis is filtered -- replacing `intents` wholesale would make
+    # attestations, cancels and validity evidence vanish.
+    #
+    # `admissible` feeds the `place` resolution as well as the decision rung,
+    # because an out-of-bound or cross-latch place would otherwise still become
+    # `governing_place_intent_id` and drive the EXECUTION outcome while a
+    # different, in-bound decision drove the DISPOSITION -- one latch, two
+    # answers, from two different rows.
+    #
+    # `decision_bounds=None` is the shipped behaviour (no filtering), so every
+    # existing caller and fixture is unchanged.
+    if decision_bounds is None:
+        admissible = intents
+    else:
+        lower, upper = decision_bounds
+        admissible = admissible_decisions(
+            intents, candidate_set=latch.candidate_set,
+            lower=lower, upper=upper,
+            # The one strict boundary, and only for a fill: see
+            # `admissible_decisions`. A decline dated ON the fill session loses
+            # to it, so it is not a decision the ledger can still be about.
+            upper_exclusive=latch.clear_reason == "fill")
+
+    place = governing_intent(admissible, "place")
+    execution_outcome = resolve_execution_outcome_for(
+        latch, place, intents, place_view=admissible)
 
     def _out(disposition: str, detail: str = "") -> LatchDisposition:
         return LatchDisposition(
@@ -495,7 +613,13 @@ def classify_latch(
     # Resolved by the SAME total order every other "latest by what?" ruling in
     # this arc uses -- `(recorded_ts, intent_id)`, with the id tiebreak
     # load-bearing because `recorded_ts` is whole seconds.
-    decision = governing_decision(intents)
+    #
+    # THE ADMISSIBLE VIEW, NOT THE FULL SET (item 3a). Once a decline TERMINATES
+    # the mandate, the lifecycle and this rung must agree about which decision
+    # governs -- an unbounded resolution here would emit `declined` for a latch
+    # the resolver cleared by `fill` or `invalidation`, scoring a filled mandate
+    # in `decision_r` as a decline.
+    decision = governing_decision(admissible)
     if decision is not None:
         if decision.intent_kind == "place":
             # This says he DECIDED to place, and NOTHING more: a rejected order
