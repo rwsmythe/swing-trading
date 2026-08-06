@@ -1724,6 +1724,92 @@ def test_calibration_c_partition_clause1_skip_evidence_still_needs_ledger() -> N
     assert residual == {"2026-06-10"}
 
 
+def test_coverage_clause1_warning_past_last_completed_is_not_evidence(
+    tmp_path: Path,
+) -> None:
+    # Codex R1 CRITICAL: a mis-anchored completed run dated AFTER the monitor's
+    # own upper bound must not supply unbounded moved-past evidence and clear a
+    # genuinely dead drumbeat. 12 cohort detections observed only through 06-09;
+    # 06-10/06-11/06-12 are real whole-session misses (no observations anywhere,
+    # no completed run names them) -- a dead drumbeat. One completed run names
+    # 2026-06-15, a REAL NYSE session but one that is still in the FUTURE
+    # relative to this monitor run's bound (last_completed == 2026-06-12), and
+    # carries a matching per-ticker no-bar warning for that date. A real session
+    # is used deliberately so this pins the UPPER BOUND specifically, not the
+    # calendar filter (which the sibling non-session test pins).
+    #
+    # Without the upper bound: 06-15 is admitted -> clause1 true for all three
+    #          holes -> every one is 2a-accepted -> 0 counted -> GREEN.
+    # With it: 06-15 is dropped -> evidence is max(observed)=06-09 -> clause1
+    #          false -> 12 x 3 = 36 counted -> RED.
+    conn = _schema_conn(tmp_path)
+    for ticker in _CL1_NO_BAR_TICKERS:
+        for det_date in _CL1_DETECTION_DATES:
+            det = _seed_detection(
+                conn, ticker=ticker, detection_date=det_date,
+                data_asof_date="2026-06-04")
+            for d in ("2026-06-05", "2026-06-08", "2026-06-09"):
+                _seed_observation(conn, det, observation_date=d, status="pending")
+    _seed_all_sessions_runs(
+        conn, ("2026-06-05", "2026-06-08", "2026-06-09"), "tok-cl1bound")
+    _seed_no_bar_skip_run(conn, "2026-06-15", "tok-cl1bound-bad")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "red"
+    assert "36 observation-coverage gap(s)" in check.summary
+    assert "accepted historical" not in check.summary
+
+
+def test_coverage_clause1_non_session_dated_warning_is_not_evidence(
+    tmp_path: Path,
+) -> None:
+    # Codex R1 CRITICAL, the calendar half: a warning dated INSIDE the monitor's
+    # bound but on a NON-SESSION day (Sunday 2026-06-07) is not evidence the
+    # drumbeat ran. One never-observed mature detection; its expected window is
+    # the 6 sessions 06-05..06-12, every one a whole-session miss (zero
+    # observations anywhere, and the only completed run names 06-07).
+    #
+    # Without the calendar filter: 06-07 is admitted -> clause1 true for the
+    #          single earlier session 06-05 -> 06-05 2a-accepted -> 5 counted.
+    # With it: 06-07 is dropped -> no evidence at all -> 6 counted.
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, ticker="WKND", data_asof_date="2026-06-04")
+    _seed_pipeline_run(
+        conn, data_asof_date="2026-06-07", lease_token="tok-cl1wknd",
+        warnings=[{"step": "pattern_observe", "ticker": "WKND",
+                   "observation_date": "2026-06-07",
+                   "reason": "no bar for observation_date"}])
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "yellow"
+    assert "6 observation-coverage gap(s)" in check.summary
+    assert "accepted historical" not in check.summary
+    assert det  # silence unused
+
+
+def test_calibration_c_partition_precomputed_skip_index_matches_derived() -> None:
+    # Codex R1 MAJOR (the precompute): the caller-precomputed
+    # latest_skip_by_ticker and the self-derived default must not diverge --
+    # ONE derivation function feeds both entry paths.
+    from swing.monitoring.research_health import (
+        _calibration_c_partition,
+        _latest_skip_session_by_ticker,
+    )
+    skip_index = {("X", "2026-06-11"), ("X", "2026-06-12"), ("Y", "2026-06-12")}
+    kwargs = dict(
+        missing_set={"2026-06-10"},
+        observed=set(),
+        ticker="X",
+        global_observed_sessions=set(),
+        run_observed_sessions={"2026-06-11", "2026-06-12"},
+        skip_index=skip_index,
+    )
+    derived = _calibration_c_partition(**kwargs)
+    precomputed = _calibration_c_partition(
+        **kwargs, latest_skip_by_ticker=_latest_skip_session_by_ticker(skip_index))
+    assert derived == precomputed == ({"2026-06-10"}, set())
+    assert _latest_skip_session_by_ticker(skip_index) == {
+        "X": "2026-06-12", "Y": "2026-06-12"}
+
+
 def test_coverage_calib_c_null_warnings_json_skipped(tmp_path: Path) -> None:
     # Degradation variant (plan Task 6): a present pipeline_runs with a NULL /
     # non-JSON / non-list warnings_json row is skipped gracefully (no crash).

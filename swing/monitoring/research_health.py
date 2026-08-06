@@ -1230,7 +1230,7 @@ def _run_observed_sessions(conn: sqlite3.Connection) -> set[str] | None:
 def _latest_moved_past_session(
     observed: set[str],
     ticker: str | None,
-    skip_index: set[tuple[str, str]],
+    latest_skip_by_ticker: dict[str, str],
 ) -> str | None:
     """The LATEST session at which the drumbeat provably RAN this detection --
     clause-1's "moved PAST the hole" evidence. None when there is none.
@@ -1246,6 +1246,11 @@ def _latest_moved_past_session(
     observation_date` skip-warnings for CNTA/CPRX/NSA/SKYT, which IS proof the
     drumbeat ran beyond the hole -- yet their 08-04 hole counted, a PERMANENT
     false RED (55 gaps that never self-heal) on the primary substrate channel.
+
+    `latest_skip_by_ticker` is `_latest_skip_session_by_ticker(skip_index)` --
+    the per-ticker MAXIMUM skip session, precomputed once per monitor run (Codex
+    R1 MAJOR: the naive per-detection scan of the whole index is an O(D x K)
+    cross-product over two append-only tables).
 
     The skip half REUSES the existing `_observe_skip_index` admission rule -- a
     `pattern_observe` skip-warning of a known reason, in a state='complete' run,
@@ -1264,9 +1269,32 @@ def _latest_moved_past_session(
     """
     latest = max(observed) if observed else None
     if isinstance(ticker, str):
-        for skip_ticker, skip_session in skip_index:
-            if skip_ticker == ticker and (latest is None or skip_session > latest):
-                latest = skip_session
+        skip_latest = latest_skip_by_ticker.get(ticker)
+        if skip_latest is not None and (latest is None or skip_latest > latest):
+            latest = skip_latest
+    return latest
+
+
+def _latest_skip_session_by_ticker(
+    skip_index: set[tuple[str, str]],
+) -> dict[str, str]:
+    """Collapse the (ticker, session) skip index to {ticker: LATEST session},
+    computed ONCE per monitor run (Codex R1 MAJOR).
+
+    `_latest_moved_past_session` needs only the per-ticker MAXIMUM, so scanning
+    the whole all-history index inside the per-detection loop would be an
+    O(detections x skip-pairs) cross-product over two APPEND-ONLY tables -- both
+    operands grow forever, and every mature detection paid it even when fully
+    covered. Precomputing is O(skip-pairs) once, then O(1) per detection.
+    Non-str tickers are dropped (they can never match a detection's ticker; the
+    same defensive posture as the clause-2b lookup)."""
+    latest: dict[str, str] = {}
+    for ticker, session in skip_index:
+        if not isinstance(ticker, str):
+            continue
+        prev = latest.get(ticker)
+        if prev is None or session > prev:
+            latest[ticker] = session
     return latest
 
 
@@ -1277,6 +1305,7 @@ def _calibration_c_partition(
     global_observed_sessions: set[str],
     run_observed_sessions: set[str] | None,
     skip_index: set[tuple[str, str]],
+    latest_skip_by_ticker: dict[str, str] | None = None,
 ) -> tuple[set[str], set[str]]:
     """Partition a detection's missing sessions into (accepted, residual) per
     CALIBRATION C. A session S in `missing_set` is ACCEPTED iff:
@@ -1305,9 +1334,16 @@ def _calibration_c_partition(
     on the residual). A non-str ticker simply never matches skip_index -> the
     hole falls through to COUNTED (defensive)."""
     accepted: set[str] = set()
-    # The clause-1 evidence, computed ONCE per detection: the latest session the
-    # drumbeat provably RAN this detection (observed OR skip-explained).
-    latest_moved_past = _latest_moved_past_session(observed, ticker, skip_index)
+    # The clause-1 evidence: the latest session the drumbeat provably RAN this
+    # detection (observed OR skip-explained). `latest_skip_by_ticker` is
+    # precomputed ONCE per monitor run by the caller; deriving it here when the
+    # caller omits it keeps this function self-contained (and correct by
+    # default) for direct unit callers -- ONE derivation function either way, so
+    # the two entry paths cannot diverge.
+    if latest_skip_by_ticker is None:
+        latest_skip_by_ticker = _latest_skip_session_by_ticker(skip_index)
+    latest_moved_past = _latest_moved_past_session(
+        observed, ticker, latest_skip_by_ticker)
     for session in missing_set:
         # clause-2b (skip-warning-explained): DIRECT per-(ticker, session)
         # evidence of a benign no-bar (delisting / no-quote), legitimate whether
@@ -1431,6 +1467,46 @@ def _check_coverage_gaps(
         after = sorted(s for s in window if s > asof.isoformat())
         return _date.fromisoformat(after[0]) if after else None
 
+    # CLAUSE-1 EVIDENCE HYGIENE (Codex R1 CRITICAL). The skip half of clause-1's
+    # moved-past evidence is only as good as the DATE on the warning, and neither
+    # `pipeline_runs.data_asof_date` nor the free-text `warnings_json`
+    # `observation_date` carries a session-or-format CHECK -- only the runner's
+    # convention (both come from the NYSE session helpers) constrains them. A
+    # single mis-anchored row (a weekend/holiday asof, or a future date) would
+    # otherwise supply UNBOUNDED "later" evidence and clear a genuinely dead
+    # drumbeat: with the drumbeat stopped after session S, one completed run
+    # dated after S carrying a matching no-bar warning would clause-1-satisfy
+    # EVERY subsequent real-session hole and flip the outage GREEN.
+    #
+    # So admit as moved-past evidence ONLY a session that is (i) a REAL NYSE
+    # session and (ii) AT OR BEFORE this monitor run's own upper bound
+    # (last_completed) -- a date past the bound describes nothing the drumbeat
+    # can have done yet.
+    #
+    # This is a clause-1 tightening ONLY: clause-2b is untouched in effect,
+    # because a 2b hit needs (ticker, S) with S in `missing_set` <= `expected`,
+    # and `expected` is built by `_sessions(...)` from the calendar itself -- so
+    # every entry dropped here could never have matched 2b anyway. Computed over
+    # the DISTINCT sessions (one calendar call each), not per pair.
+    _last_completed_iso = last_completed.isoformat()
+
+    def _is_completed_calendar_session(session: str) -> bool:
+        if session > _last_completed_iso:
+            return False
+        try:
+            day = _date.fromisoformat(session)
+            return bool(_sessions(day, day))
+        except (TypeError, ValueError, _OutOfCalendarError):
+            return False
+
+    _evidence_ok = {
+        s: _is_completed_calendar_session(s) for s in {s for _t, s in skip_index}
+    }
+    skip_index = {(t, s) for (t, s) in skip_index if _evidence_ok[s]}
+    # Precomputed ONCE (Codex R1 MAJOR): the per-ticker latest skip session, so
+    # the per-detection clause-1 evidence lookup is O(1), not a full index scan.
+    latest_skip_by_ticker = _latest_skip_session_by_ticker(skip_index)
+
     total_missing = 0
     malformed = 0
     sample: list[str] = []
@@ -1516,7 +1592,8 @@ def _check_coverage_gaps(
                 # session is the single newest one is benign pre-nightly).
                 accepted, residual = _calibration_c_partition(
                     expected, observed, det_ticker,
-                    global_observed_sessions, run_observed_sessions, skip_index)
+                    global_observed_sessions, run_observed_sessions, skip_index,
+                    latest_skip_by_ticker)
                 if accepted:
                     accepted_historical += len(accepted)
                     if len(accepted_sample) < 3:
@@ -1562,7 +1639,8 @@ def _check_coverage_gaps(
             missing_set = expected - observed
             accepted, residual = _calibration_c_partition(
                 missing_set, observed, det_ticker,
-                global_observed_sessions, run_observed_sessions, skip_index)
+                global_observed_sessions, run_observed_sessions, skip_index,
+                latest_skip_by_ticker)
             if accepted:
                 accepted_historical += len(accepted)
                 if len(accepted_sample) < 3:
