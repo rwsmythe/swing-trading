@@ -289,8 +289,15 @@ class ArchiveConfig:
 class LatchesConfig:
     """Latch-derivation calibrations (item 3b, RD's rulings of 2026-08-06).
 
-    A latch calibration is not a pipeline setting, so it gets its own section
-    and `swing config show` names it honestly. Deliberately NOT filed under
+    A latch calibration is not a pipeline setting, so it gets its own section.
+    NOT registered in `config_validation.FIELD_REGISTRY`, so it is NOT surfaced
+    by `swing config show` and NOT settable via `swing config set` -- an earlier
+    draft of this docstring CLAIMED it was, which was false (Codex R6, and the
+    #31 class: a comment may describe what the code does TODAY, never what
+    someone intends). These four are edited in the tracked toml like the
+    `archive`/`classifier` calibrations beside them; registering them would pull
+    in user-override replacement and source tracking, which is a config-surface
+    feature and not this arc's. Deliberately NOT filed under
     `[pipeline]`: `latch_horizon_sessions(cfg)` reads
     `cfg.pipeline.observe_max_pending_window_sessions` because it is DERIVED
     from that quantity for live-vs-shadow parity -- a binding-at-the-source, not

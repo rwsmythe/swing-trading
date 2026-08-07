@@ -416,7 +416,14 @@ def load_session_structural_verdicts(
         return {}
     # session -> the run ids that produced it, in (run_ts, id) order.
     by_session: dict[date, list[int]] = {}
-    for run_id, action, _run_ts in runs:
+    # Sessions whose run ORDER cannot be established (Codex R6). `run_ts` is
+    # unconstrained TEXT and the SQL orders it LEXICALLY, so a malformed stamp
+    # sorts after every valid ISO one and would be taken as "the latest run" --
+    # letting a stale failing run satisfy the STRICT half from an ordering the
+    # data does not support. Recorded, then used to disable the FAILED half only;
+    # the generous PASS is untouched, because that direction preserves mandates.
+    unorderable: set[date] = set()
+    for run_id, action, run_ts in runs:
         try:
             session = date.fromisoformat(str(action))
         except (TypeError, ValueError):
@@ -425,6 +432,24 @@ def load_session_structural_verdicts(
                 "action_session_date %r; it is not an evaluated session",
                 run_id, action)
             continue
+        # A NON-TRADING EVALUATED SESSION IS A CATEGORY ERROR, NOT A DATUM
+        # (Codex R6), and this guard already exists TWICE in this file -- for
+        # entry dates and for bars, whose comment says it exactly: "letting one
+        # invalidate a mandate would clear it on a day the market never traded".
+        # The verdict path was the sibling that never got it. Without it a
+        # Saturday-dated run can be failure number N while `_enumerate_sessions`
+        # -- which walks TRADING sessions only -- demands no Saturday bar, so the
+        # rule withdraws a mandate on a day the market was closed.
+        if not is_trading_session(session):
+            log.warning(
+                "latch reader: evaluation run %r is dated %s, not a trading "
+                "session; it is not an evaluated session",
+                run_id, session.isoformat())
+            continue
+        try:
+            datetime.fromisoformat(str(run_ts))
+        except (TypeError, ValueError):
+            unorderable.add(session)
         by_session.setdefault(session, []).append(int(run_id))
 
     run_ids = [rid for ids in by_session.values() for rid in ids]
@@ -516,7 +541,10 @@ def load_session_structural_verdicts(
                         latest_is_verified_fail = False
                 else:
                     saw_verified_fail = True
-                    if is_latest:
+                    # The STRICT half needs to know which run was LATEST. When a
+                    # malformed `run_ts` makes that unestablishable the answer is
+                    # UNVERIFIABLE, never FAILED (Codex R6).
+                    if is_latest and session not in unorderable:
                         latest_is_verified_fail = True
             # THE CONFLICT IS A DATA-QUALITY SIGNAL (OQ-15): two runs for one
             # session disagreeing on the STRUCTURAL verdict is a fact about the

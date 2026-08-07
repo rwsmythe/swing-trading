@@ -483,9 +483,22 @@ def _echo_report_only_lapse(cfg, latches) -> None:
                          "criteria_lapse_armed", False))
     sessions = getattr(getattr(cfg, "latches", None),
                        "criteria_lapse_sessions", None)
+    adr = getattr(getattr(cfg, "latches", None),
+                  "criteria_lapse_min_widening_adr", None)
+    pct = getattr(getattr(cfg, "latches", None),
+                  "criteria_lapse_min_widening_pct", None)
     click.echo("CRITERIA-LAPSE CALIBRATION"
                + ("" if armed else " (REPORT ONLY -- the rule is NOT armed)"))
     click.echo("  N in force:".ljust(_W) + str(sessions))
+    # ALL THREE CALIBRATIONS, NOT JUST N (Codex R6). Ruling 7's reason for
+    # printing N -- so a retroactive change is visible rather than silent -- is
+    # not about N, it is about every input that decides a would-withdraw. The
+    # materiality floor is `max(adr x adr_pct x pivot, pct x pivot)`, so the same
+    # corpus read at 1.0/2.0 and later at wider floors yields DIFFERENT counts
+    # while both artifacts identify the rule only as "N in force: 5". A monthly
+    # evidence series that cannot be compared to last month's is not evidence.
+    click.echo("  materiality floor:".ljust(_W)
+               + f"max({adr} x the fire's adr_pct, {pct}% of the pivot)")
     would = [x for x in latches if x.lapse_would_clear_session is not None]
     click.echo("  would-withdraw latches:".ljust(_W) + str(len(would)))
     for latch in sorted(would, key=lambda x: (x.lapse_would_clear_session,

@@ -690,3 +690,66 @@ def test_the_CRITERIA_chunk_is_bounded_by_the_same_limit_as_the_others(db, cfg):
     # the criteria rows actually arrived rather than the query silently
     # returning nothing.
     assert {v.classification for vs in got.values() for v in vs} == {"PASSED"}
+
+
+# ---------------------------------------------------------------------------
+# Codex R6 -- two ways a verdict could be manufactured from unusable metadata
+# ---------------------------------------------------------------------------
+def test_a_NON_TRADING_evaluated_session_is_not_a_session_at_all(db, cfg):
+    """Codex R6 MAJOR. This guard already exists TWICE in this file -- for entry
+    dates (`reader.py:143`) and for bars (`reader.py:617`), whose comment states
+    the reason outright: "letting one invalidate a mandate would clear it on a
+    day the market never traded". The verdict path was the sibling that never
+    got it.
+
+    It matters because the two halves disagree about what a session IS. A
+    Saturday-dated run would be counted as a failure by the streak, while
+    `_enumerate_sessions` -- which walks TRADING sessions only -- would demand no
+    Saturday bar for it. So the coverage requirement is satisfied without the
+    evidence, and an armed withdrawal gets stamped with a `clear_session` on a
+    day the market was closed.
+    """
+    with db:
+        _run(db, 1, "2026-07-31", "2026-07-30T17:30:00")     # Friday, real
+        _candidate(db, 1, "VSTS", "watch", _rows(vcp_fail=("tightness",)))
+        _run(db, 2, "2026-08-01", "2026-07-31T17:30:00")     # SATURDAY
+        _candidate(db, 2, "VSTS", "watch", _rows(vcp_fail=("tightness",)))
+    got = _verdicts(db, cfg, start="2026-07-31", end="2026-08-01")
+    assert [v.action_session.isoformat() for v in got] == ["2026-07-31"]
+    assert [v.classification for v in got] == ["FAILED"]
+
+
+def test_an_UNORDERABLE_run_ts_cannot_produce_a_FAILED_verdict(db, cfg):
+    """Codex R6 MAJOR. `run_ts` is unconstrained TEXT and the SQL orders it
+    LEXICALLY, so a malformed stamp sorts after every valid ISO one and is taken
+    as "the latest run".
+
+    The STRICT half exists precisely because incrementing the streak moves a
+    latch toward withdrawal, and it keys on WHICH RUN WAS LATEST. If that
+    ordering cannot be established from the data, the honest answer is
+    UNVERIFIABLE -- asserting FAILED would withdraw a mandate on an ordering the
+    data does not support.
+
+    Here the failing run is stamped `zzz` (sorting last) while the genuinely
+    later run does not carry the ticker at all. Pre-fix: FAILED. The generous
+    PASS is deliberately untouched -- that direction preserves mandates.
+    """
+    with db:
+        _run(db, 1, "2026-07-31", "zzz")                     # malformed
+        _candidate(db, 1, "VSTS", "watch", _rows(vcp_fail=("tightness",)))
+        _run(db, 2, "2026-07-31", "2026-07-30T18:00:00")     # ticker ABSENT
+    got = _verdicts(db, cfg, start="2026-07-31", end="2026-07-31")
+    assert [v.classification for v in got] == ["UNVERIFIABLE"]
+
+
+def test_a_generous_PASS_survives_an_unorderable_run_ts(db, cfg):
+    """The bound. The unorderable guard must disable only the STRICT half; a
+    verified PASS anywhere in the session still resets the streak, because that
+    is the mandate-preserving direction and OQ-15 says ambiguity must never
+    advance a withdrawal."""
+    with db:
+        _run(db, 1, "2026-07-31", "zzz")
+        _candidate(db, 1, "VSTS", "watch", _rows())          # a full PASS
+        _run(db, 2, "2026-07-31", "2026-07-30T18:00:00")
+    got = _verdicts(db, cfg, start="2026-07-31", end="2026-07-31")
+    assert [v.classification for v in got] == ["PASSED"]
