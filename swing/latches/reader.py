@@ -193,11 +193,27 @@ def load_decision_intents(conn: sqlite3.Connection, candidate_ids) -> dict:
     its own latch -- ONE merged latch carrying the PREDECESSOR's anchor, horizon
     and frozen stop, where the un-degraded fold produces two.
 
-    It is still the right fallback, for a reason worth stating rather than
-    assuming: with no decision evidence the decline is not merely unproven, it is
-    UNKNOWABLE, so no better answer is available -- and the behaviour that
-    shipped for the whole of the previous phase is the most conservative thing an
-    unreadable ledger can produce.
+    AND NEITHER DEGRADATION DIRECTION IS UNIVERSALLY SAFE (Codex R4). Skipping
+    ONE candidate can CLEAR a latch that must stay live (the correcting `place`
+    goes missing). Dropping ALL of them can LOSE a live successor: a decline that
+    would have closed a predecessor before a later same-pivot fire goes unseen,
+    that fire folds in as a re-confirmation, and the merged latch expires on the
+    PREDECESSOR's horizon -- so no live mandate exists where one should, and the
+    armed-latch alarm goes quiet. Any claim that one direction is simply "the
+    conservative one" is false, and two earlier drafts of this docstring made it.
+
+    ALL-OR-NOTHING IS CHOSEN ON A DIFFERENT GROUND, and it is the honest one:
+    with no decision evidence the decline is not merely unproven but UNKNOWABLE,
+    so there is no correct answer to compute -- and this reproduces EXACTLY the
+    derivation that shipped for the whole of the previous phase, which is the one
+    behaviour already understood and already witnessed. A per-candidate skip has
+    no such grounding: it invents a THIRD topology matching neither the true one
+    nor any that ever shipped.
+
+    THE TRIGGER IS ITSELF THE THING TO FIX. This path needs a missing
+    `latch_order_intents` table or a row that fails the dataclass validator it
+    was written through -- a corrupt or pre-0033 ledger. The WARNING names the
+    candidate so the corruption is repairable rather than silently absorbed.
     """
     ids = sorted({int(c) for c in (candidate_ids or ())})
     if not ids:

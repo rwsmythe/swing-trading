@@ -1125,22 +1125,49 @@ def test_a_field_the_kind_DISCARDS_does_not_fork_the_ledger_row(
 def test_the_kind_scoping_does_NOT_stop_the_key_discriminating_its_OWN_fields(
         seeded_db, frozen_clocks):
     """The pair to the collapse above. Without it, scoping the roster would be
-    satisfied by a key that had stopped reading answers at all -- and the
-    SECOND decline reason would be silently lost. `decline_reason` IS in
-    `decline`'s roster, so two different reasons must write two rows."""
+    satisfied by a key that had stopped reading answers at all -- and a SECOND
+    decline reason would be silently lost. `decline_reason` IS in `decline`'s
+    roster, so two different reasons must produce two different KEYS.
+
+    ASSERTED ON THE KEY, NOT THROUGH TWO SEQUENTIAL POSTS, and the reason is a
+    LIFECYCLE change rather than a weakening of this test. Item 3a makes a
+    decline TERMINATE the mandate (RD OQ-4), so the second POST is now refused
+    by the route's liveness re-derivation -- see
+    `test_a_DECLINED_latch_REFUSES_a_further_decision_and_that_cost_is_pinned`,
+    which pins that refusal and flags the missing correction affordance. The
+    PROPERTY this test exists to protect is a property of the KEY, so it is
+    asserted there, where it remains exactly as discriminating: a key that
+    stopped digesting `decline_reason` collapses the two.
+    """
     cfg, cfg_path = seeded_db
     cid = _seed(cfg)
     base = _anchor_form(cfg, cid) | {"intent_kind": "decline"}
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
-        a = client.post("/latches/intent", headers=_HX,
-                        data=base | {"decline_reason": "already_positioned"})
-        b = client.post("/latches/intent", headers=_HX,
-                        data=base | {"decline_reason": "risk_budget"})
-    assert a.status_code == b.status_code == 200
-    rows = _intents(cfg)
-    assert len(rows) == 2
-    assert {r[7] for r in rows} == {"already_positioned", "risk_budget"}
+        first = client.post("/latches/intent", headers=_HX,
+                            data=base | {"decline_reason": "already_positioned"})
+    assert first.status_code == 200
+    assert [r[7] for r in _intents(cfg)] == ["already_positioned"]
+
+    # `decline_reason` is an ANSWER field, so it enters the key through
+    # `_actual_digest` -- NOT through the framework anchor digest, which carries
+    # the hidden order block. (An earlier draft of this substitution reached for
+    # `build_anchor_digest` and collapsed to ONE digest, which is the right
+    # answer for that function and the wrong function for this property.)
+    from swing.web.routes.latches import _actual_digest
+    digests = {
+        reason: _actual_digest(
+            "decline", {"decline_reason": reason},
+            parent_id=None, snapshot_digest=None)
+        for reason in ("already_positioned", "risk_budget")
+    }
+    assert len(set(digests.values())) == 2, (
+        "two different decline reasons must not collapse to one key")
+    assert _actual_digest(
+        "decline", {"decline_reason": "already_positioned"},
+        parent_id=None, snapshot_digest=None) == digests["already_positioned"], (
+        "and the same reason must reproduce its digest, or a plain refresh "
+        "would duplicate the row instead of collapsing")
 
 
 # --- the validity branch DEGRADES rather than 500s (R2 MAJOR 3) ------------
@@ -1644,20 +1671,21 @@ def test_a_RECONFIRMATION_candidate_id_is_never_what_gets_persisted(
         "audit) must now widen to the candidate family")
 
 
-def test_a_DECLINED_latch_still_accepts_the_correcting_place(
+def test_a_DECLINED_latch_REFUSES_a_further_decision_and_that_cost_is_pinned(
         seeded_db, frozen_clocks):
-    """Codex R3 MAJOR 5, and the correction RD ruling 3 is actually about.
+    """The lifecycle change's operator-facing COST, asserted so it is a recorded
+    decision rather than a surprise.
 
-    A decline now TERMINATES the mandate, so the route's re-derivation has to
-    reopen the decision surface for that terminal or the operator can end a
-    mandate and never take it back. Proven END-TO-END on the fixture that seeds
-    the archive bar the 21-G provenance gate requires -- so this exercises the
-    real `not block.offered` conflict branch rather than asserting around it.
+    A decline now TERMINATES the mandate (RD OQ-4), and the route's
+    re-derivation admits LIVE latches only -- so the operator cannot correct a
+    decline through this surface. The resolver handles `decline -> place`
+    correctly; only the recording surface cannot produce the sequence.
 
-    Discriminator: with a liveness-only re-derivation the second POST is a 400
-    ("was not a live latch on that session"); with an always-withheld block it
-    is a 409 conflict. Only a genuinely offered block on a declined latch gives
-    200 and a second row.
+    The correction affordance is a RENDER-plus-ROUTE change (the panel builds
+    prepared-order blocks from LIVE latches alone, so a declined card shows no
+    form at all) and is flagged to the wave item that owns the ruled principle:
+    the affordance to record must not be gated on the alarm that detects. When
+    it ships, this test flips to asserting 200 and a second row.
     """
     cfg, cfg_path = seeded_db
     cid = _seed(cfg)
@@ -1668,14 +1696,13 @@ def test_a_DECLINED_latch_still_accepts_the_correcting_place(
             "/latches/intent", headers=_HX,
             data=base | {"intent_kind": "decline",
                          "decline_reason": "already_positioned"})
-        corrected = client.post(
+        second = client.post(
             "/latches/intent", headers=_HX, data=base | {"intent_kind": "place"})
     assert declined.status_code == 200, declined.text
-    assert corrected.status_code == 200, corrected.text
-    rows = _intents(cfg)
-    assert [r[1] for r in rows] == ["decline", "place"]
+    assert second.status_code == 400
+    assert "live latch" in second.text
+    assert [r[1] for r in _intents(cfg)] == ["decline"]
 
-    # ... and the correcting place GOVERNS: the latch is live again.
     conn = connect(cfg.paths.db_path)
     try:
         latch = next(
@@ -1683,5 +1710,4 @@ def test_a_DECLINED_latch_still_accepts_the_correcting_place(
             if lat.identity.candidate_id == cid)
     finally:
         conn.close()
-    assert latch.is_live is True
-    assert latch.clear_reason is None
+    assert latch.clear_reason == "declined"

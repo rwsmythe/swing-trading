@@ -1020,15 +1020,26 @@ def test_one_tickers_two_latches_do_not_share_a_decline_END_TO_END(tmp_path):
 
 
 # --- Codex R1: the recording surface, exercised through PRODUCTION code ----
-def test_rederive_prepared_order_REOPENS_a_declined_latch(tmp_path):
-    """Codex R1 MAJOR 5 + R2 MAJOR 4. The first form asserted a predicate DEFINED
-    IN THE TEST (a tautology); the second returned a latch but never checked the
-    BLOCK, so an implementation whose block was always WITHHELD -- which makes
-    the route refuse every correction with a conflict -- would still have passed.
+def test_a_TERMINATED_latch_is_closed_to_the_recording_surface(tmp_path):
+    """EVERY terminal closes the decision surface -- `declined` included.
 
-    A decline is his to amend (`build_idempotency_key` carries `prior_intent_id`
-    precisely so a CORRECTION keys differently from a REPLAY). Amendable means
-    the route can actually record it, which requires `block.offered`.
+    THE COST OF THE `declined` CASE IS REAL AND IS PINNED HERE RATHER THAN LEFT
+    IMPLICIT: once he declines, the route refuses any further decision on that
+    latch, so he cannot correct himself. That sits awkwardly beside
+    `build_idempotency_key`'s `prior_intent_id` -- present precisely so a
+    CORRECTION keys differently from a REPLAY -- and beside `governing_decision`
+    resolving the place/decline family by RECENCY. The RESOLVER honours
+    `decline -> place`; only the recording surface cannot produce it.
+
+    AN EARLIER CUT OF THIS ARC WIDENED THE FILTER FOR `declined` AND IT WAS
+    WRONG-SHAPED. The panel builds prepared-order blocks from LIVE latches alone,
+    so a declined card renders no decision form; widening only the POST-time
+    re-derivation made the path reachable ONLY by replaying a form rendered
+    BEFORE the decline. And a decline can MASK a later fill or invalidation
+    (earliest-date-wins), so erasing it with a late `place` would let the masked
+    terminal become authoritative -- persisting a placement against a mandate
+    already filled or dead. The affordance is a render-PLUS-route change and is
+    flagged to the wave item that owns its ruled principle.
     """
     from swing.web.view_models.latches import rederive_prepared_order
     cfg = _cfg(tmp_path)
@@ -1038,176 +1049,19 @@ def test_rederive_prepared_order_REOPENS_a_declined_latch(tmp_path):
             _run(conn, 126, "2026-07-24", "2026-07-27", pipeline_run_id=140)
             cid = _candidate(conn, 126, "VSTS", "aplus", 16.90, 13.40)
         anchor = date(2026, 7, 28)
-        live, live_block = rederive_prepared_order(
+        live, _ = rederive_prepared_order(
             conn, cfg, candidate_id=cid, anchor=anchor)
         assert live is not None and live.is_live
 
         _decline_row(conn, candidate_id=cid, run_id=126, ticker="VSTS",
                      detection="2026-07-27", session="2026-07-27")
-        declined, declined_block = rederive_prepared_order(
+        # the decline TERMINATES it, so the surface closes
+        assert build_latch_derivation(
+            conn, cfg, horizon_session_override=anchor
+        ).latches[0].clear_reason == "declined"
+        declined, block = rederive_prepared_order(
             conn, cfg, candidate_id=cid, anchor=anchor)
-        assert declined is not None
-        assert declined.clear_reason == "declined"
-        # THE OFFERED-BLOCK HALF IS NOT ASSERTED HERE, DELIBERATELY (Codex R3
-        # MAJOR 5). This fixture seeds no OHLCV archive, so the 21-G provenance
-        # gate withholds the block for the LIVE latch too -- an equality
-        # assertion between two withheld blocks would have proved nothing, which
-        # is exactly what the round-2 form did. Whether the route can actually
-        # get PAST its `not block.offered` conflict branch and record the
-        # correction is proven end-to-end in
-        # `tests/web/test_routes/test_latches_intent_route.py`
-        # (`test_a_DECLINED_latch_still_accepts_the_correcting_place`), on the
-        # fixture that seeds the archive bar the gate requires.
-        assert declined_block is None or declined_block.offered == live_block.offered
-    finally:
-        conn.close()
-
-
-def test_EVERY_world_authored_terminal_stays_closed_to_the_recording_surface(
-        tmp_path):
-    """Codex R2 MAJOR 4. The earlier negative covered `invalidation` ALONE, so an
-    implementation that reopened `filled`, `superseded` and `horizon_expired`
-    too would have passed the pair.
-
-    Each of those is authored by the WORLD -- a broker fill, a close below the
-    frozen stop, a re-fire at a new pivot, a window running out -- and none is
-    the operator's to take back. `declined` is the sole exception because it is
-    the only terminal HE authored.
-
-    Driven through the PREDICATE the production function applies, over real
-    derived latches, so it cannot drift from the four refusals it names.
-    """
-    from dataclasses import replace
-
-    from swing.web.view_models.latches import (
-        decision_surface_is_open,
-        rederive_prepared_order,
-    )
-    cfg = _cfg(tmp_path)
-    conn = ensure_schema(cfg.paths.db_path)
-    try:
-        with conn:
-            _run(conn, 126, "2026-07-24", "2026-07-27", pipeline_run_id=140)
-            cid = _candidate(conn, 126, "VSTS", "aplus", 16.90, 13.40)
-        _decline_row(conn, candidate_id=cid, run_id=126, ticker="VSTS",
-                     detection="2026-07-27", session="2026-07-27")
-        anchor = date(2026, 7, 28)
-        declined, _ = rederive_prepared_order(
-            conn, cfg, candidate_id=cid, anchor=anchor)
-        assert declined.clear_reason == "declined"
-
-        for reason, state in (("fill", "filled"),
-                              ("invalidation", "invalidated"),
-                              ("superseded", "superseded"),
-                              ("horizon", "horizon_expired")):
-            other = replace(declined, clear_reason=reason, state=state)
-            assert decision_surface_is_open(
-                other, successor_exists=False) is False, reason
-        assert decision_surface_is_open(declined, successor_exists=False) is True
-        # and the successor bound, over the SAME shipped predicate
-        assert decision_surface_is_open(
-            declined, successor_exists=True) is False
-    finally:
-        conn.close()
-
-
-def test_an_INVALIDATED_latch_is_NOT_reopened_by_the_decline_widening(tmp_path):
-    """The other half, and the one a one-sided fix gets wrong: the widening must
-    admit `declined` ONLY. An invalidation is the market's verdict, not his."""
-    import pandas as pd
-
-    from swing.web.view_models.latches import rederive_prepared_order
-    cfg = _cfg(tmp_path)
-    conn = ensure_schema(cfg.paths.db_path)
-    try:
-        with conn:
-            _run(conn, 126, "2026-07-24", "2026-07-27", pipeline_run_id=140)
-            cid = _candidate(conn, 126, "VSTS", "aplus", 16.90, 13.40)
-        pd.DataFrame([
-            {"asof_date": "2026-07-27", "open": 13.0, "high": 13.1,
-             "low": 12.9, "close": 13.00, "volume": 1000},
-        ]).to_parquet(cfg.paths.prices_cache_dir / "VSTS.yfinance.parquet")
-        latch, _ = rederive_prepared_order(
-            conn, cfg, candidate_id=cid, anchor=date(2026, 7, 28))
-        assert latch is None
-    finally:
-        conn.close()
-
-
-def test_a_declined_latch_with_a_SUCCESSOR_is_not_reopened(tmp_path):
-    """Codex R1 CRITICAL 4 -- the laundering path around `superseded`.
-
-    A latch declined on session S with a DIFFERENT-pivot fire also on S resolves
-    `declined` ONLY because R6 ranks the decline above the supersede. Reopening
-    it would let a later `place` erase the decline, dropping the latch back to
-    `superseded` -- with a placement permanently recorded against a mandate that
-    was never open.
-
-    RD's R5 is the rule: the re-fire arms a NEW latch which is its own fresh
-    decision point, and his decline never bleeds forward. So the SUCCESSOR is
-    open and the predecessor is not.
-    """
-    from swing.web.view_models.latches import rederive_prepared_order
-    cfg = _cfg(tmp_path)
-    conn = ensure_schema(cfg.paths.db_path)
-    try:
-        with conn:
-            _run(conn, 126, "2026-07-24", "2026-07-27", pipeline_run_id=140)
-            first = _candidate(conn, 126, "VSTS", "aplus", 16.90, 13.40)
-            _run(conn, 131, "2026-07-27", "2026-07-28", pipeline_run_id=145)
-            second = _candidate(conn, 131, "VSTS", "aplus", 18.50, 15.00)
-        _decline_row(conn, candidate_id=first, run_id=126, ticker="VSTS",
-                     detection="2026-07-27", session="2026-07-28")
-        anchor = date(2026, 7, 28)
-        predecessor, _ = rederive_prepared_order(
-            conn, cfg, candidate_id=first, anchor=anchor)
-        successor, _ = rederive_prepared_order(
-            conn, cfg, candidate_id=second, anchor=anchor)
-        assert predecessor is None          # superseded-in-waiting; not his to amend
-        assert successor is not None and successor.is_live
-    finally:
-        conn.close()
-
-
-def test_a_RECONFIRMATION_decline_reaches_the_panel_classifier_too(tmp_path):
-    """Codex R1 CRITICAL 2. The lifecycle resolves a terminal over the whole
-    CANDIDATE FAMILY (opening fire + re-confirmations); the panel classifier read
-    only the fire id. A decision recorded against a re-confirmation therefore
-    TERMINATED the latch while the classifier never saw the row -- so the card's
-    disposition contradicted its own terminal.
-
-    Discriminator: with a fire-id-only classifier read the terminal is `declined`
-    while the disposition is NOT `declined` (it falls through to a coverage or
-    away rung). Both halves must read the same population.
-    """
-    from swing.web.view_models.latches import _family_intents, _panel_dispositions
-    from swing.latches.classification import TelemetryHealth
-    cfg = _cfg(tmp_path)
-    conn = ensure_schema(cfg.paths.db_path)
-    try:
-        with conn:
-            # TWO fires on the SAME action session -> clause (i) collapses the
-            # second into the first as a RE-CONFIRMATION, so one latch carries
-            # two candidate ids.
-            _run(conn, 126, "2026-07-24", "2026-07-27", pipeline_run_id=140)
-            fire = _candidate(conn, 126, "VSTS", "aplus", 16.90, 13.40)
-            _run(conn, 127, "2026-07-24", "2026-07-27")
-            reconf = _candidate(conn, 127, "VSTS", "aplus", 16.90, 13.40)
-        _decline_row(conn, candidate_id=reconf, run_id=127, ticker="VSTS",
-                     detection="2026-07-27", session="2026-07-28")
-
-        d = build_latch_derivation(
-            conn, cfg, now=datetime(2026, 7, 29, 12, 0))
-        latch = d.latches[0]
-        assert reconf in latch.candidate_set and fire in latch.candidate_set
-        assert latch.clear_reason == "declined"          # the LIFECYCLE saw it
-
-        # the family read is what carries it to the classifier
-        assert [i.intent_id for i in _family_intents(conn, latch)]
-        dispositions, _ = _panel_dispositions(
-            conn, [latch], views_by_latch={}, health=TelemetryHealth(verdict="ok"),
-            fill_bound=d.horizon_session)
-        assert dispositions[latch.identity.candidate_id].disposition == "declined"
+        assert declined is None and block is None
     finally:
         conn.close()
 

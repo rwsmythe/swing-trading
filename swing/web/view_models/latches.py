@@ -1123,39 +1123,6 @@ def _panel_prepared_orders(
     return out
 
 
-def decision_surface_is_open(latch, *, successor_exists: bool) -> bool:
-    """May a `place`/`decline` still be RECORDED against `latch`?
-
-    Named and module-level so the rule is testable as SHIPPED CODE rather than
-    re-stated in a test (a predicate re-declared in its own test passes whatever
-    production actually does).
-
-    TRUE while the latch is LIVE, and -- the item-3a addition -- while its ONLY
-    terminal is `declined`, because that terminal is the one HE authored and
-    `build_idempotency_key` carries `prior_intent_id` precisely so a CORRECTION
-    keys differently from a REPLAY ("the governing answer is his LAST, never his
-    last DISTINCT"). Refusing to record the later member of a family whose
-    resolution rule is "the latest wins" would let him end a mandate and never
-    take it back.
-
-    FALSE for every WORLD-authored terminal -- a broker fill, a close below the
-    frozen stop, a re-fire at a new pivot, a window running out. None of those is
-    his to amend.
-
-    FALSE ALSO once a SUCCESSOR has taken over, which is RD's R5 applied here:
-    "the re-fire then arms a NEW latch, which is its own fresh decision point.
-    His decline never bleeds forward." Without that bound the reopening is a
-    laundering path around `superseded`: a latch declined on session S with a
-    different-pivot fire also on S is `declined` ONLY because R6 outranks the
-    supersede, so recording a later `place` erases the decline and drops the
-    latch back to `superseded` -- leaving a placement permanently recorded
-    against a mandate that was never open.
-    """
-    if latch.is_live:
-        return True
-    return latch.clear_reason == "declined" and not successor_exists
-
-
 def rederive_prepared_order(conn, cfg, *, candidate_id: int, anchor: date):
     """`(latch, PreparedOrderVM)` for ONE latch, AS OF `anchor`. `(None, None)`
     when the anchor session had no such live latch.
@@ -1170,47 +1137,33 @@ def rederive_prepared_order(conn, cfg, *, candidate_id: int, anchor: date):
     """
     derivation = build_latch_derivation(
         conn, cfg, horizon_session_override=anchor)
-    # LIVE, OR TERMINATED BY THE OPERATOR'S OWN DECISION (item 3a).
+    # LIVENESS ONLY -- and a decline now TERMINATES, so a declined latch is NOT
+    # re-openable here. THE COST IS REAL AND IS FLAGGED RATHER THAN PAPERED OVER:
+    # the operator can end a mandate and cannot take it back, which sits awkwardly
+    # beside `build_idempotency_key`'s `prior_intent_id` (there so a CORRECTION
+    # keys differently from a REPLAY) and beside `governing_decision` resolving
+    # the place/decline family by RECENCY. The RESOLVER honours `decline -> place`
+    # correctly; only the recording surface cannot currently produce it.
     #
-    # Once a `decline` TERMINATES the mandate (RD OQ-4), a liveness-only filter
-    # here makes the decision UNAMENDABLE -- and that contradicts a shipped,
-    # RD-ruled property of the ledger this feeds. `build_idempotency_key` carries
-    # `prior_intent_id` precisely so a CORRECTION keys differently from a REPLAY,
-    # on the stated ground that "the governing answer is his LAST, never his last
-    # DISTINCT" (ruling 3), and the key is deliberately LATCH-scoped rather than
-    # kind-scoped -- ONE rule, not five. `governing_decision` resolves the
-    # place/decline family by RECENCY for the same reason. Refusing to RECORD the
-    # later member of a family whose resolution rule is "the latest wins" is
-    # incoherent: it would let him end a mandate but never take it back.
+    # AN EARLIER CUT OF THIS ARC WIDENED THIS FILTER AND IT WAS WRONG-SHAPED, so
+    # the reason is recorded here rather than rediscovered. `build_latch_panel_vm`
+    # builds prepared-order blocks from `live` alone, so a declined card renders
+    # NO decision form -- widening only this POST-time re-derivation therefore
+    # created a path reachable ONLY by replaying a form rendered BEFORE the
+    # decline. That stale-form path is worse than the missing affordance: a
+    # decline can MASK a later fill or invalidation (earliest-date-wins), so
+    # erasing it with a late `place` lets the masked terminal become
+    # authoritative and persists a placement against a mandate that was already
+    # filled or dead.
     #
-    # Scoped to `declined` ALONE. A fill, an invalidation, a supersede and an
-    # expiry are all authored by the WORLD, and none of them is his to amend --
-    # so those still refuse, exactly as before.
-    #
-    # AND ONLY WHILE NO SUCCESSOR HAS TAKEN OVER, which is RD's R5 reasoning
-    # applied to the recording surface: "the re-fire then arms a NEW latch, which
-    # is its own fresh decision point. His decline never bleeds forward."
-    # Without that bound the reopening is a laundering path around `superseded`:
-    # a latch declined on session S with a DIFFERENT-pivot fire also on S resolves
-    # `declined` only BECAUSE R6 ranks the decline above the supersede, so
-    # recording a later `place` erases the decline and the latch falls back to
-    # `superseded` -- leaving a placement permanently recorded against a mandate
-    # that was never open. If a successor exists, the decision belongs to IT.
-    latest_anchor_by_ticker: dict[str, date] = {}
-    for lat in derivation.latches:
-        ticker = lat.identity.ticker
-        prior = latest_anchor_by_ticker.get(ticker)
-        if prior is None or lat.anchor > prior:
-            latest_anchor_by_ticker[ticker] = lat.anchor
-
+    # The correction affordance is a RENDER-plus-ROUTE change and belongs with the
+    # wave item that already owns its ruled principle -- recording an operator
+    # action and alarming on a detected problem are different functions, and the
+    # affordance to record must not be gated on the alarm that detects. Building
+    # half of it here bought a hole instead of a path.
+    live = [lat for lat in derivation.latches if lat.is_live]
     latch = next(
-        (lat for lat in derivation.latches
-         if lat.identity.candidate_id == candidate_id
-         and decision_surface_is_open(
-             lat,
-             successor_exists=(
-                 lat.anchor < latest_anchor_by_ticker[lat.identity.ticker]))),
-        None)
+        (lat for lat in live if lat.identity.candidate_id == candidate_id), None)
     if latch is None:
         return None, None
     try:
