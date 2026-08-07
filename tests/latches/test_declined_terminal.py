@@ -483,3 +483,42 @@ def test_the_lifecycle_and_the_classifier_agree_on_every_collision():
     live = _derive().latches[0]
     assert live.is_live is True
     assert _classified(live, [foreign]).disposition != "declined"
+
+
+def test_a_SAME_PIVOT_re_fire_on_the_decline_session_folds_INTO_the_decline():
+    """Codex R3 CRITICAL 1 -- the branch-(a) interaction, PINNED because RD
+    ruled the DIFFERENT-pivot collision (R6) and not this one.
+
+    Predecessor anchored D0, decline dated D5, SAME-pivot re-fire also on D5.
+    The liveness probe stops short of the re-fire's own session, so it reports
+    the latch live; branch (a) then absorbs a same-pivot re-fire as a
+    RE-CONFIRMATION, and the final resolution clears the combined latch
+    `declined`. ONE latch, no successor.
+
+    THE REASONING, so a future reader meets a decision rather than a mystery.
+    Branch (a) exists because a re-fire at the IDENTICAL frozen pivot is the same
+    setup re-qualifying -- the same OPPORTUNITY, which is the ledger's unit. A
+    decline binds the opportunity, so it binds the re-confirmation too. The
+    different-pivot case is genuinely a NEW opportunity at new levels, which is
+    why R6 opens a successor there and this does not.
+
+    The alternative -- opening a fresh latch at the identical pivot he declined
+    that very session -- would re-arm a mandate the operator had just refused, on
+    the same day, at the same price. That is the worse outcome, and no trade is
+    destroyed either way because the withdrawal is HIS.
+
+    FLAGGED to RD as an interaction his R6 ruling does not reach.
+    """
+    same_pivot_refire = FireRow(
+        candidate_id=9100, evaluation_run_id=131, ticker="VSTS", pivot=16.90,
+        initial_stop=13.40, action_session_date=D5,
+        run_ts="2026-07-31T17:30:04", pipeline_run_id=145)
+    d = _derive(fires=[VSTS_FIRE, same_pivot_refire], decisions=[
+        _decision("decline", session=D5, intent_id=1, candidate_id=8851)])
+    assert len(d.latches) == 1
+    latch = d.latches[0]
+    assert latch.clear_reason == "declined"
+    assert latch.clear_session == date.fromisoformat(D5)
+    # the re-fire is RECORDED as a re-confirmation, never silently dropped
+    assert latch.reconfirmation_candidate_ids == (9100,)
+    assert latch.reconfirmation_sessions == (D5,)

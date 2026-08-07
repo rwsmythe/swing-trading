@@ -1020,8 +1020,7 @@ def test_one_tickers_two_latches_do_not_share_a_decline_END_TO_END(tmp_path):
 
 
 # --- Codex R1: the recording surface, exercised through PRODUCTION code ----
-def test_rederive_prepared_order_reopens_a_DECLINED_latch_WITH_AN_OFFERED_BLOCK(
-        tmp_path):
+def test_rederive_prepared_order_REOPENS_a_declined_latch(tmp_path):
     """Codex R1 MAJOR 5 + R2 MAJOR 4. The first form asserted a predicate DEFINED
     IN THE TEST (a tautology); the second returned a latch but never checked the
     BLOCK, so an implementation whose block was always WITHHELD -- which makes
@@ -1049,9 +1048,17 @@ def test_rederive_prepared_order_reopens_a_DECLINED_latch_WITH_AN_OFFERED_BLOCK(
             conn, cfg, candidate_id=cid, anchor=anchor)
         assert declined is not None
         assert declined.clear_reason == "declined"
-        # the correction is RECORDABLE, not merely re-derivable
-        assert declined_block is not None
-        assert declined_block.offered == live_block.offered
+        # THE OFFERED-BLOCK HALF IS NOT ASSERTED HERE, DELIBERATELY (Codex R3
+        # MAJOR 5). This fixture seeds no OHLCV archive, so the 21-G provenance
+        # gate withholds the block for the LIVE latch too -- an equality
+        # assertion between two withheld blocks would have proved nothing, which
+        # is exactly what the round-2 form did. Whether the route can actually
+        # get PAST its `not block.offered` conflict branch and record the
+        # correction is proven end-to-end in
+        # `tests/web/test_routes/test_latches_intent_route.py`
+        # (`test_a_DECLINED_latch_still_accepts_the_correcting_place`), on the
+        # fixture that seeds the archive bar the gate requires.
+        assert declined_block is None or declined_block.offered == live_block.offered
     finally:
         conn.close()
 

@@ -177,12 +177,27 @@ def load_decision_intents(conn: sqlite3.Connection, candidate_ids) -> dict:
     NON-MONOTONIC: with a `decline(D5)` on the opening fire and the correcting
     `place(D6)` on a re-confirmation, skipping just the re-confirmation leaves the
     decline standing alone and CLEARS a latch that must stay live -- silencing the
-    armed-latch alarm on evidence the reader could not read. Returning nothing
-    keeps every mandate ALIVE, which is the direction that cannot destroy a trade.
+    armed-latch alarm on evidence the reader could not read.
 
     The reader cannot tell which candidates share a family (the fold computes
     that), so it cannot degrade per-family -- which is precisely why it degrades
     globally instead.
+
+    WHAT THE DEGRADED STATE ACTUALLY IS, stated exactly (Codex R3). It is the
+    PRE-ITEM-3A DERIVATION -- the shipped behaviour of the whole of Phase 21, in
+    which no decline terminated anything. It is NOT merely "the same latches,
+    still alive", and an earlier draft of this docstring claimed exactly that,
+    which overstated it: decisions participate in the fold's TOPOLOGY, so a
+    decline that would have closed a predecessor before a later SAME-PIVOT fire
+    goes unseen, and that fire folds in as a re-confirmation instead of opening
+    its own latch -- ONE merged latch carrying the PREDECESSOR's anchor, horizon
+    and frozen stop, where the un-degraded fold produces two.
+
+    It is still the right fallback, for a reason worth stating rather than
+    assuming: with no decision evidence the decline is not merely unproven, it is
+    UNKNOWABLE, so no better answer is available -- and the behaviour that
+    shipped for the whole of the previous phase is the most conservative thing an
+    unreadable ledger can produce.
     """
     ids = sorted({int(c) for c in (candidate_ids or ())})
     if not ids:

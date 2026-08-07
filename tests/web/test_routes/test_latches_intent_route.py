@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from swing.data.db import connect
 from swing.latches.constants import LATCH_BROKER_SNAPSHOT_KEYS
+from swing.latches.reader import build_latch_derivation
 from swing.web.app import create_app
 
 NOW = datetime(2026, 7, 25, 12, 0)      # Saturday -> action session 2026-07-27
@@ -1571,41 +1572,116 @@ def test_the_BEACON_id_parser_refuses_a_unicode_digit_by_name(
             assert "actionable_candidate_ids" in r.text
 
 
-def test_every_intent_is_written_against_the_latchs_OPENING_FIRE_id(
+def test_a_RECONFIRMATION_candidate_id_is_never_what_gets_persisted(
         seeded_db, frozen_clocks):
-    """Codex R2 CRITICAL 2's reachability, PINNED rather than assumed.
+    """Codex R2 CRITICAL 2's reachability, pinned DISCRIMINATINGLY (R3 MAJOR 6).
 
-    Several route-side reads are keyed on a single `candidate_id` -- the replay
-    guard, the prior-intent anchor, the unattached audit. They are correct
-    exactly while every persisted intent carries the latch's OPENING FIRE id,
-    never a re-confirmation's. `swing/web/routes/latches.py` writes
-    `candidate_id=latch.identity.candidate_id`, so it does.
+    The round-2 form submitted the opening-fire id and then asserted that same id
+    came back, which an implementation echoing the submitted `candidate_id`
+    passes unchanged -- it never offered the distinguishing input. This one
+    builds a latch that HAS a re-confirmation and POSTs against the
+    RE-CONFIRMATION id.
 
-    That is a CONSTRAINED WRITER, not a schema CHECK -- `latch_order_intents`
-    has an FK to `candidates` and nothing narrower -- which is precisely why it
-    needs a test rather than a comment. If a future writer ever records against a
-    re-confirmation id, this fails and the fire-id-keyed reads must be widened to
-    the candidate family (the lifecycle resolver and both classifiers already
-    read the family and would be unaffected).
+    WHY IT MATTERS: several route-side reads are keyed on a single
+    `candidate_id` -- the replay guard, the prior-intent anchor, the unattached
+    audit -- and they are correct exactly while every persisted intent carries
+    the latch's OPENING FIRE id. That is a CONSTRAINED WRITER, not a schema
+    CHECK (`latch_order_intents` has an FK to `candidates` and nothing
+    narrower), which is why it needs a test rather than a comment.
+
+    Either outcome is a pass: the route REFUSES the re-confirmation id (it does
+    not identify a latch the panel renders), or it persists the FIRE id. What
+    must never happen is a row carrying the re-confirmation id -- and if this
+    ever fails, the fire-id-keyed route reads must widen to the candidate family
+    (the lifecycle resolver and both classifiers already read the family and
+    would be unaffected).
     """
     cfg, cfg_path = seeded_db
     cid = _seed(cfg)
-    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        # a SECOND aplus row on the SAME action session -> clause (i) collapses
+        # it into the first latch as a RE-CONFIRMATION.
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(122, '2026-07-17T18:30:05', '2026-07-17', '2026-07-20', 1, 1, 0, "
+            "0, 0, 0)")
+        reconf = int(conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(122, 'FTRE', 'aplus', 17.76, 18.34, 14.88, 'universe')"
+        ).lastrowid)
+    conn.close()
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        latch = next(
+            lat for lat in build_latch_derivation(conn, cfg).latches
+            if lat.identity.candidate_id == cid)
+    finally:
+        conn.close()
+    assert reconf in latch.candidate_set, "the fixture must build a re-confirmation"
+    assert latch.identity.candidate_id == cid != reconf
+
+    form = _anchor_form(cfg, cid) | {
+        "intent_kind": "place", "candidate_id": str(reconf)}
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
-        assert client.post(
-            "/latches/intent", headers=_HX, data=form).status_code == 200
-    from swing.data.db import connect
-    from swing.latches.reader import build_latch_derivation
+        client.post("/latches/intent", headers=_HX, data=form)
+
     conn = connect(cfg.paths.db_path)
     try:
         persisted = {
             int(r[0]) for r in conn.execute(
                 "SELECT candidate_id FROM latch_order_intents").fetchall()}
-        latches = build_latch_derivation(conn, cfg).latches
     finally:
         conn.close()
-    assert persisted == {cid}
-    fire_ids = {lat.identity.candidate_id for lat in latches}
-    assert cid in fire_ids, (
-        "the persisted candidate_id is the latch's OPENING FIRE id")
+    assert reconf not in persisted, (
+        "a re-confirmation candidate id reached latch_order_intents -- the "
+        "fire-id-keyed route reads (replay guard, prior anchor, unattached "
+        "audit) must now widen to the candidate family")
+
+
+def test_a_DECLINED_latch_still_accepts_the_correcting_place(
+        seeded_db, frozen_clocks):
+    """Codex R3 MAJOR 5, and the correction RD ruling 3 is actually about.
+
+    A decline now TERMINATES the mandate, so the route's re-derivation has to
+    reopen the decision surface for that terminal or the operator can end a
+    mandate and never take it back. Proven END-TO-END on the fixture that seeds
+    the archive bar the 21-G provenance gate requires -- so this exercises the
+    real `not block.offered` conflict branch rather than asserting around it.
+
+    Discriminator: with a liveness-only re-derivation the second POST is a 400
+    ("was not a live latch on that session"); with an always-withheld block it
+    is a 409 conflict. Only a genuinely offered block on a declined latch gives
+    200 and a second row.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    base = _anchor_form(cfg, cid)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        declined = client.post(
+            "/latches/intent", headers=_HX,
+            data=base | {"intent_kind": "decline",
+                         "decline_reason": "already_positioned"})
+        corrected = client.post(
+            "/latches/intent", headers=_HX, data=base | {"intent_kind": "place"})
+    assert declined.status_code == 200, declined.text
+    assert corrected.status_code == 200, corrected.text
+    rows = _intents(cfg)
+    assert [r[1] for r in rows] == ["decline", "place"]
+
+    # ... and the correcting place GOVERNS: the latch is live again.
+    conn = connect(cfg.paths.db_path)
+    try:
+        latch = next(
+            lat for lat in build_latch_derivation(conn, cfg).latches
+            if lat.identity.candidate_id == cid)
+    finally:
+        conn.close()
+    assert latch.is_live is True
+    assert latch.clear_reason is None
