@@ -52,6 +52,10 @@ That is not a theme chosen for tidiness — it is what the August monthly read c
 
 **Small enabler:** emit `entry_fill` and `pivot` in `results.csv` (values the simulator already holds). Makes the shadow's uncapped-fill divergence measurable. **Do NOT change the engine's fill rule** — that touches the measurement chain and breaks T4 comparability.
 
+## 3.5 LATCH-ON-ACCEPTANCE for hyp-rec offers (operator-originated 2026-08-07, live case LQDA)
+
+A `near_trigger` hyp-rec order reads as a STRAY on the latch panel (no latch derives — A+ fires only), and a later fill risks the FTRE capture failure (label/date mis-freeze). **Design position (RD, routed `20260807T...`): NOT auto-latch** — near-triggers run 3–7/session vs six A+ fires ever; auto-latching OFFERS would flood the away/discipline denominators with unintended no-action fires. **A+ fires are MANDATES (auto-latch); hyprecs are OFFERS — the PLACE INTENT creates the latch**, freezing the fire's row (pivot/stop/label), arming order-agreement + invalidation + fill-capture. The 21-B intent ledger is the acceptance record. **Binding measurement constraint: accepted-offer latches are a SEPARATE POPULATION from mandate latches in every rate** — the stage-3-gating away rate was defined over mandates and must never be entered by an operator-initiated latch.
+
 ## 4. CARRIED FROM PHASE 21
 
 - **Latch `criteria_lapsed` amendment** (routed `20260801T145240Z`) — a 5th clear reason with a DIRECTIONAL conjunct, because the obvious form would have destroyed FTRE.
