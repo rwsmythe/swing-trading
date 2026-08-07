@@ -131,3 +131,113 @@ def test_bucket_for_characterization_table(sample_config):
         assert bucket_for(tt, vcp, risk, sample_config) == expected, (
             f"tt_pass={tt_pass} fails={tt_fails} vcp_fails={vcp_fails} "
             f"risk_pass={risk_pass}")
+
+
+def test_the_structural_gate_EXCLUDES_risk_feasibility(sample_config):
+    """T2.2 -- L4's guard, and the test that fails if any implementation reads
+    `candidates.bucket` instead of recomputing the gate.
+
+    A perfect structure whose ONLY failure is `risk_feasibility` buckets `skip`
+    -- the risk pre-filter returns before the TT/vcp tests are even run -- while
+    the STRUCTURAL gate passes. `risk_feasibility` is a fact about the
+    operator's capital, so letting it into the gate would let his own account
+    size withdraw his mandate. That is RD's exclusion and this is its guard.
+    """
+    from swing.evaluation.scoring import (
+        structural_gate_passes,
+        structural_inputs_from_results,
+    )
+
+    tt = _tt_results(8, ())
+    vcp = _vcp_results(0)
+    risk = [_make("risk", "fail", "risk_feasibility")]
+    assert bucket_for(tt, vcp, risk, sample_config) == "skip"
+    assert structural_gate_passes(
+        structural_inputs_from_results(tt, vcp), sample_config) is True
+
+
+def test_a_trend_template_na_is_a_NON_PASS_not_a_neutral(sample_config):
+    """T2.6(b) -- the half an earlier draft claimed was covered while asserting
+    only the vcp case.
+
+    Discriminator: an adapter that counts only `result == "fail"` into
+    `tt_failed_names` treats `na` as neutral, leaves `tt_pass_count` at 7 (>=
+    min_passes) with no disallowed fail, and falsely PASSES the gate. Here TT3
+    -- OUTSIDE `allowed_miss_names` -- is `na`, so the gate must FAIL.
+    """
+    from swing.evaluation.scoring import (
+        structural_gate_passes,
+        structural_inputs_from_results,
+    )
+
+    tt = [_make("trend_template", "pass", n) for n in (
+        "TT1_above_150_200", "TT2_150_above_200", "TT4_50_above_150_200",
+        "TT5_above_50", "TT6_above_52w_low_30pct",
+        "TT7_within_52w_high_25pct", "TT8_rs_rank")]
+    tt.append(_make("trend_template", "na", "TT3_200_rising"))
+    inputs = structural_inputs_from_results(tt, _vcp_results(0))
+    assert inputs.tt_pass_count == 7
+    assert "TT3_200_rising" in inputs.tt_failed_names
+    assert structural_gate_passes(inputs, sample_config) is False
+
+
+def test_a_vcp_na_counts_as_a_vcp_FAILURE(sample_config):
+    """T2.6(a). `bucket_for` has always counted `na` as a vcp fail
+    ("insufficient data is a fail"); the reduction must not quietly relax it."""
+    from swing.evaluation.scoring import structural_inputs_from_results
+
+    vcp = _vcp_results(0)[:-1] + [_make("vcp", "na", "vcp_volume_contraction")]
+    assert structural_inputs_from_results(_tt_results(8, ()), vcp
+                                          ).vcp_fail_count == 1
+
+
+def test_the_expected_criterion_rosters_match_the_real_evaluator(sample_config):
+    """T2.7 -- THE ROSTER DRIFT-PIN, and what makes a hand-written roster safe.
+
+    The rosters cannot be derived at runtime (the criterion modules expose no
+    static name list; `evaluate` is a runtime call over a constructed context),
+    so they are written out and pinned against the REAL emitter. A criterion
+    added, renamed or removed changes what the structural gate MEANS -- and the
+    latch reader's roster check would then start declaring every candidate
+    UNVERIFIABLE, or worse, pass a partial set. This test fails first instead.
+    """
+    import pandas as pd
+
+    from swing.evaluation.context import (
+        BatchContext,
+        CandidateContext,
+        MarketContext,
+    )
+    from swing.evaluation.evaluator import evaluate_one
+    from swing.evaluation.scoring import (
+        EXPECTED_TT_CRITERIA,
+        EXPECTED_VCP_CRITERIA,
+    )
+
+    n = 320
+    idx = pd.bdate_range("2025-01-01", periods=n)
+    close = pd.Series([10.0 + i * 0.05 for i in range(n)], index=idx)
+    ohlcv = pd.DataFrame({
+        "Open": close, "High": close * 1.01, "Low": close * 0.99,
+        "Close": close, "Volume": [1_000_000] * n,
+    }, index=idx)
+    ctx = CandidateContext(
+        ticker="ROSTER", ohlcv=ohlcv, config=sample_config,
+        batch=BatchContext(
+            returns_12w_by_ticker={"ROSTER": 0.40}, universe_tickers=("ROSTER",),
+            universe_version="t", universe_hash="t", spy_return_12w=0.10),
+        market=MarketContext(), current_equity=7500.0)
+    # THE REAL PRODUCTION ASSEMBLY, not the individual criterion modules: the
+    # vcp layer is built from NINE separate modules inside `evaluate_one`, so
+    # calling one of them would pin a fragment of the roster and miss the
+    # assembly -- which is where a criterion is actually added or dropped.
+    criteria = evaluate_one(ctx).criteria
+    tt_names = {c.criterion_name for c in criteria if c.layer == "trend_template"}
+    vcp_names = {c.criterion_name for c in criteria if c.layer == "vcp"}
+    risk_names = {c.criterion_name for c in criteria if c.layer == "risk"}
+    assert tt_names == EXPECTED_TT_CRITERIA
+    assert vcp_names == EXPECTED_VCP_CRITERIA
+    # The risk layer is named here only to prove it is a SEPARATE layer the
+    # gate never reads (L4) -- and that it has not quietly merged into `vcp`.
+    assert risk_names == {"risk_feasibility"}
+    assert not (EXPECTED_TT_CRITERIA & EXPECTED_VCP_CRITERIA)
