@@ -522,3 +522,34 @@ def test_a_SAME_PIVOT_re_fire_on_the_decline_session_folds_INTO_the_decline():
     # the re-fire is RECORDED as a re-confirmation, never silently dropped
     assert latch.reconfirmation_candidate_ids == (9100,)
     assert latch.reconfirmation_sessions == (D5,)
+
+
+def test_a_CORRECTED_decline_plus_a_re_fire_never_yields_TWO_armed_latches():
+    """Codex R5 CRITICAL 2 -- the open-latch rule's core invariant.
+
+    `decline(D1)`, a correcting `place(D5)`, and a different-pivot re-fire also
+    on D5. The liveness probe stops before the re-fire's own session, so it sees
+    ONLY the decline and reports the predecessor DEAD; the final resolution --
+    which sees the correcting place -- says it is STILL LIVE.
+
+    Discriminator: routed on the probe alone, clause (iii) `_close`s the
+    predecessor with `terminal=None` (i.e. ARMED) and then opens the incoming
+    fire as a SECOND latch. TWO ARMED MANDATES on one ticker, which is exactly
+    what the open-latch rule exists to make impossible, and which would tell the
+    operator to place two orders for one setup.
+    """
+    second = FireRow(
+        candidate_id=9100, evaluation_run_id=131, ticker="VSTS", pivot=18.50,
+        initial_stop=15.00, action_session_date=D5,
+        run_ts="2026-07-31T17:30:04", pipeline_run_id=145)
+    d = _derive(fires=[VSTS_FIRE, second], decisions=[
+        _decision("decline", session=D1, intent_id=1, candidate_id=8851),
+        _decision("place", session=D5, intent_id=2, candidate_id=8851)])
+    armed = [x for x in d.latches if x.is_live]
+    assert len(armed) <= 1, [
+        (x.identity.candidate_id, x.state, x.clear_reason) for x in d.latches]
+    # the correcting place kept the predecessor alive, so the re-fire SUPERSEDES
+    by_id = {x.identity.candidate_id: x for x in d.latches}
+    assert by_id[8851].clear_reason == "superseded"
+    assert by_id[8851].clear_session == date.fromisoformat(D5)
+    assert by_id[9100].is_live is True

@@ -437,6 +437,25 @@ def decision_bounds_for(latch, *, fill_bound: date) -> tuple[date, date]:
     `fill_bound` is the caller's as-of bound; on the production path it is the
     derivation's `horizon_session`, which every caller already holds. The fold's
     pulled-back probe bound applies INSIDE the fold only and never reaches here.
+
+    A KNOWN AND CURRENTLY-UNREACHABLE ASYMMETRY, RECORDED RATHER THAN PATCHED
+    (Codex R5). The LIFECYCLE resolves the governing decision BEFORE it knows the
+    terminal -- that is the chicken-and-egg the ranked candidate list exists to
+    break -- so `_resolve_decline` reads decisions through the NOMINAL horizon
+    while this caps them at the ACTUAL terminal. The two therefore disagree for
+    ONE shape: `decline(D3)`, a correcting `place(D5)`, and a fill or
+    invalidation on D4. The lifecycle sees the place, suppresses the decline and
+    resolves D4; this cap drops the place, resurrects the D3 decline, and reports
+    the same latch `declined`.
+
+    IT IS NOT REACHABLE IN THE SHIPPED SYSTEM, and the reason is the same one
+    flagged at `rederive_prepared_order`: it needs a `place` recorded AFTER a
+    `decline` on one latch, and the route refuses any decision on a latch the
+    decline has terminated. The fix is a PER-KIND cap -- places through the
+    nominal window, declines at the terminal -- and it belongs with the wave item
+    that restores the correction affordance, because that item is what makes the
+    sequence recordable. Shipping the cap before the affordance would change
+    three existing dispositions to serve a sequence nothing can create.
     """
     return (
         latch.anchor,

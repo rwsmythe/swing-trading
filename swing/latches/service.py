@@ -107,6 +107,19 @@ class _Draft:
 # DECISIONS (a decline) beat framework EVENTS (a re-fire, which is an
 # affirmative CURRENT fact) beat framework EVIDENCE of decay (an invalidation)
 # beat DEADLINES (the horizon).
+#
+# WHAT THIS TABLE DOES *NOT* CLAIM, stated so it is not read as more than it is
+# (Codex R5). `superseded` is stamped by the FOLD, not selected here, so its rank
+# governs exactly ONE comparison -- the R6 `declined`-vs-`superseded` tie in
+# branch (b). It does NOT make `superseded > horizon` true on a same-session tie:
+# a different-pivot re-fire dated exactly on the predecessor's `horizon_expiry`
+# makes the liveness probe return `horizon`, so the fold takes clause (iii) and
+# branch (b) -- the only place a `superseded` candidate is built -- never runs.
+# That gap is PRE-EXISTING (the `live_probe is None` selector is untouched by the
+# item-3a diff) and it also leaves the stale-order alarm at `warning` where
+# `superseded` would make it `critical`. Recorded here, NOT fixed here: it is a
+# shipped supersede/horizon semantic and an alarm severity, both outside a
+# `declined` arc.
 _CLEAR_REASON_RANK = {
     "fill": 0,
     "declined": 1,
@@ -559,7 +572,22 @@ def _fold_ticker(
                 open_draft = None
                 continue
 
-            if live_probe is None:                                # clause (ii)
+            # THE FULL RESOLUTION CAN ALSO REVERSE THE PROBE TO *STILL LIVE*,
+            # and that reversal must take clause (ii) as well (Codex R5).
+            # The probe cannot see a decision recorded after the re-fire's own
+            # session, so `decline(D3)` + a correcting `place(D5)` makes the
+            # probe report the old latch DEAD (declined at D3) while the final
+            # resolution -- which sees the place -- says it is STILL LIVE. Taking
+            # clause (iii) there would `_close` it as live (`terminal=None`) and
+            # then open the incoming fire as a SECOND latch: TWO ARMED MANDATES
+            # on one ticker, which the open-latch rule exists to make impossible.
+            #
+            # INERT FOR EVERY PRE-DECISION CASE, and that is checkable rather
+            # than hoped: the probe's bounds are a SUBSET of the final one's, so
+            # any invalidation or horizon it finds the final pass finds too --
+            # `live_probe is not None` therefore implied `final_probe is not
+            # None` before decisions entered the resolver.
+            if live_probe is None or final_probe is None:          # clause (ii)
                 same_pivot = (
                     round(float(fire.pivot), _PRICE_DP)
                     == round(open_draft.pivot, _PRICE_DP))
