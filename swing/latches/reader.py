@@ -262,8 +262,20 @@ def load_decision_intents(conn: sqlite3.Connection, candidate_ids) -> dict:
     return out
 
 
-def structural_inputs_from_rows(rows) -> tuple[StructuralInputs | None, str | None]:
+def structural_inputs_from_rows(
+    rows, *, bucket: str | None = None,
+) -> tuple[StructuralInputs | None, str | None]:
     """Reduce one candidate's `candidate_criteria` rows for the A+ gate.
+
+    `bucket` is that candidate's `candidates.bucket` and it decides ONLY what an
+    EMPTY roster is CALLED (Codex R2). `excluded`/`error` are the evaluator's
+    synthesised sentinels and carry `criteria=()` by construction; every other
+    bucket was actually scored, so an empty roster there is an INCOMPLETE one.
+    Both are UNVERIFIABLE and neither moves a mandate -- but the cause is
+    OPERATOR-VISIBLE on the card, so mislabelling it puts a false sentence on
+    the panel. `None` keeps the conservative sentinel label for the pure-helper
+    callers; PRODUCTION ALWAYS PASSES IT, pinned by a loader test, because a
+    default that diverges from production is its own gotcha.
 
     Returns `(inputs, cause)` -- exactly one of which is populated. The plan
     specified `StructuralInputs | None`; the CAUSE is returned alongside it
@@ -310,6 +322,11 @@ def structural_inputs_from_rows(rows) -> tuple[StructuralInputs | None, str | No
         # was never structurally evaluated. NOT a failure -- counting it as one
         # would let the framework withdraw a mandate BECAUSE the operator acted
         # on it.
+        #
+        # A SCORED bucket with no rows is a different fact and gets a different
+        # name: the roster is INCOMPLETE, not absent by design.
+        if bucket is not None and bucket not in ("excluded", "error"):
+            return None, "incomplete_roster"
         return None, "sentinel_row"
     if (set(tt_names) != EXPECTED_TT_CRITERIA
             or set(vcp_names) != EXPECTED_VCP_CRITERIA):
@@ -413,26 +430,45 @@ def load_session_structural_verdicts(
     run_ids = [rid for ids in by_session.values() for rid in ids]
     if not run_ids:
         return {}
-    # CHUNKED ON THE RUN DIMENSION, like the criteria query below (Codex R1).
-    # `run_ids` is UNBOUNDED HISTORICAL DATA -- one entry per evaluation run
-    # since the earliest retained A+ fire or archive bar, which the fire loader
-    # deliberately never truncates -- so a bare `IN` grows without limit and
-    # eventually raises `too many SQL variables`, crashing the READ-ONLY panel
-    # for every latch at once. The live DB is 135 runs against a 32766 limit, so
-    # this is decades away; it is fixed because the file's own convention
-    # already chunks and an unbounded `IN` is the defect regardless of when it
-    # lands. Tickers are bounded by the A+ fire count and do not need it.
-    tick_ph = ",".join("?" * len(values))
+    # CHUNKED ON *BOTH* DIMENSIONS, like the criteria query below (Codex R1,
+    # completed at R2). `run_ids` is UNBOUNDED HISTORICAL DATA -- one entry per
+    # evaluation run since the earliest retained A+ fire or archive bar, which
+    # the fire loader deliberately never truncates -- so a bare `IN` grows
+    # without limit and eventually raises `too many SQL variables`, crashing the
+    # READ-ONLY panel for EVERY latch at once rather than degrading one row.
+    #
+    # R2's correction is the load-bearing half: a chunk bounded on ONE dimension
+    # is not bounded. Each run-chunk carried `len(chunk) + len(values)`
+    # parameters, and `values` comes from the SAME unbounded fire corpus, so a
+    # fixed 500 could still overflow. The budget is therefore taken from the
+    # CONNECTION's own limit rather than from a guessed constant -- 999 on old
+    # builds, 32766 here -- so the pair always fits by construction.
+    try:
+        var_limit = int(conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER))
+    except Exception:            # noqa: BLE001 -- older/odd builds: assume 999
+        var_limit = 999
+    budget = max(2, var_limit - 1)
+    tick_size = max(1, min(len(values), budget // 2))
+    run_size = max(1, min(500, budget - tick_size))
     candidate_by_run_ticker: dict[tuple[int, str], int] = {}
-    for chunk_start in range(0, len(run_ids), 500):
-        chunk = run_ids[chunk_start:chunk_start + 500]
-        rid_ph = ",".join("?" * len(chunk))
-        for row in conn.execute(
-            f"SELECT id, evaluation_run_id, ticker FROM candidates "
-            f"WHERE evaluation_run_id IN ({rid_ph}) AND ticker IN ({tick_ph})",
-            [*chunk, *values],
-        ).fetchall():
-            candidate_by_run_ticker[(int(row[1]), str(row[2]))] = int(row[0])
+    bucket_by_candidate: dict[int, str | None] = {}
+    for t_start in range(0, len(values), tick_size):
+        tick_chunk = values[t_start:t_start + tick_size]
+        tick_ph = ",".join("?" * len(tick_chunk))
+        for chunk_start in range(0, len(run_ids), run_size):
+            chunk = run_ids[chunk_start:chunk_start + run_size]
+            rid_ph = ",".join("?" * len(chunk))
+            for row in conn.execute(
+                f"SELECT id, evaluation_run_id, ticker, bucket FROM candidates "
+                f"WHERE evaluation_run_id IN ({rid_ph}) "
+                f"AND ticker IN ({tick_ph})",
+                [*chunk, *tick_chunk],
+            ).fetchall():
+                candidate_by_run_ticker[(int(row[1]), str(row[2]))] = int(row[0])
+                # `bucket` decides ONLY what an EMPTY roster is CALLED, and it
+                # is loaded HERE because the reducer cannot see it (Codex R2).
+                bucket_by_candidate[int(row[0])] = (
+                    None if row[3] is None else str(row[3]))
     criteria_by_candidate: dict[int, list[tuple]] = {}
     cids = sorted(candidate_by_run_ticker.values())
     for chunk_start in range(0, len(cids), 500):
@@ -462,7 +498,8 @@ def load_session_structural_verdicts(
                         latest_cause = "absent"
                     continue
                 inputs, cause = structural_inputs_from_rows(
-                    criteria_by_candidate.get(cid, ()))
+                    criteria_by_candidate.get(cid, ()),
+                    bucket=bucket_by_candidate.get(cid))
                 if inputs is None:
                     if is_latest:
                         latest_cause = cause or "sentinel_row"

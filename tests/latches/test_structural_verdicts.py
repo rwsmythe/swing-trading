@@ -582,3 +582,76 @@ def test_the_run_dimension_is_CHUNKED_so_a_long_history_cannot_overflow(db, cfg)
     finally:
         db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 32766)
     assert set(got) == {"TST"}
+
+
+# ---------------------------------------------------------------------------
+# Codex R2 MINOR -- an empty roster is only a SENTINEL when the bucket says so
+# ---------------------------------------------------------------------------
+def test_an_empty_roster_on_a_SCORED_bucket_is_incomplete_not_a_sentinel(db, cfg):
+    """Codex R2. `structural_inputs_from_rows` returned `sentinel_row` for EVERY
+    empty roster, and the candidate query did not load `bucket` -- so a `watch`
+    or `aplus` candidate carrying no criteria rows (representable: the PK is
+    `(candidate_id, criterion_name)` and NOTHING requires the roster to exist)
+    was reported as an evaluator sentinel.
+
+    The verdict is UNVERIFIABLE either way, so no mandate moves. But the CAUSE
+    is now OPERATOR-VISIBLE on the card -- the `_unverifiable_label` fix earlier
+    in this review put it there -- so a wrong cause is a wrong sentence on the
+    panel: "the operator holds this / the evaluator errored" instead of "we have
+    an incomplete criterion set".
+
+    The two real sentinels keep their label; the evaluator synthesises
+    `excluded` and `error` with `criteria=()` and those are genuine.
+    """
+    from swing.latches.reader import structural_inputs_from_rows
+
+    for bucket in ("excluded", "error"):
+        inputs, cause = structural_inputs_from_rows((), bucket=bucket)
+        assert inputs is None and cause == "sentinel_row", bucket
+    for bucket in ("aplus", "watch", "skip"):
+        inputs, cause = structural_inputs_from_rows((), bucket=bucket)
+        assert inputs is None and cause == "incomplete_roster", bucket
+
+    # AND THE PRODUCTION LOADER MUST ACTUALLY PASS IT. Without this the helper
+    # can be perfectly correct while the reader never supplies a bucket -- the
+    # default-arg-diverges-from-production class.
+    with db:
+        _run(db, 1, "2026-07-28", "2026-07-27T17:30:00")
+        _candidate(db, 1, "VSTS", "watch", [])
+    got = _verdicts(db, cfg, start="2026-07-28", end="2026-07-28")
+    assert [v.classification for v in got] == ["UNVERIFIABLE"]
+    assert [v.cause for v in got] == ["incomplete_roster"]
+
+
+def test_the_run_and_ticker_placeholders_TOGETHER_stay_under_the_limit(db, cfg):
+    """Codex R2 MINOR -- the chunking fix was only half a fix.
+
+    Each 500-run chunk executed with `500 + len(values)` parameters, and the
+    ticker set comes from the same unbounded all-history fire corpus the run set
+    does. A chunk that is bounded on one dimension only is not bounded.
+
+    The budget is now taken from the CONNECTION's own limit, so the pair always
+    fits. Pinned with a limit BELOW `500 + len(tickers)` -- which the previous
+    fix would have exceeded on the very first chunk.
+    """
+    import sqlite3
+    from datetime import timedelta
+    start = date(2026, 1, 5)
+    tickers = [f"T{i:04d}" for i in range(400)]
+    with db:
+        for i in range(400):
+            db.execute(
+                "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+                "action_session_date, tickers_evaluated, aplus_count, "
+                "watch_count, skip_count, excluded_count, error_count) "
+                "VALUES (?, ?, ?, ?, 1, 0, 1, 0, 0, 0)",
+                (i + 1, f"2026-01-05T{i % 24:02d}:{i % 60:02d}:00",
+                 "2026-01-02", (start + timedelta(days=i % 5)).isoformat()))
+    db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 600)
+    try:
+        got = load_session_structural_verdicts(
+            db, cfg, tickers=tickers, start=start,
+            end=start + timedelta(days=10))
+    finally:
+        db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 32766)
+    assert set(got) == set(tickers)
