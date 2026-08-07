@@ -694,7 +694,17 @@ def test_a_refire_on_the_expiry_session_does_not_arm_over_a_same_session_fill():
 def test_an_expiry_session_refire_WITHOUT_a_fill_still_opens_a_new_latch():
     """The paired discriminator: the suppression is keyed on the FILL, not on
     the expiry. Without a fill the re-fire opens a genuinely new mandate (the
-    R6 behaviour), or a real setup would be silently dropped."""
+    R6 behaviour), or a real setup would be silently dropped.
+
+    THE PREDECESSOR'S REASON CHANGED WITH THE R6 TIE FIX (3b, 2026-08-07) and
+    the property this test exists for did NOT. What it discriminates is that a
+    SECOND latch arms -- and it still does. But this fixture is a DIFFERENT-pivot
+    re-fire landing exactly on the predecessor's expiry, which is the one
+    geometry where the shipped fold filed a re-BASING as having gone STALE; RD
+    banked the correction to this arc. `state` is now `superseded`, and this
+    assertion is updated rather than the fix being weakened to preserve it: the
+    old value was the defect, not a contract.
+    """
     fires = [
         FireRow(candidate_id=8101, evaluation_run_id=40, ticker="EXP2",
                 pivot=33.48, initial_stop=28.81, action_session_date="2026-07-01",
@@ -707,7 +717,8 @@ def test_an_expiry_session_refire_WITHOUT_a_fill_still_opens_a_new_latch():
         fires=fires, bars_by_ticker={"EXP2": []}, entries_by_ticker={},
         horizon_session=date(2026, 8, 13), derivation_session=date(2026, 8, 13))
     assert len(d.latches) == 2
-    assert d.latches[0].state == "horizon_expired"
+    assert d.latches[0].state == "superseded"
+    assert d.latches[0].clear_reason == "superseded"
     assert d.latches[1].state == "armed"
 
 

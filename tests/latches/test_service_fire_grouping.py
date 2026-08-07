@@ -280,3 +280,95 @@ def test_a_next_session_refire_after_a_fill_does_open_a_second_latch():
     assert len(d.latches) == 2
     assert d.latches[0].state == "filled"
     assert d.latches[1].latched_pivot == 11.0     # the NEW fire's own price
+
+
+# ---------------------------------------------------------------------------
+# R6 AT THE EXPIRY TIE -- banked from the item-3a gate to 3b (RD, 2026-08-07).
+# ---------------------------------------------------------------------------
+def test_a_different_pivot_refire_ON_the_expiry_session_supersedes_not_horizon():
+    """R6 conformance at the ONE geometry the shipped fold got wrong.
+
+    RD's ladder puts `superseded` ABOVE `horizon`: a re-fire is an affirmative
+    CURRENT fact, so "re-based" must not file as "went stale" -- at the tie as
+    everywhere. When a different-pivot re-fire lands EXACTLY on the
+    predecessor's `horizon_expiry`, both liveness probes find the horizon
+    terminal (the horizon stays inclusive AT the re-fire session), so the
+    shipped fold took clause (iii) and let the resolver stamp `horizon`. The
+    supersede candidate was never built and its rank never consulted.
+
+    Discriminator, and it is exact: on the pre-fix fold this latch clears
+    `horizon` at the same session, so an assertion on the SESSION alone passes
+    under both implementations -- only the REASON separates them. The alarm
+    severity moves with it (`superseded` is critical-stale, `horizon` is not),
+    which is the operator-visible cost of getting it wrong: a resting order
+    behind a re-based mandate alarms at `warning` when the duty to cancel it is
+    identical to the invalidation case.
+    """
+    fires = [
+        _fire(901, 9, "TIE", 10.00, 8.00, "2026-07-27", "2026-07-24T21:00:00"),
+        # 3 sessions after 2026-07-27 is 2026-07-30 -- the expiry itself.
+        _fire(902, 12, "TIE", 11.50, 9.20, "2026-07-30", "2026-07-29T21:00:00"),
+    ]
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"TIE": []}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 31), derivation_session=date(2026, 7, 30),
+        horizon_sessions=3)
+    assert len(d.latches) == 2
+    old_latch, new_latch = d.latches
+    assert old_latch.horizon_expiry == date(2026, 7, 30)   # the tie is REAL
+    assert old_latch.clear_session == date(2026, 7, 30)
+    assert old_latch.clear_reason == "superseded"          # NOT "horizon"
+    assert old_latch.state == "superseded"
+    # The successor still arms at its OWN frozen values -- an implementation
+    # that fixed the reason by dropping the incoming fire would pass the
+    # predecessor assertions while silently losing the new mandate.
+    assert new_latch.latched_pivot == 11.50
+    assert new_latch.anchor == date(2026, 7, 30)
+    assert new_latch.state == "armed"
+
+
+def test_a_same_pivot_refire_ON_the_expiry_session_still_expires():
+    """The sibling that BOUNDS the fix, and the shipped behaviour it must not
+    disturb. A same-pivot re-fire is not a RE-BASING -- nothing about the
+    mandate moved -- so the predecessor genuinely ran out its window and clears
+    `horizon`, while the fire opens its own fresh mandate (the re-confirmation
+    branch applies only while the latch is LIVE, and at the expiry it is not).
+
+    Discriminator: an over-broad fix that stamps `superseded` on ANY re-fire
+    landing on the expiry passes the test above and fails this one.
+    """
+    fires = [
+        _fire(911, 9, "SAMETIE", 10.00, 8.00, "2026-07-27", "2026-07-24T21:00:00"),
+        _fire(912, 12, "SAMETIE", 10.00, 8.00, "2026-07-30", "2026-07-29T21:00:00"),
+    ]
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"SAMETIE": []}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 31), derivation_session=date(2026, 7, 30),
+        horizon_sessions=3)
+    assert len(d.latches) == 2
+    assert d.latches[0].clear_reason == "horizon"
+    assert d.latches[1].anchor == date(2026, 7, 30)
+
+
+def test_an_earlier_invalidation_still_beats_a_later_refire_on_date():
+    """The other bound: earliest-date-wins is untouched (L10). The old latch
+    died on 2026-07-28; a different-pivot re-fire two sessions later does not
+    re-open it to stamp `superseded` over a terminal that had already resolved.
+
+    Discriminator: a fix that builds the supersede candidate unconditionally and
+    forgets the DATE comparison returns `superseded` at 2026-07-30 here,
+    rewriting a terminal three sessions after it happened.
+    """
+    fires = [
+        _fire(921, 9, "EARLY", 10.00, 8.00, "2026-07-27", "2026-07-24T21:00:00"),
+        _fire(922, 12, "EARLY", 11.50, 9.20, "2026-07-30", "2026-07-29T21:00:00"),
+    ]
+    bars = [DailyBar(session=date(2026, 7, 28), open=8.5, high=8.6,
+                     low=7.0, close=7.50)]
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"EARLY": bars}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 31), derivation_session=date(2026, 7, 30),
+        horizon_sessions=3)
+    assert len(d.latches) == 2
+    assert d.latches[0].clear_reason == "invalidation"
+    assert d.latches[0].clear_session == date(2026, 7, 28)

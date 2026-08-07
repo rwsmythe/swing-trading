@@ -613,7 +613,37 @@ def _fold_ticker(
                     [t for t in (declined, supersede) if t is not None],
                     key=lambda t: t.order_key))
             else:                                                 # clause (iii)
-                _close(open_draft)
+                # R6 AT THE EXPIRY TIE (RD, 2026-08-07 -- banked from the item-3a
+                # gate). `superseded` OUTRANKS `horizon`: a re-fire is an
+                # affirmative CURRENT fact, so "re-based" must not file as "went
+                # stale" -- at the tie as everywhere.
+                #
+                # The tie is reachable only here. The horizon stays INCLUSIVE at
+                # the re-fire session, so when `horizon_expiry == anchor` BOTH
+                # probes find the horizon terminal, clause (ii) is skipped, and
+                # branch (b) -- the only place a `superseded` candidate was ever
+                # built -- never ran. The rank existed and was never consulted.
+                #
+                # THE DATE COMPARISON IS WHAT KEEPS THIS INSIDE L10, and it is
+                # the same ranked `order_key` the resolver uses rather than a
+                # second hand-written rule: the supersede candidate is dated at
+                # the RE-FIRE's session, so a terminal that resolved EARLIER
+                # (an invalidation two sessions back, a fill) still wins on date
+                # and nothing is rewritten. Only a terminal landing on the
+                # re-fire's own session can lose to it, and then only on rank.
+                #
+                # `final_probe` is the comparison basis rather than `live_probe`
+                # because it is the resolver's ACTUAL answer for this latch;
+                # both are non-None here (clause (ii) absorbed every None), and
+                # it is a `dry_run` probe, so consulting it consumes no trade.
+                same_pivot = (
+                    round(float(fire.pivot), _PRICE_DP)
+                    == round(open_draft.pivot, _PRICE_DP))
+                supersede = _Terminal("superseded", anchor)
+                if not same_pivot and supersede.order_key < final_probe.order_key:
+                    _close(open_draft, forced=supersede)
+                else:
+                    _close(open_draft)
             open_draft = None
 
         open_draft = _Draft(
