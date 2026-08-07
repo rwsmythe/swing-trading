@@ -144,6 +144,20 @@ def _inferred_origin(order_intent, place_intents) -> tuple[str, str]:
     return "unattributed", "INFERRED (no latch and no place intent match)"
 
 
+def _family_intents(conn, latch) -> list:
+    """Every intent on a latch's WHOLE candidate family, canonically ordered.
+
+    Mirrors the panel's reader for the same reason: a latch's identity is its
+    opening fire PLUS its re-confirmations, and the lifecycle resolves its
+    terminal over exactly that set.
+    """
+    rows: list = []
+    for cid in sorted(latch.candidate_set):
+        rows.extend(list_intents_for_latch(conn, candidate_id=cid))
+    rows.sort(key=lambda r: (r.recorded_ts, r.intent_id or 0))
+    return rows
+
+
 def _observations(conn, cfg, *, since_ts: str, now: datetime):
     """`(observations, health, intents_in_window, unattached, places,
     superseded_cycles)`.
@@ -185,9 +199,12 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
 
     # The FULL per-latch history -- the classifier's evidence, never the
     # report's window.
+    # KEYED ON THE FIRE, READ OVER THE WHOLE CANDIDATE FAMILY (item 3a): the
+    # resolver decides a terminal over `candidate_set`, so a fire-id-only read
+    # would let a decision recorded against a re-confirmation clear the latch
+    # while this report classified it as something else entirely.
     history: dict[int, list] = {
-        latch.identity.candidate_id: list_intents_for_latch(
-            conn, candidate_id=latch.identity.candidate_id)
+        latch.identity.candidate_id: _family_intents(conn, latch)
         for latch in latches
     }
     # THE PARENT LOOKUP IS NOT A WINDOW QUESTION EITHER, and this is the same

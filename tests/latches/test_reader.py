@@ -1017,3 +1017,191 @@ def test_one_tickers_two_latches_do_not_share_a_decline_END_TO_END(tmp_path):
         assert by_id[second].is_live is True
     finally:
         conn.close()
+
+
+# --- Codex R1: the recording surface, exercised through PRODUCTION code ----
+def test_rederive_prepared_order_reopens_a_DECLINED_latch_and_no_other(tmp_path):
+    """Codex R1 MAJOR 5. The earlier form of this test asserted a predicate
+    DEFINED IN THE TEST, which passes whatever `rederive_prepared_order`
+    actually does -- the tautology class. This calls the production function.
+
+    A decline is his to amend (`build_idempotency_key` carries `prior_intent_id`
+    precisely so a CORRECTION keys differently from a REPLAY); a fill, an
+    invalidation, a supersede and an expiry are authored by the WORLD and are
+    not.
+    """
+    from swing.web.view_models.latches import rederive_prepared_order
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        with conn:
+            _run(conn, 126, "2026-07-24", "2026-07-27", pipeline_run_id=140)
+            cid = _candidate(conn, 126, "VSTS", "aplus", 16.90, 13.40)
+        anchor = date(2026, 7, 28)
+        live, _ = rederive_prepared_order(
+            conn, cfg, candidate_id=cid, anchor=anchor)
+        assert live is not None and live.is_live
+
+        _decline_row(conn, candidate_id=cid, run_id=126, ticker="VSTS",
+                     detection="2026-07-27", session="2026-07-27")
+        declined, _ = rederive_prepared_order(
+            conn, cfg, candidate_id=cid, anchor=anchor)
+        assert declined is not None
+        assert declined.clear_reason == "declined"
+    finally:
+        conn.close()
+
+
+def test_an_INVALIDATED_latch_is_NOT_reopened_by_the_decline_widening(tmp_path):
+    """The other half, and the one a one-sided fix gets wrong: the widening must
+    admit `declined` ONLY. An invalidation is the market's verdict, not his."""
+    import pandas as pd
+
+    from swing.web.view_models.latches import rederive_prepared_order
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        with conn:
+            _run(conn, 126, "2026-07-24", "2026-07-27", pipeline_run_id=140)
+            cid = _candidate(conn, 126, "VSTS", "aplus", 16.90, 13.40)
+        pd.DataFrame([
+            {"asof_date": "2026-07-27", "open": 13.0, "high": 13.1,
+             "low": 12.9, "close": 13.00, "volume": 1000},
+        ]).to_parquet(cfg.paths.prices_cache_dir / "VSTS.yfinance.parquet")
+        latch, _ = rederive_prepared_order(
+            conn, cfg, candidate_id=cid, anchor=date(2026, 7, 28))
+        assert latch is None
+    finally:
+        conn.close()
+
+
+def test_a_declined_latch_with_a_SUCCESSOR_is_not_reopened(tmp_path):
+    """Codex R1 CRITICAL 4 -- the laundering path around `superseded`.
+
+    A latch declined on session S with a DIFFERENT-pivot fire also on S resolves
+    `declined` ONLY because R6 ranks the decline above the supersede. Reopening
+    it would let a later `place` erase the decline, dropping the latch back to
+    `superseded` -- with a placement permanently recorded against a mandate that
+    was never open.
+
+    RD's R5 is the rule: the re-fire arms a NEW latch which is its own fresh
+    decision point, and his decline never bleeds forward. So the SUCCESSOR is
+    open and the predecessor is not.
+    """
+    from swing.web.view_models.latches import rederive_prepared_order
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        with conn:
+            _run(conn, 126, "2026-07-24", "2026-07-27", pipeline_run_id=140)
+            first = _candidate(conn, 126, "VSTS", "aplus", 16.90, 13.40)
+            _run(conn, 131, "2026-07-27", "2026-07-28", pipeline_run_id=145)
+            second = _candidate(conn, 131, "VSTS", "aplus", 18.50, 15.00)
+        _decline_row(conn, candidate_id=first, run_id=126, ticker="VSTS",
+                     detection="2026-07-27", session="2026-07-28")
+        anchor = date(2026, 7, 28)
+        predecessor, _ = rederive_prepared_order(
+            conn, cfg, candidate_id=first, anchor=anchor)
+        successor, _ = rederive_prepared_order(
+            conn, cfg, candidate_id=second, anchor=anchor)
+        assert predecessor is None          # superseded-in-waiting; not his to amend
+        assert successor is not None and successor.is_live
+    finally:
+        conn.close()
+
+
+def test_a_RECONFIRMATION_decline_reaches_the_panel_classifier_too(tmp_path):
+    """Codex R1 CRITICAL 2. The lifecycle resolves a terminal over the whole
+    CANDIDATE FAMILY (opening fire + re-confirmations); the panel classifier read
+    only the fire id. A decision recorded against a re-confirmation therefore
+    TERMINATED the latch while the classifier never saw the row -- so the card's
+    disposition contradicted its own terminal.
+
+    Discriminator: with a fire-id-only classifier read the terminal is `declined`
+    while the disposition is NOT `declined` (it falls through to a coverage or
+    away rung). Both halves must read the same population.
+    """
+    from swing.web.view_models.latches import _family_intents, _panel_dispositions
+    from swing.latches.classification import TelemetryHealth
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        with conn:
+            # TWO fires on the SAME action session -> clause (i) collapses the
+            # second into the first as a RE-CONFIRMATION, so one latch carries
+            # two candidate ids.
+            _run(conn, 126, "2026-07-24", "2026-07-27", pipeline_run_id=140)
+            fire = _candidate(conn, 126, "VSTS", "aplus", 16.90, 13.40)
+            _run(conn, 127, "2026-07-24", "2026-07-27")
+            reconf = _candidate(conn, 127, "VSTS", "aplus", 16.90, 13.40)
+        _decline_row(conn, candidate_id=reconf, run_id=127, ticker="VSTS",
+                     detection="2026-07-27", session="2026-07-28")
+
+        d = build_latch_derivation(
+            conn, cfg, now=datetime(2026, 7, 29, 12, 0))
+        latch = d.latches[0]
+        assert reconf in latch.candidate_set and fire in latch.candidate_set
+        assert latch.clear_reason == "declined"          # the LIFECYCLE saw it
+
+        # the family read is what carries it to the classifier
+        assert [i.intent_id for i in _family_intents(conn, latch)]
+        dispositions, _ = _panel_dispositions(
+            conn, [latch], views_by_latch={}, health=TelemetryHealth(verdict="ok"),
+            fill_bound=d.horizon_session)
+        assert dispositions[latch.identity.candidate_id].disposition == "declined"
+    finally:
+        conn.close()
+
+
+def test_ONE_failed_candidate_read_withdraws_ALL_decision_evidence(tmp_path):
+    """Codex R1 CRITICAL 3. A per-candidate SKIP looks conservative and is not.
+
+    `governing_decision` resolves ONE family spanning several candidate ids by
+    RECENCY, so dropping part of it is non-monotonic: a `decline` on the opening
+    fire with the correcting `place` on a re-confirmation resolves to the PLACE
+    (still live) when both are read, and to the DECLINE (cleared) when only the
+    first is. A skip therefore CLEARS a latch that must stay live, on evidence
+    the reader could not read.
+
+    All-or-nothing keeps every mandate ALIVE, the direction that cannot destroy
+    a trade.
+    """
+    from swing.latches import reader as reader_mod
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        with conn:
+            _run(conn, 126, "2026-07-24", "2026-07-27", pipeline_run_id=140)
+            fire = _candidate(conn, 126, "VSTS", "aplus", 16.90, 13.40)
+            _run(conn, 127, "2026-07-24", "2026-07-27")
+            reconf = _candidate(conn, 127, "VSTS", "aplus", 16.90, 13.40)
+        _decline_row(conn, candidate_id=fire, run_id=126, ticker="VSTS",
+                     detection="2026-07-27", session="2026-07-28")
+        _decline_row(conn, candidate_id=reconf, run_id=127, ticker="VSTS",
+                     detection="2026-07-27", session="2026-07-29", kind="place")
+
+        # both readable -> the later PLACE governs, the latch stays live
+        assert build_latch_derivation(
+            conn, cfg, now=datetime(2026, 7, 30, 12, 0)).latches[0].is_live
+
+        # the re-confirmation's read RAISES -> nothing is reported at all
+        import sqlite3
+
+        import swing.data.repos.latch_order_intents as repo
+        real = repo.list_intents_for_latch
+
+        def _boom(conn_, *, candidate_id):
+            if candidate_id == reconf:
+                raise sqlite3.OperationalError("simulated hydration failure")
+            return real(conn_, candidate_id=candidate_id)
+
+        repo.list_intents_for_latch = _boom
+        try:
+            got = reader_mod.load_decision_intents(conn, [fire, reconf])
+            assert got == {}, (
+                "a partial family is worse than none -- the fire's decline "
+                "alone would CLEAR a latch the correcting place keeps live")
+        finally:
+            repo.list_intents_for_latch = real
+    finally:
+        conn.close()

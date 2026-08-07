@@ -1153,13 +1153,34 @@ def rederive_prepared_order(conn, cfg, *, candidate_id: int, anchor: date):
     # Scoped to `declined` ALONE. A fill, an invalidation, a supersede and an
     # expiry are all authored by the WORLD, and none of them is his to amend --
     # so those still refuse, exactly as before.
-    openable = [
-        lat for lat in derivation.latches
-        if lat.is_live or lat.clear_reason == "declined"
-    ]
+    #
+    # AND ONLY WHILE NO SUCCESSOR HAS TAKEN OVER, which is RD's R5 reasoning
+    # applied to the recording surface: "the re-fire then arms a NEW latch, which
+    # is its own fresh decision point. His decline never bleeds forward."
+    # Without that bound the reopening is a laundering path around `superseded`:
+    # a latch declined on session S with a DIFFERENT-pivot fire also on S resolves
+    # `declined` only BECAUSE R6 ranks the decline above the supersede, so
+    # recording a later `place` erases the decline and the latch falls back to
+    # `superseded` -- leaving a placement permanently recorded against a mandate
+    # that was never open. If a successor exists, the decision belongs to IT.
+    latest_anchor_by_ticker: dict[str, date] = {}
+    for lat in derivation.latches:
+        ticker = lat.identity.ticker
+        prior = latest_anchor_by_ticker.get(ticker)
+        if prior is None or lat.anchor > prior:
+            latest_anchor_by_ticker[ticker] = lat.anchor
+
+    def _openable(lat) -> bool:
+        if lat.is_live:
+            return True
+        return (
+            lat.clear_reason == "declined"
+            and lat.anchor >= latest_anchor_by_ticker[lat.identity.ticker]
+        )
+
     latch = next(
-        (lat for lat in openable
-         if lat.identity.candidate_id == candidate_id), None)
+        (lat for lat in derivation.latches
+         if lat.identity.candidate_id == candidate_id and _openable(lat)), None)
     if latch is None:
         return None, None
     try:
@@ -1171,6 +1192,22 @@ def rederive_prepared_order(conn, cfg, *, candidate_id: int, anchor: date):
         conn, cfg, [latch], quotes=quotes, derivation=derivation,
         view_session_date=derivation.horizon_session.isoformat())
     return latch, blocks.get(candidate_id)
+
+
+def _family_intents(conn, latch) -> list:
+    """Every intent on a latch's WHOLE candidate family, in the canonical order.
+
+    `list_intents_for_latch` is keyed on ONE candidate id; a latch's identity is
+    its opening fire PLUS its re-confirmations. Re-sorted by `(recorded_ts,
+    intent_id)` after the union because per-candidate reads arrive already sorted
+    only WITHIN each candidate, and every "latest by what?" resolution in this arc
+    depends on that exact total order.
+    """
+    rows: list = []
+    for cid in sorted(latch.candidate_set):
+        rows.extend(list_intents_for_latch(conn, candidate_id=cid))
+    rows.sort(key=lambda r: (r.recorded_ts, r.intent_id or 0))
+    return rows
 
 
 def _panel_dispositions(
@@ -1189,7 +1226,14 @@ def _panel_dispositions(
     for latch in latches:
         cid = latch.identity.candidate_id
         try:
-            intents = list_intents_for_latch(conn, candidate_id=cid)
+            # THE WHOLE CANDIDATE FAMILY, NOT THE FIRE ID ALONE (item 3a). The
+            # resolver decides a latch's terminal over `candidate_set` -- the
+            # opening fire PLUS its re-confirmations -- so reading only the fire
+            # id here lets a decision recorded against a re-confirmation
+            # TERMINATE the latch while this classifier never sees it, and the
+            # disposition then contradicts the terminal on the same card. Both
+            # halves must read the same population or they cannot agree.
+            intents = _family_intents(conn, latch)
         except Exception as exc:  # noqa: BLE001 -- A6: a missing 0033 is not a 500
             _log.warning("latch intent read degraded for candidate %s: %s", cid, exc)
             intents = []

@@ -806,18 +806,29 @@ def test_admissible_decisions_keeps_ONLY_the_decision_family():
     assert [i.intent_id for i in got] == [1]
 
 
-def test_admissible_decisions_upper_exclusive_drops_a_boundary_dated_decision():
+def test_the_strict_upper_boundary_is_KIND_SCOPED_not_family_wide():
     """The ONE asymmetric boundary. An inclusive `upper` does not deliver
     "a fill at or before the decline session wins" on a SAME-SESSION tie, so the
-    fill case -- and only the fill case -- makes that boundary strict."""
-    decline = _intent("decline", intent_id=1, recorded_ts="2026-08-05T10:00:00",
+    fill case -- and only the fill case -- makes that boundary strict.
+
+    AND ONLY FOR THE DECLINE (Codex R1 CRITICAL 1). A place and a decline dated
+    on the same boundary session are NOT symmetric: the decline loses to the fill,
+    while the place is precisely what the fill corroborates. Excluding the family
+    drops the placement that produced the fill.
+    """
+    place = _intent("place", intent_id=1, recorded_ts="2026-08-05T09:00:00",
+                    action_session_date="2026-08-05")
+    decline = _intent("decline", intent_id=2, recorded_ts="2026-08-05T10:00:00",
                       action_session_date="2026-08-05")
-    assert admissible_decisions(
-        [decline], candidate_set=frozenset({11261}),
+    inclusive = admissible_decisions(
+        [place, decline], candidate_set=frozenset({11261}),
         lower=date(2026, 8, 3), upper=date(2026, 8, 5))
-    assert not admissible_decisions(
-        [decline], candidate_set=frozenset({11261}),
-        lower=date(2026, 8, 3), upper=date(2026, 8, 5), upper_exclusive=True)
+    assert [i.intent_id for i in inclusive] == [1, 2]
+    scoped = admissible_decisions(
+        [place, decline], candidate_set=frozenset({11261}),
+        lower=date(2026, 8, 3), upper=date(2026, 8, 5),
+        upper_exclusive_kinds=("decline",))
+    assert [i.intent_id for i in scoped] == [1]
 
 
 def test_admissible_decisions_skips_an_unparseable_action_session():
@@ -916,3 +927,42 @@ def test_classify_latch_without_bounds_is_todays_behaviour_unchanged():
         latch=latch, views=[], intents=[late],
         decision_bounds=decision_bounds_for(latch, fill_bound=date(2026, 8, 20)),
     ).disposition != "declined"
+
+
+def test_a_place_on_the_FILL_session_survives_the_strict_boundary():
+    """Codex R1 CRITICAL 1. The strict `upper` boundary exists so a DECLINE
+    dated on the fill session loses to the fill. Applying it to the whole
+    decision family drops the PLACE THAT PRODUCED THE FILL -- and he places on
+    D5 and it fills on D5 in the commonest execution sequence there is.
+
+    Discriminator: family-wide exclusivity gives `governing_place_intent_id is
+    None` and `execution_outcome == "not_applicable"` for a latch that
+    demonstrably filled, silently losing a real order from the parity
+    measurement.
+    """
+    latch = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14),
+                   state="filled", clear_reason="fill",
+                   clear_session=date(2026, 8, 5))
+    place = _intent("place", intent_id=1, recorded_ts="2026-08-05T09:00:00",
+                    action_session_date="2026-08-05")
+    got = classify_latch(
+        latch=latch, views=[], intents=[place],
+        decision_bounds=decision_bounds_for(latch, fill_bound=date(2026, 8, 20)))
+    assert got.governing_place_intent_id == 1
+    assert got.disposition == "accepted"
+    assert got.execution_outcome == "accepted_by_broker"
+
+
+def test_a_decline_on_the_FILL_session_still_loses_to_the_fill():
+    """The other half of the same boundary, so the kind-scoping cannot be
+    'fixed' by simply making the bound inclusive for everything: the lifecycle
+    ranks the fill above the decline, and the disposition must agree."""
+    latch = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14),
+                   state="filled", clear_reason="fill",
+                   clear_session=date(2026, 8, 5))
+    decline = _intent("decline", intent_id=1, recorded_ts="2026-08-05T09:00:00",
+                      action_session_date="2026-08-05")
+    got = classify_latch(
+        latch=latch, views=[], intents=[decline],
+        decision_bounds=decision_bounds_for(latch, fill_bound=date(2026, 8, 20)))
+    assert got.disposition != "declined"

@@ -167,19 +167,22 @@ def load_decision_intents(conn: sqlite3.Connection, candidate_ids) -> dict:
     latches, and a ticker-keyed map hands an old mandate's decline to a newer
     latch. The pure fold applies the per-latch candidate-family rule.
 
-    A6 AT THE SEAM, in TWO layers, because they fail differently:
+    A6 AT THE SEAM, AND THE DEGRADATION IS ALL-OR-NOTHING ON PURPOSE. Any
+    failure -- a missing 0033 table on an older DB, or a single row whose
+    `_row_to_model` hydration raises -- yields `{}` for the WHOLE read.
 
-      * the whole read degrades to `{}` -- a missing 0033 table on an older DB
-        must not 500 the panel, and no decision evidence simply means no latch
-        terminates by decline;
-      * a SINGLE unhydratable row degrades to a skip of THAT CANDIDATE'S rows --
-        `_row_to_model` runs the dataclass validator, so one malformed row would
-        otherwise take the whole read down with it.
+    PARTIAL EVIDENCE IS WORSE THAN NONE HERE, and a per-candidate skip is not the
+    conservative choice it looks like. `governing_decision` resolves ONE family
+    spanning several candidate ids by RECENCY, so dropping part of it is
+    NON-MONOTONIC: with a `decline(D5)` on the opening fire and the correcting
+    `place(D6)` on a re-confirmation, skipping just the re-confirmation leaves the
+    decline standing alone and CLEARS a latch that must stay live -- silencing the
+    armed-latch alarm on evidence the reader could not read. Returning nothing
+    keeps every mandate ALIVE, which is the direction that cannot destroy a trade.
 
-    In both directions the degradation is toward KEEPING MANDATES ALIVE, which
-    is the conservative outcome: a latch the framework cannot prove was declined
-    stays armed and keeps alarming, rather than going quiet on evidence it could
-    not read.
+    The reader cannot tell which candidates share a family (the fold computes
+    that), so it cannot degrade per-family -- which is precisely why it degrades
+    globally instead.
     """
     ids = sorted({int(c) for c in (candidate_ids or ())})
     if not ids:
@@ -195,9 +198,11 @@ def load_decision_intents(conn: sqlite3.Connection, candidate_ids) -> dict:
             rows = list_intents_for_latch(conn, candidate_id=candidate_id)
         except Exception as exc:  # noqa: BLE001 -- A6
             log.warning(
-                "latch reader: decision-intent read degraded for candidate "
-                "%s: %s", candidate_id, exc)
-            continue
+                "latch reader: decision-intent read degraded at candidate %s, "
+                "so NO decision evidence is reported for this derivation "
+                "(partial evidence could clear a latch that must stay live): %s",
+                candidate_id, exc)
+            return {}
         family = tuple(r for r in rows if r.intent_kind in ("place", "decline"))
         if family:
             out[candidate_id] = family

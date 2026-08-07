@@ -359,7 +359,7 @@ def governing_decision(intents):
 
 
 def admissible_decisions(
-    intents, *, candidate_set, lower, upper, upper_exclusive: bool = False,
+    intents, *, candidate_set, lower, upper, upper_exclusive_kinds=(),
 ) -> tuple:
     """The `place`/`decline` DECISION FAMILY that can be ABOUT one latch. PURE.
 
@@ -383,12 +383,20 @@ def admissible_decisions(
     `place(D10)` under a bound of D6, filter-first sees the decline (correct)
     while resolve-first sees the place, drops it, and reports NO decision at all.
 
-    `upper_exclusive` makes that one boundary strict, and it exists for exactly
-    one case: a fill and a decline on the SAME session. The lifecycle ranks the
-    fill above the decline ("you cannot decline a filled mandate"), and an
-    INCLUSIVE bound cannot deliver that on its own -- the decline would still be
-    admissible and rung 1 would return `declined` for a FILLED latch. Every other
-    terminal keeps the inclusive bound.
+    `upper_exclusive_kinds` makes that one boundary strict FOR NAMED KINDS ONLY,
+    and it exists for exactly one case: a fill and a DECLINE on the SAME session.
+    The lifecycle ranks the fill above the decline ("you cannot decline a filled
+    mandate"), and an INCLUSIVE bound cannot deliver that on its own -- the
+    decline would still be admissible and rung 1 would return `declined` for a
+    FILLED latch. Every other terminal keeps the inclusive bound.
+
+    IT IS KIND-SCOPED BECAUSE A FAMILY-WIDE STRICT BOUND CORRUPTS THE ORDINARY
+    CASE. He places on D5 and it fills on D5 -- the commonest execution sequence
+    there is. Excluding the whole family on that boundary drops the PLACE THAT
+    PRODUCED THE FILL, so the latch classifies with no governing place,
+    `execution_outcome` collapses to `not_applicable`, and the execution-parity
+    measurement silently loses a real order. Only the DECLINE loses to a
+    same-session fill; the place is exactly what the fill corroborates.
 
     An intent whose `action_session_date` will not parse is SKIPPED: it cannot be
     placed in the window, and a decision that cannot be placed must never
@@ -406,7 +414,9 @@ def admissible_decisions(
             continue
         if session < lower:
             continue
-        if session > upper or (upper_exclusive and session == upper):
+        if session > upper:
+            continue
+        if session == upper and intent.intent_kind in upper_exclusive_kinds:
             continue
         out.append(intent)
     return tuple(out)
@@ -576,10 +586,13 @@ def classify_latch(
         admissible = admissible_decisions(
             intents, candidate_set=latch.candidate_set,
             lower=lower, upper=upper,
-            # The one strict boundary, and only for a fill: see
-            # `admissible_decisions`. A decline dated ON the fill session loses
-            # to it, so it is not a decision the ledger can still be about.
-            upper_exclusive=latch.clear_reason == "fill")
+            # The one strict boundary, and only a DECLINE on a FILL session:
+            # see `admissible_decisions`. A decline dated ON the fill session
+            # loses to the fill, so it is not a decision the ledger can still be
+            # about -- while the PLACE dated that session is precisely what the
+            # fill corroborates and must survive.
+            upper_exclusive_kinds=(
+                ("decline",) if latch.clear_reason == "fill" else ()))
 
     place = governing_intent(admissible, "place")
     execution_outcome = resolve_execution_outcome_for(

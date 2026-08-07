@@ -353,9 +353,67 @@ def test_a_decline_dated_AFTER_a_re_fire_does_not_kill_the_old_latch_early():
     assert by_id[8851].clear_session == date.fromisoformat(D5)
 
 
-def test_no_decisions_at_all_leaves_every_shipped_outcome_unchanged():
-    """The null case, asserted rather than assumed: with the new parameter
-    absent the derivation is the shipped one."""
+def test_the_restructured_resolver_pins_LITERAL_no_decline_outcomes():
+    """Codex R1 MAJOR 6. An earlier form compared `derive_latches` to ITSELF with
+    the decision argument omitted vs empty -- which is tautological: any
+    regression inside the restructured resolver moves BOTH sides identically.
+
+    `_resolve_terminal` was rewritten from "walk, break, else horizon, then
+    compare the fill" into one ranked candidate list. The claim is that it is
+    behaviour-IDENTICAL for every case with no decline, and the only way to test
+    that claim is LITERAL expected values computed by hand. Each case below is a
+    collision the restructure could have inverted.
+    """
+    expiry = _derive().latches[0].horizon_expiry
+    late = date(2026, 9, 22)
+
+    # (1) invalidation STRICTLY BEFORE the expiry, with the horizon condition
+    #     ALSO true. Old code short-circuited the horizon; new code ranks it.
+    got = _derive(bars=[_bar(D1, 13.00)], horizon_session=late,
+                  derivation_session=date(2026, 9, 21)).latches[0]
+    assert (got.clear_reason, got.clear_session) == (
+        "invalidation", date.fromisoformat(D1))
+
+    # (2) invalidation dated EXACTLY on the expiry session -- the boundary the
+    #     ranks decide. `invalidation` (3) outranks `horizon` (4).
+    got = _derive(bars=[_bar(expiry.isoformat(), 13.00)], horizon_session=late,
+                  derivation_session=date(2026, 9, 21)).latches[0]
+    assert (got.clear_reason, got.clear_session) == ("invalidation", expiry)
+
+    # (3) the horizon ALONE, with no bars at all.
+    got = _derive(horizon_session=late,
+                  derivation_session=date(2026, 9, 21)).latches[0]
+    assert (got.clear_reason, got.clear_session) == ("horizon", expiry)
+
+    # (4) NEITHER -- still live.
+    got = _derive(bars=[_bar(D1, 15.35), _bar(D2, 15.36)]).latches[0]
+    assert (got.state, got.clear_reason) == ("armed", None)
+
+    # (5) a fill dated EXACTLY on the invalidation session: rank 0 takes it.
+    entry = EntryRecord(trade_id=41, ticker="VSTS",
+                        entry_date=date.fromisoformat(D1), candidate_id=8851,
+                        entry_price=16.95, shares=9)
+    got = _derive(bars=[_bar(D1, 13.00)], entries=[entry]).latches[0]
+    assert (got.clear_reason, got.clear_trade_id) == ("fill", 41)
+
+    # (6) a fill one session AFTER the invalidation does NOT take it.
+    entry = EntryRecord(trade_id=42, ticker="VSTS",
+                        entry_date=date.fromisoformat(D2), candidate_id=8851,
+                        entry_price=16.95, shares=9)
+    got = _derive(bars=[_bar(D1, 13.00)], entries=[entry]).latches[0]
+    assert (got.clear_reason, got.clear_trade_id) == ("invalidation", None)
+
+    # (7) a fill dated EXACTLY on the horizon expiry takes it from the horizon.
+    entry = EntryRecord(trade_id=43, ticker="VSTS", entry_date=expiry,
+                        candidate_id=8851, entry_price=16.95, shares=9)
+    got = _derive(entries=[entry], horizon_session=late,
+                  derivation_session=date(2026, 9, 21)).latches[0]
+    assert (got.clear_reason, got.clear_trade_id) == ("fill", 43)
+
+
+def test_the_new_parameter_is_inert_when_absent():
+    """Weaker than the literals above and kept only for what it DOES prove: the
+    new keyword defaults to a no-op, so no existing caller changed meaning."""
     bars = [_bar(D1, 15.35), _bar(D2, 15.36), _bar(D3, 14.92)]
     with_param = _derive(bars=bars)
     without = derive_latches(
@@ -425,38 +483,3 @@ def test_the_lifecycle_and_the_classifier_agree_on_every_collision():
     live = _derive().latches[0]
     assert live.is_live is True
     assert _classified(live, [foreign]).disposition != "declined"
-
-
-# --------------------------------------------------------------------------
-# The recording surface: a decline is AMENDABLE; no other terminal is
-# --------------------------------------------------------------------------
-def test_only_a_DECLINED_terminal_reopens_the_recording_surface():
-    """`rederive_prepared_order`'s filter, pinned as a PREDICATE rather than
-    through the route, so the rule is stated where it is decided.
-
-    Once a decline terminates the mandate, a liveness-only filter makes the
-    operator's own decision UNAMENDABLE -- which contradicts the shipped ledger
-    contract (`build_idempotency_key` carries `prior_intent_id` precisely so a
-    CORRECTION keys differently from a REPLAY, on RD ruling 3: the governing
-    answer is his LAST, never his last DISTINCT). So `declined` reopens it.
-
-    EVERY OTHER TERMINAL STILL REFUSES, and that is the half a one-sided fix
-    gets wrong: a fill, an invalidation, a supersede and an expiry are authored
-    by the WORLD, not by him, and none is his to take back.
-    """
-    from dataclasses import replace
-
-    live = _derive().latches[0]
-    declined = _derive(
-        decisions=[_decision("decline", session=D5, intent_id=1)]).latches[0]
-
-    def _openable(latch):
-        return latch.is_live or latch.clear_reason == "declined"
-
-    assert _openable(live) is True
-    assert _openable(declined) is True
-    for reason, state in (("fill", "filled"), ("invalidation", "invalidated"),
-                          ("horizon", "horizon_expired"),
-                          ("superseded", "superseded")):
-        other = replace(declined, clear_reason=reason, state=state)
-        assert _openable(other) is False, reason
