@@ -132,17 +132,14 @@ class _Draft:
 # beat DEADLINES (the horizon).
 #
 # WHAT THIS TABLE DOES *NOT* CLAIM, stated so it is not read as more than it is
-# (Codex R5). `superseded` is stamped by the FOLD, not selected here, so its rank
-# governs exactly ONE comparison -- the R6 `declined`-vs-`superseded` tie in
-# branch (b). It does NOT make `superseded > horizon` true on a same-session tie:
-# a different-pivot re-fire dated exactly on the predecessor's `horizon_expiry`
-# makes the liveness probe return `horizon`, so the fold takes clause (iii) and
-# branch (b) -- the only place a `superseded` candidate is built -- never runs.
-# That gap is PRE-EXISTING (the `live_probe is None` selector is untouched by the
-# item-3a diff) and it also leaves the stale-order alarm at `warning` where
-# `superseded` would make it `critical`. Recorded here, NOT fixed here: it is a
-# shipped supersede/horizon semantic and an alarm severity, both outside a
-# `declined` arc.
+# (Codex R5). `superseded` is stamped by the FOLD, not selected here. This table
+# supplies only the tie-breaking half of `_Terminal.order_key`, which orders by
+# SESSION first and consults the rank when two terminals share a date; it never
+# decides WHICH terminal a latch gets.
+#
+# A different-pivot re-fire dated exactly on the predecessor's `horizon_expiry`
+# is settled in clause (iii), which builds the `superseded` candidate and ranks
+# it against the resolver's own answer for that latch.
 _CLEAR_REASON_RANK = {
     "fill": 0,
     "declined": 1,
