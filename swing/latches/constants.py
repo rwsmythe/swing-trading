@@ -47,6 +47,22 @@ def latch_horizon_sessions(cfg) -> int:
 # Drift-pinned against PipelineConfig() by a test (the #11 mirror discipline).
 DEFAULT_LATCH_HORIZON_SESSIONS = 30
 
+# THE THREE `criteria_lapsed` CALIBRATIONS (RD, 2026-08-06). Mirrors of
+# `LatchesConfig`'s defaults, used ONLY as the pure derivation's signature
+# defaults; production always passes `cfg.latches`. Each is drift-pinned
+# against the dataclass by a test -- ALL THREE, because pinning only N lets a
+# materiality default drift and the pure derivation then silently uses a
+# different floor from production.
+#
+# N is a CALIBRATION, not a derivation. RD: "I would start at 5 evaluated
+# sessions (one full trading week) and bind it to config, never hard-code it. I
+# cannot derive 5 from anything and I would rather say so than dress it up."
+# Under the OQ-9 report-only framing all three are STARTING POINTS to be
+# replaced by measurement, which is the whole purpose of shipping unarmed.
+DEFAULT_CRITERIA_LAPSE_SESSIONS = 5
+DEFAULT_CRITERIA_LAPSE_MIN_WIDENING_ADR = 1.0     # x the FIRE's own adr_pct
+DEFAULT_CRITERIA_LAPSE_MIN_WIDENING_PCT = 2.0     # % of the latched pivot
+
 # The settled latch semantics: buy-zone limit cap = pivot x 1.03.
 LATCH_ZONE_CAP_PCT = 3.0
 # The same quantity as a FRACTION, because that is the shape every consumer

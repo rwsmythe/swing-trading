@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -282,6 +283,70 @@ class ArchiveConfig:
     """
     archive_history_days: int = 1260
     stagger_full_refresh: bool = True
+
+
+@dataclass(frozen=True)
+class LatchesConfig:
+    """Latch-derivation calibrations (item 3b, RD's rulings of 2026-08-06).
+
+    A latch calibration is not a pipeline setting, so it gets its own section
+    and `swing config show` names it honestly. Deliberately NOT filed under
+    `[pipeline]`: `latch_horizon_sessions(cfg)` reads
+    `cfg.pipeline.observe_max_pending_window_sessions` because it is DERIVED
+    from that quantity for live-vs-shadow parity -- a binding-at-the-source, not
+    a filing decision. Filing an independent calibration there because a section
+    already exists is how a config surface stops describing the system.
+
+    OQ-9 RULED REPORT-ONLY: the `criteria_lapsed` CLEAR is dormant until
+    `criteria_lapse_armed` is set. Every diagnostic, the streak, both conjuncts,
+    the countdown, the render and the disposition machinery ship and RUN
+    regardless -- a flag that short-circuited the computation would measure
+    nothing, and measurement is the entire purpose. `declined` is NOT gated by
+    this: it is an operator action with no N in it and ships armed.
+    """
+
+    criteria_lapse_armed: bool = False
+    criteria_lapse_sessions: int = 5
+    # The OQ-10 materiality floor: the LARGER of these two terms. Both are
+    # necessary -- an ADR-only floor still clears a tight low-ADR consolidation
+    # sitting under its pivot, and a pivot-only floor lets a 12%-ADR name lapse
+    # on ordinary noise.
+    criteria_lapse_min_widening_adr: float = 1.0     # x the FIRE's own adr_pct
+    criteria_lapse_min_widening_pct: float = 2.0     # % of the latched pivot
+
+    def __post_init__(self) -> None:
+        # EXACT bool, EXACT int, and >= 2. Each clause closes a way to
+        # configure a knob that LOOKS armed and is not -- or, worse, one that
+        # looks unarmed and is not.
+        if not isinstance(self.criteria_lapse_armed, bool):
+            raise ValueError(
+                "criteria_lapse_armed must be a bool; got "
+                f"{type(self.criteria_lapse_armed).__name__}. A coerced `1` or "
+                '"false" would silently ARM a mandate withdrawal.')
+        if (isinstance(self.criteria_lapse_sessions, bool)
+                or not isinstance(self.criteria_lapse_sessions, int)):
+            # `2.5` passes a bare `< 2` check and is then truncated to 2 by the
+            # derivation's int(); `True` is an int and configures N = 1.
+            raise ValueError(
+                "criteria_lapse_sessions must be an int (not bool); got "
+                f"{self.criteria_lapse_sessions!r}")
+        if self.criteria_lapse_sessions < 2:
+            # At N = 1 conjunct 2b compares a bar with itself, so the whole
+            # feature is inert with no error anywhere.
+            raise ValueError(
+                "criteria_lapse_sessions must be >= 2 (at 1 the decay conjunct "
+                f"is unsatisfiable); got {self.criteria_lapse_sessions!r}")
+        for name in ("criteria_lapse_min_widening_adr",
+                     "criteria_lapse_min_widening_pct"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"{name} must be a number (not bool); got {value!r}")
+            # FINITE, not merely positive: `inf` passes `> 0` and disables the
+            # lapse forever, silently; every ordered comparison against `nan` is
+            # False, so a bare `> 0` guard admits it too.
+            if not math.isfinite(float(value)) or float(value) <= 0.0:
+                raise ValueError(f"{name} must be finite and > 0; got {value!r}")
 
 
 @dataclass(frozen=True)
@@ -654,6 +719,7 @@ class Config:
     web: Web = field(default_factory=Web)
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
+    latches: LatchesConfig = field(default_factory=LatchesConfig)
     review: ReviewConfig = field(default_factory=ReviewConfig)
     reconciliation: Reconciliation = field(default_factory=Reconciliation)
     integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)
@@ -784,6 +850,10 @@ def load(config_path: Path) -> Config:
         web=Web(**raw.get("web", {})),
         classifier=ClassifierConfig(**raw.get("classifier", {})),
         archive=ArchiveConfig(**raw.get("archive", {})),
+        # `[latches]` is NOT in `required_sections`, so every existing config
+        # file keeps loading (the additive `web`/`classifier`/`archive`
+        # pattern).
+        latches=LatchesConfig(**raw.get("latches", {})),
         review=ReviewConfig(**raw.get("review", {})),
         reconciliation=Reconciliation(
             # Pass the raw value through unwrapped: the normalizer is STRICT
