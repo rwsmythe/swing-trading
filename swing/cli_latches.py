@@ -28,6 +28,7 @@ from swing.latches.classification import (
     ParityObservation,
     TelemetryHealth,
     TelemetryWindowTooLongError,
+    admissible_decisions,
     assess_telemetry_health,
     classify_latch,
     current_cycle_place,
@@ -194,7 +195,12 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
     by_latch: dict[int, list] = {}
     for row in intents:
         by_latch.setdefault(row.candidate_id, []).append(row)
-    derivable = {latch.identity.candidate_id for latch in latches}
+    # THE WHOLE CANDIDATE FAMILY, matching `history` below (Codex R2 MAJOR 3).
+    # An intent recorded against a RE-CONFIRMATION candidate is read by the
+    # history reader and used to classify its latch, so listing it as UNATTACHED
+    # would have the audit line contradict the classification computed from the
+    # very same row.
+    derivable = {cid for latch in latches for cid in latch.candidate_set}
     unattached = sorted(cid for cid in by_latch if cid not in derivable)
 
     # The FULL per-latch history -- the classifier's evidence, never the
@@ -267,15 +273,16 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
     for latch in latches:
         cid = latch.identity.candidate_id
         latch_intents = history.get(cid, [])
+        # THE SAME WINDOW THE RESOLVER USED, as on the panel. The monthly read
+        # and the lifecycle must not disagree about which decision governs a
+        # latch; `fill_bound` is the derivation's forward anchor, which is what
+        # `service.py` `_close` passes on the production path.
+        bounds = decision_bounds_for(
+            latch, fill_bound=derivation.horizon_session)
         disposition: LatchDisposition = classify_latch(
             latch=latch, views=views_by_latch.get(cid, ()),
             intents=latch_intents, telemetry_health=health,
-            # THE SAME WINDOW THE RESOLVER USED, as on the panel. The monthly
-            # read and the lifecycle must not disagree about which decision
-            # governs a latch; `fill_bound` is the derivation's forward anchor,
-            # which is what `service.py` `_close` passes on the production path.
-            decision_bounds=decision_bounds_for(
-                latch, fill_bound=derivation.horizon_session))
+            decision_bounds=bounds)
         # THE CURRENT-CYCLE PLACE (Codex exec R7 MAJOR). Keying on the latest
         # place BY KIND meant a `place -> rejected validity -> later decline`
         # sequence reported neither the rejection (the superseded place was
@@ -285,7 +292,20 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
         # classifier and the panel, and every DISPLACED place -- including all of
         # them when the governing decision is a DECLINE -- enters the labelled
         # disclosure below.
-        place = current_cycle_place(latch_intents)
+        #
+        # RESOLVED OVER THE SAME ADMISSIBLE VIEW THE CLASSIFIER USED (Codex R2
+        # CRITICAL 1). Leaving this read unbounded while `classify_latch` reads
+        # the bounded one lets the two pick DIFFERENT places for one latch, and
+        # the observation then carries P1's disposition and execution outcome
+        # beside P2's order data -- a single row mixing two cycles, silently
+        # corrupting the agreement and delta measurements this report exists to
+        # produce. One population, one governing answer.
+        admissible = admissible_decisions(
+            latch_intents, candidate_set=latch.candidate_set,
+            lower=bounds[0], upper=bounds[1],
+            upper_exclusive_kinds=(
+                ("decline",) if latch.clear_reason == "fill" else ()))
+        place = current_cycle_place(admissible)
         validity = _governing_validity_child(latch_intents, place)
         # EARLIER PLACE/VALIDITY CYCLES ARE LABELLED, NEVER SILENTLY DISCARDED
         # (auto-review CRITICAL 2). The resolver explicitly supports several

@@ -1569,3 +1569,43 @@ def test_the_BEACON_id_parser_refuses_a_unicode_digit_by_name(
                 "withheld_candidate_ids": ""})
             assert r.status_code == 400, bad
             assert "actionable_candidate_ids" in r.text
+
+
+def test_every_intent_is_written_against_the_latchs_OPENING_FIRE_id(
+        seeded_db, frozen_clocks):
+    """Codex R2 CRITICAL 2's reachability, PINNED rather than assumed.
+
+    Several route-side reads are keyed on a single `candidate_id` -- the replay
+    guard, the prior-intent anchor, the unattached audit. They are correct
+    exactly while every persisted intent carries the latch's OPENING FIRE id,
+    never a re-confirmation's. `swing/web/routes/latches.py` writes
+    `candidate_id=latch.identity.candidate_id`, so it does.
+
+    That is a CONSTRAINED WRITER, not a schema CHECK -- `latch_order_intents`
+    has an FK to `candidates` and nothing narrower -- which is precisely why it
+    needs a test rather than a comment. If a future writer ever records against a
+    re-confirmation id, this fails and the fire-id-keyed reads must be widened to
+    the candidate family (the lifecycle resolver and both classifiers already
+    read the family and would be unaffected).
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        assert client.post(
+            "/latches/intent", headers=_HX, data=form).status_code == 200
+    from swing.data.db import connect
+    from swing.latches.reader import build_latch_derivation
+    conn = connect(cfg.paths.db_path)
+    try:
+        persisted = {
+            int(r[0]) for r in conn.execute(
+                "SELECT candidate_id FROM latch_order_intents").fetchall()}
+        latches = build_latch_derivation(conn, cfg).latches
+    finally:
+        conn.close()
+    assert persisted == {cid}
+    fire_ids = {lat.identity.candidate_id for lat in latches}
+    assert cid in fire_ids, (
+        "the persisted candidate_id is the latch's OPENING FIRE id")

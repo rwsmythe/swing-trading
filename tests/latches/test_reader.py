@@ -1020,15 +1020,16 @@ def test_one_tickers_two_latches_do_not_share_a_decline_END_TO_END(tmp_path):
 
 
 # --- Codex R1: the recording surface, exercised through PRODUCTION code ----
-def test_rederive_prepared_order_reopens_a_DECLINED_latch_and_no_other(tmp_path):
-    """Codex R1 MAJOR 5. The earlier form of this test asserted a predicate
-    DEFINED IN THE TEST, which passes whatever `rederive_prepared_order`
-    actually does -- the tautology class. This calls the production function.
+def test_rederive_prepared_order_reopens_a_DECLINED_latch_WITH_AN_OFFERED_BLOCK(
+        tmp_path):
+    """Codex R1 MAJOR 5 + R2 MAJOR 4. The first form asserted a predicate DEFINED
+    IN THE TEST (a tautology); the second returned a latch but never checked the
+    BLOCK, so an implementation whose block was always WITHHELD -- which makes
+    the route refuse every correction with a conflict -- would still have passed.
 
     A decline is his to amend (`build_idempotency_key` carries `prior_intent_id`
-    precisely so a CORRECTION keys differently from a REPLAY); a fill, an
-    invalidation, a supersede and an expiry are authored by the WORLD and are
-    not.
+    precisely so a CORRECTION keys differently from a REPLAY). Amendable means
+    the route can actually record it, which requires `block.offered`.
     """
     from swing.web.view_models.latches import rederive_prepared_order
     cfg = _cfg(tmp_path)
@@ -1038,16 +1039,67 @@ def test_rederive_prepared_order_reopens_a_DECLINED_latch_and_no_other(tmp_path)
             _run(conn, 126, "2026-07-24", "2026-07-27", pipeline_run_id=140)
             cid = _candidate(conn, 126, "VSTS", "aplus", 16.90, 13.40)
         anchor = date(2026, 7, 28)
-        live, _ = rederive_prepared_order(
+        live, live_block = rederive_prepared_order(
             conn, cfg, candidate_id=cid, anchor=anchor)
         assert live is not None and live.is_live
 
         _decline_row(conn, candidate_id=cid, run_id=126, ticker="VSTS",
                      detection="2026-07-27", session="2026-07-27")
-        declined, _ = rederive_prepared_order(
+        declined, declined_block = rederive_prepared_order(
             conn, cfg, candidate_id=cid, anchor=anchor)
         assert declined is not None
         assert declined.clear_reason == "declined"
+        # the correction is RECORDABLE, not merely re-derivable
+        assert declined_block is not None
+        assert declined_block.offered == live_block.offered
+    finally:
+        conn.close()
+
+
+def test_EVERY_world_authored_terminal_stays_closed_to_the_recording_surface(
+        tmp_path):
+    """Codex R2 MAJOR 4. The earlier negative covered `invalidation` ALONE, so an
+    implementation that reopened `filled`, `superseded` and `horizon_expired`
+    too would have passed the pair.
+
+    Each of those is authored by the WORLD -- a broker fill, a close below the
+    frozen stop, a re-fire at a new pivot, a window running out -- and none is
+    the operator's to take back. `declined` is the sole exception because it is
+    the only terminal HE authored.
+
+    Driven through the PREDICATE the production function applies, over real
+    derived latches, so it cannot drift from the four refusals it names.
+    """
+    from dataclasses import replace
+
+    from swing.web.view_models.latches import (
+        decision_surface_is_open,
+        rederive_prepared_order,
+    )
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        with conn:
+            _run(conn, 126, "2026-07-24", "2026-07-27", pipeline_run_id=140)
+            cid = _candidate(conn, 126, "VSTS", "aplus", 16.90, 13.40)
+        _decline_row(conn, candidate_id=cid, run_id=126, ticker="VSTS",
+                     detection="2026-07-27", session="2026-07-27")
+        anchor = date(2026, 7, 28)
+        declined, _ = rederive_prepared_order(
+            conn, cfg, candidate_id=cid, anchor=anchor)
+        assert declined.clear_reason == "declined"
+
+        for reason, state in (("fill", "filled"),
+                              ("invalidation", "invalidated"),
+                              ("superseded", "superseded"),
+                              ("horizon", "horizon_expired")):
+            other = replace(declined, clear_reason=reason, state=state)
+            assert decision_surface_is_open(
+                other, successor_exists=False) is False, reason
+        assert decision_surface_is_open(declined, successor_exists=False) is True
+        # and the successor bound, over the SAME shipped predicate
+        assert decision_surface_is_open(
+            declined, successor_exists=True) is False
     finally:
         conn.close()
 

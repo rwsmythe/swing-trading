@@ -1123,6 +1123,39 @@ def _panel_prepared_orders(
     return out
 
 
+def decision_surface_is_open(latch, *, successor_exists: bool) -> bool:
+    """May a `place`/`decline` still be RECORDED against `latch`?
+
+    Named and module-level so the rule is testable as SHIPPED CODE rather than
+    re-stated in a test (a predicate re-declared in its own test passes whatever
+    production actually does).
+
+    TRUE while the latch is LIVE, and -- the item-3a addition -- while its ONLY
+    terminal is `declined`, because that terminal is the one HE authored and
+    `build_idempotency_key` carries `prior_intent_id` precisely so a CORRECTION
+    keys differently from a REPLAY ("the governing answer is his LAST, never his
+    last DISTINCT"). Refusing to record the later member of a family whose
+    resolution rule is "the latest wins" would let him end a mandate and never
+    take it back.
+
+    FALSE for every WORLD-authored terminal -- a broker fill, a close below the
+    frozen stop, a re-fire at a new pivot, a window running out. None of those is
+    his to amend.
+
+    FALSE ALSO once a SUCCESSOR has taken over, which is RD's R5 applied here:
+    "the re-fire then arms a NEW latch, which is its own fresh decision point.
+    His decline never bleeds forward." Without that bound the reopening is a
+    laundering path around `superseded`: a latch declined on session S with a
+    different-pivot fire also on S is `declined` ONLY because R6 outranks the
+    supersede, so recording a later `place` erases the decline and drops the
+    latch back to `superseded` -- leaving a placement permanently recorded
+    against a mandate that was never open.
+    """
+    if latch.is_live:
+        return True
+    return latch.clear_reason == "declined" and not successor_exists
+
+
 def rederive_prepared_order(conn, cfg, *, candidate_id: int, anchor: date):
     """`(latch, PreparedOrderVM)` for ONE latch, AS OF `anchor`. `(None, None)`
     when the anchor session had no such live latch.
@@ -1170,17 +1203,14 @@ def rederive_prepared_order(conn, cfg, *, candidate_id: int, anchor: date):
         if prior is None or lat.anchor > prior:
             latest_anchor_by_ticker[ticker] = lat.anchor
 
-    def _openable(lat) -> bool:
-        if lat.is_live:
-            return True
-        return (
-            lat.clear_reason == "declined"
-            and lat.anchor >= latest_anchor_by_ticker[lat.identity.ticker]
-        )
-
     latch = next(
         (lat for lat in derivation.latches
-         if lat.identity.candidate_id == candidate_id and _openable(lat)), None)
+         if lat.identity.candidate_id == candidate_id
+         and decision_surface_is_open(
+             lat,
+             successor_exists=(
+                 lat.anchor < latest_anchor_by_ticker[lat.identity.ticker]))),
+        None)
     if latch is None:
         return None, None
     try:

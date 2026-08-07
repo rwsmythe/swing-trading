@@ -21,6 +21,7 @@ from swing.latches.classification import (
     assess_telemetry_health,
     awareness_view_rows,
     classify_latch,
+    current_cycle_place,
     decision_bounds_for,
     governing_decision,
     governing_intent,
@@ -966,3 +967,37 @@ def test_a_decline_on_the_FILL_session_still_loses_to_the_fill():
         latch=latch, views=[], intents=[decline],
         decision_bounds=decision_bounds_for(latch, fill_bound=date(2026, 8, 20)))
     assert got.disposition != "declined"
+
+
+def test_current_cycle_place_over_the_ADMISSIBLE_view_matches_the_classifier():
+    """Codex R2 CRITICAL 1, pinned at the resolver both report paths share.
+
+    The monthly report reads `current_cycle_place` for the ORDER DATA while
+    `classify_latch` reads the bounded place for the DISPOSITION and EXECUTION
+    OUTCOME. Resolving them over different populations lets one observation carry
+    P1's disposition beside P2's order fields -- one row mixing two cycles.
+
+    Discriminator: over the UNFILTERED set the two disagree (P2 vs P1); over the
+    admissible view they agree, which is the property the report needs.
+    """
+    latch = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14),
+                   state="filled", clear_reason="fill",
+                   clear_session=date(2026, 8, 4))
+    p1 = _intent("place", intent_id=1, recorded_ts="2026-08-03T09:00:00",
+                 action_session_date="2026-08-03")
+    p2 = _intent("place", intent_id=2, recorded_ts="2026-08-05T09:00:00",
+                 action_session_date="2026-08-05")
+    intents = [p1, p2]
+    bounds = decision_bounds_for(latch, fill_bound=date(2026, 8, 20))
+
+    unbounded = current_cycle_place(intents)
+    assert unbounded.intent_id == 2          # the DIVERGENCE, stated
+
+    admissible = admissible_decisions(
+        intents, candidate_set=latch.candidate_set,
+        lower=bounds[0], upper=bounds[1])
+    bounded = current_cycle_place(admissible)
+    got = classify_latch(latch=latch, views=[], intents=intents,
+                         decision_bounds=bounds)
+    assert bounded.intent_id == 1
+    assert got.governing_place_intent_id == bounded.intent_id
