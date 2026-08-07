@@ -413,8 +413,25 @@ def _canonical_bars(bars) -> tuple[dict[date, DailyBar], set[date]]:
         if prior is None:
             by_session[bar.session] = bar
             continue
-        if (round(prior.close, _PRICE_DP) != round(bar.close, _PRICE_DP)
-                or round(prior.high, _PRICE_DP) != round(bar.high, _PRICE_DP)):
+        # THE COMPARISON IS RAW, NOT ROUNDED, AND THE DIFFERENCE DECIDED A
+        # WITHDRAWAL (Codex R1 CRITICAL). Rounding here contradicted the very
+        # guarantee this function exists to give, because the MATERIALITY test
+        # consumes RAW closes and rounds only the DIFFERENCE (deliberately, and
+        # correctly -- see clause 4). So two D0 rows closing 64.0151 and 64.0249
+        # both rounded to 64.02, collapsed as "identical", and whichever the
+        # archive listed first decided the answer:
+        #
+        #     round(64.0249 - 61.0249, 2) == 3.00  -> WITHDRAWS  (floor 3.00)
+        #     round(64.0151 - 61.0249, 2) == 2.99  -> preserves
+        #
+        # A cent-grain equality is the right comparison for a DISPLAYED price;
+        # it is the wrong one for deciding that two rows ARE the same bar when a
+        # sub-cent difference propagates into a threshold test. Any raw
+        # disagreement now makes the DATE ambiguous -- the framework declines to
+        # say which row was that session's bar -- and an ambiguous date is a
+        # coverage gap, which never withdraws. Byte-identical duplicates (what a
+        # re-written archive window actually produces) still collapse.
+        if prior.close != bar.close or prior.high != bar.high:
             ambiguous.add(bar.session)
     for session in ambiguous:
         by_session.pop(session, None)

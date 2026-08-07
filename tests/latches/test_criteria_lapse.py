@@ -1029,3 +1029,97 @@ def test_an_INSIDE_the_window_gap_still_refuses_it():
     latch = d.latches[0]
     assert latch.clear_reason != "criteria_lapsed"
     _assert_no_hypothetical(latch)
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 CRITICAL -- SUB-CENT DUPLICATE BARS AND ARCHIVE ROW ORDER
+# ---------------------------------------------------------------------------
+def _dup_case(first_close: float):
+    """The five-session qualifying shape with a DUPLICATE first bar.
+
+    The two rows for D0 agree to the CENT (64.0151 and 64.0249 both round to
+    64.02) and differ below it. `first_close` selects which one the archive
+    happens to return first.
+    """
+    days = _sessions(5)
+    closes = [first_close, 63.50, 63.00, 62.00, 61.0249]
+    bars = [
+        DailyBar(session=d, open=c, high=64.03, low=60.0, close=c)
+        for d, c in zip(days, closes, strict=True)
+    ]
+    return days, bars
+
+
+def test_the_MATERIALITY_answer_cannot_depend_on_ARCHIVE_ROW_ORDER():
+    """Codex R1 CRITICAL. `_canonical_bars` collapsed duplicate dates on a
+    ROUNDED comparison while the widening consumes RAW closes:
+
+        round(64.0249 - 61.0249, 2) == 3.00  -> withdraws  (floor 3.00)
+        round(64.0151 - 61.0249, 2) == 2.99  -> preserves
+
+    Both first-bars round to 64.02, so the canonicalizer called them identical
+    and kept whichever the archive listed first. The SAME evidence therefore
+    either withdrew the mandate or left it alone, decided by row order -- which
+    is exactly what the function's own docstring says it exists to prevent
+    ("`first(B)`, `min(B)` and the widening would all depend on row order").
+
+    The fix marks the date AMBIGUOUS on any RAW disagreement, so the framework
+    refuses to say which bar was that session's. That is the safe direction: an
+    ambiguous date is a coverage gap, and a coverage gap never withdraws.
+
+    THE CONTROL IS LOAD-BEARING. Without it the pair-equality below would pass
+    against an implementation that simply never qualifies this fixture.
+    """
+    days, _ = _dup_case(64.0249)
+
+    # CONTROL: a single, unambiguous 64.0249 bar DOES qualify on this floor.
+    _, solo = _dup_case(64.0249)
+    control = derive_latches(
+        fires=[_fire()], bars_by_ticker={"TST": solo}, entries_by_ticker={},
+        horizon_session=session_offset(days[4], 1),
+        derivation_session=days[4], horizon_sessions=200,
+        bar_status_by_ticker={"TST": "ok"},
+        structural_verdicts_by_ticker={"TST": _verdicts("FFFFF")},
+        criteria_lapse_armed=True, criteria_lapse_sessions=5).latches[0]
+    assert control.clear_reason == "criteria_lapsed"
+    assert control.clear_session == days[4]
+
+    results = []
+    for lead in (64.0151, 64.0249):
+        _, bars = _dup_case(lead)
+        other = 64.0249 if lead == 64.0151 else 64.0151
+        bars = [*bars, DailyBar(session=days[0], open=other, high=64.03,
+                                low=60.0, close=other)]
+        latch = derive_latches(
+            fires=[_fire()], bars_by_ticker={"TST": bars}, entries_by_ticker={},
+            horizon_session=session_offset(days[4], 1),
+            derivation_session=days[4], horizon_sessions=200,
+            bar_status_by_ticker={"TST": "ok"},
+            structural_verdicts_by_ticker={"TST": _verdicts("FFFFF")},
+            criteria_lapse_armed=True, criteria_lapse_sessions=5).latches[0]
+        results.append((latch.clear_reason, latch.lapse_qualifying_session,
+                        latch.lapse_would_clear_session))
+
+    # THE INVARIANT: the two orders agree.
+    assert results[0] == results[1], results
+    # AND they agree on the SAFE answer -- ambiguity never withdraws.
+    assert results[0] == (None, None, None)
+
+
+def test_bars_that_agree_EXACTLY_still_collapse():
+    """The bound. A genuine duplicate -- byte-identical rows, which is what a
+    re-written archive window actually produces -- must still collapse, or the
+    fix would refuse every re-fetched ticker and disable the feature outright.
+    """
+    days, bars = _dup_case(64.0249)
+    bars = [*bars, DailyBar(session=days[0], open=64.0249, high=64.03,
+                            low=60.0, close=64.0249)]
+    latch = derive_latches(
+        fires=[_fire()], bars_by_ticker={"TST": bars}, entries_by_ticker={},
+        horizon_session=session_offset(days[4], 1),
+        derivation_session=days[4], horizon_sessions=200,
+        bar_status_by_ticker={"TST": "ok"},
+        structural_verdicts_by_ticker={"TST": _verdicts("FFFFF")},
+        criteria_lapse_armed=True, criteria_lapse_sessions=5).latches[0]
+    assert latch.clear_reason == "criteria_lapsed"
+    assert latch.clear_session == days[4]
