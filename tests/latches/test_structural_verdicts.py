@@ -740,6 +740,11 @@ def test_an_UNORDERABLE_run_ts_cannot_produce_a_FAILED_verdict(db, cfg):
         _run(db, 2, "2026-07-31", "2026-07-30T18:00:00")     # ticker ABSENT
     got = _verdicts(db, cfg, start="2026-07-31", end="2026-07-31")
     assert [v.classification for v in got] == ["UNVERIFIABLE"]
+    # AND IT NAMES THE REAL CAUSE (Codex R7). Defaulting to `absent` would make
+    # the card say OFF SCREEN about a ticker that WAS on screen and WAS
+    # evaluated -- re-opening, through this guard's default, the exact falsehood
+    # the OFF-SCREEN fix closed one round earlier.
+    assert [v.cause for v in got] == ["unorderable_run_ts"]
 
 
 def test_a_generous_PASS_survives_an_unorderable_run_ts(db, cfg):

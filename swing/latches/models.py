@@ -104,7 +104,18 @@ STRUCTURAL_VERDICTS = frozenset({
 # check this"), because splitting them on the card would imply a distinction he
 # cannot act on -- the cause belongs in the detail line.
 UNVERIFIABLE_CAUSES = frozenset({
-    "absent", "sentinel_row", "incomplete_roster", "malformed_result"})
+    "absent", "sentinel_row", "incomplete_roster", "malformed_result",
+    # `unorderable_run_ts` (Codex R7): the ticker WAS present and structurally
+    # evaluated, but a malformed `run_ts` made "which run was latest"
+    # unestablishable, so the STRICT half could not fire. Without its own name it
+    # fell back to `absent`, and the card then said OFF SCREEN about a ticker
+    # that was on screen -- the same falsehood the OFF-SCREEN fix closed one
+    # round earlier, re-entering through the ordering guard's default.
+    #
+    # PURE PYTHON, NO SQL MIRROR: nothing in this arc is persisted, and a grep of
+    # `swing/data/migrations/` for the existing members returns nothing -- so
+    # widening this set is not the CHECK-mirror tripwire that `LATCH_STATES` is.
+    "unorderable_run_ts"})
 
 
 @dataclass(frozen=True)

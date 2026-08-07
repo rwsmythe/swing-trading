@@ -546,6 +546,12 @@ def load_session_structural_verdicts(
                     # UNVERIFIABLE, never FAILED (Codex R6).
                     if is_latest and session not in unorderable:
                         latest_is_verified_fail = True
+                    elif is_latest:
+                        # NAME THE REAL CAUSE (Codex R7). Leaving the default
+                        # `absent` here makes the card say OFF SCREEN about a
+                        # ticker that WAS on screen and WAS evaluated -- only the
+                        # run ordering was unusable.
+                        latest_cause = "unorderable_run_ts"
             # THE CONFLICT IS A DATA-QUALITY SIGNAL (OQ-15): two runs for one
             # session disagreeing on the STRUCTURAL verdict is a fact about the
             # pipeline. It is recorded here and resolved generously below --
