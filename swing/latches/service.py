@@ -610,8 +610,30 @@ def _analyze_criteria_lapse(
         if gap is not None:
             block_reason = f"archive gap {gap.isoformat()}"
 
+    # THE SCAN IS GATED ON WHAT MAKES IT UNCOMPUTABLE, NEVER ON THE TRAILING-GAP
+    # DIAGNOSTIC ABOVE (Codex R1 MAJOR). `block_reason` answers "could the
+    # directional test be evaluated AS OF TODAY?" -- a statement about the
+    # CURRENT edge of the evidence. Letting it gate the HISTORICAL scan re-opened
+    # L10 one level above the place `_window_qualifies` closes it: a D6 session
+    # the framework evaluated but whose archive bar has not landed (the ordinary
+    # lag) set `qualifying` back to `None` although D1..D5 were complete and
+    # qualifying. Armed, a mandate withdrawn on D5 comes back to life on D6
+    # because a bar went missing; unarmed, the calibration read silently loses
+    # the would-clear it exists to count -- in the COMMON case, not an exotic one.
+    #
+    # The completeness requirement is NOT weakened: `_window_qualifies` enforces
+    # it PER WINDOW, over `[anchor, s]` and `[first_w, last_w]`, which is where
+    # it belongs -- bounded by that window's own terminal, so the answer is
+    # permanent. The two conditions kept here are different in kind: without a
+    # floor there is no materiality test to run at all, and an UNREADABLE archive
+    # is our own ignorance, which 21-G's asymmetry says may never license an
+    # assertion.
+    scan_blocked = (
+        floor is None
+        or (archive_status is not None and archive_status != ARCHIVE_STATUS_OK))
+
     qualifying: date | None = None
-    if floor is not None and block_reason is None:
+    if not scan_blocked:
         streak: list[date] = []
         for v in in_domain:
             if v.classification == VERDICT_PASSED:

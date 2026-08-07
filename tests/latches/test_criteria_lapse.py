@@ -953,3 +953,79 @@ def test_an_armed_lapse_classifies_framework_withdrawn_not_discipline_lapse():
     got = classify_latch(latch=armed, views=[], intents=[])
     assert got.disposition == "framework_withdrawn"
     assert r_bucket_for(got.disposition, is_terminal=True) == "unattributable_r"
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 MAJOR -- L10 THROUGH THE DIAGNOSTIC GATE
+# ---------------------------------------------------------------------------
+def test_a_LATER_archive_gap_cannot_erase_an_ALREADY_QUALIFIED_window():
+    """A settled terminal must stay settled. `_window_qualifies` protects that
+    against future PRICE evidence by evaluating each window through its OWN
+    terminal -- and the outer `block_reason` gate then re-opened the same hole
+    one level up, against future MISSING evidence.
+
+    The gate ran `_coverage_gap(anchor -> the LAST in-domain verdict)` and, on
+    any gap, skipped the ENTIRE historical scan. So a D6 session that has an
+    evaluation verdict but whose archive bar has not landed yet -- the ordinary
+    lag, the code's own "a ticker whose archive lagged the cohort" -- sets
+    `qualifying_session` back to `None` although D1..D5 remain complete and
+    qualifying.
+
+    ARMED that is an L10 break: a mandate withdrawn on D5 is live again on D6
+    because a bar went missing. UNARMED it silently drops the would-clear from
+    the calibration read, which is the number the whole arc exists to produce,
+    and it drops it in the COMMON case rather than an exotic one.
+
+    Discriminator: the pair. The 6-session run must agree with the 5-session run
+    it extends. Pre-fix the second half returns `None` for both diagnostics.
+    """
+    days = _sessions(6)
+    settled = _derive(closes=QUALIFYING, verdicts=_verdicts("FFFFF"))
+    assert settled.latches[0].lapse_qualifying_session == days[4]
+    assert settled.latches[0].lapse_would_clear_session == days[4]
+
+    # Same corpus, plus a D6 the framework EVALUATED and the archive has not
+    # caught up with. Bars stop at D5; the verdict sequence runs to D6.
+    lagged = _derive(closes=QUALIFYING, verdicts=_verdicts("FFFFFF"),
+                     derivation_session=days[5])
+    latch = lagged.latches[0]
+    assert latch.lapse_qualifying_session == days[4]
+    assert latch.lapse_would_clear_session == days[4]
+    # The gap is still DISCLOSED -- it is a real fact about today's evidence,
+    # and suppressing the diagnostic would be the opposite error.
+    assert latch.directional_evaluable is False
+    assert "archive gap" in (latch.directional_block_reason or "")
+
+
+def test_the_LATER_gap_result_is_the_SAME_ARMED():
+    """The armed half of the pair, because the erasure's worst form is the one
+    the flag turns on: pre-fix the D5 withdrawal simply does not happen."""
+    days = _sessions(6)
+    armed = _derive(closes=QUALIFYING, verdicts=_verdicts("FFFFFF"),
+                    derivation_session=days[5], armed=True)
+    latch = armed.latches[0]
+    assert latch.clear_reason == "criteria_lapsed"
+    assert latch.clear_session == days[4]
+
+
+def test_an_INSIDE_the_window_gap_still_refuses_it():
+    """The bound on the fix. Loosening the OUTER gate must not loosen the
+    conjunct's own completeness requirement -- 2a's claim is "price never traded
+    through the pivot", and a gap inside `[anchor, s]` cannot support it.
+
+    Without this the fix could be "delete the coverage check" and stay green.
+    """
+    days = _sessions(6)
+    # D2's bar is MISSING from inside the lifetime range.
+    bars = [b for b in _bars([98.0, 95.0, 92.0, 89.0, 86.0, 84.0])
+            if b.session != days[2]]
+    d = derive_latches(
+        fires=[_fire()], bars_by_ticker={"TST": bars}, entries_by_ticker={},
+        horizon_session=session_offset(days[5], 1),
+        derivation_session=days[5], horizon_sessions=200,
+        bar_status_by_ticker={"TST": "ok"},
+        structural_verdicts_by_ticker={"TST": _verdicts("FFFFFF")},
+        criteria_lapse_armed=True, criteria_lapse_sessions=5)
+    latch = d.latches[0]
+    assert latch.clear_reason != "criteria_lapsed"
+    _assert_no_hypothetical(latch)
