@@ -1785,6 +1785,47 @@ def test_coverage_clause1_non_session_dated_warning_is_not_evidence(
     assert det  # silence unused
 
 
+def test_coverage_clause1_hygiene_filter_does_not_break_terminal_2b(
+    tmp_path: Path,
+) -> None:
+    # Codex R3 MAJOR: the clause-1 evidence hygiene bound must NOT be applied to
+    # the index clause-2b consumes. For an OPEN detection `expected` is capped at
+    # last_completed so no 2b hit can sit past the bound -- but a TERMINAL
+    # detection's window is capped at its own max_obs, which can legitimately
+    # extend PAST last_completed (terminal history stored ahead of the `now`
+    # seam). Filtering the SHARED index would drop that hole's explanation and
+    # manufacture a FALSE RED.
+    #
+    # TRM: observed 06-05,06-08,06-09,06-10,06-11 then TERMINAL ('expired') on
+    # 06-16 -> expected 06-05..06-16, holes 06-12 (inside the bound) and 06-15
+    # (PAST last_completed 06-12). Both carry matching completed-run no-bar
+    # warnings, so both are clause-2b explanations; neither can be 2a-accepted
+    # (both sessions ARE in the run ledger), which makes the acceptance
+    # demonstrably 2b.
+    #
+    # Filtering the shared index: 06-15 dropped -> 1 counted -> YELLOW.
+    # Filtering only the clause-1 evidence: both 2b-accepted -> GREEN.
+    conn = _schema_conn(tmp_path)
+    trm = _seed_detection(conn, ticker="TRM", data_asof_date="2026-06-04")
+    for d in ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10",
+              "2026-06-11"):
+        _seed_observation(conn, trm, observation_date=d, status="pending")
+    _seed_observation(conn, trm, observation_date="2026-06-16", status="expired")
+    _seed_all_sessions_runs(
+        conn, ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10",
+               "2026-06-11", "2026-06-16"), "tok-cl1term")
+    for asd in ("2026-06-12", "2026-06-15"):
+        _seed_pipeline_run(
+            conn, data_asof_date=asd, lease_token=f"tok-cl1term-{asd}",
+            warnings=[{"step": "pattern_observe", "ticker": "TRM",
+                       "observation_date": asd,
+                       "reason": "no bar for observation_date"}])
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"
+    assert "0 observation-coverage gaps" in check.summary
+    assert "2 accepted historical" in check.summary
+
+
 def test_calibration_c_partition_precomputed_skip_index_matches_derived() -> None:
     # Codex R1 MAJOR (the precompute): the caller-precomputed
     # latest_skip_by_ticker and the self-derived default must not diverge --

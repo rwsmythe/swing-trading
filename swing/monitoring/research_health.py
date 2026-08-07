@@ -1258,9 +1258,13 @@ def _latest_moved_past_session(
     caller omits it, the raw `skip_index`) AS GIVEN. The R1-CRITICAL bound -- an
     evidence session must be a REAL NYSE session at or before the monitor run's
     own `last_completed` -- lives in the CALLER, `_check_coverage_gaps`, which
-    filters `skip_index` BEFORE deriving the mapping. **A new caller MUST filter
-    first**; passing an unfiltered index, or a hand-built mapping, re-opens the
-    unbounded-evidence class. That caller obligation is pinned by the two
+    derives the mapping from a hygiene-FILTERED copy of the pairs while passing
+    `skip_index` itself UNFILTERED (clause-2b must keep the full index -- Codex
+    R3 MAJOR). **A new caller MUST filter the mapping's source the same way**;
+    handing over an unfiltered mapping re-opens the unbounded-evidence class,
+    and filtering `skip_index` itself instead would drop legitimate clause-2b
+    explanations for a TERMINAL detection whose window ends past the bound.
+    That caller obligation is pinned by the two
     end-to-end tests `test_coverage_clause1_warning_past_last_completed_is_not_
     evidence` and `test_coverage_clause1_non_session_dated_warning_is_not_
     evidence` (each fails if the caller stops filtering), NOT by anything here.
@@ -1508,11 +1512,18 @@ def _check_coverage_gaps(
     # (last_completed) -- a date past the bound describes nothing the drumbeat
     # can have done yet.
     #
-    # This is a clause-1 tightening ONLY: clause-2b is untouched in effect,
-    # because a 2b hit needs (ticker, S) with S in `missing_set` <= `expected`,
-    # and `expected` is built by `_sessions(...)` from the calendar itself -- so
-    # every entry dropped here could never have matched 2b anyway. Computed over
-    # the DISTINCT sessions (one calendar call each), not per pair.
+    # This is a clause-1 tightening ONLY, and it is applied to a SEPARATE
+    # evidence index -- `skip_index` itself is NOT rebound, so clause-2b keeps
+    # consuming the FULL index. Codex R3 MAJOR corrected an earlier version of
+    # this comment that claimed a dropped entry "could never have matched 2b
+    # anyway": that holds for an OPEN detection (whose `expected` is capped at
+    # last_completed) but NOT for a TERMINAL one, whose window is capped at its
+    # own `max_obs` and can legitimately extend PAST last_completed (a terminal
+    # history stored ahead of the `now` seam this monitor is called with). There
+    # a hole beyond the bound IS 2b-explainable, and filtering the shared index
+    # would have dropped the explanation -> a FALSE RED. The bound belongs to
+    # clause-1 evidence alone. Computed over the DISTINCT sessions (one calendar
+    # call each), not per pair.
     _last_completed_iso = last_completed.isoformat()
 
     def _is_completed_calendar_session(session: str) -> bool:
@@ -1527,10 +1538,12 @@ def _check_coverage_gaps(
     _evidence_ok = {
         s: _is_completed_calendar_session(s) for s in {s for _t, s in skip_index}
     }
-    skip_index = {(t, s) for (t, s) in skip_index if _evidence_ok[s]}
-    # Precomputed ONCE (Codex R1 MAJOR): the per-ticker latest skip session, so
-    # the per-detection clause-1 evidence lookup is O(1), not a full index scan.
-    latest_skip_by_ticker = _latest_skip_session_by_ticker(skip_index)
+    # Precomputed ONCE (Codex R1 MAJOR): the per-ticker latest ADMISSIBLE skip
+    # session, so the per-detection clause-1 evidence lookup is O(1) rather than
+    # a full index scan. Derived from the hygiene-filtered pairs; `skip_index`
+    # is passed to the partition UNFILTERED for clause-2b (Codex R3 MAJOR).
+    latest_skip_by_ticker = _latest_skip_session_by_ticker(
+        {(t, s) for (t, s) in skip_index if _evidence_ok[s]})
 
     total_missing = 0
     malformed = 0
