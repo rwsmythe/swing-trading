@@ -391,8 +391,48 @@ def _enumerate_sessions(start: date, end: date) -> list[date]:
     return out
 
 
+def _sound_envelope(bar: DailyBar) -> bool:
+    """Does this bar's OHLC actually hold together? (Codex R4 MAJOR.)
+
+    `DailyBar.__post_init__` validates FINITENESS ONLY and the archive reader
+    polices nothing else, so a row recording `open = 101` against `high = 99`
+    constructs happily -- and this project has a MEASURED invalid-OHLC
+    population (the 18-D research monitor baselines `invalid_ohlc` at 23 of 77
+    unique signals), so it is a real shape rather than a hypothetical one.
+
+    It matters because 2a asks *was the entry trigger reached* and answers from
+    the HIGH alone. On such a bar the OPEN proves a touch the HIGH denies, and
+    reading the high as complete evidence withdraws the mandate from a stock
+    whose stop-limit would already have triggered -- the catastrophic direction.
+
+    The framework must not pick the reading that favours withdrawal, and must
+    not pick the other one either: the bar is UNTRUSTWORTHY, so its DATE becomes
+    ambiguous and the existing coverage check refuses the window.
+
+    COMPARED AT DISPLAY PRECISION, deliberately unlike the duplicate test above.
+    The two ask opposite questions: there, rounding HID a real difference between
+    two rows, so it must be raw; here, rounding avoids condemning a legitimate
+    bar over a sub-cent float artifact, while a genuine inversion (101 vs 99) is
+    orders of magnitude clear of a cent -- and a sub-cent inversion cannot move a
+    materiality floor anyway.
+    """
+    o = round(bar.open, _PRICE_DP)
+    h = round(bar.high, _PRICE_DP)
+    low = round(bar.low, _PRICE_DP)
+    c = round(bar.close, _PRICE_DP)
+    if min(o, h, low, c) <= 0.0:
+        return False
+    # `<=` throughout: an untraded/flat session legitimately has all four equal,
+    # and the QUALIFYING fixtures rely on `high == close`.
+    return low <= min(o, c) and max(o, c) <= h and low <= h
+
+
 def _canonical_bars(bars) -> tuple[dict[date, DailyBar], set[date]]:
     """Collapse duplicate bars per date. Returns `(by_session, ambiguous)`.
+
+    A bar failing `_sound_envelope` is refused OUTRIGHT -- its date is ambiguous
+    before any duplicate question is asked, because an incoherent bar is not
+    evidence of anything.
 
     Two rows for one date collapse ONLY IF THEY AGREE ON EVERY FIELD THE
     CONJUNCTS READ -- the CLOSE and, because OQ-14 puts 2a on the session HIGH,
@@ -409,6 +449,11 @@ def _canonical_bars(bars) -> tuple[dict[date, DailyBar], set[date]]:
     by_session: dict[date, DailyBar] = {}
     ambiguous: set[date] = set()
     for bar in bars:
+        if not _sound_envelope(bar):
+            # The final pop below clears the date even when a SOUND row for it
+            # was seen first -- one incoherent row poisons the session.
+            ambiguous.add(bar.session)
+            continue
         prior = by_session.get(bar.session)
         if prior is None:
             by_session[bar.session] = bar

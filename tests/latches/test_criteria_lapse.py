@@ -1123,3 +1123,95 @@ def test_bars_that_agree_EXACTLY_still_collapse():
         criteria_lapse_armed=True, criteria_lapse_sessions=5).latches[0]
     assert latch.clear_reason == "criteria_lapsed"
     assert latch.clear_session == days[4]
+
+
+# ---------------------------------------------------------------------------
+# Codex R4 MAJOR -- A MALFORMED BAR MUST NOT BE READ AS COMPLETE EVIDENCE
+# ---------------------------------------------------------------------------
+def _envelope_case(*, d2_open: float):
+    """Five failing sessions that qualify, with D2's OPEN under test.
+
+    `DailyBar.__post_init__` validates FINITENESS ONLY, so `open` above `high`
+    constructs happily, and `resolve_ohlcv_window` does not police the envelope
+    either. This project has a MEASURED invalid-OHLC population (the 18-D
+    research monitor baselines `invalid_ohlc` at 23 of 77 unique signals), so
+    this is a real shape, not a hypothetical one.
+    """
+    days = _sessions(5)
+    closes = [99.0, 98.0, 97.0, 96.0, 95.0]
+    bars = []
+    for i, (d, c) in enumerate(zip(days, closes, strict=True)):
+        if i == 2:
+            bars.append(DailyBar(session=d, open=d2_open, high=99.0,
+                                 low=96.0, close=c))
+        else:
+            bars.append(DailyBar(session=d, open=c, high=c, low=c, close=c))
+    return days, bars
+
+
+def test_a_bar_whose_OPEN_is_above_its_HIGH_cannot_prove_no_pivot_touch():
+    """Codex R4 MAJOR, and it is the CATASTROPHIC direction: withdrawing the
+    mandate from a stock that DID trade through its pivot.
+
+    2a asks "was the entry trigger reached" and answers it from `high` alone.
+    A bar recording `open = 101` against `high = 99` is self-contradictory --
+    but on its face the OPEN proves a touch of a pivot at 100 that the HIGH
+    denies. Accepted as complete evidence, 2a saw no touch, 2b saw a $4 decline
+    against a $3 floor, and the armed rule cleared a mandate whose stop-limit
+    would already have triggered.
+
+    The framework must not pick the reading that favours withdrawal, and it must
+    not pick the other one either: the bar is UNTRUSTWORTHY, so the DATE is
+    ambiguous, which the existing coverage check already turns into a refusal.
+
+    THE CONTROL PROVES THE FIXTURE OTHERWISE CLEARS -- without it this passes
+    against any implementation that never qualifies this series.
+    """
+    def _run(d2_open):
+        days, bars = _envelope_case(d2_open=d2_open)
+        return derive_latches(
+            fires=[_fire()], bars_by_ticker={"TST": bars}, entries_by_ticker={},
+            horizon_session=session_offset(days[4], 1),
+            derivation_session=days[4], horizon_sessions=200,
+            bar_status_by_ticker={"TST": "ok"},
+            structural_verdicts_by_ticker={"TST": _verdicts("FFFFF")},
+            criteria_lapse_armed=True, criteria_lapse_sessions=5).latches[0]
+
+    sound = _run(97.0)
+    assert sound.clear_reason == "criteria_lapsed"     # the CONTROL
+
+    malformed = _run(101.0)
+    assert malformed.clear_reason != "criteria_lapsed"
+    _assert_no_hypothetical(malformed)
+    assert malformed.directional_evaluable is False
+
+
+def test_a_bar_whose_LOW_is_above_its_CLOSE_is_refused_too():
+    """The other half of the envelope. A single-sided check would pass the test
+    above while leaving `low > close` -- equally self-contradictory, and equally
+    capable of making `min(B)` lie to the ends-at-its-low clause."""
+    days = _sessions(5)
+    closes = [99.0, 98.0, 97.0, 96.0, 95.0]
+    bars = []
+    for i, (d, c) in enumerate(zip(days, closes, strict=True)):
+        low = 99.5 if i == 2 else c          # LOW above the close AND the high
+        bars.append(DailyBar(session=d, open=c, high=c, low=low, close=c))
+    latch = derive_latches(
+        fires=[_fire()], bars_by_ticker={"TST": bars}, entries_by_ticker={},
+        horizon_session=session_offset(days[4], 1),
+        derivation_session=days[4], horizon_sessions=200,
+        bar_status_by_ticker={"TST": "ok"},
+        structural_verdicts_by_ticker={"TST": _verdicts("FFFFF")},
+        criteria_lapse_armed=True, criteria_lapse_sessions=5).latches[0]
+    assert latch.clear_reason != "criteria_lapsed"
+    _assert_no_hypothetical(latch)
+
+
+def test_an_ordinary_bar_is_NOT_refused_by_the_envelope_check():
+    """The bound. An envelope check that refuses normal bars disables the
+    feature outright, which is a worse failure than the one it fixes -- the
+    QUALIFYING fixture (high == close on every bar, an equality the check must
+    permit) must still clear."""
+    latch = _derive(closes=QUALIFYING, verdicts=_verdicts("FFFFF"),
+                    armed=True).latches[0]
+    assert latch.clear_reason == "criteria_lapsed"
