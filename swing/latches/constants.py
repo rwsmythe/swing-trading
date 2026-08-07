@@ -483,11 +483,18 @@ LATCH_ACTUAL_DURATIONS = frozenset({
 # uncomputable from the classifier's pure inputs, AND it made the pessimistic
 # default depend on the instrument having rendered a prompt (the instrument
 # flattering its subject through inaction).
+#
+# `framework_withdrawn` (item 3b, RD's disposition ruling): the mandate ended
+# because the FRAMEWORK retracted it -- the name failed the A+ structural gate
+# for N evaluated sessions AND the price decayed -- not because the operator
+# declined it and not because he failed to act. It is EXCLUDED from the
+# discipline signal AND from the away rate, so it must never be scored against
+# him: he was never given a mandate to act on for the sessions that produced it.
 LATCH_DISPOSITIONS = frozenset({
     "pre_telemetry", "telemetry_unhealthy",
     "away_unseen", "accepted", "declined", "attested_acted_manually",
     "attested_chose_not_to_act", "attested_was_away", "discipline_lapse",
-    "pending_live", "never_actionable",
+    "pending_live", "never_actionable", "framework_withdrawn",
 })
 # The EXECUTION axis -- a SECOND, independent question. Collapsing the two would
 # let a broker-REJECTED placement classify as a clean `accepted` and contribute
@@ -543,7 +550,7 @@ LATCH_BROKER_SNAPSHOT_PERSISTED_BRANCHES = frozenset({"presence", "absence"})
 # ---------------------------------------------------------------------
 _ALL_EXCLUDED_DISPOSITIONS = frozenset({
     "away_unseen", "pre_telemetry",
-    "never_actionable", "telemetry_unhealthy",
+    "never_actionable", "telemetry_unhealthy", "framework_withdrawn",
 })
 PENDING_DISPOSITIONS = frozenset({"pending_live"})
 # RD ruling 2 (2026-07-28): testimony is not telemetry, so a self-declared away
@@ -563,10 +570,21 @@ DECISION_DISPOSITIONS = frozenset({
     "attested_acted_manually", "attested_chose_not_to_act",
     "discipline_lapse",
 })
-# DERIVED by set subtraction, never hand-written -- that is what makes an
-# overlap between the buckets UNREPRESENTABLE rather than merely tested-against.
+# DERIVED by set subtraction, never hand-written, so a disposition added to
+# `_ALL_EXCLUDED_DISPOSITIONS` routes here without a second edit.
 # ATTESTED_AWAY_DISPOSITIONS is subtracted too, or away_unseen's sibling would
 # fall into unattributable_r as well as its own bucket.
+#
+# THE SUBTRACTION DOES *NOT* MAKE AN OVERLAP UNREPRESENTABLE, and this comment
+# said it did until item 3b (2026-08-07). It subtracts only
+# AWAY_RATE_COUNTED_DISPOSITIONS and ATTESTED_AWAY_DISPOSITIONS -- NOT
+# DECISION_DISPOSITIONS -- so a disposition added to BOTH
+# `_ALL_EXCLUDED_DISPOSITIONS` and `DECISION_DISPOSITIONS` sits in both, and
+# because `r_bucket_for` tests unattributable BEFORE decision it silently
+# returns `unattributable_r`: the rate arithmetic looks correct while the sets
+# are incoherent. A pairwise-disjointness test is what actually holds the
+# property; leaving the stronger claim standing beside that test would have left
+# the next reader trusting a guarantee the code does not provide.
 UNATTRIBUTABLE_DISPOSITIONS = (
     _ALL_EXCLUDED_DISPOSITIONS
     - AWAY_RATE_COUNTED_DISPOSITIONS

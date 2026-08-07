@@ -691,6 +691,43 @@ def classify_latch(
         return _out(
             verdict.table_disposition,
             f"coverage={verdict.coverage}; the instrument was not there")
+    # RUNG 4.5 -- THE FRAMEWORK'S OWN WITHDRAWAL (item 3b, RD's disposition
+    # ruling). A `criteria_lapsed` clear is a mandate the FRAMEWORK retracted,
+    # not an action the operator declined and not a failure to act, so it is
+    # excluded from the discipline signal AND from the away rate -- landing in
+    # `unattributable_r`, which is in NEITHER numerator NOR denominator.
+    #
+    # IT KEYS ON `clear_reason`, NEVER ON `state`. Under OQ-2's Option B
+    # `criteria_lapsed` and `horizon` SHARE `state == "horizon_expired"`, so a
+    # state-keyed rung would re-label every horizon-expired latch
+    # `framework_withdrawn` and delete real discipline evidence from the signal.
+    #
+    # THE PLACEMENT IS DERIVED FROM THE RULING, NOT CHOSEN:
+    #
+    # * BELOW rungs 1-3 -- those are operator GROUND TRUTH. If he placed an
+    #   order that stays `accepted`; a later withdrawal cannot retroactively
+    #   un-decide what he did.
+    # * BELOW rung 4 -- the table states it is "THE ONLY ROUTE" to
+    #   `pre_telemetry` and that nothing may pre-empt a ruling. OQ-16's own
+    #   argument extends verbatim to rung 4, but RD RULED ONLY ON RUNG 5, so the
+    #   rung sits between them and this is flagged as residual R3 rather than
+    #   silently extended. Both land in the same bucket either way.
+    # * ABOVE rung 5 -- RULED (OQ-16): "the withdrawal is authored by the
+    #   structural-verdict + archive chain, which is INDEPENDENT of the
+    #   view-telemetry beacon -- labelling it `telemetry_unhealthy` asserts a
+    #   false cause." Rung 5 gates classifications that DEPEND on view telemetry
+    #   (away / lapse / attest); it must not swallow ones that do not.
+    # * ABOVE rung 6 -- otherwise `discipline_lapse` charges the operator for
+    #   failing to act on an opportunity the system retracted.
+    # * ABOVE RUNG 7, AND THAT IS WHERE THE REQUIREMENT ACTUALLY BITES -- a
+    #   withdrawn latch he never viewed would otherwise fall through to
+    #   `away_unseen`, which is `away_r`, INSIDE the away rate RD excluded it
+    #   from.
+    if latch.clear_reason == "criteria_lapsed":
+        return _out(
+            "framework_withdrawn",
+            "the framework withdrew this mandate: the A+ structural gate failed "
+            "over the calibrated window and the price decayed with it")
     # RUNG 5 -- telemetry health. `!= "ok"`, NOT `== "broken"`: excluding only
     # `broken` lets a SHORT fully-covered window with NO beacon witness
     # (`indeterminate`) score `away_unseen` and enter the away rate -- while the
