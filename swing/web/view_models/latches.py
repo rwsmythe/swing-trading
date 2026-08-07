@@ -132,6 +132,16 @@ _DISPOSITION_LABELS = {
         "DISCIPLINE LAPSE - an actionable mandate was presented and no action "
         "was recorded"),
     "pending_live": "PENDING - still live; reported, never scored",
+    # THE #11 MIRROR THIS MAP TURNED OUT TO BE (Codex R1 + auto-review, item
+    # 3b). `_build_row` subscripts this map BARE, and the panel's outer
+    # `except Exception` degrades the WHOLE panel -- so a disposition ruled
+    # into `LATCH_DISPOSITIONS` without a label here does not lose one row, it
+    # loses every latch behind "latch derivation unavailable". A set-equality
+    # test now pins the two together.
+    "framework_withdrawn": (
+        "WITHDRAWN BY THE FRAMEWORK - the A+ structural gate failed over the "
+        "calibrated window and the price decayed with it; never scored "
+        "against him"),
 }
 
 _ATTEST_OPTION_LABELS = {

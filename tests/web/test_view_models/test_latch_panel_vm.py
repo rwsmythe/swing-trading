@@ -432,3 +432,61 @@ def test_bars_through_and_absence_are_both_rendered(seeded_db):
     row = _vm(cfg).rows[0]
     assert row.bars_available is False
     assert row.bars_through == "-"
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 / auto-review -- the disposition-label roster is a #11 MIRROR
+# ---------------------------------------------------------------------------
+def test_every_ruled_disposition_has_a_panel_LABEL():
+    """`_DISPOSITION_LABELS` is a PYTHON MIRROR of `LATCH_DISPOSITIONS` and
+    nothing said so, which is how item 3b widened the enum and left the label
+    map behind.
+
+    `_build_row` subscripts the map BARE, so a missing key is a `KeyError`
+    inside `build_latch_panel_vm`'s outer `except Exception` -- which does not
+    hide one row, it replaces the ENTIRE panel with "latch derivation
+    unavailable". The operator loses every latch the moment the arm flag is
+    turned on, with a message that names none of it.
+
+    Pinned as a SET EQUALITY rather than a membership check for
+    `framework_withdrawn` alone: a containment test passes while the next
+    disposition repeats the identical failure.
+    """
+    from swing.latches.constants import LATCH_DISPOSITIONS
+    from swing.web.view_models.latches import _DISPOSITION_LABELS
+
+    assert set(_DISPOSITION_LABELS) == LATCH_DISPOSITIONS
+
+
+def test_a_framework_withdrawn_row_RENDERS_rather_than_killing_the_panel():
+    """The production path the roster pin above protects, exercised end to end
+    through `_build_row` -- because the roster test alone would pass against a
+    label map keyed correctly and read through some other broken lookup.
+
+    Discriminator: pre-fix this raises `KeyError('framework_withdrawn')`.
+    """
+    from datetime import date
+
+    from swing.latches.classification import LatchDisposition
+    from swing.latches.identity import LatchIdentity
+    from swing.latches.models import Latch
+    from swing.web.view_models.latches import _build_row
+
+    latch = Latch(
+        identity=LatchIdentity(
+            candidate_id=8851, evaluation_run_id=126, ticker="VSTS",
+            detection_date="2026-07-27", pipeline_run_id=140),
+        latched_pivot=16.90, latched_initial_stop=13.40, zone_cap=17.4070,
+        anchor=date(2026, 7, 27), horizon_expiry=date(2026, 9, 8),
+        sessions_elapsed=5, sessions_to_horizon=25,
+        state="horizon_expired", clear_reason="criteria_lapsed",
+        clear_session=date(2026, 8, 3))
+    disposition = LatchDisposition(
+        candidate_id=8851, disposition="framework_withdrawn",
+        execution_outcome="not_applicable", prompt_required=False,
+        is_terminal=True, coverage="full", awareness_view_row_count=0,
+        actionable_view_row_count=0, governing_place_intent_id=None,
+        telemetry_verdict="ok", r_multiple=None)
+    row = _build_row(latch, quote=None, views=(), disposition=disposition)
+    assert "WITHDR" in row.disposition_label.upper()
+    assert row.disposition_label != ""
