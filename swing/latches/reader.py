@@ -471,8 +471,14 @@ def load_session_structural_verdicts(
                     None if row[3] is None else str(row[3]))
     criteria_by_candidate: dict[int, list[tuple]] = {}
     cids = sorted(candidate_by_run_ticker.values())
-    for chunk_start in range(0, len(cids), 500):
-        chunk = cids[chunk_start:chunk_start + 500]
+    # SIZED FROM THE SAME BUDGET as the query above (Codex R3). This loop kept a
+    # hard-coded 500 while its sibling learned to read the connection's limit --
+    # an inconsistency the earlier fix INTRODUCED, and one that fails the whole
+    # verdict load (and with it the read-only panel) on any connection whose
+    # limit is below 500.
+    criteria_size = max(1, min(500, budget))
+    for chunk_start in range(0, len(cids), criteria_size):
+        chunk = cids[chunk_start:chunk_start + criteria_size]
         ph = ",".join("?" * len(chunk))
         for cid, name, layer, result in conn.execute(
             f"SELECT candidate_id, criterion_name, layer, result "

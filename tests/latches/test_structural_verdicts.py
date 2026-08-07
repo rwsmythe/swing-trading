@@ -655,3 +655,38 @@ def test_the_run_and_ticker_placeholders_TOGETHER_stay_under_the_limit(db, cfg):
     finally:
         db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 32766)
     assert set(got) == set(tickers)
+
+
+def test_the_CRITERIA_chunk_is_bounded_by_the_same_limit_as_the_others(db, cfg):
+    """Codex R3 MINOR, and it is an inconsistency the R1/R2 fix INTRODUCED: the
+    run/ticker query learned to size itself from the connection's own variable
+    limit while the criteria query beside it kept a hard-coded 500.
+
+    So a connection whose limit is BELOW 500 -- an old SQLite build, or any
+    caller that has lowered it -- passes the first query and then raises
+    `too many SQL variables` on the second, which fails the whole verdict load
+    and takes the read-only panel with it.
+
+    Pinned with a limit of 400 against 450 candidates: above the ticker/run
+    query's own needs, below the 450 placeholders the criteria query wanted.
+    """
+    import sqlite3
+    from datetime import timedelta
+    start = date(2026, 1, 5)
+    tickers = [f"T{i:04d}" for i in range(450)]
+    with db:
+        _run(db, 1, start.isoformat(), "2026-01-05T17:30:00")
+        for ticker in tickers:
+            _candidate(db, 1, ticker, "watch", _rows())
+    db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 400)
+    try:
+        got = load_session_structural_verdicts(
+            db, cfg, tickers=tickers, start=start,
+            end=start + timedelta(days=3))
+    finally:
+        db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 32766)
+    assert set(got) == set(tickers)
+    # The rosters were COMPLETE, so every verdict is a real PASSED -- proving
+    # the criteria rows actually arrived rather than the query silently
+    # returning nothing.
+    assert {v.classification for vs in got.values() for v in vs} == {"PASSED"}
