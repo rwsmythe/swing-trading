@@ -845,27 +845,70 @@ def test_admissible_decisions_skips_an_unparseable_action_session():
         lower=date(2026, 8, 3), upper=date(2026, 8, 6)) == ()
 
 
-def test_decision_bounds_for_is_capped_by_the_latchs_ACTUAL_terminal():
-    """Not merely by the horizon. A decision recorded AFTER the mandate ended
-    cannot be a decision ABOUT it, and the TERMINAL is what ended it -- so a
-    filled latch's window closes at the fill, never at its nominal expiry."""
+def test_decision_bounds_for_caps_DECLINES_at_the_terminal_and_PLACES_at_the_horizon():
+    """The asymmetry, asserted as the three-tuple it is (Codex R5 + R6).
+
+    A decision recorded after the mandate ended cannot be a decision ABOUT it --
+    so DECLINES cap at the actual terminal. But capping PLACES there would let a
+    late-arriving terminal rewrite a placement the operator really made: the
+    archive legitimately degrades to no bars, so a place can be logged against an
+    apparently live latch and a later-recovered invalidation would then discard
+    it, dropping the latch from `accepted` to a lapse. Places therefore reach
+    through the NOMINAL window, which is also the one the lifecycle read.
+    """
     filled = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14),
                     state="filled", clear_reason="fill",
                     clear_session=date(2026, 8, 4))
-    assert decision_bounds_for(filled, fill_bound=date(2026, 8, 20)) == (
-        date(2026, 8, 3), date(2026, 8, 4))
+    lower, upper, decline_upper = decision_bounds_for(
+        filled, fill_bound=date(2026, 8, 20))
+    assert lower == date(2026, 8, 3)
+    assert upper == date(2026, 8, 20)          # PLACES: the as-of bound
+    assert decline_upper == date(2026, 8, 4)   # DECLINES: the terminal
+
     live = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14))
     assert decision_bounds_for(live, fill_bound=date(2026, 8, 6)) == (
-        date(2026, 8, 3), date(2026, 8, 6))
+        date(2026, 8, 3), date(2026, 8, 6), date(2026, 8, 6))
     assert decision_bounds_for(live, fill_bound=date(2026, 12, 1)) == (
-        date(2026, 8, 3), date(2026, 9, 14))
+        date(2026, 8, 3), date(2026, 9, 14), date(2026, 9, 14))
+
+
+def test_a_LATE_TERMINAL_never_discards_a_placement_already_logged():
+    """Codex R6 CRITICAL 2 -- the regression the terminal cap would have caused
+    on latches with NO decline at all, i.e. on the EXISTING corpus.
+
+    The archive degrades to no bars (a documented `load_bars_with_status` path),
+    so a `place` is logged at D5 against a latch that reads live. The archive
+    later recovers and a D3 invalidation appears. A terminal-capped bound drops
+    the D5 placement and the latch falls from `accepted` to a lapse -- charging
+    the operator for failing to act on a mandate he demonstrably placed an order
+    for, because the framework's own evidence arrived late.
+
+    Discriminator: with `upper` capped at `clear_session` this returns
+    `away_unseen`/`discipline_lapse` and `governing_place_intent_id is None`.
+    """
+    invalidated = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14),
+                         state="invalidated", clear_reason="invalidation",
+                         clear_session=date(2026, 8, 3))
+    place = _intent("place", intent_id=1, recorded_ts="2026-08-05T09:00:00",
+                    action_session_date="2026-08-05")
+    got = classify_latch(
+        latch=invalidated, views=[], intents=[place],
+        decision_bounds=decision_bounds_for(
+            invalidated, fill_bound=date(2026, 8, 20)))
+    assert got.governing_place_intent_id == 1
+    assert got.disposition == "accepted"
 
 
 def test_classify_latch_bounds_BOTH_the_decision_and_the_place_it_resolves():
     """T6.14. The filtered view feeds `governing_decision` AND the `place` that
-    drives the execution outcome -- otherwise an out-of-bound place still becomes
-    `governing_place_intent_id` and drives EXECUTION while a different, in-bound
-    decision drives the DISPOSITION.
+    drives the execution outcome -- otherwise a place belonging to a DIFFERENT
+    latch still becomes `governing_place_intent_id` and drives EXECUTION while a
+    different, in-bound decision drives the DISPOSITION.
+
+    Scoped on IDENTITY rather than on the window, because a place is
+    deliberately admissible through the nominal window (see
+    `test_a_LATE_TERMINAL_never_discards_a_placement_already_logged`); the
+    cross-latch case is the one a bounds-only filter cannot catch.
 
     Everything else keeps the FULL set: replacing `intents` wholesale would make
     attestations and validity evidence vanish, which the second half asserts.
@@ -873,15 +916,15 @@ def test_classify_latch_bounds_BOTH_the_decision_and_the_place_it_resolves():
     latch = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14),
                    state="horizon_expired", clear_reason="horizon",
                    clear_session=date(2026, 8, 6))
-    late_place = _intent("place", intent_id=1, recorded_ts="2026-08-10T09:00:00",
-                         action_session_date="2026-08-10")
-    attest = _intent("attest", intent_id=2, recorded_ts="2026-08-10T10:00:00",
-                     action_session_date="2026-08-10",
+    foreign = _intent("place", intent_id=1, recorded_ts="2026-08-04T09:00:00",
+                      action_session_date="2026-08-04", candidate_id=99999)
+    attest = _intent("attest", intent_id=2, recorded_ts="2026-08-04T10:00:00",
+                     action_session_date="2026-08-04",
                      attested_disposition="chose_not_to_act")
     got = classify_latch(
-        latch=latch, views=[], intents=[late_place, attest],
+        latch=latch, views=[], intents=[foreign, attest],
         decision_bounds=decision_bounds_for(latch, fill_bound=date(2026, 8, 20)))
-    # the out-of-bound place drove NEITHER axis ...
+    # the other latch's place drove NEITHER axis ...
     assert got.governing_place_intent_id is None
     assert got.execution_outcome == "not_applicable"
     # ... while the attestation, which is NOT a decision, still governs.
@@ -893,22 +936,24 @@ def test_the_forward_guard_is_scoped_to_the_SAME_view_the_place_came_from():
 
     `resolve_execution_outcome_for`'s FORWARD guard asks "is this the LATEST
     place?" so an earlier cycle cannot borrow a later fill. Once the classifier
-    selects its place from the ADMISSIBLE view, a place that is latest IN WINDOW
-    but not latest OVERALL (an out-of-bound later place) fails a guard computed
-    over the full set -- and loses its own fill's vouching, reporting `unknown`
-    for an order that demonstrably filled.
+    selects its place from the ADMISSIBLE view, a place that is latest IN VIEW
+    but not latest in the RAW set -- here a later place belonging to a DIFFERENT
+    latch -- fails a guard computed over the raw set, and this latch's own place
+    then loses its own fill's vouching, reporting `unknown` for an order that
+    demonstrably filled.
 
     Discriminator: with the guard unscoped this returns `unknown`.
     """
     latch = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14),
                    state="filled", clear_reason="fill",
                    clear_session=date(2026, 8, 4))
-    in_window = _intent("place", intent_id=1, recorded_ts="2026-08-03T09:00:00",
-                        action_session_date="2026-08-03")
-    later_out = _intent("place", intent_id=2, recorded_ts="2026-08-10T09:00:00",
-                        action_session_date="2026-08-10")
+    mine = _intent("place", intent_id=1, recorded_ts="2026-08-03T09:00:00",
+                   action_session_date="2026-08-03")
+    foreign_later = _intent(
+        "place", intent_id=2, recorded_ts="2026-08-10T09:00:00",
+        action_session_date="2026-08-10", candidate_id=99999)
     got = classify_latch(
-        latch=latch, views=[], intents=[in_window, later_out],
+        latch=latch, views=[], intents=[mine, foreign_later],
         decision_bounds=decision_bounds_for(latch, fill_bound=date(2026, 8, 20)))
     assert got.governing_place_intent_id == 1
     assert got.execution_outcome == "accepted_by_broker"
@@ -973,31 +1018,33 @@ def test_current_cycle_place_over_the_ADMISSIBLE_view_matches_the_classifier():
     """Codex R2 CRITICAL 1, pinned at the resolver both report paths share.
 
     The monthly report reads `current_cycle_place` for the ORDER DATA while
-    `classify_latch` reads the bounded place for the DISPOSITION and EXECUTION
-    OUTCOME. Resolving them over different populations lets one observation carry
-    P1's disposition beside P2's order fields -- one row mixing two cycles.
+    `classify_latch` reads the admissible place for the DISPOSITION and
+    EXECUTION OUTCOME. Resolving them over different populations lets one
+    observation carry one cycle's disposition beside another's order fields --
+    a single row mixing two cycles.
 
-    Discriminator: over the UNFILTERED set the two disagree (P2 vs P1); over the
-    admissible view they agree, which is the property the report needs.
+    Driven with a CROSS-LATCH place, the axis the admissible view filters on
+    that the raw set does not.
     """
     latch = _latch(anchor=date(2026, 8, 3), last=date(2026, 9, 14),
                    state="filled", clear_reason="fill",
                    clear_session=date(2026, 8, 4))
-    p1 = _intent("place", intent_id=1, recorded_ts="2026-08-03T09:00:00",
-                 action_session_date="2026-08-03")
-    p2 = _intent("place", intent_id=2, recorded_ts="2026-08-05T09:00:00",
-                 action_session_date="2026-08-05")
-    intents = [p1, p2]
+    mine = _intent("place", intent_id=1, recorded_ts="2026-08-03T09:00:00",
+                   action_session_date="2026-08-03")
+    foreign = _intent("place", intent_id=2, recorded_ts="2026-08-05T09:00:00",
+                      action_session_date="2026-08-05", candidate_id=99999)
+    intents = [mine, foreign]
     bounds = decision_bounds_for(latch, fill_bound=date(2026, 8, 20))
 
-    unbounded = current_cycle_place(intents)
-    assert unbounded.intent_id == 2          # the DIVERGENCE, stated
+    assert current_cycle_place(intents).intent_id == 2     # the DIVERGENCE
 
     admissible = admissible_decisions(
         intents, candidate_set=latch.candidate_set,
-        lower=bounds[0], upper=bounds[1])
+        lower=bounds[0], upper=bounds[1], decline_upper=bounds[2])
     bounded = current_cycle_place(admissible)
     got = classify_latch(latch=latch, views=[], intents=intents,
                          decision_bounds=bounds)
     assert bounded.intent_id == 1
     assert got.governing_place_intent_id == bounded.intent_id
+
+

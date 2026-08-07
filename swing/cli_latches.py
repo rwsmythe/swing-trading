@@ -302,7 +302,7 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
         # produce. One population, one governing answer.
         admissible = admissible_decisions(
             latch_intents, candidate_set=latch.candidate_set,
-            lower=bounds[0], upper=bounds[1],
+            lower=bounds[0], upper=bounds[1], decline_upper=bounds[2],
             upper_exclusive_kinds=(
                 ("decline",) if latch.clear_reason == "fill" else ()))
         place = current_cycle_place(admissible)

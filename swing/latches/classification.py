@@ -359,7 +359,8 @@ def governing_decision(intents):
 
 
 def admissible_decisions(
-    intents, *, candidate_set, lower, upper, upper_exclusive_kinds=(),
+    intents, *, candidate_set, lower, upper, decline_upper=None,
+    upper_exclusive_kinds=(),
 ) -> tuple:
     """The `place`/`decline` DECISION FAMILY that can be ABOUT one latch. PURE.
 
@@ -390,6 +391,26 @@ def admissible_decisions(
     decline would still be admissible and rung 1 would return `declined` for a
     FILLED latch. Every other terminal keeps the inclusive bound.
 
+    `decline_upper` CAPS DECLINES EARLIER THAN PLACES, AND THE ASYMMETRY IS
+    LOAD-BEARING IN BOTH DIRECTIONS (Codex R5 + R6).
+
+    A PLACE MUST REACH THROUGH THE NOMINAL WINDOW. Capping places at the derived
+    terminal silently rewrites measurements that have nothing to do with this
+    arc: the archive legitimately degrades to NO BARS, so a `place` can be logged
+    at D5 against a latch that was live then; when the archive later recovers a
+    D3 invalidation -- or a trade is backfilled with an earlier entry date -- a
+    terminal-capped bound DROPS that placement, and the latch falls from
+    `accepted` to `discipline_lapse` or `away_unseen`. That charges the operator
+    for failing to act on a mandate he demonstrably placed an order for, because
+    the framework's own evidence arrived late. It also matches the LIFECYCLE,
+    which reads decisions through the nominal horizon because it must resolve the
+    governing decision BEFORE it knows the terminal.
+
+    A DECLINE MUST NOT. A decline recorded after the mandate ended cannot be
+    about it, and without the cap a post-terminal decline reaches rung 1 and
+    reports `declined` for a latch the resolver cleared by `fill` or
+    `invalidation` -- the lifecycle/classifier split this filter exists to close.
+
     IT IS KIND-SCOPED BECAUSE A FAMILY-WIDE STRICT BOUND CORRUPTS THE ORDINARY
     CASE. He places on D5 and it fills on D5 -- the commonest execution sequence
     there is. Excluding the whole family on that boundary drops the PLACE THAT
@@ -414,16 +435,19 @@ def admissible_decisions(
             continue
         if session < lower:
             continue
-        if session > upper:
+        cap = (
+            upper if decline_upper is None or intent.intent_kind != "decline"
+            else decline_upper)
+        if session > cap:
             continue
-        if session == upper and intent.intent_kind in upper_exclusive_kinds:
+        if session == cap and intent.intent_kind in upper_exclusive_kinds:
             continue
         out.append(intent)
     return tuple(out)
 
 
-def decision_bounds_for(latch, *, fill_bound: date) -> tuple[date, date]:
-    """The `(lower, upper)` window `admissible_decisions` applies to `latch`.
+def decision_bounds_for(latch, *, fill_bound: date) -> tuple[date, date, date]:
+    """The `(lower, upper, decline_upper)` window `admissible_decisions` applies.
 
     SINGLE-SOURCED so the panel and the monthly report cannot derive it two ways
     -- the drift class this phase has spent itself closing.
@@ -437,28 +461,15 @@ def decision_bounds_for(latch, *, fill_bound: date) -> tuple[date, date]:
     `fill_bound` is the caller's as-of bound; on the production path it is the
     derivation's `horizon_session`, which every caller already holds. The fold's
     pulled-back probe bound applies INSIDE the fold only and never reaches here.
-
-    A KNOWN AND CURRENTLY-UNREACHABLE ASYMMETRY, RECORDED RATHER THAN PATCHED
-    (Codex R5). The LIFECYCLE resolves the governing decision BEFORE it knows the
-    terminal -- that is the chicken-and-egg the ranked candidate list exists to
-    break -- so `_resolve_decline` reads decisions through the NOMINAL horizon
-    while this caps them at the ACTUAL terminal. The two therefore disagree for
-    ONE shape: `decline(D3)`, a correcting `place(D5)`, and a fill or
-    invalidation on D4. The lifecycle sees the place, suppresses the decline and
-    resolves D4; this cap drops the place, resurrects the D3 decline, and reports
-    the same latch `declined`.
-
-    IT IS NOT REACHABLE IN THE SHIPPED SYSTEM, and the reason is the same one
-    flagged at `rederive_prepared_order`: it needs a `place` recorded AFTER a
-    `decline` on one latch, and the route refuses any decision on a latch the
-    decline has terminated. The fix is a PER-KIND cap -- places through the
-    nominal window, declines at the terminal -- and it belongs with the wave item
-    that restores the correction affordance, because that item is what makes the
-    sequence recordable. Shipping the cap before the affordance would change
-    three existing dispositions to serve a sequence nothing can create.
     """
     return (
         latch.anchor,
+        # PLACES: the NOMINAL window, which is the one the LIFECYCLE read, and
+        # the one that leaves a late-arriving terminal from rewriting a
+        # placement the operator really made.
+        min(latch.horizon_expiry, fill_bound),
+        # DECLINES: capped at the ACTUAL terminal -- a decision recorded after
+        # the mandate ended cannot be a decision about it.
         min(latch.clear_session or latch.horizon_expiry, fill_bound),
     )
 
@@ -601,10 +612,10 @@ def classify_latch(
     if decision_bounds is None:
         admissible = intents
     else:
-        lower, upper = decision_bounds
+        lower, upper, decline_upper = decision_bounds
         admissible = admissible_decisions(
             intents, candidate_set=latch.candidate_set,
-            lower=lower, upper=upper,
+            lower=lower, upper=upper, decline_upper=decline_upper,
             # The one strict boundary, and only a DECLINE on a FILL session:
             # see `admissible_decisions`. A decline dated ON the fill session
             # loses to the fill, so it is not a decision the ledger can still be
