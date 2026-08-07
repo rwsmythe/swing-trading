@@ -33,6 +33,9 @@ from swing.evaluation.scoring import (
 from swing.latches.constants import (
     ARCHIVE_STATUS_OK,
     ARCHIVE_STATUS_UNAVAILABLE,
+    DEFAULT_CRITERIA_LAPSE_MIN_WIDENING_ADR,
+    DEFAULT_CRITERIA_LAPSE_MIN_WIDENING_PCT,
+    DEFAULT_CRITERIA_LAPSE_SESSIONS,
     latch_horizon_sessions,
 )
 from swing.latches.models import (
@@ -833,6 +836,23 @@ def build_latch_derivation(
         bars_by_ticker[ticker], status_by_ticker[ticker] = load_bars_with_status(
             cfg, ticker, start=start, end=derivation_session)
 
+    # THE STRUCTURAL VERDICT SEQUENCE (item 3b). Loaded over the whole latch
+    # span so each latch can slice it by its OWN window; per TICKER, so two
+    # latches on one ticker cannot be handed disagreeing sequences.
+    verdict_start = min(
+        [derivation_session, *(
+            b[0].session for b in bars_by_ticker.values() if b)]
+    ) if bars_by_ticker else derivation_session
+    for raw in (f.action_session_date for f in fires):
+        try:
+            verdict_start = min(verdict_start, date.fromisoformat(str(raw)))
+        except (TypeError, ValueError):
+            continue
+    verdicts_by_ticker = load_session_structural_verdicts(
+        conn, cfg, tickers=tickers,
+        start=verdict_start, end=horizon_session)
+
+    latches_cfg = getattr(cfg, "latches", None)
     return derive_latches(
         fires=fires,
         bars_by_ticker=bars_by_ticker,
@@ -842,4 +862,22 @@ def build_latch_derivation(
         horizon_sessions=horizon_sessions,
         bar_status_by_ticker=status_by_ticker,
         decision_intents_by_candidate_id=decisions_by_candidate,
+        structural_verdicts_by_ticker=verdicts_by_ticker,
+        # PRODUCTION PASSES ALL FOUR FROM CONFIG (L5). The pure derivation's
+        # own defaults exist only for its signature; a production path that
+        # forgot to pass them would silently derive from a module constant
+        # instead of the bound calibration -- and, worse, could NEVER arm,
+        # because the flag's default is False and no unit test over the pure
+        # layer would notice.
+        criteria_lapse_armed=getattr(
+            latches_cfg, "criteria_lapse_armed", False),
+        criteria_lapse_sessions=getattr(
+            latches_cfg, "criteria_lapse_sessions",
+            DEFAULT_CRITERIA_LAPSE_SESSIONS),
+        criteria_lapse_min_widening_adr=getattr(
+            latches_cfg, "criteria_lapse_min_widening_adr",
+            DEFAULT_CRITERIA_LAPSE_MIN_WIDENING_ADR),
+        criteria_lapse_min_widening_pct=getattr(
+            latches_cfg, "criteria_lapse_min_widening_pct",
+            DEFAULT_CRITERIA_LAPSE_MIN_WIDENING_PCT),
     )

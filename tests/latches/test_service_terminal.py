@@ -783,11 +783,27 @@ def test_the_latch_gains_no_provenance_field():
     """Arc 21-G plan B.1: provenance is a FRAGMENT concern, not a latch
     attribute. Keeping it off `Latch` is what stops the same fact being stated
     in two places that can drift -- and it keeps every 21-A `Latch` consumer,
-    including 21-B's ledger, field-for-field unchanged."""
+    including 21-B's ledger, field-for-field unchanged.
+
+    ITEM 3b ADDS FIELDS, SO THE ASSERTION IS RESTATED RATHER THAN RELAXED. The
+    21-G property being defended is that no CLOSE or PROVENANCE fact lands here;
+    the lapse diagnostics are the opposite case -- resolver OUTPUTS the view
+    model must READ rather than recompute, because recomputing the streak in the
+    VM would be the second implementation this arc single-sources the gate to
+    avoid.
+
+    So: every shipped field is still present, and the ONLY additions are the
+    ones this arc's own named roster declares. A stray field -- a provenance
+    attribute, a close, anything not on the roster -- still fails, which is what
+    the original assertion was protecting.
+    """
     from dataclasses import fields
 
-    from swing.latches.models import Latch
-    assert frozenset(f.name for f in fields(Latch)) == _SHIPPED_LATCH_FIELDS
+    from swing.latches.models import LATCH_LAPSE_DIAGNOSTIC_FIELDS, Latch
+    actual = frozenset(f.name for f in fields(Latch))
+    assert _SHIPPED_LATCH_FIELDS <= actual
+    assert actual - _SHIPPED_LATCH_FIELDS == frozenset(
+        LATCH_LAPSE_DIAGNOSTIC_FIELDS)
 
 
 def test_the_derivation_defaults_both_archive_maps_to_empty():
