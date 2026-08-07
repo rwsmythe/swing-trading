@@ -301,3 +301,56 @@ def test_the_DECISION_control_still_rides_on_the_prepared_order_block_TODAY():
     # The decline control lives INSIDE the offered branch -- above the withheld
     # paragraph -- which is precisely the gating item 4 must remove.
     assert offered_at < decline_at < withheld_at
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 MAJOR + auto-review MAJOR -- the countdown's BRANCH ORDER
+# ---------------------------------------------------------------------------
+def test_a_LATER_PASS_does_not_HIDE_the_would_clear_from_the_card():
+    """Codex R1 MAJOR. The two diagnostic scopes are deliberately different:
+    `lapse_failed_count` is CURRENT-STREAK evidence (after the last PASSED
+    session), `lapse_would_clear_session` is ANALYSIS-WINDOW evidence. So a
+    latch can carry a populated would-clear beside a streak that has since
+    reset.
+
+    The countdown tested `k >= N` FIRST, so that latch rendered
+    "failed 0 of 5 checked sessions" and said nothing at all about the
+    withdrawal the armed rule would already have made -- on the one surface
+    whose entire purpose is showing the operator what the unarmed rule is doing,
+    and while `swing latches parity` COUNTS that same latch. The panel and the
+    calibration read disagreed about the same fact.
+
+    Discriminator: pre-fix the assertion below finds no mention of the date.
+    """
+    latch = _latch(lapse_failed_count=0, lapse_qualifying_session=D[4],
+                   lapse_would_clear_session=D[4])
+    got = _lapse_countdown(latch, sessions=5)
+    assert "WOULD WITHDRAW on 2026-08-03" in got
+    assert "REPORT ONLY (not armed)" in got
+    # The reset streak is still stated -- the card must not imply the failures
+    # are current when they are not.
+    assert "0 of 5" in got
+
+
+def test_an_over_threshold_streak_that_was_NEVER_EVALUABLE_does_not_claim_NOT_MET():
+    """Codex R1 MINOR / auto-review MAJOR, and the two graded it differently
+    because it is the same falsehood as T7.11(b) wearing another hat.
+
+    With `k >= N` and no data for the directional half -- an unreadable archive,
+    an archive gap, or no usable ADR -- the threshold branch ran before the
+    evaluability check and printed "directional condition NOT MET". The
+    condition was never EVALUATED. `directional_evaluable is False` is precisely
+    the statement that it could not be.
+
+    The k < N form of this sentence already shipped correct (T7.3's second
+    half); only the over-threshold form was wrong, which is why no existing test
+    caught it.
+    """
+    latch = _latch(
+        lapse_failed_sessions=(D[0], D[1], D[2], D[3], D[4]),
+        lapse_failed_count=5, directional_evaluable=False,
+        directional_block_reason="archive unavailable")
+    got = _lapse_countdown(latch, sessions=5)
+    assert "NOT MET" not in got
+    assert "NOT EVALUABLE (archive unavailable)" in got
+    assert "5 failures; threshold 5" in got

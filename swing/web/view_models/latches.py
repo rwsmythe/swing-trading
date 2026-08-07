@@ -739,20 +739,42 @@ def _lapse_countdown(latch: Latch, *, sessions: int) -> str:
         return ""
     k = latch.lapse_failed_count
     unchecked = latch.lapse_unchecked_count
-    if k >= sessions:
-        if latch.lapse_would_clear_session is not None:
+    base = f"failed {k} of {sessions} checked sessions ({unchecked} unchecked)"
+    # RUNG 1 -- THE HYPOTHETICAL, WHEREVER THE CURRENT STREAK NOW STANDS (Codex
+    # R1 MAJOR). The two diagnostic scopes differ on purpose:
+    # `lapse_failed_count` is CURRENT-STREAK evidence, `lapse_would_clear_session`
+    # is ANALYSIS-WINDOW evidence. So a PASS after a qualifying window resets the
+    # count to zero while the would-clear stands. Testing `k >= sessions` first
+    # rendered that latch as "failed 0 of 5" and said nothing about the
+    # withdrawal the armed rule would already have made -- while `swing latches
+    # parity` COUNTS the same latch. The panel and the calibration read must not
+    # disagree about one fact.
+    if latch.lapse_would_clear_session is not None:
+        would = latch.lapse_would_clear_session.isoformat()
+        if k >= sessions:
             return (f"{k} failures; threshold {sessions}; WOULD WITHDRAW on "
-                    f"{latch.lapse_would_clear_session.isoformat()} - REPORT "
-                    "ONLY (not armed)")
+                    f"{would} - REPORT ONLY (not armed)")
+        # The reset streak is stated too: the card must not imply the failures
+        # are CURRENT when a later session passed the gate.
+        return (f"WOULD WITHDRAW on {would} - REPORT ONLY (not armed); the "
+                f"structural streak has since reset to {k} of {sessions}")
+    # RUNG 2 -- "NEVER EVALUABLE" OUTRANKS ANY CLAIM ABOUT THE CONJUNCT'S ANSWER,
+    # at every k. WITHOUT IT the card shows a failed streak beside a plain live
+    # status while the directional predicate had NO DATA -- implying a withdrawal
+    # is one session away when it is in fact unreachable -- and, over threshold,
+    # it said "directional condition NOT MET" about a condition that was never
+    # evaluated at all. `directional_evaluable is False` is precisely the
+    # statement that it could not be.
+    if not latch.directional_evaluable:
+        head = (f"{k} failures; threshold {sessions}"
+                if k >= sessions else base)
+        return (f"{head}; directional test NOT EVALUABLE "
+                f"({latch.directional_block_reason})")
+    # RUNG 3 -- the conjuncts ran and REFUSED. Only reachable once the two
+    # statements above are false, which is what makes this one true.
+    if k >= sessions:
         return (f"{k} failures; threshold {sessions}; directional condition "
                 "NOT MET")
-    base = f"failed {k} of {sessions} checked sessions ({unchecked} unchecked)"
-    if not latch.directional_evaluable:
-        # WITHOUT THIS the card shows a complete failed streak beside a plain
-        # live status while the directional predicate had NO DATA -- implying a
-        # withdrawal is one session away when it is in fact unreachable.
-        return (f"{base}; directional test NOT EVALUABLE "
-                f"({latch.directional_block_reason})")
     return base
 
 
