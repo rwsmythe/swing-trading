@@ -1254,8 +1254,10 @@ def _latest_moved_past_session(
 
     CALLER-SIDE OBLIGATION (Codex R2 MINOR; gotcha #31 -- pin the caller's duty,
     do not assert what a future caller will do). This function CANNOT verify the
-    evidence hygiene of what it is handed: it applies the mapping (or, when the
-    caller omits it, the raw `skip_index`) AS GIVEN. The R1-CRITICAL bound -- an
+    evidence hygiene of what it is handed: `latest_skip_by_ticker` is REQUIRED
+    here and applied AS GIVEN (the OMISSION default, which derives it from a raw
+    `skip_index`, belongs to `_calibration_c_partition`, not to this function).
+    The R1-CRITICAL bound -- an
     evidence session must be a REAL NYSE session at or before the monitor run's
     own `last_completed` -- lives in the CALLER, `_check_coverage_gaps`, which
     derives the mapping from a hygiene-FILTERED copy of the pairs while passing
@@ -1620,14 +1622,19 @@ def _check_coverage_gaps(
                 if first is None:
                     continue  # too fresh -- no session yet to observe
                 expected = _sessions(first, last_completed)
-                # CALIBRATION C first: observed is EMPTY -> clause-1 is FALSE for
-                # every session, so clause-2a accepts nothing -- BUT clause-2b can
-                # still fire per-session (a never-observed detection whose expected
-                # sessions carry recorded skip-warnings: the immediate-delisting-
-                # after-detection case, 19-A consequence #2). residual == expected
-                # ONLY when NO expected session is skip-explained. Then CALIBRATION
-                # A on the residual (a never-observed detection whose ONLY residual
-                # session is the single newest one is benign pre-nightly).
+                # CALIBRATION C first. `observed` is EMPTY here, so clause 1 has
+                # NO observed evidence -- but since the 2026-08-06 widening it can
+                # still hold on the SKIP half (a never-observed no-bar ticker with
+                # a later admissible skip-warning), which is exactly the cohort
+                # this branch is full of; do NOT re-read this as "clause 1 is
+                # vacuously false" (it was, before the widening). clause-2b also
+                # fires per-session independently (a never-observed detection whose
+                # expected sessions carry recorded skip-warnings: the immediate-
+                # delisting-after-detection case, 19-A consequence #2). residual ==
+                # expected ONLY when no expected session is accepted by either.
+                # Then CALIBRATION A on the residual (a never-observed detection
+                # whose ONLY residual session is the single newest one is benign
+                # pre-nightly).
                 accepted, residual = _calibration_c_partition(
                     expected, observed, det_ticker,
                     global_observed_sessions, run_observed_sessions, skip_index,

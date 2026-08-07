@@ -1144,9 +1144,13 @@ def test_coverage_calib_c_never_observed_still_red(tmp_path: Path) -> None:
     # misses). Expected window 05-04..06-12 has > 10 sessions all missing.
     #
     # Pre-fix: never-observed -> all expected (> 10) missing -> RED.
-    # Post-fix: empty observed -> C clause-1 vacuously false for every S ->
-    #          accepted empty -> residual == missing -> A graces only a lone
-    #          newest (not lone here) -> counted == len(expected) > 10 -> RED.
+    # Post-fix: empty observed AND no skip-warnings anywhere -> clause 1 has no
+    #          evidence on EITHER half (since the 2026-08-06 widening the skip
+    #          half could supply it, so "empty observed" alone is no longer the
+    #          reason) -> accepted empty -> residual == missing -> A graces only
+    #          a lone newest (not lone here) -> counted == len(expected) > 10 ->
+    #          RED. Also: every expected session IS in the run ledger, so 2a
+    #          could not fire even if clause 1 did.
     conn = _schema_conn(tmp_path)
     det = _seed_detection(conn, ticker="NVR", data_asof_date="2026-05-01")
     # Seed completed runs for the expected sessions so none is a whole-session

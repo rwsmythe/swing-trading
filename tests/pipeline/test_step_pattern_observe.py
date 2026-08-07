@@ -258,6 +258,51 @@ def test_no_bar_for_date_warns_and_skips(tmp_db_v22, tmp_path):
     assert any(w.get("reason") == "no bar for observation_date" for w in warnings)
 
 
+def test_no_bar_warning_round_trips_into_the_coverage_skip_index(
+    tmp_db_v22, tmp_path,
+):
+    # PRODUCER -> CONSUMER contract (cold-audit MINOR, 2026-08-06). The
+    # coverage_gaps monitor's CALIBRATION-C clauses 1 and 2b are BOTH driven by
+    # research_health._observe_skip_index parsing THIS warning dict out of a
+    # completed run's warnings_json. Both sides currently agree, but the monitor
+    # tests hand-BUILD the dict, so a writer change here that kept `reason` and
+    # dropped `ticker` or `observation_date` would leave every monitor test green
+    # while the live index went empty -- restoring the permanent false RED this
+    # whole calibration exists to end. So feed the REAL emitted entry through the
+    # REAL consumer.
+    import json
+
+    from swing.monitoring.research_health import _observe_skip_index
+
+    conn, db_path = tmp_db_v22
+    _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
+    cfg = _cfg(tmp_path, db_path)
+    lease = _FakeLease(db_path, 1, "2026-05-29")
+    warnings: list[dict] = []
+    import pandas as pd
+    empty = (pd.DataFrame(columns=["asof_date", "open", "high", "low", "close",
+                                   "volume"]), {})
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window", return_value=empty):
+        with patch("swing.pipeline.runner.lease_data_asof",
+                   return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=warnings)
+    emitted = [w for w in warnings if w.get("step") == "pattern_observe"
+               and w.get("reason") == "no bar for observation_date"]
+    assert emitted, "the writer emitted no no-bar skip warning"
+    # Persist EXACTLY what the writer produced, the way run completion does.
+    conn.execute(
+        "INSERT INTO pipeline_runs (started_ts, trigger, data_asof_date,"
+        " action_session_date, state, lease_token, warnings_json)"
+        " VALUES (?, 'manual', ?, ?, 'complete', ?, ?)",
+        ("2026-05-29T20:00:00", "2026-05-29", "2026-05-29", "tok-roundtrip",
+         json.dumps(warnings)))
+    conn.commit()
+    # The consumer must admit the (ticker, session) pair from the REAL entry.
+    assert ("AAA", "2026-05-29") in _observe_skip_index(conn)
+
+
 def test_missing_provenance_treated_as_no_bar(tmp_db_v22, tmp_path):
     # Codex chain #1 Major #2: _bar_for_date must NOT fabricate provider
     # provenance. A matching df row WITH an EMPTY provenance dict has no
