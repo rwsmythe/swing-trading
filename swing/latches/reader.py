@@ -423,6 +423,7 @@ def load_session_structural_verdicts(
     # data does not support. Recorded, then used to disable the FAILED half only;
     # the generous PASS is untouched, because that direction preserves mandates.
     unorderable: set[date] = set()
+    staging: dict[date, list[tuple]] = {}
     for run_id, action, run_ts in runs:
         try:
             session = date.fromisoformat(str(action))
@@ -447,10 +448,32 @@ def load_session_structural_verdicts(
                 run_id, session.isoformat())
             continue
         try:
-            datetime.fromisoformat(str(run_ts))
+            parsed = datetime.fromisoformat(str(run_ts))
         except (TypeError, ValueError):
+            parsed = None
+        staging.setdefault(session, []).append((parsed, int(run_id)))
+
+    # THE ORDER IS DECIDED IN PYTHON, NOT BY THE SQL (Codex R8). The R6 fix
+    # checked only that `run_ts` PARSES and left the ordering lexical -- but
+    # `datetime.fromisoformat` accepts BOTH `2026-07-27T17:00:00` and the space
+    # form `2026-07-27 18:00:00`, and TEXT sorts `' '` (0x20) before `'T'`
+    # (0x54), so the LATER run sorts FIRST. The strict half then reads a stale
+    # failing run as "the latest run" and emits FAILED where the most recent word
+    # was UNVERIFIABLE. Offsets do the same thing: lexical order is not UTC order.
+    #
+    # Sessions whose runs cannot be placed in ONE comparable domain -- an
+    # unparseable stamp, or a naive/aware mix that Python itself refuses to
+    # compare -- are UNORDERABLE, which disables the strict FAILED half only.
+    for session, entries in staging.items():
+        if any(ts is None for ts, _ in entries) or len(
+                {ts.tzinfo is not None for ts, _ in entries}) > 1:
             unorderable.add(session)
-        by_session.setdefault(session, []).append(int(run_id))
+            # Deterministic, and by INSERTION ORDER (id) rather than by a
+            # timestamp we have just declared unusable.
+            ordered = sorted(entries, key=lambda e: e[1])
+        else:
+            ordered = sorted(entries, key=lambda e: (e[0], e[1]))
+        by_session[session] = [rid for _, rid in ordered]
 
     run_ids = [rid for ids in by_session.values() for rid in ids]
     if not run_ids:
@@ -546,12 +569,6 @@ def load_session_structural_verdicts(
                     # UNVERIFIABLE, never FAILED (Codex R6).
                     if is_latest and session not in unorderable:
                         latest_is_verified_fail = True
-                    elif is_latest:
-                        # NAME THE REAL CAUSE (Codex R7). Leaving the default
-                        # `absent` here makes the card say OFF SCREEN about a
-                        # ticker that WAS on screen and WAS evaluated -- only the
-                        # run ordering was unusable.
-                        latest_cause = "unorderable_run_ts"
             # THE CONFLICT IS A DATA-QUALITY SIGNAL (OQ-15): two runs for one
             # session disagreeing on the STRUCTURAL verdict is a fact about the
             # pipeline. It is recorded here and resolved generously below --
@@ -568,10 +585,18 @@ def load_session_structural_verdicts(
                     classification=VERDICT_FAILED,
                     conflicted=conflicted))
             else:
+                # THE CAUSE IS THE SESSION'S, NOT THE LAST ROW'S (Codex R7, R8).
+                # An unorderable session is unverifiable BECAUSE the ordering
+                # could not be established -- regardless of whether the row that
+                # happened to sort last was absent, a sentinel or a failure.
+                # Reading the cause off that row said OFF SCREEN about a ticker
+                # that WAS on screen, which is the falsehood the OFF-SCREEN fix
+                # closed and which kept re-entering through this default.
                 verdicts.append(SessionStructuralVerdict(
                     action_session=session,
                     classification=VERDICT_UNVERIFIABLE,
-                    cause=latest_cause,
+                    cause=("unorderable_run_ts" if session in unorderable
+                           else latest_cause),
                     conflicted=conflicted))
         out[ticker] = tuple(verdicts)
     return out

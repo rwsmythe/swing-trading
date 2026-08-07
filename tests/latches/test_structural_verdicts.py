@@ -758,3 +758,61 @@ def test_a_generous_PASS_survives_an_unorderable_run_ts(db, cfg):
         _run(db, 2, "2026-07-31", "2026-07-30T18:00:00")
     got = _verdicts(db, cfg, start="2026-07-31", end="2026-07-31")
     assert [v.classification for v in got] == ["PASSED"]
+
+
+def test_a_PARSEABLE_but_lexically_inverted_run_ts_pair_is_ordered_correctly(
+        db, cfg):
+    """Codex R8 MAJOR, and a hole in the R6 fix rather than in the original code.
+
+    R6 checked only that `run_ts` PARSES and left the ordering to the SQL, which
+    sorts TEXT. `datetime.fromisoformat` accepts BOTH `...T17:00:00` and the
+    space form `... 18:00:00`, and `' '` (0x20) sorts before `'T'` (0x54) -- so
+    the LATER run sorts FIRST and the strict half reads a stale failing run as
+    "the latest run".
+
+    Here the 17:00 run carries a failing VSTS and the genuinely later 18:00 run
+    does not carry it at all. The most recent word is "we did not check it", so
+    the verdict is UNVERIFIABLE. Pre-fix the lexical order inverted the pair and
+    produced FAILED -- a step toward withdrawal taken on the older evidence.
+    """
+    with db:
+        _run(db, 1, "2026-07-31", "2026-07-30T17:00:00")
+        _candidate(db, 1, "VSTS", "watch", _rows(vcp_fail=("tightness",)))
+        _run(db, 2, "2026-07-31", "2026-07-30 18:00:00")   # LATER, space form
+    got = _verdicts(db, cfg, start="2026-07-31", end="2026-07-31")
+    assert [v.classification for v in got] == ["UNVERIFIABLE"]
+    assert [v.cause for v in got] == ["absent"]
+
+
+def test_a_naive_and_aware_run_ts_MIX_is_unorderable_not_guessed(db, cfg):
+    """The other half of R8's fix. Two stamps can both parse and still not be
+    placeable in ONE comparable domain -- Python itself raises on comparing a
+    naive datetime with an aware one. Guessing an order there is the same defect
+    in a new costume, so the session is UNORDERABLE and the strict half is off.
+    """
+    with db:
+        _run(db, 1, "2026-07-31", "2026-07-30T17:00:00")
+        _candidate(db, 1, "VSTS", "watch", _rows(vcp_fail=("tightness",)))
+        _run(db, 2, "2026-07-31", "2026-07-30T18:00:00+00:00")
+    got = _verdicts(db, cfg, start="2026-07-31", end="2026-07-31")
+    assert [v.classification for v in got] == ["UNVERIFIABLE"]
+    assert [v.cause for v in got] == ["unorderable_run_ts"]
+
+
+def test_an_unorderable_session_names_its_cause_even_when_the_last_row_is_absent(
+        db, cfg):
+    """Codex R8 MINOR. The cause belongs to the SESSION, not to whichever row
+    happened to sort last.
+
+    With a lexically-EARLY malformed stamp carrying the failing row and a valid
+    later run where the ticker is absent, the previous fix left the cause at
+    `absent` -- so the card said OFF SCREEN about a ticker that was on screen.
+    The reason the verdict cannot be determined is the ordering.
+    """
+    with db:
+        _run(db, 1, "2026-07-31", "")                      # malformed, sorts 1st
+        _candidate(db, 1, "VSTS", "watch", _rows(vcp_fail=("tightness",)))
+        _run(db, 2, "2026-07-31", "2026-07-30T18:00:00")   # ticker ABSENT
+    got = _verdicts(db, cfg, start="2026-07-31", end="2026-07-31")
+    assert [v.classification for v in got] == ["UNVERIFIABLE"]
+    assert [v.cause for v in got] == ["unorderable_run_ts"]
