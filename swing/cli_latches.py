@@ -161,7 +161,13 @@ def _family_intents(conn, latch) -> list:
 
 def _observations(conn, cfg, *, since_ts: str, now: datetime):
     """`(observations, health, intents_in_window, unattached, places,
-    superseded_cycles)`.
+    superseded_cycles, latches)`.
+
+    `latches` is returned because the item-3b REPORT-ONLY measurements are
+    facts about LATCHES rather than about intent rows -- the whole point of the
+    OQ-9 framing is that the rule runs and records what it WOULD have done, and
+    that record lives on the derived latch. Re-deriving inside the command to
+    reach it would be a second derivation of the same corpus.
 
     Pure reads only.
 
@@ -357,7 +363,8 @@ def _observations(conn, cfg, *, since_ts: str, now: datetime):
             disposition=disposition,
             framework=_framework_side(place),
             actual=_actual_side(validity)))
-    return observations, health, intents, unattached, places, tuple(superseded)
+    return (observations, health, intents, unattached, places,
+            tuple(superseded), tuple(latches))
 
 
 def _delta_summary(place, validity) -> str:
@@ -443,6 +450,72 @@ def _canonical_since(since: str) -> str:
     return text
 
 
+def _echo_report_only_lapse(cfg, latches) -> None:
+    """THE CALIBRATION INSTRUMENT (item 3b, RD OQ-9), and it is the reason the
+    arc ships at all.
+
+    Report-only exists to replace three guessed constants with measurement, so
+    this section is the measurement -- not a decoration on it. Two numbers:
+
+    THE WOULD-CLEAR COUNT READS `lapse_would_clear_session`, NEVER
+    `lapse_qualifying_session`, and the difference is the whole point. The
+    qualifying session says the conjuncts were satisfied; the would-clear
+    session says a side-effect-free re-run of the ENTIRE ladder -- including the
+    fill pass -- actually resolved to `criteria_lapsed`. A latch whose lapse
+    qualified but which the armed rule would have cleared BY FILL is not a
+    withdrawal, and counting it would inflate the very number that decides
+    whether the rule gets armed.
+
+    THE CONFLICT COUNT is RD's OQ-15 addition: two runs for one action session
+    disagreeing on the STRUCTURAL verdict is a fact about the PIPELINE. It is
+    resolved generously (ambiguity must never advance a withdrawal) but never
+    resolved SILENTLY.
+
+    OQ-3: once the flag is armed, a lapse at N < the horizon creates latches
+    live withdrew and shadow still walks. That divergence is REAL, INTENDED and
+    MEASURED -- it IS the instrument for deciding whether the amendment earns
+    its keep -- and the monthly read must carry it as its own expected-divergence
+    class, never as drift. Under report-only the window does not open at all,
+    which is why the disarmed banner says so explicitly.
+    """
+    armed = bool(getattr(getattr(cfg, "latches", None),
+                         "criteria_lapse_armed", False))
+    sessions = getattr(getattr(cfg, "latches", None),
+                       "criteria_lapse_sessions", None)
+    click.echo("CRITERIA-LAPSE CALIBRATION"
+               + ("" if armed else " (REPORT ONLY -- the rule is NOT armed)"))
+    click.echo("  N in force:".ljust(_W) + str(sessions))
+    would = [x for x in latches if x.lapse_would_clear_session is not None]
+    click.echo("  would-withdraw latches:".ljust(_W) + str(len(would)))
+    for latch in sorted(would, key=lambda x: (x.lapse_would_clear_session,
+                                              x.identity.ticker)):
+        click.echo(f"    {latch.identity.ticker} (candidate "
+                   f"{latch.identity.candidate_id}): would withdraw on "
+                   f"{latch.lapse_would_clear_session.isoformat()}")
+    # The qualifying-but-precedence-LOSING latches are printed SEPARATELY
+    # rather than folded into the count above, because they are real evidence
+    # about the conjuncts that the withdrawal count deliberately excludes.
+    lost = [
+        x for x in latches
+        if x.lapse_qualifying_session is not None
+        and x.lapse_would_clear_session is None
+    ]
+    click.echo("  qualified but LOST on precedence:".ljust(_W) + str(len(lost)))
+    conflicted = [x for x in latches if x.lapse_conflicted_sessions]
+    click.echo("  same-session verdict conflicts:".ljust(_W)
+               + str(sum(len(x.lapse_conflicted_sessions) for x in conflicted)))
+    for latch in conflicted:
+        click.echo(f"    {latch.identity.ticker}: "
+                   + ", ".join(d.isoformat()
+                               for d in latch.lapse_conflicted_sessions))
+    if not armed:
+        click.echo("  NOTHING WAS WITHDRAWN. These are the sessions the rule")
+        click.echo("  WOULD have withdrawn on, recorded so N and both")
+        click.echo("  materiality terms become measured choices rather than")
+        click.echo("  guesses. Live-vs-shadow parity is UNAFFECTED while")
+        click.echo("  disarmed; arming opens that divergence deliberately.")
+
+
 @latches_group.command("parity")
 @click.option("--since", "since", default=None,
               help="Canonical ISO date YYYY-MM-DD; include intents RECORDED "
@@ -460,7 +533,7 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
     conn = connect(cfg.paths.db_path)
     try:
         (observations, health, intents, unattached, places,
-         superseded) = _observations(
+         superseded, latches) = _observations(
             conn, cfg, since_ts=since_ts, now=datetime.now())
     finally:
         conn.close()
@@ -573,6 +646,9 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
     for name in ("pre_telemetry", "never_actionable", "telemetry_unhealthy"):
         click.echo(f"  {name}:".ljust(_W)
                    + str(report.disposition_counts.get(name, 0)))
+
+    click.echo("")
+    _echo_report_only_lapse(cfg, latches)
 
     click.echo("")
     click.echo("AGREEMENT (framework order vs the order actually placed)")

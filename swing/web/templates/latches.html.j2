@@ -64,6 +64,19 @@
           a trade links to this latch's candidate but is dated BEFORE the fire
         </dd>
         {% endif %}
+        {% if row.unverifiable_label %}
+        <dt class="latch-anomaly">Coverage</dt>
+        <dd class="latch-anomaly">{{ row.unverifiable_label }}</dd>
+        {% endif %}
+        {% if row.lapse_countdown %}
+        <dt>Criteria lapse</dt>
+        <dd>
+          {{ row.lapse_countdown }}
+          {%- if row.lapse_detail %}
+          <span class="muted">{{ row.lapse_detail }}</span>
+          {%- endif %}
+        </dd>
+        {% endif %}
         <dt>Bars</dt>
         <dd>
           {% if row.bars_available %}archive through {{ row.bars_through }}

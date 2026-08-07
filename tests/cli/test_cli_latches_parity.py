@@ -439,7 +439,8 @@ def test_a_windowed_read_classifies_from_the_latchs_WHOLE_intent_history(
     _seed_place(cfg, cid, key="p-july", recorded_ts="2026-07-27T09:00:00")
     conn = connect(cfg.paths.db_path)
     try:
-        obs, _health, intents, _unattached, _places, _sc = _observations(
+        (obs, _health, intents, _unattached, _places, _sc,
+         _latches) = _observations(
             conn, apply_overrides(cfg), since_ts="2026-08-01T00:00:00",
             now=NOW)
     finally:
@@ -529,7 +530,7 @@ def test_an_ATTRIBUTED_R_still_prints_the_number_and_its_basis(seeded_db):
     try:
         from swing.cli_latches import _observations
         from swing.config_overrides import apply_overrides
-        obs, health, _i, _u, _p, _sc = _observations(
+        (obs, health, _i, _u, _p, _sc, _latches) = _observations(
             conn, apply_overrides(cfg), since_ts="", now=NOW)
     finally:
         conn.close()
@@ -848,3 +849,130 @@ def test_a_DECLINE_superseding_the_place_moves_it_into_the_earlier_cycles(
     assert "declined:" in r.output
     assert "EARLIER PLACE/VALIDITY CYCLES" in r.output
     assert f"place intent {place}: rejected_by_broker" in r.output
+
+
+# ==========================================================================
+# T7.14 -- the REPORT-ONLY calibration lines (item 3b, RD OQ-9 / OQ-15).
+#
+# NOTE ON THE COMMAND NAME: the item-3 plan calls this surface `swing latches
+# report`. No such command exists -- `parity` is the only one on the group, and
+# it IS the latch measurement read -- so the lines land there. Recorded rather
+# than silently reconciled.
+# ==========================================================================
+def _seed_lapse_corpus(cfg):
+    """TWO latches: one TRUE would-clear, one qualifying-but-precedence-LOSING.
+
+    The loser is the T4.23(a) shape -- a qualifying lapse behind an earlier
+    FILL -- which is the only geometry that separates a would-clear count read
+    off `lapse_would_clear_session` from one read off
+    `lapse_qualifying_session`.
+    """
+    from swing.evaluation.dates import session_offset
+    from datetime import date
+
+    anchor = date(2026, 7, 27)
+    days = [anchor]
+    while len(days) < 6:
+        days.append(session_offset(days[-1], 1))
+    tt = ("TT1_above_150_200", "TT2_150_above_200", "TT3_200_rising",
+          "TT4_50_above_150_200", "TT5_above_50", "TT6_above_52w_low_30pct",
+          "TT7_within_52w_high_25pct", "TT8_rs_rank")
+    vcp = ("adr", "ma_short_rising", "ma_stack_10_20_50", "orderliness",
+           "prior_trend", "proximity_20ma", "pullback", "tightness",
+           "vcp_volume_contraction")
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        for i, d in enumerate(days):
+            conn.execute(
+                "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+                "action_session_date, tickers_evaluated, aplus_count, "
+                "watch_count, skip_count, excluded_count, error_count) "
+                "VALUES (?, ?, ?, ?, 2, 1, 1, 0, 0, 0)",
+                (300 + i, f"{d.isoformat()}T17:30:00", d.isoformat(),
+                 d.isoformat()))
+            for ticker in ("WOULD", "LOSER"):
+                bucket = "aplus" if i == 0 else "watch"
+                cur = conn.execute(
+                    "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+                    "close, pivot, initial_stop, adr_pct, rs_method) VALUES "
+                    "(?, ?, ?, 16.5, 16.90, 13.40, 4.021, 'universe')",
+                    (300 + i, ticker, bucket))
+                cid = int(cur.lastrowid)
+                for name in tt:
+                    conn.execute(
+                        "INSERT INTO candidate_criteria (candidate_id, "
+                        "criterion_name, layer, result) VALUES (?, ?, "
+                        "'trend_template', 'pass')", (cid, name))
+                for name in vcp:
+                    bad = i > 0 and name in ("tightness", "adr", "pullback")
+                    conn.execute(
+                        "INSERT INTO candidate_criteria (candidate_id, "
+                        "criterion_name, layer, result) VALUES (?, ?, 'vcp', ?)",
+                        (cid, name, "fail" if bad else "pass"))
+                conn.execute(
+                    "INSERT INTO candidate_criteria (candidate_id, "
+                    "criterion_name, layer, result) VALUES "
+                    "(?, 'risk_feasibility', 'risk', 'pass')", (cid,))
+        # The LOSER carries a FILL dated before its qualifying lapse, so the
+        # armed rule would clear it by `fill` and it must NOT be counted.
+        conn.execute(
+            "INSERT INTO trades (ticker, entry_date, entry_price, "
+            "initial_shares, initial_stop, current_stop, state, sector, "
+            "industry, trade_origin, pre_trade_locked_at, current_size) VALUES "
+            "(?, ?, 17.00, 5, 13.40, 13.40, 'entered', 's', 'i', 'pipeline_aplus', "
+            "?, 5)", ("LOSER", days[3].isoformat(),
+                      f"{days[3].isoformat()}T09:30:00"))
+    conn.close()
+    return days
+
+
+def test_the_would_clear_line_counts_the_PRECEDENCE_RESOLVED_withdrawals(
+        seeded_db, monkeypatch, tmp_path):
+    """T7.14 -- THE CALIBRATION INSTRUMENT, TESTED AS ONE.
+
+    Discriminator: a CLI reading `lapse_qualifying_session` counts TWO -- the
+    instrument INFLATED on the very number that decides whether the rule gets
+    armed -- while the web card and the conflict line both stay green.
+
+    The loser is listed separately rather than dropped, because it is real
+    evidence about the CONJUNCTS that the withdrawal count deliberately
+    excludes.
+    """
+    import pandas as pd
+
+    cfg, cfg_path = seeded_db
+    days = _seed_lapse_corpus(cfg)
+    closes = [16.50, 16.20, 15.90, 15.60, 15.30, 15.00]
+    frame = pd.DataFrame({
+        "asof_date": [d.isoformat() for d in days],
+        "open": closes, "high": closes, "low": closes, "close": closes,
+    })
+    import swing.data.ohlcv_archive as archive
+    monkeypatch.setattr(archive, "resolve_ohlcv_window",
+                        lambda ticker, **kw: (frame, {"provider": "test"}))
+    r = _run(cfg_path)
+    assert r.exit_code == 0, r.output
+    assert "CRITERIA-LAPSE CALIBRATION" in r.output
+    assert "REPORT ONLY -- the rule is NOT armed" in r.output
+    assert "would-withdraw latches:" in r.output
+    # ONE withdrawal, not two: the filled latch qualified and LOST.
+    would = [ln for ln in r.output.splitlines()
+             if "would-withdraw latches:" in ln]
+    assert would and would[0].strip().endswith("1"), r.output
+    lost = [ln for ln in r.output.splitlines()
+            if "qualified but LOST on precedence:" in ln]
+    assert lost and lost[0].strip().endswith("1"), r.output
+    assert "WOULD" in r.output
+    assert "NOTHING WAS WITHDRAWN" in r.output
+
+
+def test_the_calibration_section_states_the_N_in_force(seeded_db):
+    """N is a deliberate calibration RD says plainly he cannot derive, and
+    changing it rewrites history -- so the read that will be used to RETUNE it
+    must say which N produced its numbers."""
+    cfg, cfg_path = seeded_db
+    _seed(cfg)
+    r = _run(cfg_path)
+    assert r.exit_code == 0, r.output
+    assert "N in force:" in r.output
+    assert "same-session verdict conflicts:" in r.output

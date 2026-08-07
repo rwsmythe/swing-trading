@@ -31,6 +31,7 @@ from swing.latches.constants import (
     ARCHIVE_STATUS_OK,
     CLOSE_PROVENANCE_FUTURE_STAMP,
     CLOSE_PROVENANCE_UNCORROBORATED,
+    DEFAULT_CRITERIA_LAPSE_SESSIONS,
     LATCH_ATTESTED_DISPOSITIONS,
     LATCH_PANEL_LOOKBACK_SESSIONS,
     build_beacon_payload,
@@ -253,6 +254,15 @@ class LatchRowVM:
     # answer he already gave, worded and styled as one.
     attest_correction_available: bool = False
     attested_disposition: str = ""
+    # ===== Item 3b: the criteria-lapse countdown and the UNVERIFIABLE render =
+    # READ from the `Latch`, NEVER recomputed here. Recomputing the streak in
+    # the view would be a SECOND implementation of the resolver -- the drift
+    # class this arc single-sources the A+ gate to avoid -- and the VM cannot
+    # see the PASSED sessions at all, so it could not compute the tail
+    # correctly even if it tried.
+    lapse_countdown: str = ""
+    lapse_detail: str = ""
+    unverifiable_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -692,9 +702,99 @@ def _price_asof_claim(quote, provenance) -> tuple[str, str]:
     return "-", f"close dated on or before {stamp}"
 
 
+def _lapse_countdown(latch: Latch, *, sessions: int) -> str:
+    """The criteria-lapse countdown, on EVERY live latch.
+
+    IT DISCLOSES THE UNCHECKED SESSIONS RATHER THAN IMPLYING ADJACENCY. The bare
+    form "failed 3 of 5" reads as three CONSECUTIVE sessions, when the algorithm
+    skips arbitrarily many UNVERIFIABLE ones in between -- three failures
+    separated by twenty unchecked runs would render identically to three in a
+    row. Making the gaps visible is what stops the countdown itself being a
+    false statement, and it is also the condition under which OQ-17's PAUSE is
+    sound.
+
+    ONCE `k >= N` THERE ARE **TWO** REASONS A LATCH IS STILL LIVE AND THE CARD
+    MUST DISTINGUISH THEM OR IT STATES A FALSEHOOD:
+
+    * the conjuncts REFUSED -> "directional condition NOT MET";
+    * the conjuncts MET and the feature is UNARMED -> "WOULD WITHDRAW on <s>".
+
+    Printing "directional condition NOT MET" in the second case would be a FLAT
+    FALSEHOOD about a condition that DID meet, on the one surface whose entire
+    purpose is to show the operator what the unarmed rule is doing.
+    `directional_evaluable` does NOT disambiguate them -- it says the test COULD
+    run, not that it passed.
+    """
+    if not latch.is_live:
+        return ""
+    k = latch.lapse_failed_count
+    unchecked = latch.lapse_unchecked_count
+    if k >= sessions:
+        if latch.lapse_would_clear_session is not None:
+            return (f"{k} failures; threshold {sessions}; WOULD WITHDRAW on "
+                    f"{latch.lapse_would_clear_session.isoformat()} - REPORT "
+                    "ONLY (not armed)")
+        return (f"{k} failures; threshold {sessions}; directional condition "
+                "NOT MET")
+    base = f"failed {k} of {sessions} checked sessions ({unchecked} unchecked)"
+    if not latch.directional_evaluable:
+        # WITHOUT THIS the card shows a complete failed streak beside a plain
+        # live status while the directional predicate had NO DATA -- implying a
+        # withdrawal is one session away when it is in fact unreachable.
+        return (f"{base}; directional test NOT EVALUABLE "
+                f"({latch.directional_block_reason})")
+    return base
+
+
+def _lapse_detail(latch: Latch) -> str:
+    """The sessions NAMED, and the UNVERIFIABLE causes -- straight off the
+    `Latch`.
+
+    A card that carried only COUNTS could satisfy neither the gap disclosure the
+    PAUSE rule depends on nor the conflict signal OQ-15 requires, without either
+    inventing fields or recomputing the streak in the view."""
+    parts: list[str] = []
+    if latch.lapse_failed_sessions:
+        parts.append("failed: " + ", ".join(
+            d.isoformat() for d in latch.lapse_failed_sessions))
+    if latch.lapse_unverifiable_sessions:
+        parts.append("unchecked: " + ", ".join(
+            f"{d.isoformat()} ({cause})"
+            for d, cause in zip(latch.lapse_unverifiable_sessions,
+                                latch.lapse_unverifiable_causes, strict=False)))
+    if latch.lapse_conflicted_sessions:
+        # OQ-15: a same-session verified-PASS/verified-FAIL conflict is a
+        # DATA-QUALITY signal about the pipeline. Resolved generously, never
+        # silently.
+        parts.append("conflicting verdicts: " + ", ".join(
+            d.isoformat() for d in latch.lapse_conflicted_sessions))
+    return "; ".join(parts)
+
+
+def _unverifiable_label(latch: Latch) -> str:
+    """The off-screen UNVERIFIABLE render (RD's inverted default).
+
+    ONE unchecked session at the TAIL is enough. The claim being withheld is
+    "the framework checked this mandate for the session you are about to
+    trade", and one unchecked session falsifies it.
+
+    It is a RENDER attribute of a LIVE latch, never a terminal state -- the
+    mandate is still live and still fillable, so a terminal would be a false
+    statement. The in-tree precedent is exact: zone escape is an attribute of
+    `armed`, never a clear reason.
+    """
+    if not latch.is_live or latch.lapse_unverifiable_tail <= 0:
+        return ""
+    n = latch.lapse_unverifiable_tail
+    plural = "" if n == 1 else "s"
+    return (f"UNVERIFIABLE - OFF SCREEN: the framework has not checked this "
+            f"mandate for the last {n} evaluated session{plural}")
+
+
 def _build_row(latch: Latch, *, quote, views, provenance=None,
                prepared_order=None, disposition=None,
-               prior_intent_id: str = "") -> LatchRowVM:
+               prior_intent_id: str = "",
+               lapse_sessions: int = DEFAULT_CRITERIA_LAPSE_SESSIONS) -> LatchRowVM:
     """`quote` is `(price, asof_iso)` from the READ-ONLY last-close source, or
     `None`. `provenance` is the `CloseProvenance` for that quote, or `None`.
 
@@ -769,6 +869,9 @@ def _build_row(latch: Latch, *, quote, views, provenance=None,
         attested_disposition=(
             "" if not _attested(disposition)
             else disposition.disposition.removeprefix("attested_")),
+        lapse_countdown=_lapse_countdown(latch, sessions=lapse_sessions),
+        lapse_detail=_lapse_detail(latch),
+        unverifiable_label=_unverifiable_label(latch),
     )
 
 
@@ -956,6 +1059,12 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
                 prepared_order=blocks.get(latch.identity.candidate_id),
                 disposition=dispositions.get(latch.identity.candidate_id),
                 prior_intent_id=priors.get(latch.identity.candidate_id, ""),
+                # THE N IN FORCE, from the config the derivation actually ran
+                # under -- the panel states it so a retroactive change to N is
+                # visible rather than silent (section 3.2.1 ruling 7).
+                lapse_sessions=getattr(
+                    getattr(cfg, "latches", None), "criteria_lapse_sessions",
+                    DEFAULT_CRITERIA_LAPSE_SESSIONS),
             )
 
         rows = [
