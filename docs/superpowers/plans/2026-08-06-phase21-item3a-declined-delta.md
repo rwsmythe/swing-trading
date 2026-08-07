@@ -108,20 +108,37 @@ Sites 2, 5, 7, 8, 10 and 11 are listed **because they need no edit**: an invento
 
 ---
 
-## §5 Deviations from the item-3 plan, and one defect found while building
+## §5 Deviations from the item-3 plan
 
-* **`_close`'s `superseded_session` parameter became `forced`.** The plan kept the old shape. Two mutually exclusive optional arguments (a session and a terminal) is a worse seam than one: R6's branch now passes the WINNER of `declined` vs `superseded` through a single stamping path, which is what makes the ranked comparison the only rule.
-* **A defect the bounding introduces, found and fixed here.** `resolve_execution_outcome_for`'s FORWARD guard recomputes "is this the LATEST place?" — over the FULL intent set. Once `classify_latch` selects its place from the ADMISSIBLE view, a place that is latest **in window** but not latest **overall** (an out-of-bound later place) fails that guard and loses its own fill's vouching, reporting `unknown` for an order that demonstrably filled. Fixed with a `place_view` keyword scoping the GUARD only; `validity` children still come from the full set, or every validity answer on the latch would vanish. `test_the_forward_guard_is_scoped_to_the_SAME_view_the_place_came_from`.
-* **`decision_bounds_for` is a named helper**, not a bound each caller derives. The panel and the monthly report both call it — the D6 two-implementations-of-one-rule class this phase has spent itself closing.
+* **`_close`'s `superseded_session` parameter became `forced`.** Two mutually exclusive optional arguments (a session and a terminal) is a worse seam than one: R6's branch passes the WINNER of `declined` vs `superseded` through a single stamping path, which is what makes the ranked comparison the only rule.
+* **`decision_bounds_for` is a named helper** returning `(lower, upper, decline_upper)`, not a bound each caller derives. The panel and the monthly report both call it — the D6 two-implementations-of-one-rule class this phase has spent itself closing. The bound is **per kind**: PLACES reach through the nominal window (matching the lifecycle, so a late-arriving terminal cannot erase a placement already logged), DECLINES are capped at the actual terminal (a decision recorded after the mandate ended cannot be about it).
+* **A defect the bounding introduces, found and fixed.** `resolve_execution_outcome_for`'s FORWARD guard recomputed "is this the LATEST place?" over the FULL intent set; once the place is selected from the ADMISSIBLE view, a place latest-in-view but not latest-in-raw fails that guard and loses its own fill's vouching. Fixed with a `place_view` keyword scoping the GUARD only; validity children still come from the full set.
 
-## §6 Flagged, not fixed (outside 3a's scope)
+## §6 THE ONE REVERSAL — a recording-surface widening that was built, then removed
 
-* **`swing/cli_latches.py`'s `current_cycle_place(latch_intents)`** is UNBOUNDED. It is candidate-scoped by its own read, so no cross-latch contamination is possible, but a place recorded after a latch's terminal still drives the report's earlier-cycle disclosure. Pre-existing behaviour; not a `declined` regression. Reported rather than fixed.
-* **The item-3 plan is on branch `criteria-lapsed-plan`, not on `main`**, contrary to the dispatch's premise. Read from the worktree; no impediment.
+**An earlier cut of this arc widened `rederive_prepared_order` so a `declined` latch stayed amendable.** The motivation was real: a decline now terminates, so the operator could end a mandate and never take it back, which sits badly beside `build_idempotency_key`'s `prior_intent_id` (present so a CORRECTION keys differently from a REPLAY) and beside `governing_decision` resolving the family by RECENCY.
 
-## §7 The two named cross-arc couplings (restated per CHARC)
+**It was REVERTED, and the reason is structural rather than a detail.** `build_latch_panel_vm` builds prepared-order blocks from LIVE latches alone, so a declined card renders **no decision form at all**. Widening only the POST-time re-derivation therefore created a path reachable **only by replaying a form rendered before the decline** — a stale-form hole, not a corrective path. And a decline can MASK a later fill or invalidation under earliest-date-wins, so erasing it with a late `place` lets the masked terminal become authoritative and persists a placement against a mandate already filled or dead.
 
-* **Item 4** edits `swing/latches/orders.py` — the same file as OQ-1's `_CRITICAL_STALE_CLEAR_REASONS`, which 3a widens. Different line, but the same file lands twice.
-* **Item 5** moves trade 19's `entry_date` 07-23 -> 07-31, which moves item 3's FTRE acceptance fixture. **3a does not use that fixture** — its acceptance cases are the VSTS geometry plus a synthetic FTRE latch in the reader tests whose entry dates it owns — so the coupling does not bite here. It still binds 3b.
+**The affordance is a RENDER-plus-ROUTE change and belongs with wave item 4**, which already owns the ruled principle: *recording an operator action and alarming on a detected problem are different functions; the affordance to record must not be gated on the alarm that detects.* Building half of it here bought a hole instead of a path.
+
+**The cost is PINNED, not papered over:** `test_a_DECLINED_latch_REFUSES_a_further_decision_and_that_cost_is_pinned` (route) and `test_a_TERMINATED_latch_is_closed_to_the_recording_surface` (re-derivation) both assert the refusal and name what flips when the affordance ships.
+
+## §7 Flagged, not fixed — the residual cluster
+
+Each is recorded in the code where it lives, with its trigger and its named fix.
+
+| # | What | Why not here |
+|---|---|---|
+| **A** | **The correction affordance** — a declined latch cannot be amended through any surface | render + route; wave item 4 owns the ruled principle |
+| **B** | **A one-session-stale form can backdate a decline** over a later real terminal, orphaning a fill (the route's grace is `sessions_behind > 1`) | a DECISION-SEMANTICS question: `action_session_date` says which mandate a decision is ABOUT, `recorded_ts` when it was made. Choosing between them, or dropping the grace for decision kinds, moves shipped semantics — RD's to rule |
+| **C** | **`superseded > horizon` is not implemented** on the expiry-session tie (branch (b) is never reached) | **PRE-EXISTING** — the `live_probe is None` selector has no changed lines in this arc. Fixing it moves a shipped terminal AND an alarm severity |
+| **D** | **The derivation reads decisions globally; the classifiers re-read per latch** — a persistently malformed row for one candidate can leave another latch armed-but-classified-declined | corrupt-ledger-only (a row failing the validator it was written through). Fix = single-source the decision evidence through `LatchDerivation`, restructuring its contract |
+| **E** | **`swing/cli_latches.py`'s `current_cycle_place` for DISPLACED cycles** and **`classify_latch` retaining `governing_place_intent_id` when a decline governs** | **PRE-EXISTING**, verified on `main`: it already used `governing_intent(intents, "place")` while the CLI already used `current_cycle_place`. This arc aligned the POPULATION, never the rule |
+
+## §8 The two named cross-arc couplings (restated per CHARC)
+
+* **Item 4** edits `swing/latches/orders.py` — the same file as OQ-1's `_CRITICAL_STALE_CLEAR_REASONS`, which 3a widens. Different line, same file twice. **And item 4 now also inherits residual A**, the correction affordance.
+* **Item 5** moves trade 19's `entry_date` 07-23 -> 07-31, which moves item 3's FTRE acceptance fixture. **3a does not use that fixture** — its cases are the VSTS geometry plus synthetic FTRE latches whose dates the tests own — so the coupling does not bite here. It still binds 3b.
 
 Serial ordering covers both; the integration step is where they get CHECKED.
