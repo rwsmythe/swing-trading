@@ -60,6 +60,18 @@ class FireRow:
     action_session_date: str
     run_ts: str
     pipeline_run_id: int | None = None
+    # The FIRE's OWN `candidates.adr_pct` (item 3b) -- a PER-ROW value, so
+    # reading it here carries no gotcha-#30 exposure the way an
+    # `evaluation_runs` stamp would. It scales the `criteria_lapsed`
+    # materiality floor.
+    #
+    # RAW, NOT COERCED, exactly like `pivot`/`initial_stop` above and for the
+    # identical reason: SQLite will hold TEXT in a REAL column, and an eager
+    # float() at the reader would raise and DROP the whole fire, contradicting
+    # the reader's degrade-don't-drop contract. An unusable value makes the
+    # latch DIRECTIONALLY UNVERIFIABLE -- which never clears anything -- rather
+    # than substituting a constant.
+    adr_pct: float | None = None
 
     def __post_init__(self) -> None:
         _require_positive_int("candidate_id", self.candidate_id)
@@ -78,6 +90,57 @@ class FireRow:
     @property
     def sort_key(self) -> tuple[str, str, int]:
         return (self.action_session_date, self.run_ts, self.candidate_id)
+
+
+# The three ways one action session can answer "did this name still pass the A+
+# STRUCTURAL gate?". Named here rather than as bare strings so the resolver, the
+# reader and the render cannot drift on the spelling.
+VERDICT_PASSED = "PASSED"
+VERDICT_FAILED = "FAILED"
+VERDICT_UNVERIFIABLE = "UNVERIFIABLE"
+STRUCTURAL_VERDICTS = frozenset({
+    VERDICT_PASSED, VERDICT_FAILED, VERDICT_UNVERIFIABLE})
+# Why a session could not be verified. One CLASS to the operator ("we could not
+# check this"), because splitting them on the card would imply a distinction he
+# cannot act on -- the cause belongs in the detail line.
+UNVERIFIABLE_CAUSES = frozenset({
+    "absent", "sentinel_row", "incomplete_roster", "malformed_result"})
+
+
+@dataclass(frozen=True)
+class SessionStructuralVerdict:
+    """What ONE evaluated action session says about ONE ticker's A+ structure.
+
+    `conflicted` is RD's OQ-15 addition and is NOT a tiebreak record: two runs
+    for one session disagreeing on the STRUCTURAL verdict is a fact about the
+    pipeline, not an ambiguity to be quietly resolved. It is surfaced and
+    counted; the resolution itself is generous (a session in which the
+    framework at any point judged the setup sound is not evidence of decay).
+    """
+
+    action_session: date
+    classification: str
+    cause: str | None = None
+    conflicted: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.action_session, date):
+            raise ValueError("action_session must be a date")
+        if self.classification not in STRUCTURAL_VERDICTS:
+            raise ValueError(
+                f"classification must be in {sorted(STRUCTURAL_VERDICTS)}; "
+                f"got {self.classification!r}")
+        if self.cause is not None and self.cause not in UNVERIFIABLE_CAUSES:
+            raise ValueError(
+                f"cause must be None or in {sorted(UNVERIFIABLE_CAUSES)}; "
+                f"got {self.cause!r}")
+        # A cause explains an UNVERIFIABLE and nothing else; a verified verdict
+        # carrying one would let the detail line state a reason for a session
+        # the framework actually checked.
+        if (self.classification == VERDICT_UNVERIFIABLE) != (self.cause is not None):
+            raise ValueError(
+                "a cause is required for UNVERIFIABLE and forbidden otherwise; "
+                f"got {self.classification!r}/{self.cause!r}")
 
 
 @dataclass(frozen=True)

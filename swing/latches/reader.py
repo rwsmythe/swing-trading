@@ -24,12 +24,27 @@ from swing.evaluation.dates import (
     is_trading_session,
     session_offset,
 )
+from swing.evaluation.scoring import (
+    EXPECTED_TT_CRITERIA,
+    EXPECTED_VCP_CRITERIA,
+    StructuralInputs,
+    structural_gate_passes,
+)
 from swing.latches.constants import (
     ARCHIVE_STATUS_OK,
     ARCHIVE_STATUS_UNAVAILABLE,
     latch_horizon_sessions,
 )
-from swing.latches.models import DailyBar, EntryRecord, FireRow, LatchDerivation
+from swing.latches.models import (
+    VERDICT_FAILED,
+    VERDICT_PASSED,
+    VERDICT_UNVERIFIABLE,
+    DailyBar,
+    EntryRecord,
+    FireRow,
+    LatchDerivation,
+    SessionStructuralVerdict,
+)
 from swing.latches.service import derive_latches
 
 log = logging.getLogger(__name__)
@@ -39,7 +54,7 @@ log = logging.getLogger(__name__)
 # DISPLAY lookback is applied in the view model instead.
 _FIRE_SQL = """
     SELECT c.id, c.evaluation_run_id, c.ticker, c.pivot, c.initial_stop,
-           e.action_session_date, e.run_ts, p.id
+           e.action_session_date, e.run_ts, p.id, c.adr_pct
     FROM candidates c
     JOIN evaluation_runs e ON e.id = c.evaluation_run_id
     LEFT JOIN pipeline_runs p ON p.evaluation_run_id = e.id
@@ -76,6 +91,10 @@ def load_fire_rows(conn: sqlite3.Connection) -> tuple[FireRow, ...]:
                 action_session_date="" if row[5] is None else str(row[5]),
                 run_ts="" if row[6] is None else str(row[6]),
                 pipeline_run_id=None if row[7] is None else int(row[7]),
+                # RAW for the same reason as `pivot`/`initial_stop` above: an
+                # eager float() would raise on a TEXT-in-REAL value and drop
+                # the whole fire.
+                adr_pct=row[8],
             ))
         except (TypeError, ValueError) as exc:
             # Only a STRUCTURALLY impossible row lands here (a non-int id, a
@@ -237,6 +256,233 @@ def load_decision_intents(conn: sqlite3.Connection, candidate_ids) -> dict:
         family = tuple(r for r in rows if r.intent_kind in ("place", "decline"))
         if family:
             out[candidate_id] = family
+    return out
+
+
+def structural_inputs_from_rows(rows) -> tuple[StructuralInputs | None, str | None]:
+    """Reduce one candidate's `candidate_criteria` rows for the A+ gate.
+
+    Returns `(inputs, cause)` -- exactly one of which is populated. The plan
+    specified `StructuralInputs | None`; the CAUSE is returned alongside it
+    because the card's detail line has to explain an UNVERIFIABLE session by
+    cause, and deriving that anywhere else would be a SECOND roster check.
+
+    `rows` are `(criterion_name, layer, result)` triples.
+
+    THE ROSTER IS VALIDATED EXPLICITLY BECAUSE THE SCHEMA DOES NOT. The PK is
+    `(candidate_id, criterion_name)` and each ROW's `layer`/`result` is
+    CHECK-constrained, but NO constraint requires the roster to be COMPLETE --
+    a candidate carrying three vcp rows is representable. That matters in both
+    directions:
+
+      * a missing vcp FAILURE yields `vcp_fail_count == 0` and a false PASS;
+      * missing TT PASSES drop the count below `min_passes` and yield a false
+        FAILURE -- and a false failure, paired with the price conjunct, can
+        clear a LIVE mandate.
+
+    So an incomplete or unexpected roster returns UNVERIFIABLE, which never
+    clears anything. Grounded rather than defensive: all 11,951 evaluated rows
+    on the live DB carry one identical 18-criterion roster, so this fires only
+    on genuinely malformed data.
+
+    THE RISK LAYER IS DROPPED HERE (L4) -- `risk_feasibility` is a fact about
+    the operator's capital, not about the setup's structure.
+    """
+    tt_names: dict[str, str] = {}
+    vcp_names: dict[str, str] = {}
+    saw_any = False
+    for row in rows or ():
+        saw_any = True
+        name, layer, result = str(row[0]), str(row[1]), str(row[2])
+        if result not in ("pass", "fail", "na"):
+            return None, "malformed_result"
+        if layer == "trend_template":
+            tt_names[name] = result
+        elif layer == "vcp":
+            vcp_names[name] = result
+        # `risk` is deliberately ignored, not counted.
+    if not saw_any:
+        # An `excluded` (held-position) or `error` sentinel: the evaluator
+        # synthesises those with `criteria=()`, so zero rows means the ticker
+        # was never structurally evaluated. NOT a failure -- counting it as one
+        # would let the framework withdraw a mandate BECAUSE the operator acted
+        # on it.
+        return None, "sentinel_row"
+    if (set(tt_names) != EXPECTED_TT_CRITERIA
+            or set(vcp_names) != EXPECTED_VCP_CRITERIA):
+        return None, "incomplete_roster"
+    return StructuralInputs(
+        # `na` IS A NON-PASS ON BOTH LAYERS, and the TT half is the one a
+        # reader forgets: the shipped gate counts `tt_passes` as `result ==
+        # "pass"`, so `na` reduces it, while `vcp_fail_count` counts `fail` AND
+        # `na`. An adapter treating TT `na` as neutral can falsely PASS.
+        tt_pass_count=sum(1 for r in tt_names.values() if r == "pass"),
+        tt_failed_names=tuple(
+            sorted(n for n, r in tt_names.items() if r != "pass")),
+        vcp_fail_count=sum(
+            1 for r in vcp_names.values() if r in ("fail", "na")),
+    ), None
+
+
+def load_session_structural_verdicts(
+    conn: sqlite3.Connection, cfg, *, tickers, start: date, end: date,
+) -> dict[str, tuple[SessionStructuralVerdict, ...]]:
+    """Per TICKER, one verdict per EVALUATED action session in `[start, end]`.
+
+    PER-TICKER, NOT PER-LATCH, on purpose: two latches on one ticker with
+    different anchors slice the SAME sequence by their own windows, so this
+    reader never needs to know about anchors and cannot disagree with itself
+    between two latches.
+
+    THE DOMAIN IS EVALUATED SESSIONS, NOT CALENDAR SESSIONS, and the live
+    cadence proves the distinction is real (there is no evaluation run for
+    2026-08-05 at all). A trading session with NO run is OUTSIDE the domain
+    entirely -- the framework was not running, which is a fact about the
+    pipeline, not about the setup. A session WITH a run but no verifiable
+    verdict for this ticker IS in the domain and IS unverifiable.
+
+    THE TWO PREDICATES ARE DELIBERATELY ASYMMETRIC, and the asymmetry is the
+    whole point. A session can carry several runs -- an ad-hoc `swing eval`
+    after the nightly, or a run in which the ticker went off-screen. Both
+    obvious tie-breaks are unsafe in one direction:
+
+      * "the latest ROW wins" -- a later SENTINEL erases an earlier real PASS,
+        so the streak fails to reset and the latch moves toward a clear on the
+        strength of a run that never looked at it;
+      * "the latest VERIFIABLE row wins" -- a FAILED verdict survives a later
+        run that could NOT check the ticker, which is asserting from evidence
+        the most recent word contradicts.
+
+    So the rule is split by which direction each answer moves the latch:
+
+      PASSED  -- generous. ANY verifiable pass in the session RESETS the
+                 streak, because resetting keeps a mandate ALIVE and a live
+                 mandate is the conservative outcome.
+      FAILED  -- strict. The LATEST RUN for that session must itself carry a
+                 verifiable FAILING row, because incrementing moves the latch
+                 toward withdrawal, and withdrawal is what can destroy a trade.
+      anything else -- UNVERIFIABLE.
+
+    AND THE STRICT HALF KEYS ON THE LATEST *RUN*, NOT THE LATEST *ROW*. When a
+    09:00 run records a verifiable failure and an 18:00 run does not carry the
+    ticker AT ALL, the latest ROW belonging to the ticker is still the 09:00
+    failure -- so a row-keyed rule calls the session FAILED though the most
+    recent run never checked it. That is the ordinary off-screen case, not an
+    edge case.
+
+    RUNS ARE ORDERED BY `(run_ts, evaluation_run_id)`, never by
+    `(run_ts, candidate_id)`: the strict half asks which RUN was latest even
+    when that run has NO row for this ticker, and such a run has no candidate
+    id with which to break a `run_ts` tie.
+
+    PASSED AND FAILED OVERLAP -- a session with an earlier verified PASS and a
+    later verified FAIL satisfies both -- so the precedence is STATED rather
+    than left to the order the rules happen to be written in. PASSED WINS
+    (OQ-15: ambiguity must never advance a withdrawal), and the conflict is
+    recorded on the verdict rather than silently absorbed.
+    """
+    values = sorted({str(t) for t in (tickers or ())})
+    if not values:
+        # The empty `IN ()` gotcha, and the shipped `load_entry_records` /
+        # `load_last_closes` convention.
+        return {}
+    runs = conn.execute(
+        "SELECT id, action_session_date, run_ts FROM evaluation_runs "
+        "WHERE action_session_date >= ? AND action_session_date <= ? "
+        "ORDER BY action_session_date, run_ts, id",
+        (start.isoformat(), end.isoformat()),
+    ).fetchall()
+    if not runs:
+        return {}
+    # session -> the run ids that produced it, in (run_ts, id) order.
+    by_session: dict[date, list[int]] = {}
+    for run_id, action, _run_ts in runs:
+        try:
+            session = date.fromisoformat(str(action))
+        except (TypeError, ValueError):
+            log.warning(
+                "latch reader: evaluation run %r has a malformed "
+                "action_session_date %r; it is not an evaluated session",
+                run_id, action)
+            continue
+        by_session.setdefault(session, []).append(int(run_id))
+
+    run_ids = [rid for ids in by_session.values() for rid in ids]
+    if not run_ids:
+        return {}
+    rid_ph = ",".join("?" * len(run_ids))
+    tick_ph = ",".join("?" * len(values))
+    rows = conn.execute(
+        f"SELECT id, evaluation_run_id, ticker FROM candidates "
+        f"WHERE evaluation_run_id IN ({rid_ph}) AND ticker IN ({tick_ph})",
+        [*run_ids, *values],
+    ).fetchall()
+    candidate_by_run_ticker = {
+        (int(r[1]), str(r[2])): int(r[0]) for r in rows}
+    criteria_by_candidate: dict[int, list[tuple]] = {}
+    cids = sorted(candidate_by_run_ticker.values())
+    for chunk_start in range(0, len(cids), 500):
+        chunk = cids[chunk_start:chunk_start + 500]
+        ph = ",".join("?" * len(chunk))
+        for cid, name, layer, result in conn.execute(
+            f"SELECT candidate_id, criterion_name, layer, result "
+            f"FROM candidate_criteria WHERE candidate_id IN ({ph})", chunk,
+        ).fetchall():
+            criteria_by_candidate.setdefault(int(cid), []).append(
+                (name, layer, result))
+
+    out: dict[str, tuple[SessionStructuralVerdict, ...]] = {}
+    for ticker in values:
+        verdicts: list[SessionStructuralVerdict] = []
+        for session in sorted(by_session):
+            run_ids_for_session = by_session[session]
+            saw_pass = False
+            saw_verified_fail = False
+            latest_cause = "absent"
+            latest_is_verified_fail = False
+            for position, run_id in enumerate(run_ids_for_session):
+                is_latest = position == len(run_ids_for_session) - 1
+                cid = candidate_by_run_ticker.get((run_id, ticker))
+                if cid is None:
+                    if is_latest:
+                        latest_cause = "absent"
+                    continue
+                inputs, cause = structural_inputs_from_rows(
+                    criteria_by_candidate.get(cid, ()))
+                if inputs is None:
+                    if is_latest:
+                        latest_cause = cause or "sentinel_row"
+                    continue
+                if structural_gate_passes(inputs, cfg):
+                    saw_pass = True
+                    if is_latest:
+                        latest_is_verified_fail = False
+                else:
+                    saw_verified_fail = True
+                    if is_latest:
+                        latest_is_verified_fail = True
+            # THE CONFLICT IS A DATA-QUALITY SIGNAL (OQ-15): two runs for one
+            # session disagreeing on the STRUCTURAL verdict is a fact about the
+            # pipeline. It is recorded here and resolved generously below --
+            # never resolved silently.
+            conflicted = saw_pass and saw_verified_fail
+            if saw_pass:
+                verdicts.append(SessionStructuralVerdict(
+                    action_session=session,
+                    classification=VERDICT_PASSED,
+                    conflicted=conflicted))
+            elif latest_is_verified_fail:
+                verdicts.append(SessionStructuralVerdict(
+                    action_session=session,
+                    classification=VERDICT_FAILED,
+                    conflicted=conflicted))
+            else:
+                verdicts.append(SessionStructuralVerdict(
+                    action_session=session,
+                    classification=VERDICT_UNVERIFIABLE,
+                    cause=latest_cause,
+                    conflicted=conflicted))
+        out[ticker] = tuple(verdicts)
     return out
 
 
