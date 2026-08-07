@@ -41,6 +41,7 @@ from swing.latches.constants import (
     LATCH_BROKER_ORDER_ID_KINDS,
     LATCH_DISPOSITIONS,
     R_BUCKETS,
+    UNATTRIBUTABLE_DISPOSITIONS,
 )
 from swing.latches.order_intent import canonical_duration
 from swing.latches.reader import build_latch_derivation
@@ -501,13 +502,23 @@ def _echo_report_only_lapse(cfg, latches) -> None:
         and x.lapse_would_clear_session is None
     ]
     click.echo("  qualified but LOST on precedence:".ljust(_W) + str(len(lost)))
-    conflicted = [x for x in latches if x.lapse_conflicted_sessions]
+    # COUNTED AS UNIQUE (ticker, session) PAIRS (Codex R1 + auto-review). A
+    # conflict is a fact about the PIPELINE -- two runs for one action session
+    # disagreeing about one ticker's structure -- not a fact about a latch. The
+    # lapse analysis deliberately scans PAST a latch's actual terminal, so an old
+    # cleared latch and its successor on the same ticker carry OVERLAPPING
+    # analysis windows and both list the same session. Summing the tuple lengths
+    # reported two pipeline conflicts where one occurred, and printed the date
+    # twice -- inflating the data-quality signal OQ-15 exists to surface.
+    by_ticker: dict[str, set] = {}
+    for latch in latches:
+        for session in latch.lapse_conflicted_sessions:
+            by_ticker.setdefault(latch.identity.ticker, set()).add(session)
     click.echo("  same-session verdict conflicts:".ljust(_W)
-               + str(sum(len(x.lapse_conflicted_sessions) for x in conflicted)))
-    for latch in conflicted:
-        click.echo(f"    {latch.identity.ticker}: "
-                   + ", ".join(d.isoformat()
-                               for d in latch.lapse_conflicted_sessions))
+               + str(sum(len(v) for v in by_ticker.values())))
+    for ticker in sorted(by_ticker):
+        click.echo(f"    {ticker}: "
+                   + ", ".join(d.isoformat() for d in sorted(by_ticker[ticker])))
     if not armed:
         click.echo("  NOTHING WAS WITHDRAWN. These are the sessions the rule")
         click.echo("  WOULD have withdrawn on, recorded so N and both")
@@ -643,7 +654,12 @@ def parity_cmd(ctx: click.Context, since: str | None) -> None:
 
     click.echo("")
     click.echo("EXCLUSIONS (unattributable -- not scored against his judgment)")
-    for name in ("pre_telemetry", "never_actionable", "telemetry_unhealthy"):
+    # ITERATED OFF THE DERIVED SET, NOT A LITERAL (Codex R1 + auto-review). The
+    # literal said three while `UNATTRIBUTABLE_DISPOSITIONS` became four, so the
+    # R-bucket total counted a `framework_withdrawn` observation into
+    # `unattributable_r` while the breakdown that claims to EXPLAIN that total
+    # omitted the reason for it.
+    for name in sorted(UNATTRIBUTABLE_DISPOSITIONS):
         click.echo(f"  {name}:".ljust(_W)
                    + str(report.disposition_counts.get(name, 0)))
 

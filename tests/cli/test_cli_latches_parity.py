@@ -976,3 +976,73 @@ def test_the_calibration_section_states_the_N_in_force(seeded_db):
     assert r.exit_code == 0, r.output
     assert "N in force:" in r.output
     assert "same-session verdict conflicts:" in r.output
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 MINOR + auto-review MINOR -- two CLI counting/roster defects
+# ---------------------------------------------------------------------------
+def test_the_EXCLUSIONS_breakdown_covers_EVERY_unattributable_disposition(
+        seeded_db):
+    """Both reviewers, independently. The section is titled "unattributable"
+    and enumerated a THREE-VALUE LITERAL; `UNATTRIBUTABLE_DISPOSITIONS` became
+    four when item 3b added `framework_withdrawn`.
+
+    So the R-bucket total counts a withdrawal into `unattributable_r` while the
+    breakdown that claims to explain that total omits the reason for it -- a
+    read whose whole job is telling the operator WHY observations were excluded.
+
+    Pinned against the DERIVED set rather than a widened literal, which is the
+    only version of this test that survives the next disposition.
+    """
+    from swing.latches.constants import UNATTRIBUTABLE_DISPOSITIONS
+    cfg, cfg_path = seeded_db
+    _seed(cfg)
+    r = _run(cfg_path)
+    assert r.exit_code == 0, r.output
+    section = r.output.split("EXCLUSIONS (unattributable", 1)[1]
+    for name in sorted(UNATTRIBUTABLE_DISPOSITIONS):
+        assert f"  {name}:" in section, (name, section)
+
+
+def test_one_pipeline_conflict_is_counted_ONCE_across_overlapping_latches(
+        capsys):
+    """Codex R1 MINOR + auto-review MINOR. A same-session verdict conflict is a
+    fact about the PIPELINE -- two runs for one action session disagreeing about
+    one ticker's structure. It is not a fact about a latch.
+
+    But the lapse analysis deliberately scans PAST a latch's actual terminal, so
+    an old cleared latch and its successor on the same ticker carry OVERLAPPING
+    analysis windows and both list the same conflicted session. Summing the
+    tuple lengths reported TWO pipeline conflicts where one occurred, and
+    printed the same date twice under the same ticker -- inflating a data-quality
+    signal RD required to be surfaced accurately.
+    """
+    from datetime import date
+
+    from swing.cli_latches import _echo_report_only_lapse
+    from swing.config import LatchesConfig
+    from swing.latches.identity import LatchIdentity
+    from swing.latches.models import Latch
+
+    shared = date(2026, 7, 30)
+
+    def _latch(cid):
+        return Latch(
+            identity=LatchIdentity(
+                candidate_id=cid, evaluation_run_id=126, ticker="VSTS",
+                detection_date="2026-07-27", pipeline_run_id=140),
+            latched_pivot=16.90, latched_initial_stop=13.40, zone_cap=17.4070,
+            anchor=date(2026, 7, 27), horizon_expiry=date(2026, 9, 8),
+            sessions_elapsed=5, sessions_to_horizon=25, state="armed",
+            lapse_conflicted_sessions=(shared,))
+
+    class _Cfg:
+        latches = LatchesConfig()
+
+    _echo_report_only_lapse(_Cfg(), [_latch(8851), _latch(8852)])
+    out = capsys.readouterr().out
+    line = [ln for ln in out.splitlines()
+            if "same-session verdict conflicts:" in ln]
+    assert line and line[0].strip().endswith("1"), out
+    # And the date is printed ONCE, not once per latch.
+    assert out.count("2026-07-30") == 1, out

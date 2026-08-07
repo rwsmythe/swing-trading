@@ -544,3 +544,41 @@ def test_the_shipped_tracked_config_leaves_the_rule_DISARMED(cfg):
     withdraws nothing until someone deliberately arms it.
     """
     assert cfg.latches.criteria_lapse_armed is False
+
+
+def test_the_run_dimension_is_CHUNKED_so_a_long_history_cannot_overflow(db, cfg):
+    """Codex R1. `run_ids` is UNBOUNDED historical data -- one entry per
+    evaluation run since the earliest retained A+ fire or archive bar, and the
+    fire loader deliberately never truncates ("ALL A+ fires are loaded"). A bare
+    `IN` over it eventually raises `sqlite3.OperationalError: too many SQL
+    variables`, and because the panel's outer handler degrades on ANY exception,
+    that takes out EVERY latch at once rather than one row. The criteria query in
+    the same function was already chunked; this one was not.
+
+    THE LIMIT IS LOWERED RATHER THAN THE FIXTURE ENLARGED, and that is what makes
+    the test DISCRIMINATE. This box's SQLite allows 32766 host parameters, so a
+    1200-run fixture passes with or without the fix and would have pinned
+    nothing. `setlimit` puts the ceiling BELOW the fixture and ABOVE the 500-row
+    chunk, so the assertion is exactly "the query is chunked": pre-fix it raises,
+    post-fix it does not.
+    """
+    import sqlite3
+    from datetime import timedelta
+    start = date(2026, 1, 5)
+    with db:
+        for i in range(1200):
+            db.execute(
+                "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+                "action_session_date, tickers_evaluated, aplus_count, "
+                "watch_count, skip_count, excluded_count, error_count) "
+                "VALUES (?, ?, ?, ?, 1, 0, 1, 0, 0, 0)",
+                (i + 1, f"2026-01-05T{i % 24:02d}:{i % 60:02d}:00", "2026-01-02",
+                 (start + timedelta(days=i % 5)).isoformat()))
+    db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 600)
+    try:
+        got = load_session_structural_verdicts(
+            db, cfg, tickers=["TST"], start=start,
+            end=start + timedelta(days=10))
+    finally:
+        db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 32766)
+    assert set(got) == {"TST"}

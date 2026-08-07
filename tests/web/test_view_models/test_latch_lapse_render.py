@@ -354,3 +354,41 @@ def test_an_over_threshold_streak_that_was_NEVER_EVALUABLE_does_not_claim_NOT_ME
     assert "NOT MET" not in got
     assert "NOT EVALUABLE (archive unavailable)" in got
     assert "5 failures; threshold 5" in got
+
+
+def test_the_UNVERIFIABLE_banner_does_not_claim_OFF_SCREEN_for_other_causes():
+    """Codex R1 MINOR. The tail count is cause-agnostic; the banner was not --
+    it hard-coded "OFF SCREEN" for all four causes.
+
+    Only `absent` means off screen. A `sentinel_row` ticker WAS on screen (the
+    evaluator synthesises those for a held position or an error), and
+    `incomplete_roster` / `malformed_result` mean it was on screen with data the
+    framework would not trust. Saying OFF SCREEN there states a false reason on
+    the card AND contradicts the detail line directly beneath it, which names
+    the real cause.
+    """
+    absent = _latch(
+        lapse_unverifiable_sessions=(D[3],),
+        lapse_unverifiable_causes=("absent",),
+        lapse_unchecked_count=1, lapse_unverifiable_tail=1)
+    assert "OFF SCREEN" in _unverifiable_label(absent)
+
+    sentinel = _latch(
+        lapse_unverifiable_sessions=(D[3],),
+        lapse_unverifiable_causes=("sentinel_row",),
+        lapse_unchecked_count=1, lapse_unverifiable_tail=1)
+    got = _unverifiable_label(sentinel)
+    assert got != ""
+    assert "OFF SCREEN" not in got
+    assert "sentinel_row" in got
+    assert "last 1 evaluated session" in got
+
+    # A MIXED tail is not off-screen either: one cause that is not `absent` is
+    # enough to make the blanket claim false.
+    mixed = _latch(
+        lapse_unverifiable_sessions=(D[2], D[3]),
+        lapse_unverifiable_causes=("absent", "incomplete_roster"),
+        lapse_unchecked_count=2, lapse_unverifiable_tail=2)
+    got_mixed = _unverifiable_label(mixed)
+    assert "OFF SCREEN" not in got_mixed
+    assert "incomplete_roster" in got_mixed

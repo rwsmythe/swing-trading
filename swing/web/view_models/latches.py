@@ -819,8 +819,23 @@ def _unverifiable_label(latch: Latch) -> str:
         return ""
     n = latch.lapse_unverifiable_tail
     plural = "" if n == 1 else "s"
-    return (f"UNVERIFIABLE - OFF SCREEN: the framework has not checked this "
-            f"mandate for the last {n} evaluated session{plural}")
+    tail = (f"the framework has not checked this mandate for the last {n} "
+            f"evaluated session{plural}")
+    # THE BANNER MUST NOT NAME A CAUSE IT DOES NOT HAVE (Codex R1 MINOR). The
+    # tail COUNT is cause-agnostic; "OFF SCREEN" is not. Only `absent` means off
+    # screen -- a `sentinel_row` ticker WAS on screen (the evaluator synthesises
+    # those for a held position or an error) and `incomplete_roster` /
+    # `malformed_result` mean it was on screen carrying data the framework would
+    # not trust. The blanket claim contradicted the detail line directly beneath
+    # it, which names the real cause.
+    #
+    # The tail is a contiguous UNVERIFIABLE suffix and `lapse_unverifiable_*`
+    # are parallel and ordered, so the tail's causes are the last `n` of them.
+    causes = tuple(latch.lapse_unverifiable_causes[-n:])
+    if causes and set(causes) == {"absent"}:
+        return f"UNVERIFIABLE - OFF SCREEN: {tail}"
+    named = ", ".join(sorted(set(causes)))
+    return f"UNVERIFIABLE: {tail}" + (f" ({named})" if named else "")
 
 
 def _build_row(latch: Latch, *, quote, views, provenance=None,

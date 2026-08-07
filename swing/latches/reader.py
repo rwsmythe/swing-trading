@@ -413,15 +413,26 @@ def load_session_structural_verdicts(
     run_ids = [rid for ids in by_session.values() for rid in ids]
     if not run_ids:
         return {}
-    rid_ph = ",".join("?" * len(run_ids))
+    # CHUNKED ON THE RUN DIMENSION, like the criteria query below (Codex R1).
+    # `run_ids` is UNBOUNDED HISTORICAL DATA -- one entry per evaluation run
+    # since the earliest retained A+ fire or archive bar, which the fire loader
+    # deliberately never truncates -- so a bare `IN` grows without limit and
+    # eventually raises `too many SQL variables`, crashing the READ-ONLY panel
+    # for every latch at once. The live DB is 135 runs against a 32766 limit, so
+    # this is decades away; it is fixed because the file's own convention
+    # already chunks and an unbounded `IN` is the defect regardless of when it
+    # lands. Tickers are bounded by the A+ fire count and do not need it.
     tick_ph = ",".join("?" * len(values))
-    rows = conn.execute(
-        f"SELECT id, evaluation_run_id, ticker FROM candidates "
-        f"WHERE evaluation_run_id IN ({rid_ph}) AND ticker IN ({tick_ph})",
-        [*run_ids, *values],
-    ).fetchall()
-    candidate_by_run_ticker = {
-        (int(r[1]), str(r[2])): int(r[0]) for r in rows}
+    candidate_by_run_ticker: dict[tuple[int, str], int] = {}
+    for chunk_start in range(0, len(run_ids), 500):
+        chunk = run_ids[chunk_start:chunk_start + 500]
+        rid_ph = ",".join("?" * len(chunk))
+        for row in conn.execute(
+            f"SELECT id, evaluation_run_id, ticker FROM candidates "
+            f"WHERE evaluation_run_id IN ({rid_ph}) AND ticker IN ({tick_ph})",
+            [*chunk, *values],
+        ).fetchall():
+            candidate_by_run_ticker[(int(row[1]), str(row[2]))] = int(row[0])
     criteria_by_candidate: dict[int, list[tuple]] = {}
     cids = sorted(candidate_by_run_ticker.values())
     for chunk_start in range(0, len(cids), 500):
