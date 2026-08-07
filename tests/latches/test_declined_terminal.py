@@ -99,9 +99,15 @@ def test_the_rank_tables_domain_IS_the_live_clear_reason_vocabulary():
 
 
 def test_the_rank_order_IS_the_ruled_ladder_projected():
-    """`fill > declined > superseded > invalidation > horizon` -- R6's six-rung
-    ladder with the one reason that has no producer yet left out. 3b re-asserts
-    this same property over six members when it gains one.
+    """R6's SIX-rung ladder, now complete:
+    `fill > declined > superseded > invalidation > criteria_lapsed > horizon`.
+
+    3a shipped this projected onto FIVE, because `criteria_lapsed` had no
+    producer and a rung for a reason nothing can construct is a guard preceding
+    its condition. Item 3b gives it one, so the projection is now the whole
+    ladder -- the same property re-asserted over the vocabulary it actually has.
+    The domain test above is what forced this update rather than letting the two
+    drift.
 
     Ranks must also be DISTINCT: a duplicate makes the same-session tiebreak
     depend on the order the candidate list happened to be built in, which is a
@@ -109,7 +115,8 @@ def test_the_rank_order_IS_the_ruled_ladder_projected():
     """
     ordered = sorted(_CLEAR_REASON_RANK, key=lambda r: _CLEAR_REASON_RANK[r])
     assert ordered == [
-        "fill", "declined", "superseded", "invalidation", "horizon"]
+        "fill", "declined", "superseded", "invalidation", "criteria_lapsed",
+        "horizon"]
     assert len(set(_CLEAR_REASON_RANK.values())) == len(_CLEAR_REASON_RANK)
 
 

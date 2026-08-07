@@ -67,7 +67,8 @@ def test_locked_constants():
         "armed", "order_resting", "filled", "invalidated", "horizon_expired",
         "superseded"})
     assert LATCH_CLEAR_REASONS == frozenset({
-        "fill", "invalidation", "horizon", "superseded", "declined"})
+        "fill", "invalidation", "horizon", "superseded", "declined",
+        "criteria_lapsed"})
 
 
 def test_horizon_is_derived_from_the_observe_window_not_hard_coded():
@@ -128,8 +129,56 @@ def test_critical_stale_clear_reasons_are_pinned_as_literals():
     """T1.4(a). OQ-1's ruling is that severity encodes the operator's outstanding
     DUTY, not fault -- so `declined` joins the set (residual R2): an order resting
     behind a mandate he DECLINED carries the identical duty to cancel it, and the
-    identical consequence if he does not."""
+    identical consequence if he does not.
+
+    Item 3b adds `criteria_lapsed`, which is the reason RD actually RULED at
+    OQ-1 (against CHARC's prior); `declined` reached the set by extending that
+    same reasoning. THE WHOLE SET IS PINNED HERE, in ONE place: two tests each
+    asserting a different literal subset is how a mirror drifts while both stay
+    green.
+
+    `horizon` is the load-bearing NON-member -- a window that simply ran out
+    leaves no act undone -- and `fill` likewise.
+    """
     from swing.latches.orders import _CRITICAL_STALE_CLEAR_REASONS
 
     assert _CRITICAL_STALE_CLEAR_REASONS == frozenset({
-        "invalidation", "superseded", "declined"})
+        "invalidation", "superseded", "declined", "criteria_lapsed"})
+
+
+# --- Item 3b: `criteria_lapsed` (RD OQ-1/OQ-2). The #11 mirror locks. -------
+def test_criteria_lapsed_maps_to_horizon_expired_exactly():
+    """T1.2(b) for the second reason. OQ-2 RULED Option B: reuse
+    `horizon_expired` and let the REASON carry every distinction, because a new
+    `LATCH_STATES` member is FOUR persisted CHECK clauses across migrations 0032
+    and 0033 and buys nothing the reason does not already provide.
+
+    Pinned as a LITERAL beside the generic non-live assertion above, which
+    `criteria_lapsed` would also satisfy while mapping to `filled` or
+    `invalidated`.
+    """
+    from swing.latches.service import _STATE_BY_CLEAR_REASON
+
+    assert _STATE_BY_CLEAR_REASON["criteria_lapsed"] == "horizon_expired"
+
+
+def test_criteria_lapsed_is_critical_stale():
+    """T1.4. OQ-1 RULED YES, against CHARC's prior, and the reasoning is the
+    part that has to survive: the ALARM channel encodes the operator's
+    outstanding DUTY and its consequence, never fault -- fault lives in the
+    DISPOSITION (`framework_withdrawn`, excluded from the discipline signal).
+    The duty behind a withdrawn mandate (cancel the resting order) and the
+    consequence of ignoring it (an unmandated fill on a rally through a pivot
+    the framework has retracted) are identical to the invalidation case.
+
+    `horizon` stays ABSENT: a mandate that simply ran out its window leaves no
+    act undone.
+    """
+    from swing.latches.constants import LATCH_CLEAR_REASONS
+    from swing.latches.orders import _CRITICAL_STALE_CLEAR_REASONS
+
+    assert "criteria_lapsed" in _CRITICAL_STALE_CLEAR_REASONS
+    # The set is a SUBSET of the vocabulary, so a typo'd member cannot sit here
+    # silently selecting `warning` for every real latch.
+    assert _CRITICAL_STALE_CLEAR_REASONS <= LATCH_CLEAR_REASONS
+    assert "horizon" not in _CRITICAL_STALE_CLEAR_REASONS

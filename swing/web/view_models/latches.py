@@ -614,6 +614,14 @@ def _state_label(latch: Latch, zone_position: str) -> str:
     if latch.clear_reason == "declined":
         session = latch.clear_session.isoformat() if latch.clear_session else "-"
         return f"DECLINED - operator declined on {session}"
+    # THE SECOND Option-B REASON. THREE reasons now share `horizon_expired`, so
+    # this branch is the surface that tells them apart -- and a WITHDRAWAL is
+    # emphatically not a deadline: the framework retracted the mandate on its
+    # own structural + directional evidence, which is a claim it owes the
+    # operator plainly.
+    if latch.clear_reason == "criteria_lapsed":
+        session = latch.clear_session.isoformat() if latch.clear_session else "-"
+        return f"WITHDRAWN - criteria lapsed on {session}"
     if latch.state in _TERMINAL_STATE_LABELS:
         return _TERMINAL_STATE_LABELS[latch.state]
     base = "ORDER RESTING" if latch.state == "order_resting" else "ARMED"

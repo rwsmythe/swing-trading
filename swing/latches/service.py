@@ -44,19 +44,27 @@ from swing.latches.models import (
 # latch or flip an agreement flag.
 _PRICE_DP = 2
 
-# `declined` REUSES `horizon_expired` (RD OQ-2's Option B, applied to this
-# reason as residual R1). The state enum is a MECHANISM -- everything that must
-# tell a decline apart from a horizon expiry keys on the REASON, which is
-# first-class: the stale-order severity (`orders.py`
-# `_CRITICAL_STALE_CLEAR_REASONS`) and the panel's `_state_label` branch. The
-# alternative -- a new `LATCH_STATES` member -- is FOUR persisted CHECK clauses
-# across migrations 0032 and 0033 and buys nothing the reason does not carry.
+# `declined` and `criteria_lapsed` BOTH REUSE `horizon_expired` (RD OQ-2's
+# Option B -- ruled for `criteria_lapsed`, applied to `declined` as residual
+# R1). The state enum is a MECHANISM -- everything that must tell these apart
+# from a horizon expiry keys on the REASON, which is first-class: the
+# stale-order severity (`orders.py` `_CRITICAL_STALE_CLEAR_REASONS`), the
+# `framework_withdrawn` classifier rung, and the panel's `_state_label`
+# branches. The alternative -- a new `LATCH_STATES` member -- is FOUR persisted
+# CHECK clauses across migrations 0032 and 0033 and buys nothing the reason does
+# not carry.
+#
+# THREE REASONS NOW SHARE ONE STATE, which is exactly what OQ-2 says the state
+# enum is for -- and it is also the cost the render tests pin: a consumer that
+# reads `state` instead of `clear_reason` conflates all three, so the obligation
+# is pinned CALLER-SIDE by test rather than promised in a comment (gotcha #31).
 _STATE_BY_CLEAR_REASON = {
     "fill": "filled",
     "invalidation": "invalidated",
     "horizon": "horizon_expired",
     "superseded": "superseded",
     "declined": "horizon_expired",
+    "criteria_lapsed": "horizon_expired",
 }
 
 
@@ -84,17 +92,21 @@ class _Draft:
         return zone_cap_for_pivot(self.pivot)
 
 
-# THE PRECEDENCE LADDER, PROJECTED ONTO THE LIVE VOCABULARY (RD's R6 ruling,
-# 2026-08-06). His ladder reads
+# THE PRECEDENCE LADDER (RD's R6 ruling, 2026-08-06), now COMPLETE:
 #
 #     fill > declined > superseded > invalidation > criteria_lapsed > horizon
 #
-# and its AUTHORITY is that ruling, not this table. What the table holds is the
-# ladder RESTRICTED to the reasons this resolver can actually produce today --
-# every key here has a producer, and a rung for a reason with no writer would be
-# a guard preceding its condition. The domain is pinned against
-# `LATCH_CLEAR_REASONS` by test, so the vocabulary and its precedence cannot
-# drift apart: adding a reason without ranking it fails immediately.
+# Its AUTHORITY is that ruling, not this table. Item 3a shipped the ladder
+# PROJECTED onto five, because `criteria_lapsed` had no producer and a rung for
+# a reason nothing can construct is a guard preceding its condition; item 3b
+# gives it one, so the projection is now the whole ladder. The domain is pinned
+# against `LATCH_CLEAR_REASONS` by test, so the vocabulary and its precedence
+# cannot drift apart: adding a reason without ranking it fails immediately --
+# which is what forced this entry rather than leaving the two out of step.
+#
+# `criteria_lapsed` sits BELOW `invalidation` and ABOVE `horizon`: framework
+# EVIDENCE that the setup died outranks framework evidence that it merely
+# decayed, and both outrank a DEADLINE.
 #
 # RANK BREAKS SAME-SESSION TIES AND NOTHING ELSE. A terminal is an event with a
 # DATE and the EARLIEST one ends the mandate; nothing later can un-happen it
@@ -125,7 +137,8 @@ _CLEAR_REASON_RANK = {
     "declined": 1,
     "superseded": 2,
     "invalidation": 3,
-    "horizon": 4,
+    "criteria_lapsed": 4,
+    "horizon": 5,
 }
 
 

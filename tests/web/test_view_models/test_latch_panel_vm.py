@@ -356,6 +356,46 @@ def test_a_declined_latch_never_renders_as_HORIZON_EXPIRED():
     assert "HORIZON" not in label
 
 
+def test_a_criteria_lapsed_latch_never_renders_as_HORIZON_EXPIRED():
+    """T1.3 for the second Option-B reason, and this is the CALLER-SIDE
+    obligation gotcha #31 requires rather than a comment promising it.
+
+    Under Option B `criteria_lapsed` and `horizon` share `state ==
+    "horizon_expired"` exactly, so the RENDER is the surface that has to tell
+    them apart. Discriminator: any implementation keyed on `state` returns the
+    same label for both latches and fails -- and it fails on the surface the
+    operator actually reads, which is why `_state_label` carries the obligation
+    rather than the template's raw `clear_reason` echo.
+
+    The framework WITHDREW this mandate; the card must say so, never that a
+    deadline ran out.
+    """
+    from dataclasses import replace as _replace
+    from datetime import date
+
+    from swing.latches.identity import LatchIdentity
+    from swing.latches.models import Latch
+    from swing.web.view_models.latches import _state_label
+
+    expired = Latch(
+        identity=LatchIdentity(
+            candidate_id=9277, evaluation_run_id=103, ticker="VSTS",
+            detection_date="2026-07-01", pipeline_run_id=116),
+        latched_pivot=16.90, latched_initial_stop=13.40, zone_cap=17.41,
+        anchor=date(2026, 7, 1), horizon_expiry=date(2026, 8, 13),
+        sessions_elapsed=30, sessions_to_horizon=0,
+        state="horizon_expired", clear_reason="horizon",
+        clear_session=date(2026, 8, 13))
+    lapsed = _replace(expired, clear_reason="criteria_lapsed",
+                      clear_session=date(2026, 7, 30))
+    # IDENTICAL state -- the only difference is the reason.
+    assert expired.state == lapsed.state == "horizon_expired"
+    assert _state_label(expired, "unknown") == "HORIZON EXPIRED"
+    label = _state_label(lapsed, "unknown")
+    assert label == "WITHDRAWN - criteria lapsed on 2026-07-30"
+    assert "HORIZON" not in label
+
+
 def test_the_beacon_payload_carries_the_render_time_anchor_and_the_live_set(
         seeded_db):
     """The A4 seam's anchor. A payload built at POST time instead would

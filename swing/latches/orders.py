@@ -61,10 +61,17 @@ _LIMIT_BEARING_ORDER_TYPES = frozenset({
 # (an unmandated fill on a rally through a pivot nobody is standing behind) are
 # the same as the invalidation case, so the severity is the same.
 #
+# `criteria_lapsed` joins on the SAME OQ-1 ruling, which RD made FOR it and
+# against CHARC's prior. The prior distinguished a mandate that was WRONG
+# (invalidation / superseded) from one the framework WITHDREW -- but that is a
+# BLAME distinction, and blame already lives in the DISPOSITION
+# (`framework_withdrawn`, excluded from the discipline signal AND the away
+# rate). Severity follows DUTY; fault follows disposition.
+#
 # `horizon` is deliberately ABSENT and stays absent: a mandate that simply ran
 # out its window carries no act the operator left undone.
 _CRITICAL_STALE_CLEAR_REASONS = frozenset({
-    "invalidation", "superseded", "declined"})
+    "invalidation", "superseded", "declined", "criteria_lapsed"})
 
 
 def to_resting_orders(schwab_orders) -> tuple[RestingOrder, ...]:

@@ -126,8 +126,17 @@ LATCH_STATES = frozenset({
 # decline is a decline, on-screen or off). It is pure Python like every other
 # member here: the `decline` INTENT that authors it is persisted
 # (`latch_order_intents.intent_kind`), but the derived REASON never is.
+# `criteria_lapsed`: the FRAMEWORK withdrew the mandate -- the name failed the
+# A+ STRUCTURAL gate for N consecutive EVALUATED sessions AND the price
+# decayed over that window (RD's amendment, 2026-08-01, as ruled 08-06). It is
+# NOT an operator act and NOT a price event that killed the setup, which is
+# why it needs its own reason and its own disposition (`framework_withdrawn`)
+# rather than borrowing `horizon`'s. SHIPS REPORT-ONLY (OQ-9): the CLEAR sits
+# behind `cfg.latches.criteria_lapse_armed`, default OFF, until the
+# calibration evidence supports an N -- everything else about it runs.
 LATCH_CLEAR_REASONS = frozenset({
     "fill", "invalidation", "horizon", "superseded", "declined",
+    "criteria_lapsed",
 })
 LATCH_FILL_LINK_BASES = frozenset({"candidate_id", "windowed"})
 LATCH_DEGRADED_REASONS = frozenset({
