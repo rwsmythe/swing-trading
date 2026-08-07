@@ -1252,6 +1252,23 @@ def _latest_moved_past_session(
     R1 MAJOR: the naive per-detection scan of the whole index is an O(D x K)
     cross-product over two append-only tables).
 
+    CALLER-SIDE OBLIGATION (Codex R2 MINOR; gotcha #31 -- pin the caller's duty,
+    do not assert what a future caller will do). This function CANNOT verify the
+    evidence hygiene of what it is handed: it applies the mapping (or, when the
+    caller omits it, the raw `skip_index`) AS GIVEN. The R1-CRITICAL bound -- an
+    evidence session must be a REAL NYSE session at or before the monitor run's
+    own `last_completed` -- lives in the CALLER, `_check_coverage_gaps`, which
+    filters `skip_index` BEFORE deriving the mapping. **A new caller MUST filter
+    first**; passing an unfiltered index, or a hand-built mapping, re-opens the
+    unbounded-evidence class. That caller obligation is pinned by the two
+    end-to-end tests `test_coverage_clause1_warning_past_last_completed_is_not_
+    evidence` and `test_coverage_clause1_non_session_dated_warning_is_not_
+    evidence` (each fails if the caller stops filtering), NOT by anything here.
+    The optional-argument default exists ONLY so a direct unit caller stays
+    correct-by-default for the SHAPE of the derivation, and routes through the
+    SAME `_latest_skip_session_by_ticker` so the two entry paths cannot compute
+    a DIFFERENT maximum from the same index.
+
     The skip half REUSES the existing `_observe_skip_index` admission rule -- a
     `pattern_observe` skip-warning of a known reason, in a state='complete' run,
     whose observation_date equals that run's data_asof_date -- so there is ONE
@@ -1318,13 +1335,21 @@ def _calibration_c_partition(
                 TRAILING -- it is NOT gated by clause1 (19-A: the delisting fix;
                 a trailing OR never-observed hole is accepted when, and only
                 when, it is skip-warning-explained).
-      clause1 = _latest_moved_past_session(observed, ticker, skip_index) > S
+      clause1 = _latest_moved_past_session(observed, ticker, ...) > S
                 (the drumbeat moved PAST the hole -- a later session for THIS
                 detection is OBSERVED **or** SKIP-EXPLAINED; RD adjudication
                 2026-08-06. A TRAILING hole with no later run at all has
                 neither -> clause1 False). clause1 gates ONLY clause-2a: a
                 trailing whole-session miss with NO skip-warning stays COUNTED
                 (a real drumbeat-behind failure -- the T2/T3 safety locks).
+                The skip half is TICKER-scoped, exactly as clause-2b is: the
+                `pattern_observe` warning payload carries (step, ticker,
+                observation_date, reason) and NO detection id, so this is the
+                grain the existing admission rule has (Codex R2 MAJOR,
+                adjudicated). Clause 1's use of it is strictly WEAKER than
+                clause-2b's already-shipped use: 2b accepts a hole outright on
+                that ticker-level evidence, whereas clause 1 only UNLOCKS 2a,
+                which still demands its own whole-session-miss proof.
       clause-2a = is_whole_session_miss, requiring BOTH (S not in
                 global_observed_sessions) AND (run_observed_sessions is not None
                 and S not in run_observed_sessions) (MAJOR-R2-1: the BOTH-signals
