@@ -910,6 +910,28 @@ def _fold_ticker(
     consumed: set[int] = set()
     open_draft: _Draft | None = None
 
+    def _lapse_for(draft: _Draft, upper: date) -> _LapseAnalysis:
+        """The lapse analysis for `draft`, bounded at `upper`.
+
+        THE BOUND IS A PARAMETER BECAUSE THE PROBES ASK A DIFFERENT QUESTION.
+        A liveness probe asks "had this latch terminated by session S?", and
+        the facts that may decide that stop STRICTLY BEFORE the re-fire's own
+        session -- exactly as the probe already treats the invalidation walk and
+        the fill. Re-using the final bound here would let a lapse resolved ON
+        the re-fire session decide a probe taken the session before it.
+        """
+        return _analyze_criteria_lapse(
+            draft, verdicts=verdicts, bars=bars, archive_status=archive_status,
+            upper=min(upper, draft.horizon_expiry),
+            sessions=criteria_lapse_sessions,
+            adr_multiple=criteria_lapse_min_widening_adr,
+            min_widening_pct=criteria_lapse_min_widening_pct)
+
+    def _armed_lapse(analysis: _LapseAnalysis) -> date | None:
+        """THE ARM GATE, in ONE place so the probes and the final resolution
+        cannot disagree about whether the rule is live."""
+        return analysis.qualifying_session if criteria_lapse_armed else None
+
     def _close(draft: _Draft, *, forced: _Terminal | None = None) -> Latch:
         """`forced` is a terminal the FOLD authored rather than the resolver.
 
@@ -923,12 +945,7 @@ def _fold_ticker(
         because a flag that short-circuited the computation would measure
         nothing, and measurement is the entire purpose of shipping unarmed.
         """
-        analysis = _analyze_criteria_lapse(
-            draft, verdicts=verdicts, bars=bars, archive_status=archive_status,
-            upper=min(derivation_session, draft.horizon_expiry),
-            sessions=criteria_lapse_sessions,
-            adr_multiple=criteria_lapse_min_widening_adr,
-            min_widening_pct=criteria_lapse_min_widening_pct)
+        analysis = _lapse_for(draft, derivation_session)
         # THE COUNTERFACTUAL RUNS **BEFORE** THE ACTUAL RESOLUTION, and the
         # order is load-bearing rather than stylistic. The actual pass CONSUMES
         # the trade it matches (rule (b): one trade fills at most one latch), so
@@ -951,13 +968,14 @@ def _fold_ticker(
                 horizon_ref=horizon_session, bar_bound=derivation_session,
                 fill_bound=horizon_session, decisions=decisions,
                 horizon_sessions=horizon_sessions, dry_run=False,
-                # TASK 5b SHIPS THE HYPOTHETICAL ONLY. The lapse enters the
-                # candidate list on the DRY-RUN counterfactual below and NOWHERE
-                # ELSE, so no latch can clear by `criteria_lapsed` at this
-                # commit. Task 5c installs the terminal and its arm gate
-                # ATOMICALLY -- terminal and gate in ONE commit, so no commit
-                # ever contains an UNGATED clear.
-                lapse_session=None)
+                # THE ARM FLAG GATES THIS ONE EXPRESSION, AND THAT IS THE WHOLE
+                # DESIGN (OQ-9). `analysis.qualifying_session` is resolved on
+                # EVERY path, armed or not; only whether it is OFFERED to the
+                # ladder is conditional. A flag placed any earlier -- skipping
+                # the streak fold, the conjuncts or the diagnostics -- would make
+                # report-only measure nothing, which defeats the ruling that
+                # created it.
+                lapse_session=_armed_lapse(analysis))
         # THE COUNTERFACTUAL IS THE PRECEDENCE-RESOLVED ANSWER, NOT THE RAW
         # QUALIFYING SESSION -- and conflating them makes report-only LIE.
         # With an invalidation on D3, a fill on D4 and a qualifying lapse on
@@ -1002,12 +1020,21 @@ def _fold_ticker(
             # re-fire's own session (see `_resolve_terminal`); the horizon
             # stays inclusive AT it.
             prior = session_offset(anchor, -1)
+            # THE PROBES MUST SEE THE LAPSE TOO WHEN THE RULE IS ARMED, or the
+            # fold's TOPOLOGY silently describes the unarmed world: a latch the
+            # armed rule had already withdrawn would still look live, so a later
+            # re-fire would fold in as a RE-CONFIRMATION rather than opening its
+            # own mandate. Each probe gets the analysis bounded at ITS OWN
+            # as-of, so a lapse resolved ON the re-fire session cannot decide a
+            # probe taken the session before it.
             live_probe = _resolve_terminal(
                 open_draft, bars=bars, entries=entries, consumed=consumed,
                 horizon_ref=anchor,
                 bar_bound=min(prior, derivation_session),
                 fill_bound=prior, decisions=decisions,
-                horizon_sessions=horizon_sessions, dry_run=True)
+                horizon_sessions=horizon_sessions, dry_run=True,
+                lapse_session=_armed_lapse(
+                    _lapse_for(open_draft, min(prior, derivation_session))))
             # THE FINAL RESOLUTION CAN REVERSE THE PROBE, AND THAT REVERSAL
             # OUTRANKS BOTH BRANCHES BELOW.
             #
@@ -1023,7 +1050,9 @@ def _fold_ticker(
                 open_draft, bars=bars, entries=entries, consumed=consumed,
                 horizon_ref=horizon_session, bar_bound=derivation_session,
                 fill_bound=horizon_session, decisions=decisions,
-                horizon_sessions=horizon_sessions, dry_run=True)
+                horizon_sessions=horizon_sessions, dry_run=True,
+                lapse_session=_armed_lapse(
+                    _lapse_for(open_draft, derivation_session)))
             if (final_probe is not None
                     and final_probe.reason == "fill"
                     and final_probe.session >= anchor):

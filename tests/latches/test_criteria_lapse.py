@@ -49,10 +49,11 @@ def _sessions(n: int, *, start: date = ANCHOR) -> list[date]:
     return out
 
 
-def _fire(pivot=100.0, stop=1.00, adr_pct=3.0, cid=8851, ticker="TST"):
+def _fire(pivot=100.0, stop=1.00, adr_pct=3.0, cid=8851, ticker="TST",
+          anchor: date = ANCHOR):
     return FireRow(
         candidate_id=cid, evaluation_run_id=126, ticker=ticker, pivot=pivot,
-        initial_stop=stop, action_session_date=ANCHOR.isoformat(),
+        initial_stop=stop, action_session_date=anchor.isoformat(),
         run_ts="2026-07-24T17:30:11", pipeline_run_id=140, adr_pct=adr_pct)
 
 
@@ -85,9 +86,10 @@ def _verdicts(classifications, *, start: date = ANCHOR):
 
 def _derive(*, fire=None, closes=(), highs=None, verdicts=(), armed=False,
             sessions=5, adr=1.0, pct=2.0, entries=(), bar_status="ok",
-            derivation_session=None, extra_bars=(), extra_fires=()):
-    fire = fire or _fire()
-    bars = list(_bars(closes, highs=highs)) + list(extra_bars)
+            derivation_session=None, extra_bars=(), extra_fires=(),
+            start: date = ANCHOR):
+    fire = fire or _fire(anchor=start)
+    bars = list(_bars(closes, highs=highs, start=start)) + list(extra_bars)
     last = bars[-1].session if bars else ANCHOR
     ds = derivation_session or last
     return derive_latches(
@@ -729,6 +731,41 @@ def test_the_lapse_walk_is_capped_at_the_horizon_expiry():
 # ===========================================================================
 # T4.20 / T4.23 / T4.24 / T4.25 -- the report-only instrument itself
 # ===========================================================================
+# ===========================================================================
+# TASK 5c -- THE TERMINAL AND ITS GATE. These are the ONLY tests here that
+# assert an actual `criteria_lapsed` clear; everything above asserts the
+# HYPOTHETICAL, which is what ships in the default configuration.
+# ===========================================================================
+def test_the_hypothetical_is_computed_IDENTICALLY_armed_or_not():
+    """T4.20 -- NOT DROPPABLE. The invariant that makes report-only mean
+    anything.
+
+    Scoped to the RESOLVER'S HYPOTHETICAL, not the whole latch: returning a
+    terminal necessarily also changes `clear_session`, `is_live`, the state
+    label and the classification, so "differ ONLY in clear_reason" could never
+    hold.
+
+    It ITERATES the named roster rather than listing a subset -- a test that
+    enumerates its own subset omits exactly the newest field, which is how
+    `lapse_conflicted_sessions` and `lapse_would_clear_session` would have
+    escaped.
+
+    Discriminator: an implementation that short-circuits the streak fold or the
+    conjuncts when unarmed produces empty or different diagnostics, and
+    report-only measures NOTHING -- the failure that would make RD's framing
+    ruling worthless.
+    """
+    kwargs = dict(closes=QUALIFYING, verdicts=_verdicts("FFFFF"))
+    unarmed = _derive(**kwargs, armed=False).latches[0]
+    armed = _derive(**kwargs, armed=True).latches[0]
+    for name in LATCH_LAPSE_DIAGNOSTIC_FIELDS:
+        assert getattr(unarmed, name) == getattr(armed, name), name
+    assert unarmed.is_live is True
+    assert unarmed.clear_reason is None
+    assert armed.clear_reason == "criteria_lapsed"
+    assert armed.clear_session == unarmed.lapse_would_clear_session
+
+
 def test_the_counterfactual_respects_the_FULL_ladder_including_the_fill():
     """T4.23. Three cases, all UNARMED -- which is the shipped configuration and
     therefore the one the calibration read actually consumes.
@@ -846,3 +883,73 @@ def test_no_verdicts_at_all_makes_the_feature_inert():
     assert latch.clear_reason is None
     _assert_no_hypothetical(latch)
     assert latch.lapse_failed_count == 0
+
+
+def test_arming_the_flag_emits_the_terminal_at_the_would_clear_session():
+    """Task 5c's own assertion, stated as a PAIR rather than in isolation: the
+    session the ARMED derivation clears on is exactly the session the UNARMED
+    derivation predicted. That equality is the whole claim report-only makes to
+    the calibration decision -- if it did not hold, the measured evidence would
+    describe a rule other than the one that would be armed.
+    """
+    days = _sessions(5)
+    unarmed = _derive(closes=QUALIFYING, verdicts=_verdicts("FFFFF")).latches[0]
+    armed = _derive(closes=QUALIFYING, verdicts=_verdicts("FFFFF"),
+                    armed=True).latches[0]
+    assert unarmed.clear_reason is None
+    assert unarmed.lapse_would_clear_session == days[4]
+    assert armed.clear_reason == "criteria_lapsed"
+    assert armed.clear_session == days[4]
+    assert armed.state == "horizon_expired"        # Option B
+
+
+def test_arming_CHANGES_LATCH_TOPOLOGY_and_that_is_expected():
+    """T4.22 -- the legitimate downstream consequence T4.20's scoping excludes,
+    tested SEPARATELY rather than hidden.
+
+    A same-pivot RE-FIRE arriving after the hypothetical lapse session:
+    UNARMED the old latch is still live, so the re-fire is a RE-CONFIRMATION;
+    ARMED it had already cleared, so the re-fire opens a NEW latch.
+
+    This is a real fact for whoever arms the flag: **arming changes the latch
+    CORPUS, not merely the labels** -- which is also why report-only measures the
+    first hypothetical clear per latch rather than simulating the armed world.
+    """
+    days = _sessions(7)
+    refire = FireRow(
+        candidate_id=8852, evaluation_run_id=131, ticker="TST", pivot=100.0,
+        initial_stop=1.00, action_session_date=days[5].isoformat(),
+        run_ts="2026-08-04T17:30:00", pipeline_run_id=141, adr_pct=3.0)
+    closes = [*QUALIFYING, 85.0, 84.0]
+    kwargs = dict(closes=closes, verdicts=_verdicts("FFFFFFF"),
+                  extra_fires=[refire])
+    unarmed = _derive(**kwargs).latches
+    armed = _derive(**kwargs, armed=True).latches
+    assert len(unarmed) == 1
+    assert unarmed[0].reconfirmation_candidate_ids == (8852,)
+    assert len(armed) == 2
+    assert armed[0].clear_reason == "criteria_lapsed"
+    assert armed[1].identity.candidate_id == 8852
+    assert armed[1].is_live
+
+
+def test_an_armed_lapse_classifies_framework_withdrawn_not_discipline_lapse():
+    """The Task-6 composition, asserted at the point the terminal becomes
+    emittable. Without the disposition rung -- which is why Task 6 was
+    re-sequenced ahead of this commit -- this same latch classifies
+    `discipline_lapse`, charging the operator for a mandate the framework
+    retracted."""
+    from swing.latches.classification import classify_latch, r_bucket_for
+    from swing.latches.constants import LATCH_TELEMETRY_EPOCH_SESSION
+
+    # ANCHORED AFTER THE TELEMETRY EPOCH, deliberately: before it, rung 4
+    # legitimately returns `pre_telemetry` and pre-empts this rung (residual R3,
+    # pinned as ruled in test_framework_withdrawn.py). A fixture that ignored
+    # that would assert the wrong composition.
+    start = LATCH_TELEMETRY_EPOCH_SESSION
+    armed = _derive(closes=QUALIFYING,
+                    verdicts=_verdicts("FFFFF", start=start),
+                    start=start, armed=True).latches[0]
+    got = classify_latch(latch=armed, views=[], intents=[])
+    assert got.disposition == "framework_withdrawn"
+    assert r_bucket_for(got.disposition, is_terminal=True) == "unattributable_r"

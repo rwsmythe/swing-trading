@@ -439,3 +439,108 @@ def test_the_verdict_value_type_refuses_an_incoherent_cause():
     with pytest.raises(ValueError):
         SessionStructuralVerdict(
             action_session=date(2026, 7, 28), classification="MAYBE")
+
+
+# ---------------------------------------------------------------------------
+# T5.6 -- THE PRODUCTION PATH (Task 5c)
+# ---------------------------------------------------------------------------
+def _seed_lapse_geometry(conn):
+    """A latch that qualifies: an A+ fire, then five structurally FAILING
+    evaluated sessions whose archive closes decay past the materiality floor."""
+    from datetime import timedelta
+
+    from swing.evaluation.dates import session_offset
+
+    anchor = date(2026, 7, 27)
+    days = [anchor]
+    while len(days) < 6:
+        days.append(session_offset(days[-1], 1))
+    _run(conn, 100, days[0].isoformat(), "2026-07-24T17:30:00")
+    _candidate(conn, 100, "VSTS", "aplus", _rows())
+    for i, d in enumerate(days[1:], start=1):
+        _run(conn, 100 + i, d.isoformat(), f"{days[i - 1].isoformat()}T17:30:00")
+        _candidate(conn, 100 + i, "VSTS", "watch",
+                   _rows(vcp_fail=("tightness", "adr", "pullback")))
+    return days, timedelta
+
+
+def _bars_frame(days, closes):
+    import pandas as pd
+    return pd.DataFrame({
+        "asof_date": [d.isoformat() for d in days],
+        "open": closes, "high": closes, "low": closes, "close": closes,
+    })
+
+
+def test_the_arm_flag_reaches_the_pure_resolver_from_PRODUCTION_config(
+        db, cfg, tmp_path, monkeypatch):
+    """T5.6 -- and the discriminator is the whole reason this test is DB-backed.
+
+    `criteria_lapse_armed` is a DEFAULTED parameter, so an implementation that
+    threads it through `derive_latches` but FORGETS to pass
+    `cfg.latches.criteria_lapse_armed` from `build_latch_derivation` passes
+    every direct-resolver fixture while PRODUCTION CAN NEVER ARM -- the feature
+    permanently dead, and no unit test over the pure layer would notice. Same
+    for `adr_pct`: an implementation that adds the FIELD but forgets
+    `c.adr_pct` in `_FIRE_SQL` marks every latch directionally unverifiable in
+    production while every hand-built `FireRow` fixture stays green.
+
+    And the UNARMED half asserts EVERY roster field is populated identically to
+    the armed run -- a builder that conditionally drops the conflict sessions,
+    the causes or the block reason while unarmed would otherwise pass both the
+    pure-layer equivalence test and a would-clear-only version of this one.
+    """
+    import dataclasses
+
+    from swing.latches.models import LATCH_LAPSE_DIAGNOSTIC_FIELDS
+    from swing.latches.reader import build_latch_derivation
+
+    days, _ = _seed_lapse_geometry(db)
+    db.commit()
+    # The seeded fire is the VSTS geometry: pivot 16.90, stop 13.40, adr_pct
+    # 4.021 -> floor max(1.0 x 4.021% x 16.90, 2% x 16.90) = $0.68. These closes
+    # stay BELOW the pivot (so lifetime 2a holds), ABOVE the stop (so the latch
+    # does not invalidate and pass this test for the wrong reason), end at their
+    # own low, and widen $1.20 over the five-failure window.
+    closes = [16.50, 16.20, 15.90, 15.60, 15.30, 15.00]
+    frame = _bars_frame(days, closes)
+
+    import swing.data.ohlcv_archive as archive
+    monkeypatch.setattr(
+        archive, "resolve_ohlcv_window",
+        lambda ticker, **kw: (frame, {"provider": "test"}))
+
+    base = dataclasses.replace(
+        cfg, paths=dataclasses.replace(cfg.paths, prices_cache_dir=tmp_path))
+    now = __import__("datetime").datetime(2026, 8, 5, 18, 0, 0)
+
+    unarmed_cfg = dataclasses.replace(
+        base, latches=dataclasses.replace(
+            base.latches, criteria_lapse_armed=False))
+    armed_cfg = dataclasses.replace(
+        base, latches=dataclasses.replace(
+            base.latches, criteria_lapse_armed=True))
+
+    unarmed = build_latch_derivation(db, unarmed_cfg, now=now).latches[0]
+    armed = build_latch_derivation(db, armed_cfg, now=now).latches[0]
+
+    # PRODUCTION CAN ARM -- the flag reaches the pure resolver.
+    assert armed.clear_reason == "criteria_lapsed"
+    # ...and the shipped default does NOT withdraw, while still MEASURING.
+    assert unarmed.clear_reason is None
+    assert unarmed.lapse_would_clear_session == armed.clear_session
+    # `adr_pct` reached the resolver through the real SELECT, or the floor
+    # would be None and nothing could ever qualify.
+    assert unarmed.directional_evaluable is True
+    assert unarmed.lapse_qualifying_session is not None
+    for name in LATCH_LAPSE_DIAGNOSTIC_FIELDS:
+        assert getattr(unarmed, name) == getattr(armed, name), name
+
+
+def test_the_shipped_tracked_config_leaves_the_rule_DISARMED(cfg):
+    """The OQ-9 ruling, asserted against the config production actually loads.
+
+    This is the fact the whole arc rests on: the instrument runs, and it
+    withdraws nothing until someone deliberately arms it.
+    """
+    assert cfg.latches.criteria_lapse_armed is False
