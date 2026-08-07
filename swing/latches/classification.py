@@ -574,7 +574,7 @@ def classify_latch(
     counted_surfaces=ACTIONABLE_VIEW_SURFACES,
     epoch: date = LATCH_TELEMETRY_EPOCH_SESSION,
     r_multiple: float | None = None,
-    decision_bounds: tuple[date, date] | None = None,
+    decision_bounds: tuple[date, date, date] | None = None,
 ) -> LatchDisposition:
     """The section E precedence ladder. Each rung has its own discriminating test.
 
