@@ -32,15 +32,22 @@ from swing.web.view_models import latches as latches_vm_mod
 # The four modules that used to bind their own copy. Each maps to the number of
 # `PRICE_DP` references the consolidated tree must carry.
 #
-# 33 IS THE NUMBER OF REFERENCES, NOT THE NUMBER OF LINES, AND THE COINCIDENCE
-# IS A TRAP: the pre-change tree also had 33 `_PRICE_DP` LINES (4 definitions +
-# 29 consumer lines), because several consumer lines carry TWO `round()` calls
-# (`orders.py:156`, `:315`, `:427`; `service.py:799`). The two 33s mean
-# different things and neither may be derived from the other.
+# THESE ARE REFERENCE COUNTS, NOT LINE COUNTS, AND AT THE CONSOLIDATION THE
+# COINCIDENCE WAS A TRAP: the pre-change tree had 33 `_PRICE_DP` LINES (4
+# definitions + 29 consumer lines) and 33 references, because several consumer
+# lines carry TWO `round()` calls. The two 33s meant different things and
+# neither could be derived from the other.
+#
+# THE MAP IS MAINTAINED, NOT FROZEN, AND THAT IS THE POINT. `order_intent.py`
+# went 3 -> 5 when the below-pivot refusal started rounding BOTH of its operands
+# to display precision (Codex R7 MAJOR), and this belt is what made the change
+# visible instead of silent. A count that must be edited when the set of
+# rounded comparisons changes is a count doing its job; the failure it exists to
+# catch is a comparison quietly LOSING its rounding.
 _EXPECTED_REFERENCES = {
     "swing/latches/orders.py": 8,
     "swing/latches/service.py": 20,
-    "swing/latches/order_intent.py": 3,
+    "swing/latches/order_intent.py": 5,
     "swing/web/view_models/latches.py": 2,
 }
 

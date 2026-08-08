@@ -807,11 +807,12 @@ def test_a_CONFLICTING_repeated_order_id_is_an_INCOHERENT_book_and_RAISES():
             call()
 
 
-def test_a_BYTE_IDENTICAL_repeat_is_ONE_order_and_is_COLLAPSED():
+def test_a_repeat_IDENTICAL_IN_EVERY_FIELD_is_ONE_order_and_COLLAPSES():
     """The other side, and it is why the rule is not a blanket refusal: the
     SAME order seen twice (a paging artifact) is not a contradiction. It
     collapses, so the counts stop double-reporting one order and the two
-    functions still agree."""
+    functions still agree. "Identical" is `RestingOrder` dataclass equality --
+    field-wise over the CANONICAL values, not a byte compare (Codex R7)."""
     latches = _armed()
     cid = latches[0].identity.candidate_id
     twice = [_order(order_id="ONCE"), _order(order_id="ONCE")]
@@ -862,7 +863,7 @@ def test_a_MIXED_SIDE_duplicate_id_is_caught_the_same_way():
                            _schwab(order_id="P2", instruction="SELL")])
 
 
-def test_a_BYTE_IDENTICAL_raw_repeat_maps_to_ONE_order():
+def test_a_raw_repeat_IDENTICAL_IN_EVERY_MAPPED_FIELD_maps_to_ONE_order():
     """And the other side, so the rule is not a blanket refusal: the SAME order
     seen twice is not a contradiction and must not degrade the panel."""
     mapped = to_resting_orders([_schwab(order_id="P3"), _schwab(order_id="P3")])

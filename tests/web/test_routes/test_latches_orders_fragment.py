@@ -2781,3 +2781,52 @@ def test_a_CONTRADICTORY_repeated_order_id_degrades_the_whole_fragment(
     assert "UNKNOWN" in r.text
     assert _CANCEL_FORM not in r.text
     assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
+
+
+def test_a_FAILED_ledger_read_WITHHOLDS_the_cancel_control_and_LABELS_it(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """CODEX-AUTO-REVIEW MAJOR. `_intents_by_latch` OMITS a candidate whose
+    ledger read raised, and `.get(cid, ())` cannot tell that from "this latch
+    has no rows" -- so during a transient outage the control used to render with
+    a BLANK `prior_intent_id`.
+
+    That anchor is RULING-3 load-bearing: it is what makes a CORRECTION key
+    differently from a REPLAY. A false blank can collapse a correction onto the
+    earlier row and DISCARD the operator's actual final answer, which is the one
+    direction the ruling forbids -- the instrument editing its subject's
+    testimony in his favour.
+
+    So the control is WITHHELD and the gap is LABELLED. An unknown must be
+    renderable as unknown, which it cannot be while it is spelled the same as a
+    known emptiness.
+
+    THE FAILURE IS INJECTED AT THE REPO READ, which is the seam that actually
+    raises in production (a pre-0033 DB, a locked file, a transient IO error).
+    """
+    import swing.data.repos.latch_order_intents as repo
+
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    mandated = _order(order_id="L1", order_type="STOP_LIMIT",
+                      duration="GOOD_TILL_CANCEL")
+
+    app = _app(cfg, cfg_path, monkeypatch, orders=[mandated])
+    with TestClient(app) as client:
+        healthy = _post_orders(client).text
+    assert _CANCEL_FORM in healthy, (
+        "the premise: this geometry DOES offer a control when the ledger reads")
+
+    def _boom(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(repo, "list_intents_for_latch", _boom)
+    app2 = _app(cfg, cfg_path, monkeypatch, orders=[mandated])
+    with TestClient(app2) as client:
+        degraded = _post_orders(client).text
+    assert degraded.count(_CANCEL_FORM) == 0, (
+        "a control anchored to a 'no prior intent' state nobody established "
+        "is worse than no control")
+    assert _CANCEL_GAP in degraded
+    assert "ledger could not be read" in degraded
+    assert "L1" in degraded

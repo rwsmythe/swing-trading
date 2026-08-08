@@ -710,22 +710,54 @@ def test_the_FTRE_control_is_unmoved():
     assert res.order.limit_price > FTRE_PIVOT
 
 
-def test_the_refusal_DETAIL_never_states_a_number_is_BELOW_ITSELF():
-    """CODEX R2 MINOR. The message's whole content is `limit < pivot`, and at
-    two decimals a sub-cent pivot COLLAPSES the pair: pivot 0.0101 floors to a
-    0.01 mandate limit, so the shipped wording read "0.01 is BELOW ... 0.01".
+def test_a_pivot_ONE_ULP_ABOVE_a_collapsed_zone_is_STILL_OFFERED():
+    """CODEX R7 MAJOR, and it is the equality refinement's real test.
 
-    A diagnostic that contradicts itself teaches the operator that the panel's
-    numbers are approximate -- on the one surface whose numbers he types at a
-    broker. Precision escalates only where two decimals would erase the
-    difference, so the ordinary geometry keeps money formatting.
+    `candidates.pivot` is an unconstrained float. `math.nextafter(0.25, inf)`
+    produces cap 0.2575 and mandate limit 0.25, and a RAW `<` refuses it -- yet
+    the form RENDERS and PERSISTS that stop through `price2` as `0.25`, so the
+    order being refused is bit-for-bit the collapsed-but-orderable geometry the
+    refinement exists to protect: stop 0.25, limit 0.25.
+
+    Comparing the emitted limit against a sub-cent artifact of the pivot is the
+    price-precision-parity gotcha -- the same rule `PRICE_DP` was consolidated
+    for one piece earlier, and the refusal was the one comparison in the arc not
+    reading it.
     """
-    collapsing = _prepared_at(0.0101, 0.0001)
-    assert collapsing.withheld_reason == "limit_below_pivot"
-    assert "0.01 is BELOW the latched pivot 0.01," not in collapsing.withheld_detail
-    assert "0.0100 is BELOW the latched pivot 0.0101," in collapsing.withheld_detail
+    import math as _m
 
-    # The CONTROL: a geometry that does NOT collapse keeps two decimals, so the
-    # fix did not make every message noisier.
-    ordinary = _prepared_at(SUB_DOLLAR_PIVOT, SUB_DOLLAR_STOP)
-    assert "0.01 is BELOW the latched pivot 0.02," in ordinary.withheld_detail
+    pivot = _m.nextafter(0.25, _m.inf)
+    assert pivot != COLLAPSED_PIVOT, "the premise: it is NOT exactly 0.25"
+    assert mandate_limit_price(round(pivot * 1.03, 4)) < pivot, (
+        "the premise, inline so it cannot rot: a RAW comparison refuses this "
+        "geometry")
+    assert f"{pivot:.2f}" == f"{COLLAPSED_PIVOT:.2f}" == "0.25", (
+        "...and the premise that makes the refusal wrong: the form renders and "
+        "persists BOTH sides as 0.25")
+    res = _prepared_at(pivot, COLLAPSED_STOP)
+    assert res.withheld_reason is None
+    assert res.order is not None
+    assert res.order.limit_price == COLLAPSED_PIVOT
+
+
+def test_a_SUB_CENT_pivot_that_COLLAPSES_at_display_precision_is_OFFERED():
+    """The same rule at the other end of the scale. Pivot 0.0101 floors to a
+    0.01 mandate limit, and at the precision the card renders and the ledger
+    stores, limit == pivot == 0.01 -- the collapsed zone, which is OFFERED.
+
+    This case previously produced a message reading "0.01 is BELOW ... 0.01",
+    which was a symptom rather than the defect: a diagnostic can only contradict
+    itself if the comparison behind it is finer than the numbers it reports."""
+    res = _prepared_at(0.0101, 0.0001)
+    assert res.withheld_reason is None
+    assert res.order is not None
+
+
+def test_the_refusal_DETAIL_states_TWO_DIFFERENT_numbers():
+    """The paired GUARD on the message. Because both operands are compared at
+    display precision, a refusal implies they DIFFER at that precision -- so the
+    rendered sentence can no longer say a number is below itself, by
+    construction rather than by a formatting escape hatch."""
+    res = _prepared_at(SUB_DOLLAR_PIVOT, SUB_DOLLAR_STOP)
+    assert res.withheld_reason == "limit_below_pivot"
+    assert "0.01 is BELOW the latched pivot 0.02," in res.withheld_detail

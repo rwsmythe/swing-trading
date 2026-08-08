@@ -85,9 +85,14 @@ def to_resting_orders(schwab_orders) -> tuple[RestingOrder, ...]:
     is gone. So the check belongs at the boundary where the raw book becomes the
     domain book, which is here.
 
-    A BYTE-IDENTICAL repeat is one order seen twice and COLLAPSES; a repeat that
-    differs on ANY mapped field is a book contradicting itself about what an id
-    identifies. This module cannot resolve that and must not guess: the caller's
+    A repeat IDENTICAL IN EVERY MAPPED FIELD is one order seen twice and
+    COLLAPSES; a repeat differing on any of them is a book contradicting itself
+    about what an id identifies. NOT "byte-identical" (Codex R7 MINOR): the
+    fingerprint upper-cases side, symbol and type exactly as the mapping below
+    does, so `buy` and `BUY` are the same order here -- which is right, because
+    what must not differ is what this module will GO ON TO USE.
+
+    A CONFLICT this module cannot resolve must not be guessed at: the caller's
     A6 ladder turns the raise into the honest unknown the panel's own rule
     prescribes, which is strictly better than presenting a filled order as
     resting on the surface whose whole job is telling the operator what is

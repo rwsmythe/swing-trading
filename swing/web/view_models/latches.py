@@ -2588,9 +2588,16 @@ def build_latch_orders_vm(
     # branch returned above -- which IS the R8 MAJOR 1 rule: an unknown order
     # book renders no prompt in either direction, because a prompt built on it
     # invites an answer the operator would infer from the panel's own silence.
-    intents_by_latch = _intents_by_latch(conn, derivation.latches)
-    # THE PER-ORDER CANCEL AFFORDANCE, built from the SAME attribution tuple the
-    # alarms were computed from. Unconditional over attributable orders: the
+    intents_by_latch, intents_read_failed = _intents_by_latch(
+        conn, derivation.latches)
+    # THE PER-ORDER CANCEL AFFORDANCE. It reads the attribution tuple; the
+    # alarms do NOT -- the join deliberately receives no tuple and recomputes
+    # `_match_latch` itself (Codex R2 MAJOR removed the injection point, and
+    # Codex R7 MINOR caught this comment still describing the old shape). What
+    # makes them agree is that BOTH run the SAME pure matcher over the SAME
+    # canonical latches and orders, which is stronger than sharing a map: a
+    # shared map can be stale, two pure calls on identical inputs cannot
+    # disagree. Unconditional over attributable orders: the
     # operator may decide to cancel at any time and the ledger exists to record
     # that he did, so gating this on "when there is something wrong" would
     # re-derive the alarm's own condition under another name.
@@ -2604,13 +2611,33 @@ def build_latch_orders_vm(
             prior_intent_id=_prior_intent_id(
                 intents_by_latch.get(row.latch_candidate_id, ())),
         )
-        for row in attribution if row.latch_candidate_id is not None
+        for row in attribution
+        if row.latch_candidate_id is not None
+        and row.latch_candidate_id not in intents_read_failed
     )
+    # A LATCH WHOSE LEDGER COULD NOT BE READ OFFERS NO CONTROL, AND THE GAP IS
+    # LABELLED (codex-auto-review MAJOR). The form's `prior_intent_id` is the
+    # ruling-3 context anchor: it is what makes a CORRECTION key differently
+    # from a REPLAY. Rendering it BLANK because the read failed would anchor the
+    # submission to a "no prior intent" state that was never established, and
+    # the ledger would then collapse a correction onto the earlier row -- the
+    # one direction RD's ruling forbids. This is the same rule the validity
+    # prompt already follows: a control built on state nobody could read invites
+    # a decision the operator would infer from the panel's own silence.
     cancel_unavailable_notes = tuple(
         f"Order {row.order_id} on {row.ticker} matches no latch, so there is "
         "no mandate to log a cancel against. Cancel it at the broker; the "
         "ledger cannot record a decision about an order it cannot attribute."
         for row in attribution if row.latch_candidate_id is None
+    ) + tuple(
+        f"Order {row.order_id} on {row.ticker} has NO cancel control: this "
+        "latch's ledger could not be read, so the framework cannot tell "
+        "whether recording a cancel now would be a new decision or a repeat "
+        "of one you already made. Cancel it at the broker and reload; see the "
+        "log."
+        for row in attribution
+        if row.latch_candidate_id is not None
+        and row.latch_candidate_id in intents_read_failed
     )
     try:
         validity_prompts, validity_prompt_degraded = _validity_prompts(
@@ -3091,23 +3118,35 @@ def _fmt_price_or_blank(value) -> str:
     return "" if value is None else f"{float(value):.2f}"
 
 
-def _intents_by_latch(conn, latches) -> dict[int, list]:
-    """Every ledger row per latch, read ONCE per fragment render. A6 at the seam.
+def _intents_by_latch(conn, latches) -> tuple[dict[int, list], frozenset[int]]:
+    """`(rows_per_latch, candidates_whose_read_FAILED)`. A6 at the seam.
 
     ONE read because two consumers need it -- the validity prompts and the
     per-order cancel control's context anchor -- and two reads could disagree
     about which row governs, so one render would emit two different answers to
     the same question.
+
+    THE FAILURE SET IS RETURNED SEPARATELY BECAUSE A FAILED READ IS NOT AN EMPTY
+    LEDGER (codex-auto-review MAJOR). Omitting a failed candidate from the dict
+    makes it indistinguishable from a latch that simply has no rows, and the
+    consumers' `.get(cid, ())` then reads a transient outage as "no prior
+    intent". That anchor is RULING-3 load-bearing -- it is what distinguishes a
+    REPLAY from a CORRECTION -- so a false blank can collapse a correction onto
+    a replay key and DISCARD the operator's actual final answer, which is the
+    one direction the ruling forbids. An unknown must be renderable as unknown,
+    which it cannot be while it is spelled the same as a known emptiness.
     """
     from swing.data.repos.latch_order_intents import list_intents_for_latch
     out: dict[int, list] = {}
+    failed: set[int] = set()
     for latch in latches:
         cid = latch.identity.candidate_id
         try:
             out[cid] = list(list_intents_for_latch(conn, candidate_id=cid))
         except Exception as exc:  # noqa: BLE001 -- A6: a pre-0033 DB is not a 500
             _log.warning("latch intent read degraded for candidate %s: %s", cid, exc)
-    return out
+            failed.add(cid)
+    return out, frozenset(failed)
 
 
 def _validity_prompts(latches, *, joins, orders, anchor: date, now,
