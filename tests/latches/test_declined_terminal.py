@@ -14,6 +14,7 @@ implementation gets each wrong in a way no other test catches:
 """
 from __future__ import annotations
 
+import json
 from datetime import date
 
 from swing.data.models import LatchOrderIntent
@@ -560,3 +561,97 @@ def test_a_CORRECTED_decline_plus_a_re_fire_never_yields_TWO_armed_latches():
     assert by_id[8851].clear_reason == "superseded"
     assert by_id[8851].clear_session == date.fromisoformat(D5)
     assert by_id[9100].is_live is True
+
+
+# ---------------------------------------------------------------------------
+# D-1 -- FLAG B REACHES `decline` AND NOTHING ELSE, PINNED AS A TEST.
+#
+# RD ruled (2026-08-08) that a row's session field is server-computed at POST
+# WHEREVER THAT FIELD IS CONSUMED AS A DECISION OR ORDERING DATE. `decline`
+# meets the antecedent: `_resolve_decline` parses `action_session_date` into
+# `_Terminal("declined", session)`, a terminal date that orders the six-rung
+# ladder, so a backdated decline can kill a latch before a re-fire that should
+# have superseded it. `cancel` and `attest` do not: their session is
+# provenance/display only and `candidate_id` carries mandate identity anyway.
+#
+# THE OBLIGATION IS A TEST, NOT A COMMENT. A comment saying "cancel will
+# inherit flag B if a consumer appears" is gotcha #31 exactly -- a promise
+# about a future arc, unenforceable by construction, that reads true forever
+# after it goes false. This fails the day someone wires a non-decline row's
+# session into an ordering decision, which is precisely the day flag B must
+# extend to that kind.
+#
+# THE KINDS ARE DERIVED FROM `LATCH_INTENT_KINDS`, never hand-listed, so a kind
+# added to the enum joins this assertion automatically instead of silently
+# escaping it.
+# ---------------------------------------------------------------------------
+
+
+def _non_decision_intent(kind: str, *, session: str, intent_id: int):
+    """One CONSTRUCTIBLE row per kind, carrying exactly what its kind requires.
+
+    Built per-kind rather than through `_decision` because the dataclass
+    enforces the schema's shape exclusion: only `place`/`decline` may carry a
+    framework block, only `validity` may carry observed params or a parent
+    link, and `cancel`/`attest` may carry neither.
+    """
+    if kind in ("place", "decline"):
+        return _decision(kind, session=session, intent_id=intent_id)
+    common = dict(
+        intent_id=intent_id, candidate_id=8851, evaluation_run_id=126,
+        ticker="VSTS", detection_date=ANCHOR, pipeline_run_id=140,
+        idempotency_key=f"nd{intent_id}", action_session_date=session,
+        recorded_ts=f"{session}T10:00:00", surface="latch_panel",
+        intent_kind=kind)
+    if kind == "cancel":
+        return LatchOrderIntent(**common, actual_broker_order_id="4242")
+    if kind == "attest":
+        return LatchOrderIntent(
+            **common, attested_disposition="chose_not_to_act")
+    if kind == "validity":
+        envelope = json.dumps({
+            "broker_snapshot_ts": f"{session}T10:00:00",
+            "broker_snapshot_branch": "absence",
+            "broker_snapshot_digest": "a" * 64,
+            "broker_snapshot_session": session,
+            "attributable_order_count": 0,
+            "exact_framework_match_count": 0,
+            "indeterminate": False,
+        })
+        return LatchOrderIntent(
+            **common, validity_outcome="not_submitted",
+            validity_detail=envelope, validated_place_intent_id=1)
+    raise AssertionError(f"unhandled intent kind {kind!r} -- add it here")
+
+
+def test_ONLY_a_decline_can_reach_the_terminal_from_decisions_path():
+    """The caller-side obligation flag B rests on, asserted over EVERY kind.
+
+    `_resolve_decline` is the ONLY path by which a ledger row's
+    `action_session_date` becomes a terminal DATE, and it must answer `None`
+    for every kind but `decline`. The moment it does not, that kind's session
+    orders the ladder and RD's antecedent fires for it.
+    """
+    from swing.latches.constants import LATCH_INTENT_KINDS
+    from swing.latches.service import _Draft, _resolve_decline
+
+    assert "decline" in LATCH_INTENT_KINDS
+    draft = _Draft(
+        fire=VSTS_FIRE, anchor=date.fromisoformat(ANCHOR),
+        pivot=VSTS_FIRE.pivot, stop=VSTS_FIRE.initial_stop,
+        horizon_expiry=HORIZON_SESSION)
+    upper = HORIZON_SESSION
+
+    for kind in sorted(LATCH_INTENT_KINDS - {"decline"}):
+        row = _non_decision_intent(kind, session=D1, intent_id=1)
+        assert _resolve_decline(draft, [row], upper=upper) is None, kind
+
+    # The paired POSITIVE: a `decline` DOES reach it, and reaches it AT ITS OWN
+    # `action_session_date` -- which is exactly the value flag B server-computes
+    # at POST. Without this half the assertion above would pass on a resolver
+    # that returned `None` for everything.
+    declined = _non_decision_intent("decline", session=D1, intent_id=2)
+    terminal = _resolve_decline(draft, [declined], upper=upper)
+    assert terminal is not None
+    assert terminal.reason == "declined"
+    assert terminal.session == date.fromisoformat(D1)
