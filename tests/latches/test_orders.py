@@ -3,7 +3,12 @@ from __future__ import annotations
 
 from datetime import date
 
-from swing.latches.constants import MANDATE_ORDER_DURATIONS, MANDATE_ORDER_TYPES
+from swing.latches.constants import (
+    MANDATE_ORDER_DURATIONS,
+    MANDATE_ORDER_TYPE_BREAKOUT,
+    MANDATE_ORDER_TYPE_PULLBACK,
+    MANDATE_ORDER_TYPES,
+)
 from swing.latches.models import DailyBar, FireRow, RestingOrder
 from swing.latches.orders import (
     expected_mandate_order_type,
@@ -608,6 +613,34 @@ def test_the_regime_boundary_uses_display_precision():
     artifact must not flip the regime and invert the mandated instrument."""
     assert expected_mandate_order_type(
         latched_pivot=FTRE_PIVOT, last_close=18.339999) == "LIMIT"
+
+
+def test_close_EXACTLY_AT_the_pivot_is_the_PULLBACK_regime():
+    """GUARD -- the boundary's CURRENT disposition, pinned EXACTLY.
+
+    `expected_mandate_order_type` compares `round(close, PRICE_DP) <
+    round(pivot, PRICE_DP)`, strict, so `close == pivot` yields PULLBACK: at
+    the pivot a buy STOP would sit at the market, and the mandate is a resting
+    LIMIT at the zone cap.
+
+    THE EXISTING `18.339999` CASE IS NOT A SUBSTITUTE. That is a NEAR-equality
+    and it passes under `<` and under `<=` alike, so it cannot see this
+    boundary move. This test fails if the boundary moves in EITHER direction:
+    a flip to `<=` makes the equality BREAKOUT, and a flip to `>` or an
+    inverted return makes the `P - 0.01` neighbour PULLBACK.
+
+    `18.345` is here because its cent-rounding is non-trivial (it rounds DOWN
+    to 18.34), which is exactly the shape a rounding change would disturb.
+    """
+    for pivot in (FTRE_PIVOT, 36.27, 18.345):
+        assert expected_mandate_order_type(
+            latched_pivot=pivot, last_close=pivot) == MANDATE_ORDER_TYPE_PULLBACK, pivot
+        assert expected_mandate_order_type(
+            latched_pivot=pivot,
+            last_close=pivot - 0.01) == MANDATE_ORDER_TYPE_BREAKOUT, pivot
+        assert expected_mandate_order_type(
+            latched_pivot=pivot,
+            last_close=pivot + 0.01) == MANDATE_ORDER_TYPE_PULLBACK, pivot
 
 
 def test_both_forms_are_in_the_mandate_set_and_gtc_is_still_the_only_duration():

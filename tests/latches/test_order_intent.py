@@ -286,9 +286,12 @@ def test_infeasible_sizing_WITHHOLDS_the_form():
 
 
 def test_a_degenerate_sizing_geometry_WITHHOLDS_rather_than_raising(monkeypatch):
-    """`Latch.__post_init__` already guarantees stop < pivot < cap so this cannot
-    fire in production -- but the call is guarded anyway and a raise degrades
-    VISIBLY rather than 500ing the panel (A6)."""
+    """The constructor enforces the STOP half only -- `Latch.__post_init__`
+    raises on `latched_initial_stop >= latched_pivot` and constrains `zone_cap`
+    no further than finiteness -- so this guard is REACHABLE rather than dead,
+    and a raise degrades VISIBLY rather than 500ing the panel (A6). The failure
+    is injected here because `compute_shares`'s own degenerate inputs are now
+    refused upstream by the below-pivot check."""
     from swing.latches import order_intent as mod
 
     def _boom(**kw):
@@ -609,3 +612,90 @@ def test_the_manifest_carries_NO_encoding_coarser_than_its_rendered_display():
     assert "pct4" not in {f.encode for f in DERIVATION_FIELD_MANIFEST}, (
         "pct4 is four decimals of FRACTION against a display of three decimals "
         "of PERCENT -- coarser than what the operator can see")
+
+
+# ---------------------------------------------------------------------
+# THE BELOW-PIVOT REFUSAL (wave item 4, piece 4).
+#
+# `compute_prepared_order` pairs `limit = mandate_limit_price(zone_cap)` with
+# `stop = latched_pivot` in the breakout regime and checked nothing about their
+# ORDER. On a sub-dollar geometry the cent-floor drags the limit BELOW the
+# trigger: pivot 0.019 -> cap 0.0196 -> limit 0.01. The order cannot fill, and
+# sizing off 0.01 against a 0.001 stop reports roughly HALF the risk the 0.019
+# trigger actually carries.
+#
+# THE STRICTNESS IS THE POINT AND IT IS `<`, NEVER `<=`. At pivot 0.25 the cap
+# floors to exactly 0.25 -- a COLLAPSED zone that is still perfectly ORDERABLE,
+# and the framework's own alarm side already treats it as correct. A `<=` would
+# silently delete every collapsed-but-orderable zone.
+#
+# `_mandate_has_room` (`swing/latches/orders.py`) is the trap: it is a strict
+# `>` on the SAME two prices, so `if not _mandate_has_room(latch)` looks like
+# this refusal and IS the forbidden `<=`. The two answer different questions --
+# "is there a non-degenerate zone" versus "is the framework's own order
+# impossible" -- and `==` sits inside the first and outside the second.
+# ---------------------------------------------------------------------
+
+SUB_DOLLAR_PIVOT = 0.019          # cap 0.0196 -> mandate limit 0.01 (BELOW)
+SUB_DOLLAR_STOP = 0.001
+COLLAPSED_PIVOT = 0.25            # cap 0.2575 -> mandate limit 0.25 (EQUAL)
+COLLAPSED_STOP = 0.20
+
+
+def _latch_at(pivot: float, stop: float) -> Latch:
+    return _ftre_latch(
+        latched_pivot=pivot, latched_initial_stop=stop,
+        zone_cap=round(pivot * 1.03, 4))
+
+
+def _prepared_at(pivot: float, stop: float, regime: str = "STOP_LIMIT"):
+    return compute_prepared_order(
+        latch=_latch_at(pivot, stop), regime_order_type=regime,
+        regime_close=pivot, regime_close_session="2026-07-27",
+        sizing_inputs=_sizing())
+
+
+def test_a_limit_BELOW_the_pivot_withholds_the_prepared_order():
+    """DISCRIMINATOR. Pre-fix this geometry is OFFERED as
+    `STOP_LIMIT stop 0.019 / limit 0.01` -- an order that cannot fill, sized
+    off a risk-per-share the trigger does not carry."""
+    assert mandate_limit_price(round(SUB_DOLLAR_PIVOT * 1.03, 4)) == 0.01, (
+        "the premise, inline so it cannot rot: the cent-floor drags the "
+        "mandate limit below the trigger on this geometry")
+    res = _prepared_at(SUB_DOLLAR_PIVOT, SUB_DOLLAR_STOP)
+    assert res.order is None
+    assert res.withheld_reason == "limit_below_pivot"
+    assert res.withheld_detail.strip()
+
+
+def test_the_pullback_regime_refuses_the_same_geometry():
+    """DISCRIMINATOR. The refusal is regime-INDEPENDENT by design: in the
+    breakout regime the order cannot fill; in the pullback regime the limit
+    sits below the buy zone [pivot, cap] the mandate is defined over. In both,
+    the quantized mandate is not the mandate."""
+    res = _prepared_at(SUB_DOLLAR_PIVOT, SUB_DOLLAR_STOP, regime="LIMIT")
+    assert res.order is None
+    assert res.withheld_reason == "limit_below_pivot"
+
+
+def test_a_COLLAPSED_but_ORDERABLE_zone_is_STILL_offered():
+    """GUARD -- green on both trees, and it kills the `<=` form and any reuse
+    of `_mandate_has_room`. The zone has collapsed to a point, but a LIMIT at
+    that point is an order the operator can actually place."""
+    assert mandate_limit_price(round(COLLAPSED_PIVOT * 1.03, 4)) == COLLAPSED_PIVOT, (
+        "the premise: cap 0.2575 floors to exactly the pivot")
+    res = _prepared_at(COLLAPSED_PIVOT, COLLAPSED_STOP)
+    assert res.withheld_reason is None
+    assert res.order is not None
+    assert res.order.limit_price == COLLAPSED_PIVOT
+    assert res.order.stop_price == COLLAPSED_PIVOT
+
+
+def test_the_FTRE_control_is_unmoved():
+    """CONTROL. The live geometry the whole arc is built from must be
+    byte-identical -- an over-eager refusal is caught here, not in production."""
+    res = _prepared()
+    assert res.withheld_reason is None
+    assert res.order is not None
+    assert res.order.limit_price == FTRE_LIMIT
+    assert res.order.limit_price > FTRE_PIVOT
