@@ -17,33 +17,6 @@
       <strong>{{ alarm.kind }}</strong> ({{ alarm.severity }}) {{ alarm.ticker }}:
       {{ alarm.detail }}
     </p>
-    {# THE PER-ORDER CANCEL CONTROL on a stale-order alarm. LOG-ONLY: nothing is
-       sent to the broker on any branch -- the operator still cancels at the
-       broker, and this records that he decided to. Without it a `cancel` intent
-       is unreachable in a browser, so the row that carries section G.4's EXACT
-       linkage (a captured broker order id) never enters the ledger.
-
-       It targets a SPECIFIC broker order id, never a ticker: hazard (c), and
-       the schema CHECK makes a ticker-aimed cancel unwritable. #}
-    {% if alarm.broker_order_id and alarm.latch_candidate_id %}
-    <form class="latch-cancel-form" hx-post="/latches/intent"
-          hx-target="this" hx-swap="outerHTML"
-          hx-headers='{"HX-Request": "true"}'>
-      <input type="hidden" name="intent_kind" value="cancel">
-      <input type="hidden" name="candidate_id"
-             value="{{ alarm.latch_candidate_id }}">
-      <input type="hidden" name="view_session_date"
-             value="{{ vm.view_session_date }}">
-      <input type="hidden" name="actual_broker_order_id"
-             value="{{ alarm.broker_order_id }}">
-      <input type="hidden" name="prior_intent_id"
-             value="{{ alarm.prior_intent_id }}">
-      <button type="submit" class="latch-cancel-submit">Log that I cancelled
-        order {{ alarm.broker_order_id }}</button>
-    </form>
-    {% elif alarm.cancel_unavailable_note %}
-    <p class="latch-cancel-unavailable">{{ alarm.cancel_unavailable_note }}</p>
-    {% endif %}
     {% endfor %}
   </div>
   {% elif not vm.disagreements and not vm.indeterminate_tickers
@@ -61,6 +34,48 @@
      display-ready (the joined `vm.all_clear_claims`); this template holds no
      logic. #}
   <p class="muted">{{ vm.all_clear_note }}</p>
+  {% endif %}
+
+  {# THE PER-ORDER CANCEL LOG, and it sits OUTSIDE the alarm block on purpose.
+     RD's principle (2026-08-03): recording an operator action and alarming on a
+     detected problem are different functions, and the affordance to RECORD must
+     not be gated on the alarm that DETECTS. It used to ride inside the
+     stale-order alarm, which meant the operator could only log a cancellation
+     the framework had already complained about -- and an order in PENDING_CANCEL
+     (the state produced by him doing what the framework asked) suppresses both
+     alarms, so the framework offered no way to record the very act it requested.
+
+     LOG-ONLY on every branch: nothing is sent to the broker. He still cancels at
+     the broker and this records that he decided to. Each control targets a
+     SPECIFIC broker order id, never a ticker -- hazard (c), which migration
+     0033's CHECK also makes unwritable. Every value is display-ready; this
+     template holds no logic. #}
+  {% if vm.cancel_controls or vm.cancel_unavailable_notes %}
+  <section class="latch-cancel-log">
+    {% for control in vm.cancel_controls %}
+    {% if control.status_note %}
+    <p class="latch-cancel-status">{{ control.status_note }}</p>
+    {% endif %}
+    <form class="latch-cancel-form" hx-post="/latches/intent"
+          hx-target="this" hx-swap="outerHTML"
+          hx-headers='{"HX-Request": "true"}'>
+      <input type="hidden" name="intent_kind" value="cancel">
+      <input type="hidden" name="candidate_id"
+             value="{{ control.latch_candidate_id }}">
+      <input type="hidden" name="view_session_date"
+             value="{{ vm.view_session_date }}">
+      <input type="hidden" name="actual_broker_order_id"
+             value="{{ control.order_id }}">
+      <input type="hidden" name="prior_intent_id"
+             value="{{ control.prior_intent_id }}">
+      <button type="submit" class="latch-cancel-submit">Log that I cancelled
+        order {{ control.order_id }}</button>
+    </form>
+    {% endfor %}
+    {% for note in vm.cancel_unavailable_notes %}
+    <p class="latch-cancel-unavailable">{{ note }}</p>
+    {% endfor %}
+  </section>
   {% endif %}
 
   {# The mandate REGIME was undeterminable, so the two-form order-shape check

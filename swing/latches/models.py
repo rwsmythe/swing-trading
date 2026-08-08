@@ -517,10 +517,14 @@ class OrderAlarm:
     severity: str
     # THE BROKER ORDER THIS ALARM IS ABOUT, STRUCTURALLY (auto-review MAJOR).
     # The stale-order alarm names an order id in its PROSE, and prose is not a
-    # field: without this the panel cannot offer the per-order Cancel control the
-    # plan's file manifest requires, so a `cancel` intent -- the row that carries
-    # section G.4's EXACT linkage -- is unreachable in a browser and cancellation
-    # decisions never enter the measurement ledger at all.
+    # field, so nothing downstream could read WHICH order the alarm concerned.
+    #
+    # IT IS ALARM CONTENT, NOT A CONTROL ANCHOR. It was the anchor for the
+    # per-order Cancel control until wave item 4 moved that control off the
+    # alarm and onto the ORDER (`attribute_orders_to_latches` ->
+    # `LatchOrdersFragmentVM.cancel_controls`), because the affordance to RECORD
+    # an operator act must not be gated on the alarm that DETECTS a problem
+    # (RD, 2026-08-03). Reaching a `cancel` row no longer depends on this field.
     #
     # `None` on LATCH_ARMED_NO_RESTING_ORDER, which is an alarm about the ABSENCE
     # of an order and has no id to carry.
