@@ -54,36 +54,42 @@ _EXPECTED_REFERENCES = {
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _source(rel_path: str) -> str:
+    return (_REPO_ROOT / rel_path).read_text(encoding="utf-8")
+
+
 def _tree(rel_path: str) -> ast.Module:
-    return ast.parse((_REPO_ROOT / rel_path).read_text(encoding="utf-8"))
+    return ast.parse(_source(rel_path))
 
 
-def _bindings_of(tree: ast.Module, names: set[str]) -> list[str]:
+def _bindings_of(source: str, tree: ast.Module, names: set[str]) -> list[str]:
     """Every BINDING of `names`, at any scope, by any binding form.
 
-    `ast.Name` in a `Store` context subsumes `Assign` / `AnnAssign` /
-    `AugAssign` / `for` targets / `with ... as` / walrus; `ast.arg` covers
-    function parameters (a parameter named `PRICE_DP` shadows the import inside
-    that function while every other assertion here still passes);
-    `ExceptHandler`, `MatchAs`, `MatchStar`, `global`/`nonlocal` and a
-    `def`/`class` STATEMENT all bind through a bare STRING FIELD rather than
-    a `Name` node, so each needs its own clause. That family is why this
-    helper enumerates BINDERS rather than trusting one node type.
+    ASKED OF THE COMPILER, NOT OF AN ENUMERATION OF NODE TYPES. `symtable` is
+    the symbol table CPython itself builds, so "is this name bound in this
+    scope" is answered structurally: assignment, annotated assignment,
+    augmented assignment, `for` target, `with ... as`, walrus, parameter,
+    `except ... as`, every `match` capture, `def` / `class`, `global` /
+    `nonlocal`, PEP-695 type parameters and imports are all just BINDINGS to it.
 
-    IMPORTS ARE NOT EXEMPT BY NODE TYPE -- ONLY THE CANONICAL ONE IS ALLOWED
-    (Codex R2 MINOR). An `import` binds through `ast.alias`, and treating that
-    node type as permitted let a function-local `from somewhere_else import
-    PRICE_DP`, or an `import x as PRICE_DP`, shadow the canonical constant while
-    the identity test (which reads the MODULE attribute) and the reference count
-    both still passed. So every `alias` binding either name is rejected EXCEPT
-    the module-level `from swing.latches.constants import PRICE_DP` -- the one
-    binding this whole file exists to require.
+    THIS REPLACED A HAND-WRITTEN NODE-TYPE ROSTER THAT WAS WIDENED FIVE TIMES IN
+    FIVE REVIEW ROUNDS -- `AnnAssign`, then `arg`, then alias / `MatchAs` /
+    `MatchStar`, then `def` / `class`, then `MatchMapping.rest`, then PEP-695
+    type parameters, the last of which ALSO broke the declared 3.11 floor by
+    naming `ast.TypeVar` directly. Each widening was correct and each left the
+    next hole open, because an enumeration can only ever be as complete as the
+    grammar it was written against. A single-source guarantee with a documented
+    hole in it is not a guarantee, and six rounds of patching a roster is the
+    evidence that the roster was the wrong instrument.
 
-    Enumerating node TYPES was the shape that let `PRICE_DP: int = 2` slip past
-    an `Assign`-only ban, and exempting a node type is the same mistake wearing
-    an import's clothes. A single-source guarantee with a documented hole in it
-    is not a guarantee.
+    EXACTLY ONE BINDING IS PERMITTED: the MODULE-SCOPE IMPORT. `symtable` says a
+    name is imported but not FROM WHERE, so the alias walk below still answers
+    "which module" -- that is the one question the symbol table cannot answer,
+    and it is why a `from somewhere_else import PRICE_DP` at module scope is
+    caught here rather than by the compiler's own view.
     """
+    import symtable
+
     allowed_aliases = {
         id(alias)
         for node in tree.body
@@ -94,47 +100,29 @@ def _bindings_of(tree: ast.Module, names: set[str]) -> list[str]:
     }
     found: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            if node.id in names:
-                found.append(f"Name(Store) {node.id} at line {node.lineno}")
-        elif isinstance(node, ast.arg) and node.arg in names:
-            found.append(f"arg {node.arg} at line {node.lineno}")
-        elif isinstance(node, ast.ExceptHandler) and node.name in names:
-            found.append(f"except-as {node.name} at line {node.lineno}")
-        elif isinstance(node, ast.MatchAs) and node.name in names:
-            found.append(f"match-as {node.name} at line {node.lineno}")
-        elif isinstance(node, ast.MatchStar) and node.name in names:
-            found.append(f"match-star {node.name} at line {node.lineno}")
-        elif isinstance(node, (ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple)):
-            # PEP-695 TYPE PARAMETERS -- `def f[PRICE_DP](...)` and
-            # `class C[PRICE_DP]` (Codex R10 MINOR). A FIFTH string-field binder
-            # family, and the one that shadows the constant while leaving the
-            # import, the module identity, the reference count AND the required
-            # `round(..., PRICE_DP)` shape all intact, so every other assertion
-            # here passes.
-            if node.name in names:
-                found.append(f"type-param {node.name} at line {node.lineno}")
-        elif isinstance(node, ast.MatchMapping) and node.rest in names:
-            # `case {**PRICE_DP}` -- a FOURTH string-field binder in the match
-            # family alone (Codex R9 MINOR). Enumerating them one review round
-            # at a time is the cost of a rule stated as a list; it is written as
-            # a family above so the next reader looks for the SHAPE.
-            found.append(f"match-mapping-rest {node.rest} at line {node.lineno}")
-        elif isinstance(node, ast.alias):
+        if isinstance(node, ast.alias):
             bound = node.asname or node.name.split(".")[0]
             if bound in names and id(node) not in allowed_aliases:
-                found.append(f"import-alias {bound}")
-        elif isinstance(node, (ast.Global, ast.Nonlocal)):
-            for bound in node.names:
-                if bound in names:
-                    found.append(f"global/nonlocal {bound} at line {node.lineno}")
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                               ast.ClassDef)) and node.name in names:
-            # A `def PRICE_DP` / `class PRICE_DP` binds the name through a
-            # STRING FIELD, not a `Name(Store)` node (Codex R3 MINOR) -- the
-            # same shape as `ExceptHandler` and `MatchAs`, and the third time
-            # this belt was widened by finding another string-field binder.
-            found.append(f"def/class {node.name} at line {node.lineno}")
+                found.append(f"import of {bound} from somewhere else")
+
+    def _scan(table, path: str) -> None:
+        for sym in table.get_symbols():
+            name = sym.get_name()
+            if name not in names:
+                continue
+            bound = (sym.is_assigned() or sym.is_parameter()
+                     or sym.is_imported())
+            if not bound:
+                continue                      # a pure READ, which is the point
+            if (path == "" and sym.is_imported() and not sym.is_assigned()
+                    and not sym.is_parameter()):
+                continue                      # THE module-scope import
+            found.append(f"{name} bound in scope {path or '<module>'}")
+        for child in table.get_children():
+            _scan(child, f"{path}.{child.get_name()}" if path
+                  else child.get_name())
+
+    _scan(symtable.symtable(source, "<single-source-belt>", "exec"), "")
     return found
 
 
@@ -166,9 +154,10 @@ def _price_dp_references(tree: ast.Module) -> int:
 
 @pytest.mark.parametrize("rel_path", sorted(_EXPECTED_REFERENCES))
 def test_every_latch_price_comparison_reads_ONE_PRICE_DP(rel_path: str) -> None:
-    tree = _tree(rel_path)
+    source = _source(rel_path)
+    tree = ast.parse(source)
 
-    bindings = _bindings_of(tree, {"PRICE_DP", "_PRICE_DP"})
+    bindings = _bindings_of(source, tree, {"PRICE_DP", "_PRICE_DP"})
     assert bindings == [], (
         f"{rel_path} BINDS the display precision instead of importing it: {bindings}")
 
