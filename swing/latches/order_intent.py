@@ -356,6 +356,42 @@ def compute_prepared_order(
         float(latch.latched_pivot)
         if regime_order_type == MANDATE_ORDER_TYPE_BREAKOUT else None)
 
+    # THE FRAMEWORK'S OWN ORDER MUST BE POSSIBLE. The whole-cent FLOOR can drag
+    # the mandate limit BELOW the latched pivot whenever the 3% pad is worth
+    # less than a cent: pivot 0.019 -> cap 0.0196 -> limit 0.01. In the breakout
+    # regime that is a stop-limit whose limit sits under its own trigger, so it
+    # cannot fill AND sizing off 0.01 against a 0.001 stop reports roughly half
+    # the risk the 0.019 trigger actually carries. In the pullback regime the
+    # limit sits outside the buy zone [pivot, cap] the mandate is defined over.
+    # The refusal is therefore REGIME-INDEPENDENT: in both, the quantized
+    # mandate is not the mandate.
+    #
+    # THE SIBLING IS ALREADY SHIPPED, in `swing/recommendations/build.py`'s
+    # check 4 (`basis <= 0 or basis < pivot`) -- and its docstring carries the
+    # deferral this check DISCHARGES, findable by content search
+    # (`git log -S'OUT OF SCOPE, FLAGGED' -- swing/recommendations/build.py`)
+    # rather than by a SHA a rebase would rewrite.
+    #
+    # STRICT `<`, NEVER `<=`. At pivot 0.25 the cap floors to exactly 0.25: the
+    # zone has COLLAPSED to a point, but a limit AT that point is an order the
+    # operator can place, and the alarm side already treats it as correct
+    # (`swing/latches/orders.py:_mandate_has_room`). DO NOT REUSE THAT HELPER
+    # HERE. It is a strict `>` on the same two prices, so `if not
+    # _mandate_has_room(latch)` reads like this check and IS the forbidden
+    # `<=`. It answers a different question -- "is there a non-degenerate zone",
+    # which decides whether the limit-above-stop SHAPE rule may be applied to an
+    # OBSERVED order at all -- and `==` sits inside that one and outside this.
+    if limit_price < float(latch.latched_pivot):
+        return PreparedOrderResult(
+            order=None, withheld_reason="limit_below_pivot",
+            withheld_detail=(
+                "No prepared order: the whole-cent mandate limit "
+                f"{limit_price:.2f} is BELOW the latched pivot "
+                f"{float(latch.latched_pivot):.2f}, so the framework's own "
+                "order could not fill and sizing it would understate the "
+                "risk the trigger carries. The mandate facts are shown; no "
+                "order is offered."))
+
     # RULED BY RD 2026-07-29: the LIMIT PRICE is the sizing basis in BOTH
     # regimes, NOT pivot-parity. In the pullback regime the limit is the only
     # price the order can fill at; in the breakout regime it is the worst case.
@@ -372,9 +408,14 @@ def compute_prepared_order(
             max_risk_pct=sizing_inputs.max_risk_pct,
             position_pct_cap=sizing_inputs.position_pct_cap)
     except ValueError as exc:
-        # `Latch.__post_init__` already guarantees
-        # latched_initial_stop < latched_pivot < zone_cap, so this cannot fire --
-        # but the call is guarded anyway and a raise DEGRADES VISIBLY (A6).
+        # THE CONSTRUCTOR ENFORCES THE STOP HALF ONLY. `Latch.__post_init__`
+        # raises on `latched_initial_stop >= latched_pivot` and requires all
+        # three prices FINITE; it places NO constraint on `zone_cap` beyond
+        # finiteness. The cap-above-pivot ordering is a property of the ORDINARY
+        # derivation (`zone_cap_for_pivot` is `round(p * 1.03, 4)`), not of the
+        # type -- and `_usable_price` admits a pivot small enough to break it
+        # (`round(1e-305 * 1.03, 4)` is 0.0). So this guard is REACHABLE, and a
+        # raise DEGRADES VISIBLY rather than 500ing the panel (A6).
         return PreparedOrderResult(
             order=None, withheld_reason="sizing_degenerate",
             withheld_detail=(
