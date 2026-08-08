@@ -1173,7 +1173,48 @@ async def latches_intent(request: Request):
                 f"current session is {current.isoformat()}). Reload before "
                 "recording a decision.")
 
-        action_session_date = anchor.isoformat()
+        # FLAG B -- A DECLINE'S EFFECTIVE SESSION IS THE SERVER'S CURRENT ONE,
+        # AND BACKDATING IS IMPOSSIBLE BY CONSTRUCTION (RD, `docs/rd-state.md`).
+        #
+        # WHY `decline` AND NOT EVERY KIND. RD's antecedent is that the session
+        # field is server-computed WHEREVER IT IS CONSUMED AS A DECISION OR
+        # ORDERING DATE. `_resolve_decline` parses this column into
+        # `_Terminal("declined", session)` and `_Terminal.order_key` is
+        # `(session, rank)`, so a backdated decline can PRE-EMPT a terminal
+        # dated between the render and the submit -- including a FILL. `cancel`
+        # and `attest` do not meet it: their session is provenance/display only
+        # (the ledger's time axis is `recorded_ts`) and `candidate_id` carries
+        # mandate identity regardless, so flag B does not reach them. That
+        # asymmetry is pinned by a TEST rather than promised by a comment
+        # (`tests/latches/test_declined_terminal.py`), because a comment saying
+        # "cancel will inherit this when a consumer appears" is a claim about
+        # work that has not happened and reads true forever after it goes false.
+        #
+        # BOTH HALVES ARE REQUIRED. Server-computing alone would accept a form
+        # anchored at S and stamp it S+1 -- the operator answers about one
+        # session and the ledger records another, which is server-computed but
+        # DISHONEST. So a stale-but-tolerated anchor is REFUSED here, the same
+        # strictness `POST /latches/orders` already applies for a sibling
+        # reason, and the two values are then equal by construction (which also
+        # keeps the idempotency key, built from the form's raw spelling,
+        # coherent with the stored value).
+        #
+        # THE GATE STAYS IN STEP 5, BEHIND THE REPLAY LOOKUPS. SELECT-first
+        # idempotency requires the terminal-state read to precede validation,
+        # and moving it ahead would make a double-click on a page that went
+        # stale between clicks FAIL instead of collapsing. No new row can bear a
+        # stale-anchor key after this, because the key folds in the form's raw
+        # session and such a submission is now refused before it writes.
+        if kind == "decline" and anchor != current:
+            return _conflict(
+                f"This page is stale (rendered for {anchor.isoformat()}; "
+                f"current session is {current.isoformat()}). A decline is "
+                "recorded against the CURRENT session, so NOTHING was "
+                "recorded. Reload and decline again if that is still your "
+                "decision.")
+
+        action_session_date = (
+            current.isoformat() if kind == "decline" else anchor.isoformat())
         if kind == "validity":
             if not _snapshot_is_fresh(envelope, now=now, anchor=anchor):
                 return _conflict(
