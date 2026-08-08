@@ -2728,3 +2728,56 @@ def test_an_order_attributable_to_NO_latch_gets_a_NOTE_and_no_control_with_NO_al
     assert "9999" in r.text
     assert "no mandate to log a cancel against" in r.text
     assert _CANCEL_FORM not in r.text
+
+
+def test_an_IDENTICAL_paging_DUPLICATE_renders_as_ONE_order_everywhere(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """CODEX R4 MAJOR. A broker page can repeat an order, and canonicalising it
+    inside the join alone left `order_lines`, the validity prompts and
+    `_broker_book_digest` reading the RAW book -- so the duplicate rendered
+    twice and MOVED THE SNAPSHOT DIGEST while the join counted one order. A
+    digest that moves without the book moving lets a reload append a second
+    validity row for the same logical broker state, which is a fabricated
+    observation in a measurement ledger.
+
+    Asserted as EQUIVALENCE against the single-order render rather than as a
+    count: the property is that one order and the same order twice are the SAME
+    BOOK, and any consumer that disagrees shows up as a diff.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    once = _order(order_id="D1", duration="GOOD_TILL_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[once])
+    with TestClient(app) as client:
+        single = _post_orders(client).text
+    app2 = _app(cfg, cfg_path, monkeypatch, orders=[once, _order(
+        order_id="D1", duration="GOOD_TILL_CANCEL")])
+    with TestClient(app2) as client:
+        doubled = _post_orders(client).text
+    assert doubled == single, (
+        "an identical repeat is ONE order, so every consumer -- the order "
+        "list, the cancel controls, the alarms and the snapshot digest -- must "
+        "render byte-identically")
+    assert single.count("<li>FTRE BUY") == 1
+    assert single.count(_CANCEL_FORM) == 1
+
+
+def test_a_CONTRADICTORY_repeated_order_id_degrades_the_whole_fragment(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The other side. A book that says one id is two different orders is not
+    something this surface can resolve, and the panel's standing rule is that a
+    false all-clear and a false alarm are both worse than an honest unknown --
+    so the A6 ladder degrades it VISIBLY and no control is offered on a book
+    nobody could read."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[
+        _order(order_id="C1"), _order(order_id="C1", price=99.0, stop_price=99.0)])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "UNKNOWN" in r.text
+    assert _CANCEL_FORM not in r.text
+    assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text

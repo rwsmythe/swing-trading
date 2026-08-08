@@ -2114,6 +2114,7 @@ def build_latch_orders_vm(
     )
     from swing.latches.orders import (
         attribute_orders_to_latches,
+        canonical_order_book,
         classify_close_provenance,
         expected_mandate_order_type,
         indeterminate_order_tickers,
@@ -2163,6 +2164,16 @@ def build_latch_orders_vm(
             resolution_detail=resolution.detail, alarms=(), order_lines=())
 
     try:
+        # CANONICALISE THE BOOK ONCE, BEFORE ANY CONSUMER (Codex R4 MAJOR). A
+        # broker page can repeat an order; an IDENTICAL repeat is one order seen
+        # twice and collapses, a CONFLICTING one is a book that contradicts
+        # itself and raises into the A6 ladder below. Doing this only inside the
+        # join left `order_lines`, the validity prompts and `_broker_book_digest`
+        # reading the RAW book -- so a duplicate rendered twice and MOVED THE
+        # SNAPSHOT DIGEST while the join counted one order, and a digest that
+        # moves without the book moving lets a reload append a second validity
+        # row for the same logical broker state.
+        orders = canonical_order_book(orders)
         # BOTH READ THE SAME PURE PREDICATE OVER THE SAME ORDER SET, which is
         # what `indeterminate_order_tickers` requires of the sibling predicate
         # and what makes the alarms and the cancel-control render agree about

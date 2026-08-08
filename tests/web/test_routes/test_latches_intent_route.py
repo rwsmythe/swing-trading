@@ -1786,12 +1786,22 @@ def test_a_DECLINE_with_a_STALE_anchor_is_REFUSED_and_writes_NOTHING(
     assert _intents(cfg) == []
 
 
-def test_a_CURRENT_anchor_decline_stores_the_SERVER_session(
+def test_a_DECLINE_stores_a_SESSION_EQUAL_to_BOTH_the_clock_and_the_anchor(
         seeded_db, frozen_clocks):
-    """The other half of flag B: the stored session comes from the SERVER
-    CLOCK, not from the form. With the strict gate above, the two are equal by
-    construction -- which is what keeps the idempotency key (built from the
-    form's raw spelling) coherent with the stored value."""
+    """INVARIANT, NOT A DISCRIMINATOR, and it is labelled so (Codex R4 MINOR).
+
+    It was named "stores the SERVER session" and counted as flag B's other
+    half. It is not: the strict gate makes `anchor == current`, so the stored
+    value is identical whether it came from the form or from the clock, and the
+    row is the same on the pre-fix and post-fix trees. Presenting it as evidence
+    of the server-computed half would have been the vacuous-acceptance-test
+    class in the arc that spends three sections warning about it.
+
+    What it DOES pin is the EQUALITY the two halves produce together -- and that
+    equality is load-bearing rather than decorative, because `build_idempotency
+    _key` folds in the form's RAW session spelling while the row stores the
+    server's. If they could differ, the key and the row would describe different
+    sessions. The DISCRIMINATOR for flag B is the stale-anchor test above."""
     from swing.evaluation.dates import action_session_for_run
     cfg, cfg_path = seeded_db
     cid = _seed(cfg)
@@ -1802,7 +1812,10 @@ def test_a_CURRENT_anchor_decline_stores_the_SERVER_session(
         r = client.post("/latches/intent", headers=_HX, data=form)
     assert r.status_code == 200, r.text
     (row,) = _intents(cfg)
-    assert row[2] == action_session_for_run(NOW).isoformat() == ANCHOR
+    assert row[2] == action_session_for_run(NOW).isoformat() == ANCHOR, (
+        "the stored session, the server clock's session and the form's anchor "
+        "are ONE value -- which is exactly why this test cannot distinguish "
+        "which of them it came from")
 
 
 @pytest.mark.parametrize("kind,extra", [

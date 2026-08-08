@@ -624,11 +624,17 @@ def test_close_EXACTLY_AT_the_pivot_is_the_PULLBACK_regime():
     the pivot a buy STOP would sit at the market, and the mandate is a resting
     LIMIT at the zone cap.
 
-    THE EXISTING `18.339999` CASE IS NOT A SUBSTITUTE. That is a NEAR-equality
-    and it passes under `<` and under `<=` alike, so it cannot see this
-    boundary move. This test fails if the boundary moves in EITHER direction:
-    a flip to `<=` makes the equality BREAKOUT, and a flip to `>` or an
-    inverted return makes the `P - 0.01` neighbour PULLBACK.
+    WHAT THE EXISTING `18.339999` CASE DOES AND DOES NOT COVER, corrected
+    (Codex R4 MINOR): both of its operands round to `18.34`, so it DOES fail
+    under a flip to `<=`. The claim that it passes under both was false. What it
+    cannot see is the boundary moving the OTHER way -- under a flip to `>` it
+    still returns PULLBACK and still passes -- and it documents the disposition
+    only by implication, through a value chosen to be near the pivot.
+
+    So this test earns its place on the two things that one does not do: it
+    states the EXACT equality as the subject rather than approaching it, and its
+    `P - 0.01` neighbour fails an inverted comparison. Together they pin the
+    boundary's LOCATION in both directions.
 
     `18.345` is here because its cent-rounding is non-trivial (it rounds DOWN
     to 18.34), which is exactly the shape a rounding change would disturb.

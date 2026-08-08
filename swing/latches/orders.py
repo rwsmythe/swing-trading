@@ -625,8 +625,18 @@ def _covers_mandate(order: RestingOrder, latch: Latch, *, attributed) -> bool:
     return order.stop_price is None
 
 
-def _orders_by_unique_id(orders) -> tuple[RestingOrder, ...]:
-    """The order book keyed by BROKER ORDER ID, or a raise (Codex R3 MAJOR).
+def canonical_order_book(orders) -> tuple[RestingOrder, ...]:
+    """The order book canonicalised on BROKER ORDER ID, or a raise.
+
+    PUBLIC AND CALLED ONCE BY THE FRAGMENT VM, BEFORE ANY CONSUMER (Codex R4
+    MAJOR). Applying it inside the two join/attribution functions alone left
+    `order_lines`, `_validity_prompts` and `_broker_book_digest` reading the RAW
+    book, so an identical paging duplicate rendered twice and changed the
+    snapshot digest while the join counted ONE order -- and a digest that moves
+    without the book moving lets a reload append a second validity row for the
+    same logical broker state. A canonical form that only some consumers see is
+    not a canonical form. Both functions still call it, so a caller that skips
+    it is not silently exposed.
 
     AN ORDER ID IS AN IDENTITY, AND EVERY CONSUMER HERE TREATS IT AS ONE. The
     join's `matched` map is keyed by it, so a repeated id silently overwrote the
@@ -722,7 +732,7 @@ def attribute_orders_to_latches(*, latches, orders) -> tuple[OrderAttribution, .
         by_ticker.setdefault(latch.identity.ticker, []).append(latch)
 
     rows: list[OrderAttribution] = []
-    for order in _orders_by_unique_id(orders):
+    for order in canonical_order_book(orders):
         if (order.instruction or "").upper() not in BUY_INSTRUCTIONS:
             continue
         if not (order.is_resting or order.is_indeterminate):
@@ -764,7 +774,7 @@ def join_orders_to_latches(*, latches, orders):
     # THE SAME ID-UNIQUENESS RULE THE ATTRIBUTION APPLIES, and applied here
     # FIRST so `matched`'s order-id keying cannot silently collapse two orders
     # (Codex R3 MAJOR).
-    orders = _orders_by_unique_id(orders)
+    orders = canonical_order_book(orders)
     resting_by_ticker: dict[str, list[RestingOrder]] = {}
     indeterminate_tickers = set(indeterminate_order_tickers(orders))
     for order in orders:
