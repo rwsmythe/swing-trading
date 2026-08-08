@@ -821,3 +821,49 @@ def test_a_BYTE_IDENTICAL_repeat_is_ONE_order_and_is_COLLAPSED():
     assert len(joins[cid].orders) == 1
     assert joins[cid].matched_order_count == 1
     assert alarms == ()
+
+
+def _schwab(**over):
+    """A raw `SchwabOrderResponse`, the shape `to_resting_orders` maps."""
+    from swing.integrations.schwab.models import SchwabOrderResponse
+    base = dict(order_id="1", status="WORKING", enter_time="2026-07-20T13:30:00Z",
+                instrument_symbol="FTRE", instruction="BUY", quantity=3.0,
+                order_type="STOP_LIMIT", price=18.89, stop_price=18.34)
+    base.update(over)
+    return SchwabOrderResponse(**base)
+
+
+def test_a_MIXED_STATUS_duplicate_id_is_caught_BEFORE_the_filter_hides_it():
+    """CODEX R5 MAJOR. The id-conflict rule has to run on the RAW book, because
+    the filters below it HIDE the contradiction: the same id returned once
+    WORKING and once FILLED -- the ordinary paging race, page 1 fetched before
+    the fill and page 2 after -- loses its FILLED occurrence in
+    `to_resting_orders` and reads downstream as ONE plainly resting order.
+
+    Checking uniqueness after the filter, which is where `canonical_order_book`
+    sits, cannot see it: by then the conflicting occurrence is gone. Presenting
+    a FILLED order as resting on the surface whose whole job is telling the
+    operator what is live is worse than degrading.
+    """
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="contradicts itself"):
+        to_resting_orders([_schwab(order_id="P1"),
+                           _schwab(order_id="P1", status="FILLED")])
+
+
+def test_a_MIXED_SIDE_duplicate_id_is_caught_the_same_way():
+    """The sibling: a repeat that flips side loses its SELL occurrence to the
+    BUY filter, so the same blind spot swallows it."""
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="contradicts itself"):
+        to_resting_orders([_schwab(order_id="P2"),
+                           _schwab(order_id="P2", instruction="SELL")])
+
+
+def test_a_BYTE_IDENTICAL_raw_repeat_maps_to_ONE_order():
+    """And the other side, so the rule is not a blanket refusal: the SAME order
+    seen twice is not a contradiction and must not degrade the panel."""
+    mapped = to_resting_orders([_schwab(order_id="P3"), _schwab(order_id="P3")])
+    assert [o.order_id for o in mapped] == ["P3"]

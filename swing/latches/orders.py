@@ -72,9 +72,50 @@ _CRITICAL_STALE_CLEAR_REASONS = frozenset({
 
 def to_resting_orders(schwab_orders) -> tuple[RestingOrder, ...]:
     """Map `SchwabOrderResponse` -> `RestingOrder`, keeping BUY-side orders
-    whose status is RESTING or INDETERMINATE. Terminal statuses are dropped."""
+    whose status is RESTING or INDETERMINATE. Terminal statuses are dropped.
+
+    THE ID-CONFLICT CHECK RUNS ON THE RAW BOOK, BEFORE ANY FILTER (Codex R5
+    MAJOR). A broker page can repeat an order id, and the FILTERS BELOW HIDE THE
+    CONTRADICTION: the same id returned once `WORKING` and once `FILLED` (the
+    ordinary paging race -- page 1 fetched before the fill, page 2 after) loses
+    its FILLED occurrence here and reads downstream as one plainly resting
+    order, and a repeat that flips side loses its SELL occurrence the same way.
+    Checking id uniqueness after the filter -- which is where `canonical_order
+    _book` sits -- cannot see either, because by then the conflicting occurrence
+    is gone. So the check belongs at the boundary where the raw book becomes the
+    domain book, which is here.
+
+    A BYTE-IDENTICAL repeat is one order seen twice and COLLAPSES; a repeat that
+    differs on ANY mapped field is a book contradicting itself about what an id
+    identifies. This module cannot resolve that and must not guess: the caller's
+    A6 ladder turns the raise into the honest unknown the panel's own rule
+    prescribes, which is strictly better than presenting a filled order as
+    resting on the surface whose whole job is telling the operator what is
+    live.
+    """
+    seen: dict[str, tuple] = {}
     out: list[RestingOrder] = []
     for o in schwab_orders or ():
+        order_id = str(getattr(o, "order_id", ""))
+        fingerprint = (
+            (getattr(o, "instruction", "") or "").upper(),
+            (getattr(o, "instrument_symbol", "") or "").upper(),
+            (getattr(o, "order_type", "") or "").upper(),
+            getattr(o, "quantity", None),
+            getattr(o, "price", None),
+            getattr(o, "stop_price", None),
+            getattr(o, "status", "") or "",
+            getattr(o, "duration", None),
+        )
+        prior = seen.get(order_id)
+        if prior is not None:
+            if prior != fingerprint:
+                raise ValueError(
+                    f"broker order id {order_id!r} appears twice with DIFFERENT "
+                    "content; the order book contradicts itself about what that "
+                    "id identifies")
+            continue                      # the SAME order seen twice
+        seen[order_id] = fingerprint
         instruction = (getattr(o, "instruction", "") or "").upper()
         if instruction not in BUY_INSTRUCTIONS:
             continue

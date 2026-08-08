@@ -155,11 +155,24 @@ def _inferred_origin(order_intent, place_intents) -> tuple[str, str]:
     comparison is unreachable -- so the VALUE goes undetermined while the basis
     keeps the fact, rather than trading a wrong answer for a blind one.
 
-    WHAT THIS DOES NOT DO: resolve the linkage that IS derivable, namely
+    WHAT THIS DOES NOT DO: resolve the linkage that MAY be derivable, namely
     `cancel.actual_broker_order_id` -> the `validity` row bearing that same
     broker order id -> that row's `validated_place_intent_id` -> the place.
-    Every hop is schema-guaranteed, and it is DEFERRED to item 5 with the rest
-    of the attribution work. What was not available was shipping its absence as
+    DEFERRED to item 5 with the rest of the attribution work.
+
+    AND THE CHAIN IS CONDITIONAL, NOT SCHEMA-GUARANTEED (Codex R5 MINOR).
+    Migration 0033's only UNIQUE is on `idempotency_key`: nothing requires a
+    cancel's broker order id to have a matching `validity` row, and nothing
+    makes `actual_broker_order_id` unique -- so the FIRST hop can find ZERO
+    matches or SEVERAL. Only the LAST hop is schema-guaranteed (a validity row
+    must carry `validated_place_intent_id`, and a trigger checks the parent
+    exists). Whoever builds it must therefore answer `undetermined` on zero and
+    on multiple, exactly as this function now does, rather than picking one --
+    an attribution asserted from an ambiguous match is the same defect this
+    guard exists to remove, one hop further out. Stated here because the
+    deferral's own description is the specification the next arc will read.
+
+    What was NOT available was shipping the chain's absence as
     `operator_inferred`.
     """
     parent = order_intent.validated_place_intent_id

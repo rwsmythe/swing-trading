@@ -1109,7 +1109,11 @@ def test_a_CANCEL_beside_a_PLACE_is_UNDETERMINED_and_never_operator_inferred(
     line = next(x for x in r.output.splitlines() if "order 2001" in x)
     assert "operator_inferred" not in line, line
     assert "inferred_origin=undetermined" in line, line
-    assert "UNDETERMINED" in line, line
+    # THE BASIS'S OTHER BRANCH, ASSERTED HERE (Codex R5 MINOR). Its sibling
+    # below pins the no-place wording; without this line a regression that
+    # printed "no place intent" in BOTH branches would pass both tests, and the
+    # residual evidence the basis exists to carry would be silently gone.
+    assert "a place intent exists on this latch" in line, line
 
 
 def test_the_UNDETERMINED_basis_still_states_whether_a_place_EXISTS(seeded_db):
