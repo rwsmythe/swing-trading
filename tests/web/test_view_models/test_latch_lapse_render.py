@@ -232,10 +232,12 @@ def test_being_UNVERIFIABLE_adds_NO_new_prepared_order_suppression():
     """T7.4, NARROWED to what the source actually supports.
 
     The requirement is NOT "the prepared order is always offered on an
-    UNVERIFIABLE latch" -- 21-B withholds it for its own reasons
-    (`regime_undeterminable` / `sizing_infeasible` / `sizing_degenerate`), and an
-    off-screen latch with an uncorroborated close may legitimately hit
-    `regime_undeterminable`. The testable requirement is that for a PAIR of
+    UNVERIFIABLE latch" -- the prepared order is withheld for its own reasons,
+    the roster being `LATCH_ORDER_WITHHELD_REASONS` (three at 21-B, four since
+    wave item 4 added `limit_below_pivot`; named by the CONSTANT here rather
+    than re-listed, because the re-listed version went stale the moment the set
+    grew -- Codex R9 MINOR). An off-screen latch with an uncorroborated close
+    may legitimately hit `regime_undeterminable`. The testable requirement is that for a PAIR of
     latches identical except that one is UNVERIFIABLE, the offered/withheld
     outcome is the SAME.
 

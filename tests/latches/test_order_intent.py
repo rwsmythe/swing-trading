@@ -308,6 +308,12 @@ def test_a_degenerate_sizing_geometry_WITHHOLDS_rather_than_raising(monkeypatch)
     assert res.order is None
     assert res.withheld_reason == "sizing_degenerate"
     assert res.withheld_detail.strip()
+    # THE SAME SENTENCE MUST BE TRUE HERE (Codex R9 MINOR). This branch catches
+    # ANY ValueError crossing the module seam, so a detail naming ONE cause is
+    # an unsupported claim on every other -- and the default geometry injected
+    # here is perfectly feasible.
+    assert "No order is offered." in res.withheld_detail
+    assert "whole-share" not in res.withheld_detail
 
 
 def test_the_result_type_is_LOSSLESS_and_rejects_both_none_and_both_set():
@@ -780,3 +786,4 @@ def test_a_SUB_CENT_geometry_reaches_sizing_degenerate_WITHOUT_injection():
     assert "framework defect" not in res.withheld_detail, (
         "it is a market/quantization geometry, and the operator-facing wording "
         "must not blame the framework for it")
+    assert "No order is offered." in res.withheld_detail

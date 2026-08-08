@@ -435,10 +435,17 @@ def compute_prepared_order(
         # runtime path rather than a dependency-contract belt.
         #
         # IT IS NOT PROMOTED TO ITS OWN WITHHELD REASON HERE. `sizing_degenerate`
-        # already says the right thing -- no whole-share position fits this
-        # geometry -- and adding a fourth reason would be a vocabulary change on
-        # a set the panel renders, which is a wider decision than a review fix.
-        # FLAGGED for the orchestrator instead.
+        # already carries the right shape -- the sizing computation could not
+        # produce an order -- and a FIFTH member of `LATCH_ORDER_WITHHELD_REASONS`
+        # (which this arc already took from three to four) is a vocabulary change
+        # on a set the panel renders, which is wider than a review fix. FLAGGED
+        # for the orchestrator instead.
+        #
+        # AND THE DETAIL STAYS GENERIC ON PURPOSE (Codex R9 MINOR). This branch
+        # catches ANY `ValueError` crossing the module seam, so a diagnosis
+        # naming one cause -- 'no whole-share position fits' -- would be an
+        # unsupported claim on every other cause. The `{exc}` text carries the
+        # specific reason; the sentence around it must not add one.
         #
         # WHAT THE CONSTRUCTOR DOES AND DOES NOT GUARANTEE: it enforces the STOP
         # half only and places NO constraint on `zone_cap` beyond finiteness. The
@@ -448,7 +455,7 @@ def compute_prepared_order(
             order=None, withheld_reason="sizing_degenerate",
             withheld_detail=(
                 "No prepared order: the sizing computation is degenerate "
-                f"({exc}). No whole-share position fits this geometry."))
+                f"({exc}). No order is offered."))
     if not sizing.feasible:
         return PreparedOrderResult(
             order=None, withheld_reason="sizing_infeasible",

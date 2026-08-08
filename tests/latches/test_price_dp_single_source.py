@@ -105,6 +105,12 @@ def _bindings_of(tree: ast.Module, names: set[str]) -> list[str]:
             found.append(f"match-as {node.name} at line {node.lineno}")
         elif isinstance(node, ast.MatchStar) and node.name in names:
             found.append(f"match-star {node.name} at line {node.lineno}")
+        elif isinstance(node, ast.MatchMapping) and node.rest in names:
+            # `case {**PRICE_DP}` -- a FOURTH string-field binder in the match
+            # family alone (Codex R9 MINOR). Enumerating them one review round
+            # at a time is the cost of a rule stated as a list; it is written as
+            # a family above so the next reader looks for the SHAPE.
+            found.append(f"match-mapping-rest {node.rest} at line {node.lineno}")
         elif isinstance(node, ast.alias):
             bound = node.asname or node.name.split(".")[0]
             if bound in names and id(node) not in allowed_aliases:
