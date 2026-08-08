@@ -767,3 +767,49 @@ def test_an_attribution_from_a_DIFFERENT_latch_set_RAISES_rather_than_degrades()
     with _pytest.raises(ValueError, match="different latch set"):
         join_orders_to_latches(
             latches=_armed(), orders=[_order()], attribution=rows)
+
+
+def test_an_attribution_over_a_DIFFERENT_ORDER_SET_RAISES_rather_than_diverging():
+    """CODEX R1 MAJOR, reproduced then closed.
+
+    Validating the supplied attribution on candidate ids ALONE accepts one
+    computed over a different ORDER SET against the same latches. The map is
+    then wrong for orders it never saw, and because `None` in that map means
+    "attributed to NO latch" -- which SUPPRESSES the stale-order alarm while a
+    live latch exists -- a wrong map MOVES AN ALARM rather than merely losing
+    information. Codex reproduced the shared path emitting two alarms where the
+    internal path emitted none.
+
+    The whole reason the `attribution=` parameter exists is that the two paths
+    agree, so a mismatch fails loudly and the caller's A6 ladder degrades it
+    visibly.
+    """
+    import pytest as _pytest
+
+    latches = _armed()
+    a = _order(order_id="A")
+    b = _order(order_id="B", stop_price=99.0, limit_price=99.5)
+    rows_for_a_only = attribute_orders_to_latches(latches=latches, orders=[a])
+    with _pytest.raises(ValueError, match="different order set"):
+        join_orders_to_latches(
+            latches=latches, orders=[a, b], attribution=rows_for_a_only)
+    # ...and the reverse direction: an attribution covering MORE orders than
+    # this call carries is equally a different order set.
+    rows_for_both = attribute_orders_to_latches(latches=latches, orders=[a, b])
+    with _pytest.raises(ValueError, match="different order set"):
+        join_orders_to_latches(
+            latches=latches, orders=[a], attribution=rows_for_both)
+
+
+def test_a_DUPLICATE_order_id_in_the_attribution_RAISES():
+    """The same failure one level down: two rows for one order id silently
+    collapse in the map, so an INDETERMINATE row can overwrite a RESTING one's
+    attribution and the alarm half moves under a refactor's name."""
+    import pytest as _pytest
+
+    latches = _armed()
+    resting = _order(order_id="DUP")
+    rows = attribute_orders_to_latches(latches=latches, orders=[resting])
+    with _pytest.raises(ValueError, match="duplicate order ids"):
+        join_orders_to_latches(
+            latches=latches, orders=[resting], attribution=rows + rows)

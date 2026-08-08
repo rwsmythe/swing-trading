@@ -721,18 +721,40 @@ def join_orders_to_latches(*, latches, orders, attribution=None):
     # disagree about which latch an order belongs to.
     matched: dict[str, Latch | None] = {}
     if attribution is not None:
+        # THE SUPPLIED ATTRIBUTION MUST BE *THIS* CALL'S, ON BOTH AXES, AND
+        # NEITHER CHECK SUBSUMES THE OTHER (Codex R1 MAJOR). Validating only the
+        # candidate ids accepts an attribution computed over a DIFFERENT ORDER
+        # SET against the same latches, and the map is then wrong for orders it
+        # never saw -- reproduced as the shared path emitting two alarms where
+        # the internal path emitted none. Duplicate order ids are the same
+        # failure one level down: two rows for one id silently collapse, and an
+        # indeterminate row can overwrite a resting one's attribution.
+        #
+        # RAISE, NEVER DEGRADE. `None` in this map means "attributed to NO
+        # latch", which is a LOAD-BEARING alarm input (it suppresses the
+        # stale-order alarm while a live latch exists), so a wrong map MOVES AN
+        # ALARM rather than merely losing information. The caller's A6 ladder
+        # degrades a raise visibly; a silent divergence is invisible, and the
+        # entire reason this parameter exists is that the two paths agree.
+        expected_ids = [
+            o.order_id for o in orders or ()
+            if (o.instruction or "").upper() in BUY_INSTRUCTIONS
+            and (o.is_resting or o.is_indeterminate)
+        ]
+        supplied_ids = [row.order_id for row in attribution]
+        if len(set(supplied_ids)) != len(supplied_ids):
+            raise ValueError(
+                "attribution carries duplicate order ids, so one order's latch "
+                "would silently overwrite another's")
+        if set(supplied_ids) != set(expected_ids):
+            raise ValueError(
+                "attribution does not cover exactly this call's attributable "
+                "BUY orders -- it was computed against a different order set")
         by_cid = {x.identity.candidate_id: x for x in latches}
         for row in attribution:
             if row.latch_candidate_id is None:
                 matched[row.order_id] = None
                 continue
-            # RAISE rather than degrade to `None` on a candidate id this call's
-            # latches do not contain: `None` means "attributed to NO latch",
-            # which is a LOAD-BEARING alarm input (it suppresses the stale-order
-            # alarm while a live latch exists). Silently manufacturing it from a
-            # mismatched attribution would move an alarm, so an attribution
-            # computed against a DIFFERENT latch set must fail loudly -- the
-            # caller's A6 ladder degrades it visibly.
             if row.latch_candidate_id not in by_cid:
                 raise ValueError(
                     "attribution references candidate_id "

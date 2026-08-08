@@ -1851,8 +1851,12 @@ def test_a_NON_DECLINE_KIND_with_a_STALE_anchor_is_STILL_ACCEPTED_today(
         "today's behaviour: the FORM's anchor, not the server session")
 
 
+@pytest.mark.parametrize("kind,extra", [
+    ("decline", {"decline_reason": "not today"}),
+    ("place", {}),
+])
 def test_the_REPLAY_ORDERING_is_UNCHANGED_by_the_decline_freshness_gate(
-        seeded_db, monkeypatch):
+        seeded_db, monkeypatch, kind, extra):
     """GUARD. It kills the one wrong implementation of flag B: moving the
     freshness gate AHEAD of the replay lookups.
 
@@ -1861,15 +1865,19 @@ def test_the_REPLAY_ORDERING_is_UNCHANGED_by_the_decline_freshness_gate(
     Move the gate and a double-click on a page that went stale between clicks
     FAILS instead of collapsing onto its existing row.
 
-    `place` is used because it is a DECISION kind like `decline` and reaches
-    the identical step-5 code path, while remaining outside flag B."""
+    `decline` IS THE LOAD-BEARING PARAMETER AND `place` IS THE COMPANION
+    (Codex R1 MINOR). The new gate is decline-ONLY, so a `place`-only test
+    stays green against exactly the implementation it claims to kill -- moving
+    the DECLINE gate ahead of the replay lookups. `place` is kept beside it
+    because it proves the ordering was not disturbed for the kind that has no
+    gate at all."""
     import swing.web.routes.latches as route_mod
     import swing.web.view_models.latches as vm_mod
     cfg, cfg_path = seeded_db
     monkeypatch.setattr(vm_mod, "_now", lambda: NOW)
     monkeypatch.setattr(route_mod, "_now", lambda: NOW)
     cid = _seed(cfg)
-    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    form = _anchor_form(cfg, cid) | {"intent_kind": kind} | extra
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         first = client.post("/latches/intent", headers=_HX, data=form)

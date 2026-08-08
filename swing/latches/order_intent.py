@@ -387,10 +387,10 @@ def compute_prepared_order(
             withheld_detail=(
                 "No prepared order: the whole-cent mandate limit "
                 f"{limit_price:.2f} is BELOW the latched pivot "
-                f"{float(latch.latched_pivot):.2f}, so the framework's own "
-                "order could not fill and sizing it would understate the "
-                "risk the trigger carries. The mandate facts are shown; no "
-                "order is offered."))
+                f"{float(latch.latched_pivot):.2f}, so it is outside the buy "
+                "zone this mandate is defined over and sizing against it "
+                "would understate the risk the pivot carries. The mandate "
+                "facts are shown; no order is offered."))
 
     # RULED BY RD 2026-07-29: the LIMIT PRICE is the sizing basis in BOTH
     # regimes, NOT pivot-parity. In the pullback regime the limit is the only
