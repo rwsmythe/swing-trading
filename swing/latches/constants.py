@@ -478,8 +478,16 @@ LATCH_SIZING_BASES = frozenset({"limit_price", "pivot"})
 LATCH_STOP_LEG_STATES = frozenset({
     "both_absent", "compared", "one_sided", "unknown",
 })
+#   limit_below_pivot -- the cent-floored mandate limit sits BELOW the latched
+#                        pivot, so the framework's own order is impossible: in
+#                        the breakout regime it cannot fill, and in the pullback
+#                        regime it is outside the buy zone [pivot, cap] the
+#                        mandate is defined over. Reachable on sub-dollar
+#                        geometry, where the floor is a large fraction of the
+#                        zone (pivot 0.019 -> cap 0.0196 -> limit 0.01).
 LATCH_ORDER_WITHHELD_REASONS = frozenset({
     "regime_undeterminable", "sizing_infeasible", "sizing_degenerate",
+    "limit_below_pivot",
 })
 # The `actual_order_type` / `actual_duration` vocabularies. The framework side
 # reuses 21-A's MANDATE_ORDER_TYPES / MANDATE_ORDER_DURATIONS unchanged; the
