@@ -58,8 +58,10 @@ def _bindings_of(tree: ast.Module, names: set[str]) -> list[str]:
     `AugAssign` / `for` targets / `with ... as` / walrus; `ast.arg` covers
     function parameters (a parameter named `PRICE_DP` shadows the import inside
     that function while every other assertion here still passes);
-    `ExceptHandler` and `MatchAs` bind through a bare string attribute rather
-    than a `Name`, so each needs its own clause.
+    `ExceptHandler`, `MatchAs`, `MatchStar`, `global`/`nonlocal` and a
+    `def`/`class` STATEMENT all bind through a bare STRING FIELD rather than
+    a `Name` node, so each needs its own clause. That family is why this
+    helper enumerates BINDERS rather than trusting one node type.
 
     IMPORTS ARE NOT EXEMPT BY NODE TYPE -- ONLY THE CANONICAL ONE IS ALLOWED
     (Codex R2 MINOR). An `import` binds through `ast.alias`, and treating that
@@ -104,6 +106,13 @@ def _bindings_of(tree: ast.Module, names: set[str]) -> list[str]:
             for bound in node.names:
                 if bound in names:
                     found.append(f"global/nonlocal {bound} at line {node.lineno}")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                               ast.ClassDef)) and node.name in names:
+            # A `def PRICE_DP` / `class PRICE_DP` binds the name through a
+            # STRING FIELD, not a `Name(Store)` node (Codex R3 MINOR) -- the
+            # same shape as `ExceptHandler` and `MatchAs`, and the third time
+            # this belt was widened by finding another string-field binder.
+            found.append(f"def/class {node.name} at line {node.lineno}")
     return found
 
 

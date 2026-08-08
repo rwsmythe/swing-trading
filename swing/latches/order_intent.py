@@ -433,14 +433,26 @@ def compute_prepared_order(
             max_risk_pct=sizing_inputs.max_risk_pct,
             position_pct_cap=sizing_inputs.position_pct_cap)
     except ValueError as exc:
-        # THE CONSTRUCTOR ENFORCES THE STOP HALF ONLY. `Latch.__post_init__`
-        # raises on `latched_initial_stop >= latched_pivot` and requires all
-        # three prices FINITE; it places NO constraint on `zone_cap` beyond
-        # finiteness. The cap-above-pivot ordering is a property of the ORDINARY
-        # derivation (`zone_cap_for_pivot` is `round(p * 1.03, 4)`), not of the
-        # type -- and `_usable_price` admits a pivot small enough to break it
-        # (`round(1e-305 * 1.03, 4)` is 0.0). So this guard is REACHABLE, and a
-        # raise DEGRADES VISIBLY rather than 500ing the panel (A6).
+        # A DEPENDENCY-CONTRACT DEFENCE, NOT A REACHABLE GEOMETRY -- AND THE
+        # BELOW-PIVOT REFUSAL ABOVE IS WHAT MADE THAT TRUE (Codex R3 MINOR).
+        # `compute_shares` raises on exactly one condition, `stop >= entry`.
+        # Past the refusal `limit_price >= latched_pivot`, and
+        # `Latch.__post_init__` enforces `latched_initial_stop < latched_pivot`
+        # and requires all three prices FINITE -- so `stop < entry` always holds
+        # and this branch cannot fire on any constructible latch. It is kept
+        # because `compute_shares` lives in another module whose precondition is
+        # its own to change, and a raise crossing that seam must DEGRADE VISIBLY
+        # rather than 500 the panel (A6). Its test INJECTS the failure; it does
+        # not construct a geometry that produces one.
+        #
+        # WHAT THE CONSTRUCTOR DOES AND DOES NOT GUARANTEE, stated because the
+        # comment this replaced got it wrong twice: it enforces the STOP half
+        # only and places NO constraint on `zone_cap` beyond finiteness. The
+        # cap-above-pivot ordering is a property of the ORDINARY derivation
+        # (`zone_cap_for_pivot` is `round(p * 1.03, 4)`), not of the type, and
+        # `_usable_price` admits a pivot small enough to break it
+        # (`round(1e-305 * 1.03, 4)` is 0.0) -- which is precisely the geometry
+        # the refusal above now intercepts.
         return PreparedOrderResult(
             order=None, withheld_reason="sizing_degenerate",
             withheld_detail=(

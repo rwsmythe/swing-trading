@@ -115,12 +115,19 @@ LOG_ONLY_NOTICE = "PREPARED ORDER (LOG ONLY - nothing is sent to the broker)"
 # saying so beats a silently missing button -- an unlabelled reduction is a
 # quiet all-clear by omission, and an inert control that renders and 400s is
 # worse than both.
+# IT NAMES NO ALTERNATIVE PATH, AND THAT IS THE POINT (Codex R3 MINOR). An
+# earlier wording pointed the operator at the attestation prompt -- but a card
+# whose order was withheld THROUGHOUT classifies `never_actionable` ("the panel
+# rendered but its prepared order was withheld throughout"), and the attestation
+# prompt rides on `discipline_lapse` alone, so on exactly the card this note
+# renders on that prompt may never appear. Advertising a control that is not
+# there is worse than admitting there is none: it sends him looking, and what he
+# learns is that the panel's instructions are approximate.
 DECISION_UNAVAILABLE_NOTE = (
     "No DECLINE control: a decline is recorded as a decision about the "
     "framework's own order, and the ledger requires that order on the row. "
-    "There is no order here to decline. If you are not taking this setup, "
-    "record it with the attestation prompt instead, or wait for the card to "
-    "offer an order.")
+    "There is no order here to decline, so there is no way to record one "
+    "against this card until it offers an order.")
 
 # The DECISION-axis labels. Every one states its REASON, because an unlabelled
 # reduction is a quiet all-clear by omission -- and two of these dispositions

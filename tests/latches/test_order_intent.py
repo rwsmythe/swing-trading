@@ -286,12 +286,21 @@ def test_infeasible_sizing_WITHHOLDS_the_form():
 
 
 def test_a_degenerate_sizing_geometry_WITHHOLDS_rather_than_raising(monkeypatch):
-    """The constructor enforces the STOP half only -- `Latch.__post_init__`
-    raises on `latched_initial_stop >= latched_pivot` and constrains `zone_cap`
-    no further than finiteness -- so this guard is REACHABLE rather than dead,
-    and a raise degrades VISIBLY rather than 500ing the panel (A6). The failure
-    is injected here because `compute_shares`'s own degenerate inputs are now
-    refused upstream by the below-pivot check."""
+    """DEPENDENCY FAULT INJECTION, and the catch is DEFENSIVE rather than
+    reachable (Codex R3 MINOR).
+
+    `compute_shares` raises on exactly one condition, `stop >= entry`, and past
+    the below-pivot refusal `limit_price >= latched_pivot` while
+    `Latch.__post_init__` enforces `latched_initial_stop < latched_pivot` -- so
+    no constructible latch can produce this raise. The failure is INJECTED, not
+    constructed, and the guard is kept because `compute_shares` lives in another
+    module whose precondition is its own to change; a raise crossing that seam
+    must degrade VISIBLY rather than 500 the panel (A6).
+
+    An earlier docstring called the guard reachable via a sub-normal pivot. The
+    refusal shipped in this same arc intercepts exactly that geometry, which
+    made the claim false the moment it landed -- the discharged-deferral class,
+    inside the fix for it."""
     from swing.latches import order_intent as mod
 
     def _boom(**kw):

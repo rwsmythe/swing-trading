@@ -771,3 +771,47 @@ def test_the_ATTRIBUTION_and_the_JOIN_agree_on_EVERY_resting_order():
             assert by_id[order.order_id] == owner, (order.order_id, orders)
             checked += 1
     assert checked == 5, "the premise: five RESTING orders were compared"
+
+
+def test_a_CONFLICTING_repeated_order_id_is_an_INCOHERENT_book_and_RAISES():
+    """CODEX R3 MAJOR. The join's `matched` map is keyed by order id, so a
+    repeated id silently overwrote the earlier order's latch while
+    `attribute_orders_to_latches` attributed each OCCURRENCE -- so the two
+    disagreed, and the cancel control could target a latch the alarms never
+    attributed the order to. `None` in that map means "attributed to NO latch",
+    so the divergence can BOTH fabricate and suppress an alarm.
+
+    An order book that contradicts itself about what an id identifies is not
+    something this module can resolve, and the panel's standing rule is that a
+    false all-clear and a false alarm are both worse than an honest unknown.
+    Both public functions apply the rule, so they cannot differ on it.
+    """
+    import pytest as _pytest
+
+    latches = _armed()
+    a = _order(order_id="SAME")
+    conflicting = _order(order_id="SAME", limit_price=99.0, stop_price=99.0)
+    for call in (
+        lambda: attribute_orders_to_latches(latches=latches,
+                                            orders=[a, conflicting]),
+        lambda: join_orders_to_latches(latches=latches,
+                                       orders=[a, conflicting]),
+    ):
+        with _pytest.raises(ValueError, match="contradicts itself"):
+            call()
+
+
+def test_a_BYTE_IDENTICAL_repeat_is_ONE_order_and_is_COLLAPSED():
+    """The other side, and it is why the rule is not a blanket refusal: the
+    SAME order seen twice (a paging artifact) is not a contradiction. It
+    collapses, so the counts stop double-reporting one order and the two
+    functions still agree."""
+    latches = _armed()
+    cid = latches[0].identity.candidate_id
+    twice = [_order(order_id="ONCE"), _order(order_id="ONCE")]
+    rows = attribute_orders_to_latches(latches=latches, orders=twice)
+    assert [r.order_id for r in rows] == ["ONCE"]
+    joins, alarms = join_orders_to_latches(latches=latches, orders=twice)
+    assert len(joins[cid].orders) == 1
+    assert joins[cid].matched_order_count == 1
+    assert alarms == ()

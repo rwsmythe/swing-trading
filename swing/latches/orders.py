@@ -625,6 +625,43 @@ def _covers_mandate(order: RestingOrder, latch: Latch, *, attributed) -> bool:
     return order.stop_price is None
 
 
+def _orders_by_unique_id(orders) -> tuple[RestingOrder, ...]:
+    """The order book keyed by BROKER ORDER ID, or a raise (Codex R3 MAJOR).
+
+    AN ORDER ID IS AN IDENTITY, AND EVERY CONSUMER HERE TREATS IT AS ONE. The
+    join's `matched` map is keyed by it, so a repeated id silently overwrote the
+    earlier order's latch; `attribute_orders_to_latches` attributes each
+    OCCURRENCE, so the two then disagreed -- and the ledger's own
+    `actual_broker_order_id` is that same identity, so a cancel control could
+    target a latch the alarms never attributed the order to. The divergence can
+    both fabricate and suppress an alarm, because `None` in that map means
+    "attributed to NO latch".
+
+    A repeat that is BYTE-IDENTICAL is the SAME ORDER seen twice (a paging
+    artifact), so it is COLLAPSED: nothing is lost and the counts stop
+    double-reporting one order. A repeat that CONFLICTS is an order book that
+    contradicts itself about what an id means, which this module cannot resolve
+    and must not guess at -- the panel's standing rule is that a false all-clear
+    and a false alarm are both worse than an honest unknown, and the fragment's
+    A6 ladder turns this raise into exactly that honest unknown.
+
+    Called by BOTH public functions, so they cannot differ on it.
+    """
+    seen: dict[str, RestingOrder] = {}
+    out: list[RestingOrder] = []
+    for order in orders or ():
+        prior = seen.get(order.order_id)
+        if prior is None:
+            seen[order.order_id] = order
+            out.append(order)
+        elif prior != order:
+            raise ValueError(
+                f"broker order id {order.order_id!r} appears twice with "
+                "DIFFERENT content; the order book contradicts itself about "
+                "what that id identifies")
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class OrderAttribution:
     """ONE broker order, and the latch (if any) its frozen prices match.
@@ -685,7 +722,7 @@ def attribute_orders_to_latches(*, latches, orders) -> tuple[OrderAttribution, .
         by_ticker.setdefault(latch.identity.ticker, []).append(latch)
 
     rows: list[OrderAttribution] = []
-    for order in orders or ():
+    for order in _orders_by_unique_id(orders):
         if (order.instruction or "").upper() not in BUY_INSTRUCTIONS:
             continue
         if not (order.is_resting or order.is_indeterminate):
@@ -724,9 +761,13 @@ def join_orders_to_latches(*, latches, orders):
     for latch in latches:
         by_ticker.setdefault(latch.identity.ticker, []).append(latch)
 
+    # THE SAME ID-UNIQUENESS RULE THE ATTRIBUTION APPLIES, and applied here
+    # FIRST so `matched`'s order-id keying cannot silently collapse two orders
+    # (Codex R3 MAJOR).
+    orders = _orders_by_unique_id(orders)
     resting_by_ticker: dict[str, list[RestingOrder]] = {}
     indeterminate_tickers = set(indeterminate_order_tickers(orders))
-    for order in orders or ():
+    for order in orders:
         if (order.instruction or "").upper() not in BUY_INSTRUCTIONS:
             continue
         if order.is_indeterminate:
