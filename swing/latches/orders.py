@@ -625,8 +625,82 @@ def _covers_mandate(order: RestingOrder, latch: Latch, *, attributed) -> bool:
     return order.stop_price is None
 
 
-def join_orders_to_latches(*, latches, orders):
-    """PURE. Returns ``({latch_candidate_id: LatchOrderJoin}, alarms)``."""
+@dataclass(frozen=True)
+class OrderAttribution:
+    """ONE broker order, and the latch (if any) its frozen prices match.
+
+    THE SUBJECT OF THE RECORDING AFFORDANCE, and deliberately not the subject
+    of any alarm. RD's principle (2026-08-03): recording an operator action and
+    alarming on a detected problem are DIFFERENT FUNCTIONS, and the affordance
+    to record must not be gated on the alarm that detects. So this surface
+    carries what the operator holds -- a broker order attributable to a
+    mandate -- with no reference to whether anything is wrong with it.
+    """
+
+    order_id: str
+    ticker: str
+    status: str
+    is_indeterminate: bool
+    latch_candidate_id: int | None
+
+
+def attribute_orders_to_latches(*, latches, orders) -> tuple[OrderAttribution, ...]:
+    """PURE. One row per BUY order that is RESTING **or** INDETERMINATE.
+
+    INDETERMINATE ORDERS ARE INCLUDED, WHICH IS THE WHOLE POINT. The join drops
+    them (`if order.is_indeterminate: continue`) and both alarm loops skip
+    their entire ticker, and that is CORRECT FOR THE ALARM -- an unknown order
+    book must fire nothing, because a false all-clear and a false alarm are
+    both worse than an honest unknown. It is BACKWARDS for the recording
+    affordance: `PENDING_CANCEL` is the state produced BY the operator doing
+    exactly what the framework asked, so the framework would offer him no way
+    to record the act it requested.
+
+    SORTED BY `order_id` IN THE RETURNED TUPLE ONLY, for a stable render. The
+    caller may share the resulting MAP with `join_orders_to_latches` but must
+    never feed it this ORDERING: `_pick_reference_order` falls back to
+    `orders[0]` and `LatchOrderJoin.orders` is built from the per-ticker list,
+    so re-ordering the input can change which order the agreement flags
+    describe -- a behaviour change wearing a refactor's clothes.
+    """
+    latches = list(latches)
+    by_ticker: dict[str, list[Latch]] = {}
+    for latch in latches:
+        by_ticker.setdefault(latch.identity.ticker, []).append(latch)
+
+    rows: list[OrderAttribution] = []
+    for order in orders or ():
+        if (order.instruction or "").upper() not in BUY_INSTRUCTIONS:
+            continue
+        if not (order.is_resting or order.is_indeterminate):
+            continue
+        matched = _match_latch(order, by_ticker.get(order.ticker, []))
+        rows.append(OrderAttribution(
+            order_id=order.order_id,
+            ticker=order.ticker,
+            status=order.status,
+            is_indeterminate=order.is_indeterminate,
+            latch_candidate_id=(
+                None if matched is None else matched.identity.candidate_id),
+        ))
+    return tuple(sorted(rows, key=lambda r: r.order_id))
+
+
+def join_orders_to_latches(*, latches, orders, attribution=None):
+    """PURE. Returns ``({latch_candidate_id: LatchOrderJoin}, alarms)``.
+
+    `attribution` is the tuple `attribute_orders_to_latches` returned for this
+    SAME `(latches, orders)` pair. `None` means "compute it internally", which
+    is what every existing caller does and what keeps this signature change
+    additive. When it IS supplied, only the `{order_id: latch}` MAP is taken
+    from it -- never its ordering (see `attribute_orders_to_latches`).
+
+    Passing it is how the fragment VM gets ONE `_match_latch` pass reaching
+    both the alarms and the cancel-control render: a VM that re-derived the
+    attribution would be a second pass that can disagree with this one, which
+    is the property `indeterminate_order_tickers` already forbids for the
+    sibling predicate.
+    """
     latches = list(latches)
     by_ticker: dict[str, list[Latch]] = {}
     for latch in latches:
@@ -646,9 +720,30 @@ def join_orders_to_latches(*, latches, orders):
     # Per-order attribution, computed ONCE so the joins and the alarms cannot
     # disagree about which latch an order belongs to.
     matched: dict[str, Latch | None] = {}
-    for ticker, ticker_orders in resting_by_ticker.items():
-        for order in ticker_orders:
-            matched[order.order_id] = _match_latch(order, by_ticker.get(ticker, []))
+    if attribution is not None:
+        by_cid = {x.identity.candidate_id: x for x in latches}
+        for row in attribution:
+            if row.latch_candidate_id is None:
+                matched[row.order_id] = None
+                continue
+            # RAISE rather than degrade to `None` on a candidate id this call's
+            # latches do not contain: `None` means "attributed to NO latch",
+            # which is a LOAD-BEARING alarm input (it suppresses the stale-order
+            # alarm while a live latch exists). Silently manufacturing it from a
+            # mismatched attribution would move an alarm, so an attribution
+            # computed against a DIFFERENT latch set must fail loudly -- the
+            # caller's A6 ladder degrades it visibly.
+            if row.latch_candidate_id not in by_cid:
+                raise ValueError(
+                    "attribution references candidate_id "
+                    f"{row.latch_candidate_id}, which is not in this call's "
+                    "latches -- it was computed against a different latch set")
+            matched[row.order_id] = by_cid[row.latch_candidate_id]
+    else:
+        for ticker, ticker_orders in resting_by_ticker.items():
+            for order in ticker_orders:
+                matched[order.order_id] = _match_latch(
+                    order, by_ticker.get(ticker, []))
 
     joins: dict[int, LatchOrderJoin] = {}
     for latch in latches:
