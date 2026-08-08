@@ -105,6 +105,15 @@ def _bindings_of(tree: ast.Module, names: set[str]) -> list[str]:
             found.append(f"match-as {node.name} at line {node.lineno}")
         elif isinstance(node, ast.MatchStar) and node.name in names:
             found.append(f"match-star {node.name} at line {node.lineno}")
+        elif isinstance(node, (ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple)):
+            # PEP-695 TYPE PARAMETERS -- `def f[PRICE_DP](...)` and
+            # `class C[PRICE_DP]` (Codex R10 MINOR). A FIFTH string-field binder
+            # family, and the one that shadows the constant while leaving the
+            # import, the module identity, the reference count AND the required
+            # `round(..., PRICE_DP)` shape all intact, so every other assertion
+            # here passes.
+            if node.name in names:
+                found.append(f"type-param {node.name} at line {node.lineno}")
         elif isinstance(node, ast.MatchMapping) and node.rest in names:
             # `case {**PRICE_DP}` -- a FOURTH string-field binder in the match
             # family alone (Codex R9 MINOR). Enumerating them one review round
