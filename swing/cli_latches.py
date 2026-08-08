@@ -127,12 +127,52 @@ def _inferred_origin(order_intent, place_intents) -> tuple[str, str]:
     order tag; a broker-side client order id is the 21-C dependency that makes it
     exact IN GENERAL.
 
-    The ONE place V1 IS exact is named as such: where a broker order id was
-    captured on a `cancel` or `validity` row, THAT order's association with a
-    ledger row is exact rather than inferred, and the report distinguishes the
-    two cases rather than averaging them.
+    The ONE place V1 IS exact is named as such: a `validity` row carrying its
+    `validated_place_intent_id` links that broker order to the `place` that
+    mandated it, and the report distinguishes that case from an inference
+    rather than averaging them.
+
+    AND A ROW THAT CAN REACH NEITHER BRANCH IS `undetermined`, NEVER AN
+    OPERATOR ATTRIBUTION (RD ruling 2, 2026-08-08; merge-blocking). Both
+    branches need evidence migration 0033 permits on `validity` ALONE:
+    `validated_place_intent_id` is NULL on every other kind
+    (`CHECK (intent_kind = 'validity' OR ... validated_place_intent_id IS
+    NULL)`), and `actual_limit_price` / `actual_quantity` are NULL on every
+    other kind (the shape-exclusion CHECKs). So a `cancel` used to fall through
+    to the latch-match fallback, and a framework-mandated order cancelled
+    THROUGH the framework, carrying the broker order id the framework itself
+    recorded, was reported as OPERATOR-originated. In a ledger whose whole
+    purpose is framework-versus-operator attribution that is a WRONG ANSWER,
+    not a missing one -- a positive attribution asserted from an absence of
+    evidence, which is `alarm, never assert` inverted.
+
+    THE GUARD IS KEYED ON THE ROW'S EVIDENCE, NOT ON A KIND LIST, so a future
+    intent kind is covered by construction and no second mirror of the schema's
+    exclusion shape is created here.
+
+    THE RESIDUAL EVIDENCE SURVIVES IN THE BASIS. "Is there a `place` on this
+    candidate at all" IS answerable for every kind -- only the ORDER-LEVEL
+    comparison is unreachable -- so the VALUE goes undetermined while the basis
+    keeps the fact, rather than trading a wrong answer for a blind one.
+
+    WHAT THIS DOES NOT DO: resolve the linkage that IS derivable, namely
+    `cancel.actual_broker_order_id` -> the `validity` row bearing that same
+    broker order id -> that row's `validated_place_intent_id` -> the place.
+    Every hop is schema-guaranteed, and it is DEFERRED to item 5 with the rest
+    of the attribution work. What was not available was shipping its absence as
+    `operator_inferred`.
     """
     parent = order_intent.validated_place_intent_id
+    has_params = (order_intent.actual_limit_price is not None
+                  and order_intent.actual_quantity is not None)
+    if parent is None and not has_params:
+        on_this_latch = any(
+            p.candidate_id == order_intent.candidate_id
+            for p in place_intents.values())
+        return "undetermined", (
+            "UNDETERMINED (no parent link and no observed params on this row; "
+            + ("a place intent exists on this latch)" if on_this_latch
+               else "no place intent on this latch either)"))
     if parent is not None and parent in place_intents:
         return "framework_inferred", "EXACT (captured broker order id)"
     for place in place_intents.values():
