@@ -105,6 +105,23 @@ _DEGRADED_REASON_LABELS = {
 
 LOG_ONLY_NOTICE = "PREPARED ORDER (LOG ONLY - nothing is sent to the broker)"
 
+# THE LABELLED GAP ON THE WITHHELD BRANCH (wave item 4, piece 2). ASCII only.
+#
+# A decline is a decision ABOUT a framework order, and the ledger requires that
+# order on the row: migration 0033's two CHECKs and
+# `LatchOrderIntent._validate_shape_exclusion` all demand the framework and
+# derivation blocks on a `place`/`decline` row, and a withheld result carries
+# neither. So the DECLINE control genuinely cannot be offered here yet, and
+# saying so beats a silently missing button -- an unlabelled reduction is a
+# quiet all-clear by omission, and an inert control that renders and 400s is
+# worse than both.
+DECISION_UNAVAILABLE_NOTE = (
+    "No DECLINE control: a decline is recorded as a decision about the "
+    "framework's own order, and the ledger requires that order on the row. "
+    "There is no order here to decline. If you are not taking this setup, "
+    "record it with the attestation prompt instead, or wait for the card to "
+    "offer an order.")
+
 # The DECISION-axis labels. Every one states its REASON, because an unlabelled
 # reduction is a quiet all-clear by omission -- and two of these dispositions
 # exist precisely to say the instrument, not the operator, was silent.
@@ -178,6 +195,23 @@ class PreparedOrderVM:
     withheld_reason: str | None
     withheld_detail: str
     log_only_notice: str = LOG_ONLY_NOTICE
+    # NON-EMPTY ONLY ON THE WITHHELD BRANCH. The DECLINE control lives inside
+    # the offered form, so a withheld card takes the decline affordance with it
+    # -- the same defect class as the cancel control riding on an alarm, and
+    # T7.8 (`tests/web/test_view_models/test_latch_lapse_render.py`) is the
+    # marker for it.
+    #
+    # THIS FIELD DOES NOT SATISFY T7.8 AND IS NOT MEANT TO. A decline on a
+    # withheld card is UNWRITABLE at three barriers -- migration 0033's two
+    # CHECKs requiring the derivation and framework blocks on a `place`/
+    # `decline` row, and `LatchOrderIntent._validate_shape_exclusion` mirroring
+    # them -- and a withheld result carries neither block, because every
+    # withholding path in `compute_prepared_order` returns before any
+    # derivation object is built. Shipping the template edit alone would yield
+    # a control that renders and 400s, which is the 21-B defect this whole item
+    # exists to remove. So the SILENT absence is converted into a LABELLED one,
+    # which is the project's standing rule and the honest interim.
+    decision_unavailable_note: str = ""
 
 
 @dataclass(frozen=True)
@@ -464,7 +498,8 @@ def _withheld_block(reason: str | None, detail: str) -> PreparedOrderVM:
     return PreparedOrderVM(
         offered=False, headline="", derivation_lines=(),
         rendered_derivation_columns=frozenset(), anchor_fields=(),
-        anchor_digest="", withheld_reason=reason, withheld_detail=detail)
+        anchor_digest="", withheld_reason=reason, withheld_detail=detail,
+        decision_unavailable_note=DECISION_UNAVAILABLE_NOTE)
 
 
 def _derivation_block(latch: Latch, order) -> tuple[tuple[str, ...], frozenset[str]]:

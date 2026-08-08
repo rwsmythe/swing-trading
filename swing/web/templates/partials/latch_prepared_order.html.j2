@@ -51,6 +51,15 @@
   {% else %}
   <h3 class="latch-prepared-order-heading">PREPARED ORDER WITHHELD</h3>
   <p class="latch-prepared-order-withheld">{{ po.withheld_detail }}</p>
+  {# THE DECLINE CONTROL LIVES INSIDE THE OFFERED FORM, so a withheld card
+     takes it with it. That gap is LABELLED rather than left silent -- and it is
+     NOT closed by moving the control here: a decline on a withheld card is
+     UNWRITABLE at three barriers (two schema CHECKs plus the dataclass
+     validator), so the control would render and 400. Display-ready on the VM;
+     this template holds no logic. #}
+  {% if po.decision_unavailable_note %}
+  <p class="latch-decision-unavailable">{{ po.decision_unavailable_note }}</p>
+  {% endif %}
   {% endif %}
 </section>
 {% endif %}
