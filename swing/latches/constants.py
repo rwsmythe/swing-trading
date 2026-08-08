@@ -72,6 +72,24 @@ LATCH_ZONE_CAP_PCT = 3.0
 # constant that happens to equal the first.
 LATCH_ZONE_CAP_FRACTION = LATCH_ZONE_CAP_PCT / 100.0
 
+# THE display precision on BOTH sides of every latch price comparison (the
+# price-precision-parity gotcha). An execution-grain sub-cent difference must
+# not read as "the operator edited the order", must not fork a latch, and must
+# not flip an agreement flag -- so the two operands of every such comparison are
+# rounded to the SAME number of decimals, and that number lives here.
+#
+# CONSUMERS IMPORT THIS NAME; THEY DO NOT RE-BIND A LITERAL. Four modules used
+# to carry their own `_PRICE_DP = 2` -- four objects that agree today and drift
+# on the next edit. Four imports of one name are four names for ONE object and
+# cannot drift, which is the entire reason this constant is public. A module
+# that "re-consolidates" by writing `PRICE_DP = 2` locally has undone it, and
+# `2 is 2` will not tell you (small ints are interned), so the AST test in
+# `tests/latches/test_price_dp_single_source.py` bans the binding directly.
+#
+# NOT `mandate_limit_price`'s quantization. That floors a cap to a whole-cent
+# ORDERABLE price through `Decimal`; this is the precision a COMPARISON reads.
+PRICE_DP = 2
+
 
 def zone_cap_for_pivot(pivot, *, cap_fraction: float = LATCH_ZONE_CAP_FRACTION):
     """THE buy-zone cap for a pivot -- the ONE place the arithmetic is written.

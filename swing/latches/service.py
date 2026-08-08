@@ -35,6 +35,7 @@ from swing.latches.constants import (
     DEFAULT_CRITERIA_LAPSE_MIN_WIDENING_PCT,
     DEFAULT_CRITERIA_LAPSE_SESSIONS,
     DEFAULT_LATCH_HORIZON_SESSIONS,
+    PRICE_DP,
     zone_cap_for_pivot,
 )
 from swing.latches.identity import LatchIdentity, parse_session_date
@@ -49,11 +50,6 @@ from swing.latches.models import (
     Latch,
     LatchDerivation,
 )
-
-# The display precision every price comparison rounds to (the
-# price-precision-parity gotcha): a sub-cent float artifact must never fork a
-# latch or flip an agreement flag.
-_PRICE_DP = 2
 
 # `declined` and `criteria_lapsed` BOTH REUSE `horizon_expired` (RD OQ-2's
 # Option B -- ruled for `criteria_lapsed`, applied to `declined` as residual
@@ -284,9 +280,9 @@ def _price_in_executable_zone(entry_price, draft: _Draft) -> bool:
     value = float(entry_price)
     if not math.isfinite(value):
         return False
-    return (round(draft.pivot, _PRICE_DP)
-            <= round(value, _PRICE_DP)
-            <= round(draft.zone_cap, _PRICE_DP))
+    return (round(draft.pivot, PRICE_DP)
+            <= round(value, PRICE_DP)
+            <= round(draft.zone_cap, PRICE_DP))
 
 
 def _has_fill_link_anomaly(draft: _Draft, entries: list[EntryRecord]) -> bool:
@@ -413,10 +409,10 @@ def _sound_envelope(bar: DailyBar) -> bool:
     orders of magnitude clear of a cent -- and a sub-cent inversion cannot move a
     materiality floor anyway.
     """
-    o = round(bar.open, _PRICE_DP)
-    h = round(bar.high, _PRICE_DP)
-    low = round(bar.low, _PRICE_DP)
-    c = round(bar.close, _PRICE_DP)
+    o = round(bar.open, PRICE_DP)
+    h = round(bar.high, PRICE_DP)
+    low = round(bar.low, PRICE_DP)
+    c = round(bar.close, PRICE_DP)
     if min(o, h, low, c) <= 0.0:
         return False
     # `<=` throughout: an untraded/flat session legitimately has all four equal,
@@ -547,9 +543,9 @@ def _window_qualifies(
     # --- 2a: LIFETIME, and it may only be ASSERTED over a COMPLETE range.
     if _coverage_gap(by_session, ambiguous, start=draft.anchor, end=s) is not None:
         return False
-    pivot = round(draft.pivot, _PRICE_DP)
+    pivot = round(draft.pivot, PRICE_DP)
     for session, bar in by_session.items():
-        if draft.anchor <= session <= s and round(bar.high, _PRICE_DP) >= pivot:
+        if draft.anchor <= session <= s and round(bar.high, PRICE_DP) >= pivot:
             return False
     # --- 2b: the decay test over the STREAK window, in BAR dates.
     #
@@ -566,13 +562,13 @@ def _window_qualifies(
     b = [by_session[d] for d in _enumerate_sessions(first_w, last_w)]
     if len(b) < 2:                      # pragma: no cover -- N >= 2 + complete
         return False
-    first_close = round(b[0].close, _PRICE_DP)
-    last_close = round(b[-1].close, _PRICE_DP)
+    first_close = round(b[0].close, PRICE_DP)
+    last_close = round(b[-1].close, PRICE_DP)
     if not last_close < first_close:
         return False
     # CLAUSE 3 IS LOAD-BEARING: a bare endpoint test clears a stock that
     # collapsed then rallied 19% off its low and is about to cross the pivot.
-    if last_close > min(round(x.close, _PRICE_DP) for x in b):
+    if last_close > min(round(x.close, PRICE_DP) for x in b):
         return False
     # CLAUSE 4 -- MATERIALITY, ROUNDED AFTER THE SUBTRACTION, NEVER BEFORE.
     # Rounding each operand first does not help: round(64.02, 2) -
@@ -581,8 +577,8 @@ def _window_qualifies(
     # wrong flips a terminal while the card displays exact equality -- the
     # price-precision-parity gotcha landing on the one comparison that
     # withdraws a mandate.
-    widening = round(b[0].close - b[-1].close, _PRICE_DP)
-    return widening >= round(floor, _PRICE_DP)
+    widening = round(b[0].close - b[-1].close, PRICE_DP)
+    return widening >= round(floor, PRICE_DP)
 
 
 def _analyze_criteria_lapse(
@@ -796,7 +792,7 @@ def _resolve_terminal(
         # numbers as 14.88, and clearing silences the no-resting-order alarm.
         # Rounding is conservative in the SAFE direction: it keeps a marginal
         # mandate armed rather than silently killing it.
-        if round(bar.close, _PRICE_DP) < round(draft.stop, _PRICE_DP):
+        if round(bar.close, PRICE_DP) < round(draft.stop, PRICE_DP):
             candidates.append(_Terminal("invalidation", bar.session))
             break
     # THE OPERATOR'S OWN DECISION, capped at the expiry like every other walk.
@@ -1165,8 +1161,8 @@ def _fold_ticker(
             # None` before decisions entered the resolver.
             if live_probe is None or final_probe is None:          # clause (ii)
                 same_pivot = (
-                    round(float(fire.pivot), _PRICE_DP)
-                    == round(open_draft.pivot, _PRICE_DP))
+                    round(float(fire.pivot), PRICE_DP)
+                    == round(open_draft.pivot, PRICE_DP))
                 if same_pivot:                                    # branch (a)
                     open_draft.reconfirmation_candidate_ids.append(fire.candidate_id)
                     open_draft.reconfirmation_sessions.append(
@@ -1213,8 +1209,8 @@ def _fold_ticker(
                 # both are non-None here (clause (ii) absorbed every None), and
                 # it is a `dry_run` probe, so consulting it consumes no trade.
                 same_pivot = (
-                    round(float(fire.pivot), _PRICE_DP)
-                    == round(open_draft.pivot, _PRICE_DP))
+                    round(float(fire.pivot), PRICE_DP)
+                    == round(open_draft.pivot, PRICE_DP))
                 supersede = _Terminal("superseded", anchor)
                 if not same_pivot and supersede.order_key < final_probe.order_key:
                     _close(open_draft, forced=supersede)

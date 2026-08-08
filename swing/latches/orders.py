@@ -30,14 +30,10 @@ from swing.latches.constants import (
     MANDATE_ORDER_TYPE_BREAKOUT,
     MANDATE_ORDER_TYPE_PULLBACK,
     MANDATE_ORDER_TYPES,
+    PRICE_DP,
     mandate_limit_price,
 )
 from swing.latches.models import Latch, LatchOrderJoin, OrderAlarm, RestingOrder
-
-# Display precision on BOTH sides of every price comparison (the
-# price-precision-parity gotcha): an execution-grain sub-cent difference must
-# not read as "the operator edited the order".
-_PRICE_DP = 2
 
 # A resting order's `price` is only a genuine LIMIT for these order types; for
 # a plain STOP the mapper's documented fallback collapses `price` onto the stop
@@ -153,7 +149,7 @@ def expected_mandate_order_type(*, latched_pivot, last_close) -> str | None:
             return None
         values.append(value)
     pivot, close = values
-    if round(close, _PRICE_DP) < round(pivot, _PRICE_DP):
+    if round(close, PRICE_DP) < round(pivot, PRICE_DP):
         return MANDATE_ORDER_TYPE_BREAKOUT
     return MANDATE_ORDER_TYPE_PULLBACK
 
@@ -253,8 +249,8 @@ class CloseProvenance:
         """
         return (self.price is not None
                 and self.stamp_session_close is not None
-                and round(self.stamp_session_close, _PRICE_DP)
-                == round(self.price, _PRICE_DP))
+                and round(self.stamp_session_close, PRICE_DP)
+                == round(self.price, PRICE_DP))
 
 
 def classify_close_provenance(
@@ -312,7 +308,7 @@ def classify_close_provenance(
     elif stamp_date is None or stamp_date > derivation_session:
         provenance = CLOSE_PROVENANCE_FUTURE_STAMP
     elif (session_close is not None
-            and round(session_close, _PRICE_DP) == round(price, _PRICE_DP)):
+            and round(session_close, PRICE_DP) == round(price, PRICE_DP)):
         provenance = CLOSE_PROVENANCE_CORROBORATED
     else:
         provenance = CLOSE_PROVENANCE_UNCORROBORATED
@@ -424,7 +420,7 @@ def _agrees(order_price, latch_price) -> bool | None:
     """
     if order_price is None or latch_price is None:
         return None
-    return round(float(order_price), _PRICE_DP) == round(float(latch_price), _PRICE_DP)
+    return round(float(order_price), PRICE_DP) == round(float(latch_price), PRICE_DP)
 
 
 def _mandate_limit_of(latch: Latch) -> float:

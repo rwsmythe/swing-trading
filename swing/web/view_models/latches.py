@@ -34,6 +34,7 @@ from swing.latches.constants import (
     DEFAULT_CRITERIA_LAPSE_SESSIONS,
     LATCH_ATTESTED_DISPOSITIONS,
     LATCH_PANEL_LOOKBACK_SESSIONS,
+    PRICE_DP,
     build_beacon_payload,
     mandate_limit_price,
 )
@@ -59,11 +60,6 @@ from swing.web.view_models.journal import _base_banner_fields
 _log = logging.getLogger(__name__)
 
 _ZONE_POSITIONS = ("below_pivot", "in_zone", "above_zone", "unknown")
-
-# Display precision on BOTH sides of the zone comparison, so a boundary price
-# cannot flip the verdict on a sub-cent difference (the price-precision-parity
-# gotcha).
-_PRICE_DP = 2
 
 # RD gate ruling G.5: V1 implements the close-below-the-fire-time-stop half of
 # invalidation ONLY. The panel must NOT present itself as implementing full
@@ -607,8 +603,8 @@ def _zone_position(price, latch: Latch) -> str:
     """
     if price is None:
         return "unknown"
-    p = round(float(price), _PRICE_DP)
-    if p < round(latch.latched_pivot, _PRICE_DP):
+    p = round(float(price), PRICE_DP)
+    if p < round(latch.latched_pivot, PRICE_DP):
         return "below_pivot"
     if p > mandate_limit_price(latch.zone_cap):
         return "above_zone"

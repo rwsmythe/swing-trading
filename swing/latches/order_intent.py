@@ -20,6 +20,7 @@ from swing.latches.constants import (
     MANDATE_ORDER_DURATIONS,
     MANDATE_ORDER_TYPE_BREAKOUT,
     MANDATE_ORDER_TYPE_PULLBACK,
+    PRICE_DP,
     mandate_limit_price,
 )
 from swing.recommendations.sizing import compute_shares
@@ -498,8 +499,6 @@ def recompute_derived_display_values(row) -> dict:
 # ---------------------------------------------------------------------
 # The PER-FIELD DELTA -- computed, never stored (plan section A.3).
 # ---------------------------------------------------------------------
-_PRICE_DP = 2
-
 _DURATION_ALIASES = {
     "GTC": "GOOD_TILL_CANCEL",
     "GOOD_TILL_CANCEL": "GOOD_TILL_CANCEL",
@@ -634,7 +633,7 @@ _ORDER_FIELDS = (
 
 
 def _round2(value) -> float | None:
-    return None if value is None else round(float(value), _PRICE_DP)
+    return None if value is None else round(float(value), PRICE_DP)
 
 
 def _as_order_mapping(side) -> dict:
@@ -719,7 +718,7 @@ def _resolve_stop_leg(fw: dict, ac: dict) -> tuple[str, float | None]:
                 ac_stop if ac_stop is None else fw_stop):
             return "one_sided", None
         return "unknown", None
-    return "compared", round(ac_stop - fw_stop, _PRICE_DP)
+    return "compared", round(ac_stop - fw_stop, PRICE_DP)
 
 
 def compute_order_delta(framework, actual) -> OrderDelta:
@@ -758,7 +757,7 @@ def compute_order_delta(framework, actual) -> OrderDelta:
         unknown.append("limit_price")
         limit_price_delta = None
     else:
-        limit_price_delta = round(limit_b - limit_a, _PRICE_DP)
+        limit_price_delta = round(limit_b - limit_a, PRICE_DP)
 
     qty_a, qty_b = fw.get("quantity"), ac.get("quantity")
     if qty_a is None or qty_b is None:
