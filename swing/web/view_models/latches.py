@@ -293,14 +293,46 @@ class LatchAlarmVM:
     latch_candidate_id: int | None
     detail: str
     severity: str
-    # The per-order CANCEL control's anchors (plan file manifest: "the per-order
-    # Cancel control on stale-order rows"). Present together or not at all: a
-    # `cancel` row needs BOTH the broker order it targets and the latch identity
-    # block, so an alarm about an order attributable to NO latch cannot offer the
-    # control -- see `cancel_unavailable_note`.
+    # ALARM CONTENT -- WHICH ORDER THIS ALARM IS ABOUT. It is no longer a
+    # control anchor: wave item 4 moved the per-order Cancel control off the
+    # alarm and onto the ORDER (`LatchOrdersFragmentVM.cancel_controls`),
+    # because recording an operator act and alarming on a detected problem are
+    # different functions and the affordance to record must not be gated on the
+    # alarm that detects (RD, 2026-08-03). The field stays because an alarm that
+    # names an order in PROSE only cannot be read structurally by anything.
     broker_order_id: str | None = None
+
+
+@dataclass(frozen=True)
+class LatchCancelControlVM:
+    """ONE per-order affordance to RECORD that the operator cancelled an order.
+
+    ITS SUBJECT IS A BROKER ORDER HE HOLDS, NOT A PROBLEM THE FRAMEWORK
+    NOTICED. It is keyed on exactly three conditions and no fourth: the order
+    is in this render's order set (BUY, resting OR indeterminate), and
+    `_match_latch` attributes it to a latch (live OR terminal). NOT on any
+    alarm, NOT on the latch's liveness, NOT on the order's determinacy, and NOT
+    on whether the order covers its mandate -- each of those is the alarm's own
+    predicate wearing a different name, and re-deriving it would fail RD's
+    principle while appearing to satisfy it.
+
+    LOG-ONLY on every branch: nothing is sent to the broker. The operator still
+    cancels at the broker and this records that he decided to. It targets a
+    SPECIFIC broker order id, never a ticker -- hazard (c), which migration
+    0033's CHECK also makes unwritable.
+    """
+
+    order_id: str
+    ticker: str
+    latch_candidate_id: int
+    # Display-ready. EXACTLY `broker status {STATUS}` while the broker status is
+    # INDETERMINATE, and the EMPTY STRING otherwise. It exists so the operator
+    # can see WHY the framework is silent about this order while still offering
+    # to record his decision about it.
+    status_note: str
+    # The RULING-3 context anchor, from the SAME `_prior_intent_id` the alarm
+    # path used before the move.
     prior_intent_id: str = ""
-    cancel_unavailable_note: str = ""
 
 
 @dataclass(frozen=True)
@@ -1821,6 +1853,22 @@ class LatchOrdersFragmentVM:
     # can see. Degrading silently on THIS surface is the arc's own failure mode.
     # Display-ready, empty when nothing failed.
     validity_prompt_degraded: str = ""
+    # THE PER-ORDER CANCEL AFFORDANCE, decoupled from the alarm set (wave item
+    # 4, piece 1). One per attributable BUY order in this render -- resting OR
+    # indeterminate, latch live OR terminal, alarmed OR not.
+    #
+    # BOTH OF THESE DEFAULT TO `()` DELIBERATELY. Every early return in
+    # `build_latch_orders_vm` must keep constructing, and a degraded or unknown
+    # order book must offer NO control: a control built on a book nobody could
+    # read invites a decision the operator would infer from the panel's silence
+    # -- the same rule the validity prompt already follows.
+    cancel_controls: tuple[LatchCancelControlVM, ...] = ()
+    # One per order attributable to NO latch. A `cancel` row carries the full
+    # latch identity block, so such an order cannot be logged against one -- and
+    # the gap is LABELLED on EVERY render rather than only when the order
+    # happens to alarm, which is where it used to live. An unlabelled reduction
+    # is a quiet all-clear by omission.
+    cancel_unavailable_notes: tuple[str, ...] = ()
 
     @property
     def all_clear_claims(self) -> tuple[str, ...]:
@@ -2023,6 +2071,7 @@ def build_latch_orders_vm(
         MANDATE_ORDER_TYPE_PULLBACK,
     )
     from swing.latches.orders import (
+        attribute_orders_to_latches,
         classify_close_provenance,
         expected_mandate_order_type,
         indeterminate_order_tickers,
@@ -2072,8 +2121,15 @@ def build_latch_orders_vm(
             resolution_detail=resolution.detail, alarms=(), order_lines=())
 
     try:
-        joins, alarms = join_orders_to_latches(
+        # THE CALLER COMPUTES THE ATTRIBUTION ONCE AND SHARES IT. Building the
+        # cancel controls from a SECOND `attribute_orders_to_latches` call would
+        # be a second `_match_latch` pass that can disagree with the one the
+        # alarms ran on -- the exact property `indeterminate_order_tickers`
+        # already forbids for the sibling predicate.
+        attribution = attribute_orders_to_latches(
             latches=derivation.latches, orders=orders)
+        joins, alarms = join_orders_to_latches(
+            latches=derivation.latches, orders=orders, attribution=attribution)
     except Exception as exc:  # noqa: BLE001 -- A6
         _log.warning("latch order join degraded: %s", exc)
         return LatchOrdersFragmentVM(
@@ -2478,6 +2534,29 @@ def build_latch_orders_vm(
     # book renders no prompt in either direction, because a prompt built on it
     # invites an answer the operator would infer from the panel's own silence.
     intents_by_latch = _intents_by_latch(conn, derivation.latches)
+    # THE PER-ORDER CANCEL AFFORDANCE, built from the SAME attribution tuple the
+    # alarms were computed from. Unconditional over attributable orders: the
+    # operator may decide to cancel at any time and the ledger exists to record
+    # that he did, so gating this on "when there is something wrong" would
+    # re-derive the alarm's own condition under another name.
+    cancel_controls = tuple(
+        LatchCancelControlVM(
+            order_id=row.order_id,
+            ticker=row.ticker,
+            latch_candidate_id=row.latch_candidate_id,
+            status_note=(
+                f"broker status {row.status}" if row.is_indeterminate else ""),
+            prior_intent_id=_prior_intent_id(
+                intents_by_latch.get(row.latch_candidate_id, ())),
+        )
+        for row in attribution if row.latch_candidate_id is not None
+    )
+    cancel_unavailable_notes = tuple(
+        f"Order {row.order_id} on {row.ticker} matches no latch, so there is "
+        "no mandate to log a cancel against. Cancel it at the broker; the "
+        "ledger cannot record a decision about an order it cannot attribute."
+        for row in attribution if row.latch_candidate_id is None
+    )
     try:
         validity_prompts, validity_prompt_degraded = _validity_prompts(
             derivation.latches, joins=joins, orders=orders,
@@ -2501,20 +2580,6 @@ def build_latch_orders_vm(
                 latch_candidate_id=a.latch_candidate_id,
                 detail=a.detail, severity=a.severity,
                 broker_order_id=a.broker_order_id,
-                prior_intent_id=_prior_intent_id(
-                    intents_by_latch.get(a.latch_candidate_id, ())),
-                # A `cancel` row carries the FULL latch identity block, so an
-                # order attributable to NO latch cannot be logged against one.
-                # The gap is LABELLED rather than left as a silently missing
-                # button: the operator still has to cancel it at the broker, and
-                # a control that is simply absent reads as "nothing to do here".
-                cancel_unavailable_note=(
-                    "" if a.broker_order_id is None
-                    or a.latch_candidate_id is not None else
-                    "This order matches no latch, so there is no mandate to log "
-                    "a cancel against. Cancel it at the broker; the ledger "
-                    "cannot record a decision about an order it cannot "
-                    "attribute."),
             )
             for a in sorted(alarms, key=lambda a: (a.severity != "critical", a.kind))
         ),
@@ -2529,6 +2594,8 @@ def build_latch_orders_vm(
         live_latch_count=sum(1 for lat in derivation.latches if lat.is_live),
         validity_prompts=validity_prompts,
         validity_prompt_degraded=validity_prompt_degraded,
+        cancel_controls=cancel_controls,
+        cancel_unavailable_notes=cancel_unavailable_notes,
     )
 
 
