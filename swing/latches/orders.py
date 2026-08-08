@@ -656,12 +656,28 @@ def attribute_orders_to_latches(*, latches, orders) -> tuple[OrderAttribution, .
     exactly what the framework asked, so the framework would offer him no way
     to record the act it requested.
 
-    SORTED BY `order_id` IN THE RETURNED TUPLE ONLY, for a stable render. The
-    caller may share the resulting MAP with `join_orders_to_latches` but must
-    never feed it this ORDERING: `_pick_reference_order` falls back to
-    `orders[0]` and `LatchOrderJoin.orders` is built from the per-ticker list,
-    so re-ordering the input can change which order the agreement flags
-    describe -- a behaviour change wearing a refactor's clothes.
+    SORTED BY `order_id` IN THE RETURNED TUPLE ONLY, for a stable render. That
+    ordering is also why this result IS NOT FED INTO `join_orders_to_latches`:
+    `_pick_reference_order` falls back to `orders[0]` and `LatchOrderJoin.orders`
+    is built from the per-ticker list, so re-ordering the input can change which
+    order the agreement flags describe -- a behaviour change wearing a
+    refactor's clothes.
+
+    IT AGREES WITH THE JOIN BY CONSTRUCTION, NOT BY VALIDATION (Codex R2 MAJOR).
+    An earlier cut let the caller HAND this result to `join_orders_to_latches`
+    so one `_match_latch` pass reached both the alarms and the render. That
+    created an injection point for a map the ALARMS read, and no amount of
+    validating it closes the class: order ids and candidate ids can match while
+    the tuple came from an older SNAPSHOT whose prices attributed differently,
+    and `None` in that map means "attributed to NO latch", which SUPPRESSES the
+    stale-order alarm while a live latch exists -- so a stale map MOVES AN ALARM
+    rather than merely losing information. The injection point is GONE. Both
+    functions call THIS SAME PURE `_match_latch` over THE SAME
+    `(latches, orders)`, which is exactly what `indeterminate_order_tickers`
+    requires of the sibling predicate -- the same predicate over the same order
+    set -- and two pure calls on identical inputs cannot disagree.
+    `tests/latches/test_orders.py` pins that agreement over the resting subset,
+    so a change to one matching rule and not the other fails loudly.
     """
     latches = list(latches)
     by_ticker: dict[str, list[Latch]] = {}
@@ -686,20 +702,22 @@ def attribute_orders_to_latches(*, latches, orders) -> tuple[OrderAttribution, .
     return tuple(sorted(rows, key=lambda r: r.order_id))
 
 
-def join_orders_to_latches(*, latches, orders, attribution=None):
+def join_orders_to_latches(*, latches, orders):
     """PURE. Returns ``({latch_candidate_id: LatchOrderJoin}, alarms)``.
 
-    `attribution` is the tuple `attribute_orders_to_latches` returned for this
-    SAME `(latches, orders)` pair. `None` means "compute it internally", which
-    is what every existing caller does and what keeps this signature change
-    additive. When it IS supplied, only the `{order_id: latch}` MAP is taken
-    from it -- never its ordering (see `attribute_orders_to_latches`).
-
-    Passing it is how the fragment VM gets ONE `_match_latch` pass reaching
-    both the alarms and the cancel-control render: a VM that re-derived the
-    attribution would be a second pass that can disagree with this one, which
-    is the property `indeterminate_order_tickers` already forbids for the
-    sibling predicate.
+    ATTRIBUTION IS COMPUTED HERE AND IS NOT INJECTABLE (Codex R2 MAJOR). An
+    earlier cut of wave item 4 accepted an `attribution=` tuple so the fragment
+    VM could make one `_match_latch` pass reach both the alarms and the
+    cancel-control render. That parameter was an injection point for a map this
+    function's ALARMS read, and validating it does not close the class: order
+    ids and candidate ids can match while the tuple came from an older SNAPSHOT
+    whose prices attributed differently. `None` in that map means "attributed
+    to NO latch", which SUPPRESSES the stale-order alarm while a live latch
+    exists -- so a stale map MOVES AN ALARM rather than merely losing
+    information. The parameter is gone; `attribute_orders_to_latches` and this
+    function each call the SAME pure `_match_latch` over the SAME inputs, so
+    they agree by construction rather than by validation, and a test pins that
+    agreement so the two matching rules cannot drift apart.
     """
     latches = list(latches)
     by_ticker: dict[str, list[Latch]] = {}
@@ -720,52 +738,10 @@ def join_orders_to_latches(*, latches, orders, attribution=None):
     # Per-order attribution, computed ONCE so the joins and the alarms cannot
     # disagree about which latch an order belongs to.
     matched: dict[str, Latch | None] = {}
-    if attribution is not None:
-        # THE SUPPLIED ATTRIBUTION MUST BE *THIS* CALL'S, ON BOTH AXES, AND
-        # NEITHER CHECK SUBSUMES THE OTHER (Codex R1 MAJOR). Validating only the
-        # candidate ids accepts an attribution computed over a DIFFERENT ORDER
-        # SET against the same latches, and the map is then wrong for orders it
-        # never saw -- reproduced as the shared path emitting two alarms where
-        # the internal path emitted none. Duplicate order ids are the same
-        # failure one level down: two rows for one id silently collapse, and an
-        # indeterminate row can overwrite a resting one's attribution.
-        #
-        # RAISE, NEVER DEGRADE. `None` in this map means "attributed to NO
-        # latch", which is a LOAD-BEARING alarm input (it suppresses the
-        # stale-order alarm while a live latch exists), so a wrong map MOVES AN
-        # ALARM rather than merely losing information. The caller's A6 ladder
-        # degrades a raise visibly; a silent divergence is invisible, and the
-        # entire reason this parameter exists is that the two paths agree.
-        expected_ids = [
-            o.order_id for o in orders or ()
-            if (o.instruction or "").upper() in BUY_INSTRUCTIONS
-            and (o.is_resting or o.is_indeterminate)
-        ]
-        supplied_ids = [row.order_id for row in attribution]
-        if len(set(supplied_ids)) != len(supplied_ids):
-            raise ValueError(
-                "attribution carries duplicate order ids, so one order's latch "
-                "would silently overwrite another's")
-        if set(supplied_ids) != set(expected_ids):
-            raise ValueError(
-                "attribution does not cover exactly this call's attributable "
-                "BUY orders -- it was computed against a different order set")
-        by_cid = {x.identity.candidate_id: x for x in latches}
-        for row in attribution:
-            if row.latch_candidate_id is None:
-                matched[row.order_id] = None
-                continue
-            if row.latch_candidate_id not in by_cid:
-                raise ValueError(
-                    "attribution references candidate_id "
-                    f"{row.latch_candidate_id}, which is not in this call's "
-                    "latches -- it was computed against a different latch set")
-            matched[row.order_id] = by_cid[row.latch_candidate_id]
-    else:
-        for ticker, ticker_orders in resting_by_ticker.items():
-            for order in ticker_orders:
-                matched[order.order_id] = _match_latch(
-                    order, by_ticker.get(ticker, []))
+    for ticker, ticker_orders in resting_by_ticker.items():
+        for order in ticker_orders:
+            matched[order.order_id] = _match_latch(
+                order, by_ticker.get(ticker, []))
 
     joins: dict[int, LatchOrderJoin] = {}
     for latch in latches:

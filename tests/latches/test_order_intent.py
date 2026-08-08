@@ -699,3 +699,24 @@ def test_the_FTRE_control_is_unmoved():
     assert res.order is not None
     assert res.order.limit_price == FTRE_LIMIT
     assert res.order.limit_price > FTRE_PIVOT
+
+
+def test_the_refusal_DETAIL_never_states_a_number_is_BELOW_ITSELF():
+    """CODEX R2 MINOR. The message's whole content is `limit < pivot`, and at
+    two decimals a sub-cent pivot COLLAPSES the pair: pivot 0.0101 floors to a
+    0.01 mandate limit, so the shipped wording read "0.01 is BELOW ... 0.01".
+
+    A diagnostic that contradicts itself teaches the operator that the panel's
+    numbers are approximate -- on the one surface whose numbers he types at a
+    broker. Precision escalates only where two decimals would erase the
+    difference, so the ordinary geometry keeps money formatting.
+    """
+    collapsing = _prepared_at(0.0101, 0.0001)
+    assert collapsing.withheld_reason == "limit_below_pivot"
+    assert "0.01 is BELOW the latched pivot 0.01," not in collapsing.withheld_detail
+    assert "0.0100 is BELOW the latched pivot 0.0101," in collapsing.withheld_detail
+
+    # The CONTROL: a geometry that does NOT collapse keeps two decimals, so the
+    # fix did not make every message noisier.
+    ordinary = _prepared_at(SUB_DOLLAR_PIVOT, SUB_DOLLAR_STOP)
+    assert "0.01 is BELOW the latched pivot 0.02," in ordinary.withheld_detail

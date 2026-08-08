@@ -715,14 +715,26 @@ def test_the_join_still_picks_its_reference_order_in_BROKER_INPUT_ORDER():
     assert joins[cid].order_limit_agrees is False
 
 
-def test_SHARING_the_attribution_gives_BYTE_IDENTICAL_joins_and_alarms():
-    """The shared MAP must be the same map the join would have computed.
+def test_the_ATTRIBUTION_and_the_JOIN_agree_on_EVERY_resting_order():
+    """THE PROPERTY THAT REPLACED THE INJECTABLE MAP (Codex R2 MAJOR).
 
-    The VM passes `attribution=` so ONE `_match_latch` pass reaches both the
-    alarms and the cancel-control render -- which is only safe if the supplied
-    path and the internal path agree everywhere. Exercised across the four
-    geometries whose attribution differs: matched-live, matched-cleared,
-    unattributable-beside-a-live-latch, and indeterminate.
+    An earlier cut let the VM hand its attribution tuple to
+    `join_orders_to_latches` so ONE `_match_latch` pass reached both the alarms
+    and the render. That was an injection point for a map the ALARMS read, and
+    validating it does not close the class: order ids and candidate ids can
+    match while the tuple came from an older SNAPSHOT whose prices attributed
+    differently, and `None` in that map SUPPRESSES the stale-order alarm while
+    a live latch exists -- so a stale map MOVES AN ALARM rather than merely
+    losing information.
+
+    The parameter is gone and both functions call the SAME pure `_match_latch`
+    over the SAME inputs, so they agree BY CONSTRUCTION. This is the test that
+    keeps that true: it fails the day someone changes ONE matching rule and not
+    the other, which is now the only way the two can part.
+
+    Exercised across the geometries whose attribution differs: matched-live,
+    matched-cleared, unattributable-beside-a-live-latch, indeterminate, and the
+    multi-order shape.
     """
     live = _armed()
     bars = [DailyBar(session=date(2026, 7, 21), open=15.0, high=15.2,
@@ -740,76 +752,22 @@ def test_SHARING_the_attribution_gives_BYTE_IDENTICAL_joins_and_alarms():
         (live, [_order(order_id="A", limit_price=19.5),
                 _order(order_id="B", limit_price=19.75)]),
     )
+    checked = 0
     for latches, orders in cases:
         rows = attribute_orders_to_latches(latches=latches, orders=orders)
-        assert join_orders_to_latches(
-            latches=latches, orders=orders, attribution=rows
-        ) == join_orders_to_latches(latches=latches, orders=orders)
-
-
-def test_an_attribution_from_a_DIFFERENT_latch_set_RAISES_rather_than_degrades():
-    """`None` in the attribution map means "attributed to NO latch", and that
-    is a load-bearing ALARM input -- it suppresses the stale-order alarm while
-    a live latch exists. Manufacturing it from a mismatched attribution would
-    silently move an alarm, so the mismatch fails loudly instead."""
-    import pytest as _pytest
-
-    other = derive_latches(
-        fires=[FireRow(candidate_id=7777, evaluation_run_id=121, ticker="FTRE",
-                       pivot=18.34, initial_stop=14.88,
-                       action_session_date="2026-07-20",
-                       run_ts="2026-07-17T17:30:05", pipeline_run_id=135)],
-        bars_by_ticker={"FTRE": []}, entries_by_ticker={},
-        horizon_session=date(2026, 7, 27),
-        derivation_session=date(2026, 7, 24)).latches
-    rows = attribute_orders_to_latches(latches=other, orders=[_order()])
-    assert rows[0].latch_candidate_id == 7777
-    with _pytest.raises(ValueError, match="different latch set"):
-        join_orders_to_latches(
-            latches=_armed(), orders=[_order()], attribution=rows)
-
-
-def test_an_attribution_over_a_DIFFERENT_ORDER_SET_RAISES_rather_than_diverging():
-    """CODEX R1 MAJOR, reproduced then closed.
-
-    Validating the supplied attribution on candidate ids ALONE accepts one
-    computed over a different ORDER SET against the same latches. The map is
-    then wrong for orders it never saw, and because `None` in that map means
-    "attributed to NO latch" -- which SUPPRESSES the stale-order alarm while a
-    live latch exists -- a wrong map MOVES AN ALARM rather than merely losing
-    information. Codex reproduced the shared path emitting two alarms where the
-    internal path emitted none.
-
-    The whole reason the `attribution=` parameter exists is that the two paths
-    agree, so a mismatch fails loudly and the caller's A6 ladder degrades it
-    visibly.
-    """
-    import pytest as _pytest
-
-    latches = _armed()
-    a = _order(order_id="A")
-    b = _order(order_id="B", stop_price=99.0, limit_price=99.5)
-    rows_for_a_only = attribute_orders_to_latches(latches=latches, orders=[a])
-    with _pytest.raises(ValueError, match="different order set"):
-        join_orders_to_latches(
-            latches=latches, orders=[a, b], attribution=rows_for_a_only)
-    # ...and the reverse direction: an attribution covering MORE orders than
-    # this call carries is equally a different order set.
-    rows_for_both = attribute_orders_to_latches(latches=latches, orders=[a, b])
-    with _pytest.raises(ValueError, match="different order set"):
-        join_orders_to_latches(
-            latches=latches, orders=[a], attribution=rows_for_both)
-
-
-def test_a_DUPLICATE_order_id_in_the_attribution_RAISES():
-    """The same failure one level down: two rows for one order id silently
-    collapse in the map, so an INDETERMINATE row can overwrite a RESTING one's
-    attribution and the alarm half moves under a refactor's name."""
-    import pytest as _pytest
-
-    latches = _armed()
-    resting = _order(order_id="DUP")
-    rows = attribute_orders_to_latches(latches=latches, orders=[resting])
-    with _pytest.raises(ValueError, match="duplicate order ids"):
-        join_orders_to_latches(
-            latches=latches, orders=[resting], attribution=rows + rows)
+        by_id = {r.order_id: r.latch_candidate_id for r in rows}
+        joins, _ = join_orders_to_latches(latches=latches, orders=orders)
+        for order in orders:
+            if not order.is_resting:
+                continue
+            # The JOIN's own answer, read back out of the structure it builds:
+            # a matched order sits in the FIRST `matched_order_count` entries of
+            # its latch's `orders` tuple (strays follow it).
+            owner = next(
+                (cid for cid, j in joins.items()
+                 if any(o.order_id == order.order_id
+                        for o in j.orders[:j.matched_order_count])),
+                None)
+            assert by_id[order.order_id] == owner, (order.order_id, orders)
+            checked += 1
+    assert checked == 5, "the premise: five RESTING orders were compared"

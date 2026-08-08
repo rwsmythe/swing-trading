@@ -324,6 +324,29 @@ class SizingInputs:
     nightly_recommendation_shares: int | None = None
 
 
+def _render_inequality(lower: float, upper: float) -> tuple[str, str]:
+    """Render two prices so the INEQUALITY between them survives the format.
+
+    Money precision is what the operator reads everywhere else, so it is the
+    default -- but this diagnostic's whole content is `lower < upper`, and at
+    two decimals a sub-cent pivot COLLAPSES the pair: pivot 0.0101 floors to a
+    0.01 mandate limit and the sentence becomes "0.01 is BELOW ... 0.01"
+    (Codex R2 MINOR). A message that contradicts itself teaches the operator
+    that the panel's numbers are approximate, on the one surface whose numbers
+    he types at a broker.
+
+    So precision ESCALATES only where two decimals would erase the difference,
+    and `repr`-grade `.17g` is the terminal fallback because it round-trips a
+    double exactly: if the two still render identically at that width they are
+    the same value, which the caller's strict `<` has already excluded.
+    """
+    for spec in ("{:.2f}", "{:.4f}", "{:.6f}", "{:.17g}"):
+        low, high = spec.format(lower), spec.format(upper)
+        if low != high:
+            return low, high
+    return f"{lower!r}", f"{upper!r}"       # pragma: no cover -- `<` excludes it
+
+
 def compute_prepared_order(
     *, latch, regime_order_type: str | None, regime_close: float | None,
     regime_close_session: str | None, sizing_inputs: SizingInputs,
@@ -382,12 +405,14 @@ def compute_prepared_order(
     # which decides whether the limit-above-stop SHAPE rule may be applied to an
     # OBSERVED order at all -- and `==` sits inside that one and outside this.
     if limit_price < float(latch.latched_pivot):
+        shown_limit, shown_pivot = _render_inequality(
+            limit_price, float(latch.latched_pivot))
         return PreparedOrderResult(
             order=None, withheld_reason="limit_below_pivot",
             withheld_detail=(
                 "No prepared order: the whole-cent mandate limit "
-                f"{limit_price:.2f} is BELOW the latched pivot "
-                f"{float(latch.latched_pivot):.2f}, so it is outside the buy "
+                f"{shown_limit} is BELOW the latched pivot "
+                f"{shown_pivot}, so it is outside the buy "
                 "zone this mandate is defined over and sizing against it "
                 "would understate the risk the pivot carries. The mandate "
                 "facts are shown; no order is offered."))

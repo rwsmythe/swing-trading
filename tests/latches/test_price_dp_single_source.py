@@ -57,15 +57,32 @@ def _bindings_of(tree: ast.Module, names: set[str]) -> list[str]:
     `ast.Name` in a `Store` context subsumes `Assign` / `AnnAssign` /
     `AugAssign` / `for` targets / `with ... as` / walrus; `ast.arg` covers
     function parameters (a parameter named `PRICE_DP` shadows the import inside
-    that function while every other assertion here still passes); `ExceptHandler`
-    binds through a bare string. An `import` binds through `ast.alias`, which is
-    none of these -- so the import is permitted BY CONSTRUCTION and needs no
-    exemption.
+    that function while every other assertion here still passes);
+    `ExceptHandler` and `MatchAs` bind through a bare string attribute rather
+    than a `Name`, so each needs its own clause.
+
+    IMPORTS ARE NOT EXEMPT BY NODE TYPE -- ONLY THE CANONICAL ONE IS ALLOWED
+    (Codex R2 MINOR). An `import` binds through `ast.alias`, and treating that
+    node type as permitted let a function-local `from somewhere_else import
+    PRICE_DP`, or an `import x as PRICE_DP`, shadow the canonical constant while
+    the identity test (which reads the MODULE attribute) and the reference count
+    both still passed. So every `alias` binding either name is rejected EXCEPT
+    the module-level `from swing.latches.constants import PRICE_DP` -- the one
+    binding this whole file exists to require.
 
     Enumerating node TYPES was the shape that let `PRICE_DP: int = 2` slip past
-    an `Assign`-only ban. A single-source guarantee with a documented hole in it
+    an `Assign`-only ban, and exempting a node type is the same mistake wearing
+    an import's clothes. A single-source guarantee with a documented hole in it
     is not a guarantee.
     """
+    allowed_aliases = {
+        id(alias)
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "swing.latches.constants" and node.level == 0
+        for alias in node.names
+        if alias.name == "PRICE_DP" and alias.asname is None
+    }
     found: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
@@ -75,6 +92,18 @@ def _bindings_of(tree: ast.Module, names: set[str]) -> list[str]:
             found.append(f"arg {node.arg} at line {node.lineno}")
         elif isinstance(node, ast.ExceptHandler) and node.name in names:
             found.append(f"except-as {node.name} at line {node.lineno}")
+        elif isinstance(node, ast.MatchAs) and node.name in names:
+            found.append(f"match-as {node.name} at line {node.lineno}")
+        elif isinstance(node, ast.MatchStar) and node.name in names:
+            found.append(f"match-star {node.name} at line {node.lineno}")
+        elif isinstance(node, ast.alias):
+            bound = node.asname or node.name.split(".")[0]
+            if bound in names and id(node) not in allowed_aliases:
+                found.append(f"import-alias {bound}")
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for bound in node.names:
+                if bound in names:
+                    found.append(f"global/nonlocal {bound} at line {node.lineno}")
     return found
 
 

@@ -2156,15 +2156,17 @@ def build_latch_orders_vm(
             resolution_detail=resolution.detail, alarms=(), order_lines=())
 
     try:
-        # THE CALLER COMPUTES THE ATTRIBUTION ONCE AND SHARES IT. Building the
-        # cancel controls from a SECOND `attribute_orders_to_latches` call would
-        # be a second `_match_latch` pass that can disagree with the one the
-        # alarms ran on -- the exact property `indeterminate_order_tickers`
-        # already forbids for the sibling predicate.
+        # BOTH READ THE SAME PURE PREDICATE OVER THE SAME ORDER SET, which is
+        # what `indeterminate_order_tickers` requires of the sibling predicate
+        # and what makes the alarms and the cancel-control render agree about
+        # which latch an order belongs to. They are two calls, NOT one shared
+        # map: an earlier cut passed this tuple into the join, and an injectable
+        # map that the ALARMS read cannot be made safe by validating it (Codex
+        # R2 MAJOR). Two pure calls on identical inputs cannot disagree.
         attribution = attribute_orders_to_latches(
             latches=derivation.latches, orders=orders)
         joins, alarms = join_orders_to_latches(
-            latches=derivation.latches, orders=orders, attribution=attribution)
+            latches=derivation.latches, orders=orders)
     except Exception as exc:  # noqa: BLE001 -- A6
         _log.warning("latch order join degraded: %s", exc)
         return LatchOrdersFragmentVM(
