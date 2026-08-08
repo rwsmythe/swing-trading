@@ -209,7 +209,14 @@ def test_the_origin_field_is_named_inferred_origin_and_prints_its_basis(
     """A report printing a bare `origin` FAILS. A params match is a HEURISTIC --
     two identical orders are indistinguishable by params -- so presenting
     inference as identity would be an overclaim, and the basis is printed beside
-    the value so the reader can see which kind of claim it is."""
+    the value so the reader can see which kind of claim it is.
+
+    THE THIRD BASIS KIND ARRIVED WITH RD's D-2 RULING and this assertion was
+    widened rather than narrowed: a `cancel` row can reach NEITHER attribution
+    branch, so its basis is now UNDETERMINED -- which is a kind of claim in
+    exactly the sense this test is about, and the seeded row here IS a bare
+    cancel. Leaving the assertion at `INFERRED or EXACT` would have made this
+    test demand the wrong answer the ruling exists to remove."""
     cfg, cfg_path = seeded_db
     cid = _seed(cfg)
     conn = connect(cfg.paths.db_path)
@@ -223,7 +230,8 @@ def test_the_origin_field_is_named_inferred_origin_and_prints_its_basis(
     conn.close()
     r = _run(cfg_path)
     assert "inferred_origin=" in r.output
-    assert "INFERRED" in r.output or "EXACT" in r.output
+    line = next(x for x in r.output.splitlines() if "order 1002" in x)
+    assert any(k in line for k in ("INFERRED", "EXACT", "UNDETERMINED")), line
     # The bare word must not appear as the FIELD name.
     assert " origin=" not in r.output
 
@@ -1046,3 +1054,105 @@ def test_one_pipeline_conflict_is_counted_ONCE_across_overlapping_latches(
     assert line and line[0].strip().endswith("1"), out
     # And the date is printed ONCE, not once per latch.
     assert out.count("2026-07-30") == 1, out
+
+
+# ---------------------------------------------------------------------------
+# D-2a -- THE ATTRIBUTION FLOOR (RD ruling 2, wave item 4; MERGE-BLOCKING).
+#
+# `_inferred_origin` has two attribution branches and a `cancel` row can reach
+# NEITHER:
+#   * the EXACT branch needs `validated_place_intent_id`, which migration 0033
+#     makes NULL on every kind but `validity`
+#     (`CHECK (intent_kind = 'validity' OR (... validated_place_intent_id IS
+#     NULL))`);
+#   * the params branch needs `actual_limit_price` / `actual_quantity`, which
+#     the shape-exclusion CHECK makes NULL on every kind but `validity`.
+# So it fell through to the latch-match fallback and reported a
+# framework-mandated order, cancelled through the framework, carrying the
+# broker order id the framework itself recorded, as OPERATOR-originated.
+#
+# That is a WRONG ANSWER, not a missing one, in a ledger whose entire purpose
+# is framework-versus-operator attribution -- and it is `alarm, never assert`
+# violated: a positive attribution asserted from an absence of evidence.
+#
+# THE EXACT THREE-HOP CHAIN (cancel -> the validity row bearing the same broker
+# order id -> its `validated_place_intent_id` -> the place) IS DEFERRED TO ITEM
+# 5. What is NOT available is shipping its absence as `operator_inferred`.
+# ---------------------------------------------------------------------------
+
+
+def _seed_cancel(cfg, cid, *, key, order_id, recorded_ts="2026-07-27T09:00:00"):
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO latch_order_intents (candidate_id, evaluation_run_id, "
+            "ticker, detection_date, idempotency_key, action_session_date, "
+            "recorded_ts, surface, intent_kind, actual_broker_order_id) VALUES "
+            "(?, 121, 'FTRE', '2026-07-20', ?, '2026-07-27', ?, "
+            "'latch_panel', 'cancel', ?)",
+            (cid, key, recorded_ts, order_id))
+    conn.close()
+
+
+def test_a_CANCEL_beside_a_PLACE_is_UNDETERMINED_and_never_operator_inferred(
+        seeded_db):
+    """DISCRIMINATOR. Pre-fix this exact geometry prints
+    `inferred_origin=operator_inferred` -- the framework prepared the order, the
+    operator cancelled it through the framework, and the report credits him with
+    originating it."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    _seed_place(cfg, cid, key="p-1", recorded_ts="2026-07-27T08:00:00")
+    _seed_cancel(cfg, cid, key="c-1", order_id="2001")
+    r = _run(cfg_path)
+    assert "order 2001" in r.output
+    line = next(x for x in r.output.splitlines() if "order 2001" in x)
+    assert "operator_inferred" not in line, line
+    assert "inferred_origin=undetermined" in line, line
+    assert "UNDETERMINED" in line, line
+
+
+def test_the_UNDETERMINED_basis_still_states_whether_a_place_EXISTS(seeded_db):
+    """The residual evidence is preserved in the BASIS rather than thrown away.
+
+    "is there a place intent on this candidate at all" IS answerable for every
+    kind -- it is only the ORDER-LEVEL comparison that a cancel row cannot
+    reach -- so the value goes UNDETERMINED while the basis keeps the fact.
+    Without this the fix would trade a wrong answer for a blind one.
+    """
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    _seed_cancel(cfg, cid, key="c-2", order_id="2002")
+    line = next(
+        x for x in _run(cfg_path).output.splitlines() if "order 2002" in x)
+    assert "inferred_origin=undetermined" in line, line
+    assert "no place intent" in line, line
+
+
+def test_a_VALIDITY_row_carrying_its_PARENT_is_still_reported_EXACT(seeded_db):
+    """GUARD, and it is what stops the fix from over-firing. `validity` is the
+    one kind the schema lets carry BOTH the parent link and the observed params,
+    so the guard must not reach it: turning every row UNDETERMINED would delete
+    the only exact linkage V1 has."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    parent = _seed_place(cfg, cid, key="p-3", recorded_ts="2026-07-27T08:00:00")
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO latch_order_intents (candidate_id, evaluation_run_id, "
+            "ticker, detection_date, idempotency_key, action_session_date, "
+            "recorded_ts, surface, intent_kind, actual_broker_order_id, "
+            "actual_order_type, actual_duration, actual_limit_price, "
+            "actual_quantity, validity_outcome, validity_detail, "
+            "validated_place_intent_id) VALUES "
+            "(?, 121, 'FTRE', '2026-07-20', 'v-3', '2026-07-27', "
+            "'2026-07-27T10:00:00', 'latch_panel', 'validity', '2003', "
+            "'LIMIT', 'GOOD_TILL_CANCEL', 18.89, 9, 'accepted_by_broker', "
+            "?, ?)",
+            (cid, _SNAPSHOT.replace('"absence"', '"presence"'), parent))
+    conn.close()
+    line = next(
+        x for x in _run(cfg_path).output.splitlines() if "order 2003" in x)
+    assert "inferred_origin=framework_inferred" in line, line
+    assert "EXACT (captured broker order id)" in line, line
