@@ -2420,7 +2420,12 @@ def test_a_readable_latest_stamp_adds_no_suppression_clause(
 def _invalidate(cfg):
     """A close BELOW the frozen 14.88 stop, which clears the latch by
     INVALIDATION and leaves the resting order stale -- the operator's one manual
-    duty and the only state that earns a cancel control."""
+    duty, and the state that raises the stale-order ALARM.
+
+    IT IS NO LONGER WHAT EARNS A CANCEL CONTROL. Wave item 4 decoupled the
+    recording affordance from the alarm: every attributable order gets a
+    control, alarmed or not. This helper is retained because these tests are
+    about the ALARM's coexistence with the control."""
     import pandas as pd
     cfg.paths.prices_cache_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame([
@@ -2437,10 +2442,16 @@ def test_a_stale_order_alarm_offers_a_CANCEL_control_bound_to_THAT_order_id(
     so the row carrying section G.4's EXACT linkage (a captured broker order id)
     never enters the measurement ledger and cancellation decisions are invisible.
 
-    The alarm named the order id in PROSE only, and prose is not a field, so the
-    control could not be bound to a specific order. `OrderAlarm` now carries it
-    STRUCTURALLY. The control targets a SPECIFIC broker order id and never a
-    ticker -- hazard (c), which the schema CHECK also makes unwritable.
+    The control targets a SPECIFIC broker order id and never a ticker --
+    hazard (c), which the schema CHECK also makes unwritable.
+
+    WHAT BINDS THE CONTROL CHANGED IN WAVE ITEM 4, AND THIS TEST'S ASSERTIONS
+    DID NOT. It used to be `OrderAlarm.broker_order_id`, carried structurally so
+    a control could ride on the alarm; the control now rides on the ORDER
+    (`attribute_orders_to_latches` -> `cancel_controls`) and the alarm field is
+    alarm CONTENT. This geometry still produces both, which is exactly why the
+    test still passes -- so it is kept as the coexistence case rather than
+    rewritten.
     """
     cfg, cfg_path = seeded_db
     _seed_ftre(cfg)
@@ -2520,3 +2531,200 @@ def test_the_absent_order_alarm_carries_NO_order_id_and_NO_control(
         r = _post_orders(client)
     assert "LATCH_ARMED_NO_RESTING_ORDER" in r.text
     assert "latch-cancel-form" not in r.text
+
+
+# ---------------------------------------------------------------------------
+# THE CANCEL-AFFORDANCE DECOUPLING (wave item 4, piece 1).
+#
+# RD's principle (2026-08-03): recording an operator action and alarming on a
+# detected problem are DIFFERENT FUNCTIONS, and the affordance to record must
+# not be gated on the alarm that detects. The control's subject is a BROKER
+# ORDER THE OPERATOR HOLDS, not a problem the framework noticed.
+# ---------------------------------------------------------------------------
+_CANCEL_FORM = '<form class="latch-cancel-form"'
+_CANCEL_LOG = '<section class="latch-cancel-log">'
+_CANCEL_STATUS = 'class="latch-cancel-status"'
+_CANCEL_GAP = 'class="latch-cancel-unavailable"'
+
+
+def _alarms_container(html: str) -> str:
+    """The `.latch-alarms` DIV, or '' when absent.
+
+    SCOPED TO THE CONTAINER, NOT TO THE `<p>`. The pre-change form was a
+    SIBLING of the alarm paragraph (which closes before it) and a CHILD of
+    `.latch-alarms` -- so a `<p>`-scoped assertion is GREEN pre-change and
+    would let the inline form survive inside the alarm block while acceptance
+    reported success.
+    """
+    marker = '<div class="latch-alarms">'
+    if marker not in html:
+        return ""
+    start = html.index(marker)
+    return html[start:html.index("</div>", start)]
+
+
+def _cancel_form_fields(html: str) -> dict:
+    import re
+    start = html.index(_CANCEL_FORM)
+    form = html[start:html.index("</form>", start)]
+    return dict(re.findall(r'name="([^"]+)" *\n? *value="([^"]*)"', form))
+
+
+def test_a_PENDING_CANCEL_order_STILL_offers_the_cancel_control(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """DISCRIMINATOR. Pre-fix an INDETERMINATE order is dropped before
+    attribution and its whole ticker is skipped by both alarm loops, so NO
+    control renders at all -- the state produced BY the operator doing what the
+    framework asked is exactly the state in which the framework offered him no
+    way to record it.
+
+    The paired alarm assertions fail any implementation that bought the control
+    by WIDENING THE ALARM SET: the suppression is ruled correct, and alarming
+    on PENDING_CANCEL would shout at the operator for complying.
+
+    The status assertion is EXACT and CLASS-SCOPED, because the fragment
+    already printed `ORDER STATUS INDETERMINATE` from `vm.indeterminate_tickers`
+    before any change -- an assertion on "indeterminate is mentioned" would be
+    vacuous.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(order_id="7001", status="PENDING_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert _CANCEL_LOG in r.text
+    assert _cancel_form_fields(r.text)["actual_broker_order_id"] == "7001"
+    assert "<p " + _CANCEL_STATUS + ">broker status PENDING_CANCEL</p>" in r.text
+    # THE ALARM HALF IS UNTOUCHED.
+    assert "ORDER_RESTING_LATCH_CLEARED" not in r.text
+    assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
+    assert "ORDER STATUS INDETERMINATE" in r.text
+
+
+def test_an_ORDINARY_resting_order_carries_NO_status_note(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """GUARD -- the other side of the pair. Without it, an implementation that
+    emits a status note UNCONDITIONALLY passes the test above."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(order_id="7002", duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert _CANCEL_FORM in r.text
+    assert _CANCEL_STATUS not in r.text
+
+
+def test_a_HEALTHY_covering_order_ALSO_offers_the_cancel_control(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """DISCRIMINATOR, and it is Q2: `ORDER_RESTING_LATCH_CLEARED` must not be
+    the sole route to a `cancel` row. Pre-fix there is no alarm here, therefore
+    no control. It fails any implementation that re-keys the control on a
+    rediscovered alarm predicate."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    mandated = _order(order_id="7003", order_type="STOP_LIMIT",
+                      duration="GOOD_TILL_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[mandated])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert _ALL_CLEAR in r.text, "the premise: this geometry raises NO alarm"
+    assert _CANCEL_LOG in r.text
+    assert _cancel_form_fields(r.text)["actual_broker_order_id"] == "7003"
+
+
+def test_the_cancel_control_on_a_NON_ALARMED_order_writes_the_row_end_to_end(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """DISCRIMINATOR. RENDERED IS NOT REACHABLE -- the 21-B lesson, which is
+    why the alarm-side control has its own end-to-end test too."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    mandated = _order(order_id="7004", order_type="STOP_LIMIT",
+                      duration="GOOD_TILL_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[mandated])
+    with TestClient(app) as client:
+        html = _post_orders(client).text
+        assert _ALL_CLEAR in html, "the premise: NO alarm on this geometry"
+        r = client.post(
+            "/latches/intent", headers=_HX, data=_cancel_form_fields(html))
+    assert r.status_code == 200, r.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT intent_kind, actual_broker_order_id FROM "
+            "latch_order_intents").fetchall()
+    finally:
+        conn.close()
+    assert rows == [("cancel", "7004")]
+
+
+def test_the_alarm_block_no_longer_carries_a_FORM(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """DISCRIMINATOR, scoped to the `.latch-alarms` CONTAINER. Pre-change the
+    cancel form is a CHILD of that container, so this is RED; a `<p>`-scoped
+    assertion would be green pre-change and would let the inline form survive.
+
+    Paired with a POSITIVE assertion that a control exists elsewhere on the
+    same render -- an absence test that would pass on an empty page is not a
+    test."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _invalidate(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[_order(order_id="7005")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    container = _alarms_container(r.text)
+    assert "ORDER_RESTING_LATCH_CLEARED" in container
+    assert "<form" not in container
+    assert _CANCEL_LOG in r.text
+    assert _cancel_form_fields(r.text)["actual_broker_order_id"] == "7005"
+
+
+def test_an_UNAVAILABLE_broker_book_offers_NO_cancel_control(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """GUARD -- green on both trees, because the unavailable branch already
+    returns early with no controls. It kills the one wrong implementation:
+    building controls outside the `available` branch. A control built on a book
+    nobody could read invites a decision the operator would infer from the
+    panel's own silence."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, install_holder=False)
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert "unavailable" in r.text.lower(), "the premise: the book is UNKNOWN"
+    assert _CANCEL_FORM not in r.text
+    assert _CANCEL_LOG not in r.text
+
+
+def test_an_order_attributable_to_NO_latch_gets_a_NOTE_and_no_control_with_NO_alarm(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """DISCRIMINATOR. A stray order beside a LIVE latch fires NO
+    `ORDER_RESTING_LATCH_CLEARED` (a mispriced order for a live mandate is
+    deliberately not alarmed), so pre-change the cancel-gap label was
+    UNREACHABLE on this geometry -- the note existed only when the order also
+    alarmed.
+
+    IT ASSERTS THE CANCEL-GAP CLASS, never merely "a labelled note": the VM
+    already appends a DISAGREEMENT line for every unmatched order and the
+    template already renders it, so "a note is present" is GREEN pre-change.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    stray = _order(order_id="9999", stop_price=99.00, price=99.50)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[stray])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert "ORDER_RESTING_LATCH_CLEARED" not in r.text, (
+        "the premise: a stray beside a LIVE latch does not alarm")
+    assert _CANCEL_GAP in r.text
+    assert "9999" in r.text
+    assert "no mandate to log a cancel against" in r.text
+    assert _CANCEL_FORM not in r.text
