@@ -1711,3 +1711,171 @@ def test_a_DECLINED_latch_REFUSES_a_further_decision_and_that_cost_is_pinned(
     finally:
         conn.close()
     assert latch.clear_reason == "declined"
+
+
+# ---------------------------------------------------------------------------
+# FLAG B -- A DECLINE'S EFFECTIVE SESSION IS SERVER-COMPUTED AT POST, AND
+# BACKDATING IS IMPOSSIBLE BY CONSTRUCTION (RD, `docs/rd-state.md`).
+#
+# The defect is not cosmetic. `_resolve_decline` reads `action_session_date`
+# DIRECTLY as the `declined` terminal's session and `_Terminal.order_key` is
+# `(session, rank)`, so a backdated decline can PRE-EMPT a terminal dated
+# between the render and the submit -- including a FILL. That is the
+# orphaned-fill vector.
+# ---------------------------------------------------------------------------
+_S_PLUS_ONE_CLOCK = datetime(2026, 7, 27, 18, 0)   # -> action session 07-28
+
+
+def test_a_DECLINE_with_a_STALE_anchor_is_REFUSED_and_writes_NOTHING(
+        seeded_db, monkeypatch):
+    """DISCRIMINATOR, computed under BOTH paths.
+
+    THE OBVIOUS CONSTRUCTION IS VACUOUS AND IS REJECTED HERE RATHER THAN
+    RE-DERIVED LATER: freeze the clock ON the anchor's own session and the
+    stored session is that session PRE-fix (from the anchor) and POST-fix (from
+    the clock) alike, proving nothing.
+
+    The discriminating construction is the STALE-BUT-TOLERATED anchor: anchor
+    S, clock S+1, one session behind, which `_classify_anchor` returns `ok` for
+    today.
+
+        |                          | pre-fix          | post-fix |
+        | HTTP status              | 200              | 409      |
+        | latch_order_intents rows | 1, dated S       | 0        |
+
+    Both are asserted, so it cannot pass vacuously in either direction.
+
+    THE PREPARED ORDER MUST BE *OFFERED* AT S OR THIS PROVES NOTHING. `decline`
+    is a DECISION kind, so step 5 re-derives the block and 409s when it is
+    WITHHELD -- and withheld is the default on today's substrate, so a careless
+    fixture returns 409 + zero rows PRE-fix too, for an unrelated reason, and
+    the table above collapses into agreement. `_anchor_form` asserts
+    `prepared_order.offered` as an INLINE PREMISE, and `_seed` dates the close,
+    the run and the corroborating archive bar at the derivation session the
+    anchor S actually resolves to.
+
+    THE LEDGER STARTS EMPTY, deliberately: with no rows neither replay gate can
+    hit, so this measures the freshness gate and nothing else. The replay
+    interaction is pinned separately below.
+    """
+    import swing.web.routes.latches as route_mod
+    import swing.web.view_models.latches as vm_mod
+    cfg, cfg_path = seeded_db
+    monkeypatch.setattr(vm_mod, "_now", lambda: NOW)
+    monkeypatch.setattr(route_mod, "_now", lambda: NOW)
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {
+        "intent_kind": "decline", "decline_reason": "too extended"}
+    assert form["view_session_date"] == ANCHOR
+    assert _intents(cfg) == [], "the premise: the ledger starts EMPTY"
+
+    monkeypatch.setattr(route_mod, "_now", lambda: _S_PLUS_ONE_CLOCK)
+    monkeypatch.setattr(vm_mod, "_now", lambda: _S_PLUS_ONE_CLOCK)
+    from swing.evaluation.dates import action_session_for_run, sessions_behind
+    current = action_session_for_run(_S_PLUS_ONE_CLOCK)
+    assert current.isoformat() == "2026-07-28", current
+    assert sessions_behind(current, date(2026, 7, 27)) == 1, (
+        "the premise: ONE session behind, which the anchor classifier "
+        "TOLERATES today -- a 2-session gap would 409 for the old reason")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 409, r.text
+    assert "stale" in r.text.lower()
+    assert _intents(cfg) == []
+
+
+def test_a_CURRENT_anchor_decline_stores_the_SERVER_session(
+        seeded_db, frozen_clocks):
+    """The other half of flag B: the stored session comes from the SERVER
+    CLOCK, not from the form. With the strict gate above, the two are equal by
+    construction -- which is what keeps the idempotency key (built from the
+    form's raw spelling) coherent with the stored value."""
+    from swing.evaluation.dates import action_session_for_run
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {
+        "intent_kind": "decline", "decline_reason": "gap risk"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data=form)
+    assert r.status_code == 200, r.text
+    (row,) = _intents(cfg)
+    assert row[2] == action_session_for_run(NOW).isoformat() == ANCHOR
+
+
+@pytest.mark.parametrize("kind,extra", [
+    ("cancel", {"actual_broker_order_id": "4242"}),
+    ("attest", {"attested_disposition": "chose_not_to_act"}),
+])
+def test_a_NON_DECLINE_KIND_with_a_STALE_anchor_is_STILL_ACCEPTED_today(
+        seeded_db, monkeypatch, kind, extra):
+    """COST MARKER -- EXPLICITLY NOT A DISCRIMINATOR and not acceptance
+    evidence for anything. A current-anchor cancel stores the form anchor
+    before and after this change, so that shape passes on both trees; this one
+    has a real failing condition instead.
+
+    RD ruled `decline` and ONLY `decline`: a session field is server-computed
+    WHEREVER IT IS CONSUMED AS A DECISION OR ORDERING DATE, and `cancel` /
+    `attest` sessions are provenance/display only (the ledger's time axis is
+    `recorded_ts`), so flag B does not reach them. This test FAILS the moment
+    anyone extends flag B to either kind, which is precisely the moment to go
+    back to RD -- and it is PARAMETERISED over both, because an accidental
+    extension to `attest` alone would otherwise ship with no failing test, on
+    the kind whose prompt is DESIGNED to be answered long after the fact.
+
+    EACH KIND CARRIES ITS REQUIRED FIELD or the test never reaches the session
+    logic: step 2 rejects an `attest` with no disposition and a `cancel` with
+    no broker order id, both BEFORE step 5. `chose_not_to_act` is chosen
+    because `acted_manually` is the only disposition permitted to carry a
+    broker order id, and this row carries none.
+    """
+    import swing.web.routes.latches as route_mod
+    import swing.web.view_models.latches as vm_mod
+    cfg, cfg_path = seeded_db
+    monkeypatch.setattr(vm_mod, "_now", lambda: NOW)
+    monkeypatch.setattr(route_mod, "_now", lambda: NOW)
+    cid = _seed(cfg)
+    monkeypatch.setattr(route_mod, "_now", lambda: _S_PLUS_ONE_CLOCK)
+    monkeypatch.setattr(vm_mod, "_now", lambda: _S_PLUS_ONE_CLOCK)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/intent", headers=_HX, data={
+            "view_session_date": ANCHOR, "candidate_id": str(cid),
+            "intent_kind": kind} | extra)
+    assert r.status_code == 200, r.text
+    (row,) = _intents(cfg)
+    assert row[1] == kind
+    assert row[2] == ANCHOR, (
+        "today's behaviour: the FORM's anchor, not the server session")
+
+
+def test_the_REPLAY_ORDERING_is_UNCHANGED_by_the_decline_freshness_gate(
+        seeded_db, monkeypatch):
+    """GUARD. It kills the one wrong implementation of flag B: moving the
+    freshness gate AHEAD of the replay lookups.
+
+    SELECT-first idempotency requires the terminal-state read to precede
+    validation, and this route's own docstring argues the ordering explicitly.
+    Move the gate and a double-click on a page that went stale between clicks
+    FAILS instead of collapsing onto its existing row.
+
+    `place` is used because it is a DECISION kind like `decline` and reaches
+    the identical step-5 code path, while remaining outside flag B."""
+    import swing.web.routes.latches as route_mod
+    import swing.web.view_models.latches as vm_mod
+    cfg, cfg_path = seeded_db
+    monkeypatch.setattr(vm_mod, "_now", lambda: NOW)
+    monkeypatch.setattr(route_mod, "_now", lambda: NOW)
+    cid = _seed(cfg)
+    form = _anchor_form(cfg, cid) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        first = client.post("/latches/intent", headers=_HX, data=form)
+        assert first.status_code == 200, first.text
+        monkeypatch.setattr(route_mod, "_now", lambda: _S_PLUS_ONE_CLOCK)
+        monkeypatch.setattr(vm_mod, "_now", lambda: _S_PLUS_ONE_CLOCK)
+        replay = client.post("/latches/intent", headers=_HX, data=form)
+    assert replay.status_code == 200, replay.text
+    assert len(_intents(cfg)) == 1

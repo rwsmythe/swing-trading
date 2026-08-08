@@ -702,3 +702,69 @@ def test_the_cards_own_telemetry_echo_STAYS_narrowed_to_this_session(
         conn.close()
     assert echo[cid] == ()
     assert [r.view_session_date for r in whole[cid]] == ["2026-07-21"]
+
+
+# ---------------------------------------------------------------------------
+# THE LABELLED GAP ON THE WITHHELD BRANCH (wave item 4, piece 2, Task 2.2).
+#
+# The DECLINE control lives inside the offered form, so a withheld card takes
+# the decline affordance with it -- the same defect class as the cancel control
+# riding on an alarm. It is NOT closed here, and the reason is the ledger
+# contract rather than scope: a decline on a withheld card carries no framework
+# and no derivation block (every withholding path in `compute_prepared_order`
+# returns before any derivation object is built), which is UNWRITABLE at
+# migration 0033's two CHECKs and at
+# `LatchOrderIntent._validate_shape_exclusion`. So the SILENT absence becomes a
+# LABELLED one -- the project's standing rule, and the honest interim.
+# ---------------------------------------------------------------------------
+
+
+def test_the_WITHHELD_branch_LABELS_why_a_decline_cannot_be_recorded(seeded_db):
+    """DISCRIMINATOR -- the string does not exist anywhere pre-change."""
+    from swing.web.view_models.latches import DECISION_UNAVAILABLE_NOTE
+    cfg, _ = seeded_db
+    _seed_fire(cfg)
+    block = _vm(cfg).rows[0].prepared_order
+    assert block.offered is False, "the premise: this card is WITHHELD"
+    assert block.decision_unavailable_note == DECISION_UNAVAILABLE_NOTE
+    assert block.decision_unavailable_note.strip()
+    assert block.decision_unavailable_note.isascii()
+
+
+def test_the_OFFERED_branch_carries_NO_decision_unavailable_note(seeded_db):
+    """GUARD. It kills an implementation that sets the field on BOTH
+    construction paths -- a default that is never overridden and a field set
+    everywhere are indistinguishable from a test that looks at one branch."""
+    cfg, _ = seeded_db
+    _seed_fire(cfg)
+    _seed_derivation_session_close(cfg, 19.20)
+    block = _vm(cfg).rows[0].prepared_order
+    assert block.offered is True, "the premise: this card IS offered"
+    assert block.decision_unavailable_note == ""
+
+
+def test_the_WITHHELD_branch_STILL_offers_no_control(seeded_db):
+    """GUARD, green pre-change. It kills the one wrong implementation: adding
+    an INERT affordance while labelling the gap -- a control that renders and
+    400s, which is the 21-B defect class this whole item is about.
+
+    SCOPED TO THE PREPARED-ORDER `<section>`, not to the page: the attestation
+    form renders on the same card and a page-wide assertion would be either
+    vacuous or wrong.
+    """
+    from jinja2 import Environment, FileSystemLoader
+    cfg, _ = seeded_db
+    _seed_fire(cfg)
+    row = _vm(cfg).rows[0]
+    assert row.prepared_order.offered is False
+    root = (Path(__file__).resolve().parents[3]
+            / "swing" / "web" / "templates")
+    env = Environment(loader=FileSystemLoader(str(root)), autoescape=True)
+    html = env.get_template(
+        "partials/latch_prepared_order.html.j2").render(row=row)
+    start = html.index('<section class="latch-prepared-order')
+    section = html[start:html.index("</section>", start)]
+    assert "latch-decision-unavailable" in section
+    assert "<form" not in section
+    assert "<button" not in section
+    assert 'value="decline"' not in section
