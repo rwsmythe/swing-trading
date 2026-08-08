@@ -135,8 +135,9 @@ def _sizing_result(pivot: float | None, stop: float | None,
     an unreachable price: it aborted the step before this change too, and
     while the entry was the pivot it doubled as the "stop below the trigger"
     gate that the wider basis would otherwise have loosened. The latch
-    derivation carries the same invariant (`Latch.__post_init__`:
-    stop < pivot < zone_cap).
+    derivation enforces the STOP half of this and only that half
+    (`Latch.__post_init__` raises on `latched_initial_stop >= latched_pivot`);
+    it does not constrain `zone_cap` at all.
     IT IS WRITTEN `stop >= pivot`, NOT `not stop < pivot`, AND THE
     DIFFERENCE IS `nan`: every comparison against `nan` is False, so a `nan`
     pivot falls THROUGH to check 3 and becomes a per-row infeasible instead
@@ -146,9 +147,9 @@ def _sizing_result(pivot: float | None, stop: float | None,
     OUT OF SCOPE, FLAGGED: `compute_prepared_order` has the SAME hole as
     check 4. Its breakout branch pairs `stop = latched_pivot` with
     `limit = mandate_limit_price(zone_cap)`, so on that geometry it offers a
-    stop-limit whose limit sits below its own trigger;
-    `Latch.__post_init__` guarantees `pivot < zone_cap` on the RAW cap and
-    says nothing about the quantized one. That is 21-B's emitter, not this
+    stop-limit whose limit sits below its own trigger. NOTHING enforces
+    `pivot < zone_cap` -- not `Latch.__post_init__`, which checks the stop
+    ordering only, and not the quantizer. That is 21-B's emitter, not this
     arc's scope.
     """
     infeasible = SizingResult(
