@@ -11,6 +11,7 @@ from swing.latches.constants import (
 )
 from swing.latches.models import DailyBar, FireRow, RestingOrder
 from swing.latches.orders import (
+    attribute_orders_to_latches,
     expected_mandate_order_type,
     join_orders_to_latches,
     mandate_shape_mismatch,
@@ -646,3 +647,123 @@ def test_close_EXACTLY_AT_the_pivot_is_the_PULLBACK_regime():
 def test_both_forms_are_in_the_mandate_set_and_gtc_is_still_the_only_duration():
     assert MANDATE_ORDER_TYPES == {"STOP_LIMIT", "LIMIT"}
     assert MANDATE_ORDER_DURATIONS == {"GOOD_TILL_CANCEL"}
+
+
+# ---------------------------------------------------------------------
+# THE PURE ATTRIBUTION SURFACE (wave item 4, piece 1).
+#
+# RD's principle: recording an operator action and alarming on a detected
+# problem are different functions, and the affordance to RECORD must not be
+# gated on the alarm that DETECTS. The join drops indeterminate orders before
+# attribution and skips their whole ticker in both alarm loops -- correct for
+# the alarm (an unknown order book must fire nothing) and backwards for the
+# recording affordance, because PENDING_CANCEL is the state produced BY the
+# operator doing what the framework asked.
+# ---------------------------------------------------------------------
+
+
+def test_attribution_reaches_an_INDETERMINATE_order_the_join_drops():
+    """DISCRIMINATOR -- `attribute_orders_to_latches` does not exist pre-fix.
+
+    The paired alarm assertion pins that the DROP is preserved: the attribution
+    surface must reach the order without the alarm half moving one byte.
+    """
+    latches = _armed()
+    cid = latches[0].identity.candidate_id
+    order = _order(order_id="A1", status="PENDING_CANCEL")
+    rows = attribute_orders_to_latches(latches=latches, orders=[order])
+    assert len(rows) == 1
+    assert rows[0].order_id == "A1"
+    assert rows[0].ticker == "FTRE"
+    assert rows[0].status == "PENDING_CANCEL"
+    assert rows[0].is_indeterminate is True
+    assert rows[0].latch_candidate_id == cid
+
+    joins, alarms = join_orders_to_latches(latches=latches, orders=[order])
+    assert [a for a in alarms if a.ticker == "FTRE"] == []
+    assert joins[cid].indeterminate is True
+
+
+def test_the_join_still_picks_its_reference_order_in_BROKER_INPUT_ORDER():
+    """GUARD -- green on both trees by construction. Its whole job is to fail
+    the ONE wrong implementation of the attribution refactor: feeding the
+    SORTED attribution tuple into the join instead of sharing only the MAP.
+
+    `_pick_reference_order` falls back to `orders[0]`, and
+    `LatchOrderJoin.orders` is built from the per-ticker list -- so re-ordering
+    that list can silently change which order the agreement flags describe.
+    THE TUPLE ORDER is what a sorted feed changes and it is directly
+    observable; the reference order is not (`LatchOrderJoin` exposes no
+    reference field, and on this geometry both candidates yield the SAME
+    agreement flags, so the guard would pass against the very implementation
+    it exists to kill).
+
+    Geometry: two same-ticker orders on the CORRECT stop trigger with
+    DIFFERENT, both-wrong limits -- so `_match_latch` attributes both on the
+    stop leg and neither agrees on both legs, which is what reaches the
+    fallback.
+    """
+    latches = _armed()
+    cid = latches[0].identity.candidate_id
+    a = _order(order_id="A", limit_price=19.50)
+    b = _order(order_id="B", limit_price=19.75)
+    assert a.order_id < b.order_id, "the premise: sorting would put A first"
+
+    joins, _ = join_orders_to_latches(latches=latches, orders=[b, a])
+    assert joins[cid].orders == (b, a)
+    assert joins[cid].order_stop_agrees is True
+    assert joins[cid].order_limit_agrees is False
+
+
+def test_SHARING_the_attribution_gives_BYTE_IDENTICAL_joins_and_alarms():
+    """The shared MAP must be the same map the join would have computed.
+
+    The VM passes `attribution=` so ONE `_match_latch` pass reaches both the
+    alarms and the cancel-control render -- which is only safe if the supplied
+    path and the internal path agree everywhere. Exercised across the four
+    geometries whose attribution differs: matched-live, matched-cleared,
+    unattributable-beside-a-live-latch, and indeterminate.
+    """
+    live = _armed()
+    bars = [DailyBar(session=date(2026, 7, 21), open=15.0, high=15.2,
+                     low=14.1, close=14.0)]
+    cleared = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": bars}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 22),
+        derivation_session=date(2026, 7, 21)).latches
+    cases = (
+        (live, [_order()]),
+        (cleared, [_order()]),
+        (live, [_order(order_id="S", stop_price=None, limit_price=99.0,
+                       order_type="LIMIT")]),
+        (live, [_order(status="PENDING_CANCEL")]),
+        (live, [_order(order_id="A", limit_price=19.5),
+                _order(order_id="B", limit_price=19.75)]),
+    )
+    for latches, orders in cases:
+        rows = attribute_orders_to_latches(latches=latches, orders=orders)
+        assert join_orders_to_latches(
+            latches=latches, orders=orders, attribution=rows
+        ) == join_orders_to_latches(latches=latches, orders=orders)
+
+
+def test_an_attribution_from_a_DIFFERENT_latch_set_RAISES_rather_than_degrades():
+    """`None` in the attribution map means "attributed to NO latch", and that
+    is a load-bearing ALARM input -- it suppresses the stale-order alarm while
+    a live latch exists. Manufacturing it from a mismatched attribution would
+    silently move an alarm, so the mismatch fails loudly instead."""
+    import pytest as _pytest
+
+    other = derive_latches(
+        fires=[FireRow(candidate_id=7777, evaluation_run_id=121, ticker="FTRE",
+                       pivot=18.34, initial_stop=14.88,
+                       action_session_date="2026-07-20",
+                       run_ts="2026-07-17T17:30:05", pipeline_run_id=135)],
+        bars_by_ticker={"FTRE": []}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 27),
+        derivation_session=date(2026, 7, 24)).latches
+    rows = attribute_orders_to_latches(latches=other, orders=[_order()])
+    assert rows[0].latch_candidate_id == 7777
+    with _pytest.raises(ValueError, match="different latch set"):
+        join_orders_to_latches(
+            latches=_armed(), orders=[_order()], attribution=rows)
