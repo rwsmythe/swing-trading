@@ -693,9 +693,15 @@ def canonical_order_book(orders) -> tuple[RestingOrder, ...]:
     both fabricate and suppress an alarm, because `None` in that map means
     "attributed to NO latch".
 
-    A repeat that is BYTE-IDENTICAL is the SAME ORDER seen twice (a paging
-    artifact), so it is COLLAPSED: nothing is lost and the counts stop
-    double-reporting one order. A repeat that CONFLICTS is an order book that
+    A repeat EQUAL ACROSS EVERY CANONICAL `RestingOrder` FIELD is the SAME ORDER
+    seen twice (a paging artifact), so it is COLLAPSED: nothing is lost and the
+    counts stop double-reporting one order. NOT "byte-identical" (Codex R8
+    MINOR, the SECOND occurrence of this wording and the one R7's fix missed):
+    this is dataclass equality over the MAPPED values, so a difference the
+    mapper normalises away is not a difference here -- which is right, because
+    what must not differ is what the consumers will GO ON TO USE.
+
+    A repeat that CONFLICTS is an order book that
     contradicts itself about what an id means, which this module cannot resolve
     and must not guess at -- the panel's standing rule is that a false all-clear
     and a false alarm are both worse than an honest unknown, and the fragment's

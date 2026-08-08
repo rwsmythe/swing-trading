@@ -419,31 +419,36 @@ def compute_prepared_order(
             max_risk_pct=sizing_inputs.max_risk_pct,
             position_pct_cap=sizing_inputs.position_pct_cap)
     except ValueError as exc:
-        # A DEPENDENCY-CONTRACT DEFENCE, NOT A REACHABLE GEOMETRY -- AND THE
-        # BELOW-PIVOT REFUSAL ABOVE IS WHAT MADE THAT TRUE (Codex R3 MINOR).
-        # `compute_shares` raises on exactly one condition, `stop >= entry`.
-        # Past the refusal `limit_price >= latched_pivot`, and
-        # `Latch.__post_init__` enforces `latched_initial_stop < latched_pivot`
-        # and requires all three prices FINITE -- so `stop < entry` always holds
-        # and this branch cannot fire on any constructible latch. It is kept
-        # because `compute_shares` lives in another module whose precondition is
-        # its own to change, and a raise crossing that seam must DEGRADE VISIBLY
-        # rather than 500 the panel (A6). Its test INJECTS the failure; it does
-        # not construct a geometry that produces one.
+        # REACHABLE ON SUB-CENT GEOMETRY, AND THE ROUNDED REFUSAL IS WHAT MAKES
+        # IT SO (Codex R8 MINOR -- the THIRD revision of this comment, and the
+        # habit is worth naming: each rewrite asserted a reachability claim that
+        # the NEXT change in the same function falsified).
         #
-        # WHAT THE CONSTRUCTOR DOES AND DOES NOT GUARANTEE, stated because the
-        # comment this replaced got it wrong twice: it enforces the STOP half
-        # only and places NO constraint on `zone_cap` beyond finiteness. The
+        # `compute_shares` raises on exactly one condition, `stop >= entry`, and
+        # `entry` is the EMITTED whole-cent limit. The refusal above compares at
+        # DISPLAY precision, so it PASSES a geometry whose raw prices order
+        # correctly while the emitted ones do not: pivot 0.0101, stop 0.01005,
+        # cap 0.0104 -> limit 0.01, and 0.01 <= 0.01005. Every one of those is a
+        # constructible `Latch` (the constructor enforces `stop < pivot` and
+        # finiteness, and nothing else), so this is ORDINARY quantization
+        # geometry rather than a framework defect, and the branch is a genuine
+        # runtime path rather than a dependency-contract belt.
+        #
+        # IT IS NOT PROMOTED TO ITS OWN WITHHELD REASON HERE. `sizing_degenerate`
+        # already says the right thing -- no whole-share position fits this
+        # geometry -- and adding a fourth reason would be a vocabulary change on
+        # a set the panel renders, which is a wider decision than a review fix.
+        # FLAGGED for the orchestrator instead.
+        #
+        # WHAT THE CONSTRUCTOR DOES AND DOES NOT GUARANTEE: it enforces the STOP
+        # half only and places NO constraint on `zone_cap` beyond finiteness. The
         # cap-above-pivot ordering is a property of the ORDINARY derivation
-        # (`zone_cap_for_pivot` is `round(p * 1.03, 4)`), not of the type, and
-        # `_usable_price` admits a pivot small enough to break it
-        # (`round(1e-305 * 1.03, 4)` is 0.0) -- which is precisely the geometry
-        # the refusal above now intercepts.
+        # (`zone_cap_for_pivot` is `round(p * 1.03, 4)`), not of the type.
         return PreparedOrderResult(
             order=None, withheld_reason="sizing_degenerate",
             withheld_detail=(
                 "No prepared order: the sizing computation is degenerate "
-                f"({exc}). This is a framework defect, not a market state."))
+                f"({exc}). No whole-share position fits this geometry."))
     if not sizing.feasible:
         return PreparedOrderResult(
             order=None, withheld_reason="sizing_infeasible",

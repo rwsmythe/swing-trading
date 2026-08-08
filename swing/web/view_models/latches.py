@@ -3128,8 +3128,11 @@ def _intents_by_latch(conn, latches) -> tuple[dict[int, list], frozenset[int]]:
 
     THE FAILURE SET IS RETURNED SEPARATELY BECAUSE A FAILED READ IS NOT AN EMPTY
     LEDGER (codex-auto-review MAJOR). Omitting a failed candidate from the dict
-    makes it indistinguishable from a latch that simply has no rows, and the
-    consumers' `.get(cid, ())` then reads a transient outage as "no prior
+    makes it indistinguishable from a latch that simply has no rows -- but ONLY
+    ONE consumer was actually confused by it, and saying "the consumers" was an
+    over-claim (Codex R8 MINOR). `_validity_prompts` reads `.get(cid)` and turns
+    the missing key into its own labelled degraded state; the CANCEL-CONTROL
+    builder read `.get(cid, ())`, so a transient outage reached it as "no prior
     intent". That anchor is RULING-3 load-bearing -- it is what distinguishes a
     REPLAY from a CORRECTION -- so a false blank can collapse a correction onto
     a replay key and DISCARD the operator's actual final answer, which is the

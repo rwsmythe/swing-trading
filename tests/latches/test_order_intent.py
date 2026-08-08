@@ -286,21 +286,18 @@ def test_infeasible_sizing_WITHHOLDS_the_form():
 
 
 def test_a_degenerate_sizing_geometry_WITHHOLDS_rather_than_raising(monkeypatch):
-    """DEPENDENCY FAULT INJECTION, and the catch is DEFENSIVE rather than
-    reachable (Codex R3 MINOR).
+    """FAULT INJECTION at the module seam. It pins that a raise crossing into
+    `compute_shares` DEGRADES rather than 500ing the panel (A6), whatever the
+    cause -- and the natural-geometry case that reaches the same branch without
+    injection is pinned separately below.
 
-    `compute_shares` raises on exactly one condition, `stop >= entry`, and past
-    the below-pivot refusal `limit_price >= latched_pivot` while
-    `Latch.__post_init__` enforces `latched_initial_stop < latched_pivot` -- so
-    no constructible latch can produce this raise. The failure is INJECTED, not
-    constructed, and the guard is kept because `compute_shares` lives in another
-    module whose precondition is its own to change; a raise crossing that seam
-    must degrade VISIBLY rather than 500 the panel (A6).
-
-    An earlier docstring called the guard reachable via a sub-normal pivot. The
-    refusal shipped in this same arc intercepts exactly that geometry, which
-    made the claim false the moment it landed -- the discharged-deferral class,
-    inside the fix for it."""
+    THIS DOCSTRING HAS NOW BEEN WRONG TWICE, in opposite directions, and the
+    pattern is the point: it first claimed the constructor guaranteed
+    `stop < pivot < cap`; then, after the below-pivot refusal shipped, that the
+    branch was unreachable. The rounded refusal (Codex R7) made it reachable
+    again on sub-cent geometry. A comment asserting REACHABILITY is a claim
+    about the whole surrounding control flow, and the next change to that flow
+    falsifies it silently -- so the reachability claim now lives in a TEST."""
     from swing.latches import order_intent as mod
 
     def _boom(**kw):
@@ -761,3 +758,25 @@ def test_the_refusal_DETAIL_states_TWO_DIFFERENT_numbers():
     res = _prepared_at(SUB_DOLLAR_PIVOT, SUB_DOLLAR_STOP)
     assert res.withheld_reason == "limit_below_pivot"
     assert "0.01 is BELOW the latched pivot 0.02," in res.withheld_detail
+
+
+def test_a_SUB_CENT_geometry_reaches_sizing_degenerate_WITHOUT_injection():
+    """CODEX R8 MINOR. The rounded refusal PASSES a geometry whose raw prices
+    order correctly while the EMITTED ones do not: pivot 0.0101, stop 0.01005,
+    cap 0.0104 -> limit 0.01, and `compute_shares` then raises on
+    `0.01 <= 0.01005`.
+
+    Every value is a constructible `Latch` -- the constructor enforces
+    `stop < pivot` and finiteness and nothing else -- so this is ORDINARY
+    quantization geometry, not a framework defect. Pinned as a TEST because the
+    comment that used to carry the claim has been falsified twice by later
+    changes to the same function: a reachability claim is a statement about
+    surrounding control flow, and only an executable one survives it.
+    """
+    res = _prepared_at(0.0101, 0.01005)
+    assert res.order is None
+    assert res.withheld_reason == "sizing_degenerate"
+    assert res.withheld_detail.strip()
+    assert "framework defect" not in res.withheld_detail, (
+        "it is a market/quantization geometry, and the operator-facing wording "
+        "must not blame the framework for it")
