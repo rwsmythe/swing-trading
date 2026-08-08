@@ -281,16 +281,33 @@ def test_the_DECISION_control_still_rides_on_the_prepared_order_block_TODAY():
     one surface over.
 
     THE SHIPPED TEMPLATE PUTS THE DECLINE BUTTON INSIDE `{% if po.offered %}`,
-    so today it does NOT survive a withheld form. Item 3a built exactly this
-    affordance, then REVERTED it -- a POST-only widening reachable solely by
-    replaying a pre-decline form is a stale-form hole dressed as a corrective
-    path -- and RD SIGNED OFF on routing the render/route half to wave item 4,
-    which already owns the governing principle. Fixing it here would re-open a
-    scope he closed.
+    so it does NOT survive a withheld form.
 
-    So this test pins the CURRENT shape and names what flips when item 4 ships,
-    the same way 3a pinned its own reversal cost. It is a FLAG with a failing
-    condition attached, not an endorsement.
+    WAVE ITEM 4 SHIPPED AND THIS ASSERTION DID NOT FLIP, BECAUSE THE BLOCKER IS
+    THE LEDGER CONTRACT AND NOT SCOPE. Re-grounded on what was actually found:
+    a decline recorded on a withheld card carries NO framework block and NO
+    derivation block, because every withholding path in
+    `compute_prepared_order` returns before any derivation object is built. Such
+    a row is UNWRITABLE at three barriers -- migration 0033's
+    `CHECK (intent_kind NOT IN ('place','decline') OR (derivation_... IS NOT
+    NULL ...))`, its sibling `CHECK` over the four framework columns, and
+    `LatchOrderIntent._validate_shape_exclusion`, which mirrors both. Above them
+    sit a route gate that 409s a DECISION kind whose block is withheld and
+    `rederive_prepared_order`'s live-latch filter, which item 3a already
+    recorded was WRONG-SHAPED to widen.
+
+    So the template edit ALONE would produce a control that renders and 400s --
+    the exact 21-B defect the item exists to remove. Closing it needs a
+    migration AND a `swing/data/` carve-out, which are two tripwires, and it
+    poses RD a measurement question underneath both (a decline with no
+    derivation block is a decline of WHAT?). Both directors concurred on
+    shipping the WRITE half and LABELLING the gap:
+    `PreparedOrderVM.decision_unavailable_note` now renders on the withheld
+    branch, so the reduction is visible rather than silent.
+
+    This test therefore keeps pinning the CURRENT shape, and what flips it is no
+    longer "item 4" but a ruled migration. It is a FLAG with a failing condition
+    attached, not an endorsement.
     """
     partial = (pathlib.Path(__file__).resolve().parents[3]
                / "swing" / "web" / "templates" / "partials"
