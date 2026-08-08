@@ -101,6 +101,16 @@ def _bindings_of(source: str, tree: ast.Module, names: set[str]) -> list[str]:
     found: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.alias):
+            # A WILDCARD IMPORT IS BANNED OUTRIGHT, NOT INSPECTED (Codex R12
+            # MINOR). `from x import *` binds `"*"` as the alias name and
+            # `symtable` cannot enumerate what it introduces -- by construction,
+            # since the names are not knowable until import time. So neither
+            # instrument here can SEE a star import that exports `PRICE_DP`, and
+            # the only sound answer to an unknowable binding set is to refuse
+            # it. These four modules contain none.
+            if node.name == "*":
+                found.append("wildcard import (its bindings are unknowable)")
+                continue
             bound = node.asname or node.name.split(".")[0]
             if bound in names and id(node) not in allowed_aliases:
                 found.append(f"import of {bound} from somewhere else")
