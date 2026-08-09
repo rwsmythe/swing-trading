@@ -52,6 +52,8 @@
      template holds no logic. #}
   {% if vm.cancel_controls or vm.cancel_unavailable_notes %}
   <section class="latch-cancel-log">
+    <h3 class="latch-cancel-log-heading">CANCEL LOG (LOG ONLY - nothing is sent
+      to the broker)</h3>
     {% for control in vm.cancel_controls %}
     {% if control.status_note %}
     <p class="latch-cancel-status">{{ control.status_note }}</p>

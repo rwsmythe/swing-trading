@@ -602,9 +602,32 @@ tr.tripwire-fired td:first-child { border-left: 4px solid var(--tripwire-border)
   display: block;
 }
 
-/* The per-order cancel control rides INSIDE an alarm block, so it takes no box
-   of its own -- a second bordered box inside an alarm reads as a second alarm.
-   var()-only. */
+/* The cancel log is its OWN section, sibling to the alarm block, because
+   recording an operator action and alarming on a detected problem are different
+   functions (RD, 2026-08-03). It carries the ORDER palette, never the alarm
+   palette: a bordered box in alarm colours beside the alarm block would read as
+   a second alarm, which is the hazard the pre-decoupling styling avoided by
+   giving the control no box at all. That worked while the control lived inside
+   an alarm; once it moved out it left an unheaded button between two unrelated
+   alarm lines, which the operator witness caught. var()-only. */
+.latch-cancel-log {
+  background: var(--latch-order-bg);
+  color: var(--latch-order-fg);
+  border: 1px solid var(--latch-order-border);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+}
+
+.latch-cancel-log-heading {
+  font-weight: 600;
+  margin: 0 0 0.25rem 0;
+}
+
+.latch-cancel-status {
+  margin: 0 0 0.25rem 0;
+}
+
 .latch-cancel-form {
   margin: 0.25rem 0 0.5rem 0;
 }
