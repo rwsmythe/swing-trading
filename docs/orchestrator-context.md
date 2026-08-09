@@ -256,9 +256,17 @@ When a return report comes back, triage in this order:
 After you relay a return report to the operator in chat (UNCHANGED — that is the operator's control point and it stays), ALSO post the same report to both directors via the file mailbox so they track arc state without the operator hand-relaying it:
 
 ```
-python scripts/role_mail.py post --from orchestrator --to charc,rd \
+cd "c:/Users/rwsmy/swing-trading" && python scripts/role_mail.py post --from orchestrator --to charc,rd \
   --type return_report --subject "<arc>: <one line>" --body-file <return-report.md>
 ```
+
+**Three posting rules, each bought with a real misdelivery or a lost message (banked 2026-08-09, CHARC-folded):**
+
+1. **`--body-file` ALWAYS; never an inline `--body`.** A body containing a dollar amount broke PowerShell's argument parsing and the post FAILED rather than sending (the good outcome — but only by luck of where the shell split). `--body-file` sidesteps shell quoting entirely, and it leaves a file on disk to diff the delivered message against.
+2. **The `cd` to the MAIN repo goes in the SAME invocation, every time, and echo the cwd.** `role_mail.py` resolves its comms root from the SCRIPT's repo, so a worktree cwd silently misdelivers into the worktree's gitignored `comms/` tree while printing a success line. **PowerShell's cwd persists independently of Bash's** — a `Set-Location <worktree>` issued for a suite run will still be in effect several tool calls later. Three instances now; the third cost both directors an entire QA report they never received.
+3. **VERIFY DELIVERY ON DISK. The `posted ->` line is not evidence** — it prints relative path segments and reads identical on a misdelivery. `ls comms/<role>/inbox/ | grep <timestamp>`. Standing check: `find .worktrees -path '*/comms/*/inbox/*'` must be EMPTY — **anchor that pattern to the mailbox shape**, because a loose `*comms*` match false-positives on the many tracked docs whose filenames contain "comms," and a detector that cries wolf is one you learn to ignore.
+
+**And when an inbox reads empty: RE-READ before concluding it.** A bare "inbox is empty" immediately after a posting notification can be a write/read race — observed once, resolved on the next read moments later. There is no timestamp filter in the reader (`_now()` only stamps outgoing posts), so an empty result is not evidence that a director did not post. Cheap to re-check; expensive to conclude wrongly.
 
 **The IMPLEMENTER never posts to the mailbox — the ORCHESTRATOR does, and only AFTER QA.** Return reports flow: implementer → orchestrator (the implementer's final chat message, operator-relayed) → orchestrator QA against disk → THEN the orchestrator posts the QA'd report to the directors. A dispatch / executing-plans prompt MUST NOT instruct the implementer to run `role_mail.py post` (and NEVER `--from orchestrator` — that impersonates this role and bypasses the QA gate). The implementer's final brief step is always "return report as your final chat message," nothing more. (Caught 2026-06-12: the Arc 17-A executing prompt's Step 9 told the implementer to post its `return_report` straight to charc+operator, skipping QA — a brief-template defect, not an implementer deviation. A brief §8 / dispatch step that says "return report via the mailbox" must be read as the orchestrator's post-QA action, and dispatch prompts must be authored accordingly.)
 
