@@ -391,7 +391,7 @@ def _canonical_fill_datetime_or_refuse(raw: Any, *, fill_id: int) -> str:
 
 
 def _derive_target_date_from_discrepancy(
-    disc: Any, *, fill_datetime: str,
+    disc: Any, *, fill_datetime: str, order_entered_date: str | None = None,
 ) -> str:
     """The date this correction will write, derived from the finding itself.
 
@@ -459,6 +459,29 @@ def _derive_target_date_from_discrepancy(
             f"discrepancy {disc.discrepancy_id}'s execution_legs carry a "
             "missing or unparseable time; refusing to derive a date from a "
             "partial view of the order's own fills."
+        )
+    # CHRONOLOGY (Codex R14). The derived execution date must not PRECEDE the
+    # date the order was ENTERED. That date is what the auto-fill envelope
+    # records (`entry_date`, taken from `enter_time`), and nothing else
+    # enforces the ordering: `SchwabExecutionLeg.time` is validated non-empty
+    # only, with no chronology check against `SchwabOrderResponse.enter_time`,
+    # and the reconciliation session distance is DIRECTIONLESS -- so a
+    # backwards payload passes the order-id, quantity, price, side, session and
+    # `--to` checks alike. Correcting from one would move all three coupled
+    # dates to a date before the order existed, record an audit reason
+    # asserting an execution that preceded its own order, and on a watchlist
+    # trade produce `removed_date < added_date`.
+    #
+    # Compared against the ORIGINAL envelope date, which corrections never
+    # rewrite -- so a re-correction is measured from the same anchor as the
+    # first, not from a date this surface itself moved.
+    if order_entered_date and derived < str(order_entered_date):
+        raise EntryDateCorrectionError(
+            f"discrepancy {disc.discrepancy_id}'s latest execution leg is "
+            f"{derived}, which PRECEDES the date the order was entered "
+            f"({order_entered_date}). An execution cannot happen before its "
+            "own order; this payload is internally contradictory and cannot "
+            "authorize a correction."
         )
     if derived == str(fill_datetime)[:10]:
         raise EntryDateCorrectionError(
@@ -616,7 +639,12 @@ def _authorize(
     )
 
     target_date = _derive_target_date_from_discrepancy(
-        disc, fill_datetime=pre_fill_datetime,
+        disc,
+        fill_datetime=pre_fill_datetime,
+        order_entered_date=(
+            str(source_envelope.get("entry_date"))
+            if source_envelope.get("entry_date") else None
+        ),
     )
     if target_requested != target_date:
         raise EntryDateCorrectionError(

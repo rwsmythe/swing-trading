@@ -2687,3 +2687,81 @@ def test_r13_M3_the_split_validator_is_the_SAME_one_the_writer_uses(conn):
     for bad in ("2026-07-23garbage", "20260723T160000", "nope", "", None):
         with pytest.raises(ValueError):
             assert_canonical_fill_datetime(bad)
+
+
+# ===========================================================================
+# Codex R14 fix
+# ===========================================================================
+
+
+def test_r14_an_execution_BEFORE_the_order_was_entered_is_refused(conn):
+    """`SchwabExecutionLeg.time` is validated non-empty only, with NO chronology
+    check against `SchwabOrderResponse.enter_time`, and the reconciliation
+    session distance is DIRECTIONLESS -- so a backwards payload passed the
+    order-id, quantity, price, side, session and `--to` checks alike.
+
+    Correcting from one would move all three coupled dates to a date before the
+    order existed, record an audit reason asserting an execution that preceded
+    its own order, and on this watchlist trade produce
+    `removed_date` (2026-06-29) < `added_date` (2026-06-30).
+    """
+    ids = _seed(conn, actual_value_json=_live_actual_value_json(
+        leg_times=("2026-06-29T13:30:05+0000",),
+    ))
+    with pytest.raises(EntryDateCorrectionError, match="PRECEDES the date"):
+        _apply(conn, ids, to_date="2026-06-29")
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE
+    assert conn.execute(
+        "SELECT fill_datetime FROM fills WHERE fill_id = ?", (ids["fill_id"],),
+    ).fetchone()[0] == f"{PRE_DATE}T16:00:00"
+    assert conn.execute(
+        "SELECT removed_date FROM watchlist_archive WHERE ticker='FTRE'",
+    ).fetchone()[0] == PRE_DATE
+    # BOTH audit tables untouched.
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM trade_events WHERE event_type = "
+        "'reconciliation_auto_correct'",
+    ).fetchone()[0] == 0
+
+
+def test_r14_an_execution_ON_the_entered_date_is_not_refused_by_chronology(
+    conn,
+):
+    """Counterfactual on the boundary: the guard is `<`, not `<=`. A same-day
+    execution is ordinary; it is the DATE-EQUALS-FILL clause that disqualifies
+    it here, not chronology."""
+    ids = _seed(conn, actual_value_json=_live_actual_value_json(
+        leg_times=(f"{PRE_DATE}T19:30:05+0000",),
+    ))
+    with pytest.raises(
+        EntryDateCorrectionError, match="already equals the fill's date",
+    ):
+        _apply(conn, ids)
+
+
+def test_r14_a_RE_correction_measures_chronology_from_the_ORIGINAL_envelope(
+    conn,
+):
+    """The envelope date is never rewritten by a correction, so the second
+    correction is measured from the same anchor as the first -- not from a date
+    this surface itself moved."""
+    ids = _seed(conn)
+    _apply(conn, ids)
+    envelope = json.loads(conn.execute(
+        "SELECT schwab_source_value_json FROM fills WHERE fill_id = ?",
+        (ids["fill_id"],),
+    ).fetchone()[0])
+    assert envelope["entry_date"] == PRE_DATE  # unchanged by the correction
+    # A second finding whose evidence predates the ORDER is still refused,
+    # even though it POSTdates nothing the first correction wrote.
+    disc2 = _second_finding(conn, ids, target="2026-06-29")
+    with pytest.raises(EntryDateCorrectionError, match="PRECEDES the date"):
+        correct_entry_date(
+            conn, trade_id=ids["trade_id"], to_date="2026-06-29",
+            discrepancy_id=disc2, reason="backwards re-correction",
+        )
