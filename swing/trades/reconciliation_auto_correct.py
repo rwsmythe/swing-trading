@@ -1288,6 +1288,16 @@ def _apply_tier3_override_inner(
     # under-describes the mutation. Re-correcting an entry date goes back
     # through `swing journal correct-entry-date` against a fresh finding, so
     # the whole evidence chain is revalidated rather than partially replayed.
+    # DISCREPANCY-WIDE, not just this row (Codex R7 Major 1). Checking only
+    # the SELECTED head left a supported three-command bypass: an AUDIT-ONLY
+    # tier-2 disposition appends its OWN unsuperseded correction (with a
+    # harmless choice) without superseding the multi-row head, and a tier-3
+    # override aimed at THAT newer head sailed past a per-row check -- moving
+    # `fills.fill_datetime` alone, leaving `trades.entry_date` and the archive
+    # row behind, and terminally resolving the discrepancy. The barrier belongs
+    # to the FINDING, not to one row of its chain.
+    _assert_no_unsuperseded_multi_row_correction(conn, target.discrepancy_id)
+
     if target.correction_choice in _MULTI_ROW_CORRECTION_CHOICES:
         raise MultiRowCorrectionOverrideError(
             f"correction_id={correction_id} has correction_choice="

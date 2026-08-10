@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date as _date
@@ -765,19 +766,28 @@ def _assert_the_date_came_from_the_auto_fill(
       - the envelope's `entry_date` must equal the fill's CURRENT date. For a
         pure `schwab_auto` fill that holds by construction; for a corrected one
         it holds only if the operator edited price or shares and NOT the date.
-      - `entry_date_source == 'execution_leg'` means the auto-fill ALREADY took
-        the execution grain (a post-T1 fill), so D31 cannot be its cause. A
-        pre-T1 envelope has no such key at all, which is why the check is on
-        the VALUE and not on the key's absence.
+      - the envelope must carry NO `entry_date_source` key AT ALL. That key
+        exists only from T1 onward, so its ABSENCE is what identifies a
+        pre-T1 fill -- the only kind D31 can have produced.
     """
-    source = envelope.get("entry_date_source")
-    if source == "execution_leg":
+    if "entry_date_source" in envelope:
+        source = envelope.get("entry_date_source")
+        # ABSENCE is the qualifier, not a particular value (Codex R7 Major 2).
+        # An earlier draft refused only `execution_leg` and admitted
+        # `enter_time` -- but the POST-T1 auto-fill deliberately STAMPS
+        # `enter_time` when a leg timestamp is malformed, so a later clean
+        # reconciliation fetch on the same order would have been corrected
+        # under a reason blaming the OLD D31 bug for a fallback the fixed code
+        # took on purpose. The mutation might even be right; the recorded CAUSE
+        # would be false, and this arc exists to stop exactly that.
         raise EntryDateCorrectionError(
-            f"fill {disc.fill_id}'s envelope records "
-            "entry_date_source='execution_leg': the auto-fill already took "
-            "the EXECUTION grain, so D31 is not the cause of any divergence "
-            "here and this surface's audit reason would be false. Route it to "
-            "CHARC rather than dating it from this evidence."
+            f"fill {disc.fill_id}'s envelope carries "
+            f"entry_date_source={source!r}, so it was written by the POST-D31 "
+            "auto-fill: either it already took the execution grain, or it fell "
+            "back deliberately. Only a pre-T1 envelope -- which has NO such "
+            "key -- can be a D31 victim, and this surface's audit reason names "
+            "D31 as the cause. Route it to CHARC rather than recording a false "
+            "cause."
         )
     envelope_date = envelope.get("entry_date")
     if str(envelope_date) != str(fill_date):
@@ -813,7 +823,28 @@ def _assert_evidence_matches_fill_quantity(
                 f"discrepancy {disc.discrepancy_id} carries a non-numeric "
                 "execution-leg quantity; it cannot authorize a date rewrite."
             )
+        # EVERY leg must be FINITE and STRICTLY POSITIVE (Codex R7 Major 2).
+        # `SchwabExecutionLeg` enforces exactly that at construction, so a leg
+        # violating it could never have come from the production model -- but
+        # `insert_discrepancy` stores JSON, not that model, so the value is
+        # schema-legal here. The sum check alone is not enough: a real 10-share
+        # leg on the recorded date PLUS a zero-quantity pseudo-leg on a LATER
+        # date sums to 10 and passes, and `latest_execution_leg_date` then
+        # picks the pseudo-leg's date to rewrite three ledger rows.
+        if not math.isfinite(float(qty)) or float(qty) <= 0:
+            raise EntryDateCorrectionError(
+                f"discrepancy {disc.discrepancy_id} carries an execution leg "
+                f"with quantity {qty!r}. Every leg must be finite and strictly "
+                "positive -- SchwabExecutionLeg enforces that at construction, "
+                "so this payload could not have been emitted by the production "
+                "model and must not date a trade."
+            )
         total += float(qty)
+    if not math.isfinite(total):
+        raise EntryDateCorrectionError(
+            f"discrepancy {disc.discrepancy_id}'s execution-leg quantities do "
+            "not sum to a finite value."
+        )
     if abs(total - fill_quantity) > _PRICE_TOLERANCE_DEFAULT:
         raise EntryDateCorrectionError(
             f"discrepancy {disc.discrepancy_id}'s execution legs total "

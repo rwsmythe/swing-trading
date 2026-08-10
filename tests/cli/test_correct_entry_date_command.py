@@ -61,9 +61,11 @@ def _seed(db_path: Path, *, trade_state: str = "closed") -> dict:
              # binds the discrepancy's evidence to THIS fill -- an unrelated
              # same-ticker same-size order is not evidence about a fill it did
              # not produce.
+             # NO `entry_date_source` key -- the LIVE pre-T1 shape. Its
+             # ABSENCE is what identifies a D31 victim; any value means the
+             # POST-fix auto-fill wrote the row and D31 is not the cause.
              json.dumps({
                  "entry_date": PRE_DATE,
-                 "entry_date_source": "enter_time",
                  "entry_price": 18.8,
                  "schwab_instrument_symbol": "FTRE",
                  "schwab_order_id": "1007308870656",

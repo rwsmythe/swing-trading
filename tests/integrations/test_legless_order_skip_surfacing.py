@@ -328,17 +328,30 @@ def test_pass1_RECONCILIATION_FAILURE_path_still_surfaces_the_skip(
     assert entries[0]["order_ids"] == ["2002"]
 
 
-def test_the_runner_merges_the_step_warnings_from_a_failure_dict():
-    """The runner reads `result.get('warnings')` regardless of status, so the
-    failure/sandbox dicts reach `pipeline_runs.warnings_json` the same way the
-    success dict does. Pinned as a CALLER-SIDE obligation rather than assumed
-    (gotcha #31: pin what the caller MUST do)."""
+def test_the_runner_merge_is_NOT_gated_on_the_step_status():
+    """RENAMED AND SHARPENED (Codex R7 Minor 1). The old version searched the
+    runner source for `(_schwab_result or {}).get("warnings")` -- an expression
+    that ALREADY existed for the pre-rider cash warnings, in a file this arc
+    does not touch. It passed under the old implementation and proved nothing.
+
+    What actually matters is that the merge is UNCONDITIONAL on status, so a
+    FAILED step's legless warning still reaches `pipeline_runs.warnings_json`.
+    That is pinned by reading the runner's own statements between the call and
+    the extend and asserting none of them branches on `status` -- a CALLER-SIDE
+    obligation, pinned rather than assumed (gotcha #31).
+    """
     import inspect
 
     from swing.pipeline import runner
 
     src = inspect.getsource(runner)
-    assert '(_schwab_result or {}).get("warnings")' in src
+    call = src.index("_schwab_result = _step_schwab_orders(")
+    extend = src.index("run_warnings.extend(_schwab_warnings)", call)
+    between = src[call:extend]
+    assert '(_schwab_result or {}).get("warnings")' in between
+    # No status branch may stand between the step call and the merge.
+    assert "status" not in between, between
+
 
 
 # ===========================================================================
@@ -547,3 +560,26 @@ def test_r4_MINOR1_the_same_order_across_TWO_folds_counts_ONCE():
     ])
     assert summary.legless_orders_skipped == 2
     assert summary.legless_order_ids == ["2002", "3003"]
+
+
+def test_r7_MINOR2_an_AUDIT_LINK_failure_still_surfaces_the_skip(conn, monkeypatch):
+    """The last unguarded return path. The three `link_reconciliation_run`
+    calls sat outside every exception envelope, so a linkage failure raised out
+    of the step and the runner never received a result dict -- taking an
+    already-recorded coverage gap with it. The step failed visibly while the
+    rider's evidence disappeared."""
+    from swing.integrations.schwab import audit_service, pipeline_steps
+
+    def _boom(*a, **k):
+        raise RuntimeError("audit link exploded")
+
+    monkeypatch.setattr(audit_service, "link_reconciliation_run", _boom)
+    result = pipeline_steps._step_schwab_orders(
+        conn, _cfg(), pipeline_run_id=None,
+        client=_client([_well_formed_order("1001"), _legless_order("2002")]),
+    )
+    assert result["status"] == "failed"
+    assert result["error"].startswith("audit_link_failed")
+    entries = _legless_entries(result)
+    assert len(entries) == 1
+    assert entries[0]["order_ids"] == ["2002"]

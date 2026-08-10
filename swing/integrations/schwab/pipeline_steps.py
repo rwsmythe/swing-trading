@@ -649,14 +649,34 @@ def _step_schwab_orders(
         }
 
     # Link reconciliation_run_id back to each of the 3 audit rows.
-    for cid in call_ids:
-        if cid is None:
-            continue
-        audit_service.link_reconciliation_run(
-            conn,
-            call_id=cid,
-            reconciliation_run_id=reconciliation_run.run_id,
+    #
+    # WRAPPED (Codex R7 Minor 2). These calls sat outside every exception
+    # envelope, so a linkage failure raised out of the step and the runner
+    # never received a result dict -- taking an ALREADY-RECORDED legless-order
+    # coverage gap with it. The step would fail visibly while the rider's
+    # actionable evidence disappeared, which is this rider's own failure mode
+    # arriving at its last unguarded return path.
+    try:
+        for cid in call_ids:
+            if cid is None:
+                continue
+            audit_service.link_reconciliation_run(
+                conn,
+                call_id=cid,
+                reconciliation_run_id=reconciliation_run.run_id,
+            )
+    except Exception as exc:  # noqa: BLE001 — the pipeline never crashes here
+        log.warning(
+            "_step_schwab_orders: audit linkage failed: %s",
+            type(exc).__name__,
         )
+        return {
+            "status": "failed",
+            "call_ids": call_ids,
+            "reconciliation_run_id": reconciliation_run.run_id,
+            "warnings": _legless_warnings(),
+            "error": f"audit_link_failed: {type(exc).__name__}",
+        }
 
     log.info(
         "_step_schwab_orders: completed; reconciliation_run_id=%d "

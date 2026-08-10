@@ -121,9 +121,12 @@ def _seed(
             # `record_entry` persists -- live fill 39's shape. Its
             # `schwab_order_id` is what binds the discrepancy's evidence to
             # THIS fill; a fixture that omitted it masked the hole entirely.
+            # NO `entry_date_source` key -- this is the LIVE pre-T1 shape
+            # (fill 39's actual envelope), and its ABSENCE is what identifies a
+            # D31 victim. A fixture that stamped the key would have described a
+            # fill the pre-T1 code could not have written.
             None if source_order_id is None else json.dumps({
                 "entry_date": entry_date,
-                "entry_date_source": "enter_time",
                 "entry_price": 18.8,
                 "schwab_instrument_symbol": "FTRE",
                 "schwab_order_id": source_order_id,
@@ -1634,42 +1637,149 @@ def test_r6_M2_a_PRICE_only_operator_correction_still_qualifies(conn):
     ).fetchone()[0] == TARGET_DATE
 
 
-def test_r6_M2_a_POST_FIX_execution_leg_envelope_is_refused(conn):
-    """`entry_date_source='execution_leg'` means the auto-fill ALREADY took the
-    execution grain, so D31 cannot be the cause of any divergence here and the
-    reason would be false. A pre-T1 envelope has no such key at all, which is
-    why the check is on the VALUE, not on the key's absence."""
+@pytest.mark.parametrize(
+    "source", ["execution_leg", "enter_time", "something_new"],
+)
+def test_r6_M2_ANY_post_fix_source_marker_is_refused(conn, source):
+    """The key's ABSENCE is the qualifier, not a particular value (sharpened
+    by Codex R7 Major 2).
+
+    `execution_leg` says the post-T1 auto-fill took the execution grain.
+    `enter_time` says it fell back DELIBERATELY on a malformed leg. Either way
+    the fill was written by the FIXED code, so D31 is not its cause -- and this
+    surface's reason names D31 flatly. An earlier draft refused only
+    `execution_leg`, which would have blamed the old bug for the new code's
+    intentional fallback.
+    """
     ids = _seed(conn)
     envelope = json.loads(conn.execute(
         "SELECT schwab_source_value_json FROM fills WHERE fill_id = ?",
         (ids["fill_id"],),
     ).fetchone()[0])
-    assert envelope["entry_date_source"] == "enter_time"
-    envelope["entry_date_source"] = "execution_leg"
+    # The LIVE pre-T1 shape has no such key at all.
+    assert "entry_date_source" not in envelope
+    envelope["entry_date_source"] = source
     conn.execute(
         "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
         (json.dumps(envelope, sort_keys=True), ids["fill_id"]),
     )
     conn.commit()
-    with pytest.raises(EntryDateCorrectionError, match="execution_leg"):
+    with pytest.raises(EntryDateCorrectionError, match="POST-D31"):
         _apply(conn, ids)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
 
 
-def test_r6_M2_a_HISTORICAL_envelope_with_no_source_key_still_qualifies(conn):
-    """Every fill recorded before T1 shipped has NO `entry_date_source` key --
-    and those are precisely the D31 victims this surface exists for."""
+def test_r6_M2_a_HISTORICAL_envelope_with_no_source_key_qualifies(conn):
+    """Counterfactual, and the founding case: every fill recorded before T1
+    shipped has NO `entry_date_source` key -- live fill 39 included -- and
+    those are precisely the D31 victims this surface exists for."""
     ids = _seed(conn)
-    envelope = json.loads(conn.execute(
+    assert "entry_date_source" not in json.loads(conn.execute(
         "SELECT schwab_source_value_json FROM fills WHERE fill_id = ?",
         (ids["fill_id"],),
     ).fetchone()[0])
-    del envelope["entry_date_source"]
-    conn.execute(
-        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
-        (json.dumps(envelope, sort_keys=True), ids["fill_id"]),
-    )
-    conn.commit()
     _apply(conn, ids)
     assert conn.execute(
         "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
     ).fetchone()[0] == TARGET_DATE
+
+
+# ===========================================================================
+# Codex R7 fixes
+# ===========================================================================
+
+
+def test_r7_M1_the_audit_only_then_tier3_BYPASS_is_closed(conn):
+    """The three-command bypass R6's fix opened.
+
+    `correct-entry-date` -> an AUDIT-ONLY tier-2 disposition (permitted, and it
+    appends its OWN unsuperseded correction with a harmless choice, without
+    superseding the multi-row head) -> `override-correction <that new head>
+    --truth-value '{"fill_datetime": ...}'`. Tier 3 checked only the SELECTED
+    row's choice, so the newer head sailed past -- moving the fill alone,
+    leaving trades.entry_date and the archive row behind, and terminally
+    resolving the discrepancy. The barrier belongs to the FINDING, not to one
+    row of its chain.
+    """
+    from swing.trades.reconciliation_auto_correct import (
+        MultiRowCorrectionOverrideError,
+        apply_tier2_resolution,
+        apply_tier3_override,
+    )
+
+    ids = _seed(conn)
+    _apply(conn, ids)
+    audit_head = apply_tier2_resolution(
+        conn,
+        discrepancy_id=ids["discrepancy_id"],
+        choice_code="custom",
+        operator_custom_payload={"operator_intent": "audit only"},
+        operator_reason="audit-only disposition",
+    )
+    assert audit_head.correction_id is not None
+
+    with pytest.raises(MultiRowCorrectionOverrideError):
+        apply_tier3_override(
+            conn,
+            correction_id=audit_head.correction_id,
+            operator_truth_value={"fill_datetime": "2026-08-05T16:00:00"},
+            operator_reason="attempted bypass via the audit-only head",
+        )
+    assert conn.execute(
+        "SELECT fill_datetime FROM fills WHERE fill_id = ?", (ids["fill_id"],),
+    ).fetchone()[0] == f"{TARGET_DATE}T16:00:00"
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+    assert conn.execute(
+        "SELECT removed_date FROM watchlist_archive WHERE ticker='FTRE'",
+    ).fetchone()[0] == TARGET_DATE
+
+
+def test_r7_M2_a_ZERO_quantity_pseudo_leg_cannot_supply_the_date(conn):
+    """The sum check alone was not enough. A real 10-share leg on the RECORDED
+    date plus a zero-quantity pseudo-leg on a LATER date sums to 10 and passed
+    -- and `latest_execution_leg_date` then picked the pseudo-leg's date to
+    rewrite three ledger rows. `SchwabExecutionLeg` rejects a non-positive
+    quantity at construction, so this payload could never have come from the
+    production model; `insert_discrepancy` stores JSON, not that model."""
+    payload = json.loads(_live_actual_value_json())
+    payload["execution_legs"] = [
+        {"leg_id": 1, "price": 18.8, "quantity": 10.0,
+         "time": f"{PRE_DATE}T13:30:05+0000"},
+        {"leg_id": 2, "price": 18.8, "quantity": 0.0,
+         "time": f"{TARGET_DATE}T13:30:05+0000"},
+    ]
+    ids = _seed(conn, actual_value_json=json.dumps(payload, sort_keys=True))
+    with pytest.raises(
+        EntryDateCorrectionError, match="finite and strictly positive",
+    ):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("bad_qty", [0.0, -5.0])
+def test_r7_M2_every_leg_quantity_must_be_finite_and_positive(conn, bad_qty):
+    """`inf` / `nan` are deliberately NOT parametrized here: they are
+    UNREACHABLE through the read path. `ReconciliationDiscrepancy.__post_init__`
+    parses `actual_value_json` with `parse_constant=
+    _reject_non_standard_constant` (models.py), so a payload containing
+    `Infinity` or `NaN` raises before `get_discrepancy` can return it -- the
+    schema-prevented class, cited rather than assumed. The `math.isfinite`
+    clause in the service stays as a belt for a future caller that does not
+    come through that reader.
+    """
+    payload = json.loads(_live_actual_value_json())
+    payload["execution_legs"] = [
+        {"leg_id": 1, "price": 18.8, "quantity": bad_qty, "time": LIVE_LEG_TIME},
+    ]
+    ids = _seed(conn, actual_value_json=json.dumps(payload, sort_keys=True))
+    with pytest.raises(EntryDateCorrectionError):
+        _apply(conn, ids)
