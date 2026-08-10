@@ -808,10 +808,18 @@ def update_entry_date(
         raise ValueError(
             f"entry_date must be a DATE, not a datetime; got {candidate!r}")
     try:
-        _dt.date.fromisoformat(candidate)
+        parsed = _dt.date.fromisoformat(candidate)
     except (TypeError, ValueError) as exc:
         raise ValueError(
             f"entry_date must be a valid YYYY-MM-DD; got {candidate!r}") from exc
+    # `date.fromisoformat` on 3.11+ also accepts BASIC forms (`20260731`,
+    # `2026-W31-5`). Persisting one would break every downstream `[:10]` prefix
+    # and lexical date comparison, so require the canonical round-trip at the
+    # write boundary rather than trusting the caller to have checked.
+    if parsed.isoformat() != candidate:
+        raise ValueError(
+            f"entry_date must be EXTENDED-format YYYY-MM-DD; got {candidate!r}, "
+            f"which parses to {parsed.isoformat()}")
     cur = conn.execute(
         "UPDATE trades SET entry_date = ? WHERE id = ?", (candidate, trade_id))
     if cur.rowcount == 0:

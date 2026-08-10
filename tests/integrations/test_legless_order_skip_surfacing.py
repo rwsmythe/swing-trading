@@ -416,3 +416,79 @@ def test_pass2_dispatch_threads_the_accumulator_to_the_audited_wrapper():
         assert "legless_skips" in inspect.signature(fn).parameters, fn.__name__
     src = inspect.getsource(bf._pass_2_dispatch)
     assert "skips=legless_skips" in src
+
+
+def test_r1_M4_a_POST_FETCH_raise_still_folds_the_recorded_skips():
+    """Codex R1 Major 4. Legless skips sat in the local accumulator until
+    `_classify_and_apply` RETURNED. But that call can raise AFTER the audited
+    Schwab fetch has already recorded skips -- the per-iteration
+    pipeline-exclusion recheck inside `_handle_pass_2` raises
+    `BackfillPipelineActiveError` carrying the summary as its partial, and the
+    post-fetch classifier path can raise too. A fold that only ran on the
+    success path would drop an already-observed legless order out of the
+    aborted summary: this rider's own failure mode, reproduced inside its own
+    remedy.
+
+    Driven through the REAL `run_backfill` loop with a stub
+    `_classify_and_apply` that fills the accumulator and then raises, so the
+    assertion is about the loop's control flow rather than about a helper.
+    """
+    import sqlite3
+    import tempfile
+    from pathlib import Path as _P
+
+    from swing.data.db import ensure_schema
+    from swing.trades import reconciliation_backfill as bf
+
+    conn = ensure_schema(_P(tempfile.mkdtemp()) / "abort.db")
+    try:
+        run_id = conn.execute(
+            "INSERT INTO reconciliation_runs (source, started_ts, state) "
+            "VALUES ('schwab_api', '2026-08-09T00:00:00', 'completed')",
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO reconciliation_discrepancies (run_id, "
+            "discrepancy_type, field_name, material_to_review, resolution, "
+            "created_at) VALUES (?, 'unmatched_open_fill', 'fill_match', 1, "
+            "'unresolved', '2026-08-09T00:00:00')", (run_id,),
+        )
+        conn.commit()
+
+        real = bf._classify_and_apply
+
+        def _fetch_then_raise(*a, legless_skips=None, partial_summary=None, **k):
+            assert legless_skips is not None, (
+                "the accumulator never reached _classify_and_apply"
+            )
+            # The audited fetch has already happened and recorded a skip; THEN
+            # the pipeline-exclusion recheck fires.
+            legless_skips.append({
+                "order_id": "2002", "index": 0,
+                "reason": "missing_or_empty_leg_collection",
+            })
+            raise bf.BackfillPipelineActiveError(
+                "pipeline started mid-iteration",
+                partial_summary=partial_summary,
+            )
+
+        bf._classify_and_apply = _fetch_then_raise
+        try:
+            with pytest.raises(bf.BackfillPipelineActiveError) as exc:
+                bf.run_backfill(
+                    conn, dry_run=True, schwab_client=None,
+                    environment="production", account_hash=None,
+                )
+        finally:
+            bf._classify_and_apply = real
+
+        partial = exc.value.partial_summary
+        assert partial is not None
+        # PRE-FIX this reads 0: the fold ran only after a successful return.
+        assert partial.legless_orders_skipped == 1
+        assert partial.legless_order_ids == ["2002"]
+        block = format_summary_block(partial)
+        assert "Legless Schwab orders SKIPPED by the mapper: 1" in block
+        assert "2002" in block
+    finally:
+        conn.close()
+    assert isinstance(sqlite3.Connection, type)

@@ -324,3 +324,105 @@ def test_run_migrations_twice_is_a_no_op(tmp_path):
         "reconciliation_discrepancies ORDER BY discrepancy_id",
     ).fetchall() == before
     conn.close()
+
+
+def test_r1_M3_the_rebuild_PRESERVES_the_autoincrement_high_water_mark(tmp_path):
+    """`discrepancy_id` is INTEGER PRIMARY KEY **AUTOINCREMENT**, whose whole
+    point is that a retired id is never reissued. A naive table rebuild defeats
+    it: DROP removes the old `sqlite_sequence` row and the new sequence becomes
+    the maximum SURVIVING id.
+
+    Seed 1-3, delete 3, migrate. Pre-fix the next insert is 3 -- a REUSED audit
+    identifier, in a ledger whose whole purpose is that its statements are
+    true. Post-fix it is 4.
+    """
+    conn = _migrate(tmp_path, 34)
+    run_id = _insert_run(conn)
+    for _ in range(3):
+        _insert_discrepancy(conn, run_id, "stop_mismatch")
+    conn.execute(
+        "DELETE FROM reconciliation_discrepancies WHERE discrepancy_id = 3",
+    )
+    conn.commit()
+    assert conn.execute(
+        "SELECT seq FROM sqlite_sequence WHERE name = "
+        "'reconciliation_discrepancies'",
+    ).fetchone()[0] == 3
+    conn.close()
+
+    conn = sqlite3.connect(tmp_path / "t.db")
+    conn.execute("PRAGMA foreign_keys=ON")
+    run_migrations(conn, target_version=35, backup_dir=tmp_path)
+    assert conn.execute(
+        "SELECT seq FROM sqlite_sequence WHERE name = "
+        "'reconciliation_discrepancies'",
+    ).fetchone()[0] == 3
+    new_id = conn.execute(
+        "INSERT INTO reconciliation_discrepancies "
+        "(run_id, discrepancy_type, field_name, material_to_review, "
+        "resolution, created_at) VALUES (?, 'stop_mismatch', 'x', 1, "
+        "'unresolved', '2026-08-09T00:00:00')", (run_id,),
+    ).lastrowid
+    assert new_id == 4
+    conn.close()
+
+
+def test_r1_M3_the_high_water_mark_survives_an_EMPTY_table(tmp_path):
+    """A rebuild that copies ZERO rows leaves NO `sqlite_sequence` row at all
+    (AUTOINCREMENT creates it on the first insert), so the sequence would
+    restart at 1. The INSERT-if-absent half covers that."""
+    conn = _migrate(tmp_path, 34)
+    run_id = _insert_run(conn)
+    for _ in range(2):
+        _insert_discrepancy(conn, run_id, "stop_mismatch")
+    conn.execute("DELETE FROM reconciliation_discrepancies")
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(tmp_path / "t.db")
+    conn.execute("PRAGMA foreign_keys=ON")
+    run_migrations(conn, target_version=35, backup_dir=tmp_path)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_discrepancies",
+    ).fetchone()[0] == 0
+    new_id = conn.execute(
+        "INSERT INTO reconciliation_discrepancies "
+        "(run_id, discrepancy_type, field_name, material_to_review, "
+        "resolution, created_at) VALUES (?, 'stop_mismatch', 'x', 1, "
+        "'unresolved', '2026-08-09T00:00:00')", (run_id,),
+    ).lastrowid
+    assert new_id == 3
+    conn.close()
+
+
+def test_r1_M3_a_virgin_db_migrates_without_a_sequence_row(tmp_path):
+    """No discrepancy has ever existed. Read off a real migrated DB rather
+    than assumed: 0031's own rebuild already leaves a `sqlite_sequence` row at
+    seq=0, so the stash is 0 (not NULL) and BOTH restore statements must be
+    no-ops -- the INSERT because the row exists, the UPDATE because `seq < 0`
+    is false. What matters is the BEHAVIOUR: the first id is still 1."""
+    conn = _migrate(tmp_path, 35)
+    assert conn.execute(
+        "SELECT seq FROM sqlite_sequence WHERE name = "
+        "'reconciliation_discrepancies'",
+    ).fetchone() == (0,)
+    run_id = _insert_run(conn)
+    new_id = conn.execute(
+        "INSERT INTO reconciliation_discrepancies "
+        "(run_id, discrepancy_type, field_name, material_to_review, "
+        "resolution, created_at) VALUES (?, 'stop_mismatch', 'x', 1, "
+        "'unresolved', '2026-08-09T00:00:00')", (run_id,),
+    ).lastrowid
+    assert new_id == 1
+    conn.close()
+
+
+def test_r1_M3_the_migration_leaves_no_temp_table_behind(tmp_path):
+    conn = _migrate(tmp_path, 35)
+    temp = {
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_temp_master WHERE type = 'table'",
+        ).fetchall()
+    }
+    assert not {t for t in temp if t.startswith("_a4_seq")}, temp
+    conn.close()

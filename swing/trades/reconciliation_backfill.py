@@ -1584,21 +1584,32 @@ def run_backfill(
                 )
             )
             continue
-        outcome = _classify_and_apply(
-            conn,
-            disc,
-            dry_run=dry_run,
-            schwab_client=schwab_client,
-            environment=environment,
-            account_hash=account_hash,
-            no_pass_2_on_dry_run=no_pass_2_on_dry_run,
-            retry_pass_2_failures=retry_pass_2_failures,
-            partial_summary=summary,
-            legless_skips=legless_skips,
-        )
-        # Item-5 rider 1 -- fold AFTER every iteration, including the ones that
-        # abort below, so an interrupted backfill still reports what it dropped.
-        _fold_legless_skips(summary, legless_skips)
+        # Item-5 rider 1 -- the fold is in a `finally`, NOT after the call
+        # (Codex R1 Major 4). `_classify_and_apply` can raise AFTER the audited
+        # Schwab fetch has already recorded skips: the per-iteration
+        # pipeline-exclusion recheck inside `_handle_pass_2` raises
+        # `BackfillPipelineActiveError` carrying THIS summary as its partial,
+        # and the post-fetch classifier path can raise too. A fold that only
+        # runs on the success path would drop an already-observed legless order
+        # out of the aborted summary -- the exact silent gap this rider exists
+        # to expose, reproduced inside its own remedy. `summary` is the same
+        # object the exception carries, so folding here reaches the CLI's
+        # partial-summary render.
+        try:
+            outcome = _classify_and_apply(
+                conn,
+                disc,
+                dry_run=dry_run,
+                schwab_client=schwab_client,
+                environment=environment,
+                account_hash=account_hash,
+                no_pass_2_on_dry_run=no_pass_2_on_dry_run,
+                retry_pass_2_failures=retry_pass_2_failures,
+                partial_summary=summary,
+                legless_skips=legless_skips,
+            )
+        finally:
+            _fold_legless_skips(summary, legless_skips)
         summary.per_discrepancy_outcomes.append(outcome)
         # Counter wiring — T-D.7 Pass 1 outcomes + T-D.8 Pass 2 outcomes.
         if outcome.outcome == "tier1_applied":

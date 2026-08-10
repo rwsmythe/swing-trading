@@ -59,19 +59,37 @@ def latest_execution_leg_date(raw_times: Iterable[Any]) -> str | None:
     a plain ``append`` in API order and never sorts, so ``[0]`` / ``[-1]`` mean
     "whatever Schwab listed", which coincides with "the latest execution" only
     by luck. Parsing is used ONLY to rank; a naive leg timestamp is ranked as
-    UTC for that purpose, and the value finally emitted is the winner's raw
-    string prefix (see the module docstring).
+    UTC for that purpose.
+
+    THE EXTENDED FORMAT IS REQUIRED, and the returned value is CANONICAL
+    ``YYYY-MM-DD`` (Codex R1 Major 2). ``datetime.fromisoformat`` on 3.11+
+    accepts BASIC ISO forms -- ``20260731``, compact datetimes, ``2026-W31-5``
+    week dates -- and a naive ``[:10]`` slice of those yields ``"20260731"`` or
+    ``"2026-W31-5"``, neither of which is a date. That value would flow into
+    ``trades.entry_date`` and ``watchlist_archive.removed_date`` and break every
+    downstream ``[:10]`` prefix and lexical date comparison in the project. So a
+    leg time must be a ``str`` whose first ten characters ARE the canonical
+    date, and the emitted value is ``parsed.date().isoformat()``. Anything else
+    is a whole-collection refusal, exactly as an unparseable value is.
     """
     ranked: list[tuple[datetime, str]] = []
     for raw in raw_times:
+        if not isinstance(raw, str):
+            return None
         try:
-            parsed = datetime.fromisoformat(str(raw))
+            parsed = datetime.fromisoformat(raw)
         except (TypeError, ValueError):
+            return None
+        canonical = parsed.date().isoformat()
+        if raw[:10] != canonical:
+            # A basic/compact/week-date form, or a value whose own text
+            # disagrees with the date it parses to. Never silently canonicalize
+            # a shape we did not expect from this emitter.
             return None
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
-        ranked.append((parsed, str(raw)))
+        ranked.append((parsed, canonical))
     if not ranked:
         return None
-    _, winning_raw = max(ranked, key=lambda pair: pair[0])
-    return winning_raw[:10]
+    _, winning_date = max(ranked, key=lambda pair: pair[0])
+    return winning_date

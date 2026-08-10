@@ -83,12 +83,18 @@ def _seed(db_path: Path, *, trade_state: str = "closed") -> dict:
             (run_id, "entry_price_mismatch", trade_id, fill_id, "FTRE",
              "price", json.dumps({"price": 18.8}),
              json.dumps({
+                 "candidate_count": 1,
                  "execution_legs": [{
                      "leg_id": 1, "price": 18.8, "quantity": 10.0,
                      "time": "2026-07-31T13:30:05+0000",
                  }],
                  "execution_sessions_from_fill": 6,
+                 # The BUY side is load-bearing: a SELL-side execution is
+                 # evidence about an EXIT and must never date an entry.
+                 "execution_side": "BUY",
+                 "price": 18.8,
                  "schwab_order_id": "1007308870656",
+                 "schwab_order_price": 18.89,
              }, sort_keys=True),
              "$+0.0000 (schwab execution minus journal)", 1,
              "pending_ambiguity_resolution", "multi_match_within_window",

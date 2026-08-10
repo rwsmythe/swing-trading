@@ -49,6 +49,22 @@ BEGIN;
 --   indexes, and all FKs.
 -- ============================================================================
 
+-- Stash the AUTOINCREMENT high-water mark BEFORE the DROP (Codex R1 Major 3).
+-- `discrepancy_id` is INTEGER PRIMARY KEY **AUTOINCREMENT**, whose whole point
+-- is that a retired id is NEVER reissued. A table rebuild silently defeats
+-- that: DROP removes the old `sqlite_sequence` row, and the new table's
+-- sequence becomes the MAXIMUM SURVIVING id. If the highest discrepancy had
+-- been deleted -- reachable through the `reconciliation_runs` ON DELETE CASCADE
+-- -- the first post-migration insert REUSES that historical id, and an audit
+-- ledger that reissues identifiers is exactly the class of false statement this
+-- whole arc exists to stop. Verified against the live schema before writing
+-- this: seeding ids 1-3, deleting 3, then migrating yields a next id of 3.
+--
+-- 0031 has the same hole. It is fixed HERE rather than retro-patched, because a
+-- migration may not rewrite an already-applied one.
+CREATE TEMP TABLE _a4_seq_highwater AS
+SELECT seq FROM sqlite_sequence WHERE name = 'reconciliation_discrepancies';
+
 CREATE TABLE reconciliation_discrepancies_new (
     discrepancy_id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id INTEGER NOT NULL
@@ -138,6 +154,28 @@ CREATE INDEX ix_reconciliation_discrepancies_material
 CREATE INDEX ix_reconciliation_discrepancies_pending_ambiguity
     ON reconciliation_discrepancies(ambiguity_kind, created_at)
     WHERE resolution = 'pending_ambiguity_resolution';
+
+-- Restore the AUTOINCREMENT high-water mark. Two statements, because the row
+-- may or may not exist after the rename: AUTOINCREMENT creates a
+-- `sqlite_sequence` row on the FIRST insert, so a rebuild that copied ZERO
+-- rows leaves no row at all and the sequence would restart at 1. Both are
+-- no-ops when the stashed value is NULL (a DB that never held a discrepancy)
+-- or when the copied maximum already meets or exceeds it.
+INSERT INTO sqlite_sequence (name, seq)
+SELECT 'reconciliation_discrepancies', (SELECT MAX(seq) FROM _a4_seq_highwater)
+WHERE (SELECT MAX(seq) FROM _a4_seq_highwater) IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM sqlite_sequence
+      WHERE name = 'reconciliation_discrepancies'
+  );
+
+UPDATE sqlite_sequence
+   SET seq = (SELECT MAX(seq) FROM _a4_seq_highwater)
+ WHERE name = 'reconciliation_discrepancies'
+   AND (SELECT MAX(seq) FROM _a4_seq_highwater) IS NOT NULL
+   AND seq < (SELECT MAX(seq) FROM _a4_seq_highwater);
+
+DROP TABLE _a4_seq_highwater;
 
 -- ============================================================================
 -- Schema version bump. MUST be the FINAL statement before COMMIT per the

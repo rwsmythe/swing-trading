@@ -746,3 +746,206 @@ def test_the_service_module_interpolates_no_sql_identifier():
     assert "_update_journal_field(" not in src
     for marker in ('f"UPDATE', "f'UPDATE", 'f"SELECT', "f'SELECT"):
         assert marker not in src
+
+
+# ===========================================================================
+# Codex R1 fixes
+# ===========================================================================
+
+
+def test_r1_M1_a_SELL_side_execution_cannot_date_an_ENTRY(conn):
+    """The sole-candidate Shape-D emit fires when the candidate failed price OR
+    **SIDE** OR session, and it always carries `execution_side`. So a
+    same-ticker same-quantity SELL execution reaches the surface as the only
+    evidence on an `entry_price_mismatch` for an ENTRY fill.
+
+    Without the side clause the surface would derive the EXIT's date, move all
+    three values onto it, and append an audit row that looks entirely valid.
+    `--to` is no protection: the server derives the WRONG date and asks the
+    operator to confirm it.
+    """
+    payload = json.loads(_live_actual_value_json())
+    payload["execution_side"] = "SELL"
+    ids = _seed(conn, actual_value_json=json.dumps(payload, sort_keys=True))
+    with pytest.raises(EntryDateCorrectionError, match="not an ENTRY side"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_r1_M1_a_BUY_side_execution_is_accepted(conn):
+    """Counterfactual for the clause above -- the live payload's own BUY."""
+    ids = _seed(conn)
+    assert json.loads(
+        conn.execute(
+            "SELECT actual_value_json FROM reconciliation_discrepancies "
+            "WHERE discrepancy_id = ?", (ids["discrepancy_id"],),
+        ).fetchone()[0]
+    )["execution_side"] == "BUY"
+    _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+
+
+def test_r1_M1_a_missing_execution_side_is_refused(conn):
+    payload = json.loads(_live_actual_value_json())
+    del payload["execution_side"]
+    ids = _seed(conn, actual_value_json=json.dumps(payload, sort_keys=True))
+    with pytest.raises(EntryDateCorrectionError, match="not an ENTRY side"):
+        _apply(conn, ids)
+
+
+def test_r1_M1_a_multi_candidate_payload_cannot_authorize(conn):
+    """`candidate_count != 1`. The A1 multi-match emit is a JSON ARRAY --
+    'which candidate is the truth' is precisely the question the operator has
+    not answered."""
+    payload = json.loads(_live_actual_value_json())
+    del payload["candidate_count"]
+    ids = _seed(conn, actual_value_json=json.dumps(payload, sort_keys=True))
+    with pytest.raises(EntryDateCorrectionError, match="candidate_count"):
+        _apply(conn, ids)
+
+
+def test_r1_M1_a_json_array_payload_cannot_authorize(conn):
+    """The real A1 shape: a LIST of candidate dicts."""
+    single = json.loads(_live_actual_value_json())
+    ids = _seed(conn, actual_value_json=json.dumps([single, single]))
+    with pytest.raises(EntryDateCorrectionError, match="OBJECT payload"):
+        _apply(conn, ids)
+
+
+@pytest.mark.parametrize("raw", ["20260731", "2026-W31-5T13:30:05"])
+def test_r1_M2_a_basic_iso_leg_time_cannot_derive_a_date(conn, raw):
+    """`datetime.fromisoformat` on 3.11+ accepts BASIC ISO forms. A naive
+    `[:10]` of `20260731` is `"20260731"` -- not a date -- and writing it into
+    `trades.entry_date` would break every downstream prefix comparison."""
+    ids = _seed(conn, actual_value_json=_live_actual_value_json(
+        leg_times=(raw,),
+    ))
+    with pytest.raises(EntryDateCorrectionError, match="unparseable"):
+        _apply(conn, ids, to_date="2026-07-31")
+
+
+def test_r1_M2_a_non_string_leg_time_cannot_derive_a_date(conn):
+    ids = _seed(conn, actual_value_json=_live_actual_value_json())
+    payload = json.loads(conn.execute(
+        "SELECT actual_value_json FROM reconciliation_discrepancies "
+        "WHERE discrepancy_id = ?", (ids["discrepancy_id"],),
+    ).fetchone()[0])
+    payload["execution_legs"][0]["time"] = 20260731
+    conn.execute(
+        "UPDATE reconciliation_discrepancies SET actual_value_json = ? "
+        "WHERE discrepancy_id = ?",
+        (json.dumps(payload, sort_keys=True), ids["discrepancy_id"]),
+    )
+    conn.commit()
+    with pytest.raises(EntryDateCorrectionError, match="unparseable"):
+        _apply(conn, ids, to_date="2026-07-31")
+
+
+@pytest.mark.parametrize("bad_to", ["20260731", "2026-W31-5"])
+def test_r1_M2_a_basic_iso_to_value_is_refused(conn, bad_to):
+    ids = _seed(conn)
+    with pytest.raises(EntryDateCorrectionError, match="EXTENDED-format"):
+        _apply(conn, ids, to_date=bad_to)
+
+
+def test_r1_M2_the_repo_writer_refuses_a_basic_iso_date():
+    """The write boundary refuses independently of the service, so a future
+    caller cannot slip a non-canonical date past it."""
+    import sqlite3 as _sq
+
+    from swing.data.db import ensure_schema
+    from swing.data.repos.trades import update_entry_date
+
+    import tempfile
+    from pathlib import Path as _P
+    c = ensure_schema(_P(tempfile.mkdtemp()) / "w.db")
+    try:
+        cur = c.execute(
+            "INSERT INTO trades (ticker, entry_date, entry_price, "
+            "initial_shares, initial_stop, current_stop, state, trade_origin, "
+            "pre_trade_locked_at) "
+            "VALUES ('X', '2026-07-23', 1.0, 1, 0.5, 0.5, 'closed', "
+            "'manual_off_pipeline', '2026-07-23T16:00:00')",
+        )
+        tid = int(cur.lastrowid)
+        with pytest.raises(ValueError, match="EXTENDED-format"):
+            update_entry_date(c, trade_id=tid, entry_date="20260731")
+        assert c.execute(
+            "SELECT entry_date FROM trades WHERE id = ?", (tid,),
+        ).fetchone()[0] == "2026-07-23"
+        assert isinstance(c, _sq.Connection)
+    finally:
+        c.close()
+
+
+def test_r1_MINOR_a_MID_TRANSACTION_failure_rolls_everything_back(
+    conn, monkeypatch,
+):
+    """The previous rollback test could not reach a mid-transaction failure:
+    the archive row is resolved during `_authorize`, BEFORE any writer runs, so
+    a zero-match refused before the first UPDATE. This injects a failure AFTER
+    all three updates and the aggregate recompute."""
+    from swing.trades import entry_date_correction as mod
+
+    ids = _seed(conn)
+    pre_locked = conn.execute(
+        "SELECT pre_trade_locked_at FROM trades WHERE id = ?",
+        (ids["trade_id"],),
+    ).fetchone()[0]
+
+    def _boom(*a, **k):
+        raise RuntimeError("audit insert exploded")
+
+    monkeypatch.setattr(mod, "insert_correction", _boom)
+    with pytest.raises(RuntimeError, match="exploded"):
+        _apply(conn, ids)
+
+    assert not conn.in_transaction
+    assert conn.execute(
+        "SELECT entry_date, pre_trade_locked_at, current_avg_cost, "
+        "last_fill_at FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[:2] == (PRE_DATE, pre_locked)
+    assert conn.execute(
+        "SELECT fill_datetime, reconciliation_status FROM fills "
+        "WHERE fill_id = ?", (ids["fill_id"],),
+    ).fetchone() == (f"{PRE_DATE}T16:00:00", "unreconciled")
+    assert conn.execute(
+        "SELECT removed_date FROM watchlist_archive WHERE ticker='FTRE'",
+    ).fetchone()[0] == PRE_DATE
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM trade_events WHERE event_type = "
+        "'reconciliation_auto_correct'",
+    ).fetchone()[0] == 0
+
+
+def test_r1_MINOR_a_failure_AFTER_the_audit_insert_also_rolls_back(
+    conn, monkeypatch,
+):
+    """The last writer in the flow is the trade_events emit; a failure there
+    must not leave a correction row pointing at an unwritten mutation."""
+    from swing.trades import reconciliation_auto_correct as rac
+
+    ids = _seed(conn)
+
+    def _boom(*a, **k):
+        raise RuntimeError("event emit exploded")
+
+    monkeypatch.setattr(rac, "_emit_trade_events_correction", _boom)
+    with pytest.raises(RuntimeError, match="exploded"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0

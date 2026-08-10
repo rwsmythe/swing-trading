@@ -284,6 +284,16 @@ def _validate_target_date(to_date: str) -> str:
         raise EntryDateCorrectionError(
             f"--to must be a valid YYYY-MM-DD date; got {candidate!r}."
         ) from exc
+    # Codex R1 Major 2 -- `date.fromisoformat` on 3.11+ ALSO accepts basic ISO
+    # forms (`20260731`, `2026-W31-5`), and writing one of those into
+    # `trades.entry_date` would break every downstream `[:10]` prefix and
+    # lexical date comparison. Require the canonical round-trip.
+    if parsed.isoformat() != candidate:
+        raise EntryDateCorrectionError(
+            f"--to must be EXTENDED-format YYYY-MM-DD; got {candidate!r}, "
+            f"which parses to {parsed.isoformat()}. A basic/compact/week-date "
+            "form is refused rather than silently canonicalized."
+        )
     if not is_trading_session(parsed):
         raise EntryDateCorrectionError(
             f"--to {candidate} is not an NYSE trading session. If this is the "
@@ -363,9 +373,39 @@ def _derive_target_date_from_discrepancy(
         except (TypeError, ValueError):
             payload = None
     if not isinstance(payload, dict):
+        # A multi-candidate (A1 ambiguity) emit is a JSON ARRAY, not an object;
+        # "which candidate is the truth" is exactly the question the operator
+        # has not answered, so it cannot authorize a date rewrite either.
         raise EntryDateCorrectionError(
             f"discrepancy {disc.discrepancy_id} carries no parseable "
-            "actual_value_json payload; it cannot authorize a date rewrite."
+            "actual_value_json OBJECT payload (a multi-candidate ambiguity is "
+            "emitted as a JSON array); it cannot authorize a date rewrite."
+        )
+    # Codex R1 Major 1 -- THE SIDE MUST BE AN ENTRY SIDE. The sole-candidate
+    # Shape-D emit fires when that candidate failed price OR **SIDE** OR
+    # session, and it always carries `execution_side` (= `so.instruction`). So
+    # a same-ticker same-quantity SELL execution reaches this function as the
+    # only evidence on an `entry_price_mismatch` for an ENTRY fill -- and
+    # without this clause the surface would derive the EXIT's date, move
+    # `trades.entry_date`, the entry fill and the archive row onto it, and
+    # append an audit row that looks entirely valid. `--to` is no protection:
+    # the server derives the wrong date and asks the operator to confirm it.
+    if payload.get("candidate_count") != 1:
+        raise EntryDateCorrectionError(
+            f"discrepancy {disc.discrepancy_id} does not carry a single-"
+            "candidate execution payload (candidate_count != 1); it cannot "
+            "authorize a date rewrite."
+        )
+    from swing.trades.reconciliation_classifier import (
+        _expected_execution_sides,
+    )
+    execution_side = payload.get("execution_side")
+    if execution_side not in _expected_execution_sides("entry"):
+        raise EntryDateCorrectionError(
+            f"discrepancy {disc.discrepancy_id}'s execution_side is "
+            f"{execution_side!r}, not an ENTRY side "
+            f"({sorted(_expected_execution_sides('entry'))}). A SELL-side "
+            "execution is evidence about an EXIT and must never date an entry."
         )
     legs = payload.get("execution_legs")
     if not isinstance(legs, list) or not legs:

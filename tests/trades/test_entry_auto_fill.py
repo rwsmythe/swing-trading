@@ -883,3 +883,44 @@ def test_t1_existing_equal_timestamp_fixture_is_behaviour_preserving(
     assert json.loads(
         result.schwab_source_value_json,
     )["entry_date_source"] == "execution_leg"
+
+
+def test_t1_r1_M2_a_basic_iso_leg_time_falls_back_rather_than_writing_junk(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """`datetime.fromisoformat` on 3.11+ accepts BASIC ISO forms, and a naive
+    `[:10]` of `20260731` is `"20260731"` -- not a date. That value would reach
+    `trades.entry_date` through the entry form and break every downstream
+    `[:10]` prefix and lexical date comparison. Refuse the whole collection and
+    stamp the fallback, exactly as an unparseable value does."""
+    order = _make_buy_order_with_leg_times(
+        enter_time="2026-07-23T14:30:00.000Z", leg_times=("20260731",),
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = resolve_entry_auto_fill(
+        ticker="FTRE", cfg=_make_cfg(environment="production"),
+        conn=conn, now=fake_now,
+    )
+    assert result.entry_date == "2026-07-23"
+    assert json.loads(
+        result.schwab_source_value_json,
+    )["entry_date_source"] == "enter_time"
+
+
+def test_t1_r1_M2_the_helper_emits_a_CANONICAL_date():
+    """The returned value is `parsed.date().isoformat()`, not a raw slice."""
+    from swing.trades.execution_dates import latest_execution_leg_date
+
+    assert latest_execution_leg_date(
+        ["2026-07-31T13:30:05+0000"],
+    ) == "2026-07-31"
+    assert latest_execution_leg_date(["2026-07-31"]) == "2026-07-31"
+    # Basic / compact / week-date / non-string forms all refuse.
+    for bad in ("20260731", "20260731T133005", "2026-W31-5", 20260731, None):
+        assert latest_execution_leg_date([bad]) is None, bad
+    # An empty collection is still None, and one bad leg poisons the whole set.
+    assert latest_execution_leg_date([]) is None
+    assert latest_execution_leg_date(
+        ["2026-07-31T13:30:05+0000", "20260801"],
+    ) is None
