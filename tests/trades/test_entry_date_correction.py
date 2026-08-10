@@ -2894,3 +2894,132 @@ def test_r17_a_MALFORMED_sibling_makes_the_ordering_undecidable(conn):
     assert conn.execute(
         "SELECT COUNT(*) FROM reconciliation_corrections",
     ).fetchone()[0] == 0
+
+
+# ===========================================================================
+# Codex R18 fixes
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    "alias", ["ENTRY_DATE", "Entry_Date", "[entry_date]", "entry_date "],
+)
+def test_r18_M1_a_CASE_or_QUOTE_variant_cannot_reach_the_update(conn, alias):
+    """SQLite resolves identifiers CASE-INSENSITIVELY, and
+    `_update_journal_field` interpolates the name straight into SQL -- so
+    `{"ENTRY_DATE": ...}` missed every reservation (which compares
+    byte-for-byte against lowercase keys) and still UPDATEd
+    `trades.entry_date`. The same bypass existed for `FILL_DATETIME`,
+    `ACTION` and `TRADE_ID`, and for bracket-quoted forms.
+
+    A supported tier-2 resolution could therefore move `trades.entry_date`
+    ALONE -- defeating the structural invariant with no prior correction in
+    play at all.
+    """
+    from swing.trades.reconciliation_auto_correct import (
+        ReservedJournalFieldError,
+        _update_journal_field,
+    )
+
+    ids = _seed(conn)
+    with pytest.raises(ReservedJournalFieldError, match="not a column"):
+        _update_journal_field(
+            conn, "trades", ids["trade_id"], alias, "2026-08-05",
+        )
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE
+
+
+@pytest.mark.parametrize("alias", ["FILL_DATETIME", "ACTION", "TRADE_ID"])
+def test_r18_M1_the_fill_role_aliases_are_closed_too(conn, alias):
+    from swing.trades.reconciliation_auto_correct import (
+        ReservedJournalFieldError,
+        _update_journal_field,
+    )
+
+    ids = _seed(conn)
+    with pytest.raises(ReservedJournalFieldError, match="not a column"):
+        _update_journal_field(conn, "fills", ids["fill_id"], alias, "x")
+
+
+def test_r18_M1_the_allowlist_is_DERIVED_from_the_live_schema(conn):
+    """Counterfactual + anti-rot: a real column still passes, and the set comes
+    from `PRAGMA table_info` rather than a hand-written list that could go
+    stale as columns are added."""
+    import inspect
+
+    from swing.trades.reconciliation_auto_correct import (
+        _assert_real_column_name,
+        _update_journal_field,
+    )
+
+    assert "PRAGMA table_info" in inspect.getsource(_assert_real_column_name)
+    ids = _seed(conn)
+    _update_journal_field(conn, "trades", ids["trade_id"], "current_stop", 17.0)
+    assert conn.execute(
+        "SELECT current_stop FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == 17.0
+
+
+def test_r18_M1_the_flagged_f_string_identifier_hazard_is_CLOSED(conn):
+    """`_update_journal_field`'s own docstring forbade operator-supplied
+    identifiers reaching its f-string slot, and the tier-2 multi-field handler
+    violated it -- flagged in the plan as out of scope. The column allowlist
+    closes it as a by-product: nothing that is not a real column name gets
+    through."""
+    from swing.trades.reconciliation_auto_correct import (
+        ReservedJournalFieldError,
+        _update_journal_field,
+    )
+
+    ids = _seed(conn)
+    for hostile in ("price = price, reason", "nope", "1"):
+        with pytest.raises(ReservedJournalFieldError):
+            _update_journal_field(conn, "fills", ids["fill_id"], hostile, 1)
+
+
+@pytest.mark.parametrize(
+    "sibling_dt",
+    [
+        f"{TARGET_DATE}t13:45:30",              # lowercase separator
+        f"{TARGET_DATE}T13:45:30.000Z",         # Schwab's offset-bearing shape
+        f"{TARGET_DATE}T13:45:30+00:00",        # explicit offset
+    ],
+)
+def test_r18_M2_a_NONCANONICAL_earlier_sibling_is_still_detected(
+    conn, sibling_dt,
+):
+    """R17 compared the STRINGS. `fills.fill_datetime` holds two production
+    shapes -- the synthetic naive `T16:00:00` and Schwab's offset-bearing
+    `...T13:00:00.000Z` -- and `fromisoformat` also accepts a lowercase
+    separator. Lexically `2026-07-31t13:45:30` sorts AFTER
+    `2026-07-31T16:00:00`, so a string comparison read an EARLIER exit as later
+    and waved the correction through."""
+    ids = _seed(conn)
+    conn.execute(
+        "UPDATE fills SET fill_datetime = ? WHERE trade_id = ? AND "
+        "action = 'stop'", (sibling_dt, ids["trade_id"]),
+    )
+    conn.commit()
+    with pytest.raises(EntryDateCorrectionError, match="cannot exit before"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_r18_M2_a_SCHWAB_shaped_LATER_sibling_is_still_permitted(conn):
+    """Counterfactual: the offset-bearing shape is legitimate production data
+    (the multi-leg auto-redirect writes it), so it must not be refused merely
+    for its shape -- only for its ORDER."""
+    ids = _seed(conn)
+    conn.execute(
+        "UPDATE fills SET fill_datetime = ? WHERE trade_id = ? AND "
+        "action = 'stop'", (f"{TARGET_DATE}T19:30:00.000Z", ids["trade_id"]),
+    )
+    conn.commit()
+    _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE

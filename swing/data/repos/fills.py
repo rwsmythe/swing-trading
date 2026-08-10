@@ -172,6 +172,17 @@ def assert_canonical_fill_datetime(value: object) -> str:
         raise ValueError(
             f"fill_datetime must be EXTENDED-format YYYY-MM-DD...; got "
             f"{candidate!r}")
+    # DELIBERATELY NOT one representation. Codex R18 proposed forcing a naive
+    # literal-`T` form at every write boundary; that BREAKS a shipped path --
+    # the multi-leg auto-redirect builds split partials from Schwab execution
+    # leg times, which carry `...T13:00:00.000Z`, and four existing tests
+    # caught it. `fills.fill_datetime` genuinely holds two production shapes:
+    # `record_entry`/`record_exit`'s synthetic naive `T16:00:00` and Schwab's
+    # offset-bearing form. The representation cannot be narrowed here without
+    # a separate arc; what CAN be fixed is the consumer that compared these
+    # values LEXICALLY -- see `_assert_no_sibling_fill_precedes`, which now
+    # compares PARSED datetimes so a lowercase separator or an offset can no
+    # longer make an earlier fill sort later.
     return candidate
 
 

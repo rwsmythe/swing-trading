@@ -258,6 +258,42 @@ def _refuse_entry_fill_split_that_moves_the_date(
         )
 
 
+def _assert_real_column_name(
+    conn: sqlite3.Connection, affected_table: str, field_name: str,
+) -> None:
+    """Require `field_name` to be a BYTE-EXACT column of `affected_table`.
+
+    SQLITE RESOLVES IDENTIFIERS CASE-INSENSITIVELY (Codex R18), and
+    `_update_journal_field` interpolates this name straight into SQL -- so
+    `{"ENTRY_DATE": ...}` missed every reservation, which compares
+    byte-for-byte against lowercase keys, and still UPDATEd `trades.entry_date`.
+    The same bypass existed for `FILL_DATETIME`, `ACTION` and `TRADE_ID`, and
+    for bracket-quoted forms like `[entry_date]`.
+
+    The allowlist is DERIVED from `PRAGMA table_info` rather than hand-listed,
+    so it cannot rot as columns are added, and the comparison is exact, so no
+    casing or quoting variant survives it. This also closes the standing
+    contract violation `_update_journal_field`'s own docstring records:
+    operator-supplied `--custom-value` keys reached an f-string identifier
+    slot. They no longer can.
+    """
+    columns = {
+        row[1] for row in conn.execute(
+            f"PRAGMA table_info({affected_table})",  # noqa: S608 -- see below
+        ).fetchall()
+    }
+    # `affected_table` is NOT operator-supplied: it comes from
+    # `_resolve_affected_target`, whose output is one of four module constants.
+    if field_name not in columns:
+        raise ReservedJournalFieldError(
+            f"{field_name!r} is not a column of {affected_table!r}. Correction "
+            "field names must match a real column EXACTLY -- SQLite resolves "
+            "identifiers case-insensitively, so an alias, a different casing "
+            "or a quoted form would reach the UPDATE while missing every "
+            "field-name guard. Nothing was written."
+        )
+
+
 def _preflight_reserved_transitions(
     conn: sqlite3.Connection,
     affected_table: str,
@@ -274,6 +310,11 @@ def _preflight_reserved_transitions(
     archive rows never saw.
     """
     for field_name, new_value in proposed.items():
+        _assert_real_column_name(
+            conn, affected_table,
+            _cash_column_for_field(field_name)
+            if affected_table == _AFFECTED_TABLE_CASH else field_name,
+        )
         if _reservation_applies(
             conn, affected_table, affected_row_id, field_name, new_value,
         ):
@@ -1996,6 +2037,10 @@ def _update_journal_field(
     Refusing the COLUMN closes it for every generic path at once, and holds
     even when no multi-row correction exists to compare against.
     """
+    _assert_real_column_name(
+        conn, affected_table, _cash_column_for_field(field_name)
+        if affected_table == _AFFECTED_TABLE_CASH else field_name,
+    )
     reserved = (
         _RESERVED_JOURNAL_FIELDS.get((affected_table, field_name))
         if _reservation_applies(

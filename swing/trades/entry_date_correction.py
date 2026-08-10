@@ -1045,6 +1045,11 @@ def _assert_the_price_already_agrees(
         )
 
 
+def _naive(value: str) -> datetime:
+    """Parse an ISO fill datetime and DROP any offset, for ordering only."""
+    return datetime.fromisoformat(value).replace(tzinfo=None)
+
+
 def _assert_no_sibling_fill_precedes(
     conn: sqlite3.Connection,
     *,
@@ -1078,7 +1083,16 @@ def _assert_no_sibling_fill_precedes(
         sibling = _canonical_fill_datetime_or_refuse(
             other_dt, fill_id=int(other_id),
         )
-        if sibling < new_fill_datetime:
+        # PARSED, not lexical (Codex R18). `fills.fill_datetime` holds two
+        # production shapes -- the synthetic naive `T16:00:00` and Schwab's
+        # offset-bearing `...T13:00:00.000Z` -- and `fromisoformat` also
+        # accepts a lowercase separator. Lexically, `2026-07-31t13:45:30` sorts
+        # AFTER `2026-07-31T16:00:00` (lowercase `t` > `T`), so a string
+        # comparison would read an EARLIER exit as later and wave the
+        # correction through. Compared as datetimes with tzinfo DROPPED: no
+        # offset arithmetic, matching this module's stated posture everywhere
+        # else, and enough to order two fills of one trade.
+        if _naive(sibling) < _naive(new_fill_datetime):
             raise EntryDateCorrectionError(
                 f"moving fill {fill_id} to {new_fill_datetime} would place "
                 f"the ENTRY after {action} fill {other_id} ({sibling}). A "
