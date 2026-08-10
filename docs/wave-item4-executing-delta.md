@@ -43,9 +43,18 @@ A row whose kind **structurally cannot reach either attribution branch** is **UN
 
 ### D-2b — the EXACT chain. **DEFERRED to item 5. Do not build it here.**
 
-The linkage RD derived is real and every hop is schema-guaranteed:
+**CORRECTED IN PLACE (item 5, T5 — the sentence below previously read "the linkage RD derived is real and every hop is schema-guaranteed", and the second half was FALSE).** Replacement, not annotation, per harness-architecture §5.1: a sentence that reads as an invariant and is not must stop reading that way, because this delta is the specification the next arc inherits. The false half travelled from RD's own ruling into item 4's delta unchecked *because it arrived from a director* — RD has since corrected it himself, and CHARC canonicalized the general rule at `docs/harness-architecture.md`: **a ruling's REASONING is binding; its INCIDENTAL FACTUAL CLAIMS are still claims, and a fact belongs to the CODE even when it arrives inside a ruling.** The true half of such a sentence is what makes the false half sound checked.
+
+**The linkage RD derived is real; the chain is CONDITIONAL, not schema-guaranteed.**
 
 `cancel.actual_broker_order_id` → the `validity` row bearing that **same** broker order id → that row's `validated_place_intent_id` → the place.
+
+**Re-verified against `swing/data/migrations/0033_latch_order_intents.sql` at item-5 execution rather than inherited** (the keeper is the dangerous half of a note you are discharging): `latch_order_intents` declares exactly ONE table-level UNIQUE, `UNIQUE (idempotency_key)` (`:717`), and `latch_view_events` declares `UNIQUE (candidate_id, view_session_date, surface)` (`:147`). **Neither is on `actual_broker_order_id`, and no index covers it either** (`ix_loi_*` are on `candidate_id`, `(ticker, detection_date)` and `action_session_date`). So:
+
+- **hop 1** (cancel → the intent row bearing the same broker order id) is **NOT unique-constrained** — it can match **ZERO** rows (an out-of-band cancel) or **SEVERAL** (multiple intents sharing a broker order id);
+- **hop 2** (validity → the place) **IS** guaranteed — `trg_loi_validity_parent_insert` / `_update` (`:794` / `:808`) reject a `validated_place_intent_id` with no matching parent.
+
+**Any design here must therefore define ZERO-match and MULTI-match semantics** — the answer on both is `undetermined`, exactly as `swing/cli_latches.py:_inferred_origin` already answers today; an attribution asserted from an ambiguous match is the same defect that guard exists to remove, one hop further out. **That is design work, not plumbing, so it is CARRIED, not built here** — item 5's scope is D31 + A-4 + the two riders' *minimum* fixes. Flagged for the Phase-22 scoping deliverable.
 
 `_inferred_origin` never attempts it because `place_intents` is the only lookup it is given. RD explicitly declined the scope call; **the orchestrator ruled it to item 5** (the D31 + A-4 entry-date arc — attribution and measurement, which is this fix's natural family), operator-concurred. Folding a new three-hop lookup into an arc already carrying four pieces manufactures the artifact-scale problem the plan just avoided.
 
