@@ -1783,3 +1783,168 @@ def test_r7_M2_every_leg_quantity_must_be_finite_and_positive(conn, bad_qty):
     ids = _seed(conn, actual_value_json=json.dumps(payload, sort_keys=True))
     with pytest.raises(EntryDateCorrectionError):
         _apply(conn, ids)
+
+
+# ===========================================================================
+# Codex R8 fixes
+# ===========================================================================
+
+
+def test_r8_M1_a_MIXED_date_and_price_discrepancy_is_refused(conn):
+    """Shape-D fires when the sole candidate fails price OR side OR session, so
+    one row can carry BOTH a wrong date and a genuine execution-price
+    divergence. This surface corrects only the DATE, then stamps the fill
+    `reconciled_discrepancy_resolved` and prints a `journal_corrected`
+    follow-up that CLOSES the finding -- so a real, material price error would
+    be silently discharged by a correction that never touched it.
+
+    The shared fixture masked this by forcing payload, legs and fill all to
+    $18.80 -- which is exactly why trade 19 IS a legitimate case ($+0.0000).
+    """
+    payload = json.loads(_live_actual_value_json())
+    payload["price"] = 19.25
+    payload["execution_legs"][0]["price"] = 19.25
+    ids = _seed(conn, actual_value_json=json.dumps(payload, sort_keys=True))
+    with pytest.raises(EntryDateCorrectionError, match="ALSO a price mismatch"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE
+    assert conn.execute(
+        "SELECT reconciliation_status FROM fills WHERE fill_id = ?",
+        (ids["fill_id"],),
+    ).fetchone()[0] == "unreconciled"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_r8_M1_the_live_zero_delta_case_is_what_qualifies(conn):
+    """Counterfactual: discrepancy 95's real `$+0.0000` is what makes it a pure
+    DATE finding."""
+    ids = _seed(conn)
+    payload = json.loads(conn.execute(
+        "SELECT actual_value_json FROM reconciliation_discrepancies "
+        "WHERE discrepancy_id = ?", (ids["discrepancy_id"],),
+    ).fetchone()[0])
+    assert payload["price"] == 18.8
+    _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+
+
+def test_r8_M3_a_move_PAST_an_existing_exit_is_refused(conn):
+    """The authority check looks only at other ENTRY fills. A closed trade with
+    a stop on 07-25 would otherwise accept an entry move 07-23 -> 07-31: the
+    stop would sit BEFORE the entry, `_recompute_aggregates` would move
+    `last_fill_at` onto the later entry on a CLOSED trade, and the audit row
+    would record that impossible chronology as successfully applied."""
+    ids = _seed(conn)
+    conn.execute(
+        "UPDATE fills SET fill_datetime = '2026-07-25T16:00:00' "
+        "WHERE trade_id = ? AND action = 'stop'", (ids["trade_id"],),
+    )
+    conn.commit()
+    with pytest.raises(EntryDateCorrectionError, match="cannot exit before"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_r8_M3_an_exit_AFTER_the_target_date_still_permits_the_move(conn):
+    """Counterfactual, and the live shape: trade 19's stop is 08-04, after the
+    07-31 target."""
+    ids = _seed(conn)
+    _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+
+
+def test_r8_M2_a_NEW_discrepancy_on_the_same_fill_cannot_mutate_it(conn):
+    """The barrier was scoped to ONE discrepancy id. A LATER reconciliation run
+    emits a NEW discrepancy for the SAME fill; that id carries no multi-row
+    correction, so its mutating tier-2 path sailed through --
+    `split_into_partials` DELETES the corrected fill and replaces it with
+    differently-dated partials, while `trades.entry_date` and the archive row
+    stay on the corrected date and the surviving correction keeps asserting a
+    value for a fill that no longer exists. The coupling lives on the FILL, so
+    the barrier has to as well.
+    """
+    from swing.trades.reconciliation_auto_correct import (
+        MultiRowCorrectionOverrideError,
+        apply_tier2_resolution,
+    )
+
+    ids = _seed(conn)
+    _apply(conn, ids)
+
+    # A LATER run raises a fresh finding against the very same fill.
+    run2 = int(conn.execute(
+        "INSERT INTO reconciliation_runs (source, started_ts, state) VALUES "
+        "('schwab_api', '2026-08-10T03:00:00', 'completed')",
+    ).lastrowid)
+    disc2 = int(conn.execute(
+        "INSERT INTO reconciliation_discrepancies (run_id, discrepancy_type, "
+        "trade_id, fill_id, ticker, field_name, expected_value_json, "
+        "actual_value_json, material_to_review, resolution, ambiguity_kind, "
+        "created_at) VALUES (?, 'entry_price_mismatch', ?, ?, 'FTRE', "
+        "'price', '{}', '{}', 1, 'pending_ambiguity_resolution', "
+        "'multi_partial_vs_consolidated', '2026-08-10T03:00:00')",
+        (run2, ids["trade_id"], ids["fill_id"]),
+    ).lastrowid)
+    conn.commit()
+
+    with pytest.raises(MultiRowCorrectionOverrideError, match="bound by"):
+        apply_tier2_resolution(
+            conn,
+            discrepancy_id=disc2,
+            choice_code="split_into_partials",
+            operator_custom_payload={"partials": []},
+            operator_reason="attempted cross-discrepancy mutation",
+        )
+    assert conn.execute(
+        "SELECT fill_datetime FROM fills WHERE fill_id = ?", (ids["fill_id"],),
+    ).fetchone()[0] == f"{TARGET_DATE}T16:00:00"
+
+
+def test_r8_M2_a_DIFFERENT_fill_is_NOT_blocked(conn):
+    """Scoped to the bound fill and no wider: another fill on the same trade is
+    untouched by the barrier (an over-broad block would permanently freeze
+    every future correction on a trade that ever had its entry date fixed)."""
+    from swing.trades.reconciliation_auto_correct import (
+        _multi_row_bound_fill_ids,
+    )
+
+    ids = _seed(conn)
+    other_fill = _add_second_entry_fill(conn, ids, when="2026-08-03T16:00:00")
+    _apply(conn, ids)
+    bound = _multi_row_bound_fill_ids(conn)
+    assert ids["fill_id"] in bound
+    assert other_fill not in bound
+
+
+def test_r8_M2_the_bound_fill_id_is_recorded_in_the_audit_row(conn):
+    """The binding is DURABLE -- read out of the correction's own
+    `applied_value_json`, which this surface owns."""
+    from swing.trades.reconciliation_auto_correct import (
+        MULTI_ROW_BOUND_FILL_KEY,
+    )
+
+    ids = _seed(conn)
+    result = _apply(conn, ids)
+    applied = json.loads(conn.execute(
+        "SELECT applied_value_json FROM reconciliation_corrections "
+        "WHERE correction_id = ?", (result.correction_id,),
+    ).fetchone()[0])
+    pre = json.loads(conn.execute(
+        "SELECT pre_correction_value_json FROM reconciliation_corrections "
+        "WHERE correction_id = ?", (result.correction_id,),
+    ).fetchone()[0])
+    assert applied[MULTI_ROW_BOUND_FILL_KEY] == ids["fill_id"]
+    assert pre[MULTI_ROW_BOUND_FILL_KEY] == ids["fill_id"]

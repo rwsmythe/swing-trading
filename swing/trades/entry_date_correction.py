@@ -347,7 +347,8 @@ def _entry_fill_row(conn: sqlite3.Connection, fill_id: int) -> tuple | None:
     return conn.execute(
         "SELECT fill_id, trade_id, fill_datetime, action, "
         "reconciliation_status, quantity, fill_origin, "
-        "schwab_source_value_json, operator_corrected_value_json "
+        "schwab_source_value_json, operator_corrected_value_json, "
+        "price "
         "FROM fills WHERE fill_id = ?",
         (fill_id,),
     ).fetchone()
@@ -595,6 +596,7 @@ def _authorize(
     _assert_evidence_matches_fill_quantity(
         disc, fill_quantity=float(fill_row[5]),
     )
+    _assert_the_price_already_agrees(disc, fill_price=float(fill_row[9]))
     source_envelope = _assert_evidence_is_this_fills_order(
         disc, fill_origin=fill_row[6], source_envelope=fill_row[7],
     )
@@ -623,6 +625,12 @@ def _authorize(
     # coherent. A gate evaluated only on the PRE state cannot see this.
     new_fill_datetime = _corrected_fill_datetime(pre_fill_datetime, target_date)
     _assert_still_authoritative_after_move(
+        conn,
+        trade_id=trade_id,
+        fill_id=int(disc.fill_id),
+        new_fill_datetime=new_fill_datetime,
+    )
+    _assert_no_sibling_fill_precedes(
         conn,
         trade_id=trade_id,
         fill_id=int(disc.fill_id),
@@ -852,6 +860,77 @@ def _assert_evidence_matches_fill_quantity(
             f"{fill_quantity}. The evidence no longer describes the row it "
             "cites -- a stale finding must not authorize a live mutation."
         )
+
+
+def _assert_the_price_already_agrees(
+    disc: Any, *, fill_price: float,
+) -> None:
+    """Refuse a discrepancy that is ALSO a price mismatch (Codex R8 Major 1).
+
+    Shape-D is emitted when the sole candidate fails price OR side OR session,
+    so a row can carry BOTH a wrong date and a genuine execution-price
+    divergence. This surface corrects only the DATE, then stamps the fill
+    `reconciled_discrepancy_resolved` and prints a `journal_corrected`
+    follow-up that CLOSES the finding -- so a real, material price error would
+    be silently discharged by a correction that never touched it.
+
+    The emitter's own execution price is used (`payload['price']`, written from
+    `_compute_execution_price`) rather than a second VWAP implementation, and
+    the matcher's own tolerance rather than a new one. Trade 19's live payload
+    reads $18.80 against a $18.80 fill -- `$+0.0000` -- which is precisely why
+    it is a pure DATE finding and a legitimate case for this surface.
+    """
+    from swing.trades.schwab_reconciliation import _PRICE_TOLERANCE_DEFAULT
+
+    execution_price = _evidence_payload(disc).get("price")
+    if (
+        not isinstance(execution_price, (int, float))
+        or isinstance(execution_price, bool)
+        or not math.isfinite(float(execution_price))
+    ):
+        raise EntryDateCorrectionError(
+            f"discrepancy {disc.discrepancy_id} carries no finite execution "
+            f"price ({execution_price!r}); it cannot be shown to be a "
+            "date-only finding."
+        )
+    if abs(float(execution_price) - fill_price) > _PRICE_TOLERANCE_DEFAULT:
+        raise EntryDateCorrectionError(
+            f"discrepancy {disc.discrepancy_id} is ALSO a price mismatch: the "
+            f"execution is {float(execution_price)} and fill {disc.fill_id} "
+            f"records {fill_price}. This surface corrects the DATE only, and "
+            "closing the finding afterwards would silently discharge a real "
+            "price error. Refusing a mixed date-and-price discrepancy."
+        )
+
+
+def _assert_no_sibling_fill_precedes(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    fill_id: int,
+    new_fill_datetime: str,
+) -> None:
+    """Refuse a move that would place the ENTRY after an EXIT (Codex R8 M3).
+
+    The authority check looks only at other `action='entry'` fills, so a closed
+    trade with a stop on 07-25 would accept an entry move 07-23 -> 07-31: the
+    result has its stop BEFORE its entry, `_recompute_aggregates` moves
+    `last_fill_at` onto the later entry even though the trade is closed, and
+    the audit row records that impossible chronology as successfully applied.
+    """
+    rows = conn.execute(
+        "SELECT fill_id, fill_datetime, action FROM fills "
+        "WHERE trade_id = ? AND action <> 'entry' AND fill_id <> ?",
+        (trade_id, fill_id),
+    ).fetchall()
+    for other_id, other_dt, action in rows:
+        if str(other_dt)[:10] < new_fill_datetime[:10]:
+            raise EntryDateCorrectionError(
+                f"moving fill {fill_id} to {new_fill_datetime[:10]} would "
+                f"place the ENTRY after {action} fill {other_id} "
+                f"({str(other_dt)[:10]}). A trade cannot exit before it "
+                "enters. Nothing was written."
+            )
 
 
 def _assert_still_authoritative_after_move(
@@ -1142,6 +1221,7 @@ def _correct_entry_date_inner(
     """Never commits. Every callee is repo-level, so no inner ``with conn:``
     can close the caller's transaction out from under it."""
     from swing.trades.reconciliation_auto_correct import (
+        MULTI_ROW_BOUND_FILL_KEY,
         _emit_trade_events_correction,
         _maybe_get_active_risk_policy_id,
         _utc_now_iso_ms,
@@ -1168,6 +1248,11 @@ def _correct_entry_date_inner(
     # current_size is datetime-independent but is rewritten by the same
     # statement, so it belongs in the pre/post pair for a faithful audit.
     pre_values: dict[str, Any] = {
+        # The DURABLE binding a later mutation reads to recognise this fill.
+        # `reconciliation_corrections` records affected_table='trades' +
+        # affected_row_id=<trade_id>, which does not name the fill -- and the
+        # coupling physically lives on the fill's datetime.
+        MULTI_ROW_BOUND_FILL_KEY: fill_id,
         "trades.entry_date": pre_entry_date,
         "fills.fill_datetime": pre_fill_datetime,
         "watchlist_archive.removed_date": pre_entry_date,
@@ -1203,6 +1288,7 @@ def _correct_entry_date_inner(
     _recompute_aggregates(conn, trade_id)
 
     applied_values: dict[str, Any] = {
+        MULTI_ROW_BOUND_FILL_KEY: fill_id,
         "trades.entry_date": auth.target_date,
         "fills.fill_datetime": new_fill_datetime,
         "watchlist_archive.removed_date": auth.target_date,

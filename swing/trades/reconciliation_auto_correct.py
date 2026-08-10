@@ -782,8 +782,46 @@ def _check_recorrection_contradiction(
 # ---------------------------------------------------------------------------
 
 
+# The key a multi-row correction writes into its own value envelopes so a
+# LATER mutation can recognise the fill it bound. `reconciliation_corrections`
+# records `affected_table='trades'` + `affected_row_id=<trade_id>` for such a
+# correction, which does not name the fill -- and the fill is where the
+# coupling physically lives.
+MULTI_ROW_BOUND_FILL_KEY = "bound_fill_id"
+
+
+def _multi_row_bound_fill_ids(conn: sqlite3.Connection) -> dict[int, int]:
+    """``{fill_id: correction_id}`` for every UNSUPERSEDED multi-row head.
+
+    Read out of `applied_value_json`, which the writing surface owns.
+    """
+    out: dict[int, int] = {}
+    rows = conn.execute(
+        "SELECT correction_id, correction_choice, applied_value_json FROM "
+        "reconciliation_corrections WHERE superseded_by_correction_id IS NULL",
+    ).fetchall()
+    for correction_id, choice, applied in rows:
+        if choice not in _MULTI_ROW_CORRECTION_CHOICES:
+            continue
+        try:
+            payload = json.loads(applied or "")
+        except (TypeError, ValueError):
+            continue
+        bound = (
+            payload.get(MULTI_ROW_BOUND_FILL_KEY)
+            if isinstance(payload, Mapping) else None
+        )
+        if isinstance(bound, int) and not isinstance(bound, bool):
+            out[bound] = int(correction_id)
+    return out
+
+
 def _assert_no_unsuperseded_multi_row_correction(
-    conn: sqlite3.Connection, discrepancy_id: int,
+    conn: sqlite3.Connection,
+    discrepancy_id: int,
+    *,
+    affected_table: str | None = None,
+    affected_row_id: int | None = None,
 ) -> None:
     """Refuse a mutating dispatch against a discrepancy that already carries an
     unsuperseded MULTI-ROW correction head (Codex R5 Major 2).
@@ -805,6 +843,30 @@ def _assert_no_unsuperseded_multi_row_correction(
     resolve --resolution journal_corrected``) is untouched: it is the intended
     next step and writes no journal column.
     """
+    # (b) THE SAME FILL, through ANY discrepancy (Codex R8 Major 2). Scoping
+    # the barrier to one discrepancy id left a cross-run hole: a LATER
+    # reconciliation run emits a NEW discrepancy for the same fill, that id
+    # carries no multi-row correction, and its mutating tier-2 path sails
+    # through -- `split_into_partials` DELETES the corrected fill and replaces
+    # it with differently-dated partials, while `trades.entry_date` and the
+    # archive row stay on the corrected date and the surviving correction row
+    # keeps asserting a value for a fill that no longer exists. The coupling
+    # lives on the FILL, so the barrier has to as well. Scoped to that fill and
+    # no wider: a price-only correction on a DIFFERENT fill, or on another
+    # trade, is untouched.
+    if affected_table == _AFFECTED_TABLE_FILLS and affected_row_id is not None:
+        bound = _multi_row_bound_fill_ids(conn)
+        if int(affected_row_id) in bound:
+            raise MultiRowCorrectionOverrideError(
+                f"fill {affected_row_id} is bound by the unsuperseded "
+                f"MULTI-ROW correction {bound[int(affected_row_id)]}, whose "
+                "coupling to trades.entry_date and the watchlist_archive row "
+                "lives on THIS fill. A mutation here -- including a "
+                "split-into-partials that DELETES it -- would break that "
+                "coupling silently. Re-run the dedicated correction surface "
+                "against a current finding."
+            )
+
     rows = conn.execute(
         "SELECT correction_id, correction_choice FROM "
         "reconciliation_corrections WHERE discrepancy_id = ? "
@@ -926,7 +988,11 @@ def _apply_tier1_correction_inner(
     # correction id -- a guard that broke the documented stale-caller-safe
     # idempotency contract it had no business touching. A guard on MUTATION
     # must not fire on a path that mutates nothing.
-    _assert_no_unsuperseded_multi_row_correction(conn, discrepancy_id)
+    _t1_table, _t1_row = _resolve_affected_target(disc)
+    _assert_no_unsuperseded_multi_row_correction(
+        conn, discrepancy_id,
+        affected_table=_t1_table, affected_row_id=_t1_row,
+    )
 
     # Classification-payload validation (post-SELECT, post-idempotency).
     if classification is None:
@@ -1222,7 +1288,11 @@ def _apply_tier2_resolution_inner(
     # violating that contract. A guard against a partial MUTATION must not
     # block a NON-mutation.
     if handler not in _AUDIT_ONLY_TIER2_HANDLERS:
-        _assert_no_unsuperseded_multi_row_correction(conn, discrepancy_id)
+        _t2_table, _t2_row = _resolve_affected_target(disc)
+        _assert_no_unsuperseded_multi_row_correction(
+            conn, discrepancy_id,
+            affected_table=_t2_table, affected_row_id=_t2_row,
+        )
 
     return handler(
         conn,
@@ -1296,7 +1366,11 @@ def _apply_tier3_override_inner(
     # `fills.fill_datetime` alone, leaving `trades.entry_date` and the archive
     # row behind, and terminally resolving the discrepancy. The barrier belongs
     # to the FINDING, not to one row of its chain.
-    _assert_no_unsuperseded_multi_row_correction(conn, target.discrepancy_id)
+    _assert_no_unsuperseded_multi_row_correction(
+        conn, target.discrepancy_id,
+        affected_table=target.affected_table,
+        affected_row_id=target.affected_row_id,
+    )
 
     if target.correction_choice in _MULTI_ROW_CORRECTION_CHOICES:
         raise MultiRowCorrectionOverrideError(

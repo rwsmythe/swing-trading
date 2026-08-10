@@ -583,3 +583,49 @@ def test_r7_MINOR2_an_AUDIT_LINK_failure_still_surfaces_the_skip(conn, monkeypat
     entries = _legless_entries(result)
     assert len(entries) == 1
     assert entries[0]["order_ids"] == ["2002"]
+
+
+def test_r8_MINOR_a_SECOND_call_linkage_failure_also_surfaces_the_skip(
+    conn, monkeypatch,
+):
+    """Codex R8 minor, adjudicated PARTIALLY. The warning-loss half is FIXED
+    and is what this asserts; the ATOMICITY half is a pre-existing property of
+    `audit_service.link_reconciliation_run`, which owns its OWN transaction per
+    invocation, so an earlier link is already committed when a later one
+    fails. Making the three-call linkage atomic means a new batch service in a
+    shared audit module -- real, out of this arc's scope, and carried to the
+    return report's flagged list. This test pins what IS true today: the
+    coverage gap survives the failure, and the partial state is asserted
+    EXPLICITLY rather than left as an unexamined assumption."""
+    from swing.integrations.schwab import audit_service, pipeline_steps
+
+    calls: list[int] = []
+    real = audit_service.link_reconciliation_run
+
+    def _fail_on_second(conn_, *, call_id, reconciliation_run_id):
+        calls.append(call_id)
+        if len(calls) == 2:
+            raise RuntimeError("audit link exploded on the second call")
+        return real(
+            conn_, call_id=call_id,
+            reconciliation_run_id=reconciliation_run_id,
+        )
+
+    monkeypatch.setattr(
+        audit_service, "link_reconciliation_run", _fail_on_second,
+    )
+    result = pipeline_steps._step_schwab_orders(
+        conn, _cfg(), pipeline_run_id=None,
+        client=_client([_well_formed_order("1001"), _legless_order("2002")]),
+    )
+    assert result["status"] == "failed"
+    entries = _legless_entries(result)
+    assert len(entries) == 1
+    assert entries[0]["order_ids"] == ["2002"]
+    # The RESIDUE, asserted rather than assumed: the FIRST link is committed
+    # and the rest are not.
+    linked = conn.execute(
+        "SELECT COUNT(*) FROM schwab_api_calls "
+        "WHERE linked_reconciliation_run_id IS NOT NULL",
+    ).fetchone()[0]
+    assert linked == 1, linked
