@@ -677,9 +677,16 @@ def _call_endpoint(
             error_message=_redacted_excerpt(exc),
         )
         raise
-    except (ValueError, TypeError, KeyError) as exc:
+    except (ValueError, TypeError, KeyError, OverflowError) as exc:
         # Defensive: dataclass __post_init__ + mapper-internal validators
         # may raise other typed errors. Treat as schema-parity error.
+        #
+        # `OverflowError` joins them (item-5, Codex R19): the mappers convert
+        # broker numeric fields with `float()`, which raises it on a
+        # sufficiently large JSON integer. Uncaught, that escaped WITHOUT
+        # closing the audit row -- leaving a `schwab_api_calls` row `in_flight`
+        # forever -- and, with a legless order earlier in the same payload,
+        # took the rider's already-recorded coverage-gap warning with it.
         audit_service.record_call_finish(
             conn,
             call_id=call_id,

@@ -665,3 +665,33 @@ def test_r9_MINOR_an_AUDIT_WRITE_failure_after_the_fetch_still_surfaces(
     entries = _legless_entries(result)
     assert len(entries) == 1
     assert entries[0]["order_ids"] == ["2002"]
+
+
+def test_r19_MINOR_a_numeric_OVERFLOW_still_surfaces_an_earlier_skip(conn):
+    """The mappers convert broker numeric fields with `float()`, which raises
+    `OverflowError` on a sufficiently large JSON integer. `_call_endpoint`
+    normalized only ValueError/TypeError/KeyError, so it escaped WITHOUT
+    closing the audit row -- leaving a `schwab_api_calls` row `in_flight`
+    forever -- and, with a legless order EARLIER in the same payload, took the
+    rider's already-recorded coverage-gap warning with it."""
+    from swing.integrations.schwab.pipeline_steps import _step_schwab_orders
+
+    huge = _well_formed_order("1001")
+    huge["orderLegCollection"][0]["quantity"] = 10 ** 400
+    result = _step_schwab_orders(
+        conn, _cfg(), pipeline_run_id=None,
+        client=_client([_legless_order("2002"), huge]),
+    )
+    assert result["status"] == "failed"
+    entries = _legless_entries(result)
+    assert len(entries) == 1
+    assert entries[0]["order_ids"] == ["2002"]
+    # ...and the audit row was CLOSED rather than left in_flight.
+    statuses = [
+        r[0] for r in conn.execute(
+            "SELECT status FROM schwab_api_calls "
+            "WHERE endpoint = 'accounts.orders.list'",
+        ).fetchall()
+    ]
+    assert statuses, "no audit row was written at all"
+    assert "in_flight" not in statuses, statuses

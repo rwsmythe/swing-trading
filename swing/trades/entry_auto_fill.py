@@ -493,7 +493,7 @@ def resolve_entry_auto_fill(
     )
 
 
-def _execution_date(order: Any) -> tuple[str, str]:
+def _execution_date(order: Any) -> tuple[str | None, str]:
     """D31 — the entry date, taken from the EXECUTION grain.
 
     Returns ``(iso_date, source)`` where ``source`` is ``'execution_leg'``
