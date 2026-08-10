@@ -1112,6 +1112,13 @@ _DISCREPANCY_TYPES = (
     # ReconciliationDiscrepancy.__post_init__ reads this tuple so reads of
     # the new rows never raise.
     "untracked_broker_position",
+    # Item-5 A-4 — mirrors migration 0035's discrepancy_type CHECK (the 20-A
+    # A-5 fills<->trades entry-VWAP invariant, promoted off its
+    # `entry_price_mismatch` + `internal_consistency` discriminator
+    # approximation). This tuple is read by
+    # ReconciliationDiscrepancy.__post_init__, so omitting it would make every
+    # READ of a new-typed row raise -- not just the writes.
+    "fills_trades_price_divergence",
 )
 _RESOLUTION_VALUES = (
     "journal_corrected",

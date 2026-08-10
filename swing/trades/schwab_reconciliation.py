@@ -660,7 +660,16 @@ _FILLS_TRADES_DISPLAY_TOLERANCE = 0.005
 def _is_internal_consistency_diagnostic(disc: Any) -> bool:
     """True when a discrepancy is an A-5 internal-consistency diagnostic (its
     `actual_value_json` carries the named discriminator). Consumed at BOTH the
-    pivot AND the backfill classify-skip so the two paths cannot drift."""
+    pivot AND the backfill classify-skip so the two paths cannot drift.
+
+    Item-5 A-4 (D2): this predicate DELIBERATELY keys on the DISCRIMINATOR and
+    NOT on `discrepancy_type`, even now that the dedicated
+    `fills_trades_price_divergence` type exists. Every A-5 row persisted BEFORE
+    migration 0035 carries `entry_price_mismatch` + the discriminator; a
+    type-keyed predicate would stop skipping those historical rows and route
+    them into the tier-1 classification path. The emitter keeps writing the
+    discriminator alongside the new type so ONE predicate covers both
+    representations."""
     raw = getattr(disc, "actual_value_json", None)
     if not raw:
         return False
@@ -719,7 +728,19 @@ def _emit_fills_trades_consistency(
         _emit(
             conn,
             run_id=run_id,
-            discrepancy_type="entry_price_mismatch",
+            # Item-5 A-4 (D1) -- the dedicated type. Until migration 0035 this
+            # emit borrowed `entry_price_mismatch` because the taxonomy had no
+            # word for a fills-vs-trades PRICE divergence internal to the
+            # journal. It has one now, and this is the whole point of A-4.
+            #
+            # The `internal_consistency` discriminator below is KEPT, not
+            # replaced: every A-5 row persisted BEFORE 0035 carries
+            # `entry_price_mismatch` + the discriminator, and
+            # `_is_internal_consistency_diagnostic` keys on the discriminator
+            # so ONE predicate covers both representations. Re-keying that
+            # predicate on the TYPE would stop skipping the historical rows and
+            # route real journal-internal diagnostics into the tier-1 path.
+            discrepancy_type="fills_trades_price_divergence",
             field_name=_INTERNAL_CONSISTENCY_KEY,
             counters=counters,
             dedup_seen=dedup_seen,

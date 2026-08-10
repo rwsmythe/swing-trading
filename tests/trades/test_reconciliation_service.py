@@ -108,7 +108,9 @@ def test_discrepancy_types_match_check_enum() -> None:
     assert "sector_tamper" in DISCREPANCY_TYPES
     # Phase 18 Arc 18-H.6 widened 10 -> 11 (untracked_broker_position).
     assert "untracked_broker_position" in DISCREPANCY_TYPES
-    assert len(DISCREPANCY_TYPES) == 11
+    # Item-5 A-4 widened 11 -> 12 (fills_trades_price_divergence).
+    assert "fills_trades_price_divergence" in DISCREPANCY_TYPES
+    assert len(DISCREPANCY_TYPES) == 12
 
 
 def test_resolution_types_match_check_enum() -> None:
@@ -164,6 +166,12 @@ def test_material_by_type_covers_all_discrepancy_types() -> None:
     assert MATERIAL_BY_TYPE["position_qty_mismatch"] == 1
     assert MATERIAL_BY_TYPE["unmatched_open_fill"] == 1
     assert MATERIAL_BY_TYPE["unmatched_close_fill"] == 1
+    # Item-5 A-4, RD-ruled 2026-08-09: MATERIAL, i.e. the NO-CHANGE value.
+    # The loop above is a COVERAGE check -- it asserts a value EXISTS, which is
+    # exactly what a WRONG value satisfies -- so the new member gets its own
+    # VALUE assertion. A 0 here would be a silent de-escalation of a live alarm
+    # riding in on a taxonomy change, and the suite would stay green.
+    assert MATERIAL_BY_TYPE["fills_trades_price_divergence"] == 1
 
 
 # ===========================================================================

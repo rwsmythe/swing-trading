@@ -64,7 +64,13 @@ from pathlib import Path
 #   (NULL DEFINED as "never amended", NOT "unknown"), plus two UPDATEs on the
 #   'A+ baseline' row only. NO new table; rows 2-5 untouched. Atomic
 #   BEGIN/COMMIT.
-EXPECTED_SCHEMA_VERSION = 34
+# item-5 A-4 fills_trades_price_divergence (migration 0035): rebuild
+#   reconciliation_discrepancies to widen discrepancy_type CHECK 11 -> 12
+#   (add 'fills_trades_price_divergence', the 20-A A-5 fills<->trades entry-VWAP
+#   invariant promoted off its `entry_price_mismatch` + discriminator
+#   approximation). 0031/0019 table-rebuild pattern; all columns / indexes /
+#   FKs / cross-column CHECK preserved. Atomic BEGIN/COMMIT.
+EXPECTED_SCHEMA_VERSION = 35
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -322,6 +328,20 @@ PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 H1_AMENDMENT_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES
     | {"latch_order_intents", "hypothesis_registry"}
+)
+
+# Item-5 A-4 (migration 0035) pre-migration expected-table set. Derived from
+# the H1 chain, which already carries `reconciliation_discrepancies` -- the
+# table 0035 REBUILDS. That is the fail-closed property the H1 gate's comment
+# was written to establish (a gate that does not require the one table its
+# migration touches is not a belt), and it is inherited here rather than
+# re-argued. `reconciliation_corrections` is added EXPLICITLY: it holds the FK
+# into the rebuilt table, the runner drops that table with foreign_keys=OFF,
+# and a backup missing the child rows would be useless for exactly the failure
+# this gate exists for.
+A4_TAXONOMY_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    H1_AMENDMENT_PRE_MIGRATION_EXPECTED_TABLES
+    | {"reconciliation_discrepancies", "reconciliation_corrections"}
 )
 
 
@@ -958,6 +978,32 @@ def _create_pre_h1_amendment_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-h1-amendment-migration-{timestamp}.db"
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
+def _create_pre_a4_taxonomy_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """A-4 discrepancy-taxonomy widening (0035) mirror. SQLite-native
+    Connection.backup() before the 0035 migration. Backup file
+    ``swing-pre-a4-taxonomy-migration-<ISO>.db``.
+
+    0035 REBUILDS `reconciliation_discrepancies` (SQLite cannot ALTER a CHECK)
+    with `foreign_keys=OFF`, i.e. it DROPs a table that
+    `reconciliation_corrections` holds an FK into. A rebuild is the highest-risk
+    shape of migration this project runs; the snapshot is the belt."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-a4-taxonomy-migration-{timestamp}.db"
     src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
@@ -1772,6 +1818,47 @@ def _h1_amendment_backup_gate(
         ) from exc
 
 
+def _a4_taxonomy_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """A-4 discrepancy-taxonomy widening (0035) backup-before-migrate gate.
+
+    Fires ONLY when ``current_version == 34 AND target_version >= 35`` -- a real
+    production v34 DB about to cross v35 (migration 0035: the
+    `reconciliation_discrepancies` table REBUILD that widens the
+    discrepancy_type CHECK 11 -> 12). STRICT EQUALITY on pre_version per the
+    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps
+    from pre-v34 baselines bypass this gate by design.
+    """
+    if target_version < 35 or current_version != 34:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-a4-taxonomy backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_a4_taxonomy_migration_backup(
+            src_path, dest_dir=backup_dir)
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=A4_TAXONOMY_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-a4-taxonomy backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -1905,6 +1992,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _h1_amendment_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _a4_taxonomy_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,

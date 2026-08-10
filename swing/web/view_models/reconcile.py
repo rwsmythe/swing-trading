@@ -546,6 +546,33 @@ def _render_pre_resolution_context_sector_tamper(
     )
 
 
+def _render_pre_resolution_context_fills_trades_price_divergence(
+    disc: ReconciliationDiscrepancy,
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> ReconcilePreResolutionContext:
+    """Item-5 A-4 (D5). The resolve surface names BOTH sides.
+
+    Unlike every other helper in this table there is no Schwab column: both
+    values are JOURNAL artifacts (`trades.entry_price` versus the VWAP of the
+    trade's own entry fills), so the labels say which artifact each came from
+    rather than implying a broker comparison. Without an entry here the new
+    type would fall through to `_render_generic_fallback` -- a GRACEFUL default
+    is exactly what would make a broken dispatch invisible.
+    """
+    trades_price = expected.get("trades_entry_price", expected.get("price"))
+    fill_vwap = actual.get("entry_fill_vwap", actual.get("price"))
+    return ReconcilePreResolutionContext(
+        **_base_context_kwargs(disc),
+        journal_side_label="trades.entry_price",
+        journal_side_value=_format_price(trades_price),
+        schwab_side_label="Entry-fill VWAP (journal fills)",
+        schwab_side_value=_format_price(fill_vwap),
+        delta_label="Internal divergence",
+        delta_value=_signed_delta(fill_vwap, trades_price),
+    )
+
+
 _RENDER_HELPERS_BY_DISCREPANCY_TYPE: dict[
     str,
     Callable[
@@ -563,6 +590,9 @@ _RENDER_HELPERS_BY_DISCREPANCY_TYPE: dict[
     "unmatched_close_fill": _render_pre_resolution_context_unmatched_close_fill,
     "equity_delta": _render_pre_resolution_context_equity_delta,
     "sector_tamper": _render_pre_resolution_context_sector_tamper,
+    "fills_trades_price_divergence": (
+        _render_pre_resolution_context_fills_trades_price_divergence
+    ),
 }
 
 

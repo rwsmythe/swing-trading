@@ -180,3 +180,205 @@ def test_skip_predicate_discriminates() -> None:
     )
     assert not _is_internal_consistency_diagnostic(_D(json.dumps({"price": 5.0})))
     assert not _is_internal_consistency_diagnostic(_D(None))
+
+
+# ===========================================================================
+# Item-5 A-4 -- the dedicated `fills_trades_price_divergence` type.
+#
+# Every test above this line stayed GREEN when the emit changed type, because
+# they call the pair BUILDER directly and never assert the emitted
+# `discrepancy_type`. So these are DISPATCH-level: a graceful default is
+# exactly what makes a broken dispatch invisible.
+# ===========================================================================
+
+A4_TYPE = "fills_trades_price_divergence"
+
+
+def test_a4_the_emitter_writes_the_dedicated_type(conn) -> None:
+    """D1's own regression -- nothing asserted the emitted type before."""
+    _seed_reviewed_trade(
+        conn, ticker="PTEN", entry_price=13.00, fill_price=12.305, qty=15.0,
+    )
+    run = _run(conn)
+    row = conn.execute(
+        "SELECT discrepancy_type, field_name, material_to_review FROM "
+        "reconciliation_discrepancies WHERE run_id = ? AND field_name = ?",
+        (run.run_id, _INTERNAL_CONSISTENCY_KEY),
+    ).fetchone()
+    assert row[0] == A4_TYPE
+    assert row[1] == _INTERNAL_CONSISTENCY_KEY
+    # RD 2026-08-09: a change of CATEGORY must never smuggle a change of
+    # SEVERITY. The row was material as an `entry_price_mismatch`; it stays
+    # material as its own type.
+    assert row[2] == 1
+
+
+def test_a4_the_emitter_still_writes_the_discriminator(conn) -> None:
+    """The type is NEW; the discriminator is KEPT. One predicate has to cover
+    both the historical `entry_price_mismatch` rows and the new-typed ones."""
+    _seed_reviewed_trade(
+        conn, ticker="PTEN", entry_price=13.00, fill_price=12.305, qty=15.0,
+    )
+    run = _run(conn)
+    actual = json.loads(conn.execute(
+        "SELECT actual_value_json FROM reconciliation_discrepancies "
+        "WHERE run_id = ? AND field_name = ?",
+        (run.run_id, _INTERNAL_CONSISTENCY_KEY),
+    ).fetchone()[0])
+    assert actual[_INTERNAL_CONSISTENCY_KEY] == (
+        _INTERNAL_CONSISTENCY_FILLS_VS_TRADES
+    )
+
+
+def test_a4_the_cli_render_dispatch_resolves_to_its_own_builder(conn) -> None:
+    """D4 dispatch. `build_compared_pairs` returns None for an unknown type
+    (graceful degradation), so a missing _PAIRS_BUILDERS key would look like a
+    quiet display regression rather than a failure."""
+    from swing.trades.reconciliation_render import build_compared_pairs
+
+    _seed_reviewed_trade(
+        conn, ticker="PTEN", entry_price=13.00, fill_price=12.305, qty=15.0,
+    )
+    run = _run(conn)
+    row = conn.execute(
+        "SELECT expected_value_json, actual_value_json FROM "
+        "reconciliation_discrepancies WHERE run_id = ? AND field_name = ?",
+        (run.run_id, _INTERNAL_CONSISTENCY_KEY),
+    ).fetchone()
+    pairs = build_compared_pairs(
+        A4_TYPE, json.loads(row[0]), json.loads(row[1]),
+    )
+    assert pairs is not None, "dispatch fell through to the None default"
+    labels = [p[0] for p in pairs]
+    assert "entry price (trades vs entry-fill VWAP)" in labels
+    assert (
+        "entry price (trades vs entry-fill VWAP)", 13.00, 12.305,
+    ) in pairs
+
+
+def test_a4_the_web_vm_dispatch_is_not_the_generic_fallback(conn) -> None:
+    """D5 dispatch. `_render_generic_fallback` renders SOMETHING for any
+    unknown type, so the failure mode here is a vaguer page, not an error."""
+    from swing.data.repos.reconciliation import get_discrepancy
+    from swing.web.view_models.reconcile import (
+        _RENDER_HELPERS_BY_DISCREPANCY_TYPE,
+        _render_generic_fallback,
+        _render_pre_resolution_context,
+    )
+
+    helper = _RENDER_HELPERS_BY_DISCREPANCY_TYPE.get(A4_TYPE)
+    assert helper is not None
+    assert helper is not _render_generic_fallback
+
+    _seed_reviewed_trade(
+        conn, ticker="PTEN", entry_price=13.00, fill_price=12.305, qty=15.0,
+    )
+    run = _run(conn)
+    disc_id = conn.execute(
+        "SELECT discrepancy_id FROM reconciliation_discrepancies "
+        "WHERE run_id = ? AND field_name = ?",
+        (run.run_id, _INTERNAL_CONSISTENCY_KEY),
+    ).fetchone()[0]
+    ctx = _render_pre_resolution_context(get_discrepancy(conn, disc_id))
+    assert ctx.journal_side_label == "trades.entry_price"
+    assert ctx.schwab_side_label == "Entry-fill VWAP (journal fills)"
+    assert "13.00" in ctx.journal_side_value
+    assert "12.30" in ctx.schwab_side_value
+
+
+def test_a4_a_legacy_typed_row_is_STILL_skipped_at_the_pivot(conn) -> None:
+    """The predicate keys on the DISCRIMINATOR, not the type, and this is the
+    test that proves it must.
+
+    A row planted with the PRE-0035 shape -- `entry_price_mismatch` plus the
+    discriminator -- via RAW conn.execute (the historical-data technique; the
+    production emitter can no longer produce this shape). Re-keying the
+    predicate on the OLD TYPE would pass this test while letting every
+    NEW-typed row into classification, so the sibling test below is what makes
+    the pair discriminating.
+    """
+    _plant_raw_diagnostic(conn, discrepancy_type="entry_price_mismatch")
+    _run(conn)
+    _assert_untouched_diagnostic(conn, "entry_price_mismatch")
+
+
+def test_a4_a_new_typed_row_is_skipped_at_the_pivot(conn) -> None:
+    _plant_raw_diagnostic(conn, discrepancy_type=A4_TYPE)
+    _run(conn)
+    _assert_untouched_diagnostic(conn, A4_TYPE)
+
+
+def _plant_raw_diagnostic(conn, *, discrepancy_type: str) -> int:
+    """Plant a fills<->trades diagnostic with a chosen TYPE and the
+    discriminator, by RAW insert. Returns the discrepancy_id."""
+    trade_id, fill_id = _seed_reviewed_trade(
+        conn, ticker="DFTX", entry_price=9.00, fill_price=8.25, qty=10.0,
+    )
+    rcur = conn.execute(
+        "INSERT INTO reconciliation_runs (source, started_ts, state) "
+        "VALUES ('schwab_api', '2026-08-08T00:00:00', 'completed')",
+    )
+    run_id = int(rcur.lastrowid)
+    dcur = conn.execute(
+        "INSERT INTO reconciliation_discrepancies (run_id, discrepancy_type, "
+        "trade_id, ticker, field_name, expected_value_json, "
+        "actual_value_json, material_to_review, resolution, created_at) "
+        "VALUES (?, ?, ?, 'DFTX', ?, ?, ?, 1, 'unresolved', "
+        "'2026-08-08T00:00:00')",
+        (
+            run_id, discrepancy_type, trade_id, _INTERNAL_CONSISTENCY_KEY,
+            json.dumps({"price": 9.0, "trades_entry_price": 9.0}),
+            json.dumps({
+                _INTERNAL_CONSISTENCY_KEY: (
+                    _INTERNAL_CONSISTENCY_FILLS_VS_TRADES
+                ),
+                "price": 8.25,
+                "entry_fill_vwap": 8.25,
+                "trades_entry_price": 9.0,
+                "entry_fill_ids": [fill_id],
+            }, sort_keys=True),
+        ),
+    )
+    conn.commit()
+    return int(dcur.lastrowid)
+
+
+def _assert_untouched_diagnostic(conn, discrepancy_type: str) -> None:
+    rows = conn.execute(
+        "SELECT resolution FROM reconciliation_discrepancies "
+        "WHERE discrepancy_type = ? AND field_name = ?",
+        (discrepancy_type, _INTERNAL_CONSISTENCY_KEY),
+    ).fetchall()
+    assert rows, f"no {discrepancy_type} diagnostic row survived"
+    for (resolution,) in rows:
+        assert resolution == "unresolved", (
+            f"{discrepancy_type} diagnostic was classified/dispositioned "
+            f"(resolution={resolution!r}) -- the classify-SKIP did not fire"
+        )
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_a4_both_representations_are_skipped_at_the_BACKFILL(conn) -> None:
+    """The backfill is the SECOND firing site and imports the same predicate.
+    A legacy-only test here is satisfiable by the wrong implementation."""
+    from swing.trades.reconciliation_backfill import run_backfill
+
+    legacy_id = _plant_raw_diagnostic(
+        conn, discrepancy_type="entry_price_mismatch",
+    )
+    new_id = _plant_raw_diagnostic(conn, discrepancy_type=A4_TYPE)
+    summary = run_backfill(
+        conn, dry_run=True, schwab_client=None, environment='production',
+        account_hash=None,
+    )
+    outcomes = {
+        o.discrepancy_id: o.outcome
+        for o in summary.per_discrepancy_outcomes
+    }
+    assert outcomes.get(legacy_id) == "skipped_internal_consistency"
+    assert outcomes.get(new_id) == "skipped_internal_consistency"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0

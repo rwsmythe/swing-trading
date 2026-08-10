@@ -318,6 +318,33 @@ def _pairs_sector_tamper(
     ]
 
 
+def _pairs_fills_trades_price_divergence(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> list[tuple[str, Any, Any]]:
+    """Item-5 A-4 (D4). A fills-vs-trades divergence is EXACTLY a two-column
+    comparison, and the payload already carries both sides by name
+    (`trades_entry_price` in `expected`, `entry_fill_vwap` in `actual`).
+
+    Until 0035 this row was typed `entry_price_mismatch` and rendered only
+    because the emitter deliberately MIRRORS a `price` key into both envelopes
+    for the legacy consumers. Now that the type is its own, it renders as
+    itself. Both sides are JOURNAL values -- there is no Schwab column here --
+    so the labels say which journal artifact each came from.
+    """
+    pairs: list[tuple[str, Any, Any]] = [
+        (
+            "entry price (trades vs entry-fill VWAP)",
+            expected.get("trades_entry_price", expected.get("price")),
+            actual.get("entry_fill_vwap", actual.get("price")),
+        ),
+    ]
+    fill_ids = actual.get("entry_fill_ids")
+    if fill_ids is not None:
+        pairs.append(("contributing entry fill ids", None, fill_ids))
+    return pairs
+
+
 # Dispatch table — maps discrepancy_type to its pair-builder.
 # Types that intentionally return None (no tabular comparison possible) are
 # absent from this table; the dispatcher below handles the None case.
@@ -333,6 +360,7 @@ _PAIRS_BUILDERS: dict[
     "snapshot_mismatch": _pairs_snapshot_mismatch,
     "equity_delta": _pairs_equity_delta,
     "sector_tamper": _pairs_sector_tamper,
+    "fills_trades_price_divergence": _pairs_fills_trades_price_divergence,
 }
 
 # Types for which no tabular side-by-side comparison is meaningful.
@@ -356,7 +384,7 @@ def build_compared_pairs(
     Parameters
     ----------
     discrepancy_type:
-        One of the ten canonical discrepancy type strings.
+        One of the twelve canonical discrepancy type strings.
     expected:
         The ``expected_value_json`` envelope persisted on the discrepancy row.
     actual:

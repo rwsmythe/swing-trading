@@ -656,8 +656,11 @@ def test_the_migration_is_wrapped_in_an_explicit_transaction():
 # --------------------------------------------------------------------------
 # Version + backup gate
 # --------------------------------------------------------------------------
-def test_expected_schema_version_is_34():
-    assert EXPECTED_SCHEMA_VERSION == 34
+def test_expected_schema_version_is_35():
+    # Item-5 A-4 (migration 0035) moved HEAD 34 -> 35. The 0034-CONTENT
+    # assertion above (`UPDATE schema_version SET version = 34` inside 0034's
+    # own SQL) is about THIS migration's text and deliberately stays at 34.
+    assert EXPECTED_SCHEMA_VERSION == 35
 
 
 def test_pre_migration_expected_tables_is_the_v33_set_derived():

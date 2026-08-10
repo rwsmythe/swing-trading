@@ -38,11 +38,34 @@ from swing.journal.tos_import import (
     reconcile_tos,
 )
 
-# Spec §3.3 CHECK enum (11 values).
+# Spec §3.3 CHECK enum (12 values).
 # Phase 18 Arc 18-H.6 widened 10 -> 11 (added 'untracked_broker_position' — a
 # broker holding with no journal trade, emitted by the Schwab-driven orphan
-# pass). #11 atomicity: this constant + models._DISCREPANCY_TYPES + the
-# migration 0031 CHECK + MATERIAL_BY_TYPE land in ONE commit.
+# pass). Item-5 A-4 widened 11 -> 12 (added 'fills_trades_price_divergence').
+#
+# #11 atomicity — the REQUIRED sites, re-derived by READING every file a
+# member-value grep names rather than by trusting this list, because the
+# previous version of this comment named FOUR and was short even at four (it
+# omitted EXPECTED_SCHEMA_VERSION and the backup gate, neither of which
+# contains a member token or a constant name):
+#   1. the migration CHECK (0035, by TABLE REBUILD — SQLite cannot ALTER one)
+#   2. swing/data/db.py EXPECTED_SCHEMA_VERSION
+#   3. swing/data/db.py — the new backup gate + creator + expected-tables set
+#      + its registration inside run_migrations
+#   4. swing/data/models.py _DISCREPANCY_TYPES  (read path: __post_init__)
+#   5. this constant                            (write path: the emit guards)
+#   6. MATERIAL_BY_TYPE below   (an UNGUARDED [] lookup -> KeyError, not a
+#                                graceful default)
+#   7. tests/trades/test_reconciliation_service.py — the len() pin AND the
+#      per-type value assertion for the new member
+#   8. tests/data/** — every schema-HEAD pin (a DERIVATION run in the
+#      worktree, never a list frozen in a document; the full fast suite is the
+#      authoritative enumerator, the grep only a head start)
+#   9. tests/data/test_phase9_reconciliation_schema_verification.py — the
+#      enum-ACCEPTANCE test, which the suite CANNOT catch: inserting N still
+#      valid values through an N+1-value CHECK passes. It now derives its loop
+#      from this constant so the next widening cannot leave it behind.
+# All of them land in ONE commit.
 DISCREPANCY_TYPES: tuple[str, ...] = (
     "close_price_mismatch",
     "stop_mismatch",
@@ -55,6 +78,7 @@ DISCREPANCY_TYPES: tuple[str, ...] = (
     "entry_price_mismatch",
     "equity_delta",
     "untracked_broker_position",
+    "fills_trades_price_divergence",
 )
 
 
@@ -111,6 +135,16 @@ MATERIAL_BY_TYPE: dict[str, int] = {
     # (it drifts the ledger-derived equity from the broker NLV by the orphan's
     # unrealized P&L; the operator must reconcile it).
     "untracked_broker_position": 1,
+    # Item-5 A-4 (RD-ruled 2026-08-09) — MATERIAL. The A-5 emit this type
+    # promotes is documented as material and TODAY inherits
+    # MATERIAL_BY_TYPE['entry_price_mismatch'] = 1, so 1 is the
+    # NO-CHANGE-IN-BEHAVIOUR value: a 0 here would be a silent de-escalation of
+    # a live alarm riding in on a taxonomy change. The general rule RD attached
+    # to the ruling: A CHANGE OF CATEGORY MUST NEVER SMUGGLE A CHANGE OF
+    # SEVERITY. The existing coverage test iterates DISCREPANCY_TYPES and
+    # asserts only that A value EXISTS per type — which is exactly what a WRONG
+    # value satisfies — so this member carries its OWN value assertion.
+    "fills_trades_price_divergence": 1,
 }
 
 

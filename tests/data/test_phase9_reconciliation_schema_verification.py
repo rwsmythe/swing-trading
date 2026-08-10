@@ -299,14 +299,24 @@ def test_discrepancies_material_to_review_check_rejects_invalid(
 def test_discrepancies_all_discrepancy_type_enum_values_accepted(
     conn: sqlite3.Connection,
 ) -> None:
-    """All 10 discrepancy_type enum values per migration §3 land cleanly."""
+    """EVERY discrepancy_type enum value lands cleanly through the schema.
+
+    Item-5 R9 -- the loop is now DERIVED from `DISCREPANCY_TYPES` rather than
+    re-listing the strings, and the reason is worth stating because this test's
+    failure mode is SILENCE. It is an ACCEPTANCE test: inserting N still-valid
+    values through an N+1-value CHECK passes. It hard-coded ten values, went
+    stale at eleven when 18-H.6 widened the enum, and stayed green the whole
+    time -- invisible to a schema-version grep (it pins no version), to an
+    enum-constant grep (it imported none), and to the full fast suite. A test
+    that ASSERTS ACCEPTANCE of a list must derive that list from the canonical
+    container, or it silently narrows on every widening and no suite run will
+    ever tell you.
+    """
+    from swing.trades.reconciliation import DISCREPANCY_TYPES
+
     run_id = _insert_run(conn)
-    for dtype in (
-        "close_price_mismatch", "stop_mismatch", "position_qty_mismatch",
-        "cash_movement_mismatch", "sector_tamper", "snapshot_mismatch",
-        "unmatched_open_fill", "unmatched_close_fill",
-        "entry_price_mismatch", "equity_delta",
-    ):
+    assert DISCREPANCY_TYPES, "the canonical container is empty"
+    for dtype in DISCREPANCY_TYPES:
         conn.execute(
             "INSERT INTO reconciliation_discrepancies ("
             "run_id, discrepancy_type, field_name, material_to_review, "
