@@ -146,6 +146,35 @@ def _recompute_aggregates(conn: sqlite3.Connection, trade_id: int) -> None:
     )
 
 
+def assert_canonical_fill_datetime(value: object) -> str:
+    """Validate a `fills.fill_datetime` WHOLE and return it stripped.
+
+    The COLUMN is a bare `TEXT NOT NULL` and `Fill.__post_init__` does not
+    validate the timestamp, so a malformed value is schema-legal -- while every
+    downstream reader slices `[:10]` and compares LEXICALLY. Enforce a real ISO
+    datetime whose first ten characters ARE its own calendar date.
+
+    Shared (item-5, Codex R13) because `_handle_split_into_partials` INSERTs
+    fills directly rather than going through `update_fill_datetime`, so it
+    bypassed this check entirely and could plant `2026-07-23garbage`.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"fill_datetime must be a non-empty ISO string; got {value!r}")
+    candidate = value.strip()
+    try:
+        parsed = _datetime.fromisoformat(candidate)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"fill_datetime must be a parseable ISO datetime; got "
+            f"{candidate!r}") from exc
+    if candidate[:10] != parsed.date().isoformat():
+        raise ValueError(
+            f"fill_datetime must be EXTENDED-format YYYY-MM-DD...; got "
+            f"{candidate!r}")
+    return candidate
+
+
 def update_fill_datetime(
     conn: sqlite3.Connection, *, fill_id: int, fill_datetime: str,
 ) -> None:
@@ -164,27 +193,10 @@ def update_fill_datetime(
     A missing fill_id raises ValueError -- silence here would let a correction
     report success having written nothing.
     """
-    if not isinstance(fill_datetime, str) or not fill_datetime.strip():
-        raise ValueError("fill_datetime must be a non-empty ISO string")
-    candidate = fill_datetime.strip()
-    # The COLUMN is a bare `TEXT NOT NULL`, so a malformed value is
-    # schema-legal, and downstream readers slice `[:10]` and compare
-    # LEXICALLY. Enforce a real ISO datetime whose first ten characters ARE
-    # its calendar date, independently of any service-layer check -- a write
-    # boundary that trusts its caller is not a boundary.
-    try:
-        _parsed = _datetime.fromisoformat(candidate)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"fill_datetime must be a parseable ISO datetime; got "
-            f"{candidate!r}") from exc
-    if candidate[:10] != _parsed.date().isoformat():
-        raise ValueError(
-            f"fill_datetime must be EXTENDED-format YYYY-MM-DD...; got "
-            f"{candidate!r}")
+    candidate = assert_canonical_fill_datetime(fill_datetime)
     cur = conn.execute(
         "UPDATE fills SET fill_datetime = ? WHERE fill_id = ?",
-        (fill_datetime.strip(), fill_id),
+        (candidate, fill_id),
     )
     if cur.rowcount == 0:
         raise ValueError(f"fill {fill_id} not found")

@@ -2490,3 +2490,200 @@ def test_r11_M1_a_date_PRESERVING_entry_split_is_still_permitted(conn):
     assert conn.execute(
         "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
     ).fetchone()[0] == PRE_DATE
+
+
+# ===========================================================================
+# Codex R13 fixes
+# ===========================================================================
+
+
+def _pending_disc_on(conn, ids, *, fill_id, kind="unknown_schwab_subtype"):
+    """A pending-ambiguity discrepancy bound to a chosen fill."""
+    run = int(conn.execute(
+        "INSERT INTO reconciliation_runs (source, started_ts, state) VALUES "
+        "('schwab_api', '2026-08-10T03:00:00', 'completed')",
+    ).lastrowid)
+    disc = int(conn.execute(
+        "INSERT INTO reconciliation_discrepancies (run_id, discrepancy_type, "
+        "trade_id, fill_id, ticker, field_name, expected_value_json, "
+        "actual_value_json, material_to_review, resolution, ambiguity_kind, "
+        "created_at) VALUES (?, 'entry_price_mismatch', ?, ?, 'FTRE', "
+        "'price', '{}', '{}', 1, 'pending_ambiguity_resolution', ?, "
+        "'2026-08-10T03:00:00')",
+        (run, ids["trade_id"], fill_id, kind),
+    ).lastrowid)
+    conn.commit()
+    return disc
+
+
+@pytest.mark.parametrize(
+    "payload_order",
+    [
+        ("fill_datetime", "action"),   # the ordering that used to WORK
+        ("action", "fill_datetime"),   # the ordering that used to be refused
+    ],
+)
+def test_r13_M1_a_NON_entry_to_entry_transition_is_refused_in_BOTH_orders(
+    conn, payload_order,
+):
+    """`_reservation_applies` read CURRENT state while
+    `_handle_multi_field_correction` applies fields SEQUENTIALLY, so
+    `{"fill_datetime": ..., "action": "entry"}` on a STOP fill saw a non-entry
+    row for BOTH writes and sailed through -- while the reverse key order was
+    refused. Whether a payload was accepted depended on JSON KEY ORDER, which
+    is not a property anything should depend on.
+
+    The former stop would have become the EARLIEST authoritative entry fill
+    while trades.entry_date and the archive row stayed put.
+    """
+    from swing.trades.reconciliation_auto_correct import (
+        ReservedJournalFieldError,
+        apply_tier2_resolution,
+    )
+
+    ids = _seed(conn)
+    stop_fill = conn.execute(
+        "SELECT fill_id FROM fills WHERE trade_id = ? AND action = 'stop'",
+        (ids["trade_id"],),
+    ).fetchone()[0]
+    disc = _pending_disc_on(conn, ids, fill_id=stop_fill)
+    values = {
+        "fill_datetime": "2026-07-20T16:00:00",
+        "action": "entry",
+    }
+    with pytest.raises(ReservedJournalFieldError):
+        apply_tier2_resolution(
+            conn,
+            discrepancy_id=disc,
+            choice_code="operator_truth",
+            operator_custom_payload={k: values[k] for k in payload_order},
+            operator_reason="attempted role flip",
+        )
+    assert conn.execute(
+        "SELECT action, fill_datetime FROM fills WHERE fill_id = ?",
+        (stop_fill,),
+    ).fetchone() == ("stop", "2026-08-04T16:00:00")
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE
+
+
+def test_r13_M1_the_preflight_decides_from_the_ORIGINAL_row(conn):
+    """Pinned directly: the preflight is called before any write and reads the
+    pre-mutation row, so both key orders get the same answer."""
+    import inspect
+
+    from swing.trades import reconciliation_auto_correct as rac
+
+    src = inspect.getsource(rac._handle_multi_field_correction)
+    pre = src.index("_preflight_reserved_transitions(")
+    upd = src.index("_update_journal_field(")
+    assert pre < upd, "the preflight must run before the first write"
+
+
+def test_r13_M1_a_NON_entry_role_change_alone_is_still_permitted(conn):
+    """Counterfactual: only transitions involving the ENTRY role are reserved.
+    Re-roling a stop to a trim touches no coupled date."""
+    from swing.trades.reconciliation_auto_correct import _update_journal_field
+
+    ids = _seed(conn)
+    stop_fill = conn.execute(
+        "SELECT fill_id FROM fills WHERE trade_id = ? AND action = 'stop'",
+        (ids["trade_id"],),
+    ).fetchone()[0]
+    _update_journal_field(conn, "fills", stop_fill, "action", "trim")
+    assert conn.execute(
+        "SELECT action FROM fills WHERE fill_id = ?", (stop_fill,),
+    ).fetchone()[0] == "trim"
+
+
+def test_r13_M2_trade_id_reassignment_is_reserved_on_EVERY_fill(conn):
+    """Reassigning a fill between trades through the generic path validates
+    ONLY the destination and recomputes ONLY the destination, so the OLD trade
+    keeps stale `current_size` / `last_fill_at` denorms -- and those feed live
+    position and sizing calculations. It is not a classifier correction target
+    and is reachable only through an operator-supplied payload, so the
+    affordance is removed rather than repaired in three dispatch paths."""
+    from swing.trades.reconciliation_auto_correct import (
+        ReservedJournalFieldError,
+        _update_journal_field,
+    )
+
+    ids = _seed(conn)
+    stop_fill = conn.execute(
+        "SELECT fill_id FROM fills WHERE trade_id = ? AND action = 'stop'",
+        (ids["trade_id"],),
+    ).fetchone()[0]
+    other_trade = int(conn.execute(
+        "INSERT INTO trades (ticker, entry_date, entry_price, initial_shares, "
+        "initial_stop, current_stop, state, trade_origin, pre_trade_locked_at) "
+        "VALUES ('OTHR', '2026-06-01', 5.0, 5, 4.0, 4.0, 'managing', "
+        "'manual_off_pipeline', '2026-06-01T16:00:00')",
+    ).lastrowid)
+    conn.commit()
+    for fill in (ids["fill_id"], stop_fill):
+        with pytest.raises(ReservedJournalFieldError):
+            _update_journal_field(
+                conn, "fills", fill, "trade_id", other_trade,
+            )
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE trade_id = ?", (other_trade,),
+    ).fetchone()[0] == 0
+
+
+def test_r13_M3_a_split_with_a_MALFORMED_partial_timestamp_is_refused(conn):
+    """The split handler INSERTs fills directly rather than going through
+    `update_fill_datetime`, so it bypassed that writer's whole-value check
+    entirely -- `2026-07-23garbage` compared equal on `[:10]`, passed as
+    date-PRESERVING, and would have been planted as a replacement with
+    lexically-ordered aggregates recomputed off it and N+1 audit rows
+    recorded."""
+    from swing.trades.reconciliation_auto_correct import (
+        ReservedJournalFieldError,
+        apply_tier2_resolution,
+    )
+
+    ids = _seed(conn)
+    conn.execute(
+        "UPDATE reconciliation_discrepancies SET ambiguity_kind = "
+        "'multi_partial_vs_consolidated' WHERE discrepancy_id = ?",
+        (ids["discrepancy_id"],),
+    )
+    conn.commit()
+    with pytest.raises(ReservedJournalFieldError, match="canonical ISO"):
+        apply_tier2_resolution(
+            conn,
+            discrepancy_id=ids["discrepancy_id"],
+            choice_code="split_into_partials",
+            operator_custom_payload=[
+                {"qty": 5.0, "price": 18.8,
+                 "fill_datetime": f"{PRE_DATE}garbage"},
+                {"qty": 5.0, "price": 18.8,
+                 "fill_datetime": f"{PRE_DATE}T13:31:05"},
+            ],
+            operator_reason="malformed partial",
+        )
+    assert conn.execute(
+        "SELECT fill_datetime FROM fills WHERE fill_id = ?", (ids["fill_id"],),
+    ).fetchone()[0] == f"{PRE_DATE}T16:00:00"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_r13_M3_the_split_validator_is_the_SAME_one_the_writer_uses(conn):
+    """One source, not a second copy: the split guard and the fills write
+    boundary share `assert_canonical_fill_datetime`."""
+    import inspect
+
+    from swing.data.repos.fills import assert_canonical_fill_datetime
+    from swing.trades import reconciliation_auto_correct as rac
+
+    src = inspect.getsource(rac._refuse_entry_fill_split_that_moves_the_date)
+    assert "assert_canonical_fill_datetime" in src
+    assert assert_canonical_fill_datetime("2026-07-23T16:00:00") == (
+        "2026-07-23T16:00:00"
+    )
+    for bad in ("2026-07-23garbage", "20260723T160000", "nope", "", None):
+        with pytest.raises(ValueError):
+            assert_canonical_fill_datetime(bad)

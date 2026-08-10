@@ -217,7 +217,27 @@ def _refuse_entry_fill_split_that_moves_the_date(
     if not trade:
         return
     entry_date = str(trade[0])
-    earliest = min(str(p["fill_datetime"])[:10] for p in parsed_partials)
+    # WHOLE-VALUE validation, then compare PARSED dates (Codex R13 Major 3).
+    # The split handler INSERTs fills directly rather than going through
+    # `update_fill_datetime`, so it bypassed that writer's canonical check
+    # entirely -- `2026-07-23garbage` compared equal on `[:10]` and would have
+    # been planted as a replacement, with lexically-ordered aggregates
+    # recomputed off it and N+1 audit rows recorded. Same validator the write
+    # boundary uses; one source, not a second copy.
+    from swing.data.repos.fills import assert_canonical_fill_datetime
+    partial_dates = []
+    for i, partial in enumerate(parsed_partials):
+        try:
+            canonical = assert_canonical_fill_datetime(partial["fill_datetime"])
+        except ValueError as exc:
+            raise ReservedJournalFieldError(
+                f"split partial #{i + 1} carries fill_datetime "
+                f"{partial['fill_datetime']!r}, which is not a canonical ISO "
+                f"timestamp ({exc}). Refusing to replace an ENTRY fill with a "
+                "malformed one. Nothing was written."
+            ) from exc
+        partial_dates.append(canonical[:10])
+    earliest = min(partial_dates)
     if earliest != entry_date:
         raise ReservedJournalFieldError(
             f"splitting ENTRY fill {fill_id} would make {earliest} the "
@@ -229,9 +249,50 @@ def _refuse_entry_fill_split_that_moves_the_date(
         )
 
 
+def _preflight_reserved_transitions(
+    conn: sqlite3.Connection,
+    affected_table: str,
+    affected_row_id: int,
+    proposed: Mapping[str, Any],
+) -> None:
+    """Refuse a multi-field payload that touches a reserved column, deciding
+    from the ORIGINAL row rather than from state an earlier field may already
+    have changed.
+
+    Both directions of the entry role count: a payload that would move a fill
+    INTO `action='entry'` is refused for its `fill_datetime` too, because the
+    resulting row would be an entry fill carrying a date the coupled trade and
+    archive rows never saw.
+    """
+    for field_name, new_value in proposed.items():
+        if _reservation_applies(
+            conn, affected_table, affected_row_id, field_name, new_value,
+        ):
+            raise ReservedJournalFieldError(
+                f"{affected_table}.{field_name} cannot be written through the "
+                f"generic correction path: it is coupled to other rows and "
+                f"must move through "
+                f"`{_RESERVED_JOURNAL_FIELDS[(affected_table, field_name)]}`, "
+                "which updates all of them in one transaction. Nothing was "
+                "written."
+            )
+    if affected_table != _AFFECTED_TABLE_FILLS:
+        return
+    # The row would BECOME an entry fill: its datetime is then coupled too, and
+    # the per-field check on the ORIGINAL (non-entry) row would have allowed it.
+    becomes_entry = str(proposed.get("action", "")) == "entry"
+    if becomes_entry and "fill_datetime" in proposed:
+        raise ReservedJournalFieldError(
+            f"this payload would make fill {affected_row_id} an ENTRY fill AND "
+            "set its datetime, which decides an entry date that "
+            "trades.entry_date and the watchlist_archive row never saw. Use "
+            f"`{_ENTRY_DATE_COUPLED_SURFACE}`. Nothing was written."
+        )
+
+
 def _reservation_applies(
     conn: sqlite3.Connection, affected_table: str, affected_row_id: int,
-    field_name: str,
+    field_name: str, new_value: Any = None,
 ) -> bool:
     """Whether the reserved-column refusal binds for THIS row.
 
@@ -244,10 +305,27 @@ def _reservation_applies(
         return False
     if affected_table != _AFFECTED_TABLE_FILLS:
         return True
+    # `trade_id` is reserved on EVERY fill (Codex R13 Major 2), not only entry
+    # ones: reassigning a fill between trades through the generic path
+    # validates ONLY the destination and recomputes ONLY the destination, so
+    # the OLD trade keeps stale `current_size` / `last_fill_at` denorms that
+    # feed live position and sizing calculations. It is not a classifier
+    # correction target and is reachable only through an operator-supplied
+    # payload, so removing the affordance costs nothing real.
+    if field_name == "trade_id":
+        return True
     row = conn.execute(
         "SELECT action FROM fills WHERE fill_id = ?", (affected_row_id,),
     ).fetchone()
-    return bool(row) and str(row[0]) == "entry"
+    if bool(row) and str(row[0]) == "entry":
+        return True
+    # ...and the TO-entry direction (Codex R13 Major 1). The reservation reads
+    # CURRENT state while `_handle_multi_field_correction` applies fields
+    # SEQUENTIALLY, so `{"fill_datetime": ..., "action": "entry"}` on a stop
+    # fill saw a non-entry row for BOTH writes -- correctness depending on JSON
+    # key order. Refusing a transition INTO the entry role closes the door the
+    # ordering walked through.
+    return field_name == "action" and str(new_value) == "entry"
 
 
 class MultiRowCorrectionOverrideError(Exception):
@@ -1912,7 +1990,7 @@ def _update_journal_field(
     reserved = (
         _RESERVED_JOURNAL_FIELDS.get((affected_table, field_name))
         if _reservation_applies(
-            conn, affected_table, affected_row_id, field_name,
+            conn, affected_table, affected_row_id, field_name, new_value,
         ) else None
     )
     if reserved is not None:
@@ -2487,6 +2565,17 @@ def _handle_multi_field_correction(
     parity (F22).
     """
     affected_table, affected_row_id = _resolve_affected_target(disc)
+
+    # PREFLIGHT THE WHOLE PAYLOAD AGAINST THE ORIGINAL, IMMUTABLE ROW, before
+    # any write (Codex R13 Major 1). The per-field reservation inside
+    # `_update_journal_field` is evaluated against CURRENT state, and this
+    # handler applies fields SEQUENTIALLY -- so whether a payload was refused
+    # depended on JSON KEY ORDER, which is not a property anything should
+    # depend on. The preflight decides once, from the state that existed before
+    # the first write, so both orderings get the same answer.
+    _preflight_reserved_transitions(
+        conn, affected_table, affected_row_id, correction_target,
+    )
 
     _validate_correction_target(
         conn,
