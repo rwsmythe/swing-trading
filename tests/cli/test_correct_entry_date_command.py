@@ -53,9 +53,22 @@ def _seed(db_path: Path, *, trade_state: str = "closed") -> dict:
         trade_id = int(cur.lastrowid)
         fcur = conn.execute(
             "INSERT INTO fills (trade_id, fill_datetime, action, quantity, "
-            "price, reconciliation_status) VALUES (?,?,?,?,?,?)",
+            "price, reconciliation_status, fill_origin, "
+            "schwab_source_value_json) VALUES (?,?,?,?,?,?,?,?)",
             (trade_id, f"{PRE_DATE}T16:00:00", "entry", 10.0, 18.8,
-             "unreconciled"),
+             "unreconciled", "schwab_auto",
+             # The REAL production envelope. Its `schwab_order_id` is what
+             # binds the discrepancy's evidence to THIS fill -- an unrelated
+             # same-ticker same-size order is not evidence about a fill it did
+             # not produce.
+             json.dumps({
+                 "entry_date": PRE_DATE,
+                 "entry_date_source": "enter_time",
+                 "entry_price": 18.8,
+                 "schwab_instrument_symbol": "FTRE",
+                 "schwab_order_id": "1007308870656",
+                 "shares": 10,
+             }, sort_keys=True)),
         )
         fill_id = int(fcur.lastrowid)
         conn.execute(

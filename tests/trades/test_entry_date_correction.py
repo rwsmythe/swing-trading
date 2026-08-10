@@ -78,6 +78,8 @@ def _seed(
     actual_value_json: str | None = None,
     fill_id_on_discrepancy: int | None = -1,
     discrepancy_trade_id: int | None = -1,
+    fill_origin: str = "schwab_auto",
+    source_order_id: str | None = "1007308870656",
 ) -> dict[str, Any]:
     """Plant trade 19's live shape. Returns the key ids."""
     cur = conn.execute(
@@ -109,12 +111,24 @@ def _seed(
         """
         INSERT INTO fills (
             trade_id, fill_datetime, action, quantity, price,
-            reconciliation_status, fill_origin
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            reconciliation_status, fill_origin, schwab_source_value_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             trade_id, fill_datetime or f"{entry_date}T16:00:00", fill_action,
-            10.0, 18.8, "unreconciled", "schwab_auto",
+            10.0, 18.8, "unreconciled", fill_origin,
+            # The REAL production envelope `entry_auto_fill` writes and
+            # `record_entry` persists -- live fill 39's shape. Its
+            # `schwab_order_id` is what binds the discrepancy's evidence to
+            # THIS fill; a fixture that omitted it masked the hole entirely.
+            None if source_order_id is None else json.dumps({
+                "entry_date": entry_date,
+                "entry_date_source": "enter_time",
+                "entry_price": 18.8,
+                "schwab_instrument_symbol": "FTRE",
+                "schwab_order_id": source_order_id,
+                "shares": 10,
+            }, sort_keys=True),
         ),
     )
     fill_id = int(fcur.lastrowid)
@@ -1324,3 +1338,158 @@ def test_r4_MINOR2_the_state_gate_still_fires_on_a_GOOD_discrepancy(conn):
     ids = _seed(conn, trade_state="managing")
     with pytest.raises(EntryDateCorrectionError, match="--allow-active"):
         _apply(conn, ids)
+
+
+# ===========================================================================
+# Codex R5 fixes
+# ===========================================================================
+
+
+def test_r5_M1_an_UNRELATED_same_size_order_cannot_date_this_fill(conn):
+    """Every clause up to R4 described a SHAPE -- ticker, quantity, side,
+    singleton count -- and the emitter binds its sole candidate on exactly that
+    shape when the candidate failed price OR side OR session. So order B could
+    supply the date for a fill created from order A, moving all three rows
+    while the follow-up reason asserts D31 as the cause. `--to` is no
+    protection: it confirms the WRONG order's server-derived date.
+
+    The fill already carried the answer and it was being ignored.
+    """
+    ids = _seed(conn, source_order_id="9999999999999")
+    with pytest.raises(EntryDateCorrectionError, match="did not produce"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_r5_M1_the_MATCHING_order_id_is_what_makes_the_live_case_pass(conn):
+    """Counterfactual, and it is the live shape: fill 39's envelope and
+    discrepancy 95's payload both name order 1007308870656."""
+    ids = _seed(conn)
+    envelope = json.loads(conn.execute(
+        "SELECT schwab_source_value_json FROM fills WHERE fill_id = ?",
+        (ids["fill_id"],),
+    ).fetchone()[0])
+    payload = json.loads(conn.execute(
+        "SELECT actual_value_json FROM reconciliation_discrepancies "
+        "WHERE discrepancy_id = ?", (ids["discrepancy_id"],),
+    ).fetchone()[0])
+    assert envelope["schwab_order_id"] == payload["schwab_order_id"]
+    _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+
+
+@pytest.mark.parametrize(
+    "origin", ["operator_typed", "tos_import", "imported_legacy"],
+)
+def test_r5_M1_a_non_schwab_fill_cannot_be_dated_by_this_surface(conn, origin):
+    """It has no Schwab order provenance to bind the evidence to, AND it cannot
+    be a D31 victim -- D31 is a defect in the Schwab auto-fill path -- so the
+    follow-up reason's causal claim would be false for it."""
+    ids = _seed(conn, fill_origin=origin, source_order_id=None)
+    with pytest.raises(EntryDateCorrectionError, match="not Schwab-derived"):
+        _apply(conn, ids)
+
+
+def test_r5_M1_a_schwab_fill_with_NO_envelope_is_refused(conn):
+    ids = _seed(conn, source_order_id=None)
+    with pytest.raises(
+        EntryDateCorrectionError, match="missing or unparseable",
+    ):
+        _apply(conn, ids)
+
+
+def test_r5_M2_TIER_2_cannot_half_mutate_an_applied_multi_row_correction(conn):
+    """`correct_entry_date` deliberately leaves the discrepancy in
+    `pending_ambiguity_resolution`, and tier 2 checks only that pending state.
+    `_resolve_affected_target` picks `fills` whenever `fill_id` is present and
+    the multi-field handler updates that fill ALONE, so the supported CLI could
+    move `fills.fill_datetime` without moving trades.entry_date or the archive
+    row, then resolve the finding and append a SECOND unsuperseded correction.
+    The R4 tier-3 refusal alone was two-thirds of a guard."""
+    from swing.trades.reconciliation_auto_correct import (
+        MultiRowCorrectionOverrideError,
+        apply_tier2_resolution,
+    )
+
+    ids = _seed(conn)
+    _apply(conn, ids)
+    with pytest.raises(MultiRowCorrectionOverrideError, match="MULTI-ROW"):
+        apply_tier2_resolution(
+            conn,
+            discrepancy_id=ids["discrepancy_id"],
+            choice_code="pick_schwab_record_1",
+            operator_custom_payload={"fill_datetime": "2026-08-05T16:00:00"},
+            operator_reason="attempted tier-2 half-mutation",
+        )
+    assert conn.execute(
+        "SELECT fill_datetime FROM fills WHERE fill_id = ?", (ids["fill_id"],),
+    ).fetchone()[0] == f"{TARGET_DATE}T16:00:00"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT resolution FROM reconciliation_discrepancies "
+        "WHERE discrepancy_id = ?", (ids["discrepancy_id"],),
+    ).fetchone()[0] == "pending_ambiguity_resolution"
+
+
+def test_r5_M2_TIER_1_is_guarded_too(conn):
+    from swing.trades.reconciliation_auto_correct import (
+        MultiRowCorrectionOverrideError,
+        apply_tier1_correction,
+    )
+
+    ids = _seed(conn)
+    _apply(conn, ids)
+    with pytest.raises(MultiRowCorrectionOverrideError):
+        apply_tier1_correction(
+            conn, discrepancy_id=ids["discrepancy_id"], classification=None,
+        )
+
+
+def test_r5_M2_the_INTENDED_follow_up_resolution_is_NOT_blocked(conn):
+    """The guard must not break the very next step the surface prints. The
+    non-mutating manual resolver writes no journal column."""
+    from swing.trades.reconciliation import resolve_discrepancy
+
+    ids = _seed(conn)
+    _apply(conn, ids)
+    resolve_discrepancy(
+        conn,
+        discrepancy_id=ids["discrepancy_id"],
+        resolution="journal_corrected",
+        resolution_reason="Journal corrected, not overridden. (follow-up)",
+        require_current_resolution="pending_ambiguity_resolution",
+    )
+    assert conn.execute(
+        "SELECT resolution FROM reconciliation_discrepancies "
+        "WHERE discrepancy_id = ?", (ids["discrepancy_id"],),
+    ).fetchone()[0] == "journal_corrected"
+
+
+def test_r5_MINOR_the_state_gate_fires_AFTER_every_other_check(conn):
+    """R4's partial move was not enough: an intervening entry fill would still
+    reject AFTER the operator had been sent to fetch `--allow-active`."""
+    ids = _seed(conn, trade_state="managing")
+    _add_second_entry_fill(conn, ids, when="2026-07-25T16:00:00")
+    with pytest.raises(EntryDateCorrectionError) as exc:
+        _apply(conn, ids)
+    assert "would make" in str(exc.value)
+    assert "--allow-active" not in str(exc.value)
+
+
+def test_r5_MINOR_an_unresolvable_archive_row_also_precedes_the_state_gate(
+    conn,
+):
+    ids = _seed(conn, trade_state="managing", archive_rows=0)
+    with pytest.raises(EntryDateCorrectionError) as exc:
+        _apply(conn, ids)
+    assert "found 0" in str(exc.value)
+    assert "--allow-active" not in str(exc.value)

@@ -345,7 +345,8 @@ def _gate_on_state(trade: Any, *, allow_active: bool) -> bool:
 def _entry_fill_row(conn: sqlite3.Connection, fill_id: int) -> tuple | None:
     return conn.execute(
         "SELECT fill_id, trade_id, fill_datetime, action, "
-        "reconciliation_status, quantity "
+        "reconciliation_status, quantity, fill_origin, "
+        "schwab_source_value_json "
         "FROM fills WHERE fill_id = ?",
         (fill_id,),
     ).fetchone()
@@ -396,22 +397,7 @@ def _derive_target_date_from_discrepancy(
     across rows is not provenance for the row you are about to use. Compute the
     same date the correction will write, and compare THAT.
     """
-    raw = getattr(disc, "actual_value_json", None)
-    payload: Any = None
-    if raw:
-        try:
-            payload = json.loads(raw)
-        except (TypeError, ValueError):
-            payload = None
-    if not isinstance(payload, dict):
-        # A multi-candidate (A1 ambiguity) emit is a JSON ARRAY, not an object;
-        # "which candidate is the truth" is exactly the question the operator
-        # has not answered, so it cannot authorize a date rewrite either.
-        raise EntryDateCorrectionError(
-            f"discrepancy {disc.discrepancy_id} carries no parseable "
-            "actual_value_json OBJECT payload (a multi-candidate ambiguity is "
-            "emitted as a JSON array); it cannot authorize a date rewrite."
-        )
+    payload = _evidence_payload(disc)
     # Codex R1 Major 1 -- THE SIDE MUST BE AN ENTRY SIDE. The sole-candidate
     # Shape-D emit fires when that candidate failed price OR **SIDE** OR
     # session, and it always carries `execution_side` (= `so.instruction`). So
@@ -608,6 +594,9 @@ def _authorize(
     _assert_evidence_matches_fill_quantity(
         disc, fill_quantity=float(fill_row[5]),
     )
+    _assert_evidence_is_this_fills_order(
+        disc, fill_origin=fill_row[6], source_envelope=fill_row[7],
+    )
 
     target_date = _derive_target_date_from_discrepancy(
         disc, fill_datetime=pre_fill_datetime,
@@ -628,10 +617,6 @@ def _authorize(
     # 07-31 while `_recompute_aggregates` takes the 07-25 fill's price as
     # `current_avg_cost`, and the audit row asserts the correction was
     # coherent. A gate evaluated only on the PRE state cannot see this.
-    # The evidence is now established, so the operator can be asked for an
-    # acknowledgement that means something.
-    allow_active_used = _gate_on_state(trade, allow_active=allow_active)
-
     new_fill_datetime = _corrected_fill_datetime(pre_fill_datetime, target_date)
     _assert_still_authoritative_after_move(
         conn,
@@ -650,6 +635,16 @@ def _authorize(
         trade_id=trade_id,
     )
 
+    # THE STATE GATE FIRES LAST, after EVERY other read-only check (Codex R5
+    # minor; R4's partial move was not enough). It is the only refusal in this
+    # function that is an INSTRUCTION rather than a verdict -- it tells the
+    # operator to come back with `--allow-active`. Raising it while an
+    # intervening entry fill or an unresolvable archive row would still reject
+    # the request sends him to fetch an acknowledgement for a correction that
+    # was never eligible, which is the misleading ordering the move was
+    # supposed to eliminate.
+    allow_active_used = _gate_on_state(trade, allow_active=allow_active)
+
     return _Authorized(
         trade=trade,
         fill_row=fill_row,
@@ -658,6 +653,95 @@ def _authorize(
         target_date=target_date,
         allow_active_used=allow_active_used,
     )
+
+
+def _evidence_payload(disc: Any) -> dict[str, Any]:
+    """The discrepancy's `actual_value_json` as a dict, or a refusal.
+
+    ONE parse, ONE message, used by every evidence clause -- otherwise the
+    clause that happens to run first decides which refusal the operator sees,
+    and a multi-candidate ARRAY payload gets explained as a missing order id.
+    A multi-candidate (A1 ambiguity) emit IS a JSON array, and "which candidate
+    is the truth" is exactly the question the operator has not answered.
+    """
+    raw = getattr(disc, "actual_value_json", None)
+    payload: Any = None
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            payload = None
+    if not isinstance(payload, dict):
+        raise EntryDateCorrectionError(
+            f"discrepancy {disc.discrepancy_id} carries no parseable "
+            "actual_value_json OBJECT payload (a multi-candidate ambiguity is "
+            "emitted as a JSON array); it cannot authorize a date rewrite."
+        )
+    return payload
+
+
+SCHWAB_DERIVED_FILL_ORIGINS: frozenset[str] = frozenset({
+    "schwab_auto", "schwab_auto_then_operator_corrected",
+})
+
+
+def _assert_evidence_is_this_fills_order(
+    disc: Any, *, fill_origin: Any, source_envelope: Any,
+) -> None:
+    """The cited Schwab order must be the one that CREATED this fill.
+
+    Codex R5 Major 1, and it is the sharpest remaining hole. Every clause so
+    far -- ticker, quantity, side, singleton count -- describes a SHAPE, and
+    the reconciliation emitter binds its sole candidate on exactly that shape
+    when the candidate failed price OR side OR session. So an UNRELATED
+    same-ticker same-size BUY order could supply the date, moving the trade,
+    the fill and the archive row, while the follow-up reason asserts D31 as
+    the cause. `--to` is no protection: it confirms the wrong order's
+    server-derived date.
+
+    The fill already carries the answer and it was being ignored:
+    `entry_auto_fill` writes the originating `schwab_order_id` into
+    `schwab_source_value_json`, and `record_entry` persists it. Requiring that
+    id to equal the discrepancy payload's is the arc's own doctrine -- per-row
+    provenance captured at WRITE time (#30) -- applied to itself.
+
+    An `operator_typed` / `tos_import` / `imported_legacy` fill has no such
+    provenance AND cannot be a D31 victim (D31 is a defect in the Schwab
+    auto-fill path), so the follow-up reason's causal claim would be false for
+    it. Refused rather than dated from an order it never came from.
+    """
+    if str(fill_origin) not in SCHWAB_DERIVED_FILL_ORIGINS:
+        raise EntryDateCorrectionError(
+            f"fill {disc.fill_id} has fill_origin={fill_origin!r}, which is "
+            "not Schwab-derived. This surface corrects the D31 auto-fill "
+            "defect and its audit reason says so; a manually-recorded fill "
+            "carries no Schwab order provenance to bind the evidence to."
+        )
+    try:
+        envelope = json.loads(source_envelope or "")
+    except (TypeError, ValueError) as exc:
+        raise EntryDateCorrectionError(
+            f"fill {disc.fill_id} claims Schwab provenance but its "
+            "schwab_source_value_json is missing or unparseable; the cited "
+            "order cannot be bound to it."
+        ) from exc
+    fill_order_id = (
+        envelope.get("schwab_order_id") if isinstance(envelope, dict) else None
+    )
+    disc_order_id = _evidence_payload(disc).get("schwab_order_id")
+    if not fill_order_id or not disc_order_id:
+        raise EntryDateCorrectionError(
+            f"fill {disc.fill_id} (order {fill_order_id!r}) and discrepancy "
+            f"{disc.discrepancy_id} (order {disc_order_id!r}) do not both name "
+            "a Schwab order id; the evidence cannot be bound to this fill."
+        )
+    if str(fill_order_id) != str(disc_order_id):
+        raise EntryDateCorrectionError(
+            f"discrepancy {disc.discrepancy_id} cites Schwab order "
+            f"{disc_order_id!r}, but fill {disc.fill_id} was created from "
+            f"order {fill_order_id!r}. A same-ticker same-size order is NOT "
+            "evidence about a fill it did not produce."
+        )
 
 
 def _assert_evidence_matches_fill_quantity(
@@ -672,8 +756,7 @@ def _assert_evidence_matches_fill_quantity(
     """
     from swing.trades.schwab_reconciliation import _PRICE_TOLERANCE_DEFAULT
 
-    payload = json.loads(getattr(disc, "actual_value_json", "") or "{}")
-    legs = payload.get("execution_legs") if isinstance(payload, dict) else None
+    legs = _evidence_payload(disc).get("execution_legs")
     if not isinstance(legs, list) or not legs:
         return  # the leg-shape refusal fires in the date derivation
     total = 0.0

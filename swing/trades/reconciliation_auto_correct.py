@@ -782,6 +782,47 @@ def _check_recorrection_contradiction(
 # ---------------------------------------------------------------------------
 
 
+def _assert_no_unsuperseded_multi_row_correction(
+    conn: sqlite3.Connection, discrepancy_id: int,
+) -> None:
+    """Refuse a mutating dispatch against a discrepancy that already carries an
+    unsuperseded MULTI-ROW correction head (Codex R5 Major 2).
+
+    The tier-3 refusal alone was two-thirds of a guard. ``correct_entry_date``
+    deliberately leaves its discrepancy in ``pending_ambiguity_resolution`` (the
+    operator resolves it as a separate, witnessed step), and TIER 2 checks only
+    that pending state. ``_resolve_affected_target`` picks ``fills`` whenever
+    ``fill_id`` is present, the multi-field handler updates that fill ALONE, and
+    the fill validator neither validates nor forbids ``fill_datetime`` -- so the
+    supported CLI could move ``fills.fill_datetime`` without moving
+    ``trades.entry_date`` or the archive row, then resolve the discrepancy and
+    append a SECOND unsuperseded correction row. Both the ledger coupling and
+    the correction-chain history would be false.
+
+    Centralized here so tier-1, tier-2 and tier-3 -- and therefore the CLI, the
+    reconciliation pivot and the backfill, which reach the journal only through
+    them -- share ONE predicate. The non-mutating follow-up (``discrepancy
+    resolve --resolution journal_corrected``) is untouched: it is the intended
+    next step and writes no journal column.
+    """
+    rows = conn.execute(
+        "SELECT correction_id, correction_choice FROM "
+        "reconciliation_corrections WHERE discrepancy_id = ? "
+        "AND superseded_by_correction_id IS NULL",
+        (discrepancy_id,),
+    ).fetchall()
+    for correction_id, choice in rows:
+        if choice in _MULTI_ROW_CORRECTION_CHOICES:
+            raise MultiRowCorrectionOverrideError(
+                f"discrepancy_id={discrepancy_id} already carries the "
+                f"unsuperseded MULTI-ROW correction {correction_id} "
+                f"(correction_choice={choice!r}), which mutated more rows than "
+                "this path can write. A partial re-mutation here would leave "
+                "the coupled rows disagreeing. Resolve the finding, or re-run "
+                "the dedicated correction surface against a current one."
+            )
+
+
 def _apply_tier1_correction_inner(
     conn: sqlite3.Connection,
     *,
@@ -840,6 +881,8 @@ def _apply_tier1_correction_inner(
             correction_action=None,
             notes="sandbox: domain write short-circuited",
         )
+
+    _assert_no_unsuperseded_multi_row_correction(conn, discrepancy_id)
 
     # Codex R1 Major #2 — SELECT-first idempotency. A terminal
     # discrepancy returns its existing correction_id WITHOUT requiring a
@@ -1090,6 +1133,8 @@ def _apply_tier2_resolution_inner(
 
     # Step 1 — SELECT discrepancy.
     disc = _select_discrepancy(conn, discrepancy_id)
+
+    _assert_no_unsuperseded_multi_row_correction(conn, discrepancy_id)
 
     # Step 1.5 — post-SELECT secondary invariant: the auto-redirect path is
     # only valid against multi_partial_vs_consolidated discrepancies.
