@@ -469,11 +469,18 @@ def test_a_nonzero_session_distance_is_NOT_sufficient_evidence(conn):
 
 
 def test_a_price_only_discrepancy_carries_no_date_evidence(conn):
+    """A payload with no `execution_legs` is a price disagreement, not DATE
+    evidence. The refusal now comes from the price-authentication clause, which
+    runs first and needs the legs to authenticate against -- either way the
+    absence of legs is what disqualifies it, and nothing is written."""
     ids = _seed(conn, actual_value_json=_live_actual_value_json(
         include_legs=False,
     ))
-    with pytest.raises(EntryDateCorrectionError, match="no execution_legs"):
+    with pytest.raises(EntryDateCorrectionError, match="execution legs"):
         _apply(conn, ids)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
 
 
 def test_an_unparseable_leg_time_refuses_rather_than_ranking_a_partial_view(
@@ -2086,3 +2093,309 @@ def test_r9_M2_the_audit_row_names_the_ARCHIVE_row_it_changed(conn):
     ).fetchone()[0])
     assert payload["pre"][BOUND_ARCHIVE_KEY] == archive_id
     assert payload["applied"][BOUND_ARCHIVE_KEY] == archive_id
+
+
+# ===========================================================================
+# THE COUPLING INVARIANT, stated and enforced (coordinator steer, mid-loop)
+#
+# R6-R9 were four holes in one guard whose UNIT OF COUPLING had never been
+# decided -- it was being discovered by counterexample. The invariant:
+#
+#   trades.entry_date, the AUTHORITATIVE entry fill's fills.fill_datetime
+#   date-prefix, and the reason='entered' watchlist_archive.removed_date for
+#   that trade MUST always name the SAME calendar date; any write that changes
+#   one MUST change all three in one transaction.
+#
+# Enforced STRUCTURALLY: the coupled COLUMNS are reserved to the dedicated
+# surface at the single generic writer, and the bound FILL cannot be destroyed.
+# Neither depends on a correction row existing.
+# ===========================================================================
+
+
+def test_INVARIANT_the_three_coupled_dates_agree_after_a_correction(conn):
+    """The invariant itself, asserted end-to-end rather than inferred from the
+    three separate field assertions."""
+    ids = _seed(conn)
+    _apply(conn, ids)
+    trade_date = conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0]
+    fill_date = conn.execute(
+        "SELECT substr(fill_datetime, 1, 10) FROM fills WHERE fill_id = ?",
+        (ids["fill_id"],),
+    ).fetchone()[0]
+    archive_date = conn.execute(
+        "SELECT removed_date FROM watchlist_archive WHERE ticker = 'FTRE' "
+        "AND reason = 'entered'",
+    ).fetchone()[0]
+    assert trade_date == fill_date == archive_date == TARGET_DATE
+
+
+def test_INVARIANT_an_ENTRY_fills_datetime_is_reserved_from_the_generic_path(
+    conn,
+):
+    """The second leg of the triple. Previously reachable through tier-2
+    `pick_schwab_record_N` with a `fill_datetime` custom value, and blocked
+    only by a correction-keyed barrier -- so with NO correction present the
+    coupling could be broken from a standing start. The affordance is REMOVED
+    rather than validated a fourth time (the item-4 precedent); writing an
+    entry fill's datetime without moving the other two IS the incoherent
+    operation."""
+    from swing.trades.reconciliation_auto_correct import (
+        ReservedJournalFieldError,
+        _update_journal_field,
+    )
+
+    ids = _seed(conn)  # NO correction applied -- the guard must not need one.
+    with pytest.raises(ReservedJournalFieldError, match="correct-entry-date"):
+        _update_journal_field(
+            conn, "fills", ids["fill_id"], "fill_datetime",
+            "2026-08-05T16:00:00",
+        )
+    assert conn.execute(
+        "SELECT fill_datetime FROM fills WHERE fill_id = ?", (ids["fill_id"],),
+    ).fetchone()[0] == f"{PRE_DATE}T16:00:00"
+
+
+def test_INVARIANT_a_NON_entry_fills_datetime_is_still_writable(conn):
+    """Scoped to the ROW, not the column: an exit / trim / stop fill's datetime
+    is not part of the coupling, and correcting one is a legitimate tier-2
+    operation this must not remove. The ban is exactly as wide as the
+    invariant."""
+    from swing.trades.reconciliation_auto_correct import _update_journal_field
+
+    ids = _seed(conn)
+    stop_fill = conn.execute(
+        "SELECT fill_id FROM fills WHERE trade_id = ? AND action = 'stop'",
+        (ids["trade_id"],),
+    ).fetchone()[0]
+    _update_journal_field(
+        conn, "fills", stop_fill, "fill_datetime", "2026-08-05T16:00:00",
+    )
+    assert conn.execute(
+        "SELECT fill_datetime FROM fills WHERE fill_id = ?", (stop_fill,),
+    ).fetchone()[0] == "2026-08-05T16:00:00"
+
+
+def test_INVARIANT_a_fills_PRICE_is_still_writable(conn):
+    """Counterfactual on the column axis: only the coupled column is reserved,
+    and the tier-1 price correction this project's whole reconciliation
+    machinery exists for is untouched."""
+    from swing.trades.reconciliation_auto_correct import _update_journal_field
+
+    ids = _seed(conn)
+    _update_journal_field(conn, "fills", ids["fill_id"], "price", 18.9)
+    assert conn.execute(
+        "SELECT price FROM fills WHERE fill_id = ?", (ids["fill_id"],),
+    ).fetchone()[0] == 18.9
+
+
+def test_INVARIANT_the_reservation_needs_NO_correction_row_to_exist(conn):
+    """The structural property that the correction-keyed barriers could never
+    have: with zero corrections in the table, both coupled columns are already
+    unwritable by the generic path."""
+    from swing.trades.reconciliation_auto_correct import (
+        ReservedJournalFieldError,
+        _update_journal_field,
+    )
+
+    ids = _seed(conn)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+    for table, row_id, field, value in (
+        ("trades", ids["trade_id"], "entry_date", "2026-08-05"),
+        ("fills", ids["fill_id"], "fill_datetime", "2026-08-05T16:00:00"),
+    ):
+        with pytest.raises(ReservedJournalFieldError):
+            _update_journal_field(conn, table, row_id, field, value)
+
+
+def test_INVARIANT_watchlist_archive_has_no_generic_write_path_at_all():
+    """The third leg needs no reservation: `watchlist_archive` is not a member
+    of the `affected_table` enum, so `_update_journal_field` cannot reach it
+    and neither can any tier. Pinned so a future widening of that enum has to
+    confront this."""
+    from swing.data.models import ReconciliationCorrection  # noqa: F401
+    from swing.trades import reconciliation_auto_correct as rac
+
+    tables = {
+        rac._AFFECTED_TABLE_FILLS, rac._AFFECTED_TABLE_TRADES,
+        rac._AFFECTED_TABLE_CASH, rac._AFFECTED_TABLE_SNAPSHOTS,
+    }
+    assert "watchlist_archive" not in tables
+
+
+# ===========================================================================
+# Codex R10 fixes
+# ===========================================================================
+
+
+def test_r10_M1_leg_prices_are_authenticated_against_the_summary_and_fill(conn):
+    """The LEGS are the evidence of record; the summary `price` is a DERIVED
+    field the emitter wrote. A payload whose summary reads 18.80 while its
+    10-share leg reads 19.25 satisfied the summary-vs-fill check alone and
+    would have moved all three ledger values, stamped the fill reconciled, and
+    closed a finding whose own cited legs prove a material price error. The R8
+    test masked it by changing BOTH values together."""
+    payload = json.loads(_live_actual_value_json())
+    payload["price"] = 18.8               # agrees with the fill
+    payload["execution_legs"][0]["price"] = 19.25   # ...the legs do not
+    ids = _seed(conn, actual_value_json=json.dumps(payload, sort_keys=True))
+    with pytest.raises(EntryDateCorrectionError, match="disagrees with itself"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("bad_price", [0.0, -1.0])
+def test_r10_M1_every_leg_price_must_be_finite_and_positive(conn, bad_price):
+    payload = json.loads(_live_actual_value_json())
+    payload["execution_legs"][0]["price"] = bad_price
+    ids = _seed(conn, actual_value_json=json.dumps(payload, sort_keys=True))
+    with pytest.raises(EntryDateCorrectionError, match="leg price"):
+        _apply(conn, ids)
+
+
+def test_r10_M1_a_MULTI_LEG_vwap_that_matches_the_fill_still_qualifies(conn):
+    """Counterfactual, with the same VWAP math `_compute_execution_price`
+    uses: two 5-share legs at 18.70 and 18.90 VWAP to 18.80."""
+    payload = json.loads(_live_actual_value_json(
+        leg_times=(LIVE_LEG_TIME, "2026-07-31T13:31:00+0000"),
+    ))
+    payload["execution_legs"][0]["price"] = 18.70
+    payload["execution_legs"][1]["price"] = 18.90
+    ids = _seed(conn, actual_value_json=json.dumps(payload, sort_keys=True))
+    _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+
+
+def _second_finding(conn, ids, *, target: str, order_id: str = "1007308870656"):
+    """A LATER discrepancy citing the same order with newer broker evidence."""
+    run2 = int(conn.execute(
+        "INSERT INTO reconciliation_runs (source, started_ts, state) VALUES "
+        "('schwab_api', '2026-08-10T03:00:00', 'completed')",
+    ).lastrowid)
+    payload = json.loads(_live_actual_value_json(
+        leg_times=(f"{target}T13:30:05+0000",),
+    ))
+    payload["schwab_order_id"] = order_id
+    disc2 = int(conn.execute(
+        "INSERT INTO reconciliation_discrepancies (run_id, discrepancy_type, "
+        "trade_id, fill_id, ticker, field_name, expected_value_json, "
+        "actual_value_json, material_to_review, resolution, ambiguity_kind, "
+        "created_at) VALUES (?, 'entry_price_mismatch', ?, ?, 'FTRE', "
+        "'price', ?, ?, 1, 'pending_ambiguity_resolution', "
+        "'multi_match_within_window', '2026-08-10T03:00:00')",
+        (run2, ids["trade_id"], ids["fill_id"],
+         json.dumps({"price": 18.8}), json.dumps(payload, sort_keys=True)),
+    ).lastrowid)
+    conn.commit()
+    return disc2
+
+
+def test_r10_M2_a_correction_CAN_be_re_corrected_and_the_chain_records_it(conn):
+    """Every refusal message in this surface tells the operator to re-run
+    `correct-entry-date` against a current finding. That was FALSE: the first
+    correction leaves the auto-fill envelope's `entry_date` at its ORIGINAL
+    value while the fill holds the corrected one, so the provenance check read
+    it as an operator edit and refused -- a wrongly-corrected money-bearing
+    ledger value would have been permanent short of hand-editing SQLite.
+    """
+    ids = _seed(conn)
+    first = _apply(conn, ids)
+    later = "2026-08-03"
+    disc2 = _second_finding(conn, ids, target=later)
+
+    second = correct_entry_date(
+        conn, trade_id=ids["trade_id"], to_date=later,
+        discrepancy_id=disc2, reason="newer broker evidence",
+    )
+    # All three coupled rows moved AGAIN, together.
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == later
+    assert conn.execute(
+        "SELECT substr(fill_datetime, 1, 10) FROM fills WHERE fill_id = ?",
+        (ids["fill_id"],),
+    ).fetchone()[0] == later
+    assert conn.execute(
+        "SELECT removed_date FROM watchlist_archive WHERE ticker='FTRE'",
+    ).fetchone()[0] == later
+    # APPEND-ONLY: the prior head is SUPERSEDED, not rewritten, and exactly one
+    # live head remains -- two would be the correction-chain corruption state.
+    assert conn.execute(
+        "SELECT superseded_by_correction_id FROM reconciliation_corrections "
+        "WHERE correction_id = ?", (first.correction_id,),
+    ).fetchone()[0] == second.correction_id
+    heads = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections "
+        "WHERE superseded_by_correction_id IS NULL",
+    ).fetchone()[0]
+    assert heads == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 2
+
+
+def test_r10_M2_the_re_correction_still_needs_FRESH_evidence(conn):
+    """The escape hatch is not a bypass: the second correction runs the whole
+    authorization ladder against its own discrepancy."""
+    ids = _seed(conn)
+    _apply(conn, ids)
+    disc2 = _second_finding(conn, ids, target="2026-08-03",
+                            order_id="9999999999999")
+    with pytest.raises(EntryDateCorrectionError, match="did not produce"):
+        correct_entry_date(
+            conn, trade_id=ids["trade_id"], to_date="2026-08-03",
+            discrepancy_id=disc2, reason="wrong order",
+        )
+
+
+def test_r10_M2_an_OPERATOR_edit_after_a_correction_is_still_refused(conn):
+    """Counterfactual: the relaxation admits a PRIOR CORRECTION's applied date
+    and nothing else. A hand-edited fill date still fails provenance."""
+    ids = _seed(conn)
+    _apply(conn, ids)
+    conn.execute(
+        "UPDATE fills SET fill_datetime = '2026-07-29T16:00:00' "
+        "WHERE fill_id = ?", (ids["fill_id"],),
+    )
+    conn.execute(
+        "UPDATE trades SET entry_date = '2026-07-29' WHERE id = ?",
+        (ids["trade_id"],),
+    )
+    conn.execute(
+        "UPDATE watchlist_archive SET removed_date = '2026-07-29' "
+        "WHERE ticker = 'FTRE'",
+    )
+    conn.commit()
+    disc2 = _second_finding(conn, ids, target="2026-08-03")
+    with pytest.raises(EntryDateCorrectionError, match="edited it at the form"):
+        correct_entry_date(
+            conn, trade_id=ids["trade_id"], to_date="2026-08-03",
+            discrepancy_id=disc2, reason="after a hand edit",
+        )
+
+
+def test_r10_M2_the_barrier_LIFTS_once_the_head_is_superseded(conn):
+    """The fill-scoped barrier filters on `superseded_by_correction_id IS
+    NULL`, so chaining is what makes the surface's own instruction true."""
+    from swing.trades.reconciliation_auto_correct import (
+        _multi_row_bound_fill_ids,
+    )
+
+    ids = _seed(conn)
+    first = _apply(conn, ids)
+    assert _multi_row_bound_fill_ids(conn)[ids["fill_id"]] == first.correction_id
+    disc2 = _second_finding(conn, ids, target="2026-08-03")
+    second = correct_entry_date(
+        conn, trade_id=ids["trade_id"], to_date="2026-08-03",
+        discrepancy_id=disc2, reason="newer broker evidence",
+    )
+    assert _multi_row_bound_fill_ids(conn)[ids["fill_id"]] == (
+        second.correction_id
+    )

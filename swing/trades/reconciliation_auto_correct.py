@@ -114,10 +114,70 @@ class ReservedJournalFieldError(Exception):
     """
 
 
+# ---------------------------------------------------------------------------
+# THE ENTRY-DATE COUPLING INVARIANT (item-5; stated as an invariant after the
+# review found four separate holes in a guard whose UNIT OF COUPLING had never
+# been decided -- it was being discovered by counterexample).
+#
+#   `trades.entry_date`, the date-prefix of the AUTHORITATIVE entry fill's
+#   `fills.fill_datetime`, and the `reason='entered'`
+#   `watchlist_archive.removed_date` for that trade MUST always name the SAME
+#   calendar date. Any write that changes one MUST change all three, in one
+#   transaction.
+#
+# `record_entry` establishes the invariant (it derives all three from one
+# input); `swing journal correct-entry-date` is the only thing that may move
+# it, and it moves all three atomically.
+#
+# ENFORCEMENT, in two parts, chosen because they are STRUCTURAL -- neither
+# depends on a correction row existing, on which discrepancy is in play, or on
+# which tier is dispatching:
+#
+#   1. THE COLUMNS ARE RESERVED. Every generic tier-1/2/3 journal write goes
+#      through `_update_journal_field`, so refusing the coupled columns there
+#      closes every generic path at once. Two of the three are reachable that
+#      way; `watchlist_archive` is not in the `affected_table` enum at all, so
+#      no generic path can reach the third.
+#   2. THE BOUND FILL CANNOT BE DESTROYED. A reservation guards a COLUMN WRITE
+#      and cannot see a row DELETE (`split_into_partials` replaces the fill
+#      with partials), so the `bound_fill_id` barrier covers that shape.
+#
+# This SUPERSEDES the correction-keyed barriers as the load-bearing defence:
+# those now serve only the delete shape and a clearer message when someone
+# targets the correction head itself. The item-4 precedent applies -- when one
+# affordance is attacked repeatedly, REMOVE it rather than validate it a fourth
+# time. Writing an entry fill's datetime WITHOUT moving the other two is
+# exactly the incoherent operation, so the affordance is not worth preserving;
+# the refusal names the surface that does it coherently.
+# ---------------------------------------------------------------------------
+_ENTRY_DATE_COUPLED_SURFACE = "swing journal correct-entry-date"
+
 # (affected_table, field_name) -> the surface that owns the coupled write.
 _RESERVED_JOURNAL_FIELDS: dict[tuple[str, str], str] = {
-    ("trades", "entry_date"): "swing journal correct-entry-date",
+    ("trades", "entry_date"): _ENTRY_DATE_COUPLED_SURFACE,
+    ("fills", "fill_datetime"): _ENTRY_DATE_COUPLED_SURFACE,
 }
+
+
+def _reservation_applies(
+    conn: sqlite3.Connection, affected_table: str, affected_row_id: int,
+    field_name: str,
+) -> bool:
+    """Whether the reserved-column refusal binds for THIS row.
+
+    `fills.fill_datetime` is reserved only on an ENTRY fill: an exit / trim /
+    stop fill's datetime is not part of the coupling, and a tier-2 correction
+    of one is a legitimate operation this must not remove. Scoped to the row
+    rather than the column so the ban is exactly as wide as the invariant.
+    """
+    if (affected_table, field_name) not in _RESERVED_JOURNAL_FIELDS:
+        return False
+    if affected_table != _AFFECTED_TABLE_FILLS:
+        return True
+    row = conn.execute(
+        "SELECT action FROM fills WHERE fill_id = ?", (affected_row_id,),
+    ).fetchone()
+    return bool(row) and str(row[0]) == "entry"
 
 
 class MultiRowCorrectionOverrideError(Exception):
@@ -1779,7 +1839,12 @@ def _update_journal_field(
     Refusing the COLUMN closes it for every generic path at once, and holds
     even when no multi-row correction exists to compare against.
     """
-    reserved = _RESERVED_JOURNAL_FIELDS.get((affected_table, field_name))
+    reserved = (
+        _RESERVED_JOURNAL_FIELDS.get((affected_table, field_name))
+        if _reservation_applies(
+            conn, affected_table, affected_row_id, field_name,
+        ) else None
+    )
     if reserved is not None:
         raise ReservedJournalFieldError(
             f"{affected_table}.{field_name} cannot be written through the "

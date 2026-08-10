@@ -272,6 +272,7 @@ class _Authorized:
     archive_id: int
     target_date: str
     allow_active_used: bool
+    prior_correction_id: int | None
 
 
 def _validate_target_date(to_date: str) -> str:
@@ -606,8 +607,12 @@ def _authorize(
     source_envelope = _assert_evidence_is_this_fills_order(
         disc, fill_origin=fill_row[6], source_envelope=fill_row[7],
     )
+    prior_head = _prior_multi_row_head(conn, int(disc.fill_id))
     _assert_the_date_came_from_the_auto_fill(
         disc, envelope=source_envelope, fill_date=pre_fill_datetime[:10],
+        prior_applied_date=(
+            None if prior_head is None else str(prior_head[1])[:10]
+        ),
     )
 
     target_date = _derive_target_date_from_discrepancy(
@@ -670,6 +675,7 @@ def _authorize(
         archive_id=archive_id,
         target_date=target_date,
         allow_active_used=allow_active_used,
+        prior_correction_id=None if prior_head is None else prior_head[0],
     )
 
 
@@ -763,8 +769,48 @@ def _assert_evidence_is_this_fills_order(
     return envelope
 
 
+def _prior_multi_row_head(
+    conn: sqlite3.Connection, fill_id: int,
+) -> tuple[int, str] | None:
+    """``(correction_id, applied fills.fill_datetime)`` for the UNSUPERSEDED
+    multi-row head bound to this fill, or ``None``.
+
+    Item-5 (Codex R10 Major 2). Without this the surface was SINGLE-SHOT per
+    fill and every refusal message in it was FALSE: they instruct the operator
+    to "re-run `swing journal correct-entry-date` against a current finding",
+    but the re-run could not work -- the first correction leaves the auto-fill
+    envelope's `entry_date` at its ORIGINAL value while the fill now holds the
+    corrected one, so the provenance check read that as an operator edit and
+    refused. A money-bearing ledger value corrected WRONGLY would have been
+    permanent short of hand-editing SQLite.
+    """
+    from swing.trades.reconciliation_auto_correct import (
+        _MULTI_ROW_CORRECTION_CHOICES,
+        MULTI_ROW_BOUND_FILL_KEY,
+    )
+
+    rows = conn.execute(
+        "SELECT correction_id, correction_choice, applied_value_json FROM "
+        "reconciliation_corrections WHERE superseded_by_correction_id IS NULL",
+    ).fetchall()
+    for correction_id, choice, applied in rows:
+        if choice not in _MULTI_ROW_CORRECTION_CHOICES:
+            continue
+        try:
+            payload = json.loads(applied or "")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if payload.get(MULTI_ROW_BOUND_FILL_KEY) != fill_id:
+            continue
+        return int(correction_id), str(payload.get("fills.fill_datetime", ""))
+    return None
+
+
 def _assert_the_date_came_from_the_auto_fill(
     disc: Any, *, envelope: dict[str, Any], fill_date: str,
+    prior_applied_date: str | None = None,
 ) -> None:
     """The recorded date must be the AUTO-FILL's, unedited (Codex R6 Major 2).
 
@@ -804,6 +850,15 @@ def _assert_the_date_came_from_the_auto_fill(
             "cause."
         )
     envelope_date = envelope.get("entry_date")
+    if prior_applied_date is not None and str(prior_applied_date) == str(
+        fill_date,
+    ):
+        # The fill's current date is a PRIOR CORRECTION's applied value, not an
+        # operator edit -- the provenance chain is intact one link further
+        # along. The new correction supersedes that head (below), so the
+        # append-only chain records the supersession rather than accumulating
+        # two live heads.
+        return
     if str(envelope_date) != str(fill_date):
         raise EntryDateCorrectionError(
             f"fill {disc.fill_id}'s recorded date ({fill_date}) differs from "
@@ -888,7 +943,14 @@ def _assert_the_price_already_agrees(
     """
     from swing.trades.schwab_reconciliation import _PRICE_TOLERANCE_DEFAULT
 
-    execution_price = _evidence_payload(disc).get("price")
+    payload = _evidence_payload(disc)
+    execution_price = payload.get("price")
+    legs = payload.get("execution_legs")
+    if not isinstance(legs, list) or not legs:
+        raise EntryDateCorrectionError(
+            f"discrepancy {disc.discrepancy_id} carries no execution legs to "
+            "authenticate its price against."
+        )
     if (
         not isinstance(execution_price, (int, float))
         or isinstance(execution_price, bool)
@@ -898,6 +960,49 @@ def _assert_the_price_already_agrees(
             f"discrepancy {disc.discrepancy_id} carries no finite execution "
             f"price ({execution_price!r}); it cannot be shown to be a "
             "date-only finding."
+        )
+    # THE LEGS ARE THE EVIDENCE OF RECORD, so they are authenticated too
+    # (Codex R10 Major 1). The summary `price` is a DERIVED field the emitter
+    # wrote; a payload whose summary reads 18.80 while its 10-share leg reads
+    # 19.25 satisfied the summary-vs-fill check alone and would have moved all
+    # three ledger values, stamped the fill reconciled, and closed a finding
+    # whose own cited legs prove a material price error. Same VWAP math as
+    # `_compute_execution_price` (single leg -> its price; multi-leg ->
+    # sum(p*q)/sum(q)), and the same tolerance.
+    total_qty = 0.0
+    weighted = 0.0
+    for leg in legs:
+        price = leg.get("price") if isinstance(leg, dict) else None
+        qty = leg.get("quantity") if isinstance(leg, dict) else None
+        if (
+            not isinstance(price, (int, float)) or isinstance(price, bool)
+            or not math.isfinite(float(price)) or float(price) <= 0
+        ):
+            raise EntryDateCorrectionError(
+                f"discrepancy {disc.discrepancy_id} carries an execution leg "
+                f"with price {price!r}. Every leg price must be finite and "
+                "strictly positive."
+            )
+        total_qty += float(qty)
+        weighted += float(price) * float(qty)
+    leg_vwap = weighted / total_qty if total_qty > 0 else None
+    if leg_vwap is None or not math.isfinite(leg_vwap):
+        raise EntryDateCorrectionError(
+            f"discrepancy {disc.discrepancy_id}'s execution legs do not yield "
+            "a finite VWAP."
+        )
+    if abs(leg_vwap - float(execution_price)) > _PRICE_TOLERANCE_DEFAULT:
+        raise EntryDateCorrectionError(
+            f"discrepancy {disc.discrepancy_id}'s execution legs VWAP to "
+            f"{leg_vwap} but its summary price reads {float(execution_price)}. "
+            "The payload disagrees with itself; it cannot authorize a "
+            "correction."
+        )
+    if abs(leg_vwap - fill_price) > _PRICE_TOLERANCE_DEFAULT:
+        raise EntryDateCorrectionError(
+            f"discrepancy {disc.discrepancy_id} is ALSO a price mismatch: its "
+            f"execution legs VWAP to {leg_vwap} and fill {disc.fill_id} "
+            f"records {fill_price}. This surface corrects the DATE only."
         )
     if abs(float(execution_price) - fill_price) > _PRICE_TOLERANCE_DEFAULT:
         raise EntryDateCorrectionError(
@@ -1363,6 +1468,20 @@ def _correct_entry_date_inner(
             notes=None,
         ),
     )
+
+    # Step 9-chain -- APPEND-ONLY SUPERSESSION. `reconciliation_corrections`
+    # is append-only: a re-correction INSERTs a new row and points the prior
+    # row's `superseded_by_correction_id` at it, exactly as the tier-3 chain
+    # does. Two live heads on one fill would be the "multiple correction-chain
+    # heads" state the CLI itself labels corruption -- and once the prior head
+    # is superseded the fill-scoped barrier stops blocking it, so the surface's
+    # own instruction to re-run finally becomes true.
+    if auth.prior_correction_id is not None:
+        conn.execute(
+            "UPDATE reconciliation_corrections SET "
+            "superseded_by_correction_id = ? WHERE correction_id = ?",
+            (correction_id, auth.prior_correction_id),
+        )
 
     # Step 9a -- the fill was reconciled; every existing correction path
     # performs this transition and a fill left 'unreconciled' after being
