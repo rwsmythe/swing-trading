@@ -331,8 +331,30 @@ def test_applied_value_json_reflects_POST_recompute_aggregates(conn):
         "SELECT pre_correction_value_json FROM reconciliation_corrections "
         "WHERE correction_id = ?", (result.correction_id,),
     ).fetchone()[0])
-    assert set(CORRECTED_FIELDS).issubset(pre)
-    assert set(CORRECTED_FIELDS).issubset(applied)
+    # VALUES, not presence (Codex R9 minor). A regression that repeated the
+    # POST date in both envelopes, swapped pre for post, or recorded the wrong
+    # fill datetime would pass a keys-exist check while every live-row
+    # assertion above still succeeded.
+    assert pre["trades.entry_date"] == PRE_DATE
+    assert pre["fills.fill_datetime"] == f"{PRE_DATE}T16:00:00"
+    assert pre["watchlist_archive.removed_date"] == PRE_DATE
+    assert applied["trades.entry_date"] == TARGET_DATE
+    assert applied["fills.fill_datetime"] == f"{TARGET_DATE}T16:00:00"
+    assert applied["watchlist_archive.removed_date"] == TARGET_DATE
+    # ...and the two bound row identities, in BOTH envelopes.
+    from swing.trades.entry_date_correction import BOUND_ARCHIVE_KEY
+    from swing.trades.reconciliation_auto_correct import (
+        MULTI_ROW_BOUND_FILL_KEY,
+    )
+    archive_id = conn.execute(
+        "SELECT id FROM watchlist_archive WHERE ticker='FTRE'",
+    ).fetchone()[0]
+    for envelope in (pre, applied):
+        assert envelope[MULTI_ROW_BOUND_FILL_KEY] == ids["fill_id"]
+        assert envelope[BOUND_ARCHIVE_KEY] == archive_id
+    # The pre/post pair must actually DIFFER on every corrected field.
+    for fname in CORRECTED_FIELDS:
+        assert pre[fname] != applied[fname], fname
 
 
 def test_aggregates_move_on_an_open_trade_and_the_audit_records_it(conn):
@@ -1948,3 +1970,119 @@ def test_r8_M2_the_bound_fill_id_is_recorded_in_the_audit_row(conn):
     ).fetchone()[0])
     assert applied[MULTI_ROW_BOUND_FILL_KEY] == ids["fill_id"]
     assert pre[MULTI_ROW_BOUND_FILL_KEY] == ids["fill_id"]
+
+
+# ===========================================================================
+# Codex R9 fixes
+# ===========================================================================
+
+
+def test_r9_M1_trades_entry_date_is_RESERVED_from_the_generic_path(conn):
+    """The fill-scoped barrier checked only mutations resolving to `fills`. A
+    later `position_qty_mismatch` for the same trade has a `trade_id` and NO
+    `fill_id`, so `_resolve_affected_target` resolves it to `trades` and sails
+    past -- and the tier-2 `operator_truth` handler accepts an arbitrary key
+    because `validate_trade_correction` checks only `current_stop` and `state`.
+    `trades.entry_date` would move ALONE while the fill and the archive row
+    stayed on the corrected date, and the surviving correction row would keep
+    asserting that all three agree.
+
+    Refusing the COLUMN closes every generic path at once, and holds even when
+    no multi-row correction exists to compare against.
+    """
+    from swing.trades.reconciliation_auto_correct import (
+        ReservedJournalFieldError,
+        _update_journal_field,
+    )
+
+    ids = _seed(conn)
+    _apply(conn, ids)
+    with pytest.raises(ReservedJournalFieldError, match="correct-entry-date"):
+        _update_journal_field(
+            conn, "trades", ids["trade_id"], "entry_date", "2026-08-05",
+        )
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+
+
+def test_r9_M1_a_LATER_trade_scoped_discrepancy_cannot_uncouple_the_date(conn):
+    """The concrete route, driven through the supported tier-2 entry point."""
+    from swing.trades.reconciliation_auto_correct import (
+        ReservedJournalFieldError,
+        apply_tier2_resolution,
+    )
+
+    ids = _seed(conn)
+    _apply(conn, ids)
+    run2 = int(conn.execute(
+        "INSERT INTO reconciliation_runs (source, started_ts, state) VALUES "
+        "('schwab_api', '2026-08-10T03:00:00', 'completed')",
+    ).lastrowid)
+    disc2 = int(conn.execute(
+        "INSERT INTO reconciliation_discrepancies (run_id, discrepancy_type, "
+        "trade_id, ticker, field_name, expected_value_json, "
+        "actual_value_json, material_to_review, resolution, ambiguity_kind, "
+        "created_at) VALUES (?, 'position_qty_mismatch', ?, 'FTRE', "
+        "'quantity', '{}', '{}', 1, 'pending_ambiguity_resolution', "
+        "'unknown_schwab_subtype', '2026-08-10T03:00:00')",
+        (run2, ids["trade_id"]),
+    ).lastrowid)
+    conn.commit()
+
+    with pytest.raises(ReservedJournalFieldError):
+        apply_tier2_resolution(
+            conn,
+            discrepancy_id=disc2,
+            choice_code="operator_truth",
+            operator_custom_payload={"entry_date": "2026-08-05"},
+            operator_reason="attempted trade-scoped uncoupling",
+        )
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+    assert conn.execute(
+        "SELECT fill_datetime FROM fills WHERE fill_id = ?", (ids["fill_id"],),
+    ).fetchone()[0] == f"{TARGET_DATE}T16:00:00"
+
+
+def test_r9_M1_an_UNRELATED_trade_field_is_still_writable(conn):
+    """Counterfactual: exactly ONE column is reserved, not the table."""
+    from swing.trades.reconciliation_auto_correct import _update_journal_field
+
+    ids = _seed(conn)
+    _update_journal_field(
+        conn, "trades", ids["trade_id"], "current_stop", 17.0,
+    )
+    assert conn.execute(
+        "SELECT current_stop FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == 17.0
+
+
+def test_r9_M2_the_audit_row_names_the_ARCHIVE_row_it_changed(conn):
+    """The archive row is updated BY PRIMARY KEY and the correction's formal
+    `affected_row_id` names only the TRADE, so without this the append-only
+    trail could not reconstruct one of its own three mutations -- and a sibling
+    archive row carrying the same ticker and target date would leave the change
+    unattributable."""
+    from swing.trades.entry_date_correction import BOUND_ARCHIVE_KEY
+
+    ids = _seed(conn)
+    archive_id = conn.execute(
+        "SELECT id FROM watchlist_archive WHERE ticker='FTRE'",
+    ).fetchone()[0]
+    result = _apply(conn, ids)
+    for column in ("pre_correction_value_json", "applied_value_json"):
+        envelope = json.loads(conn.execute(
+            f"SELECT {column} FROM reconciliation_corrections "  # noqa: S608
+            "WHERE correction_id = ?", (result.correction_id,),
+        ).fetchone()[0])
+        assert envelope[BOUND_ARCHIVE_KEY] == archive_id
+    # And the trade_events payload carries the same dicts, so a forensic
+    # replay reads the identity too.
+    payload = json.loads(conn.execute(
+        "SELECT payload_json FROM trade_events WHERE trade_id = ? AND "
+        "event_type = 'reconciliation_auto_correct'", (ids["trade_id"],),
+    ).fetchone()[0])
+    assert payload["pre"][BOUND_ARCHIVE_KEY] == archive_id
+    assert payload["applied"][BOUND_ARCHIVE_KEY] == archive_id

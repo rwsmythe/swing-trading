@@ -90,6 +90,7 @@ from swing.evaluation.dates import is_trading_session
 from swing.trades.execution_dates import latest_execution_leg_date
 
 __all__ = [
+    "BOUND_ARCHIVE_KEY",
     "CORRECTED_FIELDS",
     "CORRECTION_ACTION",
     "CORRECTION_CHOICE",
@@ -145,6 +146,11 @@ CORRECTED_FIELDS: tuple[str, ...] = (
 # correction does not come from the tier-2 operator menu.
 CORRECTION_ACTION = "operator_resolved_ambiguity"
 CORRECTION_CHOICE = "correct_entry_date"
+
+# The key under which the corrected `watchlist_archive` row's PRIMARY KEY is
+# recorded in both value envelopes (and so in the trade_events payload, which
+# carries the same dicts).
+BOUND_ARCHIVE_KEY = "bound_watchlist_archive_id"
 
 # ``reconciliation_discrepancies.resolution`` values from which a FRESH live
 # mutation may be authorized. A terminal, already-dispositioned historical
@@ -1253,6 +1259,12 @@ def _correct_entry_date_inner(
         # affected_row_id=<trade_id>, which does not name the fill -- and the
         # coupling physically lives on the fill's datetime.
         MULTI_ROW_BOUND_FILL_KEY: fill_id,
+        # The archive row is updated BY PRIMARY KEY, and the correction's
+        # formal `affected_row_id` names only the TRADE -- so without this the
+        # append-only trail could not reconstruct one of its own three
+        # mutations, and a sibling archive row with the same ticker and target
+        # date would leave the change unattributable (Codex R9 Major 2).
+        BOUND_ARCHIVE_KEY: auth.archive_id,
         "trades.entry_date": pre_entry_date,
         "fills.fill_datetime": pre_fill_datetime,
         "watchlist_archive.removed_date": pre_entry_date,
@@ -1289,6 +1301,7 @@ def _correct_entry_date_inner(
 
     applied_values: dict[str, Any] = {
         MULTI_ROW_BOUND_FILL_KEY: fill_id,
+        BOUND_ARCHIVE_KEY: auth.archive_id,
         "trades.entry_date": auth.target_date,
         "fills.fill_datetime": new_fill_datetime,
         "watchlist_archive.removed_date": auth.target_date,

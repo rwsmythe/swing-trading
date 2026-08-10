@@ -577,8 +577,13 @@ def _step_schwab_orders(
     # runner never receives a result dict at all (Codex R2 Minor 1). One
     # legless row followed by one malformed row is exactly that shape. Catch it
     # here and return the same failure envelope so the count still reaches
-    # `pipeline_runs.warnings_json`.
-    except (SchwabApiError, SchwabSchemaParityError) as exc:
+    # `pipeline_runs.warnings_json`. `sqlite3.Error` joins them (Codex R9
+    # minor): the wrappers close their audit row via `record_call_finish`
+    # AFTER the mapper has already appended a skip, so a lock timeout or any
+    # other audit-write failure would otherwise escape with the count still in
+    # the accumulator -- the rider's warning-loss mode on its last post-fetch
+    # path.
+    except (SchwabApiError, SchwabSchemaParityError, sqlite3.Error) as exc:
         log.warning(
             "_step_schwab_orders: Trader-API failure: %s",
             type(exc).__name__,

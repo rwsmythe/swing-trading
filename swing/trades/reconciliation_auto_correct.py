@@ -106,6 +106,20 @@ _MULTI_ROW_CORRECTION_CHOICES: frozenset[str] = frozenset({
 })
 
 
+class ReservedJournalFieldError(Exception):
+    """A generic correction path tried to write a COUPLED journal column.
+
+    Item-5 (Codex R9 Major 1). Some columns cannot be written coherently on
+    their own; the dedicated surface named in the message owns them.
+    """
+
+
+# (affected_table, field_name) -> the surface that owns the coupled write.
+_RESERVED_JOURNAL_FIELDS: dict[tuple[str, str], str] = {
+    ("trades", "entry_date"): "swing journal correct-entry-date",
+}
+
+
 class MultiRowCorrectionOverrideError(Exception):
     """Tier-3 override refused: the target head covers MORE THAN ONE row.
 
@@ -1751,7 +1765,28 @@ def _update_journal_field(
     never accept raw operator input here. Tier-2 handlers that surface
     operator-supplied fields validate the field name against the per-
     (kind, choice_code) menu before invoking this helper.
+
+    RESERVED COLUMNS (item-5, Codex R9 Major 1). A few journal columns can only
+    be written coherently ALONGSIDE other rows, so a generic single-column
+    write to them is wrong by construction no matter which tier reaches it.
+    `trades.entry_date` is one: `record_entry` fans that date into the entry
+    fill's `fill_datetime` and the `watchlist_archive` row, and moving it alone
+    leaves those two behind. The route in was concrete -- a later
+    `position_qty_mismatch` for the same trade resolves to `trades` (it has a
+    `trade_id` and no `fill_id`), sails past the fill-scoped multi-row barrier,
+    and the tier-2 `operator_truth` handler accepts an arbitrary key because
+    `validate_trade_correction` checks only `current_stop` and `state`.
+    Refusing the COLUMN closes it for every generic path at once, and holds
+    even when no multi-row correction exists to compare against.
     """
+    reserved = _RESERVED_JOURNAL_FIELDS.get((affected_table, field_name))
+    if reserved is not None:
+        raise ReservedJournalFieldError(
+            f"{affected_table}.{field_name} cannot be written through the "
+            f"generic correction path: it is coupled to other rows and must "
+            f"move through `{reserved}`, which updates all of them in one "
+            "transaction. Nothing was written."
+        )
     if affected_table == _AFFECTED_TABLE_FILLS:
         sql = f"UPDATE fills SET {field_name} = ? WHERE fill_id = ?"
     elif affected_table == _AFFECTED_TABLE_TRADES:

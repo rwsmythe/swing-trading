@@ -339,6 +339,16 @@ def test_the_runner_merge_is_NOT_gated_on_the_step_status():
     That is pinned by reading the runner's own statements between the call and
     the extend and asserting none of them branches on `status` -- a CALLER-SIDE
     obligation, pinned rather than assumed (gotcha #31).
+
+    THE LIMIT OF THIS TEST, STATED (Codex R9 minor). It is a SOURCE-SHAPE pin
+    on a file this arc does not touch, and the property it pins already held
+    before the rider existed -- so it can NEVER go red for a rider regression.
+    It proves the caller-side obligation is not silently broken later; it does
+    NOT prove end-to-end persistence into `pipeline_runs.warnings_json`, which
+    needs a full pipeline-lease harness. The step-level half IS covered, by the
+    four failure-path tests above that assert the envelope each failing return
+    actually carries. The end-to-end gap is carried to the return report rather
+    than papered over by a name that overstates this test.
     """
     import inspect
 
@@ -629,3 +639,29 @@ def test_r8_MINOR_a_SECOND_call_linkage_failure_also_surfaces_the_skip(
         "WHERE linked_reconciliation_run_id IS NOT NULL",
     ).fetchone()[0]
     assert linked == 1, linked
+
+
+def test_r9_MINOR_an_AUDIT_WRITE_failure_after_the_fetch_still_surfaces(
+    conn, monkeypatch,
+):
+    """The wrappers close their audit row via `record_call_finish` AFTER the
+    mapper has already appended a skip, so a lock timeout or any other
+    audit-write failure raised a `sqlite3.OperationalError` that the typed
+    Schwab-exception envelope did not catch -- the count evaporating with it.
+    The rider's warning-loss mode on its last post-fetch path."""
+    import sqlite3 as _sq
+
+    from swing.integrations.schwab import audit_service, pipeline_steps
+
+    def _boom(*a, **k):
+        raise _sq.OperationalError("database is locked")
+
+    monkeypatch.setattr(audit_service, "record_call_finish", _boom)
+    result = pipeline_steps._step_schwab_orders(
+        conn, _cfg(), pipeline_run_id=None,
+        client=_client([_well_formed_order("1001"), _legless_order("2002")]),
+    )
+    assert result["status"] == "failed"
+    entries = _legless_entries(result)
+    assert len(entries) == 1
+    assert entries[0]["order_ids"] == ["2002"]
