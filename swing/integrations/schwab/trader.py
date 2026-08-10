@@ -35,6 +35,7 @@ deviations (kwarg names + value semantics).
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -338,6 +339,7 @@ def get_account_orders(
     pipeline_run_id: int | None = None,
     status: str | None = None,
     max_results: int | None = None,
+    skips: list[dict] | None = None,
 ) -> list[SchwabOrderResponse]:
     """Fetch ``Client.account_orders(...)`` via schwabdev's 21-status enum wrapper.
 
@@ -371,7 +373,9 @@ def get_account_orders(
         surface=surface,
         environment=environment,
         pipeline_run_id=pipeline_run_id,
-        mapper=map_orders_to_fill_candidates,
+        mapper=functools.partial(
+            map_orders_to_fill_candidates, skips=skips,
+        ),
         client=client,
     )
 
@@ -388,6 +392,7 @@ def get_account_orders_audited(
     pipeline_run_id: int | None = None,
     status: str | None = None,
     max_results: int | None = None,
+    skips: list[dict] | None = None,
 ) -> tuple[int, list[SchwabOrderResponse]]:
     """Phase 12 Sub-sub-bundle C.D T-D.6.1 — audited variant of
     ``get_account_orders`` returning ``(call_id, orders)`` for Pass 2
@@ -428,7 +433,9 @@ def get_account_orders_audited(
         surface=surface,
         environment=environment,
         pipeline_run_id=pipeline_run_id,
-        mapper=map_orders_to_fill_candidates,
+        mapper=functools.partial(
+            map_orders_to_fill_candidates, skips=skips,
+        ),
         client=client,
         return_call_id=True,
     )

@@ -231,6 +231,14 @@ class BackfillSummary:
     # (see line ~1029). T-1.6's inner-fn short-circuit in
     # ``apply_tier2_resolution`` + pivot-loop sentinel remain as defensive
     # future-proofing per F20 + spec §7.6 LOCK.
+    # Item-5 rider 1 (Pass 2). The Pass-2 half is the one the false-negative
+    # argument is really about, and it has NO warning envelope of its own --
+    # BackfillSummary is a flat set of integer counters. So the transport is
+    # this counter-plus-detail pair (matching the shape its neighbours already
+    # use) AND a rendered line in format_summary_block. A counter nobody prints
+    # is a quieter silence, not a fix.
+    legless_orders_skipped: int = 0
+    legless_order_ids: list[str] = field(default_factory=list)
     per_discrepancy_outcomes: list[BackfillOutcome] = field(default_factory=list)
 
 
@@ -605,6 +613,7 @@ def _pass_2_dispatch(
     account_hash: str | None,
     dry_run: bool,
     no_pass_2_on_dry_run: bool,
+    legless_skips: list[dict] | None = None,
 ) -> tuple[Any, int | None, str | None]:
     """Run Pass 2 for one Pass-2-required discrepancy.
 
@@ -657,6 +666,11 @@ def _pass_2_dispatch(
             to_entered_time=to_dt,
             surface="cli",
             environment=environment,
+            # Item-5 rider 1 -- the accumulator rides into the mapper via the
+            # wrapper's functools.partial. A legless order dropped here is a
+            # false negative on a fill for the BACKFILL too, and the backfill
+            # is the half the register's argument is about.
+            skips=legless_skips,
         )
     except Exception as exc:  # noqa: BLE001 — graceful degradation
         # Pipeline NEVER crashes (Phase 11 forward-binding lesson #2).
@@ -706,6 +720,7 @@ def _handle_pass_2(
     no_pass_2_on_dry_run: bool,
     allow_pending_update: bool = False,
     partial_summary: BackfillSummary | None = None,
+    legless_skips: list[dict] | None = None,
 ) -> BackfillOutcome:
     """Pass-2 dispatch for one Pass-2-required discrepancy.
 
@@ -756,6 +771,7 @@ def _handle_pass_2(
         account_hash=account_hash,
         dry_run=dry_run,
         no_pass_2_on_dry_run=no_pass_2_on_dry_run,
+        legless_skips=legless_skips,
     )
 
     # Default rendering values (overwritten below on Pass-2 success).
@@ -1113,6 +1129,7 @@ def _classify_and_apply(
     no_pass_2_on_dry_run: bool,
     retry_pass_2_failures: bool,
     partial_summary: BackfillSummary | None = None,
+    legless_skips: list[dict] | None = None,
 ) -> BackfillOutcome:
     """T-D.7 — Pass 1 persisted-JSON-only classification + dispatch.
 
@@ -1237,6 +1254,7 @@ def _classify_and_apply(
             no_pass_2_on_dry_run=no_pass_2_on_dry_run,
             allow_pending_update=retry_pass_2_failures,
             partial_summary=partial_summary,
+            legless_skips=legless_skips,
         )
 
     if dry_run:
@@ -1430,6 +1448,24 @@ def _classify_and_apply(
     )
 
 
+def _fold_legless_skips(
+    summary: BackfillSummary, skips: list[dict] | None,
+) -> None:
+    """Drain the per-run legless-order accumulator into the summary.
+
+    Item-5 rider 1. Called after EVERY iteration -- including the ones that go
+    on to abort -- so a partial/interrupted backfill still reports what it
+    dropped. The list is cleared so a skip is never counted twice.
+    """
+    if not skips:
+        return
+    summary.legless_orders_skipped += len(skips)
+    summary.legless_order_ids.extend(
+        str(s.get("order_id")) for s in skips
+    )
+    skips.clear()
+
+
 def run_backfill(
     conn: sqlite3.Connection,
     *,
@@ -1507,6 +1543,9 @@ def run_backfill(
         )
 
     summary = BackfillSummary()
+    # Item-5 rider 1 (Pass 2). ONE accumulator for the whole run, drained into
+    # the summary after each iteration.
+    legless_skips: list[dict] = []
     for disc in discrepancies:
         # Codex R1 Major #3 — per-iteration pipeline-exclusion recheck
         # to close the entry-check vs per-discrepancy-dispatch race
@@ -1555,7 +1594,11 @@ def run_backfill(
             no_pass_2_on_dry_run=no_pass_2_on_dry_run,
             retry_pass_2_failures=retry_pass_2_failures,
             partial_summary=summary,
+            legless_skips=legless_skips,
         )
+        # Item-5 rider 1 -- fold AFTER every iteration, including the ones that
+        # abort below, so an interrupted backfill still reports what it dropped.
+        _fold_legless_skips(summary, legless_skips)
         summary.per_discrepancy_outcomes.append(outcome)
         # Counter wiring — T-D.7 Pass 1 outcomes + T-D.8 Pass 2 outcomes.
         if outcome.outcome == "tier1_applied":
@@ -1789,9 +1832,25 @@ def format_summary_block(summary: BackfillSummary) -> str:
             f"{summary.projection_auto_redirect}\n"
         )
 
+    # Item-5 rider 1 -- THE SURFACE HALF. Without this line the counter is just
+    # a quieter silence: an order the mapper dropped is a false negative on a
+    # fill, and the whole point of the rider is that an absence renders as a
+    # LABELLED GAP instead of a clean pass. Rendered only when non-zero (the
+    # per-counter suppression pattern above); ASCII-only per the cp1252 gotcha.
+    # No incidence-rate claim is made here -- the ruling rests on the asymmetry.
+    legless_line = ""
+    if summary.legless_orders_skipped:
+        ids = ", ".join(summary.legless_order_ids)
+        legless_line = (
+            f"  *** Legless Schwab orders SKIPPED by the mapper: "
+            f"{summary.legless_orders_skipped} (order ids: {ids}). "
+            f"Each is a fill this backfill could NOT see. ***\n"
+        )
+
     return (
         "\nBackfill summary:\n"
         + abort_banner
+        + legless_line
         + f"  Tier 1 applied: {summary.tier1_applied}\n"
         + f"  Tier 2 stamped: {summary.tier2_stamped}\n"
         + f"    (of which Pass 2 re-fetch failed: {summary.pass_2_failed})\n"

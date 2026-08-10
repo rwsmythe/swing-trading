@@ -149,7 +149,18 @@ def test_get_account_orders_signature_unchanged():
         "pipeline_run_id",
         "status",
         "max_results",
+        # Item-5 rider 1 -- an ADDITIVE, keyword-only, default-None skip
+        # accumulator. The RETURN SHAPE is unchanged and every existing
+        # callsite is byte-identical, which is the single contract the rider
+        # states at all three layers (mapper, wrapper, caller). The two
+        # assertions below pin exactly that, so the widening cannot silently
+        # become a required argument or a return-shape change.
+        "skips",
     ]
+    assert sig.parameters["skips"].default is None
+    assert (
+        sig.parameters["skips"].kind is inspect.Parameter.KEYWORD_ONLY
+    )
     # Return annotation textually pins list[SchwabOrderResponse].
     assert "list" in str(sig.return_annotation)
     assert "SchwabOrderResponse" in str(sig.return_annotation)

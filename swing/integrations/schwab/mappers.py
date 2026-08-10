@@ -238,7 +238,9 @@ def map_account_details_to_equity_snapshot_inputs(
     )
 
 
-def map_orders_to_fill_candidates(response: Any) -> list[SchwabOrderResponse]:
+def map_orders_to_fill_candidates(
+    response: Any, *, skips: list[dict] | None = None,
+) -> list[SchwabOrderResponse]:
     """Map `Client.account_orders(...)` response → list of SchwabOrderResponse.
 
     Schwab returns a list of order dicts; per `api-calls.md` L126. Each order
@@ -253,6 +255,30 @@ def map_orders_to_fill_candidates(response: Any) -> list[SchwabOrderResponse]:
     matched by reconciliation); multi-leg orders pass through with the
     first-leg's metadata + the dataclass `notes` field documenting truncation
     is OUT OF SCOPE V1 (operator V2-defers complex options).
+
+    Item-5 rider 1 (RD-ruled) -- COUNT AND SURFACE, not stop-skipping. The two
+    legless-order branches below drop an order with only a `log.warning`, and
+    nothing counted them. Downstream that is a FALSE NEGATIVE ON A FILL:
+    nightly reconciliation sees no fill, raises no discrepancy, and reports
+    clean. THE INSTRUMENT DOES NOT ALARM; IT GOES QUIET. Gotcha #27 in a
+    mapper rather than a pipeline step.
+
+    Refusing to skip is NOT the fix -- it would fail the whole orders fetch on
+    a legitimately legless parent-conditional row, and that resilience is
+    correct. What is wrong is that the skip is INVISIBLE.
+
+    When ``skips`` is a list, each dropped order appends
+    ``{"order_id", "index", "reason"}`` to it. The default None preserves every
+    existing caller BYTE-IDENTICALLY, and the RETURN SHAPE NEVER CHANGES -- that
+    is the single contract at all three layers (mapper, wrapper, caller). The
+    accumulator is passed by callers via ``functools.partial`` because
+    ``_call_endpoint`` invokes ``mapper(payload)`` POSITIONALLY with exactly one
+    argument; a ``skips=`` keyword cannot reach through that seam, and widening
+    ``_call_endpoint`` -- shared by every Schwab endpoint -- to know about order
+    legs would be worse.
+
+    RD is explicitly NOT asserting an incidence rate; the ruling rests on the
+    asymmetry. No incidence claim appears here or in the tests.
     """
     if response is None:
         return []
@@ -298,6 +324,12 @@ def map_orders_to_fill_candidates(response: Any) -> list[SchwabOrderResponse]:
                 "with missing/empty orderLegCollection",
                 order_id, i,
             )
+            if skips is not None:
+                skips.append({
+                    "order_id": order_id,
+                    "index": i,
+                    "reason": "missing_or_empty_leg_collection",
+                })
             continue
         leg0 = legs[0]
         if not isinstance(leg0, dict):
@@ -307,6 +339,12 @@ def map_orders_to_fill_candidates(response: Any) -> list[SchwabOrderResponse]:
                 "with non-dict orderLegCollection[0]",
                 order_id, i,
             )
+            if skips is not None:
+                skips.append({
+                    "order_id": order_id,
+                    "index": i,
+                    "reason": "non_dict_leg_0",
+                })
             continue
         instruction = _opt(leg0, "instruction", "")
         quantity = float(_opt(leg0, "quantity", 0) or 0)

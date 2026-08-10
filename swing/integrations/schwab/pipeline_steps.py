@@ -519,6 +519,28 @@ def _step_schwab_orders(
     period_start = period_end - timedelta(days=lookback_days)
 
     call_ids: list[int] = []
+    # Item-5 rider 1 (Pass 1). The mapper SKIPS a legless order rather than
+    # failing the whole fetch -- correct resilience -- but the skip was
+    # INVISIBLE, and downstream that is a false negative on a fill:
+    # reconciliation sees nothing, raises nothing, reports clean. The
+    # accumulator rides into the mapper through a functools.partial in the
+    # wrapper (`_call_endpoint` calls `mapper(payload)` positionally), and a
+    # non-empty result reaches the step's warning envelope on EVERY post-fetch
+    # return path below -- not only the success one. A skip recorded here and
+    # dropped by an early return would be a silent skip inside the fix for
+    # silent skips.
+    legless_skips: list[dict] = []
+
+    def _legless_warnings() -> list[dict]:
+        if not legless_skips:
+            return []
+        return [{
+            "step": "schwab_orders",
+            "reason": "legless_orders_skipped",
+            "skipped_count": len(legless_skips),
+            "order_ids": [s.get("order_id") for s in legless_skips],
+        }]
+
     try:
         orders = get_account_orders(
             client, conn, account_hash,
@@ -527,6 +549,7 @@ def _step_schwab_orders(
             surface=surface, environment=environment,
             pipeline_run_id=pipeline_run_id,
             status=None,
+            skips=legless_skips,
         )
         call_ids.append(_latest_call_id_for_pipeline(conn, pipeline_run_id))
 
@@ -555,6 +578,7 @@ def _step_schwab_orders(
             "status": "failed",
             "call_ids": call_ids,
             "reconciliation_run_id": None,
+            "warnings": _legless_warnings(),
             "error": f"{type(exc).__name__}: api call failed",
         }
 
@@ -568,6 +592,7 @@ def _step_schwab_orders(
             "status": "sandbox_audit_only",
             "call_ids": call_ids,
             "reconciliation_run_id": None,
+            "warnings": _legless_warnings(),
             "error": None,
         }
 
@@ -610,6 +635,7 @@ def _step_schwab_orders(
             "status": "failed",
             "call_ids": call_ids,
             "reconciliation_run_id": None,
+            "warnings": _legless_warnings(),
             "error": f"reconciliation_failed: {type(exc).__name__}",
         }
 
@@ -641,7 +667,7 @@ def _step_schwab_orders(
         "status": "completed",
         "call_ids": call_ids,
         "reconciliation_run_id": reconciliation_run.run_id,
-        "warnings": cash_warnings,
+        "warnings": [*_legless_warnings(), *cash_warnings],
         "error": None,
     }
 
