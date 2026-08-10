@@ -346,7 +346,7 @@ def _entry_fill_row(conn: sqlite3.Connection, fill_id: int) -> tuple | None:
     return conn.execute(
         "SELECT fill_id, trade_id, fill_datetime, action, "
         "reconciliation_status, quantity, fill_origin, "
-        "schwab_source_value_json "
+        "schwab_source_value_json, operator_corrected_value_json "
         "FROM fills WHERE fill_id = ?",
         (fill_id,),
     ).fetchone()
@@ -594,8 +594,11 @@ def _authorize(
     _assert_evidence_matches_fill_quantity(
         disc, fill_quantity=float(fill_row[5]),
     )
-    _assert_evidence_is_this_fills_order(
+    source_envelope = _assert_evidence_is_this_fills_order(
         disc, fill_origin=fill_row[6], source_envelope=fill_row[7],
+    )
+    _assert_the_date_came_from_the_auto_fill(
+        disc, envelope=source_envelope, fill_date=pre_fill_datetime[:10],
     )
 
     target_date = _derive_target_date_from_discrepancy(
@@ -687,7 +690,7 @@ SCHWAB_DERIVED_FILL_ORIGINS: frozenset[str] = frozenset({
 
 def _assert_evidence_is_this_fills_order(
     disc: Any, *, fill_origin: Any, source_envelope: Any,
-) -> None:
+) -> dict[str, Any]:
     """The cited Schwab order must be the one that CREATED this fill.
 
     Codex R5 Major 1, and it is the sharpest remaining hole. Every clause so
@@ -741,6 +744,49 @@ def _assert_evidence_is_this_fills_order(
             f"{disc_order_id!r}, but fill {disc.fill_id} was created from "
             f"order {fill_order_id!r}. A same-ticker same-size order is NOT "
             "evidence about a fill it did not produce."
+        )
+    return envelope
+
+
+def _assert_the_date_came_from_the_auto_fill(
+    disc: Any, *, envelope: dict[str, Any], fill_date: str,
+) -> None:
+    """The recorded date must be the AUTO-FILL's, unedited (Codex R6 Major 2).
+
+    `schwab_auto_then_operator_corrected` means the operator edited one of
+    entry_date / entry_price / shares at the form. If he edited the DATE, the
+    recorded value is HIS, not the auto-fill's -- and the follow-up reason this
+    surface prints asserts flatly that `entry_auto_fill.py` read `enter_time`.
+    Correcting such a fill would write a FALSE CAUSAL STATEMENT into the audit
+    ledger, which is the single thing this arc exists to stop.
+
+    Two clauses, both read off the fill's own envelope rather than inferred:
+
+      - the envelope's `entry_date` must equal the fill's CURRENT date. For a
+        pure `schwab_auto` fill that holds by construction; for a corrected one
+        it holds only if the operator edited price or shares and NOT the date.
+      - `entry_date_source == 'execution_leg'` means the auto-fill ALREADY took
+        the execution grain (a post-T1 fill), so D31 cannot be its cause. A
+        pre-T1 envelope has no such key at all, which is why the check is on
+        the VALUE and not on the key's absence.
+    """
+    source = envelope.get("entry_date_source")
+    if source == "execution_leg":
+        raise EntryDateCorrectionError(
+            f"fill {disc.fill_id}'s envelope records "
+            "entry_date_source='execution_leg': the auto-fill already took "
+            "the EXECUTION grain, so D31 is not the cause of any divergence "
+            "here and this surface's audit reason would be false. Route it to "
+            "CHARC rather than dating it from this evidence."
+        )
+    envelope_date = envelope.get("entry_date")
+    if str(envelope_date) != str(fill_date):
+        raise EntryDateCorrectionError(
+            f"fill {disc.fill_id}'s recorded date ({fill_date}) differs from "
+            f"the Schwab auto-fill's own ({envelope_date!r}), so the operator "
+            "edited it at the form. The recorded date is HIS, not the "
+            "auto-fill's, and this surface's reason would blame D31 for a "
+            "human edit. Refusing rather than writing a false cause."
         )
 
 

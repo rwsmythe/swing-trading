@@ -1493,3 +1493,183 @@ def test_r5_MINOR_an_unresolvable_archive_row_also_precedes_the_state_gate(
         _apply(conn, ids)
     assert "found 0" in str(exc.value)
     assert "--allow-active" not in str(exc.value)
+
+
+# ===========================================================================
+# Codex R6 fixes
+# ===========================================================================
+
+
+def _resolve_follow_up(conn, ids):
+    from swing.trades.reconciliation import resolve_discrepancy
+
+    resolve_discrepancy(
+        conn,
+        discrepancy_id=ids["discrepancy_id"],
+        resolution="journal_corrected",
+        resolution_reason="Journal corrected, not overridden. (follow-up)",
+        require_current_resolution="pending_ambiguity_resolution",
+    )
+
+
+def test_r6_M1_tier1_IDEMPOTENCY_survives_the_multi_row_guard(conn):
+    """R5's guard sat ABOVE the documented SELECT-first terminal-idempotency
+    return, so replaying tier 1 against an already-resolved entry-date
+    discrepancy RAISED instead of returning the existing correction. A guard on
+    MUTATION must not fire on a path that mutates nothing."""
+    from swing.trades.reconciliation_auto_correct import apply_tier1_correction
+
+    ids = _seed(conn)
+    _apply(conn, ids)
+    _resolve_follow_up(conn, ids)
+    result = apply_tier1_correction(
+        conn, discrepancy_id=ids["discrepancy_id"], classification=None,
+    )
+    assert result.correction_id is not None
+
+
+def test_r6_M1_tier2_AUDIT_ONLY_dispositions_are_not_blocked(conn):
+    """`mark_unmatched`, `acknowledge`, `keep_journal_as_is` and `custom`
+    change no journal value and are exactly what an operator needs in order to
+    CLOSE a finding. R5's guard rejected all four."""
+    from swing.trades.reconciliation_auto_correct import apply_tier2_resolution
+
+    ids = _seed(conn)
+    _apply(conn, ids)
+    result = apply_tier2_resolution(
+        conn,
+        discrepancy_id=ids["discrepancy_id"],
+        choice_code="custom",
+        operator_custom_payload={"operator_intent": "audit only"},
+        operator_reason="audit-only disposition after the correction",
+    )
+    assert result is not None
+    # The coupled rows are untouched by an audit-only disposition.
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+    assert conn.execute(
+        "SELECT fill_datetime FROM fills WHERE fill_id = ?", (ids["fill_id"],),
+    ).fetchone()[0] == f"{TARGET_DATE}T16:00:00"
+
+
+def test_r6_M1_tier2_MUTATING_dispositions_are_still_blocked(conn):
+    """Counterfactual for the test above: the guard moved, it did not go."""
+    from swing.trades.reconciliation_auto_correct import (
+        MultiRowCorrectionOverrideError,
+        apply_tier2_resolution,
+    )
+
+    ids = _seed(conn)
+    _apply(conn, ids)
+    with pytest.raises(MultiRowCorrectionOverrideError):
+        apply_tier2_resolution(
+            conn,
+            discrepancy_id=ids["discrepancy_id"],
+            choice_code="pick_schwab_record_1",
+            operator_custom_payload={"fill_datetime": "2026-08-05T16:00:00"},
+            operator_reason="attempted tier-2 half-mutation",
+        )
+
+
+def test_r6_M1_the_audit_only_registry_matches_the_handlers():
+    """The classification is enumerated, not inferred, so it is pinned: every
+    member delegates STRAIGHT to `_handle_no_mutation_audit`, and no
+    NON-member does."""
+    import inspect
+
+    from swing.trades import reconciliation_auto_correct as rac
+
+    for fn in rac._AUDIT_ONLY_TIER2_HANDLERS:
+        src = inspect.getsource(fn)
+        assert "_handle_no_mutation_audit(" in src, fn.__name__
+        assert "_update_journal_field(" not in src, fn.__name__
+    others = set(rac._TIER2_HANDLERS.values()) - rac._AUDIT_ONLY_TIER2_HANDLERS
+    assert others
+    for fn in others:
+        src = inspect.getsource(fn)
+        assert "return _handle_no_mutation_audit(" not in src, fn.__name__
+
+
+def test_r6_M2_an_operator_EDITED_date_cannot_be_blamed_on_D31(conn):
+    """`schwab_auto_then_operator_corrected` means the operator edited one of
+    entry_date / entry_price / shares. If he edited the DATE, the recorded
+    value is HIS -- and this surface's follow-up reason asserts flatly that
+    `entry_auto_fill.py` read `enter_time`. Correcting it would write a FALSE
+    CAUSAL STATEMENT into the audit ledger."""
+    ids = _seed(conn, fill_origin="schwab_auto_then_operator_corrected")
+    # The auto-fill offered 2026-07-30; the operator typed 2026-07-23.
+    envelope = json.loads(conn.execute(
+        "SELECT schwab_source_value_json FROM fills WHERE fill_id = ?",
+        (ids["fill_id"],),
+    ).fetchone()[0])
+    envelope["entry_date"] = "2026-07-30"
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = ?, "
+        "operator_corrected_value_json = ? WHERE fill_id = ?",
+        (json.dumps(envelope, sort_keys=True),
+         json.dumps({"entry_date": PRE_DATE}, sort_keys=True),
+         ids["fill_id"]),
+    )
+    conn.commit()
+    with pytest.raises(EntryDateCorrectionError, match="edited it at the form"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_r6_M2_a_PRICE_only_operator_correction_still_qualifies(conn):
+    """Counterfactual: the origin alone is not disqualifying. Only an edited
+    DATE is, because only that makes the D31 causal claim false."""
+    ids = _seed(conn, fill_origin="schwab_auto_then_operator_corrected")
+    conn.execute(
+        "UPDATE fills SET operator_corrected_value_json = ? WHERE fill_id = ?",
+        (json.dumps({"entry_price": 18.81}, sort_keys=True), ids["fill_id"]),
+    )
+    conn.commit()
+    _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+
+
+def test_r6_M2_a_POST_FIX_execution_leg_envelope_is_refused(conn):
+    """`entry_date_source='execution_leg'` means the auto-fill ALREADY took the
+    execution grain, so D31 cannot be the cause of any divergence here and the
+    reason would be false. A pre-T1 envelope has no such key at all, which is
+    why the check is on the VALUE, not on the key's absence."""
+    ids = _seed(conn)
+    envelope = json.loads(conn.execute(
+        "SELECT schwab_source_value_json FROM fills WHERE fill_id = ?",
+        (ids["fill_id"],),
+    ).fetchone()[0])
+    assert envelope["entry_date_source"] == "enter_time"
+    envelope["entry_date_source"] = "execution_leg"
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
+        (json.dumps(envelope, sort_keys=True), ids["fill_id"]),
+    )
+    conn.commit()
+    with pytest.raises(EntryDateCorrectionError, match="execution_leg"):
+        _apply(conn, ids)
+
+
+def test_r6_M2_a_HISTORICAL_envelope_with_no_source_key_still_qualifies(conn):
+    """Every fill recorded before T1 shipped has NO `entry_date_source` key --
+    and those are precisely the D31 victims this surface exists for."""
+    ids = _seed(conn)
+    envelope = json.loads(conn.execute(
+        "SELECT schwab_source_value_json FROM fills WHERE fill_id = ?",
+        (ids["fill_id"],),
+    ).fetchone()[0])
+    del envelope["entry_date_source"]
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
+        (json.dumps(envelope, sort_keys=True), ids["fill_id"]),
+    )
+    conn.commit()
+    _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE

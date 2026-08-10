@@ -176,22 +176,69 @@ def test_v35_preserves_every_column_index_and_check(tmp_path):
 
 def test_v35_resolution_and_ambiguity_kind_enums_survive_the_rebuild(tmp_path):
     """The rebuild copies TWO other CHECK enums verbatim; a dropped value in
-    either would be invisible to the column/index assertions above."""
+    either would be invisible to the column/index assertions above.
+
+    ASSERTED BY INSERTING, not by searching the DDL text (Codex R6 Minor).
+    `pending_ambiguity_resolution` and `operator_resolved_ambiguity` ALSO
+    appear in the separate cross-column CHECK, so a substring search would stay
+    green with either of them dropped from `resolution IN (...)` -- and a
+    rebuild that rejected every pending-ambiguity row would ship behind a
+    passing preservation test.
+    """
     from swing.trades.reconciliation import RESOLUTION_TYPES
 
     conn = _migrate(tmp_path, 35)
-    table_sql = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE name = "
-        "'reconciliation_discrepancies'",
-    ).fetchone()[0]
+    run_id = _insert_run(conn)
+    # The two resolutions the cross-column CHECK PAIRS with a non-NULL
+    # ambiguity_kind; every other resolution requires ambiguity_kind IS NULL.
+    paired = {"pending_ambiguity_resolution", "operator_resolved_ambiguity"}
     for value in RESOLUTION_TYPES:
-        assert f"'{value}'" in table_sql
+        conn.execute(
+            "INSERT INTO reconciliation_discrepancies "
+            "(run_id, discrepancy_type, field_name, material_to_review, "
+            "resolution, ambiguity_kind, resolved_at, resolved_by, "
+            "created_at) VALUES (?, 'stop_mismatch', 'stop', 1, ?, ?, "
+            "'2026-08-09T01:00:00', 'operator', '2026-08-09T00:00:00')",
+            (run_id, value,
+             "multi_match_within_window" if value in paired else None),
+        )
+    assert conn.execute(
+        "SELECT COUNT(DISTINCT resolution) FROM reconciliation_discrepancies",
+    ).fetchone()[0] == len(RESOLUTION_TYPES)
+
+    # Each ambiguity_kind, paired with a resolution the cross-CHECK permits.
     for value in (
         "multi_partial_vs_consolidated", "multi_match_within_window",
         "unknown_schwab_subtype", "field_shape_incompatible",
         "schwab_returned_no_match", "validator_rejected", "unsupported",
     ):
-        assert f"'{value}'" in table_sql
+        conn.execute(
+            "INSERT INTO reconciliation_discrepancies "
+            "(run_id, discrepancy_type, field_name, material_to_review, "
+            "resolution, ambiguity_kind, created_at) VALUES "
+            "(?, 'stop_mismatch', 'stop', 1, "
+            "'pending_ambiguity_resolution', ?, '2026-08-09T00:00:00')",
+            (run_id, value),
+        )
+    assert conn.execute(
+        "SELECT COUNT(DISTINCT ambiguity_kind) FROM "
+        "reconciliation_discrepancies WHERE ambiguity_kind IS NOT NULL",
+    ).fetchone()[0] == 7
+
+    # Counterfactual: a bogus value in either enum is still rejected.
+    for sql, params in (
+        ("INSERT INTO reconciliation_discrepancies (run_id, discrepancy_type, "
+         "field_name, material_to_review, resolution, created_at) VALUES "
+         "(?, 'stop_mismatch', 'stop', 1, 'frobnicated', "
+         "'2026-08-09T00:00:00')", (run_id,)),
+        ("INSERT INTO reconciliation_discrepancies (run_id, discrepancy_type, "
+         "field_name, material_to_review, resolution, ambiguity_kind, "
+         "created_at) VALUES (?, 'stop_mismatch', 'stop', 1, "
+         "'pending_ambiguity_resolution', 'frobnicated', "
+         "'2026-08-09T00:00:00')", (run_id,)),
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(sql, params)
     conn.close()
 
 

@@ -882,8 +882,6 @@ def _apply_tier1_correction_inner(
             notes="sandbox: domain write short-circuited",
         )
 
-    _assert_no_unsuperseded_multi_row_correction(conn, discrepancy_id)
-
     # Codex R1 Major #2 — SELECT-first idempotency. A terminal
     # discrepancy returns its existing correction_id WITHOUT requiring a
     # valid classification payload (stale-caller-safe). The SELECT +
@@ -920,6 +918,15 @@ def _apply_tier1_correction_inner(
                     discrepancy_id=discrepancy_id,
                 )
         return _idempotent_result_for(conn, discrepancy_id)
+
+    # Item-5 (Codex R6 Major 1) -- the multi-row guard belongs HERE, AFTER the
+    # sandbox short-circuit and AFTER the terminal-state idempotent return. It
+    # was placed above both, so replaying a tier-1 against an already-resolved
+    # entry-date discrepancy raised instead of returning the existing
+    # correction id -- a guard that broke the documented stale-caller-safe
+    # idempotency contract it had no business touching. A guard on MUTATION
+    # must not fire on a path that mutates nothing.
+    _assert_no_unsuperseded_multi_row_correction(conn, discrepancy_id)
 
     # Classification-payload validation (post-SELECT, post-idempotency).
     if classification is None:
@@ -1134,8 +1141,6 @@ def _apply_tier2_resolution_inner(
     # Step 1 — SELECT discrepancy.
     disc = _select_discrepancy(conn, discrepancy_id)
 
-    _assert_no_unsuperseded_multi_row_correction(conn, discrepancy_id)
-
     # Step 1.5 — post-SELECT secondary invariant: the auto-redirect path is
     # only valid against multi_partial_vs_consolidated discrepancies.
     if (
@@ -1206,6 +1211,19 @@ def _apply_tier2_resolution_inner(
         )
 
     handler = _TIER2_HANDLERS[handler_key]
+
+    # Item-5 (Codex R6 Major 1) -- the multi-row guard fires ONLY for a handler
+    # that writes a journal column, and only AFTER terminal idempotency, the
+    # sandbox short-circuit and handler resolution. Placed at the top of this
+    # function it also rejected `keep_journal_as_is`, `mark_unmatched`,
+    # `acknowledge` and `custom` -- four dispositions that change no journal
+    # value and are exactly what an operator needs in order to CLOSE the
+    # finding -- and it pre-empted the auto-redirect sandbox short-circuit,
+    # violating that contract. A guard against a partial MUTATION must not
+    # block a NON-mutation.
+    if handler not in _AUDIT_ONLY_TIER2_HANDLERS:
+        _assert_no_unsuperseded_multi_row_correction(conn, discrepancy_id)
+
     return handler(
         conn,
         disc=disc,
@@ -2829,3 +2847,14 @@ _TIER2_HANDLERS: dict[tuple[str, str], Callable[..., CorrectionResult]] = {
     ("unsupported", "acknowledge"):
         _handle_acknowledge,
 }
+
+# Handlers that delegate STRAIGHT to `_handle_no_mutation_audit` and write no
+# journal column. Enumerated explicitly (not inferred) and pinned by a test
+# asserting every OTHER registered handler reaches a journal writer, so the
+# classification cannot silently rot as handlers are added.
+_AUDIT_ONLY_TIER2_HANDLERS: frozenset = frozenset({
+    _handle_keep_journal_as_is,
+    _handle_custom_audit_only,
+    _handle_mark_unmatched,
+    _handle_acknowledge,
+})
