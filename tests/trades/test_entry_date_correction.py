@@ -2821,3 +2821,76 @@ def test_r15_a_split_partial_is_PERSISTED_in_its_canonical_form(conn, raw):
     assert conn.execute(
         "SELECT removed_date FROM watchlist_archive WHERE ticker='FTRE'",
     ).fetchone()[0] == PRE_DATE
+
+
+# ===========================================================================
+# Codex R17 fix
+# ===========================================================================
+
+
+def test_r17_a_SAME_SESSION_exit_before_the_entry_clock_is_refused(conn):
+    """R8's guard compared DATE PREFIXES. The corrected entry keeps the fill's
+    existing clock -- the synthetic `T16:00:00` convention -- while
+    `record_exit` accepts a REAL timestamp, so an exit at 13:45:30 sorts BEFORE
+    an entry at 16:00:00 while both prefixes read 2026-07-31.
+
+    A prefix comparison called that ordering fine: the correction committed an
+    exit-before-entry chronology, `_recompute_aggregates` moved `last_fill_at`
+    onto the later synthetic entry even on a CLOSED trade, and the audit row
+    recorded the invalid recomputation as successfully applied. R8's own test
+    covered only an exit on an EARLIER calendar date and could not see it.
+    """
+    ids = _seed(conn)
+    conn.execute(
+        "UPDATE fills SET fill_datetime = ? WHERE trade_id = ? AND "
+        "action = 'stop'", (f"{TARGET_DATE}T13:45:30", ids["trade_id"]),
+    )
+    conn.commit()
+    with pytest.raises(EntryDateCorrectionError, match="cannot exit before"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE
+    assert conn.execute(
+        "SELECT fill_datetime FROM fills WHERE fill_id = ?", (ids["fill_id"],),
+    ).fetchone()[0] == f"{PRE_DATE}T16:00:00"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM trade_events WHERE event_type = "
+        "'reconciliation_auto_correct'",
+    ).fetchone()[0] == 0
+
+
+def test_r17_a_SAME_SESSION_exit_AFTER_the_entry_clock_is_permitted(conn):
+    """Counterfactual: the comparison is on the FULL datetime and is strict, so
+    a same-session exit at 19:30 -- after the entry's 16:00 -- is fine."""
+    ids = _seed(conn)
+    conn.execute(
+        "UPDATE fills SET fill_datetime = ? WHERE trade_id = ? AND "
+        "action = 'stop'", (f"{TARGET_DATE}T19:30:00", ids["trade_id"]),
+    )
+    conn.commit()
+    _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+
+
+def test_r17_a_MALFORMED_sibling_makes_the_ordering_undecidable(conn):
+    """`fills.fill_datetime` is a bare TEXT column, so a legacy sibling can be
+    malformed -- and a lexical comparison against garbage decides nothing. The
+    correction is about to REORDER this trade's fills, so it refuses rather
+    than guessing."""
+    ids = _seed(conn)
+    conn.execute(
+        "UPDATE fills SET fill_datetime = '2026-07-31garbage' "
+        "WHERE trade_id = ? AND action = 'stop'", (ids["trade_id"],),
+    )
+    conn.commit()
+    with pytest.raises(EntryDateCorrectionError, match="fill_datetime"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0

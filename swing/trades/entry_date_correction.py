@@ -1066,12 +1066,23 @@ def _assert_no_sibling_fill_precedes(
         (trade_id, fill_id),
     ).fetchall()
     for other_id, other_dt, action in rows:
-        if str(other_dt)[:10] < new_fill_datetime[:10]:
+        # FULL datetimes, not date prefixes (Codex R17). The corrected entry
+        # keeps the fill's existing clock component -- the synthetic
+        # `T16:00:00` convention -- while `record_exit` accepts a REAL
+        # timestamp, so a SAME-SESSION exit at 13:45:30 sorts before an entry
+        # at 16:00:00 while both prefixes read 2026-07-31. A prefix comparison
+        # calls that ordering fine, the correction commits an exit-before-entry
+        # chronology, `_recompute_aggregates` moves `last_fill_at` onto the
+        # later synthetic entry even on a closed trade, and the audit row
+        # records the invalid recomputation as successfully applied.
+        sibling = _canonical_fill_datetime_or_refuse(
+            other_dt, fill_id=int(other_id),
+        )
+        if sibling < new_fill_datetime:
             raise EntryDateCorrectionError(
-                f"moving fill {fill_id} to {new_fill_datetime[:10]} would "
-                f"place the ENTRY after {action} fill {other_id} "
-                f"({str(other_dt)[:10]}). A trade cannot exit before it "
-                "enters. Nothing was written."
+                f"moving fill {fill_id} to {new_fill_datetime} would place "
+                f"the ENTRY after {action} fill {other_id} ({sibling}). A "
+                "trade cannot exit before it enters. Nothing was written."
             )
 
 
