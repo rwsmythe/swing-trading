@@ -56,6 +56,23 @@
 
 The prescriptiveness audit (one artifact at a time, the discriminating rule) · the D27 provenance arc (+ rung-A EQUALS + `latches.py:1381`) · the Phase-22 demand decomposition (item 1 = knob removal + config-vs-two-sources pin + disclosure-block deletion + the one-cent exemption revisit) · the backup-gate manifest retrofit (18 gates) · the ACKED≠ACTIONED comms fix · 21-F (still blocked on the telemetry contract) · 21-C (deferred behind evidence + the signed L2 diff).
 
+## §8.5 WAVE-CLOSE WARNING-CLEANUP PASS (operator-originated 2026-08-10; RD-inventoried) — RUNS AFTER item 5 + the sweep
+
+**Operator's ask:** a small post-wave pass to *correctly* clear the standing warnings, on his belief that existing tools suffice. **RD's inventory says that holds for everything except two rows, and both are already sequenced to Phase 22** — so the pass is real work with a bounded scope, not a sweep-everything.
+
+| standing warning | route | tool state |
+|---|---|---|
+| **VSTS latch UNVERIFIABLE** (off-screen since 07-30) | operator DECLINES (the 3a terminal) + cancels the broker buy-stop + logs the cancel | **EXISTING** — 3a + item 4 |
+| **discrepancy 95 pending** | item 5's correction surface + the `journal_corrected` close | **IN FLIGHT — not manual cleanup** |
+| **AMN latch** (filled → trade 20) | should clear as `fill` in the derivation | **verify at wave close**; no action expected |
+| **LQDA stray-order warning** | the §3.5 latch-on-acceptance case — **cannot be correctly cleared by existing tools while the order stays wanted**; persists BY DESIGN until Phase 22 (or the order fills/cancels) | **Phase-22-gated** |
+| **trade-20 `entry_intent` NULL** | Demand A — a DELIBERATE null per the operator's 2026-08-10 ruling, not an omission | **Phase-22-gated** |
+| `invalid_ohlc` 52 | a watch, not a clearable warning | n/a |
+
+**Binding on the pass when it runs (RD):** clearing VSTS via decline follows the per-latch rule (**R5 — decisions are PER-LATCH, never retroactive**), and the decline's effective session is **server-computed** (flag B, live in item 4's write half). **The cleanup goes THROUGH the surfaces, not around them** — it is exactly the case those rules were built for, and hand-clearing a warning the machinery is meant to clear would waste the machinery and leave the ledger unable to say what happened.
+
+**Why this is written here rather than carried:** it is an operator-originated obligation with no arc, which is the class that cost this project five days on H1 and recurred twice more in this wave. It now has a parent.
+
 ## §9 Returns
 
 Per arc: orchestrator QAs on disk, then posts the return to the directors. RD's merge-blocking gates are named per item above; **gate visibility binds** — a held gate is stated, an override is stated in one clause. The operator witnesses are step-by-step per his standing preference.
