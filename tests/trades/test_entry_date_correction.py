@@ -51,8 +51,14 @@ def _live_actual_value_json(
         "schwab_order_price": 18.89,
     }
     if include_legs:
+        # The leg quantities SUM to the fill's 10 shares, because that is what
+        # the emitter's own candidate filter guarantees (same ticker, same
+        # execution-grain quantity within tolerance) and the surface now
+        # re-checks it. A fixture whose legs summed to 20 or 30 would be a
+        # shape the emitter cannot produce.
+        per_leg = 10.0 / len(leg_times)
         payload["execution_legs"] = [
-            {"leg_id": i + 1, "price": 18.8, "quantity": 10.0, "time": t}
+            {"leg_id": i + 1, "price": 18.8, "quantity": per_leg, "time": t}
             for i, t in enumerate(leg_times)
         ]
     return json.dumps(payload, sort_keys=True)
@@ -659,9 +665,13 @@ def test_a_caller_held_transaction_is_REJECTED_never_auto_detected(conn):
         conn.rollback()
 
 
-def test_a_refusal_mid_transaction_rolls_everything_back(conn):
-    """The archive guard fires AFTER the trade + fill UPDATEs in the inner, so
-    a rollback is the only thing that keeps the trade whole."""
+def test_an_archive_binding_refusal_happens_BEFORE_any_write(conn):
+    """RENAMED, because the original name claimed coverage this test does not
+    have (Codex R3 Minor 2). `_resolve_archive_row` runs inside `_authorize`,
+    BEFORE any writer, so this exercises the PRE-WRITE refusal path and would
+    pass even with rollback handling removed entirely. The actual rollback
+    coverage is the pair of post-writer injection tests further down
+    (`insert_correction` raising, and the trade_events emit raising)."""
     ids = _seed(conn, archive_rows=0)
     with pytest.raises(EntryDateCorrectionError):
         _apply(conn, ids)
@@ -1084,3 +1094,148 @@ def test_r2_M4_mixed_offset_legs_are_REFUSED_not_silently_resolved(conn):
     assert conn.execute(
         "SELECT COUNT(*) FROM reconciliation_corrections",
     ).fetchone()[0] == 0
+
+
+# ===========================================================================
+# Codex R3 fixes
+# ===========================================================================
+
+
+def test_r3_M1_a_move_that_would_UNSEAT_the_authoritative_fill_is_refused(conn):
+    """R2's gate proved the bound fill is authoritative TODAY. Moving its
+    datetime FORWARD can hand that role to an INTERVENING entry fill.
+
+    Sibling on 07-25, move 07-23 -> 07-31. Pre-fix the correction commits an
+    internally inconsistent ledger: trades.entry_date says 07-31 while
+    `_recompute_aggregates` takes the 07-25 fill's price as current_avg_cost,
+    and the audit row asserts the correction was coherent. R2's own test hid
+    this by placing the sibling at 08-03, AFTER the target.
+    """
+    ids = _seed(conn)
+    _add_second_entry_fill(conn, ids, when="2026-07-25T16:00:00")
+    with pytest.raises(EntryDateCorrectionError, match="would make"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date, current_avg_cost FROM trades WHERE id = ?",
+        (ids["trade_id"],),
+    ).fetchone() == (PRE_DATE, 18.8)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_r3_M1_a_sibling_AFTER_the_target_date_still_permits_the_move(conn):
+    """Counterfactual: the guard is about ORDERING, not about the mere
+    existence of a second entry fill."""
+    ids = _seed(conn)
+    _add_second_entry_fill(conn, ids, when="2026-08-03T16:00:00")
+    _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+
+
+def test_r3_M2_stale_evidence_whose_qty_no_longer_matches_is_refused(conn):
+    """The emitter selected its candidate by same ticker AND execution-grain
+    QUANTITY. A later correction can change `fills.quantity` while an older
+    discrepancy sits unresolved; the stale row must not then authorize three
+    ledger writes from an order that no longer matches the fill it cites."""
+    ids = _seed(conn)
+    conn.execute(
+        "UPDATE fills SET quantity = 25.0 WHERE fill_id = ?",
+        (ids["fill_id"],),
+    )
+    conn.commit()
+    with pytest.raises(
+        EntryDateCorrectionError, match="no longer describes the row",
+    ):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_r3_M2_a_ticker_that_no_longer_matches_is_refused(conn):
+    ids = _seed(conn)
+    conn.execute(
+        "UPDATE reconciliation_discrepancies SET ticker = 'OTHER' "
+        "WHERE discrepancy_id = ?", (ids["discrepancy_id"],),
+    )
+    conn.commit()
+    with pytest.raises(EntryDateCorrectionError, match="no longer matches"):
+        _apply(conn, ids)
+
+
+def test_r3_M3_operator_truth_value_json_is_NULL(conn):
+    """`models.py` defines this column as OPERATOR-SUPPLIED TRUTH for tier-3
+    rows, and every existing tier-2 resolution stores NULL. Populating it with
+    the applied dict would attribute current_size, current_avg_cost,
+    last_fill_at and the fill's reconciliation status to the OPERATOR, who
+    confirmed only a SERVER-DERIVED date."""
+    ids = _seed(conn)
+    result = _apply(conn, ids)
+    row = conn.execute(
+        "SELECT operator_truth_value_json, source_canonical_value_json, "
+        "correction_choice FROM reconciliation_corrections "
+        "WHERE correction_id = ?", (result.correction_id,),
+    ).fetchone()
+    assert row[0] is None
+    # The date he DID confirm is still recorded, so nothing was lost.
+    assert json.loads(row[1])["execution_leg_date"] == TARGET_DATE
+    assert row[2] == CORRECTION_CHOICE
+
+
+@pytest.mark.parametrize(
+    "bad", ["2026-07-23garbage", "20260723T160000", "not-a-datetime"],
+)
+def test_r3_M4_a_malformed_existing_fill_datetime_is_refused(conn, bad):
+    """`fills.fill_datetime` is a bare TEXT NOT NULL, so `2026-07-23garbage`
+    is schema-legal. The agreement gate compared only `[:10]` and
+    `_corrected_fill_datetime` appends everything after character ten, so it
+    would have become `2026-07-31garbage` -- committed, with LEXICALLY ordered
+    aggregates recomputed off it and an audit row asserting success."""
+    ids = _seed(conn, fill_datetime=bad)
+    with pytest.raises(EntryDateCorrectionError, match="fill_datetime"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT fill_datetime FROM fills WHERE fill_id = ?", (ids["fill_id"],),
+    ).fetchone()[0] == bad
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_r3_M4_the_fills_write_boundary_refuses_independently():
+    """A write boundary that trusts its caller is not a boundary."""
+    import tempfile
+    from pathlib import Path as _P
+
+    from swing.data.db import ensure_schema
+    from swing.data.repos.fills import update_fill_datetime
+
+    c = ensure_schema(_P(tempfile.mkdtemp()) / "fw.db")
+    try:
+        c.execute(
+            "INSERT INTO trades (ticker, entry_date, entry_price, "
+            "initial_shares, initial_stop, current_stop, state, trade_origin, "
+            "pre_trade_locked_at) VALUES ('X', '2026-07-23', 1.0, 1, 0.5, "
+            "0.5, 'closed', 'manual_off_pipeline', '2026-07-23T16:00:00')",
+        )
+        fid = int(c.execute(
+            "INSERT INTO fills (trade_id, fill_datetime, action, quantity, "
+            "price) VALUES (1, '2026-07-23T16:00:00', 'entry', 1.0, 1.0)",
+        ).lastrowid)
+        for bad in ("2026-07-31garbage", "20260731T160000", "nope"):
+            with pytest.raises(ValueError):
+                update_fill_datetime(c, fill_id=fid, fill_datetime=bad)
+        assert c.execute(
+            "SELECT fill_datetime FROM fills WHERE fill_id = ?", (fid,),
+        ).fetchone()[0] == "2026-07-23T16:00:00"
+        update_fill_datetime(
+            c, fill_id=fid, fill_datetime="2026-07-31T16:00:00",
+        )
+        assert c.execute(
+            "SELECT fill_datetime FROM fills WHERE fill_id = ?", (fid,),
+        ).fetchone()[0] == "2026-07-31T16:00:00"
+    finally:
+        c.close()

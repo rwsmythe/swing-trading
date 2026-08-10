@@ -73,6 +73,7 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date as _date
+from datetime import datetime
 from typing import Any
 
 from swing.data.models import ReconciliationCorrection
@@ -343,10 +344,40 @@ def _gate_on_state(trade: Any, *, allow_active: bool) -> bool:
 
 def _entry_fill_row(conn: sqlite3.Connection, fill_id: int) -> tuple | None:
     return conn.execute(
-        "SELECT fill_id, trade_id, fill_datetime, action, reconciliation_status "
+        "SELECT fill_id, trade_id, fill_datetime, action, "
+        "reconciliation_status, quantity "
         "FROM fills WHERE fill_id = ?",
         (fill_id,),
     ).fetchone()
+
+
+def _canonical_fill_datetime_or_refuse(raw: Any, *, fill_id: int) -> str:
+    """The fill's EXISTING datetime, validated WHOLE (Codex R3 Major 4).
+
+    The agreement gate compares only ``[:10]`` and ``_corrected_fill_datetime``
+    appends everything after character ten verbatim, so a schema-valid
+    ``2026-07-23garbage`` -- ``fills.fill_datetime`` is a bare ``TEXT NOT
+    NULL`` -- passes authorization and becomes ``2026-07-31garbage``. The
+    correction would commit, recompute LEXICALLY ordered aggregates off it, and
+    append an audit row asserting that value was successfully applied. Validate
+    the whole string before authorizing anything.
+    """
+    value = str(raw)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise EntryDateCorrectionError(
+            f"fill {fill_id}'s fill_datetime {value!r} is not a parseable ISO "
+            "datetime. `fills.fill_datetime` is a bare TEXT column, so a "
+            "malformed value is schema-legal; this surface refuses to "
+            "re-certify one by moving its date prefix."
+        ) from exc
+    if value[:10] != parsed.date().isoformat():
+        raise EntryDateCorrectionError(
+            f"fill {fill_id}'s fill_datetime {value!r} is not in EXTENDED "
+            "YYYY-MM-DD... form; refusing to rewrite its date prefix."
+        )
+    return value
 
 
 def _derive_target_date_from_discrepancy(
@@ -545,16 +576,32 @@ def _authorize(
             "Correcting a later scale-in fill would redate the whole trade; "
             "a fill-only correction path is out of scope for this surface."
         )
-    if str(fill_row[2])[:10] != str(trade.entry_date):
+    pre_fill_datetime = _canonical_fill_datetime_or_refuse(
+        fill_row[2], fill_id=int(disc.fill_id),
+    )
+    if pre_fill_datetime[:10] != str(trade.entry_date):
         raise EntryDateCorrectionError(
-            f"fill {disc.fill_id}'s date ({str(fill_row[2])[:10]}) already "
+            f"fill {disc.fill_id}'s date ({pre_fill_datetime[:10]}) already "
             f"disagrees with trades.entry_date ({trade.entry_date}). This "
             "surface restores a coupling; it cannot be used where the two "
             "have already diverged for some other reason."
         )
+    # THE EVIDENCE MUST STILL DESCRIBE THIS FILL (Codex R3 Major 2). The
+    # emitter selected its candidate by same ticker AND execution-grain
+    # QUANTITY; a later correction can change `fills.quantity` while an older
+    # discrepancy sits unresolved, and the stale row would then authorize three
+    # ledger writes from an order that no longer matches the fill it cites.
+    if str(disc.ticker or "") != str(trade.ticker):
+        raise EntryDateCorrectionError(
+            f"discrepancy {discrepancy_id}'s ticker ({disc.ticker!r}) no "
+            f"longer matches trade {trade_id}'s ({trade.ticker!r})."
+        )
+    _assert_evidence_matches_fill_quantity(
+        disc, fill_quantity=float(fill_row[5]),
+    )
 
     target_date = _derive_target_date_from_discrepancy(
-        disc, fill_datetime=str(fill_row[2]),
+        disc, fill_datetime=pre_fill_datetime,
     )
     if target_requested != target_date:
         raise EntryDateCorrectionError(
@@ -563,6 +610,22 @@ def _authorize(
             f"({target_date}). The target date is SERVER-DERIVED; --to is a "
             "confirmation, never the source. Nothing was written."
         )
+
+    # AND THE BOUND FILL MUST STILL BE AUTHORITATIVE AFTERWARDS (Codex R3
+    # Major 1). The gate above proves it is authoritative TODAY; moving its
+    # datetime FORWARD can hand that role to an intervening entry fill. With a
+    # sibling entry fill on 07-25 and a move 07-23 -> 07-31, the correction
+    # would commit an internally inconsistent ledger: `trades.entry_date` says
+    # 07-31 while `_recompute_aggregates` takes the 07-25 fill's price as
+    # `current_avg_cost`, and the audit row asserts the correction was
+    # coherent. A gate evaluated only on the PRE state cannot see this.
+    new_fill_datetime = _corrected_fill_datetime(pre_fill_datetime, target_date)
+    _assert_still_authoritative_after_move(
+        conn,
+        trade_id=trade_id,
+        fill_id=int(disc.fill_id),
+        new_fill_datetime=new_fill_datetime,
+    )
 
     # Bind the watchlist_archive row BEFORE any write. The table carries no
     # unique constraint on (ticker, reason, removed_date), so "the archive row
@@ -582,6 +645,71 @@ def _authorize(
         target_date=target_date,
         allow_active_used=allow_active_used,
     )
+
+
+def _assert_evidence_matches_fill_quantity(
+    disc: Any, *, fill_quantity: float,
+) -> None:
+    """The cited execution legs must still sum to the fill's CURRENT quantity.
+
+    Same tolerance and same grain as the matcher that produced the evidence
+    (`_resolve_match_quantity` sums leg quantities; the candidate filter
+    compares within `_PRICE_TOLERANCE_DEFAULT`). Reusing the emitter's own
+    semantics rather than inventing a second comparison.
+    """
+    from swing.trades.schwab_reconciliation import _PRICE_TOLERANCE_DEFAULT
+
+    payload = json.loads(getattr(disc, "actual_value_json", "") or "{}")
+    legs = payload.get("execution_legs") if isinstance(payload, dict) else None
+    if not isinstance(legs, list) or not legs:
+        return  # the leg-shape refusal fires in the date derivation
+    total = 0.0
+    for leg in legs:
+        qty = leg.get("quantity") if isinstance(leg, dict) else None
+        if not isinstance(qty, (int, float)) or isinstance(qty, bool):
+            raise EntryDateCorrectionError(
+                f"discrepancy {disc.discrepancy_id} carries a non-numeric "
+                "execution-leg quantity; it cannot authorize a date rewrite."
+            )
+        total += float(qty)
+    if abs(total - fill_quantity) > _PRICE_TOLERANCE_DEFAULT:
+        raise EntryDateCorrectionError(
+            f"discrepancy {disc.discrepancy_id}'s execution legs total "
+            f"{total} shares but fill {disc.fill_id} now holds "
+            f"{fill_quantity}. The evidence no longer describes the row it "
+            "cites -- a stale finding must not authorize a live mutation."
+        )
+
+
+def _assert_still_authoritative_after_move(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    fill_id: int,
+    new_fill_datetime: str,
+) -> None:
+    """Refuse when the move would hand authority to an intervening entry fill.
+
+    `get_authoritative_entry_fill` orders by ``(fill_datetime ASC, fill_id
+    ASC)``, so the question is whether any OTHER entry fill would sort strictly
+    before the corrected one under that same ordering. Evaluated on the
+    PROPOSED value, because a gate evaluated only on the pre-state is blind to
+    exactly the case that matters.
+    """
+    rows = conn.execute(
+        "SELECT fill_id, fill_datetime FROM fills "
+        "WHERE trade_id = ? AND action = 'entry' AND fill_id <> ?",
+        (trade_id, fill_id),
+    ).fetchall()
+    for other_id, other_dt in rows:
+        if (str(other_dt), int(other_id)) < (new_fill_datetime, fill_id):
+            raise EntryDateCorrectionError(
+                f"moving fill {fill_id} to {new_fill_datetime} would make "
+                f"entry fill {other_id} ({other_dt}) the AUTHORITATIVE entry "
+                f"fill, so trades.entry_date would no longer name it and "
+                "current_avg_cost would take the intervening fill's price. "
+                "Nothing was written."
+            )
 
 
 def _resolve_archive_row(
@@ -939,9 +1067,19 @@ def _correct_entry_date_inner(
                 {"execution_leg_date": auth.target_date}, sort_keys=True,
             ),
             applied_value_json=json.dumps(applied_values, sort_keys=True),
-            operator_truth_value_json=json.dumps(
-                applied_values, sort_keys=True,
-            ),
+            # NULL, not the applied dict (Codex R3 Major 3). `models.py`
+            # defines this column as OPERATOR-SUPPLIED TRUTH for tier-3
+            # `operator_overridden` rows, and every existing tier-2 operator
+            # resolution stores NULL (`reconciliation_auto_correct.py:1841`).
+            # Populating it with `applied_values` would attribute
+            # `current_size`, `current_avg_cost`, `last_fill_at` and the fill's
+            # reconciliation status to the OPERATOR, who confirmed only a
+            # SERVER-DERIVED date -- a false attestation in the one ledger this
+            # arc exists to keep honest. The date he confirmed is preserved in
+            # `source_canonical_value_json`, in `correction_choice`, and in the
+            # reason. (Deviation from the plan's step 9, which specified the
+            # applied dict here; the schema contract governs.)
+            operator_truth_value_json=None,
             applied_at=applied_at or _utc_now_iso_ms(),
             applied_by="operator",
             correction_set_id=None,

@@ -1852,10 +1852,17 @@ def format_summary_block(summary: BackfillSummary) -> str:
     legless_line = ""
     if summary.legless_orders_skipped:
         ids = ", ".join(summary.legless_order_ids)
+        # ALARM, NEVER ASSERT (Codex R3 Minor 1). The mapper's own comment says
+        # a legless row may be a parent-conditional order or an unsupported
+        # multi-leg option structure, so "each is a fill this backfill could
+        # not see" would be a POSITIVE claim manufactured from an absence --
+        # in the very surface built to make uncertainty visible. The evidence
+        # supports only that an order could not be inspected.
         legless_line = (
-            f"  *** Legless Schwab orders SKIPPED by the mapper: "
+            f"  *** Schwab orders the mapper could NOT inspect for fills: "
             f"{summary.legless_orders_skipped} (order ids: {ids}). "
-            f"Each is a fill this backfill could NOT see. ***\n"
+            f"Each is a COVERAGE GAP -- a fill may or may not be hiding "
+            f"behind it; this backfill could not tell. ***\n"
         )
 
     return (

@@ -377,14 +377,17 @@ def test_the_summary_block_RENDERS_the_gap():
          "reason": "missing_or_empty_leg_collection"},
     ])
     block = format_summary_block(summary)
-    assert "Legless Schwab orders SKIPPED by the mapper: 1" in block
+    assert "could NOT inspect for fills: 1" in block
+    assert "COVERAGE GAP" in block
+    # ALARM, never ASSERT: no positive claim that a fill was missed.
+    assert "Each is a fill" not in block
     assert "2002" in block
     block.encode("cp1252")
 
 
 def test_the_summary_block_is_SILENT_when_nothing_was_skipped():
     block = format_summary_block(BackfillSummary())
-    assert "Legless" not in block
+    assert "could NOT inspect for fills" not in block
     # Counterfactual: the block is not empty, so the assertion is not vacuous.
     assert "Backfill summary:" in block
 
@@ -400,7 +403,10 @@ def test_an_ABORTED_backfill_still_reports_what_it_dropped():
     summary.abort_reason = "pipeline started"
     block = format_summary_block(summary)
     assert "ABORTED MID-ITERATION" in block
-    assert "Legless Schwab orders SKIPPED by the mapper: 1" in block
+    assert "could NOT inspect for fills: 1" in block
+    assert "COVERAGE GAP" in block
+    # ALARM, never ASSERT: no positive claim that a fill was missed.
+    assert "Each is a fill" not in block
 
 
 def test_pass2_dispatch_threads_the_accumulator_to_the_audited_wrapper():
@@ -487,7 +493,8 @@ def test_r1_M4_a_POST_FETCH_raise_still_folds_the_recorded_skips():
         assert partial.legless_orders_skipped == 1
         assert partial.legless_order_ids == ["2002"]
         block = format_summary_block(partial)
-        assert "Legless Schwab orders SKIPPED by the mapper: 1" in block
+        assert "could NOT inspect for fills: 1" in block
+        assert "COVERAGE GAP" in block
         assert "2002" in block
     finally:
         conn.close()

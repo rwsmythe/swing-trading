@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime as _datetime
 
 from swing.data.models import Fill
 
@@ -165,6 +166,22 @@ def update_fill_datetime(
     """
     if not isinstance(fill_datetime, str) or not fill_datetime.strip():
         raise ValueError("fill_datetime must be a non-empty ISO string")
+    candidate = fill_datetime.strip()
+    # The COLUMN is a bare `TEXT NOT NULL`, so a malformed value is
+    # schema-legal, and downstream readers slice `[:10]` and compare
+    # LEXICALLY. Enforce a real ISO datetime whose first ten characters ARE
+    # its calendar date, independently of any service-layer check -- a write
+    # boundary that trusts its caller is not a boundary.
+    try:
+        _parsed = _datetime.fromisoformat(candidate)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"fill_datetime must be a parseable ISO datetime; got "
+            f"{candidate!r}") from exc
+    if candidate[:10] != _parsed.date().isoformat():
+        raise ValueError(
+            f"fill_datetime must be EXTENDED-format YYYY-MM-DD...; got "
+            f"{candidate!r}")
     cur = conn.execute(
         "UPDATE fills SET fill_datetime = ? WHERE fill_id = ?",
         (fill_datetime.strip(), fill_id),
