@@ -156,6 +156,18 @@ _ENTRY_DATE_COUPLED_SURFACE = "swing journal correct-entry-date"
 _RESERVED_JOURNAL_FIELDS: dict[tuple[str, str], str] = {
     ("trades", "entry_date"): _ENTRY_DATE_COUPLED_SURFACE,
     ("fills", "fill_datetime"): _ENTRY_DATE_COUPLED_SURFACE,
+    # THE ROLE COLUMNS TOO (Codex R12). `fill_datetime` alone was not enough:
+    # `_handle_multi_field_correction` applies operator-supplied fields
+    # SEQUENTIALLY, and `action` / `trade_id` were writable. Flipping an
+    # authoritative entry fill to `trim` makes a LATER entry fill authoritative
+    # -- the entry date moves without any of the three coupled columns being
+    # written at all. And because the datetime reservation is evaluated against
+    # CURRENT state, a payload could change `action` FIRST and then write
+    # `fill_datetime` after the reservation had stopped applying. Reserving the
+    # role columns kills both: on an entry fill the role cannot change through
+    # the generic path, so the datetime reservation cannot be stepped around.
+    ("fills", "action"): _ENTRY_DATE_COUPLED_SURFACE,
+    ("fills", "trade_id"): _ENTRY_DATE_COUPLED_SURFACE,
 }
 
 
@@ -176,16 +188,31 @@ def _refuse_entry_fill_split_that_moves_the_date(
     `trades.entry_date` and the archive row stay behind.
     """
     fill_id = getattr(disc, "fill_id", None)
-    trade_id = getattr(disc, "trade_id", None)
-    if fill_id is None or trade_id is None or not parsed_partials:
+    if fill_id is None or not parsed_partials:
         return
+    # THE OWNER COMES FROM THE FILL (Codex R12). Reading `disc.trade_id`
+    # independently was wrong twice over: migration 0035 declares `trade_id`
+    # and `fill_id` as INDEPENDENT nullable FKs with nothing binding the fill
+    # to that trade, so a schema-legal discrepancy carrying an entry `fill_id`
+    # and a NULL `trade_id` skipped the guard entirely, and a MISMATCHED
+    # non-NULL trade compared the proposed date against an unrelated trade's.
+    # The handler itself takes the owner from the fill, so the guard must too.
     row = conn.execute(
-        "SELECT action FROM fills WHERE fill_id = ?", (int(fill_id),),
+        "SELECT action, trade_id FROM fills WHERE fill_id = ?",
+        (int(fill_id),),
     ).fetchone()
     if not row or str(row[0]) != "entry":
         return
+    owner_trade_id = row[1]
+    disc_trade_id = getattr(disc, "trade_id", None)
+    if disc_trade_id is not None and int(disc_trade_id) != int(owner_trade_id):
+        raise ReservedJournalFieldError(
+            f"discrepancy names trade {disc_trade_id} but entry fill "
+            f"{fill_id} belongs to trade {owner_trade_id}; refusing to split "
+            "an entry fill on a mismatched attribution. Nothing was written."
+        )
     trade = conn.execute(
-        "SELECT entry_date FROM trades WHERE id = ?", (int(trade_id),),
+        "SELECT entry_date FROM trades WHERE id = ?", (int(owner_trade_id),),
     ).fetchone()
     if not trade:
         return
