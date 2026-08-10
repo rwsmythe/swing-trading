@@ -74,7 +74,10 @@ from swing.integrations.schwab.client import (
     SchwabConfigMissingError,
     SchwabRateLimitError,
 )
-from swing.trades.execution_dates import latest_execution_leg_date
+from swing.trades.execution_dates import (
+    execution_precedes_order,
+    latest_execution_leg_date,
+)
 from swing.trades.schwab_reconciliation import (
     _compute_execution_price,
     _is_execution_bearing_candidate,
@@ -542,6 +545,23 @@ def _execution_date(order: Any) -> tuple[str, str]:
     execution_date = latest_execution_leg_date(
         getattr(leg, "time", None) for leg in executions
     )
+    # CHRONOLOGY, via the SHARED rule (Codex R16). An execution cannot precede
+    # its own order, and nothing upstream enforces that -- `SchwabExecutionLeg
+    # .time` is validated non-empty only, with no cross-field check against
+    # `enter_time`. Taking the EXECUTION grain (T1) is what made a backwards
+    # date reachable here at all, so the rule belongs with the derivation
+    # rather than in one consumer: R14 had put it in the correction surface
+    # only, leaving the two consumers of one derivation disagreeing about what
+    # that derivation ADMITS -- the #24-#26 class, one layer up from the value.
+    #
+    # The RESPONSE is this consumer's own and legitimately differs from the
+    # correction surface's refusal: a VISIBLE fallback to the entered date,
+    # because this is a form default the operator sees and can override, not a
+    # three-row ledger rewrite.
+    if execution_precedes_order(
+        execution_date, _extract_iso_date(getattr(order, "enter_time", "") or ""),
+    ):
+        execution_date = None
     if execution_date is not None:
         return execution_date, "execution_leg"
     # VALIDATE THE WHOLE STRING, not the slice (Codex R11 minor).

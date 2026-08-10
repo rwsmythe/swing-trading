@@ -87,7 +87,10 @@ from swing.data.repos.watchlist import (
     update_archive_removed_date,
 )
 from swing.evaluation.dates import is_trading_session
-from swing.trades.execution_dates import latest_execution_leg_date
+from swing.trades.execution_dates import (
+    execution_precedes_order,
+    latest_execution_leg_date,
+)
 
 __all__ = [
     "BOUND_ARCHIVE_KEY",
@@ -475,7 +478,7 @@ def _derive_target_date_from_discrepancy(
     # Compared against the ORIGINAL envelope date, which corrections never
     # rewrite -- so a re-correction is measured from the same anchor as the
     # first, not from a date this surface itself moved.
-    if order_entered_date and derived < str(order_entered_date):
+    if execution_precedes_order(derived, order_entered_date):
         raise EntryDateCorrectionError(
             f"discrepancy {disc.discrepancy_id}'s latest execution leg is "
             f"{derived}, which PRECEDES the date the order was entered "

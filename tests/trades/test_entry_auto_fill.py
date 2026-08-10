@@ -1036,3 +1036,76 @@ def test_t1_r11_the_real_enter_time_shapes_still_populate(
     assert json.loads(
         result.schwab_source_value_json,
     )["entry_date_source"] == "enter_time"
+
+
+def test_t1_r16_an_execution_BEFORE_the_order_falls_back_VISIBLY(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """R14 put the chronology rule in the CORRECTION surface only, leaving the
+    AUTO-FILL -- the very path T1 changed to take the execution grain --
+    accepting a backwards date. Two consumers of one derivation disagreeing
+    about what that derivation ADMITS is the #24-#26 class, one layer up from
+    the value itself.
+
+    An order ENTERED 2026-07-23 with a leg timestamp of 2026-07-20 would have
+    produced a populated auto-fill dated 2026-07-20; submitted unchanged,
+    `record_entry` fans that impossible date into the trade, the authoritative
+    fill and the archive row -- the coupling invariant HOLDS while the ledger
+    says the trade executed before its order existed, and
+    `removed_date < added_date` on a watchlist row.
+
+    The auto-fill's RESPONSE is a VISIBLE fallback, not a refusal: this is a
+    form default the operator sees and can override.
+    """
+    order = _make_buy_order_with_leg_times(
+        enter_time="2026-07-23T14:30:00.000Z",
+        leg_times=("2026-07-20T13:30:05+0000",),
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = resolve_entry_auto_fill(
+        ticker="FTRE", cfg=_make_cfg(environment="production"),
+        conn=conn, now=fake_now,
+    )
+    assert result.kind == "populated"
+    assert result.entry_date == "2026-07-23"
+    assert json.loads(
+        result.schwab_source_value_json,
+    )["entry_date_source"] == "enter_time"
+
+
+def test_t1_r16_a_SAME_DAY_execution_is_not_treated_as_backwards(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Counterfactual on the boundary: the rule is `<`, not `<=`."""
+    order = _make_buy_order_with_leg_times(
+        enter_time="2026-07-23T14:30:00.000Z",
+        leg_times=("2026-07-23T19:30:05+0000",),
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = resolve_entry_auto_fill(
+        ticker="FTRE", cfg=_make_cfg(environment="production"),
+        conn=conn, now=fake_now,
+    )
+    assert result.entry_date == "2026-07-23"
+    assert json.loads(
+        result.schwab_source_value_json,
+    )["entry_date_source"] == "execution_leg"
+
+
+def test_t1_r16_BOTH_consumers_share_ONE_chronology_rule():
+    """The RULE is shared; the RESPONSE differs by consumer. Pinned so a future
+    change cannot re-introduce a second copy."""
+    import inspect
+
+    from swing.trades import entry_auto_fill, entry_date_correction
+    from swing.trades.execution_dates import execution_precedes_order
+
+    for mod in (entry_auto_fill, entry_date_correction):
+        assert "execution_precedes_order(" in inspect.getsource(mod), mod.__name__
+    assert execution_precedes_order("2026-07-20", "2026-07-23") is True
+    assert execution_precedes_order("2026-07-23", "2026-07-23") is False
+    assert execution_precedes_order("2026-07-31", "2026-07-23") is False
+    assert execution_precedes_order(None, "2026-07-23") is False
+    assert execution_precedes_order("2026-07-20", None) is False

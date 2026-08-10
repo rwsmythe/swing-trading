@@ -41,7 +41,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-__all__ = ["latest_execution_leg_date"]
+__all__ = ["execution_precedes_order", "latest_execution_leg_date"]
 
 
 def latest_execution_leg_date(raw_times: Iterable[Any]) -> str | None:
@@ -115,3 +115,34 @@ def latest_execution_leg_date(raw_times: Iterable[Any]) -> str | None:
         return None
     _, winning_date = max(ranked, key=lambda pair: pair[0])
     return winning_date
+
+
+def execution_precedes_order(
+    execution_date: str | None, order_entered_date: str | None,
+) -> bool:
+    """True when a derived execution date PRECEDES the order's entered date.
+
+    THE RULE LIVES HERE so both consumers obey it (Codex R16). R14 put the
+    check in the correction surface only, and the auto-fill -- the very path
+    T1 changed to take the execution grain -- kept accepting a backwards date.
+    Two consumers of one derivation disagreeing about what the derivation
+    ADMITS is the #24-#26 divergence class arriving one layer up from the value
+    itself.
+
+    Nothing else enforces the ordering: `SchwabExecutionLeg.time` is validated
+    non-empty only, with no cross-field chronology check against
+    `SchwabOrderResponse.enter_time`, and the reconciliation session distance is
+    DIRECTIONLESS. An execution cannot happen before its own order, so a payload
+    asserting it is internally contradictory.
+
+    The RULE is shared; the RESPONSE is each consumer's own, and legitimately
+    differs: the auto-fill falls back VISIBLY to the entered date (stamping
+    `entry_date_source='enter_time'`), while the correction surface REFUSES with
+    a message naming the contradiction, because it is about to rewrite three
+    ledger rows.
+
+    Comparison is `<`, not `<=`: a same-day execution is ordinary.
+    """
+    if not execution_date or not order_entered_date:
+        return False
+    return str(execution_date) < str(order_entered_date)
