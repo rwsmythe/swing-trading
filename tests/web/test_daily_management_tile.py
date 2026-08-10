@@ -787,3 +787,69 @@ def test_provisional_tooltip_wording_says_session_date_not_today(
     rendered = tmpl.render(vm=vm)
     assert "covers this row's session date" in rendered
     assert "covers today" not in rendered
+
+
+def test_ineligible_trail_NEVER_renders_the_candidate_price_unlabelled(  # noqa: N802
+    app_factory,
+):
+    """The 0.53R finding, pinned: an INELIGIBLE trail must not render as a
+    bare price.
+
+    Trade 19 (FTRE) stopped out at a stop the operator set from this cell.
+    ``trail_MA_eligibility_flag`` was 0 throughout, and the tile rendered the
+    candidate price ALONE -- so the surface could say "act" (badge + price)
+    and could not say "not yet" (price, minus a badge whose absence means
+    nothing to a reader who has never seen it present). Silence read as
+    permission.
+
+    The existing badge test seeds the ineligible row with
+    ``trail_MA_candidate_price=None``, so it renders "--" and never reaches
+    this branch -- which is why the defect survived it. This test seeds the
+    combination that actually occurs in production: NOT eligible, price
+    present.
+
+    Discriminating: pre-fix the ineligible cell contained the formatted price
+    with no qualifier anywhere in the row, so both assertions below fail.
+    """
+    app, db_path = app_factory()
+    conn = connect(db_path)
+    try:
+        # NOT eligible, but a candidate price EXISTS -- the live trade-19 shape.
+        _seed_trade(
+            conn, trade_id=1, ticker="FTRE", state="managing",
+            entry_price=18.80, initial_stop=14.47, current_stop=14.47,
+        )
+        insert_snapshot(
+            conn, trade_id=1,
+            snapshot_fields=_full_snapshot_fields(
+                maturity_stage="pre_+1.5R",
+                trail_MA_candidate_price=18.39,
+                trail_MA_eligibility_flag=0,
+            ),
+        )
+    finally:
+        conn.commit()
+        conn.close()
+
+    with TestClient(app) as client:
+        response = client.get("/")
+    assert response.status_code == 200
+
+    import re
+    row = re.search(
+        r'<tr[^>]*data-tile-trade-id="1"[^>]*>.*?</tr>',
+        response.text, re.DOTALL,
+    )
+    assert row is not None, "trade-1 tile row not rendered"
+    cell = row.group(0)
+
+    # The negative state NAMES itself.
+    assert "NOT YET ELIGIBLE" in cell
+    # And the price is never emitted as a bare actionable number.
+    assert "18.39" in cell, "the candidate price should still be visible"
+    assert "candidate $18.39" in cell, (
+        "an ineligible candidate price must carry its qualifier; a bare "
+        "price is what the operator acted on"
+    )
+    # The ELIGIBLE prompt must NOT appear -- spec 3.5 reserves it for flag=1.
+    assert "TRAIL ELIGIBLE" not in cell

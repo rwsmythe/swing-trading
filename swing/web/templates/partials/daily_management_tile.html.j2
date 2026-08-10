@@ -83,14 +83,32 @@
             {%- else -%}--{%- endif -%}
           </td>
           <td data-tile-cell="trail_MA">
-            {#- Spec section 7.1: trail_MA_eligibility_flag badge visible only when TRUE. -#}
+            {#- Spec section 7.1: the ELIGIBLE badge is visible only when TRUE, and
+                that rule is unchanged -- eligibility=1 is the discrete operator
+                action prompt (phase10-metrics-design section 3.5).
+
+                What changed: the NOT-eligible branch used to render the candidate
+                price ALONE. No spec asked for that. A bare price is an actionable
+                number, so the surface could say "act" and could not say "not yet"
+                -- the absence of a badge carries no meaning to a reader who has
+                never seen it present. Every state now NAMES itself, and the price
+                is never emitted unlabelled. NULL (cannot evaluate) is kept
+                distinct from 0 (evaluated, not eligible); collapsing them would
+                report missing data as a negative finding. Display only. -#}
             {% if tile.trail_MA_eligibility_flag == 1 %}
               <span class="badge badge-trail-eligible" data-flag="trail-eligible">TRAIL ELIGIBLE</span>
               {% if tile.trail_MA_candidate_price is not none %}
                 <span class="trail-ma-price">@ ${{ "%.2f"|format(tile.trail_MA_candidate_price) }}</span>
               {% endif %}
+            {% elif tile.trail_MA_eligibility_flag == 0 %}
+              <span class="trail-ma-not-yet" data-flag="trail-not-yet">NOT YET ELIGIBLE{%
+                if tile.maturity_stage %} ({{ tile.maturity_stage }}){% endif %}</span>
+              {% if tile.trail_MA_candidate_price is not none %}
+                <span class="trail-ma-price-only">candidate ${{ "%.2f"|format(tile.trail_MA_candidate_price) }}</span>
+              {% endif %}
             {% elif tile.trail_MA_candidate_price is not none %}
-              <span class="trail-ma-price-only">${{ "%.2f"|format(tile.trail_MA_candidate_price) }}</span>
+              <span class="trail-ma-unknown" data-flag="trail-unknown">ELIGIBILITY UNKNOWN</span>
+              <span class="trail-ma-price-only">candidate ${{ "%.2f"|format(tile.trail_MA_candidate_price) }}</span>
             {% else %}--{% endif %}
           </td>
           <td data-tile-cell="position_capital_utilization_pct">
