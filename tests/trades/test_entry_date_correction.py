@@ -2765,3 +2765,59 @@ def test_r14_a_RE_correction_measures_chronology_from_the_ORIGINAL_envelope(
             conn, trade_id=ids["trade_id"], to_date="2026-06-29",
             discrepancy_id=disc2, reason="backwards re-correction",
         )
+
+
+# ===========================================================================
+# Codex R15 fix
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    "raw", [f" {PRE_DATE}T13:30:05", f"{PRE_DATE}T13:30:05 "],
+)
+def test_r15_a_split_partial_is_PERSISTED_in_its_canonical_form(conn, raw):
+    """R13 validated a NORMALIZED COPY and the handler INSERTed the ORIGINAL.
+    A leading-space `" 2026-07-23T13:30:05"` therefore passed as
+    date-preserving and was stored with a date prefix of `" 2026-07-2"` --
+    disagreeing with the other two coupled dates AND sorting BEFORE every
+    canonical timestamp, so it could become the authoritative entry fill.
+
+    Validate the value you are about to persist, not a normalized copy of it.
+    """
+    from swing.trades.reconciliation_auto_correct import apply_tier2_resolution
+
+    ids = _seed(conn)
+    conn.execute(
+        "UPDATE reconciliation_discrepancies SET ambiguity_kind = "
+        "'multi_partial_vs_consolidated' WHERE discrepancy_id = ?",
+        (ids["discrepancy_id"],),
+    )
+    conn.commit()
+    apply_tier2_resolution(
+        conn,
+        discrepancy_id=ids["discrepancy_id"],
+        choice_code="split_into_partials",
+        operator_custom_payload=[
+            {"qty": 5.0, "price": 18.8, "fill_datetime": raw},
+            {"qty": 5.0, "price": 18.8,
+             "fill_datetime": f"{PRE_DATE}T13:31:05"},
+        ],
+        operator_reason="a whitespace-padded partial",
+    )
+    stored = [
+        r[0] for r in conn.execute(
+            "SELECT fill_datetime FROM fills WHERE trade_id = ? AND "
+            "action = 'entry' ORDER BY fill_datetime", (ids["trade_id"],),
+        ).fetchall()
+    ]
+    assert stored, "no entry partials were written"
+    for value in stored:
+        assert value == value.strip(), value
+        assert value[:10] == PRE_DATE, value
+    # THE INVARIANT still holds on the persisted rows.
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE
+    assert conn.execute(
+        "SELECT removed_date FROM watchlist_archive WHERE ticker='FTRE'",
+    ).fetchone()[0] == PRE_DATE

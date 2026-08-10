@@ -236,6 +236,15 @@ def _refuse_entry_fill_split_that_moves_the_date(
                 f"timestamp ({exc}). Refusing to replace an ENTRY fill with a "
                 "malformed one. Nothing was written."
             ) from exc
+        # WRITE THE CANONICAL VALUE BACK (Codex R15). The validator strips and
+        # returns the canonical form, but the handler INSERTs from
+        # `parsed_partials` -- so validating a copy and storing the original
+        # let `" 2026-07-23T13:30:05"` pass as date-preserving and then be
+        # stored with a date prefix of `" 2026-07-2"`, disagreeing with the
+        # other two coupled dates AND sorting before every canonical timestamp
+        # (so it could become the authoritative entry fill). Validate the value
+        # you are about to persist, not a normalized copy of it.
+        partial["fill_datetime"] = canonical
         partial_dates.append(canonical[:10])
     earliest = min(partial_dates)
     if earliest != entry_date:
