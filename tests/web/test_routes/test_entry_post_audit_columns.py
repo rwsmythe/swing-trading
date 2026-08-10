@@ -67,12 +67,21 @@ def _make_anchor(
     entry_price: float = 150.25,
     shares: int = 100,
     schwab_order_id: str = "schwab-order-abc",
+    entry_date_source: str = "execution_leg",
 ) -> str:
     """Build a production-shape schwab_source_value_json envelope mirroring
-    what swing/trades/entry_auto_fill.py emits at form-render time."""
+    what swing/trades/entry_auto_fill.py emits at form-render time.
+
+    `entry_date_source` is part of that shape from item-5 T1 onward and is a
+    REQUIRED anchor key: the entry-date correction surface reads this envelope
+    as authorization evidence and treats the key's ABSENCE as proof the fill
+    predates the D31 fix, so a submit that dropped it could turn a post-fix
+    fill into a warrant for a correction blaming D31.
+    """
     return json.dumps(
         {
             "entry_date": entry_date,
+            "entry_date_source": entry_date_source,
             "entry_price": entry_price,
             "shares": shares,
             "schwab_order_id": schwab_order_id,
@@ -517,7 +526,8 @@ def test_c_anchor_with_nan_price_with_claim_rejects_with_400(
     # encode NaN by default. We use the JSON literal "NaN" which
     # Python's json.loads ACCEPTS as float('nan').
     nan_anchor = (
-        '{"entry_date": "2026-05-19", "entry_price": NaN, "shares": 100}'
+        '{"entry_date": "2026-05-19", "entry_date_source": "execution_leg", '
+        '"entry_price": NaN, "shares": 100}'
     )
     with TestClient(app) as client:
         resp = _post_entry(
@@ -539,7 +549,8 @@ def test_c_anchor_with_non_int_shares_with_claim_rejects_with_400(
     _patch_price_cache_with_snapshot(monkeypatch)
     app = create_app(cfg, cfg_path)
     bad_anchor = json.dumps(
-        {"entry_date": "2026-05-19", "entry_price": 150.0, "shares": 100.5},
+        {"entry_date": "2026-05-19", "entry_date_source": "execution_leg",
+         "entry_price": 150.0, "shares": 100.5},
     )
     with TestClient(app) as client:
         resp = _post_entry(
@@ -821,3 +832,64 @@ def test_fill_origin_enum_all_three_new_values_persistable_via_route(
 # ============================================================================
 _ = Path
 _ = pytest
+
+
+def test_r20_a_claimed_autofill_MISSING_entry_date_source_is_rejected(
+    seeded_db, monkeypatch,
+):
+    """Item-5 R20. This arc made the envelope LOAD-BEARING: the entry-date
+    correction surface reads it as AUTHORIZATION evidence and treats the
+    ABSENCE of `entry_date_source` as proof the fill predates the D31 fix.
+
+    A submit that dropped the marker while keeping `fill_origin='schwab_auto'`
+    would turn a POST-fix fill -- one whose auto-fill deliberately fell back to
+    `enter_time` -- into a warrant for a correction whose audit reason blames
+    D31 for a fallback the fixed code took on purpose. Every envelope this
+    server renders has carried the key since T1, so requiring it costs nothing.
+    """
+    import json as _json
+
+    cfg, cfg_path = seeded_db
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    stripped = _json.dumps(
+        {
+            "entry_date": "2026-05-19",
+            "entry_price": 150.25,
+            "shares": 100,
+            "schwab_order_id": "schwab-order-abc",
+            "schwab_instrument_symbol": "AAPL",
+        },
+        sort_keys=True,
+    )
+    with TestClient(app) as client:
+        resp = _post_entry(
+            client,
+            schwab_source_value_json=stripped,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+    assert resp.status_code == 400, resp.text
+    assert "entry_date_source" in resp.text
+
+
+def test_r20_the_FULL_envelope_still_posts_successfully(
+    seeded_db, monkeypatch,
+):
+    """Counterfactual: the production shape -- which has carried the key since
+    T1 -- is unaffected."""
+    cfg, cfg_path = seeded_db
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_entry(
+            client,
+            schwab_source_value_json=_make_anchor(),
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+    # Not asserting a specific success code -- this fixture also trips an
+    # unrelated soft-warn confirm path. What matters is that the ANCHOR ladder
+    # does not reject it: the production shape is unaffected by the new
+    # required key.
+    assert "entry_date_source" not in resp.text, resp.text

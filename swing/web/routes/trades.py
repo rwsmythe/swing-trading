@@ -1005,7 +1005,21 @@ def entry_post(
             and claimed_auto_fill
             and not all(
                 k in anchor_envelope
-                for k in ("entry_date", "entry_price", "shares")
+                # `entry_date_source` joins the required set (item-5, Codex
+                # R20). This arc made the envelope LOAD-BEARING: the
+                # entry-date correction surface reads it as AUTHORIZATION
+                # evidence and treats the ABSENCE of this key as proof that
+                # the fill predates the D31 fix. A submit that dropped the
+                # marker while keeping `fill_origin='schwab_auto'` would
+                # therefore turn a POST-fix fill -- one whose auto-fill
+                # deliberately fell back to `enter_time` -- into a warrant for
+                # a correction whose audit reason blames D31. Every envelope
+                # this server renders has carried the key since T1, so
+                # requiring it costs nothing and closes that door at the same
+                # ladder tier the other required keys use.
+                for k in (
+                    "entry_date", "entry_price", "shares", "entry_date_source",
+                )
             )
         ):
             return _reject_anchor(
@@ -1013,7 +1027,8 @@ def entry_post(
                 f"{fill_origin_at_form_render!r} claims auto-fill "
                 "provenance but schwab_source_value_json is missing "
                 "one or more required keys (entry_date, entry_price, "
-                "shares). The form has been regenerated; please re-submit."
+                "shares, entry_date_source). The form has been regenerated; "
+                "please re-submit."
             )
         # Codex R3 Major #1 fix — value-validation for the 3 required
         # keys when ``claimed_auto_fill``. Without this guard, an
