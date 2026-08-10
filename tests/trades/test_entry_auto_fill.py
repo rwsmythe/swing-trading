@@ -27,6 +27,7 @@ Additional defensive tests:
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -47,6 +48,7 @@ from swing.integrations.schwab.models import (
 from swing.trades.entry_auto_fill import (
     DEFAULT_LOOKBACK_DAYS,
     EntryAutoFillResult,
+    _execution_date,
     resolve_entry_auto_fill,
 )
 
@@ -665,3 +667,219 @@ def test_entry_auto_fill_result_non_populated_must_be_operator_typed():
             kind="empty",
             fill_origin="schwab_auto",  # wrong
         )
+
+
+# ============================================================================
+# Item-5 T1 (D31) -- entry_date must come from the EXECUTION grain
+#
+# The pre-fix line read ``chosen.enter_time`` (the order-ENTERED timestamp)
+# while ``chosen.executions[*].time`` (the EXECUTION timestamp) sat beside it,
+# and the module was already execution-grain for PRICE. Live evidence: trade
+# 19 (FTRE) recorded entry_date 2026-07-23 for an order that executed
+# 2026-07-31T13:30:05+0000.
+#
+# The pre-existing fixtures in this file build their execution leg with
+# ``time=enter_time`` (see ``_make_buy_order``), which forces the two
+# timestamps EQUAL -- so every test above passes identically under the
+# pre-fix and post-fix code. These tests exist because those cannot
+# distinguish.
+#
+# Frozen clock throughout (``fake_now``); no test below reads datetime.now().
+# ============================================================================
+
+
+def _make_buy_order_with_leg_times(
+    *,
+    ticker: str = "FTRE",
+    enter_time: str = "2026-07-23T14:30:00.000Z",
+    leg_times: tuple[str, ...] = ("2026-07-31T13:30:05+0000",),
+    price: float = 18.8,
+    quantity_per_leg: float = 10.0,
+) -> SchwabOrderResponse:
+    """Production-shape order whose leg ``time`` values are INDEPENDENT of
+    ``enter_time`` -- the real shape that ``_make_buy_order`` collapses.
+
+    The default leg time is the literal value from discrepancy 95's live
+    ``actual_value_json`` payload (``+0000`` offset and all), derived from
+    the emitter rather than invented.
+    """
+    legs = [
+        SchwabExecutionLeg(
+            leg_id=i + 1,
+            price=price,
+            quantity=quantity_per_leg,
+            mismarked_quantity=None,
+            instrument_id=12345,
+            time=t,
+        )
+        for i, t in enumerate(leg_times)
+    ]
+    return SchwabOrderResponse(
+        order_id="1007308870656",
+        status="FILLED",
+        enter_time=enter_time,
+        instrument_symbol=ticker,
+        instruction="BUY",
+        quantity=quantity_per_leg * len(legs),
+        order_type="LIMIT",
+        price=price,
+        executions=legs,
+    )
+
+
+def test_t1_entry_date_takes_the_execution_timestamp_not_enter_time(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """D31 discriminating case, built from disc 95's live payload shape.
+
+    Pre-fix this asserts "2026-07-23" (enter_time); post-fix "2026-07-31"
+    (the execution leg). The test therefore distinguishes the two paths.
+    """
+    order = _make_buy_order_with_leg_times(
+        enter_time="2026-07-23T14:30:00.000Z",
+        leg_times=("2026-07-31T13:30:05+0000",),
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = resolve_entry_auto_fill(
+        ticker="FTRE", cfg=_make_cfg(environment="production"),
+        conn=conn, now=fake_now,
+    )
+    assert result.kind == "populated"
+    assert result.entry_date == "2026-07-31"
+    envelope = json.loads(result.schwab_source_value_json)
+    assert envelope["entry_date"] == "2026-07-31"
+    assert envelope["entry_date_source"] == "execution_leg"
+
+
+def test_t1_latest_leg_is_max_over_parsed_times_not_an_index(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """``_extract_executions_from_order_raw`` appends in API order and never
+    sorts, so ``executions[0]`` / ``executions[-1]`` are "whatever Schwab
+    listed", not "the latest execution".
+
+    Three legs with the MAXIMUM IN THE MIDDLE, so both wrong implementations
+    are excluded by this one fixture:
+      legs[0]  -> 2026-07-31 (fails)
+      legs[-1] -> 2026-08-01 (fails)
+      max()    -> 2026-08-03 (passes)
+    """
+    order = _make_buy_order_with_leg_times(
+        enter_time="2026-07-23T14:30:00.000Z",
+        leg_times=(
+            "2026-07-31T13:30:05+0000",
+            "2026-08-03T15:00:00+0000",
+            "2026-08-01T18:45:00+0000",
+        ),
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = resolve_entry_auto_fill(
+        ticker="FTRE", cfg=_make_cfg(environment="production"),
+        conn=conn, now=fake_now,
+    )
+    assert result.kind == "populated"
+    assert result.entry_date == "2026-08-03"
+    assert json.loads(
+        result.schwab_source_value_json,
+    )["entry_date_source"] == "execution_leg"
+
+
+def test_t1_any_unparseable_leg_time_falls_back_to_enter_time(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """``SchwabExecutionLeg.time`` is validated NON-EMPTY, not PARSEABLE, so
+    any non-empty string reaches the date derivation.
+
+    One valid leg + one malformed leg. The tempting wrong implementation
+    (skip the bad leg, ``max()`` the rest) would return 2026-07-31 and would
+    date the trade from a PARTIAL view of its own fills; the rule is that a
+    parse failure is visible in the envelope, never absorbed.
+    """
+    order = _make_buy_order_with_leg_times(
+        enter_time="2026-07-23T14:30:00.000Z",
+        leg_times=("2026-07-31T13:30:05+0000", "not-a-timestamp"),
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = resolve_entry_auto_fill(
+        ticker="FTRE", cfg=_make_cfg(environment="production"),
+        conn=conn, now=fake_now,
+    )
+    assert result.kind == "populated"
+    assert result.entry_date == "2026-07-23"
+    assert json.loads(
+        result.schwab_source_value_json,
+    )["entry_date_source"] == "enter_time"
+
+
+def test_t1_executions_absent_still_returns_empty_kind(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The legacy-mapper rule-1 path (``executions=None``) is UNCHANGED.
+
+    Plan section 8.1 case 2 specified a populated ``enter_time``-stamped
+    fallback here; that state is unreachable through this module, because
+    ``_compute_execution_price`` returns None for absent executions and the
+    caller short-circuits to ``kind='empty'`` two lines earlier. The
+    behaviour is pinned as-is so the fix is shown NOT to have moved it; the
+    helper's own absent-executions branch is pinned directly below.
+    """
+    order = SchwabOrderResponse(
+        order_id="order-no-exec",
+        status="FILLED",
+        enter_time="2026-07-23T14:30:00.000Z",
+        instrument_symbol="FTRE",
+        instruction="BUY",
+        quantity=10.0,
+        order_type="LIMIT",
+        price=18.8,
+        executions=None,
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = resolve_entry_auto_fill(
+        ticker="FTRE", cfg=_make_cfg(environment="production"),
+        conn=conn, now=fake_now,
+    )
+    assert result.kind == "empty"
+    assert result.entry_date is None
+
+
+def test_t1_execution_date_helper_falls_back_when_executions_absent():
+    """Direct unit pin of ``_execution_date``'s absent-executions branch,
+    which the module-level caller can never reach (see the test above)."""
+    order = SchwabOrderResponse(
+        order_id="order-no-exec",
+        status="FILLED",
+        enter_time="2026-07-23T14:30:00.000Z",
+        instrument_symbol="FTRE",
+        instruction="BUY",
+        quantity=10.0,
+        order_type="LIMIT",
+        price=18.8,
+        executions=None,
+    )
+    assert _execution_date(order) == ("2026-07-23", "enter_time")
+
+
+def test_t1_existing_equal_timestamp_fixture_is_behaviour_preserving(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The common real shape (``time == enter_time``) is unchanged by the
+    fix -- same date, now stamped with its true source."""
+    order = _make_buy_order(
+        ticker="AAPL", price=150.25, quantity=100,
+        enter_time="2026-05-19T14:30:00.000Z",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = resolve_entry_auto_fill(
+        ticker="AAPL", cfg=_make_cfg(environment="production"),
+        conn=conn, now=fake_now,
+    )
+    assert result.entry_date == "2026-05-19"
+    assert json.loads(
+        result.schwab_source_value_json,
+    )["entry_date_source"] == "execution_leg"

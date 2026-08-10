@@ -435,11 +435,15 @@ def resolve_entry_auto_fill(
         )
     quantity = _resolve_match_quantity(chosen)
     shares = int(quantity)
-    entry_date = _extract_iso_date(getattr(chosen, "enter_time", ""))
+    # D31 — the EXECUTION timestamp, not the order-ENTERED one. The
+    # provenance stamp rides in the audit envelope only (per-row provenance
+    # at write time, gotcha #30); EntryAutoFillResult gains no field.
+    entry_date, entry_date_source = _execution_date(chosen)
 
     schwab_source_value_json = json.dumps(
         {
             "entry_date": entry_date,
+            "entry_date_source": entry_date_source,
             "entry_price": entry_price,
             "shares": shares,
             "schwab_order_id": getattr(chosen, "order_id", None),
@@ -466,6 +470,63 @@ def resolve_entry_auto_fill(
         # schwab_source_value_json to the originating schwab_api_calls row.
         schwab_api_call_id=None,
     )
+
+
+def _execution_date(order: Any) -> tuple[str, str]:
+    """D31 — the entry date, taken from the EXECUTION grain.
+
+    Returns ``(iso_date, source)`` where ``source`` is ``'execution_leg'``
+    or ``'enter_time'``.
+
+    The order carries BOTH facts: ``enter_time`` is when the order was
+    ENTERED and ``executions[*].time`` is when it EXECUTED. For a resting
+    order those differ — live evidence: trade 19 (FTRE) was entered
+    2026-07-23 and executed 2026-07-31T13:30:05+0000, and the journal
+    recorded the entered date. This module was already execution-grain for
+    PRICE (``_compute_execution_price``); this makes it execution-grain for
+    the DATE too.
+
+    Rules:
+
+    - ``executions`` absent/empty -> fall back to the ``enter_time`` date
+      (the legacy-mapper rule-1 path).
+    - Otherwise parse EVERY leg's ``time`` and take the LATEST. Never index
+      the list: ``_extract_executions_from_order_raw`` builds it with a
+      plain ``append`` in API order and never sorts, so ``executions[0]`` /
+      ``executions[-1]`` are "whatever Schwab listed", not "the latest
+      execution".
+    - If ANY leg's ``time`` is unparseable, fall back to ``enter_time``
+      rather than rank a malformed value — a partial view of an order's own
+      fills must not silently date the trade. The fallback is VISIBLE in the
+      returned source (and so in the audit envelope), never absorbed.
+
+    Timezone convention (deliberate, not inherited): the emitted date is the
+    naive ``[:10]`` prefix of the winning leg's RAW timestamp string, with no
+    conversion to America/New_York. The reconciliation side reads the same
+    fact the same way (``schwab_reconciliation.py`` ``_fill_execution_session
+    _distance``: ``_date.fromisoformat(str(raw_time)[:10])``), and two paths
+    reading one fact differently is the #24-#26 divergence class — an
+    auto-fill that converted to ET while the A2-date guard did not would
+    manufacture a permanent one-session disagreement on every after-hours
+    execution. Parsing is used ONLY to rank the legs; a naive leg timestamp
+    is ranked as UTC for that purpose.
+    """
+    enter_time_date = _extract_iso_date(getattr(order, "enter_time", "") or "")
+    executions = getattr(order, "executions", None) or []
+    ranked: list[tuple[datetime, str]] = []
+    for leg in executions:
+        raw = getattr(leg, "time", None)
+        try:
+            parsed = datetime.fromisoformat(str(raw))
+        except (TypeError, ValueError):
+            return enter_time_date, "enter_time"
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        ranked.append((parsed, str(raw)))
+    if not ranked:
+        return enter_time_date, "enter_time"
+    _, winning_raw = max(ranked, key=lambda pair: pair[0])
+    return _extract_iso_date(winning_raw), "execution_leg"
 
 
 def _extract_iso_date(iso_string: str) -> str:
