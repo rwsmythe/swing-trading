@@ -986,3 +986,53 @@ def test_t1_r2_M4_mixed_offset_legs_are_refused_by_the_shared_helper():
     assert latest_execution_leg_date([
         "2026-07-31T13:30:05+0000", "2026-07-31T14:00:00+00:00",
     ]) == "2026-07-31"
+
+
+@pytest.mark.parametrize(
+    "bad_enter_time",
+    ["2026-07-23garbage", "2026-07-23Tgarbage", "2026-07-23T25:99:99Z"],
+)
+def test_t1_r11_a_malformed_enter_time_SUFFIX_declines_to_autofill(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders, bad_enter_time,
+):
+    """`_extract_iso_date` splits at `T`/space or slices ten characters, so a
+    malformed suffix reduced to a well-formed-LOOKING `2026-07-23` and the
+    canonical check on the SLICE passed -- producing a populated form default
+    from a value the contract says must decline auto-fill (Codex R11 minor).
+    The whole string is validated now."""
+    order = _make_buy_order_with_leg_times(
+        enter_time=bad_enter_time, leg_times=("not-a-timestamp",),
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = resolve_entry_auto_fill(
+        ticker="FTRE", cfg=_make_cfg(environment="production"),
+        conn=conn, now=fake_now,
+    )
+    assert result.kind == "empty"
+    assert result.entry_date is None
+
+
+@pytest.mark.parametrize(
+    "good_enter_time",
+    ["2026-07-23", "2026-07-23T14:30:00.000Z", "2026-07-23T14:30:00+00:00"],
+)
+def test_t1_r11_the_real_enter_time_shapes_still_populate(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders, good_enter_time,
+):
+    """Counterfactual: the shapes Schwab actually emits (and a bare date) still
+    fall back cleanly rather than being refused by an over-tight check."""
+    order = _make_buy_order_with_leg_times(
+        enter_time=good_enter_time, leg_times=("not-a-timestamp",),
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = resolve_entry_auto_fill(
+        ticker="FTRE", cfg=_make_cfg(environment="production"),
+        conn=conn, now=fake_now,
+    )
+    assert result.kind == "populated"
+    assert result.entry_date == "2026-07-23"
+    assert json.loads(
+        result.schwab_source_value_json,
+    )["entry_date_source"] == "enter_time"

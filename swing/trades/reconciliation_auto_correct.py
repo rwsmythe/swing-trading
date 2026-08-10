@@ -159,6 +159,49 @@ _RESERVED_JOURNAL_FIELDS: dict[tuple[str, str], str] = {
 }
 
 
+def _refuse_entry_fill_split_that_moves_the_date(
+    conn: sqlite3.Connection, disc: Any, parsed_partials: list[dict[str, Any]],
+) -> None:
+    """Refuse a split of an ENTRY fill that would MOVE the entry date.
+
+    The column reservation guards a WRITE and cannot see a row DESTROYED and
+    re-created, so this is the same invariant for that shape. It is scoped to
+    PRESERVATION, not to the operation: the multi-leg auto-redirect legitimately
+    splits a consolidated entry fill into execution-grain partials, and when
+    every partial lands on the SAME session as `trades.entry_date` the three
+    dates still agree and the operation is coherent. What is refused is exactly
+    the incoherent case -- the EARLIEST resulting partial (the one that becomes
+    authoritative under `(fill_datetime ASC, fill_id ASC)`) landing on a
+    DIFFERENT date from the trade's, which moves the entry date while
+    `trades.entry_date` and the archive row stay behind.
+    """
+    fill_id = getattr(disc, "fill_id", None)
+    trade_id = getattr(disc, "trade_id", None)
+    if fill_id is None or trade_id is None or not parsed_partials:
+        return
+    row = conn.execute(
+        "SELECT action FROM fills WHERE fill_id = ?", (int(fill_id),),
+    ).fetchone()
+    if not row or str(row[0]) != "entry":
+        return
+    trade = conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (int(trade_id),),
+    ).fetchone()
+    if not trade:
+        return
+    entry_date = str(trade[0])
+    earliest = min(str(p["fill_datetime"])[:10] for p in parsed_partials)
+    if earliest != entry_date:
+        raise ReservedJournalFieldError(
+            f"splitting ENTRY fill {fill_id} would make {earliest} the "
+            f"authoritative entry date while trades.entry_date reads "
+            f"{entry_date} and the watchlist_archive row is unchanged. Those "
+            "three must always name the same date. A split that PRESERVES the "
+            f"date is permitted; to MOVE it use `{_ENTRY_DATE_COUPLED_SURFACE}`, "
+            "which moves all three in one transaction. Nothing was written."
+        )
+
+
 def _reservation_applies(
     conn: sqlite3.Connection, affected_table: str, affected_row_id: int,
     field_name: str,
@@ -2584,6 +2627,21 @@ def _handle_split_into_partials(
     F15 invariant. Legacy default (no overrides) preserves byte-for-byte
     operator-shape behavior per F3.
     """
+    # THE ENTRY-DATE COUPLING INVARIANT, second enforcement leg, completed
+    # (item-5, Codex R11). This handler DELETES the bound fill and INSERTs
+    # replacements carrying operator-supplied `fill_datetime` values, bypassing
+    # `_update_journal_field` and therefore its reserved-column refusal. On an
+    # `action='entry'` fill that is a coupled write in disguise: the
+    # replacements keep `action='entry'`, so the AUTHORITATIVE entry fill's
+    # date moves while `trades.entry_date` and the `watchlist_archive` row stay
+    # where they were -- and splitting a later scale-in can introduce an
+    # EARLIER partial that becomes authoritative, with the same effect.
+    #
+    # The barrier keyed on an existing multi-row correction could not see this:
+    # it permits the operation outright when no correction row exists, which is
+    # the ordinary case. Keyed on the ROW'S ACTION instead, matching the column
+    # reservation, so the rule is the same shape in both enforcement legs and
+    # holds from a standing start.
     payload = _require_custom_value(operator_custom_payload, choice_code)
     if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
         raise ValueError(
@@ -2635,6 +2693,8 @@ def _handle_split_into_partials(
             f"split_into_partials requires discrepancy.fill_id to be set; "
             f"discrepancy_id={disc.discrepancy_id} has fill_id IS NULL"
         )
+
+    _refuse_entry_fill_split_that_moves_the_date(conn, disc, parsed_partials)
     original_fill_id = int(disc.fill_id)
 
     # Read the original fill to (a) sanity-check quantity sum + (b)

@@ -2399,3 +2399,94 @@ def test_r10_M2_the_barrier_LIFTS_once_the_head_is_superseded(conn):
     assert _multi_row_bound_fill_ids(conn)[ids["fill_id"]] == (
         second.correction_id
     )
+
+
+def test_r11_M1_a_date_MOVING_entry_split_is_refused_with_ZERO_corrections(
+    conn,
+):
+    """`split_into_partials` DELETES the bound fill and inserts replacements
+    carrying operator-supplied datetimes, bypassing `_update_journal_field` and
+    its reserved-column refusal. On an ENTRY fill the replacements keep
+    `action='entry'`, so the AUTHORITATIVE entry date moves while
+    trades.entry_date and the archive row stay where they were.
+
+    The correction-keyed barrier could not see this: it permits the operation
+    outright when NO correction row exists, which is the ordinary case. This
+    test therefore starts from zero corrections -- the state that made the hole
+    reachable.
+    """
+    from swing.trades.reconciliation_auto_correct import (
+        ReservedJournalFieldError,
+        apply_tier2_resolution,
+    )
+
+    ids = _seed(conn)
+    conn.execute(
+        "UPDATE reconciliation_discrepancies SET ambiguity_kind = "
+        "'multi_partial_vs_consolidated' WHERE discrepancy_id = ?",
+        (ids["discrepancy_id"],),
+    )
+    conn.commit()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+    with pytest.raises(ReservedJournalFieldError, match="authoritative entry"):
+        apply_tier2_resolution(
+            conn,
+            discrepancy_id=ids["discrepancy_id"],
+            choice_code="split_into_partials",
+            operator_custom_payload=[
+                {"qty": 5.0, "price": 18.8,
+                 "fill_datetime": f"{TARGET_DATE}T13:30:05"},
+                {"qty": 5.0, "price": 18.8,
+                 "fill_datetime": f"{TARGET_DATE}T13:31:05"},
+            ],
+            operator_reason="attempted date-moving split",
+        )
+    assert conn.execute(
+        "SELECT substr(fill_datetime, 1, 10) FROM fills WHERE fill_id = ?",
+        (ids["fill_id"],),
+    ).fetchone()[0] == PRE_DATE
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE
+
+
+def test_r11_M1_a_date_PRESERVING_entry_split_is_still_permitted(conn):
+    """Scoped to PRESERVATION, not to the operation. The multi-leg
+    auto-redirect legitimately splits a consolidated entry fill into
+    execution-grain partials; when every partial lands on the SAME session the
+    three dates still agree and the operation is coherent. Over-blocking it
+    would have broken a shipped capability (18 tests, caught before commit)."""
+    from swing.trades.reconciliation_auto_correct import apply_tier2_resolution
+
+    ids = _seed(conn)
+    conn.execute(
+        "UPDATE reconciliation_discrepancies SET ambiguity_kind = "
+        "'multi_partial_vs_consolidated' WHERE discrepancy_id = ?",
+        (ids["discrepancy_id"],),
+    )
+    conn.commit()
+    apply_tier2_resolution(
+        conn,
+        discrepancy_id=ids["discrepancy_id"],
+        choice_code="split_into_partials",
+        operator_custom_payload=[
+            {"qty": 5.0, "price": 18.8,
+             "fill_datetime": f"{PRE_DATE}T13:30:05"},
+            {"qty": 5.0, "price": 18.8,
+             "fill_datetime": f"{PRE_DATE}T13:31:05"},
+        ],
+        operator_reason="a date-preserving execution-grain split",
+    )
+    dates = {
+        r[0] for r in conn.execute(
+            "SELECT substr(fill_datetime, 1, 10) FROM fills "
+            "WHERE trade_id = ? AND action = 'entry'", (ids["trade_id"],),
+        ).fetchall()
+    }
+    assert dates == {PRE_DATE}
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE

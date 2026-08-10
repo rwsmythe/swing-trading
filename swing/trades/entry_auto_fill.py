@@ -544,15 +544,39 @@ def _execution_date(order: Any) -> tuple[str, str]:
     )
     if execution_date is not None:
         return execution_date, "execution_leg"
+    # VALIDATE THE WHOLE STRING, not the slice (Codex R11 minor).
+    # `_extract_iso_date` splits at `T`/space or takes the first ten
+    # characters, so `2026-07-23garbage` and `2026-07-23Tgarbage` both reduce
+    # to a well-formed-looking `2026-07-23` -- and the canonical check on the
+    # SLICE then passes, producing a populated form default from a value the
+    # contract says should decline auto-fill. Parse the whole thing as either a
+    # bare date or a full ISO datetime whose own prefix IS that date.
     raw_enter_time = getattr(order, "enter_time", "") or ""
     enter_time_date = _extract_iso_date(raw_enter_time)
-    try:
-        parsed = _date_cls.fromisoformat(enter_time_date)
-    except (TypeError, ValueError):
-        return None, "enter_time"
-    if parsed.isoformat() != enter_time_date:
+    if not _is_canonical_enter_time(raw_enter_time, enter_time_date):
         return None, "enter_time"
     return enter_time_date, "enter_time"
+
+
+def _is_canonical_enter_time(raw: Any, extracted: str) -> bool:
+    """True when ``raw`` is a bare canonical date OR a full ISO datetime whose
+    ``[:10]`` prefix is exactly that date."""
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        parsed_date = _date_cls.fromisoformat(extracted)
+    except (TypeError, ValueError):
+        return False
+    if parsed_date.isoformat() != extracted:
+        return False
+    if raw == extracted:
+        return True
+    normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        parsed_dt = datetime.fromisoformat(normalized)
+    except (TypeError, ValueError):
+        return False
+    return parsed_dt.date().isoformat() == extracted
 
 
 def _extract_iso_date(iso_string: str) -> str:
