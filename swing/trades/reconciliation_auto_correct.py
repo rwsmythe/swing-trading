@@ -97,6 +97,26 @@ class ReCorrectionContradictionError(Exception):
     """
 
 
+# `correction_choice` codes whose correction wrote MORE THAN the single
+# journal column the generic tier-3 override can write. Owned here because
+# this is the module that must refuse them; each entry is added by the surface
+# that mints the choice code.
+_MULTI_ROW_CORRECTION_CHOICES: frozenset[str] = frozenset({
+    "correct_entry_date",  # swing/trades/entry_date_correction.py
+})
+
+
+class MultiRowCorrectionOverrideError(Exception):
+    """Tier-3 override refused: the target head covers MORE THAN ONE row.
+
+    Item-5 (Codex R4 Major 1). The generic tier-3 path writes ONE journal
+    column on ONE ``affected_table``. A correction head whose real mutation
+    spanned several coupled rows cannot be superseded through it without
+    leaving the ledger internally inconsistent, so it is refused by
+    ``correction_choice`` -- a durable key owned by the surface that wrote it.
+    """
+
+
 class AlreadySupersededError(Exception):
     """Tier-3 override target already carries ``superseded_by_correction_id``.
 
@@ -1186,6 +1206,34 @@ def _apply_tier3_override_inner(
             f"correction_id={correction_id} is already superseded by "
             f"{target.superseded_by_correction_id}; override the current "
             f"chain head"
+        )
+
+    # Item-5 (Codex R4 Major 1) — REFUSE to override a MULTI-ROW correction
+    # head. This generic path updates ONE journal column on ONE affected_table
+    # and recomputes aggregates only for `fills`. The entry-date correction
+    # writes THREE coupled rows (`trades.entry_date`, the bound entry fill's
+    # `fill_datetime`, the `watchlist_archive` row) under one transaction and
+    # records them as a single `affected_table='trades'` head, so overriding it
+    # here would move `trades.entry_date` ALONE -- leaving the fill and the
+    # archive on the previous date, emitting no coupled event, and stamping the
+    # discrepancy `operator_overridden` while the ledger is internally
+    # inconsistent. The trade validator checks only `current_stop` and `state`,
+    # so it would not even reject a malformed date.
+    #
+    # Keyed on `correction_choice`, which is DURABLE and owned by the surface
+    # that wrote it -- not on `affected_table`, which is the very thing that
+    # under-describes the mutation. Re-correcting an entry date goes back
+    # through `swing journal correct-entry-date` against a fresh finding, so
+    # the whole evidence chain is revalidated rather than partially replayed.
+    if target.correction_choice in _MULTI_ROW_CORRECTION_CHOICES:
+        raise MultiRowCorrectionOverrideError(
+            f"correction_id={correction_id} has correction_choice="
+            f"{target.correction_choice!r}, a MULTI-ROW correction covering "
+            "more than the one journal column this generic override can "
+            "write. Overriding it here would update trades.entry_date alone "
+            "and leave the bound fill and the watchlist_archive row on the "
+            "old date. Re-run `swing journal correct-entry-date` against a "
+            "current finding instead."
         )
 
     # Step 3: validator chain re-run on operator-truth (BEFORE mutation).

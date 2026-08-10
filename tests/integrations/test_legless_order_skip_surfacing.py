@@ -521,3 +521,29 @@ def test_r2_MINOR_a_MAPPER_REJECTION_still_surfaces_an_earlier_skip(conn):
     entries = _legless_entries(result)
     assert len(entries) == 1
     assert entries[0]["order_ids"] == ["2002"]
+
+
+def test_r4_MINOR1_the_same_order_across_TWO_folds_counts_ONCE():
+    """Pass 2 fetches an OVERLAPPING order window once per discrepancy, so the
+    same legless order comes back in several accumulators. Blindly summing
+    would render one order as several coverage gaps with a repeated id -- a
+    quantitatively FALSE summary in the surface whose whole job is to report a
+    gap honestly. The prior test only re-folded an already-cleared list, so it
+    could not see this."""
+    summary = BackfillSummary()
+    for _ in range(3):
+        _fold_legless_skips(summary, [
+            {"order_id": "2002", "index": 0,
+             "reason": "missing_or_empty_leg_collection"},
+        ])
+    assert summary.legless_orders_skipped == 1
+    assert summary.legless_order_ids == ["2002"]
+    block = format_summary_block(summary)
+    assert "could NOT inspect for fills: 1" in block
+
+    # Counterfactual: a genuinely DIFFERENT order still increments.
+    _fold_legless_skips(summary, [
+        {"order_id": "3003", "index": 1, "reason": "non_dict_leg_0"},
+    ])
+    assert summary.legless_orders_skipped == 2
+    assert summary.legless_order_ids == ["2002", "3003"]

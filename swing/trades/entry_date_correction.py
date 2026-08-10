@@ -489,8 +489,17 @@ def _authorize(
     target_requested = _validate_target_date(to_date)
 
     trade = _load_trade_or_refuse(conn, trade_id)
-    allow_active_used = _gate_on_state(trade, allow_active=allow_active)
 
+    # THE NO-OP GUARD STAYS FIRST; THE STATE GATE MOVED BELOW THE EVIDENCE
+    # (Codex R4 Minor 2). The two behave differently under a bad discrepancy:
+    # "already has entry_date X" is TRUE and TERMINAL whatever the cited
+    # finding turns out to be, and it claims nothing about eligibility. The
+    # `--allow-active` refusal is an INSTRUCTION -- it asks the operator to
+    # acknowledge consequences, which implies the rest of the request is
+    # otherwise sound. Raising it before the discrepancy has been proved to
+    # authorize anything sends him to fetch an acknowledgement for a
+    # correction that was never going to run. So the state gate now fires
+    # AFTER the finding is established.
     if str(trade.entry_date) == target_requested:
         raise EntryDateCorrectionError(
             f"trade {trade_id} already has entry_date {target_requested}; "
@@ -619,6 +628,10 @@ def _authorize(
     # 07-31 while `_recompute_aggregates` takes the 07-25 fill's price as
     # `current_avg_cost`, and the audit row asserts the correction was
     # coherent. A gate evaluated only on the PRE state cannot see this.
+    # The evidence is now established, so the operator can be asked for an
+    # acknowledgement that means something.
+    allow_active_used = _gate_on_state(trade, allow_active=allow_active)
+
     new_fill_datetime = _corrected_fill_datetime(pre_fill_datetime, target_date)
     _assert_still_authoritative_after_move(
         conn,

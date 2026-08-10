@@ -1239,3 +1239,88 @@ def test_r3_M4_the_fills_write_boundary_refuses_independently():
         ).fetchone()[0] == "2026-07-31T16:00:00"
     finally:
         c.close()
+
+
+# ===========================================================================
+# Codex R4 fixes
+# ===========================================================================
+
+
+def test_r4_M1_generic_tier3_override_REFUSES_this_correction_head(conn):
+    """The generic tier-3 path writes ONE journal column on ONE affected_table
+    and recomputes aggregates only for `fills`. This correction wrote THREE
+    coupled rows and records them as a single `affected_table='trades'` head,
+    so `override-correction <id> --truth-value '{"entry_date": ...}'` would
+    move trades.entry_date ALONE -- leaving the bound fill and the archive on
+    the old date, emitting no coupled event, and stamping the discrepancy
+    `operator_overridden` over an internally inconsistent ledger. The trade
+    validator checks only `current_stop` and `state`, so it would not even
+    reject a malformed date."""
+    from swing.trades.reconciliation_auto_correct import (
+        MultiRowCorrectionOverrideError,
+        apply_tier3_override,
+    )
+
+    ids = _seed(conn)
+    result = _apply(conn, ids)
+    with pytest.raises(MultiRowCorrectionOverrideError, match="MULTI-ROW"):
+        apply_tier3_override(
+            conn,
+            correction_id=result.correction_id,
+            operator_truth_value={"entry_date": "2026-08-03"},
+            operator_reason="attempted generic override",
+        )
+    # Nothing moved, and the discrepancy was NOT dispositioned.
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+    assert conn.execute(
+        "SELECT fill_datetime FROM fills WHERE fill_id = ?", (ids["fill_id"],),
+    ).fetchone()[0] == f"{TARGET_DATE}T16:00:00"
+    assert conn.execute(
+        "SELECT resolution FROM reconciliation_discrepancies "
+        "WHERE discrepancy_id = ?", (ids["discrepancy_id"],),
+    ).fetchone()[0] == "pending_ambiguity_resolution"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT superseded_by_correction_id FROM reconciliation_corrections "
+        "WHERE correction_id = ?", (result.correction_id,),
+    ).fetchone()[0] is None
+
+
+def test_r4_M1_the_refusal_is_keyed_on_the_DURABLE_correction_choice():
+    """Keyed on `correction_choice`, not `affected_table` -- the latter is the
+    very thing that under-describes a multi-row mutation."""
+    from swing.trades.reconciliation_auto_correct import (
+        _MULTI_ROW_CORRECTION_CHOICES,
+    )
+
+    assert CORRECTION_CHOICE in _MULTI_ROW_CORRECTION_CHOICES
+
+
+def test_r4_MINOR2_an_active_trade_with_a_BAD_discrepancy_names_the_evidence(
+    conn,
+):
+    """The `--allow-active` refusal is an INSTRUCTION: it asks the operator to
+    fetch an acknowledgement, which implies the rest of the request is sound.
+    Raising it before the discrepancy has been proved to authorize anything
+    sends him after an acknowledgement for a correction that was never going to
+    run."""
+    ids = _seed(conn, trade_state="managing")
+    with pytest.raises(EntryDateCorrectionError) as exc:
+        correct_entry_date(
+            conn, trade_id=ids["trade_id"], to_date=TARGET_DATE,
+            discrepancy_id=999999, reason="x",
+        )
+    msg = str(exc.value)
+    assert "discrepancy 999999 not found" in msg
+    assert "--allow-active" not in msg
+
+
+def test_r4_MINOR2_the_state_gate_still_fires_on_a_GOOD_discrepancy(conn):
+    """Counterfactual: the gate moved, it did not disappear."""
+    ids = _seed(conn, trade_state="managing")
+    with pytest.raises(EntryDateCorrectionError, match="--allow-active"):
+        _apply(conn, ids)

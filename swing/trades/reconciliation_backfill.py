@@ -1459,10 +1459,19 @@ def _fold_legless_skips(
     """
     if not skips:
         return
-    summary.legless_orders_skipped += len(skips)
-    summary.legless_order_ids.extend(
-        str(s.get("order_id")) for s in skips
-    )
+    # DEDUPE BY ORDER ID ACROSS THE WHOLE RUN (Codex R4 Minor 1). Pass 2
+    # fetches an OVERLAPPING order window once per discrepancy, so the same
+    # legless order comes back in several accumulators. Blindly summing would
+    # render one order as several coverage gaps with a repeated id -- a
+    # quantitatively FALSE summary, in the surface whose entire job is to
+    # report a gap honestly. The count is of DISTINCT orders, which is what
+    # the rendered line says it is.
+    for s in skips:
+        order_id = str(s.get("order_id"))
+        if order_id in summary.legless_order_ids:
+            continue
+        summary.legless_order_ids.append(order_id)
+        summary.legless_orders_skipped += 1
     skips.clear()
 
 
