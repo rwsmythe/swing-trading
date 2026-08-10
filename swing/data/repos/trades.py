@@ -27,6 +27,7 @@ Phase 7 (Sub-A T6 + Sub-C C.14) changes:
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -775,6 +776,44 @@ def update_entry_intent(
         return
     cur = conn.execute(
         "UPDATE trades SET entry_intent = ? WHERE id = ?", (entry_intent, trade_id))
+    if cur.rowcount == 0:
+        raise ValueError(f"trade {trade_id} not found")
+
+
+def update_entry_date(
+    conn: sqlite3.Connection, *, trade_id: int, entry_date: str,
+) -> None:
+    """UPDATE trades.entry_date ONLY. Caller wraps the transaction.
+
+    Item-5 T2 -- the audited entry-date correction surface's only `trades`
+    writer. Modelled on `update_entry_intent`: narrow, literal SQL (no
+    interpolated identifier), no state transition, missing trade_id raises
+    ValueError.
+
+    `entry_date` must be a bare ISO calendar date. A full ISO datetime is
+    REJECTED here as well as at the service boundary, because downstream
+    callers do `date.fromisoformat(trade.entry_date)` directly -- the same
+    rejection `swing/trades/entry.py` makes on the record path.
+
+    Deliberately does NOT touch `pre_trade_locked_at`. That column is written
+    as `entry_date + 'T16:00:00'` and is a synthetic restatement of this one,
+    not independent evidence; moving it would manufacture a lock time nothing
+    supports (RD, 2026-08-09). The correction surface NAMES the resulting
+    staleness in its audit reason instead.
+    """
+    if not isinstance(entry_date, str) or not entry_date.strip():
+        raise ValueError("entry_date must be a non-empty YYYY-MM-DD string")
+    candidate = entry_date.strip()
+    if "T" in candidate:
+        raise ValueError(
+            f"entry_date must be a DATE, not a datetime; got {candidate!r}")
+    try:
+        _dt.date.fromisoformat(candidate)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"entry_date must be a valid YYYY-MM-DD; got {candidate!r}") from exc
+    cur = conn.execute(
+        "UPDATE trades SET entry_date = ? WHERE id = ?", (candidate, trade_id))
     if cur.rowcount == 0:
         raise ValueError(f"trade {trade_id} not found")
 

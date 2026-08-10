@@ -97,6 +97,41 @@ def archive_watchlist_entry(conn: sqlite3.Connection, a: WatchlistArchiveEntry) 
     return int(insert_cur.lastrowid)
 
 
+class WatchlistArchiveMatchError(Exception):
+    """A `watchlist_archive` correction did not bind exactly one row."""
+
+
+def update_archive_removed_date(
+    conn: sqlite3.Connection, *, archive_id: int, removed_date: str,
+) -> None:
+    """UPDATE watchlist_archive.removed_date for ONE bound row. Caller owns tx.
+
+    Item-5 T2. `entry.py` writes `removed_date=req.entry_date` when a watchlist
+    ticker is entered, so the archive row carries the SAME defective date the
+    trade row does -- correcting one without the other leaves two rows
+    disagreeing about the same event.
+
+    The row is bound by PRIMARY KEY, resolved by the caller from
+    `(ticker, reason='entered', removed_date)` with an exactly-one-match
+    requirement. `watchlist_archive` carries NO unique constraint on that
+    triple, so "the archive row for this trade" is an assumption until a query
+    proves it -- a ticker entered twice is exactly the shape that produces two.
+    A missing id raises rather than silently no-opping.
+    """
+    if not isinstance(removed_date, str) or not removed_date.strip():
+        raise ValueError("removed_date must be a non-empty YYYY-MM-DD string")
+    cur = conn.execute(
+        "UPDATE watchlist_archive SET removed_date = ? WHERE id = ?",
+        (removed_date.strip(), archive_id),
+    )
+    if cur.rowcount != 1:
+        raise WatchlistArchiveMatchError(
+            f"watchlist_archive row {archive_id} not found; "
+            f"{cur.rowcount} rows updated. Nothing else in this correction "
+            "should be committed."
+        )
+
+
 def list_archive(
     conn: sqlite3.Connection, *, ticker: str | None = None, limit: int = 100
 ) -> list[WatchlistArchiveEntry]:

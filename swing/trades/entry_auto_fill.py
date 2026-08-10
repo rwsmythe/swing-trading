@@ -73,6 +73,7 @@ from swing.integrations.schwab.client import (
     SchwabConfigMissingError,
     SchwabRateLimitError,
 )
+from swing.trades.execution_dates import latest_execution_leg_date
 from swing.trades.schwab_reconciliation import (
     _compute_execution_price,
     _is_execution_bearing_candidate,
@@ -500,33 +501,21 @@ def _execution_date(order: Any) -> tuple[str, str]:
       fills must not silently date the trade. The fallback is VISIBLE in the
       returned source (and so in the audit envelope), never absorbed.
 
-    Timezone convention (deliberate, not inherited): the emitted date is the
-    naive ``[:10]`` prefix of the winning leg's RAW timestamp string, with no
-    conversion to America/New_York. The reconciliation side reads the same
-    fact the same way (``schwab_reconciliation.py`` ``_fill_execution_session
-    _distance``: ``_date.fromisoformat(str(raw_time)[:10])``), and two paths
-    reading one fact differently is the #24-#26 divergence class — an
-    auto-fill that converted to ET while the A2-date guard did not would
-    manufacture a permanent one-session disagreement on every after-hours
-    execution. Parsing is used ONLY to rank the legs; a naive leg timestamp
-    is ranked as UTC for that purpose.
+    The ranking + timezone convention live in
+    ``swing/trades/execution_dates.py`` and are NOT reimplemented here: the
+    entry-date correction surface derives the same date from a discrepancy's
+    persisted ``execution_legs`` payload, and its whole authorization argument
+    is that the date it writes is the date THIS function should have written.
+    Two implementations of one derivation is the #24-#26 divergence class.
     """
     enter_time_date = _extract_iso_date(getattr(order, "enter_time", "") or "")
     executions = getattr(order, "executions", None) or []
-    ranked: list[tuple[datetime, str]] = []
-    for leg in executions:
-        raw = getattr(leg, "time", None)
-        try:
-            parsed = datetime.fromisoformat(str(raw))
-        except (TypeError, ValueError):
-            return enter_time_date, "enter_time"
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        ranked.append((parsed, str(raw)))
-    if not ranked:
+    execution_date = latest_execution_leg_date(
+        getattr(leg, "time", None) for leg in executions
+    )
+    if execution_date is None:
         return enter_time_date, "enter_time"
-    _, winning_raw = max(ranked, key=lambda pair: pair[0])
-    return _extract_iso_date(winning_raw), "execution_leg"
+    return execution_date, "execution_leg"
 
 
 def _extract_iso_date(iso_string: str) -> str:

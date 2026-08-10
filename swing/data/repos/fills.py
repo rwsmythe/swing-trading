@@ -145,6 +145,34 @@ def _recompute_aggregates(conn: sqlite3.Connection, trade_id: int) -> None:
     )
 
 
+def update_fill_datetime(
+    conn: sqlite3.Connection, *, fill_id: int, fill_datetime: str,
+) -> None:
+    """UPDATE fills.fill_datetime ONLY, for ONE fill. Caller owns the tx.
+
+    Item-5 T2 -- the entry-date correction surface's only `fills` writer.
+    Narrow + literal SQL (no interpolated identifier): the operator supplies a
+    DATE, never a field name.
+
+    The caller MUST call `_recompute_aggregates` afterwards. Moving a fill's
+    datetime can move `trades.last_fill_at` (MAX over fills) and
+    `trades.current_avg_cost` (the entry fill ORDER BY fill_datetime ASC
+    re-sort), and this writer deliberately does neither so the caller can read
+    pre-values, recompute, and read post-values in one auditable order.
+
+    A missing fill_id raises ValueError -- silence here would let a correction
+    report success having written nothing.
+    """
+    if not isinstance(fill_datetime, str) or not fill_datetime.strip():
+        raise ValueError("fill_datetime must be a non-empty ISO string")
+    cur = conn.execute(
+        "UPDATE fills SET fill_datetime = ? WHERE fill_id = ?",
+        (fill_datetime.strip(), fill_id),
+    )
+    if cur.rowcount == 0:
+        raise ValueError(f"fill {fill_id} not found")
+
+
 def get_authoritative_entry_fill(
     conn: sqlite3.Connection, trade_id: int,
 ) -> Fill | None:

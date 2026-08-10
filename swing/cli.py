@@ -2215,6 +2215,151 @@ def journal_cash_void_cmd(ctx, cash_movement_id, reason, date_str):
     )
 
 
+@journal_group.command("correct-entry-date")
+@click.argument("trade_id", type=int)
+@click.option(
+    "--to", "to_date", required=True,
+    help=(
+        "YYYY-MM-DD the trade actually executed on. This is a CONFIRMATION, "
+        "not the source: the service DERIVES the date from the cited "
+        "discrepancy's own execution evidence and refuses unless --to equals "
+        "it."
+    ),
+)
+@click.option(
+    "--discrepancy", "discrepancy_id", type=int, required=True,
+    help=(
+        "The reconciliation discrepancy that motivated the correction. "
+        "Required -- reconciliation_corrections declares discrepancy_id and "
+        "reconciliation_run_id NOT NULL, so a correction cannot float."
+    ),
+)
+@click.option(
+    "--reason", "reason", required=True,
+    help="Why the recorded entry date is wrong (required, non-empty).",
+)
+@click.option(
+    "--allow-active", "allow_active", is_flag=True, default=False,
+    help=(
+        "Acknowledge the consequences of correcting a LIVE position's entry "
+        "date. Required for state entered/managing/partial_exited; the "
+        "refusal prints the full consequence inventory."
+    ),
+)
+@click.option(
+    "--dry-run", "dry_run", is_flag=True, default=False,
+    help="Validate, bind, and print before/after; write nothing.",
+)
+@click.pass_context
+def journal_correct_entry_date_cmd(
+    ctx, trade_id, to_date, discrepancy_id, reason, allow_active, dry_run,
+):
+    """Correct a recorded trades.entry_date under an audited, append-only trail.
+
+    The D19 / `journal cash-void` precedent, one field over: CLI-only, no
+    schema, reason-required. `entry_date` is fanned out by `record_entry`, so
+    the correction moves the three values that carry the same defective date --
+    trades.entry_date, the discrepancy's OWN bound entry fill's fill_datetime,
+    and the reason='entered' watchlist_archive row's removed_date -- in ONE
+    transaction, then recomputes the trade's fill aggregates and appends a
+    reconciliation_corrections row plus a trade_events row.
+
+    Correcting fills.fill_datetime is not optional: the session-distance guard
+    that raises these findings measures against that column and never against
+    trades.entry_date, so a trades-only correction would ship, be witnessed,
+    and the very next reconciliation would re-raise the identical finding.
+
+    trades.pre_trade_locked_at is DELIBERATELY LEFT ALONE (RD 2026-08-09). It
+    is written as entry_date + 'T16:00:00' and equals exactly that on every
+    live trade -- a synthetic restatement of the column under correction, not
+    independent evidence -- so moving it would manufacture a lock time nothing
+    supports. The resulting staleness is NAMED in the stored reason.
+
+    This command does NOT resolve the discrepancy. Ordering is binding:
+    correct first, resolve second, because the resolution's reason text
+    asserts a correction that must already have happened. On success the
+    command prints the ready-to-paste follow-up with the real correction id
+    substituted.
+    """
+    from swing.config_overrides import apply_overrides
+    from swing.data.db import connect
+    from swing.trades.entry_date_correction import (
+        EntryDateCorrectionError,
+        correct_entry_date,
+        preview_entry_date_correction,
+    )
+
+    cfg = apply_overrides(ctx.obj["config"])
+    conn = connect(cfg.paths.db_path)
+    try:
+        if dry_run:
+            try:
+                preview = preview_entry_date_correction(
+                    conn, trade_id=trade_id, to_date=to_date,
+                    discrepancy_id=discrepancy_id, reason=reason,
+                    allow_active=allow_active,
+                )
+            except EntryDateCorrectionError as exc:
+                raise click.ClickException(str(exc)) from exc
+            click.echo(
+                f"DRY RUN -- nothing written. trade {preview.trade_id} "
+                f"({preview.ticker}, state={preview.state}), discrepancy "
+                f"{preview.discrepancy_id}, fill {preview.fill_id}, "
+                f"watchlist_archive row {preview.watchlist_archive_id}."
+            )
+            click.echo(f"Server-derived target date: {preview.target_date}")
+            click.echo("")
+            click.echo("  field                             before -> after")
+            for fname in preview.pre_values:
+                click.echo(
+                    f"  {fname:<33} {preview.pre_values[fname]} -> "
+                    f"{preview.post_values[fname]}"
+                )
+            click.echo("")
+            click.echo("  aggregate                         before -> after")
+            for agg, val in preview.aggregates_before.items():
+                click.echo(
+                    f"  trades.{agg:<26} {val} -> (recomputed on apply)"
+                )
+            if preview.pre_trade_locked_at_left_stale is not None:
+                click.echo("")
+                click.echo(
+                    "  trades.pre_trade_locked_at stays at "
+                    f"{preview.pre_trade_locked_at_left_stale} and becomes a "
+                    "LABELLED stale derivative of the pre-correction "
+                    "entry_date (RD 2026-08-09). It is not moved because it "
+                    "is derived from the very column being corrected."
+                )
+            if preview.allow_active_used:
+                click.echo("")
+                click.echo("  --allow-active consequences:")
+                for item in preview.active_trade_consequences:
+                    click.echo(f"    {item}")
+            return
+
+        try:
+            result = correct_entry_date(
+                conn, trade_id=trade_id, to_date=to_date,
+                discrepancy_id=discrepancy_id, reason=reason,
+                allow_active=allow_active,
+            )
+        except EntryDateCorrectionError as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        conn.close()
+
+    click.echo(
+        f"correction {result.correction_id} applied to trade "
+        f"{result.trade_id} (entry_date {result.pre_entry_date} -> "
+        f"{result.target_date}; fill {result.fill_id}; watchlist_archive row "
+        f"{result.watchlist_archive_id})."
+    )
+    click.echo("")
+    click.echo("Next, close the finding that motivated it:")
+    click.echo("")
+    click.echo(f"  {result.follow_up_command}")
+
+
 @journal_group.command("reconcile-tos")
 @click.option(
     "--csv-path", "csv_path", required=True,
