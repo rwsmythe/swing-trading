@@ -924,3 +924,65 @@ def test_t1_r1_M2_the_helper_emits_a_CANONICAL_date():
     assert latest_execution_leg_date(
         ["2026-07-31T13:30:05+0000", "20260801"],
     ) is None
+
+
+def test_t1_r2_M5_a_non_canonical_enter_time_fallback_declines_to_autofill(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The fallback was NOT held to the canonical standard the legs are held
+    to. `_extract_iso_date` only splits on `T` and slices, so a compact
+    `20260731T133005` enter_time became `"20260731"` -- and one malformed
+    execution leg is enough to activate that path. The result would be a
+    POPULATED form default carrying a non-date, i.e. exactly the shape the leg
+    checks were added to prevent, arriving through the other door."""
+    order = _make_buy_order_with_leg_times(
+        enter_time="20260731T133005", leg_times=("not-a-timestamp",),
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = resolve_entry_auto_fill(
+        ticker="FTRE", cfg=_make_cfg(environment="production"),
+        conn=conn, now=fake_now,
+    )
+    assert result.kind == "empty"
+    assert result.entry_date is None
+    assert "no usable execution date" in (result.advisory_text or "")
+
+
+def test_t1_r2_M5_a_canonical_enter_time_fallback_still_populates(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Counterfactual: the same malformed-leg path with a WELL-FORMED
+    enter_time still auto-fills, stamped with its true source."""
+    order = _make_buy_order_with_leg_times(
+        enter_time="2026-07-23T14:30:00.000Z",
+        leg_times=("not-a-timestamp",),
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = resolve_entry_auto_fill(
+        ticker="FTRE", cfg=_make_cfg(environment="production"),
+        conn=conn, now=fake_now,
+    )
+    assert result.kind == "populated"
+    assert result.entry_date == "2026-07-23"
+    assert json.loads(
+        result.schwab_source_value_json,
+    )["entry_date_source"] == "enter_time"
+
+
+def test_t1_r2_M4_mixed_offset_legs_are_refused_by_the_shared_helper():
+    """Ranking is by absolute instant; the emitted value is the leg's own
+    offset-local prefix. Those agree only while every leg shares one offset."""
+    from swing.trades.execution_dates import latest_execution_leg_date
+
+    # Later in ABSOLUTE time, EARLIER local date -- the two conventions
+    # disagree, so there is no single right answer to return.
+    assert latest_execution_leg_date([
+        "2026-08-01T00:30:00+14:00",
+        "2026-07-31T23:00:00-10:00",
+    ]) is None
+    # One shared offset, mixed with naive (ranked as UTC): still answerable.
+    assert latest_execution_leg_date([
+        "2026-07-31T13:30:05+0000", "2026-07-31T14:00:00+00:00",
+    ]) == "2026-07-31"

@@ -949,3 +949,138 @@ def test_r1_MINOR_a_failure_AFTER_the_audit_insert_also_rolls_back(
     assert conn.execute(
         "SELECT COUNT(*) FROM reconciliation_corrections",
     ).fetchone()[0] == 0
+
+
+# ===========================================================================
+# Codex R2 fixes
+# ===========================================================================
+
+
+def _add_second_entry_fill(conn, ids, *, when: str = "2026-08-03T16:00:00"):
+    """A scale-in: a SECOND `action='entry'` fill, later than the first."""
+    cur = conn.execute(
+        "INSERT INTO fills (trade_id, fill_datetime, action, quantity, price, "
+        "reconciliation_status) VALUES (?, ?, 'entry', 5.0, 19.1, "
+        "'unreconciled')", (ids["trade_id"], when),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def test_r2_M1_a_later_SCALE_IN_fill_cannot_redate_the_whole_trade(conn):
+    """`action='entry'` is NOT the same as "the fill that dated this trade".
+
+    A scale-in adds a SECOND entry fill; an `entry_price_mismatch` raised on
+    that add-on would otherwise move trades.entry_date, the archive row and
+    every entry-date-derived metric onto the ADD-ON's execution date.
+    """
+    ids = _seed(conn)
+    addon_id = _add_second_entry_fill(conn, ids)
+    conn.execute(
+        "UPDATE reconciliation_discrepancies SET fill_id = ? "
+        "WHERE discrepancy_id = ?", (addon_id, ids["discrepancy_id"]),
+    )
+    conn.commit()
+    with pytest.raises(EntryDateCorrectionError, match="AUTHORITATIVE"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == PRE_DATE
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_r2_M1_the_authoritative_fill_still_works_with_a_scale_in_present(conn):
+    """Counterfactual: the SAME trade, the SAME add-on, but the discrepancy
+    binds the FIRST entry fill -- accepted."""
+    ids = _seed(conn)
+    _add_second_entry_fill(conn, ids)
+    _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+
+
+def test_r2_M1_a_fill_already_diverged_from_the_trade_date_is_refused(conn):
+    """The surface RESTORES a coupling; it must not be used where the fill and
+    the trade already disagree for some other reason."""
+    ids = _seed(conn, fill_datetime="2026-07-20T16:00:00")
+    with pytest.raises(EntryDateCorrectionError, match="already\n?\\s*disagrees|already disagrees"):
+        _apply(conn, ids)
+
+
+def test_r2_M2_a_same_ticker_same_date_sibling_trade_refuses(conn):
+    """`watchlist_archive` has NO trade identity. `entry.py` writes a row only
+    when the ticker is CURRENTLY watchlisted, so a same-day SECOND entry on the
+    same ticker creates no row of its own -- and a naive lookup would bind, and
+    rewrite, the FIRST trade's row. Exactly-one-match proves CARDINALITY, not
+    OWNERSHIP."""
+    ids = _seed(conn)
+    conn.execute(
+        "INSERT INTO trades (ticker, entry_date, entry_price, initial_shares, "
+        "initial_stop, current_stop, state, trade_origin, pre_trade_locked_at) "
+        "VALUES ('FTRE', ?, 18.9, 5, 16.0, 16.0, 'closed', "
+        "'manual_off_pipeline', ?)", (PRE_DATE, f"{PRE_DATE}T16:00:00"),
+    )
+    conn.commit()
+    with pytest.raises(EntryDateCorrectionError, match="UNPROVABLE"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT removed_date FROM watchlist_archive WHERE ticker='FTRE'",
+    ).fetchone()[0] == PRE_DATE
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_r2_M2_a_same_ticker_DIFFERENT_date_trade_does_not_block(conn):
+    """Counterfactual: the ownership hazard is specific to a shared
+    (ticker, entry_date); an earlier entry on another date is irrelevant."""
+    ids = _seed(conn)
+    conn.execute(
+        "INSERT INTO trades (ticker, entry_date, entry_price, initial_shares, "
+        "initial_stop, current_stop, state, trade_origin, pre_trade_locked_at) "
+        "VALUES ('FTRE', '2026-05-20', 18.9, 5, 16.0, 16.0, 'closed', "
+        "'manual_off_pipeline', '2026-05-20T16:00:00')",
+    )
+    conn.commit()
+    _apply(conn, ids)
+    assert conn.execute(
+        "SELECT entry_date FROM trades WHERE id = ?", (ids["trade_id"],),
+    ).fetchone()[0] == TARGET_DATE
+
+
+@pytest.mark.parametrize("bad_count", [True, 1.0, 2, 0, "1", None])
+def test_r2_M3_candidate_count_must_be_a_STRICT_integer_one(conn, bad_count):
+    """Python evaluates `True == 1`, so a bare `!= 1` admits a JSON boolean
+    `true` -- and `1.0` besides. A malformed persisted payload must not
+    authorize three ledger writes on a truthy value that never asserted a
+    singleton."""
+    payload = json.loads(_live_actual_value_json())
+    payload["candidate_count"] = bad_count
+    ids = _seed(conn, actual_value_json=json.dumps(payload, sort_keys=True))
+    with pytest.raises(EntryDateCorrectionError, match="candidate_count"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+
+
+def test_r2_M4_mixed_offset_legs_are_REFUSED_not_silently_resolved(conn):
+    """Ranking is by ABSOLUTE INSTANT while the emitted value is the leg's own
+    offset-local prefix; those agree only while every leg shares one offset.
+    Codex's case: a later-in-absolute-time -10:00 leg carries an EARLIER local
+    date than an earlier +14:00 leg, so "the latest leg's date" stops having
+    one answer."""
+    ids = _seed(conn, actual_value_json=_live_actual_value_json(
+        leg_times=(
+            "2026-08-01T00:30:00+14:00",
+            "2026-07-31T23:00:00-10:00",
+        ),
+    ))
+    with pytest.raises(EntryDateCorrectionError, match="unparseable"):
+        _apply(conn, ids)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0

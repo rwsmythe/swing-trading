@@ -492,3 +492,25 @@ def test_r1_M4_a_POST_FETCH_raise_still_folds_the_recorded_skips():
     finally:
         conn.close()
     assert isinstance(sqlite3.Connection, type)
+
+
+def test_r2_MINOR_a_MAPPER_REJECTION_still_surfaces_an_earlier_skip(conn):
+    """`SchwabSchemaParityError` is NOT a subclass of `SchwabApiError` (it
+    derives from `_RedactedMessageError`), so a mapper rejection used to
+    propagate out of the step entirely -- taking with it any legless skip
+    already recorded from an EARLIER order in the same payload, because the
+    runner never receives a result dict at all.
+
+    One legless row followed by one malformed row is exactly that shape.
+    """
+    from swing.integrations.schwab.pipeline_steps import _step_schwab_orders
+
+    malformed = {"status": "FILLED", "enteredTime": "2026-07-23T14:30:00.000Z"}
+    result = _step_schwab_orders(
+        conn, _cfg(), pipeline_run_id=None,
+        client=_client([_legless_order("2002"), malformed]),
+    )
+    assert result["status"] == "failed"
+    entries = _legless_entries(result)
+    assert len(entries) == 1
+    assert entries[0]["order_ids"] == ["2002"]

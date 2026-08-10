@@ -62,6 +62,7 @@ from swing.integrations.schwab import audit_service
 from swing.integrations.schwab.client import (
     SchwabApiError,
     SchwabConfigMissingError,
+    SchwabSchemaParityError,
 )
 from swing.integrations.schwab.trader import (
     TRANSACTION_TYPES_ALL,
@@ -569,7 +570,15 @@ def _step_schwab_orders(
             pipeline_run_id=pipeline_run_id,
         )
         call_ids.append(_latest_call_id_for_pipeline(conn, pipeline_run_id))
-    except SchwabApiError as exc:
+    # `SchwabSchemaParityError` is NOT a subclass of `SchwabApiError` (it
+    # derives from `_RedactedMessageError`), so a mapper rejection used to
+    # propagate out of this step entirely -- and with it any legless skip
+    # already recorded from an EARLIER order in the same payload, because the
+    # runner never receives a result dict at all (Codex R2 Minor 1). One
+    # legless row followed by one malformed row is exactly that shape. Catch it
+    # here and return the same failure envelope so the count still reaches
+    # `pipeline_runs.warnings_json`.
+    except (SchwabApiError, SchwabSchemaParityError) as exc:
         log.warning(
             "_step_schwab_orders: Trader-API failure: %s",
             type(exc).__name__,

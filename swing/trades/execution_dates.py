@@ -14,9 +14,13 @@ Two implementations of one derivation is the #24-#26 two-path-divergence
 class, so the derivation lives here once and neither caller reimplements it.
 
 Timezone convention, stated because it is a decision and not an oversight:
-the emitted value is the naive ``[:10]`` prefix of the winning leg's RAW
-timestamp string — the UTC calendar date, with NO conversion to
-America/New_York. The reconciliation side reads the same fact the same way
+the emitted value is the winning leg's OWN offset-local calendar date — the
+``[:10]`` prefix of its RAW timestamp string — with NO conversion to
+America/New_York and no offset arithmetic. Schwab emits ``+0000`` on every
+execution leg, so in practice that IS the UTC calendar date; the two are
+distinguished here because they are not the same claim, and a MIXED-offset
+collection is REFUSED rather than resolved (see the function's own note).
+The reconciliation side reads the same fact the same way
 (``swing/trades/schwab_reconciliation.py`` ``_fill_execution_session_distance``:
 ``_date.fromisoformat(str(raw_time)[:10])``). An auto-fill that converted to
 ET while the A2-date guard did not would manufacture a permanent one-session
@@ -34,7 +38,7 @@ half-applied.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 __all__ = ["latest_execution_leg_date"]
@@ -44,10 +48,12 @@ def latest_execution_leg_date(raw_times: Iterable[Any]) -> str | None:
     """The ``YYYY-MM-DD`` of the LATEST execution leg, or ``None``.
 
     ``None`` means "no usable execution-grain date", and it is returned for
-    exactly two reasons, both of which the callers surface rather than absorb:
+    exactly four reasons, all of which the callers surface rather than absorb:
 
       - the leg collection is empty;
-      - ANY leg's ``time`` is unparseable.
+      - ANY leg's ``time`` is unparseable, non-``str``, or not in the EXTENDED
+        ``YYYY-MM-DD...`` format;
+      - the legs do not all share ONE utc offset.
 
     The second is deliberate. ``SchwabExecutionLeg.time`` is validated
     NON-EMPTY, not PARSEABLE, so any non-empty string reaches here. Skipping a
@@ -73,6 +79,7 @@ def latest_execution_leg_date(raw_times: Iterable[Any]) -> str | None:
     is a whole-collection refusal, exactly as an unparseable value is.
     """
     ranked: list[tuple[datetime, str]] = []
+    offsets: set[timedelta] = set()
     for raw in raw_times:
         if not isinstance(raw, str):
             return None
@@ -88,8 +95,23 @@ def latest_execution_leg_date(raw_times: Iterable[Any]) -> str | None:
             return None
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
+        offset = parsed.utcoffset() or timedelta(0)
+        offsets.add(offset)
         ranked.append((parsed, canonical))
     if not ranked:
+        return None
+    if len(offsets) > 1:
+        # MIXED OFFSETS ARE REFUSED, not silently resolved (Codex R2 Major 4).
+        # Ranking is by ABSOLUTE INSTANT while the emitted value is the leg's
+        # own offset-local prefix, and those two only agree while every leg
+        # shares one offset. With mixed offsets a later-in-absolute-time leg at
+        # -10:00 can carry an EARLIER local date than an earlier leg at +14:00,
+        # so "the latest leg's date" stops having one answer. Picking either
+        # convention here would silently diverge from the reconciliation guard,
+        # which reads the raw prefix with no offset arithmetic at all -- the
+        # #24-#26 class. A whole-collection refusal is the honest answer, and
+        # the callers already surface a refusal as a visible fallback. Schwab
+        # emits `+0000` on every leg, so this is a guard, not a live path.
         return None
     _, winning_date = max(ranked, key=lambda pair: pair[0])
     return winning_date

@@ -120,13 +120,45 @@ def test_v35_preserves_every_column_index_and_check(tmp_path):
         "ix_reconciliation_discrepancies_material",
         "ix_reconciliation_discrepancies_pending_ambiguity",
     }
-    # The pending_ambiguity index is PARTIAL; a rebuild that dropped the WHERE
-    # would still satisfy the name check above.
-    partial_sql = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE name = "
-        "'ix_reconciliation_discrepancies_pending_ambiguity'",
-    ).fetchone()[0]
-    assert "WHERE resolution = 'pending_ambiguity_resolution'" in partial_sql
+    # THREE of the five indexes are PARTIAL, and the name check above would
+    # pass with any of their predicates changed or dropped (Codex R2 Minor 2).
+    # Compare the full normalized DDL of ALL FIVE, not one.
+    def _index_ddl(c):
+        return {
+            r[0]: " ".join(r[1].split())
+            for r in c.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='reconciliation_discrepancies' "
+                "AND name LIKE 'ix_%'",
+            ).fetchall()
+        }
+
+    assert _index_ddl(conn) == {
+        "ix_reconciliation_discrepancies_run": (
+            "CREATE INDEX ix_reconciliation_discrepancies_run ON "
+            "reconciliation_discrepancies(run_id)"
+        ),
+        "ix_reconciliation_discrepancies_trade": (
+            "CREATE INDEX ix_reconciliation_discrepancies_trade ON "
+            "reconciliation_discrepancies(trade_id) "
+            "WHERE trade_id IS NOT NULL"
+        ),
+        "ix_reconciliation_discrepancies_unresolved": (
+            "CREATE INDEX ix_reconciliation_discrepancies_unresolved ON "
+            "reconciliation_discrepancies(resolution) "
+            "WHERE resolution = 'unresolved'"
+        ),
+        "ix_reconciliation_discrepancies_material": (
+            "CREATE INDEX ix_reconciliation_discrepancies_material ON "
+            "reconciliation_discrepancies(trade_id, material_to_review) "
+            "WHERE material_to_review = 1 AND resolution = 'unresolved'"
+        ),
+        "ix_reconciliation_discrepancies_pending_ambiguity": (
+            "CREATE INDEX ix_reconciliation_discrepancies_pending_ambiguity "
+            "ON reconciliation_discrepancies(ambiguity_kind, created_at) "
+            "WHERE resolution = 'pending_ambiguity_resolution'"
+        ),
+    }
 
     # The cross-column resolution/ambiguity_kind CHECK still binds.
     run_id = _insert_run(conn)
@@ -425,4 +457,60 @@ def test_r1_M3_the_migration_leaves_no_temp_table_behind(tmp_path):
         ).fetchall()
     }
     assert not {t for t in temp if t.startswith("_a4_seq")}, temp
+    conn.close()
+
+
+def test_r2_MINOR_every_FK_and_its_ON_DELETE_action_survives(tmp_path):
+    """The rebuild restates FIVE foreign keys by hand. A changed `ON DELETE`
+    action -- SET NULL silently becoming NO ACTION, say -- is invisible to the
+    column, index and CHECK assertions above, and it would only surface as data
+    loss or an integrity error months later. Compared against the v34
+    definition rather than a hand-written expectation."""
+    def _fks(c):
+        return sorted(
+            (r[2], r[3], r[4], r[5], r[6])  # table, from, to, on_update, on_delete
+            for r in c.execute(
+                "PRAGMA foreign_key_list(reconciliation_discrepancies)",
+            ).fetchall()
+        )
+
+    conn = _migrate(tmp_path, 34)
+    before = _fks(conn)
+    conn.close()
+
+    conn = sqlite3.connect(tmp_path / "t.db")
+    conn.execute("PRAGMA foreign_keys=ON")
+    run_migrations(conn, target_version=35, backup_dir=tmp_path)
+    assert _fks(conn) == before
+    assert len(before) == 5, before
+    # And the SET NULL actions are actually present, so a v34 that had already
+    # lost them could not make this test vacuous.
+    assert sorted(a for *_, a in before) == [
+        "CASCADE", "SET NULL", "SET NULL", "SET NULL", "SET NULL",
+    ]
+    conn.close()
+
+
+def test_r2_MINOR_the_index_ddl_is_compared_against_the_v34_definition(tmp_path):
+    """The hand-written expectation in the test above is itself checked: the
+    five index definitions must be byte-identical (modulo whitespace) to the
+    ones a v34 DB carries."""
+    def _ddl(c):
+        return {
+            r[0]: " ".join(r[1].split())
+            for r in c.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='reconciliation_discrepancies' "
+                "AND name LIKE 'ix_%'",
+            ).fetchall()
+        }
+
+    conn = _migrate(tmp_path, 34)
+    before = _ddl(conn)
+    conn.close()
+
+    conn = sqlite3.connect(tmp_path / "t.db")
+    conn.execute("PRAGMA foreign_keys=ON")
+    run_migrations(conn, target_version=35, backup_dir=tmp_path)
+    assert _ddl(conn) == before
     conn.close()

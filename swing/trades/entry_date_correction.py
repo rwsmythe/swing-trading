@@ -390,11 +390,21 @@ def _derive_target_date_from_discrepancy(
     # `trades.entry_date`, the entry fill and the archive row onto it, and
     # append an audit row that looks entirely valid. `--to` is no protection:
     # the server derives the wrong date and asks the operator to confirm it.
-    if payload.get("candidate_count") != 1:
+    candidate_count = payload.get("candidate_count")
+    # STRICT int (Codex R2 Major 3): Python evaluates `True == 1`, so a bare
+    # `!= 1` admits a JSON boolean `true`, and it admits `1.0` besides. The
+    # classifier already rejects bools and non-integers on its own count field;
+    # a malformed persisted payload must not authorize three ledger writes on
+    # the strength of a truthy value that never asserted a singleton.
+    if (
+        not isinstance(candidate_count, int)
+        or isinstance(candidate_count, bool)
+        or candidate_count != 1
+    ):
         raise EntryDateCorrectionError(
-            f"discrepancy {disc.discrepancy_id} does not carry a single-"
-            "candidate execution payload (candidate_count != 1); it cannot "
-            "authorize a date rewrite."
+            f"discrepancy {disc.discrepancy_id} does not carry an integer "
+            f"single-candidate execution payload (candidate_count="
+            f"{candidate_count!r}); it cannot authorize a date rewrite."
         )
     from swing.trades.reconciliation_classifier import (
         _expected_execution_sides,
@@ -514,6 +524,34 @@ def _authorize(
             f"fill {disc.fill_id} has action {fill_row[3]!r}, not 'entry'; "
             "this surface corrects an ENTRY date."
         )
+    # THE BOUND FILL MUST BE THE TRADE'S AUTHORITATIVE ENTRY FILL, AND ITS
+    # DATE MUST BE THE ONE `trades.entry_date` CLAIMS (Codex R2 Major 1).
+    # `action='entry'` is not the same as "the fill that dated this trade": a
+    # scale-in adds a SECOND entry fill, and an `entry_price_mismatch` raised
+    # on that later add-on would otherwise move `trades.entry_date`, the
+    # `watchlist_archive` row and every entry-date-derived metric onto the
+    # ADD-ON's execution date. `get_authoritative_entry_fill` is the project's
+    # existing definition of "first by (fill_datetime ASC, fill_id ASC)"; it is
+    # reused rather than re-derived. A fill-only correction path for a
+    # non-authoritative add-on is real and OUT OF SCOPE -- refused, not
+    # silently widened.
+    from swing.data.repos.fills import get_authoritative_entry_fill
+    authoritative = get_authoritative_entry_fill(conn, trade_id)
+    if authoritative is None or authoritative.fill_id != int(disc.fill_id):
+        raise EntryDateCorrectionError(
+            f"fill {disc.fill_id} is not trade {trade_id}'s AUTHORITATIVE "
+            f"entry fill (that is fill "
+            f"{None if authoritative is None else authoritative.fill_id}). "
+            "Correcting a later scale-in fill would redate the whole trade; "
+            "a fill-only correction path is out of scope for this surface."
+        )
+    if str(fill_row[2])[:10] != str(trade.entry_date):
+        raise EntryDateCorrectionError(
+            f"fill {disc.fill_id}'s date ({str(fill_row[2])[:10]}) already "
+            f"disagrees with trades.entry_date ({trade.entry_date}). This "
+            "surface restores a coupling; it cannot be used where the two "
+            "have already diverged for some other reason."
+        )
 
     target_date = _derive_target_date_from_discrepancy(
         disc, fill_datetime=str(fill_row[2]),
@@ -530,7 +568,10 @@ def _authorize(
     # unique constraint on (ticker, reason, removed_date), so "the archive row
     # for this trade" is an assumption until the query proves it.
     archive_id = _resolve_archive_row(
-        conn, ticker=str(trade.ticker), removed_date=str(trade.entry_date),
+        conn,
+        ticker=str(trade.ticker),
+        removed_date=str(trade.entry_date),
+        trade_id=trade_id,
     )
 
     return _Authorized(
@@ -544,8 +585,39 @@ def _authorize(
 
 
 def _resolve_archive_row(
-    conn: sqlite3.Connection, *, ticker: str, removed_date: str,
+    conn: sqlite3.Connection, *, ticker: str, removed_date: str, trade_id: int,
 ) -> int:
+    """Bind the `reason='entered'` archive row for THIS trade, or refuse.
+
+    ``watchlist_archive`` carries NO trade or fill FK -- it is keyed only by
+    ``(ticker, removed_date, reason)`` -- so exactly-one-match establishes
+    CARDINALITY, not OWNERSHIP (Codex R2 Major 2). The gap is concrete:
+    ``entry.py`` writes an archive row only when the ticker is CURRENTLY
+    watchlisted, so a same-day SECOND entry on the same ticker (the first
+    having already removed it from the watchlist) creates NO row of its own --
+    and a naive lookup would then bind, and rewrite, the FIRST trade's row.
+
+    The ownership proof available WITHOUT schema is that no OTHER non-voided
+    trade shares this ``(ticker, entry_date)``: the lookup is keyed on this
+    trade's own entry date, so any row it could wrongly bind must belong to a
+    trade sharing that exact pair. When one does, ownership is unprovable and
+    the correction is REFUSED with the reason named. Giving archive rows
+    durable trade identity is the real fix and it is SCHEMA -- out of scope for
+    this arc, recorded rather than silently approximated.
+    """
+    siblings = conn.execute(
+        "SELECT id FROM trades WHERE ticker = ? AND entry_date = ? "
+        "AND id <> ?",
+        (ticker, removed_date, trade_id),
+    ).fetchall()
+    if siblings:
+        raise EntryDateCorrectionError(
+            f"trade(s) {[int(r[0]) for r in siblings]} share ticker={ticker!r} "
+            f"and entry_date={removed_date!r} with trade {trade_id}. "
+            "watchlist_archive has no trade identity, so which trade the "
+            "archive row belongs to is UNPROVABLE here and correcting it "
+            "could rewrite another trade's row. Nothing was written."
+        )
     rows = conn.execute(
         "SELECT id FROM watchlist_archive "
         "WHERE ticker = ? AND reason = 'entered' AND removed_date = ?",

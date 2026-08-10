@@ -52,6 +52,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from datetime import date as _date_cls
 from typing import Any, Literal
 
 # NOTE: _compute_degraded_state is imported here so it can be monkeypatched
@@ -440,6 +441,22 @@ def resolve_entry_auto_fill(
     # provenance stamp rides in the audit envelope only (per-row provenance
     # at write time, gotcha #30); EntryAutoFillResult gains no field.
     entry_date, entry_date_source = _execution_date(chosen)
+    if entry_date is None:
+        # No usable date at EITHER grain: the legs were unusable AND the
+        # order-entered timestamp is not a canonical calendar date. Emitting a
+        # populated form default here would put a non-date into
+        # `trades.entry_date` through the entry form -- the operator types the
+        # date himself instead (Codex R2 Major 5).
+        return EntryAutoFillResult(
+            kind="empty",
+            fill_origin="operator_typed",
+            advisory_text=(
+                f"Schwab BUY fill for {ticker} carries no usable execution "
+                "date (unusable execution legs and a non-calendar entered "
+                "timestamp); please enter the date manually."
+            ),
+            auto_fill_audit_at=auto_fill_audit_at,
+        )
 
     schwab_source_value_json = json.dumps(
         {
@@ -507,15 +524,35 @@ def _execution_date(order: Any) -> tuple[str, str]:
     persisted ``execution_legs`` payload, and its whole authorization argument
     is that the date it writes is the date THIS function should have written.
     Two implementations of one derivation is the #24-#26 divergence class.
+
+    THE FALLBACK IS HELD TO THE SAME CANONICAL STANDARD AS THE LEGS (Codex R2
+    Major 5). ``_extract_iso_date`` only splits on ``T``/space and slices, so a
+    compact ``20260731T133005`` ``enter_time`` becomes ``"20260731"`` -- not a
+    date. ``SchwabOrderResponse.__post_init__`` does not validate
+    ``enter_time`` and ``EntryAutoFillResult`` only requires the date to be
+    non-``None``, so ONE malformed execution leg would activate the fallback
+    and emit exactly the invalid shape the leg checks were added to prevent.
+    A non-canonical fallback therefore returns ``(None, "enter_time")`` and the
+    caller declines to auto-fill at all.
+
+    Returns ``(None, "enter_time")`` when no usable date exists at either
+    grain; the caller MUST treat that as "no auto-fill", never as a value.
     """
-    enter_time_date = _extract_iso_date(getattr(order, "enter_time", "") or "")
     executions = getattr(order, "executions", None) or []
     execution_date = latest_execution_leg_date(
         getattr(leg, "time", None) for leg in executions
     )
-    if execution_date is None:
-        return enter_time_date, "enter_time"
-    return execution_date, "execution_leg"
+    if execution_date is not None:
+        return execution_date, "execution_leg"
+    raw_enter_time = getattr(order, "enter_time", "") or ""
+    enter_time_date = _extract_iso_date(raw_enter_time)
+    try:
+        parsed = _date_cls.fromisoformat(enter_time_date)
+    except (TypeError, ValueError):
+        return None, "enter_time"
+    if parsed.isoformat() != enter_time_date:
+        return None, "enter_time"
+    return enter_time_date, "enter_time"
 
 
 def _extract_iso_date(iso_string: str) -> str:
