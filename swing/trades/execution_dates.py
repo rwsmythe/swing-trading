@@ -1,17 +1,27 @@
-"""Item-5 D31 — the SINGLE source for "which date did this order execute on".
+"""D31 — the SINGLE source for "which date did this order execute on".
 
-Two consumers derive an entry date from a Schwab order's execution legs:
+THREE consumers derive a date from a Schwab order's execution legs (two entry,
+one exit; the count was two until the D31 exit-side follow-on):
 
-  - :mod:`swing.trades.entry_auto_fill` — from a ``SchwabOrderResponse``'s
-    ``executions[*].time`` attributes, at form-render time;
-  - :mod:`swing.trades.entry_date_correction` — from a discrepancy's persisted
-    ``actual_value_json.execution_legs[*]['time']`` dicts, when the operator
-    corrects a recorded date.
+  - :mod:`swing.trades.entry_auto_fill` — the ENTRY date, from a
+    ``SchwabOrderResponse``'s ``executions[*].time`` attributes, at
+    form-render time;
+  - :mod:`swing.trades.entry_date_correction` — the ENTRY date, from a
+    discrepancy's persisted ``actual_value_json.execution_legs[*]['time']``
+    dicts, when the operator corrects a recorded date;
+  - :mod:`swing.trades.exit_auto_fill` — the EXIT date, from a
+    ``SchwabOrderResponse``'s ``executions[*].time`` attributes, at
+    form-render time, per candidate.
 
-They MUST agree, and the correction surface's whole authorization argument is
-that the date it writes is *the same date the auto-fill should have written*.
-Two implementations of one derivation is the #24-#26 two-path-divergence
-class, so the derivation lives here once and neither caller reimplements it.
+The two ENTRY consumers must agree with EACH OTHER, and the correction
+surface's whole authorization argument is that the date it writes is *the same
+date the auto-fill should have written*. The EXIT consumer derives a different
+FACT (when a SELL executed, not when a BUY did) by the same RULE, and its
+agreement obligation is with the reconciliation session guard rather than with
+either entry consumer — see ``exit_auto_fill._execution_date``, which states
+the exit-side invariant. Two implementations of one derivation is the #24-#26
+two-path-divergence class, so the derivation lives here once and no caller
+reimplements it.
 
 Timezone convention, stated because it is a decision and not an oversight:
 the emitted value is the winning leg's OWN offset-local calendar date — the
@@ -31,9 +41,11 @@ Known residue: the divergence begins at 00:00Z, i.e. 20:00 ET on the previous
 local date (19:00 ET under EST). A US-equity execution in the 20:00-24:00 ET
 after-hours block lands on the NEXT UTC date, so both paths agree on a date
 one day later than the operator's calendar. Regular US equity hours are
-13:30Z-20:00Z (EDT), entirely within one UTC day. The clean fix converts BOTH
-sites in one change; it is out of scope here and is recorded rather than
-half-applied.
+13:30Z-20:00Z (EDT), entirely within one UTC day. The residue is unchanged by
+the exit-side consumer but its BLAST RADIUS now includes exit dates as well as
+entry dates. The clean fix converts BOTH sites — this module and the
+reconciliation guard — in one change; it is out of scope here and is recorded
+rather than half-applied.
 """
 from __future__ import annotations
 
@@ -48,7 +60,10 @@ def latest_execution_leg_date(raw_times: Iterable[Any]) -> str | None:
     """The ``YYYY-MM-DD`` of the LATEST execution leg, or ``None``.
 
     ``None`` means "no usable execution-grain date", and it is returned for
-    exactly four reasons, all of which the callers surface rather than absorb:
+    exactly THREE reasons, all of which the callers surface rather than absorb
+    (the count read "four" against three bullets from the day this function
+    was written; corrected by counting the code's own refusal branches at the
+    D31 exit-side follow-on):
 
       - the leg collection is empty;
       - ANY leg's ``time`` is unparseable, non-``str``, or not in the EXTENDED
@@ -72,8 +87,10 @@ def latest_execution_leg_date(raw_times: Iterable[Any]) -> str | None:
     accepts BASIC ISO forms -- ``20260731``, compact datetimes, ``2026-W31-5``
     week dates -- and a naive ``[:10]`` slice of those yields ``"20260731"`` or
     ``"2026-W31-5"``, neither of which is a date. That value would flow into
-    ``trades.entry_date`` and ``watchlist_archive.removed_date`` and break every
-    downstream ``[:10]`` prefix and lexical date comparison in the project. So a
+    ``trades.entry_date`` and ``watchlist_archive.removed_date`` from the entry
+    consumers, and into ``fills.fill_datetime`` from the exit one, and break
+    every downstream ``[:10]`` prefix and lexical date comparison in the
+    project. So a
     leg time must be a ``str`` whose first ten characters ARE the canonical
     date, and the emitted value is ``parsed.date().isoformat()``. Anything else
     is a whole-collection refusal, exactly as an unparseable value is.
@@ -122,12 +139,13 @@ def execution_precedes_order(
 ) -> bool:
     """True when a derived execution date PRECEDES the order's entered date.
 
-    THE RULE LIVES HERE so both consumers obey it (Codex R16). R14 put the
-    check in the correction surface only, and the auto-fill -- the very path
-    T1 changed to take the execution grain -- kept accepting a backwards date.
-    Two consumers of one derivation disagreeing about what the derivation
-    ADMITS is the #24-#26 divergence class arriving one layer up from the value
-    itself.
+    THE RULE LIVES HERE so every consumer obeys it (Codex R16) -- three of
+    them as of the D31 exit-side follow-on. R14 put the check in the correction
+    surface only, and the entry auto-fill -- the very path T1 changed to take
+    the execution grain -- kept accepting a backwards date. Consumers of one
+    derivation disagreeing about what the derivation ADMITS is the #24-#26
+    divergence class arriving one layer up from the value itself, which is why
+    the exit consumer inherited the rule by import rather than by resemblance.
 
     Nothing else enforces the ordering: `SchwabExecutionLeg.time` is validated
     non-empty only, with no cross-field chronology check against
@@ -136,10 +154,11 @@ def execution_precedes_order(
     asserting it is internally contradictory.
 
     The RULE is shared; the RESPONSE is each consumer's own, and legitimately
-    differs: the auto-fill falls back VISIBLY to the entered date (stamping
-    `entry_date_source='enter_time'`), while the correction surface REFUSES with
-    a message naming the contradiction, because it is about to rewrite three
-    ledger rows.
+    differs: both auto-fills fall back VISIBLY to the entered date (stamping
+    `entry_date_source` / `exit_date_source` = `'enter_time'`), because each is
+    a form default the operator sees and can override, while the correction
+    surface REFUSES with a message naming the contradiction, because it is
+    about to rewrite three ledger rows.
 
     Comparison is `<`, not `<=`: a same-day execution is ordinary.
     """
