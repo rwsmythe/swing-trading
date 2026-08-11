@@ -176,13 +176,19 @@ def _patch_schwab_stack_with_sell_fill(
     enter_time: str = "2026-05-19T14:30:00.000Z",
     price: float = 120.50,
     quantity: float = 100,
+    execution_time: str | None = None,
 ) -> None:
     """Stub the exit_auto_fill Schwab integration stack to return a single
     production-shape SELL fill matching the seeded trade.
+
+    ``execution_time`` defaults to ``enter_time`` (the same-session fill).
+    Pass it to build the STRADDLING shape a resting stop produces: entered on
+    one session, executed on another.
     """
     leg = SchwabExecutionLeg(
         leg_id=1, price=price, quantity=quantity,
-        mismarked_quantity=None, instrument_id=12345, time=enter_time,
+        mismarked_quantity=None, instrument_id=12345,
+        time=execution_time if execution_time is not None else enter_time,
     )
     order = SchwabOrderResponse(
         order_id="order-AAPL-exit-e2e", status="FILLED",
@@ -398,3 +404,87 @@ def test_full_arc_get_then_post_persists_schwab_auto_exit_fill(
         f"full-quantity exit (100/100) should close the trade; "
         f"got state={trade_state_row[0]!r}"
     )
+
+
+def test_d31_resting_order_e2e_defaults_and_persists_the_execution_date(
+    seeded_db, monkeypatch,
+):
+    """D31 exit-side, end to end, in the shape that produced the live catch.
+
+    A resting order ENTERED 2026-05-19 and EXECUTED 2026-05-20. Pre-fix the
+    form defaulted to 2026-05-19, the operator either accepted a wrong date or
+    corrected it by hand (which is what happened to fill 40 on the live DB),
+    and the recorded fill then sat one NYSE session away from the execution it
+    claimed to record.
+
+    Post-fix the whole chain carries 2026-05-20: the rendered date input, the
+    hidden anchor envelope, the persisted `fills.fill_datetime`, and the
+    envelope's `exit_date_source` naming the grain it came from. The operator
+    submits unchanged, so `fill_origin` stays 'schwab_auto' and
+    `operator_corrected_value_json` stays NULL -- the hand correction the
+    defect forced is no longer needed.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "AAPL")
+    _patch_price_cache(monkeypatch)
+    _patch_production_cfg_seam(monkeypatch)
+    _patch_schwab_stack_with_sell_fill(
+        monkeypatch, ticker="AAPL",
+        enter_time="2026-05-19T14:30:00.000Z",
+        execution_time="2026-05-20T13:30:05.000Z",
+        price=120.50, quantity=100,
+    )
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp_get = client.get(f"/trades/{trade_id}/exit/form")
+        assert resp_get.status_code == 200, resp_get.text
+        body = resp_get.text
+
+        # The value the operator actually SEES in the date input.
+        assert _extract_hidden_input_value(body, "exit_date") == "2026-05-20"
+
+        anchor_json = _extract_hidden_input_value(
+            body, "schwab_source_value_json",
+        )
+        audit_at = _extract_hidden_input_value(body, "auto_fill_audit_at")
+        anchor_dict = json.loads(anchor_json)
+        assert anchor_dict["exit_date"] == "2026-05-20"
+        assert anchor_dict["exit_date_source"] == "execution_leg"
+        (only_entry,) = anchor_dict["candidates_map"].values()
+        assert only_entry["date"] == "2026-05-20"
+        assert only_entry["date_source"] == "execution_leg"
+
+        resp_post = client.post(
+            f"/trades/{trade_id}/exit",
+            data={
+                "exit_date": "2026-05-20",
+                "exit_price": "120.50",
+                "shares": "100",
+                "reason": "manual",
+                "notes": "",
+                "schwab_source_value_json": anchor_json,
+                "auto_fill_audit_at": audit_at,
+                "fill_origin_at_form_render": "schwab_auto",
+            },
+            headers={"HX-Request": "true"},
+        )
+        assert resp_post.status_code == 200, resp_post.text
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        fill_row = conn.execute(
+            "SELECT fill_datetime, fill_origin, schwab_source_value_json, "
+            "operator_corrected_value_json "
+            "FROM fills WHERE trade_id = ? AND action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1",
+            (trade_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert fill_row is not None, "exit fill should be persisted"
+    assert str(fill_row[0])[:10] == "2026-05-20"
+    assert fill_row[1] == "schwab_auto"
+    assert json.loads(fill_row[2])["exit_date_source"] == "execution_leg"
+    assert fill_row[3] is None
