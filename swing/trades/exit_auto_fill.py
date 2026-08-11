@@ -79,6 +79,10 @@ from swing.integrations.schwab.client import (
     SchwabConfigMissingError,
     SchwabRateLimitError,
 )
+from swing.trades.execution_dates import (
+    execution_precedes_order,
+    latest_execution_leg_date,
+)
 from swing.trades.schwab_reconciliation import (
     _compute_execution_price,
     _is_execution_bearing_candidate,
@@ -126,6 +130,13 @@ _EXIT_FILL_ORIGIN_VALUES: frozenset[str] = frozenset({
     "schwab_auto_then_operator_corrected",
     "tos_import",
     "imported_legacy",
+})
+
+
+# D31 (exit half) — which grain produced a candidate's date. Stamped
+# per-candidate into the audit envelope; see ``_execution_date``.
+_EXIT_DATE_SOURCE_VALUES: frozenset[str] = frozenset({
+    "execution_leg", "enter_time",
 })
 
 
@@ -537,14 +548,28 @@ def resolve_exit_auto_fill(
     def _candidate_value_tuple(o: Any) -> tuple[str, float, int] | None:
         """Return (date_str, round(price, 2), int(qty)) or None if any
         execution-grain field cannot be resolved. Matches the dedupe-
-        tuple shape the VM constructs from existing fills."""
+        tuple shape the VM constructs from existing fills.
+
+        D31 — the date comes from ``_execution_date``, the SAME derivation
+        ``_build_candidate`` uses, for two reasons. First, the other side of
+        this comparison is an existing fill's own ``fill_datetime[:10]``
+        (``swing/web/view_models/trades.py``), which is an EXECUTION date, so
+        reading the ORDER-ENTERED date here compared two different quantities:
+        an already-recorded resting-stop fill failed to match its own
+        candidate and the form re-offered it (the live shape — fill 40 is
+        stored at 2026-08-04 while the candidate dated itself 2026-08-03),
+        while a DIFFERENT candidate whose entered date happened to equal some
+        recorded fill's execution date collapsed onto it. Second, deriving the
+        date twice in one file, two ways, is the #24-#26 class at arm's
+        length; there is now one derivation and both callers use it.
+        """
         p = _compute_execution_price(o)
         if p is None:
             return None
         q = _resolve_match_quantity(o)
         if q is None or q <= 0:
             return None
-        d = _extract_iso_date(getattr(o, "enter_time", ""))
+        d, _ = _execution_date(o)
         if not d:
             return None
         try:
@@ -585,35 +610,48 @@ def resolve_exit_auto_fill(
     # per spec §6.2 paragraph 2. Multi-partial case = length-N list for
     # operator selection.
     #
-    # Sort matches by enter_time ASCENDING so the candidates list carries
+    # Sort matches by EXECUTION date ASCENDING so the candidates list carries
     # chronological order (oldest first; most-recent last). Then build
     # candidates from the sorted matches; _build_candidate returns None
     # for orders lacking execution-grain price/quantity (mapper edge case),
     # so candidates may have fewer entries than matches.
     #
+    # D31 — the sort key was ``enter_time``, which makes "most recent" mean
+    # "the order the operator TYPED last". Two resting orders can be entered
+    # in one order and fill in the other, so the default candidate could be a
+    # fill that happened BEFORE the one it was preferred over. Correcting the
+    # DATE without correcting the RANKING would have left "most recent"
+    # measured on the clock the fix just retired.
+    #
     # Per reviewer fix (T-B.2.1 follow-up): the chosen (default) candidate
-    # is the LAST entry in the candidates list (most recent by enter_time)
-    # — NOT a second invocation of _compute_execution_price /
+    # is the LAST entry in the candidates list (most recent by execution
+    # date) — NOT a second invocation of _compute_execution_price /
     # _resolve_match_quantity against the raw order. This guarantees the
     # chosen values are consistent with what _build_candidate validated +
     # avoids a TypeError when _resolve_match_quantity returns None for
     # partial-then-canceled MARKET orders.
     # ----------------------------------------------------------------------
-    sorted_matches = sorted(matches, key=lambda o: getattr(o, "enter_time", ""))
+    sorted_matches = sorted(matches, key=_candidate_sort_key)
     candidates: list[ExitAutoFillCandidate] = []
+    date_sources: dict[str, str] = {}
     for o in sorted_matches:
-        cand = _build_candidate(o)
-        if cand is not None:
+        built = _build_candidate(o)
+        if built is not None:
+            cand, date_source = built
             candidates.append(cand)
+            date_sources[cand.signature_hash] = date_source
     if not candidates:
         # All matches lacked execution-grain price/quantity (mapper edge
-        # case OR partial-then-canceled MARKET with no resolvable qty).
+        # case OR partial-then-canceled MARKET with no resolvable qty) OR a
+        # usable date at either grain (D31 — an unusable execution leg time
+        # AND a non-canonical `enter_time`).
         return ExitAutoFillResult(
             kind="empty",
             fill_origin="operator_typed",
             advisory_text=(
-                f"Schwab SELL fills for {ticker} lacked execution-grain "
-                "price; please enter manually."
+                f"Schwab SELL fills for {ticker} lacked an execution-grain "
+                "price/quantity or a usable execution date; please enter "
+                "manually."
             ),
             auto_fill_audit_at=auto_fill_audit_at,
         )
@@ -641,9 +679,17 @@ def resolve_exit_auto_fill(
     #       authoritative map, the operator's selection was semantically
     #       meaningless).
     # Sort_keys=True makes the JSON stable across runs for test parity.
+    #
+    # D31 — ``date_source`` rides on EACH map entry, not once at the top
+    # level. The operator can select any candidate and the POST handler reads
+    # ``candidates_map[submitted_hash]`` as authoritative, so a single stamp
+    # would label whichever candidate he picked with the DEFAULT's provenance
+    # (gotcha #30). The top-level ``exit_date_source`` describes the top-level
+    # ``exit_date``, i.e. the default, and nothing else.
     candidates_map = {
         cand.signature_hash: {
             "date": cand.date,
+            "date_source": date_sources[cand.signature_hash],
             "price": cand.price,
             "quantity": cand.quantity,
             "order_id": cand.order_id,
@@ -653,6 +699,7 @@ def resolve_exit_auto_fill(
     schwab_source_value_json = json.dumps(
         {
             "exit_date": chosen.date,
+            "exit_date_source": date_sources[chosen.signature_hash],
             "exit_price": chosen.price,
             "closed_shares": chosen.quantity,
             "schwab_order_id": chosen.order_id,
@@ -677,14 +724,22 @@ def resolve_exit_auto_fill(
     )
 
 
-def _build_candidate(o: Any) -> ExitAutoFillCandidate | None:
+def _build_candidate(o: Any) -> tuple[ExitAutoFillCandidate, str] | None:
     """Build an ExitAutoFillCandidate from a SchwabOrderResponse.
+
+    Returns ``(candidate, date_source)`` where ``date_source`` is the grain
+    that produced the candidate's date (see ``_execution_date``). The source
+    rides OUT here rather than on the dataclass because it is provenance about
+    the derivation, not part of the fill's identity — the audit envelope
+    carries it PER CANDIDATE (gotcha #30: a single stamp is not provenance for
+    N rows, and this surface has N rows the operator can select between).
 
     Uses execution-grain helpers per CLAUDE.md "Pass-1-tier-1 Sub-bundle 1"
     discipline — do NOT consume raw ``so.price``.
 
-    Returns None if the order lacks execution-grain price (mapper edge
-    case; caller falls back to empty result if ALL candidates are None).
+    Returns None when the order lacks an execution-grain price/quantity
+    (mapper edge case) or a usable date at either grain; the caller falls back
+    to an empty result if ALL candidates are None.
     """
     price = _compute_execution_price(o)
     if price is None:
@@ -692,7 +747,7 @@ def _build_candidate(o: Any) -> ExitAutoFillCandidate | None:
     quantity = _resolve_match_quantity(o)
     if quantity is None or quantity <= 0:
         return None
-    date = _extract_iso_date(getattr(o, "enter_time", ""))
+    date, date_source = _execution_date(o)
     if not date:
         return None
     order_id = getattr(o, "order_id", None)
@@ -703,13 +758,132 @@ def _build_candidate(o: Any) -> ExitAutoFillCandidate | None:
         quantity=quantity,
         enter_time=getattr(o, "enter_time", ""),
     )
-    return ExitAutoFillCandidate(
-        date=date,
-        price=float(price),
-        quantity=int(quantity),
-        signature_hash=sig,
-        order_id=order_id,
+    return (
+        ExitAutoFillCandidate(
+            date=date,
+            price=float(price),
+            quantity=int(quantity),
+            signature_hash=sig,
+            order_id=order_id,
+        ),
+        date_source,
     )
+
+
+def _candidate_sort_key(o: Any) -> tuple[str, str]:
+    """Chronological ordering key for the candidate list (D31).
+
+    PRIMARY is the derived EXECUTION date — "most recent" on this surface
+    means most recently EXECUTED, since that is the fill the operator is
+    recording. SECONDARY is ``enter_time``, which breaks ties among fills that
+    executed on the SAME date; the shared derivation emits day granularity
+    only, so a same-date tiebreak has nothing finer to rank on and the entered
+    order is the honest fallback rather than a second ranking of leg times.
+
+    A candidate whose date is unresolvable sorts first; ``_build_candidate``
+    drops it immediately afterwards, so its position never reaches the
+    operator.
+    """
+    date, _ = _execution_date(o)
+    return (date or "", str(getattr(o, "enter_time", "") or ""))
+
+
+def _execution_date(order: Any) -> tuple[str | None, str]:
+    """D31 (exit half) — the exit date, taken from the EXECUTION grain.
+
+    Returns ``(iso_date, source)`` where ``source`` is ``'execution_leg'`` or
+    ``'enter_time'``. ``(None, 'enter_time')`` means "no usable date at either
+    grain"; the caller MUST treat that as "no candidate", never as a value.
+
+    The order carries BOTH facts: ``enter_time`` is when the order was ENTERED
+    and ``executions[*].time`` is when it EXECUTED. For a resting order those
+    differ — live evidence: fill 40 (trade 19, FTRE, ``action='stop'``) was
+    entered 2026-08-03, executed 2026-08-04, and the framework proposed
+    2026-08-03 for the operator to correct by hand. This module was already
+    execution-grain for PRICE (``_compute_execution_price``); this makes it
+    execution-grain for the DATE too.
+
+    THE EXIT-SIDE INVARIANT, stated where the grain is chosen. It is NOT the
+    entry side's three-row coupling and must not be read as one: **there is no
+    ``trades.exit_date`` column.** The exit date is SINGLE-HOMED in
+    ``fills.fill_datetime`` (written by ``record_exit`` from the submitted
+    ``exit_date``), it DERIVES into ``trades.last_fill_at``
+    (``MAX(fill_datetime)``, recomputed by ``_recompute_aggregates`` in the
+    same transaction as every fill insert), and it is CHECKED — not mirrored —
+    against the broker by ``schwab_reconciliation._fill_execution_session_
+    distance``, which measures the NYSE-session distance between
+    ``fill_datetime[:10]`` and each ``executions[*].time[:10]`` of the matched
+    order and treats a nonzero distance as not-session-consistent. So one home,
+    one derived denorm, one external cross-check, and nothing to keep in step
+    at write time.
+
+    That third fact is why the execution grain is not a preference here: the
+    reconciliation guard ALREADY reads ``fills.fill_datetime`` as an execution
+    date, so an auto-fill defaulting to the ORDER-ENTERED date put the
+    framework in disagreement with its own guard and manufactured a
+    self-inflicted session-distance finding on every resting order.
+
+    Rules, and the response to each:
+
+    - Parse EVERY leg's ``time`` and take the LATEST. Never index the list:
+      ``_extract_executions_from_order_raw`` builds it with a plain ``append``
+      in API order and never sorts.
+    - If ANY leg's ``time`` is unparseable, or the legs do not share one utc
+      offset, the shared helper REFUSES the whole collection and this falls
+      back to the entered date — a partial view of an order's own fills must
+      not silently date the exit. The fallback is VISIBLE in the returned
+      source (and so in the audit envelope), never absorbed.
+    - An execution cannot precede its own order. The RULE is shared; the
+      RESPONSE here is a visible fallback to the entered date, because this is
+      a form default the operator sees and can override, not a ledger rewrite.
+
+    The ranking, the canonical-date standard and the chronology rule all live
+    in ``swing/trades/execution_dates.py`` and are NOT reimplemented here —
+    two implementations of one derivation is the #24-#26 divergence class.
+
+    REACHABILITY OF THE FALLBACK IS PINNED IN A TEST, NOT ASSERTED HERE (a
+    comment about control flow is falsified silently by the next change to it).
+    An EMPTY ``executions`` list never reaches this function:
+    ``_compute_execution_price`` returns ``None`` first and ``_build_candidate``
+    declines above. What does reach it is a PRESENT-but-unusable leg time —
+    ``SchwabExecutionLeg.__post_init__`` validates ``time`` as non-empty, never
+    as parseable.
+
+    THE FALLBACK IS HELD TO THE SAME CANONICAL STANDARD AS THE LEGS.
+    ``_extract_iso_date`` only splits on ``T``/space and slices, so a compact
+    ``20260803T134500`` ``enter_time`` becomes ``"20260803"`` — not a date.
+    ``SchwabOrderResponse.__post_init__`` does not validate ``enter_time``,
+    ``fills.fill_datetime`` is a bare ``TEXT NOT NULL``, and ``record_exit``
+    normalizes rather than refuses, so nothing downstream catches it while
+    every ``[:10]`` prefix and lexical date comparison downstream would
+    mis-order it. A non-canonical fallback therefore yields ``None`` and the
+    caller declines the candidate.
+    """
+    executions = getattr(order, "executions", None) or []
+    execution_date = latest_execution_leg_date(
+        getattr(leg, "time", None) for leg in executions
+    )
+    raw_enter_time = getattr(order, "enter_time", "") or ""
+    if execution_precedes_order(
+        execution_date, _extract_iso_date(raw_enter_time),
+    ):
+        execution_date = None
+    if execution_date is not None:
+        return execution_date, "execution_leg"
+    return _canonical_date(raw_enter_time), "enter_time"
+
+
+def _canonical_date(raw: Any) -> str | None:
+    """The canonical ``YYYY-MM-DD`` of ONE timestamp string, or ``None``.
+
+    Deliberately the SHARED leg standard applied to a single value rather than
+    a second predicate spelling out the same rules: ``latest_execution_leg_
+    date`` already requires a ``str`` whose first ten characters ARE the
+    canonical date of what it parses to, and returns ``parsed.date()
+    .isoformat()``. Restating those rules here would be the #24-#26 class in
+    miniature, inside one file.
+    """
+    return latest_execution_leg_date((raw,))
 
 
 def _compute_signature_hash(

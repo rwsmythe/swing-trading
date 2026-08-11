@@ -23,6 +23,7 @@ entry_date).
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -40,11 +41,13 @@ from swing.integrations.schwab.models import (
     SchwabExecutionLeg,
     SchwabOrderResponse,
 )
+from swing.trades.exit import _normalize_trade_event_date_to_iso
 from swing.trades.exit_auto_fill import (
     ExitAutoFillCandidate,
     ExitAutoFillResult,
     resolve_exit_auto_fill,
 )
+from swing.trades.schwab_reconciliation import _fill_execution_session_distance
 
 # ============================================================================
 # Shared fixtures (mirror T3.SB1 test pattern verbatim)
@@ -94,11 +97,17 @@ def _make_sell_order(
     instruction: str = "SELL",
     status: str = "FILLED",
     order_id: str | None = None,
+    execution_time: str | None = None,
 ) -> SchwabOrderResponse:
     """Build a production-emitter-shape SchwabOrderResponse representing a
     SELL fill with one execution leg. Per CLAUDE.md "Synthetic-fixture-vs-
     production-emitter shape drift" gotcha — tests use the real dataclass,
     not a stub.
+
+    ``execution_time`` defaults to ``enter_time`` (the same-session fill that
+    every pre-D31 test assumed). Pass it explicitly to build the STRADDLING
+    shape: an order ENTERED on one session and EXECUTED on another, which is
+    what a resting stop does and what the D31 exit-side defect mis-dated.
     """
     leg = SchwabExecutionLeg(
         leg_id=1,
@@ -106,7 +115,7 @@ def _make_sell_order(
         quantity=quantity,
         mismarked_quantity=None,
         instrument_id=12345,
-        time=enter_time,
+        time=execution_time if execution_time is not None else enter_time,
     )
     return SchwabOrderResponse(
         order_id=order_id or f"order-{ticker}-{enter_time}",
@@ -915,3 +924,329 @@ def test_exit_auto_fill_candidate_validates_fields():
             date="2026-05-19", price=100.0, quantity=0,
             signature_hash="abc", order_id="o-1",
         )
+
+
+# ============================================================================
+# D31 exit-side follow-on — the exit date is the EXECUTION date
+#
+# Frozen clocks throughout: this whole section is about dates, so a live clock
+# here would be a false green waiting for a session boundary.
+# ============================================================================
+
+# The live founding case: fill 40 (trade 19, FTRE, action='stop'). The stop
+# rested from 2026-08-03 and executed 2026-08-04; the framework proposed
+# 2026-08-03 and the operator corrected it by hand.
+_FTRE_ENTERED = "2026-08-03T13:45:00.000Z"
+_FTRE_EXECUTED = "2026-08-04T13:30:05.000Z"
+
+
+@pytest.fixture
+def d31_now() -> datetime:
+    """Frozen 'now' for the D31 cases (the live FTRE window)."""
+    return datetime(2026, 8, 4, 20, 0, 0, tzinfo=UTC)
+
+
+def _resolve_ftre(conn, now, orders, **kwargs):
+    """Run the resolver over ``orders`` with the FTRE trade's real anchors."""
+    return resolve_exit_auto_fill(
+        trade_id=19, ticker="FTRE", entry_date="2026-07-23",
+        cfg=_make_cfg(environment="production"), conn=conn, now=now,
+        **kwargs,
+    )
+
+
+def test_d31_candidate_date_is_the_execution_date_not_the_entered_date(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The founding case. Pre-fix this resolves 2026-08-03 and fails.
+
+    ``_extract_iso_date(o.enter_time)`` read when the ORDER WAS PLACED. The
+    fill happened the next session, and `fills.fill_datetime` is defined as
+    when the EXIT happened (`swing/trades/exit.py`), so the entered date was
+    never the value this form should default to.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-stop",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(conn, d31_now, [order])
+
+    assert result.kind == "populated"
+    assert result.exit_date == "2026-08-04"
+    assert result.candidates is not None
+    chosen = result.candidates[-1]
+    assert chosen.date == "2026-08-04"
+
+    envelope = json.loads(result.schwab_source_value_json)
+    assert envelope["exit_date"] == "2026-08-04"
+    assert envelope["exit_date_source"] == "execution_leg"
+    entry = envelope["candidates_map"][chosen.signature_hash]
+    assert entry["date"] == "2026-08-04"
+    assert entry["date_source"] == "execution_leg"
+
+
+def test_d31_date_source_is_per_candidate_not_one_stamp_for_the_list(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Per-row provenance (gotcha #30), on the surface that has N rows.
+
+    Two candidates whose dates come from DIFFERENT grains: the first from its
+    execution leg, the second falling back to the entered date because its leg
+    time is unusable. A single top-level stamp would label one of them wrongly,
+    and the operator can SELECT either -- the POST handler reads
+    ``candidates_map[submitted_hash]`` as authoritative, not the top level.
+
+    Also locks the agreement the POST handler depends on: the envelope's top
+    level, the chosen candidate, and that candidate's map entry carry ONE date.
+    A disagreement there would flip ``fill_origin`` to
+    ``schwab_auto_then_operator_corrected`` for an operator who edited nothing.
+    """
+    from_leg = _make_sell_order(
+        ticker="FTRE", price=18.10, quantity=4,
+        enter_time="2026-08-01T13:45:00.000Z",
+        execution_time="2026-08-03T17:00:00.000Z",
+        instruction="SELL", order_id="order-FTRE-part1",
+    )
+    from_entered = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=6,
+        enter_time="2026-08-04T13:45:00.000Z",
+        execution_time="not-a-timestamp",
+        instruction="SELL", order_id="order-FTRE-part2",
+    )
+    patch_get_orders.state["orders"] = [from_leg, from_entered]
+    result = _resolve_ftre(conn, d31_now, [from_leg, from_entered])
+
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert len(result.candidates) == 2
+    envelope = json.loads(result.schwab_source_value_json)
+    by_order = {
+        cand.order_id: envelope["candidates_map"][cand.signature_hash]
+        for cand in result.candidates
+    }
+    assert by_order["order-FTRE-part1"]["date"] == "2026-08-03"
+    assert by_order["order-FTRE-part1"]["date_source"] == "execution_leg"
+    assert by_order["order-FTRE-part2"]["date"] == "2026-08-04"
+    assert by_order["order-FTRE-part2"]["date_source"] == "enter_time"
+
+    chosen = result.candidates[-1]
+    assert result.exit_date == chosen.date
+    assert envelope["exit_date"] == chosen.date
+    assert envelope["candidates_map"][chosen.signature_hash]["date"] == chosen.date
+    assert envelope["exit_date_source"] == (
+        envelope["candidates_map"][chosen.signature_hash]["date_source"]
+    )
+    for cand in result.candidates:
+        cand_entry = envelope["candidates_map"][cand.signature_hash]
+        assert cand_entry["date"] == cand.date
+        assert cand_entry["price"] == cand.price
+        assert cand_entry["quantity"] == cand.quantity
+
+
+def test_d31_entered_time_fallback_is_reachable_and_stamped(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The fallback's REACHABILITY, pinned in a test rather than a comment.
+
+    An EMPTY execution list cannot reach the date derivation at all --
+    ``_compute_execution_price`` returns ``None`` first and ``_build_candidate``
+    declines before any date is derived. What DOES reach it is a
+    PRESENT-but-unusable leg TIME: ``SchwabExecutionLeg.__post_init__``
+    validates ``time`` as NON-EMPTY, never as parseable, so any non-empty
+    string arrives here.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time=_FTRE_ENTERED, execution_time="not-a-timestamp",
+        instruction="SELL", order_id="order-FTRE-badleg",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(conn, d31_now, [order])
+
+    assert result.kind == "populated"
+    assert result.exit_date == "2026-08-03"
+    envelope = json.loads(result.schwab_source_value_json)
+    assert envelope["exit_date_source"] == "enter_time"
+
+
+def test_d31_execution_before_the_order_falls_back_visibly(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """An execution cannot precede its own order; the shared rule refuses it.
+
+    The RESPONSE is this consumer's own -- a VISIBLE fallback to the entered
+    date, because this is a form default the operator sees and can override,
+    not a ledger rewrite.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time="2026-08-04T13:45:00.000Z",
+        execution_time="2026-08-03T13:30:05.000Z",
+        instruction="SELL", order_id="order-FTRE-backwards",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(conn, d31_now, [order])
+
+    assert result.kind == "populated"
+    assert result.exit_date == "2026-08-04"
+    envelope = json.loads(result.schwab_source_value_json)
+    assert envelope["exit_date_source"] == "enter_time"
+
+
+def test_d31_non_canonical_entered_time_declines_the_candidate(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """A basic-format ``enter_time`` must not become a form default.
+
+    ``_extract_iso_date`` only splits on ``T``/space and slices, so
+    ``20260803T134500`` reduced to ``"20260803"`` -- not a date, and one that
+    every downstream ``[:10]`` prefix and LEXICAL date comparison in the
+    project would then mis-order. ``fills.fill_datetime`` is a bare
+    ``TEXT NOT NULL`` and ``record_exit`` normalizes rather than refuses, so
+    nothing further down catches it. The candidate is declined instead.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time="20260803T134500", execution_time="not-a-timestamp",
+        instruction="SELL", order_id="order-FTRE-basicformat",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(conn, d31_now, [order])
+
+    assert result.kind == "empty"
+    assert result.exit_date is None
+    assert result.candidates is None
+    assert result.advisory_text is not None
+
+
+def test_d31_derived_exit_date_satisfies_the_reconciliation_session_guard(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """THE EXIT-SIDE INVARIANT, cross-checked against its actual consumer.
+
+    There is no ``trades.exit_date``. The exit date is SINGLE-HOMED in
+    ``fills.fill_datetime``, derives into ``trades.last_fill_at``
+    (``MAX(fill_datetime)``), and is CHECKED against the broker by
+    ``_fill_execution_session_distance``, which measures the NYSE-session
+    distance between ``fill_datetime[:10]`` and every ``executions[*].time``
+    of the matched order. That guard already assumes the fill carries the
+    EXECUTION date -- so the auto-fill proposing the ORDER-ENTERED date put
+    the framework in disagreement with its own reconciliation guard.
+
+    The second assertion is what makes this test distinguish: under the
+    pre-fix derivation the proposed date sat one session away from the
+    execution it claims to record.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-stop",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(conn, d31_now, [order])
+
+    derived = _normalize_trade_event_date_to_iso(
+        result.exit_date, field_name="exit_date",
+    )
+    assert _fill_execution_session_distance(derived, order) == 0
+
+    entered = _normalize_trade_event_date_to_iso(
+        "2026-08-03", field_name="exit_date",
+    )
+    assert _fill_execution_session_distance(entered, order) == 1
+
+
+def test_d31_dedupe_tuple_matches_the_recorded_execution_date(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The fallback dedupe compares like with like.
+
+    ``build_exit_form_vm`` builds each existing tuple from the stored fill's
+    OWN ``fill_datetime`` -- an EXECUTION date. Pre-fix the candidate side
+    contributed the ORDER-ENTERED date, so an already-recorded resting-stop
+    fill failed to match its own candidate and the form re-offered it. That
+    is the live shape: fill 40 is stored at 2026-08-04 while the candidate
+    dated itself 2026-08-03.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-stop",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_fill_value_tuples={("2026-08-04", 18.40, 10)},
+    )
+    assert result.kind == "empty"
+
+
+def test_d31_dedupe_tuple_no_longer_matches_the_entered_date(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The other direction of the same correction, stated explicitly.
+
+    A recorded fill dated 2026-08-03 is a DIFFERENT fill from an order that
+    executed on 2026-08-04, and pre-fix the candidate collapsed onto it --
+    the over-merge direction, where the surface goes quiet instead of
+    offering a real unrecorded fill.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-stop",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_fill_value_tuples={("2026-08-03", 18.40, 10)},
+    )
+    assert result.kind == "populated"
+    assert result.exit_date == "2026-08-04"
+
+
+def test_d31_default_candidate_is_the_latest_execution_not_the_latest_entry(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """"Most recent" means most recently EXECUTED.
+
+    ``early_entry`` was placed first and filled LAST (a resting stop);
+    ``late_entry`` was placed second and filled the SAME day. Sorting the
+    candidate list by ``enter_time`` defaults the form to the order the
+    operator TYPED last, which is not the fill he is recording.
+    """
+    early_entry = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=6,
+        enter_time="2026-08-03T13:45:00.000Z",
+        execution_time="2026-08-06T13:30:05.000Z",
+        instruction="SELL", order_id="order-FTRE-resting",
+    )
+    late_entry = _make_sell_order(
+        ticker="FTRE", price=18.10, quantity=4,
+        enter_time="2026-08-04T13:45:00.000Z",
+        execution_time="2026-08-05T13:30:05.000Z",
+        instruction="SELL", order_id="order-FTRE-sameday",
+    )
+    patch_get_orders.state["orders"] = [early_entry, late_entry]
+    result = resolve_exit_auto_fill(
+        trade_id=19, ticker="FTRE", entry_date="2026-07-23",
+        cfg=_make_cfg(environment="production"), conn=conn,
+        now=datetime(2026, 8, 6, 20, 0, 0, tzinfo=UTC),
+    )
+
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert [c.date for c in result.candidates] == ["2026-08-05", "2026-08-06"]
+    assert result.exit_date == "2026-08-06"
+    assert result.closed_shares == 6
