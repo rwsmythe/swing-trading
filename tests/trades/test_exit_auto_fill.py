@@ -861,8 +861,11 @@ def test_unresolvable_match_falls_through_to_empty_not_typeerror(
     ``_is_execution_bearing_candidate`` (FILLED with price set) but
     LACKS executions (``executions=None``), the order-grain helpers
     ``_compute_execution_price`` and ``_resolve_match_quantity`` cannot
-    surface execution-grain price; ``_build_candidate`` returns None;
-    candidates list is empty; the service returns ``kind='empty'``.
+    surface execution-grain price; ``_build_candidate`` returns
+    ``(None, 'no_execution_price')``; candidates list is empty; the service
+    returns ``kind='empty'``. The refusal reason matters: only a
+    ``'no_usable_date'`` refusal raises the D31 omission advisory, and this
+    order is refused for a different reason, so no advisory is due.
 
     Pre-fix code path invoked ``int(_resolve_match_quantity(chosen_order))``
     on the raw order AFTER the candidates list was built. For analogous
@@ -874,7 +877,7 @@ def test_unresolvable_match_falls_through_to_empty_not_typeerror(
     """
     # FILLED + price set passes _is_execution_bearing_candidate, but
     # executions=None makes _compute_execution_price return None →
-    # _build_candidate returns None → candidates list is empty.
+    # _build_candidate refuses with 'no_execution_price' → candidates empty.
     no_exec_order = SchwabOrderResponse(
         order_id="order-no-executions",
         status="FILLED",

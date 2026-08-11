@@ -511,6 +511,61 @@ def test_d31_unrecognized_date_source_in_the_anchor_rejects_with_400(
     assert row[0] == 0, "a rejected anchor must persist no fill"
 
 
+def test_d31_null_and_unhashable_date_source_reject_not_500(
+    seeded_db, monkeypatch,
+):
+    """Codex R2 Major -- the tier must REJECT these, not mistake or crash on
+    them.
+
+    ``.get()`` collapses "key absent" and "key present with JSON null" into one
+    ``None``, so an explicit null was persisted as though the envelope were a
+    legacy one. And ``<list> in <frozenset>`` raises ``TypeError`` (verified:
+    "cannot use 'list' as a set element"), which is uncaught in this handler,
+    so a tampered ``"date_source": []`` returned 500 rather than the 400 this
+    tier exists to return. Presence is keyed on the KEY; membership is tested
+    only once the value is known to be a str.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+
+    cases = []
+    for bad_value in (None, [], {"nested": 1}, 7, True):
+        top = json.loads(_make_anchor())
+        top["exit_date_source"] = bad_value
+        cases.append(top)
+        nested = json.loads(_make_anchor())
+        nested["candidates_map"]["sig-cand-0"]["date_source"] = bad_value
+        cases.append(nested)
+
+    with TestClient(app) as client:
+        for tampered in cases:
+            resp = _post_exit(
+                client, trade_id,
+                schwab_source_value_json=json.dumps(
+                    tampered, sort_keys=True,
+                ),
+                auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+                fill_origin_at_form_render="schwab_auto",
+                candidate_signature_hash_0="sig-cand-0",
+                candidate_order_id_0="schwab-order-777",
+            )
+            assert resp.status_code == 400, (
+                f"{tampered.get('exit_date_source')!r} / nested -> "
+                f"{resp.status_code}: {resp.text[:300]}"
+            )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE action != 'entry'",
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == 0, "a rejected anchor must persist no fill"
+
+
 def test_d31_legacy_anchor_without_date_source_keys_still_accepted(
     seeded_db, monkeypatch,
 ):

@@ -2148,27 +2148,36 @@ async def exit_post(
         # claim, which is worse than no claim at all. ABSENCE IS LEGAL AND
         # STAYS LEGAL: every envelope written before D31 lacks both keys, and a
         # resubmitted one must not be rejected for that.
+        # ABSENCE is keyed on the KEY, and membership is tested only after the
+        # value is known to be a str (Codex R2 Major). `.get()` collapses
+        # "key missing" and "key present with JSON null" into the same `None`,
+        # which would persist an explicit null as though it were a legacy
+        # envelope; and `<list> in <frozenset>` raises TypeError, so a
+        # `"date_source": []` in a tampered anchor produced a 500 instead of
+        # the 400 this tier exists to return.
+        def _bad_source(container: dict, key: str) -> bool:
+            if key not in container:
+                return False
+            value = container[key]
+            return not (
+                isinstance(value, str) and value in _EXIT_DATE_SOURCE_VALUES
+            )
+
         if isinstance(anchor_envelope, dict) and claimed_auto_fill:
             bad_sources: list[str] = []
-            top_source = anchor_envelope.get("exit_date_source")
-            if (
-                top_source is not None
-                and top_source not in _EXIT_DATE_SOURCE_VALUES
-            ):
-                bad_sources.append(f"exit_date_source={top_source!r}")
+            if _bad_source(anchor_envelope, "exit_date_source"):
+                bad_sources.append(
+                    f"exit_date_source={anchor_envelope['exit_date_source']!r}"
+                )
             envelope_map = anchor_envelope.get("candidates_map")
             if isinstance(envelope_map, dict):
                 for sig, entry in envelope_map.items():
                     if not isinstance(entry, dict):
                         continue
-                    entry_source = entry.get("date_source")
-                    if (
-                        entry_source is not None
-                        and entry_source not in _EXIT_DATE_SOURCE_VALUES
-                    ):
+                    if _bad_source(entry, "date_source"):
                         bad_sources.append(
                             f"candidates_map[{sig!r}].date_source="
-                            f"{entry_source!r}"
+                            f"{entry['date_source']!r}"
                         )
             if bad_sources:
                 return _reject_anchor(

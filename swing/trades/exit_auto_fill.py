@@ -638,9 +638,11 @@ def resolve_exit_auto_fill(
     #
     # Sort matches by EXECUTION date ASCENDING so the candidates list carries
     # chronological order (oldest first; most-recent last). Then build
-    # candidates from the sorted matches; _build_candidate returns None
-    # for orders lacking execution-grain price/quantity (mapper edge case),
-    # so candidates may have fewer entries than matches.
+    # candidates from the sorted matches; _build_candidate returns
+    # ``(None, <refusal reason>)`` for orders lacking an execution-grain
+    # price/quantity (mapper edge case) or a usable date, so candidates may
+    # have fewer entries than matches — and the ``no_usable_date`` refusals are
+    # COUNTED below rather than dropped on the floor.
     #
     # D31 — the sort key was ``enter_time``, which makes "most recent" mean
     # "the order the operator TYPED last". Two resting orders can be entered
@@ -907,11 +909,15 @@ def _execution_date(order: Any) -> tuple[str | None, str]:
     classifier admits tier-1 while that distance is ``<=
     _MAX_TIER1_SESSION_DISTANCE``, which is **1**. So a one-session straddle —
     the ordinary overnight rest, and the live fill-40 shape — was recorded on
-    the wrong date and passed the guard SILENTLY; only a rest spanning more
-    than one session (a weekend or a holiday, which is most of them) would
-    have raised anything. The defect was therefore mostly invisible to
-    reconciliation rather than loudly flagged by it, which is the worse of the
-    two and the reason it survived to be caught by hand.
+    the wrong date and passed the guard SILENTLY. Distance is counted in NYSE
+    SESSIONS, not calendar days, so a Friday-entered order filling Monday is
+    also distance 1 and also passes; raising anything requires at least one
+    intervening TRADING session (verified by execution: Fri 2026-08-07 to Mon
+    2026-08-10 is 1, Mon 2026-08-03 to Wed 2026-08-05 is 2 — Codex R2 Minor
+    corrected an earlier draft that said a weekend was enough). The defect was
+    therefore mostly invisible to reconciliation rather than loudly flagged by
+    it, which is the worse of the two and the reason it survived to be caught
+    by hand.
 
     Rules, and the response to each:
 
