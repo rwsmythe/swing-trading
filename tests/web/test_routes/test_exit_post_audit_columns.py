@@ -1783,6 +1783,121 @@ def test_b_review_major1_non_default_radio_plus_edits_drops_the_order_id(
     }, f"got {anon!r}"
 
 
+def test_b_review_major1_present_but_empty_candidates_map_drops_the_order_id(
+    seeded_db, monkeypatch,
+):
+    """Codex R1 major on the MAJOR 1 fix -- absent map != present empty map.
+
+    The retention gate's legacy fallback is justified by what
+    ``resolve_exit_auto_fill`` emits: the top-level date/price/shares/order_id
+    quartet all come from ONE chosen candidate, so on an envelope with NO
+    ``candidates_map`` key the top-level values ARE the id's own candidate's
+    values. That justification does not extend to an envelope that CARRIES the
+    key and declares it EMPTY: a populated resolver never emits an empty map,
+    so such an envelope asserts a candidate manifest containing nothing, and an
+    id naming no candidate in it evidences no link at all.
+
+    A first version of the gate tested ``if candidates_map:``, which conflates
+    the two and would keep the id here -- suppressing that order silently on
+    the next render. The gate now branches on KEY PRESENCE, so the map governs
+    whenever it is present and the legacy path is reachable only by absence.
+
+    Discriminating: the submitted values equal the top-level quartet exactly,
+    so the falsy-test version keeps 'ord-9'; the presence-test version drops
+    it.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    envelope = json.dumps(
+        {
+            "exit_date": "2026-05-19",
+            "exit_price": 120.50,
+            "closed_shares": 3,
+            "schwab_order_id": "ord-9",
+            "schwab_instrument_symbol": "NVDA",
+            "candidate_count": 0,
+            "candidates_map": {},
+        },
+        sort_keys=True,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            # Exactly the top-level values -- no operator edit at all.
+            exit_date="2026-05-19", exit_price="120.50", shares="3",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin, schwab_source_value_json "
+            "FROM fills WHERE action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "schwab_auto", "no edit vs the top-level values"
+    persisted = json.loads(row[1])
+    assert persisted.get("schwab_order_id") is None, (
+        "an envelope declaring an EMPTY candidate manifest names no candidate "
+        f"for its top-level id; got {persisted.get('schwab_order_id')!r}"
+    )
+
+
+def test_b_review_major1_legacy_envelope_without_a_map_keeps_a_matching_id(
+    seeded_db, monkeypatch,
+):
+    """The other side of the same branch -- absence is still the legacy path.
+
+    A legacy envelope carries no ``candidates_map`` key at all. Its top-level
+    quartet came from one chosen candidate, the submitted values match it
+    exactly, so the id still names the fill that was recorded and is KEPT.
+    Without this the presence-test fix would have silently turned every legacy
+    unedited submit into an anonymous row.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    envelope = json.dumps(
+        {
+            "exit_date": "2026-05-19",
+            "exit_price": 120.50,
+            "closed_shares": 3,
+            "schwab_order_id": "ord-legacy",
+            "schwab_instrument_symbol": "NVDA",
+        },
+        sort_keys=True,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            exit_date="2026-05-19", exit_price="120.50", shares="3",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT schwab_source_value_json FROM fills "
+            "WHERE action != 'entry' ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    persisted = json.loads(row[0])
+    assert persisted.get("schwab_order_id") == "ord-legacy", (
+        "a legacy envelope's top-level quartet describes one candidate; an "
+        "unedited submit still derives from it"
+    )
+
+
 # ============================================================================
 # Codex R4 Major #1 — an authoritative selected candidate carrying no usable
 # order id — top-level ``schwab_order_id`` must be REMOVED (not silently left

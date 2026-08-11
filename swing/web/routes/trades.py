@@ -2464,9 +2464,8 @@ async def exit_post(
                     and authoritative_selected is not None
                 ):
                     # Codex R4 Major #1 fix — when the authoritative
-                    # selected candidate's ``order_id`` is None (e.g.,
-                    # MARKET fills without a broker order_id, or mapper
-                    # edge cases), the pre-R4 R3 M#1 rewrite SILENTLY
+                    # selected candidate carries no usable ``order_id``,
+                    # the pre-R4 R3 M#1 rewrite SILENTLY
                     # SKIPPED, leaving top-level ``schwab_order_id`` at the
                     # form-render default (most-recent candidate's
                     # order_id). The future-fetch dedupe path in
@@ -2489,6 +2488,23 @@ async def exit_post(
                     # FLAGS a (date, price, qty) match by naming the row, it
                     # does NOT exclude on it (RD, 2026-08-11 — superseding
                     # the R2 M#4 behaviour this comment originally described).
+                    #
+                    # WHERE AN UNUSABLE ID COMES FROM. This comment used to
+                    # say "MARKET fills without a broker order_id, or mapper
+                    # edge cases". Production cannot produce that:
+                    # ``SchwabOrderResponse.__post_init__`` requires a
+                    # non-empty ``order_id`` and ``_build_candidate`` copies it
+                    # straight onto the candidate. The reachable sources are
+                    # the client-editable envelope (banked, cited) and legacy
+                    # envelopes. The constructor is no stricter than non-empty,
+                    # so a WHITESPACE id is constructible where a ``None`` is
+                    # not — and the truthiness test below does NOT reject one:
+                    # ``"   "`` is truthy and would be installed here. It is
+                    # then DROPPED by the retention rule further down, whose
+                    # first condition is ``top_order_id.strip()``, so the
+                    # outcome is identical and no link is ever asserted on a
+                    # blank token. Stated because the reader of this branch
+                    # would otherwise reasonably infer the test rejects it.
                     auth_top_order_id = authoritative_selected.get("order_id")
                     if isinstance(auth_top_order_id, str) and auth_top_order_id:
                         extended["schwab_order_id"] = auth_top_order_id
@@ -2549,7 +2565,15 @@ async def exit_post(
 
             top_order_id = extended.get("schwab_order_id")
             if isinstance(top_order_id, str):
-                if candidates_map:
+                # PRESENCE, not truthiness (Codex R1 major). An envelope that
+                # CARRIES ``candidates_map`` and declares it EMPTY asserts a
+                # candidate manifest containing nothing, and an id naming no
+                # entry in it evidences no link — the legacy justification
+                # below does not reach that shape. A falsy test conflated the
+                # two and would keep such an id. A populated resolver never
+                # emits an empty map, so this is a client-edited or malformed
+                # envelope either way; the map governs whenever it is present.
+                if "candidates_map" in anchor_envelope:
                     # The id's own candidate is the map entry naming it. Zero
                     # or several -> the id names no single offered fill, so it
                     # cannot evidence a link either way.
