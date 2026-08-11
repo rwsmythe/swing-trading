@@ -1359,18 +1359,27 @@ def test_d31_derived_exit_date_satisfies_the_reconciliation_session_guard(
     assert _fill_execution_session_distance(entered, order) == 1
 
 
-def test_d31_dedupe_tuple_matches_the_recorded_execution_date(
+def test_d31_anonymous_same_grain_match_is_offered_with_the_flag(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,
 ):
-    """The fallback dedupe compares like with like.
+    """The SAME-grain match, which used to exclude silently and now flags.
 
-    ``build_exit_form_vm`` builds each existing tuple from the stored fill's
-    OWN ``fill_datetime`` -- an EXECUTION date. Pre-fix the candidate side
-    contributed the ORDER-ENTERED date, so an already-recorded resting-stop
-    fill failed to match its own candidate and the form re-offered it. That
-    is the live shape: fill 40 is stored at 2026-08-04 while the candidate
-    dated itself 2026-08-03.
+    The anonymous row's stored date equals the candidate's EXECUTION date --
+    the strongest value-tuple match available, and until the ruling of
+    2026-08-11 it silently removed the candidate.
+
+    RULING OF 2026-08-11: SILENT EXCLUSION REQUIRES PROVEN IDENTITY, AND
+    VALUE-TUPLE EQUALITY IS NEVER PROOF. Every anonymous row on
+    this ledger is ``operator_typed``, a hand-typed date, so which grain the
+    human had in mind is unknowable IN PRINCIPLE -- no epoch or backfill
+    recovers it. A same-grain match therefore carries exactly the evidentiary
+    weight an other-grain match does, which is some, and gets the same
+    response: OFFERED, carrying the flag that NAMES the row.
+
+    This is the discriminating test for that half of the rule: remove the
+    execution-date member from the alarm's date set and it goes red, because
+    the candidate arrives here unflagged.
     """
     order = _make_sell_order(
         ticker="FTRE", price=18.40, quantity=10,
@@ -1380,9 +1389,20 @@ def test_d31_dedupe_tuple_matches_the_recorded_execution_date(
     patch_get_orders.state["orders"] = [order]
     result = _resolve_ftre(
         conn, d31_now, [order],
-        existing_fill_value_tuples={("2026-08-04", 18.40, 10)},
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=40, date="2026-08-04", price=18.40, quantity=10,
+            ),
+        ),
     )
-    assert result.kind == "empty"
+
+    assert result.kind == "populated", "never silently excluded"
+    assert result.candidates is not None
+    flag = result.candidates[0].possible_duplicate_of
+    assert flag is not None, "never offered clean"
+    assert flag.fill_id == 40
+    assert result.advisory_text is not None
+    assert "POSSIBLE DUPLICATE" in result.advisory_text
 
 
 def test_d31_identified_recorded_fill_does_not_suppress_a_different_order(
@@ -1449,7 +1469,6 @@ def test_d31_anonymous_other_grain_match_is_offered_with_the_flag(
     patch_get_orders.state["orders"] = [order]
     result = _resolve_ftre(
         conn, d31_now, [order],
-        existing_fill_value_tuples={("2026-08-03", 18.40, 10)},
         existing_anonymous_fills=(
             PossibleDuplicateFill(
                 fill_id=41, date="2026-08-03", price=18.40, quantity=10,
@@ -1523,17 +1542,17 @@ def test_d31_flag_models_the_old_grain_with_the_OLD_tolerant_extraction(
     assert flag.fill_id == 42
 
 
-def test_d31_anonymous_same_grain_match_still_excludes(
+def test_d31_both_grains_produce_the_same_response(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,
 ):
-    """State 2 -- unchanged by the flag work, asserted so it stays unchanged.
+    """The two grains are EQUIVALENT evidence, so they get one response.
 
-    The anonymous row's stored date equals the candidate's EXECUTION date, so
-    the existing value-equality exclusion applies and the candidate does not
-    surface at all. That is pre-existing semantics and this arc does not
-    re-litigate it; the point of the assertion is that adding state 3 did not
-    quietly convert state 2 into a flagged offer.
+    One order, two runs: an anonymous row on the candidate's EXECUTION date,
+    and an anonymous row on its ORDER-ENTERED date. Both are offered, both
+    flagged, and neither is excluded. The asymmetry the earlier rule drew
+    between them rested on knowing which grain a hand-typed date used, which
+    nobody can.
     """
     order = _make_sell_order(
         ticker="FTRE", price=18.40, quantity=10,
@@ -1541,16 +1560,20 @@ def test_d31_anonymous_same_grain_match_still_excludes(
         instruction="SELL", order_id="order-FTRE-stop",
     )
     patch_get_orders.state["orders"] = [order]
-    result = _resolve_ftre(
-        conn, d31_now, [order],
-        existing_fill_value_tuples={("2026-08-04", 18.40, 10)},
-        existing_anonymous_fills=(
-            PossibleDuplicateFill(
-                fill_id=41, date="2026-08-04", price=18.40, quantity=10,
+    for row_date, fill_id in (("2026-08-04", 40), ("2026-08-03", 41)):
+        result = _resolve_ftre(
+            conn, d31_now, [order],
+            existing_anonymous_fills=(
+                PossibleDuplicateFill(
+                    fill_id=fill_id, date=row_date,
+                    price=18.40, quantity=10,
+                ),
             ),
-        ),
-    )
-    assert result.kind == "empty"
+        )
+        assert result.kind == "populated", row_date
+        assert result.candidates is not None
+        flag = result.candidates[0].possible_duplicate_of
+        assert flag is not None and flag.fill_id == fill_id, row_date
 
 
 def test_d31_same_session_fill_is_never_flagged_against_an_anonymous_row(
@@ -1564,12 +1587,13 @@ def test_d31_same_session_fill_is_never_flagged_against_an_anonymous_row(
     entirely, and flagging it would alarm on the ordinary fill -- which is how
     an alarm stops being read.
 
-    THE FIXTURE REACHES THE GUARD (Codex R14 minor). The anonymous row is
-    dated 2026-08-04, matching the candidate's entered AND execution date, and
-    NO tuple set is passed so state 2's exclusion cannot fire first. Remove
-    the ``entered_date == candidate.date`` guard and this test goes red; an
-    earlier version dated the row 2026-08-03, which never matched the entered
-    tuple at all and so stayed green either way.
+    SUPERSEDED AND REWRITTEN (RD, 2026-08-11). This test used to assert that
+    a same-session candidate is NEVER flagged, on the theory that a same-grain
+    match was decidable and belonged to the silent-exclusion path. The ruling
+    removed that path: a same-session order whose values match an anonymous
+    row is now OFFERED WITH THE FLAG like any other match. What it pins now is
+    that the ordinary same-session fill is not SUPPRESSED -- the operator sees
+    it and adjudicates.
     """
     order = _make_sell_order(
         ticker="FTRE", price=18.40, quantity=10,
@@ -1586,10 +1610,11 @@ def test_d31_same_session_fill_is_never_flagged_against_an_anonymous_row(
             ),
         ),
     )
-    assert result.kind == "populated"
+    assert result.kind == "populated", "never silently excluded"
     assert result.candidates is not None
-    assert result.candidates[0].possible_duplicate_of is None
-    assert result.advisory_text is None
+    flag = result.candidates[0].possible_duplicate_of
+    assert flag is not None and flag.fill_id == 41
+    assert result.advisory_text is not None
 
 
 def test_d31_anonymous_row_with_other_values_does_not_flag(
@@ -1622,25 +1647,31 @@ def test_d31_anonymous_row_with_other_values_does_not_flag(
     assert result.candidates[0].possible_duplicate_of is None
 
 
-def test_d31_dedupe_tuple_set_still_over_merges_ambiguous_candidates(
+def test_d31_equal_clip_scale_out_is_offered_and_flagged_not_swallowed(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,
 ):
-    """The FLAGGED residue, pinned as it actually behaves (Codex R1 Major 1).
+    """THE BEHAVIOUR THIS TEST FROZE WAS RULED OUT ON 2026-08-11.
 
-    ``existing_fill_value_tuples`` is a SET with no multiplicity, so ONE
-    recorded fill excludes EVERY candidate sharing its (date, price, quantity)
-    tuple. Two equal clips at one price on one session -- an ordinary
-    scale-out -- therefore both vanish once either is recorded.
+    It used to pin the over-merge: ``existing_fill_value_tuples`` was a SET
+    with no multiplicity, so ONE recorded fill excluded EVERY candidate
+    sharing its (date, price, quantity) tuple, and two equal clips at one
+    price on one session -- an ordinary scale-out -- both vanished once either
+    was recorded. The docstring said it recorded rather than blessed the
+    behaviour and that a later arc changing it must deliberately rewrite this
+    test. This is that rewrite.
 
-    This test EXISTS TO RECORD THAT, not to bless it. It is a pre-existing
-    property of the lossy fallback key, not of the date grain this arc
-    corrected: before D31 the same collision happened on a shared
-    ORDER-ENTERED date. Changing it is an operator-facing call (a silent
-    omission versus a visible duplicate-record invitation) against a shipped,
-    separately-tested contract, so it is routed up rather than decided here.
-    If a later arc changes the behaviour, this test is the thing it must
-    deliberately rewrite -- which is the point of pinning it.
+    RULING OF 2026-08-11: SILENT EXCLUSION REQUIRES PROVEN IDENTITY, AND
+    VALUE-TUPLE EQUALITY IS NEVER PROOF. The value-tuple
+    exclusion is GONE, so the multiplicity problem went with it rather than
+    being patched: BOTH clips are now OFFERED, EACH carrying the flag naming
+    the one recorded row, and the operator adjudicates. A silent omission
+    became a visible question.
+
+    The operator declined a count-and-surface halfway house (exclude when
+    unambiguous, flag when several share a tuple) in as many words -- "flag
+    noise is fine" -- preferring flagged re-offers of manually-typed exits to
+    ever silently hiding a real fill.
     """
     twin_a = _make_sell_order(
         ticker="FTRE", price=18.40, quantity=5,
@@ -1657,9 +1688,21 @@ def test_d31_dedupe_tuple_set_still_over_merges_ambiguous_candidates(
     patch_get_orders.state["orders"] = [twin_a, twin_b]
     result = _resolve_ftre(
         conn, d31_now, [twin_a, twin_b],
-        existing_fill_value_tuples={("2026-08-04", 18.40, 5)},
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=40, date="2026-08-04", price=18.40, quantity=5,
+            ),
+        ),
     )
-    assert result.kind == "empty"
+
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert len(result.candidates) == 2, "neither clip is swallowed"
+    assert all(
+        c.possible_duplicate_of is not None
+        and c.possible_duplicate_of.fill_id == 40
+        for c in result.candidates
+    ), "each is flagged against the one recorded row"
 
 
 def test_d31_undated_fill_omitted_from_a_populated_list_is_announced(

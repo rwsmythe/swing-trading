@@ -1013,14 +1013,13 @@ def build_exit_form_vm(
         # envelopes missing the key). Tolerance: price compared with
         # round(_, 2); date string-exact; quantity int-exact.
         #
-        # D31 — ``existing_anonymous_fills`` is built in THIS SAME LOOP from
-        # THIS SAME QUERY as ``existing_fill_value_tuples``, deliberately: the
-        # tuple set is the exclusion key (state 2) and the record list lets the
-        # resolver NAME the row a candidate may duplicate (state 3). Two
-        # derivations of one population would be the #24-#26 divergence class,
-        # so there is one derivation and two shapes of its output.
+        # D31 — anonymous rows are collected WITH their identity and CANNOT
+        # exclude anything (RD, 2026-08-11). The bare-tuple set that used to
+        # be built alongside this list, and which silently filtered matching
+        # candidates, is gone: value-tuple equality is never proof of identity,
+        # and every anonymous row here is `operator_typed` -- a hand-typed date
+        # whose grain is unknowable in principle.
         existing_fill_order_ids: set[str] = set()
-        existing_fill_value_tuples: set[tuple[str, float, int]] = set()
         existing_anonymous_fills: list[PossibleDuplicateFill] = []
         existing_envelopes_cur = conn.execute(
             "SELECT schwab_source_value_json, fill_datetime, price, "
@@ -1050,18 +1049,19 @@ def build_exit_form_vm(
             # values are the visible-input values, NOT a Schwab order's).
             if not order_id_found:
                 try:
+                    # `[:10]`, not `split("T")` — the stored value is a
+                    # canonical `YYYY-MM-DD...` timestamp whose first ten
+                    # characters ARE its date (`assert_canonical_fill_datetime`),
+                    # and production carries BOTH a literal-`T` form and Schwab's
+                    # offset form. A `T`-split returned the WHOLE timestamp for
+                    # any space-separated value while the surrounding code
+                    # claimed `[:10]`; the flag's accuracy now depends on this
+                    # parse, so it matches the project's other readers
+                    # (`_fill_execution_session_distance` reads `[:10]` too).
                     fill_date = (
-                        str(fill_dt).split("T", 1)[0]
-                        if fill_dt is not None else None
+                        str(fill_dt)[:10] if fill_dt is not None else None
                     )
                     if fill_date and fill_price is not None and fill_qty is not None:
-                        existing_fill_value_tuples.add(
-                            (
-                                fill_date,
-                                round(float(fill_price), 2),
-                                int(fill_qty),
-                            )
-                        )
                         existing_anonymous_fills.append(
                             PossibleDuplicateFill(
                                 fill_id=int(fill_id),
@@ -1083,10 +1083,6 @@ def build_exit_form_vm(
             conn=conn,
             existing_fill_order_ids=(
                 existing_fill_order_ids if existing_fill_order_ids else None
-            ),
-            existing_fill_value_tuples=(
-                existing_fill_value_tuples
-                if existing_fill_value_tuples else None
             ),
             existing_anonymous_fills=(
                 tuple(existing_anonymous_fills)

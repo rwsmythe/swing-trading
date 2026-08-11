@@ -413,40 +413,43 @@ def resolve_exit_auto_fill(
     conn: Any,
     now: datetime | None = None,
     existing_fill_order_ids: set[str] | None = None,
-    existing_fill_value_tuples: set[tuple[str, float, int]] | None = None,
     existing_anonymous_fills: tuple[PossibleDuplicateFill, ...] | None = None,
 ) -> ExitAutoFillResult:
     """Resolve form-render-time exit auto-fill via Schwab Trader API.
 
-    IDENTITY IS NEVER ASSERTED FROM A DATE ALONE, IN EITHER DIRECTION (RD
-    ruling, D31 exit-side). Three evidence states govern whether an
-    already-recorded fill suppresses a candidate:
+    SILENT EXCLUSION REQUIRES PROVEN IDENTITY. VALUE-TUPLE EQUALITY IS NEVER
+    PROOF (RD ruling, 2026-08-11, superseding his own earlier three-state
+    formulation). Two evidence states govern whether an already-recorded fill
+    suppresses a candidate:
 
       1. ``schwab_order_id`` present on BOTH sides -> identity is PROVEN or
-         REFUTED. Assert freely; ``existing_fill_order_ids`` does exactly that
-         and is UNCHANGED by D31.
-      2. Anonymous recorded fill, tuple match at the SAME grain (its stored
-         date equals the candidate's EXECUTION date) -> the existing exclusion
-         stands. Pre-existing value-equality semantics, not this arc's.
-      3. Anonymous recorded fill, tuple match at the OTHER grain ONLY (its
-         stored date equals the candidate's ORDER-ENTERED date -- the grain
-         this module recorded under before D31) -> NEITHER assertion is
-         available. The rows may be one broker fill recorded under the old
-         grain, or two genuinely different fills. The candidate is OFFERED,
-         carrying ``possible_duplicate_of`` naming the row it may duplicate.
-         Never excluded silently; never offered clean.
+         REFUTED. Exclusion by id is exact; ``existing_fill_order_ids`` does
+         exactly that and is UNCHANGED.
+      2. ANONYMOUS recorded fill (no ``schwab_order_id``), value-tuple match at
+         EITHER grain -- its stored date equals the candidate's EXECUTION date,
+         OR the candidate's ORDER-ENTERED date, same price and quantity ->
+         the candidate is OFFERED carrying ``possible_duplicate_of`` naming the
+         row. NEVER silently excluded. NEVER offered clean.
 
-    State 3 is the D31 COMPATIBILITY PATH. The grain cutover moved the
-    candidate side to execution dates while every fill already recorded under
-    the old grain kept its entered date, and an anonymous row has no id to
-    reconcile them with -- so a pre-fix recording no longer matched its own
-    post-fix candidate and would have been re-offered CLEAN.
+    THE LINE IS PROVENANCE, NOT GRAIN, and the fact that moved it is this: all
+    ten anonymous non-entry fills on the live ledger are ``operator_typed`` --
+    hand-typed dates. Which grain a human had in mind when typing is not merely
+    unknown pending some migration, it is **unknowable in principle, forever**.
+    No epoch, backfill or provenance column recovers it. An earlier version of
+    this rule drew a bright line between a "same-grain" and an "other-grain"
+    match and silently excluded the first; that line ran through a variable
+    which does not exist, so the exclusion it authorised rested on nothing.
 
-    Falling back to entered-date MATCHING for anonymous rows was considered
-    and rejected: it converts a visible double-record invitation into a SILENT
-    OMISSION, which is the exact harm the fallback-dedupe residue is flagged
-    for rather than widened (see ``_passes_filters``). Alarm, never assert --
-    and the affordance to record is not gated on the alarm.
+    The one-sidedness is deliberate and is the operator's own call: he accepts
+    flagged re-offers of manually-typed exits rather than ever silently hiding
+    a real fill. A visible duplicate invitation is adjudicable; a silent
+    omission is not. Alarm, never assert -- and the affordance to record is
+    never gated on the alarm.
+
+    A COUNT-AND-SURFACE HALFWAY HOUSE (exclude when unambiguous, flag when
+    several candidates share a tuple) was offered as a fallback floor and
+    DECLINED. It is not the shipped behaviour and must not be reintroduced as
+    an optimisation.
 
     Args:
         trade_id: trades.id of the trade being exited (used for audit /
@@ -476,30 +479,20 @@ def resolve_exit_auto_fill(
             BEFORE the candidates list is built. Default ``None`` =
             no exclusion (backwards-compat for entry-side parity tests
             + the empty-set degenerate case).
-        existing_fill_value_tuples: optional fallback dedupe set for
-            fills that lack a parseable ``schwab_order_id`` in their
-            envelope — covers pre-v20 fills, ``operator_typed`` fills,
-            ``tos_import`` fills, ``imported_legacy`` fills, AND
-            envelopes whose only order-id key is
-            ``selected_candidate_order_id`` (which the M3 fix excludes
-            from order-id dedupe because the actually-persisted values
-            came from the DEFAULT candidate, not the selected one).
-            Codex R2 Major #4 fix — without this fallback, those fills
-            would not dedupe and the operator could double-record.
-            Each tuple is ``(date_str, round(price, 2), int(quantity))``;
-            candidates whose ``(date, round(price, 2), quantity)`` tuple
-            matches an entry are filtered out. Tolerance: 2-decimal
-            price rounding handles float drift; date is string-exact;
-            quantity is int-exact. Default ``None`` = no fallback.
-            THIS IS STATE 2's KEY AND IS UNCHANGED BY D31.
-        existing_anonymous_fills: the SAME anonymous rows as
-            ``existing_fill_value_tuples``, carried WITH their identity
-            (``fill_id`` + stored date/price/quantity) so state 3 can NAME the
-            row a candidate may duplicate. Exclusion still runs off the tuple
-            set; this parameter only feeds the flag, and
-            ``build_exit_form_vm`` builds both from ONE query in ONE loop so
-            they cannot drift apart. Default ``None`` = no flagging (the
-            resolver's other callers are tests that predate the flag).
+        existing_anonymous_fills: the already-recorded non-entry fills for
+            this trade that carry NO usable ``schwab_order_id`` — pre-v20
+            fills, ``operator_typed`` fills, ``tos_import`` and
+            ``imported_legacy`` fills, and envelopes whose only order-id key
+            is ``selected_candidate_order_id``. Each is carried WITH its
+            identity (``fill_id`` + stored date/price/quantity) so a match can
+            NAME the row rather than merely suppress a candidate.
+
+            THIS IS THE ONLY CHANNEL FOR ANONYMOUS ROWS AND IT CANNOT EXCLUDE.
+            A prior ``existing_fill_value_tuples`` parameter carried the same
+            population as bare tuples and silently filtered candidates that
+            matched one; it was REMOVED rather than left dormant, because a
+            parameter whose sole effect is the behaviour a ruling forbids is an
+            invitation to reinstate it. Default ``None`` = no flagging.
 
     Returns:
         ``ExitAutoFillResult`` — see dataclass docstring for the 5 kinds.
@@ -681,43 +674,6 @@ def resolve_exit_auto_fill(
         if isinstance(existing_fill_order_ids, set)
         else set()
     )
-    excluded_value_tuples: set[tuple[str, float, int]] = (
-        existing_fill_value_tuples
-        if isinstance(existing_fill_value_tuples, set)
-        else set()
-    )
-
-    def _candidate_value_tuple(o: Any) -> tuple[str, float, int] | None:
-        """Return (date_str, round(price, 2), int(qty)) or None if any
-        execution-grain field cannot be resolved. Matches the dedupe-
-        tuple shape the VM constructs from existing fills.
-
-        D31 — the date comes from ``_execution_date``, the SAME derivation
-        ``_build_candidate`` uses, for two reasons. First, the other side of
-        this comparison is an existing fill's own ``fill_datetime[:10]``
-        (``swing/web/view_models/trades.py``), which is an EXECUTION date, so
-        reading the ORDER-ENTERED date here compared two different quantities:
-        an already-recorded resting-stop fill failed to match its own
-        candidate and the form re-offered it (the live shape — fill 40 is
-        stored at 2026-08-04 while the candidate dated itself 2026-08-03),
-        while a DIFFERENT candidate whose entered date happened to equal some
-        recorded fill's execution date collapsed onto it. Second, deriving the
-        date twice in one file, two ways, is the #24-#26 class at arm's
-        length; there is now one derivation and both callers use it.
-        """
-        p = _compute_execution_price(o)
-        if p is None:
-            return None
-        q = _resolve_match_quantity(o)
-        if q is None or q <= 0:
-            return None
-        d, _ = _execution_date(o)
-        if not d:
-            return None
-        try:
-            return (d, round(float(p), 2), int(q))
-        except (TypeError, ValueError):
-            return None
 
     def _passes_filters(o: Any) -> bool:
         if getattr(o, "instrument_symbol", "") != ticker:
@@ -726,39 +682,19 @@ def resolve_exit_auto_fill(
             return False
         if not _is_execution_bearing_candidate(o):
             return False
-        if excluded_ids and getattr(o, "order_id", None) in excluded_ids:
-            return False
-        if excluded_value_tuples:
-            vt = _candidate_value_tuple(o)
-            if vt is not None and vt in excluded_value_tuples:
-                return False
-        return True
+        return not (
+            excluded_ids and getattr(o, "order_id", None) in excluded_ids
+        )
 
-    # FLAGGED, DELIBERATELY NOT FIXED HERE (D31, Codex R1 Major 1).
-    # ``excluded_value_tuples`` is a SET and carries no multiplicity, so when
-    # TWO surviving orders share one (date, price, quantity) tuple and only ONE
-    # fill was recorded, membership drops BOTH and a real unrecorded fill
-    # disappears from the operator's list with nothing said. That is a genuine
-    # silent-false-negative, and it is REACHABLE -- an operator scaling out in
-    # equal clips at one price on one session produces exactly this shape.
-    #
-    # It is NOT a defect of this arc, and the fix is not obviously one-sided.
-    # The collision is a property of the (date, price, quantity) KEY, which is
-    # a deliberate lossy fallback for fills carrying no ``schwab_order_id`` at
-    # all; the order-id path above is exact and runs first. Correcting the date
-    # grain changes WHICH orders can collide, not whether they can: before D31
-    # the key collided on a shared ORDER-ENTERED date, which for a scale-out
-    # placed in one sitting is at least as likely as a shared execution date.
-    # And retaining ambiguous candidates trades a silent omission for a visible
-    # duplicate-record invitation, which is an operator-facing call about how
-    # his own money is recorded, not an implementer's.
-    #
-    # The current behaviour is also EXPLICITLY TESTED
-    # (``tests/web/test_routes/test_exit_form_auto_fill.py``,
-    # ``test_r2_major4_fallback_dedupe_resolver_filters_matching_tuple``, which
-    # plants three orders rounding to one excluded tuple and asserts all three
-    # are excluded), so changing it is a supersession of a shipped contract
-    # rather than a bug fix. Routed up instead.
+    # ONLY A PROVEN IDENTITY EXCLUDES (RD, 2026-08-11). The value-tuple
+    # exclusion that used to sit here is GONE, and with it the multiplicity
+    # problem it carried: a SET cannot say "one of these two", so one recorded
+    # fill silently dropped every candidate sharing its tuple. That was flagged
+    # rather than fixed while the rule still authorised value-equality
+    # exclusion; the ruling removed the authority, and the defect dissolved
+    # with it rather than being patched. Equal-clip scale-out candidates are
+    # now all OFFERED, each flagged against the recorded row, so the silent
+    # omission became visible adjudication.
     matches = [o for o in orders if _passes_filters(o)]
     if not matches:
         return ExitAutoFillResult(
@@ -1138,10 +1074,18 @@ def _undecidable_duplicate(
     Returns the anonymous recorded fill this candidate MIGHT duplicate, or
     ``None`` when identity is decidable or nothing matches.
 
-    The comparison is the candidate's PRE-D31 tuple -- what this module would
-    have recorded for this same order before the grain cutover, i.e. its
-    ORDER-ENTERED date with the same execution-grain price and quantity --
-    against each anonymous row's stored tuple.
+    BOTH GRAINS MATCH (RD, 2026-08-11). The candidate's price and quantity are
+    compared against each anonymous row's, and its date is compared at EITHER
+    grain: the date the candidate carries (its EXECUTION date, or its entered
+    date when the execution legs were unusable), and the date this module would
+    have recorded for the same order BEFORE the grain cutover.
+
+    The earlier version matched only the pre-cutover grain, on the theory that
+    a same-grain match was decidable and could keep excluding. It is not:
+    every anonymous row on this ledger is ``operator_typed``, a hand-typed
+    date, so which grain the human had in mind is unknowable in principle. A
+    match at either grain therefore carries exactly the same evidentiary
+    weight -- some -- and the same response.
 
     IT USES THE RETIRED, TOLERANT ``_extract_iso_date`` ON PURPOSE, and that is
     the one place in this module that still should (Codex R14 major). This
@@ -1155,15 +1099,11 @@ def _undecidable_duplicate(
     the retired rule; the strict rule governs what this module WRITES, which is
     a different question.
 
-    Two guards keep this to state 3 alone:
-
-      - a candidate whose entered date EQUALS its own date is not a
-        cross-grain case at all (its date came from ``enter_time``, or the
-        order was entered and filled on one session); state 2 already governs
-        it, and re-flagging would alarm on the ordinary same-day fill;
-      - candidates whose EXECUTION tuple matched an anonymous row are already
-        gone -- ``_passes_filters`` excluded them upstream -- so anything
-        reaching here has no same-grain match to be decided by.
+    NOTHING IS REMOVED BEFORE THIS RUNS. ``_passes_filters`` no longer excludes
+    on value tuples at all, so every candidate an anonymous row could match is
+    still in the list when this is called. Under the previous rule the
+    same-grain matches were filtered upstream and could never be seen here --
+    the alarm could not have fired on them even had it looked.
 
     The FIRST match wins and is named. Two anonymous rows sharing one tuple is
     the ambiguity the flagged dedupe residue already describes; naming one of
@@ -1172,25 +1112,26 @@ def _undecidable_duplicate(
     """
     if not anonymous_fills:
         return None
-    entered_date = _extract_iso_date(getattr(order, "enter_time", "") or "")
-    if not entered_date or entered_date == candidate.date:
-        return None
     try:
-        entered_tuple = (
-            entered_date,
-            round(float(candidate.price), 2),
-            int(candidate.quantity),
-        )
+        price = round(float(candidate.price), 2)
+        quantity = int(candidate.quantity)
     except (TypeError, ValueError):
         return None
+    dates = {candidate.date}
+    entered_date = _extract_iso_date(getattr(order, "enter_time", "") or "")
+    if entered_date:
+        dates.add(entered_date)
     for row in anonymous_fills:
         try:
-            row_tuple = (
-                row.date, round(float(row.price), 2), int(row.quantity),
-            )
+            row_price = round(float(row.price), 2)
+            row_quantity = int(row.quantity)
         except (TypeError, ValueError):
             continue
-        if row_tuple == entered_tuple:
+        if (
+            row_price == price
+            and row_quantity == quantity
+            and row.date in dates
+        ):
             return row
     return None
 

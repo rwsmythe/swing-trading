@@ -76,7 +76,6 @@ def _patch_auto_fill(
         conn: Any,
         now: Any = None,
         existing_fill_order_ids: Any = None,
-        existing_fill_value_tuples: Any = None,
         existing_anonymous_fills: Any = None,
     ) -> ExitAutoFillResult:
         # The stub mirrors the PRODUCTION signature explicitly rather than
@@ -92,7 +91,6 @@ def _patch_auto_fill(
             "conn": conn,
             "now": now,
             "existing_fill_order_ids": existing_fill_order_ids,
-            "existing_fill_value_tuples": existing_fill_value_tuples,
             "existing_anonymous_fills": existing_anonymous_fills,
         })
         return result
@@ -593,8 +591,9 @@ def test_major4_existing_fills_order_ids_passed_to_resolver(
     STILL unrecorded and must remain surfaceable in future exits.
 
     The fill whose envelope carries only ``selected_candidate_order_id``
-    therefore falls into the R2 M#4 fallback dedupe set
-    (``existing_fill_value_tuples``) instead.
+    therefore falls into the ANONYMOUS channel
+    (``existing_anonymous_fills``) instead -- where, since 2026-08-11, it can
+    raise a named possible-duplicate flag but cannot exclude anything.
     """
     import json as _json
 
@@ -608,8 +607,8 @@ def test_major4_existing_fills_order_ids_passed_to_resolver(
     #   to existing_fill_order_ids.
     # - second carries ONLY ``selected_candidate_order_id`` (no top-
     #   level schwab_order_id) → represents the M#3 non-default-radio-
-    #   no-edit case. Must contribute to existing_fill_value_tuples
-    #   (fallback), NOT existing_fill_order_ids.
+    #   no-edit case. Must contribute to existing_anonymous_fills,
+    #   NOT existing_fill_order_ids.
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
@@ -672,17 +671,21 @@ def test_major4_existing_fills_order_ids_passed_to_resolver(
         f"selected_candidate_order_id-only envelope must fall through to "
         f"the R2 M#4 fallback. Got {excluded!r}"
     )
-    # R2 M#4: the selected-candidate-only envelope falls into the
-    # fallback dedupe set keyed by (date, round(price, 2), int(qty)).
-    fallback = calls[0]["existing_fill_value_tuples"]
-    assert fallback is not None, (
-        "R2 M#4: envelopes without a top-level schwab_order_id MUST "
-        "contribute to existing_fill_value_tuples fallback"
+    # R2 M#4, as superseded on 2026-08-11: the selected-candidate-only
+    # envelope still falls THROUGH the order-id path, but its destination is
+    # now the NAMED anonymous-row list rather than a bare tuple set. It can
+    # raise the possible-duplicate flag; it can no longer exclude anything.
+    anon = calls[0]["existing_anonymous_fills"]
+    assert anon is not None, (
+        "envelopes without a top-level schwab_order_id MUST contribute to "
+        "existing_anonymous_fills"
     )
-    assert isinstance(fallback, set)
-    assert ("2026-05-17", 115.00, 3) in fallback, (
-        f"R2 M#4: selected-candidate-only envelope must yield fallback "
-        f"tuple (date, round(price, 2), qty); got {fallback!r}"
+    assert isinstance(anon, tuple)
+    assert ("2026-05-17", 115.00, 3) in {
+        (r.date, r.price, r.quantity) for r in anon
+    }, (
+        f"selected-candidate-only envelope must yield a named anonymous row "
+        f"carrying (date, round(price, 2), qty); got {anon!r}"
     )
 
 
@@ -712,8 +715,8 @@ def test_major4_no_existing_fills_passes_none(seeded_db, monkeypatch):
     assert resp.status_code == 200, resp.text
     assert len(calls) == 1
     assert calls[0]["existing_fill_order_ids"] is None
-    # R2 M#4: no envelopes + no non-entry fills => fallback also None.
-    assert calls[0]["existing_fill_value_tuples"] is None
+    # No non-entry fills at all => the anonymous channel is None too.
+    assert calls[0]["existing_anonymous_fills"] is None
 
 
 # ============================================================================
@@ -877,22 +880,22 @@ def test_d31_possible_duplicate_flag_reaches_the_rendered_form(
     assert 'name="candidate_index" value="1"' in body
 
 
-def test_d31_vm_passes_anonymous_fills_agreeing_with_the_tuple_set(
+def test_d31_vm_passes_named_anonymous_fills_and_no_exclusion_channel(
     seeded_db, monkeypatch,
 ):
-    """The VM's two anonymous-fill outputs come from ONE derivation.
+    """The VM has exactly ONE channel for anonymous rows, and it cannot
+    exclude.
 
-    ``existing_fill_value_tuples`` is state 2's exclusion key and
-    ``existing_anonymous_fills`` lets state 3 NAME the row a candidate may
-    duplicate. They describe the SAME population, so they are built in one
-    loop over one query -- and this pins that they agree, because two
-    derivations of one population is the #24-#26 divergence class and the
-    failure would be a flag naming a row that is not actually excluded, or an
-    exclusion with no row to name.
+    Anonymous fills reach the resolver as NAMED rows carrying ``fill_id``.
+    The bare-tuple set that used to travel beside them, and silently filtered
+    matching candidates, was REMOVED on 2026-08-11 rather than left dormant --
+    a parameter whose only effect is a behaviour the ruling forbids is an
+    invitation to reinstate it, so this asserts the channel is GONE from the
+    call, not merely unused.
 
     Two anonymous rows are seeded (one operator_typed with no envelope, one
     whose envelope carries no usable order id) plus one IDENTIFIED row, which
-    must appear in NEITHER anonymous output.
+    must reach the order-id channel and NOT the anonymous one.
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
@@ -944,27 +947,31 @@ def test_d31_vm_passes_anonymous_fills_agreeing_with_the_tuple_set(
     assert resp.status_code == 200, resp.text
     assert len(calls) == 1
 
-    tuples = calls[0]["existing_fill_value_tuples"]
     anon = calls[0]["existing_anonymous_fills"]
     assert anon is not None and isinstance(anon, tuple)
     assert {r.fill_id for r in anon} == {anon_a, anon_b}, (
-        "the identified fill must appear in NEITHER anonymous output"
+        "the identified fill must NOT appear in the anonymous channel"
     )
     assert calls[0]["existing_fill_order_ids"] == {"ORD-IDENTIFIED"}
-    # The two outputs describe one population.
-    assert {(r.date, r.price, r.quantity) for r in anon} == tuples
+    assert "existing_fill_value_tuples" not in calls[0], (
+        "the value-tuple exclusion channel must be GONE from the call, not "
+        "merely empty"
+    )
 
 
 def test_r2_major4_fallback_dedupe_operator_typed_no_envelope(
     seeded_db, monkeypatch,
 ):
-    """Codex R2 Major #4 Test A — operator_typed fill (no envelope) at
-    date=2026-05-19 + price=160.50 + quantity=100 must dedupe against a
-    Schwab response carrying a matching SELL order at the same
-    (date, price, qty) tuple.
+    """Codex R2 Major #4 Test A, SUPERSEDED 2026-08-11 — an operator_typed
+    fill (no envelope) at date=2026-05-19 + price=160.50 + quantity=100 must
+    reach the resolver as a NAMED anonymous row.
 
-    Resolver receives existing_fill_value_tuples containing
-    (2026-05-19, 160.50, 100); a matching candidate is excluded.
+    It used to arrive as a bare tuple that silently EXCLUDED any matching
+    candidate. Silent exclusion now requires proven identity, and value-tuple
+    equality is never proof -- least of all here, where the row is
+    ``operator_typed``, i.e. a hand-typed date whose grain is unknowable in
+    principle. The row still travels; it now arrives with its ``fill_id`` so a
+    match can NAME it, and it cannot remove anything from the operator's list.
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
@@ -1007,31 +1014,36 @@ def test_r2_major4_fallback_dedupe_operator_typed_no_envelope(
     assert len(calls) == 1
     # No schwab_order_id envelope present → order_ids should be None.
     assert calls[0]["existing_fill_order_ids"] is None
-    # Fallback dedupe set carries the (date, rounded-price, qty) tuple.
-    fallback = calls[0]["existing_fill_value_tuples"]
-    assert fallback is not None and isinstance(fallback, set)
-    assert ("2026-05-19", 160.50, 100) in fallback, (
-        f"R2 M#4 Test A: operator_typed fill (no envelope) must "
-        f"contribute (date, round(price, 2), int(qty)) to "
-        f"existing_fill_value_tuples; got {fallback!r}"
+    anon = calls[0]["existing_anonymous_fills"]
+    assert anon is not None and isinstance(anon, tuple)
+    assert ("2026-05-19", 160.50, 100) in {
+        (r.date, r.price, r.quantity) for r in anon
+    }, (
+        f"operator_typed fill (no envelope) must contribute a NAMED "
+        f"anonymous row carrying (date, round(price, 2), int(qty)); "
+        f"got {anon!r}"
     )
+    assert all(isinstance(r.fill_id, int) for r in anon)
 
 
 def test_r2_major4_fallback_dedupe_resolver_filters_matching_tuple(
     seeded_db, monkeypatch,
 ):
-    """Codex R2 Major #4 — direct test of resolve_exit_auto_fill's
-    tuple-filtering branch. Plant 3 Schwab candidates A + B + C; pass
-    excluded value tuples matching A's (date, price, qty). Assert A
-    excluded from candidates list while B + C remain.
+    """SUPERSEDED 2026-08-11 — this was the shipped contract whose breakage
+    stopped an earlier count-aware fix, and the ruling has now replaced it.
 
-    Plus tolerance tests:
-      * candidate at 160.51 (1 cent off) is NOT filtered when excluded
-        tuple is (date, 160.50, 100) — drift exceeds 2-decimal rounding.
-      * candidate at 160.504 (rounds to 160.50) IS filtered when excluded
-        tuple is (date, 160.50, 100).
-      * candidate at 160.499 (rounds to 160.50) IS filtered when excluded
-        tuple is (date, 160.50, 100).
+    It asserted that a recorded anonymous fill FILTERS every candidate whose
+    (date, round(price, 2), qty) tuple matches it -- A exactly, D and E via
+    2-decimal rounding -- while B (a cent off) and C (unrelated) survive.
+
+    RULING OF 2026-08-11: SILENT EXCLUSION REQUIRES PROVEN IDENTITY, AND
+    VALUE-TUPLE EQUALITY IS NEVER PROOF. So nothing is
+    filtered any more. What the fixture still discriminates is the ROUNDING
+    TOLERANCE, which survives intact inside the alarm: A, D and E are FLAGGED
+    against the recorded row (160.504 and 160.499 both round to 160.50), while
+    B at 160.51 exceeds the tolerance and C is unrelated, so neither is
+    flagged. The tolerance is now the difference between a named alarm and a
+    clean offer rather than between a silent drop and an offer.
     """
     from unittest.mock import MagicMock
 
@@ -1115,32 +1127,39 @@ def test_r2_major4_fallback_dedupe_resolver_filters_matching_tuple(
             entry_date="2026-04-15",
             cfg=fake_cfg,
             conn=fake_conn,
-            existing_fill_value_tuples={("2026-05-19", 160.50, 100)},
+            existing_anonymous_fills=(
+                PossibleDuplicateFill(
+                    fill_id=77, date="2026-05-19",
+                    price=160.50, quantity=100,
+                ),
+            ),
         )
     finally:
         monkeypatch_obj.undo()
 
     assert result.kind == "populated", (
-        f"expected populated result with B+C surviving; got {result!r}"
+        f"expected populated result with ALL five surviving; got {result!r}"
     )
-    cand_order_ids = {c.order_id for c in (result.candidates or ())}
-    # A excluded by exact tuple match; D + E excluded by rounding match.
-    assert "ORD-A" not in cand_order_ids, (
-        "Test A: exact (date, 160.50, 100) match must be excluded"
+    by_order = {
+        c.order_id: c.possible_duplicate_of for c in (result.candidates or ())
+    }
+    assert set(by_order) == {"ORD-A", "ORD-B", "ORD-C", "ORD-D", "ORD-E"}, (
+        f"nothing may be silently excluded any more; got {sorted(by_order)}"
     )
-    assert "ORD-D" not in cand_order_ids, (
-        "Test C: 160.504 rounds to 160.50; must be excluded"
+    # Exact + both rounding matches are FLAGGED against the recorded row.
+    for oid in ("ORD-A", "ORD-D", "ORD-E"):
+        assert by_order[oid] is not None, (
+            f"{oid} matches (date, 160.50, 100) within the 2-decimal "
+            f"tolerance and must carry the possible-duplicate flag"
+        )
+        assert by_order[oid].fill_id == 77
+    # Outside the tolerance, and unrelated: offered CLEAN.
+    assert by_order["ORD-B"] is None, (
+        "160.51 (1 cent off) exceeds 2-decimal rounding tolerance; "
+        "MUST NOT be flagged"
     )
-    assert "ORD-E" not in cand_order_ids, (
-        "Test C bis: 160.499 rounds to 160.50; must be excluded"
-    )
-    # B + C survive — drift > rounding + unrelated qty/date.
-    assert "ORD-B" in cand_order_ids, (
-        "Test B: 160.51 (1 cent off) exceeds 2-decimal rounding "
-        "tolerance; MUST NOT be excluded"
-    )
-    assert "ORD-C" in cand_order_ids, (
-        "Unrelated candidate (different date + qty) MUST survive"
+    assert by_order["ORD-C"] is None, (
+        "unrelated candidate (different date + qty) MUST NOT be flagged"
     )
 
 
