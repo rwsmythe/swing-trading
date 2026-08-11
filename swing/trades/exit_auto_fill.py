@@ -255,9 +255,14 @@ class ExitAutoFillCandidate:
                 f"ExitAutoFillCandidate.date must be an EXTENDED-format ISO "
                 f"YYYY-MM-DD calendar date; got {self.date!r}"
             )
-        if (
-            self.date_source is not None
-            and self.date_source not in _EXIT_DATE_SOURCE_VALUES
+        # `isinstance` BEFORE membership: `[] in frozenset(...)` raises
+        # TypeError, not the ValueError this contract promises (Codex R14).
+        # Same shape as the POST tier's unhashable-value defect two rounds
+        # earlier -- a set-membership test is only safe once the value is known
+        # to be hashable.
+        if self.date_source is not None and not (
+            isinstance(self.date_source, str)
+            and self.date_source in _EXIT_DATE_SOURCE_VALUES
         ):
             raise ValueError(
                 f"ExitAutoFillCandidate.date_source must be one of "
@@ -1138,6 +1143,18 @@ def _undecidable_duplicate(
     ORDER-ENTERED date with the same execution-grain price and quantity --
     against each anonymous row's stored tuple.
 
+    IT USES THE RETIRED, TOLERANT ``_extract_iso_date`` ON PURPOSE, and that is
+    the one place in this module that still should (Codex R14 major). This
+    function's job is to reproduce WHAT THE OLD CODE WOULD HAVE STORED, and the
+    old code took whatever ``_extract_iso_date`` returned -- a split on ``T``,
+    no canonical check. So ``enter_time="2026-08-03Tjunk"`` really did propose,
+    and the operator really did record, ``2026-08-03``. Reconstructing that with
+    the NEW strict ``_canonical_date`` yields ``None``, the alarm stays silent,
+    and the candidate is offered clean -- recreating the exact double-record the
+    compatibility path exists to prevent. Modelling a retired behaviour requires
+    the retired rule; the strict rule governs what this module WRITES, which is
+    a different question.
+
     Two guards keep this to state 3 alone:
 
       - a candidate whose entered date EQUALS its own date is not a
@@ -1155,7 +1172,7 @@ def _undecidable_duplicate(
     """
     if not anonymous_fills:
         return None
-    entered_date = _canonical_date(getattr(order, "enter_time", "") or "")
+    entered_date = _extract_iso_date(getattr(order, "enter_time", "") or "")
     if not entered_date or entered_date == candidate.date:
         return None
     try:

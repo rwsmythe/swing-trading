@@ -932,6 +932,28 @@ def test_exit_auto_fill_candidate_validates_fields():
             date="2026-05-19", price=100.0, quantity=0,
             signature_hash="abc", order_id="o-1",
         )
+    # D31 — the two contracts widened this arc. Without these cases, removing
+    # either validator left this test green while its module's docstring went
+    # on promising both (Codex R14 minor).
+    for bad_date in ("20260519", "2026-W21-2", "2026-05-19garbage"):
+        with pytest.raises(ValueError, match="EXTENDED-format"):
+            ExitAutoFillCandidate(
+                date=bad_date, price=100.0, quantity=100,
+                signature_hash="abc", order_id="o-1",
+            )
+    for bad_source in ("operator_vibes", [], {"a": 1}, 7, True):
+        with pytest.raises(ValueError, match="date_source"):
+            ExitAutoFillCandidate(
+                date="2026-05-19", price=100.0, quantity=100,
+                signature_hash="abc", order_id="o-1",
+                date_source=bad_source,
+            )
+    # Both stated values, and None for "unstated", are accepted.
+    for ok_source in ("execution_leg", "enter_time", None):
+        ExitAutoFillCandidate(
+            date="2026-05-19", price=100.0, quantity=100,
+            signature_hash="abc", order_id="o-1", date_source=ok_source,
+        )
 
 
 # ============================================================================
@@ -1455,6 +1477,52 @@ def test_d31_anonymous_other_grain_match_is_offered_with_the_flag(
     assert entry["possible_duplicate_of"]["fill_id"] == 41
 
 
+def test_d31_flag_models_the_old_grain_with_the_OLD_tolerant_extraction(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Codex R14 major -- the compatibility path must reproduce what the OLD
+    code STORED, which means using the OLD extraction rule.
+
+    ``enter_time="2026-08-03Tjunk"`` is a payload the models permit
+    (``SchwabOrderResponse`` does not validate ``enter_time`` at all). Pre-D31
+    this module ran ``_extract_iso_date`` on it -- a bare split on ``T`` with no
+    canonical check -- so it proposed ``2026-08-03`` and that is what the
+    operator recorded. The execution leg is good, so the post-fix candidate
+    carries ``2026-08-04``.
+
+    Reconstructing the old value with the NEW strict ``_canonical_date``
+    returns ``None``, the alarm stays silent, and the candidate is offered
+    clean -- exactly the double-record this path exists to prevent, recreated
+    inside the fix for it. The reconstruction therefore uses the retired
+    tolerant rule on purpose.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time="2026-08-03Tjunk", execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-loose-enter-time",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=42, date="2026-08-03", price=18.40, quantity=10,
+            ),
+        ),
+    )
+
+    assert result.kind == "populated"
+    assert result.exit_date == "2026-08-04"
+    assert result.candidates is not None
+    flag = result.candidates[0].possible_duplicate_of
+    assert flag is not None, (
+        "a fill recorded under the OLD tolerant extraction must still raise "
+        "the compatibility alarm"
+    )
+    assert flag.fill_id == 42
+
+
 def test_d31_anonymous_same_grain_match_still_excludes(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,
@@ -1493,10 +1561,15 @@ def test_d31_same_session_fill_is_never_flagged_against_an_anonymous_row(
 
     An order entered and executed on ONE session has no cross-grain case at
     all: its entered date IS its execution date, so state 2 governs it
-    entirely. Without the equality guard the flag would fire on every
-    same-session candidate whose values happen to match an unrelated
-    anonymous row at a different date -- turning a targeted alarm into noise,
-    which is how an alarm stops being read.
+    entirely, and flagging it would alarm on the ordinary fill -- which is how
+    an alarm stops being read.
+
+    THE FIXTURE REACHES THE GUARD (Codex R14 minor). The anonymous row is
+    dated 2026-08-04, matching the candidate's entered AND execution date, and
+    NO tuple set is passed so state 2's exclusion cannot fire first. Remove
+    the ``entered_date == candidate.date`` guard and this test goes red; an
+    earlier version dated the row 2026-08-03, which never matched the entered
+    tuple at all and so stayed green either way.
     """
     order = _make_sell_order(
         ticker="FTRE", price=18.40, quantity=10,
@@ -1509,7 +1582,7 @@ def test_d31_same_session_fill_is_never_flagged_against_an_anonymous_row(
         conn, d31_now, [order],
         existing_anonymous_fills=(
             PossibleDuplicateFill(
-                fill_id=41, date="2026-08-03", price=18.40, quantity=10,
+                fill_id=41, date="2026-08-04", price=18.40, quantity=10,
             ),
         ),
     )
