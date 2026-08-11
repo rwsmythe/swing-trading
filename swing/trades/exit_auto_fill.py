@@ -240,10 +240,19 @@ class ExitAutoFillResult:
         call fired.
       - ``'error'``: Schwab call fired but raised a typed exception.
 
-    ``schwab_source_value_json`` + ``auto_fill_audit_at`` are hidden audit
-    anchors server-stamped at form render (per CLAUDE.md "For any V1
-    single-operator form with hidden audit fields, default to SERVER-
-    STAMPING at handler entry; hidden inputs are tampering surfaces").
+    ``schwab_source_value_json`` + ``auto_fill_audit_at`` are GET-GENERATED,
+    CLIENT-ROUND-TRIPPED audit anchors: this resolver computes them at form
+    render, they travel to the browser as hidden inputs, and the POST accepts
+    them back.
+
+    THEY ARE NOT "SERVER-STAMPED" IN THIS PROJECT'S SENSE, and calling them
+    that WHILE CITING THE CONVENTION THAT FORBIDS IT is the falsified-claim
+    shape (Codex R11). CLAUDE.md defines the term precisely: server-stamping
+    means the POST handler RE-COMPUTES from canonical state at POST time, NOT
+    that a GET-rendered value is trusted on resubmit -- and `auto_fill_audit_at`
+    is read straight off the submitted form and persisted. The anchors are
+    therefore a tampering surface, which is exactly why the POST carries a
+    rejection ladder over them rather than trusting them.
     """
 
     kind: ExitAutoFillKind

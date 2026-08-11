@@ -178,7 +178,9 @@ def test_a_populated_auto_fill_renders_values_and_hidden_anchor(
     # Auto-populated exit_price flows through to the input value.
     assert 'value="120.50"' in body
 
-    # Display-only audit metadata visible (server-stamped, not <input>).
+    # Audit metadata rendered as DISPLAY text (not an editable <input> --
+    # though the same values also travel as the hidden anchors asserted
+    # above, so this is a display copy, not a server-stamped value).
     assert "Auto-fill source:" in body
     assert "schwab_auto" in body
 

@@ -40,16 +40,24 @@
           hx-target="closest tr" hx-swap="outerHTML"
           hx-headers='{"HX-Request": "true"}'>
       {#- Phase 13 T3.SB2 — auto-fill hidden anchors (T-B.2.2).
-          ``schwab_source_value_json`` carries the SERVER-STAMPED original
-          auto-populated values as a JSON envelope; the POST handler
+          ``schwab_source_value_json`` carries the GET-GENERATED original
+          auto-populated values as a JSON envelope -- client-editable in
+          transit, NOT server-stamped in the CLAUDE.md sense, which is why
+          the POST validates it rather than trusting it; the POST handler
           (T-B.2.3) compares submitted exit_date/exit_price/shares
           against this to detect operator edits + flip fill_origin to
-          'schwab_auto_then_operator_corrected'. Per CLAUDE.md gotcha
-          "For any V1 single-operator form with hidden audit fields,
-          default to SERVER-STAMPING at handler entry" — the GET handler
-          server-stamps these; the operator sees them as display-only
-          metadata above. The hidden inputs carry the values to POST
-          (transport requirement; without them POST cannot detect edits).
+          'schwab_auto_then_operator_corrected'. The operator also sees these
+          values as display-only metadata above; the hidden inputs are the
+          TRANSPORT (without them the POST cannot detect edits at all).
+
+          CLAUDE.md's rule for hidden audit fields is "SERVER-STAMP, don't
+          trust hidden inputs", and it defines server-stamping as the POST
+          RE-COMPUTING from canonical state rather than a GET-rendered value
+          being trusted on resubmit. This form does NOT meet that bar and this
+          comment used to claim it did (Codex R11). The values genuinely must
+          round-trip, because detecting an operator edit means comparing
+          against what he was SHOWN; what stands in for server-stamping here
+          is the POST's rejection ladder over the returned anchor.
       -#}
       {% if vm.auto_fill_schwab_source_value_json %}
       <input type="hidden" name="schwab_source_value_json"
