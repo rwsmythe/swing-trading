@@ -2445,17 +2445,20 @@ async def exit_post(
                 # persisted), letting the operator re-record the same
                 # Schwab order as a duplicate fill.
                 #
-                # Fix scope: ONLY rewrite when ``fill_origin ==
-                # 'schwab_auto'`` AND ``authoritative_selected is not
-                # None``. The ``schwab_auto_then_operator_corrected``
-                # branch keeps the existing top-level top-level order_id —
-                # the operator either (a) over-rode the default with
-                # custom values, or (b) picked a non-default candidate
-                # without rebinding visible inputs (so the default's
-                # values were persisted). In both sub-cases the persisted
-                # values trace back to the default's "source" candidate,
-                # which the existing top-level order_id correctly
-                # represents.
+                # Rewrite scope: ONLY when ``fill_origin == 'schwab_auto'``
+                # AND ``authoritative_selected is not None`` — that is the
+                # path on which the SELECTED candidate's values are the ones
+                # persisted, so the id must name IT.
+                #
+                # WHAT THE OTHER PATHS DO IS NO LONGER DECIDED HERE. This
+                # comment used to enumerate the two sub-cases its author had
+                # thought of and conclude that the corrected branch could keep
+                # the default's id because "in both sub-cases the persisted
+                # values trace back to the default's source candidate". A
+                # third case reached the same branch and the enumeration did
+                # not cover it (orchestrator B review MAJOR 1). The retention
+                # question is now answered ONCE, below, by the rule rather
+                # than by a list of cases.
                 if (
                     resolved_fill_origin == "schwab_auto"
                     and authoritative_selected is not None
@@ -2491,6 +2494,86 @@ async def exit_post(
                         extended["schwab_order_id"] = auth_top_order_id
                     else:
                         extended.pop("schwab_order_id", None)
+
+            # ---------------------------------------------------------------
+            # WHAT A TOP-LEVEL ``schwab_order_id`` ASSERTS, STATED WHERE IT IS
+            # ENFORCED (RD, 2026-08-11; orchestrator B review MAJOR 1):
+            #
+            #   The operator affirmatively LINKED this row to that broker
+            #   order — by selecting it, or by accepting its unedited render.
+            #   An id that arrived as a display default and survived edits
+            #   pointing elsewhere is RESIDUE, not a link. Any path where the
+            #   persisted values cease to derive from the id's OWN candidate
+            #   DROPS the id: the row becomes anonymous-in-substance and
+            #   enters the flag channel, which is built for exactly this
+            #   evidence state.
+            #
+            # THIS IS A RULE, NOT AN ENUMERATION, and that is the whole fix.
+            # The false-exhaustive comment above is what let a reachable third
+            # case survive: a NON-DEFAULT radio pick plus edits matching
+            # neither that candidate nor the default kept the default's id,
+            # and ``view_models/trades.py`` reads a top-level id as PROVEN
+            # IDENTITY — the one evidence state permitted to suppress a
+            # candidate. Two failures compounded: the default's Schwab order,
+            # never recorded, was silently suppressed, AND the fill that WAS
+            # recorded never entered the flag channel. Widening the branch
+            # condition by one case would have been the same comment one case
+            # longer, waiting for a fourth.
+            #
+            # The evidence hierarchy is VALUES->ORDER, never TOKEN->ORDER, so
+            # dropping costs nothing real: ``selected_candidate_order_id``
+            # still records what the operator picked, and the flag channel
+            # alarms rather than asserts. ONE SHIPPED CASE CHANGED BEHAVIOUR —
+            # the default-radio override, which used to keep the id because
+            # the default "was the source the operator started from". That is
+            # the residue the ruling names; its regression test moved with it.
+            #
+            # Comparison grain matches the origin comparator above (date
+            # exact, price at the template's 2 decimals, quantity as int)
+            # because "derives from" must mean the same thing in both places
+            # or a row could be corrected by one measure and linked by the
+            # other.
+            def _derives_from(entry: object) -> bool:
+                if not isinstance(entry, dict):
+                    return False
+                try:
+                    entry_price = float(entry.get("price"))
+                    entry_shares = int(entry.get("quantity"))
+                except (TypeError, ValueError):
+                    return False
+                return (
+                    entry.get("date") == exit_date
+                    and round(entry_price, 2) == round(exit_price, 2)
+                    and entry_shares == shares
+                )
+
+            top_order_id = extended.get("schwab_order_id")
+            if isinstance(top_order_id, str):
+                if candidates_map:
+                    # The id's own candidate is the map entry naming it. Zero
+                    # or several -> the id names no single offered fill, so it
+                    # cannot evidence a link either way.
+                    named = [
+                        entry for entry in candidates_map.values()
+                        if isinstance(entry, dict)
+                        and entry.get("order_id") == top_order_id
+                    ]
+                else:
+                    # Legacy envelope with no map: ``resolve_exit_auto_fill``
+                    # emits the top-level date/price/shares/order_id quartet
+                    # from ONE chosen candidate, so the top-level values ARE
+                    # the id's own candidate's values.
+                    named = [{
+                        "date": anchor_envelope.get("exit_date"),
+                        "price": anchor_envelope.get("exit_price"),
+                        "quantity": anchor_envelope.get("closed_shares"),
+                    }]
+                if not (
+                    top_order_id.strip()
+                    and len(named) == 1
+                    and _derives_from(named[0])
+                ):
+                    extended.pop("schwab_order_id", None)
             resolved_schwab_source_value_json = _json.dumps(
                 extended, sort_keys=True,
             )
