@@ -1081,7 +1081,7 @@ def test_d31_entered_time_fallback_is_reachable_and_stamped(
     assert envelope["exit_date_source"] == "enter_time"
 
 
-def test_d31_sort_key_reaches_the_date_derivation_before_any_price_check(
+def test_d31_sort_key_reaches_the_date_derivation_before_price_resolution(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders, monkeypatch,
 ):
@@ -1094,8 +1094,16 @@ def test_d31_sort_key_reaches_the_date_derivation_before_any_price_check(
     -the-branch shape.
 
     So: spy on the module-global derivation and resolve a no-legs order.
-    ``_build_candidate`` refuses it for ``no_execution_price`` BEFORE deriving
-    any date, so the only possible caller is the sort key.
+    ``_build_candidate`` refuses it for ``no_execution_price`` before deriving
+    any date (verified: it makes zero derivation calls for such an order).
+
+    ``_warn_on_mixed_candidate_offsets`` IS STUBBED OUT, and that is the point
+    of this fix (Codex R5 Minor). It also calls ``_execution_date``, and it was
+    added by the same round that added this test -- so the round's own canary
+    silently gave the round's own test a second way to pass, and removing the
+    sort-key call would have left it green. A spy test is only evidence while
+    exactly one caller can satisfy it, so the other one is removed rather than
+    assumed harmless.
     """
     import swing.trades.exit_auto_fill as module
     seen: list[str | None] = []
@@ -1106,6 +1114,10 @@ def test_d31_sort_key_reaches_the_date_derivation_before_any_price_check(
         return real(order)
 
     monkeypatch.setattr(module, "_execution_date", spy)
+    monkeypatch.setattr(
+        module, "_warn_on_mixed_candidate_offsets",
+        lambda ticker, matches: None,
+    )
     no_legs = SchwabOrderResponse(
         order_id="order-no-legs", status="FILLED",
         enter_time="2026-08-03T13:45:00.000Z", instrument_symbol="FTRE",
