@@ -1149,6 +1149,86 @@ def test_r2_major4_fallback_dedupe_operator_typed_no_envelope(
     assert all(isinstance(r.fill_id, int) for r in anon)
 
 
+def test_b_review_major2_whitespace_order_id_is_not_proof_of_identity(
+    seeded_db, monkeypatch,
+):
+    """Orchestrator B review MAJOR 2 -- ``" "`` is truthy and was taken as an id.
+
+    The VM's check was ``isinstance(v, str) and v``, so a whitespace-only
+    ``schwab_order_id`` set ``order_id_found`` and the row LEFT the anonymous
+    channel: a matching candidate then reached the operator with no flag, and
+    a candidate carrying the same whitespace id was suppressed outright.
+
+    This is not adjacent to the 2026-08-11 rule, it is that rule's own boundary
+    condition. The rule reduces to "silent exclusion requires PROOF", and a
+    whitespace token proves nothing. Post-fix the row is anonymous in the
+    system's eyes exactly as it is in substance.
+
+    Discriminating: pre-fix ``existing_fill_order_ids == {"   "}`` and the row
+    is absent from ``existing_anonymous_fills``; post-fix the reverse. Both
+    halves are asserted because dropping the id without routing the row to the
+    flag channel would make it invisible instead of anonymous.
+    """
+    import json as _json
+
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            env_blank = _json.dumps({
+                "exit_date": "2026-05-19", "exit_price": 160.50,
+                "closed_shares": 100, "schwab_order_id": "   ",
+                "schwab_instrument_symbol": "NVDA",
+            })
+            conn.execute(
+                "INSERT INTO fills "
+                "(trade_id, fill_datetime, action, quantity, price, "
+                "reason, rule_based, fees, manual_entry_confidence, "
+                "reconciliation_status, tos_match_id, "
+                "fill_origin, schwab_source_value_json, "
+                "operator_corrected_value_json, auto_fill_audit_at) "
+                "VALUES (?, '2026-05-19T15:30:00', 'trim', 100, 160.50, "
+                "'manual', 0, 0.0, NULL, 'unreconciled', NULL, "
+                "'schwab_auto', ?, NULL, "
+                "'2026-05-19T14:30:00.000000+00:00')",
+                (trade_id, env_blank),
+            )
+    finally:
+        conn.close()
+
+    calls = _patch_auto_fill(
+        monkeypatch,
+        ExitAutoFillResult(
+            kind="empty", fill_origin="operator_typed",
+            advisory_text="no matches",
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+        ),
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            f"/trades/{trade_id}/exit/form",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert len(calls) == 1
+    assert calls[0]["existing_fill_order_ids"] is None, (
+        "a whitespace-only order id must never become an exclusion key; "
+        f"got {calls[0]['existing_fill_order_ids']!r}"
+    )
+    anon = calls[0]["existing_anonymous_fills"]
+    assert anon is not None and isinstance(anon, tuple)
+    assert ("2026-05-19", 160.50, 100.0) in {
+        (r.date, r.price, r.quantity) for r in anon
+    }, (
+        f"a row whose only order id is whitespace is anonymous IN SUBSTANCE "
+        f"and must reach the flag channel; got {anon!r}"
+    )
+
+
 def test_r2_major4_superseded_value_match_now_flags_instead_of_filtering(
     seeded_db, monkeypatch,
 ):

@@ -1049,7 +1049,18 @@ def build_exit_form_vm(
             order_id_found = False
             if isinstance(env, dict):
                 v = env.get("schwab_order_id")
-                if isinstance(v, str) and v:
+                # `.strip()`, not bare truthiness (orchestrator B review
+                # MAJOR 2). `" "` is truthy, so a whitespace-only id used to
+                # set `order_id_found` and lift the row OUT of the anonymous
+                # channel: a matching candidate reached the operator unflagged
+                # and a candidate carrying the same blank id was suppressed.
+                # The 2026-08-11 rule reduces to "silent exclusion requires
+                # PROOF", and a whitespace token is not proof of anything --
+                # this is that rule's own boundary condition, not a case
+                # adjacent to it. The id is added VERBATIM when it is usable:
+                # exclusion compares it against a broker-emitted `order_id`,
+                # so stripping the stored value here would invent a match.
+                if isinstance(v, str) and v.strip():
                     existing_fill_order_ids.add(v)
                     order_id_found = True
             # Fallback dedupe tuple — populated for ALL non-entry fills
