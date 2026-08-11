@@ -892,8 +892,10 @@ class TradeExitFormVM:
     # execution times were unusable, so he is told which shown dates are not
     # execution dates; (c) one or more LISTED candidates carry a
     # ``possible_duplicates`` — the anonymous recorded fills they may duplicate
-    # under the pre-D31 grain, which identity evidence cannot decide either
-    # way. It stays None on a populated result with none of the three.
+    # at EITHER grain (RD 2026-08-11: value-tuple equality is never proof of
+    # identity, so an anonymous match flags rather than excludes whichever
+    # grain it matched on). It stays None on a populated result with none of
+    # the three.
     #
     # ``fill_origin`` here is the form-render-time stamp (always
     # 'schwab_auto' on populated, 'operator_typed' otherwise). The POST

@@ -21,11 +21,13 @@
         no execution-grain price, or no resolvable quantity), when a
         LISTED candidate's date fell back to when the order was PLACED because
         its execution times were unusable, and when a LISTED candidate MAY
-        duplicate an anonymous recorded fill under the pre-D31 grain, which
-        identity evidence cannot decide either way. A list that looks complete
-        and is not, a date that looks like an execution date and is not, and a
-        candidate that may already be recorded, are the
-        two things this surface must never show silently. -#}
+        duplicate an anonymous recorded fill at EITHER grain, which identity
+        evidence cannot decide either way (RD 2026-08-11: value-tuple equality
+        is never proof of identity, so an anonymous match flags rather than
+        excludes). A list that looks complete and is not, a date that looks
+        like an execution date and is not, and a candidate that may already be
+        recorded, are the THREE things this surface must never show
+        silently. -#}
     {% if vm.auto_fill_advisory_text %}
     <div class="banner banner-info" role="status">
       <strong>Schwab auto-fill:</strong> {{ vm.auto_fill_advisory_text }}
