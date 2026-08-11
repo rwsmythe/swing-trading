@@ -2171,7 +2171,7 @@ async def exit_post(
                 )
             # A MALFORMED MAP IS REJECTED HERE RATHER THAN SKIPPED PAST (Codex
             # R3 Major). The gap predates this tier: a dict map whose SELECTED
-            # entry is a non-dict passes the forgery check (its KEY is present),
+            # entry is a non-dict passes the membership check (its KEY is there),
             # becomes ``authoritative_selected`` below, and then meets
             # ``.get("date")`` -- AttributeError, uncaught, 500. A 500 is worse
             # than a wrong answer on this ladder, whose recovery contract is a

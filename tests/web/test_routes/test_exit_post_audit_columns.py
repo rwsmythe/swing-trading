@@ -89,10 +89,16 @@ def _make_anchor(
     """Production-shape envelope mirroring resolve_exit_auto_fill output.
 
     Codex R1 Critical #1 + Major #1 fix — ``candidates_map`` is now part
-    of the server-stamped envelope. When None, defaults to a single-fill
-    map keyed by ``sig-cand-0`` so the POST handler's authoritative
-    lookup path is exercised. Tests that need a multi-candidate map pass
-    one explicitly.
+    of the envelope the GET renders. When None, defaults to a single-fill
+    map keyed by ``sig-cand-0`` so the POST handler's lookup path is
+    exercised. Tests that need a multi-candidate map pass one explicitly.
+
+    D31 trust note: "the envelope" is GET-GENERATED but CLIENT-EDITABLE. It
+    round-trips through a hidden input, so nothing the POST does with it
+    proves server provenance -- see the note at the membership check in
+    ``swing/trades/exit_auto_fill.py``. This helper also omits the D31
+    ``exit_date_source`` / ``date_source`` keys, deliberately: their absence
+    is legal for legacy envelopes and these tests exercise that path.
     """
     if candidates_map is None:
         candidates_map = {
@@ -569,8 +575,8 @@ def test_d31_null_and_unhashable_date_source_reject_not_500(
 def test_d31_malformed_candidates_map_rejects_not_500(seeded_db, monkeypatch):
     """Codex R3 Major -- a non-dict map, or a non-dict ENTRY, must 400.
 
-    A dict map whose SELECTED entry is a list survives the forgery check (the
-    key is present), becomes ``authoritative_selected``, and then meets
+    A dict map whose SELECTED entry is a list survives the membership check
+    (the key is present), becomes ``authoritative_selected``, and then meets
     ``.get("date")`` -- ``AttributeError``, uncaught, 500. A 500 is worse than
     a wrong answer here: the ladder's whole recovery contract is a 400 that
     re-renders the form with the bad anchor CLEARED, and a 500 leaves the
@@ -655,9 +661,14 @@ def test_d31_legacy_anchor_without_date_source_keys_still_accepted(
 def test_e_valid_anchor_without_claim_persists_operator_typed(
     seeded_db, monkeypatch,
 ):
-    """Anti-forgery gate: valid anchor without
-    fill_origin_at_form_render='schwab_auto' claim MUST NOT stamp Schwab
+    """Claim gate: a valid anchor WITHOUT
+    fill_origin_at_form_render='schwab_auto' MUST NOT stamp Schwab
     provenance. Persists as operator_typed.
+
+    Not an anti-forgery gate (D31): the claim field is a client-supplied form
+    input like the envelope itself. What this pins is that the two halves must
+    AGREE before any provenance is recorded -- an envelope alone never
+    upgrades a fill's origin.
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
@@ -1070,15 +1081,19 @@ def test_h_critical1_non_default_radio_with_matching_edits_stays_schwab_auto(
 def test_h_major1_tampered_sig_hash_not_in_candidates_map_rejects(
     seeded_db, monkeypatch,
 ):
-    """Codex R1 Major #1 — tampered POST with a candidate_signature_hash
-    that does NOT appear in the server-stamped candidates_map MUST be
-    rejected with 400.
+    """Codex R1 Major #1 — a POST whose candidate_signature_hash does NOT
+    appear in its OWN submitted candidates_map MUST be rejected with 400.
 
-    Pre-fix: the POST handler trusted whatever signature_hash the client
-    submitted, allowing a malicious operator to forge an arbitrary
-    selected_candidate_signature_hash with no server-side verification.
-    Post-fix: candidates_map (server-stamped) is the authoritative truth
-    source; tampered hashes never appear in it and the gate rejects.
+    Pre-fix the handler took whatever signature_hash arrived and recorded it
+    as the selection, so the two halves of one submission could disagree with
+    no check at all.
+
+    D31 trust note: this establishes CONSISTENCY WITHIN THE SUBMITTED
+    ENVELOPE, not server provenance. Both the map and the hash round-trip
+    through hidden inputs and a client can alter them together; the check is
+    also skipped entirely when the submitted map is empty. The earlier
+    wording here called the map "server-stamped" and "the authoritative truth
+    source", which overstated it.
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
@@ -1184,8 +1199,8 @@ def test_h_critical1_single_fill_regression_unedited_stays_schwab_auto(
 def test_g_multi_partial_invalid_candidate_index_rejects_with_400(
     seeded_db, monkeypatch,
 ):
-    """Operator's candidate_index must map to a server-rendered candidate.
-    Out-of-range index OR non-int index -> 400 (tamper / stale form).
+    """Operator's candidate_index must map to a candidate the SUBMISSION
+    carries. Out-of-range index OR non-int index -> 400 (tamper / stale form).
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
@@ -1228,19 +1243,23 @@ def test_g_multi_partial_invalid_candidate_index_rejects_with_400(
 
 
 # ============================================================================
-# Codex R2 Major #2 — authoritative selected_candidate_order_id from
-# server-stamped candidates_map (NOT client-submitted candidate_order_id_<i>).
+# Codex R2 Major #2 — selected_candidate_order_id read from the envelope's
+# candidates_map entry, NOT from the separately-submitted
+# candidate_order_id_<i>. ONE source, so the persisted order_id cannot
+# disagree with the values compared against; not a provenance guarantee (D31).
 # ============================================================================
 
 
 def test_h_major2_authoritative_selected_candidate_order_id_from_envelope(
     seeded_db, monkeypatch,
 ):
-    """Codex R2 Major #2 — when the operator submits a valid
-    candidate_signature_hash that maps to a server-stamped candidates_map
-    entry, the persisted ``selected_candidate_order_id`` MUST come from
-    the authoritative envelope's ``order_id`` field — NOT from the
-    client-submitted ``candidate_order_id_<i>`` hidden input.
+    """Codex R2 Major #2 — when the operator submits a
+    candidate_signature_hash that maps to a candidates_map entry, the
+    persisted ``selected_candidate_order_id`` MUST come from that entry's
+    ``order_id`` field — NOT from the separately-submitted
+    ``candidate_order_id_<i>`` hidden input. Reading ONE source keeps the
+    persisted id consistent with the values compared against; both inputs are
+    client-editable, so this is consistency rather than provenance (D31).
 
     Threat: a tampered POST could submit a valid signature_hash AND a
     forged candidate_order_id_<i>; without this fix, the persisted
@@ -1303,7 +1322,7 @@ def test_h_major2_authoritative_selected_candidate_order_id_from_envelope(
     # Authoritative envelope value wins — forged client input ignored.
     assert persisted["selected_candidate_order_id"] == "REAL-ORDER-A", (
         "Codex R2 M#2: selected_candidate_order_id must come from "
-        "server-stamped candidates_map[sig-cand-0]['order_id'], NOT "
+        "the envelope's candidates_map[sig-cand-0]['order_id'], NOT "
         f"client-submitted candidate_order_id_0; got {persisted!r}"
     )
     assert persisted["selected_candidate_signature_hash"] == "sig-cand-0"

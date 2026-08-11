@@ -317,7 +317,7 @@ def test_e_multi_partial_renders_candidate_list_with_per_candidate_hidden_inputs
       - candidate_order_id_<i>
 
     Forward-binding for T-B.2.3: POST handler reads operator's selected
-    radio + maps to the server-rendered per-candidate envelope so a
+    radio + maps to the per-candidate envelope the GET rendered so a
     non-default selection records correct provenance.
     """
     cfg, cfg_path = seeded_db
@@ -361,7 +361,7 @@ def test_e_multi_partial_renders_candidate_list_with_per_candidate_hidden_inputs
 
     # Per-candidate hidden inputs for the FORWARD-BINDING WATCH ITEM —
     # all three indices appear so POST handler can verify operator's
-    # selected candidate index maps to a server-rendered candidate.
+    # selected candidate index maps to a candidate the submission carries.
     assert 'name="candidate_signature_hash_0"' in body
     assert 'name="candidate_signature_hash_1"' in body
     assert 'name="candidate_signature_hash_2"' in body

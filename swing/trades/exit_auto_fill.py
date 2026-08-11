@@ -185,8 +185,9 @@ class ExitAutoFillCandidate:
       - ``quantity``: execution-grain quantity (sum of leg quantities for
         multi-leg single-order fills).
       - ``signature_hash``: stable hash of the broker-emitted fill
-        identity (per-candidate distinct; used downstream for operator-
-        selection round-trip + idempotency).
+        identity (per-candidate distinct; used downstream for the
+        operator-selection round-trip + audit provenance -- NOT for
+        idempotency, see ``_compute_signature_hash``).
       - ``order_id``: Schwab order id (for audit / debugging).
     """
 
@@ -1132,10 +1133,22 @@ def _compute_signature_hash(
 ) -> str:
     """Compute a stable signature hash for a candidate.
 
-    Includes the broker order_id (when present) plus a tuple of fill
-    identity fields so candidates with the same shape but different
-    underlying Schwab orders get distinct hashes. Used downstream for
-    operator-selection round-trip + idempotency.
+    Includes the broker order_id (when present) plus a tuple of fill identity
+    fields so candidates with the same shape but different underlying Schwab
+    orders get distinct hashes.
+
+    IT IS NOT AN IDEMPOTENCY KEY, and saying it was is what made the D31
+    date-grain change look like a data-compatibility question (Codex R9). The
+    hash is computed fresh at every form render, round-trips through that
+    render's own hidden inputs, and is checked at POST against the SAME
+    render's ``candidates_map``. Nothing recomputes a hash at POST time and
+    NOTHING READS A PERSISTED ONE BACK: `selected_candidate_signature_hash`
+    and `other_candidate_signature_hashes` are written into
+    `fills.schwab_source_value_json` and have no reader in `swing/` at all,
+    while the future-render dedupe works off `schwab_order_id` or the
+    (date, price, quantity) tuple. So changing what `date` means changes every
+    hash and invalidates NOTHING -- the correct scope is
+    operator-selection round-trip + audit provenance.
     """
     payload = json.dumps(
         {

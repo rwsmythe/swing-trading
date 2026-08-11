@@ -864,9 +864,12 @@ def test_unresolvable_match_falls_through_to_empty_not_typeerror(
     ``_compute_execution_price`` and ``_resolve_match_quantity`` cannot
     surface execution-grain price; ``_build_candidate`` returns
     ``(None, 'no_execution_price')``; candidates list is empty; the service
-    returns ``kind='empty'``. The refusal reason matters: only a
-    ``'no_usable_date'`` refusal raises the D31 omission advisory, and this
-    order is refused for a different reason, so no advisory is due.
+    returns ``kind='empty'``. The empty result carries its own generic
+    manual-entry advisory, which is what the assertion below checks; the
+    reason-specific D31 omission advisory belongs to POPULATED results and
+    does not apply when no candidate survived at all (Codex R9 corrected an
+    earlier claim here that "no advisory is due", which the same test's
+    ``advisory_text is not None`` assertion contradicted).
 
     Pre-fix code path invoked ``int(_resolve_match_quantity(chosen_order))``
     on the raw order AFTER the candidates list was built. For analogous
