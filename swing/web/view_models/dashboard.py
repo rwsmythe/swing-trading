@@ -751,10 +751,14 @@ def build_hyp_recs_expanded(
     # `compute_shares`'s `stop >= entry` refusal doubled as that gate. The
     # entry is now the buy LIMIT, which is strictly wider, so a stop sitting
     # ABOVE the pivot but below the limit would newly pass and the card would
-    # render a setup whose stop is above its own buy stop. The latch
-    # derivation carries the same invariant (`Latch.__post_init__`:
-    # stop < pivot < zone_cap); this preserves it here rather than loosening
-    # it by side effect.
+    # render a setup whose stop is above its own buy stop. The latch derivation
+    # carries the STOP half of this and only that half -- `Latch.__post_init__`
+    # enforces `latched_initial_stop < latched_pivot` and finiteness, and says
+    # NOTHING about `zone_cap`. The cap ordering is a property of the ORDINARY
+    # derivation (`zone_cap_for_pivot` is `round(p * 1.03, 4)`, which exceeds
+    # `p` for every ordinary pivot but not a sub-normal one), never a
+    # constructor guarantee. This guard preserves the stop invariant here
+    # rather than loosening it by side effect.
     if (
         candidate is None
         or candidate.pivot is None

@@ -610,8 +610,10 @@ def test_a_stop_AT_OR_ABOVE_the_pivot_is_still_REFUSED(stop):
     doubled as the "the stop must sit below the trigger" sanity gate. Widening
     the entry to the limit (100.00 -> 103.00) would let a stop ABOVE the pivot
     pass, shipping a recommendation whose stop is above its own trigger. The
-    latch derivation carries the same invariant (`Latch.__post_init__`:
-    stop < pivot < zone_cap), so this preserves it rather than inventing it.
+    latch derivation carries the STOP half of this and only that half --
+    `Latch.__post_init__` enforces `latched_initial_stop < latched_pivot` and
+    finiteness, and says NOTHING about `zone_cap` -- so this guard preserves
+    that invariant rather than inventing it.
 
     All three stops are BELOW the post-fix limit 103.00 and AT-OR-ABOVE the
     pivot 100.00 -- i.e. each one passes an unguarded post-fix builder.

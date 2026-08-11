@@ -232,8 +232,9 @@ def test_a_stop_AT_OR_ABOVE_the_pivot_still_returns_None(seeded_db):
     and with entry = the pivot that doubled as the "stop below the trigger"
     sanity gate. Widening the entry to 103.00 lets a 101.50 stop through, and
     the card would render a setup whose stop sits ABOVE its own buy stop. The
-    latch derivation carries the same invariant (`Latch.__post_init__`:
-    stop < pivot < zone_cap).
+    latch derivation carries the STOP half of this and only that half --
+    `Latch.__post_init__` enforces `latched_initial_stop < latched_pivot` and
+    finiteness, and says NOTHING about `zone_cap`.
     """
     cfg, _ = seeded_db
     assert 101.50 < mandate_limit_price(zone_cap_for_pivot(100.0))
