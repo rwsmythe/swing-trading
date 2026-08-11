@@ -24,6 +24,7 @@ entry_date).
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1080,15 +1081,54 @@ def test_d31_entered_time_fallback_is_reachable_and_stamped(
     assert envelope["exit_date_source"] == "enter_time"
 
 
+def test_d31_sort_key_reaches_the_date_derivation_before_any_price_check(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders, monkeypatch,
+):
+    """The CONTROL FLOW claim, pinned where it actually lives (Codex R4 Minor).
+
+    The unit test below pins what ``_execution_date`` DOES with an absent leg
+    list. It does NOT pin that the resolver ever calls it with one -- delete
+    the call from ``_candidate_sort_key`` and that test stays green while its
+    docstring's claim quietly becomes false, which is the fixture-routes-around
+    -the-branch shape.
+
+    So: spy on the module-global derivation and resolve a no-legs order.
+    ``_build_candidate`` refuses it for ``no_execution_price`` BEFORE deriving
+    any date, so the only possible caller is the sort key.
+    """
+    import swing.trades.exit_auto_fill as module
+    seen: list[str | None] = []
+    real = module._execution_date
+
+    def spy(order):
+        seen.append(getattr(order, "order_id", None))
+        return real(order)
+
+    monkeypatch.setattr(module, "_execution_date", spy)
+    no_legs = SchwabOrderResponse(
+        order_id="order-no-legs", status="FILLED",
+        enter_time="2026-08-03T13:45:00.000Z", instrument_symbol="FTRE",
+        instruction="SELL", quantity=10, order_type="LIMIT", price=18.40,
+        executions=None,
+    )
+    patch_get_orders.state["orders"] = [no_legs]
+    result = _resolve_ftre(conn, d31_now, [no_legs])
+
+    assert result.kind == "empty", "a no-legs order must not become a candidate"
+    assert "order-no-legs" in seen, (
+        "the sort key must reach the date derivation for an order whose "
+        "price check will later refuse it"
+    )
+
+
 def test_d31_execution_date_helper_falls_back_when_executions_absent():
     """Direct unit pin of ``_execution_date``'s absent-executions branch.
 
     Codex R3 Minor -- a docstring claimed this branch was unreachable because
     ``_compute_execution_price`` refuses an empty leg list first. It is
-    reachable: ``_candidate_sort_key`` calls ``_execution_date`` for every
-    match during ``sorted()``, before any price check runs. The claim now lives
-    here, where a future change to the control flow will break it instead of
-    silently voiding it.
+    reachable through the sort key. This test pins the helper's own behaviour;
+    the test above pins that the resolver reaches it.
     """
     from swing.trades.exit_auto_fill import _execution_date
     order = SchwabOrderResponse(
@@ -1140,6 +1180,79 @@ def test_d31_execution_before_the_order_falls_back_visibly(
     assert result.exit_date == "2026-08-04"
     envelope = json.loads(result.schwab_source_value_json)
     assert envelope["exit_date_source"] == "enter_time"
+
+
+def test_d31_malformed_entered_time_does_not_discard_a_good_execution_date(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Codex R4 Minor -- the chronology rule compares CANONICAL values only.
+
+    An earlier draft fed the raw ``_extract_iso_date`` SLICE of ``enter_time``
+    to ``execution_precedes_order``. That slice is not a date: ``9999-99-99``
+    (verified: ``_extract_iso_date('9999-99-99Tjunk')`` returns exactly that)
+    sorts lexically after every real execution date, so the chronology rule
+    fired, the good execution-grain date was thrown away, and the fallback then
+    refused the same garbage -- losing the whole candidate on the evidence of
+    an unrelated malformed field.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time="9999-99-99Tjunk", execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-bad-enter-time",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(conn, d31_now, [order])
+
+    assert result.kind == "populated"
+    assert result.exit_date == "2026-08-04"
+    envelope = json.loads(result.schwab_source_value_json)
+    assert envelope["exit_date_source"] == "execution_leg"
+
+
+def test_d31_mixed_offsets_across_candidates_order_by_local_date_and_warn(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders, caplog,
+):
+    """Codex R4 Major -- the residue, RECORDED with its canary.
+
+    Two orders whose offset-local dates and absolute instants disagree: A
+    executed 2026-08-04T23:00-10:00 (absolute 08-05T09:00Z) and B executed
+    2026-08-05T01:00+14:00 (absolute 08-04T11:00Z). Ordering by local date puts
+    A first and defaults to B; ordering by absolute instant would reverse them.
+
+    The list is ordered by LOCAL DATE, deliberately: it is the value displayed
+    to the operator and the value recorded when he accepts, so an
+    instant-primary order would show 2026-08-05 above 2026-08-04 and default to
+    the row reading earlier. `latest_execution_leg_date` refuses this same
+    ambiguity WITHIN one order and cannot see across orders, so the condition
+    is logged. Schwab emits +0000 on every leg, making this a canary rather
+    than a live path -- which is exactly why it is pinned rather than trusted
+    to stay unreachable.
+    """
+    west = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=6,
+        enter_time="2026-08-03T13:00:00+00:00",
+        execution_time="2026-08-04T23:00:00-10:00",
+        instruction="SELL", order_id="order-FTRE-west",
+    )
+    east = _make_sell_order(
+        ticker="FTRE", price=18.10, quantity=4,
+        enter_time="2026-08-03T13:00:00+00:00",
+        execution_time="2026-08-05T01:00:00+14:00",
+        instruction="SELL", order_id="order-FTRE-east",
+    )
+    patch_get_orders.state["orders"] = [west, east]
+    with caplog.at_level(logging.WARNING, logger="swing.trades.exit_auto_fill"):
+        result = _resolve_ftre(conn, d31_now, [west, east])
+
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert [c.date for c in result.candidates] == ["2026-08-04", "2026-08-05"]
+    assert result.exit_date == "2026-08-05"
+    assert any(
+        "different utc offsets" in rec.message for rec in caplog.records
+    ), "the mixed-offset canary must fire"
 
 
 def test_d31_non_canonical_entered_time_declines_the_candidate(

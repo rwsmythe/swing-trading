@@ -59,7 +59,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 # NOTE: _compute_degraded_state is imported here so it can be monkeypatched
@@ -660,6 +660,7 @@ def resolve_exit_auto_fill(
     # partial-then-canceled MARKET orders.
     # ----------------------------------------------------------------------
     sorted_matches = sorted(matches, key=_candidate_sort_key)
+    _warn_on_mixed_candidate_offsets(ticker, sorted_matches)
     candidates: list[ExitAutoFillCandidate] = []
     date_sources: dict[str, str] = {}
     undated_count = 0
@@ -855,21 +856,74 @@ def _candidate_sort_key(o: Any) -> tuple[str, float, str]:
     A candidate whose date is unresolvable sorts first; ``_build_candidate``
     drops it immediately afterwards, so its position never reaches the
     operator.
+
+    THE DATE STAYS PRIMARY, AND THE RESIDUE IS NAMED RATHER THAN TRADED AWAY
+    (Codex R4 Major). The date is the leg's OWN offset-local calendar prefix,
+    so across two orders carrying DIFFERENT utc offsets the local-date order
+    and the absolute-instant order can disagree, and this key would then rank
+    by local date. The shared helper refuses mixed offsets WITHIN one order for
+    exactly that reason, but it cannot see across orders. Promoting the instant
+    to primary was rejected: the operator picks from a list that DISPLAYS these
+    dates and the chosen one is what gets recorded, so an instant-primary order
+    would show him 2026-08-05 above 2026-08-04 and default to the row reading
+    earlier — incoherent on the surface it exists to serve — and it would
+    introduce exactly the offset-arithmetic divergence from the reconciliation
+    guard that ``execution_dates`` was written to prevent. The condition is
+    LOGGED instead, so a mis-ordering is observable rather than silent, and it
+    is not a live path: Schwab emits ``+0000`` on every execution leg (checked
+    against the live DB — every stored leg time, all ``+0000``).
     """
     date, source = _execution_date(o)
-    instant = (
-        latest_execution_leg_instant(
-            getattr(leg, "time", None)
-            for leg in (getattr(o, "executions", None) or [])
-        )
-        if source == "execution_leg"
-        else None
-    )
+    instant = _execution_instant(o) if source == "execution_leg" else None
     return (
         date or "",
         instant.timestamp() if instant is not None else float("-inf"),
         str(getattr(o, "enter_time", "") or ""),
     )
+
+
+def _execution_instant(order: Any) -> datetime | None:
+    """The winning execution leg's absolute instant, or ``None``.
+
+    A thin adapter over the shared ranking token so the two callers below spell
+    the leg-time extraction once. Returns ``None`` for any order whose legs the
+    shared helper refuses.
+    """
+    return latest_execution_leg_instant(
+        getattr(leg, "time", None)
+        for leg in (getattr(order, "executions", None) or [])
+    )
+
+
+def _warn_on_mixed_candidate_offsets(ticker: str, matches: list[Any]) -> None:
+    """Log when the candidate SET spans more than one utc offset (D31, Codex
+    R4 Major).
+
+    ``latest_execution_leg_date`` refuses mixed offsets WITHIN one order,
+    because "the latest leg's date" stops having one answer; it cannot see
+    ACROSS orders, where the same ambiguity reappears between the offset-local
+    date this list is ordered and displayed by and the absolute instant the
+    fills actually happened at. ``_candidate_sort_key`` explains why the date
+    stays primary. This makes the condition observable rather than silent.
+    Schwab emits ``+0000`` on every leg, so it is a canary, not a live path.
+    """
+    offsets: set[timedelta] = set()
+    for o in matches:
+        _, source = _execution_date(o)
+        if source != "execution_leg":
+            continue
+        instant = _execution_instant(o)
+        if instant is not None:
+            offsets.add(instant.utcoffset() or timedelta(0))
+    if len(offsets) > 1:
+        log.warning(
+            "schwab exit auto-fill: %s candidate fills span %d different utc "
+            "offsets (%s); the candidate list is ordered by each leg's own "
+            "offset-local date, which can differ from absolute execution "
+            "order -- verify the default fill against the broker",
+            ticker, len(offsets),
+            ", ".join(sorted(str(off) for off in offsets)),
+        )
 
 
 def _execution_date(order: Any) -> tuple[str | None, str]:
@@ -968,14 +1022,22 @@ def _execution_date(order: Any) -> tuple[str | None, str]:
     execution_date = latest_execution_leg_date(
         getattr(leg, "time", None) for leg in executions
     )
-    raw_enter_time = getattr(order, "enter_time", "") or ""
-    if execution_precedes_order(
-        execution_date, _extract_iso_date(raw_enter_time),
-    ):
+    # CANONICALIZE THE ENTERED TIMESTAMP ONCE, BEFORE ANYTHING COMPARES AGAINST
+    # IT (Codex R4 Minor). An earlier draft fed the raw ``_extract_iso_date``
+    # SLICE to the chronology rule, and that slice is not a date: a malformed
+    # ``9999-99-99Tjunk`` slices to ``9999-99-99``, which sorts lexically after
+    # every real execution date, so a perfectly good execution-grain date was
+    # discarded on the evidence of garbage in an unrelated field -- and then the
+    # fallback refused the same garbage, dropping the candidate entirely. One
+    # canonical value now serves both the comparison and the fallback; when it
+    # is ``None`` there is nothing trustworthy to compare against, and
+    # ``execution_precedes_order`` correctly declines to refuse on a ``None``.
+    entered_date = _canonical_date(getattr(order, "enter_time", "") or "")
+    if execution_precedes_order(execution_date, entered_date):
         execution_date = None
     if execution_date is not None:
         return execution_date, "execution_leg"
-    return _canonical_date(raw_enter_time), "enter_time"
+    return entered_date, "enter_time"
 
 
 def _canonical_date(raw: Any) -> str | None:
