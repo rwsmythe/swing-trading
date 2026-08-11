@@ -2208,9 +2208,11 @@ async def exit_post(
                     + ". The form has been regenerated; please re-submit."
                 )
 
-        # Multi-partial: parse candidate_index + verify it maps to a
-        # server-rendered candidate (its candidate_signature_hash_<i> hidden
-        # input must be present). Single-fill case: candidate_index omitted
+        # Multi-partial: parse candidate_index + verify it maps to a candidate
+        # the SUBMISSION itself carries (its candidate_signature_hash_<i>
+        # hidden input must be present — a consistency check on the submitted
+        # form, not proof the candidate came from this server).
+        # Single-fill case: candidate_index omitted
         # → treat as 0 (the template emits no radio at length 1; the form
         # may or may not emit candidate_signature_hash_0; both shapes OK).
         selected_index: int | None = None
@@ -2314,8 +2316,8 @@ async def exit_post(
                     )
 
             # Compute the comparison baseline. When the operator made a
-            # multi-partial selection with a server-validated authoritative
-            # entry, compare visible inputs against THAT candidate (not
+            # multi-partial selection whose hash is consistent with its own
+            # submitted map, compare visible inputs against THAT candidate (not
             # the envelope's default chosen). Otherwise (single-fill case
             # or selection without candidates_map) fall back to the
             # envelope's top-level exit_date / exit_price / closed_shares.
@@ -2389,13 +2391,13 @@ async def exit_post(
                 extended["selected_candidate_signature_hash"] = (
                     candidate_sigs[selected_index]
                 )
-                # Codex R2 Major #2 fix — persist authoritative ``order_id``
-                # from the server-stamped ``candidates_map`` envelope, NOT
-                # the client-submitted ``candidate_order_id_<i>`` hidden
-                # input. A tampered POST could submit a valid
-                # signature_hash but a forged candidate_order_id_<i>; the
-                # envelope's authoritative entry has already been
-                # validated by the M1 hash-membership check above. Falls
+                # Codex R2 Major #2 fix — persist the ``order_id`` from the
+                # ``candidates_map`` entry, NOT from the separately-submitted
+                # ``candidate_order_id_<i>`` hidden input. Reading ONE source
+                # keeps the persisted order_id consistent with the values
+                # compared above instead of letting two client-supplied fields
+                # disagree; it does NOT make either unforgeable (see the trust
+                # note at the membership check). Falls
                 # back to the client-submitted value only when
                 # candidates_map is empty (legacy envelopes lacking the
                 # map — pre-Critical-#1-fix envelopes; covered by R2 M4

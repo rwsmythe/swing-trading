@@ -1484,8 +1484,16 @@ def test_d31_price_omission_is_announced_too(
     ``SchwabExecutionLeg.__post_init__`` rejects ``quantity <= 0`` at
     construction, so no valid order can produce it. A test would have to
     monkeypatch the helper, which would assert the mock rather than the
-    behaviour. The branch is kept because the helper's contract permits
-    ``None`` and the counter must not go quiet if it ever returns one.
+    behaviour.
+
+    The guard is kept as a DEFENSIVE one, and the reason is stated correctly
+    here rather than plausibly (Codex R8): an earlier draft said the helper's
+    contract permits ``None``, which is false —
+    ``swing/trades/schwab_reconciliation.py`` annotates
+    ``_resolve_match_quantity(so) -> float``. The conclusion was right and the
+    stated reason was not, which is the shape this whole arc keeps finding. It
+    is retained against a nonconforming input or a future widening of that
+    contract, not against the current one.
     """
     good = _make_sell_order(
         ticker="FTRE", price=18.40, quantity=6,

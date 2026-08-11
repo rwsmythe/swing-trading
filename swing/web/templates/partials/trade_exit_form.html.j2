@@ -67,9 +67,11 @@
       {#- Multi-partial-exit candidate list (length >= 2): operator
           selects which fill drives the form values via radio buttons.
           Per-candidate hidden inputs (candidate_signature_hash_<i> +
-          candidate_order_id_<i>) round-trip provenance so POST handler
-          (T-B.2.3) can verify operator's selected candidate index maps
-          to a server-rendered candidate (FORWARD-BINDING WATCH ITEM). -#}
+          candidate_order_id_<i>) round-trip provenance so the POST handler
+          (T-B.2.3) can check the operator's selected candidate index against
+          the candidates this same submission carries. Consistency within one
+          submitted form, NOT proof of server provenance — these are hidden
+          inputs and a client can alter them together with the envelope. -#}
       {% if vm.auto_fill_candidates and vm.auto_fill_candidates|length > 1 %}
       <fieldset class="auto-fill-candidates">
         <legend>Select fill (Schwab returned {{ vm.auto_fill_candidates|length }} partial exits)</legend>

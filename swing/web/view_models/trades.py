@@ -871,10 +871,15 @@ class TradeExitFormVM:
     # carry the resolution result from
     # ``swing.trades.exit_auto_fill.resolve_exit_auto_fill``. When the
     # resolution is short-circuited (sandbox / DEGRADED / no account_hash /
-    # credentials missing / Schwab error) OR yields no candidates, all
-    # auto_fill_* fields stay None except ``auto_fill_advisory_text`` +
-    # ``auto_fill_fill_origin``. The template gates display + hidden-input
-    # emission on ``vm.auto_fill_schwab_source_value_json is not none``.
+    # credentials missing / Schwab error) OR yields no candidates, the
+    # value-bearing auto_fill_* fields stay None and FOUR are still populated:
+    # ``auto_fill_kind`` (the resolver always reports which outcome it took),
+    # ``auto_fill_fill_origin``, ``auto_fill_advisory_text``, and
+    # ``auto_fill_audit_at`` (stamped on EVERY kind, since the anchor records
+    # that an auto-fill ATTEMPT happened at that time). An earlier version of
+    # this comment named only two of the four (Codex R8). The template gates
+    # display + hidden-input emission on
+    # ``vm.auto_fill_schwab_source_value_json is not none``.
     #
     # ``auto_fill_advisory_text`` is NOT exclusive to those kinds since D31. A
     # POPULATED result sets it in EITHER of two cases, and can carry both at
@@ -901,9 +906,12 @@ class TradeExitFormVM:
     # the single-fill case renders pre-populated inputs directly (no
     # radio). Per-candidate ``signature_hash`` + ``order_id`` are emitted
     # as hidden inputs ``candidate_signature_hash_<i>`` +
-    # ``candidate_order_id_<i>`` so POST handler can verify operator's
-    # selected candidate index maps to a server-rendered candidate
-    # (FORWARD-BINDING WATCH ITEM for T-B.2.3).
+    # ``candidate_order_id_<i>`` so the POST handler can verify the operator's
+    # selected candidate index against the candidates the SUBMISSION itself
+    # carries. That is a consistency check on one submitted form, not proof of
+    # server provenance: these are hidden inputs and a client can alter them
+    # together with the envelope (see the trust note in
+    # ``swing/trades/exit_auto_fill.py``).
     auto_fill_kind: str = "operator_typed"
     auto_fill_fill_origin: str = "operator_typed"
     auto_fill_exit_date: str | None = None

@@ -722,21 +722,23 @@ def resolve_exit_auto_fill(
     # candidate the operator sees defaulted. Use chosen.* directly to
     # guarantee envelope-vs-candidate value consistency.
     #
-    # Codex R1 Critical #1 + Major #1 fix — add ``candidates_map`` as a
-    # server-side authoritative truth source keyed by signature_hash.
+    # Codex R1 Critical #1 + Major #1 fix — add ``candidates_map``, keyed by
+    # signature_hash, as the truth source the POST handler prefers OVER THE
+    # VISIBLE INPUT BOXES.
     #
-    # "AUTHORITATIVE" IS RELATIVE TO THE VISIBLE INPUTS, NOT TO A TAMPERING
-    # CLIENT (cold audit). The whole envelope round-trips through a hidden form
-    # field, so the POST can only prove that a submitted signature appears in
-    # the SUBMITTED map — both halves are client-reachable, and the map is
-    # authoritative over the visible date/price/quantity boxes rather than
-    # unforgeable. Making it unforgeable needs a signed envelope, which is a
-    # design decision outside this arc and is flagged rather than improvised.
+    # IT IS NOT A SERVER-SIDE TRUTH SOURCE AND THE POST CANNOT PROVE
+    # PROVENANCE (cold audit + Codex R8). The whole envelope round-trips
+    # through a hidden form field, so a client can alter the map and the
+    # signature TOGETHER; what the handler establishes is CONSISTENCY WITHIN
+    # THE SUBMITTED ENVELOPE, and only when that envelope carries a non-empty
+    # map (its check is `if candidates_map and submitted_hash not in
+    # candidates_map`, so a legacy envelope with no map skips it entirely).
+    # Making this unforgeable needs a SIGNED envelope, which is a design
+    # decision outside this arc and is flagged rather than improvised.
     #
     # The POST handler uses this map to:
-    #   (a) verify the operator-submitted signature_hash maps to a server-
-    #       rendered candidate (closes Major #1 forgery surface — a
-    #       tampered POST claiming an arbitrary hash is rejected with 400);
+    #   (a) reject a submitted signature_hash that does not appear in its own
+    #       submitted map (400) — a consistency gate, not a forgery gate;
     #   (b) look up the authoritative price/date/quantity for the selected
     #       candidate so multi-partial radio selection actually drives
     #       persisted values (closes Critical #1 — the template's radio
