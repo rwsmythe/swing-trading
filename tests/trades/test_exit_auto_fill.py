@@ -1658,6 +1658,73 @@ def test_d31_fractional_recorded_quantity_does_not_falsely_match(
     ] == [40]
 
 
+def test_b_review_major3_fractional_execution_quantity_flags_its_own_row(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Orchestrator B review MAJOR 3 -- the OFFERED side truncated too.
+
+    ``_build_candidate`` stores ``int(quantity)`` on the candidate, and the
+    alarm read the candidate. So a 10.9-share execution compared as 10.0:
+
+      * against a recorded 10.9 row the alarm STAYED SILENT -- the silent miss
+        the whole ruling exists to prevent;
+      * against a recorded 10.0 row it FIRED, naming a row that cannot be the
+        same fill.
+
+    Both directions are asserted here because a fix that ROUNDS instead of
+    preserving passes the first and fails the second. The comparison now
+    consumes the untruncated execution-grain quantity threaded out of
+    ``_build_candidate``, so both sides of the equality are the values Schwab
+    actually reported.
+
+    The live ledger holds no fractional quantity today (RD's query: 43 fills,
+    zero fractional), so the quantity is PLANTED rather than looked for.
+    ``fills.quantity`` is ``REAL NOT NULL CHECK (quantity > 0)`` and
+    ``SchwabExecutionLeg.quantity`` is a float, so neither side is
+    schema-prevented.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10.9,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-stop",
+    )
+    patch_get_orders.state["orders"] = [order]
+
+    # (1) MUST FLAG: the recorded row carries the same fractional quantity.
+    result = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=40, date="2026-08-04", price=18.40, quantity=10.9,
+            ),
+        ),
+    )
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert [
+        d.fill_id for d in result.candidates[0].possible_duplicates
+    ] == [40], (
+        "a 10.9-share execution must flag a recorded 10.9-share row; "
+        "truncating the offered side to 10 silences the alarm"
+    )
+
+    # (2) MUST NOT FLAG: the recorded row is a whole-number 10.
+    result_whole = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=41, date="2026-08-04", price=18.40, quantity=10.0,
+            ),
+        ),
+    )
+    assert result_whole.candidates is not None
+    assert result_whole.candidates[0].possible_duplicates == (), (
+        "10 recorded shares is not a 10.9-share execution; truncating the "
+        "offered side names the wrong row"
+    )
+
+
 def test_d31_both_grains_produce_the_same_response(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,

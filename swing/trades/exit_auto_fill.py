@@ -772,13 +772,21 @@ def resolve_exit_auto_fill(
     # good candidates to protest one bad one is a worse trade for the operator.
     omitted: dict[str, int] = {}
     for o in sorted_matches:
-        cand, outcome = _build_candidate(o)
+        cand, outcome, match_quantity = _build_candidate(o)
         if cand is not None:
             cand = replace(
                 cand,
                 date_source=outcome,
+                # ``match_quantity`` is non-None exactly when ``cand`` is
+                # non-None -- the builder returns them together and refuses
+                # both when the quantity is unresolvable, which is why this
+                # branch can pass it straight through. It is the untruncated
+                # quantity, threaded so the alarm compares Schwab's number
+                # rather than the dataclass's truncation of it (B review
+                # MAJOR 3).
                 possible_duplicates=_undecidable_duplicates(
                     o, cand, anonymous_fills,
+                    match_quantity=match_quantity,
                 ),
             )
             candidates.append(cand)
@@ -999,17 +1007,33 @@ def resolve_exit_auto_fill(
     )
 
 
-def _build_candidate(o: Any) -> tuple[ExitAutoFillCandidate | None, str]:
+def _build_candidate(
+    o: Any,
+) -> tuple[ExitAutoFillCandidate | None, str, float | None]:
     """Build an ExitAutoFillCandidate from a SchwabOrderResponse.
 
-    Returns ``(candidate, date_source)`` on success, where ``date_source`` is
-    the grain that produced the candidate's date (see ``_execution_date``). The
-    source rides OUT here rather than on the dataclass because it is provenance
-    about the derivation, not part of the fill's identity — the audit envelope
-    carries it PER CANDIDATE (gotcha #30: a single stamp is not provenance for
-    N rows, and this surface has N rows the operator can select between).
+    Returns ``(candidate, date_source, match_quantity)`` on success, where
+    ``date_source`` is the grain that produced the candidate's date (see
+    ``_execution_date``). The source rides OUT here rather than on the dataclass
+    because it is provenance about the derivation, not part of the fill's
+    identity — the audit envelope carries it PER CANDIDATE (gotcha #30: a single
+    stamp is not provenance for N rows, and this surface has N rows the operator
+    can select between).
 
-    Returns ``(None, <refusal reason>)`` when the order cannot become a
+    ``match_quantity`` IS THE UNTRUNCATED EXECUTION-GRAIN QUANTITY, and it rides
+    out for the same reason (orchestrator B review MAJOR 3). The dataclass field
+    is typed ``int`` and this function truncates into it; widening that field
+    touches the persisted envelope, the form and the signature input, so it is a
+    separate arc. Meanwhile the duplicate-flag comparison MUST see the real
+    number: ``PossibleDuplicateFill.quantity`` is a float precisely because
+    truncating a stored 5.9 to 5 names the wrong row, and the OFFERED side was
+    still truncating. Threaded rather than re-derived: re-invoking
+    ``_resolve_match_quantity`` against the raw order is what the note above
+    ``sorted_matches`` warns against, and a second derivation can drift from the
+    one this function validated and hashed. ``None`` exactly when the candidate
+    is ``None``.
+
+    Returns ``(None, <refusal reason>, None)`` when the order cannot become a
     candidate. THE REASON IS RETURNED, not swallowed (Codex R1 Major 2): a
     refusal that leaves OTHER candidates standing produces a list that looks
     complete while omitting a real fill, and the caller can only say so out
@@ -1021,13 +1045,13 @@ def _build_candidate(o: Any) -> tuple[ExitAutoFillCandidate | None, str]:
     """
     price = _compute_execution_price(o)
     if price is None:
-        return None, "no_execution_price"
+        return None, "no_execution_price", None
     quantity = _resolve_match_quantity(o)
     if quantity is None or quantity <= 0:
-        return None, "no_quantity"
+        return None, "no_quantity", None
     date, date_source = _execution_date(o)
     if not date:
-        return None, "no_usable_date"
+        return None, "no_usable_date", None
     order_id = getattr(o, "order_id", None)
     sig = _compute_signature_hash(
         order_id=order_id,
@@ -1045,6 +1069,7 @@ def _build_candidate(o: Any) -> tuple[ExitAutoFillCandidate | None, str]:
             order_id=order_id,
         ),
         date_source,
+        float(quantity),
     )
 
 
@@ -1104,10 +1129,21 @@ def _undecidable_duplicates(
     order: Any,
     candidate: ExitAutoFillCandidate,
     anonymous_fills: tuple[PossibleDuplicateFill, ...],
+    *,
+    match_quantity: float,
 ) -> tuple[PossibleDuplicateFill, ...]:
     """Every anonymous recorded fill this candidate MIGHT duplicate.
 
     Returns an empty tuple when nothing matches.
+
+    BOTH SIDES OF THE QUANTITY COMPARISON ARE UNTRUNCATED (orchestrator B
+    review MAJOR 3). ``match_quantity`` is the execution-grain quantity
+    ``_build_candidate`` resolved, validated (``not None and > 0``) and hashed
+    for THIS order; the candidate's own ``quantity`` field is an ``int`` that
+    truncated it. Reading the field made a 10.9-share execution compare as
+    10.0, which stayed SILENT against a recorded 10.9 and FIRED against a
+    recorded 10.0 -- the same defect ``PossibleDuplicateFill.quantity`` was
+    made a float to prevent, surviving on the other side of the equality.
 
     ALL MATCHES ARE RETURNED, NOT THE FIRST (Codex R16 major). An earlier
     version named one and argued that pointing the operator at the ledger was
@@ -1154,7 +1190,7 @@ def _undecidable_duplicates(
         return ()
     try:
         price = round(float(candidate.price), 2)
-        quantity = float(candidate.quantity)
+        quantity = float(match_quantity)
     except (TypeError, ValueError):
         return ()
     dates = {candidate.date}
