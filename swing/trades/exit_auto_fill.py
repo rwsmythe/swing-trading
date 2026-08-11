@@ -174,11 +174,13 @@ ExitFillOrigin = Literal[
 class PossibleDuplicateFill:
     """An ALREADY-RECORDED fill a candidate MIGHT duplicate, named in full.
 
-    Emitted when the D31 grain cutover leaves identity UNDECIDABLE: a recorded
-    fill carrying no ``schwab_order_id`` whose stored date matches the
-    candidate's ORDER-ENTERED date (the pre-D31 recording grain) but not its
-    execution date. The rows may be one broker fill recorded under the old
-    grain, or two different fills. Nothing available can tell them apart.
+    Emitted when identity is UNDECIDABLE: a recorded fill carrying no
+    ``schwab_order_id`` whose stored date matches EITHER of the two dates in
+    play for a candidate -- the date the candidate carries, or the date this
+    module would have recorded for the same order before the D31 grain
+    cutover -- with the same price and quantity. The rows may be one broker
+    fill or two different ones. Nothing available can tell them apart, and
+    since every such row is ``operator_typed`` nothing ever will.
 
     The row is NAMED rather than merely counted -- ``fill_id``, stored date,
     price, quantity -- because the operator adjudicates this, and "one of your
@@ -188,7 +190,13 @@ class PossibleDuplicateFill:
     fill_id: int
     date: str
     price: float
-    quantity: int
+    # FLOAT, NOT INT (Codex R16 major). `fills.quantity` is
+    # `REAL NOT NULL CHECK (quantity > 0)` (migration 0014) and the
+    # split-partial correction path writes fractional values, so truncating a
+    # stored 5.9 to 5 would make it falsely equal a 5-share candidate and
+    # name the wrong row. The live ledger happens to hold no fractional
+    # quantity today; the schema has always permitted one.
+    quantity: float
 
     def __post_init__(self) -> None:
         if isinstance(self.fill_id, bool) or not isinstance(self.fill_id, int):
@@ -230,10 +238,13 @@ class ExitAutoFillCandidate:
         hand-constructed candidate gets; the resolver always states it. A
         default of ``'execution_leg'`` would let a construction that never
         thought about provenance silently claim the good grain.
-      - ``possible_duplicate_of``: set when identity against an anonymous
-        recorded fill is UNDECIDABLE (see ``PossibleDuplicateFill``). The
-        candidate is still OFFERED -- the affordance to record is never gated
-        on the alarm -- but never offered clean.
+      - ``possible_duplicates``: EVERY anonymous recorded fill this candidate
+        might duplicate (see ``PossibleDuplicateFill``); empty tuple when none.
+        The candidate is still OFFERED -- the affordance to record is never
+        gated on the alarm -- but never offered clean. ALL matches are named,
+        not just the first: nothing is excluded any more, so if the operator
+        rules out the one row he was shown he would duplicate the one he was
+        not (Codex R16 major).
     """
 
     date: str
@@ -242,7 +253,7 @@ class ExitAutoFillCandidate:
     signature_hash: str
     order_id: str | None = None
     date_source: str | None = None
-    possible_duplicate_of: PossibleDuplicateFill | None = None
+    possible_duplicates: tuple[PossibleDuplicateFill, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.date, str) or not self.date:
@@ -428,8 +439,8 @@ def resolve_exit_auto_fill(
       2. ANONYMOUS recorded fill (no ``schwab_order_id``), value-tuple match at
          EITHER grain -- its stored date equals the candidate's EXECUTION date,
          OR the candidate's ORDER-ENTERED date, same price and quantity ->
-         the candidate is OFFERED carrying ``possible_duplicate_of`` naming the
-         row. NEVER silently excluded. NEVER offered clean.
+         the candidate is OFFERED carrying ``possible_duplicates`` naming
+         EVERY such row. NEVER silently excluded. NEVER offered clean.
 
     THE LINE IS PROVENANCE, NOT GRAIN, and the fact that moved it is this: all
     ten anonymous non-entry fills on the live ledger are ``operator_typed`` --
@@ -760,7 +771,7 @@ def resolve_exit_auto_fill(
             cand = replace(
                 cand,
                 date_source=outcome,
-                possible_duplicate_of=_undecidable_duplicate(
+                possible_duplicates=_undecidable_duplicates(
                     o, cand, anonymous_fills,
                 ),
             )
@@ -834,18 +845,17 @@ def resolve_exit_auto_fill(
             "order_id": cand.order_id,
             # The PERSISTED envelope records that this candidate was offered
             # under an undecidable-identity alarm, so if a double-record ever
-            # happens the fill's own audit trail shows the operator was told
-            # which row it might duplicate.
-            "possible_duplicate_of": (
+            # happens the fill's own audit trail shows EVERY row it might
+            # duplicate -- the same list the operator was shown.
+            "possible_duplicates": [
                 {
-                    "fill_id": cand.possible_duplicate_of.fill_id,
-                    "date": cand.possible_duplicate_of.date,
-                    "price": cand.possible_duplicate_of.price,
-                    "quantity": cand.possible_duplicate_of.quantity,
+                    "fill_id": dup.fill_id,
+                    "date": dup.date,
+                    "price": dup.price,
+                    "quantity": dup.quantity,
                 }
-                if cand.possible_duplicate_of is not None
-                else None
-            ),
+                for dup in cand.possible_duplicates
+            ],
         }
         for cand in candidates
     }
@@ -883,30 +893,42 @@ def resolve_exit_auto_fill(
     # envelope nobody reads. It is stated first because it is the only one of
     # these messages that can cost the operator a wrong ledger row.
     advisory_parts: list[str] = []
-    flagged = [c for c in candidates if c.possible_duplicate_of is not None]
+    flagged = [c for c in candidates if c.possible_duplicates]
     if flagged:
+        # NEUTRAL WORDING (Codex R16 minor). An earlier draft told the operator
+        # the matching row was "recorded under the OLD date convention" and was
+        # "dated when the ORDER WAS PLACED". That is an assertion about which
+        # grain a HAND-TYPED date used -- the very thing ruled unknowable, and
+        # false on its face for a row matching the candidate's own execution
+        # date. The message states the EVIDENCE and leaves the conclusion to
+        # the operator, which is the whole point of alarming instead of
+        # asserting.
         named = "; ".join(
-            f"fill #{c.possible_duplicate_of.fill_id} recorded "
-            f"{c.possible_duplicate_of.date} at "
-            f"{c.possible_duplicate_of.price:.2f} x "
-            f"{c.possible_duplicate_of.quantity} (offered here as "
-            f"{c.date} at {c.price:.2f} x {c.quantity})"
+            f"fill #{dup.fill_id} recorded {dup.date} at {dup.price:.2f} x "
+            f"{dup.quantity:g} (offered here as {c.date} at {c.price:.2f} x "
+            f"{c.quantity})"
             for c in flagged
+            for dup in c.possible_duplicates
         )
         noun = "fill" if len(flagged) == 1 else "fills"
         advisory_parts.append(
-            f"POSSIBLE DUPLICATE: {len(flagged)} offered {noun} may already "
-            f"be recorded under the OLD date convention -- {named}. Fills "
-            "recorded before this change were dated when the ORDER WAS "
-            "PLACED, and these carry no broker order id to tell them apart. "
-            "Check the trade's recorded fills before submitting."
+            f"POSSIBLE DUPLICATE: {len(flagged)} offered {noun} match an "
+            f"already-recorded fill on price, quantity and one of the two "
+            f"dates involved -- {named}. Those recorded fills carry no broker "
+            "order id, so nothing here can tell whether they are the same "
+            "fill or different ones. Check the trade's recorded fills before "
+            "submitting."
         )
         log.warning(
-            "schwab exit auto-fill: %s -- %d candidate(s) may duplicate an "
-            "anonymous recorded fill under the pre-D31 date grain (fill_ids "
-            "%s); offered WITH the alarm, not suppressed",
+            "schwab exit auto-fill: %s -- %d candidate(s) match an anonymous "
+            "recorded fill on value and date with no id to decide identity "
+            "(fill_ids %s); offered WITH the alarm, not suppressed",
             ticker, len(flagged),
-            ", ".join(str(c.possible_duplicate_of.fill_id) for c in flagged),
+            ", ".join(
+                str(dup.fill_id)
+                for c in flagged
+                for dup in c.possible_duplicates
+            ),
         )
     fallback_dates = sorted(
         cand.date for cand in candidates
@@ -1064,15 +1086,20 @@ def _candidate_sort_key(o: Any) -> tuple[str, float, str]:
     )
 
 
-def _undecidable_duplicate(
+def _undecidable_duplicates(
     order: Any,
     candidate: ExitAutoFillCandidate,
     anonymous_fills: tuple[PossibleDuplicateFill, ...],
-) -> PossibleDuplicateFill | None:
-    """State 3 of the identity rule: the OTHER-grain-ONLY match.
+) -> tuple[PossibleDuplicateFill, ...]:
+    """Every anonymous recorded fill this candidate MIGHT duplicate.
 
-    Returns the anonymous recorded fill this candidate MIGHT duplicate, or
-    ``None`` when identity is decidable or nothing matches.
+    Returns an empty tuple when nothing matches.
+
+    ALL MATCHES ARE RETURNED, NOT THE FIRST (Codex R16 major). An earlier
+    version named one and argued that pointing the operator at the ledger was
+    enough. It is not, now that nothing is excluded: shown one row, he can
+    rule it out and record a fill that duplicates the OTHER one he was never
+    told about. Naming a subset of the ambiguity is its own quiet failure.
 
     BOTH GRAINS MATCH (RD, 2026-08-11). The candidate's price and quantity are
     compared against each anonymous row's, and its date is compared at EITHER
@@ -1111,20 +1138,21 @@ def _undecidable_duplicate(
     is to send him to the ledger, not to resolve it for him.
     """
     if not anonymous_fills:
-        return None
+        return ()
     try:
         price = round(float(candidate.price), 2)
-        quantity = int(candidate.quantity)
+        quantity = float(candidate.quantity)
     except (TypeError, ValueError):
-        return None
+        return ()
     dates = {candidate.date}
     entered_date = _extract_iso_date(getattr(order, "enter_time", "") or "")
     if entered_date:
         dates.add(entered_date)
+    matches: list[PossibleDuplicateFill] = []
     for row in anonymous_fills:
         try:
             row_price = round(float(row.price), 2)
-            row_quantity = int(row.quantity)
+            row_quantity = float(row.quantity)
         except (TypeError, ValueError):
             continue
         if (
@@ -1132,8 +1160,8 @@ def _undecidable_duplicate(
             and row_quantity == quantity
             and row.date in dates
         ):
-            return row
-    return None
+            matches.append(row)
+    return tuple(matches)
 
 
 def _execution_instant(order: Any) -> datetime | None:

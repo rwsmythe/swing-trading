@@ -1398,8 +1398,7 @@ def test_d31_anonymous_same_grain_match_is_offered_with_the_flag(
 
     assert result.kind == "populated", "never silently excluded"
     assert result.candidates is not None
-    flag = result.candidates[0].possible_duplicate_of
-    assert flag is not None, "never offered clean"
+    (flag,) = result.candidates[0].possible_duplicates
     assert flag.fill_id == 40
     assert result.advisory_text is not None
     assert "POSSIBLE DUPLICATE" in result.advisory_text
@@ -1439,7 +1438,7 @@ def test_d31_identified_recorded_fill_does_not_suppress_a_different_order(
     assert result.kind == "populated"
     assert result.exit_date == "2026-08-04"
     assert result.candidates is not None
-    assert result.candidates[0].possible_duplicate_of is None
+    assert result.candidates[0].possible_duplicates == ()
     assert result.advisory_text is None
 
 
@@ -1456,7 +1455,7 @@ def test_d31_anonymous_other_grain_match_is_offered_with_the_flag(
     the old grain, or a genuinely different fill. Nothing can tell them apart.
 
     The candidate is OFFERED (the affordance to record is never gated on the
-    alarm) and carries ``possible_duplicate_of`` NAMING the row: fill id,
+    alarm) and carries ``possible_duplicates`` NAMING the row: fill id,
     stored date, price, quantity. Never excluded silently; never offered
     clean. The advisory carries it too, because the template renders the
     per-candidate list only at length >= 2 and this is a single-fill render.
@@ -1479,8 +1478,7 @@ def test_d31_anonymous_other_grain_match_is_offered_with_the_flag(
     assert result.kind == "populated", "never excluded silently"
     assert result.exit_date == "2026-08-04"
     assert result.candidates is not None
-    flag = result.candidates[0].possible_duplicate_of
-    assert flag is not None, "never offered clean"
+    (flag,) = result.candidates[0].possible_duplicates
     assert flag.fill_id == 41
     assert flag.date == "2026-08-03"
     assert flag.price == 18.40
@@ -1493,7 +1491,7 @@ def test_d31_anonymous_other_grain_match_is_offered_with_the_flag(
 
     envelope = json.loads(result.schwab_source_value_json)
     entry = envelope["candidates_map"][result.candidates[0].signature_hash]
-    assert entry["possible_duplicate_of"]["fill_id"] == 41
+    assert [d["fill_id"] for d in entry["possible_duplicates"]] == [41]
 
 
 def test_d31_flag_models_the_old_grain_with_the_OLD_tolerant_extraction(
@@ -1534,12 +1532,108 @@ def test_d31_flag_models_the_old_grain_with_the_OLD_tolerant_extraction(
     assert result.kind == "populated"
     assert result.exit_date == "2026-08-04"
     assert result.candidates is not None
-    flag = result.candidates[0].possible_duplicate_of
-    assert flag is not None, (
+    (flag,) = result.candidates[0].possible_duplicates
+    assert flag.fill_id == 42, (
         "a fill recorded under the OLD tolerant extraction must still raise "
         "the compatibility alarm"
     )
-    assert flag.fill_id == 42
+
+
+def test_d31_every_matching_row_is_named_not_just_the_first(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Codex R16 major -- naming a SUBSET of the ambiguity is its own failure.
+
+    TWO anonymous recorded rows share one (price, quantity) and sit on the
+    candidate's two dates: one on its execution date, one on its entered date.
+    An earlier version returned the FIRST match and argued that pointing the
+    operator at the ledger was enough. It is not, now that nothing is
+    excluded: shown only fill #40 he can check it, rule it out, record the
+    fill, and duplicate #41 -- which he was never told about.
+
+    Every match is named, on the candidate, in the advisory, and in the
+    persisted envelope.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-stop",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=40, date="2026-08-04", price=18.40, quantity=10,
+            ),
+            PossibleDuplicateFill(
+                fill_id=41, date="2026-08-03", price=18.40, quantity=10,
+            ),
+        ),
+    )
+
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    dups = result.candidates[0].possible_duplicates
+    assert [d.fill_id for d in dups] == [40, 41], (
+        f"both recorded rows must be named; got {dups!r}"
+    )
+    assert result.advisory_text is not None
+    assert "fill #40" in result.advisory_text
+    assert "fill #41" in result.advisory_text
+    envelope = json.loads(result.schwab_source_value_json)
+    entry = envelope["candidates_map"][result.candidates[0].signature_hash]
+    assert [d["fill_id"] for d in entry["possible_duplicates"]] == [40, 41]
+
+
+def test_d31_fractional_recorded_quantity_does_not_falsely_match(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Codex R16 major -- the stored quantity is REAL and must not truncate.
+
+    ``fills.quantity`` is ``REAL NOT NULL CHECK (quantity > 0)`` (migration
+    0014) and the split-partial correction path writes fractional values. An
+    earlier version coerced both sides with ``int()``, so a recorded 10.9
+    shares falsely equalled a 10-share candidate and the alarm named a row
+    that cannot be the same fill. The live ledger holds no fractional quantity
+    today -- the schema has always permitted one, so this is not
+    schema-prevented.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-stop",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=40, date="2026-08-04", price=18.40, quantity=10.9,
+            ),
+        ),
+    )
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert result.candidates[0].possible_duplicates == (), (
+        "10.9 recorded shares is not 10 offered shares"
+    )
+
+    # An exactly-equal float still matches -- 10.0 IS 10.
+    result_equal = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=40, date="2026-08-04", price=18.40, quantity=10.0,
+            ),
+        ),
+    )
+    assert result_equal.candidates is not None
+    assert [
+        d.fill_id for d in result_equal.candidates[0].possible_duplicates
+    ] == [40]
 
 
 def test_d31_both_grains_produce_the_same_response(
@@ -1572,11 +1666,11 @@ def test_d31_both_grains_produce_the_same_response(
         )
         assert result.kind == "populated", row_date
         assert result.candidates is not None
-        flag = result.candidates[0].possible_duplicate_of
-        assert flag is not None and flag.fill_id == fill_id, row_date
+        (flag,) = result.candidates[0].possible_duplicates
+        assert flag.fill_id == fill_id, row_date
 
 
-def test_d31_same_session_fill_is_never_flagged_against_an_anonymous_row(
+def test_d31_same_session_fill_is_offered_and_flagged_not_suppressed(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,
 ):
@@ -1612,8 +1706,8 @@ def test_d31_same_session_fill_is_never_flagged_against_an_anonymous_row(
     )
     assert result.kind == "populated", "never silently excluded"
     assert result.candidates is not None
-    flag = result.candidates[0].possible_duplicate_of
-    assert flag is not None and flag.fill_id == 41
+    (flag,) = result.candidates[0].possible_duplicates
+    assert flag.fill_id == 41
     assert result.advisory_text is not None
 
 
@@ -1644,7 +1738,7 @@ def test_d31_anonymous_row_with_other_values_does_not_flag(
     )
     assert result.kind == "populated"
     assert result.candidates is not None
-    assert result.candidates[0].possible_duplicate_of is None
+    assert result.candidates[0].possible_duplicates == ()
 
 
 def test_d31_equal_clip_scale_out_is_offered_and_flagged_not_swallowed(
@@ -1699,8 +1793,7 @@ def test_d31_equal_clip_scale_out_is_offered_and_flagged_not_swallowed(
     assert result.candidates is not None
     assert len(result.candidates) == 2, "neither clip is swallowed"
     assert all(
-        c.possible_duplicate_of is not None
-        and c.possible_duplicate_of.fill_id == 40
+        [d.fill_id for d in c.possible_duplicates] == [40]
         for c in result.candidates
     ), "each is flagged against the one recorded row"
 

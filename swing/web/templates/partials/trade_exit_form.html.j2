@@ -112,12 +112,11 @@
             {% if cand.date_source == 'enter_time' %}
             <span class="muted">&mdash; date is when the ORDER WAS PLACED (execution time unusable)</span>
             {% endif %}
-            {% if cand.possible_duplicate_of %}
-            <strong>&mdash; POSSIBLE DUPLICATE of recorded fill #{{ cand.possible_duplicate_of.fill_id }}
-              ({{ cand.possible_duplicate_of.date }} at
-              {{ '%.2f' | format(cand.possible_duplicate_of.price) }} &times;
-              {{ cand.possible_duplicate_of.quantity }} sh)</strong>
-            {% endif %}
+            {%- for dup in cand.possible_duplicates %}
+            <strong>&mdash; POSSIBLE DUPLICATE of recorded fill #{{ dup.fill_id }}
+              ({{ dup.date }} at {{ '%.2f' | format(dup.price) }} &times;
+              {{ dup.quantity }} sh)</strong>
+            {%- endfor %}
           </label>
           <input type="hidden" name="candidate_signature_hash_{{ loop.index0 }}"
                  value="{{ cand.signature_hash }}">

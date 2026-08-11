@@ -891,7 +891,7 @@ class TradeExitFormVM:
     # more LISTED candidates fell back to the order-entered date because their
     # execution times were unusable, so he is told which shown dates are not
     # execution dates; (c) one or more LISTED candidates carry a
-    # ``possible_duplicate_of`` — an anonymous recorded fill they may duplicate
+    # ``possible_duplicates`` — the anonymous recorded fills they may duplicate
     # under the pre-D31 grain, which identity evidence cannot decide either
     # way. It stays None on a populated result with none of the three.
     #

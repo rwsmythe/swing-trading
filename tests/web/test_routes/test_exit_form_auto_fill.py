@@ -839,8 +839,10 @@ def test_d31_possible_duplicate_flag_reaches_the_rendered_form(
         date="2026-05-20", price=161.25, quantity=60,
         signature_hash="sig-flagged", order_id="ORD-FLAGGED",
         date_source="execution_leg",
-        possible_duplicate_of=PossibleDuplicateFill(
-            fill_id=41, date="2026-05-19", price=161.25, quantity=60,
+        possible_duplicates=(
+            PossibleDuplicateFill(
+                fill_id=41, date="2026-05-19", price=161.25, quantity=60,
+            ),
         ),
     )
     _patch_auto_fill(
@@ -1026,7 +1028,7 @@ def test_r2_major4_fallback_dedupe_operator_typed_no_envelope(
     assert all(isinstance(r.fill_id, int) for r in anon)
 
 
-def test_r2_major4_fallback_dedupe_resolver_filters_matching_tuple(
+def test_r2_major4_superseded_value_match_now_flags_instead_of_filtering(
     seeded_db, monkeypatch,
 ):
     """SUPERSEDED 2026-08-11 — this was the shipped contract whose breakage
@@ -1141,24 +1143,23 @@ def test_r2_major4_fallback_dedupe_resolver_filters_matching_tuple(
         f"expected populated result with ALL five surviving; got {result!r}"
     )
     by_order = {
-        c.order_id: c.possible_duplicate_of for c in (result.candidates or ())
+        c.order_id: c.possible_duplicates for c in (result.candidates or ())
     }
     assert set(by_order) == {"ORD-A", "ORD-B", "ORD-C", "ORD-D", "ORD-E"}, (
         f"nothing may be silently excluded any more; got {sorted(by_order)}"
     )
     # Exact + both rounding matches are FLAGGED against the recorded row.
     for oid in ("ORD-A", "ORD-D", "ORD-E"):
-        assert by_order[oid] is not None, (
+        assert [d.fill_id for d in by_order[oid]] == [77], (
             f"{oid} matches (date, 160.50, 100) within the 2-decimal "
             f"tolerance and must carry the possible-duplicate flag"
         )
-        assert by_order[oid].fill_id == 77
     # Outside the tolerance, and unrelated: offered CLEAN.
-    assert by_order["ORD-B"] is None, (
+    assert by_order["ORD-B"] == (), (
         "160.51 (1 cent off) exceeds 2-decimal rounding tolerance; "
         "MUST NOT be flagged"
     )
-    assert by_order["ORD-C"] is None, (
+    assert by_order["ORD-C"] == (), (
         "unrelated candidate (different date + qty) MUST NOT be flagged"
     )
 
