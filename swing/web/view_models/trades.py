@@ -1008,12 +1008,20 @@ def build_exit_form_vm(
         # Excluding both would over-dedupe the picked-but-unrecorded
         # candidate from future fetches.
         #
-        # Codex R2 Major #4 fix — fallback dedupe by
-        # (date, round(price, 2), quantity) tuple for fills lacking a
-        # parseable ``schwab_order_id`` (pre-v20 / tos_import /
-        # imported_legacy / operator_typed fills with no envelope, OR
-        # envelopes missing the key). Tolerance: price compared with
-        # round(_, 2); date string-exact; quantity int-exact.
+        # Codex R2 Major #4, AS SUPERSEDED — every non-entry fill lacking a
+        # usable ``schwab_order_id`` (pre-v20 / tos_import / imported_legacy /
+        # operator_typed fills with no envelope, envelopes missing the key,
+        # and envelopes whose only id is ``selected_candidate_order_id``)
+        # travels as a NAMED anonymous row. It once travelled as a bare tuple
+        # that DEDUPED; it now FLAGS and can exclude nothing.
+        #
+        # The comparison grain, stated here because this is where the values
+        # are built and rounded (Codex R2 minor — this paragraph still said
+        # "quantity int-exact", which the arc's own fix retired): date is
+        # string-exact against EITHER of the candidate's two dates, price is
+        # compared at ``round(_, 2)``, and quantity is compared as a FLOAT
+        # within an absolute 1e-9 — see ``_undecidable_duplicates`` in
+        # ``swing/trades/exit_auto_fill.py``, which owns the comparison.
         #
         # D31 — anonymous rows are collected WITH their identity and CANNOT
         # exclude anything (RD, 2026-08-11). The bare-tuple set that used to
@@ -1063,8 +1071,9 @@ def build_exit_form_vm(
                 if isinstance(v, str) and v.strip():
                     existing_fill_order_ids.add(v)
                     order_id_found = True
-            # Fallback dedupe tuple — populated for ALL non-entry fills
-            # whose envelope did not surface an order_id. This covers
+            # The NAMED anonymous row — built for ALL non-entry fills whose
+            # envelope did not surface a usable order_id. It flags; it does
+            # not dedupe (the word this comment used to use). This covers
             # pre-v20 fills (no schwab_source_value_json), operator_typed
             # fills (no envelope), tos_import / imported_legacy fills
             # (no envelope), AND envelopes carrying only

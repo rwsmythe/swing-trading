@@ -2494,9 +2494,14 @@ async def exit_post(
                     # edge cases". Production cannot produce that:
                     # ``SchwabOrderResponse.__post_init__`` requires a
                     # non-empty ``order_id`` and ``_build_candidate`` copies it
-                    # straight onto the candidate. The reachable sources are
-                    # the client-editable envelope (banked, cited) and legacy
-                    # envelopes. The constructor is no stricter than non-empty,
+                    # straight onto the candidate. The one reachable source is
+                    # the client-editable envelope (banked, cited) — and NOT a
+                    # "legacy envelope", which in this handler means one
+                    # carrying no ``candidates_map`` at all, a shape that
+                    # cannot reach this branch because
+                    # ``authoritative_selected`` is read OUT of that map
+                    # (Codex R2 minor). The constructor is no stricter than
+                    # non-empty,
                     # so a WHITESPACE id is constructible where a ``None`` is
                     # not — and the truthiness test below does NOT reject one:
                     # ``"   "`` is truthy and would be installed here. It is
@@ -2563,8 +2568,21 @@ async def exit_post(
                     and entry_shares == shares
                 )
 
-            top_order_id = extended.get("schwab_order_id")
-            if isinstance(top_order_id, str):
+            # EVERY PRESENT VALUE IS JUDGED, not only the string-shaped ones
+            # (Codex R2 minor). An earlier version gated on
+            # ``isinstance(top_order_id, str)``, so a numeric / list / object
+            # id — reachable only through the client-editable envelope —
+            # survived the rule that claims to govern every top-level id. The
+            # VM ignores non-string values today, so nothing was silently
+            # suppressed; the envelope simply carried an assertion the rule had
+            # never examined. A value that is not a non-blank string asserts no
+            # link and is dropped without further inquiry.
+            if "schwab_order_id" in extended:
+                top_order_id = extended["schwab_order_id"]
+                usable = (
+                    isinstance(top_order_id, str) and bool(top_order_id.strip())
+                )
+                named: list = []
                 # PRESENCE, not truthiness (Codex R1 major). An envelope that
                 # CARRIES ``candidates_map`` and declares it EMPTY asserts a
                 # candidate manifest containing nothing, and an id naming no
@@ -2573,7 +2591,7 @@ async def exit_post(
                 # two and would keep such an id. A populated resolver never
                 # emits an empty map, so this is a client-edited or malformed
                 # envelope either way; the map governs whenever it is present.
-                if "candidates_map" in anchor_envelope:
+                if usable and "candidates_map" in anchor_envelope:
                     # The id's own candidate is the map entry naming it. Zero
                     # or several -> the id names no single offered fill, so it
                     # cannot evidence a link either way.
@@ -2582,7 +2600,7 @@ async def exit_post(
                         if isinstance(entry, dict)
                         and entry.get("order_id") == top_order_id
                     ]
-                else:
+                elif usable:
                     # Legacy envelope with no map: ``resolve_exit_auto_fill``
                     # emits the top-level date/price/shares/order_id quartet
                     # from ONE chosen candidate, so the top-level values ARE
@@ -2593,7 +2611,7 @@ async def exit_post(
                         "quantity": anchor_envelope.get("closed_shares"),
                     }]
                 if not (
-                    top_order_id.strip()
+                    usable
                     and len(named) == 1
                     and _derives_from(named[0])
                 ):

@@ -734,7 +734,7 @@ def resolve_exit_auto_fill(
     # Sort matches by EXECUTION date ASCENDING so the candidates list carries
     # chronological order (oldest first; most-recent last). Then build
     # candidates from the sorted matches; _build_candidate returns
-    # ``(None, <refusal reason>)`` for orders lacking an execution-grain
+    # ``(None, <refusal reason>, None)`` for orders lacking an execution-grain
     # price/quantity (mapper edge case) or a usable date, so candidates may
     # have fewer entries than matches — and the ``no_usable_date`` refusals are
     # COUNTED below rather than dropped on the floor.
