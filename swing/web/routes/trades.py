@@ -28,6 +28,7 @@ from swing.trades.entry import (
 )
 from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason, ExitRequest, record_exit
+from swing.trades.exit_auto_fill import _EXIT_DATE_SOURCE_VALUES
 from swing.trades.origin import EntryPath
 from swing.trades.stop_adjust import (
     StopAdjustRationale,
@@ -2137,6 +2138,46 @@ async def exit_post(
                     "exit_price must be finite numeric; closed_shares must "
                     "be an integer). The form has been regenerated; please "
                     "re-submit."
+                )
+
+        # (e) D31 — the provenance stamps, when PRESENT, must be members of the
+        # closed enum the resolver emits. The envelope is a hidden input and so
+        # a tampering surface (the CLAUDE.md gotcha this whole ladder exists
+        # for); without this tier an arbitrary string persists into
+        # `fills.schwab_source_value_json` wearing the shape of a provenance
+        # claim, which is worse than no claim at all. ABSENCE IS LEGAL AND
+        # STAYS LEGAL: every envelope written before D31 lacks both keys, and a
+        # resubmitted one must not be rejected for that.
+        if isinstance(anchor_envelope, dict) and claimed_auto_fill:
+            bad_sources: list[str] = []
+            top_source = anchor_envelope.get("exit_date_source")
+            if (
+                top_source is not None
+                and top_source not in _EXIT_DATE_SOURCE_VALUES
+            ):
+                bad_sources.append(f"exit_date_source={top_source!r}")
+            envelope_map = anchor_envelope.get("candidates_map")
+            if isinstance(envelope_map, dict):
+                for sig, entry in envelope_map.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_source = entry.get("date_source")
+                    if (
+                        entry_source is not None
+                        and entry_source not in _EXIT_DATE_SOURCE_VALUES
+                    ):
+                        bad_sources.append(
+                            f"candidates_map[{sig!r}].date_source="
+                            f"{entry_source!r}"
+                        )
+            if bad_sources:
+                return _reject_anchor(
+                    "Trade exit rejected: schwab_source_value_json carries an "
+                    "unrecognized auto-fill date provenance value ("
+                    + "; ".join(sorted(bad_sources))
+                    + "). Allowed values are "
+                    + ", ".join(sorted(_EXIT_DATE_SOURCE_VALUES))
+                    + ". The form has been regenerated; please re-submit."
                 )
 
         # Multi-partial: parse candidate_index + verify it maps to a

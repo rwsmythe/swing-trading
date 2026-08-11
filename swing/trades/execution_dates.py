@@ -30,12 +30,21 @@ America/New_York and no offset arithmetic. Schwab emits ``+0000`` on every
 execution leg, so in practice that IS the UTC calendar date; the two are
 distinguished here because they are not the same claim, and a MIXED-offset
 collection is REFUSED rather than resolved (see the function's own note).
-The reconciliation side reads the same fact the same way
+The reconciliation side reads each leg's timestamp the same way
 (``swing/trades/schwab_reconciliation.py`` ``_fill_execution_session_distance``:
 ``_date.fromisoformat(str(raw_time)[:10])``). An auto-fill that converted to
 ET while the A2-date guard did not would manufacture a permanent one-session
 disagreement on every after-hours execution — precisely the shape of the
 finding this arc exists to close.
+
+Same READ, different AGGREGATION, and the distinction matters (D31 exit-side,
+Codex R1 Minor): this module ranks the legs and emits the LATEST one's date,
+while the guard emits the MAX session distance ACROSS ALL legs against a fill
+date already recorded. On a multi-leg order spanning two sessions the two
+therefore differ by construction, and neither is wrong — one answers "when did
+this order finish executing", the other "how far is this recorded date from the
+furthest leg". Do not read the guard as a check that this module's output is
+the only admissible value.
 
 Known residue: the divergence begins at 00:00Z, i.e. 20:00 ET on the previous
 local date (19:00 ET under EST). A US-equity execution in the 20:00-24:00 ET
@@ -53,7 +62,34 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-__all__ = ["execution_precedes_order", "latest_execution_leg_date"]
+__all__ = [
+    "execution_precedes_order",
+    "latest_execution_leg_date",
+    "latest_execution_leg_instant",
+]
+
+
+def latest_execution_leg_instant(raw_times: Iterable[Any]) -> datetime | None:
+    """The ABSOLUTE INSTANT of the LATEST execution leg, or ``None``.
+
+    Same collection, same refusals, same winner as ``latest_execution_leg_date``
+    — this returns the winning leg's parsed ``datetime`` where that returns its
+    calendar date. Both delegate to one ranking pass, so they cannot disagree
+    about which leg won.
+
+    Exists because a consumer ranking candidates chronologically needs finer
+    than day granularity for two fills that executed on the SAME date, and
+    ranking them on ``enter_time`` instead would order them by when the
+    OPERATOR TYPED them (D31 exit-side, Codex R1 Major 3). The DATE remains the
+    value that gets recorded; this is a ranking token only, and a caller must
+    NOT persist it or treat it as the fill's date.
+
+    The returned datetime is always timezone-aware: a naive leg timestamp is
+    ranked as UTC (the same convention the date form uses), so instants from
+    different orders are always comparable.
+    """
+    ranked = _rank_execution_legs(raw_times)
+    return ranked[0] if ranked is not None else None
 
 
 def latest_execution_leg_date(raw_times: Iterable[Any]) -> str | None:
@@ -95,6 +131,21 @@ def latest_execution_leg_date(raw_times: Iterable[Any]) -> str | None:
     date, and the emitted value is ``parsed.date().isoformat()``. Anything else
     is a whole-collection refusal, exactly as an unparseable value is.
     """
+    ranked = _rank_execution_legs(raw_times)
+    return ranked[1] if ranked is not None else None
+
+
+def _rank_execution_legs(
+    raw_times: Iterable[Any],
+) -> tuple[datetime, str] | None:
+    """The ONE ranking pass behind both public readers.
+
+    Returns ``(winning_instant, winning_canonical_date)`` or ``None`` under the
+    refusals documented on ``latest_execution_leg_date``. Split out (D31
+    exit-side, Codex R1 Major 3) so the date reader and the instant reader
+    cannot pick different winners; NEITHER public function reimplements it,
+    which is the whole point of this module.
+    """
     ranked: list[tuple[datetime, str]] = []
     offsets: set[timedelta] = set()
     for raw in raw_times:
@@ -130,8 +181,7 @@ def latest_execution_leg_date(raw_times: Iterable[Any]) -> str | None:
         # the callers already surface a refusal as a visible fallback. Schwab
         # emits `+0000` on every leg, so this is a guard, not a live path.
         return None
-    _, winning_date = max(ranked, key=lambda pair: pair[0])
-    return winning_date
+    return max(ranked, key=lambda pair: pair[0])
 
 
 def execution_precedes_order(

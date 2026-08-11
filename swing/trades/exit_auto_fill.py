@@ -82,6 +82,7 @@ from swing.integrations.schwab.client import (
 from swing.trades.execution_dates import (
     execution_precedes_order,
     latest_execution_leg_date,
+    latest_execution_leg_instant,
 )
 from swing.trades.schwab_reconciliation import (
     _compute_execution_price,
@@ -592,6 +593,31 @@ def resolve_exit_auto_fill(
                 return False
         return True
 
+    # FLAGGED, DELIBERATELY NOT FIXED HERE (D31, Codex R1 Major 1).
+    # ``excluded_value_tuples`` is a SET and carries no multiplicity, so when
+    # TWO surviving orders share one (date, price, quantity) tuple and only ONE
+    # fill was recorded, membership drops BOTH and a real unrecorded fill
+    # disappears from the operator's list with nothing said. That is a genuine
+    # silent-false-negative, and it is REACHABLE -- an operator scaling out in
+    # equal clips at one price on one session produces exactly this shape.
+    #
+    # It is NOT a defect of this arc, and the fix is not obviously one-sided.
+    # The collision is a property of the (date, price, quantity) KEY, which is
+    # a deliberate lossy fallback for fills carrying no ``schwab_order_id`` at
+    # all; the order-id path above is exact and runs first. Correcting the date
+    # grain changes WHICH orders can collide, not whether they can: before D31
+    # the key collided on a shared ORDER-ENTERED date, which for a scale-out
+    # placed in one sitting is at least as likely as a shared execution date.
+    # And retaining ambiguous candidates trades a silent omission for a visible
+    # duplicate-record invitation, which is an operator-facing call about how
+    # his own money is recorded, not an implementer's.
+    #
+    # The current behaviour is also EXPLICITLY TESTED
+    # (``tests/web/test_routes/test_exit_form_auto_fill.py``,
+    # ``test_r2_major4_fallback_dedupe_resolver_filters_matching_tuple``, which
+    # plants three orders rounding to one excluded tuple and asserts all three
+    # are excluded), so changing it is a supersession of a shipped contract
+    # rather than a bug fix. Routed up instead.
     matches = [o for o in orders if _passes_filters(o)]
     if not matches:
         return ExitAutoFillResult(
@@ -634,12 +660,21 @@ def resolve_exit_auto_fill(
     sorted_matches = sorted(matches, key=_candidate_sort_key)
     candidates: list[ExitAutoFillCandidate] = []
     date_sources: dict[str, str] = {}
+    undated_count = 0
     for o in sorted_matches:
-        built = _build_candidate(o)
-        if built is not None:
-            cand, date_source = built
+        cand, outcome = _build_candidate(o)
+        if cand is not None:
             candidates.append(cand)
-            date_sources[cand.signature_hash] = date_source
+            date_sources[cand.signature_hash] = outcome
+        elif outcome == "no_usable_date":
+            # A fill with a real price and quantity that we cannot DATE. If
+            # other candidates survive, the list below looks complete while
+            # omitting this one, so the omission is said out loud instead
+            # (Codex R1 Major 2). Declining the WHOLE auto-fill -- the
+            # entry-side posture -- would be wrong here: the entry side has one
+            # order, this surface has N, and hiding N-1 good candidates to
+            # protest one bad one is a worse trade for the operator.
+            undated_count += 1
     if not candidates:
         # All matches lacked execution-grain price/quantity (mapper edge
         # case OR partial-then-canceled MARKET with no resolvable qty) OR a
@@ -710,6 +745,25 @@ def resolve_exit_auto_fill(
         sort_keys=True,
     )
 
+    # An omission the operator cannot see is worse than one he can (Codex R1
+    # Major 2). A populated result carried ``advisory_text=None`` before D31
+    # and still does whenever nothing was omitted -- the template renders this
+    # text whenever it is set, so a standing advisory on every populated result
+    # would train the operator to ignore it.
+    omission_advisory: str | None = None
+    if undated_count:
+        omission_advisory = (
+            f"{undated_count} Schwab SELL fill(s) for {ticker} are NOT listed "
+            "here: they carry no usable execution date (unusable execution "
+            "leg times and a non-calendar order-entered timestamp). Check the "
+            "broker and record those manually."
+        )
+        log.warning(
+            "schwab exit auto-fill: %d %s SELL fill(s) omitted from the "
+            "candidate list -- no usable execution date at either grain",
+            undated_count, ticker,
+        )
+
     return ExitAutoFillResult(
         kind="populated",
         fill_origin="schwab_auto",
@@ -717,39 +771,42 @@ def resolve_exit_auto_fill(
         exit_price=chosen.price,
         closed_shares=chosen.quantity,
         candidates=candidates,
-        advisory_text=None,
+        advisory_text=omission_advisory,
         schwab_source_value_json=schwab_source_value_json,
         auto_fill_audit_at=auto_fill_audit_at,
         schwab_api_call_id=None,
     )
 
 
-def _build_candidate(o: Any) -> tuple[ExitAutoFillCandidate, str] | None:
+def _build_candidate(o: Any) -> tuple[ExitAutoFillCandidate | None, str]:
     """Build an ExitAutoFillCandidate from a SchwabOrderResponse.
 
-    Returns ``(candidate, date_source)`` where ``date_source`` is the grain
-    that produced the candidate's date (see ``_execution_date``). The source
-    rides OUT here rather than on the dataclass because it is provenance about
-    the derivation, not part of the fill's identity — the audit envelope
+    Returns ``(candidate, date_source)`` on success, where ``date_source`` is
+    the grain that produced the candidate's date (see ``_execution_date``). The
+    source rides OUT here rather than on the dataclass because it is provenance
+    about the derivation, not part of the fill's identity — the audit envelope
     carries it PER CANDIDATE (gotcha #30: a single stamp is not provenance for
     N rows, and this surface has N rows the operator can select between).
 
+    Returns ``(None, <refusal reason>)`` when the order cannot become a
+    candidate. THE REASON IS RETURNED, not swallowed (Codex R1 Major 2): a
+    refusal that leaves OTHER candidates standing produces a list that looks
+    complete while omitting a real fill, and the caller can only say so out
+    loud if it knows why the omission happened. The reasons are
+    ``'no_execution_price'``, ``'no_quantity'`` and ``'no_usable_date'``.
+
     Uses execution-grain helpers per CLAUDE.md "Pass-1-tier-1 Sub-bundle 1"
     discipline — do NOT consume raw ``so.price``.
-
-    Returns None when the order lacks an execution-grain price/quantity
-    (mapper edge case) or a usable date at either grain; the caller falls back
-    to an empty result if ALL candidates are None.
     """
     price = _compute_execution_price(o)
     if price is None:
-        return None
+        return None, "no_execution_price"
     quantity = _resolve_match_quantity(o)
     if quantity is None or quantity <= 0:
-        return None
+        return None, "no_quantity"
     date, date_source = _execution_date(o)
     if not date:
-        return None
+        return None, "no_usable_date"
     order_id = getattr(o, "order_id", None)
     sig = _compute_signature_hash(
         order_id=order_id,
@@ -770,22 +827,47 @@ def _build_candidate(o: Any) -> tuple[ExitAutoFillCandidate, str] | None:
     )
 
 
-def _candidate_sort_key(o: Any) -> tuple[str, str]:
+def _candidate_sort_key(o: Any) -> tuple[str, float, str]:
     """Chronological ordering key for the candidate list (D31).
 
     PRIMARY is the derived EXECUTION date — "most recent" on this surface
     means most recently EXECUTED, since that is the fill the operator is
-    recording. SECONDARY is ``enter_time``, which breaks ties among fills that
-    executed on the SAME date; the shared derivation emits day granularity
-    only, so a same-date tiebreak has nothing finer to rank on and the entered
-    order is the honest fallback rather than a second ranking of leg times.
+    recording.
+
+    SECONDARY is the winning leg's absolute INSTANT, which is what orders two
+    fills that executed on the SAME date. An earlier draft used ``enter_time``
+    here and claimed the derivation had "nothing finer" to rank on; that was
+    false about the DATA (``executions[*].time`` carries full timestamps) and
+    would have defaulted the form to whichever same-day fill was ORDERED last
+    rather than EXECUTED last (Codex R1 Major 3). The instant comes from
+    ``latest_execution_leg_instant``, which shares one ranking pass with the
+    date reader, so the two cannot disagree about which leg won.
+
+    A candidate whose date came from the ``enter_time`` FALLBACK has no known
+    execution instant, and is NOT ranked as though it did: it takes ``-inf``
+    and therefore sorts before any same-date candidate we actually dated from
+    its execution. Preferring a genuinely-dated fill as the default is the
+    conservative choice, and TERTIARY ``enter_time`` keeps that group's order
+    stable.
 
     A candidate whose date is unresolvable sorts first; ``_build_candidate``
     drops it immediately afterwards, so its position never reaches the
     operator.
     """
-    date, _ = _execution_date(o)
-    return (date or "", str(getattr(o, "enter_time", "") or ""))
+    date, source = _execution_date(o)
+    instant = (
+        latest_execution_leg_instant(
+            getattr(leg, "time", None)
+            for leg in (getattr(o, "executions", None) or [])
+        )
+        if source == "execution_leg"
+        else None
+    )
+    return (
+        date or "",
+        instant.timestamp() if instant is not None else float("-inf"),
+        str(getattr(o, "enter_time", "") or ""),
+    )
 
 
 def _execution_date(order: Any) -> tuple[str | None, str]:
@@ -811,17 +893,25 @@ def _execution_date(order: Any) -> tuple[str | None, str]:
     (``MAX(fill_datetime)``, recomputed by ``_recompute_aggregates`` in the
     same transaction as every fill insert), and it is CHECKED — not mirrored —
     against the broker by ``schwab_reconciliation._fill_execution_session_
-    distance``, which measures the NYSE-session distance between
-    ``fill_datetime[:10]`` and each ``executions[*].time[:10]`` of the matched
-    order and treats a nonzero distance as not-session-consistent. So one home,
-    one derived denorm, one external cross-check, and nothing to keep in step
-    at write time.
+    distance``. So one home, one derived denorm, one external cross-check, and
+    nothing to keep in step at write time.
 
     That third fact is why the execution grain is not a preference here: the
-    reconciliation guard ALREADY reads ``fills.fill_datetime`` as an execution
-    date, so an auto-fill defaulting to the ORDER-ENTERED date put the
-    framework in disagreement with its own guard and manufactured a
-    self-inflicted session-distance finding on every resting order.
+    guard ALREADY reads ``fills.fill_datetime`` as an execution date, so an
+    auto-fill defaulting to the ORDER-ENTERED date was feeding it a value of a
+    different KIND.
+
+    THE GUARD IS A TOLERANCE, NOT AN EQUALITY, and overstating it would be the
+    same defect this arc exists to fix (Codex R1 Minor). It returns the MAX
+    NYSE-session distance across ALL legs of the matched order, and the
+    classifier admits tier-1 while that distance is ``<=
+    _MAX_TIER1_SESSION_DISTANCE``, which is **1**. So a one-session straddle —
+    the ordinary overnight rest, and the live fill-40 shape — was recorded on
+    the wrong date and passed the guard SILENTLY; only a rest spanning more
+    than one session (a weekend or a holiday, which is most of them) would
+    have raised anything. The defect was therefore mostly invisible to
+    reconciliation rather than loudly flagged by it, which is the worse of the
+    two and the reason it survived to be caught by hand.
 
     Rules, and the response to each:
 

@@ -1136,14 +1136,15 @@ def test_d31_derived_exit_date_satisfies_the_reconciliation_session_guard(
     ``fills.fill_datetime``, derives into ``trades.last_fill_at``
     (``MAX(fill_datetime)``), and is CHECKED against the broker by
     ``_fill_execution_session_distance``, which measures the NYSE-session
-    distance between ``fill_datetime[:10]`` and every ``executions[*].time``
-    of the matched order. That guard already assumes the fill carries the
-    EXECUTION date -- so the auto-fill proposing the ORDER-ENTERED date put
-    the framework in disagreement with its own reconciliation guard.
+    distance between ``fill_datetime[:10]`` and the order's execution legs.
+    That guard already reads the fill as carrying the EXECUTION date.
 
     The second assertion is what makes this test distinguish: under the
     pre-fix derivation the proposed date sat one session away from the
-    execution it claims to record.
+    execution it claims to record. It also shows why the defect was not loud
+    -- the classifier admits tier-1 through
+    ``_MAX_TIER1_SESSION_DISTANCE == 1``, so this one-session error passed the
+    guard silently and had to be caught by hand.
     """
     order = _make_sell_order(
         ticker="FTRE", price=18.40, quantity=10,
@@ -1213,6 +1214,171 @@ def test_d31_dedupe_tuple_no_longer_matches_the_entered_date(
     )
     assert result.kind == "populated"
     assert result.exit_date == "2026-08-04"
+
+
+def test_d31_dedupe_tuple_set_still_over_merges_ambiguous_candidates(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The FLAGGED residue, pinned as it actually behaves (Codex R1 Major 1).
+
+    ``existing_fill_value_tuples`` is a SET with no multiplicity, so ONE
+    recorded fill excludes EVERY candidate sharing its (date, price, quantity)
+    tuple. Two equal clips at one price on one session -- an ordinary
+    scale-out -- therefore both vanish once either is recorded.
+
+    This test EXISTS TO RECORD THAT, not to bless it. It is a pre-existing
+    property of the lossy fallback key, not of the date grain this arc
+    corrected: before D31 the same collision happened on a shared
+    ORDER-ENTERED date. Changing it is an operator-facing call (a silent
+    omission versus a visible duplicate-record invitation) against a shipped,
+    separately-tested contract, so it is routed up rather than decided here.
+    If a later arc changes the behaviour, this test is the thing it must
+    deliberately rewrite -- which is the point of pinning it.
+    """
+    twin_a = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=5,
+        enter_time="2026-08-03T13:45:00.000Z",
+        execution_time="2026-08-04T13:30:05.000Z",
+        instruction="SELL", order_id="order-FTRE-twin-a",
+    )
+    twin_b = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=5,
+        enter_time="2026-08-03T14:45:00.000Z",
+        execution_time="2026-08-04T15:30:05.000Z",
+        instruction="SELL", order_id="order-FTRE-twin-b",
+    )
+    patch_get_orders.state["orders"] = [twin_a, twin_b]
+    result = _resolve_ftre(
+        conn, d31_now, [twin_a, twin_b],
+        existing_fill_value_tuples={("2026-08-04", 18.40, 5)},
+    )
+    assert result.kind == "empty"
+
+
+def test_d31_undated_fill_omitted_from_a_populated_list_is_announced(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Codex R1 Major 2 -- a short list must not look complete.
+
+    One order has a real price and quantity but no usable date at EITHER grain
+    (unusable leg time AND a basic-format `enter_time`), so it cannot become a
+    candidate. Another order is fine. Dropping the first silently would show
+    the operator a list that omits a fill he actually made; the populated
+    result carries an advisory naming the omission instead, and the template
+    renders `auto_fill_advisory_text` whenever it is set.
+    """
+    good = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=6,
+        enter_time="2026-08-03T13:45:00.000Z",
+        execution_time="2026-08-04T13:30:05.000Z",
+        instruction="SELL", order_id="order-FTRE-good",
+    )
+    undated = _make_sell_order(
+        ticker="FTRE", price=18.10, quantity=4,
+        enter_time="20260803T134500", execution_time="not-a-timestamp",
+        instruction="SELL", order_id="order-FTRE-undated",
+    )
+    patch_get_orders.state["orders"] = [good, undated]
+    result = _resolve_ftre(conn, d31_now, [good, undated])
+
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert [c.order_id for c in result.candidates] == ["order-FTRE-good"]
+    assert result.advisory_text is not None
+    assert "1 Schwab SELL fill(s)" in result.advisory_text
+    assert "not listed" in result.advisory_text.lower()
+    assert result.advisory_text.isascii()
+
+
+def test_d31_populated_without_omissions_carries_no_advisory(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The omission advisory must not become standing noise.
+
+    An advisory on every populated result would train the operator to ignore
+    the one case where it means something.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-stop",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(conn, d31_now, [order])
+
+    assert result.kind == "populated"
+    assert result.advisory_text is None
+
+
+def test_d31_same_day_default_is_the_latest_execution_instant(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Codex R1 Major 3 -- the same-date tiebreak is the EXECUTION instant.
+
+    Both fills executed on 2026-08-04, so the date cannot separate them. The
+    one ENTERED later executed EARLIER; ranking the tie on `enter_time` would
+    default the form to the 10:01 fill because its order was typed second.
+    Exact execution timestamps exist, so the ranking uses them.
+    """
+    entered_first = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=6,
+        enter_time="2026-08-04T13:00:00.000Z",
+        execution_time="2026-08-04T19:59:00.000Z",
+        instruction="SELL", order_id="order-FTRE-late-exec",
+    )
+    entered_second = _make_sell_order(
+        ticker="FTRE", price=18.10, quantity=4,
+        enter_time="2026-08-04T14:00:00.000Z",
+        execution_time="2026-08-04T14:01:00.000Z",
+        instruction="SELL", order_id="order-FTRE-early-exec",
+    )
+    patch_get_orders.state["orders"] = [entered_first, entered_second]
+    result = _resolve_ftre(conn, d31_now, [entered_first, entered_second])
+
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert [c.order_id for c in result.candidates] == [
+        "order-FTRE-early-exec", "order-FTRE-late-exec",
+    ]
+    assert result.closed_shares == 6
+
+
+def test_d31_entered_time_fallback_never_ranks_as_a_known_instant(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """A fallback-dated candidate is not ranked as though we knew its instant.
+
+    Both land on 2026-08-04; one from its execution leg, one from a bare
+    `enter_time` with an unusable leg. The genuinely-dated fill is preferred
+    as the default no matter what hour the fallback's entered timestamp
+    carries -- there is no execution instant to compare it against.
+    """
+    from_leg = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=6,
+        enter_time="2026-08-03T13:00:00.000Z",
+        execution_time="2026-08-04T14:00:00.000Z",
+        instruction="SELL", order_id="order-FTRE-from-leg",
+    )
+    from_entered = _make_sell_order(
+        ticker="FTRE", price=18.10, quantity=4,
+        enter_time="2026-08-04T19:59:00.000Z",
+        execution_time="not-a-timestamp",
+        instruction="SELL", order_id="order-FTRE-from-entered",
+    )
+    patch_get_orders.state["orders"] = [from_leg, from_entered]
+    result = _resolve_ftre(conn, d31_now, [from_leg, from_entered])
+
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert [c.order_id for c in result.candidates] == [
+        "order-FTRE-from-entered", "order-FTRE-from-leg",
+    ]
+    assert result.closed_shares == 6
 
 
 def test_d31_default_candidate_is_the_latest_execution_not_the_latest_entry(

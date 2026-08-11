@@ -465,6 +465,83 @@ def test_e_dict_anchor_invalid_value_shapes_with_claim_rejects(
         assert resp_shares.status_code == 400, resp_shares.text
 
 
+def test_d31_unrecognized_date_source_in_the_anchor_rejects_with_400(
+    seeded_db, monkeypatch,
+):
+    """Rejection tier (e), D31 -- a provenance stamp outside the closed enum.
+
+    The envelope is a hidden input and therefore a tampering surface. Without
+    this tier an arbitrary string persists into `fills.schwab_source_value_json`
+    wearing the shape of a provenance claim, which is worse than no claim.
+    Both the top-level stamp and each `candidates_map` entry's stamp are
+    checked.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+
+    top_level_bad = json.loads(_make_anchor())
+    top_level_bad["exit_date_source"] = "operator_vibes"
+    entry_bad = json.loads(_make_anchor())
+    entry_bad["exit_date_source"] = "execution_leg"
+    entry_bad["candidates_map"]["sig-cand-0"]["date_source"] = "operator_vibes"
+
+    with TestClient(app) as client:
+        for tampered in (top_level_bad, entry_bad):
+            resp = _post_exit(
+                client, trade_id,
+                schwab_source_value_json=json.dumps(
+                    tampered, sort_keys=True,
+                ),
+                auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+                fill_origin_at_form_render="schwab_auto",
+                candidate_signature_hash_0="sig-cand-0",
+                candidate_order_id_0="schwab-order-777",
+            )
+            assert resp.status_code == 400, resp.text
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE action != 'entry'",
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == 0, "a rejected anchor must persist no fill"
+
+
+def test_d31_legacy_anchor_without_date_source_keys_still_accepted(
+    seeded_db, monkeypatch,
+):
+    """Absence is legal and stays legal.
+
+    Every envelope written before D31 lacks both provenance keys, and an
+    operator resubmitting one must not be rejected for what it does not carry.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            schwab_source_value_json=_make_anchor(),
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin FROM fills WHERE action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1",
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "schwab_auto"
+
+
 def test_e_valid_anchor_without_claim_persists_operator_typed(
     seeded_db, monkeypatch,
 ):

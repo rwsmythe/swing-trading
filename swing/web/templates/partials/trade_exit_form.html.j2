@@ -14,8 +14,12 @@
         audit metadata (spec §6.2 + plan §G.5 T-B.2.2). Banner renders
         when auto_fill_advisory_text is set (sandbox / degraded / error /
         empty kinds — all use this surface to inform the operator).
-        Populated kind has advisory_text=None — operator sees pre-filled
-        inputs (or radio list for multi-partial) with no banner. -#}
+        Populated kind USUALLY has advisory_text=None — operator sees
+        pre-filled inputs (or radio list for multi-partial) with no banner.
+        D31 exception: a populated result DOES set it when one or more real
+        SELL fills were OMITTED from the list because they carry no usable
+        execution date, since a list that looks complete and is not is the
+        one thing this surface must never show silently. -#}
     {% if vm.auto_fill_advisory_text %}
     <div class="banner banner-info" role="status">
       <strong>Schwab auto-fill:</strong> {{ vm.auto_fill_advisory_text }}
