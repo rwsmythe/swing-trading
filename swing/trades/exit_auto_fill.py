@@ -179,8 +179,14 @@ class PossibleDuplicateFill:
     play for a candidate -- the date the candidate carries, or the date this
     module would have recorded for the same order before the D31 grain
     cutover -- with the same price and quantity. The rows may be one broker
-    fill or two different ones. Nothing available can tell them apart, and
-    since every such row is ``operator_typed`` nothing ever will.
+    fill or two different ones, and nothing available can tell them apart:
+    BY DEFINITION these rows carry no usable ``schwab_order_id`` bound to their
+    recorded values, and that id is the only proof of identity this system has.
+    On the live ledger today they are additionally ALL ``operator_typed`` --
+    hand-typed dates whose grain is unknowable in principle -- which is the
+    observation RD's 2026-08-11 ruling rests on. That is a fact about the
+    CURRENT POPULATION, not the definition of this channel, which also admits
+    imported fills and ``selected_candidate_order_id``-only envelopes.
 
     The row is NAMED rather than merely counted -- ``fill_id``, stored date,
     price, quantity -- because the operator adjudicates this, and "one of your
@@ -1368,8 +1374,10 @@ def _compute_signature_hash(
     NOTHING READS A PERSISTED ONE BACK: `selected_candidate_signature_hash`
     and `other_candidate_signature_hashes` are written into
     `fills.schwab_source_value_json` and have no reader in `swing/` at all,
-    while the future-render dedupe works off `schwab_order_id` or the
-    (date, price, quantity) tuple. So changing what `date` means changes every
+    while a future render SUPPRESSES only on a matching `schwab_order_id` and
+    merely FLAGS a (date, price, quantity) match against an anonymous recorded
+    row -- since the 2026-08-11 ruling that channel neither dedupes nor
+    excludes. So changing what `date` means changes every
     hash and invalidates NOTHING -- the correct scope is
     operator-selection round-trip + audit provenance.
     """

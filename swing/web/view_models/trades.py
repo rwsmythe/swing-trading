@@ -1018,9 +1018,12 @@ def build_exit_form_vm(
         # D31 — anonymous rows are collected WITH their identity and CANNOT
         # exclude anything (RD, 2026-08-11). The bare-tuple set that used to
         # be built alongside this list, and which silently filtered matching
-        # candidates, is gone: value-tuple equality is never proof of identity,
-        # and every anonymous row here is `operator_typed` -- a hand-typed date
-        # whose grain is unknowable in principle.
+        # candidates, is gone: value-tuple equality is never proof of identity.
+        # These rows are anonymous BY DEFINITION -- no usable order id bound to
+        # their values, per the enumeration above. On the live ledger today they
+        # are additionally all `operator_typed` (hand-typed dates whose grain is
+        # unknowable in principle), which is the fact the ruling rests on and
+        # NOT this channel's definition.
         existing_fill_order_ids: set[str] = set()
         existing_anonymous_fills: list[PossibleDuplicateFill] = []
         existing_envelopes_cur = conn.execute(

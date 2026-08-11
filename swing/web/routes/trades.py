@@ -2472,13 +2472,20 @@ async def exit_post(
                     # ``order_id_found=True`` (just for the wrong order),
                     # preventing the fallback (date, price, qty) tuple
                     # match from firing — letting the operator re-record
-                    # the same fill as a duplicate.
+                    # the same fill as a duplicate. Since the 2026-08-11
+                    # ruling the same defect is WORSE, not milder: a
+                    # present-but-wrong order id is treated as PROVEN
+                    # identity, which is the only evidence state that may
+                    # suppress a candidate at all.
                     #
                     # Fix: pop top-level ``schwab_order_id`` when the
                     # authoritative selected has no usable order_id. The
                     # VM-side dedupe will see no usable order_id for this
-                    # fill and correctly fall through to the (date, price,
-                    # qty) tuple fallback (R2 M#4 behavior).
+                    # fill and correctly fall through to the anonymous
+                    # channel. NOTE THE CHANGED CONSEQUENCE: that channel
+                    # FLAGS a (date, price, qty) match by naming the row, it
+                    # does NOT exclude on it (RD, 2026-08-11 — superseding
+                    # the R2 M#4 behaviour this comment originally described).
                     auth_top_order_id = authoritative_selected.get("order_id")
                     if isinstance(auth_top_order_id, str) and auth_top_order_id:
                         extended["schwab_order_id"] = auth_top_order_id
