@@ -922,9 +922,10 @@ def resolve_exit_auto_fill(
             f"matches among already-recorded fills on price and quantity, "
             f"with each recorded date equal to the offered date or to the "
             f"date its order was entered -- {named}. Each matching recorded "
-            "fill carries no broker order id, so nothing here can tell "
-            "whether it is the same fill or a different one. Check the "
-            "trade's recorded fills before submitting."
+            "fill carries no usable broker order id for the values that were "
+            "recorded, so nothing here can tell whether it is the same fill "
+            "or a different one. Check the trade's recorded fills before "
+            "submitting."
         )
         log.warning(
             "schwab exit auto-fill: %s -- %d candidate(s) match an anonymous "

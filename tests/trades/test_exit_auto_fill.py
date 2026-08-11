@@ -1595,6 +1595,14 @@ def test_d31_every_matching_row_is_named_not_just_the_first(
     ) in advisory
     assert "an already-recorded fill on" not in advisory
     assert "offered fill match" not in advisory, "verb agreement"
+    # NOT a bare "carries no broker order id" (Codex R21): a fill whose
+    # envelope holds only ``selected_candidate_order_id`` reaches the
+    # anonymous channel by design and DOES carry an id -- just not one that
+    # identifies the values actually recorded.
+    assert (
+        "carries no usable broker order id for the values that were recorded"
+    ) in advisory
+    assert "carries no broker order id," not in advisory
     assert advisory.isascii()
     envelope = json.loads(result.schwab_source_value_json)
     entry = envelope["candidates_map"][result.candidates[0].signature_hash]
