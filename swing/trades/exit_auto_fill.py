@@ -1132,10 +1132,9 @@ def _undecidable_duplicates(
     same-grain matches were filtered upstream and could never be seen here --
     the alarm could not have fired on them even had it looked.
 
-    The FIRST match wins and is named. Two anonymous rows sharing one tuple is
-    the ambiguity the flagged dedupe residue already describes; naming one of
-    them still tells the operator exactly where to look, and the alarm's job
-    is to send him to the ledger, not to resolve it for him.
+    The alarm's job is to send the operator to the ledger, not to resolve the
+    ambiguity for him -- but it must send him to ALL of it, which is why every
+    match is returned rather than the first.
     """
     if not anonymous_fills:
         return ()

@@ -882,6 +882,127 @@ def test_d31_possible_duplicate_flag_reaches_the_rendered_form(
     assert 'name="candidate_index" value="1"' in body
 
 
+def test_d31_vm_preserves_a_fractional_recorded_quantity(
+    seeded_db, monkeypatch,
+):
+    """Codex R17 major -- the truncation lived in the VM, not the dataclass.
+
+    A round earlier the quantity coercion was corrected on
+    ``PossibleDuplicateFill`` and in the resolver's comparison, and a unit test
+    proved 10.9 no longer matches a 10-share candidate. It passed while
+    PRODUCTION still truncated, because that test built the row DIRECTLY and
+    the only code that reads a quantity out of the database is this VM --
+    which still said ``int(fill_qty)``. The fixture routed around the
+    production derivation path, which is the shape this project has a gotcha
+    for.
+
+    ``fills.quantity`` is ``REAL NOT NULL CHECK (quantity > 0)`` (migration
+    0014), so this seeds a genuinely fractional row and asserts the value
+    survives the DB round-trip intact.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO fills "
+                "(trade_id, fill_datetime, action, quantity, price, "
+                "reason, rule_based, fees, manual_entry_confidence, "
+                "reconciliation_status, tos_match_id, "
+                "fill_origin, schwab_source_value_json, "
+                "operator_corrected_value_json, auto_fill_audit_at) "
+                "VALUES (?, '2026-05-19T15:30:00', 'trim', 10.9, 160.50, "
+                "'manual', 0, 0.0, NULL, 'unreconciled', NULL, "
+                "'operator_typed', NULL, NULL, NULL)",
+                (trade_id,),
+            )
+    finally:
+        conn.close()
+
+    calls = _patch_auto_fill(
+        monkeypatch,
+        ExitAutoFillResult(
+            kind="empty", fill_origin="operator_typed",
+            advisory_text="no matches",
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+        ),
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            f"/trades/{trade_id}/exit/form",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    (row,) = calls[0]["existing_anonymous_fills"]
+    assert row.quantity == 10.9, (
+        f"the stored REAL quantity must reach the resolver intact, not "
+        f"truncated to 10; got {row.quantity!r}"
+    )
+
+
+def test_d31_vm_orders_anonymous_fills_deterministically(
+    seeded_db, monkeypatch,
+):
+    """Codex R17 minor -- `possible_duplicates` needs a STABLE order.
+
+    Without an ``ORDER BY`` the row order is unspecified, so the same two
+    recorded fills could be named in either order across renders and a
+    persisted envelope would be harder to compare against what the operator
+    was shown. Three rows are seeded and asserted to arrive ascending by
+    ``fill_id``.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+
+    ids = []
+    for dt, qty in (
+        ("2026-05-19T15:30:00", 3),
+        ("2026-05-20T15:30:00", 4),
+        ("2026-05-21T15:30:00", 5),
+    ):
+        conn = connect(cfg.paths.db_path)
+        try:
+            with conn:
+                cur = conn.execute(
+                    "INSERT INTO fills "
+                    "(trade_id, fill_datetime, action, quantity, price, "
+                    "reason, rule_based, fees, manual_entry_confidence, "
+                    "reconciliation_status, tos_match_id, "
+                    "fill_origin, schwab_source_value_json, "
+                    "operator_corrected_value_json, auto_fill_audit_at) "
+                    "VALUES (?, ?, 'trim', ?, 160.50, 'manual', 0, 0.0, "
+                    "NULL, 'unreconciled', NULL, 'operator_typed', NULL, "
+                    "NULL, NULL)",
+                    (trade_id, dt, qty),
+                )
+                ids.append(int(cur.lastrowid))
+        finally:
+            conn.close()
+
+    calls = _patch_auto_fill(
+        monkeypatch,
+        ExitAutoFillResult(
+            kind="empty", fill_origin="operator_typed",
+            advisory_text="no matches",
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+        ),
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            f"/trades/{trade_id}/exit/form",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    got = [r.fill_id for r in calls[0]["existing_anonymous_fills"]]
+    assert got == sorted(ids), f"expected ascending fill_id; got {got}"
+
+
 def test_d31_vm_passes_named_anonymous_fills_and_no_exclusion_channel(
     seeded_db, monkeypatch,
 ):

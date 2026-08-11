@@ -1024,7 +1024,14 @@ def build_exit_form_vm(
         existing_envelopes_cur = conn.execute(
             "SELECT schwab_source_value_json, fill_datetime, price, "
             "quantity, fill_id FROM fills "
-            "WHERE trade_id = ? AND action != 'entry'",
+            "WHERE trade_id = ? AND action != 'entry' "
+            # ORDER BY so `possible_duplicates` has a STABLE order in the
+            # candidate, the advisory, the template and the persisted
+            # envelope. Without it SQLite's row order is unspecified and the
+            # same two rows could be named in either order across renders,
+            # which makes a persisted envelope harder to compare against what
+            # the operator was actually shown (Codex R17).
+            "ORDER BY fill_id ASC",
             (trade_id,),
         )
         for env_json, fill_dt, fill_price, fill_qty, fill_id in (
@@ -1067,7 +1074,15 @@ def build_exit_form_vm(
                                 fill_id=int(fill_id),
                                 date=fill_date,
                                 price=round(float(fill_price), 2),
-                                quantity=int(fill_qty),
+                                # float(), NOT int() (Codex R17 major).
+                                # `fills.quantity` is REAL; truncating 10.9 to
+                                # 10 here would falsely flag a 10-share
+                                # candidate. The dataclass and the comparison
+                                # were corrected a round earlier and THIS
+                                # construction was missed, so the unit test
+                                # passed while the production path -- the only
+                                # one that reads the DB -- still truncated.
+                                quantity=float(fill_qty),
                             )
                         )
                 except (TypeError, ValueError):
