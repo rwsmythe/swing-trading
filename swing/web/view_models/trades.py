@@ -867,7 +867,7 @@ class TradeExitFormVM:
     reasons: tuple[str, ...]
     # Phase 13 T3.SB2 T-B.2.2 — exit auto-fill via Schwab Trader API at
     # form render (spec §6.2 + plan §G.5). SELL-side mirror of
-    # TradeEntryFormVM's auto_fill_* fields. The 8 auto_fill_* fields
+    # TradeEntryFormVM's auto_fill_* fields. The 9 auto_fill_* fields
     # carry the resolution result from
     # ``swing.trades.exit_auto_fill.resolve_exit_auto_fill``. When the
     # resolution is short-circuited (sandbox / DEGRADED / no account_hash /

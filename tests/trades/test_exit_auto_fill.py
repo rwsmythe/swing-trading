@@ -1460,6 +1460,74 @@ def test_d31_undated_fill_omitted_from_a_populated_list_is_announced(
     assert result.advisory_text.isascii()
 
 
+def test_d31_price_and_quantity_omissions_are_announced_too(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Cold audit -- EVERY refusal reason is counted, not just the date one.
+
+    A fill dropped because its price could not be resolved is exactly as absent
+    from the operator's list as one dropped for an unusable date, and the list
+    looks equally complete either way. Counting only the reason this arc
+    introduced would have announced a third of the omissions while the
+    mechanism to announce all of them was already built.
+
+    ``no_execution_price`` is reached with a FILLED order carrying an
+    order-grain price and no execution legs -- it passes
+    ``_is_execution_bearing_candidate`` but ``_compute_execution_price``
+    refuses it.
+    """
+    good = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=6,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-good",
+    )
+    no_price = SchwabOrderResponse(
+        order_id="order-FTRE-no-price", status="FILLED",
+        enter_time="2026-08-03T13:45:00.000Z", instrument_symbol="FTRE",
+        instruction="SELL", quantity=4, order_type="LIMIT", price=18.10,
+        executions=None,
+    )
+    patch_get_orders.state["orders"] = [good, no_price]
+    result = _resolve_ftre(conn, d31_now, [good, no_price])
+
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert [c.order_id for c in result.candidates] == ["order-FTRE-good"]
+    assert result.advisory_text is not None
+    assert "1 Schwab SELL fill(s)" in result.advisory_text
+    assert "execution-grain price" in result.advisory_text
+    assert result.advisory_text.isascii()
+
+
+def test_d31_entered_time_fallback_is_announced_to_the_operator(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Cold audit -- the fallback must be visible ON THE FORM, not just in JSON.
+
+    The derivation calls its ``enter_time`` fallback "visible", and it is -- in
+    the audit envelope. The template renders no provenance, so a fallback-dated
+    candidate showed the operator an ORDER-ENTERED date presented exactly like
+    an execution date. That is the defect this whole arc exists to stop,
+    arriving through the fix's own fallback path.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time=_FTRE_ENTERED, execution_time="not-a-timestamp",
+        instruction="SELL", order_id="order-FTRE-fallback",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(conn, d31_now, [order])
+
+    assert result.kind == "populated"
+    assert result.exit_date == "2026-08-03"
+    assert result.advisory_text is not None
+    assert "ORDER WAS PLACED" in result.advisory_text
+    assert "2026-08-03" in result.advisory_text
+    assert result.advisory_text.isascii()
+
+
 def test_d31_populated_without_omissions_carries_no_advisory(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,

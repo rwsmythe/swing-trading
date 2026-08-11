@@ -37,14 +37,19 @@ ET while the A2-date guard did not would manufacture a permanent one-session
 disagreement on every after-hours execution — precisely the shape of the
 finding this arc exists to close.
 
-Same READ, different AGGREGATION, and the distinction matters (D31 exit-side,
-Codex R1 Minor): this module ranks the legs and emits the LATEST one's date,
-while the guard emits the MAX session distance ACROSS ALL legs against a fill
-date already recorded. On a multi-leg order spanning two sessions the two
-therefore differ by construction, and neither is wrong — one answers "when did
-this order finish executing", the other "how far is this recorded date from the
-furthest leg". Do not read the guard as a check that this module's output is
-the only admissible value.
+Same TEXT read, different AGGREGATION and different ACCEPTANCE, and both
+distinctions matter (D31 exit-side, Codex R1 Minor + the cold audit). On
+aggregation: this module ranks the legs and emits the LATEST one's date, while
+the guard emits the MAX session distance ACROSS ALL legs against a fill date
+already recorded — on a multi-leg order spanning two sessions the two differ by
+construction, and neither is wrong, since one answers "when did this order
+finish executing" and the other "how far is this recorded date from the
+furthest leg". On acceptance: this module REFUSES a leg whose first ten
+characters are not its own canonical date (compact ``20260731``, week dates),
+while the guard hands that same slice straight to ``date.fromisoformat``, which
+accepts some of them. So do NOT read the guard as a check that this module's
+output is the only admissible value, and do not infer from the shared reading
+convention that the two agree on what a leg time may BE.
 
 Known residue: the divergence begins at 00:00Z, i.e. 20:00 ET on the previous
 local date (19:00 ET under EST). A US-equity execution in the 20:00-24:00 ET

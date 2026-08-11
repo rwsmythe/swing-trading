@@ -141,6 +141,21 @@ _EXIT_DATE_SOURCE_VALUES: frozenset[str] = frozenset({
 })
 
 
+# Operator-facing text for each ``_build_candidate`` refusal reason. Every
+# reason is announced, not just the one D31 introduced (cold audit) — a fill
+# omitted for an unresolvable price is exactly as absent as one omitted for an
+# unusable date. An unknown key falls through to the raw reason rather than
+# being swallowed, so a future reason cannot go quiet by forgetting this map.
+_OMISSION_REASON_TEXT: dict[str, str] = {
+    "no_usable_date": (
+        "no usable execution date (unusable execution leg times and a "
+        "non-calendar order-entered timestamp)"
+    ),
+    "no_execution_price": "no execution-grain price",
+    "no_quantity": "no resolvable execution quantity",
+}
+
+
 ExitAutoFillKind = Literal[
     "populated", "empty", "sandbox_short_circuit", "degraded", "error",
 ]
@@ -663,21 +678,24 @@ def resolve_exit_auto_fill(
     _warn_on_mixed_candidate_offsets(ticker, sorted_matches)
     candidates: list[ExitAutoFillCandidate] = []
     date_sources: dict[str, str] = {}
-    undated_count = 0
+    # EVERY refusal is counted, not just the date one (cold audit). A fill
+    # dropped for an unresolvable price or quantity is exactly as absent from
+    # the operator's list as one dropped for an unusable date, and the list
+    # looks equally complete either way. Counting only the reason this arc
+    # happened to introduce would have announced one third of the omissions
+    # while the mechanism to announce all of them was already built.
+    #
+    # Declining the WHOLE auto-fill -- the entry-side posture -- would be wrong
+    # here: the entry side has one order, this surface has N, and hiding N-1
+    # good candidates to protest one bad one is a worse trade for the operator.
+    omitted: dict[str, int] = {}
     for o in sorted_matches:
         cand, outcome = _build_candidate(o)
         if cand is not None:
             candidates.append(cand)
             date_sources[cand.signature_hash] = outcome
-        elif outcome == "no_usable_date":
-            # A fill with a real price and quantity that we cannot DATE. If
-            # other candidates survive, the list below looks complete while
-            # omitting this one, so the omission is said out loud instead
-            # (Codex R1 Major 2). Declining the WHOLE auto-fill -- the
-            # entry-side posture -- would be wrong here: the entry side has one
-            # order, this surface has N, and hiding N-1 good candidates to
-            # protest one bad one is a worse trade for the operator.
-            undated_count += 1
+        else:
+            omitted[outcome] = omitted.get(outcome, 0) + 1
     if not candidates:
         # All matches lacked execution-grain price/quantity (mapper edge
         # case OR partial-then-canceled MARKET with no resolvable qty) OR a
@@ -705,8 +723,17 @@ def resolve_exit_auto_fill(
     # guarantee envelope-vs-candidate value consistency.
     #
     # Codex R1 Critical #1 + Major #1 fix — add ``candidates_map`` as a
-    # server-side authoritative truth source keyed by signature_hash. The
-    # POST handler uses this map to:
+    # server-side authoritative truth source keyed by signature_hash.
+    #
+    # "AUTHORITATIVE" IS RELATIVE TO THE VISIBLE INPUTS, NOT TO A TAMPERING
+    # CLIENT (cold audit). The whole envelope round-trips through a hidden form
+    # field, so the POST can only prove that a submitted signature appears in
+    # the SUBMITTED map — both halves are client-reachable, and the map is
+    # authoritative over the visible date/price/quantity boxes rather than
+    # unforgeable. Making it unforgeable needs a signed envelope, which is a
+    # design decision outside this arc and is flagged rather than improvised.
+    #
+    # The POST handler uses this map to:
     #   (a) verify the operator-submitted signature_hash maps to a server-
     #       rendered candidate (closes Major #1 forgery surface — a
     #       tampered POST claiming an arbitrary hash is rejected with 400);
@@ -750,22 +777,51 @@ def resolve_exit_auto_fill(
 
     # An omission the operator cannot see is worse than one he can (Codex R1
     # Major 2). A populated result carried ``advisory_text=None`` before D31
-    # and still does whenever nothing was omitted -- the template renders this
-    # text whenever it is set, so a standing advisory on every populated result
-    # would train the operator to ignore it.
-    omission_advisory: str | None = None
-    if undated_count:
-        omission_advisory = (
-            f"{undated_count} Schwab SELL fill(s) for {ticker} are NOT listed "
-            "here: they carry no usable execution date (unusable execution "
-            "leg times and a non-calendar order-entered timestamp). Check the "
-            "broker and record those manually."
+    # and still does whenever nothing was omitted AND every listed candidate was
+    # dated from its executions -- the template renders this text whenever it is
+    # set, so a standing advisory on every populated result would train the
+    # operator to ignore it.
+    #
+    # THE FALLBACK IS ANNOUNCED TOO (cold audit). The derivation calls its
+    # ``enter_time`` fallback "visible", and it is -- in the audit envelope. The
+    # TEMPLATE renders no provenance, so an operator looking at the form saw an
+    # ORDER-ENTERED date presented exactly like an execution date, which is the
+    # defect this whole arc exists to stop. A stamp in hidden JSON is audit
+    # data, not disclosure.
+    advisory_parts: list[str] = []
+    fallback_dates = sorted(
+        cand.date for cand in candidates
+        if date_sources.get(cand.signature_hash) == "enter_time"
+    )
+    if fallback_dates:
+        advisory_parts.append(
+            f"{len(fallback_dates)} listed fill(s) could not be dated from "
+            "their Schwab execution times, so the date shown is when the ORDER "
+            f"WAS PLACED, not when it filled ({', '.join(fallback_dates)}). "
+            "Check those against the broker before submitting."
+        )
+        log.warning(
+            "schwab exit auto-fill: %d %s candidate(s) fell back to the "
+            "order-entered date (%s)",
+            len(fallback_dates), ticker, ", ".join(fallback_dates),
+        )
+    omitted_total = sum(omitted.values())
+    if omitted_total:
+        reasons = "; ".join(
+            f"{count} for {_OMISSION_REASON_TEXT.get(reason, reason)}"
+            for reason, count in sorted(omitted.items())
+        )
+        advisory_parts.append(
+            f"{omitted_total} Schwab SELL fill(s) for {ticker} are NOT listed "
+            f"here ({reasons}). Check the broker and record those manually."
         )
         log.warning(
             "schwab exit auto-fill: %d %s SELL fill(s) omitted from the "
-            "candidate list -- no usable execution date at either grain",
-            undated_count, ticker,
+            "candidate list (%s)",
+            omitted_total, ticker,
+            ", ".join(f"{r}={c}" for r, c in sorted(omitted.items())),
         )
+    omission_advisory: str | None = " ".join(advisory_parts) or None
 
     return ExitAutoFillResult(
         kind="populated",
@@ -981,8 +1037,12 @@ def _execution_date(order: Any) -> tuple[str | None, str]:
     - If ANY leg's ``time`` is unparseable, or the legs do not share one utc
       offset, the shared helper REFUSES the whole collection and this falls
       back to the entered date — a partial view of an order's own fills must
-      not silently date the exit. The fallback is VISIBLE in the returned
-      source (and so in the audit envelope), never absorbed.
+      not silently date the exit. The fallback is stamped in the returned
+      source, which reaches the audit envelope AND (cold audit) an
+      operator-facing advisory on the form: a stamp in hidden JSON is audit
+      data, not disclosure, and an unannounced fallback shows the operator an
+      order-entered date presented exactly like an execution date — the defect
+      this module was changed to stop.
     - An execution cannot precede its own order. The RULE is shared; the
       RESPONSE here is a visible fallback to the entered date, because this is
       a form default the operator sees and can override, not a ledger rewrite.

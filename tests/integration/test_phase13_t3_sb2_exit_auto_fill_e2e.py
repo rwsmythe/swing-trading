@@ -5,13 +5,18 @@ the full GET -> POST happy-path:
 
   1. Seed an open trade (AAPL, 100 shares @ $100, entry 2026-04-15).
   2. GET /trades/{id}/exit/form with a mocked production-shape
-     SchwabOrderResponse SELL fill -> auto-populated input values + hidden
-     anchor + per-candidate hidden inputs.
+     SchwabOrderResponse SELL fill -> auto-populated input values + the hidden
+     anchor. Per-candidate hidden inputs are NOT rendered in this single-fill
+     case and the test asserts their ABSENCE: the template gates them on
+     ``vm.auto_fill_candidates|length > 1``, so they belong to the
+     multi-candidate render only (cold audit corrected the earlier wording,
+     which described the opposite of what the test checks).
   3. Operator submits the form unchanged (POST with the same auto-fill
      values + the hidden anchors verbatim) ->
      fills row persists with fill_origin='schwab_auto' +
-     schwab_source_value_json (re-stamped with selected_candidate_*) +
-     operator_corrected_value_json NULL + auto_fill_audit_at populated.
+     schwab_source_value_json + operator_corrected_value_json NULL +
+     auto_fill_audit_at populated. ``selected_candidate_*`` is NOT stamped in
+     the single-fill case, for the same reason, and the test asserts that too.
   4. schwab_api_calls audit row has surface='trade_exit' + success status +
      signature_hash populated.
   5. Trade state transitions to 'closed' (full-quantity exit matches the
