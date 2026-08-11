@@ -1725,6 +1725,75 @@ def test_b_review_major3_fractional_execution_quantity_flags_its_own_row(
     )
 
 
+def test_b_review_major3_multileg_float_sum_still_flags_its_own_row(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Codex R1 major -- exact float equality re-opened the silent miss.
+
+    ``_resolve_match_quantity`` SUMS execution legs, and binary floating point
+    does not sum exactly: ``10.1 + 0.2`` is ``10.299999999999999``, which is
+    not ``==`` the ``10.3`` a ledger row stores. Making the comparison
+    fractional-precise therefore introduced a NEW way for a genuine duplicate
+    to be offered clean -- the exact failure mode the ruling exists to prevent,
+    arriving through its own fix.
+
+    The tolerance is absolute and far below any real share granularity
+    (``1e-9`` against a smallest meaningful difference of ``1e-4``), so it
+    cannot conflate two genuinely different quantities. It errs toward the
+    ALARM, which is the direction this whole surface is built to err in.
+
+    Discriminating: under exact ``==`` the flag does not fire.
+    """
+    legs = [
+        SchwabExecutionLeg(
+            leg_id=i + 1, price=18.40, quantity=q, mismarked_quantity=None,
+            instrument_id=12345, time=_FTRE_EXECUTED,
+        )
+        for i, q in enumerate((10.1, 0.2))
+    ]
+    assert sum(q for q in (10.1, 0.2)) != 10.3, (
+        "the fixture is only discriminating while the float sum is inexact"
+    )
+    order = SchwabOrderResponse(
+        order_id="order-FTRE-multileg", status="FILLED",
+        enter_time=_FTRE_ENTERED, instrument_symbol="FTRE",
+        instruction="SELL", quantity=10.3, order_type="LIMIT",
+        price=18.40, executions=legs,
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=42, date="2026-08-04", price=18.40, quantity=10.3,
+            ),
+        ),
+    )
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert [
+        d.fill_id for d in result.candidates[0].possible_duplicates
+    ] == [42], (
+        "a leg sum of 10.299999999999999 must still flag a recorded 10.3"
+    )
+
+    # And a genuinely different quantity is still NOT flagged -- the tolerance
+    # is float noise, not a rounding rule.
+    result_other = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=43, date="2026-08-04", price=18.40, quantity=10.2999,
+            ),
+        ),
+    )
+    assert result_other.candidates is not None
+    assert result_other.candidates[0].possible_duplicates == (), (
+        "10.2999 differs from 10.3 by 1e-4 -- a real difference, not noise"
+    )
+
+
 def test_d31_both_grains_produce_the_same_response(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,

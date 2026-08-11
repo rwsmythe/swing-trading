@@ -58,6 +58,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -1206,7 +1207,18 @@ def _undecidable_duplicates(
             continue
         if (
             row_price == price
-            and row_quantity == quantity
+            # NOT `==` (Codex R1 major on the B-review fix). The offered
+            # quantity is a SUM over execution legs, and binary floating point
+            # does not sum exactly: 10.1 + 0.2 is 10.299999999999999, which is
+            # not equal to a ledger row's 10.3. Exact equality would therefore
+            # offer a genuine duplicate CLEAN -- the silent miss this whole
+            # surface exists to prevent, re-introduced by the fix that made the
+            # comparison fractional-precise. The tolerance is ABSOLUTE and
+            # 1e-9: five orders of magnitude below the smallest meaningful
+            # share difference (1e-4), so it cannot conflate two genuinely
+            # different quantities, and it errs toward the ALARM. `rel_tol=0`
+            # deliberately -- a relative slack would widen with the quantity.
+            and math.isclose(row_quantity, quantity, rel_tol=0.0, abs_tol=1e-9)
             and row.date in dates
         ):
             matches.append(row)
