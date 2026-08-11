@@ -883,15 +883,17 @@ class TradeExitFormVM:
     # ``vm.auto_fill_schwab_source_value_json is not none``.
     #
     # ``auto_fill_advisory_text`` is NOT exclusive to those kinds since D31. A
-    # POPULATED result sets it in EITHER of two cases, and can carry both at
-    # once: (a) one or more real SELL fills were OMITTED from
+    # POPULATED result sets it in ANY of THREE cases, and can carry more than
+    # one at once: (a) one or more real SELL fills were OMITTED from
     # ``auto_fill_candidates`` — for want of a usable execution date, an
     # execution-grain price, or a resolvable quantity — so the operator is told
     # the list is short rather than shown a complete-looking one; (b) one or
     # more LISTED candidates fell back to the order-entered date because their
     # execution times were unusable, so he is told which shown dates are not
-    # execution dates. It stays None on a populated result with no omissions
-    # and no fallbacks.
+    # execution dates; (c) one or more LISTED candidates carry a
+    # ``possible_duplicate_of`` — an anonymous recorded fill they may duplicate
+    # under the pre-D31 grain, which identity evidence cannot decide either
+    # way. It stays None on a populated result with none of the three.
     #
     # ``fill_origin`` here is the form-render-time stamp (always
     # 'schwab_auto' on populated, 'operator_typed' otherwise). The POST
