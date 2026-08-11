@@ -8,7 +8,29 @@
 
 ---
 
-## 1. YOUR FIRST ACTION — an implementer is MID-TASK right now
+## 1. YOUR FIRST ACTION — **the arc RETURNED after this file was written. Read this section, not the one below it.**
+
+**UPDATE, same session, minutes after the above was committed: the implementer completed every gate and returned.** The §1.OLD text below is preserved only because a successor may find the worktree mid-something; **it is superseded.**
+
+**State now: branch `d31-exit` @ `7bf581ff`, 27 commits, clean, review scratch RESTORED to the worktree root (50 files, `.copowers-findings.md` 40,214 bytes, rounds 1-23).** My two comment edits were verified comment-only by the implementer (identical AST on the VM file; the template diff entirely inside one Jinja comment block) and committed as `7bf581ff` with attribution. **Converged at R23** — `NO_NEW_CRITICAL_MAJOR`, all four assertions, on the tree that ships including my edits.
+
+**WHAT IS NOT DONE, and it is yours:**
+
+1. **ORCHESTRATOR QA ON DISK. I did none of it.** The implementer reports suite **10800 / 7 / 0** off the final head — **that number is unverified by me. Re-run it; do not carry it forward.**
+2. **THE B REVIEW. Run it yourself** — §2. This is the gate that caught an introduced-and-blessed regression on this very arc, twice, and it has NOT been run against `7bf581ff`.
+3. RD's merge gate, then merge with byte-identity proof, then suite on the merged head.
+
+**Two residuals the implementer cited for your call**, both the load-bearing-comment class this arc met repeatedly:
+- `exit_auto_fill.py:1371` and `routes/trades.py:2473` still describe future-render dedupe as falling back to the `(date, price, quantity)` tuple. **Since the ruling that channel neither dedupes nor excludes.** Runtime is correct; the stated risk is that the comment "could encourage reintroducing forbidden silent exclusion" — the one behaviour the ruling forbids outright. Two comment edits.
+- `exit_auto_fill.py:183` and `view_models/trades.py:1020` say every anonymous row is `operator_typed`. **True of the live ledger and the ruling rests on it — but it is not the channel's definition**, which also admits imported fills and `selected_candidate_order_id`-only envelopes. A live-population fact stated where a structural invariant belongs.
+
+**Expect one flaky test at merge and do NOT read it as a regression:** `tests/integrations/schwab/test_ladder_stress_production_path.py::test_forced_finish_lock_leaves_in_flight_row` failed once on a loaded box and passed in isolation, as a module, and on the final run. It is `busy_timeout_ms=1` plus a background lock-holder thread and `sleep(0.1)` coordination under 16 xdist workers — **load-sensitive by construction**, with zero references to anything this arc touched. The mechanism is the proof, not the re-run.
+
+**Two things landed as the ruling predicted:** `existing_fill_value_tuples` had **no production contributor left**, so the parameter was removed outright rather than left dormant (a test now asserts the channel is *absent from the call*, not merely empty) — and **MAJOR 1 dissolved**, because the multiplicity problem was a property of a SET being asked to say "one of these two", and the set is gone.
+
+---
+
+## 1.OLD (SUPERSEDED) — an implementer was MID-TASK when this was written
 
 **`.worktrees/d31-exit`, branch `d31-exit` @ `f9046921`, with TWO UNCOMMITTED comment fixes in the working tree** (`swing/web/view_models/trades.py`, `swing/web/templates/partials/trade_exit_form.html.j2`). **Those uncommitted edits are MINE, not the implementer's** — see §2.
 
