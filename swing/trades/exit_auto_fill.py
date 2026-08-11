@@ -356,8 +356,12 @@ def resolve_exit_auto_fill(
         conn: open DB connection (used for the DEGRADED predicate's
             ``schwab_api_calls`` query + the ``trader.get_account_orders``
             audit-row writes).
-        now: server-stamped 'now' for the lookback upper bound + audit_at;
-            defaults to ``datetime.now(UTC)``.
+        now: the GET-generated render-time clock for the lookback upper
+            bound + ``auto_fill_audit_at``; defaults to ``datetime.now(UTC)``.
+            NOT "server-stamped" in the CLAUDE.md sense -- the resulting
+            timestamp travels to the browser as a hidden input and the POST
+            accepts it back (Codex R12). Tests that assert anything derived
+            from it MUST pass a fixed value or freeze this module's clock.
         existing_fill_order_ids: optional set of Schwab order_ids that
             have ALREADY been persisted as fills for this trade (for
             partial_exited trades with one or more recorded SELL fills).

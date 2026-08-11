@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -244,6 +244,30 @@ def _patch_schwab_stack_with_sell_fill(
     )
 
 
+class _FrozenExitAutoFillDatetime(datetime):
+    """``datetime`` subclass whose ``now()`` is fixed (frozen-clock convention).
+
+    ``resolve_exit_auto_fill`` calls ``datetime.now(UTC)`` when the caller
+    passes no ``now``, and the web route never passes one -- so an E2E driven
+    through the route runs on the live wall clock. This arc is entirely about
+    dates, and a live-clock date test is a false green waiting for a session
+    boundary (Codex R12). Mirrors the ``_FixedDatetime`` pattern already used
+    at ``tests/data/test_datetime_helpers.py``.
+    """
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: D102 - drop-in for datetime.now
+        fixed = datetime(2026, 5, 20, 20, 15, 0, 123456, tzinfo=UTC)
+        return fixed if tz is not None else fixed.replace(tzinfo=None)
+
+
+def _freeze_exit_auto_fill_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Freeze the clock ``resolve_exit_auto_fill`` reaches for by default."""
+    monkeypatch.setattr(
+        "swing.trades.exit_auto_fill.datetime", _FrozenExitAutoFillDatetime,
+    )
+
+
 def _extract_hidden_input_value(body: str, name: str) -> str:
     """Pull the value="..." attribute off a hidden input by ``name``."""
     patterns = [
@@ -438,6 +462,7 @@ def test_d31_resting_order_e2e_defaults_and_persists_the_execution_date(
     trade_id = _seed_open_trade(cfg, "AAPL")
     _patch_price_cache(monkeypatch)
     _patch_production_cfg_seam(monkeypatch)
+    _freeze_exit_auto_fill_clock(monkeypatch)
     _patch_schwab_stack_with_sell_fill(
         monkeypatch, ticker="AAPL",
         enter_time="2026-05-19T14:30:00.000Z",
@@ -458,6 +483,9 @@ def test_d31_resting_order_e2e_defaults_and_persists_the_execution_date(
             body, "schwab_source_value_json",
         )
         audit_at = _extract_hidden_input_value(body, "auto_fill_audit_at")
+        # The frozen clock is LOAD-BEARING, so it is asserted rather than
+        # installed and hoped for: an unfrozen run stamps the wall clock here.
+        assert audit_at == "2026-05-20T20:15:00.123456+00:00"
         anchor_dict = json.loads(anchor_json)
         assert anchor_dict["exit_date"] == "2026-05-20"
         assert anchor_dict["exit_date_source"] == "execution_leg"
