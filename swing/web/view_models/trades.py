@@ -1072,15 +1072,28 @@ def build_exit_form_vm(
             # values are the visible-input values, NOT a Schwab order's).
             if not order_id_found:
                 try:
-                    # `[:10]`, not `split("T")` — the stored value is a
-                    # canonical `YYYY-MM-DD...` timestamp whose first ten
-                    # characters ARE its date (`assert_canonical_fill_datetime`),
-                    # and production carries BOTH a literal-`T` form and Schwab's
-                    # offset form. A `T`-split returned the WHOLE timestamp for
-                    # any space-separated value while the surrounding code
-                    # claimed `[:10]`; the flag's accuracy now depends on this
-                    # parse, so it matches the project's other readers
-                    # (`_fill_execution_session_distance` reads `[:10]` too).
+                    # `[:10]`, not `split("T")` — production carries BOTH a
+                    # literal-`T` form and Schwab's offset form, and a `T`-split
+                    # returned the WHOLE timestamp for any space-separated value
+                    # while the surrounding code claimed `[:10]`. The flag's
+                    # accuracy depends on this parse, so it matches the project's
+                    # other readers (`_fill_execution_session_distance` reads
+                    # `[:10]` too).
+                    #
+                    # NOTHING GUARANTEES THOSE TEN CHARACTERS ARE A DATE, and an
+                    # earlier version of this comment said `assert_canonical_
+                    # fill_datetime` did (orchestrator B review MINOR 1). That
+                    # helper is wired into `update_fill_datetime` and the
+                    # split-partial correction path ONLY; the general insert path
+                    # `insert_fill_with_event` never calls it and the column is a
+                    # bare `TEXT NOT NULL`, so a schema-legal `2026-08-04garbage`
+                    # reaches here and slices to `2026-08-04`. The consequence is
+                    # bounded and points the safe way: this channel can only ADD
+                    # a possible-duplicate flag, never exclude a candidate, so a
+                    # malformed stored value costs a spurious alarm the operator
+                    # adjudicates — not a silent omission. Wiring the assertion
+                    # into the insert path is a `swing/data` carve-out and is
+                    # cited, not done here.
                     fill_date = (
                         str(fill_dt)[:10] if fill_dt is not None else None
                     )
