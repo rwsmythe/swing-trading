@@ -566,6 +566,61 @@ def test_d31_null_and_unhashable_date_source_reject_not_500(
     assert row[0] == 0, "a rejected anchor must persist no fill"
 
 
+def test_d31_malformed_candidates_map_rejects_not_500(seeded_db, monkeypatch):
+    """Codex R3 Major -- a non-dict map, or a non-dict ENTRY, must 400.
+
+    A dict map whose SELECTED entry is a list survives the forgery check (the
+    key is present), becomes ``authoritative_selected``, and then meets
+    ``.get("date")`` -- ``AttributeError``, uncaught, 500. A 500 is worse than
+    a wrong answer here: the ladder's whole recovery contract is a 400 that
+    re-renders the form with the bad anchor CLEARED, and a 500 leaves the
+    operator with no form at all.
+
+    The gap predates this arc; the provenance tier iterates those very entries
+    and used to skip past a malformed one, so it is closed where it is seen.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+
+    cases = []
+    for bad_entry in ([], "a string", 7, None, True):
+        env = json.loads(_make_anchor())
+        env["candidates_map"]["sig-cand-0"] = bad_entry
+        cases.append(env)
+    for bad_map in ([], "a string", 7, True):
+        env = json.loads(_make_anchor())
+        env["candidates_map"] = bad_map
+        cases.append(env)
+
+    with TestClient(app) as client:
+        for tampered in cases:
+            resp = _post_exit(
+                client, trade_id,
+                schwab_source_value_json=json.dumps(
+                    tampered, sort_keys=True, default=str,
+                ),
+                auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+                fill_origin_at_form_render="schwab_auto",
+                candidate_signature_hash_0="sig-cand-0",
+                candidate_order_id_0="schwab-order-777",
+            )
+            assert resp.status_code == 400, (
+                f"candidates_map={tampered['candidates_map']!r} -> "
+                f"{resp.status_code}"
+            )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE action != 'entry'",
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == 0, "a rejected anchor must persist no fill"
+
+
 def test_d31_legacy_anchor_without_date_source_keys_still_accepted(
     seeded_db, monkeypatch,
 ):

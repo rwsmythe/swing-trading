@@ -937,13 +937,22 @@ def _execution_date(order: Any) -> tuple[str | None, str]:
     in ``swing/trades/execution_dates.py`` and are NOT reimplemented here —
     two implementations of one derivation is the #24-#26 divergence class.
 
-    REACHABILITY OF THE FALLBACK IS PINNED IN A TEST, NOT ASSERTED HERE (a
-    comment about control flow is falsified silently by the next change to it).
-    An EMPTY ``executions`` list never reaches this function:
-    ``_compute_execution_price`` returns ``None`` first and ``_build_candidate``
-    declines above. What does reach it is a PRESENT-but-unusable leg time —
-    ``SchwabExecutionLeg.__post_init__`` validates ``time`` as non-empty, never
-    as parseable.
+    REACHABILITY IS PINNED IN TESTS, NOT ASSERTED HERE — and the rule earned
+    itself inside this very arc (Codex R3 Minor). An earlier draft of this
+    paragraph said an EMPTY ``executions`` list "never reaches this function"
+    because ``_compute_execution_price`` refuses first. That was FALSE THE
+    MOMENT IT WAS WRITTEN: ``_candidate_sort_key`` calls this function for
+    every match during ``sorted()``, which runs BEFORE ``_build_candidate``
+    checks the price. The claim was voided by a change made 200 lines away in
+    the same commit that wrote it, and it still read plausibly.
+
+    What is true, and is asserted rather than described: an empty ``executions``
+    list DOES reach here (through the sort key) and takes the ``enter_time``
+    fallback, but such an order cannot become a candidate, because
+    ``_build_candidate`` refuses it for ``'no_execution_price'`` first. The
+    reachable fallback for a REAL candidate is a PRESENT-but-unusable leg time
+    — ``SchwabExecutionLeg.__post_init__`` validates ``time`` as non-empty,
+    never as parseable.
 
     THE FALLBACK IS HELD TO THE SAME CANONICAL STANDARD AS THE LEGS.
     ``_extract_iso_date`` only splits on ``T``/space and slices, so a compact

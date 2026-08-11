@@ -2169,22 +2169,41 @@ async def exit_post(
                 bad_sources.append(
                     f"exit_date_source={anchor_envelope['exit_date_source']!r}"
                 )
-            envelope_map = anchor_envelope.get("candidates_map")
-            if isinstance(envelope_map, dict):
-                for sig, entry in envelope_map.items():
-                    if not isinstance(entry, dict):
-                        continue
-                    if _bad_source(entry, "date_source"):
-                        bad_sources.append(
-                            f"candidates_map[{sig!r}].date_source="
-                            f"{entry['date_source']!r}"
-                        )
+            # A MALFORMED MAP IS REJECTED HERE RATHER THAN SKIPPED PAST (Codex
+            # R3 Major). The gap predates this tier: a dict map whose SELECTED
+            # entry is a non-dict passes the forgery check (its KEY is present),
+            # becomes ``authoritative_selected`` below, and then meets
+            # ``.get("date")`` -- AttributeError, uncaught, 500. A 500 is worse
+            # than a wrong answer on this ladder, whose recovery contract is a
+            # 400 that re-renders with the bad anchor CLEARED; a 500 leaves the
+            # operator no form to retry from. The tier already iterates these
+            # entries, so it closes the hole it can see. ABSENCE of the key
+            # stays legal for legacy envelopes; PRESENCE must be well-formed.
+            if "candidates_map" in anchor_envelope:
+                envelope_map = anchor_envelope["candidates_map"]
+                if not isinstance(envelope_map, dict):
+                    bad_sources.append(
+                        f"candidates_map={envelope_map!r} is not an object"
+                    )
+                else:
+                    for sig, entry in envelope_map.items():
+                        if not isinstance(entry, dict):
+                            bad_sources.append(
+                                f"candidates_map[{sig!r}]={entry!r} is not an "
+                                "object"
+                            )
+                        elif _bad_source(entry, "date_source"):
+                            bad_sources.append(
+                                f"candidates_map[{sig!r}].date_source="
+                                f"{entry['date_source']!r}"
+                            )
             if bad_sources:
                 return _reject_anchor(
-                    "Trade exit rejected: schwab_source_value_json carries an "
-                    "unrecognized auto-fill date provenance value ("
+                    "Trade exit rejected: schwab_source_value_json carries a "
+                    "malformed auto-fill candidate map or an unrecognized "
+                    "date provenance value ("
                     + "; ".join(sorted(bad_sources))
-                    + "). Allowed values are "
+                    + "). Allowed provenance values are "
                     + ", ".join(sorted(_EXIT_DATE_SOURCE_VALUES))
                     + ". The form has been regenerated; please re-submit."
                 )

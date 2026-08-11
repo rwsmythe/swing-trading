@@ -1056,12 +1056,15 @@ def test_d31_entered_time_fallback_is_reachable_and_stamped(
 ):
     """The fallback's REACHABILITY, pinned in a test rather than a comment.
 
-    An EMPTY execution list cannot reach the date derivation at all --
-    ``_compute_execution_price`` returns ``None`` first and ``_build_candidate``
-    declines before any date is derived. What DOES reach it is a
-    PRESENT-but-unusable leg TIME: ``SchwabExecutionLeg.__post_init__``
-    validates ``time`` as NON-EMPTY, never as parseable, so any non-empty
-    string arrives here.
+    The reachable fallback for a real CANDIDATE is a PRESENT-but-unusable leg
+    TIME: ``SchwabExecutionLeg.__post_init__`` validates ``time`` as NON-EMPTY,
+    never as parseable, so any non-empty string arrives at the derivation.
+
+    (An EMPTY execution list also reaches the derivation -- via
+    ``_candidate_sort_key`` during ``sorted()`` -- but such an order is refused
+    for ``'no_execution_price'`` and never becomes a candidate. That half is
+    pinned separately by
+    ``test_d31_execution_date_helper_falls_back_when_executions_absent``.)
     """
     order = _make_sell_order(
         ticker="FTRE", price=18.40, quantity=10,
@@ -1075,6 +1078,43 @@ def test_d31_entered_time_fallback_is_reachable_and_stamped(
     assert result.exit_date == "2026-08-03"
     envelope = json.loads(result.schwab_source_value_json)
     assert envelope["exit_date_source"] == "enter_time"
+
+
+def test_d31_execution_date_helper_falls_back_when_executions_absent():
+    """Direct unit pin of ``_execution_date``'s absent-executions branch.
+
+    Codex R3 Minor -- a docstring claimed this branch was unreachable because
+    ``_compute_execution_price`` refuses an empty leg list first. It is
+    reachable: ``_candidate_sort_key`` calls ``_execution_date`` for every
+    match during ``sorted()``, before any price check runs. The claim now lives
+    here, where a future change to the control flow will break it instead of
+    silently voiding it.
+    """
+    from swing.trades.exit_auto_fill import _execution_date
+    order = SchwabOrderResponse(
+        order_id="order-no-legs",
+        status="FILLED",
+        enter_time="2026-08-03T13:45:00.000Z",
+        instrument_symbol="FTRE",
+        instruction="SELL",
+        quantity=10,
+        order_type="LIMIT",
+        price=18.40,
+        executions=None,
+    )
+    assert _execution_date(order) == ("2026-08-03", "enter_time")
+    order_empty_legs = SchwabOrderResponse(
+        order_id="order-empty-legs",
+        status="FILLED",
+        enter_time="2026-08-03T13:45:00.000Z",
+        instrument_symbol="FTRE",
+        instruction="SELL",
+        quantity=10,
+        order_type="LIMIT",
+        price=18.40,
+        executions=[],
+    )
+    assert _execution_date(order_empty_legs) == ("2026-08-03", "enter_time")
 
 
 def test_d31_execution_before_the_order_falls_back_visibly(
