@@ -2233,10 +2233,11 @@ async def exit_post(
                 if selected_index not in candidate_sigs:
                     return _reject_anchor(
                         "Trade exit rejected: candidate_index="
-                        f"{selected_index} does not map to a server-"
-                        "rendered candidate (no candidate_signature_hash_"
-                        f"{selected_index} hidden input). The form has "
-                        "been regenerated; please re-submit."
+                        f"{selected_index} does not map to a candidate "
+                        "carried by this submission (no "
+                        f"candidate_signature_hash_{selected_index} hidden "
+                        "input). The form has been regenerated; please "
+                        "re-submit."
                     )
             elif candidate_sigs:
                 # candidate_index omitted but per-candidate hidden inputs
