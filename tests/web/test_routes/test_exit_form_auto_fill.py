@@ -23,6 +23,7 @@ step 1 + dispatch brief §5 watch items + FORWARD-BINDING WATCH ITEM:
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from typing import Any
@@ -75,7 +76,13 @@ def _patch_auto_fill(
         now: Any = None,
         existing_fill_order_ids: Any = None,
         existing_fill_value_tuples: Any = None,
+        existing_anonymous_fills: Any = None,
     ) -> ExitAutoFillResult:
+        # The stub mirrors the PRODUCTION signature explicitly rather than
+        # absorbing **kwargs: a stub that swallows unknown arguments stops
+        # being evidence that the VM passes what it claims to, which is the
+        # synthetic-fixture-vs-production-emitter drift family. Widening it is
+        # the intended cost of adding a parameter.
         calls.append({
             "trade_id": trade_id,
             "ticker": ticker,
@@ -85,6 +92,7 @@ def _patch_auto_fill(
             "now": now,
             "existing_fill_order_ids": existing_fill_order_ids,
             "existing_fill_value_tuples": existing_fill_value_tuples,
+            "existing_anonymous_fills": existing_anonymous_fills,
         })
         return result
 
@@ -794,6 +802,84 @@ def test_r2_major3_dedupe_only_on_persisted_schwab_order_id(
 # for fills without a parseable schwab_order_id (pre-v20, operator_typed,
 # tos_import, imported_legacy fills).
 # ============================================================================
+
+
+def test_d31_vm_passes_anonymous_fills_agreeing_with_the_tuple_set(
+    seeded_db, monkeypatch,
+):
+    """The VM's two anonymous-fill outputs come from ONE derivation.
+
+    ``existing_fill_value_tuples`` is state 2's exclusion key and
+    ``existing_anonymous_fills`` lets state 3 NAME the row a candidate may
+    duplicate. They describe the SAME population, so they are built in one
+    loop over one query -- and this pins that they agree, because two
+    derivations of one population is the #24-#26 divergence class and the
+    failure would be a flag naming a row that is not actually excluded, or an
+    exclusion with no row to name.
+
+    Two anonymous rows are seeded (one operator_typed with no envelope, one
+    whose envelope carries no usable order id) plus one IDENTIFIED row, which
+    must appear in NEITHER anonymous output.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+
+    def _insert(dt, qty, price, origin, envelope):
+        conn = connect(cfg.paths.db_path)
+        try:
+            with conn:
+                cur = conn.execute(
+                    "INSERT INTO fills "
+                    "(trade_id, fill_datetime, action, quantity, price, "
+                    "reason, rule_based, fees, manual_entry_confidence, "
+                    "reconciliation_status, tos_match_id, "
+                    "fill_origin, schwab_source_value_json, "
+                    "operator_corrected_value_json, auto_fill_audit_at) "
+                    "VALUES (?, ?, 'trim', ?, ?, 'manual', 0, 0.0, NULL, "
+                    "'unreconciled', NULL, ?, ?, NULL, NULL)",
+                    (trade_id, dt, qty, price, origin, envelope),
+                )
+                return int(cur.lastrowid)
+        finally:
+            conn.close()
+
+    anon_a = _insert("2026-05-19T15:30:00", 100, 160.50, "operator_typed", None)
+    anon_b = _insert(
+        "2026-05-20T15:30:00", 50, 161.25, "schwab_auto",
+        json.dumps({"exit_date": "2026-05-20"}, sort_keys=True),
+    )
+    _insert(
+        "2026-05-21T15:30:00", 25, 162.00, "schwab_auto",
+        json.dumps({"schwab_order_id": "ORD-IDENTIFIED"}, sort_keys=True),
+    )
+
+    calls = _patch_auto_fill(
+        monkeypatch,
+        ExitAutoFillResult(
+            kind="empty", fill_origin="operator_typed",
+            advisory_text="no matches",
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+        ),
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            f"/trades/{trade_id}/exit/form",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert len(calls) == 1
+
+    tuples = calls[0]["existing_fill_value_tuples"]
+    anon = calls[0]["existing_anonymous_fills"]
+    assert anon is not None and isinstance(anon, tuple)
+    assert {r.fill_id for r in anon} == {anon_a, anon_b}, (
+        "the identified fill must appear in NEITHER anonymous output"
+    )
+    assert calls[0]["existing_fill_order_ids"] == {"ORD-IDENTIFIED"}
+    # The two outputs describe one population.
+    assert {(r.date, r.price, r.quantity) for r in anon} == tuples
 
 
 def test_r2_major4_fallback_dedupe_operator_typed_no_envelope(

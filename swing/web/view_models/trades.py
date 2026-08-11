@@ -25,6 +25,7 @@ from swing.recommendations.sizing import compute_shares
 from swing.trades.entry import entry_rationale_options
 from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason
+from swing.trades.exit_auto_fill import PossibleDuplicateFill
 from swing.trades.intent import (
     entry_intent_display_choices,
     suggest_entry_intent,
@@ -1009,14 +1010,23 @@ def build_exit_form_vm(
         # imported_legacy / operator_typed fills with no envelope, OR
         # envelopes missing the key). Tolerance: price compared with
         # round(_, 2); date string-exact; quantity int-exact.
+        #
+        # D31 — ``existing_anonymous_fills`` is built in THIS SAME LOOP from
+        # THIS SAME QUERY as ``existing_fill_value_tuples``, deliberately: the
+        # tuple set is the exclusion key (state 2) and the record list lets the
+        # resolver NAME the row a candidate may duplicate (state 3). Two
+        # derivations of one population would be the #24-#26 divergence class,
+        # so there is one derivation and two shapes of its output.
         existing_fill_order_ids: set[str] = set()
         existing_fill_value_tuples: set[tuple[str, float, int]] = set()
+        existing_anonymous_fills: list[PossibleDuplicateFill] = []
         existing_envelopes_cur = conn.execute(
             "SELECT schwab_source_value_json, fill_datetime, price, "
-            "quantity FROM fills WHERE trade_id = ? AND action != 'entry'",
+            "quantity, fill_id FROM fills "
+            "WHERE trade_id = ? AND action != 'entry'",
             (trade_id,),
         )
-        for env_json, fill_dt, fill_price, fill_qty in (
+        for env_json, fill_dt, fill_price, fill_qty, fill_id in (
             existing_envelopes_cur.fetchall()
         ):
             try:
@@ -1050,6 +1060,14 @@ def build_exit_form_vm(
                                 int(fill_qty),
                             )
                         )
+                        existing_anonymous_fills.append(
+                            PossibleDuplicateFill(
+                                fill_id=int(fill_id),
+                                date=fill_date,
+                                price=round(float(fill_price), 2),
+                                quantity=int(fill_qty),
+                            )
+                        )
                 except (TypeError, ValueError):
                     # Defensive: skip fills with non-parseable values.
                     continue
@@ -1067,6 +1085,10 @@ def build_exit_form_vm(
             existing_fill_value_tuples=(
                 existing_fill_value_tuples
                 if existing_fill_value_tuples else None
+            ),
+            existing_anonymous_fills=(
+                tuple(existing_anonymous_fills)
+                if existing_anonymous_fills else None
             ),
         )
     finally:

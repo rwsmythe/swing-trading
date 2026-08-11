@@ -58,7 +58,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
@@ -171,6 +171,39 @@ ExitFillOrigin = Literal[
 
 
 @dataclass(frozen=True)
+class PossibleDuplicateFill:
+    """An ALREADY-RECORDED fill a candidate MIGHT duplicate, named in full.
+
+    Emitted when the D31 grain cutover leaves identity UNDECIDABLE: a recorded
+    fill carrying no ``schwab_order_id`` whose stored date matches the
+    candidate's ORDER-ENTERED date (the pre-D31 recording grain) but not its
+    execution date. The rows may be one broker fill recorded under the old
+    grain, or two different fills. Nothing available can tell them apart.
+
+    The row is NAMED rather than merely counted -- ``fill_id``, stored date,
+    price, quantity -- because the operator adjudicates this, and "one of your
+    recorded fills might be this" is not an actionable sentence.
+    """
+
+    fill_id: int
+    date: str
+    price: float
+    quantity: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.fill_id, bool) or not isinstance(self.fill_id, int):
+            raise ValueError(
+                f"PossibleDuplicateFill.fill_id must be int (not bool); "
+                f"got {self.fill_id!r}"
+            )
+        if not isinstance(self.date, str) or not self.date:
+            raise ValueError(
+                f"PossibleDuplicateFill.date must be non-empty str; "
+                f"got {self.date!r}"
+            )
+
+
+@dataclass(frozen=True)
 class ExitAutoFillCandidate:
     """One SELL-side fill candidate surfaced to the operator at form
     render. Multiple instances form the ``candidates`` list on a
@@ -179,7 +212,10 @@ class ExitAutoFillCandidate:
 
     Fields:
 
-      - ``date``: ISO ``YYYY-MM-DD`` date of the fill.
+      - ``date``: ISO ``YYYY-MM-DD`` date of the fill. VALIDATED as such
+        below, because this docstring used to promise the format while
+        ``__post_init__`` checked only non-emptiness (orchestrator B review) --
+        a documented contract nothing enforced.
       - ``price``: execution-grain price (VWAP across legs for multi-leg
         single-order fills).
       - ``quantity``: execution-grain quantity (sum of leg quantities for
@@ -189,6 +225,15 @@ class ExitAutoFillCandidate:
         operator-selection round-trip + audit provenance -- NOT for
         idempotency, see ``_compute_signature_hash``).
       - ``order_id``: Schwab order id (for audit / debugging).
+      - ``date_source``: which grain produced ``date`` -- ``'execution_leg'``
+        or ``'enter_time'``. ``None`` means UNSTATED, which is what a
+        hand-constructed candidate gets; the resolver always states it. A
+        default of ``'execution_leg'`` would let a construction that never
+        thought about provenance silently claim the good grain.
+      - ``possible_duplicate_of``: set when identity against an anonymous
+        recorded fill is UNDECIDABLE (see ``PossibleDuplicateFill``). The
+        candidate is still OFFERED -- the affordance to record is never gated
+        on the alarm -- but never offered clean.
     """
 
     date: str
@@ -196,12 +241,28 @@ class ExitAutoFillCandidate:
     quantity: int
     signature_hash: str
     order_id: str | None = None
+    date_source: str | None = None
+    possible_duplicate_of: PossibleDuplicateFill | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.date, str) or not self.date:
             raise ValueError(
                 f"ExitAutoFillCandidate.date must be non-empty str; "
                 f"got {self.date!r}"
+            )
+        if _canonical_date(self.date) != self.date:
+            raise ValueError(
+                f"ExitAutoFillCandidate.date must be an EXTENDED-format ISO "
+                f"YYYY-MM-DD calendar date; got {self.date!r}"
+            )
+        if (
+            self.date_source is not None
+            and self.date_source not in _EXIT_DATE_SOURCE_VALUES
+        ):
+            raise ValueError(
+                f"ExitAutoFillCandidate.date_source must be one of "
+                f"{sorted(_EXIT_DATE_SOURCE_VALUES)} or None; "
+                f"got {self.date_source!r}"
             )
         if not isinstance(self.signature_hash, str) or not self.signature_hash:
             raise ValueError(
@@ -228,9 +289,15 @@ class ExitAutoFillResult:
 
       - ``'populated'``: Schwab returned at least one matching SELL fill.
         ``exit_date`` / ``exit_price`` / ``closed_shares`` carry the
-        most-recent candidate's execution-grain values; ``candidates``
-        carries the full list (length >= 1) for operator selection;
-        ``fill_origin='schwab_auto'``.
+        most-recent candidate's values; ``candidates`` carries the full list
+        (length >= 1) for operator selection; ``fill_origin='schwab_auto'``.
+        PRICE AND QUANTITY ARE ALWAYS EXECUTION-GRAIN; **THE DATE IS NOT
+        ALWAYS** (orchestrator B review). An earlier version of this line said
+        "execution-grain values" of all three, which the module's own
+        supported fallback contradicts: when an order's execution leg times
+        are unusable the date comes from ``enter_time`` and the result is
+        still ``populated``. Per-candidate ``date_source`` says which grain
+        each one used, and the operator is told on the form.
       - ``'empty'``: Schwab returned no matching SELL fill. Fields are
         None; ``candidates=None``; ``fill_origin='operator_typed'``;
         ``advisory_text`` non-None.
@@ -342,8 +409,39 @@ def resolve_exit_auto_fill(
     now: datetime | None = None,
     existing_fill_order_ids: set[str] | None = None,
     existing_fill_value_tuples: set[tuple[str, float, int]] | None = None,
+    existing_anonymous_fills: tuple[PossibleDuplicateFill, ...] | None = None,
 ) -> ExitAutoFillResult:
     """Resolve form-render-time exit auto-fill via Schwab Trader API.
+
+    IDENTITY IS NEVER ASSERTED FROM A DATE ALONE, IN EITHER DIRECTION (RD
+    ruling, D31 exit-side). Three evidence states govern whether an
+    already-recorded fill suppresses a candidate:
+
+      1. ``schwab_order_id`` present on BOTH sides -> identity is PROVEN or
+         REFUTED. Assert freely; ``existing_fill_order_ids`` does exactly that
+         and is UNCHANGED by D31.
+      2. Anonymous recorded fill, tuple match at the SAME grain (its stored
+         date equals the candidate's EXECUTION date) -> the existing exclusion
+         stands. Pre-existing value-equality semantics, not this arc's.
+      3. Anonymous recorded fill, tuple match at the OTHER grain ONLY (its
+         stored date equals the candidate's ORDER-ENTERED date -- the grain
+         this module recorded under before D31) -> NEITHER assertion is
+         available. The rows may be one broker fill recorded under the old
+         grain, or two genuinely different fills. The candidate is OFFERED,
+         carrying ``possible_duplicate_of`` naming the row it may duplicate.
+         Never excluded silently; never offered clean.
+
+    State 3 is the D31 COMPATIBILITY PATH. The grain cutover moved the
+    candidate side to execution dates while every fill already recorded under
+    the old grain kept its entered date, and an anonymous row has no id to
+    reconcile them with -- so a pre-fix recording no longer matched its own
+    post-fix candidate and would have been re-offered CLEAN.
+
+    Falling back to entered-date MATCHING for anonymous rows was considered
+    and rejected: it converts a visible double-record invitation into a SILENT
+    OMISSION, which is the exact harm the fallback-dedupe residue is flagged
+    for rather than widened (see ``_passes_filters``). Alarm, never assert --
+    and the affordance to record is not gated on the alarm.
 
     Args:
         trade_id: trades.id of the trade being exited (used for audit /
@@ -388,6 +486,15 @@ def resolve_exit_auto_fill(
             matches an entry are filtered out. Tolerance: 2-decimal
             price rounding handles float drift; date is string-exact;
             quantity is int-exact. Default ``None`` = no fallback.
+            THIS IS STATE 2's KEY AND IS UNCHANGED BY D31.
+        existing_anonymous_fills: the SAME anonymous rows as
+            ``existing_fill_value_tuples``, carried WITH their identity
+            (``fill_id`` + stored date/price/quantity) so state 3 can NAME the
+            row a candidate may duplicate. Exclusion still runs off the tuple
+            set; this parameter only feeds the flag, and
+            ``build_exit_form_vm`` builds both from ONE query in ONE loop so
+            they cannot drift apart. Default ``None`` = no flagging (the
+            resolver's other callers are tests that predate the flag).
 
     Returns:
         ``ExitAutoFillResult`` — see dataclass docstring for the 5 kinds.
@@ -690,6 +797,9 @@ def resolve_exit_auto_fill(
     # ----------------------------------------------------------------------
     sorted_matches = sorted(matches, key=_candidate_sort_key)
     _warn_on_mixed_candidate_offsets(ticker, sorted_matches)
+    anonymous_fills: tuple[PossibleDuplicateFill, ...] = (
+        tuple(existing_anonymous_fills) if existing_anonymous_fills else ()
+    )
     candidates: list[ExitAutoFillCandidate] = []
     date_sources: dict[str, str] = {}
     # EVERY refusal is counted, not just the date one (cold audit). A fill
@@ -706,6 +816,13 @@ def resolve_exit_auto_fill(
     for o in sorted_matches:
         cand, outcome = _build_candidate(o)
         if cand is not None:
+            cand = replace(
+                cand,
+                date_source=outcome,
+                possible_duplicate_of=_undecidable_duplicate(
+                    o, cand, anonymous_fills,
+                ),
+            )
             candidates.append(cand)
             date_sources[cand.signature_hash] = outcome
         else:
@@ -774,6 +891,20 @@ def resolve_exit_auto_fill(
             "price": cand.price,
             "quantity": cand.quantity,
             "order_id": cand.order_id,
+            # The PERSISTED envelope records that this candidate was offered
+            # under an undecidable-identity alarm, so if a double-record ever
+            # happens the fill's own audit trail shows the operator was told
+            # which row it might duplicate.
+            "possible_duplicate_of": (
+                {
+                    "fill_id": cand.possible_duplicate_of.fill_id,
+                    "date": cand.possible_duplicate_of.date,
+                    "price": cand.possible_duplicate_of.price,
+                    "quantity": cand.possible_duplicate_of.quantity,
+                }
+                if cand.possible_duplicate_of is not None
+                else None
+            ),
         }
         for cand in candidates
     }
@@ -804,7 +935,38 @@ def resolve_exit_auto_fill(
     # ORDER-ENTERED date presented exactly like an execution date, which is the
     # defect this whole arc exists to stop. A stamp in hidden JSON is audit
     # data, not disclosure.
+    #
+    # THE DUPLICATE ALARM LEADS, and it is in the ADVISORY as well as on the
+    # candidate. The template renders the per-candidate list only at length
+    # >= 2, so a single-fill render would otherwise carry the flag in an
+    # envelope nobody reads. It is stated first because it is the only one of
+    # these messages that can cost the operator a wrong ledger row.
     advisory_parts: list[str] = []
+    flagged = [c for c in candidates if c.possible_duplicate_of is not None]
+    if flagged:
+        named = "; ".join(
+            f"fill #{c.possible_duplicate_of.fill_id} recorded "
+            f"{c.possible_duplicate_of.date} at "
+            f"{c.possible_duplicate_of.price:.2f} x "
+            f"{c.possible_duplicate_of.quantity} (offered here as "
+            f"{c.date} at {c.price:.2f} x {c.quantity})"
+            for c in flagged
+        )
+        noun = "fill" if len(flagged) == 1 else "fills"
+        advisory_parts.append(
+            f"POSSIBLE DUPLICATE: {len(flagged)} offered {noun} may already "
+            f"be recorded under the OLD date convention -- {named}. Fills "
+            "recorded before this change were dated when the ORDER WAS "
+            "PLACED, and these carry no broker order id to tell them apart. "
+            "Check the trade's recorded fills before submitting."
+        )
+        log.warning(
+            "schwab exit auto-fill: %s -- %d candidate(s) may duplicate an "
+            "anonymous recorded fill under the pre-D31 date grain (fill_ids "
+            "%s); offered WITH the alarm, not suppressed",
+            ticker, len(flagged),
+            ", ".join(str(c.possible_duplicate_of.fill_id) for c in flagged),
+        )
     fallback_dates = sorted(
         cand.date for cand in candidates
         if date_sources.get(cand.signature_hash) == "enter_time"
@@ -959,6 +1121,61 @@ def _candidate_sort_key(o: Any) -> tuple[str, float, str]:
         instant.timestamp() if instant is not None else float("-inf"),
         str(getattr(o, "enter_time", "") or ""),
     )
+
+
+def _undecidable_duplicate(
+    order: Any,
+    candidate: ExitAutoFillCandidate,
+    anonymous_fills: tuple[PossibleDuplicateFill, ...],
+) -> PossibleDuplicateFill | None:
+    """State 3 of the identity rule: the OTHER-grain-ONLY match.
+
+    Returns the anonymous recorded fill this candidate MIGHT duplicate, or
+    ``None`` when identity is decidable or nothing matches.
+
+    The comparison is the candidate's PRE-D31 tuple -- what this module would
+    have recorded for this same order before the grain cutover, i.e. its
+    ORDER-ENTERED date with the same execution-grain price and quantity --
+    against each anonymous row's stored tuple.
+
+    Two guards keep this to state 3 alone:
+
+      - a candidate whose entered date EQUALS its own date is not a
+        cross-grain case at all (its date came from ``enter_time``, or the
+        order was entered and filled on one session); state 2 already governs
+        it, and re-flagging would alarm on the ordinary same-day fill;
+      - candidates whose EXECUTION tuple matched an anonymous row are already
+        gone -- ``_passes_filters`` excluded them upstream -- so anything
+        reaching here has no same-grain match to be decided by.
+
+    The FIRST match wins and is named. Two anonymous rows sharing one tuple is
+    the ambiguity the flagged dedupe residue already describes; naming one of
+    them still tells the operator exactly where to look, and the alarm's job
+    is to send him to the ledger, not to resolve it for him.
+    """
+    if not anonymous_fills:
+        return None
+    entered_date = _canonical_date(getattr(order, "enter_time", "") or "")
+    if not entered_date or entered_date == candidate.date:
+        return None
+    try:
+        entered_tuple = (
+            entered_date,
+            round(float(candidate.price), 2),
+            int(candidate.quantity),
+        )
+    except (TypeError, ValueError):
+        return None
+    for row in anonymous_fills:
+        try:
+            row_tuple = (
+                row.date, round(float(row.price), 2), int(row.quantity),
+            )
+        except (TypeError, ValueError):
+            continue
+        if row_tuple == entered_tuple:
+            return row
+    return None
 
 
 def _execution_instant(order: Any) -> datetime | None:
@@ -1211,5 +1428,6 @@ __all__ = [
     "ExitAutoFillKind",
     "ExitAutoFillResult",
     "ExitFillOrigin",
+    "PossibleDuplicateFill",
     "resolve_exit_auto_fill",
 ]

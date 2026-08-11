@@ -102,6 +102,19 @@
                    {% if loop.last %}checked{% endif %}>
             {{ cand.date }} &mdash; {{ '%.2f' | format(cand.price) }} &times; {{ cand.quantity }} sh
             {% if cand.order_id %}<span class="muted">(order {{ cand.order_id }})</span>{% endif %}
+            {#- D31 per-row markers. The banner above states these for the
+                whole list (and is the ONLY surface in the single-fill case,
+                where this fieldset does not render at all); these mark WHICH
+                row each statement is about. -#}
+            {% if cand.date_source == 'enter_time' %}
+            <span class="muted">&mdash; date is when the ORDER WAS PLACED (execution time unusable)</span>
+            {% endif %}
+            {% if cand.possible_duplicate_of %}
+            <strong>&mdash; POSSIBLE DUPLICATE of recorded fill #{{ cand.possible_duplicate_of.fill_id }}
+              ({{ cand.possible_duplicate_of.date }} at
+              {{ '%.2f' | format(cand.possible_duplicate_of.price) }} &times;
+              {{ cand.possible_duplicate_of.quantity }} sh)</strong>
+            {% endif %}
           </label>
           <input type="hidden" name="candidate_signature_hash_{{ loop.index0 }}"
                  value="{{ cand.signature_hash }}">

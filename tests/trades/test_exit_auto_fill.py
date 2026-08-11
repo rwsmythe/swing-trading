@@ -46,6 +46,7 @@ from swing.trades.exit import _normalize_trade_event_date_to_iso
 from swing.trades.exit_auto_fill import (
     ExitAutoFillCandidate,
     ExitAutoFillResult,
+    PossibleDuplicateFill,
     resolve_exit_auto_fill,
 )
 from swing.trades.schwab_reconciliation import _fill_execution_session_distance
@@ -1362,16 +1363,61 @@ def test_d31_dedupe_tuple_matches_the_recorded_execution_date(
     assert result.kind == "empty"
 
 
-def test_d31_dedupe_tuple_no_longer_matches_the_entered_date(
+def test_d31_identified_recorded_fill_does_not_suppress_a_different_order(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,
 ):
-    """The other direction of the same correction, stated explicitly.
+    """State 1 -- identity REFUTED by ids, so the clean re-offer is correct.
 
-    A recorded fill dated 2026-08-03 is a DIFFERENT fill from an order that
-    executed on 2026-08-04, and pre-fix the candidate collapsed onto it --
-    the over-merge direction, where the surface goes quiet instead of
-    offering a real unrecorded fill.
+    The recorded fill carries a broker order id DIFFERENT from the candidate's,
+    which PROVES they are different fills. The candidate is offered clean: no
+    exclusion, no duplicate flag.
+
+    RE-FIXTURED (orchestrator B review). This test previously passed only a
+    value tuple dated 2026-08-03 and asserted the candidate survived, with a
+    docstring claiming "a recorded fill dated 2026-08-03 is a DIFFERENT fill
+    from an order that executed on 2026-08-04". That asserts IDENTITY FROM A
+    DATE ALONE, on a fixture carrying no identity that could prove it -- and
+    since a pre-D31 recording of THIS VERY ORDER would have been dated
+    2026-08-03, the old fixture documented the arc's own compatibility gap as
+    the intended contract. Identity now comes from ids, which the production
+    VM also supplies exactly this way (an order-id match sets
+    ``order_id_found`` and NO value tuple is emitted for that row).
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-stop",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_fill_order_ids={"order-FTRE-a-different-order"},
+    )
+    assert result.kind == "populated"
+    assert result.exit_date == "2026-08-04"
+    assert result.candidates is not None
+    assert result.candidates[0].possible_duplicate_of is None
+    assert result.advisory_text is None
+
+
+def test_d31_anonymous_other_grain_match_is_offered_with_the_flag(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """State 3 -- the D31 compatibility path. Neither assertion is available.
+
+    An anonymous fill (no ``schwab_order_id``) recorded at 2026-08-03 for the
+    same price and quantity as a candidate that EXECUTED 2026-08-04 but was
+    ENTERED 2026-08-03. Before this arc, recording that candidate would have
+    stored exactly 2026-08-03 -- so the row may be this same broker fill under
+    the old grain, or a genuinely different fill. Nothing can tell them apart.
+
+    The candidate is OFFERED (the affordance to record is never gated on the
+    alarm) and carries ``possible_duplicate_of`` NAMING the row: fill id,
+    stored date, price, quantity. Never excluded silently; never offered
+    clean. The advisory carries it too, because the template renders the
+    per-candidate list only at length >= 2 and this is a single-fill render.
     """
     order = _make_sell_order(
         ticker="FTRE", price=18.40, quantity=10,
@@ -1382,9 +1428,125 @@ def test_d31_dedupe_tuple_no_longer_matches_the_entered_date(
     result = _resolve_ftre(
         conn, d31_now, [order],
         existing_fill_value_tuples={("2026-08-03", 18.40, 10)},
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=41, date="2026-08-03", price=18.40, quantity=10,
+            ),
+        ),
+    )
+
+    assert result.kind == "populated", "never excluded silently"
+    assert result.exit_date == "2026-08-04"
+    assert result.candidates is not None
+    flag = result.candidates[0].possible_duplicate_of
+    assert flag is not None, "never offered clean"
+    assert flag.fill_id == 41
+    assert flag.date == "2026-08-03"
+    assert flag.price == 18.40
+    assert flag.quantity == 10
+
+    assert result.advisory_text is not None
+    assert "POSSIBLE DUPLICATE" in result.advisory_text
+    assert "fill #41" in result.advisory_text
+    assert result.advisory_text.isascii()
+
+    envelope = json.loads(result.schwab_source_value_json)
+    entry = envelope["candidates_map"][result.candidates[0].signature_hash]
+    assert entry["possible_duplicate_of"]["fill_id"] == 41
+
+
+def test_d31_anonymous_same_grain_match_still_excludes(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """State 2 -- unchanged by the flag work, asserted so it stays unchanged.
+
+    The anonymous row's stored date equals the candidate's EXECUTION date, so
+    the existing value-equality exclusion applies and the candidate does not
+    surface at all. That is pre-existing semantics and this arc does not
+    re-litigate it; the point of the assertion is that adding state 3 did not
+    quietly convert state 2 into a flagged offer.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-stop",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_fill_value_tuples={("2026-08-04", 18.40, 10)},
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=41, date="2026-08-04", price=18.40, quantity=10,
+            ),
+        ),
+    )
+    assert result.kind == "empty"
+
+
+def test_d31_same_session_fill_is_never_flagged_against_an_anonymous_row(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The alarm must not fire on the ordinary same-day fill.
+
+    An order entered and executed on ONE session has no cross-grain case at
+    all: its entered date IS its execution date, so state 2 governs it
+    entirely. Without the equality guard the flag would fire on every
+    same-session candidate whose values happen to match an unrelated
+    anonymous row at a different date -- turning a targeted alarm into noise,
+    which is how an alarm stops being read.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time="2026-08-04T13:45:00.000Z",
+        execution_time="2026-08-04T15:30:05.000Z",
+        instruction="SELL", order_id="order-FTRE-sameday",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=41, date="2026-08-03", price=18.40, quantity=10,
+            ),
+        ),
     )
     assert result.kind == "populated"
-    assert result.exit_date == "2026-08-04"
+    assert result.candidates is not None
+    assert result.candidates[0].possible_duplicate_of is None
+    assert result.advisory_text is None
+
+
+def test_d31_anonymous_row_with_other_values_does_not_flag(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The flag keys on the WHOLE tuple, not the date.
+
+    An anonymous row on the candidate's entered date but at a different price
+    is not a possible duplicate of it, and saying so would be the mirror of
+    the defect being fixed -- an assertion from a date alone, in the other
+    direction.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=10,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-stop",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=41, date="2026-08-03", price=99.99, quantity=10,
+            ),
+        ),
+    )
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert result.candidates[0].possible_duplicate_of is None
 
 
 def test_d31_dedupe_tuple_set_still_over_merges_ambiguous_candidates(
