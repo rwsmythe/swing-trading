@@ -1579,9 +1579,17 @@ def test_d31_every_matching_row_is_named_not_just_the_first(
     assert [d.fill_id for d in dups] == [40, 41], (
         f"both recorded rows must be named; got {dups!r}"
     )
-    assert result.advisory_text is not None
-    assert "fill #40" in result.advisory_text
-    assert "fill #41" in result.advisory_text
+    advisory = result.advisory_text
+    assert advisory is not None
+    assert "fill #40" in advisory
+    assert "fill #41" in advisory
+    # The SUMMARY sentence, regression-locked (Codex R19). It used to say the
+    # candidates match "an already-recorded fill" -- singular -- which is
+    # false here, and the earlier wording would pass an assertion that only
+    # checks the two ids appear in the detail list below it.
+    assert "match already-recorded fills on price and quantity" in advisory
+    assert "an already-recorded fill on" not in advisory
+    assert advisory.isascii()
     envelope = json.loads(result.schwab_source_value_json)
     entry = envelope["candidates_map"][result.candidates[0].signature_hash]
     assert [d["fill_id"] for d in entry["possible_duplicates"]] == [40, 41]
@@ -1708,7 +1716,18 @@ def test_d31_same_session_fill_is_offered_and_flagged_not_suppressed(
     assert result.candidates is not None
     (flag,) = result.candidates[0].possible_duplicates
     assert flag.fill_id == 41
-    assert result.advisory_text is not None
+    advisory = result.advisory_text
+    assert advisory is not None
+    # A same-session order's entered and execution dates COINCIDE, so a
+    # summary offering the operator a choice between "the two dates involved"
+    # describes a choice that does not exist here (Codex R19). The wording
+    # states the relation instead, and holds whether or not they differ.
+    assert (
+        "each recorded date equal to the offered date or to the date its "
+        "order was entered"
+    ) in advisory
+    assert "one of the two dates" not in advisory
+    assert advisory.isascii()
 
 
 def test_d31_anonymous_row_with_other_values_does_not_flag(
