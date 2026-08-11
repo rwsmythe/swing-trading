@@ -876,11 +876,16 @@ class TradeExitFormVM:
     # ``auto_fill_fill_origin``. The template gates display + hidden-input
     # emission on ``vm.auto_fill_schwab_source_value_json is not none``.
     #
-    # ``auto_fill_advisory_text`` is NOT exclusive to those kinds since D31: a
-    # POPULATED result sets it when one or more real SELL fills were omitted
-    # from ``auto_fill_candidates`` for want of a usable execution date, so the
-    # operator is told the list is short rather than shown a complete-looking
-    # one. It stays None on a populated result with no omissions.
+    # ``auto_fill_advisory_text`` is NOT exclusive to those kinds since D31. A
+    # POPULATED result sets it in EITHER of two cases, and can carry both at
+    # once: (a) one or more real SELL fills were OMITTED from
+    # ``auto_fill_candidates`` — for want of a usable execution date, an
+    # execution-grain price, or a resolvable quantity — so the operator is told
+    # the list is short rather than shown a complete-looking one; (b) one or
+    # more LISTED candidates fell back to the order-entered date because their
+    # execution times were unusable, so he is told which shown dates are not
+    # execution dates. It stays None on a populated result with no omissions
+    # and no fallbacks.
     #
     # ``fill_origin`` here is the form-render-time stamp (always
     # 'schwab_auto' on populated, 'operator_typed' otherwise). The POST

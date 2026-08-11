@@ -2247,14 +2247,26 @@ async def exit_post(
         # consistency check agree (valid dict envelope + claim present).
         # Mirrors entry_post Codex R4 Major #1 gate.
         if isinstance(anchor_envelope, dict) and claimed_auto_fill:
-            # Codex R1 Critical #1 + Major #1 fix — server-side
-            # authoritative envelope. The ``candidates_map`` (added by
-            # ``resolve_exit_auto_fill`` at form render) is keyed by
-            # signature_hash and carries the per-candidate authoritative
-            # date/price/quantity/order_id. Two failure modes closed:
-            #   (a) Major #1 forgery surface — a tampered POST claiming
-            #       an arbitrary candidate_signature_hash that does NOT
-            #       appear in the server-stamped map is rejected with 400.
+            # Codex R1 Critical #1 + Major #1 fix — the ``candidates_map``
+            # (added by ``resolve_exit_auto_fill`` at form render) is keyed by
+            # signature_hash and carries the per-candidate
+            # date/price/quantity/order_id that this handler treats as
+            # authoritative OVER THE VISIBLE INPUT BOXES.
+            #
+            # IT IS NOT UNFORGEABLE, and the earlier wording here ("server-side
+            # authoritative", "server-stamped", "server-issued", "forgery
+            # surface closed") overstated it (cold audit; the same correction
+            # was made at the emitting site in
+            # ``swing/trades/exit_auto_fill.py`` and this half was left behind
+            # for one commit, which is the partial-cleanup shape). The WHOLE
+            # envelope round-trips through a hidden form field, so a client can
+            # alter the map and the signature together; what check (a) below
+            # establishes is CONSISTENCY WITHIN THE SUBMITTED ENVELOPE, not
+            # provenance from the server. Making it unforgeable needs a signed
+            # envelope, which is a design decision outside this arc and is
+            # flagged rather than improvised. Two failure modes addressed:
+            #   (a) a POST claiming a candidate_signature_hash that does NOT
+            #       appear in its own submitted map is rejected with 400.
             #   (b) Critical #1 broken radio selection — the template's
             #       radio inputs do NOT rebind visible exit_date /
             #       exit_price / shares form fields client-side. When the
@@ -2276,11 +2288,11 @@ async def exit_post(
                 candidates_map = {}
 
             # When a multi-partial selection is present, verify the
-            # operator's submitted signature_hash maps to a server-stamped
-            # candidate in ``candidates_map``. This is the Major #1
-            # forgery-rejection gate. ``selected_index`` was already
-            # validated to be in ``candidate_sigs`` above; here we go one
-            # step further and confirm the hash itself is server-issued.
+            # operator's submitted signature_hash appears in the SUBMITTED
+            # ``candidates_map``. ``selected_index`` was already validated to
+            # be in ``candidate_sigs`` above; this goes one step further and
+            # confirms the two halves of the submission agree with each other.
+            # See the note above on what that does and does not prove.
             submitted_sig_hash: str | None = None
             authoritative_selected: dict | None = None
             if selected_index is not None and selected_index in candidate_sigs:
@@ -2292,7 +2304,7 @@ async def exit_post(
                     return _reject_anchor(
                         "Trade exit rejected: candidate_signature_hash_"
                         f"{selected_index}={submitted_sig_hash!r} does not "
-                        "map to a server-stamped candidate in the auto-fill "
+                        "match any candidate in the submitted auto-fill "
                         "envelope. The form has been regenerated; please "
                         "re-submit."
                     )

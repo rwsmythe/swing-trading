@@ -272,13 +272,18 @@ def test_full_arc_get_then_post_persists_schwab_auto_exit_fill(
     1. Seed open AAPL trade (100sh @ $100, entered 2026-04-15).
     2. GET /trades/{id}/exit/form -> mock Schwab returns matching SELL fill
        at $120.50 x 100sh on 2026-05-19.
-    3. Form renders pre-populated with those values + hidden anchor +
-       per-candidate hidden inputs.
+    3. Form renders pre-populated with those values + the hidden anchor, and
+       WITHOUT per-candidate hidden inputs or the radio fieldset -- the
+       template gates both on ``|length > 1`` and this is the single-fill
+       case. The test asserts their absence (cold audit: these steps claimed
+       the opposite of what the assertions below require).
     4. POST /trades/{id}/exit submits unchanged values (operator accepts
        auto-fill).
     5. fills row carries fill_origin='schwab_auto' +
-       schwab_source_value_json (re-stamped with selected_candidate_*) +
-       operator_corrected_value_json NULL + auto_fill_audit_at present.
+       schwab_source_value_json round-tripped verbatim and NOT re-stamped with
+       selected_candidate_* (no per-candidate inputs were emitted, so
+       selected_index stays None) + operator_corrected_value_json NULL +
+       auto_fill_audit_at present.
     6. Audit row in schwab_api_calls with surface='trade_exit'.
     7. Trade state transitions to 'closed' (full-quantity exit).
     """

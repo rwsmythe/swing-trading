@@ -1455,12 +1455,12 @@ def test_d31_undated_fill_omitted_from_a_populated_list_is_announced(
     assert result.candidates is not None
     assert [c.order_id for c in result.candidates] == ["order-FTRE-good"]
     assert result.advisory_text is not None
-    assert "1 Schwab SELL fill(s)" in result.advisory_text
-    assert "not listed" in result.advisory_text.lower()
+    assert "1 Schwab SELL fill is NOT listed here" in result.advisory_text
+    assert "no usable execution date" in result.advisory_text
     assert result.advisory_text.isascii()
 
 
-def test_d31_price_and_quantity_omissions_are_announced_too(
+def test_d31_price_omission_is_announced_too(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,
 ):
@@ -1476,6 +1476,16 @@ def test_d31_price_and_quantity_omissions_are_announced_too(
     order-grain price and no execution legs -- it passes
     ``_is_execution_bearing_candidate`` but ``_compute_execution_price``
     refuses it.
+
+    NAMED FOR THE ONE REASON IT REACHES (Codex R7 Minor). The third reason,
+    ``no_quantity``, is NOT exercised and deliberately has no test: it needs a
+    resolvable execution price with an unresolvable quantity, and
+    ``_resolve_match_quantity`` sums the same legs the price came from while
+    ``SchwabExecutionLeg.__post_init__`` rejects ``quantity <= 0`` at
+    construction, so no valid order can produce it. A test would have to
+    monkeypatch the helper, which would assert the mock rather than the
+    behaviour. The branch is kept because the helper's contract permits
+    ``None`` and the counter must not go quiet if it ever returns one.
     """
     good = _make_sell_order(
         ticker="FTRE", price=18.40, quantity=6,
@@ -1495,8 +1505,8 @@ def test_d31_price_and_quantity_omissions_are_announced_too(
     assert result.candidates is not None
     assert [c.order_id for c in result.candidates] == ["order-FTRE-good"]
     assert result.advisory_text is not None
-    assert "1 Schwab SELL fill(s)" in result.advisory_text
-    assert "execution-grain price" in result.advisory_text
+    assert "1 Schwab SELL fill is NOT listed here" in result.advisory_text
+    assert "no execution-grain price" in result.advisory_text
     assert result.advisory_text.isascii()
 
 
@@ -1526,6 +1536,95 @@ def test_d31_entered_time_fallback_is_announced_to_the_operator(
     assert "ORDER WAS PLACED" in result.advisory_text
     assert "2026-08-03" in result.advisory_text
     assert result.advisory_text.isascii()
+
+
+def test_d31_fallback_and_omission_advisories_compose(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Both advisory halves can be true at once, and both must be said.
+
+    Three orders: one dated from its execution legs, one LISTED but dated from
+    the order-entered fallback, and one OMITTED for want of any usable date.
+    An earlier shape of this code would have emitted at most one of the two
+    messages; they are separate facts about separate fills and the operator
+    needs both.
+
+    Also pins the SINGULAR wording, since the counts here are 1 and 1 (Codex R7
+    Minor: the first draft emitted "1 listed fill(s) ... are").
+    """
+    from_leg = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=6,
+        enter_time="2026-08-03T13:00:00.000Z",
+        execution_time="2026-08-04T13:30:05.000Z",
+        instruction="SELL", order_id="order-FTRE-from-leg",
+    )
+    fallback = _make_sell_order(
+        ticker="FTRE", price=18.10, quantity=3,
+        enter_time="2026-08-04T13:00:00.000Z",
+        execution_time="not-a-timestamp",
+        instruction="SELL", order_id="order-FTRE-fallback",
+    )
+    undated = _make_sell_order(
+        ticker="FTRE", price=18.20, quantity=1,
+        enter_time="20260804T130000", execution_time="not-a-timestamp",
+        instruction="SELL", order_id="order-FTRE-undated",
+    )
+    patch_get_orders.state["orders"] = [from_leg, fallback, undated]
+    result = _resolve_ftre(conn, d31_now, [from_leg, fallback, undated])
+
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert {c.order_id for c in result.candidates} == {
+        "order-FTRE-from-leg", "order-FTRE-fallback",
+    }
+    advisory = result.advisory_text
+    assert advisory is not None
+    assert "1 listed fill could not be dated" in advisory
+    assert "each date shown" not in advisory
+    assert "1 Schwab SELL fill is NOT listed here" in advisory
+    assert "no usable execution date" in advisory
+    assert advisory.isascii()
+
+
+def test_d31_advisory_pluralizes_on_more_than_one(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The plural branch of the same two messages (Codex R7 Minor)."""
+    fallback_a = _make_sell_order(
+        ticker="FTRE", price=18.10, quantity=3,
+        enter_time="2026-08-04T13:00:00.000Z",
+        execution_time="not-a-timestamp",
+        instruction="SELL", order_id="order-FTRE-fb-a",
+    )
+    fallback_b = _make_sell_order(
+        ticker="FTRE", price=18.15, quantity=2,
+        enter_time="2026-08-05T13:00:00.000Z",
+        execution_time="not-a-timestamp",
+        instruction="SELL", order_id="order-FTRE-fb-b",
+    )
+    undated_a = _make_sell_order(
+        ticker="FTRE", price=18.20, quantity=1,
+        enter_time="20260804T130000", execution_time="not-a-timestamp",
+        instruction="SELL", order_id="order-FTRE-un-a",
+    )
+    undated_b = _make_sell_order(
+        ticker="FTRE", price=18.25, quantity=1,
+        enter_time="2026-W32-1", execution_time="not-a-timestamp",
+        instruction="SELL", order_id="order-FTRE-un-b",
+    )
+    orders = [fallback_a, fallback_b, undated_a, undated_b]
+    patch_get_orders.state["orders"] = orders
+    result = _resolve_ftre(conn, d31_now, orders)
+
+    assert result.kind == "populated"
+    advisory = result.advisory_text
+    assert advisory is not None
+    assert "2 listed fills could not be dated" in advisory
+    assert "each date shown" in advisory
+    assert "2 Schwab SELL fills are NOT listed here" in advisory
+    assert advisory.isascii()
 
 
 def test_d31_populated_without_omissions_carries_no_advisory(

@@ -16,10 +16,13 @@
         empty kinds — all use this surface to inform the operator).
         Populated kind USUALLY has advisory_text=None — operator sees
         pre-filled inputs (or radio list for multi-partial) with no banner.
-        D31 exception: a populated result DOES set it when one or more real
-        SELL fills were OMITTED from the list because they carry no usable
-        execution date, since a list that looks complete and is not is the
-        one thing this surface must never show silently. -#}
+        D31 exceptions, either or both: a populated result DOES set it when
+        real SELL fills were OMITTED from the list (no usable execution date,
+        no execution-grain price, or no resolvable quantity), and when a
+        LISTED candidate's date fell back to when the order was PLACED because
+        its execution times were unusable. A list that looks complete and is
+        not, and a date that looks like an execution date and is not, are the
+        two things this surface must never show silently. -#}
     {% if vm.auto_fill_advisory_text %}
     <div class="banner banner-info" role="status">
       <strong>Schwab auto-fill:</strong> {{ vm.auto_fill_advisory_text }}

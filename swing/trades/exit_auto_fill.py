@@ -794,16 +794,22 @@ def resolve_exit_auto_fill(
         if date_sources.get(cand.signature_hash) == "enter_time"
     )
     if fallback_dates:
+        n = len(fallback_dates)
         advisory_parts.append(
-            f"{len(fallback_dates)} listed fill(s) could not be dated from "
-            "their Schwab execution times, so the date shown is when the ORDER "
-            f"WAS PLACED, not when it filled ({', '.join(fallback_dates)}). "
-            "Check those against the broker before submitting."
+            (
+                f"{n} listed fill could not be dated from its Schwab "
+                "execution times, so the date shown is when the ORDER WAS "
+                if n == 1 else
+                f"{n} listed fills could not be dated from their Schwab "
+                "execution times, so each date shown is when the ORDER WAS "
+            )
+            + f"PLACED, not when it filled ({', '.join(fallback_dates)}). "
+            + "Check against the broker before submitting."
         )
         log.warning(
             "schwab exit auto-fill: %d %s candidate(s) fell back to the "
             "order-entered date (%s)",
-            len(fallback_dates), ticker, ", ".join(fallback_dates),
+            n, ticker, ", ".join(fallback_dates),
         )
     omitted_total = sum(omitted.values())
     if omitted_total:
@@ -811,9 +817,10 @@ def resolve_exit_auto_fill(
             f"{count} for {_OMISSION_REASON_TEXT.get(reason, reason)}"
             for reason, count in sorted(omitted.items())
         )
+        noun = "fill is" if omitted_total == 1 else "fills are"
         advisory_parts.append(
-            f"{omitted_total} Schwab SELL fill(s) for {ticker} are NOT listed "
-            f"here ({reasons}). Check the broker and record those manually."
+            f"{omitted_total} Schwab SELL {noun} NOT listed here "
+            f"({reasons}). Check the broker and record manually."
         )
         log.warning(
             "schwab exit auto-fill: %d %s SELL fill(s) omitted from the "
