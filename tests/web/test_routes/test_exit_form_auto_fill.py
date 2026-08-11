@@ -37,6 +37,7 @@ from swing.data.repos.trades import insert_trade_with_event, list_open_trades
 from swing.trades.exit_auto_fill import (
     ExitAutoFillCandidate,
     ExitAutoFillResult,
+    PossibleDuplicateFill,
 )
 from swing.web.app import create_app
 from swing.web.price_cache import PriceCache, PriceSnapshot
@@ -802,6 +803,78 @@ def test_r2_major3_dedupe_only_on_persisted_schwab_order_id(
 # for fills without a parseable schwab_order_id (pre-v20, operator_typed,
 # tos_import, imported_legacy fills).
 # ============================================================================
+
+
+def test_d31_possible_duplicate_flag_reaches_the_rendered_form(
+    seeded_db, monkeypatch,
+):
+    """The alarm must reach the SCREEN, not just the result object.
+
+    RD's ruling says the candidate is offered carrying an explicit
+    possible-duplicate flag naming the anonymous row -- and a flag the
+    operator cannot see is the same as no flag. This drives the real template
+    through the route and asserts BOTH surfaces:
+
+      - the multi-candidate list marks the specific row (the fieldset renders
+        only at length >= 2);
+      - the advisory banner states it too, which is the ONLY surface in the
+        single-fill case.
+
+    It also asserts the OFFER survives: the flagged candidate's radio input is
+    present, because the affordance to record is never gated on the alarm.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+
+    clean = ExitAutoFillCandidate(
+        date="2026-05-19", price=160.50, quantity=40,
+        signature_hash="sig-clean", order_id="ORD-CLEAN",
+        date_source="execution_leg",
+    )
+    flagged = ExitAutoFillCandidate(
+        date="2026-05-20", price=161.25, quantity=60,
+        signature_hash="sig-flagged", order_id="ORD-FLAGGED",
+        date_source="execution_leg",
+        possible_duplicate_of=PossibleDuplicateFill(
+            fill_id=41, date="2026-05-19", price=161.25, quantity=60,
+        ),
+    )
+    _patch_auto_fill(
+        monkeypatch,
+        ExitAutoFillResult(
+            kind="populated",
+            fill_origin="schwab_auto",
+            exit_date="2026-05-20",
+            exit_price=161.25,
+            closed_shares=60,
+            candidates=[clean, flagged],
+            advisory_text=(
+                "POSSIBLE DUPLICATE: 1 offered fill may already be recorded "
+                "under the OLD date convention -- fill #41 recorded "
+                "2026-05-19 at 161.25 x 60."
+            ),
+            schwab_source_value_json='{"exit_date": "2026-05-20"}',
+            auto_fill_audit_at="2026-05-20T14:30:00.000000+00:00",
+        ),
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            f"/trades/{trade_id}/exit/form",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+
+    # The per-row marker names the row.
+    assert "POSSIBLE DUPLICATE of recorded fill #41" in body
+    assert "2026-05-19" in body
+    # The banner says it too (the single-fill case's only surface).
+    assert "POSSIBLE DUPLICATE:" in body
+    # The offer survives -- the alarm does not gate the affordance.
+    assert 'value="sig-flagged"' in body
+    assert 'name="candidate_index" value="1"' in body
 
 
 def test_d31_vm_passes_anonymous_fills_agreeing_with_the_tuple_set(
