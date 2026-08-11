@@ -1784,39 +1784,58 @@ def test_b_review_major1_non_default_radio_plus_edits_drops_the_order_id(
 
 
 # ============================================================================
-# Codex R4 Major #1 — None-order_id authoritative selected — top-level
-# ``schwab_order_id`` must be REMOVED (not silently left at form-render
-# default) so dedupe falls through to (date, price, qty) tuple matching.
+# Codex R4 Major #1 — an authoritative selected candidate carrying no usable
+# order id — top-level ``schwab_order_id`` must be REMOVED (not silently left
+# at the form-render default) so the row reaches the FLAG channel.
 # ============================================================================
 
 
 def test_h_r4m1_authoritative_selected_with_none_order_id_pops_top_level(
     seeded_db, monkeypatch,
 ):
-    """Codex R4 Major #1 — authoritative selected candidate has order_id=None
-    (e.g., MARKET fill without broker order_id).
+    """Codex R4 Major #1 — the selected candidate carries no usable order id.
 
-    Operator picks the non-default (None-order_id) candidate via radio +
-    manually edits visible inputs to match it. Post-fix: top-level
-    ``schwab_order_id`` is REMOVED from the persisted envelope (not left at
-    the form-render default 'ord-2' which was never persisted).
-    fill_origin = ``schwab_auto`` (no edits vs authoritative). VM-side
-    dedupe will then see no usable order_id and correctly fall through to
-    (date, price, qty) tuple fallback (R2 M#4 behavior).
+    Operator picks that candidate via radio + manually edits visible inputs to
+    match it. Top-level ``schwab_order_id`` is REMOVED from the persisted
+    envelope rather than left at the form-render default 'ord-2', which was
+    never persisted. ``fill_origin`` stays ``schwab_auto`` (no edits vs the
+    authoritative values).
 
-    Discriminating: pre-fix the rewrite at routes/trades.py:2077 only fired
-    when ``auth_top_order_id`` was a truthy string, so top-level stayed
-    at 'ord-2' (the default's order_id), causing dedupe to exclude the
-    WRONG order_id + the (date, price, qty) fallback not to fire because
-    VM's "order_id_found" flag was True (for the wrong order).
+    TWO CLAIMS CORRECTED (orchestrator B review MINOR 2).
+
+    1. WHERE A ``None`` ORDER ID COMES FROM. This docstring used to say "e.g.
+       MARKET fill without broker order_id". Production cannot produce that:
+       ``SchwabOrderResponse.__post_init__`` requires a non-empty ``order_id``,
+       and ``_build_candidate`` reads the candidate's id straight off the
+       order, so every server-built candidate carries one. The reachable vector
+       is the envelope itself -- it round-trips through a hidden input and is
+       CLIENT-EDITABLE (banked, cited-not-fixed) -- plus legacy envelopes. The
+       constructor is no stricter than non-empty, so a WHITESPACE id is
+       constructible where a ``None`` is not; the handler treats both as
+       unusable.
+    2. WHERE THE ROW GOES NEXT. It used to say the VM "falls through to
+       (date, price, qty) tuple fallback (R2 M#4)". That dedupe is RETIRED
+       (RD, 2026-08-11): value-tuple equality is never proof of identity, so a
+       tuple match now FLAGS by naming the recorded row and excludes nothing.
+
+    The assertions were not discriminating for the reason the docstring gave --
+    they proved only that a key was removed, and would have stayed green if the
+    VM then dropped the row or failed to flag it. The next render is now
+    exercised: the recorded fill must arrive in ``existing_anonymous_fills``
+    and nothing may be excluded.
     """
+    from swing.trades.exit_auto_fill import ExitAutoFillResult
+
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
     _patch_price_cache(monkeypatch)
     candidates_map = {
         "sig-cand-0": {
             "date": "2026-05-15", "price": 110.00, "quantity": 3,
-            "order_id": None,  # MARKET fill — no broker order_id
+            # NOT a production shape: the Schwab constructor requires a
+            # non-empty order_id. A client-edited or legacy envelope is the
+            # reachable source, and the handler must treat it as unusable.
+            "order_id": None,
         },
         "sig-cand-1": {
             "date": "2026-05-19", "price": 120.50, "quantity": 3,
@@ -1833,44 +1852,79 @@ def test_h_r4m1_authoritative_selected_with_none_order_id_pops_top_level(
     with TestClient(app) as client:
         resp = _post_exit(
             client, trade_id,
-            # Operator manually edited visible inputs to match c0 (MARKET).
+            # Operator manually edited visible inputs to match c0.
             exit_date="2026-05-15", exit_price="110.00", shares="3",
             schwab_source_value_json=envelope,
             auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
             fill_origin_at_form_render="schwab_auto",
-            candidate_index="0",  # operator picked None-order_id c0
+            candidate_index="0",  # operator picked the id-less c0
             candidate_signature_hash_0="sig-cand-0",
             candidate_order_id_0="",  # form emits empty for None
             candidate_signature_hash_1="sig-cand-1",
             candidate_order_id_1="ord-2",
         )
-    assert resp.status_code == 200, resp.text
-    conn = connect(cfg.paths.db_path)
-    try:
-        row = conn.execute(
-            "SELECT fill_origin, schwab_source_value_json "
-            "FROM fills WHERE action != 'entry' "
-            "ORDER BY fill_id DESC LIMIT 1"
-        ).fetchone()
-    finally:
-        conn.close()
-    assert row[0] == "schwab_auto", (
-        "visible inputs match authoritative c0; fill_origin stays "
-        "schwab_auto"
+        assert resp.status_code == 200, resp.text
+        conn = connect(cfg.paths.db_path)
+        try:
+            row = conn.execute(
+                "SELECT fill_origin, schwab_source_value_json "
+                "FROM fills WHERE action != 'entry' "
+                "ORDER BY fill_id DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row[0] == "schwab_auto", (
+            "visible inputs match authoritative c0; fill_origin stays "
+            "schwab_auto"
+        )
+        persisted = json.loads(row[1])
+        assert persisted["selected_candidate_signature_hash"] == "sig-cand-0"
+        # Top-level schwab_order_id is REMOVED, NOT left at the form-render
+        # default 'ord-2' -- which was never persisted and would be read on
+        # the next render as PROVEN IDENTITY.
+        assert persisted.get("schwab_order_id") is None, (
+            "top-level schwab_order_id must be REMOVED when the selected "
+            "candidate carries no usable order id (not left at the "
+            f"form-render default); got {persisted.get('schwab_order_id')!r}"
+        )
+        # selected_candidate_order_id should also be None (per R2 M#2 fix).
+        assert persisted.get("selected_candidate_order_id") is None
+
+        # --- the consequence, on the NEXT render -------------------------
+        # This is what makes the removal load-bearing rather than cosmetic,
+        # and what the old assertions could not see.
+        calls: list = []
+
+        def _fake_resolve(**kwargs):
+            calls.append(kwargs)
+            return ExitAutoFillResult(
+                kind="empty", fill_origin="operator_typed",
+                advisory_text="no matches",
+                auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            )
+
+        monkeypatch.setattr(
+            "swing.trades.exit_auto_fill.resolve_exit_auto_fill",
+            _fake_resolve,
+        )
+        form = client.get(
+            f"/trades/{trade_id}/exit/form",
+            headers={"HX-Request": "true"},
+        )
+    assert form.status_code == 200, form.text
+    assert len(calls) == 1
+    assert calls[0]["existing_fill_order_ids"] is None, (
+        "'ord-2' was never persisted; nothing may be excluded on its "
+        f"account. Got {calls[0]['existing_fill_order_ids']!r}"
     )
-    persisted = json.loads(row[1])
-    assert persisted["selected_candidate_signature_hash"] == "sig-cand-0"
-    # CRITICAL R4 M#1 ASSERTION: top-level schwab_order_id is REMOVED
-    # (None or absent), NOT left at the form-render default ('ord-2').
-    # VM-side dedupe will then fall through to (date, price, qty) tuple
-    # matching per R2 M#4 fallback semantics.
-    assert "schwab_order_id" not in persisted or persisted.get("schwab_order_id") is None, (
-        "Codex R4 M#1: top-level schwab_order_id must be REMOVED when "
-        "authoritative selected candidate has order_id=None (not left at "
-        f"form-render default); got {persisted.get('schwab_order_id')!r}"
+    anon = calls[0]["existing_anonymous_fills"]
+    assert anon is not None, (
+        "the recorded fill carries no usable order id, so it must reach the "
+        "flag channel rather than be treated as identified"
     )
-    # selected_candidate_order_id should also be None (per R2 M#2 fix).
-    assert persisted.get("selected_candidate_order_id") is None
+    assert ("2026-05-15", 110.00, 3.0) in {
+        (r.date, r.price, r.quantity) for r in anon
+    }, f"got {anon!r}"
 
 
 # ============================================================================
