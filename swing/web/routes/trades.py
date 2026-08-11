@@ -2506,7 +2506,7 @@ async def exit_post(
                     # not — and the truthiness test below does NOT reject one:
                     # ``"   "`` is truthy and would be installed here. It is
                     # then DROPPED by the retention rule further down, whose
-                    # first condition is ``top_order_id.strip()``, so the
+                    # ``usable`` predicate requires a NON-BLANK string, so the
                     # outcome is identical and no link is ever asserted on a
                     # blank token. Stated because the reader of this branch
                     # would otherwise reasonably infer the test rejects it.
