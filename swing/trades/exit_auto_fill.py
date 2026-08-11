@@ -912,12 +912,13 @@ def resolve_exit_auto_fill(
         )
         noun = "fill" if len(flagged) == 1 else "fills"
         advisory_parts.append(
-            f"POSSIBLE DUPLICATE: {len(flagged)} offered {noun} match an "
-            f"already-recorded fill on price, quantity and one of the two "
-            f"dates involved -- {named}. Those recorded fills carry no broker "
-            "order id, so nothing here can tell whether they are the same "
-            "fill or different ones. Check the trade's recorded fills before "
-            "submitting."
+            f"POSSIBLE DUPLICATE: {len(flagged)} offered {noun} match "
+            f"already-recorded fills on price and quantity, with each "
+            f"recorded date equal to the offered date or to the date its "
+            f"order was entered -- {named}. Those recorded fills carry no "
+            "broker order id, so nothing here can tell whether they are the "
+            "same fill or different ones. Check the trade's recorded fills "
+            "before submitting."
         )
         log.warning(
             "schwab exit auto-fill: %s -- %d candidate(s) match an anonymous "
