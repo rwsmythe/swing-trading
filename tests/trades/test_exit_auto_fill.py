@@ -1587,8 +1587,14 @@ def test_d31_every_matching_row_is_named_not_just_the_first(
     # candidates match "an already-recorded fill" -- singular -- which is
     # false here, and the earlier wording would pass an assertion that only
     # checks the two ids appear in the detail list below it.
-    assert "match already-recorded fills on price and quantity" in advisory
+    # ONE candidate with TWO matches: the count is of flagged CANDIDATES,
+    # and "one or more matches" is what carries the two rows (Codex R20).
+    assert (
+        "1 offered fill has one or more matches among already-recorded "
+        "fills on price and quantity"
+    ) in advisory
     assert "an already-recorded fill on" not in advisory
+    assert "offered fill match" not in advisory, "verb agreement"
     assert advisory.isascii()
     envelope = json.loads(result.schwab_source_value_json)
     entry = envelope["candidates_map"][result.candidates[0].signature_hash]

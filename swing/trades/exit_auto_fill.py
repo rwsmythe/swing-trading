@@ -910,15 +910,21 @@ def resolve_exit_auto_fill(
             for c in flagged
             for dup in c.possible_duplicates
         )
-        noun = "fill" if len(flagged) == 1 else "fills"
+        # NUMBER-NEUTRAL (Codex R20). The single-candidate/single-row case
+        # is the COMMON one, and the previous phrasing read "1 offered fill
+        # match already-recorded fills" -- ungrammatical, and implying several
+        # recorded rows where there is one. "has one or more matches" and
+        # "Each matching recorded fill" are true at every cardinality without
+        # branching the sentence three ways.
+        noun = "fill has" if len(flagged) == 1 else "fills have"
         advisory_parts.append(
-            f"POSSIBLE DUPLICATE: {len(flagged)} offered {noun} match "
-            f"already-recorded fills on price and quantity, with each "
-            f"recorded date equal to the offered date or to the date its "
-            f"order was entered -- {named}. Those recorded fills carry no "
-            "broker order id, so nothing here can tell whether they are the "
-            "same fill or different ones. Check the trade's recorded fills "
-            "before submitting."
+            f"POSSIBLE DUPLICATE: {len(flagged)} offered {noun} one or more "
+            f"matches among already-recorded fills on price and quantity, "
+            f"with each recorded date equal to the offered date or to the "
+            f"date its order was entered -- {named}. Each matching recorded "
+            "fill carries no broker order id, so nothing here can tell "
+            "whether it is the same fill or a different one. Check the "
+            "trade's recorded fills before submitting."
         )
         log.warning(
             "schwab exit auto-fill: %s -- %d candidate(s) match an anonymous "
