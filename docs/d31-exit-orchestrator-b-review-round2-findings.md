@@ -33,8 +33,14 @@ id was affirmed. Two writers can, and one population never had the guarantee at 
   writes `schwab_source_value_json` at all** (verified: zero occurrences). So a correction to
   `fill_datetime`, `price` or `quantity` moves the persisted values away from the id's candidate and
   leaves the id standing.
-- **`swing/trades/reconciliation_classifier.py:1902`** — close-price corrections target
-  `fills.price`, same shape.
+- ~~**`swing/trades/reconciliation_classifier.py:1902`** — close-price corrections target
+  `fills.price`, same shape.~~ **WRONG, corrected 2026-08-12 by the fix-arc implementer, which
+  checked it instead of repeating it.** That file contains **zero** `conn.execute`/`UPDATE`
+  statements; `:1902` returns a `ClassificationResult` carrying `correction_target={"price": ...}`.
+  **It PROPOSES; the corrector WRITES.** I cited a caller of the writer as if it were a second
+  writer. The finding is unaffected — `reconciliation_auto_correct.py:2058` is a real single-column
+  writer and one is enough to make the point — but the claim as published was false, and it was
+  published to RD.
 - **Pre-fix rows** carry ids affirmed under the OLD, weaker rule and were never re-examined.
 
 **Consequence:** on the next render that stale id enters `existing_fill_order_ids` and **silently
