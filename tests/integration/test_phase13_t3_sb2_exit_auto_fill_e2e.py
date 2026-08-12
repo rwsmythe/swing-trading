@@ -552,7 +552,10 @@ def test_d31_sub_one_share_fill_renders_the_page_and_names_the_reason(
     cannot pass against a map whose wording drifted from what the operator is
     shown.
     """
-    from swing.trades.exit_auto_fill import _OMISSION_REASON_TEXT
+    from swing.trades.exit_auto_fill import (
+        _OMISSION_REASON_TEXT,
+        _SUB_ONE_SHARE_NOTE,
+    )
 
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "AAPL")
@@ -587,6 +590,7 @@ def test_d31_sub_one_share_fill_renders_the_page_and_names_the_reason(
     assert "Schwab auto-fill:" in body, "the advisory block itself rendered"
     assert _OMISSION_REASON_TEXT["sub_one_share_quantity"] in body
     assert "1 Schwab SELL fill is NOT listed here" in body
+    assert _SUB_ONE_SHARE_NOTE in body
     # The refusal is confined to the order that caused it.
     assert _extract_hidden_input_value(body, "exit_date") == "2026-05-20"
     assert 'value="120.50"' in body

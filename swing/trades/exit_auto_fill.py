@@ -154,11 +154,23 @@ _OMISSION_REASON_TEXT: dict[str, str] = {
     ),
     "no_execution_price": "no execution-grain price",
     "no_quantity": "no resolvable execution quantity",
-    "sub_one_share_quantity": (
-        "an execution quantity below one whole share, which this form "
-        "cannot represent"
-    ),
+    "sub_one_share_quantity": "an execution quantity below one whole share",
 }
+
+
+# Appended to either advisory whenever a sub-one-share fill was refused, and
+# it exists because the generic instruction is IMPOSSIBLE for that one reason
+# (Codex R1 minor). Both advisories end by telling the operator to record the
+# omitted fill by hand, and the Shares input this form renders carries
+# ``step="1" min="1"`` -- so for a 0.9-share fill the instruction names an
+# action the form refuses. Naming the exception is the honest fix; the ruled
+# remedy for the underlying limitation is the BANKED field-type migration, not
+# a widening of the input, so this text describes today's form rather than
+# promising a future one.
+_SUB_ONE_SHARE_NOTE = (
+    "A fill below one whole share cannot be recorded on this form at all: "
+    "its Shares input takes whole shares only."
+)
 
 
 def _omission_reason_summary(omitted: dict[str, int]) -> str:
@@ -834,6 +846,10 @@ def resolve_exit_auto_fill(
                 f"No Schwab SELL fill for {ticker} could be listed "
                 f"({_omission_reason_summary(omitted)}); please enter "
                 "manually."
+                + (
+                    f" {_SUB_ONE_SHARE_NOTE}"
+                    if "sub_one_share_quantity" in omitted else ""
+                )
             ),
             auto_fill_audit_at=auto_fill_audit_at,
         )
@@ -1010,6 +1026,10 @@ def resolve_exit_auto_fill(
         advisory_parts.append(
             f"{omitted_total} Schwab SELL {noun} NOT listed here "
             f"({reasons}). Check the broker and record manually."
+            + (
+                f" {_SUB_ONE_SHARE_NOTE}"
+                if "sub_one_share_quantity" in omitted else ""
+            )
         )
         log.warning(
             "schwab exit auto-fill: %d %s SELL fill(s) omitted from the "
@@ -1285,15 +1305,26 @@ def _undecidable_duplicates(
             # claim the code does not support.
             #
             # What 1e-9 actually covers is IEEE-754 double summation error over
-            # the execution legs -- relative error on the order of 1e-16, so an
-            # absolute 1e-9 stays ample across any share count this ledger will
-            # see while remaining tiny next to the differences the comparison is
-            # meant to resolve. It is ABSOLUTE and `rel_tol=0` deliberately: a
-            # relative slack would widen with the quantity, so a large position
-            # would get a looser test than a small one for no stated reason.
-            # The asymmetry is the point -- being slightly loose costs a
-            # spurious flag the operator adjudicates, being exact costs a
-            # silent miss, so this errs toward the ALARM.
+            # the execution legs. THAT ERROR IS RELATIVE (order 1e-16 of the
+            # magnitude) WHILE THIS TOLERANCE IS ABSOLUTE, SO THE COVER HAS A
+            # CEILING AND THE CEILING IS STATED RATHER THAN WAVED AT (Codex R1
+            # major on this comment, which had claimed the tolerance was "ample
+            # across any share count this ledger will see" -- an over-claim of
+            # the same shape as the grain it replaced). 1e-9 absorbs the error
+            # up to roughly 1e7 shares and NOT beyond: legs summing to about
+            # 10,000,000.3 can land ~2e-9 from a ledger row storing that same
+            # value, and the alarm would stay silent. The largest quantity on
+            # the live ledger is 39 shares, so the ceiling sits six orders of
+            # magnitude above the population, but it is a ceiling and not an
+            # absence of one. Should quantities ever approach it the answer is
+            # to revisit this comparison, NOT to widen the tolerance.
+            #
+            # `rel_tol=0` deliberately: a relative slack would widen with the
+            # quantity, so a large position would get a looser test than a small
+            # one -- precisely backwards, since a large position is where a
+            # spurious silence costs most. The asymmetry is the point: being
+            # slightly loose costs a spurious flag the operator adjudicates,
+            # being exact costs a silent miss, so this errs toward the ALARM.
             and math.isclose(row_quantity, quantity, rel_tol=0.0, abs_tol=1e-9)
             and row.date in dates
         ):

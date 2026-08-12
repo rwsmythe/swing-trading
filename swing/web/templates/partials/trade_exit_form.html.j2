@@ -17,8 +17,13 @@
         Populated kind USUALLY has advisory_text=None — operator sees
         pre-filled inputs (or radio list for multi-partial) with no banner.
         D31 exceptions, any or all THREE: a populated result DOES set it when
-        real SELL fills were OMITTED from the list (no usable execution date,
-        no execution-grain price, or no resolvable quantity), when a
+        real SELL fills were OMITTED from the list -- for ANY refusal reason
+        the resolver counts, which is why the reasons are NOT enumerated here
+        (this comment listed three of them and a fourth,
+        `sub_one_share_quantity`, arrived; the enumeration was the only thing
+        that had to change, since the banner renders whatever text the resolver
+        composes). `swing/trades/exit_auto_fill.py:_OMISSION_REASON_TEXT` is
+        the one place they are listed. A populated result also sets it when a
         LISTED candidate's date fell back to when the order was PLACED because
         its execution times were unusable, and when a LISTED candidate MAY
         duplicate an anonymous recorded fill at EITHER grain, which identity

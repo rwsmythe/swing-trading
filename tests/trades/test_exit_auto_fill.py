@@ -44,6 +44,7 @@ from swing.integrations.schwab.models import (
 )
 from swing.trades.exit import _normalize_trade_event_date_to_iso
 from swing.trades.exit_auto_fill import (
+    _SUB_ONE_SHARE_NOTE,
     ExitAutoFillCandidate,
     ExitAutoFillResult,
     PossibleDuplicateFill,
@@ -2122,6 +2123,11 @@ def test_d31_sub_one_share_fill_is_refused_and_announced_not_a_crash(
         "execution quantity below one whole share"
         in result.advisory_text
     )
+    # The generic instruction ("record manually") is IMPOSSIBLE for this one
+    # reason -- the form's Shares input is `step="1" min="1"` -- so the
+    # advisory names the exception rather than issuing an action the form
+    # refuses (Codex R1 minor).
+    assert _SUB_ONE_SHARE_NOTE in result.advisory_text
     assert result.advisory_text.isascii()
 
 
@@ -2184,6 +2190,7 @@ def test_d31_only_sub_one_share_fills_says_why_the_list_is_empty(
     assert "lacked an execution-grain price/quantity" not in (
         result.advisory_text
     ), "the old blanket sentence asserted three things this order has"
+    assert _SUB_ONE_SHARE_NOTE in result.advisory_text
     assert result.advisory_text.isascii()
 
 
