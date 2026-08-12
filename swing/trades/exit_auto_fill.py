@@ -1390,32 +1390,43 @@ def _undecidable_duplicates(
             # claim the code does not support.
             #
             # What 1e-9 covers is IEEE-754 double summation error over the
-            # execution legs. IT IS AN ABSOLUTE TOLERANCE STANDING AGAINST A
-            # RELATIVE ERROR, SO IT DOES NOT BOUND THAT ERROR FOR ARBITRARY
-            # INPUTS AND THIS COMMENT DOES NOT CLAIM IT DOES (Codex R1 major +
-            # R2 minor, both landing on this comment: it first claimed the
-            # tolerance was "ample across any share count this ledger will
-            # see", then claimed a clean ~1e7-share ceiling -- and a residual
-            # grows with the TOTAL's magnitude AND with the number and spread
-            # of the legs, so no single share count is the boundary). Around
-            # 1e7 shares, or with a pathological spread of leg sizes below it,
-            # the residual can exceed 1e-9 and a genuine duplicate is offered
-            # clean. The largest quantity on the live ledger is 39 shares, more
-            # than five orders of magnitude below where this starts to matter.
-            # The limitation is stated rather than waved at because the
-            # justification this replaced appealed to a 1e-4 share grain
-            # nothing enforces, and swapping one unsupported claim for another
-            # would be the same defect. Should quantities ever reach that scale
-            # the answer is to revisit this comparison, NOT to widen the
-            # tolerance.
+            # execution legs, and THAT ERROR IS RELATIVE -- it grows with the
+            # magnitude of the total (and with the number and spread of the
+            # legs). So the tolerance is REL+ABS and neither half is
+            # decorative: `abs_tol` carries the small end, where a relative
+            # slack shrinks toward nothing; `rel_tol` carries the large end,
+            # where an absolute slack stops bounding the error at all.
             #
-            # `rel_tol=0` deliberately: a relative slack would widen with the
-            # quantity, so a large position would get a looser test than a small
-            # one -- precisely backwards, since a large position is where a
-            # spurious silence costs most. The asymmetry is the point: being
-            # slightly loose costs a spurious flag the operator adjudicates,
-            # being exact costs a silent miss, so this errs toward the ALARM.
-            and math.isclose(row_quantity, quantity, rel_tol=0.0, abs_tol=1e-9)
+            # THE MISSING `rel_tol` WAS ITSELF A SILENT MISS, AND THIS IS THAT
+            # FIX (orchestrator B review round 4, MAJOR 3). `10000000.1 + 0.2`
+            # is `10000000.299999999`; its residual against a recorded
+            # `10000000.3` is 1.862645e-9, past `abs_tol`, so the genuine
+            # duplicate was offered CLEAN. The comment this replaces argued
+            # `rel_tol=0` on the ground that a relative slack "widens with the
+            # quantity, so a large position would get a looser test than a
+            # small one -- precisely backwards". The widening is real and the
+            # conclusion was backwards: the ERROR widens with the quantity too,
+            # and it was the large position that got the silence. Live
+            # reachability is nil today -- the largest quantity on this ledger
+            # is 39 shares -- which bore on urgency and not on whether the
+            # comparison was right.
+            #
+            # THE HYBRID DELIBERATELY DOES NOT TIGHTEN THE SMALL END, AND THAT
+            # IS NOT AN OVERSIGHT LEFT FOR A LATER READER TO TIDY. `10.0`
+            # against a recorded `10.0000000005` still flags: the residual is
+            # 5e-10, inside `abs_tol`, and those are two DISTINCT quantities.
+            # Both halves err the same way on purpose, under the asymmetry this
+            # surface is built on -- a spurious flag costs the operator one
+            # look at the ledger and he adjudicates it; a silent miss costs a
+            # double-recorded fill and nobody ever sees it. Tightening this end
+            # to remove the spurious flag would buy it with silence, which is
+            # the one trade this comparison exists to refuse. The same holds in
+            # the other direction: at 1e7 shares `rel_tol` opens a 0.01-share
+            # window, so two genuinely distinct quantities closer than that now
+            # flag together -- again the alarm direction, again adjudicated.
+            # `tests/trades/test_exit_auto_fill.py` pins BOTH ends, so a later
+            # tightening goes red there instead of arriving unnoticed.
+            and math.isclose(row_quantity, quantity, rel_tol=1e-9, abs_tol=1e-9)
             and row.date in dates
         ):
             matches.append(row)

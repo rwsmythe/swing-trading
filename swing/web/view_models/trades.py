@@ -1020,7 +1020,10 @@ def build_exit_form_vm(
         # "quantity int-exact", which the arc's own fix retired): date is
         # string-exact against EITHER of the candidate's two dates, price is
         # compared at ``round(_, 2)``, and quantity is compared as a FLOAT
-        # within an absolute 1e-9 — see ``_undecidable_duplicates`` in
+        # within a RELATIVE AND absolute 1e-9 (``math.isclose`` with both
+        # tolerances at 1e-9 — B review round 4 MAJOR 3; an absolute tolerance
+        # alone does not bound a summation error that scales with the total)
+        # — see ``_undecidable_duplicates`` in
         # ``swing/trades/exit_auto_fill.py``, which owns the comparison.
         #
         # D31 — anonymous rows are collected WITH their identity and CANNOT

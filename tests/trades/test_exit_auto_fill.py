@@ -1768,10 +1768,12 @@ def test_b_review_major3_multileg_float_sum_still_flags_its_own_row(
     not exist -- ``fills.quantity`` is a bare ``REAL`` with no quantisation and
     ``SchwabExecutionLeg.__post_init__`` admits any finite ``> 0`` -- and the
     comment at ``exit_auto_fill.py`` was already corrected to stop appealing to
-    it and to state that an ABSOLUTE tolerance standing against a RELATIVE
-    summation error bounds nothing for arbitrary inputs. This docstring went on
-    making the retracted claim, in the one place a reader would take it for the
-    test's own finding.
+    it. This docstring went on making the retracted claim, in the one place a
+    reader would take it for the test's own finding.
+
+    The tolerance the comment then carried, ABSOLUTE-only, was itself found
+    unsound at round 4 and is now rel+abs; the case that established it is
+    ``test_b_review_round4_major3_large_magnitude_leg_sum_still_flags``.
 
     What the two halves below actually establish is narrower and is all they
     are cited for: a leg sum whose residual is ~1e-15 still flags its own
@@ -1827,6 +1829,122 @@ def test_b_review_major3_multileg_float_sum_still_flags_its_own_row(
     assert result_other.candidates is not None
     assert result_other.candidates[0].possible_duplicates == (), (
         "10.2999 differs from 10.3 by 1e-4 -- a real difference, not noise"
+    )
+
+
+def test_b_review_round4_major3_large_magnitude_leg_sum_still_flags(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """B review round 4, MAJOR 3 -- an ABSOLUTE tolerance against a RELATIVE
+    error.
+
+    The summation error this tolerance exists to absorb SCALES WITH THE TOTAL,
+    so a fixed ``abs_tol`` stops covering it once the total is large enough.
+    ``10000000.1 + 0.2`` is ``10000000.299999999``, whose residual against a
+    recorded ``10000000.3`` is ``1.862645e-9`` -- past ``abs_tol=1e-9``. Under
+    the ``rel_tol=0.0`` this replaces, the genuine duplicate was therefore
+    offered CLEAN: the silent miss the whole surface exists to prevent,
+    arriving through the fix that closed the previous one.
+
+    Discriminating: the residual assertion below pins the fixture at the
+    magnitude that matters, and the flag assertion FAILS under
+    ``rel_tol=0.0`` (observed red before the fix). The same fixture at 10
+    shares would pass under either tolerance and would prove nothing.
+    """
+    legs = [
+        SchwabExecutionLeg(
+            leg_id=i + 1, price=18.40, quantity=q, mismarked_quantity=None,
+            instrument_id=12345, time=_FTRE_EXECUTED,
+        )
+        for i, q in enumerate((10000000.1, 0.2))
+    ]
+    assert abs((10000000.1 + 0.2) - 10000000.3) > 1e-9, (
+        "the fixture is only discriminating while the leg sum's residual "
+        "exceeds the ABSOLUTE tolerance -- that is the whole finding"
+    )
+    order = SchwabOrderResponse(
+        order_id="order-FTRE-large", status="FILLED",
+        enter_time=_FTRE_ENTERED, instrument_symbol="FTRE",
+        instruction="SELL", quantity=10000000.3, order_type="LIMIT",
+        price=18.40, executions=legs,
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=44, date="2026-08-04", price=18.40,
+                quantity=10000000.3,
+            ),
+        ),
+    )
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert [
+        d.fill_id for d in result.candidates[0].possible_duplicates
+    ] == [44], (
+        "a leg sum of 10000000.299999999 must still flag a recorded "
+        "10000000.3 -- an absolute tolerance alone does not bound a "
+        "relative error"
+    )
+
+
+def test_b_review_round4_hybrid_does_not_tighten_the_small_case(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The surviving looseness at the small end is DELIBERATE -- pinned so a
+    later tidy-up goes red here.
+
+    ``10.0`` against a recorded ``10.0000000005`` is a residual of ``5e-10``,
+    inside ``abs_tol``, and those are two DISTINCT quantities. The rel+abs
+    hybrid does not tighten that, and the reason is the asymmetry the
+    comparison is built on: a spurious flag costs the operator one look at the
+    ledger, which he then adjudicates; a silent miss costs a double-recorded
+    fill that nobody ever sees. Trading the flag away buys it with silence.
+
+    WHAT THIS TEST DISCRIMINATES, STATED PLAINLY BECAUSE IT IS NOT THE USUAL
+    KIND. It passes both before and after the round-4 fix -- it is not that
+    fix's discriminator (its sibling above is). It is a LOCK against a future
+    change: shrinking ``abs_tol``, or making the comparison exact at the small
+    end, turns this red. That is its entire job, and a reader who takes it for
+    a regression test of the hybrid will mis-read it.
+    """
+    legs = [
+        SchwabExecutionLeg(
+            leg_id=1, price=18.40, quantity=10.0, mismarked_quantity=None,
+            instrument_id=12345, time=_FTRE_EXECUTED,
+        ),
+    ]
+    assert 0 < abs(10.0 - 10.0000000005) < 1e-9, (
+        "the fixture is only a lock while the two quantities DIFFER and the "
+        "difference sits inside the absolute tolerance"
+    )
+    order = SchwabOrderResponse(
+        order_id="order-FTRE-small", status="FILLED",
+        enter_time=_FTRE_ENTERED, instrument_symbol="FTRE",
+        instruction="SELL", quantity=10.0, order_type="LIMIT",
+        price=18.40, executions=legs,
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(
+        conn, d31_now, [order],
+        existing_anonymous_fills=(
+            PossibleDuplicateFill(
+                fill_id=45, date="2026-08-04", price=18.40,
+                quantity=10.0000000005,
+            ),
+        ),
+    )
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert [
+        d.fill_id for d in result.candidates[0].possible_duplicates
+    ] == [45], (
+        "a 5e-10 difference must STILL flag -- the tolerance errs toward the "
+        "alarm at both ends on purpose, and tightening it here would buy a "
+        "removed spurious flag with a silent miss"
     )
 
 
