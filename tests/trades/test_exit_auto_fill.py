@@ -1760,12 +1760,26 @@ def test_b_review_major3_multileg_float_sum_still_flags_its_own_row(
     to be offered clean -- the exact failure mode the ruling exists to prevent,
     arriving through its own fix.
 
-    The tolerance is absolute and far below any real share granularity
-    (``1e-9`` against a smallest meaningful difference of ``1e-4``), so it
-    cannot conflate two genuinely different quantities. It errs toward the
-    ALARM, which is the direction this whole surface is built to err in.
+    WHAT THIS TEST DISCRIMINATES, STATED WITHOUT THE CLAIM THE PRODUCTION
+    COMMENT RETRACTED (orchestrator B review round 3). An earlier version of
+    this paragraph said the ``1e-9`` tolerance sits "far below any real share
+    granularity (against a smallest meaningful difference of ``1e-4``), so it
+    cannot conflate two genuinely different quantities." That 1e-4 grain does
+    not exist -- ``fills.quantity`` is a bare ``REAL`` with no quantisation and
+    ``SchwabExecutionLeg.__post_init__`` admits any finite ``> 0`` -- and the
+    comment at ``exit_auto_fill.py`` was already corrected to stop appealing to
+    it and to state that an ABSOLUTE tolerance standing against a RELATIVE
+    summation error bounds nothing for arbitrary inputs. This docstring went on
+    making the retracted claim, in the one place a reader would take it for the
+    test's own finding.
 
-    Discriminating: under exact ``==`` the flag does not fire.
+    What the two halves below actually establish is narrower and is all they
+    are cited for: a leg sum whose residual is ~1e-15 still flags its own
+    recorded row, and a quantity differing by 1e-4 does not. They fix the
+    tolerance's behaviour at two points; they do not bound it, and no test here
+    does.
+
+    Discriminating: under exact ``==`` the first half does not fire.
     """
     legs = [
         SchwabExecutionLeg(
