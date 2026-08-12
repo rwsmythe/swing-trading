@@ -1109,6 +1109,18 @@ def _build_candidate(
     ``_OMISSION_REASON_TEXT``, which the caller renders into the operator's
     advisory on both the populated and the all-refused exit.
 
+    THE REASON IS FIRST-MATCH, NOT A DIAGNOSIS (Codex R2 minor). An order
+    failing several checks is counted under the FIRST one it fails, so a
+    sub-one-share order that ALSO has no execution-grain price is announced as
+    ``'no_execution_price'`` and the caller's sub-one-share note -- which says
+    the form cannot take such a fill at all -- does not fire for it. The
+    announcement stays TRUE (that fill really does lack a resolvable price);
+    it is simply not exhaustive about a fill with more than one problem.
+    Re-ordering the checks would only move the incompleteness to a different
+    compound case, and computing every reason for every refusal is a wider
+    change than this arc is scoped for, so the precedence is STATED here and
+    pinned by a test rather than left for a reader to discover.
+
     Uses execution-grain helpers per CLAUDE.md "Pass-1-tier-1 Sub-bundle 1"
     discipline — do NOT consume raw ``so.price``.
     """
@@ -1304,20 +1316,25 @@ def _undecidable_duplicates(
             # `> 0`. The tolerance was defensible; the reason given for it was a
             # claim the code does not support.
             #
-            # What 1e-9 actually covers is IEEE-754 double summation error over
-            # the execution legs. THAT ERROR IS RELATIVE (order 1e-16 of the
-            # magnitude) WHILE THIS TOLERANCE IS ABSOLUTE, SO THE COVER HAS A
-            # CEILING AND THE CEILING IS STATED RATHER THAN WAVED AT (Codex R1
-            # major on this comment, which had claimed the tolerance was "ample
-            # across any share count this ledger will see" -- an over-claim of
-            # the same shape as the grain it replaced). 1e-9 absorbs the error
-            # up to roughly 1e7 shares and NOT beyond: legs summing to about
-            # 10,000,000.3 can land ~2e-9 from a ledger row storing that same
-            # value, and the alarm would stay silent. The largest quantity on
-            # the live ledger is 39 shares, so the ceiling sits six orders of
-            # magnitude above the population, but it is a ceiling and not an
-            # absence of one. Should quantities ever approach it the answer is
-            # to revisit this comparison, NOT to widen the tolerance.
+            # What 1e-9 covers is IEEE-754 double summation error over the
+            # execution legs. IT IS AN ABSOLUTE TOLERANCE STANDING AGAINST A
+            # RELATIVE ERROR, SO IT DOES NOT BOUND THAT ERROR FOR ARBITRARY
+            # INPUTS AND THIS COMMENT DOES NOT CLAIM IT DOES (Codex R1 major +
+            # R2 minor, both landing on this comment: it first claimed the
+            # tolerance was "ample across any share count this ledger will
+            # see", then claimed a clean ~1e7-share ceiling -- and a residual
+            # grows with the TOTAL's magnitude AND with the number and spread
+            # of the legs, so no single share count is the boundary). Around
+            # 1e7 shares, or with a pathological spread of leg sizes below it,
+            # the residual can exceed 1e-9 and a genuine duplicate is offered
+            # clean. The largest quantity on the live ledger is 39 shares, more
+            # than five orders of magnitude below where this starts to matter.
+            # The limitation is stated rather than waved at because the
+            # justification this replaced appealed to a 1e-4 share grain
+            # nothing enforces, and swapping one unsupported claim for another
+            # would be the same defect. Should quantities ever reach that scale
+            # the answer is to revisit this comparison, NOT to widen the
+            # tolerance.
             #
             # `rel_tol=0` deliberately: a relative slack would widen with the
             # quantity, so a large position would get a looser test than a small

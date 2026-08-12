@@ -2131,6 +2131,52 @@ def test_d31_sub_one_share_fill_is_refused_and_announced_not_a_crash(
     assert result.advisory_text.isascii()
 
 
+def test_d31_refusal_reason_is_first_match_on_a_doubly_bad_order(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The precedence, pinned -- and the incompleteness it carries, stated.
+
+    ``_build_candidate`` checks price, then quantity, then the sub-one-share
+    truncation, then the date, and returns on the FIRST failure. So an order
+    that is BOTH sub-one-share and priceless is counted as
+    ``no_execution_price``, and the sub-one-share note -- the one that tells
+    the operator this form cannot take such a fill at all -- does not fire.
+
+    What the advisory says stays TRUE: that fill really does lack a resolvable
+    execution price. It is not EXHAUSTIVE about a fill with two problems, and
+    that is a stated limitation rather than an accident (Codex R2 minor,
+    flagged to the orchestrator). This test exists so the precedence cannot
+    change silently: reordering the checks would move the incompleteness to a
+    different compound case rather than remove it, so it should be a decision,
+    not a side effect.
+    """
+    good = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=6,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-good",
+    )
+    sub_share_no_price = SchwabOrderResponse(
+        order_id="order-FTRE-sub-share-no-price", status="FILLED",
+        enter_time="2026-08-03T13:45:00.000Z", instrument_symbol="FTRE",
+        instruction="SELL", quantity=0.9, order_type="LIMIT", price=18.10,
+        executions=None,
+    )
+    patch_get_orders.state["orders"] = [good, sub_share_no_price]
+    result = _resolve_ftre(conn, d31_now, [good, sub_share_no_price])
+
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert [c.order_id for c in result.candidates] == ["order-FTRE-good"]
+    advisory = result.advisory_text
+    assert advisory is not None
+    assert "1 Schwab SELL fill is NOT listed here" in advisory
+    assert "no execution-grain price" in advisory
+    assert "execution quantity below one whole share" not in advisory
+    assert _SUB_ONE_SHARE_NOTE not in advisory
+    assert advisory.isascii()
+
+
 def test_d31_exactly_one_share_is_still_offered(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,
