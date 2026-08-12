@@ -1328,10 +1328,14 @@ def test_r2_major4_superseded_value_match_now_flags_instead_of_filtering(
         o.price = price
         return o
 
-    # The resolver uses _compute_execution_price / _resolve_match_quantity
-    # which read order activity collection; let's monkeypatch them to
-    # produce deterministic values keyed off the mock attributes for
-    # this discriminating test.
+    # The resolver derives price and quantity through
+    # _compute_execution_price / _resolve_match_quantity, both of which read
+    # ``so.executions`` directly -- NOT ``order_activity_collection``, which
+    # this comment claimed until the orchestrator's B round 5 checked the two
+    # helpers against the symbols they name. They are monkeypatched here only
+    # to make the rounding assertions below deterministic; this test does NOT
+    # cover the production derivation path, and the tests that do are the
+    # execution-grain ones in tests/trades/test_exit_auto_fill.py.
     monkeypatch_obj = pytest.MonkeyPatch()
     try:
         monkeypatch_obj.setattr(

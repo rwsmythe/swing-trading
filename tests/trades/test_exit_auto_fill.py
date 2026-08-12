@@ -2369,7 +2369,12 @@ def test_d31_sub_one_share_fill_is_refused_and_announced_not_a_crash(
 
     RD ruled the remedy is a FOURTH REFUSAL REASON, not the banked ``int`` ->
     ``float`` migration: visible degradation instead of a crash, and the
-    operator records such a fill by hand. The assertions therefore pin all
+    operator is told what he CAN do. He canNOT record it by hand -- the form's
+    Shares input and ``swing trade exit`` both take whole shares, which is why
+    the advisory points him at the trade's Daily-management notes instead
+    (orchestrator B round 5; this docstring previously said "records such a
+    fill by hand", contradicting both the shipped advisory and this test's own
+    assertion that manual entry is impossible). The assertions therefore pin all
     three halves -- no exception, the omission ANNOUNCED by its own reason, and
     the other candidates in the same response untouched. Asserting only "no
     exception" would pass against a fix that swallowed it silently, which is
