@@ -1392,10 +1392,23 @@ def _undecidable_duplicates(
             # What 1e-9 covers is IEEE-754 double summation error over the
             # execution legs, and THAT ERROR IS RELATIVE -- it grows with the
             # magnitude of the total (and with the number and spread of the
-            # legs). So the tolerance is REL+ABS and neither half is
-            # decorative: `abs_tol` carries the small end, where a relative
-            # slack shrinks toward nothing; `rel_tol` carries the large end,
-            # where an absolute slack stops bounding the error at all.
+            # legs). `rel_tol` is what tracks it; an absolute slack stops
+            # bounding it once the total is large enough.
+            #
+            # `abs_tol` IS A FLOOR THAT NOTHING REACHABLE THROUGH THIS FUNCTION
+            # CURRENTLY BINDS ON, AND THE COMMENT SAYS SO RATHER THAN CLAIMING
+            # A DIVISION OF LABOUR (Codex R1 minor on this fix, which is right:
+            # an earlier draft said `abs_tol` "carries the small end"). Every
+            # candidate reaching here cleared `_build_candidate`, which refuses
+            # `int(quantity) <= 0`, so the offered quantity is >= 1 --
+            # therefore `max(|a|, |b|) >= 1` and the relative window is never
+            # narrower than 1e-9. `abs_tol` would bind only if BOTH sides fell
+            # below one share, which that refusal prevents on the offered side.
+            # It is kept because it costs nothing and because the refusal is a
+            # neighbouring function's rule, not this comparison's: were
+            # sub-one-share candidates ever admitted, `rel_tol` alone would
+            # shrink toward an exact comparison exactly where the quantities
+            # are smallest.
             #
             # THE MISSING `rel_tol` WAS ITSELF A SILENT MISS, AND THIS IS THAT
             # FIX (orchestrator B review round 4, MAJOR 3). `10000000.1 + 0.2`

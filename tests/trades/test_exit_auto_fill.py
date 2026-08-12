@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1425,6 +1426,22 @@ def test_d31_anonymous_same_grain_match_is_offered_with_the_flag(
     assert result.advisory_text is not None
     assert "POSSIBLE DUPLICATE" in result.advisory_text
 
+    # THE PROHIBITION BELONGS AGAINST THE REAL EMITTER (Codex R1 major on the
+    # round-4 fix). Its sibling in `tests/web/test_routes/` asserts the same
+    # absence, but that test STUBS the resolver and supplies its own advisory,
+    # so it can only pin the fixture: production could append "under the OLD
+    # date convention" to this very sentence and every assertion over there
+    # would stay green. This one reads what `_resolve_exit_auto_fill` actually
+    # built. Both retired phrases assert which grain a HAND-TYPED date used --
+    # the thing the 2026-08-11 ruling calls unknowable -- and this test's
+    # fixture is the case that makes the claim self-evidently false: the
+    # recorded row's date IS the candidate's execution date.
+    for retired in ("OLD date convention", "ORDER WAS PLACED"):
+        assert retired.lower() not in result.advisory_text.lower(), (
+            f"the advisory must not tell the operator {retired!r}; it states "
+            "the evidence and leaves the conclusion to him"
+        )
+
 
 def test_d31_identified_recorded_fill_does_not_suppress_a_different_order(
     conn, d31_now, patch_live_state, patch_credentials,
@@ -1907,9 +1924,13 @@ def test_b_review_round4_hybrid_does_not_tighten_the_small_case(
     WHAT THIS TEST DISCRIMINATES, STATED PLAINLY BECAUSE IT IS NOT THE USUAL
     KIND. It passes both before and after the round-4 fix -- it is not that
     fix's discriminator (its sibling above is). It is a LOCK against a future
-    change: shrinking ``abs_tol``, or making the comparison exact at the small
-    end, turns this red. That is its entire job, and a reader who takes it for
-    a regression test of the hybrid will mis-read it.
+    change, and the change it locks against is a TIGHTENED ``rel_tol`` or an
+    exact comparison -- NOT a shrunken ``abs_tol`` (Codex R1 minor; an earlier
+    docstring here claimed the latter and was wrong). ``_build_candidate``
+    refuses ``int(quantity) <= 0``, so every offered quantity is >= 1, the
+    relative window is never narrower than the absolute one, and ``abs_tol``
+    binds on nothing reachable. The assertion below states that mechanism as a
+    CHECK rather than as prose, so it cannot quietly stop being true.
     """
     legs = [
         SchwabExecutionLeg(
@@ -1920,6 +1941,12 @@ def test_b_review_round4_hybrid_does_not_tighten_the_small_case(
     assert 0 < abs(10.0 - 10.0000000005) < 1e-9, (
         "the fixture is only a lock while the two quantities DIFFER and the "
         "difference sits inside the absolute tolerance"
+    )
+    assert math.isclose(10.0, 10.0000000005, rel_tol=1e-9, abs_tol=0.0), (
+        "it is rel_tol that holds this case, not abs_tol: the offered "
+        "quantity is always >= 1 (_build_candidate refuses int(quantity) <= "
+        "0), so the relative window is never narrower than the absolute one "
+        "and abs_tol binds on nothing reachable here"
     )
     order = SchwabOrderResponse(
         order_id="order-FTRE-small", status="FILLED",
