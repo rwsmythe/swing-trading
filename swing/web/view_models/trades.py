@@ -1054,6 +1054,44 @@ def build_exit_form_vm(
                 env = json.loads(env_json) if env_json else None
             except (ValueError, TypeError):
                 env = None
+            # WHAT THIS READ DOES NOT DO, AND MUST NOT BE "FIXED" TO DO
+            # (RD, 2026-08-11, correcting his own earlier wording; the
+            # orchestrator's B review round 2 MAJOR A).
+            #
+            # A top-level `schwab_order_id` asserts a HISTORICAL FACT: at
+            # recording time the operator linked this row to that broker order.
+            # Value-derivation was the EVIDENCE that established the link at
+            # POST; it is NOT a property the row must go on preserving. A later
+            # correction moves the row toward being a MORE accurate record of
+            # THE SAME order -- it does not unmake the link. The id names WHICH
+            # order; the values describe HOW it executed. Drift between them is
+            # a data-quality question, never an identity question.
+            #
+            # So this read deliberately does NOT re-derive the link against the
+            # fill's CURRENT date/price/quantity, and adding that re-derivation
+            # is the failure it is written to prevent. THE CONCRETE ROW IS FILL
+            # 40. Eleven non-entry fills on the live ledger carry an envelope
+            # and all eleven carry a top-level id; exactly one has drifted from
+            # its named candidate -- fill 40, order 1007444179553, stored
+            # 2026-08-04 against a candidate dated 2026-08-03 (price and
+            # quantity identical). That is FTRE's exit, the row this whole D31
+            # programme was built around, and its id is CORRECT: the operator
+            # hand-corrected the exit date TOWARD the truth, because the
+            # form defaulted to the order-entered date. A re-derivation would
+            # read that correction as evidence AGAINST the link, demote the
+            # best-evidenced row on the ledger to anonymous, and re-offer its
+            # order as a fresh candidate -- the double-record the ruling exists
+            # to prevent, produced by the mechanism built to prevent it.
+            #
+            # Values CAN move after the id is affirmed and nothing here assumes
+            # otherwise. `reconciliation_auto_correct.py` applies corrections
+            # through a single-column `UPDATE fills SET <field> = ?` (the
+            # classifier only PROPOSES them -- it is a pure function and issues
+            # no SQL at all), and neither module mentions
+            # `schwab_source_value_json` anywhere. So a corrected fill's values
+            # move while its envelope stands still. Under the rule above that is
+            # exactly what a correction should do, and it is why this read must
+            # not treat the resulting difference as evidence about identity.
             order_id_found = False
             if isinstance(env, dict):
                 v = env.get("schwab_order_id")

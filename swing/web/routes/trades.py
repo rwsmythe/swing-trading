@@ -2529,6 +2529,30 @@ async def exit_post(
             #   enters the flag channel, which is built for exactly this
             #   evidence state.
             #
+            # THAT IS THE TEST THAT ESTABLISHES THE LINK, AT THE ONE MOMENT IT
+            # CAN BE APPLIED -- NOT AN INVARIANT THE ROW CARRIES FOREVER
+            # (RD, 2026-08-11, correcting his own earlier wording, which
+            # described a test as though it were a property; the orchestrator's
+            # B review round 2 MAJOR A). Here at POST the question is
+            # link-versus-residue, and value-derivation is the only evidence
+            # available to answer it: nothing else distinguishes an id the
+            # operator meant from one the form happened to render. So the rule
+            # above governs THIS handler, in full, and is not weakened by
+            # anything below.
+            #
+            # Once the id is written it asserts a HISTORICAL FACT -- that this
+            # link was made -- and later movement of the row's values does not
+            # revoke it. A correction moves the row toward being a MORE accurate
+            # record of THE SAME order; the id names WHICH order, the values
+            # describe HOW it executed, and drift between them is a data-quality
+            # question, never an identity question. The reader who takes the
+            # paragraph above as a standing invariant is exactly the reader who
+            # adds a re-derivation on the READ path, and that re-derivation is
+            # ruled out: `swing/web/view_models/trades.py` carries the case --
+            # fill 40, whose hand-corrected date is the TRUEST thing about it --
+            # and the reasoning for why re-deriving would demote the
+            # best-evidenced row on the ledger and re-offer its order.
+            #
             # THIS IS A RULE, NOT AN ENUMERATION, and that is the whole fix.
             # The false-exhaustive comment above is what let a reachable third
             # case survive: a NON-DEFAULT radio pick plus edits matching
