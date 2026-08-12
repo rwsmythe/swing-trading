@@ -865,14 +865,24 @@ def test_unresolvable_match_falls_through_to_empty_not_typeerror(
     ``_is_execution_bearing_candidate`` (FILLED with price set) but
     LACKS executions (``executions=None``), the order-grain helpers
     ``_compute_execution_price`` and ``_resolve_match_quantity`` cannot
-    surface execution-grain price; ``_build_candidate`` returns
-    ``(None, 'no_execution_price')``; candidates list is empty; the service
-    returns ``kind='empty'``. The empty result carries its own generic
-    manual-entry advisory, which is what the assertion below checks; the
-    reason-specific D31 omission advisory belongs to POPULATED results and
-    does not apply when no candidate survived at all (Codex R9 corrected an
-    earlier claim here that "no advisory is due", which the same test's
-    ``advisory_text is not None`` assertion contradicted).
+    surface execution-grain price; ``_build_candidate`` refuses it with
+    ``'no_execution_price'``; candidates list is empty; the service returns
+    ``kind='empty'``.
+
+    THE EMPTY RESULT IS NO LONGER GENERIC (orchestrator B review round 3
+    corrected this paragraph). It used to state a fixed sentence naming
+    price/quantity/date, and this docstring described that; B round 2's MAJOR B
+    changed the branch to render the SAME per-reason map the populated advisory
+    uses, so the reason-specific text now belongs to BOTH exits. The docstring
+    went on describing the retired behaviour while the assertion below --
+    ``"execution-grain" in advisory`` -- passed under either one, because the
+    retired blanket sentence and the current per-reason text both contain that
+    word. The assertions now pin the per-reason rendering and the retired
+    sentence's absence, so this test fails if the empty branch reverts.
+
+    (Codex R9 had already corrected an earlier claim here that "no advisory is
+    due", which the same test's ``advisory_text is not None`` assertion
+    contradicted.)
 
     Pre-fix code path invoked ``int(_resolve_match_quantity(chosen_order))``
     on the raw order AFTER the candidates list was built. For analogous
@@ -909,7 +919,17 @@ def test_unresolvable_match_falls_through_to_empty_not_typeerror(
     assert result.closed_shares is None
     assert result.candidates is None
     assert result.advisory_text is not None
-    assert "execution-grain" in result.advisory_text.lower()
+    # The REASON, counted and named -- not "execution-grain" appearing
+    # somewhere, which the retired blanket sentence also satisfied.
+    assert "1 for no execution-grain price" in result.advisory_text
+    assert "lacked an execution-grain price/quantity" not in (
+        result.advisory_text
+    ), "the retired blanket sentence asserted reasons it had not counted"
+    # This omission IS recordable by hand (a whole 100 shares), so the
+    # manual-entry instruction stands -- the withholding is reserved for the
+    # sub-one-share case, which cannot be typed into the form at all.
+    assert _MANUAL_ENTRY_INSTRUCTION in result.advisory_text
+    assert _SUB_ONE_SHARE_NOTE not in result.advisory_text
 
 
 def test_exit_auto_fill_candidate_validates_fields():
