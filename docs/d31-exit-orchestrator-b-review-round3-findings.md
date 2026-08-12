@@ -110,3 +110,41 @@ holds, resolves it without a precedence debate.
 **This is not the schema-boundary treadmill (#39) — every finding here is real.** It is a different
 failure: a review measured against a contract that omits what has already been decided. The
 countermeasure is the accepted-limitations declaration, and it demonstrably works.
+
+---
+
+# BANKED ITEM (RD-ruled 2026-08-12) — the Schwab error-tuple parity gap
+
+**Ruling: BANK AS A NAMED FOLLOW-ON.** The boundary is **INTRODUCED vs PRE-EXISTING**, and severity
+does NOT override it. RD's reasoning, kept because it is the part that gets tested next time: *"If
+identical operator experience were sufficient to pull a pre-existing defect into an arc, the boundary
+would have no content at all — every pre-existing defect produces some operator experience, so the
+exception would swallow the rule and every bounded arc would end where its reviewer's imagination
+did. What makes an arc bounded is precisely that it declines work it did not cause."* The answer to
+"pre-existing is the excuse this project distrusts" is not to abandon the boundary but to make the
+banked item REAL. **Bank ≠ forget.**
+
+**THE EVIDENCE, so the next reader inherits it rather than the claim:**
+
+- **Site:** `swing/trades/exit_auto_fill.py:699`.
+- **Handler tuple:** `except (SchwabAuthError, SchwabRateLimitError, SchwabApiError)`.
+- **MRO:** `SchwabSchemaParityError` → `_RedactedMessageError` → `RuntimeError`. **It does NOT descend
+  from `SchwabApiError`, so the tuple misses it.** Verified BY MRO, not by reading the except clause —
+  which is the only reason it was found at all, and is the method the next reader should copy.
+- **The raise is deliberate:** `swing/integrations/schwab/trader.py:665`, for malformed broker shapes.
+- Neither `build_exit_form_vm` nor the GET route converts it → **500 instead of the `kind="error"`
+  refusal every other Schwab failure produces**, after the audit row has already been closed.
+- **Production incidence (RD's query, 2026-08-12): `schwab_api_calls` total 7,795 — success 6,495 /
+  error 1,289 / auth_failed 11. `error_message` matching 'parity' or 'schema': ZERO. Errors on
+  `accounts.orders.list` all-time: 3** (1,278 of the 1,289 are `marketdata.pricehistory`). **A
+  schema-parity failure has never fired in production on any endpoint.** RD noted the answer *could*
+  have changed his ruling: recurring live parity failures on the orders endpoint would have pulled it
+  in-arc regardless of the boundary.
+- **Not this arc's:** `git log -S "SchwabSchemaParityError" -- swing/trades/exit_auto_fill.py` is
+  EMPTY.
+
+**SCOPED TO THE CLASS, NOT THE LINE (RD).** The follow-on question is *"which handlers catch the
+Schwab error tuple, and does `SchwabSchemaParityError` escape each?"* — the same MRO gap plausibly
+reaches every surface using that tuple. Fixing this one call site would be the instance-patch this
+project keeps learning not to accept, **and that is why banking is the better answer here rather than
+merely the cheaper one: the right fix is wider than this arc could have taken.**
