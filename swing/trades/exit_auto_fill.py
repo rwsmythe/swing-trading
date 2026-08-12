@@ -1272,11 +1272,28 @@ def _undecidable_duplicates(
             # not equal to a ledger row's 10.3. Exact equality would therefore
             # offer a genuine duplicate CLEAN -- the silent miss this whole
             # surface exists to prevent, re-introduced by the fix that made the
-            # comparison fractional-precise. The tolerance is ABSOLUTE and
-            # 1e-9: five orders of magnitude below the smallest meaningful
-            # share difference (1e-4), so it cannot conflate two genuinely
-            # different quantities, and it errs toward the ALARM. `rel_tol=0`
-            # deliberately -- a relative slack would widen with the quantity.
+            # comparison fractional-precise.
+            #
+            # THE TOLERANCE IS SIZED AGAINST THE ERROR IT ABSORBS, NOT AGAINST
+            # A SHARE GRAIN (orchestrator B review round 2, MINOR C). An
+            # earlier version of this comment justified 1e-9 as "five orders of
+            # magnitude below the smallest meaningful share difference (1e-4)".
+            # No such grain exists: `fills.quantity` is `REAL NOT NULL CHECK
+            # (quantity > 0)` with no quantisation, the repo writer rounds
+            # nothing, and `SchwabExecutionLeg.__post_init__` admits any finite
+            # `> 0`. The tolerance was defensible; the reason given for it was a
+            # claim the code does not support.
+            #
+            # What 1e-9 actually covers is IEEE-754 double summation error over
+            # the execution legs -- relative error on the order of 1e-16, so an
+            # absolute 1e-9 stays ample across any share count this ledger will
+            # see while remaining tiny next to the differences the comparison is
+            # meant to resolve. It is ABSOLUTE and `rel_tol=0` deliberately: a
+            # relative slack would widen with the quantity, so a large position
+            # would get a looser test than a small one for no stated reason.
+            # The asymmetry is the point -- being slightly loose costs a
+            # spurious flag the operator adjudicates, being exact costs a
+            # silent miss, so this errs toward the ALARM.
             and math.isclose(row_quantity, quantity, rel_tol=0.0, abs_tol=1e-9)
             and row.date in dates
         ):
