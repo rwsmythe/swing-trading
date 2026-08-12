@@ -1542,6 +1542,20 @@ def test_d31_anonymous_other_grain_match_is_offered_with_the_flag(
     assert "POSSIBLE DUPLICATE" in result.advisory_text
     assert "fill #41" in result.advisory_text
     assert result.advisory_text.isascii()
+    # THE TWO SIDES MUST NOT BE SOURCED FROM THE SAME PLACE (Codex R4 minor).
+    # This is the only fixture where the recorded row and the offered candidate
+    # DIFFER in a rendered field -- the row is dated 2026-08-03, the candidate
+    # 2026-08-04 -- so it is the only one that can catch the advisory printing
+    # candidate values in the RECORDED slot. Every other assertion about this
+    # message survives that swap, and in the single-candidate case the
+    # per-candidate fieldset does not render, so the banner would be the
+    # operator's only ledger evidence while he adjudicates the duplicate.
+    assert "recorded 2026-08-03 at 18.40 x 10" in result.advisory_text, (
+        "the recorded side must come from the FILL, not from the candidate"
+    )
+    assert "offered here as 2026-08-04 at 18.40 x 10" in result.advisory_text, (
+        "the offered side must come from the CANDIDATE"
+    )
 
     envelope = json.loads(result.schwab_source_value_json)
     entry = envelope["candidates_map"][result.candidates[0].signature_hash]
@@ -1991,11 +2005,19 @@ def test_b_review_round4_hybrid_does_not_tighten_the_small_case(
     # `<=`, so exactly AT them the pair is still close.
     residual = abs(10.0 - 10.0000000005)
     rel_break_even = residual / max(10.0, 10.0000000005)
+    # Each break-even is checked with the OTHER tolerance at zero (Codex R4
+    # minor -- supplying both let `abs_tol` alone carry the assertion, so it
+    # discriminated neither boundary).
     assert math.isclose(
-        10.0, 10.0000000005, rel_tol=rel_break_even, abs_tol=residual,
+        10.0, 10.0000000005, rel_tol=rel_break_even, abs_tol=0.0,
     ), (
-        "at the break-even the comparison is still inclusive -- a bound "
-        "quoted as strict here would be wrong by one ulp of argument"
+        "at the RELATIVE break-even the comparison is still inclusive -- a "
+        "bound quoted as strict here would be wrong by one ulp of argument"
+    )
+    assert math.isclose(
+        10.0, 10.0000000005, rel_tol=0.0, abs_tol=residual,
+    ), (
+        "and at the ABSOLUTE break-even likewise"
     )
     assert not math.isclose(
         10.0, 10.0000000005, rel_tol=5.0e-11, abs_tol=5.0000004e-10,
