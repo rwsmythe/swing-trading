@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
+from html import unescape
 from typing import Any
 
 import pytest
@@ -802,9 +803,15 @@ def test_r2_major3_dedupe_only_on_persisted_schwab_order_id(
 
 
 # ============================================================================
-# Codex R2 Major #4 — fallback dedupe by (date, round(price, 2), quantity)
-# for fills without a parseable schwab_order_id (pre-v20, operator_typed,
-# tos_import, imported_legacy fills).
+# Codex R2 Major #4, AS SUPERSEDED BY D31 -- the (date, round(price, 2),
+# quantity) match on recorded fills that carry no usable schwab_order_id
+# (pre-v20, operator_typed, tos_import, imported_legacy) now FLAGS the offered
+# candidate. It used to DEDUPE it -- silently filtering the candidate out of
+# the list -- and that channel is GONE: value equality is never proof of
+# identity (RD, 2026-08-11). "fallback dedupe" was this section's description
+# until B review round 4; it named a mechanism the arc had already retired,
+# which is the same defect the tests below exist to catch on the operator's
+# side of the screen.
 # ============================================================================
 
 
@@ -825,6 +832,16 @@ def test_d31_possible_duplicate_flag_reaches_the_rendered_form(
 
     It also asserts the OFFER survives: the flagged candidate's radio input is
     present, because the affordance to record is never gated on the alarm.
+
+    THE FIXTURE'S ADVISORY IS THE ONE PRODUCTION EMITS TODAY (B review round
+    4, MINOR). It used to read "may already be recorded under the OLD date
+    convention" -- an assertion about which grain a HAND-TYPED date used, ruled
+    unknowable, and retired at ``exit_auto_fill.py`` for exactly that reason.
+    This test stubs the resolver, so a stale string here is invisible to every
+    other test in the suite: the wording it drives through the real template is
+    the wording a reader takes for the operator-facing text. The assertions
+    below therefore name BOTH retired phrases and require their ABSENCE, so
+    restoring either one goes red here rather than only in a reviewer's eye.
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
@@ -855,9 +872,15 @@ def test_d31_possible_duplicate_flag_reaches_the_rendered_form(
             closed_shares=60,
             candidates=[clean, flagged],
             advisory_text=(
-                "POSSIBLE DUPLICATE: 1 offered fill may already be recorded "
-                "under the OLD date convention -- fill #41 recorded "
-                "2026-05-19 at 161.25 x 60."
+                "POSSIBLE DUPLICATE: 1 offered fill has one or more matches "
+                "among already-recorded fills on price and quantity, with "
+                "each recorded date equal to the offered date or to the date "
+                "its order was entered -- fill #41 recorded 2026-05-19 at "
+                "161.25 x 60 (offered here as 2026-05-20 at 161.25 x 60). "
+                "Each matching recorded fill carries no usable broker order "
+                "id for the values that were recorded, so nothing here can "
+                "tell whether it is the same fill or a different one. Check "
+                "the trade's recorded fills before submitting."
             ),
             schwab_source_value_json='{"exit_date": "2026-05-20"}',
             auto_fill_audit_at="2026-05-20T14:30:00.000000+00:00",
@@ -880,6 +903,34 @@ def test_d31_possible_duplicate_flag_reaches_the_rendered_form(
     # The offer survives -- the alarm does not gate the affordance.
     assert 'value="sig-flagged"' in body
     assert 'name="candidate_index" value="1"' in body
+
+    # The banner STATES THE EVIDENCE and leaves the conclusion to the operator.
+    # Rendered, not merely constructed: this is the only surface in the
+    # single-fill case. Unescaped first -- Jinja autoescaping turns the
+    # apostrophe in "the trade's recorded fills" into `&#39;`, so a raw-body
+    # match on that sentence fails against text that renders correctly.
+    text = unescape(body)
+    assert (
+        "carries no usable broker order id for the values that were recorded"
+        in text
+    ), (
+        "the banner must say WHY identity is undecidable; without it the "
+        "alarm asserts a duplicate it cannot know about"
+    )
+    assert "nothing here can tell whether it is the same fill" in text
+    assert "Check the trade's recorded fills before submitting" in text, (
+        "an alarm with no action is a warning the operator cannot discharge"
+    )
+
+    # And it does NOT assert which grain a hand-typed date used. Both phrases
+    # below were the operator-facing text before this arc retired them at
+    # `exit_auto_fill.py`; restoring either must fail here.
+    for retired in ("OLD date convention", "ORDER WAS PLACED"):
+        assert retired.lower() not in text.lower(), (
+            f"{retired!r} asserts which grain a HAND-TYPED date used -- the "
+            "thing ruled unknowable, and false on its face for a row matching "
+            "the candidate's own execution date"
+        )
 
 
 def test_d31_vm_preserves_a_fractional_recorded_quantity(
