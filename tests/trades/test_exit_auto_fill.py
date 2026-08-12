@@ -1832,12 +1832,23 @@ def test_d31_same_session_fill_is_offered_and_flagged_not_suppressed(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,
 ):
-    """The alarm must not fire on the ordinary same-day fill.
+    """The ordinary same-day fill is OFFERED WITH THE FLAG, never suppressed.
 
     An order entered and executed on ONE session has no cross-grain case at
-    all: its entered date IS its execution date, so state 2 governs it
-    entirely, and flagging it would alarm on the ordinary fill -- which is how
-    an alarm stops being read.
+    all: its entered date IS its execution date, so there is only one date to
+    match on. That does not exempt it -- a same-session candidate whose values
+    match an anonymous ledger row is flagged like any other match, because the
+    match carries the same evidentiary weight however the two dates relate.
+    What the operator must never lose is the OFFER.
+
+    THE OPENING OF THIS DOCSTRING SAID THE OPPOSITE UNTIL NOW (orchestrator B
+    review round 2, MINOR D). It read "the alarm must not fire on the ordinary
+    same-day fill" and described an unflagged result, while the test's name,
+    the paragraph below and every assertion require the candidate to be
+    FLAGGED. The assertions pin the correct behaviour, so nothing was vacuous
+    -- but a reader reconciling the contradiction in the wrong direction would
+    restore precisely the silent exclusion the rewrite rejected, which is the
+    load-bearing-comment class arriving in a test docstring.
 
     SUPERSEDED AND REWRITTEN (RD, 2026-08-11). This test used to assert that
     a same-session candidate is NEVER flagged, on the theory that a same-grain
