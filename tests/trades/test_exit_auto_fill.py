@@ -1948,12 +1948,18 @@ def test_b_review_round4_hybrid_does_not_tighten_the_small_case(
     ``abs_tol`` then takes over).
 
     The truth is that EITHER tolerance alone, left at 1e-9, keeps this green.
-    The residual is 5.0000004e-10, so red requires ``rel_tol`` below 5.0e-11
-    AND ``abs_tol`` below 5.0000004e-10 -- or an exact comparison. That is the
-    change this locks against: a future pass deciding the surviving small-end
-    looseness is untidy and removing it. The assertions below pin those
+    Red requires BOTH to go under their break-evens -- or an exact comparison.
+    The break-evens are not quoted here as rounded literals (Codex R3 minor:
+    the previous rounding stated them as strict bounds when the true relative
+    break-even is slightly ABOVE the figure given, so a tolerance the docstring
+    called safe was already red). They are DERIVED from the fixture below and
+    asserted, including the fact that ``math.isclose`` compares with ``<=`` and
+    is therefore still green exactly AT the break-even.
+
+    That is the change this locks against: a future pass deciding the surviving
+    small-end looseness is untidy and removing it. The assertions pin the
     boundaries as CHECKS rather than prose, so the claim cannot quietly stop
-    being true a third time.
+    being true a fourth time.
     """
     legs = [
         SchwabExecutionLeg(
@@ -1976,15 +1982,27 @@ def test_b_review_round4_hybrid_does_not_tighten_the_small_case(
         "abs_tol alone holds it too -- the residual is 5.0000004e-10"
     )
     # It goes red only on an EXACT comparison, or when BOTH are tightened past
-    # the residual. That is the change this test exists to catch.
+    # their break-evens. That is the change this test exists to catch.
     assert not math.isclose(10.0, 10.0000000005, rel_tol=0.0, abs_tol=0.0), (
         "an exact comparison is what would trade this spurious flag for a "
         "silent miss"
     )
-    assert not math.isclose(
-        10.0, 10.0000000005, rel_tol=1e-12, abs_tol=1e-10,
+    # The break-evens, DERIVED rather than quoted: `math.isclose` compares with
+    # `<=`, so exactly AT them the pair is still close.
+    residual = abs(10.0 - 10.0000000005)
+    rel_break_even = residual / max(10.0, 10.0000000005)
+    assert math.isclose(
+        10.0, 10.0000000005, rel_tol=rel_break_even, abs_tol=residual,
     ), (
-        "tightening BOTH past the residual is the other way to lose it"
+        "at the break-even the comparison is still inclusive -- a bound "
+        "quoted as strict here would be wrong by one ulp of argument"
+    )
+    assert not math.isclose(
+        10.0, 10.0000000005, rel_tol=5.0e-11, abs_tol=5.0000004e-10,
+    ), (
+        "and just under BOTH break-evens it is red -- these two literals sit "
+        "below `rel_break_even` and `residual` respectively, which is why a "
+        "docstring rounding them DOWN and calling them the bound was wrong"
     )
     order = SchwabOrderResponse(
         order_id="order-FTRE-small", status="FILLED",
