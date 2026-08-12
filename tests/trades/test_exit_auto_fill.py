@@ -2061,6 +2061,121 @@ def test_d31_price_omission_is_announced_too(
     assert result.advisory_text.isascii()
 
 
+def test_d31_sub_one_share_fill_is_refused_and_announced_not_a_crash(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """B round-2 MAJOR B -- a 0.9-share execution must not take the page down.
+
+    ``ExitAutoFillCandidate.quantity`` is an ``int`` and ``_build_candidate``
+    truncates into it, so a cleanly-resolved 0.9 became ``int(0.9) == 0`` and
+    the dataclass validator raised ``ValueError`` on ``quantity <= 0``. None of
+    the three refusal reasons caught it, the build loop has no ``try/except``,
+    and the VM wraps the resolver in ``try/FINALLY`` -- so the exception reached
+    the route and the whole trade-detail page 500'd. ``fills.quantity`` is
+    ``REAL`` (migration 0014) and the Schwab leg validator admits any finite
+    ``> 0``, so nothing prevents the input: this is not schema-prevented.
+
+    RD ruled the remedy is a FOURTH REFUSAL REASON, not the banked ``int`` ->
+    ``float`` migration: visible degradation instead of a crash, and the
+    operator records such a fill by hand. The assertions therefore pin all
+    three halves -- no exception, the omission ANNOUNCED by its own reason, and
+    the other candidates in the same response untouched. Asserting only "no
+    exception" would pass against a fix that swallowed it silently, which is
+    the failure mode this surface exists to prevent.
+    """
+    good = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=6,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-good",
+    )
+    sub_share = _make_sell_order(
+        ticker="FTRE", price=18.10, quantity=0.9,
+        enter_time="2026-08-03T13:45:00.000Z",
+        execution_time="2026-08-04T13:31:00.000Z",
+        instruction="SELL", order_id="order-FTRE-sub-share",
+    )
+    patch_get_orders.state["orders"] = [good, sub_share]
+    result = _resolve_ftre(conn, d31_now, [good, sub_share])
+
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert [c.order_id for c in result.candidates] == ["order-FTRE-good"]
+    assert result.candidates[0].quantity == 6, (
+        "the surviving candidate is untouched by the refusal"
+    )
+    assert result.closed_shares == 6
+    assert result.advisory_text is not None
+    assert "1 Schwab SELL fill is NOT listed here" in result.advisory_text
+    assert (
+        "execution quantity below one whole share"
+        in result.advisory_text
+    )
+    assert result.advisory_text.isascii()
+
+
+def test_d31_exactly_one_share_is_still_offered(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The boundary the fourth reason must NOT swallow.
+
+    The refusal keys on the TRUNCATION the dataclass performs, so it must fire
+    only where that truncation destroys the fill: one whole share truncates to
+    itself and is a perfectly ordinary execution. A refusal written as "less
+    than the typical lot" or rounded rather than truncated would silence this
+    one, so it is pinned in the opposite direction from the test above.
+    """
+    order = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=1,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-one-share",
+    )
+    patch_get_orders.state["orders"] = [order]
+    result = _resolve_ftre(conn, d31_now, [order])
+
+    assert result.kind == "populated"
+    assert result.candidates is not None
+    assert [c.order_id for c in result.candidates] == ["order-FTRE-one-share"]
+    assert result.closed_shares == 1
+    assert result.advisory_text is None, "no omission, so nothing to announce"
+
+
+def test_d31_only_sub_one_share_fills_says_why_the_list_is_empty(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The empty result is operator-facing text too, and it must not lie.
+
+    When the sub-one-share order is the ONLY match there is no populated list
+    to carry the omission advisory, and the empty branch used to state flatly
+    that the fills "lacked an execution-grain price/quantity or a usable
+    execution date" -- three things this order has. A reason that reaches the
+    counter and then a message contradicting it is the silent-omission class
+    wearing a counter, one branch further along.
+    """
+    sub_share = _make_sell_order(
+        ticker="FTRE", price=18.10, quantity=0.5,
+        enter_time="2026-08-03T13:45:00.000Z",
+        execution_time="2026-08-04T13:31:00.000Z",
+        instruction="SELL", order_id="order-FTRE-sub-share-only",
+    )
+    patch_get_orders.state["orders"] = [sub_share]
+    result = _resolve_ftre(conn, d31_now, [sub_share])
+
+    assert result.kind == "empty"
+    assert result.candidates is None
+    assert result.advisory_text is not None
+    assert (
+        "execution quantity below one whole share"
+        in result.advisory_text
+    )
+    assert "lacked an execution-grain price/quantity" not in (
+        result.advisory_text
+    ), "the old blanket sentence asserted three things this order has"
+    assert result.advisory_text.isascii()
+
+
 def test_d31_entered_time_fallback_is_announced_to_the_operator(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,

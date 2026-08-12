@@ -182,6 +182,7 @@ def _patch_schwab_stack_with_sell_fill(
     price: float = 120.50,
     quantity: float = 100,
     execution_time: str | None = None,
+    extra_orders: tuple[SchwabOrderResponse, ...] = (),
 ) -> None:
     """Stub the exit_auto_fill Schwab integration stack to return a single
     production-shape SELL fill matching the seeded trade.
@@ -189,6 +190,9 @@ def _patch_schwab_stack_with_sell_fill(
     ``execution_time`` defaults to ``enter_time`` (the same-session fill).
     Pass it to build the STRADDLING shape a resting stop produces: entered on
     one session, executed on another.
+
+    ``extra_orders`` are returned ALONGSIDE the built order, for the cases
+    where what matters is how one order affects the rendering of another.
     """
     leg = SchwabExecutionLeg(
         leg_id=1, price=price, quantity=quantity,
@@ -236,7 +240,7 @@ def _patch_schwab_stack_with_sell_fill(
             signature_hash="sha256:e2e-fast-exit-test-sig",
             status="success", error_message=None,
         )
-        return [order]
+        return [order, *extra_orders]
 
     monkeypatch.setattr(
         "swing.trades.exit_auto_fill.trader.get_account_orders",
@@ -526,3 +530,63 @@ def test_d31_resting_order_e2e_defaults_and_persists_the_execution_date(
     assert fill_row[1] == "schwab_auto"
     assert json.loads(fill_row[2])["exit_date_source"] == "execution_leg"
     assert fill_row[3] is None
+
+
+def test_d31_sub_one_share_fill_renders_the_page_and_names_the_reason(
+    seeded_db, monkeypatch,
+):
+    """B round-2 MAJOR B, END TO END: the page survives, and it SAYS SO.
+
+    Pre-fix a 0.9-share execution reached ``ExitAutoFillCandidate`` as
+    ``int(0.9) == 0``, the validator raised, and -- the build loop having no
+    ``try/except`` and the VM caller wrapping the resolver in ``try/FINALLY``
+    -- the ``ValueError`` propagated to the route. This is the only test in the
+    arc that exercises that whole path: the unit tests pin the resolver's
+    return value, and a resolver that returned the right advisory into a
+    template that never rendered it would still be a silent omission.
+
+    So the assertions are made against the RENDERED HTML: 200 rather than a
+    500, the reason text present in the operator-visible advisory block, and
+    the good candidate's values still rendered into the inputs. The reason
+    string is imported from the production map rather than retyped, so this
+    cannot pass against a map whose wording drifted from what the operator is
+    shown.
+    """
+    from swing.trades.exit_auto_fill import _OMISSION_REASON_TEXT
+
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "AAPL")
+    _patch_price_cache(monkeypatch)
+    _patch_production_cfg_seam(monkeypatch)
+    _freeze_exit_auto_fill_clock(monkeypatch)
+    sub_share_leg = SchwabExecutionLeg(
+        leg_id=1, price=119.00, quantity=0.9,
+        mismarked_quantity=None, instrument_id=12345,
+        time="2026-05-20T13:35:00.000Z",
+    )
+    sub_share_order = SchwabOrderResponse(
+        order_id="order-AAPL-sub-share", status="FILLED",
+        enter_time="2026-05-19T14:35:00.000Z", instrument_symbol="AAPL",
+        instruction="SELL", quantity=0.9, order_type="LIMIT",
+        price=119.00, executions=[sub_share_leg],
+    )
+    _patch_schwab_stack_with_sell_fill(
+        monkeypatch, ticker="AAPL",
+        enter_time="2026-05-19T14:30:00.000Z",
+        execution_time="2026-05-20T13:30:05.000Z",
+        price=120.50, quantity=100,
+        extra_orders=(sub_share_order,),
+    )
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(f"/trades/{trade_id}/exit/form")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert "Schwab auto-fill:" in body, "the advisory block itself rendered"
+    assert _OMISSION_REASON_TEXT["sub_one_share_quantity"] in body
+    assert "1 Schwab SELL fill is NOT listed here" in body
+    # The refusal is confined to the order that caused it.
+    assert _extract_hidden_input_value(body, "exit_date") == "2026-05-20"
+    assert 'value="120.50"' in body

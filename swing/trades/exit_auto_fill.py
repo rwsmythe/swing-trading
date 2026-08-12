@@ -154,7 +154,27 @@ _OMISSION_REASON_TEXT: dict[str, str] = {
     ),
     "no_execution_price": "no execution-grain price",
     "no_quantity": "no resolvable execution quantity",
+    "sub_one_share_quantity": (
+        "an execution quantity below one whole share, which this form "
+        "cannot represent"
+    ),
 }
+
+
+def _omission_reason_summary(omitted: dict[str, int]) -> str:
+    """``'<n> for <reason>; <n> for <reason>'`` over every refusal counted.
+
+    Spelled ONCE because both operator-facing exits announce omissions: the
+    populated result's advisory, and the empty result the caller reaches when
+    every match was refused. The empty branch used to state a fixed sentence
+    naming price/quantity/date, which is a false description of a fill refused
+    for anything else -- a reason reaching the counter and then a message
+    contradicting it (orchestrator B review round 2, MAJOR B).
+    """
+    return "; ".join(
+        f"{count} for {_OMISSION_REASON_TEXT.get(reason, reason)}"
+        for reason, count in sorted(omitted.items())
+    )
 
 
 ExitAutoFillKind = Literal[
@@ -795,16 +815,24 @@ def resolve_exit_auto_fill(
         else:
             omitted[outcome] = omitted.get(outcome, 0) + 1
     if not candidates:
-        # All matches lacked execution-grain price/quantity (mapper edge
-        # case OR partial-then-canceled MARKET with no resolvable qty) OR a
-        # usable date at either grain (D31 — an unusable execution leg time
-        # AND a non-canonical `enter_time`).
+        # EVERY match was refused, and the operator is told WHICH reasons
+        # (orchestrator B review round 2, MAJOR B). This branch used to state a
+        # fixed sentence -- "lacked an execution-grain price/quantity or a
+        # usable execution date" -- which enumerated the reasons that existed
+        # when it was written and read as a complete account of why the list is
+        # empty. It is false for a fill refused for anything else: a
+        # sub-one-share execution has a price, a quantity and a date. The
+        # reasons are now rendered from the same map the populated advisory
+        # uses, so a reason cannot be announced on one exit and denied on the
+        # other. ``omitted`` is necessarily non-empty here: reaching this line
+        # means ``matches`` was non-empty (the no-matches case returned above)
+        # and every one of them incremented a counter.
         return ExitAutoFillResult(
             kind="empty",
             fill_origin="operator_typed",
             advisory_text=(
-                f"Schwab SELL fills for {ticker} lacked an execution-grain "
-                "price/quantity or a usable execution date; please enter "
+                f"No Schwab SELL fill for {ticker} could be listed "
+                f"({_omission_reason_summary(omitted)}); please enter "
                 "manually."
             ),
             auto_fill_audit_at=auto_fill_audit_at,
@@ -977,10 +1005,7 @@ def resolve_exit_auto_fill(
         )
     omitted_total = sum(omitted.values())
     if omitted_total:
-        reasons = "; ".join(
-            f"{count} for {_OMISSION_REASON_TEXT.get(reason, reason)}"
-            for reason, count in sorted(omitted.items())
-        )
+        reasons = _omission_reason_summary(omitted)
         noun = "fill is" if omitted_total == 1 else "fills are"
         advisory_parts.append(
             f"{omitted_total} Schwab SELL {noun} NOT listed here "
@@ -1034,12 +1059,35 @@ def _build_candidate(
     one this function validated and hashed. ``None`` exactly when the candidate
     is ``None``.
 
+    THE BANKED ``int`` -> ``float`` MIGRATION OF THAT FIELD CARRIES A SECOND
+    COST, RECORDED HERE SO THE NEXT SCOPING SEES IT WHOLE (RD, 2026-08-11,
+    re-deciding on the orchestrator's B review round 2). While the field stays
+    an ``int``:
+
+      - a sub-one-share execution CANNOT BE OFFERED AT ALL. It is refused below
+        as ``'sub_one_share_quantity'`` and announced, so the operator records
+        it by hand rather than losing the page -- visible degradation, the
+        standard every ruling on this surface has taken, but a real capability
+        gap and not merely a display artefact.
+      - for any fractional quantity >= 1 the value HASHED, the value COMPARED
+        and the value PERSISTED disagree: a 10.9-share execution is hashed and
+        duplicate-compared as 10.9 (via ``match_quantity``) while being
+        displayed, submitted and persisted as 10, linked to that order's id.
+
+    RD's live query over the ledger found 43 fills and ZERO fractional
+    quantities, so neither has a live instance today. Neither is
+    schema-prevented: ``fills.quantity`` is ``REAL`` (migration 0014) and
+    ``SchwabExecutionLeg.__post_init__`` admits any finite ``> 0``.
+
     Returns ``(None, <refusal reason>, None)`` when the order cannot become a
     candidate. THE REASON IS RETURNED, not swallowed (Codex R1 Major 2): a
     refusal that leaves OTHER candidates standing produces a list that looks
     complete while omitting a real fill, and the caller can only say so out
     loud if it knows why the omission happened. The reasons are
-    ``'no_execution_price'``, ``'no_quantity'`` and ``'no_usable_date'``.
+    ``'no_execution_price'``, ``'no_quantity'``, ``'sub_one_share_quantity'``
+    and ``'no_usable_date'``, and EVERY one of them is announced -- see
+    ``_OMISSION_REASON_TEXT``, which the caller renders into the operator's
+    advisory on both the populated and the all-refused exit.
 
     Uses execution-grain helpers per CLAUDE.md "Pass-1-tier-1 Sub-bundle 1"
     discipline — do NOT consume raw ``so.price``.
@@ -1050,6 +1098,17 @@ def _build_candidate(
     quantity = _resolve_match_quantity(o)
     if quantity is None or quantity <= 0:
         return None, "no_quantity", None
+    # THE TRUNCATION IS SPELLED, NOT A THRESHOLD RE-DERIVED FROM IT
+    # (orchestrator B review round 2, MAJOR B). ``int(quantity) <= 0`` is the
+    # exact expression the constructor call below performs, checked against the
+    # exact test ``__post_init__`` applies to the result; writing ``< 1``
+    # instead would state the same boundary in a second place, free to drift
+    # from the truncation it is guarding. A cleanly-resolved 0.9 otherwise
+    # became ``0``, the validator raised, and -- with no ``try/except`` in the
+    # build loop and a ``try/FINALLY`` in the VM caller -- the exception
+    # reached the route and took the whole trade-detail page down.
+    if int(quantity) <= 0:
+        return None, "sub_one_share_quantity", None
     date, date_source = _execution_date(o)
     if not date:
         return None, "no_usable_date", None
