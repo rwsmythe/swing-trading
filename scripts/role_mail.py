@@ -74,6 +74,9 @@ _AUTOMATED_EMITTER_TYPES = {
 }
 
 _SLUG_MAX = 40
+# Hard cap on `--subject`, enforced in `post` before anything is written.
+# See the guard for the reasoning; 80 vs git's 50-char subject convention.
+_MAX_SUBJECT_LEN = 80
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -404,6 +407,22 @@ def post_message(
                 f"{label} may not contain newlines (frontmatter injection). "
                 "Nothing was written."
             )
+    # Subject length cap (operator-directed 2026-08-12). Subjects had drifted
+    # into abstracts -- the worst observed was 839 chars, and ALL THREE roles
+    # (both directors + the orchestrator) drifted the same way, which is the
+    # signature of a norm that needs a mechanical guard rather than a firmer
+    # convention. Two concrete costs: `_slugify` truncates the filename to
+    # `_SLUG_MAX` (40), so everything past that is invisible in a listing and reaches no
+    # reader; and a subject carrying the argument duplicates the body it sits
+    # on top of. 80 is deliberately generous -- git's own subject convention is
+    # 50 -- so anything tripping this is an abstract, not a tight subject.
+    if len(subject) > _MAX_SUBJECT_LEN:
+        raise MailError(
+            f"subject is {len(subject)} chars; the cap is {_MAX_SUBJECT_LEN}. "
+            "A subject NAMES the message; the body CARRIES it. Put the finding, "
+            "the evidence and the reasoning in the body -- they are why the "
+            "body exists. Nothing was written."
+        )
     # Parse recipients to (role, None) pairs. A retired `:<session_id>` suffix
     # is REJECTED here (21-D), before anything is written.
     pairs = _parse_recipient_pairs(recipients)
