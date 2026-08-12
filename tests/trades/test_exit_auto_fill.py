@@ -2299,6 +2299,48 @@ def test_d31_exactly_one_share_is_still_offered(
     assert result.advisory_text is None, "no omission, so nothing to announce"
 
 
+def test_sub_one_share_note_names_an_action_and_the_surface_exists():
+    """The note's ACTION, pinned literally and against the live templates.
+
+    Every other assertion about this text imports ``_SUB_ONE_SHARE_NOTE`` from
+    production, so reverting the constant to the pre-arc refusal-only wording
+    ("cannot be recorded on this form at all: its Shares input takes whole
+    shares only") would move the response and the expectation TOGETHER and every
+    one of those tests would still pass (Codex R1 minor on this arc). The
+    requirement RD attached to it -- that the sub-one-share case say what the
+    operator CAN do, not only what the framework will not -- was therefore
+    unprotected by anything.
+
+    So the ACTION is pinned as literal text here, and against the two templates
+    that must carry those labels: a UI rename fails this test rather than
+    quietly leaving the advisory naming a surface the operator cannot find. The
+    three phrases are each absent from the superseded wording, so this test
+    fails against it in three independent places.
+    """
+    for phrase in ("Daily management", "Management notes",
+                   "date, price and quantity"):
+        assert phrase in _SUB_ONE_SHARE_NOTE, (
+            f"the note must tell the operator what to do: {phrase!r} missing"
+        )
+    templates = (
+        Path(__file__).resolve().parents[2] / "swing" / "web" / "templates"
+    )
+    detail = (templates / "trades" / "detail.html.j2").read_text(
+        encoding="utf-8",
+    )
+    event_form = (
+        templates / "partials" / "daily_management_event_form.html.j2"
+    ).read_text(encoding="utf-8")
+    assert "Daily management" in detail, (
+        "the note sends the operator to a section heading on the trade "
+        "detail page; that heading must still be there"
+    )
+    assert "Management notes" in event_form, (
+        "the note names the field he types into; that label must still be "
+        "there"
+    )
+
+
 def test_d31_only_sub_one_share_fills_says_why_the_list_is_empty(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,
