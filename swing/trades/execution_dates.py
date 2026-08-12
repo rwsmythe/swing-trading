@@ -209,11 +209,27 @@ def execution_precedes_order(
     asserting it is internally contradictory.
 
     The RULE is shared; the RESPONSE is each consumer's own, and legitimately
-    differs: both auto-fills fall back VISIBLY to the entered date (stamping
-    `entry_date_source` / `exit_date_source` = `'enter_time'`), because each is
-    a form default the operator sees and can override, while the correction
-    surface REFUSES with a message naming the contradiction, because it is
-    about to rewrite three ledger rows.
+    differs. Stated per consumer rather than in one sentence covering both,
+    because an earlier version said both auto-fills fall back "VISIBLY" and
+    that was FALSE of the entry side (orchestrator B review round 3):
+
+    - The EXIT auto-fill falls back to the entered date and SAYS SO: the source
+      is stamped per candidate in the audit envelope AND announced in the
+      operator-facing advisory the exit form renders ("the date shown is when
+      the ORDER WAS PLACED, not when it filled").
+    - The ENTRY auto-fill falls back to the entered date and does NOT say so
+      today: `entry_date_source` goes into the hidden
+      `schwab_source_value_json` envelope only, the populated result carries
+      `advisory_text=None`, and `partials/trade_entry_form.html.j2` renders the
+      fill ORIGIN ("Auto-fill source: schwab_auto") but no date-grain marker.
+      A stamp in hidden JSON is audit data, not disclosure. Making it visible
+      is a change to the entry surface and is NOT described here as though it
+      had happened.
+    - The CORRECTION surface REFUSES with a message naming the contradiction,
+      because it is about to rewrite three ledger rows.
+
+    Both auto-fills fall back rather than refuse for the same reason: each is a
+    form default the operator sees and can override, not a ledger rewrite.
 
     Comparison is `<`, not `<=`: a same-day execution is ordinary.
     """
