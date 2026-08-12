@@ -158,22 +158,44 @@ _OMISSION_REASON_TEXT: dict[str, str] = {
 }
 
 
-# Appended to either advisory whenever a sub-one-share fill was refused, and
-# it exists because the generic instruction is IMPOSSIBLE for that one reason
-# (Codex R1 minor). Both advisories end by telling the operator to record the
-# omitted fill by hand, and the Shares input this form renders carries
-# ``step="1" min="1"`` -- so for a 0.9-share fill the instruction names an
-# action the form refuses. Naming the exception is the honest fix; the ruled
-# remedy for the underlying limitation is the BANKED field-type migration, not
-# a widening of the input, so this text describes today's form rather than
-# promising a future one.
+# The action clause both advisories close with, spelled once so the decision
+# to WITHHOLD it can be made in one place (see ``_omission_guidance``).
+_MANUAL_ENTRY_INSTRUCTION = "Check the broker and record manually."
+
+
+# Appended to either advisory whenever a sub-one-share fill was refused, and it
+# exists because ``_MANUAL_ENTRY_INSTRUCTION`` is IMPOSSIBLE for that one
+# condition (Codex R1 minor): the Shares input this form renders carries
+# ``step="1" min="1"``, so for a 0.9-share fill "record manually" names an
+# action the form refuses.
+#
+# IT SAYS WHAT THE OPERATOR CAN DO, NOT ONLY WHAT THIS FORM WILL NOT (RD,
+# orchestrator B review round 3). An earlier version stopped at the refusal,
+# which leaves him holding a broker fill and no route for it. Every claim here
+# is checked against the code rather than assumed: the Shares input is
+# ``step="1" min="1"`` (``partials/trade_exit_form.html.j2``), ``swing trade
+# exit --shares`` is ``type=int`` (``swing/cli.py``), and the daily-management
+# event form -- ``build_event_log_form_vm`` returns a VM for every ACTIVE
+# trade, which every exit-form trade is -- renders a free-text
+# ``management_notes`` textarea on the trade detail page with a ``no_action``
+# option, so a note costs nothing and falsifies nothing.
+#
+# It describes TODAY's surfaces and promises no future one (CLAUDE.md #31):
+# the ruled remedy for the underlying limitation is the BANKED
+# ``int`` -> ``float`` field migration, which this text does not mention
+# because the operator cannot act on it.
 _SUB_ONE_SHARE_NOTE = (
-    "A fill below one whole share cannot be recorded on this form at all: "
-    "its Shares input takes whole shares only."
+    "A fill below one whole share cannot be recorded as an exit at all: "
+    "this form's Shares input and the CLI's 'swing trade exit' both take "
+    "whole shares only. Put it on the record as a note instead -- this "
+    "trade's detail page has a 'Daily management' section whose Management "
+    "notes field takes free text, so the broker's date, price and quantity "
+    "can be kept there. The trade's recorded share count stays as it is, so "
+    "it will read high by the amount left off."
 )
 
 
-def _omission_reason_summary(omitted: dict[str, int]) -> str:
+def _omission_reason_summary(omitted: dict[tuple[str, ...], int]) -> str:
     """``'<n> for <reason>; <n> for <reason>'`` over every refusal counted.
 
     Spelled ONCE because both operator-facing exits announce omissions: the
@@ -182,11 +204,49 @@ def _omission_reason_summary(omitted: dict[str, int]) -> str:
     naming price/quantity/date, which is a false description of a fill refused
     for anything else -- a reason reaching the counter and then a message
     contradicting it (orchestrator B review round 2, MAJOR B).
+
+    THE KEY IS A FILL'S WHOLE SET OF REASONS, NOT ONE OF THEM (orchestrator B
+    review round 3, MAJOR 2). Counting per-reason instead would let the counts
+    sum to more than the announced total whenever one fill failed two checks,
+    so a refused fill is counted ONCE under its combination and its reasons are
+    joined with "and": ``'1 for no execution-grain price and an execution
+    quantity below one whole share'``. A single-reason refusal renders exactly
+    as it did before.
     """
     return "; ".join(
-        f"{count} for {_OMISSION_REASON_TEXT.get(reason, reason)}"
-        for reason, count in sorted(omitted.items())
+        f"{count} for "
+        + " and ".join(
+            _OMISSION_REASON_TEXT.get(reason, reason) for reason in reasons
+        )
+        for reasons, count in sorted(omitted.items())
     )
+
+
+def _omission_guidance(omitted: dict[tuple[str, ...], int]) -> str:
+    """The action clause that closes an omission announcement.
+
+    Shared by both exits so they cannot disagree about what the operator is
+    told to do. ``omitted`` is non-empty at both call sites, and the result is
+    therefore never empty: either some omitted fill CAN be typed in, or every
+    one of them is sub-one-share and the note applies.
+
+    THE MANUAL-ENTRY INSTRUCTION IS WITHHELD ONLY WHEN IT IS IMPOSSIBLE FOR
+    EVERY OMITTED FILL. Withholding it because SOME omission is sub-one-share
+    would strand the recordable ones; issuing it when they are ALL
+    sub-one-share names an action this form refuses, which is the defect
+    (orchestrator B review round 3, MAJOR 2).
+    """
+    total = sum(omitted.values())
+    sub_one_share = sum(
+        count for reasons, count in omitted.items()
+        if "sub_one_share_quantity" in reasons
+    )
+    parts: list[str] = []
+    if sub_one_share < total:
+        parts.append(_MANUAL_ENTRY_INSTRUCTION)
+    if sub_one_share:
+        parts.append(_SUB_ONE_SHARE_NOTE)
+    return " ".join(parts)
 
 
 ExitAutoFillKind = Literal[
@@ -766,10 +826,11 @@ def resolve_exit_auto_fill(
     # Sort matches by EXECUTION date ASCENDING so the candidates list carries
     # chronological order (oldest first; most-recent last). Then build
     # candidates from the sorted matches; _build_candidate returns
-    # ``(None, <refusal reason>, None)`` for orders lacking an execution-grain
-    # price/quantity (mapper edge case) or a usable date, so candidates may
-    # have fewer entries than matches — and the ``no_usable_date`` refusals are
-    # COUNTED below rather than dropped on the floor.
+    # ``(None, '', None, <refusal reasons>)`` for orders lacking an
+    # execution-grain price/quantity (mapper edge case), carrying a quantity
+    # that truncates away, or lacking a usable date, so candidates may have
+    # fewer entries than matches — and EVERY refusal is COUNTED below rather
+    # than dropped on the floor.
     #
     # D31 — the sort key was ``enter_time``, which makes "most recent" mean
     # "the order the operator TYPED last". Two resting orders can be entered
@@ -803,9 +864,13 @@ def resolve_exit_auto_fill(
     # Declining the WHOLE auto-fill -- the entry-side posture -- would be wrong
     # here: the entry side has one order, this surface has N, and hiding N-1
     # good candidates to protest one bad one is a worse trade for the operator.
-    omitted: dict[str, int] = {}
+    #
+    # KEYED ON THE WHOLE REASON SET, so a fill that failed two checks is
+    # counted ONCE and announced under BOTH (orchestrator B review round 3,
+    # MAJOR 2) -- see ``_omission_reason_summary``.
+    omitted: dict[tuple[str, ...], int] = {}
     for o in sorted_matches:
-        cand, outcome, match_quantity = _build_candidate(o)
+        cand, outcome, match_quantity, refusals = _build_candidate(o)
         if cand is not None:
             cand = replace(
                 cand,
@@ -825,7 +890,7 @@ def resolve_exit_auto_fill(
             candidates.append(cand)
             date_sources[cand.signature_hash] = outcome
         else:
-            omitted[outcome] = omitted.get(outcome, 0) + 1
+            omitted[refusals] = omitted.get(refusals, 0) + 1
     if not candidates:
         # EVERY match was refused, and the operator is told WHICH reasons
         # (orchestrator B review round 2, MAJOR B). This branch used to state a
@@ -844,12 +909,8 @@ def resolve_exit_auto_fill(
             fill_origin="operator_typed",
             advisory_text=(
                 f"No Schwab SELL fill for {ticker} could be listed "
-                f"({_omission_reason_summary(omitted)}); please enter "
-                "manually."
-                + (
-                    f" {_SUB_ONE_SHARE_NOTE}"
-                    if "sub_one_share_quantity" in omitted else ""
-                )
+                f"({_omission_reason_summary(omitted)}). "
+                + _omission_guidance(omitted)
             ),
             auto_fill_audit_at=auto_fill_audit_at,
         )
@@ -1025,17 +1086,16 @@ def resolve_exit_auto_fill(
         noun = "fill is" if omitted_total == 1 else "fills are"
         advisory_parts.append(
             f"{omitted_total} Schwab SELL {noun} NOT listed here "
-            f"({reasons}). Check the broker and record manually."
-            + (
-                f" {_SUB_ONE_SHARE_NOTE}"
-                if "sub_one_share_quantity" in omitted else ""
-            )
+            f"({reasons}). "
+            + _omission_guidance(omitted)
         )
         log.warning(
             "schwab exit auto-fill: %d %s SELL fill(s) omitted from the "
             "candidate list (%s)",
             omitted_total, ticker,
-            ", ".join(f"{r}={c}" for r, c in sorted(omitted.items())),
+            ", ".join(
+                f"{'+'.join(r)}={c}" for r, c in sorted(omitted.items())
+            ),
         )
     omission_advisory: str | None = " ".join(advisory_parts) or None
 
@@ -1055,10 +1115,10 @@ def resolve_exit_auto_fill(
 
 def _build_candidate(
     o: Any,
-) -> tuple[ExitAutoFillCandidate | None, str, float | None]:
+) -> tuple[ExitAutoFillCandidate | None, str, float | None, tuple[str, ...]]:
     """Build an ExitAutoFillCandidate from a SchwabOrderResponse.
 
-    Returns ``(candidate, date_source, match_quantity)`` on success, where
+    Returns ``(candidate, date_source, match_quantity, ())`` on success, where
     ``date_source`` is the grain that produced the candidate's date (see
     ``_execution_date``). The source rides OUT here rather than on the dataclass
     because it is provenance about the derivation, not part of the fill's
@@ -1085,10 +1145,12 @@ def _build_candidate(
     an ``int``:
 
       - a sub-one-share execution CANNOT BE OFFERED AT ALL. It is refused below
-        as ``'sub_one_share_quantity'`` and announced, so the operator records
-        it by hand rather than losing the page -- visible degradation, the
-        standard every ruling on this surface has taken, but a real capability
-        gap and not merely a display artefact.
+        as ``'sub_one_share_quantity'`` and announced, and because no surface
+        in this framework can record it as an exit the advisory points the
+        operator at a daily-management NOTE instead (see
+        ``_SUB_ONE_SHARE_NOTE``) rather than at a form that would refuse him --
+        visible degradation, the standard every ruling on this surface has
+        taken, but a real capability gap and not merely a display artefact.
       - for any fractional quantity >= 1 the value HASHED, the value COMPARED
         and the value PERSISTED disagree: a 10.9-share execution is hashed and
         duplicate-compared as 10.9 (via ``match_quantity``) while being
@@ -1099,37 +1161,46 @@ def _build_candidate(
     schema-prevented: ``fills.quantity`` is ``REAL`` (migration 0014) and
     ``SchwabExecutionLeg.__post_init__`` admits any finite ``> 0``.
 
-    Returns ``(None, <refusal reason>, None)`` when the order cannot become a
-    candidate. THE REASON IS RETURNED, not swallowed (Codex R1 Major 2): a
-    refusal that leaves OTHER candidates standing produces a list that looks
-    complete while omitting a real fill, and the caller can only say so out
-    loud if it knows why the omission happened. The reasons are
+    Returns ``(None, '', None, <refusal reasons>)`` when the order cannot
+    become a candidate. THE REASONS ARE RETURNED, not swallowed (Codex R1 Major
+    2): a refusal that leaves OTHER candidates standing produces a list that
+    looks complete while omitting a real fill, and the caller can only say so
+    out loud if it knows why the omission happened. The reasons are
     ``'no_execution_price'``, ``'no_quantity'``, ``'sub_one_share_quantity'``
     and ``'no_usable_date'``, and EVERY one of them is announced -- see
     ``_OMISSION_REASON_TEXT``, which the caller renders into the operator's
     advisory on both the populated and the all-refused exit.
 
-    THE REASON IS FIRST-MATCH, NOT A DIAGNOSIS (Codex R2 minor). An order
-    failing several checks is counted under the FIRST one it fails, so a
-    sub-one-share order that ALSO has no execution-grain price is announced as
-    ``'no_execution_price'`` and the caller's sub-one-share note -- which says
-    the form cannot take such a fill at all -- does not fire for it. The
-    announcement stays TRUE (that fill really does lack a resolvable price);
-    it is simply not exhaustive about a fill with more than one problem.
-    Re-ordering the checks would only move the incompleteness to a different
-    compound case, and computing every reason for every refusal is a wider
-    change than this arc is scoped for, so the precedence is STATED here and
-    pinned by a test rather than left for a reader to discover.
+    EVERY CONDITION THAT HELD IS REPORTED, NOT THE FIRST (orchestrator B
+    review round 3, MAJOR 2). The three derivations are unconditional and each
+    runs ONCE, then the reasons are collected in check order. The previous
+    version returned on the first failure, so a sub-one-share order that ALSO
+    had no execution-grain price was announced as ``'no_execution_price'``
+    alone -- and the caller's sub-one-share note, the one that tells the
+    operator what he CAN do with a fill this form cannot take, never fired for
+    it. What the announcement said stayed true; what it INSTRUCTED did not, and
+    that is the half a precedence argument cannot reach. Reordering the checks
+    would have relocated the incompleteness rather than removed it, which is
+    why the choice between reasons is gone instead.
+
+    ``no_quantity`` and ``'sub_one_share_quantity'`` remain MUTUALLY EXCLUSIVE
+    (the ``elif``): a quantity that is missing or non-positive is not also a
+    quantity that truncates away.
 
     Uses execution-grain helpers per CLAUDE.md "Pass-1-tier-1 Sub-bundle 1"
     discipline — do NOT consume raw ``so.price``.
     """
     price = _compute_execution_price(o)
-    if price is None:
-        return None, "no_execution_price", None
     quantity = _resolve_match_quantity(o)
+    date, date_source = _execution_date(o)
+    # Computing all three before deciding costs nothing new: they are pure
+    # derivations over the order, and ``_execution_date`` already ran for every
+    # match inside ``_candidate_sort_key`` before this function was reached.
+    reasons: list[str] = []
+    if price is None:
+        reasons.append("no_execution_price")
     if quantity is None or quantity <= 0:
-        return None, "no_quantity", None
+        reasons.append("no_quantity")
     # THE TRUNCATION IS SPELLED, NOT A THRESHOLD RE-DERIVED FROM IT
     # (orchestrator B review round 2, MAJOR B). ``int(quantity) <= 0`` is the
     # exact expression the constructor call below performs, checked against the
@@ -1139,11 +1210,12 @@ def _build_candidate(
     # became ``0``, the validator raised, and -- with no ``try/except`` in the
     # build loop and a ``try/FINALLY`` in the VM caller -- the exception
     # reached the route and took the whole trade-detail page down.
-    if int(quantity) <= 0:
-        return None, "sub_one_share_quantity", None
-    date, date_source = _execution_date(o)
+    elif int(quantity) <= 0:
+        reasons.append("sub_one_share_quantity")
     if not date:
-        return None, "no_usable_date", None
+        reasons.append("no_usable_date")
+    if reasons:
+        return None, "", None, tuple(reasons)
     order_id = getattr(o, "order_id", None)
     sig = _compute_signature_hash(
         order_id=order_id,
@@ -1162,6 +1234,7 @@ def _build_candidate(
         ),
         date_source,
         float(quantity),
+        (),
     )
 
 
@@ -1474,7 +1547,8 @@ def _execution_date(order: Any) -> tuple[str | None, str]:
     What is true, and is asserted rather than described: an empty ``executions``
     list DOES reach here (through the sort key) and takes the ``enter_time``
     fallback, but such an order cannot become a candidate, because
-    ``_build_candidate`` refuses it for ``'no_execution_price'`` first. The
+    ``_build_candidate`` refuses it with ``'no_execution_price'`` among its
+    reasons (it reports every condition that held, not the first). The
     reachable fallback for a REAL candidate is a PRESENT-but-unusable leg time
     — ``SchwabExecutionLeg.__post_init__`` validates ``time`` as non-empty,
     never as parseable.

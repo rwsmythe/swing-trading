@@ -44,6 +44,7 @@ from swing.integrations.schwab.models import (
 )
 from swing.trades.exit import _normalize_trade_event_date_to_iso
 from swing.trades.exit_auto_fill import (
+    _MANUAL_ENTRY_INSTRUCTION,
     _SUB_ONE_SHARE_NOTE,
     ExitAutoFillCandidate,
     ExitAutoFillResult,
@@ -2131,25 +2132,32 @@ def test_d31_sub_one_share_fill_is_refused_and_announced_not_a_crash(
     assert result.advisory_text.isascii()
 
 
-def test_d31_refusal_reason_is_first_match_on_a_doubly_bad_order(
+def test_d31_doubly_bad_order_announces_every_reason_it_failed(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,
 ):
-    """The precedence, pinned -- and the incompleteness it carries, stated.
+    """A refused fill is announced for EVERY condition that held, not the first.
 
-    ``_build_candidate`` checks price, then quantity, then the sub-one-share
-    truncation, then the date, and returns on the FIRST failure. So an order
-    that is BOTH sub-one-share and priceless is counted as
-    ``no_execution_price``, and the sub-one-share note -- the one that tells
-    the operator this form cannot take such a fill at all -- does not fire.
+    SUPERSEDES ``test_d31_refusal_reason_is_first_match_on_a_doubly_bad_order``
+    (shipped 2026-08-11), which pinned the OPPOSITE outcome as correct: the
+    reason was first-match, so an order that is BOTH priceless and sub-one-share
+    was announced as ``no_execution_price`` alone, the sub-one-share note never
+    fired, and the advisory closed by telling the operator to record the fill by
+    hand -- an action this form's ``step="1" min="1"`` Shares input REFUSES.
+    That superseded test's own reasoning (reordering the checks only relocates
+    the incompleteness) was sound about PRECEDENCE and beside the point: the
+    defect was an advisory instructing an impossible action, so the fix is to
+    stop choosing between reasons at all (orchestrator B review round 3, MAJOR
+    2).
 
-    What the advisory says stays TRUE: that fill really does lack a resolvable
-    execution price. It is not EXHAUSTIVE about a fill with two problems, and
-    that is a stated limitation rather than an accident (Codex R2 minor,
-    flagged to the orchestrator). This test exists so the precedence cannot
-    change silently: reordering the checks would move the incompleteness to a
-    different compound case rather than remove it, so it should be a decision,
-    not a side effect.
+    The order here is priceless (``executions=None`` on a FILLED order with an
+    order-grain price) AND sub-one-share (``quantity=0.9``). Both conditions
+    must reach the operator, and the note that tells him what he CAN do must
+    fire off the CONDITION rather than off which reason happened to win.
+
+    Discriminating against the superseded behaviour in both directions: under
+    first-match the second reason and the note are absent; under a fix that
+    merely reordered the checks the FIRST reason would be absent instead.
     """
     good = _make_sell_order(
         ticker="FTRE", price=18.40, quantity=6,
@@ -2170,10 +2178,63 @@ def test_d31_refusal_reason_is_first_match_on_a_doubly_bad_order(
     assert [c.order_id for c in result.candidates] == ["order-FTRE-good"]
     advisory = result.advisory_text
     assert advisory is not None
+    # ONE fill, counted once, under BOTH of its reasons -- the counts still sum
+    # to the announced total, which a per-reason tally would break.
     assert "1 Schwab SELL fill is NOT listed here" in advisory
-    assert "no execution-grain price" in advisory
-    assert "execution quantity below one whole share" not in advisory
-    assert _SUB_ONE_SHARE_NOTE not in advisory
+    assert (
+        "1 for no execution-grain price and an execution quantity below one "
+        "whole share" in advisory
+    )
+    assert _SUB_ONE_SHARE_NOTE in advisory
+    # Every omitted fill here is sub-one-share, so the manual-entry instruction
+    # is WITHHELD: it would name an action the form refuses.
+    assert _MANUAL_ENTRY_INSTRUCTION not in advisory
+    assert advisory.isascii()
+
+
+def test_d31_mixed_omissions_keep_the_manual_entry_instruction(
+    conn, d31_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """The manual-entry instruction is withheld only when it is IMPOSSIBLE.
+
+    Two omitted fills: one sub-one-share (which cannot be typed into this form
+    at all) and one merely undated (which CAN). Suppressing the instruction
+    because SOME omission is unrecordable would strand the recordable one, so
+    the instruction is withheld only when EVERY omitted fill carries the
+    sub-one-share condition.
+
+    Discriminating: a fix that keyed the suppression on "any sub-one-share
+    omission" drops the instruction here and this test fails.
+    """
+    sub_share = _make_sell_order(
+        ticker="FTRE", price=18.10, quantity=0.9,
+        enter_time="2026-08-03T13:45:00.000Z",
+        execution_time="2026-08-04T13:31:00.000Z",
+        instruction="SELL", order_id="order-FTRE-sub-share",
+    )
+    undated = _make_sell_order(
+        ticker="FTRE", price=18.20, quantity=4,
+        enter_time="20260803T134500", execution_time="not-a-timestamp",
+        instruction="SELL", order_id="order-FTRE-undated",
+    )
+    good = _make_sell_order(
+        ticker="FTRE", price=18.40, quantity=6,
+        enter_time=_FTRE_ENTERED, execution_time=_FTRE_EXECUTED,
+        instruction="SELL", order_id="order-FTRE-good",
+    )
+    orders = [good, sub_share, undated]
+    patch_get_orders.state["orders"] = orders
+    result = _resolve_ftre(conn, d31_now, orders)
+
+    assert result.kind == "populated"
+    advisory = result.advisory_text
+    assert advisory is not None
+    assert "2 Schwab SELL fills are NOT listed here" in advisory
+    assert "1 for an execution quantity below one whole share" in advisory
+    assert "1 for no usable execution date" in advisory
+    assert _MANUAL_ENTRY_INSTRUCTION in advisory
+    assert _SUB_ONE_SHARE_NOTE in advisory
     assert advisory.isascii()
 
 
@@ -2237,6 +2298,16 @@ def test_d31_only_sub_one_share_fills_says_why_the_list_is_empty(
         result.advisory_text
     ), "the old blanket sentence asserted three things this order has"
     assert _SUB_ONE_SHARE_NOTE in result.advisory_text
+    # The only omitted fill is sub-one-share, so this branch withholds the
+    # manual-entry instruction for the same reason the populated one does.
+    # Asserted on the WORD, not just the constant: pre-fix this branch closed
+    # with "please enter manually." -- a different string that told him the
+    # same impossible thing, which a constant-only assertion would have missed.
+    assert _MANUAL_ENTRY_INSTRUCTION not in result.advisory_text
+    assert "manual" not in result.advisory_text.lower(), (
+        "every omitted fill here is sub-one-share, so nothing in this "
+        "advisory may tell the operator to record it by hand"
+    )
     assert result.advisory_text.isascii()
 
 

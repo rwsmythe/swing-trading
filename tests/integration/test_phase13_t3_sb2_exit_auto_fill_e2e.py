@@ -590,7 +590,14 @@ def test_d31_sub_one_share_fill_renders_the_page_and_names_the_reason(
     assert "Schwab auto-fill:" in body, "the advisory block itself rendered"
     assert _OMISSION_REASON_TEXT["sub_one_share_quantity"] in body
     assert "1 Schwab SELL fill is NOT listed here" in body
-    assert _SUB_ONE_SHARE_NOTE in body
+    # Compared against the UNESCAPED body: the note is prose and carries
+    # apostrophes, which Jinja autoescaping renders as a character reference.
+    # Unescaping the body (rather than escaping the expectation) keeps the
+    # comparison independent of WHICH reference the escaper emits -- `&#39;`
+    # and `&#x27;` are the same apostrophe to the operator, and a test that
+    # pinned one would fail on a templating-layer change that broke nothing.
+    import html
+    assert _SUB_ONE_SHARE_NOTE in html.unescape(body)
     # The refusal is confined to the order that caused it.
     assert _extract_hidden_input_value(body, "exit_date") == "2026-05-20"
     assert 'value="120.50"' in body
