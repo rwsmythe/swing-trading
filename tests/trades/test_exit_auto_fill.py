@@ -1543,13 +1543,17 @@ def test_d31_anonymous_other_grain_match_is_offered_with_the_flag(
     assert "fill #41" in result.advisory_text
     assert result.advisory_text.isascii()
     # THE TWO SIDES MUST NOT BE SOURCED FROM THE SAME PLACE (Codex R4 minor).
-    # This is the only fixture where the recorded row and the offered candidate
-    # DIFFER in a rendered field -- the row is dated 2026-08-03, the candidate
-    # 2026-08-04 -- so it is the only one that can catch the advisory printing
-    # candidate values in the RECORDED slot. Every other assertion about this
-    # message survives that swap, and in the single-candidate case the
-    # per-candidate fieldset does not render, so the banner would be the
-    # operator's only ledger evidence while he adjudicates the duplicate.
+    # Here the recorded row is dated 2026-08-03 and the candidate 2026-08-04,
+    # so this fixture discriminates the DATE half. It is not the only fixture
+    # that differs in a rendered field -- an earlier version of this comment
+    # said so and was wrong (Codex R5 minor, and the claim was never
+    # established, only assumed); the fractional-quantity test differs in the
+    # QUANTITY and pins that half there. The PRICE cannot be discriminated
+    # anywhere, by construction: the flag requires equality at
+    # `round(price, 2)`. Every other assertion about this message survives a
+    # swap, and in the single-candidate case the per-candidate fieldset does
+    # not render, so the banner would be the operator's only ledger evidence
+    # while he adjudicates the duplicate.
     assert "recorded 2026-08-03 at 18.40 x 10" in result.advisory_text, (
         "the recorded side must come from the FILL, not from the candidate"
     )
@@ -1775,6 +1779,23 @@ def test_b_review_major3_fractional_execution_quantity_flags_its_own_row(
     ] == [40], (
         "a 10.9-share execution must flag a recorded 10.9-share row; "
         "truncating the offered side to 10 silences the alarm"
+    )
+    # THE QUANTITY HALF OF THE ADVISORY'S PROVENANCE (Codex R5 minor). Its
+    # sibling assertion on the other-grain fixture pins the DATES; only this
+    # fixture can pin the QUANTITIES, because only here do the recorded and
+    # offered sides differ in that field (10.9 recorded, truncated to 10 on the
+    # candidate -- the accepted `int` limitation, visible in the message). The
+    # PRICE can never discriminate anywhere: the flag requires equality at
+    # `round(price, 2)`, so the two sides are equal by construction. Without
+    # this, swapping `dup.quantity` for the candidate's at the emitter passes
+    # every other assertion, and the single-candidate banner -- the operator's
+    # only ledger evidence there -- would misstate the recorded quantity.
+    assert result.advisory_text is not None
+    assert "recorded 2026-08-04 at 18.40 x 10.9" in result.advisory_text, (
+        "the recorded quantity must come from the FILL"
+    )
+    assert "offered here as 2026-08-04 at 18.40 x 10" in result.advisory_text, (
+        "the offered quantity must come from the CANDIDATE"
     )
 
     # (2) MUST NOT FLAG: the recorded row is a whole-number 10.

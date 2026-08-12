@@ -1427,18 +1427,31 @@ def _undecidable_duplicates(
             # THE HYBRID DELIBERATELY DOES NOT TIGHTEN THE SMALL END, AND THAT
             # IS NOT AN OVERSIGHT LEFT FOR A LATER READER TO TIDY. `10.0`
             # against a recorded `10.0000000005` still flags: the residual is
-            # 5e-10, inside `abs_tol`, and those are two DISTINCT quantities.
-            # Both halves err the same way on purpose, under the asymmetry this
-            # surface is built on -- a spurious flag costs the operator one
-            # look at the ledger and he adjudicates it; a silent miss costs a
-            # double-recorded fill and nobody ever sees it. Tightening this end
-            # to remove the spurious flag would buy it with silence, which is
-            # the one trade this comparison exists to refuse. The same holds in
-            # the other direction: at 1e7 shares `rel_tol` opens a 0.01-share
-            # window, so two genuinely distinct quantities closer than that now
-            # flag together -- again the alarm direction, again adjudicated.
-            # `tests/trades/test_exit_auto_fill.py` pins BOTH ends, so a later
-            # tightening goes red there instead of arriving unnoticed.
+            # 5.0000004e-10, inside BOTH windows here (the relative one is
+            # 1e-8 at ten shares), and those are two DISTINCT quantities. The
+            # comparison errs the same way at both ends on purpose, under the
+            # asymmetry this surface is built on -- a spurious flag costs the
+            # operator one look at the ledger and he adjudicates it; a silent
+            # miss costs a double-recorded fill and nobody ever sees it.
+            # Tightening this end to remove the spurious flag would buy it with
+            # silence, which is the one trade this comparison exists to refuse.
+            # The same holds in the other direction: at 1e7 shares `rel_tol`
+            # opens a 0.01-share window, so two genuinely distinct quantities
+            # closer than that now flag together -- again the alarm direction,
+            # again adjudicated.
+            #
+            # WHAT THE TESTS ACTUALLY PIN, WHICH IS LESS THAN "BOTH ENDS"
+            # (Codex R5 minor -- the sentence here claimed any later tightening
+            # would go red, and that is not true).
+            # `tests/trades/test_exit_auto_fill.py` pins two CASES: a
+            # large-magnitude leg sum still flags its own recorded row, and a
+            # 5e-10-distinct small pair still flags. The first goes red only if
+            # `rel_tol` falls to essentially zero; the second only if BOTH
+            # tolerances fall under their break-evens. NOTHING pins the WIDTH
+            # of the relative window, so a tightening to, say, 1e-12 would keep
+            # both green while narrowing the large-magnitude alarm. That gap is
+            # named rather than closed: pinning a spurious-flag width as
+            # required behaviour would freeze a side effect into a contract.
             and math.isclose(row_quantity, quantity, rel_tol=1e-9, abs_tol=1e-9)
             and row.date in dates
         ):
