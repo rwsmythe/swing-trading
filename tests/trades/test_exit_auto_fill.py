@@ -1441,6 +1441,21 @@ def test_d31_anonymous_same_grain_match_is_offered_with_the_flag(
             f"the advisory must not tell the operator {retired!r}; it states "
             "the evidence and leaves the conclusion to him"
         )
+    # And the clauses that MAKE it evidence are pinned here too, against the
+    # real emitter (Codex R2 minor). The route test asserts these on the
+    # rendered page, but it renders its own stubbed copy -- so without this,
+    # production could drop the explanation or the action and the route test
+    # would keep claiming those words reach the screen.
+    for clause in (
+        "carries no usable broker order id for the values that were recorded",
+        "nothing here can tell whether it is the same fill",
+        "Check the trade's recorded fills before submitting",
+    ):
+        assert clause in result.advisory_text, (
+            f"the advisory must still say {clause!r} -- without the reason "
+            "identity is undecidable, and without an action, the alarm is a "
+            "claim the operator cannot discharge"
+        )
 
 
 def test_d31_identified_recorded_fill_does_not_suppress_a_different_order(
@@ -1922,15 +1937,23 @@ def test_b_review_round4_hybrid_does_not_tighten_the_small_case(
     fill that nobody ever sees. Trading the flag away buys it with silence.
 
     WHAT THIS TEST DISCRIMINATES, STATED PLAINLY BECAUSE IT IS NOT THE USUAL
-    KIND. It passes both before and after the round-4 fix -- it is not that
-    fix's discriminator (its sibling above is). It is a LOCK against a future
-    change, and the change it locks against is a TIGHTENED ``rel_tol`` or an
-    exact comparison -- NOT a shrunken ``abs_tol`` (Codex R1 minor; an earlier
-    docstring here claimed the latter and was wrong). ``_build_candidate``
-    refuses ``int(quantity) <= 0``, so every offered quantity is >= 1, the
-    relative window is never narrower than the absolute one, and ``abs_tol``
-    binds on nothing reachable. The assertion below states that mechanism as a
-    CHECK rather than as prose, so it cannot quietly stop being true.
+    KIND, AND STATED ON THE THIRD ATTEMPT. It passes both before and after the
+    round-4 fix -- it is not that fix's discriminator (its sibling above is).
+    It is a LOCK, and naming what it locks against took two corrections: the
+    first draft said a shrunken ``abs_tol`` turns it red (Codex R1 minor -- it
+    does not, because ``_build_candidate`` refuses ``int(quantity) <= 0``, so
+    the offered quantity is always >= 1 and the relative window is never
+    narrower than the absolute one), and the replacement said a tightened
+    ``rel_tol`` turns it red (Codex R2 minor -- it does not either, because
+    ``abs_tol`` then takes over).
+
+    The truth is that EITHER tolerance alone, left at 1e-9, keeps this green.
+    The residual is 5.0000004e-10, so red requires ``rel_tol`` below 5.0e-11
+    AND ``abs_tol`` below 5.0000004e-10 -- or an exact comparison. That is the
+    change this locks against: a future pass deciding the surviving small-end
+    looseness is untidy and removing it. The assertions below pin those
+    boundaries as CHECKS rather than prose, so the claim cannot quietly stop
+    being true a third time.
     """
     legs = [
         SchwabExecutionLeg(
@@ -1942,11 +1965,26 @@ def test_b_review_round4_hybrid_does_not_tighten_the_small_case(
         "the fixture is only a lock while the two quantities DIFFER and the "
         "difference sits inside the absolute tolerance"
     )
+    # EITHER tolerance alone holds this case, which is why neither can be
+    # named as the thing a future tightening would have to touch.
     assert math.isclose(10.0, 10.0000000005, rel_tol=1e-9, abs_tol=0.0), (
-        "it is rel_tol that holds this case, not abs_tol: the offered "
-        "quantity is always >= 1 (_build_candidate refuses int(quantity) <= "
-        "0), so the relative window is never narrower than the absolute one "
-        "and abs_tol binds on nothing reachable here"
+        "rel_tol alone holds it: the offered quantity is always >= 1 "
+        "(_build_candidate refuses int(quantity) <= 0), so the relative "
+        "window is never narrower than the absolute one"
+    )
+    assert math.isclose(10.0, 10.0000000005, rel_tol=0.0, abs_tol=1e-9), (
+        "abs_tol alone holds it too -- the residual is 5.0000004e-10"
+    )
+    # It goes red only on an EXACT comparison, or when BOTH are tightened past
+    # the residual. That is the change this test exists to catch.
+    assert not math.isclose(10.0, 10.0000000005, rel_tol=0.0, abs_tol=0.0), (
+        "an exact comparison is what would trade this spurious flag for a "
+        "silent miss"
+    )
+    assert not math.isclose(
+        10.0, 10.0000000005, rel_tol=1e-12, abs_tol=1e-10,
+    ), (
+        "tightening BOTH past the residual is the other way to lose it"
     )
     order = SchwabOrderResponse(
         order_id="order-FTRE-small", status="FILLED",
