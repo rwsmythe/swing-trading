@@ -32,6 +32,7 @@ from swing.data.models import (
     PROVENANCE_CORRECTED_FIELDS,
     ProvenanceCorrection,
 )
+from swing.data.repos.recommendations import snapshot_recommendation_row
 
 RUN_TS_RAW = "2026-08-10T17:30:26"
 FINISHED_RAW = "2026-08-10T17:44:45"
@@ -251,6 +252,7 @@ def _seed_parents(conn: sqlite3.Connection) -> dict[str, int]:
     return {
         "run": int(run), "pipeline": int(pipe), "candidate": int(cand),
         "dr": int(dr), "trade": int(trade), "fill": int(fill),
+        "dr_snapshot": snapshot_recommendation_row(conn, int(dr)),
     }
 
 
@@ -287,10 +289,13 @@ def _row_kwargs(ids: dict[str, int], **overrides):
         cited_recommendation_action_session_date=DR_SESSION,
         entry_fill_session_date=FILL_SESSION,
         cited_run_ts_raw=RUN_TS_RAW,
-        cited_recommendation_snapshot_json=json.dumps({
-            "id": ids["dr"], "evaluation_run_id": ids["run"],
-            "action_session_date": DR_SESSION, "ticker": "CADL",
-        }, sort_keys=True),
+        # THE PRODUCTION SNAPSHOT, not a four-field hand-write (Codex R2
+        # Minor 7). A partial snapshot is emitter-impossible -- production
+        # freezes every PRAGMA-derived column -- so blessing one here would
+        # let a schema that failed to enforce the advertised whole-row freeze
+        # pass this test.
+        cited_recommendation_snapshot_json=json.dumps(
+            ids["dr_snapshot"], sort_keys=True),
         derivation_rule_version="2026-08-12.1",
         # The FULL three-key envelopes. The earlier one-key version claimed
         # all three corrected fields while carrying ONE -- a "well-formed"
@@ -350,6 +355,13 @@ def _raw_insert(conn: sqlite3.Connection, kwargs: dict) -> int:
 def test_a_well_formed_row_inserts_at_both_layers(conn) -> None:
     ids = _seed_parents(conn)
     kw = _row_kwargs(ids)
+    # The fixture snapshot IS the production one -- asserted, so this test
+    # cannot quietly bless a shape the emitter never produces.
+    live_cols = {
+        r[1] for r in conn.execute(
+            "PRAGMA table_info(daily_recommendations)").fetchall()
+    }
+    assert set(json.loads(kw["cited_recommendation_snapshot_json"])) == live_cols
     ProvenanceCorrection(**kw)  # constructs
     assert _raw_insert(conn, kw) > 0
 

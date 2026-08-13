@@ -167,7 +167,80 @@ CREATE TABLE provenance_corrections (
     CHECK (cited_candidate_action_session_date      <= entry_fill_session_date),
     CHECK (cited_recommendation_action_session_date <= entry_fill_session_date),
 
-    -- The window is well-formed in BOTH domains, compared within each.
+    -- EVERY AUDIT TIMESTAMP HAS A GRAMMAR, not merely an ORDERING (Codex R2
+    -- Major 2). The ordering CHECKs below are LEXICAL, so before these guards
+    -- a row carrying 'aaa' / 'bbb' / 'ccc' / 'zzz' as its four clock columns
+    -- satisfied every one of them and INSERTed cleanly -- an audit row whose
+    -- window is not a window. GLOB is this repo's established grammar idiom
+    -- for a TEXT date column (`0029_cash_reconciliation.sql:16`).
+    --
+    -- The shape is `YYYY-MM-DDTHH:MM:SS` with an OPTIONAL `.` + 1-6 digits,
+    -- and nothing else: no offset, no `Z`, no space separator, no trailing
+    -- junk. `datetime(substr(...,1,19))` then rejects an impossible calendar
+    -- value that the digit-shape alone would accept ('2026-99-99T00:00:00').
+    -- The NOT-GLOB clause is what stops `substr(x,21) GLOB '[0-9]*'` from
+    -- accepting `.5abc` -- a leading-digit test says nothing about the rest.
+    CHECK (
+        (cited_run_ts_raw GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+         OR (length(cited_run_ts_raw) BETWEEN 21 AND 26
+             AND substr(cited_run_ts_raw,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+             AND substr(cited_run_ts_raw,20,1) = '.'
+             AND substr(cited_run_ts_raw,21) NOT GLOB '*[^0-9]*'))
+        AND datetime(substr(cited_run_ts_raw,1,19)) IS NOT NULL),
+    CHECK (
+        (cited_pipeline_finished_ts_raw GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+         OR (length(cited_pipeline_finished_ts_raw) BETWEEN 21 AND 26
+             AND substr(cited_pipeline_finished_ts_raw,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+             AND substr(cited_pipeline_finished_ts_raw,20,1) = '.'
+             AND substr(cited_pipeline_finished_ts_raw,21) NOT GLOB '*[^0-9]*'))
+        AND datetime(substr(cited_pipeline_finished_ts_raw,1,19)) IS NOT NULL),
+    CHECK (
+        (cited_run_ts_utc GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+         OR (length(cited_run_ts_utc) BETWEEN 21 AND 26
+             AND substr(cited_run_ts_utc,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+             AND substr(cited_run_ts_utc,20,1) = '.'
+             AND substr(cited_run_ts_utc,21) NOT GLOB '*[^0-9]*'))
+        AND datetime(substr(cited_run_ts_utc,1,19)) IS NOT NULL),
+    CHECK (
+        (cited_status_window_upper_utc GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+         OR (length(cited_status_window_upper_utc) BETWEEN 21 AND 26
+             AND substr(cited_status_window_upper_utc,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+             AND substr(cited_status_window_upper_utc,20,1) = '.'
+             AND substr(cited_status_window_upper_utc,21) NOT GLOB '*[^0-9]*'))
+        AND datetime(substr(cited_status_window_upper_utc,1,19)) IS NOT NULL),
+    CHECK (
+        (cited_hypothesis_status_recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+         OR (length(cited_hypothesis_status_recorded_at) BETWEEN 21 AND 26
+             AND substr(cited_hypothesis_status_recorded_at,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+             AND substr(cited_hypothesis_status_recorded_at,20,1) = '.'
+             AND substr(cited_hypothesis_status_recorded_at,21) NOT GLOB '*[^0-9]*'))
+        AND datetime(substr(cited_hypothesis_status_recorded_at,1,19)) IS NOT NULL),
+    CHECK (
+        (cited_hypothesis_status_effective_from GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+         OR (length(cited_hypothesis_status_effective_from) BETWEEN 21 AND 26
+             AND substr(cited_hypothesis_status_effective_from,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+             AND substr(cited_hypothesis_status_effective_from,20,1) = '.'
+             AND substr(cited_hypothesis_status_effective_from,21) NOT GLOB '*[^0-9]*'))
+        AND datetime(substr(cited_hypothesis_status_effective_from,1,19)) IS NOT NULL),
+    CHECK (cited_hypothesis_status_effective_to IS NULL OR (
+        (cited_hypothesis_status_effective_to GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+         OR (length(cited_hypothesis_status_effective_to) BETWEEN 21 AND 26
+             AND substr(cited_hypothesis_status_effective_to,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+             AND substr(cited_hypothesis_status_effective_to,20,1) = '.'
+             AND substr(cited_hypothesis_status_effective_to,21) NOT GLOB '*[^0-9]*'))
+        AND datetime(substr(cited_hypothesis_status_effective_to,1,19)) IS NOT NULL)),
+    CHECK (
+        (applied_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+         OR (length(applied_at) BETWEEN 21 AND 26
+             AND substr(applied_at,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+             AND substr(applied_at,20,1) = '.'
+             AND substr(applied_at,21) NOT GLOB '*[^0-9]*'))
+        AND datetime(substr(applied_at,1,19)) IS NOT NULL),
+
+    -- The window is well-formed in BOTH domains, compared within each. These
+    -- ORDERINGS are lexical and are only meaningful because the GRAMMAR guards
+    -- above force a fixed-width canonical form, under which lexical order IS
+    -- chronological order.
     CHECK (cited_run_ts_raw <= cited_pipeline_finished_ts_raw),
     CHECK (cited_run_ts_utc <= cited_status_window_upper_utc),
     -- The admitted status interval was on record by the START of the window.
@@ -278,7 +351,15 @@ CREATE TABLE provenance_corrections (
            AND json_type(applied_value_json, '$."trades.hypothesis_label"')
                    = 'text'
            AND json_type(applied_value_json, '$."trades.trade_origin"')
-                   = 'text', 0)
+                   = 'text'
+           -- NON-EMPTY, not merely present (Codex R2 Major 2). `json_type =
+           -- 'text'` accepts `""`, which the model REJECTS -- so a
+           -- schema-valid row existed that the supported reader crashed on
+           -- while hydrating. The two layers now accept the same set.
+           AND length(trim(json_extract(
+                   applied_value_json, '$."trades.hypothesis_label"'))) > 0
+           AND length(trim(json_extract(
+                   applied_value_json, '$."trades.trade_origin"'))) > 0, 0)
            ELSE 0 END),
     -- The PRE envelope must record the UNSET state this surface requires as
     -- its precondition -- the correction FILLS empty provenance, so a pre-row

@@ -706,3 +706,216 @@ def test_R1M3_the_written_envelopes_carry_all_three_keys(conn) -> None:
         "trades.candidate_id": None,
         "trades.trade_origin": "manual_off_pipeline",
     }
+
+
+# =========================================================================
+# Codex R2 -- the audit clocks, the margin, the preview, the wider drift.
+# =========================================================================
+
+
+def _kwargs_from(row):
+    kw = {f: getattr(row, f) for f in row.__dataclass_fields__}
+    kw["provenance_correction_id"] = None
+    return kw
+
+
+def _raw_insert_or_raise(conn, row, kw):
+    names = [f for f in row.__dataclass_fields__
+             if f != "provenance_correction_id"]
+    conn.execute(
+        f"INSERT INTO provenance_corrections ({', '.join(names)}) "
+        f"VALUES ({', '.join('?' * len(names))})",
+        [kw[n] for n in names])
+
+
+@pytest.mark.parametrize("column", [
+    "cited_run_ts_raw", "cited_pipeline_finished_ts_raw", "cited_run_ts_utc",
+    "cited_status_window_upper_utc", "cited_hypothesis_status_recorded_at",
+    "cited_hypothesis_status_effective_from", "applied_at",
+])
+def test_R2M2_every_audit_clock_has_a_GRAMMAR_not_just_an_ordering(
+    conn, column,
+) -> None:
+    """Every 0036 ordering CHECK is LEXICAL and the model mirrored it with
+    string comparisons -- so a row carrying aaa / bbb / ccc / zzz as its four
+    clock columns satisfied EVERY ordering rule and inserted cleanly. An audit
+    row whose window is not a window."""
+    from swing.data.models import ProvenanceCorrection
+
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    conn.execute("DELETE FROM provenance_corrections")
+    kw = _kwargs_from(row)
+    kw[column] = "aaa"
+    with pytest.raises(ValueError):
+        ProvenanceCorrection(**kw)
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_insert_or_raise(conn, row, kw)
+
+
+def test_R2M2_an_ordered_but_MEANINGLESS_clock_quartet_is_refused(
+    conn,
+) -> None:
+    """aaa <= bbb and ccc <= zzz both hold lexically, which is exactly how the
+    pre-fix row passed."""
+    assert "aaa" <= "bbb" and "ccc" <= "zzz"
+    from swing.data.models import ProvenanceCorrection
+
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    kw = _kwargs_from(row)
+    kw.update(
+        cited_run_ts_raw="aaa", cited_pipeline_finished_ts_raw="bbb",
+        cited_run_ts_utc="ccc", cited_status_window_upper_utc="zzz")
+    with pytest.raises(ValueError):
+        ProvenanceCorrection(**kw)
+
+
+def test_R2M2_an_empty_applied_label_is_refused_at_BOTH_layers(conn) -> None:
+    """json_type = text accepts the empty string, which the model REJECTS --
+    so a schema-valid row existed that the supported reader CRASHED on while
+    hydrating. The two layers now accept the same set."""
+    from swing.data.models import ProvenanceCorrection
+
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    conn.execute("DELETE FROM provenance_corrections")
+    env = json.loads(row.applied_value_json)
+    env["trades.hypothesis_label"] = ""
+    kw = _kwargs_from(row)
+    kw["applied_value_json"] = json.dumps(env, sort_keys=True)
+    with pytest.raises(ValueError):
+        ProvenanceCorrection(**kw)
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_insert_or_raise(conn, row, kw)
+
+
+def test_R2M2_a_malformed_applied_at_from_the_PUBLIC_api_is_refused(
+    conn,
+) -> None:
+    """applied_at is a public parameter of correct_cohort_provenance -- the
+    one clock in this set that is REACHABLE rather than merely
+    schema-legal."""
+    ids = build_cadl_case(conn)
+    conn.commit()
+    with pytest.raises(ValueError):
+        correct_cohort_provenance(
+            conn, trade_id=ids["trade_id"],
+            cited_candidate_id=ids["candidate_id"],
+            cited_recommendation_id=ids["daily_recommendation_id"],
+            reason=REASON, applied_at="whenever")
+    assert conn.execute(
+        "SELECT COUNT(*) FROM provenance_corrections").fetchone()[0] == 0
+
+
+def test_R2M3_a_recorded_at_inside_the_margin_REFUSES(conn) -> None:
+    """The margin exists to protect a verdict a wrong-by-hours conversion
+    could flip, and the retrospective guard DECIDES AUTHORIZATION by comparing
+    recorded_at against the zone-converted lower bound -- so omitting
+    recorded_at left the one comparison the margin was built for unprotected.
+    Window lower bound 2026-08-11T03:30:26 UTC; recorded_at two hours before
+    it is inside the band."""
+    ids = build_cadl_case(conn)
+    conn.execute(
+        "UPDATE hypothesis_status_history SET recorded_at = "
+        "'2026-08-11T01:30:26.000' WHERE hypothesis_id = 1")
+    conn.commit()
+    with pytest.raises(CohortProvenanceCorrectionError) as exc:
+        preview_cohort_provenance_correction(
+            conn, trade_id=ids["trade_id"],
+            cited_candidate_id=ids["candidate_id"],
+            cited_recommendation_id=ids["daily_recommendation_id"],
+            reason=REASON)
+    msg = str(exc.value)
+    assert "recorded_at" in msg
+    assert "within 24 hours of the" in msg
+
+
+def test_R2M4_the_preview_leaves_no_transaction_open(conn) -> None:
+    """It pins ONE read snapshot for the whole ladder and rolls back
+    unconditionally, so it still writes nothing and takes no write lock."""
+    ids = build_cadl_case(conn)
+    conn.commit()
+    assert not conn.in_transaction
+    preview_cohort_provenance_correction(
+        conn, trade_id=ids["trade_id"],
+        cited_candidate_id=ids["candidate_id"],
+        cited_recommendation_id=ids["daily_recommendation_id"],
+        reason=REASON)
+    assert not conn.in_transaction
+    assert conn.execute(
+        "SELECT COUNT(*) FROM provenance_corrections").fetchone()[0] == 0
+
+
+def test_R2M5_a_bucket_change_on_the_cited_candidate_is_reported(conn) -> None:
+    """No current UPDATE site is not immutability, and a migration or an
+    operator repair is where an audit reader earns its keep. The label is
+    RE-DERIVED rather than snapshot-compared, so ONE comparison catches a
+    bucket change, a criterion change AND a registry rename."""
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.execute(
+        "UPDATE candidates SET bucket = 'watch' WHERE id = ?",
+        (ids["candidate_id"],))
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    joined = "\n".join(report.drift_lines)
+    assert "candidates.bucket" in joined
+    assert "RE-DERIVED" in joined
+
+
+def test_R2M5_a_criterion_change_moves_the_re_derived_label(conn) -> None:
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.execute(
+        "UPDATE candidate_criteria SET result = 'fail' "
+        "WHERE candidate_id = ? AND criterion_name = 'tightness'",
+        (ids["candidate_id"],))
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    joined = "\n".join(report.drift_lines)
+    assert "RE-DERIVED" in joined
+    assert "tightness" in joined
+
+
+def test_R2M5_a_registry_rename_is_reported(conn) -> None:
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.execute(
+        "UPDATE hypothesis_registry SET name = 'A+ baseline v2' WHERE id = 1")
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    assert any("hypothesis_registry.name" in line
+               for line in report.drift_lines)
+
+
+def test_R2M5_a_moved_evaluation_run_anchor_is_reported(conn) -> None:
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.execute(
+        "UPDATE evaluation_runs SET action_session_date = '2026-08-10' "
+        "WHERE id = ?", (ids["evaluation_run_id"],))
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    assert any("evaluation_runs.action_session_date" in line
+               for line in report.drift_lines)
+
+
+@pytest.mark.parametrize("column,value", [
+    ("hypothesis_label", "a label nobody derived"),
+    ("candidate_id", None),
+    ("trade_origin", "manual_off_pipeline"),
+])
+def test_R2M5_the_TRADE_no_longer_carrying_the_applied_triple_is_reported(
+    conn, column, value,
+) -> None:
+    """The audit row asserts three values were WRITTEN and nothing until now
+    ever checked that the trade still carries them -- the most direct honesty
+    check available."""
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.execute(
+        f"UPDATE trades SET {column} = ? WHERE id = ?",
+        (value, ids["trade_id"]))
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    assert any(f"trades.{column} was written as" in line
+               for line in report.drift_lines), report.drift_lines

@@ -486,3 +486,25 @@ def test_a_malformed_pipeline_finished_ts_is_refused(conn) -> None:
     with pytest.raises(CohortProvenanceCorrectionError) as exc:
         _preview(conn, ids)
     assert "finished_ts" in str(exc.value)
+
+
+def test_R2m6_a_new_digest_cannot_reuse_an_existing_version() -> None:
+    """A lone constant plus a lone digest let a maintainer change the builder
+    and update ONLY the digest: the sha test goes green while two different
+    rules claim one audit version -- the exact failure the pin exists to
+    prevent. The history makes a new digest require a new version."""
+    from swing.trades.cohort_provenance_correction import (
+        DERIVATION_RULE_HISTORY,
+    )
+
+    versions = [v for v, _d in DERIVATION_RULE_HISTORY]
+    digests = [d for _v, d in DERIVATION_RULE_HISTORY]
+    assert len(set(versions)) == len(versions), (
+        "two entries claim the same DERIVATION_RULE_VERSION")
+    assert len(set(digests)) == len(digests), (
+        "two entries claim the same source digest")
+    assert DERIVATION_RULE_VERSION == versions[-1]
+    assert DERIVATION_RULE_SOURCE_SHA256 == digests[-1]
+    for version, digest in DERIVATION_RULE_HISTORY:
+        assert version.strip() and len(digest) == 64
+        assert all(ch in "0123456789abcdef" for ch in digest)

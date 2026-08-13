@@ -3002,6 +3002,36 @@ PROVENANCE_CORRECTION_APPLIED_BY: str = "operator"
 PROVENANCE_REQUIRED_HYPOTHESIS_STATUS: str = "active"
 
 
+# The canonical audit-timestamp grammar, mirroring the GLOB CHECKs in
+# migration 0036: `YYYY-MM-DDTHH:MM:SS` with an OPTIONAL `.` + 1-6 digits, a
+# LITERAL `T`, no offset, no `Z`, no surrounding whitespace.
+_PROVENANCE_TS_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?$")
+
+
+def _require_audit_timestamp(name: str, value) -> None:
+    """Every audit timestamp is PARSED, not merely ORDERED (Codex R2 M2).
+
+    The 0036 ordering CHECKs are LEXICAL and this validator's comparisons are
+    string comparisons, so before this guard a row carrying `aaa` / `bbb` /
+    `ccc` / `zzz` as its four clock columns satisfied every ordering rule and
+    was accepted at BOTH layers -- an audit row whose window is not a window.
+    `applied_at` is the reachable one: it is a public parameter of
+    ``correct_cohort_provenance``.
+    """
+    if not isinstance(value, str) or not _PROVENANCE_TS_RE.match(value):
+        raise ValueError(
+            f"{name} must be a canonical naive ISO timestamp "
+            f"'YYYY-MM-DDTHH:MM:SS[.ffffff]'; got {value!r}")
+    from datetime import datetime as _datetime
+    try:
+        _datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{name} matches the ISO shape but is not a real datetime: "
+            f"{value!r}") from exc
+
+
 def _require_extended_iso_date(name: str, value) -> None:
     """EXTENDED-form ``YYYY-MM-DD``, round-trip enforced.
 
@@ -3151,6 +3181,20 @@ class ProvenanceCorrection:
             "entry_fill_session_date",
         ):
             _require_extended_iso_date(fname, getattr(self, fname))
+        for fname in (
+            "cited_run_ts_raw",
+            "cited_pipeline_finished_ts_raw",
+            "cited_run_ts_utc",
+            "cited_status_window_upper_utc",
+            "cited_hypothesis_status_recorded_at",
+            "cited_hypothesis_status_effective_from",
+            "applied_at",
+        ):
+            _require_audit_timestamp(fname, getattr(self, fname))
+        if self.cited_hypothesis_status_effective_to is not None:
+            _require_audit_timestamp(
+                "cited_hypothesis_status_effective_to",
+                self.cited_hypothesis_status_effective_to)
         # CONTEMPORANEITY, mirrored. The SQL CHECK makes a post-dating row
         # un-INSERTable; this makes it un-CONSTRUCTIBLE.
         if (self.cited_candidate_action_session_date

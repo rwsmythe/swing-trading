@@ -67,6 +67,7 @@ from swing.evaluation.dates import PIPELINE_LOCAL_TIMEZONE, is_trading_session
 __all__ = [
     "APLUS_BUCKET",
     "COHORT_CORRECTED_FIELDS",
+    "DERIVATION_RULE_HISTORY",
     "DERIVATION_RULE_SOURCE_SHA256",
     "DERIVATION_RULE_VERSION",
     "REQUIRED_RECOMMENDATION",
@@ -131,10 +132,18 @@ _OFFSET_SUFFIX_RE = re.compile(r"([Zz]|[+-]\d{2}:?\d{2})$")
 # a test. Changing either function fails that test until the hash AND the
 # version move in the same commit. This is the project's own idiom -- the H1
 # amendment text is pinned by sha256 for exactly this reason.
-DERIVATION_RULE_VERSION: str = "2026-08-12.1"
-DERIVATION_RULE_SOURCE_SHA256: str = (
-    "5d00449acd1f16cc2b6626e843044f76118710a736790a8a506806500df9d878"
+# A CHECKED-IN (version, digest) HISTORY, not a bare pair (Codex R2 Minor 6).
+# A lone constant plus a lone digest lets a maintainer change the builder and
+# update ONLY the digest -- the test goes green while two different rules share
+# one audit version, which is the exact failure the pin was added to prevent.
+# The history is append-only and both columns are asserted UNIQUE, so a new
+# digest can only be recorded alongside a NEW version.
+DERIVATION_RULE_HISTORY: tuple[tuple[str, str], ...] = (
+    ("2026-08-12.1",
+     "5d00449acd1f16cc2b6626e843044f76118710a736790a8a506806500df9d878"),
 )
+DERIVATION_RULE_VERSION: str = DERIVATION_RULE_HISTORY[-1][0]
+DERIVATION_RULE_SOURCE_SHA256: str = DERIVATION_RULE_HISTORY[-1][1]
 
 
 class CohortProvenanceCorrectionError(ValueError):
@@ -855,6 +864,18 @@ def _assert_outside_the_clock_margin(
     for interval in intervals:
         for label, boundary in (
             ("effective_from", interval.start), ("effective_to", interval.end),
+            # `recorded_at` BELONGS HERE (Codex R2 Major 3). The margin exists
+            # to protect a verdict a wrong-by-hours conversion could flip, and
+            # `_assert_contemporaneous_interval` DECIDES AUTHORIZATION by
+            # comparing `recorded_at` against the zone-converted lower bound --
+            # so omitting it left the one comparison the margin was built for
+            # unprotected. Concretely: a 17:30 local run is assumed 03:30 UTC
+            # under HST, so a 02:00 UTC `recorded_at` reads contemporaneous;
+            # had that run actually been written under PDT its real UTC time
+            # was 00:30 and the same record is RETROSPECTIVE. With distant
+            # interval bounds the margin never fired and the claimed
+            # accept/refuse equivalence was false.
+            ("recorded_at", interval.recorded_at),
         ):
             if boundary is None:
                 continue
@@ -993,6 +1014,14 @@ def _derive(
     finished_parsed = _require_naive_datetime(
         bound.finished_ts,
         what=f"pipeline run {bound.pipeline_run_id}'s finished_ts")
+    # `started_ts` rides into the frozen snapshot, so it is validated too
+    # (Codex R2 Major 2). It is a bare TEXT column like every other timestamp
+    # here, and an unvalidated value would be frozen into an audit row as
+    # though the surface had vouched for it.
+    if bound.snapshot.get("started_ts") is not None:
+        _require_naive_datetime(
+            bound.snapshot["started_ts"],
+            what=f"pipeline run {bound.pipeline_run_id}'s started_ts")
     if finished_parsed < anchored.run_ts_parsed:
         raise _refuse(
             f"pipeline run {bound.pipeline_run_id} finished "
@@ -1099,6 +1128,26 @@ def _derive(
         raise _refuse(
             f"hypothesis {match.hypothesis_id} matched while its as-of status "
             f"was {interval.status!r}.")
+    # THE CITATION GRAPH IS ASSERTED, NOT MERELY ARRANGED (Codex R2 Major 1).
+    # The audit row's FKs prove each cited row EXISTS; nothing in SQLite can
+    # express "this interval belongs to that hypothesis" or "this candidate
+    # belongs to that run" across tables without composite FKs against UNIQUE
+    # indexes on tables this arc does not own. The SERVICE can and now does say
+    # so about its own output, so the coherence it arranges is also CHECKED.
+    if interval.hypothesis_id != int(match.hypothesis_id):  # pragma: no cover
+        raise _refuse(
+            f"the covering interval (history row {interval.history_id}) "
+            f"belongs to hypothesis {interval.hypothesis_id}, not to the "
+            f"matched hypothesis {match.hypothesis_id}.")
+    if int(anchored.cited.evaluation_run_id) != int(anchored.run.id):
+        raise _refuse(  # pragma: no cover -- the run is fetched BY that id
+            f"candidate {anchored.cited.candidate_id} belongs to evaluation "
+            f"run {anchored.cited.evaluation_run_id}, but the cited run is "
+            f"{anchored.run.id}.")
+    if int(bound.snapshot["evaluation_run_id"]) != run_id:  # pragma: no cover
+        raise _refuse(
+            f"pipeline run {bound.pipeline_run_id} owns evaluation run "
+            f"{bound.snapshot['evaluation_run_id']}, not {run_id}.")
 
     label = canonicalize_hypothesis_label(match.suggested_label_descriptive)
     if not label:
@@ -1285,16 +1334,42 @@ def preview_cohort_provenance_correction(
     authorization function -- one authorization function, two entry points, so
     ``--dry-run`` cannot diverge from apply.
     """
-    auth = _authorize(
-        conn,
-        trade_id=trade_id,
-        cited_candidate_id=cited_candidate_id,
-        cited_recommendation_id=cited_recommendation_id,
-        reason=reason,
-    )
-    if auth.already_applied is not None:
-        return _preview_from_existing(auth.trade, auth.already_applied)
-    anchored, derived = auth.anchored, auth.derived
+    # A DRY RUN MUST AT LEAST BE COHERENT WITH ITSELF (Codex R2 Major 4). The
+    # authorization ladder runs a dozen separate SELECTs, and under sqlite3's
+    # default isolation each one sees whatever is committed at that instant --
+    # so a pipeline run, a status transition or a reconciliation landing
+    # MID-LADDER could make the preview report a mix of two worlds. A DEFERRED
+    # read transaction pins ONE snapshot for the whole ladder and is rolled
+    # back unconditionally, so the preview still writes nothing and still takes
+    # no write lock.
+    #
+    # WHAT THIS DOES NOT BUY, stated rather than implied: it does not bind the
+    # preview to a LATER apply. The apply re-runs the ENTIRE ladder, so it can
+    # never write on stale inputs -- it either derives afresh or refuses -- but
+    # the operator may be shown one reading and get another outcome. Closing
+    # that needs a digest threaded preview -> apply, and the CLI parameter
+    # manifest is pinned at EXACTLY five by a test that exists to keep a VALUE
+    # out of the operator's hands. Recorded as a V2 dependency; the apply
+    # prints the anchors it actually used so a divergence is visible at the
+    # moment of the write.
+    owns_read_tx = not conn.in_transaction
+    if owns_read_tx:
+        conn.execute("BEGIN DEFERRED")
+    try:
+        auth = _authorize(
+            conn,
+            trade_id=trade_id,
+            cited_candidate_id=cited_candidate_id,
+            cited_recommendation_id=cited_recommendation_id,
+            reason=reason,
+        )
+        if auth.already_applied is not None:
+            return _preview_from_existing(auth.trade, auth.already_applied)
+        anchored, derived = auth.anchored, auth.derived
+    finally:
+        if owns_read_tx:
+            with contextlib.suppress(sqlite3.Error):
+                conn.rollback()
     trade = anchored.trade
     return CohortProvenanceCorrectionPreview(
         trade_id=trade_id,
@@ -1728,6 +1803,107 @@ def _status_interval_drift(
     return lines
 
 
+def _derivation_input_drift(
+    conn: sqlite3.Connection, correction: Any,
+) -> list[str]:
+    """RE-DERIVE the label and RE-READ the trade (Codex R2 Major 5).
+
+    "No current UPDATE site" is not immutability, and a migration or an
+    operator repair is exactly where an audit reader earns its keep. But
+    freezing a field-by-field copy of the candidate and its criteria would need
+    new columns for values that are already RECOVERABLE: the label this
+    correction wrote is a total function of the candidate row, its criteria and
+    the registry name, so RE-DERIVING it and comparing against
+    ``applied_value_json`` catches a bucket change, a criterion change AND a
+    registry rename in ONE comparison -- and catches them by the property that
+    actually matters rather than by string equality on a snapshot.
+
+    The evaluation run's two anchors are already frozen, so they are compared
+    directly.
+
+    And the TRADE ITSELF is re-read: the audit row asserts three values were
+    written and nothing until now ever checked that the trade still carries
+    them. That is the most direct honesty check in this file.
+    """
+    from swing.data.repos.candidates import (
+        fetch_candidate_by_id,
+        get_evaluation_run_by_id,
+    )
+    from swing.recommendations.hypothesis import _descriptive_label
+    from swing.trades.entry import canonicalize_hypothesis_label
+
+    lines: list[str] = []
+
+    run = get_evaluation_run_by_id(
+        conn, int(correction.cited_evaluation_run_id))
+    if run is None:  # pragma: no cover -- ON DELETE RESTRICT
+        lines.append(
+            f"{CITATION_DRIFT}: the cited evaluation run "
+            f"{correction.cited_evaluation_run_id} no longer exists.")
+    else:
+        for frozen, live, field in (
+            (str(correction.cited_candidate_action_session_date),
+             str(run.action_session_date), "action_session_date"),
+            (str(correction.cited_run_ts_raw), str(run.run_ts), "run_ts"),
+        ):
+            if frozen != live:
+                lines.append(
+                    f"{CITATION_DRIFT}: evaluation_runs.{field} was "
+                    f"{frozen!r} now {live!r}")
+
+    applied = json.loads(correction.applied_value_json)
+    cited = fetch_candidate_by_id(conn, int(correction.cited_candidate_id))
+    name_row = conn.execute(
+        "SELECT name FROM hypothesis_registry WHERE id = ?",
+        (int(correction.cited_hypothesis_id),),
+    ).fetchone()
+    if cited is None or name_row is None:  # pragma: no cover -- RESTRICT
+        lines.append(
+            f"{CITATION_DRIFT}: the cited candidate or hypothesis registry row "
+            "no longer exists.")
+    else:
+        if str(name_row[0]) != str(
+                correction.cited_hypothesis_name_at_correction):
+            lines.append(
+                f"{CITATION_DRIFT}: hypothesis_registry.name was "
+                f"{correction.cited_hypothesis_name_at_correction!r} now "
+                f"{name_row[0]!r}")
+        rederived = canonicalize_hypothesis_label(
+            _descriptive_label(cited.candidate, str(name_row[0])))
+        if rederived != applied.get("trades.hypothesis_label"):
+            lines.append(
+                f"{CITATION_DRIFT}: the label RE-DERIVED from candidate "
+                f"{correction.cited_candidate_id} today is {rederived!r}, but "
+                f"this correction wrote "
+                f"{applied.get('trades.hypothesis_label')!r} -- the cited "
+                "record's bucket, criteria or hypothesis name has moved.")
+        if str(cited.candidate.bucket) != APLUS_BUCKET:
+            lines.append(
+                f"{CITATION_DRIFT}: candidates.bucket was {APLUS_BUCKET!r} at "
+                f"correction time and is {cited.candidate.bucket!r} now.")
+
+    trade_row = conn.execute(
+        "SELECT hypothesis_label, candidate_id, trade_origin FROM trades "
+        "WHERE id = ?", (int(correction.trade_id),),
+    ).fetchone()
+    if trade_row is None:  # pragma: no cover -- ON DELETE RESTRICT
+        lines.append(
+            f"{CITATION_DRIFT}: trade {correction.trade_id} no longer exists.")
+    else:
+        live_triple = {
+            "trades.hypothesis_label": trade_row[0],
+            "trades.candidate_id": trade_row[1],
+            "trades.trade_origin": trade_row[2],
+        }
+        for key in COHORT_CORRECTED_FIELDS:
+            if applied.get(key) != live_triple[key]:
+                lines.append(
+                    f"{CITATION_DRIFT}: {key} was written as "
+                    f"{applied.get(key)!r} but the trade now carries "
+                    f"{live_triple[key]!r}")
+    return lines
+
+
 def _fill_anchor_drift(
     conn: sqlite3.Connection, correction: Any,
 ) -> list[str]:
@@ -1828,6 +2004,7 @@ def read_provenance_corrections(
             None if bound is None else bound.snapshot,
         ))
         lines.extend(_status_interval_drift(conn, correction))
+        lines.extend(_derivation_input_drift(conn, correction))
         lines.extend(_fill_anchor_drift(conn, correction))
         reports.append(ProvenanceCorrectionReport(
             correction=correction, drift_lines=tuple(lines)))

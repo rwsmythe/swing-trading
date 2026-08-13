@@ -108,17 +108,51 @@ def test_the_entry_date_reservation_is_untouched(conn) -> None:
             conn, "trades", ids["trade_id"], "entry_date", "2026-08-05")
 
 
-def test_no_live_correction_row_has_ever_targeted_these_columns(conn) -> None:
-    """Regression risk, CHECKED rather than assumed: the reservation cannot
-    break a replay of anything that has happened, because nothing has.
-    (Asserted on a freshly-migrated DB here; the same query on the live DB
-    returned zero across all 37 rows.)"""
-    rows = conn.execute(
-        "SELECT COUNT(*) FROM reconciliation_corrections "
-        "WHERE affected_table = 'trades' AND field_name IN "
-        "('hypothesis_label', 'candidate_id', 'trade_origin')",
-    ).fetchone()[0]
-    assert rows == 0
+def test_a_historical_correction_on_a_NON_reserved_field_still_replays(
+    conn,
+) -> None:
+    """THE REAL REGRESSION RISK, seeded rather than asserted-into-existence.
+
+    The previous version of this test counted rows in a FRESHLY MIGRATED
+    temporary database, where `reconciliation_corrections` is necessarily
+    empty -- it proved nothing about the live history it claimed to be about
+    and would have passed whatever the reservation did. The live-DB fact (zero
+    of 37 rows target these columns) belongs in the return report, where it
+    can be checked against the live DB; what a TEST can establish is that a
+    representative historical shape still replays.
+    """
+    ids = build_cadl_case(conn)
+    run_id = conn.execute(
+        "INSERT INTO reconciliation_runs (source, started_ts, state) "
+        "VALUES ('schwab_api', '2026-08-01T00:00:00', 'running')",
+    ).lastrowid
+    disc_id = conn.execute(
+        "INSERT INTO reconciliation_discrepancies (run_id, discrepancy_type, "
+        "trade_id, field_name, material_to_review, resolution, created_at) "
+        "VALUES (?, 'stop_mismatch', ?, 'current_stop', 1, 'unresolved', "
+        "'2026-08-01T00:00:00')",
+        (run_id, ids["trade_id"]),
+    ).lastrowid
+    assert disc_id
+    # The historical shape: a correction targeting a NON-reserved trades
+    # column. Replaying it must still work.
+    _update_journal_field(conn, "trades", ids["trade_id"], "current_stop", 8.5)
+    assert conn.execute(
+        "SELECT current_stop FROM trades WHERE id = ?",
+        (ids["trade_id"],)).fetchone()[0] == 8.5
+
+
+def test_the_reserved_columns_have_no_historical_correction_shape(
+    conn,
+) -> None:
+    """And the three RESERVED columns are refused even when a discrepancy
+    exists for the trade -- the reservation is on the COLUMN, so it holds
+    whatever finding is cited."""
+    ids = build_cadl_case(conn)
+    for column in COHORT_COLUMNS:
+        with pytest.raises(ReservedJournalFieldError):
+            _update_journal_field(
+                conn, "trades", ids["trade_id"], column, "x")
 
 
 def test_reservation_applies_unconditionally_for_the_trades_table(conn) -> None:

@@ -2546,6 +2546,16 @@ def journal_correct_cohort_provenance_cmd(
             f"provenance correction {result.correction_id} applied to trade "
             f"{result.trade_id}."
         )
+        # THE ANCHORS THIS APPLY ACTUALLY USED, printed at the moment of the
+        # write. The dry run and the apply are separate commands and the apply
+        # re-runs the whole authorization ladder, so it can never write on
+        # stale inputs -- but the operator could still be shown one reading and
+        # get another outcome. Printing the citation here makes a divergence
+        # from the dry-run reading visible where he can act on it.
+        click.echo(
+            f"  cited candidates {result.cited_candidate_id} + "
+            f"daily_recommendations {result.cited_daily_recommendation_id}"
+        )
         for fname in COHORT_FIELD_ORDER:
             click.echo(
                 f"  {fname:<28} {result.pre_values[fname]!r} -> "
