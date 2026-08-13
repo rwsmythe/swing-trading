@@ -10,6 +10,27 @@ import pandas as pd
 
 _NYSE = xcals.get_calendar("XNYS")
 
+# THE ZONE THE PIPELINE'S NAIVE TIMESTAMPS BELONG TO.
+#
+# `evaluation_runs.run_ts` and `pipeline_runs.started_ts`/`finished_ts` are
+# written by bare `datetime.now()` (`pipeline/runner.py`, `pipeline/lease.py`)
+# -- naive LOCAL -- while the Phase-9 audit tables, `hypothesis_status_history`
+# among them, are naive UTC by explicit design (`data/datetime_helpers.py`).
+# Nothing in either column marks which domain it belongs to, so ANY comparison
+# across the two families is wrong by the local UTC offset and looks perfectly
+# reasonable. Normalizing needs ONE spelling of the local zone.
+#
+# It did not exist: the literal was embedded independently as the two function
+# DEFAULTS below and nowhere else -- the D21 decay class sitting in the file
+# that defines the project's session semantics. This is a pure constant
+# EXTRACTION with zero behavioural delta (both defaults already carried this
+# exact literal), added under a CHARC-approved, explicitly BOUNDED envelope
+# extension: the constant, these two defaults, and the Demand C service's
+# import. The other live spellings -- in `swing/monitoring/research_health.py`
+# and `swing/monitoring/tool_health.py` -- are NOT in that grant and belong to
+# the D37 sweep.
+PIPELINE_LOCAL_TIMEZONE: str = "Pacific/Honolulu"
+
 
 class PageKind(Enum):
     """Topbar-date intent for a base-layout page."""
@@ -98,7 +119,9 @@ def is_trading_session(candidate: date) -> bool:
     return bool(_NYSE.is_session(pd.Timestamp(candidate)))
 
 
-def last_completed_session(now_local: datetime, *, tz: str = "Pacific/Honolulu") -> date:
+def last_completed_session(
+    now_local: datetime, *, tz: str = PIPELINE_LOCAL_TIMEZONE,
+) -> date:
     """Most recent NYSE session whose close has already happened at `now_local`.
 
     Used when `as_of_date` is omitted — never serve a partial in-progress daily bar.
@@ -120,7 +143,9 @@ def last_completed_session(now_local: datetime, *, tz: str = "Pacific/Honolulu")
     return _NYSE.date_to_session(pd.Timestamp(today_date), direction="previous").date()
 
 
-def action_session_for_run(now_local: datetime, *, tz: str = "Pacific/Honolulu") -> date:
+def action_session_for_run(
+    now_local: datetime, *, tz: str = PIPELINE_LOCAL_TIMEZONE,
+) -> date:
     """The next NYSE trading session at or after `now_local`.
 
     Converts local time to US/Eastern, then asks the NYSE calendar for the next open
