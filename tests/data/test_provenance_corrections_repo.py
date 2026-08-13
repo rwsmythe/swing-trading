@@ -271,6 +271,14 @@ def _correction(ids: dict, **overrides) -> ProvenanceCorrection:
         # against a snapshot implementation that never froze the whole row.
         cited_recommendation_snapshot_json=json.dumps(
             ids["dr_snapshot"], sort_keys=True),
+        cited_candidate_snapshot_json=json.dumps({
+            "id": ids["candidate_id"], "evaluation_run_id": ids["evaluation_run_id"], "ticker": "CADL",
+            "bucket": "aplus", "rs_method": "fallback_spy",
+            "criteria": [
+                {"criterion_name": "TT8_rs_rank", "layer": "trend_template",
+                 "result": "na", "value": None, "rule": None},
+            ],
+        }, sort_keys=True),
         derivation_rule_version="2026-08-12.1",
         pre_value_json=json.dumps({
             "trades.hypothesis_label": None,

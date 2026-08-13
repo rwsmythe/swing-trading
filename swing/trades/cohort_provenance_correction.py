@@ -68,6 +68,7 @@ __all__ = [
     "APLUS_BUCKET",
     "COHORT_CORRECTED_FIELDS",
     "DERIVATION_RULE_HISTORY",
+    "DERIVATION_RULE_SOURCE_FUNCTIONS",
     "DERIVATION_RULE_SOURCE_SHA256",
     "DERIVATION_RULE_VERSION",
     "REQUIRED_RECOMMENDATION",
@@ -151,9 +152,31 @@ _OFFSET_SUFFIX_RE = re.compile(r"([Zz]|[+-]\d{2}:?\d{2})$")
 # one audit version, which is the exact failure the pin was added to prevent.
 # The history is append-only and both columns are asserted UNIQUE, so a new
 # digest can only be recorded alongside a NEW version.
+#
+# AND IT COVERS EVERY FUNCTION THAT DECIDES THE STORED VALUE (Codex R4 Major
+# 4). The first digest covered only `_descriptive_label` and
+# `_non_pass_criterion_names` -- but the written label ALSO passes through
+# `canonicalize_hypothesis_label`, and WHICH hypothesis is selected comes from
+# `match_candidate_to_hypotheses` and the `_aplus_baseline_match` predicate.
+# Changing the canonicalizer could therefore change every stored label while
+# the pin stayed green and new corrections kept claiming the same version.
+# That is REACHABLE AFTER A ROUTINE CODE UPGRADE, which is the one class a pin
+# like this exists for.
+DERIVATION_RULE_SOURCE_FUNCTIONS: tuple[str, ...] = (
+    "swing.recommendations.hypothesis:_descriptive_label",
+    "swing.recommendations.hypothesis:_non_pass_criterion_names",
+    "swing.recommendations.hypothesis:_aplus_baseline_match",
+    "swing.recommendations.hypothesis:match_candidate_to_hypotheses",
+    "swing.trades.entry:canonicalize_hypothesis_label",
+)
+
 DERIVATION_RULE_HISTORY: tuple[tuple[str, str], ...] = (
+    # 2026-08-12.1 pinned only the two label functions; superseded rather than
+    # edited, so the append-only property the history exists for is kept.
     ("2026-08-12.1",
      "5d00449acd1f16cc2b6626e843044f76118710a736790a8a506806500df9d878"),
+    ("2026-08-13.1",
+     "9bdb95d1877a02777dac1284e766db932299e1e44ed934c6b5b7a2d3eca18099"),
 )
 DERIVATION_RULE_VERSION: str = DERIVATION_RULE_HISTORY[-1][0]
 DERIVATION_RULE_SOURCE_SHA256: str = DERIVATION_RULE_HISTORY[-1][1]
@@ -224,6 +247,9 @@ def _require_session_date(raw: Any, *, what: str) -> _date:
             "rather than silently canonicalized, because every downstream "
             "[:10] prefix and lexical comparison reads the stored string."
         )
+    if value[:4] < "1900":
+        raise _refuse(
+            f"{what} {value} is before 1900; the audit schema refuses it.")
     if not is_trading_session(parsed):
         raise _refuse(
             f"{what} {value} is not an NYSE trading session. "
@@ -286,6 +312,17 @@ def _require_naive_datetime(raw: Any, *, what: str) -> datetime:
             "a bare TEXT column, so a truncated, space-separated or "
             "offset-bearing value is schema-legal -- and a date-only value "
             "would silently be read as MIDNIGHT."
+        )
+    # THE 1900 FLOOR (Codex R4 Major 1). The audit schema refuses a pre-1900
+    # timestamp, so accepting one HERE would let a dry run approve an apply
+    # that necessarily dies at the INSERT -- the preview/apply divergence this
+    # whole validator exists to prevent, arriving through a bound the two
+    # layers did not share.
+    if value[:4] < "1900":
+        raise _refuse(
+            f"{what} {value!r} is before 1900. The audit schema refuses it, so "
+            "authorizing on it would approve a correction that cannot be "
+            "recorded."
         )
     # Hour 24: `fromisoformat` ACCEPTS it and NORMALISES to the next day, so a
     # stamp would silently move by a calendar day.
@@ -436,6 +473,42 @@ class _AsOfInterval:
     recorded_at_raw: str
     effective_from_raw: str
     effective_to_raw: str | None
+
+
+def candidate_provenance_snapshot(cited: Any) -> dict[str, Any]:
+    """The cited candidate's DERIVATION-BEARING content, canonically.
+
+    Frozen because re-derivation ALONE is not enough (Codex R4 Major 3):
+    `_non_pass_criterion_names` observes only the SET OF NAMES whose result is
+    not `pass`, so flipping the live CADL case's `TT8_rs_rank` from `na` to
+    `fail` leaves the set and therefore the LABEL unchanged -- while the
+    correction's stored reason specifically records the `na` evidence.
+    Criterion `value`, `rule` and `layer` changes, and the deletion of a
+    PASSING criterion, are invisible the same way. So the label is still
+    re-derived (it catches what a snapshot comparison would miss about
+    MEANING) and the snapshot is compared as well (it catches what
+    re-derivation cannot see). Neither subsumes the other.
+
+    Sorted by criterion name so the comparison is order-independent.
+    """
+    return {
+        "id": int(cited.candidate_id),
+        "evaluation_run_id": int(cited.evaluation_run_id),
+        "ticker": str(cited.candidate.ticker),
+        "bucket": str(cited.candidate.bucket),
+        "rs_method": str(cited.candidate.rs_method),
+        "criteria": [
+            {
+                "criterion_name": c.criterion_name,
+                "layer": c.layer,
+                "result": c.result,
+                "value": c.value,
+                "rule": c.rule,
+            }
+            for c in sorted(
+                cited.candidate.criteria, key=lambda c: c.criterion_name)
+        ],
+    }
 
 
 @dataclass(frozen=True)
@@ -1683,6 +1756,8 @@ def _correct_cohort_provenance_inner(
                 derived.status_interval.effective_from_raw),
             cited_hypothesis_status_effective_to=(
                 derived.status_interval.effective_to_raw),
+            cited_candidate_snapshot_json=json.dumps(
+                candidate_provenance_snapshot(anchored.cited), sort_keys=True),
             cited_hypothesis_name_at_correction=derived.hypothesis_name,
             cited_candidate_action_session_date=anchored.candidate_anchor,
             cited_recommendation_action_session_date=(
@@ -1888,6 +1963,7 @@ def _derivation_input_drift(
         fetch_candidate_by_id,
         get_evaluation_run_by_id,
     )
+    from swing.metrics.funnel import APLUS_TRADE_ORIGIN
     from swing.recommendations.hypothesis import _descriptive_label
     from swing.trades.entry import canonicalize_hypothesis_label
 
@@ -1936,6 +2012,28 @@ def _derivation_input_drift(
                 f"this correction wrote "
                 f"{applied.get('trades.hypothesis_label')!r} -- the cited "
                 "record's bucket, criteria or hypothesis name has moved.")
+        frozen_candidate = json.loads(correction.cited_candidate_snapshot_json)
+        live_candidate = candidate_provenance_snapshot(cited)
+        if frozen_candidate != live_candidate:
+            for key in sorted(set(frozen_candidate) | set(live_candidate)):
+                if frozen_candidate.get(key) != live_candidate.get(key):
+                    lines.append(
+                        f"{CITATION_DRIFT}: candidates.{key} was "
+                        f"{frozen_candidate.get(key)!r} now "
+                        f"{live_candidate.get(key)!r}")
+        # THE ORIGIN IS RE-DERIVED TOO (Codex R4 Major 2). The reader
+        # re-derived the LABEL and checked the bucket, but never the origin --
+        # so an audit row citing an A+ candidate with the correct label and
+        # `trade_origin='pipeline_watch_manual'` reported CLEAN.
+        expected_origin = (
+            APLUS_TRADE_ORIGIN if str(cited.candidate.bucket) == APLUS_BUCKET
+            else None)
+        if applied.get("trades.trade_origin") != expected_origin:
+            lines.append(
+                f"{CITATION_DRIFT}: the origin RE-DERIVED from candidate "
+                f"{correction.cited_candidate_id} today is "
+                f"{expected_origin!r}, but this correction wrote "
+                f"{applied.get('trades.trade_origin')!r}.")
         if str(cited.candidate.bucket) != APLUS_BUCKET:
             lines.append(
                 f"{CITATION_DRIFT}: candidates.bucket was {APLUS_BUCKET!r} at "

@@ -46,6 +46,7 @@ _COLUMNS: tuple[str, ...] = (
     "entry_fill_session_date",
     "cited_run_ts_raw",
     "cited_recommendation_snapshot_json",
+    "cited_candidate_snapshot_json",
     "derivation_rule_version",
     "pre_value_json",
     "applied_value_json",

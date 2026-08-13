@@ -1109,3 +1109,171 @@ def test_R2M5_the_TRADE_no_longer_carrying_the_applied_triple_is_reported(
     [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
     assert any(f"trades.{column} was written as" in line
                for line in report.drift_lines), report.drift_lines
+
+
+# =========================================================================
+# Codex R4 -- the 1900 floor, the pinned origin, the candidate freeze,
+#            the widened derivation digest, and the tightened trigger.
+# =========================================================================
+
+
+def test_R4M1_a_pre_1900_history_stamp_REFUSES_in_preview_AND_apply(
+    conn,
+) -> None:
+    """Every 0036 timestamp CHECK requires year >= 1900 and neither Python
+    validator did -- so a schema-legal
+    `hypothesis_status_history.recorded_at='1899-01-01T00:00:00.000'` passed
+    parsing, the retrospective test and the margin, the PREVIEW said GO, and
+    the apply then UPDATED THE TRADE and died at the audit INSERT with an
+    untyped IntegrityError. Both entry points now refuse identically."""
+    ids = build_cadl_case(conn)
+    conn.execute(
+        "UPDATE hypothesis_status_history SET recorded_at = "
+        "'1899-01-01T00:00:00.000', effective_from = '1899-01-01T00:00:00.000' "
+        "WHERE hypothesis_id = 1")
+    conn.commit()
+    with pytest.raises(CohortProvenanceCorrectionError) as preview_exc:
+        preview_cohort_provenance_correction(
+            conn, trade_id=ids["trade_id"],
+            cited_candidate_id=ids["candidate_id"],
+            cited_recommendation_id=ids["daily_recommendation_id"],
+            reason=REASON)
+    with pytest.raises(CohortProvenanceCorrectionError) as apply_exc:
+        correct_cohort_provenance(
+            conn, trade_id=ids["trade_id"],
+            cited_candidate_id=ids["candidate_id"],
+            cited_recommendation_id=ids["daily_recommendation_id"],
+            reason=REASON)
+    assert "before 1900" in str(preview_exc.value)
+    assert str(preview_exc.value) == str(apply_exc.value)
+    assert _cohort_row(conn, ids["trade_id"])[2] == "manual_off_pipeline"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM provenance_corrections").fetchone()[0] == 0
+
+
+def test_R4M2_an_impossible_aplus_watch_origin_row_is_refused(conn) -> None:
+    """Binding only `candidate_id` let an audit row cite an A+ candidate with
+    the correct label and `trade_origin='pipeline_watch_manual'` -- an
+    impossible cohort assignment that passed BOTH layers."""
+    from swing.data.models import ProvenanceCorrection
+
+    ids = build_cadl_case(conn)
+    other = build_cadl_case(conn, ticker="OTHR")
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    env = json.loads(row.applied_value_json)
+    env["trades.trade_origin"] = "pipeline_watch_manual"
+    kw = _repointed_at(row, other)
+    kw["applied_value_json"] = json.dumps(env, sort_keys=True)
+    with pytest.raises(ValueError):
+        ProvenanceCorrection(**kw)
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_insert_or_raise(conn, row, kw)
+
+
+def test_R4M2_the_reader_RE_DERIVES_the_origin_too(conn) -> None:
+    """The reader re-derived the LABEL and checked the bucket but never the
+    ORIGIN, so a trade carrying a watch origin beside an A+ citation reported
+    CLEAN."""
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.execute(
+        "UPDATE trades SET trade_origin = 'pipeline_watch_manual' "
+        "WHERE id = ?", (ids["trade_id"],))
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    joined = "\n".join(report.drift_lines)
+    assert "trades.trade_origin was written as" in joined
+
+
+def test_R4M3_a_criteria_change_that_PRESERVES_the_label_is_still_reported(
+    conn,
+) -> None:
+    """THE EQUIVALENCE CLASS THAT DEFEATS RE-DERIVATION.
+    `_non_pass_criterion_names` observes only the SET OF NAMES whose result is
+    not `pass`, so flipping the live CADL case's `TT8_rs_rank` from `na` to
+    `fail` leaves that set -- and therefore the LABEL -- UNCHANGED, while the
+    correction's stored reason specifically records the `na` evidence. The
+    earlier test flipped `tightness` from pass to fail, which MOVES the label,
+    so it could not cover this class at all."""
+    from swing.recommendations.hypothesis import _descriptive_label
+    from swing.data.repos.candidates import fetch_candidate_by_id
+
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    before = _descriptive_label(
+        fetch_candidate_by_id(conn, ids["candidate_id"]).candidate,
+        "A+ baseline")
+    conn.execute(
+        "UPDATE candidate_criteria SET result = 'fail' "
+        "WHERE candidate_id = ? AND criterion_name = 'TT8_rs_rank'",
+        (ids["candidate_id"],))
+    after = _descriptive_label(
+        fetch_candidate_by_id(conn, ids["candidate_id"]).candidate,
+        "A+ baseline")
+    assert before == after, "the fixture must leave the label UNCHANGED"
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    joined = "\n".join(report.drift_lines)
+    assert "candidates.criteria" in joined
+    assert "RE-DERIVED" not in joined  # the label really did not move
+
+
+def test_R4M3_a_criterion_value_change_is_reported(conn) -> None:
+    """`value`, `rule` and `layer` are invisible to re-derivation too."""
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.execute(
+        "UPDATE candidate_criteria SET value = 'universe, rank 12' "
+        "WHERE candidate_id = ? AND criterion_name = 'TT8_rs_rank'",
+        (ids["candidate_id"],))
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    assert any("candidates.criteria" in line for line in report.drift_lines)
+
+
+def test_R4M3_deleting_a_PASSING_criterion_is_reported(conn) -> None:
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.execute(
+        "DELETE FROM candidate_criteria WHERE candidate_id = ? "
+        "AND criterion_name = 'ma_short_rising'", (ids["candidate_id"],))
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    assert any("candidates.criteria" in line for line in report.drift_lines)
+
+
+def test_R4m5_an_empty_hypothesis_name_is_refused_by_SQL_too(conn) -> None:
+    """`__post_init__` already rejected it, so without the SQL CHECK a RAW row
+    inserted cleanly and then made `list_provenance_corrections` RAISE during
+    hydration -- aborting the whole supported report rather than surfacing one
+    bad row."""
+    from swing.data.models import ProvenanceCorrection
+
+    ids = build_cadl_case(conn)
+    other = build_cadl_case(conn, ticker="OTHR")
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    kw = _repointed_at(row, other)
+    kw["cited_hypothesis_name_at_correction"] = "   "
+    with pytest.raises(ValueError):
+        ProvenanceCorrection(**kw)
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_insert_or_raise(conn, row, kw)
+
+
+def test_R4m6_the_pointer_cannot_be_nulled_while_the_parent_still_EXISTS(
+    conn,
+) -> None:
+    """The trigger recognised only the VALUE TRANSITION, so a direct
+    `UPDATE ... SET entry_fill_id = NULL` succeeded while the fill still
+    existed -- after which the reader falsely reported that the fill had been
+    DELETED. The exception now says what it actually is."""
+    ids = build_cadl_case(conn)
+    result = _apply(conn, ids)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE fill_id = ?",
+        (ids["fill_id"],)).fetchone()[0] == 1
+    with pytest.raises(sqlite3.IntegrityError, match="APPEND-ONLY"):
+        conn.execute(
+            "UPDATE provenance_corrections SET entry_fill_id = NULL "
+            "WHERE provenance_correction_id = ?", (result.correction_id,))
+    # ...and it IS permitted once the parent is genuinely gone.
+    conn.execute("DELETE FROM fills WHERE fill_id = ?", (ids["fill_id"],))
+    assert get_correction_for_trade(conn, ids["trade_id"]).entry_fill_id is None

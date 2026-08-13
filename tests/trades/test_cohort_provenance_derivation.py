@@ -149,12 +149,24 @@ def test_derivation_rule_version_is_pinned_to_the_source_sha(conn) -> None:
     drift ("the descriptive suffix may evolve"), so a version constant that is
     "bumped by hand" is gotcha #31. Changing either function fails HERE until
     the hash and the version move in the same commit."""
-    from swing.recommendations.hypothesis import (
-        _descriptive_label,
-        _non_pass_criterion_names,
+    import importlib
+
+    from swing.trades.cohort_provenance_correction import (
+        DERIVATION_RULE_SOURCE_FUNCTIONS,
     )
-    src = (inspect.getsource(_descriptive_label)
-           + inspect.getsource(_non_pass_criterion_names))
+
+    # EVERY function that decides the stored value, not just the two that
+    # format it. The written label also passes through
+    # `canonicalize_hypothesis_label`, and WHICH hypothesis is selected comes
+    # from `match_candidate_to_hypotheses` and `_aplus_baseline_match` -- so
+    # changing the canonicalizer could have changed every stored label while
+    # this test stayed green and new corrections kept claiming the same
+    # version. That is reachable after a ROUTINE CODE UPGRADE.
+    src = ""
+    for spec in DERIVATION_RULE_SOURCE_FUNCTIONS:
+        module_name, func_name = spec.split(":")
+        src += inspect.getsource(
+            getattr(importlib.import_module(module_name), func_name))
     digest = hashlib.sha256(src.encode("utf-8")).hexdigest()
     assert digest == DERIVATION_RULE_SOURCE_SHA256, (
         "swing.recommendations.hypothesis._descriptive_label or "

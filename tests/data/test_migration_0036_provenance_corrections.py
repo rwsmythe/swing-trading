@@ -296,6 +296,14 @@ def _row_kwargs(ids: dict[str, int], **overrides):
         # pass this test.
         cited_recommendation_snapshot_json=json.dumps(
             ids["dr_snapshot"], sort_keys=True),
+        cited_candidate_snapshot_json=json.dumps({
+            "id": ids["candidate"], "evaluation_run_id": ids["run"], "ticker": "CADL",
+            "bucket": "aplus", "rs_method": "fallback_spy",
+            "criteria": [
+                {"criterion_name": "TT8_rs_rank", "layer": "trend_template",
+                 "result": "na", "value": None, "rule": None},
+            ],
+        }, sort_keys=True),
         derivation_rule_version="2026-08-12.1",
         # The FULL three-key envelopes. The earlier one-key version claimed
         # all three corrected fields while carrying ONE -- a "well-formed"
@@ -335,6 +343,7 @@ _COLUMNS = (
     "cited_candidate_action_session_date, "
     "cited_recommendation_action_session_date, entry_fill_session_date, "
     "cited_run_ts_raw, cited_recommendation_snapshot_json, "
+    "cited_candidate_snapshot_json, "
     "derivation_rule_version, pre_value_json, applied_value_json, "
     "corrected_fields_json, applied_at, applied_by, correction_reason, "
     "risk_policy_id_at_correction"

@@ -124,6 +124,16 @@ CREATE TABLE provenance_corrections (
     -- about it changing, so its content at authorization is frozen here and
     -- drift is REPORTED by the read command.
     cited_recommendation_snapshot_json TEXT NOT NULL,
+    -- THE CITED CANDIDATE'S DERIVATION-BEARING CONTENT, FROZEN (Codex R4
+    -- Major 3). Re-deriving the label ALONE is not enough:
+    -- `_non_pass_criterion_names` observes only the SET OF NAMES whose result
+    -- is not `pass`, so flipping the live CADL case's `TT8_rs_rank` from `na`
+    -- to `fail` leaves that set -- and the label -- UNCHANGED, while the
+    -- correction's stored reason specifically records the `na` evidence.
+    -- Criterion `value` / `rule` / `layer` changes and the deletion of a
+    -- PASSING criterion are invisible the same way. The reader does BOTH:
+    -- re-derives (catches meaning) and compares this (catches content).
+    cited_candidate_snapshot_json TEXT NOT NULL,
 
     -- The label format and the na-counts-as-non-pass rule are CODE, not data,
     -- so no FK can pin them; the version constant makes a later change visible
@@ -457,8 +467,17 @@ CREATE TABLE provenance_corrections (
            -- while hydrating. The two layers now accept the same set.
            AND length(trim(json_extract(
                    applied_value_json, '$."trades.hypothesis_label"'))) > 0
-           AND length(trim(json_extract(
-                   applied_value_json, '$."trades.trade_origin"'))) > 0, 0)
+           -- THE ORIGIN IS PINNED, not merely non-empty (Codex R4 Major 2).
+           -- Binding only `candidate_id` let an audit row cite an A+
+           -- candidate with the correct label and
+           -- `trade_origin='pipeline_watch_manual'` -- an impossible cohort
+           -- assignment that passed BOTH layers. V1 corrects `aplus`
+           -- candidates ONLY (the boundary of what is DERIVABLE, not a scope
+           -- cut), so `pipeline_aplus` is the only truthful applied origin;
+           -- widening it is a V2 migration alongside the entry-side change
+           -- that would make a watch correction derivable at all.
+           AND json_extract(applied_value_json, '$."trades.trade_origin"')
+                   = 'pipeline_aplus', 0)
            ELSE 0 END),
     -- The PRE envelope must record the UNSET state this surface requires as
     -- its precondition -- the correction FILLS empty provenance, so a pre-row
@@ -471,6 +490,24 @@ CREATE TABLE provenance_corrections (
            AND json_type(pre_value_json, '$."trades.candidate_id"')
                    = 'null', 0)
            ELSE 0 END),
+
+    CHECK (CASE WHEN json_valid(cited_candidate_snapshot_json) THEN COALESCE(
+               json_extract(cited_candidate_snapshot_json, '$.id')
+                   = cited_candidate_id
+           AND json_extract(cited_candidate_snapshot_json, '$.evaluation_run_id')
+                   = cited_evaluation_run_id
+           AND json_extract(cited_candidate_snapshot_json, '$.bucket')
+                   = 'aplus'
+           AND json_type(cited_candidate_snapshot_json, '$.criteria')
+                   = 'array', 0)
+           ELSE 0 END),
+
+    -- The hypothesis NAME must be non-empty in SQL too (Codex R4 Minor 5).
+    -- `__post_init__` already rejects an empty or whitespace-only name, so
+    -- without this a RAW row inserted cleanly and then made
+    -- `list_provenance_corrections` raise during hydration -- aborting the
+    -- whole supported CLI report rather than surfacing one bad row.
+    CHECK (length(trim(cited_hypothesis_name_at_correction)) > 0),
 
     CHECK (applied_by = 'operator'),
     CHECK (length(trim(correction_reason)) > 0),
@@ -516,11 +553,20 @@ CREATE INDEX ix_provenance_corrections_cited_candidate
 CREATE TRIGGER trg_provenance_corrections_append_only_update
 BEFORE UPDATE ON provenance_corrections
 FOR EACH ROW WHEN NOT (
-    -- the FK-driven nulling of one pointer, or the other, or both
-    ((NEW.entry_fill_id IS NULL AND OLD.entry_fill_id IS NOT NULL)
+    -- THE FK-DRIVEN nulling of one pointer, or the other, or both -- and the
+    -- PARENT MUST ACTUALLY BE GONE (Codex R4 Minor 6). Recognising only the
+    -- VALUE TRANSITION let a direct `UPDATE ... SET entry_fill_id = NULL`
+    -- succeed while the fill still existed, after which the reader falsely
+    -- reported the fill had been DELETED. Subqueries are prohibited in CHECK
+    -- constraints but ARE permitted in a trigger WHEN clause -- verified at
+    -- the prompt -- so the exception is stated as what it actually is.
+    ((NEW.entry_fill_id IS NULL AND OLD.entry_fill_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM fills WHERE fill_id = OLD.entry_fill_id))
      OR (NEW.entry_fill_id IS OLD.entry_fill_id))
     AND ((NEW.risk_policy_id_at_correction IS NULL
-          AND OLD.risk_policy_id_at_correction IS NOT NULL)
+          AND OLD.risk_policy_id_at_correction IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM risk_policy
+                          WHERE policy_id = OLD.risk_policy_id_at_correction))
          OR (NEW.risk_policy_id_at_correction
              IS OLD.risk_policy_id_at_correction))
     -- ...and it must actually BE one of them, not a no-op cover for a rewrite
@@ -551,6 +597,7 @@ FOR EACH ROW WHEN NOT (
            AND NEW.entry_fill_session_date = OLD.entry_fill_session_date
            AND NEW.cited_run_ts_raw = OLD.cited_run_ts_raw
            AND NEW.cited_recommendation_snapshot_json = OLD.cited_recommendation_snapshot_json
+           AND NEW.cited_candidate_snapshot_json = OLD.cited_candidate_snapshot_json
            AND NEW.derivation_rule_version = OLD.derivation_rule_version
            AND NEW.pre_value_json = OLD.pre_value_json
            AND NEW.applied_value_json = OLD.applied_value_json

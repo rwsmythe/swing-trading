@@ -3023,6 +3023,18 @@ def _require_audit_timestamp(name: str, value) -> None:
         raise ValueError(
             f"{name} must be a canonical naive ISO timestamp "
             f"'YYYY-MM-DDTHH:MM:SS[.ffffff]'; got {value!r}")
+    # THE 1900 FLOOR, MIRRORED (Codex R4 Major 1). Every 0036 timestamp CHECK
+    # requires year >= 1900 and neither Python validator did, so a
+    # schema-legal source value such as
+    # `hypothesis_status_history.recorded_at='1899-01-01T00:00:00.000'` passed
+    # parsing, the retrospective test and the margin -- preview said GO, and
+    # the apply then died at the audit INSERT with an untyped IntegrityError
+    # after having already updated the trade. Same floor, same layer order.
+    if value[:4] < "1900":
+        raise ValueError(
+            f"{name} is before 1900 ({value!r}); the audit schema refuses it, "
+            "so accepting it here would make a dry run approve an apply that "
+            "cannot succeed")
     # HOUR 24 IS REFUSED EXPLICITLY. `datetime.fromisoformat` ACCEPTS
     # '2026-08-11T24:00:00' and NORMALISES it to 2026-08-12T00:00:00 -- so a
     # stamp would silently move by a calendar day -- while the 0036 GLOB CHECK
@@ -3096,6 +3108,11 @@ def _require_value_envelope(
                     f"{name}[{key!r}] is {env[key]!r}; the pre-state must be "
                     "unset (null) -- this surface FILLS empty provenance")
         return
+    if env["trades.trade_origin"] != "pipeline_aplus":
+        raise ValueError(
+            f"{name}['trades.trade_origin'] is "
+            f"{env['trades.trade_origin']!r}; V1 corrects `aplus` candidates "
+            "only, so 'pipeline_aplus' is the only truthful applied origin")
     if env["trades.candidate_id"] != required_candidate_id:
         raise ValueError(
             f"{name}['trades.candidate_id'] is "
@@ -3175,6 +3192,7 @@ class ProvenanceCorrection:
     entry_fill_session_date: str
     cited_run_ts_raw: str
     cited_recommendation_snapshot_json: str
+    cited_candidate_snapshot_json: str
     derivation_rule_version: str
     pre_value_json: str
     applied_value_json: str
@@ -3331,6 +3349,19 @@ class ProvenanceCorrection:
                 # domain.
                 "finished_ts": self.cited_pipeline_finished_ts_raw,
             })
+        cand = _provenance_snapshot_dict(
+            "cited_candidate_snapshot_json",
+            self.cited_candidate_snapshot_json)
+        _require_snapshot_fields(
+            "cited_candidate_snapshot_json", cand, {
+                "id": self.cited_candidate_id,
+                "evaluation_run_id": self.cited_evaluation_run_id,
+                "bucket": "aplus",
+            })
+        if not isinstance(cand.get("criteria"), list):
+            raise ValueError(
+                "cited_candidate_snapshot_json['criteria'] must be a list; "
+                "the criteria are what the derived label is a function of")
         fill = _provenance_snapshot_dict(
             "entry_fill_snapshot_json", self.entry_fill_snapshot_json)
         _require_snapshot_fields(
