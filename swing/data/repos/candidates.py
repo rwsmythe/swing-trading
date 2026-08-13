@@ -139,6 +139,113 @@ def fetch_candidates_for_run(conn: sqlite3.Connection, run_id: int) -> list[Cand
 
 
 @dataclass(frozen=True)
+class CitedCandidate:
+    """A `candidates` row WITH the two facts `Candidate` cannot carry.
+
+    `Candidate` (models.py) has no `id` and no `evaluation_run_id` field --
+    verified by reading the dataclass, not inferred -- so
+    `fetch_candidates_for_run` cannot serve a caller that must CITE a specific
+    row. Demand C's whole surface is a citation, so it needs both.
+    """
+    candidate_id: int
+    evaluation_run_id: int
+    candidate: Candidate
+
+
+def get_evaluation_run_by_id(
+    conn: sqlite3.Connection, run_id: int,
+) -> EvaluationRun | None:
+    """One `evaluation_runs` row by primary key, or None.
+
+    NO date predicate and NO ordering: `run_ts` / `data_asof_date` /
+    `action_session_date` are unconstrained TEXT columns, and a lexical SQL
+    filter over one of those excludes a malformed row BEFORE any validator can
+    see it. The caller loads by id and validates in Python.
+    """
+    row = conn.execute(
+        """
+        SELECT id, run_ts, data_asof_date, action_session_date,
+               finviz_csv_path, tickers_evaluated, aplus_count, watch_count,
+               skip_count, excluded_count, error_count, rs_universe_version,
+               rs_universe_hash
+        FROM evaluation_runs WHERE id = ?
+        """,
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return EvaluationRun(*row)
+
+
+def fetch_candidate_by_id(
+    conn: sqlite3.Connection, candidate_id: int,
+) -> CitedCandidate | None:
+    """One candidate by primary key, HYDRATED with its criteria.
+
+    The criteria are not decoration here: the hypothesis label is built from
+    the non-pass criterion set, so an unhydrated row would silently produce a
+    DIFFERENT (cleaner) label than the framework's own record supports.
+    """
+    row = conn.execute(
+        """
+        SELECT id, evaluation_run_id, ticker, bucket, close, pivot,
+               initial_stop, adr_pct, tight_streak, pullback_pct,
+               prior_trend_pct, rs_rank, rs_return_12w_vs_spy, rs_method,
+               pattern_tag, notes, sector, industry
+        FROM candidates WHERE id = ?
+        """,
+        (candidate_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    crit_rows = conn.execute(
+        """
+        SELECT criterion_name, layer, result, value, rule
+        FROM candidate_criteria WHERE candidate_id = ?
+        ORDER BY criterion_name
+        """,
+        (candidate_id,),
+    ).fetchall()
+    criteria = tuple(
+        CriterionResult(name, layer, res, val, rule)
+        for (name, layer, res, val, rule) in crit_rows
+    )
+    return CitedCandidate(
+        candidate_id=int(row[0]),
+        evaluation_run_id=int(row[1]),
+        candidate=Candidate(
+            ticker=row[2], bucket=row[3], close=row[4], pivot=row[5],
+            initial_stop=row[6], adr_pct=row[7], tight_streak=row[8],
+            pullback_pct=row[9], prior_trend_pct=row[10], rs_rank=row[11],
+            rs_return_12w_vs_spy=row[12], rs_method=row[13],
+            pattern_tag=row[14], notes=row[15], criteria=criteria,
+            sector=row[16], industry=row[17],
+        ),
+    )
+
+
+def list_candidates_for_ticker(
+    conn: sqlite3.Connection, ticker: str,
+) -> list[tuple[int, int, str]]:
+    """`(candidate_id, evaluation_run_id, bucket)` for EVERY row of a ticker.
+
+    Deliberately UNFILTERED and UNORDERED beyond the primary key: the
+    last-word guard's competitor set is decided on PARSED dates in Python,
+    because a lexical `WHERE er.action_session_date <= F` silently DROPS a
+    basic-form competitor (`'20260811' <= '2026-08-12'` is False) and the
+    guard would then bless an older operator-selected citation -- the exact
+    citation-shopping it exists to prevent, arriving through its own
+    comparison.
+    """
+    rows = conn.execute(
+        "SELECT id, evaluation_run_id, bucket FROM candidates "
+        "WHERE ticker = ? ORDER BY id ASC",
+        (ticker,),
+    ).fetchall()
+    return [(int(r[0]), int(r[1]), str(r[2])) for r in rows]
+
+
+@dataclass(frozen=True)
 class CandidateSectorIndustryRecord:
     """Most-recent candidates-row Sector + Industry pair WITH provenance.
 

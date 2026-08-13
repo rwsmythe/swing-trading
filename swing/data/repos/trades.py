@@ -827,6 +827,63 @@ def update_entry_date(
 
 
 # ---------------------------------------------------------------------------
+# Demand C — the cohort-key writer.
+# ---------------------------------------------------------------------------
+
+# Mirrors the `trades.trade_origin` CHECK in
+# `0014_phase7_state_machine_and_fills.sql:161-162`. A test reads the LIVE
+# DDL and asserts the two sets are equal, so a widened CHECK cannot silently
+# leave this behind (#11).
+TRADE_ORIGINS: frozenset[str] = frozenset({
+    "pipeline_aplus",
+    "pipeline_watch_hyp_recs",
+    "pipeline_watch_manual",
+    "manual_off_pipeline",
+})
+
+
+def update_cohort_provenance(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    hypothesis_label: str,
+    candidate_id: int,
+    trade_origin: str,
+) -> None:
+    """UPDATE the THREE cohort keys together. Caller owns the transaction.
+
+    Demand C's only `trades` writer. LITERAL three-column SQL with NO
+    interpolated identifier: the operator supplies two row IDs and a reason,
+    never a column name and never a value, so the free-typing surface the
+    generic corrector exposes does not exist here.
+
+    The three move TOGETHER because they are a COUPLED TRIPLE, not three
+    independent columns — a `candidate_id` pointing at an `aplus` row beside a
+    `trade_origin` of `manual_off_pipeline` is an internally contradictory
+    cohort assignment, and the generic path applies operator-supplied fields
+    SEQUENTIALLY with no cross-field coherence check.
+
+    A missing trade_id raises ValueError: silence would let a correction
+    report success having written nothing.
+    """
+    if not isinstance(hypothesis_label, str) or not hypothesis_label.strip():
+        raise ValueError("hypothesis_label must be a non-empty string")
+    if isinstance(candidate_id, bool) or not isinstance(candidate_id, int):
+        raise ValueError(f"candidate_id must be an int; got {candidate_id!r}")
+    if trade_origin not in TRADE_ORIGINS:
+        raise ValueError(
+            f"trade_origin must be one of {sorted(TRADE_ORIGINS)}; "
+            f"got {trade_origin!r}")
+    cur = conn.execute(
+        "UPDATE trades SET hypothesis_label = ?, candidate_id = ?, "
+        "trade_origin = ? WHERE id = ?",
+        (hypothesis_label, candidate_id, trade_origin, trade_id),
+    )
+    if cur.rowcount == 0:
+        raise ValueError(f"trade {trade_id} not found")
+
+
+# ---------------------------------------------------------------------------
 # 3e.16 — cadence-review trade-activity summary helper.
 # ---------------------------------------------------------------------------
 

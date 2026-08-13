@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from dataclasses import dataclass
 
 from swing.data.models import PipelineChartTarget, PipelineRun
 
@@ -270,3 +271,59 @@ def list_chart_targets(
         )
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Demand C -- the evaluation run's PERSISTENCE BOUND.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EvaluationRunPersistenceBound:
+    """The pipeline row that bounds when an evaluation run was persisted."""
+    pipeline_run_id: int
+    finished_ts: str
+    snapshot: dict
+
+
+def evaluation_run_persistence_bound(
+    conn: sqlite3.Connection, *, evaluation_run_id: int,
+) -> EvaluationRunPersistenceBound | None:
+    """The upper bound of the run's persistence window, or None.
+
+    ``evaluation_runs.run_ts`` is captured at run START and copied into the
+    row at step 13, which is persisted at step 14 with the recommendation rows
+    emitted later still -- 14m19s of uncertainty on the live CADL run. So the
+    hypothesis-status question is asked over a WINDOW, and this is its top.
+
+    Returns None -- i.e. the window cannot be closed and the caller REFUSES --
+    unless EXACTLY ONE ``pipeline_runs`` row references this evaluation run
+    AND that row is ``state='complete'`` with a non-NULL ``finished_ts``.
+    ``pipeline_runs.evaluation_run_id`` is a NULLABLE, NON-UNIQUE FK, so
+    "exactly one complete row" is a fact about the table that must be
+    ESTABLISHED by a count rather than assumed by a ``LIMIT 1``.
+
+    NO ordering and NO limit: picking one of two rows is exactly the silent
+    choice this refusal exists to prevent.
+    """
+    rows = conn.execute(
+        "SELECT id, evaluation_run_id, state, started_ts, finished_ts "
+        "FROM pipeline_runs WHERE evaluation_run_id = ?",
+        (evaluation_run_id,),
+    ).fetchall()
+    if len(rows) != 1:
+        return None
+    run_id, eval_id, state, started_ts, finished_ts = rows[0]
+    if state != "complete" or finished_ts is None:
+        return None
+    return EvaluationRunPersistenceBound(
+        pipeline_run_id=int(run_id),
+        finished_ts=str(finished_ts),
+        snapshot={
+            "id": int(run_id),
+            "evaluation_run_id": int(eval_id),
+            "state": str(state),
+            "started_ts": None if started_ts is None else str(started_ts),
+            "finished_ts": str(finished_ts),
+        },
+    )
