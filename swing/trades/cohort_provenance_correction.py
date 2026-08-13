@@ -41,6 +41,8 @@ under a SAVEPOINT.
 """
 from __future__ import annotations
 
+import contextlib
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import date as _date
@@ -48,7 +50,11 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from swing.data.models import PROVENANCE_CORRECTED_FIELDS
+from swing.data.models import (
+    PROVENANCE_CORRECTED_FIELDS,
+    PROVENANCE_CORRECTION_APPLIED_BY,
+    ProvenanceCorrection,
+)
 from swing.data.repos.candidates import (
     fetch_candidate_by_id,
     get_evaluation_run_by_id,
@@ -67,7 +73,11 @@ __all__ = [
     "CallerHeldTransactionError",
     "CohortProvenanceCorrectionError",
     "CohortProvenanceCorrectionPreview",
+    "CohortProvenanceCorrectionResult",
+    "ProvenanceCorrectionReport",
+    "correct_cohort_provenance",
     "preview_cohort_provenance_correction",
+    "read_provenance_corrections",
 ]
 
 # The manifest of what ONE correction touches -- imported from `models.py`
@@ -1038,6 +1048,7 @@ class CohortProvenanceCorrectionPreview:
     pre_values: dict[str, Any]
     post_values: dict[str, Any]
     na_criterion_suffix_note: str | None = None
+    already_applied_correction_id: int | None = None
 
 
 def _reason_or_refuse(reason: Any) -> str:
@@ -1048,8 +1059,10 @@ def _reason_or_refuse(reason: Any) -> str:
 
 @dataclass(frozen=True)
 class _Authorized:
-    anchored: _Anchored
-    derived: _Derived
+    trade: Any
+    already_applied: Any = None       # ProvenanceCorrection | None
+    anchored: _Anchored | None = None
+    derived: _Derived | None = None
 
 
 def _authorize(
@@ -1058,15 +1071,50 @@ def _authorize(
     trade_id: int,
     cited_candidate_id: int,
     cited_recommendation_id: int,
+    reason: Any,
 ) -> _Authorized:
-    """Every read-only check, in refusal-ladder order. Writes nothing."""
+    """Every read-only check, in refusal-ladder order. Writes nothing.
+
+    SELECT-FIRST IDEMPOTENCY LEADS THE LADDER, and it sits ABOVE ``--reason``
+    validation, not merely above the unset-state gate. CLAUDE.md states the
+    rule directly: a terminal-state row must return its existing audit-row id
+    even with a stale or None payload. With ``--reason`` checked first, an
+    already-applied re-run carrying an empty reason REFUSES instead of
+    returning its correction id -- and a happy-path test using a valid reason
+    cannot catch that.
+    """
+    trade = _load_trade_or_refuse(conn, trade_id)
+
+    from swing.data.repos.provenance_corrections import get_correction_for_trade
+
+    existing = get_correction_for_trade(conn, trade_id)
+    if existing is not None:
+        same = (
+            int(existing.cited_candidate_id) == int(cited_candidate_id)
+            and int(existing.cited_daily_recommendation_id)
+            == int(cited_recommendation_id)
+        )
+        if same:
+            return _Authorized(trade=trade, already_applied=existing)
+        raise _refuse(
+            f"trade {trade_id} already has provenance correction "
+            f"{existing.provenance_correction_id}, which cites candidate "
+            f"{existing.cited_candidate_id} and daily_recommendations row "
+            f"{existing.cited_daily_recommendation_id} -- not candidate "
+            f"{cited_candidate_id} / row {cited_recommendation_id}. V1 records "
+            "provenance ONCE per trade and there is no supersession path: "
+            "re-deciding provenance is a different authority question."
+        )
+
+    _reason_or_refuse(reason)
     anchored = _anchor_half(
         conn,
         trade_id=trade_id,
         cited_candidate_id=cited_candidate_id,
         cited_recommendation_id=cited_recommendation_id,
     )
-    return _Authorized(anchored=anchored, derived=_derive(conn, anchored))
+    return _Authorized(
+        trade=trade, anchored=anchored, derived=_derive(conn, anchored))
 
 
 def _na_suffix_note(anchored: _Anchored, derived: _Derived) -> str | None:
@@ -1109,13 +1157,15 @@ def preview_cohort_provenance_correction(
     authorization function -- one authorization function, two entry points, so
     ``--dry-run`` cannot diverge from apply.
     """
-    _reason_or_refuse(reason)
     auth = _authorize(
         conn,
         trade_id=trade_id,
         cited_candidate_id=cited_candidate_id,
         cited_recommendation_id=cited_recommendation_id,
+        reason=reason,
     )
+    if auth.already_applied is not None:
+        return _preview_from_existing(auth.trade, auth.already_applied)
     anchored, derived = auth.anchored, auth.derived
     trade = anchored.trade
     return CohortProvenanceCorrectionPreview(
@@ -1150,3 +1200,429 @@ def preview_cohort_provenance_correction(
         },
         na_criterion_suffix_note=_na_suffix_note(anchored, derived),
     )
+
+
+def _preview_from_existing(trade: Any, existing: Any) -> CohortProvenanceCorrectionPreview:
+    """The preview for an ALREADY-APPLIED trade, read off the audit row.
+
+    Every value comes from the FROZEN columns rather than being re-derived, so
+    the dry run reports what is RECORDED rather than what a fresh derivation
+    would produce today. Those can differ -- a registry rename, a
+    `_descriptive_label` change -- and reporting the re-derivation here would
+    quietly show the operator a value his ledger does not contain.
+    """
+    applied = json.loads(existing.applied_value_json)
+    pre = json.loads(existing.pre_value_json)
+    return CohortProvenanceCorrectionPreview(
+        trade_id=int(existing.trade_id),
+        ticker=str(trade.ticker),
+        state=str(trade.state),
+        cited_candidate_id=int(existing.cited_candidate_id),
+        cited_daily_recommendation_id=int(
+            existing.cited_daily_recommendation_id),
+        cited_evaluation_run_id=int(existing.cited_evaluation_run_id),
+        cited_pipeline_run_id=int(existing.cited_pipeline_run_id),
+        cited_hypothesis_id=int(existing.cited_hypothesis_id),
+        cited_hypothesis_name=str(existing.cited_hypothesis_name_at_correction),
+        cited_hypothesis_status_history_id=int(
+            existing.cited_hypothesis_status_history_id),
+        entry_fill_id=int(existing.entry_fill_id_at_correction),
+        entry_fill_session_date=str(existing.entry_fill_session_date),
+        candidate_action_session_date=str(
+            existing.cited_candidate_action_session_date),
+        recommendation_action_session_date=str(
+            existing.cited_recommendation_action_session_date),
+        run_ts_raw=str(existing.cited_run_ts_raw),
+        run_ts_utc=str(existing.cited_run_ts_utc),
+        pipeline_finished_ts_raw=str(existing.cited_pipeline_finished_ts_raw),
+        status_window_upper_utc=str(existing.cited_status_window_upper_utc),
+        derivation_rule_version=str(existing.derivation_rule_version),
+        pre_values=pre,
+        post_values=applied,
+        already_applied_correction_id=int(existing.provenance_correction_id),
+    )
+
+
+@dataclass(frozen=True)
+class CohortProvenanceCorrectionResult:
+    correction_id: int
+    trade_id: int
+    already_applied: bool
+    cited_candidate_id: int
+    cited_daily_recommendation_id: int
+    pre_values: dict[str, Any]
+    applied_values: dict[str, Any]
+    correction_reason: str
+    follow_up_command: str
+
+
+def _compose_reason(
+    operator_reason: str, anchored: _Anchored, derived: _Derived,
+) -> str:
+    """The operator's reason plus the clause only the server can write.
+
+    The audit trail explains its OWN string: which two rows were cited, what
+    their anchors were, which fill supplied `F`, which hypothesis and interval
+    authorized the label, and -- when it applies -- why the label carries a
+    `failed:` heading over a criterion whose result was `na`.
+    """
+    parts = [
+        operator_reason.strip(),
+        "[server-derived: cohort keys taken from candidates row "
+        f"{anchored.cited.candidate_id} (evaluation run "
+        f"{anchored.cited.evaluation_run_id}, action session "
+        f"{anchored.candidate_anchor}) confirmed by daily_recommendations row "
+        f"{anchored.recommendation.id} (action session "
+        f"{anchored.recommendation_anchor}); both pre-date the authoritative "
+        f"entry fill {anchored.entry_fill.fill_id}'s session "
+        f"{anchored.fill_session}. Hypothesis {derived.hypothesis_id} "
+        f"({derived.hypothesis_name}) was 'active' over "
+        f"[{anchored.run_ts_utc}, {derived.status_window_upper_utc}] UTC per "
+        f"status-history row {derived.status_interval.history_id}. Label "
+        f"written verbatim from the framework's own builder "
+        f"(derivation rule {DERIVATION_RULE_VERSION}): "
+        f"{derived.hypothesis_label!r}.]",
+    ]
+    note = _na_suffix_note(anchored, derived)
+    if note:
+        parts.append(f"[{note}]")
+    return " ".join(parts)
+
+
+def correct_cohort_provenance(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    cited_candidate_id: int,
+    cited_recommendation_id: int,
+    reason: str | None = None,
+    applied_at: str | None = None,
+) -> CohortProvenanceCorrectionResult:
+    """Outer: owns ``BEGIN IMMEDIATE`` / COMMIT / ROLLBACK, and REJECTS a
+    caller-held transaction -- never auto-detects, because an auto-detect
+    guard re-introduces the race the explicit lock closed."""
+    if conn.in_transaction:
+        raise CallerHeldTransactionError(
+            "correct_cohort_provenance must be called with no open "
+            "transaction; compose via _correct_cohort_provenance_inner inside "
+            "an existing tx. Nothing was written."
+        )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        result = _correct_cohort_provenance_inner(
+            conn,
+            trade_id=trade_id,
+            cited_candidate_id=cited_candidate_id,
+            cited_recommendation_id=cited_recommendation_id,
+            reason=reason,
+            applied_at=applied_at,
+        )
+        conn.commit()
+        return result
+    except Exception:
+        with contextlib.suppress(sqlite3.Error):
+            conn.rollback()
+        raise
+
+
+def _correct_cohort_provenance_inner(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    cited_candidate_id: int,
+    cited_recommendation_id: int,
+    reason: str | None = None,
+    applied_at: str | None = None,
+) -> CohortProvenanceCorrectionResult:
+    """Never commits. Every callee is repo-level, so no inner ``with conn:``
+    can close the caller's transaction out from under it.
+
+    THERE IS NO STEP AFTER THE AUDIT INSERT. V1 writes exactly one correction
+    row per trade and never supersedes; ``ux_provenance_corrections_trade``
+    makes a second row impossible even if this function were wrong.
+
+    NO ``trade_events`` ROW IS EMITTED, DELIBERATELY. ``trade_events
+    .event_type`` is a CHECK enum of exactly seven values -- read off the live
+    DDL: entry, stop_adjust, note, exit, flag, pre_trade_edit,
+    reconciliation_auto_correct -- and none of them truthfully names an
+    operator cohort-provenance correction. Item 5 already carries
+    ``reconciliation_auto_correct`` as recorded naming debt; repeating it here
+    would be worse, because there is no reconciliation anywhere in this arc.
+    Writing a MISLABELLED audit record beside a purpose-built correct one is
+    the precise failure this arc exists to stop. CONSEQUENCE, NAMED: a
+    ``trade_events``-backed timeline will not show this correction;
+    ``swing journal provenance-corrections`` is the read surface.
+    """
+    from swing.data.repos.provenance_corrections import (
+        insert_provenance_correction,
+    )
+    from swing.data.repos.recommendations import snapshot_recommendation_row
+    from swing.data.repos.trades import update_cohort_provenance
+    from swing.trades.reconciliation_auto_correct import (
+        _maybe_get_active_risk_policy_id,
+        _utc_now_iso_ms,
+    )
+
+    auth = _authorize(
+        conn,
+        trade_id=trade_id,
+        cited_candidate_id=cited_candidate_id,
+        cited_recommendation_id=cited_recommendation_id,
+        reason=reason,
+    )
+    if auth.already_applied is not None:
+        existing = auth.already_applied
+        return CohortProvenanceCorrectionResult(
+            correction_id=int(existing.provenance_correction_id),
+            trade_id=trade_id,
+            already_applied=True,
+            cited_candidate_id=int(existing.cited_candidate_id),
+            cited_daily_recommendation_id=int(
+                existing.cited_daily_recommendation_id),
+            pre_values=json.loads(existing.pre_value_json),
+            applied_values=json.loads(existing.applied_value_json),
+            correction_reason=str(existing.correction_reason),
+            follow_up_command=(
+                f"swing journal provenance-corrections {trade_id}"),
+        )
+
+    anchored = auth.anchored
+    derived = auth.derived
+    trade = auth.trade
+
+    pre_values: dict[str, Any] = {
+        "trades.hypothesis_label": trade.hypothesis_label,
+        "trades.candidate_id": trade.candidate_id,
+        "trades.trade_origin": trade.trade_origin,
+    }
+    applied_values: dict[str, Any] = {
+        "trades.hypothesis_label": derived.hypothesis_label,
+        "trades.candidate_id": derived.candidate_id,
+        "trades.trade_origin": derived.trade_origin,
+    }
+
+    update_cohort_provenance(
+        conn,
+        trade_id=trade_id,
+        hypothesis_label=derived.hypothesis_label,
+        candidate_id=derived.candidate_id,
+        trade_origin=derived.trade_origin,
+    )
+
+    snapshot = snapshot_recommendation_row(conn, cited_recommendation_id)
+    if snapshot is None:  # pragma: no cover -- rung 6 already found the row
+        raise _refuse(
+            f"daily_recommendations row {cited_recommendation_id} vanished "
+            "between authorization and the snapshot.")
+
+    stored_reason = _compose_reason(str(reason), anchored, derived)
+    correction_id = insert_provenance_correction(
+        conn,
+        ProvenanceCorrection(
+            provenance_correction_id=None,
+            trade_id=trade_id,
+            entry_fill_id=anchored.entry_fill.fill_id,
+            entry_fill_id_at_correction=anchored.entry_fill.fill_id,
+            entry_fill_snapshot_json=json.dumps(
+                anchored.entry_fill.snapshot(), sort_keys=True),
+            cited_candidate_id=int(anchored.cited.candidate_id),
+            cited_daily_recommendation_id=cited_recommendation_id,
+            cited_evaluation_run_id=int(anchored.cited.evaluation_run_id),
+            cited_hypothesis_id=derived.hypothesis_id,
+            cited_hypothesis_status_history_id=(
+                derived.status_interval.history_id),
+            cited_hypothesis_status_at_record=derived.status_interval.status,
+            cited_pipeline_finished_ts_raw=derived.pipeline_finished_ts_raw,
+            cited_run_ts_utc=anchored.run_ts_utc,
+            cited_status_window_upper_utc=derived.status_window_upper_utc,
+            cited_pipeline_run_id=derived.pipeline_run_id,
+            cited_pipeline_run_snapshot_json=json.dumps(
+                derived.pipeline_snapshot, sort_keys=True),
+            cited_hypothesis_status_recorded_at=(
+                derived.status_interval.recorded_at_raw),
+            cited_hypothesis_name_at_correction=derived.hypothesis_name,
+            cited_candidate_action_session_date=anchored.candidate_anchor,
+            cited_recommendation_action_session_date=(
+                anchored.recommendation_anchor),
+            entry_fill_session_date=anchored.fill_session,
+            cited_run_ts_raw=anchored.run_ts_raw,
+            cited_recommendation_snapshot_json=json.dumps(
+                snapshot, sort_keys=True),
+            derivation_rule_version=DERIVATION_RULE_VERSION,
+            pre_value_json=json.dumps(pre_values, sort_keys=True),
+            applied_value_json=json.dumps(applied_values, sort_keys=True),
+            corrected_fields_json=json.dumps(list(COHORT_CORRECTED_FIELDS)),
+            applied_at=applied_at or _utc_now_iso_ms(),
+            applied_by=PROVENANCE_CORRECTION_APPLIED_BY,
+            correction_reason=stored_reason,
+            risk_policy_id_at_correction=_maybe_get_active_risk_policy_id(conn),
+        ),
+    )
+
+    return CohortProvenanceCorrectionResult(
+        correction_id=correction_id,
+        trade_id=trade_id,
+        already_applied=False,
+        cited_candidate_id=int(anchored.cited.candidate_id),
+        cited_daily_recommendation_id=cited_recommendation_id,
+        pre_values=pre_values,
+        applied_values=applied_values,
+        correction_reason=stored_reason,
+        follow_up_command=f"swing journal provenance-corrections {trade_id}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# The READ surface -- and its drift reporting.
+#
+# Without it the audit table has no supported reader, and "verify against the
+# audit trail" would need raw SQL. More importantly, a FROZEN SNAPSHOT NOBODY
+# COMPARES IS DECORATION: a silent contradiction between the audit row and the
+# row it cites is the failure mode, and a LOUD one is a finding the operator
+# can act on.
+# ---------------------------------------------------------------------------
+
+CITATION_DRIFT = "CITATION DRIFT"
+CITATION_SCHEMA_DRIFT = "CITATION SCHEMA DRIFT"
+CITATION_ANCHOR_DRIFT = "CITATION ANCHOR DRIFT"
+CITATION_ANCHOR_UNVERIFIABLE = "CITATION ANCHOR UNVERIFIABLE"
+CITATION_INVALIDATED = "CITATION INVALIDATED"
+
+
+@dataclass(frozen=True)
+class ProvenanceCorrectionReport:
+    correction: Any                 # ProvenanceCorrection
+    drift_lines: tuple[str, ...]
+
+    @property
+    def has_drift(self) -> bool:
+        return bool(self.drift_lines)
+
+
+def _snapshot_drift(
+    label: str, frozen: dict[str, Any], live: dict[str, Any] | None,
+) -> list[str]:
+    """Field-by-field over the SAME derived column set, plus schema drift."""
+    if live is None:
+        return [
+            f"{CITATION_DRIFT}: the cited {label} row no longer exists."]
+    lines: list[str] = []
+    for missing in sorted(set(frozen) - set(live)):
+        lines.append(
+            f"{CITATION_SCHEMA_DRIFT}: {label}.{missing} was frozen but is "
+            "absent from the live row.")
+    for added in sorted(set(live) - set(frozen)):
+        lines.append(
+            f"{CITATION_SCHEMA_DRIFT}: {label}.{added} exists live but was "
+            "not frozen at correction time.")
+    for field in sorted(set(frozen) & set(live)):
+        if frozen[field] != live[field]:
+            lines.append(
+                f"{CITATION_DRIFT}: {label}.{field} was {frozen[field]!r} now "
+                f"{live[field]!r}")
+    return lines
+
+
+def _fill_anchor_drift(
+    conn: sqlite3.Connection, correction: Any,
+) -> list[str]:
+    """Recompute the anchor; never merely re-read the frozen value.
+
+    Ordering is load-bearing. **`entry_fill_id IS NULL` is CONCLUSIVE deletion
+    drift and is checked FIRST, before any recomputation.** `fills.fill_id` is
+    `INTEGER PRIMARY KEY` WITHOUT `AUTOINCREMENT` -- a bare rowid -- so SQLite
+    REUSES the number when the deleted row held the maximum, and the
+    production split handler deletes the consolidated fill and reinserts
+    partials with no explicit id. Demonstrated: a date-PRESERVING split of the
+    max fill reinserts a partial that comes back wearing the SAME fill_id with
+    the SAME fill_datetime, so a check on `(fill_id, date)` alone reports NO
+    DRIFT on a row that was deleted and replaced -- a false clean in the audit
+    command. The FK's `ON DELETE SET NULL` fires at the DELETE and a later
+    INSERT reusing the number does NOT restore it, which is what makes the
+    NULL a reuse-proof marker.
+
+    The recomputation goes through THE SAME LOCAL VALIDATED RESOLVER the
+    authorization path uses, never `get_authoritative_entry_fill`; otherwise
+    the reader would compute its verdict through the very lexical ordering
+    this module forbids, hiding a malformed earlier fill and reporting NO
+    drift, on a path no authorization test exercises.
+    """
+    lines: list[str] = []
+    if correction.entry_fill_id is None:
+        lines.append(
+            f"{CITATION_ANCHOR_DRIFT}: the cited entry fill "
+            f"{correction.entry_fill_id_at_correction} has been DELETED (the "
+            "FK went NULL). The frozen snapshot still names what this "
+            "correction anchored on; the row it named is gone.")
+        return lines
+
+    try:
+        current = resolve_authoritative_entry_fill(
+            conn, int(correction.trade_id))
+    except CohortProvenanceCorrectionError as exc:
+        # A reader must NOT manufacture a clean answer out of data its own
+        # validator rejected.
+        return [
+            f"{CITATION_ANCHOR_UNVERIFIABLE}: trade {correction.trade_id} has "
+            f"a malformed fill_datetime, so the anchor cannot be recomputed "
+            f"({exc})."
+        ]
+
+    frozen = json.loads(correction.entry_fill_snapshot_json)
+    live = current.snapshot()
+    # The WHOLE frozen snapshot, not an id-and-date pair.
+    for field in ("fill_id", "trade_id", "action", "fill_datetime"):
+        if frozen.get(field) != live.get(field):
+            lines.append(
+                f"{CITATION_ANCHOR_DRIFT}: entry_fill.{field} was "
+                f"{frozen.get(field)!r} at correction time and the trade's "
+                f"authoritative entry fill now reports {live.get(field)!r} "
+                f"(fill {current.fill_id}).")
+    if lines:
+        new_session = current.session_date
+        for column, name in (
+            (correction.cited_candidate_action_session_date,
+             "the cited candidate's action session"),
+            (correction.cited_recommendation_action_session_date,
+             "the cited recommendation's action session"),
+        ):
+            if str(column) > new_session:
+                lines.append(
+                    f"{CITATION_INVALIDATED}: the cohort assignment recorded "
+                    f"by correction {correction.provenance_correction_id} no "
+                    f"longer satisfies contemporaneity -- {name} ({column}) "
+                    f"post-dates the CURRENT authoritative entry fill's "
+                    f"session ({new_session}).")
+    return lines
+
+
+def read_provenance_corrections(
+    conn: sqlite3.Connection, *, trade_id: int | None = None,
+) -> list[ProvenanceCorrectionReport]:
+    """Every correction with its citations, its frozen anchors and any DRIFT."""
+    from swing.data.repos.pipeline import evaluation_run_persistence_bound
+    from swing.data.repos.provenance_corrections import (
+        list_provenance_corrections,
+    )
+    from swing.data.repos.recommendations import snapshot_recommendation_row
+
+    reports: list[ProvenanceCorrectionReport] = []
+    for correction in list_provenance_corrections(conn, trade_id=trade_id):
+        lines: list[str] = []
+        lines.extend(_snapshot_drift(
+            "daily_recommendations",
+            json.loads(correction.cited_recommendation_snapshot_json),
+            snapshot_recommendation_row(
+                conn, int(correction.cited_daily_recommendation_id)),
+        ))
+        bound = evaluation_run_persistence_bound(
+            conn, evaluation_run_id=int(correction.cited_evaluation_run_id))
+        lines.extend(_snapshot_drift(
+            "pipeline_runs",
+            json.loads(correction.cited_pipeline_run_snapshot_json),
+            None if bound is None else bound.snapshot,
+        ))
+        lines.extend(_fill_anchor_drift(conn, correction))
+        reports.append(ProvenanceCorrectionReport(
+            correction=correction, drift_lines=tuple(lines)))
+    return reports
