@@ -577,3 +577,221 @@ def test_R5M4_the_manifest_covers_the_constants_the_rule_reads() -> None:
         assert required in specs, required
     kinds = {kind for kind, _spec in DERIVATION_RULE_DEPENDENCIES}
     assert kinds == {"function", "constant"}
+
+
+# =========================================================================
+# THE CLOSURE CHECK -- what makes a FIFTH omission fail loudly.
+#
+# The manifest's own comment promised that "the next dependency added is a
+# visible line here rather than an invisible hole", and its first outing
+# shipped with TWO holes: `_derive` itself and three sibling matcher
+# predicates. A hand-enumerated roster is the same instrument as the count it
+# replaced and it fails the same way -- the feeling of having swept is
+# identical to having swept. So the roster is no longer trusted to be
+# complete: this walks what `_derive` ACTUALLY depends on and requires every
+# swing-local function and constant it reaches to be EITHER manifested OR
+# excluded WITH A STATED REASON.
+#
+# The exclusion list carries reasons because without them it becomes a
+# dumping ground and the problem is rebuilt one level over.
+# =========================================================================
+
+# spec -> the reason it cannot influence the written cohort triple.
+DERIVATION_CLOSURE_EXCLUSIONS: dict[str, str] = {
+    "swing.recommendations.hypothesis:_priority_hint_for":
+        "computes HypothesisMatch.priority_hint, a field this surface never "
+        "reads -- _derive uses only hypothesis_id, hypothesis_name and "
+        "suggested_label_descriptive.",
+    "swing.trades.cohort_provenance_correction:_refuse":
+        "builds a refusal exception; it can change refusal TEXT and never a "
+        "written value. _derive's own refusal text is already covered because "
+        "_derive is hashed wholesale.",
+    "swing.trades.cohort_provenance_correction:CohortProvenanceCorrectionError":
+        "the exception TYPE raised by refusals; carries no derivation logic.",
+    # Frozen dataclass containers: they CARRY computed values and compute
+    # none. A field rename breaks loudly at the attribute access rather than
+    # silently altering a stored value.
+    "swing.trades.cohort_provenance_correction:_Anchored":
+        "frozen dataclass container; carries values, computes none.",
+    "swing.trades.cohort_provenance_correction:_AsOfInterval":
+        "frozen dataclass container; carries values, computes none.",
+    "swing.trades.cohort_provenance_correction:_Derived":
+        "frozen dataclass container; carries values, computes none.",
+    "swing.data.repos.pipeline:EvaluationRunPersistenceBound":
+        "frozen dataclass container; carries values, computes none.",
+    "swing.recommendations.hypothesis:HypothesisMatch":
+        "frozen dataclass container; the label it carries is computed by "
+        "_descriptive_label, which IS manifested.",
+    "swing.recommendations.hypothesis:HypothesisRegistryEntry":
+        "frozen dataclass container for a registry row.",
+    "swing.data.repos.hypothesis:HypothesisRegistryEntry":
+        "the same container, reached through the repo module.",
+    "swing.data.repos.hypothesis_status_history:HypothesisStatusHistory":
+        "frozen dataclass container for a status-history row.",
+    "swing.recommendations.hypothesis:Candidate":
+        "frozen dataclass container for a candidates row.",
+}
+
+_DERIVATION_ROOT = "swing.trades.cohort_provenance_correction:_derive"
+
+
+def _derivation_closure(root: str = _DERIVATION_ROOT) -> set[str]:
+    """Every swing-local function/constant reachable from `_derive`.
+
+    A STATIC walk (`ast`), not a runtime trace: a runtime trace only sees the
+    branches a particular fixture happened to take, which is precisely how an
+    unexercised predicate stays invisible.
+
+    Resolution covers the three shapes this codebase actually uses -- a
+    module-level name, an attribute on an imported module, and the
+    function-local `from swing.x import y` that this service uses throughout
+    to avoid import cycles.
+    """
+    import ast
+    import importlib
+    import textwrap
+    import types
+
+    def is_swing(obj, fallback: str | None = None) -> bool:
+        mod = getattr(obj, "__module__", None) or fallback
+        return bool(mod and (mod == "swing" or mod.startswith("swing.")))
+
+    seen: set[str] = set()
+    found: set[str] = set()
+    stack = [root]
+    while stack:
+        spec = stack.pop()
+        if spec in seen:
+            continue
+        seen.add(spec)
+        mod_name, attr = spec.split(":")
+        try:
+            obj = getattr(importlib.import_module(mod_name), attr)
+        except (ImportError, AttributeError):  # pragma: no cover
+            continue
+        if isinstance(obj, types.ModuleType):
+            continue
+        found.add(spec)
+        if not inspect.isfunction(obj):
+            continue
+        try:
+            src = textwrap.dedent(inspect.getsource(obj))
+        except OSError:  # pragma: no cover
+            continue
+        mod = importlib.import_module(mod_name)
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                for alias in node.names:
+                    try:
+                        sub = importlib.import_module(node.module)
+                        target = getattr(sub, alias.name)
+                    except (ImportError, AttributeError):  # pragma: no cover
+                        continue
+                    if is_swing(target, node.module):
+                        stack.append(f"{node.module}:{alias.name}")
+            elif isinstance(node, ast.Name):
+                target = getattr(mod, node.id, None)
+                if target is not None and not isinstance(
+                        target, types.ModuleType) and is_swing(
+                            target, mod_name):
+                    stack.append(f"{mod_name}:{node.id}")
+            elif isinstance(node, ast.Attribute) and isinstance(
+                    node.value, ast.Name):
+                base = getattr(mod, node.value.id, None)
+                if (isinstance(base, types.ModuleType)
+                        and is_swing(base, base.__name__)
+                        and hasattr(base, node.attr)):
+                    stack.append(f"{base.__name__}:{node.attr}")
+    return found
+
+
+def test_the_derivation_closure_is_fully_accounted_for() -> None:
+    """EVERY dependency is manifested or excluded-with-a-reason.
+
+    This is the check that would have caught `_derive` and the three sibling
+    predicates going missing from the manifest on its first outing.
+    """
+    from swing.trades.cohort_provenance_correction import (
+        DERIVATION_RULE_DEPENDENCIES,
+    )
+
+    manifested = {spec for _kind, spec in DERIVATION_RULE_DEPENDENCIES}
+    accounted = manifested | set(DERIVATION_CLOSURE_EXCLUSIONS)
+    # sorted() throughout: a set difference rendered unsorted is the same
+    # PYTHONHASHSEED trap the digest already had to be fixed for.
+    unaccounted = sorted(_derivation_closure() - accounted)
+    assert not unaccounted, (
+        "these are reachable from _derive but are NEITHER in "
+        "DERIVATION_RULE_DEPENDENCIES NOR in DERIVATION_CLOSURE_EXCLUSIONS:\n  "
+        + "\n  ".join(unaccounted)
+        + "\n\nAdd each to the manifest (and bump DERIVATION_RULE_VERSION with "
+        "a new DERIVATION_RULE_HISTORY entry), or exclude it WITH A STATED "
+        "REASON explaining why it cannot influence the written cohort triple."
+    )
+
+
+def test_the_closure_check_would_CATCH_a_missing_dependency() -> None:
+    """The check is only worth having if it FAILS when a dependency is
+    dropped. Dropping `_descriptive_label` -- which literally builds the
+    stored label -- must leave it unaccounted for."""
+    from swing.trades.cohort_provenance_correction import (
+        DERIVATION_RULE_DEPENDENCIES,
+    )
+
+    victim = "swing.recommendations.hypothesis:_descriptive_label"
+    weakened = {
+        spec for _kind, spec in DERIVATION_RULE_DEPENDENCIES
+        if spec != victim
+    } | set(DERIVATION_CLOSURE_EXCLUSIONS)
+    assert victim not in weakened
+    assert victim in _derivation_closure() - weakened
+
+
+def test_the_closure_actually_reaches_the_things_it_must() -> None:
+    """A walker that silently resolved nothing would make the check above
+    vacuously green, so the closure's own membership is asserted."""
+    closure = _derivation_closure()
+    for required in (
+        _DERIVATION_ROOT,
+        "swing.recommendations.hypothesis:_descriptive_label",
+        "swing.recommendations.hypothesis:match_candidate_to_hypotheses",
+        # the three the manifest originally omitted
+        "swing.recommendations.hypothesis:_near_aplus_extension_match",
+        "swing.recommendations.hypothesis:_sub_aplus_vcp_not_formed_match",
+        "swing.recommendations.hypothesis:_capital_blocked_match",
+        # reached only through a function-local import
+        "swing.trades.entry:canonicalize_hypothesis_label",
+        "swing.data.repos.hypothesis:list_hypotheses",
+        # a constant, not a function
+        "swing.recommendations.hypothesis:H_APLUS_BASELINE",
+    ):
+        assert required in closure, required
+    assert len(closure) > 30, len(closure)
+
+
+def test_every_exclusion_carries_a_reason() -> None:
+    """Without stated reasons the exclusion list becomes a dumping ground and
+    the problem is rebuilt one level over."""
+    for spec, reason in sorted(DERIVATION_CLOSURE_EXCLUSIONS.items()):
+        assert ":" in spec, spec
+        assert isinstance(reason, str)
+        assert len(reason.strip()) >= 40, (
+            f"{spec} has no substantive reason: {reason!r}")
+
+
+def test_no_exclusion_is_stale() -> None:
+    """An exclusion for something no longer reachable is dead weight that
+    makes the list look more considered than it is."""
+    closure = _derivation_closure()
+    stale = sorted(set(DERIVATION_CLOSURE_EXCLUSIONS) - closure)
+    assert not stale, f"exclusions no longer reachable from _derive: {stale}"
+
+
+def test_no_spec_is_both_manifested_and_excluded() -> None:
+    from swing.trades.cohort_provenance_correction import (
+        DERIVATION_RULE_DEPENDENCIES,
+    )
+
+    manifested = {spec for _kind, spec in DERIVATION_RULE_DEPENDENCIES}
+    both = sorted(manifested & set(DERIVATION_CLOSURE_EXCLUSIONS))
+    assert not both, f"claimed as both hashed and irrelevant: {both}"

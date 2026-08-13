@@ -168,16 +168,77 @@ _OFFSET_SUFFIX_RE = re.compile(r"([Zz]|[+-]\d{2}:?\d{2})$")
 # fourth widening would be the wrong move: hashing function SOURCE cannot see
 # a value the source merely NAMES, so `H_APLUS_BASELINE` could be re-spelled,
 # selecting a different registry row, without moving the digest by one bit.
-# The manifest makes the dependency set an EXPLICIT, EDITABLE ROSTER: the next
-# dependency added is a visible line here rather than an invisible hole, and a
-# CONSTANT-ONLY change moves the digest (asserted by a test that mutates one).
+# The manifest makes the dependency set an EXPLICIT, EDITABLE ROSTER.
+#
+# AND THAT WAS NOT ENOUGH ON ITS OWN. Its first outing shipped with TWO HOLES:
+# `_derive` -- the function that SELECTS the match and CONSTRUCTS the stored
+# label -- was absent, and so were three of the sibling matcher predicates. A
+# routine upgrade to `_derive`'s label transformation, or to an omitted
+# predicate such that a different hypothesis becomes the sole match, would
+# change the written label while the digest stayed put, and the audit row
+# would claim a rule version it no longer implements. No raw write required.
+#
+# THE LESSON IS NOT A LONGER LIST. A hand-enumerated roster is the same
+# instrument as the count it replaced and it fails the same way: the feeling of
+# having swept is identical to having swept. So this roster is paired with a
+# CLOSURE CHECK (`tests/trades/test_cohort_provenance_derivation.py`) that
+# walks what `_derive` actually depends on and fails unless every swing-local
+# function and constant it reaches is EITHER here OR on an exclusion list with
+# a stated reason. A fifth omission fails loudly instead of shipping.
+#
+# `_derive` IS HASHED WHOLESALE, AND THE NOISE IS ACCEPTED DELIBERATELY
+# (coordinator-ruled). Its source contains refusal messages, so a cosmetic
+# wording edit moves the digest and forces a version bump that nothing
+# semantic required. That is a FALSE ALARM and it is the correct trade:
+# fail-closed matches RD's governing asymmetry on this arc -- a wrong refusal
+# costs a legible message and a human escalation, a wrong acceptance
+# contaminates H1 invisibly and permanently. DO NOT "fix" the noise by
+# narrowing the hash to part of the function; that reintroduces exactly the
+# hole this widening closed.
 DERIVATION_RULE_DEPENDENCIES: tuple[tuple[str, str], ...] = (
+    # THE ROOT: selection + label construction happen here.
+    ("function", "swing.trades.cohort_provenance_correction:_derive"),
+    # Label construction.
     ("function", "swing.recommendations.hypothesis:_descriptive_label"),
     ("function", "swing.recommendations.hypothesis:_non_pass_criterion_names"),
-    ("function", "swing.recommendations.hypothesis:_aplus_baseline_match"),
+    ("function", "swing.trades.entry:canonicalize_hypothesis_label"),
+    # SELECTION -- the matcher and EVERY predicate it consults. Any one of
+    # them becoming true or false for a candidate changes which hypothesis is
+    # the sole match, and therefore the label's name component.
     ("function",
      "swing.recommendations.hypothesis:match_candidate_to_hypotheses"),
-    ("function", "swing.trades.entry:canonicalize_hypothesis_label"),
+    ("function", "swing.recommendations.hypothesis:_aplus_baseline_match"),
+    ("function",
+     "swing.recommendations.hypothesis:_near_aplus_extension_match"),
+    ("function",
+     "swing.recommendations.hypothesis:_sub_aplus_vcp_not_formed_match"),
+    ("function", "swing.recommendations.hypothesis:_capital_blocked_match"),
+    ("function",
+     "swing.recommendations.hypothesis:_broad_watch_baseline_match"),
+    # THE AS-OF REGISTRY. These decide which hypotheses are ACTIVE as of the
+    # cited record, and the matcher filters on exactly that -- so they decide
+    # the selection as surely as the predicates do.
+    ("function",
+     "swing.trades.cohort_provenance_correction:_load_validated_intervals"),
+    ("function", "swing.trades.cohort_provenance_correction:_as_of_status"),
+    ("function",
+     "swing.trades.cohort_provenance_correction"
+     ":_assert_contemporaneous_interval"),
+    ("function",
+     "swing.trades.cohort_provenance_correction"
+     ":_assert_outside_the_clock_margin"),
+    ("function", "swing.trades.cohort_provenance_correction:_to_utc_naive"),
+    ("function",
+     "swing.trades.cohort_provenance_correction:_require_naive_datetime"),
+    # The readers that supply the registry rows, the intervals and the window
+    # bound. Their column rosters and row mappers decide what the matcher
+    # sees.
+    ("function", "swing.data.repos.hypothesis:list_hypotheses"),
+    ("function", "swing.data.repos.hypothesis:_row_to_entry"),
+    ("function",
+     "swing.data.repos.hypothesis_status_history:list_history_for_hypothesis"),
+    ("function", "swing.data.repos.hypothesis_status_history:_row_to_model"),
+    ("function", "swing.data.repos.pipeline:evaluation_run_persistence_bound"),
     # The hypothesis NAMES decide WHICH registry row the matcher selects and
     # which name the label carries.
     ("constant", "swing.recommendations.hypothesis:H_APLUS_BASELINE"),
@@ -188,6 +249,14 @@ DERIVATION_RULE_DEPENDENCIES: tuple[tuple[str, str], ...] = (
     # The defensible-miss set is a matcher input with a default.
     ("constant",
      "swing.recommendations.hypothesis:DOCTRINE_DEFENSIBLE_MISS_SET"),
+    # The SELECT column rosters the row mappers index positionally.
+    ("constant", "swing.data.repos.hypothesis:_SELECT_COLUMNS"),
+    ("constant",
+     "swing.data.repos.hypothesis_status_history:_SELECT_COLUMNS"),
+    # The clock inputs to the as-of window.
+    ("constant", "swing.trades.cohort_provenance_correction:CLOCK_MARGIN"),
+    ("constant",
+     "swing.trades.cohort_provenance_correction:PIPELINE_LOCAL_TIMEZONE"),
     # And the two values this surface itself writes.
     ("constant", "swing.metrics.funnel:APLUS_TRADE_ORIGIN"),
     ("constant", "swing.trades.cohort_provenance_correction:APLUS_BUCKET"),
@@ -242,6 +311,11 @@ DERIVATION_RULE_HISTORY: tuple[tuple[str, str], ...] = (
      "9bdb95d1877a02777dac1284e766db932299e1e44ed934c6b5b7a2d3eca18099"),
     ("2026-08-13.2",
      "29f5748aa00db73c13304152aae85f7c027b77307cb90f326b1e033c58a43692"),
+    # 2026-08-13.3 closes the two holes the manifest shipped with -- `_derive`
+    # itself and the sibling matcher predicates -- and adds the as-of registry
+    # machinery and the readers that feed it. Appended, never edited.
+    ("2026-08-13.3",
+     "8b994668acfdccf758bb1e050f1728cfddc7beed330406edb3a071b2819a14a4"),
 )
 DERIVATION_RULE_VERSION: str = DERIVATION_RULE_HISTORY[-1][0]
 DERIVATION_RULE_SOURCE_SHA256: str = DERIVATION_RULE_HISTORY[-1][1]
