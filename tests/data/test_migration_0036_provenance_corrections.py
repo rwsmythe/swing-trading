@@ -229,6 +229,17 @@ def _seed_parents(conn: sqlite3.Connection) -> dict[str, int]:
         "rs_method) VALUES (?, 'CADL', 'aplus', 'fallback_spy')",
         (run,),
     ).lastrowid
+    # THE EVIDENCE THE SNAPSHOT FREEZES IS ACTUALLY SEEDED (Codex R6 Major 3).
+    # The fixture used to insert NO `candidate_criteria` rows and then freeze a
+    # fictitious `TT8_rs_rank='na'` criterion -- a "well-formed" row describing
+    # evidence that did not exist, which is the same vacuous-fixture class
+    # caught three times in this arc.
+    conn.execute(
+        "INSERT INTO candidate_criteria (candidate_id, criterion_name, layer, "
+        "result, value, rule) VALUES (?, 'TT8_rs_rank', 'trend_template', "
+        "'na', NULL, NULL)",
+        (cand,),
+    )
     dr = conn.execute(
         "INSERT INTO daily_recommendations (evaluation_run_id, "
         "data_asof_date, action_session_date, ticker, recommendation) "
@@ -248,6 +259,17 @@ def _seed_parents(conn: sqlite3.Connection) -> dict[str, int]:
         "VALUES (?, ?, 'entry', 19, 10.81)",
         (trade, FILL_DATETIME),
     ).lastrowid
+    # THE TRADE ACTUALLY CARRIES WHAT THE AUDIT ROW CLAIMS (Codex R6 Major 1).
+    # The fixture used to insert a "well-formed" correction asserting a triple
+    # while the trade still read (NULL, NULL, 'manual_off_pipeline') -- a
+    # ledger row recording a correction that never happened. The service
+    # updates the trade FIRST in the same transaction, so the fixture now does
+    # what the emitter does.
+    conn.execute(
+        "UPDATE trades SET hypothesis_label = ?, candidate_id = ?, "
+        "trade_origin = 'pipeline_aplus' WHERE id = ?",
+        ("A+ baseline (aplus)", cand, trade),
+    )
     # The seeded 0017 status-history row carries `recorded_at` = MIGRATION
     # APPLY TIME. The citation-graph trigger requires the frozen interval to BE
     # that row, so the fixture states the interval it is going to claim rather
