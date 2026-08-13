@@ -333,6 +333,132 @@ def _gate_on_unset_state(trade: Any) -> None:
         )
 
 
+def _bind_the_recommendation(
+    conn: sqlite3.Connection,
+    *,
+    evaluation_run_id: int,
+    ticker: str,
+    supplied_recommendation_id: int,
+) -> None:
+    """The DR row is LOOKED UP, not picked -- and CONFIRMED, never selected.
+
+    Cardinality is established by a COUNT, not by ``fetchone()``. The unique
+    index on ``daily_recommendations`` is
+    ``(action_session_date, ticker, recommendation)`` -- NOT
+    ``(evaluation_run_id, ticker, recommendation)`` -- and
+    ``upsert_recommendation`` REWRITES ``evaluation_run_id`` in place on
+    conflict, so two ``today_decision`` rows with different action sessions can
+    legitimately carry the same run id. A bare ``fetchone()`` would let
+    SQLite's row order -- or the operator's supplied id -- pick the citation,
+    reopening the citation-shopping channel the last-word guard exists to
+    close.
+
+    THE CARDINALITY REFUSAL PRECEDES THE CONFIRMATION COMPARE, so a supplied
+    id can never break a tie.
+
+    Then ``--cited-recommendation`` is a CONFIRMATION of the row derived from
+    the candidate's own run, never the source of it -- item 5's ``--to`` idiom
+    applied to a citation.
+    """
+    from swing.data.repos.recommendations import (
+        list_today_decisions_for_run_ticker,
+    )
+
+    rows = list_today_decisions_for_run_ticker(
+        conn, evaluation_run_id=evaluation_run_id, ticker=ticker)
+    if len(rows) != 1:
+        raise _refuse(
+            f"evaluation run {evaluation_run_id} carries {len(rows)} "
+            f"'{REQUIRED_RECOMMENDATION}' daily_recommendations rows for "
+            f"{ticker} (ids {[r.id for r in rows]}); exactly one is required. "
+            "The unique index is keyed on (action_session_date, ticker, "
+            "recommendation), NOT on evaluation_run_id, so more than one is "
+            "schema-legal -- and picking among them is the citation-shopping "
+            "this surface refuses."
+        )
+    derived_id = int(rows[0].id)
+    if derived_id != supplied_recommendation_id:
+        raise _refuse(
+            f"--cited-recommendation {supplied_recommendation_id} is not the "
+            f"row derived from the cited candidate's run ({derived_id}). The "
+            "recommendation is LOOKED UP from the candidate's own "
+            "evaluation_run_id; the supplied id is a CONFIRMATION, never the "
+            "source."
+        )
+
+
+def _assert_last_word_before_the_fill(
+    conn: sqlite3.Connection,
+    *,
+    ticker: str,
+    fill_session: str,
+    cited_candidate_id: int,
+) -> None:
+    """The cited candidate must be THE FRAMEWORK'S LAST WORD BEFORE THE FILL.
+
+    Contemporaneity alone does not close citation-shopping. CADL has 33
+    `candidates` rows, four of them in the fill's vicinity -- `watch` on 08-06,
+    `watch` on 08-07, `watch` on 08-10 and `aplus` on 08-11 -- and ALL FOUR
+    pre-date the 08-12 fill, so all four are contemporaneous. An operator free
+    to pick among them picks the bucket he likes, which is the curation the
+    evidence rule exists to prevent, re-entering through the choice of WHICH
+    true record to cite.
+
+    So: the maximum under `(action_session_date, run_ts, candidate_id)` among
+    all rows for the ticker whose run's `action_session_date <= F`.
+
+    EVERY COMPETITOR ROW IS VALIDATED, not just the cited one. The filter and
+    the ordering are comparisons over unconstrained TEXT, so a competitor
+    carrying a basic-ISO date is SILENTLY DROPPED from the competitor set --
+    verified, `'20260811' <= '2026-08-12'` is False because `'0'` sorts after
+    `'-'` -- and the guard would then bless an OLDER operator-selected
+    citation: precisely the citation-shopping it exists to prevent, arriving
+    through its own comparison. Validation scope is every row the DECISION
+    READS, not every row the OPERATOR CITED.
+    """
+    from swing.data.repos.candidates import list_candidates_for_ticker
+
+    rows = list_candidates_for_ticker(conn, ticker)
+    ranked: list[tuple[_date, datetime, int, int]] = []
+    for candidate_id, run_id, _bucket in rows:
+        run = get_evaluation_run_by_id(conn, run_id)
+        if run is None:
+            raise _refuse(
+                f"candidate {candidate_id} ({ticker}) names evaluation run "
+                f"{run_id}, which does not exist, so the last-word guard "
+                "cannot rank it."
+            )
+        anchor = _require_session_date(
+            run.action_session_date,
+            what=(f"competitor candidate {candidate_id}'s evaluation run "
+                  f"{run_id} action_session_date"),
+        )
+        run_ts = _require_naive_datetime(
+            run.run_ts,
+            what=(f"competitor candidate {candidate_id}'s evaluation run "
+                  f"{run_id} run_ts"),
+        )
+        if anchor.isoformat() <= fill_session:
+            ranked.append((anchor, run_ts, candidate_id, run_id))
+    if not ranked:
+        raise _refuse(
+            f"no {ticker} candidates row pre-dates the entry fill's session "
+            f"({fill_session}), so there is no framework record to cite."
+        )
+    last_word = max(ranked)
+    if last_word[2] != cited_candidate_id:
+        raise _refuse(
+            f"candidate {cited_candidate_id} is NOT the framework's last word "
+            f"before the fill: candidate {last_word[2]} (evaluation run "
+            f"{last_word[3]}, action session {last_word[0].isoformat()}) is "
+            "later and also pre-dates the fill. Citing an earlier record when "
+            "a later one exists is the citation-shopping this guard refuses -- "
+            "including when the later record is a `skip` or `watch` row, in "
+            "which case the trade is UNCORRECTABLE through this surface and "
+            "the case belongs to RD."
+        )
+
+
 def _anchor_half(
     conn: sqlite3.Connection,
     *,
@@ -447,6 +573,14 @@ def _anchor_half(
         run.run_ts, what=f"evaluation run {run.id}'s run_ts")
     run_ts_raw = str(run.run_ts).strip()
 
+    # Rungs 11 and 12 -- CARDINALITY first, then the confirmation compare.
+    _bind_the_recommendation(
+        conn,
+        evaluation_run_id=int(cited.evaluation_run_id),
+        ticker=trade_ticker,
+        supplied_recommendation_id=cited_recommendation_id,
+    )
+
     # Rungs 13 and 14 -- the contemporaneity comparisons, on PARSED dates.
     if candidate_anchor > fill_session:
         raise _refuse(
@@ -463,6 +597,14 @@ def _anchor_half(
             f"fill's session ({fill_session}), so the framework wrote that "
             "record AFTER the trade was already filled."
         )
+
+    # Rung 15 -- the LAST-WORD guard.
+    _assert_last_word_before_the_fill(
+        conn,
+        ticker=trade_ticker,
+        fill_session=fill_session,
+        cited_candidate_id=cited_candidate_id,
+    )
 
     return _Anchored(
         trade=trade,
