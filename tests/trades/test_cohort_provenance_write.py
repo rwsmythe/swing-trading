@@ -358,8 +358,12 @@ def test_pipeline_snapshot_drift_is_reported_too(conn) -> None:
         "UPDATE pipeline_runs SET finished_ts = '2026-08-10T18:00:00' "
         "WHERE id = ?", (ids["pipeline_run_id"],))
     [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    # The label now says what it CHECKS -- persistence-bound evidence, not the
+    # whole 23-column row (Codex R5 Minor 6).
     assert any(
-        line.startswith(f"{CITATION_DRIFT}: pipeline_runs.finished_ts ")
+        line.startswith(
+            f"{CITATION_DRIFT}: pipeline_runs[persistence-bound evidence]"
+            ".finished_ts ")
         for line in report.drift_lines
     ), report.drift_lines
 
@@ -1277,3 +1281,269 @@ def test_R4m6_the_pointer_cannot_be_nulled_while_the_parent_still_EXISTS(
     # ...and it IS permitted once the parent is genuinely gone.
     conn.execute("DELETE FROM fills WHERE fill_id = ?", (ids["fill_id"],))
     assert get_correction_for_trade(conn, ids["trade_id"]).entry_fill_id is None
+
+
+# =========================================================================
+# Codex R5 -- the reader snapshot, the citation graph, the clock binding,
+#            and the recommendation column manifest.
+# =========================================================================
+
+
+def test_R5M3_the_reader_reports_from_ONE_snapshot(conn, tmp_path) -> None:
+    """THE TWIN OF A DEFECT ALREADY FIXED ONE FUNCTION AWAY. The reader runs
+    many independent SELECTs, so a production write committing MID-REPORT left
+    it comparing half its checks against one world and half against another,
+    and then printing a verdict that is a picture of no moment that ever
+    existed.
+
+    Driven with a SECOND CONNECTION that commits a real status-history
+    transition part-way through the report, from inside `_snapshot_drift` --
+    the first comparison the reader makes.
+
+    THE ASSERTION UNDER BOTH PATHS: with the read snapshot the report is the
+    consistent PRE-image and carries NO status drift; without it the reader
+    sees the post-mutation status row and emits an `effective_to` drift line
+    beside recommendation checks taken from the pre-image. The two differ, so
+    this test distinguishes."""
+    import swing.trades.cohort_provenance_correction as svc
+
+    db = tmp_path / "swing.db"
+    conn.close()
+    from swing.data.db import ensure_schema, open_connection
+
+    live = ensure_schema(db)
+    ids = build_cadl_case(live)
+    live.commit()
+    correct_cohort_provenance(
+        live, trade_id=ids["trade_id"],
+        cited_candidate_id=ids["candidate_id"],
+        cited_recommendation_id=ids["daily_recommendation_id"],
+        reason=REASON)
+
+    other = open_connection(db)
+    fired = {"n": 0}
+    real = svc._snapshot_drift
+
+    def _mutating(label, frozen, live_values):
+        if fired["n"] == 0:
+            fired["n"] = 1
+            # A REAL, supported transition committed from another connection.
+            other.execute(
+                "UPDATE hypothesis_status_history SET effective_to = "
+                "'2026-12-01T00:00:00.000' WHERE history_id = 1")
+            other.commit()
+        return real(label, frozen, live_values)
+
+    svc._snapshot_drift = _mutating
+    try:
+        [report] = svc.read_provenance_corrections(
+            live, trade_id=ids["trade_id"])
+    finally:
+        svc._snapshot_drift = real
+        other.close()
+
+    assert fired["n"] == 1, "the mid-report mutation never fired"
+    joined = "\n".join(report.drift_lines)
+    assert "hypothesis_status_history.effective_to" not in joined, (
+        "the report mixed a post-mutation status row with a pre-mutation "
+        "recommendation image: " + joined)
+    assert report.drift_lines == ()
+    # ...and the NEXT report, on a fresh snapshot, DOES see it -- so the
+    # mutation was real and the first report was stale-but-consistent rather
+    # than blind.
+    [after] = svc.read_provenance_corrections(live, trade_id=ids["trade_id"])
+    assert any("hypothesis_status_history.effective_to" in line
+               for line in after.drift_lines), after.drift_lines
+    live.close()
+
+
+def test_R5M3_the_reader_leaves_no_transaction_open(conn) -> None:
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.commit()
+    assert not conn.in_transaction
+    read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    assert not conn.in_transaction
+
+
+def test_R5M2_the_LIVE_CADL_citation_graph_is_ADMITTED(conn) -> None:
+    """THE BINDING SAFETY CONDITION. The first production row this table will
+    ever hold is the CADL correction, applied at an operator-witnessed gate. A
+    trigger set that refuses it turns a witnessed gate into a failure in front
+    of the operator.
+
+    Every value below was read READ-ONLY off the live DB before this test was
+    written (`file:...?mode=ro`), and the graph is asserted here in the same
+    shape the trigger checks:
+      candidate 12341 -> evaluation run 137 (run_ts 2026-08-10T17:30:26,
+      action session 2026-08-11) ; daily_recommendations 172 (today_decision,
+      CADL, 2026-08-11) ; pipeline run 151 (complete, finished
+      2026-08-10T17:44:45) ; hypothesis 1 'A+ baseline' via status-history row
+      1 ; trade 23 / entry fill 45 (2026-08-12T16:00:00).
+
+    NOTE FOR THE RECORD: the citation graph runs through evaluation run
+    **137**, not 138. Run 138 is the LATER run (action session 2026-08-12)
+    that contains NO CADL row -- which is exactly what makes 12341 the
+    framework's last word."""
+    ids = build_cadl_case(conn)   # built on those same live shapes
+    conn.commit()
+    result = correct_cohort_provenance(
+        conn, trade_id=ids["trade_id"],
+        cited_candidate_id=ids["candidate_id"],
+        cited_recommendation_id=ids["daily_recommendation_id"],
+        reason=REASON)
+    assert result.correction_id > 0
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    assert row.cited_candidate_id == ids["candidate_id"]
+    assert row.cited_evaluation_run_id == ids["evaluation_run_id"]
+    assert row.cited_pipeline_run_id == ids["pipeline_run_id"]
+    assert row.cited_hypothesis_id == 1
+    assert row.cited_run_ts_raw == "2026-08-10T17:30:26"
+    assert row.cited_pipeline_finished_ts_raw == "2026-08-10T17:44:45"
+    assert row.cited_candidate_action_session_date == "2026-08-11"
+    assert row.entry_fill_session_date == "2026-08-12"
+
+
+@pytest.mark.parametrize("break_it", [
+    "candidate_run", "recommendation_run", "pipeline_run", "status_hypothesis",
+    "registry_name", "fill_trade", "run_anchor",
+])
+def test_R5M2_a_broken_citation_graph_is_REFUSED_by_the_trigger(
+    conn, break_it,
+) -> None:
+    """The FKs prove each row EXISTS; they do not prove the rows form the
+    contemporaneous PAIR the correction asserts. The arc ADVERTISES the
+    citation as structural, so claim and code have to agree."""
+    ids = build_cadl_case(conn)
+    other = build_cadl_case(conn, ticker="OTHR")
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    kw = _repointed_at(row, other)
+    if break_it == "candidate_run":
+        kw["cited_candidate_id"] = other["candidate_id"]
+        env = json.loads(kw["applied_value_json"])
+        env["trades.candidate_id"] = other["candidate_id"]
+        kw["applied_value_json"] = json.dumps(env, sort_keys=True)
+        snap = json.loads(kw["cited_candidate_snapshot_json"])
+        snap["id"] = other["candidate_id"]
+        kw["cited_candidate_snapshot_json"] = json.dumps(snap, sort_keys=True)
+    elif break_it == "recommendation_run":
+        kw["cited_daily_recommendation_id"] = other["daily_recommendation_id"]
+        snap = dict(other["dr_snapshot"])
+        kw["cited_recommendation_snapshot_json"] = json.dumps(
+            snap, sort_keys=True)
+        kw["cited_recommendation_action_session_date"] = str(
+            snap["action_session_date"])
+    elif break_it == "pipeline_run":
+        kw["cited_pipeline_run_id"] = other["pipeline_run_id"]
+        snap = json.loads(kw["cited_pipeline_run_snapshot_json"])
+        snap["id"] = other["pipeline_run_id"]
+        kw["cited_pipeline_run_snapshot_json"] = json.dumps(
+            snap, sort_keys=True)
+    elif break_it == "status_hypothesis":
+        kw["cited_hypothesis_status_history_id"] = 2   # belongs to H2
+    elif break_it == "registry_name":
+        kw["cited_hypothesis_name_at_correction"] = "Not The Registry Name"
+    elif break_it == "fill_trade":
+        kw["entry_fill_id"] = None
+        kw["entry_fill_id_at_correction"] = ids["fill_id"]   # another trade
+        snap = json.loads(kw["entry_fill_snapshot_json"])
+        snap["fill_id"] = ids["fill_id"]
+        kw["entry_fill_snapshot_json"] = json.dumps(snap, sort_keys=True)
+    elif break_it == "run_anchor":
+        kw["cited_run_ts_raw"] = "2026-08-10T17:30:27"      # not the run's
+        kw["cited_run_ts_utc"] = "2026-08-11T03:30:27"
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_insert_or_raise(conn, row, kw)
+
+
+def test_R5M1_the_utc_pair_must_BE_the_conversion_of_the_raw_pair(
+    conn,
+) -> None:
+    """Both layers validated ordering WITHIN each clock domain and never that
+    the two domains describe the SAME INSTANTS -- so a row could shift both UTC
+    values by hours, cite a different status window, satisfy every coverage and
+    retrospective CHECK, and be reported CLEAN. Nine hours instead of ten,
+    which is exactly the shape a wrong-zone assumption produces."""
+    from swing.data.models import ProvenanceCorrection
+
+    ids = build_cadl_case(conn)
+    other = build_cadl_case(conn, ticker="OTHR")
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    kw = _repointed_at(row, other)
+    kw["cited_run_ts_utc"] = "2026-08-11T02:30:26"          # nine hours
+    kw["cited_status_window_upper_utc"] = "2026-08-11T02:44:45"
+    with pytest.raises(ValueError, match="SAME INSTANT"):
+        ProvenanceCorrection(**kw)
+
+
+def test_R5m5_a_partial_recommendation_snapshot_is_REFUSED(conn) -> None:
+    """The snapshot is advertised as a WHOLE-ROW freeze and only three keys
+    were enforced -- so a three-key object satisfied both layers while omitting
+    exactly the columns `upsert_recommendation` can rewrite underneath the
+    citation."""
+    from swing.data.models import ProvenanceCorrection
+
+    ids = build_cadl_case(conn)
+    other = build_cadl_case(conn, ticker="OTHR")
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    full = json.loads(row.cited_recommendation_snapshot_json)
+    kw = _repointed_at(row, other)
+    kw["cited_recommendation_snapshot_json"] = json.dumps({
+        "id": full["id"], "evaluation_run_id": full["evaluation_run_id"],
+        "action_session_date": full["action_session_date"],
+    }, sort_keys=True)
+    with pytest.raises(ValueError, match="EXACTLY the"):
+        ProvenanceCorrection(**kw)
+
+
+@pytest.mark.parametrize("dropped", [
+    "data_asof_date", "ticker", "recommendation", "action_text",
+    "entry_target", "stop_target", "shares", "risk_dollars", "risk_pct",
+    "rationale",
+])
+def test_R5m5_dropping_ANY_live_column_is_refused(conn, dropped) -> None:
+    """Parameterized over every live column the three ID checks do NOT name --
+    the ones a three-key test could never have covered."""
+    from swing.data.models import ProvenanceCorrection
+
+    ids = build_cadl_case(conn)
+    other = build_cadl_case(conn, ticker="OTHR")
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    snap = json.loads(row.cited_recommendation_snapshot_json)
+    snap.pop(dropped)
+    kw = _repointed_at(row, other)
+    kw["cited_recommendation_snapshot_json"] = json.dumps(snap, sort_keys=True)
+    with pytest.raises(ValueError, match="EXACTLY the"):
+        ProvenanceCorrection(**kw)
+
+
+def test_R5m5_the_column_manifest_matches_the_LIVE_schema(conn) -> None:
+    """#11: a checked-in manifest cannot read the live schema, so the drift
+    test is what stops it rotting on the next ALTER TABLE."""
+    from swing.data.models import DAILY_RECOMMENDATION_SNAPSHOT_COLUMNS
+
+    live = {
+        r[1] for r in conn.execute(
+            "PRAGMA table_info(daily_recommendations)").fetchall()
+    }
+    assert set(DAILY_RECOMMENDATION_SNAPSHOT_COLUMNS) == live
+
+
+def test_R5m6_a_churn_column_on_the_pipeline_row_is_NOT_drift(conn) -> None:
+    """The CLAIM was narrowed, not the snapshot widened. `pipeline_runs` has 23
+    columns and only the five persistence-bound ones are frozen -- deliberately,
+    because `current_step` and the lease/progress columns churn legitimately
+    and freezing them would manufacture constant false drift. The label now
+    says what it checks."""
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.execute(
+        "UPDATE pipeline_runs SET current_step = 'export', "
+        "lease_heartbeat_ts = '2026-08-10T17:44:00' WHERE id = ?",
+        (ids["pipeline_run_id"],))
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    assert report.drift_lines == ()

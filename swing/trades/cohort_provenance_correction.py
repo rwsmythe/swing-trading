@@ -67,8 +67,8 @@ from swing.evaluation.dates import PIPELINE_LOCAL_TIMEZONE, is_trading_session
 __all__ = [
     "APLUS_BUCKET",
     "COHORT_CORRECTED_FIELDS",
+    "DERIVATION_RULE_DEPENDENCIES",
     "DERIVATION_RULE_HISTORY",
-    "DERIVATION_RULE_SOURCE_FUNCTIONS",
     "DERIVATION_RULE_SOURCE_SHA256",
     "DERIVATION_RULE_VERSION",
     "REQUIRED_RECOMMENDATION",
@@ -162,13 +162,76 @@ _OFFSET_SUFFIX_RE = re.compile(r"([Zz]|[+-]\d{2}:?\d{2})$")
 # the pin stayed green and new corrections kept claiming the same version.
 # That is REACHABLE AFTER A ROUTINE CODE UPGRADE, which is the one class a pin
 # like this exists for.
-DERIVATION_RULE_SOURCE_FUNCTIONS: tuple[str, ...] = (
-    "swing.recommendations.hypothesis:_descriptive_label",
-    "swing.recommendations.hypothesis:_non_pass_criterion_names",
-    "swing.recommendations.hypothesis:_aplus_baseline_match",
-    "swing.recommendations.hypothesis:match_candidate_to_hypotheses",
-    "swing.trades.entry:canonicalize_hypothesis_label",
+# AND ITS SHAPE IS A DEPENDENCY MANIFEST, NOT A FUNCTION LIST (Codex R5 Major
+# 4). This pin has now been widened three times -- functions, then selection
+# and canonicalization, then the CONSTANTS those functions read -- and a
+# fourth widening would be the wrong move: hashing function SOURCE cannot see
+# a value the source merely NAMES, so `H_APLUS_BASELINE` could be re-spelled,
+# selecting a different registry row, without moving the digest by one bit.
+# The manifest makes the dependency set an EXPLICIT, EDITABLE ROSTER: the next
+# dependency added is a visible line here rather than an invisible hole, and a
+# CONSTANT-ONLY change moves the digest (asserted by a test that mutates one).
+DERIVATION_RULE_DEPENDENCIES: tuple[tuple[str, str], ...] = (
+    ("function", "swing.recommendations.hypothesis:_descriptive_label"),
+    ("function", "swing.recommendations.hypothesis:_non_pass_criterion_names"),
+    ("function", "swing.recommendations.hypothesis:_aplus_baseline_match"),
+    ("function",
+     "swing.recommendations.hypothesis:match_candidate_to_hypotheses"),
+    ("function", "swing.trades.entry:canonicalize_hypothesis_label"),
+    # The hypothesis NAMES decide WHICH registry row the matcher selects and
+    # which name the label carries.
+    ("constant", "swing.recommendations.hypothesis:H_APLUS_BASELINE"),
+    ("constant", "swing.recommendations.hypothesis:H_NEAR_APLUS_EXTENSION"),
+    ("constant", "swing.recommendations.hypothesis:H_SUB_APLUS_VCP"),
+    ("constant", "swing.recommendations.hypothesis:H_CAPITAL_BLOCKED"),
+    ("constant", "swing.recommendations.hypothesis:H_BROAD_WATCH_BASELINE"),
+    # The defensible-miss set is a matcher input with a default.
+    ("constant",
+     "swing.recommendations.hypothesis:DOCTRINE_DEFENSIBLE_MISS_SET"),
+    # And the two values this surface itself writes.
+    ("constant", "swing.metrics.funnel:APLUS_TRADE_ORIGIN"),
+    ("constant", "swing.trades.cohort_provenance_correction:APLUS_BUCKET"),
 )
+
+
+def derivation_rule_digest() -> str:
+    """sha256 over the ENUMERATED dependency manifest.
+
+    Functions contribute their SOURCE; constants contribute a CANONICAL
+    rendering. Both are keyed by their fully-qualified spec, so re-pointing a
+    name is a change even when the value is unchanged.
+
+    THE CANONICAL RENDERING IS NOT `repr`, AND THE PIN TEST I WROTE FOR THIS
+    FIX CAUGHT IT ON ITS FIRST RUN. `repr(frozenset)` follows SET ITERATION
+    ORDER, which for `str` elements depends on PYTHONHASHSEED and therefore
+    VARIES BETWEEN PROCESSES -- `DOCTRINE_DEFENSIBLE_MISS_SET` printed two
+    different orders across three subprocesses, and the digest came out
+    different on three of four runs. A digest built on `repr` would have been a
+    FLAKY pin: green locally, red intermittently in CI, and the fix a
+    maintainer reaches for under that pressure is to WEAKEN the assertion --
+    which would have quietly retired the guard. Sets and dicts are sorted
+    before rendering, so the digest is a function of the VALUE and not of the
+    run.
+    """
+    import hashlib
+    import importlib
+    import inspect
+
+    def _canonical(obj: Any) -> str:
+        if isinstance(obj, (set, frozenset)):
+            return f"{type(obj).__name__}({sorted(map(repr, obj))!r})"
+        if isinstance(obj, dict):
+            return repr(sorted((repr(k), repr(v)) for k, v in obj.items()))
+        return repr(obj)
+
+    parts: list[str] = []
+    for kind, spec in DERIVATION_RULE_DEPENDENCIES:
+        module_name, attr = spec.split(":")
+        obj = getattr(importlib.import_module(module_name), attr)
+        body = inspect.getsource(obj) if kind == "function" else _canonical(obj)
+        parts.append(f"{kind}\x1f{spec}\x1f{body}")
+    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
+
 
 DERIVATION_RULE_HISTORY: tuple[tuple[str, str], ...] = (
     # 2026-08-12.1 pinned only the two label functions; superseded rather than
@@ -177,6 +240,8 @@ DERIVATION_RULE_HISTORY: tuple[tuple[str, str], ...] = (
      "5d00449acd1f16cc2b6626e843044f76118710a736790a8a506806500df9d878"),
     ("2026-08-13.1",
      "9bdb95d1877a02777dac1284e766db932299e1e44ed934c6b5b7a2d3eca18099"),
+    ("2026-08-13.2",
+     "29f5748aa00db73c13304152aae85f7c027b77307cb90f326b1e033c58a43692"),
 )
 DERIVATION_RULE_VERSION: str = DERIVATION_RULE_HISTORY[-1][0]
 DERIVATION_RULE_SOURCE_SHA256: str = DERIVATION_RULE_HISTORY[-1][1]
@@ -2161,6 +2226,34 @@ def read_provenance_corrections(
     conn: sqlite3.Connection, *, trade_id: int | None = None,
 ) -> list[ProvenanceCorrectionReport]:
     """Every correction with its citations, its frozen anchors and any DRIFT."""
+    # ONE READ SNAPSHOT FOR THE WHOLE REPORT (Codex R5 Major 3). This is the
+    # EXACT defect already fixed for the preview, on the surface next door: the
+    # reader runs many independent SELECTs, so a production
+    # `upsert_recommendation` or a status transition committing mid-report
+    # could leave it comparing half its checks against one world and half
+    # against another -- and then print "no citation drift" about a citation
+    # that had already moved. A drift reader that reports a MIXED image is
+    # worse than one that reports a stale one, because the mixed image is not
+    # a picture of any moment that ever existed.
+    #
+    # WAL gives a read transaction a consistent snapshot without blocking the
+    # writer, so this costs concurrency nothing. Rolled back unconditionally:
+    # the reader still writes nothing and still takes no write lock.
+    owns_read_tx = not conn.in_transaction
+    if owns_read_tx:
+        conn.execute("BEGIN DEFERRED")
+    try:
+        return _read_provenance_corrections_inner(conn, trade_id=trade_id)
+    finally:
+        if owns_read_tx:
+            with contextlib.suppress(sqlite3.Error):
+                conn.rollback()
+
+
+def _read_provenance_corrections_inner(
+    conn: sqlite3.Connection, *, trade_id: int | None = None,
+) -> list[ProvenanceCorrectionReport]:
+    """Never opens a transaction; the caller owns the read snapshot."""
     from swing.data.repos.pipeline import evaluation_run_persistence_bound
     from swing.data.repos.provenance_corrections import (
         list_provenance_corrections,
@@ -2178,8 +2271,15 @@ def read_provenance_corrections(
         ))
         bound = evaluation_run_persistence_bound(
             conn, evaluation_run_id=int(correction.cited_evaluation_run_id))
+        # THE CLAIM IS NARROWED, NOT THE SNAPSHOT WIDENED (Codex R5 Minor 6).
+        # `pipeline_runs` has 23 columns and only the five PERSISTENCE-BOUND
+        # ones are frozen. That projection is deliberate -- `lease_heartbeat_ts`,
+        # `current_step`, `last_step_progress_ts` and the per-step status
+        # columns churn legitimately, and freezing them would manufacture
+        # constant false drift -- but the label said `pipeline_runs`, which
+        # reads as a claim about the whole row. It now says what it checks.
         lines.extend(_snapshot_drift(
-            "pipeline_runs",
+            "pipeline_runs[persistence-bound evidence]",
             json.loads(correction.cited_pipeline_run_snapshot_json),
             None if bound is None else bound.snapshot,
         ))

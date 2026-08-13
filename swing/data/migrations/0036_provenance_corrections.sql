@@ -529,6 +529,99 @@ CREATE INDEX ix_provenance_corrections_cited_candidate
     ON provenance_corrections(cited_candidate_id);
 
 
+
+-- ============================================================================
+-- THE CITATION GRAPH, ENFORCED (Codex R5 Major 2).
+--
+-- The FKs prove each cited row EXISTS. They do NOT prove those rows form the
+-- contemporaneous PAIR the correction asserts: a row could cite candidate A
+-- while declaring evaluation run B, cite a pipeline row belonging to another
+-- run, or cite a status interval belonging to another hypothesis. Since this
+-- arc ADVERTISES the citation as structural, the claim and the code have to
+-- agree -- and this was declined TWICE on the grounds that SQLite cannot
+-- express cross-table relationships without composite FKs against UNIQUE
+-- indexes on tables this arc does not own. That is true of FOREIGN KEYS and
+-- FALSE of TRIGGERS, which can query the parent rows; this migration already
+-- relies on triggers for its append-only guard, so the precedent was already
+-- here. Subqueries are prohibited in CHECK constraints but permitted in a
+-- trigger WHEN clause -- verified at the prompt.
+--
+-- "Impossible through the current service emitter" is NOT "unreachable" on
+-- this codebase: the generic corrector interpolates a PRAGMA-validated column
+-- name into dynamic SQL, so a writer no column-name grep can see is the
+-- standing shape here (D36). The reservation added by this arc closes that
+-- door for the three cohort columns; this trigger closes it for the audit
+-- row's own coherence.
+--
+-- EVERY relation below is satisfied by the live CADL citation graph, read
+-- read-only off the operator DB before this was written: candidate 12341 ->
+-- evaluation run 137 (run_ts 2026-08-10T17:30:26, action session 2026-08-11),
+-- daily_recommendations 172 (today_decision, CADL, 2026-08-11), pipeline run
+-- 151 (complete, finished 2026-08-10T17:44:45), hypothesis 1 'A+ baseline'
+-- via status-history row 1, trade 23 / entry fill 45 (2026-08-12T16:00:00).
+-- ============================================================================
+CREATE TRIGGER trg_provenance_corrections_citation_graph
+BEFORE INSERT ON provenance_corrections
+FOR EACH ROW WHEN NOT (
+    -- the cited candidate belongs to the cited run, and is an aplus row
+    EXISTS (SELECT 1 FROM candidates ca
+            WHERE ca.id = NEW.cited_candidate_id
+              AND ca.evaluation_run_id = NEW.cited_evaluation_run_id
+              AND ca.bucket = 'aplus')
+    -- the frozen run anchors ARE that run's own columns
+    AND EXISTS (SELECT 1 FROM evaluation_runs er
+                WHERE er.id = NEW.cited_evaluation_run_id
+                  AND er.run_ts = NEW.cited_run_ts_raw
+                  AND er.action_session_date
+                      = NEW.cited_candidate_action_session_date)
+    -- the cited recommendation belongs to the same run and the same ticker,
+    -- is a today_decision, and carries the frozen anchor
+    AND EXISTS (SELECT 1 FROM daily_recommendations dr
+                WHERE dr.id = NEW.cited_daily_recommendation_id
+                  AND dr.evaluation_run_id = NEW.cited_evaluation_run_id
+                  AND dr.recommendation = 'today_decision'
+                  AND dr.action_session_date
+                      = NEW.cited_recommendation_action_session_date
+                  AND dr.ticker = (SELECT ca.ticker FROM candidates ca
+                                   WHERE ca.id = NEW.cited_candidate_id))
+    -- the cited pipeline row OWNS that run, is complete, and supplied the bound
+    AND EXISTS (SELECT 1 FROM pipeline_runs pr
+                WHERE pr.id = NEW.cited_pipeline_run_id
+                  AND pr.evaluation_run_id = NEW.cited_evaluation_run_id
+                  AND pr.state = 'complete'
+                  AND pr.finished_ts = NEW.cited_pipeline_finished_ts_raw)
+    -- the cited interval belongs to the cited hypothesis and IS what was frozen
+    AND EXISTS (SELECT 1 FROM hypothesis_status_history h
+                WHERE h.history_id = NEW.cited_hypothesis_status_history_id
+                  AND h.hypothesis_id = NEW.cited_hypothesis_id
+                  AND h.status = NEW.cited_hypothesis_status_at_record
+                  AND h.effective_from
+                      = NEW.cited_hypothesis_status_effective_from
+                  AND h.effective_to
+                      IS NEW.cited_hypothesis_status_effective_to
+                  AND h.recorded_at
+                      = NEW.cited_hypothesis_status_recorded_at)
+    -- the frozen NAME is that hypothesis's name as spelled right now
+    AND EXISTS (SELECT 1 FROM hypothesis_registry hr
+                WHERE hr.id = NEW.cited_hypothesis_id
+                  AND hr.name = NEW.cited_hypothesis_name_at_correction)
+    -- the anchoring fill is an ENTRY fill of THIS trade on the frozen session
+    AND EXISTS (SELECT 1 FROM fills f
+                WHERE f.fill_id = NEW.entry_fill_id_at_correction
+                  AND f.trade_id = NEW.trade_id
+                  AND f.action = 'entry'
+                  AND substr(f.fill_datetime, 1, 10)
+                      = NEW.entry_fill_session_date)
+    -- and the trade and the cited candidate are the same instrument
+    AND EXISTS (SELECT 1 FROM trades t
+                WHERE t.id = NEW.trade_id
+                  AND t.ticker = (SELECT ca.ticker FROM candidates ca
+                                  WHERE ca.id = NEW.cited_candidate_id))
+)
+BEGIN
+    SELECT RAISE(ABORT, 'provenance_corrections: the cited rows exist but do not form the citation graph this correction asserts (candidate->run, recommendation->run/ticker/kind, pipeline->run, status-history->hypothesis, registry name, fill->trade, trade<->candidate ticker). The citation is STRUCTURAL: a row may not claim a contemporaneous pair it does not have.');
+END;
+
 -- ============================================================================
 -- APPEND-ONLY, ENFORCED (Codex R3 Major 6).
 --

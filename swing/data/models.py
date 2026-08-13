@@ -2997,6 +2997,19 @@ PROVENANCE_CORRECTED_FIELDS: tuple[str, ...] = (
 
 PROVENANCE_CORRECTION_APPLIED_BY: str = "operator"
 
+# The FULL `daily_recommendations` column roster the frozen snapshot must
+# carry (Codex R5 Minor 5). The snapshot is advertised as the WHOLE row and
+# only three keys were ever enforced, so a three-key object satisfied both
+# layers -- omitting `action_text`, the targets, the risk fields and the
+# rationale, which are exactly the columns `upsert_recommendation` can rewrite
+# underneath the citation. A checked-in manifest cannot read the live schema,
+# so a drift test asserts this set EQUALS `PRAGMA table_info` (#11).
+DAILY_RECOMMENDATION_SNAPSHOT_COLUMNS: frozenset[str] = frozenset({
+    "id", "evaluation_run_id", "data_asof_date", "action_session_date",
+    "ticker", "recommendation", "action_text", "entry_target", "stop_target",
+    "shares", "risk_dollars", "risk_pct", "rationale",
+})
+
 # The status a cited hypothesis MUST have carried when the framework wrote the
 # cited record. Mirrors the 0036 CHECK.
 PROVENANCE_REQUIRED_HYPOTHESIS_STATUS: str = "active"
@@ -3052,6 +3065,37 @@ def _require_audit_timestamp(name: str, value) -> None:
         raise ValueError(
             f"{name} matches the ISO shape but is not a real datetime: "
             f"{value!r}") from exc
+
+
+def _require_utc_conversion(
+    raw_name: str, raw: str, utc_name: str, utc: str,
+) -> None:
+    """The `_utc` value must BE the UTC conversion of its `_raw` sibling.
+
+    Codex R5 Major 1. Both layers validated ordering WITHIN each clock domain
+    and never established that the two domains describe the SAME INSTANTS -- so
+    a row could shift both UTC values by hours, cite a different status window,
+    satisfy every coverage and retrospective CHECK, and be reported CLEAN
+    because the drift reader never recomputes the conversion. The audit row's
+    entire warrant is that it holds true statements about its own evidence.
+
+    Recomputed from the project's single declared local zone, so this cannot
+    drift from the service's own normalization.
+    """
+    from datetime import datetime as _datetime
+    from zoneinfo import ZoneInfo
+
+    from swing.evaluation.dates import PIPELINE_LOCAL_TIMEZONE
+
+    local = _datetime.fromisoformat(raw).replace(
+        tzinfo=ZoneInfo(PIPELINE_LOCAL_TIMEZONE))
+    expected = local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+    if utc != expected.isoformat():
+        raise ValueError(
+            f"{utc_name} is {utc!r}, but {raw_name} {raw!r} converts from "
+            f"{PIPELINE_LOCAL_TIMEZONE} to {expected.isoformat()!r}. The two "
+            "clock columns must describe the SAME INSTANT; ordering within "
+            "each domain does not establish that.")
 
 
 def _require_extended_iso_date(name: str, value) -> None:
@@ -3285,6 +3329,14 @@ class ProvenanceCorrection:
                 f"{self.cited_hypothesis_status_effective_to} ends at or "
                 f"before the window end {self.cited_status_window_upper_utc}, "
                 "so the cited interval does not cover the whole window")
+        _require_utc_conversion(
+            "cited_run_ts_raw", self.cited_run_ts_raw,
+            "cited_run_ts_utc", self.cited_run_ts_utc)
+        _require_utc_conversion(
+            "cited_pipeline_finished_ts_raw",
+            self.cited_pipeline_finished_ts_raw,
+            "cited_status_window_upper_utc",
+            self.cited_status_window_upper_utc)
         if self.applied_by != PROVENANCE_CORRECTION_APPLIED_BY:
             raise ValueError(
                 "applied_by must be "
@@ -3329,6 +3381,17 @@ class ProvenanceCorrection:
         rec = _provenance_snapshot_dict(
             "cited_recommendation_snapshot_json",
             self.cited_recommendation_snapshot_json)
+        # THE WHOLE ROW, not the three keys the ID checks happen to name
+        # (Codex R5 Minor 5). The snapshot is advertised as a full-row freeze
+        # and a three-key object satisfied both layers, omitting exactly the
+        # columns `upsert_recommendation` can rewrite underneath the citation.
+        if set(rec) != set(DAILY_RECOMMENDATION_SNAPSHOT_COLUMNS):
+            missing = sorted(DAILY_RECOMMENDATION_SNAPSHOT_COLUMNS - set(rec))
+            extra = sorted(set(rec) - DAILY_RECOMMENDATION_SNAPSHOT_COLUMNS)
+            raise ValueError(
+                "cited_recommendation_snapshot_json must carry EXACTLY the "
+                f"daily_recommendations column set; missing {missing}, "
+                f"unexpected {extra}")
         _require_snapshot_fields(
             "cited_recommendation_snapshot_json", rec, {
                 "id": self.cited_daily_recommendation_id,

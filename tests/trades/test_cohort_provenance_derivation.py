@@ -8,8 +8,8 @@ two-directional and both directions are wrong, so both are tested.
 """
 from __future__ import annotations
 
-import hashlib
 import inspect
+import pathlib
 import sqlite3
 from pathlib import Path
 
@@ -149,25 +149,15 @@ def test_derivation_rule_version_is_pinned_to_the_source_sha(conn) -> None:
     drift ("the descriptive suffix may evolve"), so a version constant that is
     "bumped by hand" is gotcha #31. Changing either function fails HERE until
     the hash and the version move in the same commit."""
-    import importlib
-
     from swing.trades.cohort_provenance_correction import (
-        DERIVATION_RULE_SOURCE_FUNCTIONS,
+        derivation_rule_digest,
     )
 
-    # EVERY function that decides the stored value, not just the two that
-    # format it. The written label also passes through
-    # `canonicalize_hypothesis_label`, and WHICH hypothesis is selected comes
-    # from `match_candidate_to_hypotheses` and `_aplus_baseline_match` -- so
-    # changing the canonicalizer could have changed every stored label while
-    # this test stayed green and new corrections kept claiming the same
-    # version. That is reachable after a ROUTINE CODE UPGRADE.
-    src = ""
-    for spec in DERIVATION_RULE_SOURCE_FUNCTIONS:
-        module_name, func_name = spec.split(":")
-        src += inspect.getsource(
-            getattr(importlib.import_module(module_name), func_name))
-    digest = hashlib.sha256(src.encode("utf-8")).hexdigest()
+    # THE ENUMERATED DEPENDENCY MANIFEST, not a function list. Hashing function
+    # SOURCE cannot see a value the source merely NAMES, so `H_APLUS_BASELINE`
+    # could be re-spelled -- selecting a different registry row -- without
+    # moving a source-only digest by one bit.
+    digest = derivation_rule_digest()
     assert digest == DERIVATION_RULE_SOURCE_SHA256, (
         "swing.recommendations.hypothesis._descriptive_label or "
         "_non_pass_criterion_names changed. BUMP DERIVATION_RULE_VERSION "
@@ -520,3 +510,70 @@ def test_R2m6_a_new_digest_cannot_reuse_an_existing_version() -> None:
     for version, digest in DERIVATION_RULE_HISTORY:
         assert version.strip() and len(digest) == 64
         assert all(ch in "0123456789abcdef" for ch in digest)
+
+
+def test_R5M4_a_CONSTANT_only_change_moves_the_digest() -> None:
+    """The pin's SHAPE, not its coverage. Hashing function SOURCE cannot see a
+    value the source merely NAMES: `H_APLUS_BASELINE` could be re-spelled --
+    selecting a different registry row and changing every stored label -- and a
+    source-only digest would not move by one bit. Mutating the constant here
+    proves the manifest sees it."""
+    import swing.recommendations.hypothesis as hyp
+    from swing.trades.cohort_provenance_correction import (
+        derivation_rule_digest,
+    )
+
+    before = derivation_rule_digest()
+    original = hyp.H_APLUS_BASELINE
+    try:
+        hyp.H_APLUS_BASELINE = "A+ baseline (renamed)"
+        assert derivation_rule_digest() != before, (
+            "a constant-only rule change did not move the digest -- the "
+            "manifest is not seeing its own dependencies")
+    finally:
+        hyp.H_APLUS_BASELINE = original
+    assert derivation_rule_digest() == before
+
+
+def test_R5M4_the_digest_is_STABLE_across_processes() -> None:
+    """`repr(frozenset)` follows SET ITERATION ORDER, which for str elements
+    depends on PYTHONHASHSEED -- so a repr-based digest differed across
+    subprocesses and would have been a FLAKY pin: green locally, red
+    intermittently, and the fix a maintainer reaches for under that pressure
+    is to weaken the assertion. Run in fresh interpreters, because a
+    same-process check cannot see hash randomization at all."""
+    import subprocess
+    import sys
+
+    code = ("from swing.trades.cohort_provenance_correction import "
+            "derivation_rule_digest as d; print(d())")
+    seen = {
+        subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True,
+            cwd=str(pathlib.Path(__file__).resolve().parents[2]),
+        ).stdout.strip()
+        for _ in range(4)
+    }
+    assert len(seen) == 1, f"digest is not process-stable: {seen}"
+    assert seen == {DERIVATION_RULE_SOURCE_SHA256}
+
+
+def test_R5M4_the_manifest_covers_the_constants_the_rule_reads() -> None:
+    """A roster is only as good as its membership, so the members are READ."""
+    from swing.trades.cohort_provenance_correction import (
+        DERIVATION_RULE_DEPENDENCIES,
+    )
+
+    specs = {spec for _kind, spec in DERIVATION_RULE_DEPENDENCIES}
+    for required in (
+        "swing.recommendations.hypothesis:_descriptive_label",
+        "swing.recommendations.hypothesis:_non_pass_criterion_names",
+        "swing.recommendations.hypothesis:match_candidate_to_hypotheses",
+        "swing.trades.entry:canonicalize_hypothesis_label",
+        "swing.recommendations.hypothesis:H_APLUS_BASELINE",
+        "swing.recommendations.hypothesis:DOCTRINE_DEFENSIBLE_MISS_SET",
+        "swing.metrics.funnel:APLUS_TRADE_ORIGIN",
+    ):
+        assert required in specs, required
+    kinds = {kind for kind, _spec in DERIVATION_RULE_DEPENDENCIES}
+    assert kinds == {"function", "constant"}

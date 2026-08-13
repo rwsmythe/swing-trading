@@ -248,6 +248,15 @@ def _seed_parents(conn: sqlite3.Connection) -> dict[str, int]:
         "VALUES (?, ?, 'entry', 19, 10.81)",
         (trade, FILL_DATETIME),
     ).lastrowid
+    # The seeded 0017 status-history row carries `recorded_at` = MIGRATION
+    # APPLY TIME. The citation-graph trigger requires the frozen interval to BE
+    # that row, so the fixture states the interval it is going to claim rather
+    # than claiming one the DB does not hold.
+    conn.execute(
+        "UPDATE hypothesis_status_history SET effective_from = ?, "
+        "effective_to = NULL, recorded_at = ? WHERE history_id = 1",
+        ("2026-04-25T00:00:00.000", "2026-04-25T00:00:00.000"),
+    )
     conn.commit()
     return {
         "run": int(run), "pipeline": int(pipe), "candidate": int(cand),
