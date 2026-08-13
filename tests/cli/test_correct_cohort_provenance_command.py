@@ -105,8 +105,12 @@ def test_the_service_signature_accepts_no_cohort_VALUE() -> None:
     names = set(inspect.signature(correct_cohort_provenance).parameters)
     assert names == {
         "conn", "trade_id", "cited_candidate_id", "cited_recommendation_id",
-        "reason", "applied_at",
+        "reason",
     }
+    # `applied_at` is DELIBERATELY absent: an audit time a caller can supply
+    # is an audit time a caller can falsify, and this table exists to hold
+    # claims that are true.
+    assert "applied_at" not in names
 
 
 def test_the_value_comes_from_the_RECORD_not_from_the_cohort(

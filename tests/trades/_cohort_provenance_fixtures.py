@@ -355,7 +355,11 @@ def build_cadl_case(
     )
     if contemporaneous_history:
         rebase_status_history_recorded_at(conn)
+    # The PRODUCTION recommendation snapshot, so a test that needs one never
+    # hand-writes a partial object production cannot emit.
+    from swing.data.repos.recommendations import snapshot_recommendation_row
     return {
+        "dr_snapshot": snapshot_recommendation_row(conn, dr_id),
         "evaluation_run_id": run_id,
         "pipeline_run_id": pipeline_ids[0] if pipeline_ids else None,
         "pipeline_run_ids": pipeline_ids,

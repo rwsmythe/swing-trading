@@ -3023,6 +3023,16 @@ def _require_audit_timestamp(name: str, value) -> None:
         raise ValueError(
             f"{name} must be a canonical naive ISO timestamp "
             f"'YYYY-MM-DDTHH:MM:SS[.ffffff]'; got {value!r}")
+    # HOUR 24 IS REFUSED EXPLICITLY. `datetime.fromisoformat` ACCEPTS
+    # '2026-08-11T24:00:00' and NORMALISES it to 2026-08-12T00:00:00 -- so a
+    # stamp would silently move by a calendar day -- while the 0036 GLOB CHECK
+    # refuses it. Without this the two layers accept DIFFERENT sets, which is
+    # the asymmetry these guards exist to remove.
+    if value[11:13] > "23":
+        raise ValueError(
+            f"{name} carries hour {value[11:13]}; a clock produced no such "
+            f"time and fromisoformat would silently roll it to the next day "
+            f"({value!r})")
     from datetime import datetime as _datetime
     try:
         _datetime.fromisoformat(value)
@@ -3233,15 +3243,25 @@ class ProvenanceCorrection:
         # does nothing about that row CHANGING, and
         # `update_close_open_interval` rewrites `effective_to` IN PLACE on
         # every supported transition.
-        if self.cited_hypothesis_status_effective_from > self.cited_run_ts_utc:
+        # SECOND GRANULARITY, STRICT AT BOTH ENDS -- the EXACT comparison the
+        # 0036 CHECKs make (Codex R3 Major 2). A lexical comparison across
+        # differing fractional precisions is wrong:
+        # '2026-08-11T03:44:45.0' > '2026-08-11T03:44:45' is True although
+        # they are the SAME INSTANT. Truncating removes the precision axis;
+        # STRICT is the conservative direction, since an interval starting or
+        # ending inside the window's own boundary second has not been shown to
+        # cover it.
+        if (self.cited_hypothesis_status_effective_from[:19]
+                >= self.cited_run_ts_utc[:19]):
             raise ValueError(
                 "cited_hypothesis_status_effective_from "
-                f"{self.cited_hypothesis_status_effective_from} begins AFTER "
-                f"the window start {self.cited_run_ts_utc}, so the cited "
-                "interval does not cover the window it is cited as covering")
+                f"{self.cited_hypothesis_status_effective_from} does not begin "
+                f"strictly before the window start {self.cited_run_ts_utc}, so "
+                "the cited interval does not cover the window it is cited as "
+                "covering")
         if (self.cited_hypothesis_status_effective_to is not None
-                and self.cited_hypothesis_status_effective_to
-                <= self.cited_status_window_upper_utc):
+                and self.cited_hypothesis_status_effective_to[:19]
+                <= self.cited_status_window_upper_utc[:19]):
             raise ValueError(
                 "cited_hypothesis_status_effective_to "
                 f"{self.cited_hypothesis_status_effective_to} ends at or "

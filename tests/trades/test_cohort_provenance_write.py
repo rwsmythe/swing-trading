@@ -334,19 +334,20 @@ def test_drift_is_reported_per_mutable_column(conn, column, new_value) -> None:
     ), report.drift_lines
 
 
-def test_a_frozen_column_absent_from_the_live_row_is_SCHEMA_drift(conn) -> None:
-    ids = build_cadl_case(conn)
-    _apply(conn, ids)
-    row = get_correction_for_trade(conn, ids["trade_id"])
-    snap = json.loads(row.cited_recommendation_snapshot_json)
-    snap["a_column_that_no_longer_exists"] = 1
-    conn.execute(
-        "UPDATE provenance_corrections SET "
-        "cited_recommendation_snapshot_json = ? "
-        "WHERE provenance_correction_id = ?",
-        (json.dumps(snap, sort_keys=True), row.provenance_correction_id))
-    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
-    assert any(CITATION_SCHEMA_DRIFT in line for line in report.drift_lines)
+def test_a_frozen_column_absent_from_the_live_row_is_SCHEMA_drift() -> None:
+    """Exercised on the comparison FUNCTION rather than by mutating an audit
+    row: the table is APPEND-ONLY now, and routing around that to set up a
+    test would be defeating the guard rather than testing the behaviour."""
+    from swing.trades.cohort_provenance_correction import _snapshot_drift
+
+    lines = _snapshot_drift(
+        "daily_recommendations",
+        {"id": 1, "gone_column": 7},
+        {"id": 1, "new_column": 9},
+    )
+    joined = "\n".join(lines)
+    assert f"{CITATION_SCHEMA_DRIFT}: daily_recommendations.gone_column" in joined
+    assert f"{CITATION_SCHEMA_DRIFT}: daily_recommendations.new_column" in joined
 
 
 def test_pipeline_snapshot_drift_is_reported_too(conn) -> None:
@@ -719,6 +720,24 @@ def _kwargs_from(row):
     return kw
 
 
+def _repointed_at(row, other):
+    """The same well-formed row, re-pointed at an UNCORRECTED trade.
+
+    The audit table is APPEND-ONLY (triggers), so a rejection test cannot
+    simply DELETE the row it just wrote and re-insert a mutated one -- which
+    is the append-only guard working, not an obstacle to route around.
+    """
+    kw = _kwargs_from(row)
+    kw["trade_id"] = other["trade_id"]
+    kw["entry_fill_id"] = other["fill_id"]
+    kw["entry_fill_id_at_correction"] = other["fill_id"]
+    kw["entry_fill_snapshot_json"] = json.dumps({
+        "fill_id": other["fill_id"], "trade_id": other["trade_id"],
+        "action": "entry", "fill_datetime": CADL_FILL_DATETIME,
+    }, sort_keys=True)
+    return kw
+
+
 def _raw_insert_or_raise(conn, row, kw):
     names = [f for f in row.__dataclass_fields__
              if f != "provenance_correction_id"]
@@ -743,10 +762,10 @@ def test_R2M2_every_audit_clock_has_a_GRAMMAR_not_just_an_ordering(
     from swing.data.models import ProvenanceCorrection
 
     ids = build_cadl_case(conn)
+    other = build_cadl_case(conn, ticker="OTHR")
     _apply(conn, ids)
     row = get_correction_for_trade(conn, ids["trade_id"])
-    conn.execute("DELETE FROM provenance_corrections")
-    kw = _kwargs_from(row)
+    kw = _repointed_at(row, other)
     kw[column] = "aaa"
     with pytest.raises(ValueError):
         ProvenanceCorrection(**kw)
@@ -780,12 +799,12 @@ def test_R2M2_an_empty_applied_label_is_refused_at_BOTH_layers(conn) -> None:
     from swing.data.models import ProvenanceCorrection
 
     ids = build_cadl_case(conn)
+    other = build_cadl_case(conn, ticker="OTHR")
     _apply(conn, ids)
     row = get_correction_for_trade(conn, ids["trade_id"])
-    conn.execute("DELETE FROM provenance_corrections")
     env = json.loads(row.applied_value_json)
     env["trades.hypothesis_label"] = ""
-    kw = _kwargs_from(row)
+    kw = _repointed_at(row, other)
     kw["applied_value_json"] = json.dumps(env, sort_keys=True)
     with pytest.raises(ValueError):
         ProvenanceCorrection(**kw)
@@ -793,22 +812,193 @@ def test_R2M2_an_empty_applied_label_is_refused_at_BOTH_layers(conn) -> None:
         _raw_insert_or_raise(conn, row, kw)
 
 
-def test_R2M2_a_malformed_applied_at_from_the_PUBLIC_api_is_refused(
-    conn,
-) -> None:
-    """applied_at is a public parameter of correct_cohort_provenance -- the
-    one clock in this set that is REACHABLE rather than merely
-    schema-legal."""
+def test_R3M1_applied_at_cannot_be_supplied_by_a_caller(conn) -> None:
+    """A caller could previously pass applied_at='1900-01-01T00:00:00' and the
+    audit row would durably record that the correction happened then --
+    reachable through a direct service call, and grammar validation
+    established only that the value LOOKED like a timestamp, never that this
+    surface OBSERVED it. In a table whose purpose is to hold true claims, the
+    one field nobody may supply is when it happened."""
+    import inspect
+
     ids = build_cadl_case(conn)
     conn.commit()
-    with pytest.raises(ValueError):
+    assert "applied_at" not in inspect.signature(
+        correct_cohort_provenance).parameters
+    with pytest.raises(TypeError):
         correct_cohort_provenance(
             conn, trade_id=ids["trade_id"],
             cited_candidate_id=ids["candidate_id"],
             cited_recommendation_id=ids["daily_recommendation_id"],
-            reason=REASON, applied_at="whenever")
+            reason=REASON, applied_at="1900-01-01T00:00:00")
     assert conn.execute(
         "SELECT COUNT(*) FROM provenance_corrections").fetchone()[0] == 0
+
+
+def test_R3M1_the_clock_is_stamped_inside_and_is_patchable_for_tests(
+    conn, monkeypatch,
+) -> None:
+    """The determinism seam is a MODULE attribute, not a parameter, precisely
+    so it is not part of the public surface."""
+    import swing.trades.cohort_provenance_correction as svc
+
+    ids = build_cadl_case(conn)
+    monkeypatch.setattr(
+        svc, "_APPLIED_AT_CLOCK", lambda: "2026-08-13T00:00:00.000")
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    assert row.applied_at == "2026-08-13T00:00:00.000"
+
+
+def test_R3M6_the_audit_row_cannot_be_UPDATED_or_DELETED(conn) -> None:
+    """`ux_provenance_corrections_trade` only stops a SECOND row existing. It
+    does nothing about REWRITING the citation, or DELETING it and reopening
+    the trade for a different one -- so "enforced by the schema rather than by
+    prose" was true of the COUNT and false of the CONTENT."""
+    ids = build_cadl_case(conn)
+    result = _apply(conn, ids)
+    with pytest.raises(sqlite3.IntegrityError, match="APPEND-ONLY"):
+        conn.execute(
+            "UPDATE provenance_corrections SET cited_candidate_id = 999 "
+            "WHERE provenance_correction_id = ?", (result.correction_id,))
+    with pytest.raises(sqlite3.IntegrityError, match="APPEND-ONLY"):
+        conn.execute(
+            "UPDATE provenance_corrections SET correction_reason = 'rewritten' "
+            "WHERE provenance_correction_id = ?", (result.correction_id,))
+    with pytest.raises(sqlite3.IntegrityError, match="APPEND-ONLY"):
+        conn.execute(
+            "DELETE FROM provenance_corrections "
+            "WHERE provenance_correction_id = ?", (result.correction_id,))
+    assert conn.execute(
+        "SELECT COUNT(*) FROM provenance_corrections").fetchone()[0] == 1
+
+
+def test_R3M6_the_FK_driven_nulling_is_STILL_permitted(conn) -> None:
+    """The trigger cannot simply reject everything: `entry_fill_id` is
+    deliberately ON DELETE SET NULL so cohort bookkeeping never vetoes the
+    money-bearing split handler, and SQLite implements that as an UPDATE. The
+    composition test elsewhere in this file exercises the real split path;
+    this one pins the transition directly."""
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.execute("DELETE FROM fills WHERE fill_id = ?", (ids["fill_id"],))
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    assert row.entry_fill_id is None
+    assert row.entry_fill_id_at_correction == ids["fill_id"]
+
+
+def test_R3M4_a_malformed_live_interval_bound_is_UNVERIFIABLE(conn) -> None:
+    """The coverage test is a string comparison over an unconstrained TEXT
+    column, so closing the interval with a basic-form `20260811T033500`
+    produced an ordinary drift line and NO invalidation -- the malformed value
+    sorts AFTER the bound. A reader must not manufacture a coverage verdict
+    out of data it cannot parse."""
+    assert "20260811T033500" > "2026-08-11T03:44:45"
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.execute(
+        "UPDATE hypothesis_status_history SET effective_to = '20260811T033500' "
+        "WHERE history_id = 1")
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    joined = "\n".join(report.drift_lines)
+    assert CITATION_ANCHOR_UNVERIFIABLE in joined
+    assert "effective_to" in joined
+
+
+def test_R3M3_moving_the_cited_candidate_to_another_run_is_reported(
+    conn,
+) -> None:
+    """The audit's candidate and evaluation-run FKs are INDEPENDENT, so moving
+    the cited candidate to a different run left its label and bucket unchanged
+    and the reader reported CLEAN -- while the correction's whole claim is
+    that THIS candidate came from THAT run."""
+    ids = build_cadl_case(conn)
+    other = build_cadl_case(conn, ticker="OTHR")
+    _apply(conn, ids)
+    conn.execute(
+        "UPDATE candidates SET evaluation_run_id = ? WHERE id = ?",
+        (other["evaluation_run_id"], ids["candidate_id"]))
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    joined = "\n".join(report.drift_lines)
+    assert "candidates.evaluation_run_id" in joined
+    assert "no longer belongs to the cited run" in joined
+
+
+def test_R3M3_a_reticketed_cited_candidate_is_reported(conn) -> None:
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.execute(
+        "UPDATE candidates SET ticker = 'ELSE' WHERE id = ?",
+        (ids["candidate_id"],))
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    assert any("now ticker" in line for line in report.drift_lines)
+
+
+def test_R3M2_an_equal_instant_at_finer_precision_does_not_cover(conn) -> None:
+    """The grammar admits 0-6 fractional digits and the coverage comparison
+    was LEXICAL: verified, '2026-08-11T03:44:45.0' > '2026-08-11T03:44:45' is
+    True although they are the SAME INSTANT and the half-open interval does
+    not cover the bound. Truncating to seconds removes the precision axis."""
+    from swing.data.models import ProvenanceCorrection
+
+    assert "2026-08-11T03:44:45.0" > "2026-08-11T03:44:45"
+    ids = build_cadl_case(conn)
+    other = build_cadl_case(conn, ticker="OTHR")
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    kw = _repointed_at(row, other)
+    kw["cited_hypothesis_status_effective_to"] = "2026-08-11T03:44:45.0"
+    with pytest.raises(ValueError):
+        ProvenanceCorrection(**kw)
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_insert_or_raise(conn, row, kw)
+
+
+@pytest.mark.parametrize("bad", [
+    "2026-02-30T00:00:00",   # SQLite NORMALISES this rather than NULLing it
+    "2026-08-11T24:00:00",   # SQLite round-trips hour 24 happily
+    "0000-01-01T00:00:00",   # ...and year zero
+])
+def test_R3M5_impossible_dates_are_refused_by_SQL_too(conn, bad) -> None:
+    """`datetime(x) IS NOT NULL` was not enough: SQLite NORMALISES Feb 30
+    rather than returning NULL, and ECHOES hour 24 and year zero -- all three
+    of which Python's fromisoformat RAISES on. A raw row therefore INSERTed
+    and then crashed the supported reader at hydration."""
+    from swing.data.models import ProvenanceCorrection
+
+    ids = build_cadl_case(conn)
+    other = build_cadl_case(conn, ticker="OTHR")
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    kw = _repointed_at(row, other)
+    kw["applied_at"] = bad
+    with pytest.raises(ValueError):
+        ProvenanceCorrection(**kw)
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_insert_or_raise(conn, row, kw)
+
+
+def test_R3m7_an_already_populated_trade_refuses_BEFORE_asking_for_a_reason(
+    conn,
+) -> None:
+    """The unset-state verdict is TERMINAL and true whatever payload arrives,
+    while "supply a reason" is an INSTRUCTION implying the rest is sound. With
+    the reason first, the operator was sent away to justify an operation that
+    can never be authorized."""
+    ids = build_cadl_case(conn)
+    conn.execute(
+        "UPDATE trades SET trade_origin = 'pipeline_aplus' WHERE id = ?",
+        (ids["trade_id"],))
+    conn.commit()
+    with pytest.raises(CohortProvenanceCorrectionError) as exc:
+        correct_cohort_provenance(
+            conn, trade_id=ids["trade_id"],
+            cited_candidate_id=ids["candidate_id"],
+            cited_recommendation_id=ids["daily_recommendation_id"],
+            reason=None)
+    msg = str(exc.value)
+    assert "already carries cohort provenance" in msg
+    assert "--reason" not in msg
 
 
 def test_R2M3_a_recorded_at_inside_the_margin_REFUSES(conn) -> None:

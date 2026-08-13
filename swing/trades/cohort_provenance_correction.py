@@ -109,6 +109,19 @@ UNSET_TRADE_ORIGIN = "manual_off_pipeline"
 # answer is to decline rather than to guess.
 CLOCK_MARGIN = timedelta(hours=24)
 
+
+def _applied_at_now() -> str:
+    """The audit stamp, taken by THIS surface and by nobody else."""
+    from swing.trades.reconciliation_auto_correct import _utc_now_iso_ms
+
+    return _utc_now_iso_ms()
+
+
+# The seam a test patches for determinism. It is a module attribute rather
+# than a parameter precisely so it is not part of the PUBLIC surface: an audit
+# time a caller can supply is an audit time a caller can falsify.
+_APPLIED_AT_CLOCK = _applied_at_now
+
 # The EXACT naive-ISO grammar every timestamp this module reads must satisfy:
 # `YYYY-MM-DDTHH:MM:SS` with an optional fractional part, a LITERAL `T`, no
 # offset, no `Z`, and no surrounding whitespace. Anchored at both ends.
@@ -273,6 +286,14 @@ def _require_naive_datetime(raw: Any, *, what: str) -> datetime:
             "a bare TEXT column, so a truncated, space-separated or "
             "offset-bearing value is schema-legal -- and a date-only value "
             "would silently be read as MIDNIGHT."
+        )
+    # Hour 24: `fromisoformat` ACCEPTS it and NORMALISES to the next day, so a
+    # stamp would silently move by a calendar day.
+    if value[11:13] > "23":
+        raise _refuse(
+            f"{what} {value!r} carries hour {value[11:13]}; no clock produced "
+            "that time and parsing it would silently roll the stamp to the "
+            "next day."
         )
     try:
         parsed = datetime.fromisoformat(value)
@@ -1283,6 +1304,14 @@ def _authorize(
             "re-deciding provenance is a different authority question."
         )
 
+    # THE UNSET-STATE VERDICT PRECEDES THE REASON INSTRUCTION (Codex R3 Minor
+    # 7). It is TERMINAL and true whatever payload arrives, while "supply a
+    # reason" is an INSTRUCTION that implies the rest of the request is sound.
+    # With the reason first, a trade whose cohort keys are already populated
+    # sent the operator away to compose a justification for an operation that
+    # can never be authorized. This is the plan's own ordering principle --
+    # every VERDICT before any INSTRUCTION -- applied to its own ladder.
+    _gate_on_unset_state(trade)
     _reason_or_refuse(reason)
     anchored = _anchor_half(
         conn,
@@ -1499,11 +1528,21 @@ def correct_cohort_provenance(
     cited_candidate_id: int,
     cited_recommendation_id: int,
     reason: str | None = None,
-    applied_at: str | None = None,
 ) -> CohortProvenanceCorrectionResult:
     """Outer: owns ``BEGIN IMMEDIATE`` / COMMIT / ROLLBACK, and REJECTS a
     caller-held transaction -- never auto-detects, because an auto-detect
-    guard re-introduces the race the explicit lock closed."""
+    guard re-introduces the race the explicit lock closed.
+
+    THERE IS NO ``applied_at`` PARAMETER (Codex R3 Major 1). A caller could
+    previously pass ``applied_at='1900-01-01T00:00:00'`` and the audit row
+    would durably record that the correction happened then -- reachable
+    through a direct service call, and grammar validation established only
+    that the value LOOKED like a timestamp, never that this surface OBSERVED
+    it. In a table whose entire purpose is to hold claims that are true, the
+    one field nobody may supply is when it happened. The clock is stamped
+    INSIDE the transaction; tests that need determinism patch
+    ``_APPLIED_AT_CLOCK``.
+    """
     if conn.in_transaction:
         raise CallerHeldTransactionError(
             "correct_cohort_provenance must be called with no open "
@@ -1518,7 +1557,6 @@ def correct_cohort_provenance(
             cited_candidate_id=cited_candidate_id,
             cited_recommendation_id=cited_recommendation_id,
             reason=reason,
-            applied_at=applied_at,
         )
         conn.commit()
         return result
@@ -1535,7 +1573,6 @@ def _correct_cohort_provenance_inner(
     cited_candidate_id: int,
     cited_recommendation_id: int,
     reason: str | None = None,
-    applied_at: str | None = None,
 ) -> CohortProvenanceCorrectionResult:
     """Never commits. Every callee is repo-level, so no inner ``with conn:``
     can close the caller's transaction out from under it.
@@ -1563,7 +1600,6 @@ def _correct_cohort_provenance_inner(
     from swing.data.repos.trades import update_cohort_provenance
     from swing.trades.reconciliation_auto_correct import (
         _maybe_get_active_risk_policy_id,
-        _utc_now_iso_ms,
     )
 
     auth = _authorize(
@@ -1659,7 +1695,7 @@ def _correct_cohort_provenance_inner(
             pre_value_json=json.dumps(pre_values, sort_keys=True),
             applied_value_json=json.dumps(applied_values, sort_keys=True),
             corrected_fields_json=json.dumps(list(COHORT_CORRECTED_FIELDS)),
-            applied_at=applied_at or _utc_now_iso_ms(),
+            applied_at=_APPLIED_AT_CLOCK(),
             applied_by=PROVENANCE_CORRECTION_APPLIED_BY,
             correction_reason=stored_reason,
             risk_policy_id_at_correction=_maybe_get_active_risk_policy_id(conn),
@@ -1784,11 +1820,34 @@ def _status_interval_drift(
     lines = _snapshot_drift("hypothesis_status_history", frozen, live)
     if not lines:
         return lines
+    # THE LIVE BOUNDS ARE VALIDATED BEFORE ANY VERDICT IS COMPUTED FROM THEM
+    # (Codex R3 Major 4). These are unconstrained TEXT columns, and the
+    # coverage test below is a string comparison -- so closing the interval
+    # with a basic-form `20260811T033500` produced an ordinary drift line and
+    # NO invalidation, because the malformed value sorts AFTER the bound. A
+    # reader must not manufacture a coverage verdict out of data it cannot
+    # parse; it says so instead.
+    for field in ("effective_from", "effective_to", "recorded_at"):
+        value = live[field]
+        if value is None:
+            continue
+        try:
+            _require_naive_datetime(value, what=field)
+        except CohortProvenanceCorrectionError:
+            lines.append(
+                f"{CITATION_ANCHOR_UNVERIFIABLE}: hypothesis_status_history "
+                f"row {correction.cited_hypothesis_status_history_id}'s "
+                f"{field} is {value!r}, which this surface cannot parse, so "
+                "whether the interval still covers the cited window cannot be "
+                "decided.")
+            return lines
     # Does the interval STILL cover the window this correction proved it over?
+    # Second-granular and strict, the SAME comparison the audit CHECKs make.
     upper = str(correction.cited_status_window_upper_utc)
     covers = (
-        live["effective_from"] <= str(correction.cited_run_ts_utc)
-        and (live["effective_to"] is None or live["effective_to"] > upper)
+        live["effective_from"][:19] < str(correction.cited_run_ts_utc)[:19]
+        and (live["effective_to"] is None
+             or live["effective_to"][:19] > upper[:19])
         and live["status"] == "active"
     )
     if not covers:
@@ -1881,6 +1940,29 @@ def _derivation_input_drift(
             lines.append(
                 f"{CITATION_DRIFT}: candidates.bucket was {APLUS_BUCKET!r} at "
                 f"correction time and is {cited.candidate.bucket!r} now.")
+        # CANDIDATE OWNERSHIP (Codex R3 Major 3). The audit's candidate and
+        # evaluation-run FKs are INDEPENDENT, so moving the cited candidate to
+        # a different run left its label and bucket unchanged and the reader
+        # reported CLEAN -- while the correction's whole claim is that THIS
+        # candidate came from THAT run. The run id is already frozen, so the
+        # comparison costs nothing.
+        if int(cited.evaluation_run_id) != int(
+                correction.cited_evaluation_run_id):
+            lines.append(
+                f"{CITATION_DRIFT}: candidates.evaluation_run_id was "
+                f"{correction.cited_evaluation_run_id} at correction time and "
+                f"is {cited.evaluation_run_id} now -- the cited candidate no "
+                "longer belongs to the cited run.")
+        trade_ticker = conn.execute(
+            "SELECT ticker FROM trades WHERE id = ?",
+            (int(correction.trade_id),),
+        ).fetchone()
+        if trade_ticker is not None and str(
+                cited.candidate.ticker) != str(trade_ticker[0]):
+            lines.append(
+                f"{CITATION_DRIFT}: the cited candidate is now ticker "
+                f"{cited.candidate.ticker!r} while trade "
+                f"{correction.trade_id} is {trade_ticker[0]!r}.")
 
     trade_row = conn.execute(
         "SELECT hypothesis_label, candidate_id, trade_origin FROM trades "

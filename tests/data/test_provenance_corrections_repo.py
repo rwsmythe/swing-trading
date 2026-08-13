@@ -231,6 +231,7 @@ def test_update_cohort_provenance_refuses_a_non_enum_origin(conn) -> None:
 
 
 def _correction(ids: dict, **overrides) -> ProvenanceCorrection:
+    """A correction built from the PRODUCTION snapshot writer."""
     base = dict(
         provenance_correction_id=None,
         trade_id=ids["trade_id"],
@@ -264,11 +265,12 @@ def _correction(ids: dict, **overrides) -> ProvenanceCorrection:
         cited_recommendation_action_session_date=CADL_ACTION_SESSION,
         entry_fill_session_date=CADL_F,
         cited_run_ts_raw=CADL_RUN_TS_LOCAL,
-        cited_recommendation_snapshot_json=json.dumps({
-            "id": ids["daily_recommendation_id"],
-            "evaluation_run_id": ids["evaluation_run_id"],
-            "action_session_date": CADL_ACTION_SESSION,
-        }, sort_keys=True),
+        # THE PRODUCTION SNAPSHOT (Codex R3 Minor 8). A three-field
+        # hand-write is emitter-impossible -- production freezes every
+        # PRAGMA-derived column -- so a round-trip test built on it would pass
+        # against a snapshot implementation that never froze the whole row.
+        cited_recommendation_snapshot_json=json.dumps(
+            ids["dr_snapshot"], sort_keys=True),
         derivation_rule_version="2026-08-12.1",
         pre_value_json=json.dumps({
             "trades.hypothesis_label": None,

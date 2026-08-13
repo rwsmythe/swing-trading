@@ -186,56 +186,144 @@ CREATE TABLE provenance_corrections (
              AND substr(cited_run_ts_raw,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
              AND substr(cited_run_ts_raw,20,1) = '.'
              AND substr(cited_run_ts_raw,21) NOT GLOB '*[^0-9]*'))
-        AND datetime(substr(cited_run_ts_raw,1,19)) IS NOT NULL),
+        -- ROUND-TRIP, not `IS NOT NULL` (Codex R3 Major 5). SQLite
+        -- NORMALISES an impossible date rather than returning NULL:
+        -- datetime('2026-02-30T00:00:00') is '2026-03-02 00:00:00', so
+        -- the row INSERTed and then CRASHED the supported reader at
+        -- hydration. Verified at the prompt: the round-trip catches
+        -- Feb 30, but SQLite HAPPILY ECHOES hour 24 and year zero --
+        -- both of which Python's fromisoformat RAISES on -- so the hour
+        -- bound and the year floor are separately load-bearing.
+        AND datetime(substr(cited_run_ts_raw,1,19))
+                = replace(substr(cited_run_ts_raw,1,19),'T',' ')
+        AND substr(cited_run_ts_raw,1,4) >= '1900'
+        AND substr(cited_run_ts_raw,12,2) <= '23'),
     CHECK (
         (cited_pipeline_finished_ts_raw GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
          OR (length(cited_pipeline_finished_ts_raw) BETWEEN 21 AND 26
              AND substr(cited_pipeline_finished_ts_raw,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
              AND substr(cited_pipeline_finished_ts_raw,20,1) = '.'
              AND substr(cited_pipeline_finished_ts_raw,21) NOT GLOB '*[^0-9]*'))
-        AND datetime(substr(cited_pipeline_finished_ts_raw,1,19)) IS NOT NULL),
+        -- ROUND-TRIP, not `IS NOT NULL` (Codex R3 Major 5). SQLite
+        -- NORMALISES an impossible date rather than returning NULL:
+        -- datetime('2026-02-30T00:00:00') is '2026-03-02 00:00:00', so
+        -- the row INSERTed and then CRASHED the supported reader at
+        -- hydration. Verified at the prompt: the round-trip catches
+        -- Feb 30, but SQLite HAPPILY ECHOES hour 24 and year zero --
+        -- both of which Python's fromisoformat RAISES on -- so the hour
+        -- bound and the year floor are separately load-bearing.
+        AND datetime(substr(cited_pipeline_finished_ts_raw,1,19))
+                = replace(substr(cited_pipeline_finished_ts_raw,1,19),'T',' ')
+        AND substr(cited_pipeline_finished_ts_raw,1,4) >= '1900'
+        AND substr(cited_pipeline_finished_ts_raw,12,2) <= '23'),
     CHECK (
         (cited_run_ts_utc GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
          OR (length(cited_run_ts_utc) BETWEEN 21 AND 26
              AND substr(cited_run_ts_utc,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
              AND substr(cited_run_ts_utc,20,1) = '.'
              AND substr(cited_run_ts_utc,21) NOT GLOB '*[^0-9]*'))
-        AND datetime(substr(cited_run_ts_utc,1,19)) IS NOT NULL),
+        -- ROUND-TRIP, not `IS NOT NULL` (Codex R3 Major 5). SQLite
+        -- NORMALISES an impossible date rather than returning NULL:
+        -- datetime('2026-02-30T00:00:00') is '2026-03-02 00:00:00', so
+        -- the row INSERTed and then CRASHED the supported reader at
+        -- hydration. Verified at the prompt: the round-trip catches
+        -- Feb 30, but SQLite HAPPILY ECHOES hour 24 and year zero --
+        -- both of which Python's fromisoformat RAISES on -- so the hour
+        -- bound and the year floor are separately load-bearing.
+        AND datetime(substr(cited_run_ts_utc,1,19))
+                = replace(substr(cited_run_ts_utc,1,19),'T',' ')
+        AND substr(cited_run_ts_utc,1,4) >= '1900'
+        AND substr(cited_run_ts_utc,12,2) <= '23'),
     CHECK (
         (cited_status_window_upper_utc GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
          OR (length(cited_status_window_upper_utc) BETWEEN 21 AND 26
              AND substr(cited_status_window_upper_utc,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
              AND substr(cited_status_window_upper_utc,20,1) = '.'
              AND substr(cited_status_window_upper_utc,21) NOT GLOB '*[^0-9]*'))
-        AND datetime(substr(cited_status_window_upper_utc,1,19)) IS NOT NULL),
+        -- ROUND-TRIP, not `IS NOT NULL` (Codex R3 Major 5). SQLite
+        -- NORMALISES an impossible date rather than returning NULL:
+        -- datetime('2026-02-30T00:00:00') is '2026-03-02 00:00:00', so
+        -- the row INSERTed and then CRASHED the supported reader at
+        -- hydration. Verified at the prompt: the round-trip catches
+        -- Feb 30, but SQLite HAPPILY ECHOES hour 24 and year zero --
+        -- both of which Python's fromisoformat RAISES on -- so the hour
+        -- bound and the year floor are separately load-bearing.
+        AND datetime(substr(cited_status_window_upper_utc,1,19))
+                = replace(substr(cited_status_window_upper_utc,1,19),'T',' ')
+        AND substr(cited_status_window_upper_utc,1,4) >= '1900'
+        AND substr(cited_status_window_upper_utc,12,2) <= '23'),
     CHECK (
         (cited_hypothesis_status_recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
          OR (length(cited_hypothesis_status_recorded_at) BETWEEN 21 AND 26
              AND substr(cited_hypothesis_status_recorded_at,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
              AND substr(cited_hypothesis_status_recorded_at,20,1) = '.'
              AND substr(cited_hypothesis_status_recorded_at,21) NOT GLOB '*[^0-9]*'))
-        AND datetime(substr(cited_hypothesis_status_recorded_at,1,19)) IS NOT NULL),
+        -- ROUND-TRIP, not `IS NOT NULL` (Codex R3 Major 5). SQLite
+        -- NORMALISES an impossible date rather than returning NULL:
+        -- datetime('2026-02-30T00:00:00') is '2026-03-02 00:00:00', so
+        -- the row INSERTed and then CRASHED the supported reader at
+        -- hydration. Verified at the prompt: the round-trip catches
+        -- Feb 30, but SQLite HAPPILY ECHOES hour 24 and year zero --
+        -- both of which Python's fromisoformat RAISES on -- so the hour
+        -- bound and the year floor are separately load-bearing.
+        AND datetime(substr(cited_hypothesis_status_recorded_at,1,19))
+                = replace(substr(cited_hypothesis_status_recorded_at,1,19),'T',' ')
+        AND substr(cited_hypothesis_status_recorded_at,1,4) >= '1900'
+        AND substr(cited_hypothesis_status_recorded_at,12,2) <= '23'),
     CHECK (
         (cited_hypothesis_status_effective_from GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
          OR (length(cited_hypothesis_status_effective_from) BETWEEN 21 AND 26
              AND substr(cited_hypothesis_status_effective_from,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
              AND substr(cited_hypothesis_status_effective_from,20,1) = '.'
              AND substr(cited_hypothesis_status_effective_from,21) NOT GLOB '*[^0-9]*'))
-        AND datetime(substr(cited_hypothesis_status_effective_from,1,19)) IS NOT NULL),
+        -- ROUND-TRIP, not `IS NOT NULL` (Codex R3 Major 5). SQLite
+        -- NORMALISES an impossible date rather than returning NULL:
+        -- datetime('2026-02-30T00:00:00') is '2026-03-02 00:00:00', so
+        -- the row INSERTed and then CRASHED the supported reader at
+        -- hydration. Verified at the prompt: the round-trip catches
+        -- Feb 30, but SQLite HAPPILY ECHOES hour 24 and year zero --
+        -- both of which Python's fromisoformat RAISES on -- so the hour
+        -- bound and the year floor are separately load-bearing.
+        AND datetime(substr(cited_hypothesis_status_effective_from,1,19))
+                = replace(substr(cited_hypothesis_status_effective_from,1,19),'T',' ')
+        AND substr(cited_hypothesis_status_effective_from,1,4) >= '1900'
+        AND substr(cited_hypothesis_status_effective_from,12,2) <= '23'),
     CHECK (cited_hypothesis_status_effective_to IS NULL OR (
         (cited_hypothesis_status_effective_to GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
          OR (length(cited_hypothesis_status_effective_to) BETWEEN 21 AND 26
              AND substr(cited_hypothesis_status_effective_to,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
              AND substr(cited_hypothesis_status_effective_to,20,1) = '.'
              AND substr(cited_hypothesis_status_effective_to,21) NOT GLOB '*[^0-9]*'))
-        AND datetime(substr(cited_hypothesis_status_effective_to,1,19)) IS NOT NULL)),
+        -- ROUND-TRIP, not `IS NOT NULL` (Codex R3 Major 5). SQLite
+        -- NORMALISES an impossible date rather than returning NULL:
+        -- datetime('2026-02-30T00:00:00') is '2026-03-02 00:00:00', so
+        -- the row INSERTed and then CRASHED the supported reader at
+        -- hydration. Verified at the prompt: the round-trip catches
+        -- Feb 30, but SQLite HAPPILY ECHOES hour 24 and year zero --
+        -- both of which Python's fromisoformat RAISES on -- so the hour
+        -- bound and the year floor are separately load-bearing.
+        AND datetime(substr(cited_hypothesis_status_effective_to,1,19))
+                = replace(substr(cited_hypothesis_status_effective_to,1,19),'T',' ')
+        AND substr(cited_hypothesis_status_effective_to,1,4) >= '1900'
+        AND substr(cited_hypothesis_status_effective_to,12,2) <= '23')),
     CHECK (
         (applied_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
          OR (length(applied_at) BETWEEN 21 AND 26
              AND substr(applied_at,1,19) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
              AND substr(applied_at,20,1) = '.'
              AND substr(applied_at,21) NOT GLOB '*[^0-9]*'))
-        AND datetime(substr(applied_at,1,19)) IS NOT NULL),
+        -- ROUND-TRIP, not `IS NOT NULL` (Codex R3 Major 5). SQLite
+        -- NORMALISES an impossible date rather than returning NULL:
+        -- datetime('2026-02-30T00:00:00') is '2026-03-02 00:00:00', so
+        -- the row INSERTed and then CRASHED the supported reader at
+        -- hydration. Verified at the prompt: the round-trip catches
+        -- Feb 30, but SQLite HAPPILY ECHOES hour 24 and year zero --
+        -- both of which Python's fromisoformat RAISES on -- so the hour
+        -- bound and the year floor are separately load-bearing.
+        AND datetime(substr(applied_at,1,19))
+                = replace(substr(applied_at,1,19),'T',' ')
+        AND substr(applied_at,1,4) >= '1900'
+        AND substr(applied_at,12,2) <= '23'),
 
     -- The window is well-formed in BOTH domains, compared within each. These
     -- ORDERINGS are lexical and are only meaningful because the GRAMMAR guards
@@ -304,10 +392,21 @@ CREATE TABLE provenance_corrections (
 
     -- The cited interval must itself be well-formed and must COVER the frozen
     -- window it is cited as covering. Intra-row, so SQLite enforces it.
-    CHECK (cited_hypothesis_status_effective_from <= cited_run_ts_utc),
+    -- COVERAGE IS COMPARED AT SECOND GRANULARITY, STRICTLY, AT BOTH ENDS
+    -- (Codex R3 Major 2). The grammar admits 0-6 fractional digits, and a
+    -- LEXICAL comparison across differing precisions is wrong: verified,
+    -- '2026-08-11T03:44:45.0' > '2026-08-11T03:44:45' is TRUE although they
+    -- are the SAME INSTANT and the half-open interval does not cover the
+    -- bound. Truncating to `substr(...,1,19)` removes the precision axis
+    -- entirely, and STRICT at both ends is the conservative direction: an
+    -- interval that starts or ends inside the window's own boundary SECOND
+    -- has not been shown to cover it. The model mirrors this comparison
+    -- EXACTLY, so the two layers accept the same set.
+    CHECK (substr(cited_hypothesis_status_effective_from,1,19)
+           < substr(cited_run_ts_utc,1,19)),
     CHECK (cited_hypothesis_status_effective_to IS NULL
-           OR cited_hypothesis_status_effective_to
-              > cited_status_window_upper_utc),
+           OR substr(cited_hypothesis_status_effective_to,1,19)
+              > substr(cited_status_window_upper_utc,1,19)),
 
     -- THE VALUE ENVELOPES ARE PINNED TOO (Codex R1 Major 3). Without these,
     -- `pre_value_json` / `applied_value_json` / `corrected_fields_json` were
@@ -391,6 +490,87 @@ CREATE UNIQUE INDEX ux_provenance_corrections_trade
     ON provenance_corrections(trade_id);
 CREATE INDEX ix_provenance_corrections_cited_candidate
     ON provenance_corrections(cited_candidate_id);
+
+
+-- ============================================================================
+-- APPEND-ONLY, ENFORCED (Codex R3 Major 6).
+--
+-- `ux_provenance_corrections_trade` only stops a SECOND row existing at the
+-- same time. It does nothing about REWRITING the existing citation, and
+-- nothing about DELETING it and reopening the trade for a different one --
+-- so "V1 records provenance ONCE, enforced by the schema rather than by
+-- prose" was true of the count and false of the content. Omitting UPDATE and
+-- DELETE repo functions is a CONVENTION, and this table's whole purpose is to
+-- hold a claim nobody can quietly revise.
+--
+-- The UPDATE trigger cannot simply reject everything: TWO of this table's own
+-- FKs are `ON DELETE SET NULL` (`entry_fill_id` -- deliberately, so cohort
+-- bookkeeping never vetoes the money-bearing split handler -- and
+-- `risk_policy_id_at_correction`), and SQLite implements that action as an
+-- UPDATE. So the trigger permits EXACTLY those two transitions, in the
+-- value -> NULL direction only, with every other column byte-identical. The
+-- "unchanged" test is NULL-AWARE (`IS`, not `=`): `NULL = NULL` is NULL, and
+-- a NULL WHEN clause does not fire the trigger, which would have silently
+-- allowed a rewrite of any nullable column.
+-- ============================================================================
+CREATE TRIGGER trg_provenance_corrections_append_only_update
+BEFORE UPDATE ON provenance_corrections
+FOR EACH ROW WHEN NOT (
+    -- the FK-driven nulling of one pointer, or the other, or both
+    ((NEW.entry_fill_id IS NULL AND OLD.entry_fill_id IS NOT NULL)
+     OR (NEW.entry_fill_id IS OLD.entry_fill_id))
+    AND ((NEW.risk_policy_id_at_correction IS NULL
+          AND OLD.risk_policy_id_at_correction IS NOT NULL)
+         OR (NEW.risk_policy_id_at_correction
+             IS OLD.risk_policy_id_at_correction))
+    -- ...and it must actually BE one of them, not a no-op cover for a rewrite
+    AND (NEW.entry_fill_id IS NOT OLD.entry_fill_id
+         OR NEW.risk_policy_id_at_correction
+            IS NOT OLD.risk_policy_id_at_correction)
+    AND NEW.provenance_correction_id = OLD.provenance_correction_id
+           AND NEW.trade_id = OLD.trade_id
+           AND NEW.entry_fill_id_at_correction = OLD.entry_fill_id_at_correction
+           AND NEW.entry_fill_snapshot_json = OLD.entry_fill_snapshot_json
+           AND NEW.cited_candidate_id = OLD.cited_candidate_id
+           AND NEW.cited_daily_recommendation_id = OLD.cited_daily_recommendation_id
+           AND NEW.cited_evaluation_run_id = OLD.cited_evaluation_run_id
+           AND NEW.cited_hypothesis_id = OLD.cited_hypothesis_id
+           AND NEW.cited_hypothesis_status_history_id = OLD.cited_hypothesis_status_history_id
+           AND NEW.cited_hypothesis_status_at_record = OLD.cited_hypothesis_status_at_record
+           AND NEW.cited_pipeline_finished_ts_raw = OLD.cited_pipeline_finished_ts_raw
+           AND NEW.cited_run_ts_utc = OLD.cited_run_ts_utc
+           AND NEW.cited_status_window_upper_utc = OLD.cited_status_window_upper_utc
+           AND NEW.cited_pipeline_run_id = OLD.cited_pipeline_run_id
+           AND NEW.cited_pipeline_run_snapshot_json = OLD.cited_pipeline_run_snapshot_json
+           AND NEW.cited_hypothesis_status_recorded_at = OLD.cited_hypothesis_status_recorded_at
+           AND NEW.cited_hypothesis_status_effective_from = OLD.cited_hypothesis_status_effective_from
+           AND (NEW.cited_hypothesis_status_effective_to IS OLD.cited_hypothesis_status_effective_to)
+           AND NEW.cited_hypothesis_name_at_correction = OLD.cited_hypothesis_name_at_correction
+           AND NEW.cited_candidate_action_session_date = OLD.cited_candidate_action_session_date
+           AND NEW.cited_recommendation_action_session_date = OLD.cited_recommendation_action_session_date
+           AND NEW.entry_fill_session_date = OLD.entry_fill_session_date
+           AND NEW.cited_run_ts_raw = OLD.cited_run_ts_raw
+           AND NEW.cited_recommendation_snapshot_json = OLD.cited_recommendation_snapshot_json
+           AND NEW.derivation_rule_version = OLD.derivation_rule_version
+           AND NEW.pre_value_json = OLD.pre_value_json
+           AND NEW.applied_value_json = OLD.applied_value_json
+           AND NEW.corrected_fields_json = OLD.corrected_fields_json
+           AND NEW.applied_at = OLD.applied_at
+           AND NEW.applied_by = OLD.applied_by
+           AND NEW.correction_reason = OLD.correction_reason
+)
+BEGIN
+    -- SQL string literals do NOT concatenate by adjacency, so this message is
+    -- one literal. (Caught by the migration failing to apply at all.)
+    SELECT RAISE(ABORT, 'provenance_corrections is APPEND-ONLY: the only permitted UPDATE is the FK-driven nulling of entry_fill_id or risk_policy_id_at_correction. V1 records provenance ONCE per trade and there is no re-correction path.');
+END;
+
+CREATE TRIGGER trg_provenance_corrections_append_only_delete
+BEFORE DELETE ON provenance_corrections
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'provenance_corrections is APPEND-ONLY: a correction cannot be deleted. Deleting one would reopen the trade for a different citation, which is the re-correction path V1 deliberately does not have.');
+END;
 
 -- Schema version bump. MUST be the FINAL statement before COMMIT per the
 -- Phase 9 section A.0 R1 Critical #1 precedent (a truncated transaction would
