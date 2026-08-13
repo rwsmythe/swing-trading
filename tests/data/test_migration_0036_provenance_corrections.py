@@ -88,6 +88,9 @@ def test_every_declared_column_is_present_and_notnull_as_designed(conn) -> None:
         "provenance_correction_id",      # INTEGER PRIMARY KEY
         "entry_fill_id",                 # ON DELETE SET NULL by design
         "risk_policy_id_at_correction",  # ON DELETE SET NULL by design
+        # NULL means the cited interval is STILL OPEN -- the shape the live H1
+        # row has -- so it cannot be NOT NULL.
+        "cited_hypothesis_status_effective_to",
     }
     for required in (
         "trade_id", "entry_fill_id_at_correction", "entry_fill_snapshot_json",
@@ -98,6 +101,7 @@ def test_every_declared_column_is_present_and_notnull_as_designed(conn) -> None:
         "cited_run_ts_utc", "cited_status_window_upper_utc",
         "cited_pipeline_run_id", "cited_pipeline_run_snapshot_json",
         "cited_hypothesis_status_recorded_at",
+        "cited_hypothesis_status_effective_from",
         "cited_hypothesis_name_at_correction",
         "cited_candidate_action_session_date",
         "cited_recommendation_action_session_date",
@@ -276,6 +280,8 @@ def _row_kwargs(ids: dict[str, int], **overrides):
             "finished_ts": FINISHED_RAW,
         }, sort_keys=True),
         cited_hypothesis_status_recorded_at="2026-04-25T00:00:00.000",
+        cited_hypothesis_status_effective_from="2026-04-25T00:00:00.000",
+        cited_hypothesis_status_effective_to=None,
         cited_hypothesis_name_at_correction="A+ baseline",
         cited_candidate_action_session_date=CAND_SESSION,
         cited_recommendation_action_session_date=DR_SESSION,
@@ -286,8 +292,20 @@ def _row_kwargs(ids: dict[str, int], **overrides):
             "action_session_date": DR_SESSION, "ticker": "CADL",
         }, sort_keys=True),
         derivation_rule_version="2026-08-12.1",
-        pre_value_json=json.dumps({"trades.hypothesis_label": None}),
-        applied_value_json=json.dumps({"trades.hypothesis_label": "x"}),
+        # The FULL three-key envelopes. The earlier one-key version claimed
+        # all three corrected fields while carrying ONE -- a "well-formed"
+        # fixture that the row's own manifest contradicted, and every
+        # rejection test built on it inherited the defect.
+        pre_value_json=json.dumps({
+            "trades.hypothesis_label": None,
+            "trades.candidate_id": None,
+            "trades.trade_origin": "manual_off_pipeline",
+        }, sort_keys=True),
+        applied_value_json=json.dumps({
+            "trades.hypothesis_label": "A+ baseline (aplus)",
+            "trades.candidate_id": ids["candidate"],
+            "trades.trade_origin": "pipeline_aplus",
+        }, sort_keys=True),
         corrected_fields_json=json.dumps(list(PROVENANCE_CORRECTED_FIELDS)),
         applied_at="2026-08-13T00:00:00.000",
         applied_by="operator",
@@ -306,6 +324,8 @@ _COLUMNS = (
     "cited_hypothesis_status_at_record, cited_pipeline_finished_ts_raw, "
     "cited_run_ts_utc, cited_status_window_upper_utc, cited_pipeline_run_id, "
     "cited_pipeline_run_snapshot_json, cited_hypothesis_status_recorded_at, "
+    "cited_hypothesis_status_effective_from, "
+    "cited_hypothesis_status_effective_to, "
     "cited_hypothesis_name_at_correction, "
     "cited_candidate_action_session_date, "
     "cited_recommendation_action_session_date, entry_fill_session_date, "
@@ -488,12 +508,75 @@ def test_entry_fill_id_must_agree_with_the_frozen_scalar(conn) -> None:
         _raw_insert(conn, kw)
 
 
-def test_corrected_fields_must_be_a_subset_of_the_manifest(conn) -> None:
+@pytest.mark.parametrize("bad_fields", [
+    ["trades.entry_date"],                       # not a member at all
+    ["trades.hypothesis_label"],                 # a SUBSET, which the first
+                                                 # draft accepted
+    ["trades.hypothesis_label", "trades.candidate_id"],
+    ["trades.candidate_id", "trades.hypothesis_label",
+     "trades.trade_origin"],                     # right members, WRONG order
+    [],
+])
+def test_corrected_fields_must_be_EXACTLY_the_manifest(conn, bad_fields):
+    """A SUBSET rule accepted a row claiming ONE corrected field while the
+    service always writes all three -- an audit row asserting a partial cohort
+    assignment that cannot have happened."""
     ids = _seed_parents(conn)
-    kw = _row_kwargs(
-        ids, corrected_fields_json=json.dumps(["trades.entry_date"]))
+    kw = _row_kwargs(ids, corrected_fields_json=json.dumps(bad_fields))
     with pytest.raises(ValueError):
         ProvenanceCorrection(**kw)
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_insert(conn, kw)
+
+
+@pytest.mark.parametrize("column,bad", [
+    # The APPLIED envelope naming a DIFFERENT candidate than the row cites.
+    ("applied_value_json", {"trades.candidate_id": 987654}),
+    # A partial envelope -- one key missing, which json_extract cannot
+    # distinguish from a JSON null.
+    ("applied_value_json", {"__drop__": "trades.trade_origin"}),
+    ("pre_value_json", {"__drop__": "trades.candidate_id"}),
+    # A PRE envelope that contradicts the unset-state gate that let the
+    # correction be written at all.
+    ("pre_value_json", {"trades.trade_origin": "pipeline_aplus"}),
+    ("pre_value_json", {"trades.hypothesis_label": "already set"}),
+    ("pre_value_json", {"trades.candidate_id": 5}),
+])
+def test_value_envelopes_must_describe_this_correction(conn, column, bad):
+    """`pre_value_json` and `applied_value_json` were unconstrained TEXT that
+    nothing ever parsed: a row could declare an applied candidate unrelated to
+    `cited_candidate_id`, or a pre-state contradicting its own precondition."""
+    ids = _seed_parents(conn)
+    env = json.loads(_row_kwargs(ids)[column])
+    if "__drop__" in bad:
+        env.pop(bad["__drop__"])
+    else:
+        env.update(bad)
+    kw = _row_kwargs(ids, **{column: json.dumps(env, sort_keys=True)})
+    with pytest.raises(ValueError):
+        ProvenanceCorrection(**kw)
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_insert(conn, kw)
+
+
+@pytest.mark.parametrize("overrides", [
+    # The interval begins AFTER the window starts.
+    {"cited_hypothesis_status_effective_from": "2026-08-11T03:30:27"},
+    # The interval ends INSIDE the window.
+    {"cited_hypothesis_status_effective_to": "2026-08-11T03:40:00.000"},
+    # ...or exactly at its upper bound (half-open: `to` must be STRICTLY past).
+    {"cited_hypothesis_status_effective_to": UPPER_UTC},
+])
+def test_the_cited_interval_must_COVER_the_frozen_window(conn, overrides):
+    """The FK pins WHICH history row was cited and does nothing about that row
+    CHANGING; `update_close_open_interval` rewrites `effective_to` IN PLACE on
+    every supported transition."""
+    ids = _seed_parents(conn)
+    kw = _row_kwargs(ids, **overrides)
+    with pytest.raises(ValueError):
+        ProvenanceCorrection(**kw)
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_insert(conn, kw)
 
 
 def test_fk_enforcement_restricts_deleting_a_cited_candidate(conn) -> None:

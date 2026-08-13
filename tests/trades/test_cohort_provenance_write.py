@@ -595,3 +595,114 @@ def test_reading_across_trades_returns_one_report_each(conn) -> None:
     assert len(read_provenance_corrections(conn)) == 2
     assert len(list_provenance_corrections(conn)) == 2
     assert len(read_provenance_corrections(conn, trade_id=b["trade_id"])) == 1
+
+
+# =========================================================================
+# Codex R1 Major 4 -- the cited STATUS-HISTORY row is re-read.
+# =========================================================================
+
+
+def test_R1M4_an_in_place_status_closure_is_reported_as_drift(conn) -> None:
+    """`update_close_open_interval` rewrites `effective_to` IN PLACE on EVERY
+    supported status transition, and the FK pins only WHICH row was cited. So
+    the row the whole correction's authority rests on is mutable through a
+    SHIPPED service -- and with nothing frozen to compare, the reader printed
+    'no citation drift' after a real, supported mutation.
+
+    Driven through the REAL repo writer, not a hand-written UPDATE."""
+    from swing.data.repos.hypothesis_status_history import (
+        update_close_open_interval,
+    )
+
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    [clean] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    assert clean.drift_lines == ()
+
+    # A LATER closure: legitimate evolution, coverage claim still true.
+    update_close_open_interval(
+        conn, hypothesis_id=1, effective_to="2026-12-01T00:00:00.000")
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    joined = "\n".join(report.drift_lines)
+    assert "CITATION DRIFT: hypothesis_status_history.effective_to" in joined
+    assert CITATION_INVALIDATED not in joined
+
+
+def test_R1M4_a_closure_INSIDE_the_window_escalates_to_INVALIDATED(
+    conn,
+) -> None:
+    """The two questions are different: has the row MOVED (drift, always
+    reported) and does it still COVER the frozen window (invalidation)."""
+    from swing.data.repos.hypothesis_status_history import (
+        update_close_open_interval,
+    )
+
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    # Inside [2026-08-11T03:30:26, 2026-08-11T03:44:45] UTC.
+    update_close_open_interval(
+        conn, hypothesis_id=1, effective_to="2026-08-11T03:35:00.000")
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    joined = "\n".join(report.drift_lines)
+    assert "CITATION DRIFT: hypothesis_status_history.effective_to" in joined
+    assert CITATION_INVALIDATED in joined
+    assert "no longer covers it" in joined
+
+
+def test_R1M4_the_cited_status_row_CANNOT_be_deleted(conn) -> None:
+    """Deletion is SCHEMA-PREVENTED, so the reader's missing-row branch is a
+    general degrade path rather than a reachable case. The constraint is
+    CITED rather than assumed: `cited_hypothesis_status_history_id INTEGER NOT
+    NULL REFERENCES hypothesis_status_history(history_id) ON DELETE RESTRICT`
+    in `0036_provenance_corrections.sql`, read back here off the LIVE PRAGMA."""
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    fks = {
+        r[3]: (r[2], r[6]) for r in conn.execute(
+            "PRAGMA foreign_key_list(provenance_corrections)").fetchall()
+    }
+    assert fks["cited_hypothesis_status_history_id"] == (
+        "hypothesis_status_history", "RESTRICT")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "DELETE FROM hypothesis_status_history WHERE history_id = ?", (1,))
+
+
+def test_R1M4_the_interval_bounds_are_FROZEN_on_the_audit_row(conn) -> None:
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    assert row.cited_hypothesis_status_effective_from == (
+        "2026-04-25T00:00:00.000")
+    assert row.cited_hypothesis_status_effective_to is None  # still open
+    live_from, live_to = conn.execute(
+        "SELECT effective_from, effective_to FROM hypothesis_status_history "
+        "WHERE history_id = ?",
+        (row.cited_hypothesis_status_history_id,)).fetchone()
+    assert row.cited_hypothesis_status_effective_from == live_from
+    assert row.cited_hypothesis_status_effective_to == live_to
+
+
+def test_R1M3_the_written_envelopes_carry_all_three_keys(conn) -> None:
+    """The audit row must DESCRIBE its own correction: exactly the three
+    corrected fields, an applied envelope naming the CITED candidate, and a
+    pre envelope recording the UNSET state that was this write's
+    precondition."""
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    assert json.loads(row.corrected_fields_json) == [
+        "trades.hypothesis_label", "trades.candidate_id",
+        "trades.trade_origin",
+    ]
+    applied = json.loads(row.applied_value_json)
+    assert set(applied) == {
+        "trades.hypothesis_label", "trades.candidate_id",
+        "trades.trade_origin"}
+    assert applied["trades.candidate_id"] == row.cited_candidate_id
+    pre = json.loads(row.pre_value_json)
+    assert pre == {
+        "trades.hypothesis_label": None,
+        "trades.candidate_id": None,
+        "trades.trade_origin": "manual_off_pipeline",
+    }

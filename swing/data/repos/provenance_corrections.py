@@ -38,6 +38,8 @@ _COLUMNS: tuple[str, ...] = (
     "cited_pipeline_run_id",
     "cited_pipeline_run_snapshot_json",
     "cited_hypothesis_status_recorded_at",
+    "cited_hypothesis_status_effective_from",
+    "cited_hypothesis_status_effective_to",
     "cited_hypothesis_name_at_correction",
     "cited_candidate_action_session_date",
     "cited_recommendation_action_session_date",

@@ -96,6 +96,16 @@ CREATE TABLE provenance_corrections (
     -- RETROSPECTIVE assertion (migration 0017 backdated its seeds) and the
     -- service REFUSES it; this column makes the admitted ones checkable.
     cited_hypothesis_status_recorded_at TEXT NOT NULL,
+    -- THE CITED INTERVAL'S OWN BOUNDS, FROZEN (Codex R1 Major 4). The FK pins
+    -- WHICH history row was cited; it does nothing about that row CHANGING.
+    -- `update_close_open_interval` writes `effective_to` IN PLACE on every
+    -- supported status transition (`repos/hypothesis_status_history.py:66`),
+    -- so without these the drift reader had nothing to compare and printed
+    -- "no citation drift" after a real, supported mutation of the very row the
+    -- correction's authority rests on. `_to` is NULL for a still-open
+    -- interval, which is the shape the live H1 row has.
+    cited_hypothesis_status_effective_from TEXT NOT NULL,
+    cited_hypothesis_status_effective_to   TEXT,
     -- The registry NAME as spelled when the label was written. The FK above is
     -- the identity; this is the join-key rendering (plan section 3.4.1a).
     cited_hypothesis_name_at_correction TEXT NOT NULL,
@@ -218,6 +228,69 @@ CREATE TABLE provenance_corrections (
     -- The convenience FK, while it still points anywhere, must point at the
     -- same fill the frozen scalar names.
     CHECK (entry_fill_id IS NULL OR entry_fill_id = entry_fill_id_at_correction),
+
+    -- The cited interval must itself be well-formed and must COVER the frozen
+    -- window it is cited as covering. Intra-row, so SQLite enforces it.
+    CHECK (cited_hypothesis_status_effective_from <= cited_run_ts_utc),
+    CHECK (cited_hypothesis_status_effective_to IS NULL
+           OR cited_hypothesis_status_effective_to
+              > cited_status_window_upper_utc),
+
+    -- THE VALUE ENVELOPES ARE PINNED TOO (Codex R1 Major 3). Without these,
+    -- `pre_value_json` / `applied_value_json` / `corrected_fields_json` were
+    -- unconstrained TEXT: a row could claim ONE corrected field, carry
+    -- malformed or empty value JSON, or declare an applied candidate
+    -- UNRELATED to `cited_candidate_id` -- an audit row that does not describe
+    -- its own correction, in the one ledger this arc exists to keep honest.
+    -- Same `CASE WHEN json_valid(...) THEN COALESCE(..., 0) ELSE 0 END` form
+    -- as the snapshots above, for the same NULL-passes-a-CHECK reason.
+    --
+    -- EXACTLY the three coupled fields IN ORDER, not a subset: this surface
+    -- writes all three together or none, and a row claiming fewer would assert
+    -- a partial cohort assignment the service cannot produce.
+    --
+    -- Written with INDEXED extraction rather than `EXISTS (SELECT ... FROM
+    -- json_each(...))`, because SQLite PROHIBITS SUBQUERIES IN CHECK
+    -- CONSTRAINTS -- verified at the prompt on 3.50.4 before this was written
+    -- down ("subqueries prohibited in CHECK constraints"), which would have
+    -- made the whole CREATE TABLE fail rather than merely under-constrain.
+    CHECK (CASE WHEN json_valid(corrected_fields_json) THEN COALESCE(
+               json_array_length(corrected_fields_json) = 3
+           AND json_extract(corrected_fields_json, '$[0]')
+                   = 'trades.hypothesis_label'
+           AND json_extract(corrected_fields_json, '$[1]')
+                   = 'trades.candidate_id'
+           AND json_extract(corrected_fields_json, '$[2]')
+                   = 'trades.trade_origin', 0)
+           ELSE 0 END),
+    -- The APPLIED envelope must name the candidate this row CITES. Otherwise
+    -- the audit says "I wrote candidate X" while citing candidate Y.
+    -- `json_type` rather than `json_extract IS NOT NULL` for the presence
+    -- checks: `json_extract` cannot distinguish a JSON null from an ABSENT
+    -- key (both give SQL NULL), so a partial envelope would slip through --
+    -- the same existence-is-not-completeness trap the snapshot CHECKs above
+    -- were rewritten for. Verified: json_type('{}', path) is NULL,
+    -- json_type('{"k":null}', path) is 'null', json_type('{"k":"x"}', path)
+    -- is 'text'.
+    CHECK (CASE WHEN json_valid(applied_value_json) THEN COALESCE(
+               json_extract(applied_value_json, '$."trades.candidate_id"')
+                   = cited_candidate_id
+           AND json_type(applied_value_json, '$."trades.hypothesis_label"')
+                   = 'text'
+           AND json_type(applied_value_json, '$."trades.trade_origin"')
+                   = 'text', 0)
+           ELSE 0 END),
+    -- The PRE envelope must record the UNSET state this surface requires as
+    -- its precondition -- the correction FILLS empty provenance, so a pre-row
+    -- asserting anything else contradicts the gate that let it be written.
+    CHECK (CASE WHEN json_valid(pre_value_json) THEN COALESCE(
+               json_extract(pre_value_json, '$."trades.trade_origin"')
+                   = 'manual_off_pipeline'
+           AND json_type(pre_value_json, '$."trades.hypothesis_label"')
+                   = 'null'
+           AND json_type(pre_value_json, '$."trades.candidate_id"')
+                   = 'null', 0)
+           ELSE 0 END),
 
     CHECK (applied_by = 'operator'),
     CHECK (length(trim(correction_reason)) > 0),

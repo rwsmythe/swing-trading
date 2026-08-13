@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import date as _date
@@ -107,6 +108,15 @@ UNSET_TRADE_ORIGIN = "manual_off_pipeline"
 # answer is to decline rather than to guess.
 CLOCK_MARGIN = timedelta(hours=24)
 
+# The EXACT naive-ISO grammar every timestamp this module reads must satisfy:
+# `YYYY-MM-DDTHH:MM:SS` with an optional fractional part, a LITERAL `T`, no
+# offset, no `Z`, and no surrounding whitespace. Anchored at both ends.
+_NAIVE_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?$")
+
+# An offset or `Z` suffix, detected SEPARATELY so it earns its own
+# unsupported-representation message rather than a generic grammar one.
+_OFFSET_SUFFIX_RE = re.compile(r"([Zz]|[+-]\d{2}:?\d{2})$")
+
 # THE DERIVATION RULE, PINNED RATHER THAN PROMISED.
 #
 # `_descriptive_label`'s format and `_non_pass_criterion_names`'s
@@ -165,7 +175,18 @@ def _require_session_date(raw: Any, *, what: str) -> _date:
     """
     if not isinstance(raw, str) or not raw.strip():
         raise _refuse(f"{what} is missing or not a string ({raw!r}).")
-    value = raw.strip()
+    # NOT STRIPPED (Codex R1 Major 2). Stripping would make the anchor COLUMN
+    # hold a canonicalized value while the frozen SNAPSHOT holds the raw one,
+    # and the 0036 CHECK compares the two -- preview says GO, apply dies at the
+    # INSERT. A surrounding-whitespace value is refused, not repaired.
+    value = raw
+    if value != value.strip():
+        raise _refuse(
+            f"{what} {value!r} carries surrounding whitespace. It is REFUSED "
+            "rather than canonicalized: the anchor column would hold the "
+            "trimmed value while the frozen snapshot holds the raw one, and "
+            "the audit CHECK compares them."
+        )
     try:
         parsed = _date.fromisoformat(value)
     except (TypeError, ValueError) as exc:
@@ -205,15 +226,29 @@ def _require_naive_datetime(raw: Any, *, what: str) -> datetime:
     """
     if not isinstance(raw, str) or not raw.strip():
         raise _refuse(f"{what} is missing or not a string ({raw!r}).")
-    value = raw.strip()
-    try:
-        parsed = datetime.fromisoformat(value)
-    except (TypeError, ValueError) as exc:
-        raise _refuse(
-            f"{what} {value!r} is not a parseable ISO datetime. The column is "
-            "a bare TEXT column, so a malformed value is schema-legal."
-        ) from exc
-    if parsed.tzinfo is not None:
+    value = raw
+    # THE EXACT EMITTER GRAMMAR, NOT MERELY "PARSEABLE" (Codex R1 Major 2).
+    # `datetime.fromisoformat` accepts `2026-08-10`, `2026-08-10T17`, and
+    # `2026-08-10 17:30:26`, and EVERY ONE of those passes a date-prefix check:
+    # a date-only `run_ts` becomes MIDNIGHT and widens the hypothesis-status
+    # window by hours, producing an authorization verdict from a timestamp
+    # whose actual time is unknown. A space separator additionally breaks the
+    # audit row's own lexical ordering CHECK, because ' ' (0x20) sorts before
+    # 'T' (0x54). And stripping would split the anchor column from the frozen
+    # snapshot the CHECK compares it to. So the grammar is asserted directly.
+    #
+    # The four live production shapes all satisfy it: fills / evaluation_runs /
+    # pipeline_runs use `...T16:00:00` (19 chars) and
+    # `hypothesis_status_history` uses the millisecond form
+    # `2026-04-25T00:00:00.000` (23). A round-TRIP would wrongly refuse the
+    # last -- `datetime.fromisoformat('...T00:00:00.000').isoformat()` drops
+    # the `.000` -- which is why this is a grammar assertion, not a round-trip.
+    # The OFFSET / `Z` case gets its own message FIRST, because it is a NAMED
+    # unsupported REPRESENTATION rather than corruption: an offset-bearing
+    # Schwab execution stamp is a real production shape elsewhere in this
+    # codebase, and the operator needs to be told it is out of scope and
+    # routable, not that his data is malformed.
+    if _OFFSET_SUFFIX_RE.search(value):
         raise _refuse(
             f"{what} {value!r} carries a UTC offset or a Z suffix. That "
             "representation is UNSUPPORTED by this surface rather than "
@@ -221,7 +256,31 @@ def _require_naive_datetime(raw: Any, *, what: str) -> datetime:
             "exchange session, and anchoring on it would land one session LATE "
             "-- i.e. more permissive. Route it to CHARC."
         )
-    if value[:10] != parsed.date().isoformat():
+    if not _NAIVE_ISO_RE.match(value):
+        raise _refuse(
+            f"{what} {value!r} is not a canonical naive ISO datetime "
+            "(YYYY-MM-DDTHH:MM:SS with optional fractional seconds, a LITERAL "
+            "'T', no offset, no 'Z', no surrounding whitespace). The column is "
+            "a bare TEXT column, so a truncated, space-separated or "
+            "offset-bearing value is schema-legal -- and a date-only value "
+            "would silently be read as MIDNIGHT."
+        )
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise _refuse(
+            f"{what} {value!r} matches the ISO shape but is not a real "
+            "datetime (an impossible day, month or time)."
+        ) from exc
+    if parsed.tzinfo is not None:  # pragma: no cover -- the regex forbids it
+        raise _refuse(
+            f"{what} {value!r} carries a UTC offset or a Z suffix. That "
+            "representation is UNSUPPORTED by this surface rather than "
+            "silently mis-dated: its [:10] prefix is a calendar prefix, not an "
+            "exchange session, and anchoring on it would land one session LATE "
+            "-- i.e. more permissive. Route it to CHARC."
+        )
+    if value[:10] != parsed.date().isoformat():  # pragma: no cover
         raise _refuse(
             f"{what} {value!r} is not in EXTENDED YYYY-MM-DD... form; its date "
             "prefix does not equal its own parsed date."
@@ -345,6 +404,8 @@ class _AsOfInterval:
     end: datetime | None
     recorded_at: datetime
     recorded_at_raw: str
+    effective_from_raw: str
+    effective_to_raw: str | None
 
 
 @dataclass(frozen=True)
@@ -756,7 +817,10 @@ def _load_validated_intervals(
             start=start,
             end=end,
             recorded_at=recorded,
-            recorded_at_raw=str(row.recorded_at).strip(),
+            recorded_at_raw=str(row.recorded_at),
+            effective_from_raw=str(row.effective_from),
+            effective_to_raw=(
+                None if row.effective_to is None else str(row.effective_to)),
         ))
     return out
 
@@ -936,6 +1000,49 @@ def _derive(
             f"({anchored.run_ts_raw}); the window is inverted and cannot bound "
             "anything."
         )
+    # RUNG 14a -- THE SAME-SESSION CREATION-ORDER GATE (Codex R1 Major 1).
+    #
+    # `<=` is the Director's ruling and is NOT relitigated here. His REASON for
+    # it is that a session-N record is produced by the run on the EVENING of
+    # session N-1, so its creation strictly precedes any session-N fill BY
+    # CONSTRUCTION. That reason is true of the nightly schedule and FALSE in
+    # general: `action_session_for_run` returns the CURRENT session before the
+    # close, so a manual mid-session run on session N produces a session-N
+    # record CREATED AFTER a trade that already filled that session. Measured
+    # on the live DB: 25 of 139 evaluation runs have
+    # `date(run_ts) == action_session_date`, and 3 `aplus` candidates live in
+    # them -- so this is reachable, not theoretical.
+    #
+    # The gate ENFORCES the ruling's own reason instead of weakening its
+    # encoding: equality still ACCEPTS wherever the reason holds, and refuses
+    # ONLY where the record demonstrably could have been written after the
+    # fill. It compares a naive-LOCAL pipeline stamp against a session DATE --
+    # never a fill's clock TIME, which is the synthetic `T16:00:00` placeholder
+    # on all 46 live fills and carries no information. Inventing a third clock
+    # domain to order them is exactly what this arc refuses to do.
+    #
+    # Direction: a REFUSAL only. It can never accept something `<=` refuses.
+    fill_session = anchored.fill_session
+    for anchor, label in (
+        (anchored.candidate_anchor, "the cited candidate's evaluation run"),
+        (anchored.recommendation_anchor, "the cited recommendation's run"),
+    ):
+        if anchor != fill_session:
+            continue
+        if bound.finished_ts[:10] >= fill_session:
+            raise _refuse(
+                f"{label} carries action_session_date {anchor}, which EQUALS "
+                f"the authoritative entry fill's session ({fill_session}), and "
+                f"pipeline run {bound.pipeline_run_id} finished at "
+                f"{bound.finished_ts} -- on that same session or later. "
+                "Same-session citations are admissible because a session-N "
+                "record is normally produced by the run on the EVENING of "
+                "session N-1, so its creation precedes any session-N fill; "
+                "this run does not have that shape, so it cannot be shown to "
+                "pre-date the fill. The fill's own clock time is the synthetic "
+                "T16:00:00 placeholder and cannot order them."
+            )
+
     lo = _to_utc_naive(anchored.run_ts_parsed)
     hi = _to_utc_naive(finished_parsed)
 
@@ -1084,6 +1191,27 @@ def _authorize(
     cannot catch that.
     """
     trade = _load_trade_or_refuse(conn, trade_id)
+
+    # THE CITATION IDS ARE THE IDEMPOTENCY KEY, NOT PAYLOAD (Codex R1 Minor 5,
+    # partially adopted). CLAUDE.md's SELECT-first rule is about a stale or
+    # None PAYLOAD; the citation is what makes a request the SAME request, so
+    # it cannot be optional without weakening the contract to "any re-run on
+    # this trade_id succeeds" -- under which a typo'd replay would silently
+    # report success against a citation it never named. `--reason` is the
+    # payload and IS optional on the replay path; the citations stay required.
+    #
+    # What IS adopted: a non-int citation must produce this surface's typed
+    # refusal rather than a bare `TypeError` from `int(...)` inside the
+    # comparison below, which is reachable from a direct service call.
+    for name, value in (
+        ("cited_candidate_id", cited_candidate_id),
+        ("cited_recommendation_id", cited_recommendation_id),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise _refuse(
+                f"{name} must be an int row id; got {value!r}. The citation "
+                "is the idempotency KEY, so it is required even on a replay."
+            )
 
     from swing.data.repos.provenance_corrections import get_correction_for_trade
 
@@ -1440,6 +1568,10 @@ def _correct_cohort_provenance_inner(
                 derived.pipeline_snapshot, sort_keys=True),
             cited_hypothesis_status_recorded_at=(
                 derived.status_interval.recorded_at_raw),
+            cited_hypothesis_status_effective_from=(
+                derived.status_interval.effective_from_raw),
+            cited_hypothesis_status_effective_to=(
+                derived.status_interval.effective_to_raw),
             cited_hypothesis_name_at_correction=derived.hypothesis_name,
             cited_candidate_action_session_date=anchored.candidate_anchor,
             cited_recommendation_action_session_date=(
@@ -1520,6 +1652,79 @@ def _snapshot_drift(
             lines.append(
                 f"{CITATION_DRIFT}: {label}.{field} was {frozen[field]!r} now "
                 f"{live[field]!r}")
+    return lines
+
+
+def _status_interval_drift(
+    conn: sqlite3.Connection, correction: Any,
+) -> list[str]:
+    """RE-READ the cited status-history row (Codex R1 Major 4).
+
+    The FK pins WHICH interval was cited; it does nothing about that interval
+    CHANGING. ``update_close_open_interval`` rewrites ``effective_to`` IN PLACE
+    on EVERY supported status transition
+    (``repos/hypothesis_status_history.py:66``), so the row whose coverage the
+    whole correction's authority rests on is mutable through a shipped
+    service — and with nothing frozen to compare, the reader printed "no
+    citation drift" after a real, supported mutation.
+
+    Two questions, and they are DIFFERENT:
+      - has the row MOVED at all (drift, reported whatever the consequence);
+      - does it still COVER the frozen window (invalidation, escalated).
+    A later closure is legitimate evolution and may leave the coverage claim
+    true; it must still not be reported as no drift.
+
+    The candidate row and its `candidate_criteria` are deliberately NOT tracked
+    here, and the reason is checked rather than assumed: `grep -rniE
+    "update candidate_criteria|delete from candidate_criteria"` over all of
+    `swing/` returns ZERO sites, and `candidates` itself is held by an
+    `ON DELETE RESTRICT` FK. They are written once at run creation and never
+    mutated, so there is no live path for them to drift through.
+    """
+    frozen = {
+        "hypothesis_id": int(correction.cited_hypothesis_id),
+        "status": str(correction.cited_hypothesis_status_at_record),
+        "effective_from": str(
+            correction.cited_hypothesis_status_effective_from),
+        "effective_to": correction.cited_hypothesis_status_effective_to,
+        "recorded_at": str(correction.cited_hypothesis_status_recorded_at),
+    }
+    row = conn.execute(
+        "SELECT hypothesis_id, status, effective_from, effective_to, "
+        "recorded_at FROM hypothesis_status_history WHERE history_id = ?",
+        (int(correction.cited_hypothesis_status_history_id),),
+    ).fetchone()
+    if row is None:
+        return [
+            f"{CITATION_DRIFT}: the cited hypothesis_status_history row "
+            f"{correction.cited_hypothesis_status_history_id} no longer "
+            "exists."
+        ]
+    live = {
+        "hypothesis_id": int(row[0]), "status": str(row[1]),
+        "effective_from": str(row[2]),
+        "effective_to": None if row[3] is None else str(row[3]),
+        "recorded_at": str(row[4]),
+    }
+    lines = _snapshot_drift("hypothesis_status_history", frozen, live)
+    if not lines:
+        return lines
+    # Does the interval STILL cover the window this correction proved it over?
+    upper = str(correction.cited_status_window_upper_utc)
+    covers = (
+        live["effective_from"] <= str(correction.cited_run_ts_utc)
+        and (live["effective_to"] is None or live["effective_to"] > upper)
+        and live["status"] == "active"
+    )
+    if not covers:
+        lines.append(
+            f"{CITATION_INVALIDATED}: the cohort assignment recorded by "
+            f"correction {correction.provenance_correction_id} rests on "
+            f"hypothesis_status_history row "
+            f"{correction.cited_hypothesis_status_history_id} being 'active' "
+            f"across [{correction.cited_run_ts_utc}, {upper}] UTC, and that "
+            "interval no longer covers it."
+        )
     return lines
 
 
@@ -1622,6 +1827,7 @@ def read_provenance_corrections(
             json.loads(correction.cited_pipeline_run_snapshot_json),
             None if bound is None else bound.snapshot,
         ))
+        lines.extend(_status_interval_drift(conn, correction))
         lines.extend(_fill_anchor_drift(conn, correction))
         reports.append(ProvenanceCorrectionReport(
             correction=correction, drift_lines=tuple(lines)))

@@ -3021,6 +3021,53 @@ def _require_extended_iso_date(name: str, value) -> None:
             f"parses to {parsed.isoformat()}")
 
 
+def _require_value_envelope(
+    name: str, raw, *, required_candidate_id: int | None = None,
+    unset: bool = False,
+) -> None:
+    """Mirror of the 0036 pre/applied value-envelope CHECKs (Codex R1 M3).
+
+    An audit row whose value envelope does not describe its own correction is
+    the failure this arc exists to stop, and these two columns were
+    unconstrained TEXT that nothing ever parsed. ``unset`` asserts the PRE
+    state the surface requires as its precondition; otherwise the APPLIED
+    envelope must name the candidate the row CITES.
+
+    Key PRESENCE is required, not merely a non-None read -- a missing key and
+    a JSON null are indistinguishable through ``json_extract``, which is the
+    same existence-is-not-completeness trap the snapshot CHECKs were rewritten
+    for.
+    """
+    env = _provenance_snapshot_dict(name, raw)
+    missing = set(PROVENANCE_CORRECTED_FIELDS) - set(env)
+    if missing:
+        raise ValueError(
+            f"{name} is missing {sorted(missing)}; it must carry all three "
+            "cohort keys, because the correction writes all three together")
+    if unset:
+        if env["trades.trade_origin"] != "manual_off_pipeline":
+            raise ValueError(
+                f"{name}['trades.trade_origin'] is "
+                f"{env['trades.trade_origin']!r}; the pre-state must be the "
+                "UNSET 'manual_off_pipeline' this surface requires")
+        for key in ("trades.hypothesis_label", "trades.candidate_id"):
+            if env[key] is not None:
+                raise ValueError(
+                    f"{name}[{key!r}] is {env[key]!r}; the pre-state must be "
+                    "unset (null) -- this surface FILLS empty provenance")
+        return
+    if env["trades.candidate_id"] != required_candidate_id:
+        raise ValueError(
+            f"{name}['trades.candidate_id'] is "
+            f"{env['trades.candidate_id']!r} but this row CITES candidate "
+            f"{required_candidate_id}")
+    for key in ("trades.hypothesis_label", "trades.trade_origin"):
+        if not isinstance(env[key], str) or not env[key]:
+            raise ValueError(
+                f"{name}[{key!r}] must be a non-empty string; got "
+                f"{env[key]!r}")
+
+
 def _provenance_snapshot_dict(name: str, raw) -> dict:
     if not isinstance(raw, str):
         raise ValueError(
@@ -3080,6 +3127,8 @@ class ProvenanceCorrection:
     cited_pipeline_run_id: int
     cited_pipeline_run_snapshot_json: str
     cited_hypothesis_status_recorded_at: str
+    cited_hypothesis_status_effective_from: str
+    cited_hypothesis_status_effective_to: str | None
     cited_hypothesis_name_at_correction: str
     cited_candidate_action_session_date: str
     cited_recommendation_action_session_date: str
@@ -3135,6 +3184,25 @@ class ProvenanceCorrection:
                 "interval was NOT on record when the framework wrote the "
                 "cited record, so it is a retrospective assertion (migration "
                 "0017 backdated its seeds this way)")
+        # The cited interval must COVER the frozen window it is cited as
+        # covering (Codex R1 Major 4). The FK pins WHICH row was cited and
+        # does nothing about that row CHANGING, and
+        # `update_close_open_interval` rewrites `effective_to` IN PLACE on
+        # every supported transition.
+        if self.cited_hypothesis_status_effective_from > self.cited_run_ts_utc:
+            raise ValueError(
+                "cited_hypothesis_status_effective_from "
+                f"{self.cited_hypothesis_status_effective_from} begins AFTER "
+                f"the window start {self.cited_run_ts_utc}, so the cited "
+                "interval does not cover the window it is cited as covering")
+        if (self.cited_hypothesis_status_effective_to is not None
+                and self.cited_hypothesis_status_effective_to
+                <= self.cited_status_window_upper_utc):
+            raise ValueError(
+                "cited_hypothesis_status_effective_to "
+                f"{self.cited_hypothesis_status_effective_to} ends at or "
+                f"before the window end {self.cited_status_window_upper_utc}, "
+                "so the cited interval does not cover the whole window")
         if self.applied_by != PROVENANCE_CORRECTION_APPLIED_BY:
             raise ValueError(
                 "applied_by must be "
@@ -3163,14 +3231,19 @@ class ProvenanceCorrection:
             raise ValueError(
                 "corrected_fields_json is not valid JSON: "
                 f"{self.corrected_fields_json!r}") from exc
-        if not isinstance(fields, list) or not fields:
+        # EXACTLY the three coupled fields, IN ORDER (Codex R1 Major 3). A
+        # SUBSET rule accepted a row claiming ONE corrected field while the
+        # service always writes all three, so the audit row could assert a
+        # partial cohort assignment that cannot have happened.
+        if list(fields) != list(PROVENANCE_CORRECTED_FIELDS):
             raise ValueError(
-                "corrected_fields_json must be a non-empty JSON list")
-        extra = set(fields) - set(PROVENANCE_CORRECTED_FIELDS)
-        if extra:
-            raise ValueError(
-                f"corrected_fields_json names {sorted(extra)}, which is not a "
-                f"subset of {list(PROVENANCE_CORRECTED_FIELDS)}")
+                f"corrected_fields_json must be exactly "
+                f"{list(PROVENANCE_CORRECTED_FIELDS)} in order; got {fields!r}")
+        _require_value_envelope(
+            "applied_value_json", self.applied_value_json,
+            required_candidate_id=self.cited_candidate_id)
+        _require_value_envelope(
+            "pre_value_json", self.pre_value_json, unset=True)
         rec = _provenance_snapshot_dict(
             "cited_recommendation_snapshot_json",
             self.cited_recommendation_snapshot_json)

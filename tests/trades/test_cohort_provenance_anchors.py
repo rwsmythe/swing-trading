@@ -277,7 +277,7 @@ def test_local_resolver_REFUSES_a_basic_form_sibling_fill(conn) -> None:
     assert lexical.fill_datetime == "2026-08-12T16:00:00"  # the WRONG answer
     with pytest.raises(CohortProvenanceCorrectionError) as exc:
         resolve_authoritative_entry_fill(conn, ids["trade_id"])
-    assert "EXTENDED" in str(exc.value) or "parseable" in str(exc.value)
+    assert "canonical naive ISO datetime" in str(exc.value)
 
 
 def test_local_resolver_matches_the_repo_helper_on_canonical_data(conn) -> None:
@@ -487,3 +487,137 @@ def test_the_pipeline_local_timezone_constant_is_the_single_source(conn) -> None
     # And the service does not re-spell it.
     source = inspect.getsource(svc)
     assert "Pacific/Honolulu" not in source
+
+
+# =========================================================================
+# Codex R1 fixes -- each verified to distinguish the pre-fix behaviour.
+# =========================================================================
+
+
+@pytest.mark.parametrize("bad,why", [
+    ("2026-08-10", "date-only: silently read as MIDNIGHT, widening the window"),
+    ("2026-08-10T17", "hour-only: the minutes and seconds are invented"),
+    ("2026-08-10 17:30:26", "space separator: ' ' sorts before 'T', so the "
+                            "audit row's own ordering CHECK breaks"),
+    (" 2026-08-10T17:30:26", "leading whitespace"),
+    ("2026-08-10T17:30:26 ", "trailing whitespace"),
+])
+def test_R1M2_a_non_canonical_run_ts_is_refused(conn, bad, why) -> None:
+    """`datetime.fromisoformat` accepts EVERY one of these, and every one
+    passes a date-prefix check -- so "parseable" was not the same as "the
+    emitter's grammar". A date-only run_ts becomes midnight and can widen the
+    hypothesis-status window by seventeen hours."""
+    import datetime as _dt
+    assert _dt.datetime.fromisoformat(bad.strip())  # all of them parse
+    ids = build_cadl_case(conn)
+    conn.execute(
+        "UPDATE evaluation_runs SET run_ts = ? WHERE id = ?",
+        (bad, ids["evaluation_run_id"]))
+    with pytest.raises(CohortProvenanceCorrectionError) as exc:
+        _preview(conn, ids)
+    assert "canonical naive ISO datetime" in str(exc.value), why
+
+
+def test_R1M2_the_live_millisecond_history_shape_is_still_ACCEPTED(
+    conn,
+) -> None:
+    """The grammar must not be a round-trip: `datetime.fromisoformat(
+    '2026-04-25T00:00:00.000').isoformat()` DROPS the `.000`, so a round-trip
+    would refuse the live `hypothesis_status_history` shape."""
+    import datetime as _dt
+    assert _dt.datetime.fromisoformat(
+        "2026-04-25T00:00:00.000").isoformat() == "2026-04-25T00:00:00"
+    ids = build_cadl_case(conn)
+    recorded = conn.execute(
+        "SELECT recorded_at FROM hypothesis_status_history WHERE history_id=1",
+    ).fetchone()[0]
+    assert recorded.endswith(".000")
+    assert _preview(conn, ids).cited_hypothesis_id == 1
+
+
+def test_R1M2_a_whitespace_anchor_is_refused_not_canonicalized(conn) -> None:
+    """Stripping would split the anchor COLUMN from the frozen SNAPSHOT that
+    the 0036 CHECK compares it against -- preview says GO, apply dies at the
+    INSERT."""
+    ids = build_cadl_case(conn)
+    conn.execute(
+        "UPDATE daily_recommendations SET action_session_date = ' 2026-08-11' "
+        "WHERE id = ?", (ids["daily_recommendation_id"],))
+    with pytest.raises(CohortProvenanceCorrectionError) as exc:
+        _preview(conn, ids)
+    assert "surrounding whitespace" in str(exc.value)
+
+
+def test_R1M1_a_same_session_run_that_finished_ON_that_session_REFUSES(
+    conn,
+) -> None:
+    """The equality case's ADMISSIBILITY reason is that a session-N record is
+    produced by the run on the EVENING of session N-1. `action_session_for_run`
+    returns the CURRENT session before the close, so a mid-session manual run
+    breaks that -- and 25 of 139 live evaluation runs have
+    `date(run_ts) == action_session_date`, 3 of them holding aplus candidates.
+
+    Anchor 2026-08-12 == F 2026-08-12, pipeline finished 2026-08-12T11:00:00
+    -> REFUSE. The pre-fix code ACCEPTED this."""
+    ids = build_cadl_case(
+        conn,
+        data_asof_date="2026-08-11",
+        action_session_date="2026-08-12",
+        run_ts="2026-08-12T10:30:00",
+        pipeline_finished_ts="2026-08-12T11:00:00",
+        fill_datetime="2026-08-12T16:00:00",
+        entry_date="2026-08-12",
+    )
+    with pytest.raises(CohortProvenanceCorrectionError) as exc:
+        _preview(conn, ids)
+    msg = str(exc.value)
+    assert "EQUALS" in msg
+    assert "EVENING of" in msg
+    assert "synthetic" in msg
+
+
+def test_R1M1_the_MODAL_evening_run_still_ACCEPTS_at_equality(conn) -> None:
+    """Trade 17's real shape survives: the run finished on the EVENING of
+    2026-06-24 and its action session is 2026-06-25, which equals F. This is
+    the case the Director's `<=` ruling exists for and it must not narrow."""
+    ids = build_cadl_case(
+        conn,
+        ticker="VSTS",
+        data_asof_date="2026-06-24",
+        action_session_date="2026-06-25",
+        run_ts="2026-06-24T17:30:02",
+        pipeline_finished_ts="2026-06-24T17:44:00",
+        fill_datetime="2026-06-25T16:00:00",
+        entry_date="2026-06-25",
+        non_pass={},
+    )
+    p = _preview(conn, ids)
+    assert p.candidate_action_session_date == p.entry_fill_session_date
+    assert p.pipeline_finished_ts_raw[:10] < p.entry_fill_session_date
+
+
+def test_R1M1_the_gate_does_not_fire_when_the_anchor_PRE_dates_the_fill(
+    conn,
+) -> None:
+    """The live CADL shape: anchor 08-11, F 08-12. Not an equality case, so
+    the creation-order gate is not consulted at all -- it is a refusal ADDED
+    to the equality branch, never a new acceptance and never a wider one."""
+    ids = build_cadl_case(conn)
+    p = _preview(conn, ids)
+    assert p.candidate_action_session_date < p.entry_fill_session_date
+    assert p.pipeline_finished_ts_raw[:10] == "2026-08-10"
+
+
+@pytest.mark.parametrize("bad", [None, "12341", 1.0, True])
+def test_R1m5_a_non_int_citation_is_a_typed_refusal(conn, bad) -> None:
+    """Reachable from a direct service call: without this the comparison
+    `int(existing.cited_candidate_id) == int(None)` raises a bare TypeError
+    with no 'Nothing was written.' and no named cause."""
+    ids = build_cadl_case(conn)
+    with pytest.raises(CohortProvenanceCorrectionError) as exc:
+        preview_cohort_provenance_correction(
+            conn, trade_id=ids["trade_id"], cited_candidate_id=bad,
+            cited_recommendation_id=ids["daily_recommendation_id"],
+            reason=REASON)
+    assert "must be an int row id" in str(exc.value)
+    assert "idempotency KEY" in str(exc.value)
