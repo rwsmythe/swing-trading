@@ -41,12 +41,12 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 def test_expected_schema_version_constant_is_19() -> None:
     # ensure_schema walks to HEAD; constant tracks the current HEAD migration.
-    assert EXPECTED_SCHEMA_VERSION == 35
+    assert EXPECTED_SCHEMA_VERSION == 36
 
 
 def test_schema_version_row_is_19(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row[0] == 35
+    assert row[0] == 36
 
 
 # ============================================================================

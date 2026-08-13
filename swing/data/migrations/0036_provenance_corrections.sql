@@ -1,0 +1,246 @@
+-- 0036_provenance_corrections.sql
+-- Demand C: the cohort-key provenance-correction audit table.
+-- ADDITIVE ONLY. Nothing is rebuilt, dropped or renamed.
+-- Atomic via explicit BEGIN; ... COMMIT; per gotcha #9 (executescript
+-- implicit COMMIT). Bumps schema_version 35 -> 36.
+--
+-- WHY A NEW TABLE RATHER THAN REUSING reconciliation_corrections (plan
+-- section 2). That table declares BOTH `discrepancy_id` AND
+-- `reconciliation_run_id` NOT NULL with ON DELETE CASCADE FKs, so a row in it
+-- is by construction the CHILD of a reconciliation run and a discrepancy. A
+-- provenance correction has neither. Relaxing those NOT NULLs is a REBUILD --
+-- the highest-risk shape of migration this project runs (db.py's own words at
+-- the 0035 gate) -- on the audit table of record, it would strand the existing
+-- rows in a table that no longer guarantees anchoring, and it would silently
+-- make a SHIPPED module's stated refusal false
+-- (`entry_date_correction.py:15-19` and `cli.py:2231-2236` both justify
+-- `--discrepancy` by citing exactly those two NOT NULLs). It also cannot make
+-- the citation STRUCTURAL, which is the whole point: the citation would live
+-- in `pre_correction_value_json` as unenforced text.
+
+BEGIN;
+
+CREATE TABLE provenance_corrections (
+    provenance_correction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    trade_id      INTEGER NOT NULL REFERENCES trades(id)      ON DELETE RESTRICT,
+    -- ON DELETE SET NULL, NOT RESTRICT (Codex R7 Major 1). RESTRICT would make
+    -- cohort bookkeeping BLOCK a supported money-bearing operation: the
+    -- production `split_into_partials` handler DELETEs the consolidated fill
+    -- (`reconciliation_auto_correct.py:2926`, `DELETE FROM fills WHERE
+    -- fill_id = ?`), including entry fills, and two shipped tests protect that
+    -- capability. After a provenance correction existed, a legitimate
+    -- date-preserving execution-grain split of the cited fill would die on an
+    -- FK IntegrityError -- the exact priority inversion the plan's section
+    -- 3.1.3 says must be avoided, introduced by the plan two sections later.
+    -- Migration 0035 already set the precedent: its own `fill_id` reference is
+    -- ON DELETE SET NULL. The PROVENANCE survives the delete in the frozen
+    -- snapshot below; the pointer is a convenience and is allowed to go NULL.
+    entry_fill_id INTEGER REFERENCES fills(fill_id) ON DELETE SET NULL,
+    -- THE FROZEN NUMBER (Codex R9 Major 2). `entry_fill_id` goes NULL the
+    -- moment the fill is deleted, so it CANNOT be the thing the snapshot is
+    -- checked against -- after a split, the JSON would be the only surviving
+    -- identity and nothing would ever have bound it to the fill actually used.
+    -- A plain NOT NULL scalar with NO FK survives the delete and is what the
+    -- snapshot CHECK pins.
+    --
+    -- IT IS NOT AN IMMUTABLE *IDENTITY*, and round 9 called it one (Codex R11
+    -- Major 1). `fills.fill_id` is INTEGER PRIMARY KEY WITHOUT AUTOINCREMENT
+    -- (`0014_phase7_state_machine_and_fills.sql`) -- a bare rowid -- so SQLite
+    -- REUSES the number when the deleted row held the maximum. Verified: a
+    -- date-preserving split of the max fill reinserts a partial that comes
+    -- back wearing the SAME fill_id with the SAME fill_datetime. The NUMBER is
+    -- durable; the ROW is not. Deletion is therefore detected from
+    -- `entry_fill_id IS NULL` (which an INSERT does not restore, also
+    -- verified), never from the number matching.
+    entry_fill_id_at_correction INTEGER NOT NULL,
+    -- The fill's identity, owner, role and datetime frozen verbatim, so a
+    -- deleted or replaced fill leaves the audit row still able to say WHAT it
+    -- anchored on -- and able to PROVE it was that fill.
+    entry_fill_snapshot_json TEXT NOT NULL,
+
+    -- THE CITATION. NOT NULL is the evidence rule made structural: the schema
+    -- refuses a correction that does not name the records it derives from.
+    -- ON DELETE RESTRICT (not CASCADE, not SET NULL): an audit row whose
+    -- citation can vanish is not a citation, and RESTRICT matches the
+    -- latch_view_events.candidate_id precedent from migration 0033.
+    cited_candidate_id            INTEGER NOT NULL REFERENCES candidates(id)             ON DELETE RESTRICT,
+    cited_daily_recommendation_id INTEGER NOT NULL REFERENCES daily_recommendations(id)  ON DELETE RESTRICT,
+    cited_evaluation_run_id       INTEGER NOT NULL REFERENCES evaluation_runs(id)        ON DELETE RESTRICT,
+
+    -- THE HYPOTHESIS ASSIGNMENT'S OWN PROVENANCE (Codex R1 Critical 1). The
+    -- matcher filters on registry `status`, which is MUTABLE, so the derived
+    -- hypothesis is only as contemporaneous as the status it was evaluated
+    -- against. The interval that made it active is cited structurally.
+    cited_hypothesis_id                INTEGER NOT NULL REFERENCES hypothesis_registry(id)              ON DELETE RESTRICT,
+    cited_hypothesis_status_history_id INTEGER NOT NULL REFERENCES hypothesis_status_history(history_id) ON DELETE RESTRICT,
+    cited_hypothesis_status_at_record  TEXT NOT NULL,
+    -- The interval must cover the WHOLE uncertainty window, because run_ts is
+    -- the run's START and the record is persisted later (14m19s on the live
+    -- CADL run). Both bounds are frozen so the window this correction actually
+    -- proved is legible without re-deriving it.
+    -- FOUR clock columns, each with ONE job (Codex R6 Critical 1). The _raw
+    -- pair is naive LOCAL verbatim from the source rows; the _utc pair is the
+    -- normalized form. History timestamps are compared ONLY against _utc; the
+    -- pipeline snapshot is validated ONLY against _raw. Storing one pair and
+    -- pretending it serves both is what round 5 did.
+    cited_pipeline_finished_ts_raw     TEXT NOT NULL,
+    cited_run_ts_utc                   TEXT NOT NULL,
+    cited_status_window_upper_utc      TEXT NOT NULL,
+    -- The pipeline row that SUPPLIED that upper bound, cited rather than merely
+    -- consulted: pipeline_runs.evaluation_run_id is a nullable NON-UNIQUE FK, so
+    -- "exactly one complete row" is unrecoverable after the fact without this.
+    cited_pipeline_run_id              INTEGER NOT NULL REFERENCES pipeline_runs(id) ON DELETE RESTRICT,
+    cited_pipeline_run_snapshot_json   TEXT NOT NULL,
+    -- recorded_at of the cited interval. An interval recorded AFTER run_ts is a
+    -- RETROSPECTIVE assertion (migration 0017 backdated its seeds) and the
+    -- service REFUSES it; this column makes the admitted ones checkable.
+    cited_hypothesis_status_recorded_at TEXT NOT NULL,
+    -- The registry NAME as spelled when the label was written. The FK above is
+    -- the identity; this is the join-key rendering (plan section 3.4.1a).
+    cited_hypothesis_name_at_correction TEXT NOT NULL,
+
+    -- THE ANCHORS AS EVALUATED, FROZEN AT WRITE TIME (#30 applied to this
+    -- table itself): per-row provenance is carried, not re-derived later. A
+    -- reader must never have to re-join to learn what this correction claimed.
+    cited_candidate_action_session_date      TEXT NOT NULL,
+    cited_recommendation_action_session_date TEXT NOT NULL,
+    entry_fill_session_date                  TEXT NOT NULL,
+    cited_run_ts_raw                         TEXT NOT NULL,
+
+    -- The cited daily_recommendations row is MUTABLE IN PLACE (Codex R1
+    -- Critical 2; `upsert_recommendation` DO UPDATE SET rewrites even
+    -- `evaluation_run_id`). RESTRICT stops it disappearing and does nothing
+    -- about it changing, so its content at authorization is frozen here and
+    -- drift is REPORTED by the read command.
+    cited_recommendation_snapshot_json TEXT NOT NULL,
+
+    -- The label format and the na-counts-as-non-pass rule are CODE, not data,
+    -- so no FK can pin them; the version constant makes a later change visible
+    -- (and a sha256 source pin makes bumping it non-optional).
+    derivation_rule_version TEXT NOT NULL,
+
+    pre_value_json        TEXT NOT NULL,
+    applied_value_json    TEXT NOT NULL,
+    corrected_fields_json TEXT NOT NULL,
+
+    applied_at        TEXT NOT NULL,
+    applied_by        TEXT NOT NULL,
+    correction_reason TEXT NOT NULL,
+
+    risk_policy_id_at_correction INTEGER REFERENCES risk_policy(policy_id) ON DELETE SET NULL,
+
+    -- Three-predicate date guards, per migration 0033's own lesson: a SQLite
+    -- CHECK PASSES when its expression is NULL, so date('2026-99-99') IS NULL
+    -- accepts a length-correct invalid date. Round-trip equality catches the
+    -- NORMALISING case, IS NOT NULL catches the INVALID case, and the year
+    -- floor catches year zero (which SQLite round-trips and Python's
+    -- date.fromisoformat RAISES on -- the DB holding a row the read path
+    -- cannot hydrate).
+    CHECK (date(cited_candidate_action_session_date) IS NOT NULL
+           AND date(cited_candidate_action_session_date) = cited_candidate_action_session_date
+           AND cited_candidate_action_session_date >= '1900-01-01'),
+    CHECK (date(cited_recommendation_action_session_date) IS NOT NULL
+           AND date(cited_recommendation_action_session_date) = cited_recommendation_action_session_date
+           AND cited_recommendation_action_session_date >= '1900-01-01'),
+    CHECK (date(entry_fill_session_date) IS NOT NULL
+           AND date(entry_fill_session_date) = entry_fill_session_date
+           AND entry_fill_session_date >= '1900-01-01'),
+
+    -- CONTEMPORANEITY, ENFORCED BY THE SCHEMA. A cross-TABLE comparison cannot
+    -- be a SQLite CHECK -- but FREEZING the anchors onto this row (above)
+    -- makes it INTRA-row, and an intra-row CHECK is exactly what SQLite does
+    -- enforce. This does NOT replace the service-layer gate, whose job is to
+    -- prove the frozen values equal the cited rows' actual columns; it makes a
+    -- correction row that ASSERTS a post-dating citation physically
+    -- un-INSERTable.
+    CHECK (cited_candidate_action_session_date      <= entry_fill_session_date),
+    CHECK (cited_recommendation_action_session_date <= entry_fill_session_date),
+
+    -- The window is well-formed in BOTH domains, compared within each.
+    CHECK (cited_run_ts_raw <= cited_pipeline_finished_ts_raw),
+    CHECK (cited_run_ts_utc <= cited_status_window_upper_utc),
+    -- The admitted status interval was on record by the START of the window.
+    -- The evidence rule made structural: a retrospective interval cannot be
+    -- filed at all, not merely flagged. `recorded_at` is naive UTC, so it is
+    -- compared against the UTC bound and NEVER against the raw local one --
+    -- that comparison would be wrong by ten hours.
+    CHECK (cited_hypothesis_status_recorded_at <= cited_run_ts_utc),
+
+    -- THE THREE SNAPSHOTS ARE PINNED IN SQL, NOT ONLY IN `__post_init__`
+    -- (Codex R7 Major 2). The tests require RAW INSERTs of `{}`, malformed
+    -- JSON and wrong-id snapshots to be REJECTED -- and a raw INSERT never
+    -- constructs the dataclass, so a `__post_init__`-only design would accept
+    -- every one of them.
+    --
+    -- THE `CASE WHEN json_valid(...) THEN COALESCE(<all predicates>, 0) ELSE 0
+    -- END` FORM IS MANDATORY, and two weaker drafts were wrong (Codex R7 M2,
+    -- R8 M1). A SQLite CHECK PASSES when its expression is NULL.
+    -- `json_extract('{}','$.id')` is NULL, so the bare form ACCEPTED `{}`;
+    -- adding `IS NOT NULL` on `$.id` ALONE then still ACCEPTED the PARTIAL
+    -- object `{"id":172}`, because the remaining comparisons went NULL --
+    -- existence != completeness, inside the fix for it. `COALESCE(..., 0)`
+    -- collapses every NULL to a failure at once, and the `CASE WHEN
+    -- json_valid` gate is this repo's established malformed-JSON pattern
+    -- (`0033_latch_order_intents.sql`, whose exception-TYPE contract
+    -- `tests/data/test_migration_0033.py` pins).
+    CHECK (CASE WHEN json_valid(cited_recommendation_snapshot_json) THEN COALESCE(
+               json_extract(cited_recommendation_snapshot_json, '$.id')
+                   = cited_daily_recommendation_id
+           AND json_extract(cited_recommendation_snapshot_json, '$.evaluation_run_id')
+                   = cited_evaluation_run_id
+           AND json_extract(cited_recommendation_snapshot_json, '$.action_session_date')
+                   = cited_recommendation_action_session_date, 0)
+           ELSE 0 END),
+    CHECK (CASE WHEN json_valid(cited_pipeline_run_snapshot_json) THEN COALESCE(
+               json_extract(cited_pipeline_run_snapshot_json, '$.id')
+                   = cited_pipeline_run_id
+           AND json_extract(cited_pipeline_run_snapshot_json, '$.evaluation_run_id')
+                   = cited_evaluation_run_id
+           AND json_extract(cited_pipeline_run_snapshot_json, '$.state') = 'complete'
+           AND json_extract(cited_pipeline_run_snapshot_json, '$.finished_ts')
+                   = cited_pipeline_finished_ts_raw, 0)
+           ELSE 0 END),
+    -- The snapshot must BE the fill this correction anchored on -- id, owner
+    -- and role, not merely a well-formed object (Codex R9 Major 2). Without
+    -- the id equality, `entry_fill_id=45` with snapshot `{"fill_id":999,...}`
+    -- passed BOTH layers and the audit would durably assert contemporaneity
+    -- against a fill it never used.
+    CHECK (CASE WHEN json_valid(entry_fill_snapshot_json) THEN COALESCE(
+               json_extract(entry_fill_snapshot_json, '$.fill_id')
+                   = entry_fill_id_at_correction
+           AND json_extract(entry_fill_snapshot_json, '$.trade_id') = trade_id
+           AND json_extract(entry_fill_snapshot_json, '$.action') = 'entry'
+           AND json_extract(entry_fill_snapshot_json, '$.fill_datetime') IS NOT NULL
+           AND substr(json_extract(entry_fill_snapshot_json, '$.fill_datetime'), 1, 10)
+                   = entry_fill_session_date, 0)
+           ELSE 0 END),
+    -- The convenience FK, while it still points anywhere, must point at the
+    -- same fill the frozen scalar names.
+    CHECK (entry_fill_id IS NULL OR entry_fill_id = entry_fill_id_at_correction),
+
+    CHECK (applied_by = 'operator'),
+    CHECK (length(trim(correction_reason)) > 0),
+    CHECK (length(trim(derivation_rule_version)) > 0),
+    -- The correction may only be recorded on the strength of a hypothesis that
+    -- was ACTIVE when the framework wrote the cited record.
+    CHECK (cited_hypothesis_status_at_record = 'active')
+);
+
+-- ONE correction per trade, enforced by the SCHEMA. This became available only
+-- once V1 dropped the supersession chain (Codex R1 Major 1): a chain needs two
+-- live heads for the duration of one statement, and SQLite evaluates
+-- uniqueness per statement with no deferral for indexes, so a chain and this
+-- index are mutually exclusive. V1 does not re-correct, so the index is both
+-- correct and strictly stronger than a service-layer guard.
+CREATE UNIQUE INDEX ux_provenance_corrections_trade
+    ON provenance_corrections(trade_id);
+CREATE INDEX ix_provenance_corrections_cited_candidate
+    ON provenance_corrections(cited_candidate_id);
+
+-- Schema version bump. MUST be the FINAL statement before COMMIT per the
+-- Phase 9 section A.0 R1 Critical #1 precedent (a truncated transaction would
+-- leave the version stamp ahead of the schema).
+UPDATE schema_version SET version = 36;
+
+COMMIT;

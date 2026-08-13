@@ -53,7 +53,7 @@ def test_expected_schema_version_is_current():
     0033 (Arc 21-B) took it to 33; the EXACT value is owned by the newest
     migration's own test (tests/data/test_migration_0033.py), and this
     assertion exists so a bump that misses a mirror fails loudly here too."""
-    assert EXPECTED_SCHEMA_VERSION == 35
+    assert EXPECTED_SCHEMA_VERSION == 36
 
 
 def test_table_exists_with_identity_block_first(tmp_path):

@@ -2974,3 +2974,238 @@ def _require_broker_snapshot_envelope(raw) -> None:
         raise ValueError(
             "indeterminate must be a JSON boolean; got "
             f"{env['indeterminate']!r}")
+
+
+# ---------------------------------------------------------------------------
+# Demand C (migration 0036) -- the cohort-key provenance-correction audit row.
+#
+# #11 is binding: the SQL CHECKs in `0036_provenance_corrections.sql`, the
+# constants here and the `__post_init__` validator below land in ONE commit.
+# The two layers are NOT redundant -- the SQL layer catches RAW INSERTs, which
+# never construct this dataclass; this layer catches every caller that does,
+# three statements EARLIER than the CHECK would.
+# ---------------------------------------------------------------------------
+
+# The closed manifest of columns ONE provenance correction may touch. The
+# operator supplies two row IDs and a reason -- never a column name and never a
+# value -- so this tuple is a documented, pinned ceiling.
+PROVENANCE_CORRECTED_FIELDS: tuple[str, ...] = (
+    "trades.hypothesis_label",
+    "trades.candidate_id",
+    "trades.trade_origin",
+)
+
+PROVENANCE_CORRECTION_APPLIED_BY: str = "operator"
+
+# The status a cited hypothesis MUST have carried when the framework wrote the
+# cited record. Mirrors the 0036 CHECK.
+PROVENANCE_REQUIRED_HYPOTHESIS_STATUS: str = "active"
+
+
+def _require_extended_iso_date(name: str, value) -> None:
+    """EXTENDED-form ``YYYY-MM-DD``, round-trip enforced.
+
+    ``_require_iso_session_date`` checks ``len == 10`` and parseability, which
+    is NOT enough here: ``date.fromisoformat('2026-W31-5')`` is a length-10
+    WEEK date that parses to 2026-07-31, so it would slip through while every
+    downstream ``[:10]`` prefix and lexical comparison reads ``2026-W31-5``.
+    The SQL side already refuses it (``date('2026-W31-5')`` is NULL and the
+    guard's ``IS NOT NULL`` predicate fires), so the mirror must too or the two
+    layers disagree.
+    """
+    _require_iso_session_date(name, value)
+    parsed = date.fromisoformat(value)
+    if parsed.isoformat() != value:
+        raise ValueError(
+            f"{name} must be EXTENDED-format YYYY-MM-DD; got {value!r}, which "
+            f"parses to {parsed.isoformat()}")
+
+
+def _provenance_snapshot_dict(name: str, raw) -> dict:
+    if not isinstance(raw, str):
+        raise ValueError(
+            f"{name} must be a JSON str; got {type(raw).__name__}")
+    try:
+        env = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} is not valid JSON: {raw!r}") from exc
+    if not isinstance(env, dict):
+        raise ValueError(
+            f"{name} must be a JSON OBJECT; got {type(env).__name__}")
+    return env
+
+
+def _require_snapshot_fields(name: str, env: dict, expected: dict) -> None:
+    """Every key must be PRESENT and equal -- existence != completeness.
+
+    The SQL twin's failure mode is why this loops over the WHOLE roster rather
+    than checking the id alone: ``json_extract('{}', '$.id')`` is NULL,
+    ``NULL = x`` is NULL, and a SQLite CHECK PASSES on NULL, so a guard on
+    ``$.id`` alone accepted the partial object ``{"id": 172}``.
+    """
+    for key, want in expected.items():
+        if key not in env:
+            raise ValueError(
+                f"{name} is missing required key {key!r}; a snapshot that does "
+                "not describe the row it is filed under cannot be constructed")
+        got = env[key]
+        if got != want:
+            raise ValueError(
+                f"{name}[{key!r}] is {got!r} but this row declares {want!r}; "
+                "the snapshot must BE the record this correction anchored on")
+
+
+@dataclass(frozen=True)
+class ProvenanceCorrection:
+    """One audited cohort-key correction. APPEND-ONLY; one row per trade.
+
+    Every ``cited_*`` column is the evidence rule made structural: the schema
+    refuses a correction that does not name the records its values derive from.
+    """
+
+    provenance_correction_id: int | None
+    trade_id: int
+    entry_fill_id: int | None
+    entry_fill_id_at_correction: int
+    entry_fill_snapshot_json: str
+    cited_candidate_id: int
+    cited_daily_recommendation_id: int
+    cited_evaluation_run_id: int
+    cited_hypothesis_id: int
+    cited_hypothesis_status_history_id: int
+    cited_hypothesis_status_at_record: str
+    cited_pipeline_finished_ts_raw: str
+    cited_run_ts_utc: str
+    cited_status_window_upper_utc: str
+    cited_pipeline_run_id: int
+    cited_pipeline_run_snapshot_json: str
+    cited_hypothesis_status_recorded_at: str
+    cited_hypothesis_name_at_correction: str
+    cited_candidate_action_session_date: str
+    cited_recommendation_action_session_date: str
+    entry_fill_session_date: str
+    cited_run_ts_raw: str
+    cited_recommendation_snapshot_json: str
+    derivation_rule_version: str
+    pre_value_json: str
+    applied_value_json: str
+    corrected_fields_json: str
+    applied_at: str
+    applied_by: str
+    correction_reason: str
+    risk_policy_id_at_correction: int | None = None
+
+    def __post_init__(self) -> None:
+        for fname in (
+            "cited_candidate_action_session_date",
+            "cited_recommendation_action_session_date",
+            "entry_fill_session_date",
+        ):
+            _require_extended_iso_date(fname, getattr(self, fname))
+        # CONTEMPORANEITY, mirrored. The SQL CHECK makes a post-dating row
+        # un-INSERTable; this makes it un-CONSTRUCTIBLE.
+        if (self.cited_candidate_action_session_date
+                > self.entry_fill_session_date):
+            raise ValueError(
+                "cited_candidate_action_session_date "
+                f"{self.cited_candidate_action_session_date} POST-DATES the "
+                f"entry fill session {self.entry_fill_session_date}")
+        if (self.cited_recommendation_action_session_date
+                > self.entry_fill_session_date):
+            raise ValueError(
+                "cited_recommendation_action_session_date "
+                f"{self.cited_recommendation_action_session_date} POST-DATES "
+                f"the entry fill session {self.entry_fill_session_date}")
+        if self.cited_run_ts_raw > self.cited_pipeline_finished_ts_raw:
+            raise ValueError(
+                "cited_run_ts_raw must not exceed "
+                "cited_pipeline_finished_ts_raw (both naive LOCAL)")
+        if self.cited_run_ts_utc > self.cited_status_window_upper_utc:
+            raise ValueError(
+                "cited_run_ts_utc must not exceed "
+                "cited_status_window_upper_utc (both naive UTC)")
+        # `recorded_at` is naive UTC, so it is compared against the UTC bound
+        # and NEVER against the raw local one -- that comparison is wrong by
+        # the local UTC offset (ten hours on this box).
+        if self.cited_hypothesis_status_recorded_at > self.cited_run_ts_utc:
+            raise ValueError(
+                "cited_hypothesis_status_recorded_at "
+                f"{self.cited_hypothesis_status_recorded_at} post-dates "
+                f"cited_run_ts_utc {self.cited_run_ts_utc}: the status "
+                "interval was NOT on record when the framework wrote the "
+                "cited record, so it is a retrospective assertion (migration "
+                "0017 backdated its seeds this way)")
+        if self.applied_by != PROVENANCE_CORRECTION_APPLIED_BY:
+            raise ValueError(
+                "applied_by must be "
+                f"{PROVENANCE_CORRECTION_APPLIED_BY!r}; got "
+                f"{self.applied_by!r}")
+        if (self.cited_hypothesis_status_at_record
+                != PROVENANCE_REQUIRED_HYPOTHESIS_STATUS):
+            raise ValueError(
+                "cited_hypothesis_status_at_record must be "
+                f"{PROVENANCE_REQUIRED_HYPOTHESIS_STATUS!r}; got "
+                f"{self.cited_hypothesis_status_at_record!r}")
+        for fname in ("correction_reason", "derivation_rule_version",
+                      "cited_hypothesis_name_at_correction"):
+            val = getattr(self, fname)
+            if not isinstance(val, str) or not val.strip():
+                raise ValueError(f"{fname} must be a non-empty string")
+        if (self.entry_fill_id is not None
+                and self.entry_fill_id != self.entry_fill_id_at_correction):
+            raise ValueError(
+                f"entry_fill_id {self.entry_fill_id} must name the same fill "
+                f"as entry_fill_id_at_correction "
+                f"{self.entry_fill_id_at_correction}")
+        try:
+            fields = json.loads(self.corrected_fields_json)
+        except ValueError as exc:
+            raise ValueError(
+                "corrected_fields_json is not valid JSON: "
+                f"{self.corrected_fields_json!r}") from exc
+        if not isinstance(fields, list) or not fields:
+            raise ValueError(
+                "corrected_fields_json must be a non-empty JSON list")
+        extra = set(fields) - set(PROVENANCE_CORRECTED_FIELDS)
+        if extra:
+            raise ValueError(
+                f"corrected_fields_json names {sorted(extra)}, which is not a "
+                f"subset of {list(PROVENANCE_CORRECTED_FIELDS)}")
+        rec = _provenance_snapshot_dict(
+            "cited_recommendation_snapshot_json",
+            self.cited_recommendation_snapshot_json)
+        _require_snapshot_fields(
+            "cited_recommendation_snapshot_json", rec, {
+                "id": self.cited_daily_recommendation_id,
+                "evaluation_run_id": self.cited_evaluation_run_id,
+                "action_session_date":
+                    self.cited_recommendation_action_session_date,
+            })
+        pipe = _provenance_snapshot_dict(
+            "cited_pipeline_run_snapshot_json",
+            self.cited_pipeline_run_snapshot_json)
+        _require_snapshot_fields(
+            "cited_pipeline_run_snapshot_json", pipe, {
+                "id": self.cited_pipeline_run_id,
+                "evaluation_run_id": self.cited_evaluation_run_id,
+                "state": "complete",
+                # The RAW column, because the snapshot is the pipeline row
+                # verbatim and the normalized bound is a different clock
+                # domain.
+                "finished_ts": self.cited_pipeline_finished_ts_raw,
+            })
+        fill = _provenance_snapshot_dict(
+            "entry_fill_snapshot_json", self.entry_fill_snapshot_json)
+        _require_snapshot_fields(
+            "entry_fill_snapshot_json", fill, {
+                "fill_id": self.entry_fill_id_at_correction,
+                "trade_id": self.trade_id,
+                "action": "entry",
+            })
+        fill_dt = fill.get("fill_datetime")
+        if (not isinstance(fill_dt, str)
+                or fill_dt[:10] != self.entry_fill_session_date):
+            raise ValueError(
+                "entry_fill_snapshot_json['fill_datetime'] must be a string "
+                f"whose date prefix is {self.entry_fill_session_date}; got "
+                f"{fill_dt!r}")

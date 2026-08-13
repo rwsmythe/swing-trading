@@ -70,7 +70,13 @@ from pathlib import Path
 #   invariant promoted off its `entry_price_mismatch` + discriminator
 #   approximation). 0031/0019 table-rebuild pattern; all columns / indexes /
 #   FKs / cross-column CHECK preserved. Atomic BEGIN/COMMIT.
-EXPECTED_SCHEMA_VERSION = 35
+# demand-c provenance_corrections (migration 0036): ONE new append-only audit
+#   table whose schema IS the evidence rule -- the cited candidate,
+#   recommendation, evaluation run, hypothesis, status interval and pipeline
+#   run are all NOT NULL FKs, and the frozen anchors make contemporaneity an
+#   INTRA-row CHECK. ADDITIVE ONLY: nothing is rebuilt, dropped or renamed.
+#   Atomic BEGIN/COMMIT.
+EXPECTED_SCHEMA_VERSION = 36
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -342,6 +348,18 @@ H1_AMENDMENT_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 A4_TAXONOMY_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     H1_AMENDMENT_PRE_MIGRATION_EXPECTED_TABLES
     | {"reconciliation_discrepancies", "reconciliation_corrections"}
+)
+
+# Demand C (migration 0036) pre-migration expected-table set. INHERITED from
+# the A-4 chain with NO additions: 0036 CREATEs a table rather than rebuilding
+# one, so it requires nothing new in the PRE set -- but the chain is inherited
+# rather than restarted so the backup's provenance stays auditable (the
+# `PHASE14_PRE_MIGRATION_EXPECTED_TABLES` precedent). The tables 0036's FKs
+# POINT AT -- trades, fills, candidates, daily_recommendations,
+# evaluation_runs, hypothesis_registry, hypothesis_status_history,
+# pipeline_runs, risk_policy -- are all already members via that chain.
+DEMAND_C_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    A4_TAXONOMY_PRE_MIGRATION_EXPECTED_TABLES
 )
 
 
@@ -1004,6 +1022,32 @@ def _create_pre_a4_taxonomy_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-a4-taxonomy-migration-{timestamp}.db"
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
+def _create_pre_demand_c_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """Demand C provenance-corrections (0036) mirror. SQLite-native
+    Connection.backup() before the 0036 migration. Backup file
+    ``swing-pre-demand-c-migration-<ISO>.db``.
+
+    0036 is ADDITIVE -- a bare CREATE TABLE plus two indexes -- so it is not
+    the rebuild class the 0035 gate guards. The snapshot is taken anyway
+    because every other version crossing in this file takes one and a gate
+    that is skipped for being "safe enough" is a gate nobody can rely on."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-demand-c-migration-{timestamp}.db"
     src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
@@ -1859,6 +1903,45 @@ def _a4_taxonomy_backup_gate(
         ) from exc
 
 
+def _demand_c_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """Demand C provenance-corrections (0036) backup-before-migrate gate.
+
+    Fires ONLY when ``current_version == 35 AND target_version >= 36`` -- a
+    real production v35 DB about to cross v36. STRICT EQUALITY on pre_version
+    per the ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version
+    jumps from pre-v35 baselines bypass this gate by design.
+    """
+    if target_version < 36 or current_version != 35:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-demand-c backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_demand_c_migration_backup(
+            src_path, dest_dir=backup_dir)
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=DEMAND_C_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-demand-c backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -1998,6 +2081,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _a4_taxonomy_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _demand_c_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,
