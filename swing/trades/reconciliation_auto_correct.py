@@ -152,10 +152,35 @@ class ReservedJournalFieldError(Exception):
 # ---------------------------------------------------------------------------
 _ENTRY_DATE_COUPLED_SURFACE = "swing journal correct-entry-date"
 
+# THE THREE COHORT KEYS ARE A COUPLED TRIPLE, NOT THREE COLUMNS (Demand C).
+#
+# A `candidate_id` pointing at an `aplus` row beside a `trade_origin` of
+# `manual_off_pipeline` is an internally CONTRADICTORY cohort assignment, and
+# `_handle_multi_field_correction` applies operator-supplied fields
+# SEQUENTIALLY with no cross-field coherence check. Worse, the generic path
+# takes an operator-supplied VALUE -- so `hypothesis_label` reachable through
+# it is precisely the free-typing surface the evidence rule forbids, with an
+# audit trail attached to make it look sound. Reserving the three routes every
+# cohort write to the one surface that DERIVES instead of accepting.
+#
+# What this closes and what it does not: it closes every generic tier-1/2/3
+# journal write, which is the only other live UPDATE path to these columns
+# (established by reading all 21 `UPDATE trades` sites in `swing/`, including
+# the two dynamic-SQL builders). It does not close a hand-written SQL edit,
+# which nothing can.
+#
+# Regression risk, checked rather than assumed: no live
+# `reconciliation_corrections` row has ever targeted these fields, so the
+# reservation cannot break a replay of anything that has happened.
+_COHORT_PROVENANCE_COUPLED_SURFACE = "swing journal correct-cohort-provenance"
+
 # (affected_table, field_name) -> the surface that owns the coupled write.
 _RESERVED_JOURNAL_FIELDS: dict[tuple[str, str], str] = {
     ("trades", "entry_date"): _ENTRY_DATE_COUPLED_SURFACE,
     ("fills", "fill_datetime"): _ENTRY_DATE_COUPLED_SURFACE,
+    ("trades", "hypothesis_label"): _COHORT_PROVENANCE_COUPLED_SURFACE,
+    ("trades", "candidate_id"): _COHORT_PROVENANCE_COUPLED_SURFACE,
+    ("trades", "trade_origin"): _COHORT_PROVENANCE_COUPLED_SURFACE,
     # THE ROLE COLUMNS TOO (Codex R12). `fill_datetime` alone was not enough:
     # `_handle_multi_field_correction` applies operator-supplied fields
     # SEQUENTIALLY, and `action` / `trade_id` were writable. Flipping an
