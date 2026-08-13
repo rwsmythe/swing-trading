@@ -34,6 +34,7 @@ from swing.cli_latches import latches_group
 from swing.cli_schwab import schwab_group
 from swing.config import load as load_config
 from swing.data.db import connect, ensure_schema, open_connection
+from swing.data.models import PROVENANCE_CORRECTED_FIELDS
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
 from swing.data.yfinance_audit_context import set_yfinance_audit_base_context
 from swing.evaluation.orchestration import (
@@ -2358,6 +2359,275 @@ def journal_correct_entry_date_cmd(
     click.echo("Next, close the finding that motivated it:")
     click.echo("")
     click.echo(f"  {result.follow_up_command}")
+
+
+# The display order for the three cohort keys. Spelled once so the dry-run
+# table and the apply summary cannot drift apart, and taken from the model's
+# own manifest so it cannot drift from what a correction may touch.
+COHORT_FIELD_ORDER: tuple[str, ...] = PROVENANCE_CORRECTED_FIELDS
+
+
+@journal_group.command("correct-cohort-provenance")
+@click.argument("trade_id", type=int)
+@click.option(
+    "--cited-candidate", "cited_candidate_id", type=int, required=True,
+    help=(
+        "The candidates.id this trade's cohort keys are DERIVED FROM. Must be "
+        "the framework's LAST WORD before the entry fill and must be an "
+        "`aplus` row."
+    ),
+)
+@click.option(
+    "--cited-recommendation", "cited_recommendation_id", type=int,
+    required=True,
+    help=(
+        "The daily_recommendations.id cited. This CONFIRMS the today_decision "
+        "row derived from the candidate's own evaluation run; it never "
+        "selects it."
+    ),
+)
+# NOT `required=True`, and this is the one place the CLI could silently void a
+# service-level guarantee. The refusal ladder promises that an already-applied
+# replay returns its existing correction id BEFORE any payload is inspected --
+# including with no reason at all. Click rejects a missing required option
+# during PARSING, before the command body runs, so `required=True` would make
+# that promise true for direct service calls and FALSE for the commissioned
+# operator-facing surface: the operator replaying a correction would get
+# "Missing option '--reason'" instead of the existing id. A service-level test
+# passes under either declaration and therefore cannot pin this.
+@click.option(
+    "--reason", "reason", required=False, default=None,
+    help=(
+        "Why the cohort keys are empty and why this citation is the right one "
+        "(required, non-empty, on the path that WRITES)."
+    ),
+)
+@click.option(
+    "--dry-run", "dry_run", is_flag=True, default=False,
+    help="Full validation + before/after + the exact derived label; writes nothing.",
+)
+@click.pass_context
+def journal_correct_cohort_provenance_cmd(
+    ctx, trade_id, cited_candidate_id, cited_recommendation_id, reason,
+    dry_run,
+):
+    """Fill a trade's EMPTY cohort keys from the framework's own record.
+
+    Writes trades.hypothesis_label, trades.candidate_id and
+    trades.trade_origin on ONE trade, deriving every value from a
+    STRUCTURALLY CITED pair of contemporaneous pipeline records and appending
+    a provenance_corrections row whose schema refuses a correction without its
+    citation.
+
+    THERE IS DELIBERATELY NO --label, NO --origin AND NO --hypothesis OPTION.
+    The surface takes no value parameter at all, so free-typing a cohort key
+    is not refused at runtime -- it is UNREPRESENTABLE. The operator supplies
+    two row ids and a reason; the framework supplies the values.
+
+    A citation is admissible only if BOTH cited rows' own action_session_date
+    does not POST-DATE the session of the trade's authoritative entry fill,
+    the cited candidate is the framework's LAST WORD before that fill, and the
+    matched hypothesis was ACTIVE when the framework wrote the record.
+
+    V1 records provenance ONCE per trade. There is no re-correction path, so
+    the --dry-run reading is the decision point.
+    """
+    from swing.config_overrides import apply_overrides
+    from swing.data.db import connect
+    from swing.trades.cohort_provenance_correction import (
+        CohortProvenanceCorrectionError,
+        correct_cohort_provenance,
+        preview_cohort_provenance_correction,
+    )
+
+    cfg = apply_overrides(ctx.obj["config"])
+    conn = connect(cfg.paths.db_path)
+    try:
+        if dry_run:
+            try:
+                preview = preview_cohort_provenance_correction(
+                    conn, trade_id=trade_id,
+                    cited_candidate_id=cited_candidate_id,
+                    cited_recommendation_id=cited_recommendation_id,
+                    reason=reason,
+                )
+            except CohortProvenanceCorrectionError as exc:
+                raise click.ClickException(str(exc)) from exc
+            if preview.already_applied_correction_id is not None:
+                click.echo(
+                    f"DRY RUN -- trade {preview.trade_id} ALREADY has "
+                    f"provenance correction "
+                    f"{preview.already_applied_correction_id}; the values "
+                    "below are what is RECORDED, not a fresh derivation."
+                )
+            else:
+                click.echo(
+                    f"DRY RUN -- nothing written. trade {preview.trade_id} "
+                    f"({preview.ticker}, state={preview.state})."
+                )
+            click.echo(
+                f"  cited candidates row          {preview.cited_candidate_id} "
+                f"(action session {preview.candidate_action_session_date})"
+            )
+            click.echo(
+                "  cited daily_recommendations   "
+                f"{preview.cited_daily_recommendation_id} (action session "
+                f"{preview.recommendation_action_session_date})"
+            )
+            click.echo(
+                f"  cited evaluation run          "
+                f"{preview.cited_evaluation_run_id}"
+            )
+            click.echo(
+                f"  cited pipeline run            "
+                f"{preview.cited_pipeline_run_id}"
+            )
+            click.echo(
+                f"  authoritative entry fill      {preview.entry_fill_id} "
+                f"(session F = {preview.entry_fill_session_date})"
+            )
+            click.echo(
+                f"  hypothesis                    "
+                f"{preview.cited_hypothesis_id} "
+                f"({preview.cited_hypothesis_name}), status-history row "
+                f"{preview.cited_hypothesis_status_history_id}"
+            )
+            click.echo(
+                f"  status window (UTC)           {preview.run_ts_utc} -> "
+                f"{preview.status_window_upper_utc}"
+            )
+            click.echo(
+                f"  status window (raw, local)    {preview.run_ts_raw} -> "
+                f"{preview.pipeline_finished_ts_raw}"
+            )
+            click.echo(
+                f"  derivation rule               "
+                f"{preview.derivation_rule_version}"
+            )
+            click.echo("")
+            click.echo("  field                        before -> after")
+            for fname in COHORT_FIELD_ORDER:
+                click.echo(
+                    f"  {fname:<28} {preview.pre_values[fname]!r} -> "
+                    f"{preview.post_values[fname]!r}"
+                )
+            if preview.na_criterion_suffix_note:
+                click.echo("")
+                click.echo(f"  NOTE: {preview.na_criterion_suffix_note}")
+            click.echo("")
+            click.echo(
+                "  V1 records provenance ONCE per trade; there is no "
+                "supported re-correction path, so THIS reading is the "
+                "decision point."
+            )
+            return
+
+        try:
+            result = correct_cohort_provenance(
+                conn, trade_id=trade_id,
+                cited_candidate_id=cited_candidate_id,
+                cited_recommendation_id=cited_recommendation_id,
+                reason=reason,
+            )
+        except CohortProvenanceCorrectionError as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        conn.close()
+
+    if result.already_applied:
+        click.echo(
+            f"ALREADY APPLIED -- trade {result.trade_id} already carries "
+            f"provenance correction {result.correction_id} citing candidate "
+            f"{result.cited_candidate_id} and daily_recommendations row "
+            f"{result.cited_daily_recommendation_id}. Nothing was written."
+        )
+    else:
+        click.echo(
+            f"provenance correction {result.correction_id} applied to trade "
+            f"{result.trade_id}."
+        )
+        for fname in COHORT_FIELD_ORDER:
+            click.echo(
+                f"  {fname:<28} {result.pre_values[fname]!r} -> "
+                f"{result.applied_values[fname]!r}"
+            )
+    click.echo("")
+    click.echo("Read it back with:")
+    click.echo("")
+    click.echo(f"  {result.follow_up_command}")
+
+
+@journal_group.command("provenance-corrections")
+@click.argument("trade_id", type=int, required=False, default=None)
+@click.pass_context
+def journal_provenance_corrections_cmd(ctx, trade_id):
+    """Read the cohort-provenance audit trail, with any CITATION DRIFT.
+
+    Without this the audit table has no supported reader and verifying a
+    correction against the trail would need raw SQL. A frozen snapshot nobody
+    compares is decoration: a silent contradiction between the audit row and
+    the row it cites is the failure mode; a loud one is a finding.
+    """
+    from swing.config_overrides import apply_overrides
+    from swing.data.db import connect
+    from swing.trades.cohort_provenance_correction import (
+        read_provenance_corrections,
+    )
+
+    cfg = apply_overrides(ctx.obj["config"])
+    conn = connect(cfg.paths.db_path)
+    try:
+        reports = read_provenance_corrections(conn, trade_id=trade_id)
+    finally:
+        conn.close()
+
+    if not reports:
+        scope = "" if trade_id is None else f" for trade {trade_id}"
+        click.echo(f"No provenance corrections recorded{scope}.")
+        return
+
+    for report in reports:
+        c = report.correction
+        click.echo(
+            f"correction {c.provenance_correction_id} -- trade {c.trade_id} "
+            f"-- applied {c.applied_at} by {c.applied_by}"
+        )
+        click.echo(
+            f"  cites candidates {c.cited_candidate_id} (action session "
+            f"{c.cited_candidate_action_session_date}) + "
+            f"daily_recommendations {c.cited_daily_recommendation_id} "
+            f"(action session {c.cited_recommendation_action_session_date})"
+        )
+        click.echo(
+            f"  evaluation run {c.cited_evaluation_run_id}, pipeline run "
+            f"{c.cited_pipeline_run_id}"
+        )
+        click.echo(
+            f"  entry fill {c.entry_fill_id_at_correction} (session "
+            f"{c.entry_fill_session_date}); live FK "
+            f"{c.entry_fill_id if c.entry_fill_id is not None else 'NULL'}"
+        )
+        click.echo(
+            f"  hypothesis {c.cited_hypothesis_id} "
+            f"({c.cited_hypothesis_name_at_correction}) status "
+            f"{c.cited_hypothesis_status_at_record!r} per status-history row "
+            f"{c.cited_hypothesis_status_history_id} recorded "
+            f"{c.cited_hypothesis_status_recorded_at}"
+        )
+        click.echo(
+            f"  status window raw {c.cited_run_ts_raw} -> "
+            f"{c.cited_pipeline_finished_ts_raw} (local); UTC "
+            f"{c.cited_run_ts_utc} -> {c.cited_status_window_upper_utc}"
+        )
+        click.echo(f"  derivation rule {c.derivation_rule_version}")
+        click.echo(f"  applied {c.applied_value_json}")
+        click.echo(f"  reason  {c.correction_reason}")
+        if report.drift_lines:
+            for line in report.drift_lines:
+                click.echo(f"  {line}")
+        else:
+            click.echo("  no citation drift.")
+        click.echo("")
 
 
 @journal_group.command("reconcile-tos")
