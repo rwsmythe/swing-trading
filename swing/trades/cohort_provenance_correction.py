@@ -60,6 +60,8 @@ from swing.evaluation.dates import PIPELINE_LOCAL_TIMEZONE, is_trading_session
 __all__ = [
     "APLUS_BUCKET",
     "COHORT_CORRECTED_FIELDS",
+    "DERIVATION_RULE_SOURCE_SHA256",
+    "DERIVATION_RULE_VERSION",
     "REQUIRED_RECOMMENDATION",
     "UNSET_TRADE_ORIGIN",
     "CallerHeldTransactionError",
@@ -94,6 +96,25 @@ UNSET_TRADE_ORIGIN = "manual_off_pipeline"
 # records where the box was when it was written, so inside the band the honest
 # answer is to decline rather than to guess.
 CLOCK_MARGIN = timedelta(hours=24)
+
+# THE DERIVATION RULE, PINNED RATHER THAN PROMISED.
+#
+# `_descriptive_label`'s format and `_non_pass_criterion_names`'s
+# `na`-counts-as-non-pass semantics are CODE, not data, so no FK can anchor
+# them. A version constant that "is bumped by hand when either changes" would
+# be gotcha #31 -- an unenforceable promise about future discipline, and
+# `_descriptive_label`'s own docstring even invites the drift ("the descriptive
+# suffix may evolve"). Two corrections would then claim the same derivation
+# version while using different rules.
+#
+# So the version is paired with a sha256 of both functions' SOURCE, asserted by
+# a test. Changing either function fails that test until the hash AND the
+# version move in the same commit. This is the project's own idiom -- the H1
+# amendment text is pinned by sha256 for exactly this reason.
+DERIVATION_RULE_VERSION: str = "2026-08-12.1"
+DERIVATION_RULE_SOURCE_SHA256: str = (
+    "5d00449acd1f16cc2b6626e843044f76118710a736790a8a506806500df9d878"
+)
 
 
 class CohortProvenanceCorrectionError(ValueError):
@@ -301,6 +322,34 @@ class _Anchored:
     recommendation_anchor: str
     run_ts_raw: str
     run_ts_utc: str
+    run_ts_parsed: datetime
+
+
+@dataclass(frozen=True)
+class _AsOfInterval:
+    """One validated `hypothesis_status_history` interval."""
+    history_id: int
+    hypothesis_id: int
+    status: str
+    start: datetime
+    end: datetime | None
+    recorded_at: datetime
+    recorded_at_raw: str
+
+
+@dataclass(frozen=True)
+class _Derived:
+    """The three written values, plus the provenance that justifies each."""
+    hypothesis_label: str
+    candidate_id: int
+    trade_origin: str
+    hypothesis_id: int
+    hypothesis_name: str
+    status_interval: _AsOfInterval
+    pipeline_run_id: int
+    pipeline_finished_ts_raw: str
+    pipeline_snapshot: dict[str, Any]
+    status_window_upper_utc: str
 
 
 def _load_trade_or_refuse(conn: sqlite3.Connection, trade_id: int) -> Any:
@@ -617,6 +666,342 @@ def _anchor_half(
         recommendation_anchor=recommendation_anchor,
         run_ts_raw=run_ts_raw,
         run_ts_utc=_to_utc_naive(run_ts_parsed).isoformat(),
+        run_ts_parsed=run_ts_parsed,
+    )
+
+
+# ---------------------------------------------------------------------------
+# THE AS-OF REGISTRY (refusal-ladder rungs 16-18).
+# ---------------------------------------------------------------------------
+
+
+def _load_validated_intervals(
+    conn: sqlite3.Connection, hypothesis_id: int,
+) -> list[_AsOfInterval]:
+    """ALL intervals for one hypothesis, every timestamp validated.
+
+    Loaded through the EXISTING unfiltered ``list_history_for_hypothesis``.
+    That reader does carry an ``ORDER BY effective_from ASC`` in SQL, which is
+    harmless HERE precisely because it ORDERS without FILTERING -- no row is
+    hidden -- and its ordering is discarded and re-derived on parsed values
+    anyway. The rule against lexical SQL is about FILTERING and LIMITING,
+    which lose rows; a pure ordering that loses none is safe to inherit and
+    unsafe to RELY on.
+
+    A lexical ``WHERE`` would drop a malformed interval that genuinely
+    OVERLAPS the window (a basic-form ``20260811T033500`` sorts after a
+    normalized ``2026-08-11T03:44:45`` bound), leaving a corrupt overlapping
+    interval invisible and ONE valid interval looking uniquely authoritative --
+    manufacturing exactly the false single-interval result this guard exists
+    to prevent.
+
+    ``recorded_at`` is validated too, and it was the one omission that
+    mattered: it is the WHOLE retrospective guard, the column is bare
+    ``TEXT NOT NULL``, and ``HypothesisStatusHistory.__post_init__`` does not
+    validate it -- so ``recorded_at=''`` sorts before EVERY valid ``run_ts``,
+    satisfies the guard lexically, and authorizes an interval whose recording
+    time is unknowable. A validation manifest is complete only if it covers
+    every value the DECISION reads, and this one was decisive precisely
+    because it was newest.
+    """
+    from swing.data.repos.hypothesis_status_history import (
+        list_history_for_hypothesis,
+    )
+
+    try:
+        history = list_history_for_hypothesis(conn, hypothesis_id)
+    except ValueError as exc:
+        # `HypothesisStatusHistory.__post_init__` compares `effective_to`
+        # against `effective_from` LEXICALLY, so a malformed basic-form bound
+        # can make the READER itself raise while hydrating. Left bare, that
+        # escapes as an untyped ValueError with no "Nothing was written" and
+        # no hypothesis named -- a refusal the operator cannot act on. The
+        # reader is still the project's existing UNFILTERED one; only the
+        # hydration failure is given this surface's own voice.
+        raise _refuse(
+            f"hypothesis {hypothesis_id}'s status history could not be read: "
+            f"{exc}. A malformed interval bound is schema-legal (the columns "
+            "are bare TEXT), and this surface refuses rather than deriving a "
+            "status from the rows that happen to hydrate."
+        ) from exc
+    out: list[_AsOfInterval] = []
+    for row in history:
+        what = f"hypothesis {hypothesis_id} history row {row.history_id}"
+        start = _require_naive_datetime(
+            row.effective_from, what=f"{what}'s effective_from")
+        end = None
+        if row.effective_to is not None:
+            end = _require_naive_datetime(
+                row.effective_to, what=f"{what}'s effective_to")
+            if end < start:
+                raise _refuse(
+                    f"{what} ends ({row.effective_to}) before it begins "
+                    f"({row.effective_from}).")
+        recorded = _require_naive_datetime(
+            row.recorded_at, what=f"{what}'s recorded_at")
+        out.append(_AsOfInterval(
+            history_id=int(row.history_id),
+            hypothesis_id=int(row.hypothesis_id),
+            status=str(row.status),
+            start=start,
+            end=end,
+            recorded_at=recorded,
+            recorded_at_raw=str(row.recorded_at).strip(),
+        ))
+    return out
+
+
+def _assert_outside_the_clock_margin(
+    intervals: list[_AsOfInterval], *, lo: datetime, hi: datetime,
+) -> None:
+    """REFUSE when any inspected boundary sits within +/-24h of a window bound.
+
+    A naive stamp carries no zone and nothing records where the box was when it
+    was written; a laptop that travelled, or an HST assumption applied to a
+    machine that later moved, silently shifts every historical comparison.
+    Inside the band a wrong-by-hours conversion could flip the verdict; outside
+    it the ten-hour question cannot change the answer. So inside, decline.
+
+    **CALLED ONLY AFTER `_as_of_status` HAS ALREADY DECLINED TO REFUSE, and
+    that ordering is load-bearing.** The margin exists to protect a verdict a
+    wrong-by-hours conversion could FLIP; when the interval ladder has already
+    refused, the verdict is the conservative one and no flip is possible. Run
+    the other way round, this check PRE-EMPTS every in-window transition -- a
+    transition strictly inside a 14-minute window is necessarily within 24
+    hours of both bounds -- so the specific "the status CHANGED INSIDE the
+    window" refusal becomes UNREACHABLE and its test can only ever assert the
+    margin message. The accept/refuse behaviour is identical either way; only
+    the message the operator reads differs, and it differs in the direction
+    that tells him what actually happened.
+
+    Live cost, measured: none. H1's only interval begins 2026-04-25 and never
+    ends, while the CADL window is 107 days away -- which is exactly why the
+    margin refusal CANNOT stand in for a positive normalization assertion.
+    """
+    for interval in intervals:
+        for label, boundary in (
+            ("effective_from", interval.start), ("effective_to", interval.end),
+        ):
+            if boundary is None:
+                continue
+            for bound_name, bound in (("lower", lo), ("upper", hi)):
+                if abs(boundary - bound) <= CLOCK_MARGIN:
+                    raise _refuse(
+                        f"hypothesis {interval.hypothesis_id} history row "
+                        f"{interval.history_id}'s {label} "
+                        f"({boundary.isoformat()}) is within 24 hours of the "
+                        f"{bound_name} window bound ({bound.isoformat()} UTC). "
+                        "The pipeline's timestamps are naive LOCAL and the "
+                        "audit table's are naive UTC, and nothing records "
+                        "which zone the box was in when either was written -- "
+                        "so inside that band a wrong-by-hours conversion could "
+                        "flip this verdict and the honest answer is to decline "
+                        "rather than guess."
+                    )
+
+
+def _as_of_status(
+    intervals: list[_AsOfInterval],
+    *,
+    hypothesis_id: int,
+    lo: datetime,
+    hi: datetime,
+) -> _AsOfInterval | None:
+    """The covering interval, or None when the hypothesis was NOT YET PRESENT.
+
+    THE QUERY IS ON INTERVALS INTERSECTING THE WINDOW, NOT COVERING IT, AND
+    THAT DISTINCTION IS THE WHOLE GUARD. Counting only COVERING intervals and
+    expecting "more than one" on a mid-window transition is wrong: the
+    production writer CLOSES the predecessor (`UPDATE prior SET effective_to`)
+    and THEN INSERTs the successor, both at the same instant `t`, so a
+    transition strictly inside the window yields two ADJACENT half-open
+    intervals NEITHER of which covers it -- and the rule would fall through to
+    its "no covering interval" branch and SILENTLY EXCLUDE the hypothesis
+    instead of refusing.
+
+    Half-open `[effective_from, effective_to)`; `effective_to IS NULL` means
+    still current.
+    """
+    if not intervals:
+        raise _refuse(
+            f"hypothesis {hypothesis_id} has NO status-history rows at all. "
+            "The audit table this guard rests on is incomplete for it, so the "
+            "status as of the cited record cannot be established."
+        )
+    intersecting = [
+        i for i in intervals
+        if i.start <= hi and (i.end is None or i.end > lo)
+    ]
+    if not intersecting:
+        earliest = min(i.start for i in intervals)
+        if hi < earliest:
+            # NOT YET PRESENT -- exclude, do NOT refuse. Migration 0026 created
+            # H5 on 2026-06-09 with its history starting there, so refusing on
+            # absence would make EVERY citation older than that uncorrectable
+            # because an unrelated FUTURE hypothesis had not yet existed. It is
+            # also what the matcher itself does: it omits non-active rows
+            # rather than erroring.
+            return None
+        raise _refuse(
+            f"hypothesis {hypothesis_id}'s status history has a GAP over the "
+            f"window [{lo.isoformat()}, {hi.isoformat()}] UTC: no interval "
+            "intersects it and the window does not precede the hypothesis's "
+            "earliest interval."
+        )
+    if len(intersecting) == 1:
+        only = intersecting[0]
+        covers = only.start <= lo and (only.end is None or only.end > hi)
+        if covers:
+            return only
+    raise _refuse(
+        f"hypothesis {hypothesis_id}'s status CHANGED INSIDE the window "
+        f"[{lo.isoformat()}, {hi.isoformat()}] UTC "
+        f"({len(intersecting)} intersecting interval(s), none covering it). "
+        "run_ts is the run's START and the record is persisted later, so the "
+        "status the framework evaluated against is ambiguous here."
+    )
+
+
+def _assert_contemporaneous_interval(
+    interval: _AsOfInterval, *, run_ts_utc: datetime,
+) -> None:
+    """REFUSE a RETROSPECTIVE interval -- one recorded after the window began.
+
+    ``0017_phase9_risk_policy_and_reconciliation.sql`` seeds one interval per
+    registry row with ``effective_from`` = a day-start anchor of the registry's
+    ``created_at`` but ``recorded_at`` = MIGRATION APPLY TIME -- the migration's
+    own comment says so. Those seeds are BACKDATED ASSERTIONS, not
+    contemporaneous records, and the binding rule admits only the framework's
+    own contemporaneous record. Disclosure is not authorization, and "otherwise
+    the correction is unavailable" is an AVAILABILITY argument rather than
+    evidence of contemporaneity.
+
+    Compared against the UTC bound and NEVER against the raw local one:
+    ``recorded_at`` is naive UTC and that comparison would be wrong by ten
+    hours.
+    """
+    if interval.recorded_at > run_ts_utc:
+        raise _refuse(
+            f"hypothesis {interval.hypothesis_id}'s status interval "
+            f"(history row {interval.history_id}) was recorded at "
+            f"{interval.recorded_at_raw} UTC, which POST-DATES the cited "
+            f"record's window start ({run_ts_utc.isoformat()} UTC). It is a "
+            "RETROSPECTIVE assertion -- migration 0017 backdated its seed "
+            "intervals exactly this way -- and a backdated interval is not the "
+            "framework's contemporaneous record of its own status."
+        )
+
+
+def _derive(
+    conn: sqlite3.Connection, anchored: _Anchored,
+) -> _Derived:
+    """Rungs 16-18, then the three values -- each a function of the record."""
+    from dataclasses import replace
+
+    from swing.data.repos.hypothesis import list_hypotheses
+    from swing.data.repos.pipeline import evaluation_run_persistence_bound
+    from swing.metrics.funnel import APLUS_TRADE_ORIGIN
+    from swing.recommendations.hypothesis import match_candidate_to_hypotheses
+    from swing.trades.entry import canonicalize_hypothesis_label
+
+    run_id = int(anchored.cited.evaluation_run_id)
+
+    # Rung 16 -- the window's UPPER BOUND, and the row that supplies it.
+    bound = evaluation_run_persistence_bound(conn, evaluation_run_id=run_id)
+    if bound is None:
+        raise _refuse(
+            f"evaluation run {run_id} has no single COMPLETE pipeline_runs row "
+            "with a finished_ts, so the instant at which its records were "
+            "persisted is UNBOUNDED ABOVE. run_ts is a run-START stamp (14m19s "
+            "of uncertainty on the live CADL run), so without an upper bound "
+            "the hypothesis-status window cannot be closed."
+        )
+    finished_parsed = _require_naive_datetime(
+        bound.finished_ts,
+        what=f"pipeline run {bound.pipeline_run_id}'s finished_ts")
+    if finished_parsed < anchored.run_ts_parsed:
+        raise _refuse(
+            f"pipeline run {bound.pipeline_run_id} finished "
+            f"({bound.finished_ts}) BEFORE evaluation run {run_id} started "
+            f"({anchored.run_ts_raw}); the window is inverted and cannot bound "
+            "anything."
+        )
+    lo = _to_utc_naive(anchored.run_ts_parsed)
+    hi = _to_utc_naive(finished_parsed)
+
+    # Rung 17 -- the AS-OF registry.
+    #
+    # `match_candidate_to_hypotheses` filters `h.status == 'active'` on the
+    # rows handed to it, so passing TODAY's `list_hypotheses(conn)` would make
+    # the derived hypothesis a function of PRESENT-DAY MUTABLE STATE -- exactly
+    # what the binding rule forbids, one level up from the values themselves.
+    # The failure is two-directional and both directions are wrong: a
+    # hypothesis PAUSED when the record was written but active today would be
+    # assigned anyway, and one active then and closed now would be refused.
+    # Not hypothetical -- H2 has a real active/paused/active cycle and H3 went
+    # active -> closed-target-met; only H1's own history is uninterrupted,
+    # which is why the CADL case would have come out right BY LUCK.
+    as_of_rows = []
+    covering_by_hypothesis: dict[int, _AsOfInterval] = {}
+    for entry in list_hypotheses(conn):
+        intervals = _load_validated_intervals(conn, int(entry.id))
+        covering = _as_of_status(
+            intervals, hypothesis_id=int(entry.id), lo=lo, hi=hi)
+        # The margin guards a verdict that could FLIP, so it runs only where
+        # the ladder above did NOT already refuse -- both the "use it" verdict
+        # and the NOT-YET-PRESENT exclusion, since either lets the correction
+        # proceed. See `_assert_outside_the_clock_margin`.
+        _assert_outside_the_clock_margin(intervals, lo=lo, hi=hi)
+        if covering is None:
+            continue  # NOT YET PRESENT -- excluded, not refused.
+        _assert_contemporaneous_interval(covering, run_ts_utc=lo)
+        covering_by_hypothesis[int(entry.id)] = covering
+        as_of_rows.append(replace(entry, status=covering.status))
+
+    # Rung 18 -- the hypothesis is DERIVED, not chosen.
+    #
+    # `include_baseline` stays at its False default: the broad-watch fallback
+    # is a caller-side opt-in for the recommendation surface, and firing it
+    # here would let a FALLBACK rule label a correction.
+    matches = match_candidate_to_hypotheses(
+        anchored.cited.candidate, registry=as_of_rows)
+    if len(matches) != 1:
+        raise _refuse(
+            f"the matcher returned {len(matches)} hypothesis matches for "
+            f"candidate {anchored.cited.candidate_id} against the registry AS "
+            f"OF the cited record "
+            f"({[m.hypothesis_name for m in matches]}); exactly one is "
+            "required. An `aplus` candidate matches the A+ baseline and only "
+            "it today, but the registry is DATA and this asserts rather than "
+            "assumes that."
+        )
+    match = matches[0]
+
+    interval = covering_by_hypothesis[int(match.hypothesis_id)]
+    if interval.status != "active":  # pragma: no cover -- matcher guarantees
+        raise _refuse(
+            f"hypothesis {match.hypothesis_id} matched while its as-of status "
+            f"was {interval.status!r}.")
+
+    label = canonicalize_hypothesis_label(match.suggested_label_descriptive)
+    if not label:
+        raise _refuse(
+            "the framework's own label builder produced an empty label for "
+            f"candidate {anchored.cited.candidate_id}.")
+
+    return _Derived(
+        hypothesis_label=label,
+        candidate_id=int(anchored.cited.candidate_id),
+        # IMPORTED from `swing.metrics.funnel`, never a third copy of the
+        # literal (#11). A drift test pins it against `origin.py`'s mapping.
+        trade_origin=APLUS_TRADE_ORIGIN,
+        hypothesis_id=int(match.hypothesis_id),
+        hypothesis_name=str(match.hypothesis_name),
+        status_interval=interval,
+        pipeline_run_id=bound.pipeline_run_id,
+        pipeline_finished_ts_raw=str(bound.finished_ts),
+        pipeline_snapshot=bound.snapshot,
+        status_window_upper_utc=hi.isoformat(),
     )
 
 
@@ -637,19 +1022,77 @@ class CohortProvenanceCorrectionPreview:
     cited_candidate_id: int
     cited_daily_recommendation_id: int
     cited_evaluation_run_id: int
+    cited_pipeline_run_id: int
+    cited_hypothesis_id: int
+    cited_hypothesis_name: str
+    cited_hypothesis_status_history_id: int
     entry_fill_id: int
     entry_fill_session_date: str
     candidate_action_session_date: str
     recommendation_action_session_date: str
     run_ts_raw: str
     run_ts_utc: str
+    pipeline_finished_ts_raw: str
+    status_window_upper_utc: str
+    derivation_rule_version: str
     pre_values: dict[str, Any]
+    post_values: dict[str, Any]
+    na_criterion_suffix_note: str | None = None
 
 
 def _reason_or_refuse(reason: Any) -> str:
     if not isinstance(reason, str) or not reason.strip():
         raise _refuse("--reason must be a non-empty string.")
     return reason.strip()
+
+
+@dataclass(frozen=True)
+class _Authorized:
+    anchored: _Anchored
+    derived: _Derived
+
+
+def _authorize(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    cited_candidate_id: int,
+    cited_recommendation_id: int,
+) -> _Authorized:
+    """Every read-only check, in refusal-ladder order. Writes nothing."""
+    anchored = _anchor_half(
+        conn,
+        trade_id=trade_id,
+        cited_candidate_id=cited_candidate_id,
+        cited_recommendation_id=cited_recommendation_id,
+    )
+    return _Authorized(anchored=anchored, derived=_derive(conn, anchored))
+
+
+def _na_suffix_note(anchored: _Anchored, derived: _Derived) -> str | None:
+    """Explain a ``; failed: X`` suffix earned by an ``na`` result.
+
+    A NAMED WART, not a hidden one. ``_non_pass_criterion_names`` counts `na`
+    as non-pass -- matching `bucket_for`'s VCP gating -- so a criterion whose
+    result is `na` renders under a `failed:` heading. That inaccuracy is
+    PRE-EXISTING in the framework's own builder and fixing it would change
+    every future recommendation label, so this surface reuses the builder
+    rather than minting a second implementation, and SAYS SO wherever the
+    string is shown.
+    """
+    na_names = sorted(
+        c.criterion_name for c in anchored.cited.candidate.criteria
+        if c.result == "na"
+    )
+    if not na_names or "; failed:" not in derived.hypothesis_label:
+        return None
+    return (
+        "the derived label's `failed:` suffix includes "
+        f"{', '.join(na_names)}, whose result is `na` rather than `fail`. "
+        "The framework's own label builder counts `na` as non-pass, so the "
+        "wording is a pre-existing inaccuracy in that builder and not "
+        "something this correction introduced."
+    )
 
 
 def preview_cohort_provenance_correction(
@@ -667,12 +1110,13 @@ def preview_cohort_provenance_correction(
     ``--dry-run`` cannot diverge from apply.
     """
     _reason_or_refuse(reason)
-    anchored = _anchor_half(
+    auth = _authorize(
         conn,
         trade_id=trade_id,
         cited_candidate_id=cited_candidate_id,
         cited_recommendation_id=cited_recommendation_id,
     )
+    anchored, derived = auth.anchored, auth.derived
     trade = anchored.trade
     return CohortProvenanceCorrectionPreview(
         trade_id=trade_id,
@@ -681,15 +1125,28 @@ def preview_cohort_provenance_correction(
         cited_candidate_id=cited_candidate_id,
         cited_daily_recommendation_id=cited_recommendation_id,
         cited_evaluation_run_id=int(anchored.cited.evaluation_run_id),
+        cited_pipeline_run_id=derived.pipeline_run_id,
+        cited_hypothesis_id=derived.hypothesis_id,
+        cited_hypothesis_name=derived.hypothesis_name,
+        cited_hypothesis_status_history_id=derived.status_interval.history_id,
         entry_fill_id=anchored.entry_fill.fill_id,
         entry_fill_session_date=anchored.fill_session,
         candidate_action_session_date=anchored.candidate_anchor,
         recommendation_action_session_date=anchored.recommendation_anchor,
         run_ts_raw=anchored.run_ts_raw,
         run_ts_utc=anchored.run_ts_utc,
+        pipeline_finished_ts_raw=derived.pipeline_finished_ts_raw,
+        status_window_upper_utc=derived.status_window_upper_utc,
+        derivation_rule_version=DERIVATION_RULE_VERSION,
         pre_values={
             "trades.hypothesis_label": trade.hypothesis_label,
             "trades.candidate_id": trade.candidate_id,
             "trades.trade_origin": trade.trade_origin,
         },
+        post_values={
+            "trades.hypothesis_label": derived.hypothesis_label,
+            "trades.candidate_id": derived.candidate_id,
+            "trades.trade_origin": derived.trade_origin,
+        },
+        na_criterion_suffix_note=_na_suffix_note(anchored, derived),
     )
