@@ -1,6 +1,6 @@
-# PHASE 22 — Scope Proposal (CHARC, 2026-08-23; operator ratification pending)
+# PHASE 22 — Scope Proposal (CHARC, 2026-08-23; **operator-RATIFIED AS PROPOSED 2026-08-24**)
 
-**Theme: THE ORDER-LIFECYCLE GAP + TRUTHFUL-RECORD COMPLETION.** Phase 21 built the latch
+**PHASE 22 ACTIVE as of 2026-08-24.** Theme: **THE ORDER-LIFECYCLE GAP + TRUTHFUL-RECORD COMPLETION.** Phase 21 built the latch
 execution surface; the boundary wave built the provenance-correction machinery. What three weeks
 of live trading has exposed is the seam BETWEEN them: **the framework models the mandate and the
 journal models the fill, and nothing models the ORDER in the days it rests at the broker while
