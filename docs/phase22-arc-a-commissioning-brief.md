@@ -44,21 +44,54 @@ column today** (`entry_intent` is the only intent-adjacent column).
 > `criteria_lapsed`, REPORT-ONLY by RD's arming ruling). The discriminator is the latch's own
 > FROZEN invalidation — a semantic line the fire itself declared — never the bucket series.
 
-The discriminator compares against values the fire froze (`latch_order_intents` framework
-columns + the frozen invalidation), so it is a pure comparison against existing columns — no
-later judgment, no run-level stamp anywhere in the predicate (#30).
+**CORRECTED 2026-08-24 (orchestrator Finding C; the original claim here was CHARC's error):
+the frozen invalidation is NOT a latch column.** `latch_order_intents` freezes the PIVOT
+(`framework_stop_price` = the buy-stop trigger; OII 53.98), limit, and quantity — the
+invalidation lives on the FIRE CANDIDATE's `candidates.initial_stop` (OII 41.42, AMN 30.85).
+The discriminator therefore requires a **latch→candidate JOIN**, and `candidates` immutability
+becomes load-bearing. **Never read the TRADE's stop** — trade 25's `initial_stop` is 37.89, not
+the fire's 41.42 (the FTRE 14.47-vs-14.88 family). **RD's gate requirement, verbatim: the number
+compared must be PROVABLY the fire's frozen value at comparison time.** Two acceptable proofs —
+immutability established with EVIDENCE (the audit-trail form, never writer-absence: "no UPDATE
+path" is a claim with a shelf life, D36) or the invalidation SNAPSHOT at latch time
+(freeze-at-fire made structural). The plan owns the choice; a bare "candidates is append-only"
+sentence does not pass his gate. Still true and still binding: no later judgment, no run-level
+stamp anywhere in the predicate (#30).
+
+**The boundary inequality is RULED (RD, 2026-08-24), so the encoding never guesses: a close
+EXACTLY EQUAL to the frozen invalidation is NOT a breach — strict less-than.** Grounds: the
+constraint-6 posture (invalidation semantics err toward MANDATE-PRESERVATION) and "close BELOW
+X" is strict on its face.
 
 ## 4. THE ACCEPTANCE TEST — fully specified by three live cases; RD holds the plan to it
 
-**From the record alone**, the shipped mechanism must reproduce:
-- **AMN (trade 20):** close breached the frozen invalidation before the fill → does **NOT**
-  label from the fire (negative control).
-- **OII (trade 25):** bucket drifted to `watch`, invalidation NEVER approached, fill exactly at
-  the frozen pivot on the validated order → **DOES** label from the fire (drift-is-not-death).
-- **VSTS:** never filled → **nothing** (no label, no row).
-Plus: **RHI (trade 24) unchanged** — the unlatched watch-pool path byte-identical before/after.
-These are fixtures built from the REAL rows (synthetic-vs-emitter drift is the standing family),
-with expected values computed under BOTH pre- and post-fix paths.
+**CORRECTED AND EXTENDED 2026-08-24 (orchestrator Finding A confirmed by RD; Finding B —
+CHARC's mislabel — endorsed). The original four cases could not fail an implementation that
+omits the invalidation comparison entirely: AMN has ZERO latch rows** (the instrument post-dates
+its entry — the same fact RD banked for Demand A's tier-2 admission, unpropagated) **so it
+passes trivially through the no-latch fallback, never reaching the check.** SIX cases:
+1. **OII (trade 25, live):** validated latch, bucket drifted, invalidation never approached,
+   fill at the frozen pivot → **labels from the fire.**
+2. **AMN (trade 20, live):** NO latch rows → falls through to the current derivation — the
+   **no-latch fallback control**, NOT an invalidation control (it cannot be one via this path).
+3. **VSTS (live):** never filled → nothing.
+4. **RHI (trade 24, live, ITS REAL SHAPE): latch place-intent WITHOUT a validity row → falls
+   through.** This is the one live case separating keying-on-any-latch-row from
+   keying-on-a-broker-VALIDATED order, and the mechanism MUST key on VALIDITY (RD: the evidence
+   standard is the operator's acceptance, `accepted_by_broker`). Do NOT build this fixture as
+   "no latch" — that erases exactly what it discriminates. Note in the plan: RHI's latch cites
+   candidate **12442** while the trade carries **12518** — the mechanism will meet such
+   divergences and the plan says what it does with them.
+5. **SYNTHETIC BREACH (labelled synthetic; the 18-B.1 raw-insert technique):** OII's REAL row
+   shape with ONE mutated value — the close set to the frozen invalidation **MINUS 0.05, the
+   real AMN breach geometry** (a deep breach passes sloppy encodings; five cents pins it) →
+   validated latch + breach → must **NOT** label from the fire, **AND lands where AMN landed:
+   keys honestly NULL, never silently broad-watch** (a refusal that misfiles is not a refusal —
+   the outcome is stated in FULL, RD refinement 3).
+6. **BOUNDARY (synthetic):** close **EXACTLY EQUAL** to the frozen invalidation → NOT a breach
+   → the latch survives → **labels from the fire.** Without this case a `<=` encoding passes
+   case 5 and silently kills mandates at the line.
+Fixtures from the REAL rows; expected values computed under BOTH pre- and post-fix paths.
 
 ## 5. EVIDENCE RULES CARRIED (each invisible from inside the arc)
 
