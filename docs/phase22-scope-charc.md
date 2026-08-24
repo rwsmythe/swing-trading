@@ -28,6 +28,23 @@ order gets a durable link at ACCEPTANCE time, so the fill inherits provenance in
 **This is the stop-the-bleeding arc: without it, every future resting order that outlives its
 screen appearance mints another empty-keys row** (2 in 9 days since Demand C shipped).
 
+**Sharpened by RD's trade-25 ruling (2026-08-24), which is 22-A's governing input:**
+- **The citation-graph EXTENSION is in scope:** a fill matched to a broker-validated latch order
+  may cite the FIRE candidate + the LATCH VALIDITY row (both contemporaneous, both
+  audit-trail-verifiable — the two-tier admission shape already ruled). The last-word guard's
+  bucket-series path stays UNTOUCHED for unlatched trades — its refusal of OII's `aplus` citation
+  is CORRECT for what the guard is; the latch ladder is a different authority the guard
+  structurally cannot see. Scope boundary, not defect.
+- **The doctrine bound's second clause governs the semantics:** *a latch dies at its own
+  INVALIDATION (rung 4) or above — never of bucket drift* (rung 5 is `criteria_lapsed`,
+  report-only by RD's arming ruling). The discriminator is the latch's own FROZEN invalidation —
+  a semantic line the fire itself declared — never the bucket.
+- **THE ACCEPTANCE TEST IS FULLY SPECIFIED BY THE THREE LIVE CASES and RD will hold the plan to
+  it:** from the record alone, 22-A must reproduce AMN (invalidation breached → does NOT label
+  from the fire), OII (drift, invalidation untouched, frozen-pivot fill → DOES label from the
+  fire), and VSTS (never filled → no label at all). Three exits, three different answers, one
+  mechanism.
+
 **22-B: Demand A — `unintended_execution`** (name operator-concurred; §3 pass committed; RD's
 two-tier admission endorsed with immutability-verified-against-the-audit-trail). The migration is
 a **57-column/13-CHECK `trades` REBUILD** (D30 class; the 0031 pattern, NOT the 0027 shape).
@@ -41,12 +58,14 @@ INADMISSIBLE as cohort/intent evidence** (the guard all demands carry). Closes t
 class — the §5.1 absorbing state gets its exit. Should land before the next stale mandate needs
 it, not before 09-08 (VSTS itself expires per ratification).
 
-**Interim operator action (not an arc): trade 25 OII disposition.** The Demand-C surface exists
-and its last-word guard will (correctly) refuse the `aplus` citation. Whether trade 25 labels
-from the 08-17 `watch` row (broad-watch cohort, like RHI) or stays uncorrected pending 22-A **is
-RD's ruling** — the doctrine bound's first contested case: `watch` is a downgrade, not an
-invalidation, and the bound as stated ("a latch does not survive its own INVALIDATION") does not
-obviously reach it.
+**Trade 25 OII: RULED (RD, 2026-08-24) — it labels FROM THE FIRE (H1, faithful derivation from
+candidate 12284, `standard` intent already set); the 08-17 `watch`-row labeling is REFUSED
+outright (it would misfile a mandate fill exactly as `standard` would have misfiled AMN, and H1
+— starved at 2/20 — would silently lose a genuine sample to H5). INTERIM: cohort keys stay
+EMPTY pending 22-A** — honest NULL over silent wrong, the trade-20 standard; no raw write, no
+watch citation. **Calendar consequence, RD-stated:** trade 25 is OPEN and H1 counts CLOSED
+trades, so the September read is unaffected unless it closes before 22-A lands — in which case
+the read carries it as a NAMED pending-label row, never silently uncounted.
 
 ## TIER 2 — surfaces that lie
 
