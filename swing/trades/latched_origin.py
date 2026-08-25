@@ -619,6 +619,386 @@ def aplus_trade_origin() -> str:
 
 
 # ---------------------------------------------------------------------------
+# THE LOOKUP -- RAW, AND IT RETURNS A LIST
+#
+# Two functions, not one, because the declared one-argument signature could not
+# implement the rungs assigned to it (plan S5.1, review 22A-R4-08).  This half
+# takes a broker order id and returns EVERY matching link; the list is what
+# makes S2.4's "cardinality by COUNT, not fetchone()" expressible in the TYPE
+# instead of only in prose.  There is deliberately NO UNIQUE on
+# ``broker_order_id`` -- a duplicate would abort the LEDGER write, and cohort
+# bookkeeping must never block a money-bearing operation -- so the reader
+# counts and a ``fetchone()`` signature would silently pick one and look right.
+# ---------------------------------------------------------------------------
+def find_accepted_latch_order(
+    conn, *, broker_order_id: str,
+) -> list[AcceptedLatchOrder]:
+    """Every link naming this broker order, oldest first.  NO rungs run here.
+
+    ``actual_limit_price`` comes from the validity JOIN this lookup already
+    performs, so the envelope guards stay a PURE function over the dataclass
+    (plan S5.1) rather than growing a connection argument.
+    """
+    rows = conn.execute(
+        "SELECT l.link_id, l.validity_intent_id, l.place_intent_id, "
+        "       l.candidate_id, l.evaluation_run_id, l.ticker, "
+        "       l.detection_date, l.broker_order_id, l.frozen_pivot, "
+        "       l.frozen_invalidation, l.actual_quantity, l.freeze_tier, "
+        "       v.actual_limit_price "
+        "  FROM latch_order_mandate_links l "
+        "  JOIN latch_order_intents v ON v.intent_id = l.validity_intent_id "
+        " WHERE l.broker_order_id = ? "
+        " ORDER BY l.link_id",
+        (broker_order_id,),
+    ).fetchall()
+    return [
+        AcceptedLatchOrder(
+            link_id=int(r[0]), validity_intent_id=int(r[1]),
+            place_intent_id=int(r[2]), candidate_id=int(r[3]),
+            evaluation_run_id=int(r[4]), ticker=str(r[5]),
+            detection_date=str(r[6]), broker_order_id=str(r[7]),
+            frozen_pivot=r[8], frozen_invalidation=r[9],
+            actual_quantity=None if r[10] is None else int(r[10]),
+            freeze_tier=str(r[11]), actual_limit_price=r[12],
+        )
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# THE AUTHORIZATION LADDER -- ELEVEN RUNGS, EACH A REFUSAL, EACH NAMED
+#
+# Ten ship HERE (task 4): 1, 2, 3, 3b, 3c, 4, 5, 6, 7 and 9.  **Rung 8 --
+# competitor liveness -- is task 6a's**, because it must evaluate each
+# competitor through ``mandate_alive_at`` and could not have run at this point
+# in the ladder (22A-R7-09).  It is injected through ``competitor_rung`` rather
+# than hard-coded here, so task 6a adds a rung without re-opening this function
+# and the seam is a parameter rather than a comment promising inheritance (#31).
+#
+# EVERY RUNG RECORDS THE INPUT IT JUDGED AND THE VERDICT IT REACHED, into the
+# ``$.authorization`` object whose roster is ``AUTHORIZATION_CLAUSES`` -- or
+# "passed" and "never ran" are indistinguishable at audit (plan S4.3).  The
+# block is built by WALKING the roster, so a rung added to the roster without a
+# value here raises at emit rather than shipping a silently-absent entry.
+# ---------------------------------------------------------------------------
+def _refuse(reason: str, order: AcceptedLatchOrder, **fields) -> LatchedProvenance:
+    return LatchedProvenance(
+        admitted=False, recognised_but_underivable=True,
+        decline_reason=reason, order=order, **fields)
+
+
+def _authorization_block(inputs: dict) -> dict:
+    """``{key: {"input": ..., "verdict": "pass"}}`` over the WHOLE roster."""
+    missing = sorted(set(AUTHORIZATION_KEYS) - set(inputs))
+    extra = sorted(set(inputs) - set(AUTHORIZATION_KEYS))
+    if missing or extra:
+        raise KeyError(
+            f"authorization block does not match AUTHORIZATION_CLAUSES: "
+            f"missing {missing}, extra {extra}")
+    return {key: {"input": inputs[key], "verdict": "pass"}
+            for key in AUTHORIZATION_KEYS}
+
+
+def _intent_row(conn, intent_id: int | None) -> dict | None:
+    if intent_id is None:
+        return None
+    row = conn.execute(
+        "SELECT intent_id, candidate_id, intent_kind, validity_outcome, "
+        "       actual_broker_order_id, actual_quantity, actual_limit_price, "
+        "       validated_place_intent_id, recorded_ts "
+        "  FROM latch_order_intents WHERE intent_id = ?",
+        (intent_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "intent_id": row[0], "candidate_id": row[1], "intent_kind": row[2],
+        "validity_outcome": row[3], "actual_broker_order_id": row[4],
+        "actual_quantity": row[5], "actual_limit_price": row[6],
+        "validated_place_intent_id": row[7], "recorded_ts": row[8],
+    }
+
+
+def authorize_accepted_order(
+    conn,
+    cfg,
+    *,
+    order: AcceptedLatchOrder,
+    ticker: str,
+    fill_session: date,
+    price: float,
+    shares: float,
+    fill_origin: str,
+    envelope_symbol: str | None,
+    exclude_trade_ids: frozenset[int],
+    trade_id: int | None = None,
+    competitor_rung=None,
+) -> LatchedProvenance:
+    """Run the ladder over ONE recognised link, then probe the mandate.
+
+    ``trade_id`` is the SUBJECT trade where one already exists (the correction
+    path); on the entry path there is no row yet and ``None`` is correct -- the
+    consumption rungs then scan every OTHER trade, which is all of them.
+
+    ``competitor_rung`` is rung 8's seam.  It is a callable
+    ``(conn, cfg, order, fill_session, exclude_trade_ids) -> (reason, ids)``;
+    ``None`` means the rung does not run, which is exactly true at task 4 and
+    is what keeps the two tasks' acceptance sets disjoint rather than
+    overlapping (22A-R8-08: rung 8 was once claimed by two tasks and rungs 2
+    and 3c by neither).
+    """
+    validity = _intent_row(conn, order.validity_intent_id)
+    place = _intent_row(conn, order.place_intent_id)
+
+    # RUNG 1 -- the link's ticker IS the request's.
+    if order.ticker != ticker:
+        return _refuse("ticker_mismatch", order)
+
+    # RUNG 2 -- the place parent resolves to a `place` row on the SAME
+    # candidate.  A raw link may name a row that is not a place at all, or one
+    # belonging to a different mandate; rungs 1 and 3 both pass on either.
+    if (place is None or place["intent_kind"] != "place"
+            or place["candidate_id"] != order.candidate_id):
+        return _refuse("link_parent_incoherent", order)
+
+    # RUNG 3 -- the linked validity row's OWN outcome.  0033 forbids a
+    # non-accepted validity row from carrying an actual_broker_order_id, so
+    # against the SERVICE this is belt-and-braces with the schema; against a
+    # RAW link it is not, and a raw link is reachable throughout this plan.
+    if validity is None or validity["intent_kind"] != "validity":
+        return _refuse("linked_validity_not_accepted", order)
+    if validity["validity_outcome"] != "accepted_by_broker":
+        return _refuse("linked_validity_not_accepted", order)
+
+    # RUNG 3b -- and it is still the LATEST validity child of its place, by the
+    # classifier's own total order (recorded_ts, intent_id) -- IMPORTED, never
+    # re-spelled as max(intent_id), which is a DIFFERENT order whenever a
+    # later-inserted row carries an earlier stamp.
+    from swing.data.repos.latch_order_intents import list_intents_for_latch
+    from swing.latches.classification import _order_key
+
+    children = [
+        i for i in list_intents_for_latch(conn, candidate_id=order.candidate_id)
+        if i.intent_kind == "validity"
+        and i.validated_place_intent_id == order.place_intent_id
+    ]
+    latest = max(children, key=_order_key) if children else None
+    if latest is None or latest.intent_id != order.validity_intent_id:
+        return _refuse("validity_superseded", order)
+
+    # RUNG 3c -- EVERY DUPLICATED LINK FIELD IS BOUND BACK TO ITS SOURCE.  The
+    # link COPIES five fields that are already held authoritatively elsewhere,
+    # and rungs 1-3b checked ticker, parent and outcome while never binding the
+    # copies.  So a raw link could cite a GENUINE accepted validity row while
+    # substituting a different broker order id or an inflated quantity, and the
+    # submitted envelope would then match the forgery rather than the
+    # acceptance.
+    candidate = conn.execute(
+        "SELECT c.ticker, c.evaluation_run_id, e.action_session_date "
+        "  FROM candidates c JOIN evaluation_runs e "
+        "    ON e.id = c.evaluation_run_id WHERE c.id = ?",
+        (order.candidate_id,),
+    ).fetchone()
+    if candidate is None:
+        return _refuse("link_field_unbound", order)
+    if order.broker_order_id != validity["actual_broker_order_id"]:
+        return _refuse("link_field_unbound", order)
+    if order.actual_quantity != validity["actual_quantity"]:
+        return _refuse("link_field_unbound", order)
+    if (order.ticker != candidate[0]
+            or order.evaluation_run_id != candidate[1]
+            or order.detection_date != str(candidate[2])):
+        return _refuse("link_field_unbound", order)
+
+    # RUNG 4 -- THE GOVERNING PLACE CYCLE AS OF THE FILL.  A later `place`
+    # opens a new cycle and RETIRES the earlier order regardless of what the
+    # earlier order's own validity children say.  The as-of bound is STRICTLY
+    # BEFORE the fill session -- the same date-only clock policy the probe
+    # applies, because the entry carries a DATE and inventing a third clock
+    # domain to order an intent against a fill is what this arc declines to do.
+    governing = conn.execute(
+        "SELECT intent_id FROM latch_order_intents "
+        " WHERE candidate_id = ? AND intent_kind = 'place' "
+        "   AND date(recorded_ts) < ? "
+        " ORDER BY recorded_ts DESC, intent_id DESC LIMIT 1",
+        (order.candidate_id, fill_session.isoformat()),
+    ).fetchone()
+    if governing is None or int(governing[0]) != order.place_intent_id:
+        log.warning(
+            "22-A: link %s cites place %s but the governing place cycle as of "
+            "%s is %s; the later place retired the earlier order",
+            order.link_id, order.place_intent_id, fill_session,
+            None if governing is None else governing[0])
+        return _refuse("place_cycle_superseded", order)
+
+    # RUNG 5 -- CANCELLATION HISTORY.  Before the fill kills; ON the fill is
+    # UNORDERABLE and refuses rather than being counted either way; AFTER the
+    # fill is not consulted at all -- an implementation refusing on any cancel
+    # fails case 29d.
+    cancel_before = conn.execute(
+        "SELECT intent_id FROM latch_order_intents "
+        " WHERE candidate_id = ? AND intent_kind = 'cancel' "
+        "   AND date(recorded_ts) < ? ORDER BY intent_id LIMIT 1",
+        (order.candidate_id, fill_session.isoformat()),
+    ).fetchone()
+    if cancel_before is not None:
+        return _refuse("order_cancelled", order)
+    cancel_same_day = conn.execute(
+        "SELECT intent_id FROM latch_order_intents "
+        " WHERE candidate_id = ? AND intent_kind = 'cancel' "
+        "   AND date(recorded_ts) = ? ORDER BY intent_id LIMIT 1",
+        (order.candidate_id, fill_session.isoformat()),
+    ).fetchone()
+    if cancel_same_day is not None:
+        return _refuse("cancel_ordering_ambiguous", order)
+
+    # RUNG 6 -- CONSUMPTION IS ORDER-LINKED, never COUNT(*) over the candidate.
+    # The ordinary entry path assigns candidate_id from pipeline provenance
+    # with no accepted order anywhere near it, so a count would let an
+    # unrelated ordinary trade falsely block the real order-linked fill.
+    #
+    # THE SUBJECT IS EXCLUDED BY `trade_id`, NEVER BY `exclude_trade_ids`.
+    # The two look interchangeable on the correction path (both name trade 25)
+    # and they are NOT: `exclude_trade_ids` is the PROBE's parameter, a set a
+    # caller may widen for its own reasons, and honouring it HERE could turn a
+    # genuine second consumer into an ACCEPTANCE.  A wrong refusal costs a
+    # message; a wrong acceptance contaminates H1.
+    consuming = conn.execute(
+        "SELECT f.trade_id FROM fills f "
+        " WHERE f.action = 'entry' AND f.schwab_source_value_json IS NOT NULL "
+        "   AND json_valid(f.schwab_source_value_json) "
+        "   AND json_extract(f.schwab_source_value_json, ?) = ? "
+        " ORDER BY f.fill_id",
+        (f"$.{SCHWAB_ORDER_ID_ENVELOPE_KEY}", order.broker_order_id),
+    ).fetchall()
+    others = [
+        int(r[0]) for r in consuming
+        if r[0] is not None and int(r[0]) != (trade_id if trade_id is not None else -1)
+    ]
+    if others:
+        log.warning(
+            "22-A: broker order %s is already consumed by trade(s) %s; one "
+            "trade per mandate", order.broker_order_id, others)
+        return _refuse("mandate_already_consumed", order)
+
+    # RUNG 7 -- AND THE EVIDENCE FOR RUNG 6 IS DESTRUCTIBLE.  The supported
+    # split-into-partials handler REBUILT replacement fills without
+    # `fill_origin` or `schwab_source_value_json` (task 11a fixes it FORWARD),
+    # so a consumption that began in the supposedly authoritative
+    # representation can simply DISAPPEAR.  Rows already rebuilt are already
+    # blind, which is why this rung survives the fix.
+    scanned = conn.execute(
+        "SELECT f.fill_id FROM fills f JOIN trades t ON t.id = f.trade_id "
+        " WHERE f.action = 'entry' AND t.ticker = ? ORDER BY f.fill_id",
+        (ticker,),
+    ).fetchall()
+    blinded = conn.execute(
+        "SELECT f.fill_id FROM fills f JOIN trades t ON t.id = f.trade_id "
+        " WHERE f.action = 'entry' AND t.ticker = ? "
+        "   AND f.reconciliation_status = 'reconciled_discrepancy_resolved' "
+        "   AND f.schwab_source_value_json IS NULL "
+        "   AND t.id <> ? ORDER BY f.fill_id",
+        (ticker, trade_id if trade_id is not None else -1),
+    ).fetchall()
+    if blinded:
+        log.warning(
+            "22-A: consumption evidence for %s may have been DESTROYED -- "
+            "fills %s were rebuilt by the split handler with the envelope "
+            "stripped, so the scan cannot prove non-consumption",
+            ticker, [int(r[0]) for r in blinded])
+        return _refuse("consumption_evidence_unavailable", order)
+
+    # RUNG 8 -- COMPETITOR LIVENESS.  Task 6a owns it; the seam is a parameter.
+    competitor_ids: list[int] = []
+    if competitor_rung is not None:
+        reason, competitor_ids = competitor_rung(
+            conn, cfg, order=order, fill_session=fill_session,
+            exclude_trade_ids=exclude_trade_ids)
+        if reason is not None:
+            return _refuse(reason, order)
+
+    # RUNG 9 -- RD'S REFUSE-BY-DEFAULT, and CHARC's read-time existence check.
+    #
+    # THE BARRIER CHECK COMES FIRST and refuses for EVERY candidate, pre- or
+    # post-barrier: "single-state" means armed and VERIFIABLY ARMED WITH THE
+    # ACTUAL BARRIER, NOW.  Dropping the triggers mechanically halts structural
+    # admission, which is what converts CHARC's CONDITION 3 from something a
+    # person must remember into a consequence nobody can avoid.
+    from swing.data.repos.candidates_immutability_epoch import (
+        freeze_tier_for_candidate,
+    )
+
+    read_time_tier, installed = freeze_tier_for_candidate(
+        conn, order.candidate_id)
+    if not installed:
+        log.warning(
+            "22-A: the candidates barrier is ABSENT OR ALTERED at read time; "
+            "structural admission is refused for link %s regardless of its "
+            "stored tier", order.link_id)
+        return _refuse("barrier_not_installed", order,
+                       freeze_tier=order.freeze_tier)
+    # THE STORED TIER IS AN ATTESTATION; THE READ-TIME TIER IS A VERDICT, and
+    # BOTH must say live_at_acceptance.  Requiring both can only ever refuse
+    # MORE -- the minting CASE and freeze_tier_for_candidate are the same rule
+    # in two spellings, so they agree for every truthfully-minted row -- and it
+    # closes the one shape a stored-tier-only rung would admit: a RAW link
+    # whose freeze_tier column was written by hand.
+    if (order.freeze_tier != FREEZE_TIER_LIVE_AT_ACCEPTANCE
+            or read_time_tier != FREEZE_TIER_LIVE_AT_ACCEPTANCE):
+        return _refuse("pre_barrier_unproven", order,
+                       freeze_tier=order.freeze_tier)
+
+    # THE FIVE ENVELOPE GUARDS.  Demoted deliberately to REFUSAL GUARDS rather
+    # than identity evidence (plan S2.4.1): fill_origin is computed server-side
+    # but FROM the same hidden inputs, so no rung here is independent evidence.
+    shape = assert_fill_consistent_with_order(
+        order, ticker=ticker, price=price, shares=shares,
+        fill_origin=fill_origin, envelope_symbol=envelope_symbol)
+    if shape is not None:
+        return _refuse(shape, order, freeze_tier=order.freeze_tier)
+
+    verdict = mandate_alive_at(
+        conn, cfg, order=order, fill_session=fill_session,
+        exclude_trade_ids=exclude_trade_ids)
+    if not verdict.admitted:
+        return verdict
+
+    evidence = dict(verdict.probe_evidence or {})
+    evidence["authorization"] = _authorization_block({
+        "rung1_link_ticker": order.ticker,
+        "rung2_link_parent": order.place_intent_id,
+        "rung3_validity_outcome": validity["validity_outcome"],
+        "rung3b_latest_validity_child": order.validity_intent_id,
+        "rung3c_link_broker_order_id": order.broker_order_id,
+        "rung4_governing_place_intent": order.place_intent_id,
+        "rung5_cancel_intent_id": None,
+        "rung6_consuming_trade_id": None,
+        "rung7_consumption_scan_fill_ids": [int(r[0]) for r in scanned],
+        "rung8_competitor_link_ids": [int(i) for i in competitor_ids],
+        "rung9_stored_freeze_tier": order.freeze_tier,
+        "guard_fill_origin": fill_origin,
+        "guard_envelope_symbol": envelope_symbol,
+        "guard_quantity": shares,
+        "guard_framework_price_bound": price,
+        "guard_broker_limit_bound": order.actual_limit_price,
+    })
+    return LatchedProvenance(
+        admitted=True,
+        recognised_but_underivable=False,
+        decline_reason=None,
+        order=order,
+        clear_reason=verdict.clear_reason,
+        clear_session=verdict.clear_session,
+        horizon_session=verdict.horizon_session,
+        bars_through=verdict.bars_through,
+        window_empty=verdict.window_empty,
+        archive_status=verdict.archive_status,
+        probe_evidence=evidence,
+        freeze_tier=order.freeze_tier,
+    )
+
+
+# ---------------------------------------------------------------------------
 # THE PROBE -- ``mandate_alive_at``
 #
 # THREE-VALUED FOR ITS CALLERS, and rung 8 depends on the distinction (S2.4b):
