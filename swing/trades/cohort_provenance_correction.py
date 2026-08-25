@@ -198,6 +198,18 @@ _OFFSET_SUFFIX_RE = re.compile(r"([Zz]|[+-]\d{2}:?\d{2})$")
 DERIVATION_RULE_DEPENDENCIES: tuple[tuple[str, str], ...] = (
     # THE ROOT: selection + label construction happen here.
     ("function", "swing.trades.cohort_provenance_correction:_derive"),
+    # AND SINCE 22-A TASK 7 THE ROOT IS SPLIT IN TWO. The extraction moved
+    # rungs 16-18 -- the persistence bound, the AS-OF registry, the matcher
+    # and the canonicalizer -- into `derive_cohort_keys_for_fire`, which the
+    # LATCH LADDER also calls. Hashing only `_derive` after that split would
+    # leave the entire selection-and-label rule OUTSIDE the pin while the
+    # digest stayed green, which is the exact hole the manifest was widened
+    # three times to close -- arriving through a refactor rather than an
+    # edit. `_FireKeys` rides with it: it is the shape the derivation
+    # returns, so a field added or renamed changes what the caller writes.
+    ("function",
+     "swing.trades.cohort_provenance_correction:derive_cohort_keys_for_fire"),
+    ("function", "swing.trades.cohort_provenance_correction:_FireKeys"),
     # Label construction.
     ("function", "swing.recommendations.hypothesis:_descriptive_label"),
     ("function", "swing.recommendations.hypothesis:_non_pass_criterion_names"),
@@ -316,6 +328,16 @@ DERIVATION_RULE_HISTORY: tuple[tuple[str, str], ...] = (
     # machinery and the readers that feed it. Appended, never edited.
     ("2026-08-13.3",
      "8b994668acfdccf758bb1e050f1728cfddc7beed330406edb3a071b2819a14a4"),
+    # 2026-08-25.1 -- 22-A task 7. The derivation was EXTRACTED into
+    # `derive_cohort_keys_for_fire` so the latch ladder and the last-word guard
+    # share ONE rule rather than two spellings that agree today. The code that
+    # decides the stored triple is UNCHANGED line for line; what moved is where
+    # it lives, and the digest moved with it because `_derive` is hashed
+    # wholesale. Appended, never edited. Correction row 1 keeps '2026-08-13.3':
+    # the drift reader compares against the value STORED on the row, so a row
+    # written under the old rule must keep saying so.
+    ("2026-08-25.1",
+     "7a2b15f5994c2402e7795076d1992cd5380ce4cd99ccf9db76116f254c198f36"),
 )
 DERIVATION_RULE_VERSION: str = DERIVATION_RULE_HISTORY[-1][0]
 DERIVATION_RULE_SOURCE_SHA256: str = DERIVATION_RULE_HISTORY[-1][1]
@@ -1220,10 +1242,60 @@ def _assert_contemporaneous_interval(
         )
 
 
-def _derive(
-    conn: sqlite3.Connection, anchored: _Anchored,
-) -> _Derived:
-    """Rungs 16-18, then the three values -- each a function of the record."""
+@dataclass(frozen=True)
+class _FireKeys:
+    """The three cohort keys a FIRE determines, plus its as-of evidence."""
+
+    hypothesis_label: str
+    candidate_id: int
+    trade_origin: str
+    hypothesis_id: int
+    hypothesis_name: str
+    status_interval: Any
+    pipeline_run_id: int
+    pipeline_finished_ts_raw: str
+    pipeline_snapshot: dict[str, Any]
+    status_window_upper_utc: str
+
+
+def derive_cohort_keys_for_fire(
+    conn: sqlite3.Connection,
+    *,
+    candidate: Any,
+    candidate_id: int,
+    evaluation_run_id: int,
+    run_ts_parsed: datetime,
+    gate: Any = None,
+) -> _FireKeys:
+    """RUNGS 16-18 AS A FUNCTION OF THE FIRE -- the ONE derivation.
+
+    Extracted at 22-A task 7 (plan S2.6.1) so the LATCH LADDER and the
+    LAST-WORD guard derive the same three cohort keys from the same code
+    rather than from two spellings that agree today.  ``_derive`` calls it
+    and is otherwise unchanged; the extraction is BEHAVIOUR-PRESERVING and
+    the whole Demand-C suite staying green unchanged is what pins that.
+
+    ``gate`` IS WHAT MAKES IT ORDER-PRESERVING, and it is a parameter
+    rather than a comment because the alternative silently reorders
+    refusals.  The correction path has TWO fill-specific checks that must
+    run AFTER the persistence bound is validated and BEFORE the as-of
+    registry is built -- the inverted-window check and rung 14a's
+    same-session creation-order gate.  Moving them after the registry
+    would change WHICH refusal a doubly-bad record reports, and the
+    Demand-C suite pins those messages.  The latch path passes ``None``:
+    it has no fill-vs-record ordering question, because its authority is
+    an append-only row the broker's acceptance created rather than a
+    ranking over the framework's bucket series.
+
+    ``run_ts_parsed`` is supplied by the caller because the correction
+    path has already validated it on its own anchor; parsing it a second
+    time here would be a second reader of one value (#11).  So are
+    ``candidate_id`` and ``evaluation_run_id``: the ``Candidate``
+    dataclass carries NEITHER (measured -- ``'Candidate' object has no
+    attribute 'evaluation_run_id'``), and inferring them from a row the
+    caller already holds is how a reader starts disagreeing with the row
+    the citation names.
+    """
     from dataclasses import replace
 
     from swing.data.repos.hypothesis import list_hypotheses
@@ -1232,7 +1304,7 @@ def _derive(
     from swing.recommendations.hypothesis import match_candidate_to_hypotheses
     from swing.trades.entry import canonicalize_hypothesis_label
 
-    run_id = int(anchored.cited.evaluation_run_id)
+    run_id = int(evaluation_run_id)
 
     # Rung 16 -- the window's UPPER BOUND, and the row that supplies it.
     bound = evaluation_run_persistence_bound(conn, evaluation_run_id=run_id)
@@ -1255,57 +1327,10 @@ def _derive(
         _require_naive_datetime(
             bound.snapshot["started_ts"],
             what=f"pipeline run {bound.pipeline_run_id}'s started_ts")
-    if finished_parsed < anchored.run_ts_parsed:
-        raise _refuse(
-            f"pipeline run {bound.pipeline_run_id} finished "
-            f"({bound.finished_ts}) BEFORE evaluation run {run_id} started "
-            f"({anchored.run_ts_raw}); the window is inverted and cannot bound "
-            "anything."
-        )
-    # RUNG 14a -- THE SAME-SESSION CREATION-ORDER GATE (Codex R1 Major 1).
-    #
-    # `<=` is the Director's ruling and is NOT relitigated here. His REASON for
-    # it is that a session-N record is produced by the run on the EVENING of
-    # session N-1, so its creation strictly precedes any session-N fill BY
-    # CONSTRUCTION. That reason is true of the nightly schedule and FALSE in
-    # general: `action_session_for_run` returns the CURRENT session before the
-    # close, so a manual mid-session run on session N produces a session-N
-    # record CREATED AFTER a trade that already filled that session. Measured
-    # on the live DB: 25 of 139 evaluation runs have
-    # `date(run_ts) == action_session_date`, and 3 `aplus` candidates live in
-    # them -- so this is reachable, not theoretical.
-    #
-    # The gate ENFORCES the ruling's own reason instead of weakening its
-    # encoding: equality still ACCEPTS wherever the reason holds, and refuses
-    # ONLY where the record demonstrably could have been written after the
-    # fill. It compares a naive-LOCAL pipeline stamp against a session DATE --
-    # never a fill's clock TIME, which is the synthetic `T16:00:00` placeholder
-    # on all 46 live fills and carries no information. Inventing a third clock
-    # domain to order them is exactly what this arc refuses to do.
-    #
-    # Direction: a REFUSAL only. It can never accept something `<=` refuses.
-    fill_session = anchored.fill_session
-    for anchor, label in (
-        (anchored.candidate_anchor, "the cited candidate's evaluation run"),
-        (anchored.recommendation_anchor, "the cited recommendation's run"),
-    ):
-        if anchor != fill_session:
-            continue
-        if bound.finished_ts[:10] >= fill_session:
-            raise _refuse(
-                f"{label} carries action_session_date {anchor}, which EQUALS "
-                f"the authoritative entry fill's session ({fill_session}), and "
-                f"pipeline run {bound.pipeline_run_id} finished at "
-                f"{bound.finished_ts} -- on that same session or later. "
-                "Same-session citations are admissible because a session-N "
-                "record is normally produced by the run on the EVENING of "
-                "session N-1, so its creation precedes any session-N fill; "
-                "this run does not have that shape, so it cannot be shown to "
-                "pre-date the fill. The fill's own clock time is the synthetic "
-                "T16:00:00 placeholder and cannot order them."
-            )
+    if gate is not None:
+        gate(bound, finished_parsed)
 
-    lo = _to_utc_naive(anchored.run_ts_parsed)
+    lo = _to_utc_naive(run_ts_parsed)
     hi = _to_utc_naive(finished_parsed)
 
     # Rung 17 -- the AS-OF registry.
@@ -1343,11 +1368,11 @@ def _derive(
     # is a caller-side opt-in for the recommendation surface, and firing it
     # here would let a FALLBACK rule label a correction.
     matches = match_candidate_to_hypotheses(
-        anchored.cited.candidate, registry=as_of_rows)
+        candidate, registry=as_of_rows)
     if len(matches) != 1:
         raise _refuse(
             f"the matcher returned {len(matches)} hypothesis matches for "
-            f"candidate {anchored.cited.candidate_id} against the registry AS "
+            f"candidate {candidate_id} against the registry AS "
             f"OF the cited record "
             f"({[m.hypothesis_name for m in matches]}); exactly one is "
             "required. An `aplus` candidate matches the A+ baseline and only "
@@ -1372,11 +1397,6 @@ def _derive(
             f"the covering interval (history row {interval.history_id}) "
             f"belongs to hypothesis {interval.hypothesis_id}, not to the "
             f"matched hypothesis {match.hypothesis_id}.")
-    if int(anchored.cited.evaluation_run_id) != int(anchored.run.id):
-        raise _refuse(  # pragma: no cover -- the run is fetched BY that id
-            f"candidate {anchored.cited.candidate_id} belongs to evaluation "
-            f"run {anchored.cited.evaluation_run_id}, but the cited run is "
-            f"{anchored.run.id}.")
     if int(bound.snapshot["evaluation_run_id"]) != run_id:  # pragma: no cover
         raise _refuse(
             f"pipeline run {bound.pipeline_run_id} owns evaluation run "
@@ -1386,11 +1406,11 @@ def _derive(
     if not label:
         raise _refuse(
             "the framework's own label builder produced an empty label for "
-            f"candidate {anchored.cited.candidate_id}.")
+            f"candidate {candidate_id}.")
 
-    return _Derived(
+    return _FireKeys(
         hypothesis_label=label,
-        candidate_id=int(anchored.cited.candidate_id),
+        candidate_id=int(candidate_id),
         # IMPORTED from `swing.metrics.funnel`, never a third copy of the
         # literal (#11). A drift test pins it against `origin.py`'s mapping.
         trade_origin=APLUS_TRADE_ORIGIN,
@@ -1401,6 +1421,95 @@ def _derive(
         pipeline_finished_ts_raw=str(bound.finished_ts),
         pipeline_snapshot=bound.snapshot,
         status_window_upper_utc=hi.isoformat(),
+    )
+
+
+
+
+def _derive(
+    conn: sqlite3.Connection, anchored: _Anchored,
+) -> _Derived:
+    """Rungs 16-18, then the three values -- each a function of the record.
+
+    THE DERIVATION ITSELF NOW LIVES IN ``derive_cohort_keys_for_fire``
+    (22-A task 7, plan S2.6.1), shared with the latch ladder.  What stays
+    HERE is the pair of checks that are about the FILL rather than about
+    the fire, handed to the shared derivation as its ``gate`` so they run
+    at exactly the point they always did.
+    """
+    def _fill_gates(bound, finished_parsed) -> None:
+        run_id = int(anchored.cited.evaluation_run_id)
+        if finished_parsed < anchored.run_ts_parsed:
+            raise _refuse(
+                f"pipeline run {bound.pipeline_run_id} finished "
+                f"({bound.finished_ts}) BEFORE evaluation run {run_id} started "
+                f"({anchored.run_ts_raw}); the window is inverted and cannot bound "
+                "anything."
+            )
+        # RUNG 14a -- THE SAME-SESSION CREATION-ORDER GATE (Codex R1 Major 1).
+        #
+        # `<=` is the Director's ruling and is NOT relitigated here. His REASON for
+        # it is that a session-N record is produced by the run on the EVENING of
+        # session N-1, so its creation strictly precedes any session-N fill BY
+        # CONSTRUCTION. That reason is true of the nightly schedule and FALSE in
+        # general: `action_session_for_run` returns the CURRENT session before the
+        # close, so a manual mid-session run on session N produces a session-N
+        # record CREATED AFTER a trade that already filled that session. Measured
+        # on the live DB: 25 of 139 evaluation runs have
+        # `date(run_ts) == action_session_date`, and 3 `aplus` candidates live in
+        # them -- so this is reachable, not theoretical.
+        #
+        # The gate ENFORCES the ruling's own reason instead of weakening its
+        # encoding: equality still ACCEPTS wherever the reason holds, and refuses
+        # ONLY where the record demonstrably could have been written after the
+        # fill. It compares a naive-LOCAL pipeline stamp against a session DATE --
+        # never a fill's clock TIME, which is the synthetic `T16:00:00` placeholder
+        # on all 46 live fills and carries no information. Inventing a third clock
+        # domain to order them is exactly what this arc refuses to do.
+        #
+        # Direction: a REFUSAL only. It can never accept something `<=` refuses.
+        fill_session = anchored.fill_session
+        for anchor, label in (
+            (anchored.candidate_anchor, "the cited candidate's evaluation run"),
+            (anchored.recommendation_anchor, "the cited recommendation's run"),
+        ):
+            if anchor != fill_session:
+                continue
+            if bound.finished_ts[:10] >= fill_session:
+                raise _refuse(
+                    f"{label} carries action_session_date {anchor}, which EQUALS "
+                    f"the authoritative entry fill's session ({fill_session}), and "
+                    f"pipeline run {bound.pipeline_run_id} finished at "
+                    f"{bound.finished_ts} -- on that same session or later. "
+                    "Same-session citations are admissible because a session-N "
+                    "record is normally produced by the run on the EVENING of "
+                    "session N-1, so its creation precedes any session-N fill; "
+                    "this run does not have that shape, so it cannot be shown to "
+                    "pre-date the fill. The fill's own clock time is the synthetic "
+                    "T16:00:00 placeholder and cannot order them."
+                )
+
+    keys = derive_cohort_keys_for_fire(
+        conn, candidate=anchored.cited.candidate,
+        candidate_id=int(anchored.cited.candidate_id),
+        evaluation_run_id=int(anchored.cited.evaluation_run_id),
+        run_ts_parsed=anchored.run_ts_parsed, gate=_fill_gates)
+    if int(anchored.cited.evaluation_run_id) != int(anchored.run.id):
+        raise _refuse(  # pragma: no cover -- the run is fetched BY that id
+            f"candidate {anchored.cited.candidate_id} belongs to evaluation "
+            f"run {anchored.cited.evaluation_run_id}, but the cited run is "
+            f"{anchored.run.id}.")
+    return _Derived(
+        hypothesis_label=keys.hypothesis_label,
+        candidate_id=keys.candidate_id,
+        trade_origin=keys.trade_origin,
+        hypothesis_id=keys.hypothesis_id,
+        hypothesis_name=keys.hypothesis_name,
+        status_interval=keys.status_interval,
+        pipeline_run_id=keys.pipeline_run_id,
+        pipeline_finished_ts_raw=keys.pipeline_finished_ts_raw,
+        pipeline_snapshot=keys.pipeline_snapshot,
+        status_window_upper_utc=keys.status_window_upper_utc,
     )
 
 
