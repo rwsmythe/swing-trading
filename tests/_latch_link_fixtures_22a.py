@@ -84,11 +84,11 @@ def seed_fire(
     return int(cur.lastrowid)
 
 
-def place_row(candidate_id: int, **over) -> dict:
+def place_row(candidate_id: int, *, run_id: int = RUN_ID, **over) -> dict:
     """A MINIMAL VALID ``place`` row -- the whole drift-capable derivation block
     included, because the schema requires it."""
     row = {
-        "candidate_id": candidate_id, "evaluation_run_id": RUN_ID,
+        "candidate_id": candidate_id, "evaluation_run_id": run_id,
         "ticker": TICKER, "detection_date": DETECTION_DATE,
         "pipeline_run_id": None, "idempotency_key": "key-place",
         "action_session_date": GOOD_SESSION, "recorded_ts": GOOD_TS,
@@ -111,10 +111,11 @@ def place_row(candidate_id: int, **over) -> dict:
 
 
 def validity_row(candidate_id: int, place_intent_id: int,
-                 key: str = "key-validity", **over) -> dict:
+                 key: str = "key-validity", *, run_id: int = RUN_ID,
+                 **over) -> dict:
     """A COMPLETE ``accepted_by_broker`` validity row."""
     row = {
-        "candidate_id": candidate_id, "evaluation_run_id": RUN_ID,
+        "candidate_id": candidate_id, "evaluation_run_id": run_id,
         "ticker": TICKER, "detection_date": DETECTION_DATE,
         "pipeline_run_id": None, "idempotency_key": key,
         "action_session_date": GOOD_SESSION, "recorded_ts": GOOD_TS,
@@ -146,6 +147,7 @@ def accept_order(
     *,
     key: str = "key-validity",
     place_key: str = "key-place",
+    run_id: int = RUN_ID,
     **validity_over,
 ) -> tuple[int, int]:
     """Place an order and record the broker's acceptance.
@@ -156,7 +158,8 @@ def accept_order(
     trigger.
     """
     place_id = insert_intent(
-        conn, place_row(candidate_id, idempotency_key=place_key))
+        conn, place_row(candidate_id, run_id=run_id, idempotency_key=place_key))
     validity_id = insert_intent(
-        conn, validity_row(candidate_id, place_id, key=key, **validity_over))
+        conn, validity_row(candidate_id, place_id, key=key, run_id=run_id,
+                           **validity_over))
     return place_id, validity_id

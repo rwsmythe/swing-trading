@@ -55,6 +55,15 @@ _COLUMNS: tuple[str, ...] = (
     "applied_by",
     "correction_reason",
     "risk_policy_id_at_correction",
+    # --- 22-A (migration 0037). The read path widens in the SAME place as the
+    # write path, because they ARE the same place: one tuple feeds both. A
+    # read-path mapper that lagged the write path is #11's own example.
+    "admission_tier",
+    "cited_latch_link_id",
+    "cited_latch_validity_intent_id",
+    "cited_latch_place_intent_id",
+    "cited_latch_broker_order_id",
+    "cited_latch_probe_json",
 )
 
 _SELECT = "provenance_correction_id, " + ", ".join(_COLUMNS)

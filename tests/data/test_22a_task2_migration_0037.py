@@ -35,6 +35,7 @@ from swing.trades.latched_origin import (
     LATCH_FREEZE_TIERS,
     PROVENANCE_ADMISSION_TIERS,
 )
+from tests.trades._cohort_provenance_fixtures import build_cadl_case
 from tests._latch_link_fixtures_22a import (
     BROKER_ORDER_ID,
     INITIAL_STOP,
@@ -632,19 +633,54 @@ def test_the_six_new_columns_are_append_only_in_all_three_directions(
 def test_an_existing_correction_row_survives_the_migration_as_last_word(
         tmp_path: Path) -> None:
     """The CADL row's tier is TRUE of it: it was admitted by the last-word
-    guard, which is what ``last_word`` names."""
-    c = _v36(tmp_path)
+    guard, which is what ``last_word`` names.
+
+    THE ROW MUST PRE-DATE THE MIGRATION or the test proves the DEFAULT on a new
+    row rather than the BACKFILL of an old one -- and the production repo
+    cannot write it at v36, because its column tuple is at HEAD (V1 has no
+    version branch and should not grow one: #11's remedy here is to migrate the
+    FIXTURE, not to branch the writer).  So the row is derived by the real
+    service on a v37 database and REPLAYED into the v36 one through its OWN
+    column set, which is what a genuinely pre-existing row looks like.
+    """
+    head = ensure_schema(tmp_path / "head.db")
     try:
-        ids = _seed_correction(c)
-        c.commit()
-        run_migrations(c, target_version=37, backup_dir=tmp_path / "bak")
-        row = c.execute(
-            "SELECT admission_tier, cited_latch_link_id, cited_latch_probe_json "
-            "FROM provenance_corrections WHERE provenance_correction_id = ?",
-            (ids["row_id"],)).fetchone()
-        assert row == ("last_word", None, None)
+        head_ids = _seed_correction(head)
+        cols_v37 = [r[1] for r in head.execute(
+            "PRAGMA table_info(provenance_corrections)")]
+        values = dict(zip(cols_v37, head.execute(
+            "SELECT * FROM provenance_corrections "
+            "WHERE provenance_correction_id = ?",
+            (head_ids["row_id"],)).fetchone(), strict=True))
     finally:
-        c.close()
+        head.close()
+
+    old = _v36(tmp_path)
+    try:
+        ids = build_cadl_case(old)
+        assert ids["trade_id"] == head_ids["trade_id"], (
+            "the two fixtures must produce identical ids or the replayed row "
+            "would cite rows that do not exist in the v36 database")
+        cols_v36 = [r[1] for r in old.execute(
+            "PRAGMA table_info(provenance_corrections)")]
+        assert set(cols_v36) < set(cols_v37), "v36 must be the NARROWER shape"
+        payload = {c: values[c] for c in cols_v36}
+        old.execute(
+            f"INSERT INTO provenance_corrections ({', '.join(payload)}) "
+            f"VALUES ({', '.join('?' * len(payload))})",
+            tuple(payload.values()))
+        old.commit()
+
+        run_migrations(old, target_version=37, backup_dir=tmp_path / "bak")
+
+        row = old.execute(
+            "SELECT admission_tier, cited_latch_link_id, "
+            "cited_latch_validity_intent_id, cited_latch_place_intent_id, "
+            "cited_latch_broker_order_id, cited_latch_probe_json "
+            "FROM provenance_corrections").fetchone()
+        assert row == ("last_word", None, None, None, None, None)
+    finally:
+        old.close()
 
 
 def test_a_latch_ladder_row_with_no_citation_is_refused(conn) -> None:

@@ -36,7 +36,13 @@ from dataclasses import dataclass
 from datetime import date
 
 from swing.latches.constants import (
+    FREEZE_TIER_LIVE_AT_ACCEPTANCE,
+    FREEZE_TIER_PRE_BARRIER,
+    LATCH_FREEZE_TIERS,
     PRICE_DP,
+    PROVENANCE_ADMISSION_TIER_LAST_WORD,
+    PROVENANCE_ADMISSION_TIER_LATCH,
+    PROVENANCE_ADMISSION_TIERS,
     mandate_limit_price,
     zone_cap_for_pivot,
 )
@@ -56,20 +62,41 @@ TRUSTED_LATCH_FILL_ORIGINS = frozenset(
     {"schwab_auto", "schwab_auto_then_operator_corrected"}
 )
 
-# The two-valued freeze tier under SINGLE-STATE.  ``gap_era_reconstructed``
-# and the era model it names are CARVED to 22-A2, so a pre-barrier
-# reconstruction can never be read as a post-barrier freeze.
-FREEZE_TIER_LIVE_AT_ACCEPTANCE = "live_at_acceptance"
-FREEZE_TIER_PRE_BARRIER = "pre_barrier_reconstructed"
-LATCH_FREEZE_TIERS = frozenset(
-    {FREEZE_TIER_LIVE_AT_ACCEPTANCE, FREEZE_TIER_PRE_BARRIER}
-)
+# THE FREEZE-TIER AND ADMISSION-TIER ENUMS ARE RE-EXPORTED, NOT RE-DEFINED.
+# They were declared here when this module was the arc's only Python surface;
+# migration 0037 gave each a SQL CHECK and ``swing/data/models.py`` a dataclass
+# validator, and ``swing.data`` cannot import from ``swing.trades`` without
+# inverting the layering -- so the single source moved to the cycle-free
+# ``swing/latches/constants.py`` and every consumer reads it from there.  The
+# names below are unchanged, so no caller had to move with them.
+__all__ = [
+    "FREEZE_TIER_LIVE_AT_ACCEPTANCE",
+    "FREEZE_TIER_PRE_BARRIER",
+    "LATCH_FREEZE_TIERS",
+    "PROVENANCE_ADMISSION_TIERS",
+    "PROVENANCE_ADMISSION_TIER_LAST_WORD",
+    "PROVENANCE_ADMISSION_TIER_LATCH",
+    "AUTHORIZATION_CLAUSES",
+    "AUTHORIZATION_KEYS",
+    "DECLINE_REASONS",
+    "AcceptedLatchOrder",
+    "LatchedProvenance",
+    "LatchProbeInvariantError",
+    "SCHWAB_ORDER_ID_ENVELOPE_KEY",
+    "SCHWAB_SYMBOL_ENVELOPE_KEY",
+    "TRUSTED_LATCH_FILL_ORIGINS",
+    "aplus_trade_origin",
+    "assert_fill_consistent_with_order",
+    "broker_order_id_from_envelope",
+    "instrument_symbol_from_envelope",
+]
 
-PROVENANCE_ADMISSION_TIER_LAST_WORD = "last_word"
-PROVENANCE_ADMISSION_TIER_LATCH = "latch_ladder"
-PROVENANCE_ADMISSION_TIERS = frozenset(
-    {PROVENANCE_ADMISSION_TIER_LAST_WORD, PROVENANCE_ADMISSION_TIER_LATCH}
-)
+# The probe-evidence schema's own version, mirrored from migration 0037's
+# citation trigger (`$.evidence_version`).  A row written under an older shape
+# must be DISTINGUISHABLE rather than silently re-interpreted, which is only
+# true if both halves name the same version -- so a drift test asserts the
+# literal in the migration equals this constant (#11).
+LATCH_PROBE_EVIDENCE_VERSION = "2026-08-24.1"
 
 
 class LatchProbeInvariantError(RuntimeError):

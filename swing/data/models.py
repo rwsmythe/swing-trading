@@ -11,6 +11,10 @@ from typing import ClassVar
 from swing.latches.constants import (
     DERIVATION_FIELD_MANIFEST,
     DERIVATION_NULLABLE_ON_DECISION,
+    LATCH_FREEZE_TIERS,
+    PROVENANCE_ADMISSION_TIER_LAST_WORD,
+    PROVENANCE_ADMISSION_TIERS,
+    PROVENANCE_LATCH_CITATION_FIELDS,
 )
 from swing.latches.constants import (
     LATCH_ACTUAL_DURATIONS as _LATCH_ACTUAL_DURATIONS,
@@ -3204,6 +3208,61 @@ def _require_snapshot_fields(name: str, env: dict, expected: dict) -> None:
 
 
 @dataclass(frozen=True)
+class LatchOrderMandateLink:
+    """One BROKER-ACCEPTED latch order, with the fire's FROZEN values.
+
+    Minted by a TRIGGER at acceptance (migration 0037), never by a service
+    hook: a hook in ``record_intent`` or in the route is skippable and
+    invisible to a raw INSERT, and a trigger cannot be bypassed by any writer.
+
+    ``frozen_pivot`` / ``frozen_invalidation`` are NULLABLE BY CONSTRUCTION.
+    ``candidates.pivot`` and ``candidates.initial_stop`` are unconstrained REAL
+    columns, so a junk fire is representable; the minting trigger guards each
+    copy with a ``CASE`` and lands NULL rather than ABORTING the operator's
+    acceptance record.  Cohort bookkeeping must never block a money-bearing
+    operation (0036:26-38); admission later refuses
+    ``frozen_value_unavailable``.
+
+    THERE IS NO CAP FIELD.  The buy-zone cap is a pure function of the frozen
+    pivot, so storing it would duplicate arithmetic into SQL and carry a false
+    "frozen" claim.
+    """
+
+    link_id: int | None
+    validity_intent_id: int
+    place_intent_id: int
+    candidate_id: int
+    evaluation_run_id: int
+    ticker: str
+    detection_date: str
+    broker_order_id: str
+    frozen_pivot: float | None
+    frozen_invalidation: float | None
+    actual_quantity: int | None
+    freeze_tier: str
+    linked_at: str
+
+    def __post_init__(self) -> None:
+        if self.freeze_tier not in LATCH_FREEZE_TIERS:
+            raise ValueError(
+                f"freeze_tier {self.freeze_tier!r} is not one of "
+                f"{sorted(LATCH_FREEZE_TIERS)}; the enum is TWO-VALUED under "
+                "single-state and gap_era_reconstructed travels with the era "
+                "model to 22-A2")
+        _require_extended_iso_date("detection_date", self.detection_date)
+        if not self.ticker.strip():
+            raise ValueError("ticker must be non-empty")
+        if not self.broker_order_id.strip():
+            raise ValueError("broker_order_id must be non-empty")
+        for name in ("frozen_pivot", "frozen_invalidation"):
+            value = getattr(self, name)
+            if value is not None and not value > 0:
+                raise ValueError(f"{name} must be > 0 or NULL, got {value!r}")
+        if self.actual_quantity is not None and self.actual_quantity <= 0:
+            raise ValueError("actual_quantity must be > 0 or NULL")
+
+
+@dataclass(frozen=True)
 class ProvenanceCorrection:
     """One audited cohort-key correction. APPEND-ONLY; one row per trade.
 
@@ -3245,6 +3304,16 @@ class ProvenanceCorrection:
     applied_by: str
     correction_reason: str
     risk_policy_id_at_correction: int | None = None
+    # --- 22-A (migration 0037). SIX columns: ONE non-NULL tier plus FIVE
+    # nullable citation fields. Defaults keep every existing construction site
+    # -- and the whole Demand-C suite -- unchanged, which is what makes the
+    # widening ADDITIVE at the Python layer as well as at the schema.
+    admission_tier: str = PROVENANCE_ADMISSION_TIER_LAST_WORD
+    cited_latch_link_id: int | None = None
+    cited_latch_validity_intent_id: int | None = None
+    cited_latch_place_intent_id: int | None = None
+    cited_latch_broker_order_id: str | None = None
+    cited_latch_probe_json: str | None = None
 
     def __post_init__(self) -> None:
         for fname in (
@@ -3337,6 +3406,33 @@ class ProvenanceCorrection:
             self.cited_pipeline_finished_ts_raw,
             "cited_status_window_upper_utc",
             self.cited_status_window_upper_utc)
+        # THE 22-A TIER AND ITS PAIRED-NULL RULE, mirrored (#11). The schema
+        # states it in the citation trigger; a RAW conn.execute never
+        # constructs this dataclass, and a caller building one never touches
+        # the trigger -- so a row incoherent in one layer must be rejected by
+        # the other, or the two layers accept different sets.
+        if self.admission_tier not in PROVENANCE_ADMISSION_TIERS:
+            raise ValueError(
+                f"admission_tier {self.admission_tier!r} is not one of "
+                f"{sorted(PROVENANCE_ADMISSION_TIERS)}")
+        cited = {
+            name: getattr(self, name)
+            for name in PROVENANCE_LATCH_CITATION_FIELDS
+        }
+        if self.admission_tier == PROVENANCE_ADMISSION_TIER_LAST_WORD:
+            present = sorted(k for k, v in cited.items() if v is not None)
+            if present:
+                raise ValueError(
+                    f"admission_tier 'last_word' carries latch citations "
+                    f"{present}: the tier a row claims and the evidence it "
+                    "carries may not disagree")
+        else:
+            absent = sorted(k for k, v in cited.items() if v is None)
+            if absent:
+                raise ValueError(
+                    f"admission_tier {self.admission_tier!r} is missing "
+                    f"{absent}: an admission whose evidence cannot be produced "
+                    "is indistinguishable at audit from an unchecked one")
         if self.applied_by != PROVENANCE_CORRECTION_APPLIED_BY:
             raise ValueError(
                 "applied_by must be "
