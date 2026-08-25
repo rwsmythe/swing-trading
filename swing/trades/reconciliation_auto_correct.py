@@ -2895,10 +2895,21 @@ def _handle_split_into_partials(
     # Read the original fill to (a) sanity-check quantity sum + (b)
     # capture the trade_id + (c) preserve the original payload for the
     # deletion-sentinel audit row.
+    #
+    # 22-A task 11a (plan S2.4a, review 22A-R3-02): ``fill_origin`` and
+    # ``schwab_source_value_json`` are read HERE and carried onto every
+    # replacement below. A partial of a Schwab fill is still a Schwab fill --
+    # and 22-A establishes CONSUMPTION of an accepted broker order by scanning
+    # entry-fill envelopes for that order id, so stripping the envelope here
+    # DESTROYS the evidence and lets the same accepted order be admitted for a
+    # second trade. Forward-only: rows already rebuilt without it are already
+    # blind, which is why rung 7 (``consumption_evidence_unavailable``) still
+    # refuses where the envelope is missing on a reconciled-resolved fill.
     orig_row = conn.execute(
         "SELECT fill_id, trade_id, fill_datetime, action, quantity, price, "
         "reason, rule_based, fees, manual_entry_confidence, "
-        "reconciliation_status, tos_match_id "
+        "reconciliation_status, tos_match_id, "
+        "fill_origin, schwab_source_value_json, auto_fill_audit_at "
         "FROM fills WHERE fill_id = ?",
         (original_fill_id,),
     ).fetchone()
@@ -2918,6 +2929,10 @@ def _handle_split_into_partials(
     trade_id = int(orig_row[1])
     original_action = str(orig_row[3])
     orig_quantity = float(orig_row[4])
+    # 22-A task 11a -- the identity columns carried onto every replacement.
+    original_fill_origin = str(orig_row[12])
+    original_schwab_envelope_json = orig_row[13]
+    original_auto_fill_audit_at = orig_row[14]
 
     partials_qty_sum = sum(p["qty"] for p in parsed_partials)
     qty_tolerance = 1e-6
@@ -3005,6 +3020,12 @@ def _handle_split_into_partials(
             manual_entry_confidence=None,
             reconciliation_status="reconciled_discrepancy_resolved",
             tos_match_id=None,
+            # 22-A task 11a: a partial of a Schwab fill is still a Schwab
+            # fill. Preserving these three keeps the broker order id visible
+            # to 22-A's order-linked consumption scan (plan S2.4a fix 1).
+            fill_origin=original_fill_origin,
+            schwab_source_value_json=original_schwab_envelope_json,
+            auto_fill_audit_at=original_auto_fill_audit_at,
         )
         # Suppress the per-fill action trade_event — the correction
         # event is emitted separately below as
