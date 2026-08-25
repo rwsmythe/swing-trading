@@ -52,6 +52,23 @@ from swing.latches.service import derive_latches
 
 log = logging.getLogger(__name__)
 
+
+class DecisionIntentsUnavailableError(RuntimeError):
+    """The decision ledger could NOT be read, under `strict_decisions=True`.
+
+    22-A EXT-1, approved by CHARC 2026-08-24. `load_decision_intents` degrades
+    to `{}` on any read failure (the A6 posture the panel needs), and `Latch`
+    carries no decision-ledger status -- so `clear_reason is None` cannot be
+    distinguished from *"the decline ledger could not be read"*, and a DECLINED
+    mandate would be admitted as alive.
+
+    THERE IS NO FALLBACK FOR THIS PARAMETER and none is wanted: an admission
+    resolver must be able to tell ignorance from evidence, and the only way to
+    do that through this loader is to make the failure LOUD on demand. The
+    default stays `{}` so no shipped caller changes behaviour.
+    """
+
+
 # ALL A+ fires are loaded (11 rows ever). A truncated read would break the
 # re-confirmation chain and could fabricate a second latch for one mandate; the
 # DISPLAY lookback is applied in the view model instead.
@@ -175,7 +192,12 @@ def load_entry_records(conn: sqlite3.Connection, tickers) -> dict[str, list[Entr
     return out
 
 
-def load_decision_intents(conn: sqlite3.Connection, candidate_ids) -> dict:
+def load_decision_intents(
+    conn: sqlite3.Connection,
+    candidate_ids,
+    *,
+    strict: bool = False,
+) -> dict:
     """The operator's `place`/`decline` ledger, keyed by CANDIDATE ID.
 
     THE WHOLE DECISION FAMILY, NOT JUST THE DECLINES. `governing_decision`
@@ -236,6 +258,13 @@ def load_decision_intents(conn: sqlite3.Connection, candidate_ids) -> dict:
     `latch_order_intents` table or a row that fails the dataclass validator it
     was written through -- a corrupt or pre-0033 ledger. The WARNING names the
     candidate so the corruption is repairable rather than silently absorbed.
+
+    `strict` (22-A EXT-1) INVERTS the degradation and NOTHING ELSE. Under
+    `strict=True` a READ FAILURE raises `DecisionIntentsUnavailableError`
+    instead of returning `{}`, so a caller that must not confuse ignorance with
+    evidence can say so. A SUCCESSFUL read returning no decisions is a FACT and
+    is returned as `{}` under both modes -- a strict mode that raised on "no
+    decisions recorded" would refuse every ordinary mandate in the system.
     """
     ids = sorted({int(c) for c in (candidate_ids or ())})
     if not ids:
@@ -243,6 +272,9 @@ def load_decision_intents(conn: sqlite3.Connection, candidate_ids) -> dict:
     try:
         from swing.data.repos.latch_order_intents import list_intents_for_latch
     except Exception as exc:  # noqa: BLE001 -- A6
+        if strict:
+            raise DecisionIntentsUnavailableError(
+                f"decision-intent repo unavailable: {exc}") from exc
         log.warning("latch reader: decision-intent repo unavailable: %s", exc)
         return {}
     out: dict[int, tuple] = {}
@@ -250,6 +282,11 @@ def load_decision_intents(conn: sqlite3.Connection, candidate_ids) -> dict:
         try:
             rows = list_intents_for_latch(conn, candidate_id=candidate_id)
         except Exception as exc:  # noqa: BLE001 -- A6
+            if strict:
+                raise DecisionIntentsUnavailableError(
+                    f"decision-intent read failed at candidate {candidate_id}: "
+                    f"{exc}"
+                ) from exc
             log.warning(
                 "latch reader: decision-intent read degraded at candidate %s, "
                 "so NO decision evidence is reported for this derivation "
@@ -874,6 +911,9 @@ def build_latch_derivation(
     *,
     now: datetime | None = None,
     horizon_session_override: date | None = None,
+    criteria_lapse_armed_override: bool | None = None,
+    exclude_trade_ids: frozenset[int] | None = None,
+    strict_decisions: bool = False,
 ) -> LatchDerivation:
     """Assemble every input and run the pure derivation.
 
@@ -886,6 +926,29 @@ def build_latch_derivation(
     `horizon_session_override` is what the view-telemetry beacon POST passes so
     it rebuilds the EXACT render-time context from the session anchor alone; a
     GET never passes it.
+
+    THE LAST THREE ARE 22-A EXT-1, APPROVED BY CHARC 2026-08-24, and every one
+    of them is INERT AT ITS DEFAULT -- the five shipped call sites pass none of
+    them and their behaviour is byte-identical:
+
+    * `criteria_lapse_armed_override` -- TRI-STATE, and the third state is the
+      point. `None` READS the config exactly as before; `False` forces the
+      drift rung OFF (RD's bound: a latch never dies of drift, and
+      `criteria_lapsed` IS the drift rung); `True` forces it on. Coercing this
+      to a plain bool would read the shipped `None` as "disarmed" and silently
+      change production. The recorded-but-not-taken fallback was
+      `dataclasses.replace(cfg, ...)`, which works today and is enforceable by
+      nothing (#31).
+    * `exclude_trade_ids` -- drops the named trades from the ENTRY records the
+      fold judges, and nothing else. On the correction path the subject trade
+      already exists and `_match_fill`'s windowed rung would match its own
+      fill, so an unexcluded probe answers `clear_reason='fill'` for the very
+      mandate it is being asked about. Scoped to the NAMED ids only: the
+      per-ticker fold uses other fills to resolve supersession and consumption,
+      so blanking all entries would change other latches' answers.
+    * `strict_decisions` -- makes the decision-ledger read RAISE
+      `DecisionIntentsUnavailableError` rather than degrade to `{}`, so an
+      admission caller can tell an unread ledger from an absent decline.
     """
     horizon_session = horizon_session_override or action_session_for_run(
         now or datetime.now())
@@ -906,11 +969,23 @@ def build_latch_derivation(
     )
     tickers = sorted({f.ticker for f in fires})
     entries_by_ticker = load_entry_records(conn, tickers)
+    if exclude_trade_ids:
+        # A ticker whose ONLY entry was excluded loses its key entirely, which
+        # is exactly the shape `load_entry_records` returns when that trade does
+        # not exist -- the world this parameter is asked to simulate. Leaving an
+        # empty list behind would be a THIRD shape neither the real nor the
+        # simulated world produces.
+        excluded = {int(t) for t in exclude_trade_ids}
+        entries_by_ticker = {
+            ticker: kept
+            for ticker, records in entries_by_ticker.items()
+            if (kept := [r for r in records if r.trade_id not in excluded])
+        }
     # Scoped to the AS-OF FIRE SET, so a beacon POST carrying yesterday's anchor
     # cannot pick up a decision recorded against a fire that did not exist in the
     # world that anchor describes.
     decisions_by_candidate = load_decision_intents(
-        conn, [f.candidate_id for f in fires])
+        conn, [f.candidate_id for f in fires], strict=strict_decisions)
 
     bars_by_ticker: dict[str, list[DailyBar]] = {}
     status_by_ticker: dict[str, str] = {}
@@ -982,8 +1057,14 @@ def build_latch_derivation(
         # instead of the bound calibration -- and, worse, could NEVER arm,
         # because the flag's default is False and no unit test over the pure
         # layer would notice.
-        criteria_lapse_armed=getattr(
-            latches_cfg, "criteria_lapse_armed", False),
+        # THE OVERRIDE IS TRI-STATE: `None` falls through to the config read
+        # above it, byte-for-byte. `bool(override)` would collapse the third
+        # state onto `False` and disarm a config-armed rung in production.
+        criteria_lapse_armed=(
+            getattr(latches_cfg, "criteria_lapse_armed", False)
+            if criteria_lapse_armed_override is None
+            else bool(criteria_lapse_armed_override)
+        ),
         criteria_lapse_sessions=getattr(
             latches_cfg, "criteria_lapse_sessions",
             DEFAULT_CRITERIA_LAPSE_SESSIONS),
