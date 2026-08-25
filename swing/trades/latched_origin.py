@@ -115,6 +115,7 @@ __all__ = [
     "mandate_alive_at",
     "authorize_accepted_order",
     "competitor_liveness_rung",
+    "resolve_latched_provenance",
     "find_accepted_latch_order",
     "broker_order_id_from_envelope",
     "instrument_symbol_from_envelope",
@@ -1690,4 +1691,209 @@ def mandate_alive_at(
         archive_status=status,
         probe_evidence=evidence,
         freeze_tier=order.freeze_tier,
+    )
+
+
+# ---------------------------------------------------------------------------
+# THE RESOLVER -- ONE ENTRY POINT, THREE OUTCOMES
+#
+# `record_entry` (task 9) and the correction path (task 11) both call THIS, so
+# the ladder cannot be honoured at one call site and forgotten at another.
+#
+# THE THREE OUTCOMES ARE NEVER TWO (plan S2.2):
+#   admitted                     -> write the three fire-derived keys
+#   recognised_but_underivable   -> a link WAS recognised and admission then
+#                                   failed for ANY reason: write the HONEST
+#                                   UNSET row and SUPPRESS the ordinary
+#                                   candidate/origin chain
+#   neither flag                 -> the ORDINARY path, byte-identical to main
+#
+# WHY SUPPRESSION RATHER THAN FALLBACK (S2.6.4).  For a ticker that is `aplus`
+# in today's LATEST run the ordinary chain would write `pipeline_aplus` plus
+# TODAY's candidate -- a DIFFERENT candidate from the mandate we know this fill
+# came from.  Silent-wrong, not honest-NULL, and exactly what RD's trade-25
+# standard forbids.
+# ---------------------------------------------------------------------------
+def resolve_latched_provenance(
+    conn,
+    cfg,
+    req,
+    *,
+    trade_id: int | None = None,
+    exclude_trade_ids: frozenset[int] | None = None,
+) -> LatchedProvenance:
+    """The whole ladder for ONE entry request.
+
+    THE FILL SESSION IS `req.entry_date` AND NOTHING ELSE (S2.4.2, case 5c).
+    It is the CORRECTED date the operator submitted -- not `trades.entry_date`,
+    which on the correction path is the value being corrected, and not the wall
+    clock. An implementation reading a different date probes a DIFFERENT WORLD
+    and can admit a mandate that was dead when the fill actually happened.
+
+    `exclude_trade_ids` defaults to `None` and is then derived from `trade_id`.
+    On the ENTRY path there is no row yet, so the set is empty; on the
+    CORRECTION path the subject must be excluded or `_match_fill`'s windowed
+    rung returns `clear_reason='fill'` for the very mandate it is being asked
+    about (verified against the live DB).
+    """
+    if cfg is None:
+        # A DISTINCT REASON, NOT A SHARED ONE (case 18). "No config" and "no
+        # order id" are different ignorances, and an operator reading the log
+        # needs to know which one happened.
+        return LatchedProvenance(
+            admitted=False, recognised_but_underivable=False,
+            decline_reason="no_config")
+
+    envelope = getattr(req, "schwab_source_value_json", None)
+    if envelope is None:
+        return LatchedProvenance(
+            admitted=False, recognised_but_underivable=False,
+            decline_reason="no_envelope")
+
+    broker_order_id = broker_order_id_from_envelope(envelope)
+    if broker_order_id is None:
+        return LatchedProvenance(
+            admitted=False, recognised_but_underivable=False,
+            decline_reason="no_order_id")
+
+    fill_session = _as_date(req.entry_date)
+    if fill_session is None:
+        # An order id WAS supplied, so this is a RECOGNISED request that cannot
+        # be resolved -- it must not fall through to the ordinary chain as
+        # though no order had been named.
+        log.warning(
+            "22-A: entry_date %r is not an ISO date; the latch probe cannot "
+            "run and the entry records with honest-unset cohort keys",
+            req.entry_date)
+        return LatchedProvenance(
+            admitted=False, recognised_but_underivable=True,
+            decline_reason="fill_session_not_a_session")
+
+    orders = find_accepted_latch_order(conn, broker_order_id=broker_order_id)
+    if not orders:
+        # NOT recognised: no link names this order, so the ordinary chain runs
+        # exactly as it does on `main`. This is the ONLY refusal after an order
+        # id was found that leaves the ordinary path intact.
+        return LatchedProvenance(
+            admitted=False, recognised_but_underivable=False,
+            decline_reason="no_accepted_latch_order")
+    if len(orders) > 1:
+        log.warning(
+            "22-A: broker order %s names %d links (%s); cardinality is the "
+            "READER's count and two is not one",
+            broker_order_id, len(orders), [o.link_id for o in orders])
+        return LatchedProvenance(
+            admitted=False, recognised_but_underivable=True,
+            decline_reason="ambiguous_accepted_orders")
+
+    order = orders[0]
+    if exclude_trade_ids is not None:
+        excluded = frozenset(exclude_trade_ids)
+    elif trade_id is not None:
+        excluded = frozenset({trade_id})
+    else:
+        excluded = frozenset()
+    verdict = authorize_accepted_order(
+        conn, cfg,
+        order=order,
+        ticker=req.ticker,
+        fill_session=fill_session,
+        price=float(req.entry_price),
+        shares=float(req.shares),
+        fill_origin=getattr(req, "fill_origin", "operator_typed"),
+        envelope_symbol=instrument_symbol_from_envelope(envelope),
+        exclude_trade_ids=excluded,
+        trade_id=trade_id,
+        competitor_rung=competitor_liveness_rung,
+    )
+    if not verdict.admitted:
+        return verdict
+
+    # THE KEYS COME FROM THE ONE DERIVATION, shared with Demand C (S2.6.1).
+    # A refusal here is `keys_not_derivable` and takes the honest-unset path
+    # like every other recognised-but-refused outcome -- the three keys move
+    # TOGETHER or not at all (S2.6).
+    try:
+        keys = _cohort_keys_for_fire(conn, order)
+    except Exception as exc:  # noqa: BLE001 -- any refusal here is ignorance
+        log.warning(
+            "22-A: the cohort keys for fire %s (%s, link %s) could not be "
+            "derived (%s: %s); the entry records with honest-unset keys rather "
+            "than with TODAY's candidate, which would be a different mandate",
+            order.candidate_id, order.ticker, order.link_id,
+            type(exc).__name__, exc)
+        return _refuse(
+            "keys_not_derivable", order,
+            clear_reason=verdict.clear_reason,
+            clear_session=verdict.clear_session,
+            horizon_session=verdict.horizon_session,
+            bars_through=verdict.bars_through,
+            window_empty=verdict.window_empty,
+            archive_status=verdict.archive_status,
+            probe_evidence=verdict.probe_evidence,
+            freeze_tier=order.freeze_tier)
+
+    submitted = getattr(req, "hypothesis_label", None)
+    if submitted is not None and submitted != keys.hypothesis_label:
+        # THE DERIVED LABEL WINS, AND THE SUBSTITUTION IS LOUD (S2.6.3).
+        # Refusing the entry instead would invert the priority `0036:26-38`
+        # establishes: cohort bookkeeping must not block a money-bearing
+        # operation.
+        log.warning(
+            "22-A: the operator's submitted hypothesis_label %r is REPLACED by "
+            "the framework's derived label %r for %s (trade %s, order %s); the "
+            "entry is not refused over a label",
+            submitted, keys.hypothesis_label, req.ticker, trade_id,
+            order.broker_order_id)
+
+    from dataclasses import replace
+    return replace(
+        verdict,
+        trade_origin=keys.trade_origin,
+        candidate_id=keys.candidate_id,
+        hypothesis_label=keys.hypothesis_label,
+    )
+
+
+def _cohort_keys_for_fire(conn, order: AcceptedLatchOrder):
+    """The fire's three cohort keys, through Demand C's OWN derivation.
+
+    NO SECOND SPELLING (#11, plan S2.6.1).  The alternative -- a local matcher
+    call here -- is the comparator-vs-emitter divergence 21-A and 21-B each
+    paid for: two derivations that agree on the day they are written and drift
+    apart on the day one of them is upgraded.
+
+    NO ``gate``: the latch path has no fill-vs-record ordering question,
+    because its authority is an append-only row the broker's acceptance created
+    rather than a ranking over the framework's bucket series.
+
+    ``fetch_candidate_by_id`` is used rather than a bare row read because it
+    HYDRATES the criteria, and the hypothesis label is built from the non-pass
+    criterion set -- an unhydrated row would silently produce a different
+    label, which is that repo function's own documented reason for existing.
+    """
+    from swing.data.repos.candidates import fetch_candidate_by_id
+    from swing.trades.cohort_provenance_correction import (
+        _require_naive_datetime,
+        derive_cohort_keys_for_fire,
+    )
+
+    cited = fetch_candidate_by_id(conn, order.candidate_id)
+    if cited is None:
+        raise ValueError(f"candidate {order.candidate_id} is absent")
+    run_ts = conn.execute(
+        "SELECT run_ts FROM evaluation_runs WHERE id = ?",
+        (order.evaluation_run_id,),
+    ).fetchone()
+    if run_ts is None:
+        raise ValueError(f"evaluation run {order.evaluation_run_id} is absent")
+    return derive_cohort_keys_for_fire(
+        conn,
+        candidate=cited.candidate,
+        candidate_id=order.candidate_id,
+        evaluation_run_id=order.evaluation_run_id,
+        run_ts_parsed=_require_naive_datetime(
+            run_ts[0],
+            what=f"evaluation run {order.evaluation_run_id}'s run_ts"),
+        gate=None,
     )
