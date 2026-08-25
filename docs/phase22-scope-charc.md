@@ -67,6 +67,22 @@ watch citation. **Calendar consequence, RD-stated:** trade 25 is OPEN and H1 cou
 trades, so the September read is unaffected unless it closes before 22-A lands — in which case
 the read carries it as a NAMED pending-label row, never silently uncounted.
 
+**22-A SPLIT (operator-directed option C, 2026-08-25; RD + CHARC ratified).** 22-A ships the
+link + entry-path consultation + the `candidates` barrier + a SINGLE-STATE epoch (armed at the
+migration; **the admission reader verifies the barrier triggers EXIST at read time and refuses
+structural admission if absent** — the drop's consequence made mechanical) + the six-case gate +
+**pre-barrier admission REFUSING outright, no tier-2 escape**. A continuity gap REFUSES (amended
+from demotes — nothing to demote to). **22-A2 (PROOF MACHINERY, the follow-on)** owns: the
+`[fire_session, read]` continuity interval · the tier-2 conjunction WITH RD's single-rounding-
+authority amendment · attestation/replay semantics · retirement/gap/re-arm eras + the third and
+fourth epoch triggers + `gap_era_reconstructed` · **trade 25's correction**. The deferred
+rulings travel AS RULED, never re-opened; inherited findings (R6-02/03/04, R7-01/02/03/06,
+R8-01/02/03) transfer with their evidence as the brief's opening premise-set. **Horizon marker
+(RD): if trade 25 has closed, 22-A2 lands before the OCTOBER read.** Split evidence: 10 of 13
+recent CRITICALs in the proof machinery; round 8 the clean experiment (no rulings absorbed, all
+three criticals in the interval authored one round earlier); 97 findings with ZERO
+oscillation — scope, not instability.
+
 ## TIER 2 — surfaces that lie
 
 **22-D: trail-surface one-voice** (operator-ratified). The advisory gates on the SAME eligibility
