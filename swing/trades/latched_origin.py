@@ -113,6 +113,9 @@ __all__ = [
     "aplus_trade_origin",
     "assert_fill_consistent_with_order",
     "mandate_alive_at",
+    "authorize_accepted_order",
+    "competitor_liveness_rung",
+    "find_accepted_latch_order",
     "broker_order_id_from_envelope",
     "instrument_symbol_from_envelope",
 ]
@@ -717,6 +720,124 @@ def _intent_row(conn, intent_id: int | None) -> dict | None:
         "actual_quantity": row[5], "actual_limit_price": row[6],
         "validated_place_intent_id": row[7], "recorded_ts": row[8],
     }
+
+
+# ---------------------------------------------------------------------------
+# RUNG 8 -- COMPETITOR LIVENESS, AND THE POPULATION IS THREE-VALUED
+#
+# It ships in task 6a rather than task 4 because it must evaluate each
+# competitor THROUGH ``mandate_alive_at``, which task 6 delivers (22A-R7-09).
+#
+# THE RULE: PROVEN-DEAD, PROVEN-LIVE, or UNPROVABLE, and only PROVEN-DEAD is
+# DROPPED.  An earlier draft made the evaluation two-valued and EXCLUDED
+# anything it could not resolve -- the exact inversion of this arc's posture
+# everywhere else, under which an unprovable competitor reads as an absent one
+# and the selected order is admitted while two live mandates may have existed.
+#
+# The refusal NAMES the competitor and WHY it could not be resolved, because a
+# guard that says only "ambiguous" cannot be acted on.
+# ---------------------------------------------------------------------------
+def competitor_liveness_rung(
+    conn,
+    cfg,
+    *,
+    order: AcceptedLatchOrder,
+    fill_session: date,
+    exclude_trade_ids: frozenset[int],
+) -> tuple[str | None, list[int]]:
+    """``(reason_or_None, competitor_link_ids)`` -- rung 8.
+
+    ``competitor_link_ids`` is the SCANNED population (every link on the ticker
+    that survived the authority and consumption filters), not merely the live
+    ones: it is the INPUT the rung judged, and the ``$.authorization`` entry
+    records the input rather than the conclusion.
+    """
+    from swing.data.repos.latch_order_intents import list_intents_for_latch
+    from swing.data.repos.latch_order_mandate_links import list_links_for_ticker
+    from swing.latches.classification import _order_key
+
+    scanned: list[int] = []
+    live: list[int] = []
+    for link in list_links_for_ticker(conn, order.ticker):
+        if int(link.link_id) == int(order.link_id):
+            continue
+
+        # AUTHORITATIVE?  A link whose validity row has been SUPERSEDED -- by a
+        # later child of the same place -- is not a competitor: it records what
+        # the broker said before the answer was replaced.
+        try:
+            intents = list_intents_for_latch(conn, candidate_id=link.candidate_id)
+        except Exception as exc:  # noqa: BLE001 -- ignorance, not a crash
+            # A LEDGER READ THAT FAILS IS IGNORANCE, NOT ABSENCE, and the
+            # three-valued rule applies to the AUTHORITY filter exactly as it
+            # applies to the liveness verdict: a competitor whose intents could
+            # not be read must not be dropped as though it had none.  Letting
+            # the exception escape would ALSO block the entry path over cohort
+            # bookkeeping (`0036:26-38`).
+            log.warning(
+                "22-A: the intent ledger for competitor link %s could not be "
+                "read (%s: %s); its authority is UNPROVABLE",
+                link.link_id, type(exc).__name__, exc)
+            scanned.append(int(link.link_id))
+            return "competitor_liveness_unverifiable", scanned
+        siblings = [
+            i for i in intents
+            if i.intent_kind == "validity"
+            and i.validated_place_intent_id == link.place_intent_id
+        ]
+        if not siblings:
+            continue
+        if max(siblings, key=_order_key).intent_id != link.validity_intent_id:
+            continue
+
+        # CONSUMED?  A mandate another trade has already taken is not competing
+        # for this one.  Order-linked, exactly as rung 6 is.
+        consumed = conn.execute(
+            "SELECT 1 FROM fills f WHERE f.action = 'entry' "
+            "  AND f.schwab_source_value_json IS NOT NULL "
+            "  AND json_valid(f.schwab_source_value_json) "
+            "  AND json_extract(f.schwab_source_value_json, ?) = ? LIMIT 1",
+            (f"$.{SCHWAB_ORDER_ID_ENVELOPE_KEY}", link.broker_order_id),
+        ).fetchone()
+        if consumed is not None:
+            continue
+
+        scanned.append(int(link.link_id))
+        matches = [
+            o for o in find_accepted_latch_order(
+                conn, broker_order_id=link.broker_order_id)
+            if o.link_id == link.link_id
+        ]
+        if not matches:
+            # The link's validity row vanished from the JOIN -- ignorance, not
+            # absence.  Fail CLOSED, exactly as the three-valued rule requires.
+            log.warning(
+                "22-A: competitor link %s could not be re-read; its liveness "
+                "is UNPROVABLE", link.link_id)
+            return "competitor_liveness_unverifiable", scanned
+        verdict = mandate_alive_at(
+            conn, cfg, order=matches[0], fill_session=fill_session,
+            exclude_trade_ids=exclude_trade_ids)
+        if verdict.admitted:
+            live.append(int(link.link_id))
+        elif verdict.decline_reason == "mandate_not_alive":
+            continue  # PROVEN dead -- the only state that is dropped
+        else:
+            log.warning(
+                "22-A: competitor link %s on %s is UNPROVABLE at %s (%s); the "
+                "selected order is refused rather than admitted beside a "
+                "mandate whose state could not be established",
+                link.link_id, order.ticker, fill_session,
+                verdict.decline_reason)
+            return "competitor_liveness_unverifiable", scanned
+
+    if live:
+        log.warning(
+            "22-A: %d live accepted order(s) compete on %s (links %s); the "
+            "envelope cannot say which one this fill came from",
+            len(live), order.ticker, live)
+        return "ambiguous_ticker_orders", scanned
+    return None, scanned
 
 
 def authorize_accepted_order(
