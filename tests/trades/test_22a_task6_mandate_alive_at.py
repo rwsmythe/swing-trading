@@ -987,7 +987,7 @@ def test_the_exclusion_set_is_a_required_keyword() -> None:
 # ---------------------------------------------------------------------------
 # Codex round 1 -- three majors and a minor, each with its regression
 # ---------------------------------------------------------------------------
-def test_a_post_fill_decision_on_a_SIBLING_latch_is_still_caught() -> None:
+def test_a_post_fill_decision_on_a_SIBLING_latch_is_still_caught(tmp_path) -> None:
     """Codex R1 (major): the as-of guard's SCOPE.
 
     The fold consumes decisions with NO ``recorded_ts`` bound, so an intent that
@@ -1003,10 +1003,7 @@ def test_a_post_fill_decision_on_a_SIBLING_latch_is_still_caught() -> None:
     which needs the fold to filter decisions by ``recorded_ts`` -- a FOURTH
     EXT-1 parameter, and EXT-1 is approved as exactly three.**
     """
-    import tempfile
-
-    root = Path(tempfile.mkdtemp())
-    conn, cfg, first = build_world(root, "sibling-topology")
+    conn, cfg, first = build_world(tmp_path, "sibling-topology")
     try:
         seed_run(conn, 133, date(2026, 7, 22))
         cur = conn.execute(
@@ -1029,7 +1026,7 @@ def test_a_post_fill_decision_on_a_SIBLING_latch_is_still_caught() -> None:
         conn.close()
 
 
-def test_a_decision_outside_the_latchs_own_window_is_not_consulted() -> None:
+def test_a_decision_outside_the_latchs_own_window_is_not_consulted(tmp_path) -> None:
     """Codex R2 (major): the window is the LADDER's, imported.
 
     ``_resolve_decline`` reads decisions through ``admissible_decisions`` with
@@ -1040,10 +1037,7 @@ def test_a_decision_outside_the_latchs_own_window_is_not_consulted() -> None:
     ADMIT, and rung 8 blocks on unverifiable competitors while dropping
     proven-dead ones, so the distinction is not cosmetic.
     """
-    import tempfile
-
-    root = Path(tempfile.mkdtemp())
-    conn, cfg, candidate_id = build_world(root, "window-scoped")
+    conn, cfg, candidate_id = build_world(tmp_path, "window-scoped")
     try:
         # action session BEFORE the latch's anchor -> outside its window;
         # recorded AFTER the fill -> the OLD guard would have refused.
@@ -1058,7 +1052,7 @@ def test_a_decision_outside_the_latchs_own_window_is_not_consulted() -> None:
         conn.close()
 
 
-def test_an_unrelated_corrupt_fire_does_not_block_the_entry_path() -> None:
+def test_an_unrelated_corrupt_fire_does_not_block_the_entry_path(tmp_path) -> None:
     """Codex R3 (major): cohort bookkeeping must never block a money-bearing
     operation (``0036:26-38``), and this one could.
 
@@ -1073,10 +1067,7 @@ def test_an_unrelated_corrupt_fire_does_not_block_the_entry_path() -> None:
     Post-fix the probe degrades fail-CLOSED to ``aliveness_unverifiable``: the
     entry records with honest-unset cohort keys instead of being refused.
     """
-    import tempfile
-
-    root = Path(tempfile.mkdtemp())
-    conn, cfg, candidate_id = build_world(root, "corrupt-sibling")
+    conn, cfg, candidate_id = build_world(tmp_path, "corrupt-sibling")
     try:
         seed_run(conn, 199, date(2026, 7, 24))
         conn.execute(
@@ -1090,6 +1081,95 @@ def test_an_unrelated_corrupt_fire_does_not_block_the_entry_path() -> None:
         assert not __import__(
             "swing.evaluation.dates", fromlist=["is_trading_session"]
         ).is_trading_session(date(2026, 7, 25))
+
+        verdict = _probe(conn, cfg, order_for_candidate(conn, candidate_id))
+        assert verdict.admitted is False
+        assert verdict.decline_reason == "aliveness_unverifiable"
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Codex round 2
+# ---------------------------------------------------------------------------
+def test_a_mutation_that_MANUFACTURES_a_terminal_reads_as_drift(
+        tmp_path) -> None:
+    """Codex R2-01 (major): the ORDER of the cross-check, and the order is the
+    whole finding.
+
+    The probe judges the LIVE candidate row, so a mutated stop does not merely
+    fail a later comparison -- it MANUFACTURES a terminal.  Frozen stop 14.88,
+    live stop 17.20 and a 17.10 close yields ``clear_reason='invalidation'`` for
+    a mandate whose OWN frozen value was never approached.
+
+    PRE-fix the aliveness verdict was reached first and the probe returned
+    ``mandate_not_alive`` -- stamping a live mandate PROVEN DEAD off a number it
+    never declared, which rung 8 then DROPS as a non-competitor.  POST-fix the
+    drift verdict is reached before any terminal is believed.
+
+    The existing drift cases (9, 9b) cannot catch this: their mutations leave
+    the latch alive, so they exercise the comparison without exercising its
+    PLACE in the sequence.
+    """
+    from swing.data.repos.candidates_immutability_epoch import barrier_installed
+
+    conn, cfg, candidate_id = build_world(tmp_path, "manufactured-terminal")
+    try:
+        order = order_for_candidate(conn, candidate_id)
+        assert order.frozen_invalidation == STOP
+        with candidates_barrier_lifted(conn):
+            conn.execute("UPDATE candidates SET initial_stop = ? WHERE id = ?",
+                         (17.20, candidate_id))
+        conn.commit()
+        assert barrier_installed(conn) is True
+
+        # The mutation really does manufacture an invalidation the frozen
+        # mandate never suffered -- asserted, so the fixture cannot rot into a
+        # plain drift case and still pass.
+        latch = build_latch_derivation(
+            conn, cfg, horizon_session_override=FILL_SESSION,
+            criteria_lapse_armed_override=False,
+            exclude_trade_ids=NO_EXCLUSIONS, strict_decisions=True).latches[0]
+        assert latch.clear_reason == "invalidation"
+        assert min(BASE_CLOSES.values()) > STOP        # never breached at 14.88
+
+        verdict = _probe(conn, cfg, order)
+        assert verdict.admitted is False
+        assert verdict.decline_reason == "frozen_value_drift"
+    finally:
+        conn.close()
+
+
+def test_an_UNDATED_terminal_is_unprovable_not_proven_dead(
+        tmp_path, monkeypatch) -> None:
+    """Codex R2-02 (major, tagged out-of-envelope by the reviewer and taken
+    anyway).
+
+    ``Latch.__post_init__`` requires a terminal REASON but never a corresponding
+    SESSION, so an undated terminal is representable.  The shipped fold does not
+    emit one today -- which is exactly why treating it as PROVEN DEAD would be an
+    invisible error rather than a visible one.  It cannot show the mandate died
+    BEFORE the fill, so the honest answer is ignorance, and the difference is
+    load-bearing: rung 8 DROPS proven-dead competitors and BLOCKS on unprovable
+    ones, so the wrong classification silently removes a competitor that may
+    have been live.
+    """
+    import swing.trades.latched_origin as module
+
+    conn, cfg, candidate_id = build_world(tmp_path, "undated-terminal")
+    try:
+        real = build_latch_derivation(
+            conn, cfg, horizon_session_override=FILL_SESSION,
+            criteria_lapse_armed_override=False,
+            exclude_trade_ids=NO_EXCLUSIONS, strict_decisions=True)
+        (latch,) = real.latches
+        undated = dataclasses.replace(
+            latch, state="horizon_expired", clear_reason="horizon",
+            clear_session=None)
+        assert undated.clear_session is None            # the model permits it
+        monkeypatch.setattr(
+            module, "build_latch_derivation",
+            lambda *a, **k: dataclasses.replace(real, latches=(undated,)))
 
         verdict = _probe(conn, cfg, order_for_candidate(conn, candidate_id))
         assert verdict.admitted is False

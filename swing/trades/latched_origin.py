@@ -594,11 +594,22 @@ def _decision_ordering_refusal(
     third clock domain to order them is what this arc declines to do (D37). So
     the rule can only ever REFUSE, never admit something it should not.
 
-    THIS IS A SECOND READ OF THE LEDGER AND THAT IS SOUND, where a second read
-    of the ARCHIVE would not be: `latch_order_intents` carries
-    `trg_loi_no_update` / `trg_loi_no_delete`, so the rows cannot change between
-    the derivation's read and this one. The parquet has no such guarantee, which
-    is why coverage is computed from `derivation.archive_closes` instead.
+    THIS IS A SECOND READ OF THE LEDGER, AND MY FIRST JUSTIFICATION FOR IT WAS
+    FALSE (Codex R2-03). I wrote that `trg_loi_no_update` / `trg_loi_no_delete`
+    make the rows unchangeable between the derivation's read and this one. They
+    forbid UPDATE and DELETE; they do NOT forbid an INSERT, and two bare SELECTs
+    outside one transaction can therefore see different ledger worlds.
+
+    WHAT ACTUALLY MAKES IT SOUND IS THE CALLER'S TRANSACTION, and it is stated
+    as a PRECONDITION rather than assumed: on the production entry path
+    `record_entry` opens `BEGIN IMMEDIATE` before resolving, so the derivation
+    and this guard run inside ONE snapshot. **A caller that resolves OUTSIDE a
+    transaction gets a split-world read**, and the residual is declared rather
+    than papered over -- it is flagged for the correction path, which does not
+    hold that lock today.
+
+    (Coverage is still computed from `derivation.archive_closes` and never
+    re-read: the parquet has no equivalent of the caller's lock at all.)
 
     A read failure here refuses `decision_evidence_unavailable` -- the same
     reason the strict loader raises -- because the two are the same ignorance.
@@ -650,8 +661,10 @@ def _decision_ordering_refusal(
     return None
 
 
-def _fill_wins(latch, fill_session: date) -> tuple[bool, str | None]:
+def _fill_wins(latch, fill_session: date) -> tuple[bool | None, str | None]:
     """``(alive, admission_basis)`` -- the LADDER's comparison, not a local one.
+
+    TRI-VALUED: ``True`` alive, ``False`` PROVEN dead, ``None`` UNPROVABLE.
 
     A re-derivation of `_resolve_terminal`'s `fill.order_key <= nonfill.order_key`
     with the SUBJECT's own `(fill_session, rank 0)` supplied, computed from the
@@ -667,8 +680,15 @@ def _fill_wins(latch, fill_session: date) -> tuple[bool, str | None]:
         return False, None
     clear_session = latch.clear_session
     if clear_session is None:
-        # A terminal with no date cannot be argued onto the fill session.
-        return False, None
+        # AN UNDATED TERMINAL IS UNPROVABLE, NOT PROVEN-DEAD (Codex R2-02).
+        # `Latch.__post_init__` requires a terminal REASON but never a
+        # corresponding SESSION, so the shape is representable; the shipped fold
+        # does not emit it today, which is exactly why treating it as dead would
+        # be an invisible error. It cannot show the mandate died BEFORE the fill,
+        # so the honest answer is ignorance -- and the difference is
+        # load-bearing downstream, where rung 8 DROPS proven-dead competitors
+        # and BLOCKS on unprovable ones.
+        return None, None
     subject = _Terminal("fill", fill_session)
     nonfill = _Terminal(latch.clear_reason, clear_session)
     if subject.order_key > nonfill.order_key:
@@ -686,6 +706,31 @@ def _fill_wins(latch, fill_session: date) -> tuple[bool, str | None]:
             f"makes this impossible, so the bound did not take"
         )
     return True, "subject_fill_wins_same_session_tie"
+
+
+def _snapshot_agrees(order: AcceptedLatchOrder, latch) -> tuple[bool, bool]:
+    """``(invalidation_equal, pivot_equal)`` at ``PRICE_DP``.
+
+    THE ARC'S SINGLE ROUNDING AUTHORITY. It happens HERE, in Python, at
+    `PRICE_DP`, ONCE. The citation trigger does NOT repeat it: it binds the RAW
+    operands to their sources by identity and records this comparison's VERDICT
+    as a datum. A SQL-side re-comparison is forbidden in both available forms --
+    raw equality refuses truthful sub-cent drift, and SQLite's `round()` is a
+    DIFFERENT rounding rule from Python's (half-away-from-zero vs half-to-even),
+    measured to diverge on 24 live `candidates` rows.
+
+    The comparison is the link's frozen value against the LATCH's, per RD
+    constraint 1: the mandate is frozen at its OPENING fire, so that is the
+    number the mandate actually declared. Where an order was placed against a
+    re-confirmation whose stop had drifted from the opening fire's, the two
+    differ and admission refuses -- the correct, fail-closed answer.
+    """
+    return (
+        round(float(order.frozen_invalidation), PRICE_DP)
+        == round(float(latch.latched_initial_stop), PRICE_DP),
+        round(float(order.frozen_pivot), PRICE_DP)
+        == round(float(latch.latched_pivot), PRICE_DP),
+    )
 
 
 def _coverage_view(derivation, latch, *, ticker: str, fill_session: date):
@@ -854,7 +899,36 @@ def mandate_alive_at(
         # INPUT was admissible, not about what the ladder concluded from it.
         return _probe_refusal(ordering, order=order, **common)
 
+    # THE SNAPSHOT CROSS-CHECK RUNS BEFORE THE TERMINAL IS TRUSTED (Codex
+    # R2-01, and the ordering is the whole finding). The probe judges the LIVE
+    # candidate row, so a MUTATED stop does not merely fail a later comparison
+    # -- it MANUFACTURES a terminal. Frozen stop 14.88, live stop 17.20 and a
+    # 17.10 close yields `clear_reason='invalidation'` for a mandate whose OWN
+    # frozen value was never breached. Returning `mandate_not_alive` there
+    # stamps a live mandate PROVEN DEAD off a number it never declared, and
+    # rung 8 drops proven-dead competitors. The drift verdict must therefore be
+    # reached BEFORE any terminal is believed.
+    invalidation_equal, pivot_equal = _snapshot_agrees(order, latch)
+    if not (invalidation_equal and pivot_equal):
+        log.warning(
+            "22-A: frozen-value DRIFT for %s (link %s): frozen "
+            "(pivot=%r, invalidation=%r) vs latched (pivot=%r, invalidation=%r)"
+            "; the probe's terminal was derived from the LIVE values and is not "
+            "evidence about this mandate",
+            order.ticker, order.link_id, order.frozen_pivot,
+            order.frozen_invalidation, latch.latched_pivot,
+            latch.latched_initial_stop)
+        return _probe_refusal("frozen_value_drift", order=order, **common)
+
     alive, basis = _fill_wins(latch, fill_session)
+    if alive is None:
+        log.warning(
+            "22-A: the %s probe returned terminal %r with NO clear_session at "
+            "%s; an undated terminal cannot show the mandate died before the "
+            "fill", order.ticker, latch.clear_reason, fill_session)
+        return _probe_refusal(
+            "aliveness_unverifiable", order=order,
+            clear_reason=latch.clear_reason, **common)
     if not alive:
         evidence = dict(common)
         if latch.clear_reason == "fill":
@@ -892,38 +966,6 @@ def mandate_alive_at(
             coverage.get("missing_sessions"))
         return _probe_refusal(
             "aliveness_unverifiable", order=order,
-            clear_reason=latch.clear_reason, clear_session=latch.clear_session,
-            window_empty=window_empty, archive_status=status,
-            probe_evidence={"coverage": coverage}, **common)
-
-    # THE SNAPSHOT CROSS-CHECK -- RD's gate, enforced AT the comparison, and
-    # THE ARC'S SINGLE ROUNDING AUTHORITY. It happens HERE, in Python, at
-    # PRICE_DP, ONCE. The citation trigger does NOT repeat it: it binds the RAW
-    # operands to their sources by identity and records THIS comparison's
-    # verdict as a datum. A SQL-side re-comparison is forbidden in both
-    # available forms -- raw equality refuses truthful sub-cent drift, and
-    # SQLite's `round()` is a DIFFERENT rounding rule from Python's.
-    #
-    # The comparison is the link's frozen value against the LATCH's, per RD
-    # constraint 1: the mandate is frozen at its OPENING fire, so that is the
-    # number the mandate actually declared. Where an order was placed against a
-    # re-confirmation whose stop had drifted from the opening fire's, the two
-    # differ and this refuses -- which is the correct, fail-closed answer.
-    invalidation_equal = (
-        round(float(order.frozen_invalidation), PRICE_DP)
-        == round(float(latch.latched_initial_stop), PRICE_DP))
-    pivot_equal = (
-        round(float(order.frozen_pivot), PRICE_DP)
-        == round(float(latch.latched_pivot), PRICE_DP))
-    if not (invalidation_equal and pivot_equal):
-        log.warning(
-            "22-A: frozen-value DRIFT for %s (link %s): frozen "
-            "(pivot=%r, invalidation=%r) vs latched (pivot=%r, invalidation=%r)",
-            order.ticker, order.link_id, order.frozen_pivot,
-            order.frozen_invalidation, latch.latched_pivot,
-            latch.latched_initial_stop)
-        return _probe_refusal(
-            "frozen_value_drift", order=order,
             clear_reason=latch.clear_reason, clear_session=latch.clear_session,
             window_empty=window_empty, archive_status=status,
             probe_evidence={"coverage": coverage}, **common)
