@@ -165,6 +165,14 @@ _BARRIER_TABLE: dict[str, str] = {
     **{name: "candidates_immutability_epoch" for name in _EPOCH_BARRIER_DDL},
 }
 
+# The CANDIDATES subset, exported separately because the test helper that
+# LIFTS the barrier lifts only that half -- the epoch is never lifted by
+# any fixture.  One roster for the reader's whole claim and one for the
+# half a helper may touch; conflating them made the helper's own
+# cross-check demand it drop three triggers it has no business dropping.
+CANDIDATES_BARRIER_TRIGGER_NAMES: tuple[str, ...] = tuple(
+    _CANDIDATES_BARRIER_DDL)
+
 BARRIER_TRIGGER_NAMES: tuple[str, ...] = tuple(_ALL_BARRIER_DDL)
 
 _WHITESPACE = re.compile(r"\s+")

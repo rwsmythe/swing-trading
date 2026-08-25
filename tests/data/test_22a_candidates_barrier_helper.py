@@ -263,7 +263,22 @@ def test_the_helper_spells_no_trigger_body_of_its_own() -> None:
 
 
 def test_the_helper_names_exactly_the_readers_barrier_trigger_set() -> None:
-    """Two rosters, one barrier.  If migration 0037 ever grows a fourth barrier
-    trigger, the helper would drop three and restore three while the reader
-    demands four -- every later admission refused, for a reason no test names."""
-    assert set(CANDIDATES_BARRIER_TRIGGERS) == set(BARRIER_TRIGGER_NAMES)
+    """Two rosters, one barrier.  If migration 0037 ever grows a fourth
+    CANDIDATES barrier trigger, the helper would drop three and restore three
+    while the reader demands four -- every later admission refused, for a
+    reason no test names.
+
+    THE COMPARISON IS AGAINST THE CANDIDATES SUBSET, not against the reader's
+    whole roster (Codex 22A-R3-01).  The reader now certifies SIX triggers --
+    the three on ``candidates`` and the three on the EPOCH -- and this helper
+    lifts only the first three, because no fixture has any business making the
+    epoch mutable.  Asserting set equality against all six would demand the
+    helper drop triggers it must never drop.
+    """
+    from swing.data.repos.candidates_immutability_epoch import (
+        CANDIDATES_BARRIER_TRIGGER_NAMES,
+    )
+
+    assert set(CANDIDATES_BARRIER_TRIGGERS) == set(
+        CANDIDATES_BARRIER_TRIGGER_NAMES)
+    assert set(CANDIDATES_BARRIER_TRIGGER_NAMES) < set(BARRIER_TRIGGER_NAMES)
