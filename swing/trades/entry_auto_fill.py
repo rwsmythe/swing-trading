@@ -78,6 +78,10 @@ from swing.trades.execution_dates import (
     execution_precedes_order,
     latest_execution_leg_date,
 )
+from swing.trades.latched_origin import (
+    SCHWAB_ORDER_ID_ENVELOPE_KEY,
+    SCHWAB_SYMBOL_ENVELOPE_KEY,
+)
 from swing.trades.schwab_reconciliation import (
     _compute_execution_price,
     _is_execution_bearing_candidate,
@@ -467,8 +471,11 @@ def resolve_entry_auto_fill(
             "entry_date_source": entry_date_source,
             "entry_price": entry_price,
             "shares": shares,
-            "schwab_order_id": getattr(chosen, "order_id", None),
-            "schwab_instrument_symbol": getattr(
+            # 22-A: the key is imported from the ONE constant every reader
+            # uses (#11). A second spelling here and the provenance link
+            # silently stops resolving, with nothing to fail.
+            SCHWAB_ORDER_ID_ENVELOPE_KEY: getattr(chosen, "order_id", None),
+            SCHWAB_SYMBOL_ENVELOPE_KEY: getattr(
                 chosen, "instrument_symbol", None,
             ),
         },
