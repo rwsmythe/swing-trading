@@ -18,6 +18,8 @@ Landed in [`implementer-dispatch-recipe.md`](implementer-dispatch-recipe.md) wit
 
 **Still owed, small:** merge-then-migrate as the banked shape (orchestrator-context material) · premise-verification-as-highest-yield-step as a named discipline (currently enforced via dispatch prompts; the Demand-C §1 re-derivation caught two brief errors, which is its evidence) · RD's both-modes arm-flag (banked, trigger not yet met). Banked with triggers: ENVELOPE_SEVERITY · FROZEN_CONSUMER_CHECK.
 
+**schwabdev 4.0.0: evaluated 2026-08-25, DECLINED for Phase 22, banked with triggers** ([`schwabdev-4.0.0-evaluation-charc.md`](schwabdev-4.0.0-evaluation-charc.md)): tokens DDL byte-compatible (T1b passes), logger + init-hazard unchanged, kwargs superset — but near-zero gain vs a Phase-15-shaped cutover cost, `validate_params` is a new false-refusal layer, and swapping the broker lib under 22-A is the 21-D class. Revisit at the Phase-23 boundary at 4.0.2+; escalate on advisory / Schwab-side break / parity failures >0.
+
 ## #3 — OPEN ELSEWHERE (owner named)
 
 | item | owner | state |
