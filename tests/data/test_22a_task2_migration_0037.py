@@ -14,6 +14,7 @@ fire DELETE triggers.
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -22,8 +23,8 @@ import pytest
 
 from swing.data.db import (
     EXPECTED_SCHEMA_VERSION,
-    MigrationBackupRequiredException,
     PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES,
+    MigrationBackupRequiredException,
     _current_version,
     _phase22_arc_a_backup_gate,
     ensure_schema,
@@ -33,9 +34,9 @@ from swing.data.db import (
 from swing.trades.latched_origin import (
     AUTHORIZATION_KEYS,
     LATCH_FREEZE_TIERS,
+    LATCH_PROBE_EVIDENCE_VERSION,
     PROVENANCE_ADMISSION_TIERS,
 )
-from tests.trades._cohort_provenance_fixtures import build_cadl_case
 from tests._latch_link_fixtures_22a import (
     BROKER_ORDER_ID,
     INITIAL_STOP,
@@ -46,6 +47,7 @@ from tests._latch_link_fixtures_22a import (
     seed_fire,
     validity_row,
 )
+from tests.trades._cohort_provenance_fixtures import build_cadl_case
 
 MIGRATION = (
     Path(__file__).resolve().parents[2]
@@ -273,8 +275,8 @@ def test_insert_candidates_still_works_through_the_production_repo(
     still writes -- a byte-parity test on a synthetic statement would not see a
     divergence in how the real writer spells it.
     """
-    from swing.data.repos.candidates import insert_candidates
     from swing.data.models import Candidate
+    from swing.data.repos.candidates import insert_candidates
 
     conn.execute(
         "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
@@ -824,3 +826,198 @@ def _insert_correction(conn: sqlite3.Connection, ids: dict, **over) -> None:
         f"VALUES ({', '.join('?' * len(payload))})",
         tuple(payload.values()),
     )
+
+
+# ---------------------------------------------------------------------------
+# THE CITATION TRIGGER IS SATISFIABLE
+#
+# NO CASE ID: the formal evidence-contract cases (34*, 39*, 48*, 49*) belong to
+# task 11.  This is the property that must hold BEFORE any of them can be
+# written, and it is the one a refusal-only test set cannot establish -- the
+# plan's own history has an instance where the trigger required the probe
+# session to equal the fill session while the service could only supply the
+# derivation's PRIOR session, so a truthful correction row could not have been
+# written at all.  A trigger nothing can pass looks exactly like a strict one
+# until someone tries.
+# ---------------------------------------------------------------------------
+def seed_latch_ladder_citation(conn: sqlite3.Connection) -> dict:
+    """A TRUTHFUL ``latch_ladder`` correction payload, from real emitters.
+
+    Shared with task 11, which mutates ONE field at a time out of it: an
+    omission or a fidelity case is only discriminating if the row it starts
+    from is genuinely accepted.
+    """
+    from tests._latch_link_fixtures_22a import (
+        insert_intent as _insert_intent,
+    )
+    from tests._latch_link_fixtures_22a import (
+        place_row as _place_row,
+    )
+    from tests._latch_link_fixtures_22a import (
+        validity_row as _validity_row,
+    )
+    from tests.trades._cohort_provenance_fixtures import CADL_TICKER
+
+    ids = _seed_correction(conn)
+    run_id, candidate_id = ids["evaluation_run_id"], ids["candidate_id"]
+    session = conn.execute(
+        "SELECT action_session_date FROM evaluation_runs WHERE id = ?",
+        (run_id,)).fetchone()[0]
+    place = _place_row(candidate_id, run_id=run_id)
+    place.update(ticker=CADL_TICKER, detection_date=session,
+                 action_session_date=session, recorded_ts="2026-08-11T12:00:00")
+    place_id = _insert_intent(conn, place)
+    validity = _validity_row(candidate_id, place_id, run_id=run_id)
+    validity.update(ticker=CADL_TICKER, detection_date=session,
+                    action_session_date=session,
+                    recorded_ts="2026-08-11T12:05:00")
+    validity_id = _insert_intent(conn, validity)
+    conn.commit()
+
+    def _row(table: str, where: str, args: tuple) -> dict:
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        return dict(zip(cols, conn.execute(
+            f"SELECT * FROM {table} WHERE {where}", args).fetchone(),
+            strict=True))
+
+    link = _row("latch_order_mandate_links", "1 = 1", ())
+    row = _row("provenance_corrections", "provenance_correction_id = ?",
+               (ids["row_id"],))
+    fill_id = row["entry_fill_id_at_correction"]
+
+    # The fill must LOOK like the broker fill the citation claims: the five
+    # envelope guards are SQL-BOUND to it at CORRECTION time, because by then
+    # the operator-submitted values are PERSISTED on the fill this row already
+    # anchors on (inherited finding 22A-R9-06).
+    conn.execute(
+        "UPDATE fills SET fill_origin = 'schwab_auto', "
+        "schwab_source_value_json = ? WHERE fill_id = ?",
+        (json.dumps({"schwab_order_id": link["broker_order_id"],
+                     "schwab_instrument_symbol": CADL_TICKER}), fill_id))
+    conn.commit()
+    quantity, price = conn.execute(
+        "SELECT quantity, price FROM fills WHERE fill_id = ?",
+        (fill_id,)).fetchone()
+    pivot, initial_stop = conn.execute(
+        "SELECT pivot, initial_stop FROM candidates WHERE id = ?",
+        (candidate_id,)).fetchone()
+    fill_session = row["entry_fill_session_date"]
+
+    authorization = {
+        "rung1_link_ticker": CADL_TICKER,
+        "rung2_link_parent": place_id,
+        "rung3_validity_outcome": "accepted_by_broker",
+        "rung3b_latest_validity_child": validity_id,
+        "rung3c_link_broker_order_id": link["broker_order_id"],
+        "rung4_governing_place_intent": place_id,
+        "rung5_cancel_intent_id": None,
+        "rung6_consuming_trade_id": None,
+        "rung7_consumption_scan_fill_ids": [fill_id],
+        "rung8_competitor_link_ids": [],
+        "rung9_stored_freeze_tier": link["freeze_tier"],
+        "guard_fill_origin": "schwab_auto",
+        "guard_envelope_symbol": CADL_TICKER,
+        "guard_quantity": quantity,
+        "guard_framework_price_bound": price,
+        "guard_broker_limit_bound": validity["actual_limit_price"],
+    }
+    assert set(authorization) == set(AUTHORIZATION_KEYS), (
+        "the blob builder and the roster disagree: "
+        f"{sorted(set(authorization) ^ set(AUTHORIZATION_KEYS))}")
+    blob = {
+        "evidence_version": LATCH_PROBE_EVIDENCE_VERSION,
+        "fire_candidate_id": candidate_id,
+        "ticker": CADL_TICKER,
+        "fill_session": fill_session,
+        "horizon_session": fill_session,
+        "bars_through": "2026-08-11",
+        "clear_reason": None,
+        "clear_session": None,
+        "admission_basis": "armed",
+        "criteria_lapse_forced_off": 1,
+        "freeze_tier": link["freeze_tier"],
+        "archive_status": "ok",
+        "frozen_invalidation_raw": link["frozen_invalidation"],
+        "live_invalidation_raw": initial_stop,
+        "frozen_pivot_raw": link["frozen_pivot"],
+        "live_pivot_raw": pivot,
+        "invalidation_equal_at_dp": 1,
+        "pivot_equal_at_dp": 1,
+        "compare_dp": 2,
+        "coverage": {"expected_sessions": ["2026-08-11"],
+                     "observed_sessions": ["2026-08-11"],
+                     "missing_sessions": []},
+        "authorization": {
+            key: {"input": value, "verdict": "pass"}
+            for key, value in authorization.items()
+        },
+    }
+    row["provenance_correction_id"] = None
+    row.update(
+        admission_tier="latch_ladder",
+        cited_latch_link_id=link["link_id"],
+        cited_latch_validity_intent_id=validity_id,
+        cited_latch_place_intent_id=place_id,
+        cited_latch_broker_order_id=link["broker_order_id"],
+        cited_latch_probe_json=json.dumps(blob),
+    )
+    # Clear the last_word row so the one-per-trade UNIQUE index does not fire.
+    conn.execute("DROP TRIGGER trg_provenance_corrections_append_only_delete")
+    conn.execute("DELETE FROM provenance_corrections")
+    conn.commit()
+    return row
+
+
+def _insert_payload(conn: sqlite3.Connection, payload: dict) -> None:
+    conn.execute(
+        f"INSERT INTO provenance_corrections ({', '.join(payload)}) "
+        f"VALUES ({', '.join('?' * len(payload))})", tuple(payload.values()))
+
+
+def test_a_truthful_latch_ladder_citation_is_accepted(conn) -> None:
+    """THE TRIGGER IS SATISFIABLE.
+
+    Every SQL-bound clause is satisfied from its real source -- the link's own
+    columns, both intents, the cited candidate, and the fill the correction
+    already anchors on -- and the row inserts.  Without this, a refusal-only
+    test set goes green against a trigger no truthful row can pass.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _insert_payload(conn, payload)
+    assert conn.execute(
+        "SELECT admission_tier, cited_latch_link_id FROM provenance_corrections"
+    ).fetchone() == ("latch_ladder", payload["cited_latch_link_id"])
+
+
+def test_a_fabricated_input_on_a_sql_bound_rung_is_rejected(conn) -> None:
+    """PRESENCE IS NOT FIDELITY.
+
+    The same truthful row with ONE bound entry's ``input`` mutated away from
+    its source and every ``verdict`` still ``'pass'``.  A presence-only trigger
+    -- sixteen keys, sixteen passes -- ACCEPTS it, and an admission whose
+    recorded inputs are invented is indistinguishable at audit from an
+    unchecked one.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    blob = json.loads(payload["cited_latch_probe_json"])
+    blob["authorization"]["rung3c_link_broker_order_id"]["input"] = "9999999999"
+    payload["cited_latch_probe_json"] = json.dumps(blob)
+    with pytest.raises(sqlite3.IntegrityError, match="citation graph"):
+        _insert_payload(conn, payload)
+
+
+def test_a_missing_authorization_entry_is_rejected_not_read_as_a_pass(
+        conn) -> None:
+    """AND THIS IS THE CLAUSE THE COALESCE WRAPPER EXISTS FOR.
+
+    A missing JSON key makes ``json_type`` NULL, ``NULL = 'text'`` NULL, and a
+    NULL ``WHEN`` clause DOES NOT FIRE the trigger -- so without
+    ``COALESCE(..., 0)`` around the latch block this row is silently ACCEPTED.
+    Measured on 3.50.4 before the wrapper was written.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    blob = json.loads(payload["cited_latch_probe_json"])
+    del blob["authorization"]["rung7_consumption_scan_fill_ids"]
+    payload["cited_latch_probe_json"] = json.dumps(blob)
+    with pytest.raises(sqlite3.IntegrityError, match="citation graph"):
+        _insert_payload(conn, payload)
