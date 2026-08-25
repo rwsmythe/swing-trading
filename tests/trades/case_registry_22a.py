@@ -261,6 +261,95 @@ FOURTEEN twins are live: 1-pre, 4c-i-pre, 5b-pre, 6-pre, 8-pre, 10-pre,
 22-pre, 23-pre, 24-pre, 27-pre, 28a-pre, 28b-pre, 28c-pre, 29d-pre.
 """
 
+# --------------------------------------------------------------------------
+# THE TEN INHERITED FINDINGS (plan S13.2), RE-VERIFIED AGAINST THE CODE.
+#
+# S13.3(1): "A premise belongs to the CODE, not to whoever last described it
+# -- including this plan."  Each entry below records what was CHECKED and HOW,
+# so a continuation lifts a verified premise rather than a reported one.
+# --------------------------------------------------------------------------
+INHERITED_FINDINGS_VERIFIED = """\
+R9-02  NOT YET RE-VERIFIED IN CODE (it is a plan-internal contradiction, not a
+       code fact): S2.4d says at-or-below the boundary is PRE-barrier while
+       S4.5C's lifted quote says "rows at or after it do [admit]".  A
+       candidate whose id EQUALS max_candidate_id_at_barrier already existed
+       when the barrier was installed, so it is PRE-barrier and the correct
+       comparison is STRICTLY GREATER THAN.  Case 38 as the plan words it
+       ("the two spellings AGREE") cannot catch it -- two identically-wrong
+       >= implementations agree.  ENCODED IN THIS REGISTRY as finding N6:
+       case 38 must assert the EXPECTED TIER at below / equal / above.
+
+R9-04  CONFIRMED ON DISK.  swing/data/migrations/0033_latch_order_intents.sql
+       carries CHECK (validity_outcome <> 'accepted_by_broker' OR (... AND
+       actual_limit_price IS NOT NULL AND ...)), and place/decline rows are
+       CHECKed to carry actual_limit_price IS NULL.  So the plan's "four of
+       the five live rows carry NULL" is a correct MEASUREMENT with a wrong
+       INFERENCE -- those four are place intents and can never back an
+       accepted link.  DISPOSED: case 30d kept as a DEFENSIVE-HANDLING test
+       with the schema-impossibility stated in its docstring, plus a
+       companion test that pins the CHECK itself.  Shipped in task 1.
+
+R9-05  CONFIRMED BY EXECUTION, BOTH HALVES.
+       (a) Case 34g as specified (frozen = live = 22.125) does NOT
+           discriminate: Python round -> 22.12 == 22.12 (True) and SQLite
+           round -> 22.13 == 22.13 (True), so the FORBIDDEN
+           round(...)=round(...) trigger ACCEPTS the row written to catch it.
+       (b) The repaired geometry DOES discriminate: 22.125 / 22.1249 gives
+           Python 22.12 == 22.12 (admit) against SQLite 22.13 <> 22.12
+           (reject).  Use it.
+       (c) The round( grep gate is underspecified: a literal scan matches
+           'round(' and MISSES 'ROUND(', 'Round(', 'round (' and a
+           newline-split call.  The gate must normalize case AND whitespace.
+
+R9-06  CONFIRMED AS TO FACT; L17's stated REASON is wrong.  L17 says the five
+       envelope guards rest on "operator-submitted values that no subquery can
+       reach" -- but by CORRECTION time those values are PERSISTED on the
+       fill provenance_corrections already cites (entry_fill_id_at_correction;
+       0036's citation trigger already reaches that fill and its trade), and
+       fills carries quantity, price, fill_origin and
+       schwab_source_value_json.  DISPOSED: the five guards are declared
+       SQL_BOUND in AUTHORIZATION_CLAUSES (see swing/trades/latched_origin.py)
+       so the migration binds them; L17 narrows from SEVEN clauses to the TWO
+       genuinely service-validated ones (rungs 7 and 8), and case 49j's scope
+       narrows with it.  No plan case id is invented.
+
+R9-07  RESOLVED, and it was the one blocking a deterministic build.  The
+       $.authorization schema is now WRITTEN OUT as
+       latched_origin.AUTHORIZATION_CLAUSES: sixteen keys (eleven rungs + five
+       separately-enumerated envelope guards), each with its json_type, its
+       nullability and the exact column the trigger binds its input to.  The
+       migration's closure list DERIVES from that roster and a test asserts
+       they match, so neither is a hand-maintained copy of the other.
+
+R9-08  AGREED, unverified by execution (needs the migration).  Cases 9/9b
+       plant drift by dropping the barrier trigger, but rung 9 now refuses
+       barrier_not_installed whenever a barrier is absent OR ALTERED, so the
+       fixture would test the integrity guard instead of frozen_value_drift.
+       FIX DIRECTION, and the body check makes it exactly expressible:
+       re-create the CANONICAL trigger after planting the mutation and before
+       authorization -- a byte-identical restore passes by construction.
+
+R9-09  RE-VERIFIED against the restructured ladder.  See R9_09_REVERIFICATION.
+
+R9-10  RESOLVED.  See this module's docstring and CLOSURE_FINDINGS.
+
+R9-12  CONFIRMED BY READ.  S0(3), in THE HEADLINE, still asserts the tier-2
+       class exists, describes its evidence and says trade 25 qualifies, with
+       no carve marker.  S1.8 still calls the monkeypatched trade-25
+       post-values "the S9 live-application outcome" and says they "bound Task
+       10" -- but S9's outcome is now pre_barrier_unproven with NO correction,
+       and task 10 is the route extension.  Both are build-directing.  NOTE
+       FOR THE CONTINUATION: do NOT build a tier-2 path from S0(3), and do NOT
+       take S1.8 as task 10's bound.  S12 and S13 are authoritative.
+
+R9-13  CONFIRMED ON DISK.  swing/data/db.py: 'current = _current_version(conn);
+       if current >= target_version: return' and 'if current < version <=
+       apply_ceiling:'.  A second run_migrations never re-enters 0037 -- the
+       VERSION GATE returns first.  Cases 35c/35p validly test the BEFORE
+       INSERT trigger; the twice-run migration test does NOT prove that
+       property and must not be cited as doing so.
+"""
+
 # Cases the arc does NOT build.  Every entry is a DECLARED DEVIATION and is
 # reported to the orchestrator.  An empty dict is the intended end state.
 DEFERRED_CASES: dict[str, str] = {}
