@@ -99,6 +99,10 @@ __all__ = [
     "PROVENANCE_ADMISSION_TIER_LATCH",
     "AUTHORIZATION_CLAUSES",
     "AUTHORIZATION_KEYS",
+    "PROBE_GUARD_CLAUSES",
+    "PROBE_GUARD_KEYS",
+    "PROBE_EVIDENCE_KEYS",
+    "PROBE_EMITTED_EVIDENCE_KEYS",
     "DECLINE_REASONS",
     "AcceptedLatchOrder",
     "LatchedProvenance",
@@ -118,7 +122,7 @@ __all__ = [
 # must be DISTINGUISHABLE rather than silently re-interpreted, which is only
 # true if both halves name the same version -- so a drift test asserts the
 # literal in the migration equals this constant (#11).
-LATCH_PROBE_EVIDENCE_VERSION = "2026-08-24.1"
+LATCH_PROBE_EVIDENCE_VERSION = "2026-08-25.1"
 
 
 class LatchProbeInvariantError(RuntimeError):
@@ -295,6 +299,109 @@ AUTHORIZATION_CLAUSES: tuple[AuthorizationClause, ...] = (
 )
 
 AUTHORIZATION_KEYS: tuple[str, ...] = tuple(c.key for c in AUTHORIZATION_CLAUSES)
+
+
+# ---------------------------------------------------------------------------
+# ``$.probe_guards`` -- THE PROBE'S OWN REFUSAL-CAPABLE CLAUSES (Codex R2-04).
+#
+# ``$.authorization`` covers the AUTHORIZER's rungs and the envelope guards.
+# The PROBE has refusal-capable clauses of its own, and they had no verdict
+# slot at all -- so an audit could not distinguish "the guard passed" from "the
+# guard never ran" for exactly the three clauses that decide whether the
+# delegated derivation is trustworthy.  Same standing rule, same {input,
+# verdict} shape, one nested object so the top-level roster grows by ONE key.
+#
+# THREE ENTRIES, and the boundary is stated rather than left to look complete:
+#   * ``fill_session_is_session`` -- an implementation omitting it walks
+#     ``session_offset`` from a weekend and shifts the WHOLE probe window.
+#   * ``fire_membership`` -- the count of latches whose ``candidate_set``
+#     contains the fire.  Exactly ONE is an admission; the reason
+#     ``ambiguous_fire_membership`` exists for the other case.
+#   * ``decision_ordering`` -- the admissible decisions the as-of rule judged,
+#     each as ``[intent_id, recorded_ts]``.  This carries R2-04's "consulted
+#     decision IDs/timestamps" AND is the input the ordering verdict was
+#     reached over, so the snapshot and the verdict are one entry rather than
+#     two halves that could disagree.
+#
+# THREE CLAUSES ARE DELIBERATELY *NOT* HERE, each for a stated reason -- an
+# honest exclusion list, because a roster whose boundary is unstated is the
+# hand-enumerated-roster failure again:
+#   * the FROZEN-VALUE PRESENCE guard: ``frozen_pivot_raw`` /
+#     ``frozen_invalidation_raw`` are already top-level, typed ``real|integer``
+#     and BOUND BY IDENTITY to the link's columns, so their presence IS the
+#     record of that guard's input and verdict.  A second copy would be two
+#     spellings of one fact.
+#   * the SNAPSHOT CROSS-CHECK and the COVERAGE guard: recorded already, as
+#     ``invalidation_equal_at_dp`` / ``pivot_equal_at_dp`` / ``compare_dp`` and
+#     as ``coverage`` / ``archive_status``.
+#   * the BROAD ``except Exception`` around the derivation: an implementation
+#     omitting it CRASHES rather than admitting, so its absence is loud rather
+#     than silent -- it is not the "passed vs never ran" class.
+# ---------------------------------------------------------------------------
+PROBE_GUARD_CLAUSES: tuple[AuthorizationClause, ...] = (
+    AuthorizationClause(
+        "fill_session_is_session", SQL_BOUND, "text", False,
+        "provenance_corrections.entry_fill_session_date",
+        "the fill session is an NYSE trading session",
+    ),
+    AuthorizationClause(
+        "fire_membership", SERVICE_VALIDATED, "integer", False,
+        "-- derivation state; no subquery can walk the fold",
+        "exactly ONE latch's candidate_set contains the fire",
+    ),
+    AuthorizationClause(
+        "decision_ordering", SERVICE_VALIDATED, "array", False,
+        "-- the admissible decisions consulted, [intent_id, recorded_ts]",
+        "every consulted decision is orderable STRICTLY BEFORE the fill",
+    ),
+)
+
+PROBE_GUARD_KEYS: tuple[str, ...] = tuple(c.key for c in PROBE_GUARD_CLAUSES)
+
+# ---------------------------------------------------------------------------
+# THE TOP-LEVEL EVIDENCE ROSTER -- THE INDEPENDENT THIRD PARTY (Codex R2-04).
+#
+# The predecessor's key-set test derived its expectation FROM migration 0037's
+# closure list, so an implementation and a migration omitting the SAME key both
+# passed.  Adding keys to a closed object guarded by a circular test leaves the
+# new keys equally unguarded, which is why this roster exists BEFORE the keys
+# were added rather than after.
+#
+# BOTH halves are compared against THIS, never against each other: the
+# migration's closure list (task-2 module) and the blob the probe actually
+# emits (task-6 module).  A key dropped from either fails against the roster; a
+# key dropped from both still fails, twice.
+# ---------------------------------------------------------------------------
+PROBE_EVIDENCE_KEYS: tuple[str, ...] = (
+    "evidence_version",
+    "fire_candidate_id",
+    "ticker",
+    "fill_session",
+    "horizon_session",
+    "bars_through",
+    "clear_reason",
+    "clear_session",
+    "admission_basis",
+    "criteria_lapse_forced_off",
+    "freeze_tier",
+    "archive_status",
+    "frozen_invalidation_raw",
+    "live_invalidation_raw",
+    "frozen_pivot_raw",
+    "live_pivot_raw",
+    "invalidation_equal_at_dp",
+    "pivot_equal_at_dp",
+    "compare_dp",
+    "coverage",
+    "probe_guards",
+    # FILLED BY THE AUTHORIZER, not by the probe: `mandate_alive_at` emits
+    # every key above and this one is added when the ladder has run.
+    "authorization",
+)
+
+PROBE_EMITTED_EVIDENCE_KEYS: tuple[str, ...] = tuple(
+    k for k in PROBE_EVIDENCE_KEYS if k != "authorization"
+)
 
 
 @dataclass(frozen=True)
@@ -553,9 +660,18 @@ def _as_date(raw) -> date | None:
 
 def _decision_ordering_refusal(
     conn, *, derivation, ticker: str, fill_session: date,
-) -> str | None:
-    """``None``, or the reason the decision ledger cannot be ordered against
-    the fill.
+) -> tuple[str | None, list[list]]:
+    """``(reason_or_None, consulted)`` -- the ordering verdict AND its INPUT.
+
+    THE CONSULTED LIST IS RETURNED, NOT DISCARDED (Codex R2-04). The guard is
+    refusal-capable, so the evidence blob records the input it judged and the
+    verdict it reached, or "passed" and "never ran" are indistinguishable at
+    audit. Each element is ``[intent_id, recorded_ts]`` for one ADMISSIBLE
+    decision -- the rows the as-of rule actually ordered, not every row on the
+    ticker.
+
+    ``reason`` is ``None``, or the reason the decision ledger cannot be ordered
+    against the fill.
 
     THE SCAN COVERS EVERY LATCH ON THE TICKER, NOT ONLY THE SELECTED ONE
     (Codex R1, and the scope is what makes the guard reachable at all). The
@@ -566,11 +682,17 @@ def _decision_ordering_refusal(
     latch's family then never sees the offending decline, because the decline
     lives on the latch it created. Scanning every same-ticker latch does.
 
-    **THE RESIDUAL IS DECLARED AND ROUTED, NOT PAPERED OVER.** This DETECTS the
-    hazard and refuses; it cannot make the derivation itself as-of-correct,
-    because that needs the fold to filter decisions by `recorded_ts` -- a FOURTH
-    EXT-1 parameter, and EXT-1 is approved as exactly THREE. Detect-and-refuse
-    is fail-closed and inside the envelope; derive-correctly is not.
+    **DETECT-AND-REFUSE IS RATIFIED, AND EXT-1 STAYS AT THREE (CHARC,
+    2026-08-25).** This DETECTS the hazard and refuses; it cannot make the
+    derivation itself as-of-correct, because that needs the fold to filter
+    decisions by `recorded_ts` -- a FOURTH EXT-1 parameter, and EXT-1 is
+    approved as exactly THREE. **The ground is the governing asymmetry: a wrong
+    REFUSAL costs a legible message, and a wrong ACCEPTANCE contaminates H1.**
+    A detected-not-derived as-of world is an HONEST LIMITATION, not a defect --
+    and the fourth parameter is not this arc's to take. If 22-A2's proof
+    machinery needs the derivation itself, that is 22-A2's envelope question.
+    Recorded in the accepted-limitations list so a review measuring against a
+    contract that omits it does not re-find it every round.
 
     THE WINDOW IS THE LADDER'S OWN, IMPORTED. `decision_bounds_for` +
     `admissible_decisions` are the single-sourced filter `_resolve_decline`
@@ -603,10 +725,19 @@ def _decision_ordering_refusal(
     WHAT ACTUALLY MAKES IT SOUND IS THE CALLER'S TRANSACTION, and it is stated
     as a PRECONDITION rather than assumed: on the production entry path
     `record_entry` opens `BEGIN IMMEDIATE` before resolving, so the derivation
-    and this guard run inside ONE snapshot. **A caller that resolves OUTSIDE a
-    transaction gets a split-world read**, and the residual is declared rather
-    than papered over -- it is flagged for the correction path, which does not
-    hold that lock today.
+    and this guard run inside ONE snapshot.
+
+    **THE SPLIT-WORLD READ IS AN OBLIGATION ON THE CORRECTION PATH, NOT A
+    FOOTNOTE (CHARC, 2026-08-25).** The two ledger reads are one world ONLY
+    because the caller holds `BEGIN IMMEDIATE`. **Outside that lock -- the
+    CORRECTION path -- a split-world read is possible**, and the correction
+    path must ANSWER it rather than inherit it. It is answered where the
+    correction path owns its transaction (`correct_cohort_provenance`'s
+    `BEGIN IMMEDIATE`), which is the SAME precondition stated once and honoured
+    by both callers. **It is NOT answered by owning a transaction inside this
+    function**: that violates the project's single-transaction contract (the
+    caller MUST own it; auto-detecting an outer tx re-introduces the very race
+    the explicit lock closed).
 
     (Coverage is still computed from `derivation.archive_closes` and never
     re-read: the parquet has no equivalent of the caller's lock at all.)
@@ -622,6 +753,7 @@ def _decision_ordering_refusal(
 
     post_dates: list[int] = []
     unorderable: list[int] = []
+    consulted: list[list] = []
     for latch in derivation.latches:
         if latch.identity.ticker != ticker:
             continue
@@ -635,19 +767,21 @@ def _decision_ordering_refusal(
                     "22-A: decision-ledger read failed at candidate %s; the "
                     "probe cannot tell an absent decline from an unread one: "
                     "%s", candidate_id, exc)
-                return "decision_evidence_unavailable"
+                return "decision_evidence_unavailable", consulted
         lower, upper, decline_upper = decision_bounds_for(
             latch, fill_bound=fill_session)
         for intent in admissible_decisions(
             intents, candidate_set=latch.candidate_set,
             lower=lower, upper=upper, decline_upper=decline_upper,
         ):
+            consulted.append([intent.intent_id or 0, str(intent.recorded_ts)])
             recorded = _as_date(intent.recorded_ts)
             if recorded is None or recorded == fill_session:
                 # An UNPARSEABLE stamp is as unorderable as a same-day one.
                 unorderable.append(intent.intent_id or 0)
             elif recorded > fill_session:
                 post_dates.append(intent.intent_id or 0)
+    consulted.sort()
     if post_dates:
         # Named FIRST because it is the DEFINITE fact -- the evidence provably
         # post-dates the fill -- while a same-day stamp is only an ambiguity.
@@ -655,10 +789,10 @@ def _decision_ordering_refusal(
             "22-A: decision intents %s were recorded AFTER the fill session %s; "
             "the probe refuses rather than judging a mandate on evidence that "
             "had not happened when it filled", post_dates, fill_session)
-        return "decision_evidence_post_dates_fill"
+        return "decision_evidence_post_dates_fill", consulted
     if unorderable:
-        return "decision_ordering_ambiguous"
-    return None
+        return "decision_ordering_ambiguous", consulted
+    return None, consulted
 
 
 def _fill_wins(latch, fill_session: date) -> tuple[bool | None, str | None]:
@@ -706,6 +840,26 @@ def _fill_wins(latch, fill_session: date) -> tuple[bool | None, str | None]:
             f"makes this impossible, so the bound did not take"
         )
     return True, "subject_fill_wins_same_session_tie"
+
+
+def _probe_guard_block(inputs: dict) -> dict:
+    """``{key: {"input": ..., "verdict": "pass"}}`` over the WHOLE roster.
+
+    Built by walking ``PROBE_GUARD_CLAUSES`` rather than by writing a literal,
+    so a clause added to the roster without a value here raises at emit. The
+    verdict is ``'pass'`` unconditionally and that is not a shortcut: every
+    guard REFUSES before reaching this point, so a blob that exists at all is
+    one where each of them passed. The migration asserts the same thing from
+    the other side.
+    """
+    missing = sorted(set(PROBE_GUARD_KEYS) - set(inputs))
+    extra = sorted(set(inputs) - set(PROBE_GUARD_KEYS))
+    if missing or extra:
+        raise KeyError(
+            f"probe-guard block does not match PROBE_GUARD_CLAUSES: "
+            f"missing {missing}, extra {extra}")
+    return {key: {"input": inputs[key], "verdict": "pass"}
+            for key in PROBE_GUARD_KEYS}
 
 
 def _snapshot_agrees(order: AcceptedLatchOrder, latch) -> tuple[bool, bool]:
@@ -891,7 +1045,7 @@ def mandate_alive_at(
             f"RD's bound that a latch never dies of drift"
         )
 
-    ordering = _decision_ordering_refusal(
+    ordering, consulted_decisions = _decision_ordering_refusal(
         conn, derivation=derivation, ticker=order.ticker,
         fill_session=fill_session)
     if ordering is not None:
@@ -1008,7 +1162,20 @@ def mandate_alive_at(
         "pivot_equal_at_dp": 1 if pivot_equal else 0,
         "compare_dp": PRICE_DP,
         "coverage": coverage,
+        # THE PROBE'S OWN REFUSAL-CAPABLE CLAUSES, each with the input it judged
+        # and the verdict it reached (Codex R2-04). Built from the roster so a
+        # clause added to `PROBE_GUARD_CLAUSES` without a value here raises
+        # KeyError at emit rather than shipping a silently-absent guard.
+        "probe_guards": _probe_guard_block({
+            "fill_session_is_session": fill_session.isoformat(),
+            "fire_membership": len(containing),
+            "decision_ordering": consulted_decisions,
+        }),
     }
+    assert set(evidence) == set(PROBE_EMITTED_EVIDENCE_KEYS), (
+        "the emitted evidence and PROBE_EVIDENCE_KEYS disagree: "
+        f"{sorted(set(evidence) ^ set(PROBE_EMITTED_EVIDENCE_KEYS))}"
+    )
     return LatchedProvenance(
         admitted=True,
         recognised_but_underivable=False,

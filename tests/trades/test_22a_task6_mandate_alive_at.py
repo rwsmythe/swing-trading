@@ -37,6 +37,8 @@ from swing.latches.constants import PRICE_DP
 from swing.latches.reader import build_latch_derivation
 from swing.trades.latched_origin import (
     LATCH_PROBE_EVIDENCE_VERSION,
+    PROBE_EMITTED_EVIDENCE_KEYS,
+    PROBE_GUARD_KEYS,
     LatchProbeInvariantError,
     mandate_alive_at,
 )
@@ -893,22 +895,17 @@ def test_the_admission_evidence_records_every_probe_input_and_verdict(
     evidence blob records the INPUT it judged and the VERDICT it reached, or
     "passed" and "never ran" are indistinguishable at audit.*
 
-    The key set is asserted against migration 0037's own closure list, read off
-    disk, minus ``$.authorization`` -- which the AUTHORIZER fills, not the
-    probe.  A hand-typed expected set is the same instrument as the count it
-    replaced.
+    THE KEY SET IS ASSERTED AGAINST THE ROSTER, NOT AGAINST THE MIGRATION
+    (Codex R2-04).  The predecessor derived ``expected`` from migration 0037's
+    own closure list, so an implementation and a migration that omitted the
+    SAME refusal-capable clause both passed -- the check inherited the claim's
+    framing, and a check that inherits a claim's framing is not a check.
+    ``PROBE_EVIDENCE_KEYS`` is the independent third party: this test compares
+    the EMITTER to it, and the task-2 module compares the MIGRATION to it, so a
+    key missing from either half fails against the roster and a key missing
+    from both fails twice.
     """
-    migration = (
-        Path(__file__).resolve().parents[2]
-        / "swing" / "data" / "migrations" / "0037_latch_order_mandate_links.sql"
-    ).read_text(encoding="utf-8")
-    start = migration.index("json_remove(NEW.cited_latch_probe_json,")
-    closure = migration[start:migration.index("= '{}'", start)]
-    expected = {
-        chunk.split("'")[1].removeprefix("$.")
-        for chunk in closure.split(",")
-        if "'$." in chunk
-    } - {"authorization"}
+    expected = set(PROBE_EMITTED_EVIDENCE_KEYS)
 
     conn, cfg, candidate_id = build_world(tmp_path, "evidence")
     try:
@@ -939,6 +936,17 @@ def test_the_admission_evidence_records_every_probe_input_and_verdict(
         assert evidence["invalidation_equal_at_dp"] == 1
         assert evidence["pivot_equal_at_dp"] == 1
         assert evidence["compare_dp"] == PRICE_DP
+        # THE PROBE'S OWN GUARDS, each with the input it judged and the
+        # verdict it reached.  `fire_membership` is the COUNT of latches whose
+        # candidate_set contained the fire -- exactly one, or the probe would
+        # have refused `ambiguous_fire_membership` and never reached here.
+        guards = evidence["probe_guards"]
+        assert set(guards) == set(PROBE_GUARD_KEYS)
+        assert guards["fill_session_is_session"] == {
+            "input": FILL_SESSION.isoformat(), "verdict": "pass"}
+        assert guards["fire_membership"] == {"input": 1, "verdict": "pass"}
+        assert guards["decision_ordering"]["verdict"] == "pass"
+        assert isinstance(guards["decision_ordering"]["input"], list)
         assert evidence["coverage"]["missing_sessions"] == []
         assert evidence["coverage"]["expected_sessions"] == [
             s.isoformat() for s in sorted(BASE_CLOSES)]

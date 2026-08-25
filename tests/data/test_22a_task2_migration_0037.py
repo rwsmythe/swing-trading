@@ -35,6 +35,8 @@ from swing.trades.latched_origin import (
     AUTHORIZATION_KEYS,
     LATCH_FREEZE_TIERS,
     LATCH_PROBE_EVIDENCE_VERSION,
+    PROBE_EVIDENCE_KEYS,
+    PROBE_GUARD_KEYS,
     PROVENANCE_ADMISSION_TIERS,
 )
 from tests._latch_link_fixtures_22a import (
@@ -947,11 +949,22 @@ def seed_latch_ladder_citation(conn: sqlite3.Connection) -> dict:
         "coverage": {"expected_sessions": ["2026-08-11"],
                      "observed_sessions": ["2026-08-11"],
                      "missing_sessions": []},
+        "probe_guards": {
+            "fill_session_is_session": {"input": fill_session,
+                                        "verdict": "pass"},
+            "fire_membership": {"input": 1, "verdict": "pass"},
+            "decision_ordering": {
+                "input": [[place_id, "2026-08-11T12:00:00"]],
+                "verdict": "pass"},
+        },
         "authorization": {
             key: {"input": value, "verdict": "pass"}
             for key, value in authorization.items()
         },
     }
+    assert set(blob) == set(PROBE_EVIDENCE_KEYS), (
+        "the blob builder and the evidence roster disagree: "
+        f"{sorted(set(blob) ^ set(PROBE_EVIDENCE_KEYS))}")
     row["provenance_correction_id"] = None
     row.update(
         admission_tier="latch_ladder",
@@ -1020,4 +1033,119 @@ def test_a_missing_authorization_entry_is_rejected_not_read_as_a_pass(
     del blob["authorization"]["rung7_consumption_scan_fill_ids"]
     payload["cited_latch_probe_json"] = json.dumps(blob)
     with pytest.raises(sqlite3.IntegrityError, match="citation graph"):
+        _insert_payload(conn, payload)
+
+
+# ---------------------------------------------------------------------------
+# 22A-R2-04 -- THE PROBE'S OWN GUARDS GET VERDICT SLOTS, AND THE KEY-SET CHECK
+# STOPS BEING CIRCULAR.
+#
+# The predecessor's key-set test derived its expectation FROM migration 0037,
+# so an implementation and a migration that omitted the SAME refusal-capable
+# clause both passed.  Adding keys to a closed object guarded by a circular
+# test leaves the new keys equally unguarded.
+#
+# THE REPAIR IS THE SHAPE ALREADY USED FOR ``$.authorization``: an INDEPENDENT
+# Python roster is the source, and BOTH the migration's closure list AND the
+# emitted blob are compared against IT -- never against each other.  Dropping a
+# key now requires editing three artifacts rather than two, and the two that
+# omit it fail against the third.
+#
+# NO CASE ID: these are properties of the evidence contract that task 11's
+# formal cases (34*/39*/48*/49*) build ON.  They are named without a
+# ``_case_<slug>`` suffix so the closure walk does not read them as case
+# coverage.
+# ---------------------------------------------------------------------------
+def test_the_migrations_probe_evidence_closure_list_matches_the_roster() -> None:
+    """The TOP-LEVEL closure list is the roster, exactly.
+
+    Direction matters: the roster is the independent third party.  A key
+    dropped from the migration alone fails here; a key dropped from the emitter
+    alone fails the task-6 emission test; a key dropped from both still fails
+    both, which is precisely what the circular version could not do.
+    """
+    text = MIGRATION.read_text(encoding="utf-8")
+    marker = "json_remove(NEW.cited_latch_probe_json,"
+    assert marker in text
+    closure = text.split(marker, 1)[1].split("= '{}'", 1)[0]
+    keys = set(re.findall(r"'\$\.(\w+)'", closure))
+    assert keys == set(PROBE_EVIDENCE_KEYS), (
+        f"migration closure list and PROBE_EVIDENCE_KEYS disagree: "
+        f"only in SQL {sorted(keys - set(PROBE_EVIDENCE_KEYS))}, "
+        f"only in Python {sorted(set(PROBE_EVIDENCE_KEYS) - keys)}"
+    )
+
+
+def test_the_migrations_probe_guard_closure_list_matches_the_roster() -> None:
+    """``$.probe_guards`` is closed on the PROBE_GUARD_CLAUSES roster."""
+    text = MIGRATION.read_text(encoding="utf-8")
+    marker = "json_remove(json_extract(NEW.cited_latch_probe_json, '$.probe_guards'),"
+    assert marker in text
+    closure = text.split(marker, 1)[1].split("= '{}'", 1)[0]
+    keys = set(re.findall(r"'\$\.(\w+)'", closure))
+    assert keys == set(PROBE_GUARD_KEYS), (
+        f"migration probe-guard closure and PROBE_GUARD_CLAUSES disagree: "
+        f"only in SQL {sorted(keys - set(PROBE_GUARD_KEYS))}, "
+        f"only in Python {sorted(set(PROBE_GUARD_KEYS) - keys)}"
+    )
+
+
+def test_a_truthful_probe_guard_block_is_ACCEPTED(conn) -> None:
+    """THE ACCEPTED BASELINE for the three new guards.
+
+    A refusal-only test set cannot establish that a guard can EVER accept, and
+    this plan's own history contains a trigger nothing could satisfy.  Every
+    variation below starts HERE and moves ONE field.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    blob = json.loads(payload["cited_latch_probe_json"])
+    assert set(blob["probe_guards"]) == set(PROBE_GUARD_KEYS)
+    _insert_payload(conn, payload)
+
+
+@pytest.mark.parametrize("guard_key", sorted(PROBE_GUARD_KEYS))
+def test_an_omitted_probe_guard_entry_is_REJECTED(conn, guard_key) -> None:
+    """ONE guard removed from the accepted baseline -- REJECTED.
+
+    This is the omission direction the closure list enforces, and it is what
+    makes "passed" and "never ran" distinguishable for the PROBE's own guards
+    rather than only for the authorizer's rungs.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    blob = json.loads(payload["cited_latch_probe_json"])
+    del blob["probe_guards"][guard_key]
+    payload["cited_latch_probe_json"] = json.dumps(blob)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_payload(conn, payload)
+
+
+def test_a_fire_membership_input_other_than_one_is_REJECTED(conn) -> None:
+    """Exactly ONE latch may contain the fire.  Two is not an admission."""
+    payload = seed_latch_ladder_citation(conn)
+    blob = json.loads(payload["cited_latch_probe_json"])
+    blob["probe_guards"]["fire_membership"]["input"] = 2
+    payload["cited_latch_probe_json"] = json.dumps(blob)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_payload(conn, payload)
+
+
+def test_a_fill_session_guard_input_not_bound_to_the_fill_is_REJECTED(
+        conn) -> None:
+    """The session the guard says it judged must BE the row's fill session."""
+    payload = seed_latch_ladder_citation(conn)
+    blob = json.loads(payload["cited_latch_probe_json"])
+    blob["probe_guards"]["fill_session_is_session"]["input"] = "2026-01-05"
+    payload["cited_latch_probe_json"] = json.dumps(blob)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_payload(conn, payload)
+
+
+@pytest.mark.parametrize("guard_key", sorted(PROBE_GUARD_KEYS))
+def test_a_non_pass_probe_guard_verdict_is_REJECTED(conn, guard_key) -> None:
+    """A guard that did not pass contradicts the admission it sits inside."""
+    payload = seed_latch_ladder_citation(conn)
+    blob = json.loads(payload["cited_latch_probe_json"])
+    blob["probe_guards"][guard_key]["verdict"] = "refuse"
+    payload["cited_latch_probe_json"] = json.dumps(blob)
+    with pytest.raises(sqlite3.IntegrityError):
         _insert_payload(conn, payload)

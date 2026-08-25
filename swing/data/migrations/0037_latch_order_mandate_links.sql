@@ -582,12 +582,12 @@ FOR EACH ROW WHEN NOT (
                  '$.live_invalidation_raw', '$.frozen_pivot_raw',
                  '$.live_pivot_raw', '$.invalidation_equal_at_dp',
                  '$.pivot_equal_at_dp', '$.compare_dp', '$.coverage',
-                 '$.authorization') = '{}'
+                 '$.probe_guards', '$.authorization') = '{}'
 
          -- the schema's own version, pinned. A row written under an older shape
          -- must be DISTINGUISHABLE rather than silently re-interpreted.
          AND json_type(NEW.cited_latch_probe_json, '$.evidence_version') = 'text'
-         AND json_extract(NEW.cited_latch_probe_json, '$.evidence_version') = '2026-08-24.1'
+         AND json_extract(NEW.cited_latch_probe_json, '$.evidence_version') = '2026-08-25.1'
 
          AND json_type(NEW.cited_latch_probe_json, '$.fire_candidate_id') = 'integer'
          AND json_extract(NEW.cited_latch_probe_json, '$.fire_candidate_id')
@@ -718,6 +718,60 @@ FOR EACH ROW WHEN NOT (
                    WHERE e.type <> 'text' OR length(e.value) <> 10
                       OR date(e.value) IS NULL OR date(e.value) <> e.value))
          )
+
+         -- ------------- $.probe_guards: THE PROBE'S OWN REFUSAL-CAPABLE
+         -- CLAUSES. $.authorization covers the AUTHORIZER's rungs; the PROBE
+         -- has clauses of its own -- the fill-session check, fire-membership
+         -- uniqueness and the decision as-of ordering -- and they had NO
+         -- verdict slot, so an audit could not tell "the guard passed" from
+         -- "the guard never ran" for exactly the three clauses that decide
+         -- whether the delegated derivation is trustworthy. Same standing
+         -- rule, same {input, verdict} shape, closed on the SAME roster
+         -- (PROBE_GUARD_CLAUSES in swing/trades/latched_origin.py), with the
+         -- comparison running roster-to-SQL and roster-to-emitter rather than
+         -- SQL-to-emitter -- a key-set check that derives its expectation from
+         -- THIS FILE cannot catch a key missing from both halves.
+         AND json_type(NEW.cited_latch_probe_json, '$.probe_guards') = 'object'
+         AND json_remove(json_extract(NEW.cited_latch_probe_json, '$.probe_guards'),
+                 '$.fill_session_is_session', '$.fire_membership',
+                 '$.decision_ordering') = '{}'
+
+         -- THE FILL SESSION THE GUARD JUDGED IS THE ROW'S OWN. An unbound copy
+         -- would let a row attest a check it ran against a different date.
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.probe_guards.fill_session_is_session'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.probe_guards.fill_session_is_session.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.probe_guards.fill_session_is_session.input') = 'text'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.probe_guards.fill_session_is_session.input')
+             = NEW.entry_fill_session_date
+
+         -- EXACTLY ONE latch's candidate_set may contain the fire. The count
+         -- is derivation state no subquery can reach, so SQL binds the VALUE
+         -- (it must be 1) rather than re-deriving it; two is the shape
+         -- ambiguous_fire_membership refuses and is not an admission.
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.probe_guards.fire_membership'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.probe_guards.fire_membership.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.probe_guards.fire_membership.input') = 'integer'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.probe_guards.fire_membership.input') = 1
+
+         -- THE DECISIONS THE AS-OF RULE ORDERED, each [intent_id,
+         -- recorded_ts]. SERVICE-VALIDATED (L17): the ADMISSIBLE subset is
+         -- computed by the ladder's own window and no subquery can reproduce
+         -- it, so SQL asserts presence, type and verdict. A fabricated array
+         -- is ACCEPTED -- a declared LIMIT, the same one rungs 7 and 8 carry.
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.probe_guards.decision_ordering'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.probe_guards.decision_ordering.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.probe_guards.decision_ordering.input') = 'array'
 
          -- ------------- $.authorization: ONE ENTRY PER REFUSAL-CAPABLE CLAUSE
          -- If a clause can REFUSE an admission, the blob records the INPUT it
