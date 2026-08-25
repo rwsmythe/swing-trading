@@ -18,6 +18,7 @@ from swing.data.repos.provenance_corrections import (
     list_provenance_corrections,
 )
 from swing.metrics.funnel import APLUS_TRADE_ORIGIN
+from tests._candidates_barrier_helper import candidates_barrier_lifted
 from swing.trades.cohort_provenance_correction import (
     CITATION_ANCHOR_DRIFT,
     CITATION_ANCHOR_UNVERIFIABLE,
@@ -919,9 +920,16 @@ def test_R3M3_moving_the_cited_candidate_to_another_run_is_reported(
     ids = build_cadl_case(conn)
     other = build_cadl_case(conn, ticker="OTHR")
     _apply(conn, ids)
-    conn.execute(
-        "UPDATE candidates SET evaluation_run_id = ? WHERE id = ?",
-        (other["evaluation_run_id"], ids["candidate_id"]))
+    with candidates_barrier_lifted(conn):
+        # 22-A migration 0037 barriers `candidates`, so an ordinary UPDATE
+        # now ABORTS.  A migration-level repair -- drop, mutate, restore --
+        # is still possible and is exactly what this reader exists to catch
+        # (this module's own words: "a migration or an operator repair is
+        # where an audit reader earns its keep").  The barrier is restored
+        # verbatim, so the drift SUBJECT is planted without disarming it.
+        conn.execute(
+            "UPDATE candidates SET evaluation_run_id = ? WHERE id = ?",
+            (other["evaluation_run_id"], ids["candidate_id"]))
     [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
     joined = "\n".join(report.drift_lines)
     assert "candidates.evaluation_run_id" in joined
@@ -931,9 +939,16 @@ def test_R3M3_moving_the_cited_candidate_to_another_run_is_reported(
 def test_R3M3_a_reticketed_cited_candidate_is_reported(conn) -> None:
     ids = build_cadl_case(conn)
     _apply(conn, ids)
-    conn.execute(
-        "UPDATE candidates SET ticker = 'ELSE' WHERE id = ?",
-        (ids["candidate_id"],))
+    with candidates_barrier_lifted(conn):
+        # 22-A migration 0037 barriers `candidates`, so an ordinary UPDATE
+        # now ABORTS.  A migration-level repair -- drop, mutate, restore --
+        # is still possible and is exactly what this reader exists to catch
+        # (this module's own words: "a migration or an operator repair is
+        # where an audit reader earns its keep").  The barrier is restored
+        # verbatim, so the drift SUBJECT is planted without disarming it.
+        conn.execute(
+            "UPDATE candidates SET ticker = 'ELSE' WHERE id = ?",
+            (ids["candidate_id"],))
     [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
     assert any("now ticker" in line for line in report.drift_lines)
 
@@ -1051,9 +1066,16 @@ def test_R2M5_a_bucket_change_on_the_cited_candidate_is_reported(conn) -> None:
     bucket change, a criterion change AND a registry rename."""
     ids = build_cadl_case(conn)
     _apply(conn, ids)
-    conn.execute(
-        "UPDATE candidates SET bucket = 'watch' WHERE id = ?",
-        (ids["candidate_id"],))
+    with candidates_barrier_lifted(conn):
+        # 22-A migration 0037 barriers `candidates`, so an ordinary UPDATE
+        # now ABORTS.  A migration-level repair -- drop, mutate, restore --
+        # is still possible and is exactly what this reader exists to catch
+        # (this module's own words: "a migration or an operator repair is
+        # where an audit reader earns its keep").  The barrier is restored
+        # verbatim, so the drift SUBJECT is planted without disarming it.
+        conn.execute(
+            "UPDATE candidates SET bucket = 'watch' WHERE id = ?",
+            (ids["candidate_id"],))
     [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
     joined = "\n".join(report.drift_lines)
     assert "candidates.bucket" in joined

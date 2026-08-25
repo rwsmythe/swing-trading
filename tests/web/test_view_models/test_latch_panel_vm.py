@@ -7,6 +7,7 @@ import pytest
 
 from swing.data.db import connect
 from swing.evaluation.dates import PageKind
+from tests._candidates_barrier_helper import candidates_barrier_lifted
 from swing.web.view_models.latches import LatchPanelVM, build_latch_panel_vm
 
 NOW = datetime(2026, 7, 25, 12, 0)     # Saturday -> action session 2026-07-27
@@ -57,7 +58,13 @@ def _clear_closes(cfg):
     so 'no price at all' is a REACHABLE production shape, not a fiction."""
     conn = connect(cfg.paths.db_path)
     with conn:
-        conn.execute("UPDATE candidates SET close = NULL")
+        # From migration 0037 (22-A) `candidates` is structurally immutable.
+        # A NULL close is a REACHABLE production shape -- 0001 puts no NOT NULL
+        # on the column -- so the fixture plants it with the barrier lifted and
+        # restores the barrier verbatim, rather than the panel losing its
+        # no-price case to a barrier that exists for a different reason.
+        with candidates_barrier_lifted(conn):
+            conn.execute("UPDATE candidates SET close = NULL")
     conn.close()
 
 

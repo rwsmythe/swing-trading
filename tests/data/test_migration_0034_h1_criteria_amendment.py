@@ -661,7 +661,7 @@ def test_expected_schema_version_is_head():
     # 0036, provenance_corrections) moves it 35 -> 36. The 0034-CONTENT
     # assertion above (`UPDATE schema_version SET version = 34` inside 0034's
     # own SQL) is about THIS migration's text and deliberately stays at 34.
-    assert EXPECTED_SCHEMA_VERSION == 36
+    assert EXPECTED_SCHEMA_VERSION == 37
 
 
 def test_pre_migration_expected_tables_is_the_v33_set_derived():

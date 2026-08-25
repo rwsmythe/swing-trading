@@ -1,0 +1,1068 @@
+-- 0037_latch_order_mandate_links.sql
+-- 22-A: the durable order<->mandate LINK, and the STRUCTURAL immutability that
+-- makes the mandate's frozen invalidation provable.
+-- ADDITIVE. Nothing is rebuilt, no existing row is mutated, and the only
+-- DROPs are the two provenance_corrections triggers this same transaction
+-- immediately re-creates (see THE CONDITION-4 ADJUDICATION below).
+-- Atomic via explicit BEGIN; ... COMMIT; per gotcha #9 (executescript issues an
+-- implicit COMMIT and runs its statements in autocommit, so a migration
+-- without its own transaction would leave provenance_corrections momentarily
+-- unguarded between a DROP and its CREATE). Bumps schema_version 36 -> 37.
+--
+-- ONE MIGRATION, ONE TASK, ONE VERSION BUMP (review 22A-R9-11). The runner
+-- applies a version ONCE and only when strictly greater than the database's
+-- current version -- "current = _current_version(conn); if current >=
+-- target_version: return" (swing/data/db.py) -- so anything added to THIS file
+-- after any database has recorded v37 would never run on that database again,
+-- silently, with CI green because fresh fixtures always apply the whole file.
+-- A versioned migration file is an ATOMIC deliverable.
+--
+-- ============================================================================
+-- REVERSIBILITY HEADER (CHARC CONDITION 3, 2026-08-24)
+-- ============================================================================
+-- The candidates barrier is retired by exactly two statements:
+--
+--     DROP TRIGGER trg_candidates_no_update;
+--     DROP TRIGGER trg_candidates_no_delete;
+--
+-- and the conflict-scoped INSERT barrier by one more:
+--
+--     DROP TRIGGER trg_candidates_no_replace;
+--
+-- A DROP ENDS the proven guarantee rather than falsifying it, so ANY DROP MUST
+-- ITSELF BE RECORDED: it is performed ONLY inside a NEW numbered migration,
+-- which is the record. That is the procedural half.
+--
+-- THE MECHANICAL HALF, which is what makes single-state coherent: the
+-- admission reader verifies BOTH barrier triggers exist AT READ TIME -- and
+-- compares their BODIES against a verbatim pinned copy, not their names --
+-- and refuses barrier_not_installed if either is absent or altered. So a drop
+-- mechanically HALTS structural admission whether or not anyone remembered to
+-- write the record. The emergency escape hatch survives; what it can no longer
+-- do is leave admission running on a claim the barrier no longer backs.
+--
+-- ============================================================================
+-- THE CONDITION-4 ADJUDICATION (CHARC, 2026-08-24) -- named here so the next
+-- reader of "the migration is ADDITIVE; nothing dropped" finds the decision
+-- rather than the ambiguity.
+-- ============================================================================
+-- CONDITION 4 said: additive; nothing rebuilt, nothing dropped, no existing row
+-- touched. This migration exceeds its LETTER in two places, BOTH ROUTED AND
+-- BOTH APPROVED:
+--   EXCEPTION 1 -- THREE CREATE TRIGGERs on candidates_immutability_epoch
+--     rather than the two originally enumerated. Purely additive: the count
+--     moving is not a widening of the condition's KIND. (The third trigger's
+--     PURPOSE changed at the Option-C carve, from guarding an ERA SEQUENCE --
+--     which single-state cannot represent -- to closing a measured
+--     INSERT OR REPLACE hole; surfaced at his section-3 gate, not absorbed.)
+--   EXCEPTION 2 -- the TRANSACTIONAL replacement of two provenance_corrections
+--     triggers. SQLite has no ALTER TRIGGER and both must learn six new
+--     columns. His ruling, verbatim: "A transactional DROP+CREATE that replaces
+--     a guard with an EQUAL-OR-STRONGER guard is not a DROP in Condition-4's
+--     sense -- but it is ALWAYS DECLARED, NEVER SILENT."
+
+BEGIN;
+
+-- ============================================================================
+-- 1. THE SINGLE-STATE IMMUTABILITY EPOCH
+--
+-- One row, one boundary, no eras. A fire is either at-or-below the boundary
+-- (PRE-barrier: it already existed when the barrier was installed, so no
+-- structural proof of its frozen values is available) or STRICTLY ABOVE it
+-- (POST-barrier: it was created under the barrier, so the value derive_latches
+-- reads live IS the value the fire declared).
+--
+-- THE COMPARISON IS STRICTLY GREATER THAN, AND THE BOUNDARY ROW IS PRE-BARRIER
+-- (inherited finding 22A-R9-02). A candidate whose id EQUALS
+-- max_candidate_id_at_barrier already existed at migration time. ">=" would
+-- stamp it live_at_acceptance and mint a false structural-proof label for the
+-- one row the boundary is named after.
+-- ============================================================================
+CREATE TABLE candidates_immutability_epoch (
+  epoch_id                    INTEGER PRIMARY KEY CHECK (epoch_id = 1),
+  max_candidate_id_at_barrier INTEGER NOT NULL,
+  applied_at                  TEXT    NOT NULL
+);
+
+-- Seeded from the live table, so the boundary is a MEASUREMENT rather than a
+-- constant somebody typed. COALESCE covers an empty candidates table (a fresh
+-- database migrating 0001 -> 0037 in one walk): boundary 0 means every future
+-- fire is post-barrier, which is exactly right for a database that has never
+-- held an unbarriered candidate.
+INSERT INTO candidates_immutability_epoch (epoch_id, max_candidate_id_at_barrier, applied_at)
+SELECT 1, COALESCE(MAX(id), 0), strftime('%Y-%m-%dT%H:%M:%SZ', 'now') FROM candidates;
+
+-- THE THREE EPOCH TRIGGERS, CREATED AFTER THE SEEDING ROW.
+--
+-- A TWO-TRIGGER EPOCH IS FAIL-OPEN AT SQLITE'S DEFAULT, MEASURED BY EXECUTION
+-- (sqlite 3.50.4): for the REPLACE conflict-resolution strategy SQLite fires
+-- DELETE triggers IF AND ONLY IF PRAGMA recursive_triggers is ON, and it is OFF
+-- by default. "grep -rn recursive_triggers swing/ tests/" returns ZERO hits and
+-- swing/data/db.py sets only busy_timeout, foreign_keys and journal_mode -- so
+-- the default governs in production. With UPDATE+DELETE triggers only,
+-- INSERT OR REPLACE, bare REPLACE and INSERT OR IGNORE all reach the row.
+--
+-- AND THE DIRECTION OF THAT FAILURE IS THE UNTOLERABLE ONE: an INSERT OR
+-- REPLACE LOWERING max_candidate_id_at_barrier stamps a PRE-barrier fire
+-- live_at_acceptance -- a false structural-proof label minted by the very
+-- mechanism that exists to make the proof honest. Raising it merely costs an
+-- admission (fail-closed, survivable).
+--
+-- The CHECK (epoch_id = 1) is kept as the declarative belt -- it alone stops a
+-- plain second-row INSERT -- but the trigger is the load-bearing half, because
+-- REPLACE satisfies the CHECK by deleting the row that conflicts with it.
+CREATE TRIGGER trg_candidates_epoch_no_update BEFORE UPDATE ON candidates_immutability_epoch
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_candidates_epoch_no_update: the candidates immutability epoch is written ONCE by migration 0037 and never again. Its boundary is what stamps a fire pre- or post-barrier, so an edit would re-tier fires that are already linked. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
+CREATE TRIGGER trg_candidates_epoch_no_delete BEFORE DELETE ON candidates_immutability_epoch
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_candidates_epoch_no_delete: the candidates immutability epoch is PERMANENT. Deleting it would leave every freeze_tier derivation without a boundary to compare against. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
+CREATE TRIGGER trg_candidates_epoch_no_insert BEFORE INSERT ON candidates_immutability_epoch
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_candidates_epoch_no_insert: the candidates immutability epoch is seeded ONCE by migration 0037. This trigger exists because INSERT OR REPLACE bypasses a DELETE trigger whenever PRAGMA recursive_triggers is OFF, which is SQLite default and this repo never enables it -- a measured fail-open path to a false structural-proof label. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
+-- ============================================================================
+-- 2. THE candidates IMMUTABILITY BARRIER -- UPDATE, DELETE and the
+--    CONFLICT-SCOPED INSERT that closes REPLACE.
+--
+-- This is the arc's PROOF of RD's frozen-value gate for every fire created
+-- after it. Writer-absence is not evidence (D36): "no UPDATE/DELETE path
+-- exists for candidates" is a claim with a shelf life, and the barrier is what
+-- converts it into a structural property.
+-- ============================================================================
+CREATE TRIGGER trg_candidates_no_update BEFORE UPDATE ON candidates
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_candidates_no_update: candidates rows are IMMUTABLE from migration 0037. A re-evaluation APPENDS a new row; it never edits an existing one. To change a fire''s recorded values you must add an evaluation run. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
+CREATE TRIGGER trg_candidates_no_delete BEFORE DELETE ON candidates
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_candidates_no_delete: candidates rows are PERMANENT from migration 0037. The latch identity space and every provenance citation address rows by a REUSABLE rowid, so a delete would silently repoint them. Pruning is a migration-level operation -- see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
+-- THE UPDATE+DELETE PAIR IS FAIL-OPEN TO REPLACE, ON THIS ARC'S LOAD-BEARING
+-- TABLE, AND IT IS WORSE HERE THAN ON THE EPOCH (CHARC's generalisation of the
+-- epoch finding, 2026-08-24). MEASURED at production settings
+-- (recursive_triggers default OFF, foreign_keys ON) against the real candidates
+-- shape, which carries TWO conflict targets -- id INTEGER PRIMARY KEY and
+-- UNIQUE(evaluation_run_id, ticker):
+--
+--   INSERT OR REPLACE on the UNIQUE  -> SUCCEEDS: id moved 12284 -> 12285,
+--                                       pivot/stop rewritten,
+--                                       candidate_criteria CASCADE-wiped 1 -> 0
+--   bare REPLACE on the rowid PK     -> SUCCEEDS: id preserved, pivot/stop
+--                                       rewritten, candidate_criteria wiped
+--
+-- That is exactly the id-reuse catastrophe the DELETE half exists to prevent,
+-- reached with BOTH barrier triggers present, canonical and UNFIRED -- so the
+-- admission reader's body-comparison integrity check cannot see it. The
+-- triggers are not altered; they are BYPASSED.
+--
+-- ONE THING INCIDENTALLY PROTECTS THE WRONG HALF and must not be mistaken for a
+-- defence: with a citing link row present, candidate_id REFERENCES
+-- candidates(id) ON DELETE RESTRICT blocks both REPLACE paths. So the FK covers
+-- the POST-acceptance population and leaves the PRE-acceptance population fully
+-- exposed -- and pre-acceptance is precisely the window that matters, because
+-- the link copies frozen_pivot / frozen_invalidation AT MINT TIME. A REPLACE
+-- before acceptance rewrites the very values that are then frozen and stamped
+-- live_at_acceptance.
+--
+-- THE FIX CANNOT BE THE EPOCH'S. candidates must accept ordinary INSERTs every
+-- night, so a blanket BEFORE INSERT barrier is unavailable. What is available
+-- is a CONFLICT-SCOPED one: refuse an INSERT that would COLLIDE with an
+-- existing row, so REPLACE can never reach its delete half. BEFORE INSERT
+-- triggers fire BEFORE conflict resolution deletes anything -- the property the
+-- fix rests on, measured rather than assumed.
+--
+-- TWO BEHAVIOUR CHANGES, DECLARED rather than discovered at the live pipeline
+-- gate: (a) INSERT OR IGNORE on a duplicate candidate now ABORTS where it
+-- previously no-op'd, and (b) a plain duplicate INSERT now aborts with THIS
+-- message rather than SQLite's UNIQUE message -- same outcome, different text,
+-- and this text is the more useful of the two. Neither is reachable from
+-- production today: a case-insensitive grep for "insert or replace|replace
+-- into" across swing/ (*.py, *.sql) returns ZERO executable statements (every
+-- hit is a comment FORBIDDING the idiom) and insert_candidates uses a plain
+-- INSERT. That is SERVICE-prevention at an incidence of zero, which is exactly
+-- the posture the barrier exists to replace.
+CREATE TRIGGER trg_candidates_no_replace BEFORE INSERT ON candidates
+WHEN EXISTS (SELECT 1 FROM candidates
+              WHERE (evaluation_run_id = NEW.evaluation_run_id AND ticker = NEW.ticker)
+                 OR (NEW.id IS NOT NULL AND id = NEW.id))
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_candidates_no_replace: candidates rows are PERMANENT from migration 0037. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE) would DELETE the existing row, bypassing trg_candidates_no_delete, reusing its id and cascade-wiping candidate_criteria. A re-evaluation APPENDS a new row under a new evaluation_run_id. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
+-- ============================================================================
+-- 3. THE LINK: one row per BROKER-ACCEPTED latch order.
+--
+-- WHY A NEW TABLE AT ALL. The acceptance row in latch_order_intents genuinely
+-- IS a durable order<->mandate link -- append-only, trigger-protected, carrying
+-- actual_broker_order_id and candidate_id on one row. What it does NOT carry is
+-- the fire's INVALIDATION, and it can never be made to: trg_loi_no_update and
+-- trg_loi_no_delete ABORT every UPDATE and DELETE (0033), so a new column on
+-- that table could never be back-filled for an existing acceptance. An
+-- implementation built on it alone must read candidates.initial_stop live at
+-- comparison time with nothing to check it against -- precisely the shape RD's
+-- frozen-value gate refuses.
+--
+-- link_id is AUTOINCREMENT, deliberately. provenance_corrections cites it by
+-- id; a bare rowid is REUSED when the row holding the maximum is deleted, and
+-- an audit citation that can silently repoint at a different row is not a
+-- citation (the fills.fill_id-reuse class this repo already paid for at 0036).
+--
+-- NO UNIQUE ON broker_order_id. A duplicate would abort the LEDGER write, and
+-- cohort bookkeeping must never block a money-bearing operation (0036:26-38).
+-- Cardinality is the READER's COUNT: two links sharing one broker order id
+-- refuse ambiguous_accepted_orders at admission. UNIQUE(validity_intent_id) IS
+-- declared -- the minting trigger fires once per validity row, so it cannot
+-- conflict, and it is what makes "one link per acceptance" structural.
+--
+-- NO frozen_zone_cap COLUMN. The buy-zone cap is a pure function of the frozen
+-- pivot (zone_cap_for_pivot), used only by the price-consistency REFUSAL guard
+-- and never as evidence. Storing it would duplicate arithmetic into SQL and
+-- carry a false "frozen" claim; deriving it at read time removes both.
+--
+-- THE FROZEN COLUMNS ARE NULLABLE, and that is the priority ruling rather than
+-- laxity: candidates.pivot / initial_stop are unconstrained REAL columns, so a
+-- junk fire is representable. A NOT NULL or a bare "> 0" NOT NULL here would
+-- make the minting trigger ABORT the operator's acceptance record. NULL lands,
+-- and admission later refuses frozen_value_unavailable.
+--
+-- EVERY FK IS ON DELETE RESTRICT. On a table whose UPDATE trigger aborts every
+-- UPDATE, ON DELETE SET NULL is UNIMPLEMENTABLE -- the cascade IS an UPDATE
+-- (0033's own lesson, inherited rather than re-derived).
+-- ============================================================================
+CREATE TABLE latch_order_mandate_links (
+    link_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    validity_intent_id INTEGER NOT NULL UNIQUE
+        REFERENCES latch_order_intents(intent_id) ON DELETE RESTRICT,
+    place_intent_id    INTEGER NOT NULL
+        REFERENCES latch_order_intents(intent_id) ON DELETE RESTRICT,
+    candidate_id       INTEGER NOT NULL
+        REFERENCES candidates(id) ON DELETE RESTRICT,
+
+    -- The denormalised identity block, copied from the accepting intent. Rung
+    -- 3c binds every one of these back to its authoritative source at
+    -- admission, because a copy nothing checks is a forgery surface: a RAW link
+    -- could cite a GENUINE accepted validity row while substituting a different
+    -- broker order id or an inflated quantity.
+    evaluation_run_id  INTEGER NOT NULL,
+    ticker             TEXT    NOT NULL,
+    detection_date     TEXT    NOT NULL,
+    broker_order_id    TEXT    NOT NULL,
+
+    frozen_pivot        REAL,
+    frozen_invalidation REAL,
+    actual_quantity     INTEGER,
+
+    -- TWO-VALUED under single-state. gap_era_reconstructed and the era model it
+    -- names are CARVED to 22-A2, so a pre-barrier reconstruction can never be
+    -- read as a post-barrier freeze and there is no third state to confuse with
+    -- either. Mirrored by LATCH_FREEZE_TIERS in swing/trades/latched_origin.py,
+    -- and a drift test asserts the two spellings hold the same values (#11 --
+    -- the comparator is the only mirror that defends the set).
+    freeze_tier TEXT NOT NULL
+        CHECK (freeze_tier IN ('live_at_acceptance', 'pre_barrier_reconstructed')),
+
+    linked_at TEXT NOT NULL,
+
+    CHECK (frozen_pivot        IS NULL OR frozen_pivot        > 0),
+    CHECK (frozen_invalidation IS NULL OR frozen_invalidation > 0),
+    CHECK (actual_quantity     IS NULL OR actual_quantity     > 0),
+    CHECK (length(trim(ticker)) > 0),
+    CHECK (length(trim(broker_order_id)) > 0),
+    CHECK (evaluation_run_id > 0),
+    -- The three-predicate date guard, per 0033's own lesson: length, parseable,
+    -- and round-trips. date('2026-08-32') is NULL; date('2026-8-1') parses but
+    -- does NOT round-trip; a bare length check accepts both.
+    CHECK (COALESCE(length(detection_date) = 10
+           AND date(detection_date) IS NOT NULL
+           AND date(detection_date) = detection_date
+           AND CAST(substr(detection_date, 1, 4) AS INTEGER) BETWEEN 1 AND 9999, 0))
+);
+
+CREATE INDEX ix_loml_broker_order_id ON latch_order_mandate_links(broker_order_id);
+CREATE INDEX ix_loml_candidate_id    ON latch_order_mandate_links(candidate_id);
+CREATE INDEX ix_loml_ticker          ON latch_order_mandate_links(ticker);
+
+CREATE TRIGGER trg_loml_no_update BEFORE UPDATE ON latch_order_mandate_links
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loml_no_update: latch_order_mandate_links is append-only. A link records what the broker accepted at one instant; editing it would rewrite the frozen values the admission proof rests on. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
+CREATE TRIGGER trg_loml_no_delete BEFORE DELETE ON latch_order_mandate_links
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loml_no_delete: latch_order_mandate_links is append-only. Deleting a link would erase the only durable record binding a broker order to its mandate. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
+-- ============================================================================
+-- 4. THE MINTING TRIGGER, and the BACKFILL.
+--
+-- A TRIGGER, NOT A SERVICE HOOK. A hook in record_intent or in the route is
+-- skippable and invisible to a raw INSERT -- the D36 shape. A trigger cannot be
+-- bypassed by any writer.
+--
+-- IT MUST BE INCAPABLE OF RAISING. Each copied value is guarded AT THE SOURCE
+-- by a CASE, so a junk fire lands NULL frozen values rather than aborting the
+-- operator's acceptance record.
+--
+-- THE TIER IS DERIVED, NEVER HARD-CODED (review 22A-R7-03). The specification
+-- for this trigger once read freeze_tier='live_at_acceptance' unconditionally,
+-- which would have given a POST-migration acceptance of a PRE-migration fire a
+-- false structural-proof label -- the exact defect the epoch exists to prevent,
+-- written into the epoch's own migration. It was the TWELFTH mirror site of the
+-- freeze-tier family and an eleven-site sweep could not have found it, because
+-- that sweep looked for the enum's VALUE SET and this line hard-coded ONE
+-- MEMBER of it. A value-set sweep does not find a hard-coded single member.
+-- The CASE below and the one in the backfill are the SQL twin of
+-- freeze_tier_for_candidate; a test runs both spellings over the same fixtures.
+-- ============================================================================
+CREATE TRIGGER trg_latch_link_mint_on_acceptance
+AFTER INSERT ON latch_order_intents
+FOR EACH ROW WHEN NEW.intent_kind = 'validity'
+             AND NEW.validity_outcome = 'accepted_by_broker'
+             AND NEW.actual_broker_order_id IS NOT NULL
+BEGIN
+    INSERT INTO latch_order_mandate_links (
+        validity_intent_id, place_intent_id, candidate_id, evaluation_run_id,
+        ticker, detection_date, broker_order_id,
+        frozen_pivot, frozen_invalidation, actual_quantity,
+        freeze_tier, linked_at)
+    SELECT NEW.intent_id,
+           NEW.validated_place_intent_id,
+           NEW.candidate_id,
+           NEW.evaluation_run_id,
+           NEW.ticker,
+           NEW.detection_date,
+           NEW.actual_broker_order_id,
+           CASE WHEN typeof(c.pivot) = 'real' AND c.pivot > 0
+                THEN c.pivot ELSE NULL END,
+           CASE WHEN typeof(c.initial_stop) = 'real' AND c.initial_stop > 0
+                THEN c.initial_stop ELSE NULL END,
+           NEW.actual_quantity,
+           CASE WHEN c.id > (SELECT max_candidate_id_at_barrier
+                               FROM candidates_immutability_epoch
+                              WHERE epoch_id = 1)
+                THEN 'live_at_acceptance' ELSE 'pre_barrier_reconstructed' END,
+           strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+      FROM candidates c
+     WHERE c.id = NEW.candidate_id;
+END;
+
+-- THE BACKFILL is a GENERAL statement over the ledger, never a hand-written
+-- row, and it derives the tier through the SAME CASE rather than stating a
+-- constant -- the second single-member site the corrected sweep found. Its
+-- expected result on the live database today is exactly ONE row at
+-- pre_barrier_reconstructed, and the test asserts that as an OUTCOME of the
+-- derivation rather than as an input to it: the epoch was seeded from
+-- MAX(candidates.id) moments ago, so every candidate that exists is at-or-below
+-- the boundary and no backfilled link can be post-barrier.
+INSERT INTO latch_order_mandate_links (
+    validity_intent_id, place_intent_id, candidate_id, evaluation_run_id,
+    ticker, detection_date, broker_order_id,
+    frozen_pivot, frozen_invalidation, actual_quantity,
+    freeze_tier, linked_at)
+SELECT v.intent_id,
+       v.validated_place_intent_id,
+       v.candidate_id,
+       v.evaluation_run_id,
+       v.ticker,
+       v.detection_date,
+       v.actual_broker_order_id,
+       CASE WHEN typeof(c.pivot) = 'real' AND c.pivot > 0
+            THEN c.pivot ELSE NULL END,
+       CASE WHEN typeof(c.initial_stop) = 'real' AND c.initial_stop > 0
+            THEN c.initial_stop ELSE NULL END,
+       v.actual_quantity,
+       CASE WHEN c.id > (SELECT max_candidate_id_at_barrier
+                           FROM candidates_immutability_epoch
+                          WHERE epoch_id = 1)
+            THEN 'live_at_acceptance' ELSE 'pre_barrier_reconstructed' END,
+       strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+  FROM latch_order_intents v
+  JOIN candidates c ON c.id = v.candidate_id
+ WHERE v.intent_kind = 'validity'
+   AND v.validity_outcome = 'accepted_by_broker'
+   AND v.actual_broker_order_id IS NOT NULL
+   AND v.validated_place_intent_id IS NOT NULL;
+
+-- ============================================================================
+-- 5. THE CORRECTION SURFACE LEARNS THE LATCH LADDER -- SIX ADD COLUMNs.
+--
+-- admission_tier takes a CONSTANT default, so NOT NULL DEFAULT is legal and the
+-- existing CADL row becomes 'last_word' -- which is true of it. The five
+-- citation columns default NULL, as SQLite requires for an added FK column.
+--
+-- The tier enum is TWO-VALUED in this arc; latch_ladder_tier2 arrives with
+-- 22-A2 and the tier-2 evidence class it belongs to. A column-level CHECK IS
+-- accepted and ENFORCED by ALTER TABLE ADD COLUMN on the installed SQLite
+-- (3.50.4) -- verified at the prompt before this was written, per 0036's
+-- four-CHECK-semantics-surprises lesson -- so the SQL half of the enum mirror
+-- lives here and PROVENANCE_ADMISSION_TIERS mirrors it (#11).
+-- ============================================================================
+ALTER TABLE provenance_corrections ADD COLUMN admission_tier TEXT NOT NULL
+    DEFAULT 'last_word' CHECK (admission_tier IN ('last_word', 'latch_ladder'));
+ALTER TABLE provenance_corrections ADD COLUMN cited_latch_link_id INTEGER
+    REFERENCES latch_order_mandate_links(link_id) ON DELETE RESTRICT;
+ALTER TABLE provenance_corrections ADD COLUMN cited_latch_validity_intent_id INTEGER
+    REFERENCES latch_order_intents(intent_id) ON DELETE RESTRICT;
+ALTER TABLE provenance_corrections ADD COLUMN cited_latch_place_intent_id INTEGER
+    REFERENCES latch_order_intents(intent_id) ON DELETE RESTRICT;
+ALTER TABLE provenance_corrections ADD COLUMN cited_latch_broker_order_id TEXT;
+ALTER TABLE provenance_corrections ADD COLUMN cited_latch_probe_json TEXT;
+
+-- ============================================================================
+-- 6. THE CITATION GRAPH, RE-CREATED (CONDITION-4 EXCEPTION 2).
+--
+-- The EIGHT relations 0036 established are carried VERBATIM. What is added is
+-- the tier / paired-NULL rule and, under 'latch_ladder', the latch citation's
+-- own structural bindings plus a VERSIONED, CLOSED evidence schema.
+--
+-- WHY A TRIGGER RATHER THAN TABLE-LEVEL CHECKs. ALTER TABLE ADD COLUMN cannot
+-- add a TABLE-level CHECK, and the paired-NULL rule is cross-column; the
+-- bindings are cross-TABLE, which no CHECK can express (subqueries are
+-- prohibited in CHECK constraints and permitted in a trigger WHEN clause --
+-- verified). The only alternative is rebuilding the audit table of record.
+--
+-- THE COALESCE WRAPPER ON THE LATCH BLOCK IS LOAD-BEARING, AND MEASURED. In a
+-- trigger's WHEN NOT (...) clause a single NULL conjunct makes the WHOLE
+-- predicate NULL, and a NULL WHEN DOES NOT FIRE THE TRIGGER -- so an evidence
+-- blob with a MISSING required key silently passes: json_type(blob,'$.absent')
+-- is NULL, NULL = 'text' is NULL, and the row is accepted. Verified by
+-- execution on 3.50.4: without COALESCE a blob omitting a required key is
+-- ACCEPTED; with COALESCE(..., 0) it is REJECTED. 0036's own CHECKs use the
+-- same idiom for the same reason; this is that trap arriving one layer up, in
+-- the construct whose failure mode is silence rather than an error.
+--
+-- WHAT THIS TRIGGER CLAIMS, NARROWED TO WHAT IT CAN ESTABLISH. Three limits,
+-- stated here rather than only in the plan:
+--   (1) Element-wise equality of expected_sessions and observed_sessions proves
+--       the two arrays agree with EACH OTHER, not with the NYSE calendar or
+--       with the archive. Two identical fabricated arrays pass -- including two
+--       EMPTY arrays for a non-empty window. A trigger cannot enumerate a
+--       session calendar. The coverage FACT is established by the service.
+--   (2) json_remove(<obj>, <every allowed key>) = '{}' rejects EXTRA keys but
+--       does NOT establish that every REQUIRED key exists, because SQLite
+--       renders both a missing path and a JSON null as SQL NULL. Every required
+--       field therefore ALSO carries a positive json_type assertion, under the
+--       COALESCE wrapper above.
+--   (3) bars_through is deliberately NOT SQL-bound: a trigger cannot walk an
+--       exchange calendar, and pretending otherwise is how horizon_session and
+--       bars_through were once collapsed into one field with two incompatible
+--       definitions. It is presence- and type-checked here and validated in the
+--       service. Stated so the next reader finds a decision rather than a gap.
+--
+-- THE SINGLE ROUNDING AUTHORITY (RD's ruled principle). Python rounds
+-- half-to-EVEN and SQLite rounds half-AWAY-from-zero; they disagree on exactly
+-- the eighth-dollar values (.125 / .625), and 24 live candidates rows sit on
+-- that family. So the blob carries the RAW operands, each bound by a plain =
+-- against its SOURCE column -- an IDENTITY check, same value and same domain,
+-- no rounding, no cross-domain comparison -- and the SERVICE'S VERDICT travels
+-- as a datum (invalidation_equal_at_dp / pivot_equal_at_dp, with compare_dp
+-- binding the precision the service used, so a later PRICE_DP change cannot
+-- silently re-interpret an old row). SQL NEVER rounds and NEVER compares two
+-- independently-sourced prices to each other. The residual is declared: SQL
+-- cannot verify that the recorded verdict is the CORRECT rounding of the two
+-- raw operands. That is strictly smaller than what a raw-equality clause
+-- exposed -- both raws stay bound to the cited link and the cited candidate, so
+-- a forger cannot name a different mandate -- and it is the unavoidable price
+-- of the rule, because ANY SQL-side recomputation re-creates the cross-domain
+-- comparison the rule exists to forbid.
+--
+-- THE $.authorization ROSTER IS THE MACHINE-READABLE SOURCE OF TRUTH. The
+-- json_remove path list below is the closure list; AUTHORIZATION_CLAUSES in
+-- swing/trades/latched_origin.py mirrors it, and a test parses the path list
+-- out of THIS FILE and asserts exact set equality with that roster -- the
+-- 0033 LATCH_BROKER_SNAPSHOT_KEYS precedent, so neither is a hand-maintained
+-- copy of the other. SIXTEEN entries: the ELEVEN ladder rungs plus the FIVE
+-- envelope guards enumerated SEPARATELY, because one lumped envelope_guards
+-- entry cannot distinguish "all five passed" from "one ran and four never did".
+-- ============================================================================
+DROP TRIGGER trg_provenance_corrections_citation_graph;
+
+CREATE TRIGGER trg_provenance_corrections_citation_graph
+BEFORE INSERT ON provenance_corrections
+FOR EACH ROW WHEN NOT (
+    -- the cited candidate belongs to the cited run, and is an aplus row
+    EXISTS (SELECT 1 FROM candidates ca
+            WHERE ca.id = NEW.cited_candidate_id
+              AND ca.evaluation_run_id = NEW.cited_evaluation_run_id
+              AND ca.bucket = 'aplus')
+    -- the frozen run anchors ARE that run's own columns
+    AND EXISTS (SELECT 1 FROM evaluation_runs er
+                WHERE er.id = NEW.cited_evaluation_run_id
+                  AND er.run_ts = NEW.cited_run_ts_raw
+                  AND er.action_session_date
+                      = NEW.cited_candidate_action_session_date)
+    -- the cited recommendation belongs to the same run and the same ticker,
+    -- is a today_decision, and carries the frozen anchor
+    AND EXISTS (SELECT 1 FROM daily_recommendations dr
+                WHERE dr.id = NEW.cited_daily_recommendation_id
+                  AND dr.evaluation_run_id = NEW.cited_evaluation_run_id
+                  AND dr.recommendation = 'today_decision'
+                  AND dr.action_session_date
+                      = NEW.cited_recommendation_action_session_date
+                  AND dr.ticker = (SELECT ca.ticker FROM candidates ca
+                                   WHERE ca.id = NEW.cited_candidate_id))
+    -- the cited pipeline row OWNS that run, is complete, and supplied the bound
+    AND EXISTS (SELECT 1 FROM pipeline_runs pr
+                WHERE pr.id = NEW.cited_pipeline_run_id
+                  AND pr.evaluation_run_id = NEW.cited_evaluation_run_id
+                  AND pr.state = 'complete'
+                  AND pr.finished_ts = NEW.cited_pipeline_finished_ts_raw)
+    -- the cited interval belongs to the cited hypothesis and IS what was frozen
+    AND EXISTS (SELECT 1 FROM hypothesis_status_history h
+                WHERE h.history_id = NEW.cited_hypothesis_status_history_id
+                  AND h.hypothesis_id = NEW.cited_hypothesis_id
+                  AND h.status = NEW.cited_hypothesis_status_at_record
+                  AND h.effective_from
+                      = NEW.cited_hypothesis_status_effective_from
+                  AND h.effective_to
+                      IS NEW.cited_hypothesis_status_effective_to
+                  AND h.recorded_at
+                      = NEW.cited_hypothesis_status_recorded_at)
+    -- the frozen NAME is that hypothesis's name as spelled right now
+    AND EXISTS (SELECT 1 FROM hypothesis_registry hr
+                WHERE hr.id = NEW.cited_hypothesis_id
+                  AND hr.name = NEW.cited_hypothesis_name_at_correction)
+    -- the anchoring fill is an ENTRY fill of THIS trade on the frozen session
+    AND EXISTS (SELECT 1 FROM fills f
+                WHERE f.fill_id = NEW.entry_fill_id_at_correction
+                  AND f.trade_id = NEW.trade_id
+                  AND f.action = 'entry'
+                  AND substr(f.fill_datetime, 1, 10)
+                      = NEW.entry_fill_session_date)
+    -- and the trade and the cited candidate are the same instrument
+    AND EXISTS (SELECT 1 FROM trades t
+                WHERE t.id = NEW.trade_id
+                  AND t.ticker = (SELECT ca.ticker FROM candidates ca
+                                  WHERE ca.id = NEW.cited_candidate_id))
+
+    -- ===================== 22-A: THE TIER AND ITS CITATION ==================
+    AND COALESCE((
+        -- 'last_word': ALL FIVE citation columns NULL. The tier a row claims
+        -- and the evidence it carries may not disagree.
+        (NEW.admission_tier = 'last_word'
+         AND NEW.cited_latch_link_id IS NULL
+         AND NEW.cited_latch_validity_intent_id IS NULL
+         AND NEW.cited_latch_place_intent_id IS NULL
+         AND NEW.cited_latch_broker_order_id IS NULL
+         AND NEW.cited_latch_probe_json IS NULL)
+        OR
+        -- 'latch_ladder': ALL FIVE present, each bound to its source.
+        (NEW.admission_tier = 'latch_ladder'
+         AND NEW.cited_latch_link_id IS NOT NULL
+         AND NEW.cited_latch_validity_intent_id IS NOT NULL
+         AND NEW.cited_latch_place_intent_id IS NOT NULL
+         AND NEW.cited_latch_broker_order_id IS NOT NULL
+         AND NEW.cited_latch_probe_json IS NOT NULL
+
+         -- the LINK is the one the row claims, on the cited candidate, naming
+         -- the cited order and the two cited intents
+         AND EXISTS (SELECT 1 FROM latch_order_mandate_links l
+                     WHERE l.link_id = NEW.cited_latch_link_id
+                       AND l.candidate_id = NEW.cited_candidate_id
+                       AND l.broker_order_id = NEW.cited_latch_broker_order_id
+                       AND l.validity_intent_id = NEW.cited_latch_validity_intent_id
+                       AND l.place_intent_id = NEW.cited_latch_place_intent_id)
+         -- the cited VALIDITY row is accepted, carries that order id, and its
+         -- own parent IS the cited place row (the relation a raw link can
+         -- otherwise assert falsely while every other check passes)
+         AND EXISTS (SELECT 1 FROM latch_order_intents v
+                     WHERE v.intent_id = NEW.cited_latch_validity_intent_id
+                       AND v.intent_kind = 'validity'
+                       AND v.validity_outcome = 'accepted_by_broker'
+                       AND v.actual_broker_order_id = NEW.cited_latch_broker_order_id
+                       AND v.validated_place_intent_id = NEW.cited_latch_place_intent_id)
+         -- the cited PLACE row is a place row on the cited candidate
+         AND EXISTS (SELECT 1 FROM latch_order_intents p
+                     WHERE p.intent_id = NEW.cited_latch_place_intent_id
+                       AND p.intent_kind = 'place'
+                       AND p.candidate_id = NEW.cited_candidate_id)
+
+         -- ---------------- THE PROBE EVIDENCE, CLOSED AND BOUND -------------
+         AND json_valid(NEW.cited_latch_probe_json)
+         AND json_type(NEW.cited_latch_probe_json) = 'object'
+         AND json_remove(NEW.cited_latch_probe_json,
+                 '$.evidence_version', '$.fire_candidate_id', '$.ticker',
+                 '$.fill_session', '$.horizon_session', '$.bars_through',
+                 '$.clear_reason', '$.clear_session', '$.admission_basis',
+                 '$.criteria_lapse_forced_off', '$.freeze_tier',
+                 '$.archive_status', '$.frozen_invalidation_raw',
+                 '$.live_invalidation_raw', '$.frozen_pivot_raw',
+                 '$.live_pivot_raw', '$.invalidation_equal_at_dp',
+                 '$.pivot_equal_at_dp', '$.compare_dp', '$.coverage',
+                 '$.authorization') = '{}'
+
+         -- the schema's own version, pinned. A row written under an older shape
+         -- must be DISTINGUISHABLE rather than silently re-interpreted.
+         AND json_type(NEW.cited_latch_probe_json, '$.evidence_version') = 'text'
+         AND json_extract(NEW.cited_latch_probe_json, '$.evidence_version') = '2026-08-24.1'
+
+         AND json_type(NEW.cited_latch_probe_json, '$.fire_candidate_id') = 'integer'
+         AND json_extract(NEW.cited_latch_probe_json, '$.fire_candidate_id')
+             = NEW.cited_candidate_id
+         AND json_type(NEW.cited_latch_probe_json, '$.ticker') = 'text'
+         AND json_extract(NEW.cited_latch_probe_json, '$.ticker')
+             = (SELECT t.ticker FROM trades t WHERE t.id = NEW.trade_id)
+         AND json_type(NEW.cited_latch_probe_json, '$.fill_session') = 'text'
+         AND json_extract(NEW.cited_latch_probe_json, '$.fill_session')
+             = NEW.entry_fill_session_date
+         -- horizon_session IS the fill session and IS bound; bars_through is
+         -- the exchange-calendar-derived prior session and is NOT (limit 3).
+         AND json_type(NEW.cited_latch_probe_json, '$.horizon_session') = 'text'
+         AND json_extract(NEW.cited_latch_probe_json, '$.horizon_session')
+             = NEW.entry_fill_session_date
+         AND json_type(NEW.cited_latch_probe_json, '$.bars_through') = 'text'
+
+         -- the lapse rung was FORCED OFF: RD's bound is that a latch never dies
+         -- of drift, so an admission derived with the rung armed is a different
+         -- judgment wearing the same name.
+         AND json_type(NEW.cited_latch_probe_json, '$.criteria_lapse_forced_off') = 'integer'
+         AND json_extract(NEW.cited_latch_probe_json, '$.criteria_lapse_forced_off') = 1
+
+         AND json_type(NEW.cited_latch_probe_json, '$.freeze_tier') = 'text'
+         AND json_extract(NEW.cited_latch_probe_json, '$.freeze_tier')
+             = (SELECT l.freeze_tier FROM latch_order_mandate_links l
+                 WHERE l.link_id = NEW.cited_latch_link_id)
+
+         -- THE ADMISSION BASIS. Without it an admission reached through the
+         -- same-session tie would either ABORT here or record clear_reason null
+         -- and FALSELY CLAIM an armed probe -- a false provenance claim minted
+         -- by the fix that made the mechanism correct.
+         AND json_type(NEW.cited_latch_probe_json, '$.admission_basis') = 'text'
+         AND (
+             (json_extract(NEW.cited_latch_probe_json, '$.admission_basis') = 'armed'
+              AND json_type(NEW.cited_latch_probe_json, '$.clear_reason') = 'null'
+              AND json_type(NEW.cited_latch_probe_json, '$.clear_session') = 'null')
+             OR
+             -- THE THREE REACHABLE REASONS. invalidation is admitted by the
+             -- RULE (fill-wins is uniform) but is UNREACHABLE through the
+             -- production probe -- bar_bound is the session BEFORE the fill, so
+             -- an invalidation can never carry the fill session's date and a row
+             -- claiming one is incoherent by construction. fill is excluded by
+             -- the rule itself: another trade's fill is a consumption.
+             (json_extract(NEW.cited_latch_probe_json, '$.admission_basis')
+                  = 'subject_fill_wins_same_session_tie'
+              AND json_type(NEW.cited_latch_probe_json, '$.clear_reason') = 'text'
+              AND json_extract(NEW.cited_latch_probe_json, '$.clear_reason')
+                  IN ('declined', 'superseded', 'horizon')
+              AND json_type(NEW.cited_latch_probe_json, '$.clear_session') = 'text'
+              AND json_extract(NEW.cited_latch_probe_json, '$.clear_session')
+                  = NEW.entry_fill_session_date)
+         )
+
+         -- THE FOUR RAW OPERANDS, EACH BOUND BY IDENTITY TO ITS SOURCE. A
+         -- number a row supplies about itself proves only that the row is
+         -- self-consistent.
+         AND json_type(NEW.cited_latch_probe_json, '$.frozen_invalidation_raw')
+             IN ('real', 'integer')
+         AND json_extract(NEW.cited_latch_probe_json, '$.frozen_invalidation_raw')
+             = (SELECT l.frozen_invalidation FROM latch_order_mandate_links l
+                 WHERE l.link_id = NEW.cited_latch_link_id)
+         AND json_type(NEW.cited_latch_probe_json, '$.live_invalidation_raw')
+             IN ('real', 'integer')
+         AND json_extract(NEW.cited_latch_probe_json, '$.live_invalidation_raw')
+             = (SELECT ca.initial_stop FROM candidates ca
+                 WHERE ca.id = NEW.cited_candidate_id)
+         AND json_type(NEW.cited_latch_probe_json, '$.frozen_pivot_raw')
+             IN ('real', 'integer')
+         AND json_extract(NEW.cited_latch_probe_json, '$.frozen_pivot_raw')
+             = (SELECT l.frozen_pivot FROM latch_order_mandate_links l
+                 WHERE l.link_id = NEW.cited_latch_link_id)
+         AND json_type(NEW.cited_latch_probe_json, '$.live_pivot_raw')
+             IN ('real', 'integer')
+         AND json_extract(NEW.cited_latch_probe_json, '$.live_pivot_raw')
+             = (SELECT ca.pivot FROM candidates ca
+                 WHERE ca.id = NEW.cited_candidate_id)
+
+         -- THE SERVICE'S VERDICT, CARRIED AS A DATUM. SQL asserts the verdicts
+         -- are 1 and that compare_dp is the precision the service used. It does
+         -- NOT recompute them -- that is the rule, not an omission.
+         AND json_type(NEW.cited_latch_probe_json, '$.invalidation_equal_at_dp') = 'integer'
+         AND json_extract(NEW.cited_latch_probe_json, '$.invalidation_equal_at_dp') = 1
+         AND json_type(NEW.cited_latch_probe_json, '$.pivot_equal_at_dp') = 'integer'
+         AND json_extract(NEW.cited_latch_probe_json, '$.pivot_equal_at_dp') = 1
+         AND json_type(NEW.cited_latch_probe_json, '$.compare_dp') = 'integer'
+         AND json_extract(NEW.cited_latch_probe_json, '$.compare_dp') = 2
+
+         -- ARCHIVE STATUS: 'ok' unless the judging window was empty.
+         AND json_type(NEW.cited_latch_probe_json, '$.archive_status') IN ('text', 'null')
+         AND (json_type(NEW.cited_latch_probe_json, '$.coverage.window_empty') = 'true'
+              OR json_extract(NEW.cited_latch_probe_json, '$.archive_status') = 'ok')
+
+         -- COVERAGE: exactly one of the two shapes, each closed at its own
+         -- level. The arrays are compared ELEMENT BY ELEMENT via json_each --
+         -- equal lengths plus an empty missing_sessions accepts two unrelated
+         -- or duplicated arrays -- with duplicate rejection and an ISO-date
+         -- check on every element. Note json_each's own `type` column is used:
+         -- the ONE-ARGUMENT json_type() parses its argument AS JSON and raises
+         -- "malformed JSON" on a bare date string (measured).
+         AND json_type(NEW.cited_latch_probe_json, '$.coverage') = 'object'
+         AND (
+             (json_remove(json_extract(NEW.cited_latch_probe_json, '$.coverage'),
+                          '$.window_empty') = '{}'
+              AND json_type(NEW.cited_latch_probe_json, '$.coverage.window_empty') = 'true')
+             OR
+             (json_remove(json_extract(NEW.cited_latch_probe_json, '$.coverage'),
+                          '$.expected_sessions', '$.observed_sessions',
+                          '$.missing_sessions') = '{}'
+              AND json_type(NEW.cited_latch_probe_json, '$.coverage.expected_sessions') = 'array'
+              AND json_type(NEW.cited_latch_probe_json, '$.coverage.observed_sessions') = 'array'
+              AND json_type(NEW.cited_latch_probe_json, '$.coverage.missing_sessions') = 'array'
+              AND json_array_length(NEW.cited_latch_probe_json, '$.coverage.missing_sessions') = 0
+              AND json_array_length(NEW.cited_latch_probe_json, '$.coverage.expected_sessions')
+                  = json_array_length(NEW.cited_latch_probe_json, '$.coverage.observed_sessions')
+              AND NOT EXISTS (
+                  SELECT 1
+                    FROM json_each(NEW.cited_latch_probe_json, '$.coverage.expected_sessions') e
+                    LEFT JOIN json_each(NEW.cited_latch_probe_json,
+                                        '$.coverage.observed_sessions') o ON o.key = e.key
+                   WHERE o.value IS NOT e.value)
+              AND (SELECT COUNT(DISTINCT value) FROM json_each(
+                      NEW.cited_latch_probe_json, '$.coverage.expected_sessions'))
+                  = json_array_length(NEW.cited_latch_probe_json, '$.coverage.expected_sessions')
+              AND NOT EXISTS (
+                  SELECT 1
+                    FROM json_each(NEW.cited_latch_probe_json, '$.coverage.expected_sessions') e
+                   WHERE e.type <> 'text' OR length(e.value) <> 10
+                      OR date(e.value) IS NULL OR date(e.value) <> e.value))
+         )
+
+         -- ------------- $.authorization: ONE ENTRY PER REFUSAL-CAPABLE CLAUSE
+         -- If a clause can REFUSE an admission, the blob records the INPUT it
+         -- judged and the VERDICT it reached -- or "passed" and "never ran" are
+         -- indistinguishable at audit. A MISSING entry is REJECTED rather than
+         -- read as a pass, and PRESENCE IS NOT FIDELITY: the SQL-bound entries
+         -- have their recorded input bound by subquery to its source, so a
+         -- fabricated input is rejected too.
+         AND json_type(NEW.cited_latch_probe_json, '$.authorization') = 'object'
+         AND json_remove(json_extract(NEW.cited_latch_probe_json, '$.authorization'),
+                 '$.rung1_link_ticker', '$.rung2_link_parent',
+                 '$.rung3_validity_outcome', '$.rung3b_latest_validity_child',
+                 '$.rung3c_link_broker_order_id', '$.rung4_governing_place_intent',
+                 '$.rung5_cancel_intent_id', '$.rung6_consuming_trade_id',
+                 '$.rung7_consumption_scan_fill_ids', '$.rung8_competitor_link_ids',
+                 '$.rung9_stored_freeze_tier', '$.guard_fill_origin',
+                 '$.guard_envelope_symbol', '$.guard_quantity',
+                 '$.guard_framework_price_bound',
+                 '$.guard_broker_limit_bound') = '{}'
+
+         -- every entry is closed to exactly {input, verdict} and every verdict
+         -- is 'pass' (a non-pass entry contradicts the admission it sits in)
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung1_link_ticker'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung1_link_ticker.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.rung1_link_ticker.input') = 'text'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung1_link_ticker.input')
+             = (SELECT l.ticker FROM latch_order_mandate_links l
+                 WHERE l.link_id = NEW.cited_latch_link_id)
+
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung2_link_parent'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung2_link_parent.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.rung2_link_parent.input') = 'integer'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung2_link_parent.input')
+             = (SELECT l.place_intent_id FROM latch_order_mandate_links l
+                 WHERE l.link_id = NEW.cited_latch_link_id)
+
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3_validity_outcome'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3_validity_outcome.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3_validity_outcome.input') = 'text'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3_validity_outcome.input')
+             = (SELECT v.validity_outcome FROM latch_order_intents v
+                 WHERE v.intent_id = NEW.cited_latch_validity_intent_id)
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3_validity_outcome.input') = 'accepted_by_broker'
+
+         -- THE LATEST VALIDITY CHILD, by the SAME TOTAL ORDER the classifier
+         -- uses -- (recorded_ts, intent_id), swing/latches/classification.py
+         -- _order_key -- spelled here as ORDER BY ... DESC LIMIT 1 rather than
+         -- MAX(intent_id), which is a DIFFERENT order whenever a later-inserted
+         -- row carries an earlier recorded_ts.
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3b_latest_validity_child'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3b_latest_validity_child.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3b_latest_validity_child.input') = 'integer'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3b_latest_validity_child.input')
+             = NEW.cited_latch_validity_intent_id
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3b_latest_validity_child.input')
+             = (SELECT x.intent_id FROM latch_order_intents x
+                 WHERE x.validated_place_intent_id = NEW.cited_latch_place_intent_id
+                   AND x.intent_kind = 'validity'
+                 ORDER BY x.recorded_ts DESC, x.intent_id DESC LIMIT 1)
+
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3c_link_broker_order_id'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3c_link_broker_order_id.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3c_link_broker_order_id.input') = 'text'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung3c_link_broker_order_id.input')
+             = (SELECT v.actual_broker_order_id FROM latch_order_intents v
+                 WHERE v.intent_id = NEW.cited_latch_validity_intent_id)
+
+         -- THE GOVERNING PLACE CYCLE AS OF THE FILL. A later place opens a new
+         -- cycle and RETIRES the earlier order regardless of what the earlier
+         -- order's own validity children say. The as-of bound is STRICTLY
+         -- BEFORE the fill session, the same date-only clock policy the service
+         -- applies: an intent recorded ON the fill session is UNORDERABLE
+         -- against it and refuses rather than being counted either way.
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung4_governing_place_intent'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung4_governing_place_intent.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.rung4_governing_place_intent.input') = 'integer'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung4_governing_place_intent.input')
+             = NEW.cited_latch_place_intent_id
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung4_governing_place_intent.input')
+             = (SELECT x.intent_id FROM latch_order_intents x
+                 WHERE x.candidate_id = NEW.cited_candidate_id
+                   AND x.intent_kind = 'place'
+                   AND date(x.recorded_ts) < NEW.entry_fill_session_date
+                 ORDER BY x.recorded_ts DESC, x.intent_id DESC LIMIT 1)
+
+         -- NO CANCELLATION at-or-before the fill. The recorded input is JSON
+         -- null -- "none found" -- and the null is BOUND: the trigger asserts
+         -- there genuinely is none.
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung5_cancel_intent_id'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung5_cancel_intent_id.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.rung5_cancel_intent_id.input') = 'null'
+         AND NOT EXISTS (SELECT 1 FROM latch_order_intents x
+                         WHERE x.candidate_id = NEW.cited_candidate_id
+                           AND x.intent_kind = 'cancel'
+                           AND date(x.recorded_ts) <= NEW.entry_fill_session_date)
+
+         -- NO OTHER TRADE HAS CONSUMED THIS ORDER. Order-linked, never
+         -- COUNT(*) over the candidate: the ordinary entry path assigns
+         -- candidate_id from pipeline provenance with no accepted order
+         -- anywhere near it, so a count would let an unrelated trade falsely
+         -- block the real order-linked fill.
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung6_consuming_trade_id'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung6_consuming_trade_id.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.rung6_consuming_trade_id.input') = 'null'
+         AND NOT EXISTS (SELECT 1 FROM fills f2
+                         WHERE f2.action = 'entry'
+                           AND f2.trade_id <> NEW.trade_id
+                           AND f2.schwab_source_value_json IS NOT NULL
+                           AND json_valid(f2.schwab_source_value_json)
+                           AND json_extract(f2.schwab_source_value_json, '$.schwab_order_id')
+                               = NEW.cited_latch_broker_order_id)
+
+         -- SERVICE-VALIDATED (L17). Rungs 7 and 8 rest on a scan result and on
+         -- derivation state that no subquery can reach, so SQL asserts their
+         -- PRESENCE, TYPE and verdict and nothing more. A fabricated input on
+         -- either is ACCEPTED -- that is a LIMIT of the trigger, declared, not
+         -- a guarantee.
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung7_consumption_scan_fill_ids'),
+                 '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung7_consumption_scan_fill_ids.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.rung7_consumption_scan_fill_ids.input') = 'array'
+
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung8_competitor_link_ids'),
+                 '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung8_competitor_link_ids.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.rung8_competitor_link_ids.input') = 'array'
+
+         -- RUNG 9 IS RD'S REFUSE-BY-DEFAULT, MADE STRUCTURAL IN THE AUDIT ROW.
+         -- A latch_ladder correction may only cite a POST-barrier link.
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung9_stored_freeze_tier'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung9_stored_freeze_tier.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.rung9_stored_freeze_tier.input') = 'text'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung9_stored_freeze_tier.input')
+             = (SELECT l.freeze_tier FROM latch_order_mandate_links l
+                 WHERE l.link_id = NEW.cited_latch_link_id)
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung9_stored_freeze_tier.input') = 'live_at_acceptance'
+
+         -- THE FIVE ENVELOPE GUARDS, SEPARATELY ENUMERATED AND -- at CORRECTION
+         -- time -- SQL-BOUND. Their inputs are operator-submitted at ENTRY, but
+         -- by the time a correction cites them they are PERSISTED on the fill
+         -- this row already names (entry_fill_id_at_correction), so a subquery
+         -- CAN reach them and a fabricated input is rejected rather than merely
+         -- present.
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_fill_origin'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_fill_origin.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_fill_origin.input') = 'text'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_fill_origin.input')
+             = (SELECT f.fill_origin FROM fills f
+                 WHERE f.fill_id = NEW.entry_fill_id_at_correction)
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_fill_origin.input')
+             IN ('schwab_auto', 'schwab_auto_then_operator_corrected')
+
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_envelope_symbol'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_envelope_symbol.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_envelope_symbol.input') = 'text'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_envelope_symbol.input')
+             = (SELECT json_extract(f.schwab_source_value_json,
+                                    '$.schwab_instrument_symbol')
+                  FROM fills f WHERE f.fill_id = NEW.entry_fill_id_at_correction)
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_envelope_symbol.input')
+             = (SELECT t.ticker FROM trades t WHERE t.id = NEW.trade_id)
+
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_quantity'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_quantity.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_quantity.input') IN ('real', 'integer')
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_quantity.input')
+             = (SELECT f.quantity FROM fills f
+                 WHERE f.fill_id = NEW.entry_fill_id_at_correction)
+
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_framework_price_bound'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_framework_price_bound.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_framework_price_bound.input') IN ('real', 'integer')
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_framework_price_bound.input')
+             = (SELECT f.price FROM fills f
+                 WHERE f.fill_id = NEW.entry_fill_id_at_correction)
+
+         -- NULLABLE BY DESIGN, and bound with IS so a JSON null must match a
+         -- SQL NULL rather than passing on NULL propagation. 0033 CHECKs that
+         -- an accepted_by_broker row carries actual_limit_price NOT NULL, so
+         -- the null branch is defensive against a shape the schema forbids --
+         -- stated rather than left to look like an oversight.
+         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_broker_limit_bound'), '$.input', '$.verdict') = '{}'
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_broker_limit_bound.verdict') = 'pass'
+         AND json_type(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_broker_limit_bound.input')
+             IN ('real', 'integer', 'null')
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.guard_broker_limit_bound.input')
+             IS (SELECT v.actual_limit_price FROM latch_order_intents v
+                  WHERE v.intent_id = NEW.cited_latch_validity_intent_id)
+        )
+    ), 0)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'provenance_corrections: the cited rows exist but do not form the citation graph this correction asserts (candidate->run, recommendation->run/ticker/kind, pipeline->run, status-history->hypothesis, registry name, fill->trade, trade<->candidate ticker, and -- for admission_tier latch_ladder -- link->candidate/order/intents, the accepted validity row and its place parent, and a closed VERSIONED probe-evidence blob whose every bound field matches its source and whose $.authorization records one passing entry per refusal-capable clause). The citation is STRUCTURAL: a row may not claim a contemporaneous pair it does not have, nor an admission whose evidence it cannot produce.');
+END;
+
+-- ============================================================================
+-- 7. APPEND-ONLY, RE-CREATED with the SIX new columns.
+--
+-- The shipped trigger ENUMERATES every column, so a column added without
+-- updating it becomes freely REWRITABLE on an append-only audit table. Not
+-- optional.
+--
+-- EVERY ONE OF THE SIX IS COMPARED WITH `IS`, NEVER `=`. Five are NULLABLE
+-- (only admission_tier carries NOT NULL DEFAULT), and NULL = NULL evaluates to
+-- NULL, which makes the WHEN guard NULL and DOES NOT FIRE THE TRIGGER -- so an
+-- `=` comparison would silently permit a rewrite of exactly the columns that
+-- carry the latch citation. admission_tier is compared with `IS` too: it is
+-- non-nullable today, and a comparison whose correctness depends on a
+-- NOT NULL somewhere else is a #31-shaped promise.
+--
+-- THE OLD GUARANTEE SURVIVES, and the test is computed against the OLD one: for
+-- every column the PRE-0037 trigger protected, a barred write must STILL fail.
+-- A test written only against the six new columns passes a replacement that
+-- silently dropped protection on an old one.
+-- ============================================================================
+DROP TRIGGER trg_provenance_corrections_append_only_update;
+
+CREATE TRIGGER trg_provenance_corrections_append_only_update
+BEFORE UPDATE ON provenance_corrections
+FOR EACH ROW WHEN NOT (
+    ((NEW.entry_fill_id IS NULL AND OLD.entry_fill_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM fills WHERE fill_id = OLD.entry_fill_id))
+     OR (NEW.entry_fill_id IS OLD.entry_fill_id))
+    AND ((NEW.risk_policy_id_at_correction IS NULL
+          AND OLD.risk_policy_id_at_correction IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM risk_policy
+                          WHERE policy_id = OLD.risk_policy_id_at_correction))
+         OR (NEW.risk_policy_id_at_correction
+             IS OLD.risk_policy_id_at_correction))
+    AND (NEW.entry_fill_id IS NOT OLD.entry_fill_id
+         OR NEW.risk_policy_id_at_correction
+            IS NOT OLD.risk_policy_id_at_correction)
+    AND NEW.provenance_correction_id = OLD.provenance_correction_id
+           AND NEW.trade_id = OLD.trade_id
+           AND NEW.entry_fill_id_at_correction = OLD.entry_fill_id_at_correction
+           AND NEW.entry_fill_snapshot_json = OLD.entry_fill_snapshot_json
+           AND NEW.cited_candidate_id = OLD.cited_candidate_id
+           AND NEW.cited_daily_recommendation_id = OLD.cited_daily_recommendation_id
+           AND NEW.cited_evaluation_run_id = OLD.cited_evaluation_run_id
+           AND NEW.cited_hypothesis_id = OLD.cited_hypothesis_id
+           AND NEW.cited_hypothesis_status_history_id = OLD.cited_hypothesis_status_history_id
+           AND NEW.cited_hypothesis_status_at_record = OLD.cited_hypothesis_status_at_record
+           AND NEW.cited_pipeline_finished_ts_raw = OLD.cited_pipeline_finished_ts_raw
+           AND NEW.cited_run_ts_utc = OLD.cited_run_ts_utc
+           AND NEW.cited_status_window_upper_utc = OLD.cited_status_window_upper_utc
+           AND NEW.cited_pipeline_run_id = OLD.cited_pipeline_run_id
+           AND NEW.cited_pipeline_run_snapshot_json = OLD.cited_pipeline_run_snapshot_json
+           AND NEW.cited_hypothesis_status_recorded_at = OLD.cited_hypothesis_status_recorded_at
+           AND NEW.cited_hypothesis_status_effective_from = OLD.cited_hypothesis_status_effective_from
+           AND (NEW.cited_hypothesis_status_effective_to IS OLD.cited_hypothesis_status_effective_to)
+           AND NEW.cited_hypothesis_name_at_correction = OLD.cited_hypothesis_name_at_correction
+           AND NEW.cited_candidate_action_session_date = OLD.cited_candidate_action_session_date
+           AND NEW.cited_recommendation_action_session_date = OLD.cited_recommendation_action_session_date
+           AND NEW.entry_fill_session_date = OLD.entry_fill_session_date
+           AND NEW.cited_run_ts_raw = OLD.cited_run_ts_raw
+           AND NEW.cited_recommendation_snapshot_json = OLD.cited_recommendation_snapshot_json
+           AND NEW.cited_candidate_snapshot_json = OLD.cited_candidate_snapshot_json
+           AND NEW.derivation_rule_version = OLD.derivation_rule_version
+           AND NEW.pre_value_json = OLD.pre_value_json
+           AND NEW.applied_value_json = OLD.applied_value_json
+           AND NEW.corrected_fields_json = OLD.corrected_fields_json
+           AND NEW.applied_at = OLD.applied_at
+           AND NEW.applied_by = OLD.applied_by
+           AND NEW.correction_reason = OLD.correction_reason
+           -- the SIX 22-A columns
+           AND NEW.admission_tier IS OLD.admission_tier
+           AND NEW.cited_latch_link_id IS OLD.cited_latch_link_id
+           AND NEW.cited_latch_validity_intent_id IS OLD.cited_latch_validity_intent_id
+           AND NEW.cited_latch_place_intent_id IS OLD.cited_latch_place_intent_id
+           AND NEW.cited_latch_broker_order_id IS OLD.cited_latch_broker_order_id
+           AND NEW.cited_latch_probe_json IS OLD.cited_latch_probe_json
+)
+BEGIN
+    SELECT RAISE(ABORT, 'provenance_corrections is APPEND-ONLY: the only permitted UPDATE is the FK-driven nulling of entry_fill_id or risk_policy_id_at_correction. V1 records provenance ONCE per trade and there is no re-correction path.');
+END;
+
+-- Schema version bump. MUST be the FINAL statement before COMMIT per the
+-- Phase 9 section A.0 precedent (a truncated transaction would leave the
+-- version stamp ahead of the schema).
+UPDATE schema_version SET version = 37;
+
+COMMIT;

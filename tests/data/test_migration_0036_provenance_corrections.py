@@ -54,11 +54,11 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 
 def test_expected_schema_version_is_36() -> None:
-    assert EXPECTED_SCHEMA_VERSION == 36
+    assert EXPECTED_SCHEMA_VERSION == 37
 
 
 def test_migration_applies_and_stamps_version_36(conn) -> None:
-    assert _current_version(conn) == 36
+    assert _current_version(conn) == 37
 
 
 def test_table_and_both_indexes_exist_read_from_sqlite_master(conn) -> None:
@@ -92,6 +92,19 @@ def test_every_declared_column_is_present_and_notnull_as_designed(conn) -> None:
         # NULL means the cited interval is STILL OPEN -- the shape the live H1
         # row has -- so it cannot be NOT NULL.
         "cited_hypothesis_status_effective_to",
+        # --- ADDED BY MIGRATION 0037 (22-A). SQLite requires an added FK
+        # column to default NULL, and the paired-NULL rule makes that
+        # SEMANTIC rather than incidental: a 'last_word' correction carries
+        # all five of these NULL and a 'latch_ladder' one carries all five
+        # NON-NULL, enforced by the citation trigger rather than by column
+        # nullability. `admission_tier` is deliberately NOT here -- it takes a
+        # constant NOT NULL DEFAULT, which is what makes the existing CADL row
+        # become 'last_word', true of it.
+        "cited_latch_link_id",
+        "cited_latch_validity_intent_id",
+        "cited_latch_place_intent_id",
+        "cited_latch_broker_order_id",
+        "cited_latch_probe_json",
     }
     for required in (
         "trade_id", "entry_fill_id_at_correction", "entry_fill_snapshot_json",
@@ -150,7 +163,7 @@ def test_rerunning_the_migration_is_a_clean_no_op(conn) -> None:
     ).fetchone()[0]
     run_migrations(conn)
     run_migrations(conn)
-    assert _current_version(conn) == 36
+    assert _current_version(conn) == 37
     after = conn.execute(
         "SELECT sql FROM sqlite_master WHERE name='provenance_corrections'",
     ).fetchone()[0]

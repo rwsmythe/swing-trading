@@ -18,6 +18,8 @@ from datetime import date
 
 import pytest
 
+from tests._candidates_barrier_helper import candidates_barrier_lifted
+
 from swing.config import load
 from swing.data.db import ensure_schema
 from swing.latches.reader import (
@@ -417,7 +419,13 @@ def test_a_TEXT_adr_pct_does_not_drop_the_whole_fire(db, cfg):
     with db:
         _run(db, 1, "2026-07-27", "2026-07-24T17:30:00")
         _candidate(db, 1, "VSTS", "aplus", _rows())
-        db.execute("UPDATE candidates SET adr_pct = 'bad'")
+        # From migration 0037 (22-A) `candidates` is structurally immutable, so
+        # the TEXT value is planted with the barrier lifted and the barrier
+        # restored verbatim.  This test pins the reader's DEGRADE-DON'T-DROP
+        # contract against a row that already holds a junk value -- detection of
+        # a historical shape, not the write path -- exactly the 18-B.1 posture.
+        with candidates_barrier_lifted(db):
+            db.execute("UPDATE candidates SET adr_pct = 'bad'")
     fires = load_fire_rows(db)
     assert len(fires) == 1                 # the fire SURVIVES
     assert fires[0].adr_pct == "bad"       # raw, for the resolver to refuse

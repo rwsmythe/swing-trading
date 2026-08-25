@@ -65,7 +65,7 @@ def test_expected_schema_version_is_head():
     # gate arithmetic -- IS 0035-specific and deliberately stays. This file is
     # the one place both kinds coexist, which is why it is edited surgically
     # and never by bulk replace.
-    assert EXPECTED_SCHEMA_VERSION == 36
+    assert EXPECTED_SCHEMA_VERSION == 37
 
 
 def test_v34_rejects_the_new_type_then_v35_accepts(tmp_path):

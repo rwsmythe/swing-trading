@@ -62,12 +62,12 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 
 def test_expected_schema_version_constant_is_19() -> None:
-    assert EXPECTED_SCHEMA_VERSION == 36
+    assert EXPECTED_SCHEMA_VERSION == 37
 
 
 def test_schema_version_row_is_19(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row[0] == 36
+    assert row[0] == 37
 
 
 # ============================================================================
@@ -83,7 +83,7 @@ def test_migration_0019_applies_against_v18_baseline(tmp_path: Path) -> None:
         post = conn.execute(
             "SELECT version FROM schema_version"
         ).fetchone()[0]
-        assert post == 36
+        assert post == 37
 
         # Tables/columns expected by Sub-bundle C exist:
         schema = {

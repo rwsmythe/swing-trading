@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 import pytest
 from swing.data.db import EXPECTED_SCHEMA_VERSION, run_migrations
+from tests._candidates_barrier_helper import candidates_barrier_lifted
 from swing.evaluation.pe_origin import PROVABLE_APLUS_PE_PREDICATE
 
 
@@ -102,11 +103,20 @@ def test_ladder_all_six_branches(tmp_path):
     _cand(conn, 2, "BBB", "watch"); b = _pe(conn, 2, "BBB"); _pde(conn, 2, "BBB", "watch")
     # Case C (step 2 INCLUDE): candidate GONE, PDE bucket aplus.
     _cand(conn, 2, "CCC", "aplus"); c = _pe(conn, 2, "CCC"); _pde(conn, 2, "CCC", "aplus")
-    conn.execute("DELETE FROM candidates WHERE ticker='CCC'")
+    # Cases C and D need the candidate row GONE so the ladder falls to step 2.
+    # From migration 0037 (22-A) an ordinary DELETE on `candidates` ABORTS at
+    # the immutability barrier, so it is lifted for exactly these two
+    # statements and restored verbatim.  The ladder branch under test is a
+    # HISTORICAL shape -- databases predating the barrier can hold it -- so
+    # planting it by a path the barrier does not see is the 18-B.1 remedy, not
+    # a weakening of the barrier.
+    with candidates_barrier_lifted(conn):
+        conn.execute("DELETE FROM candidates WHERE ticker='CCC'")
     # Case D (step 2 path -> EXCLUDE): candidate GONE, PDE bucket watch (the
     # Codex-R2 leak vector: must NOT leak).
     _cand(conn, 2, "DDD", "watch"); d = _pe(conn, 2, "DDD"); _pde(conn, 2, "DDD", "watch")
-    conn.execute("DELETE FROM candidates WHERE ticker='DDD'")
+    with candidates_barrier_lifted(conn):
+        conn.execute("DELETE FROM candidates WHERE ticker='DDD'")
     # Case E (step 3 INCLUDE): pre-widen historical PE, NO candidate, NO PDE,
     # run strictly before the boundary.
     e = _pe(conn, 1, "EEE")

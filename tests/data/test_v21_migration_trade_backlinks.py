@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._candidates_barrier_helper import candidates_barrier_lifted
+
 from swing.data import db as db_module
 from swing.data.db import (
     EXPECTED_SCHEMA_VERSION,
@@ -342,8 +344,14 @@ def test_fk_cascade_on_candidates_delete_sets_trade_candidate_id_null(
                 conn, trade,
                 event_ts="2026-05-22T12:30:00.000",
             )
-        # Drop the candidate row.
-        conn.execute("DELETE FROM candidates WHERE id=?", (candidate_id,))
+        # Drop the candidate row.  From migration 0037 (22-A) an ordinary
+        # DELETE on `candidates` ABORTS at the immutability barrier, so the
+        # barrier is lifted for exactly this statement and restored verbatim
+        # afterwards.  The FK ACTION this test pins is unchanged and still
+        # reachable -- pruning is now a migration-level operation, which is the
+        # declared consequence (plan S8-L12), not a retirement of the cascade.
+        with candidates_barrier_lifted(conn):
+            conn.execute("DELETE FROM candidates WHERE id=?", (candidate_id,))
         conn.commit()
         # Trade survives; candidate_id is now NULL.
         row = conn.execute(
@@ -719,7 +727,7 @@ def test_expected_schema_version_constant_is_21_post_sb6c() -> None:
     Test name preserved (stale-name-but-current-assertion) per cumulative
     discipline; Phase 14 Sub-bundle 3 migration 0023 bumps HEAD from 22 to 23.
     """
-    assert EXPECTED_SCHEMA_VERSION == 36, (
+    assert EXPECTED_SCHEMA_VERSION == 37, (
         f"EXPECTED_SCHEMA_VERSION must be 23, got {EXPECTED_SCHEMA_VERSION}"
     )
 
@@ -784,7 +792,7 @@ def test_schema_version_reaches_21_after_v21_migration(
     conn = _v21_conn(tmp_path)
     try:
         ver = conn.execute("SELECT version FROM schema_version").fetchone()
-        assert ver[0] == 36, f"schema_version != HEAD, got {ver[0]}"
+        assert ver[0] == 37, f"schema_version != HEAD, got {ver[0]}"
     finally:
         conn.close()
 

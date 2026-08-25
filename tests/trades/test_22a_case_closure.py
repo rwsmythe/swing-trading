@@ -45,10 +45,17 @@ LADDER_TASKS = frozenset(
      "12", "13"}
 )
 
-# Test modules the static walk covers.  A module added to the arc without
-# being listed here would make direction I under-count, so the list is
-# asserted to match the on-disk glob (test_arc_modules_are_all_walked).
-ARC_TEST_GLOBS = ("tests/trades/test_22a_*.py", "tests/latches/test_22a_*.py")
+# Test modules the static walk covers.  A module added to the arc OUTSIDE these
+# globs would make direction I silently under-count -- the case would read as
+# unimplemented and, worse, a DEFERRAL could then be declared for a case that
+# already has a test.  The globs are therefore RECURSIVE and a companion test
+# asserts they cover every ``test_22a_*.py`` on disk.
+#
+# THE COMPANION TEST DID NOT EXIST WHEN THIS COMMENT FIRST CLAIMED IT DID
+# ("...asserted to match the on-disk glob (test_arc_modules_are_all_walked)").
+# Existence is not completeness, arriving in the instrument written to enforce
+# that distinction.  It exists now, below, under the name the comment promised.
+ARC_TEST_GLOBS = ("tests/**/test_22a_*.py",)
 
 # ---------------------------------------------------------------------------
 # THE LEXICAL SPEC, as code rather than as prose.
@@ -192,6 +199,26 @@ def implemented_case_ids() -> set[str]:
                             ):
                                 covered.add(element.value)
     return covered
+
+
+def test_arc_modules_are_all_walked() -> None:
+    """Every ``test_22a_*.py`` on disk is inside the walked set.
+
+    A module the walk cannot see makes direction I under-count in the ONE
+    direction that is dangerous: a case would read as unimplemented, and the
+    documented remedy for an unimplemented case is a DECLARED DEFERRAL -- so an
+    unwalked module could turn a built case into a recorded deviation.
+    """
+    walked = {p.resolve() for p in _arc_test_files()}
+    on_disk = {
+        p.resolve() for p in REPO_ROOT.glob("tests/**/test_22a_*.py")
+        if "__pycache__" not in p.parts
+    }
+    missing = sorted(str(p.relative_to(REPO_ROOT)) for p in on_disk - walked)
+    assert not missing, (
+        f"22-A test modules outside ARC_TEST_GLOBS: {missing}. Widen the glob "
+        f"or move the module; do NOT leave it unwalked."
+    )
 
 
 def test_arc_test_modules_exist() -> None:

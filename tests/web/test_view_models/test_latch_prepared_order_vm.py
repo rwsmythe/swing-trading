@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from swing.data.db import connect
+from tests._candidates_barrier_helper import candidates_barrier_lifted
 from swing.latches.constants import (
     DERIVATION_FIELD_MANIFEST,
     LATCH_ATTESTED_DISPOSITIONS,
@@ -477,8 +478,13 @@ def test_the_anchor_digest_MOVES_when_the_framework_order_moves(seeded_db):
     first = _vm(cfg).rows[0].prepared_order.anchor_digest
     conn = connect(cfg.paths.db_path)
     with conn:                          # move the regime close -> BREAKOUT form
-        conn.execute("UPDATE candidates SET close = 17.00 "
-                     "WHERE evaluation_run_id = 900")
+        # 22-A migration 0037 barriers `candidates`.  This test moves a close
+        # to prove the ANCHOR DIGEST moves with the framework order; the moved
+        # world is the SUBJECT of the assertion, so it is planted with the
+        # barrier lifted and the barrier restored verbatim.
+        with candidates_barrier_lifted(conn):
+            conn.execute("UPDATE candidates SET close = 17.00 "
+                         "WHERE evaluation_run_id = 900")
     conn.close()
     # THE ARCHIVE BAR MOVES WITH IT, or this stops being a digest test. Leaving
     # the 19.20 bar in place would make the moved close UNCORROBORATED, withhold

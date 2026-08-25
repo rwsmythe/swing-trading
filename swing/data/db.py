@@ -76,7 +76,17 @@ from pathlib import Path
 #   run are all NOT NULL FKs, and the frozen anchors make contemporaneity an
 #   INTRA-row CHECK. ADDITIVE ONLY: nothing is rebuilt, dropped or renamed.
 #   Atomic BEGIN/COMMIT.
-EXPECTED_SCHEMA_VERSION = 36
+# 22-A latch_order_mandate_links (migration 0037): the durable order<->mandate
+#   link minted by a trigger at broker acceptance, plus the STRUCTURAL
+#   immutability that makes a fire's frozen invalidation provable -- a
+#   candidates UPDATE + DELETE barrier and a CONFLICT-SCOPED BEFORE INSERT
+#   barrier closing the measured REPLACE bypass, a single-state
+#   candidates_immutability_epoch with its own three barriers, SIX ADD COLUMNs
+#   on provenance_corrections and the TRANSACTIONAL replacement of that table's
+#   two triggers (CHARC CONDITION-4 exception 2, declared in the migration
+#   header). ADDITIVE: nothing rebuilt, no existing row mutated. Atomic
+#   BEGIN/COMMIT.
+EXPECTED_SCHEMA_VERSION = 37
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -360,6 +370,17 @@ A4_TAXONOMY_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 # pipeline_runs, risk_policy -- are all already members via that chain.
 DEMAND_C_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     A4_TAXONOMY_PRE_MIGRATION_EXPECTED_TABLES
+)
+
+# 22-A (migration 0037) pre-migration expected-table set. INHERITED from the
+# Demand-C chain PLUS `provenance_corrections` EXPLICITLY: 0037 ALTERs that
+# table (six ADD COLUMNs) and transactionally replaces two of its triggers, and
+# the H1 gate's own rule is that a gate which does not require the one table its
+# migration TOUCHES is not a belt. `candidates` and `latch_order_intents` -- the
+# tables the barrier and the backfill read -- are already members via the chain
+# (verified by reading the resolved set, not by assuming the chain covers them).
+PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    DEMAND_C_PRE_MIGRATION_EXPECTED_TABLES | {"provenance_corrections"}
 )
 
 
@@ -1048,6 +1069,33 @@ def _create_pre_demand_c_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-demand-c-migration-{timestamp}.db"
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
+def _create_pre_phase22_arc_a_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """22-A order<->mandate link (0037) mirror. SQLite-native
+    Connection.backup() before the 0037 migration. Backup file
+    ``swing-pre-22a-migration-<ISO>.db``.
+
+    0037 is ADDITIVE -- new tables, new triggers, six ADD COLUMNs -- so it is
+    not the rebuild class the 0035 gate guards. The snapshot is taken anyway,
+    and here it earns its keep: 0037 installs an IMMUTABILITY BARRIER on
+    ``candidates``, so a post-migration repair of that table is a
+    migration-level operation. The pre-image is the only ordinary way back."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-22a-migration-{timestamp}.db"
     src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
@@ -1942,6 +1990,45 @@ def _demand_c_backup_gate(
         ) from exc
 
 
+def _phase22_arc_a_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """22-A order<->mandate link (0037) backup-before-migrate gate.
+
+    Fires ONLY when ``current_version == 36 AND target_version >= 37`` -- a
+    real production v36 DB about to cross v37. STRICT EQUALITY on pre_version
+    per the ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version
+    jumps from pre-v36 baselines bypass this gate by design.
+    """
+    if target_version < 37 or current_version != 36:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-22-A backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_phase22_arc_a_migration_backup(
+            src_path, dest_dir=backup_dir)
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-22-A backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -2087,6 +2174,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _demand_c_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _phase22_arc_a_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,

@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from swing.data.db import ensure_schema
+from tests._candidates_barrier_helper import candidates_barrier_lifted
 from swing.trades.cohort_provenance_correction import (
     CohortProvenanceCorrectionError,
     preview_cohort_provenance_correction,
@@ -413,14 +414,28 @@ def test_a_trade_that_already_carries_provenance_is_refused(conn) -> None:
 
 def test_ticker_disagreement_is_refused_on_each_side(conn) -> None:
     ids = build_cadl_case(conn)
-    conn.execute(
-        "UPDATE candidates SET ticker = 'OTHER' WHERE id = ?",
-        (ids["candidate_id"],))
+    with candidates_barrier_lifted(conn):
+        # 22-A migration 0037 barriers `candidates`, so an ordinary UPDATE
+        # now ABORTS.  A migration-level repair -- drop, mutate, restore --
+        # is still possible and is exactly what this reader exists to catch
+        # (this module's own words: "a migration or an operator repair is
+        # where an audit reader earns its keep").  The barrier is restored
+        # verbatim, so the drift SUBJECT is planted without disarming it.
+        conn.execute(
+            "UPDATE candidates SET ticker = 'OTHER' WHERE id = ?",
+            (ids["candidate_id"],))
     with pytest.raises(CohortProvenanceCorrectionError):
         _preview(conn, ids)
-    conn.execute(
-        "UPDATE candidates SET ticker = 'CADL' WHERE id = ?",
-        (ids["candidate_id"],))
+    with candidates_barrier_lifted(conn):
+        # 22-A migration 0037 barriers `candidates`, so an ordinary UPDATE
+        # now ABORTS.  A migration-level repair -- drop, mutate, restore --
+        # is still possible and is exactly what this reader exists to catch
+        # (this module's own words: "a migration or an operator repair is
+        # where an audit reader earns its keep").  The barrier is restored
+        # verbatim, so the drift SUBJECT is planted without disarming it.
+        conn.execute(
+            "UPDATE candidates SET ticker = 'CADL' WHERE id = ?",
+            (ids["candidate_id"],))
     conn.execute(
         "UPDATE daily_recommendations SET ticker = 'OTHER' WHERE id = ?",
         (ids["daily_recommendation_id"],))

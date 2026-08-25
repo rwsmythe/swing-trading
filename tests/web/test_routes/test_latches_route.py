@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from swing.data.db import connect
 from swing.web.app import create_app
+from tests._candidates_barrier_helper import candidates_barrier_lifted
 
 NOW = datetime(2026, 7, 25, 12, 0)     # Saturday -> action session 2026-07-27
 
@@ -361,7 +362,10 @@ def test_a_card_with_no_price_still_renders_the_shipped_dash(
     _seed_ftre(cfg, with_drift=False)
     conn = connect(cfg.paths.db_path)
     with conn:
-        conn.execute("UPDATE candidates SET close = NULL")
+        # 22-A migration 0037 barriers `candidates`; a NULL close is still a
+        # reachable production shape, so it is planted with the barrier lifted.
+        with candidates_barrier_lifted(conn):
+            conn.execute("UPDATE candidates SET close = NULL")
     conn.close()
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
