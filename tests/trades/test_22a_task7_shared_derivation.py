@@ -61,7 +61,7 @@ def test_the_cadl_golden_is_reproduced_through_the_extracted_derivation(
             cited_recommendation_id=ids["daily_recommendation_id"],
             reason="22-A task 7 golden",
         )
-        assert preview.proposed["trades.hypothesis_label"] == CADL_LABEL
+        assert preview.post_values["trades.hypothesis_label"] == CADL_LABEL
         assert preview.derivation_rule_version == DERIVATION_RULE_VERSION
     finally:
         conn.close()
