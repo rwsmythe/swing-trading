@@ -552,10 +552,34 @@ def _as_date(raw) -> date | None:
 
 
 def _decision_ordering_refusal(
-    conn, *, candidate_set, fill_session: date,
+    conn, *, derivation, ticker: str, fill_session: date,
 ) -> str | None:
     """``None``, or the reason the decision ledger cannot be ordered against
     the fill.
+
+    THE SCAN COVERS EVERY LATCH ON THE TICKER, NOT ONLY THE SELECTED ONE
+    (Codex R1, and the scope is what makes the guard reachable at all). The
+    fold consumes decisions WITHOUT any `recorded_ts` bound, so an intent that
+    post-dates the fill can CHANGE THE TOPOLOGY -- a post-fill decline on fire A
+    closes A, and a later same-pivot fire B that would have folded in as A's
+    re-confirmation instead opens its OWN latch. Scanning only the selected
+    latch's family then never sees the offending decline, because the decline
+    lives on the latch it created. Scanning every same-ticker latch does.
+
+    **THE RESIDUAL IS DECLARED AND ROUTED, NOT PAPERED OVER.** This DETECTS the
+    hazard and refuses; it cannot make the derivation itself as-of-correct,
+    because that needs the fold to filter decisions by `recorded_ts` -- a FOURTH
+    EXT-1 parameter, and EXT-1 is approved as exactly THREE. Detect-and-refuse
+    is fail-closed and inside the envelope; derive-correctly is not.
+
+    THE WINDOW IS THE LADDER'S OWN, IMPORTED. `decision_bounds_for` +
+    `admissible_decisions` are the single-sourced filter `_resolve_decline`
+    uses, so this helper cannot decide a decision is "about" a latch on
+    different terms from the fold that judged it. A hand-written window here
+    would refuse on decisions the fold correctly ignores -- naming an
+    UNVERIFIABLE where the truth is a PROVEN-DEAD mandate, which matters
+    downstream because rung 8 drops proven-dead competitors and blocks on
+    unverifiable ones.
 
     ``horizon_session_override`` scopes FIRES and BARS; it does NOT scope
     DECISIONS. `admissible_decisions` filters on `action_session_date` and never
@@ -580,26 +604,33 @@ def _decision_ordering_refusal(
     reason the strict loader raises -- because the two are the same ignorance.
     """
     from swing.data.repos.latch_order_intents import list_intents_for_latch
+    from swing.latches.classification import (
+        admissible_decisions,
+        decision_bounds_for,
+    )
 
     post_dates: list[int] = []
     unorderable: list[int] = []
-    for candidate_id in sorted(candidate_set):
-        try:
-            rows = list_intents_for_latch(conn, candidate_id=candidate_id)
-        except Exception as exc:  # noqa: BLE001 -- ignorance, not a crash
-            log.warning(
-                "22-A: decision-ledger read failed at candidate %s; the probe "
-                "cannot tell an absent decline from an unread one: %s",
-                candidate_id, exc)
-            return "decision_evidence_unavailable"
-        for intent in rows:
-            if intent.intent_kind not in ("place", "decline"):
-                continue
-            # Only intents the probe would ADMIT are in scope: one whose mandate
-            # session post-dates the fill was never about this fill.
-            mandate_session = _as_date(intent.action_session_date)
-            if mandate_session is not None and mandate_session > fill_session:
-                continue
+    for latch in derivation.latches:
+        if latch.identity.ticker != ticker:
+            continue
+        intents: list = []
+        for candidate_id in sorted(latch.candidate_set):
+            try:
+                intents.extend(
+                    list_intents_for_latch(conn, candidate_id=candidate_id))
+            except Exception as exc:  # noqa: BLE001 -- ignorance, not a crash
+                log.warning(
+                    "22-A: decision-ledger read failed at candidate %s; the "
+                    "probe cannot tell an absent decline from an unread one: "
+                    "%s", candidate_id, exc)
+                return "decision_evidence_unavailable"
+        lower, upper, decline_upper = decision_bounds_for(
+            latch, fill_bound=fill_session)
+        for intent in admissible_decisions(
+            intents, candidate_set=latch.candidate_set,
+            lower=lower, upper=upper, decline_upper=decline_upper,
+        ):
             recorded = _as_date(intent.recorded_ts)
             if recorded is None or recorded == fill_session:
                 # An UNPARSEABLE stamp is as unorderable as a same-day one.
@@ -756,6 +787,29 @@ def mandate_alive_at(
         return _probe_refusal(
             "decision_evidence_unavailable", order=order,
             horizon_session=fill_session, freeze_tier=order.freeze_tier)
+    except Exception as exc:  # noqa: BLE001 -- see below; this is DELIBERATE
+        # THE ENTRY PATH MUST NEVER BE BLOCKED BY COHORT BOOKKEEPING
+        # (`0036:26-38`), and the derivation folds EVERY ticker, so one
+        # unrelated corrupt fire can abort a probe about a perfectly good order.
+        # MEASURED, not hypothesised: a `bucket='aplus'` candidate whose run is
+        # dated on a SATURDAY parses fine (`_validate_fire` checks ISO parsing
+        # and price sanity, never the exchange calendar), and the fold's
+        # `session_offset(anchor, horizon_sessions)` then raises
+        # `exchange_calendars.errors.NotSessionError` -- taking down the probe
+        # for a DIFFERENT ticker's order.
+        #
+        # The catch is BROAD on purpose: enumerating the raisable types is the
+        # hand-maintained-roster failure, and every branch here is fail-CLOSED
+        # (`aliveness_unverifiable` never admits). The WARNING carries the
+        # exception type so a real bug is loud rather than absorbed.
+        log.warning(
+            "22-A: the latch derivation RAISED for the %s probe at %s (%s: %s); "
+            "aliveness is unverifiable, so the entry records with honest-unset "
+            "cohort keys rather than being blocked",
+            order.ticker, fill_session, type(exc).__name__, exc)
+        return _probe_refusal(
+            "aliveness_unverifiable", order=order,
+            horizon_session=fill_session, freeze_tier=order.freeze_tier)
 
     # SELECTION IS BY `candidate_set` MEMBERSHIP, NEVER BY IDENTITY. The set is
     # "the opening fire PLUS every re-confirmation" and the fold keeps the
@@ -793,7 +847,8 @@ def mandate_alive_at(
         )
 
     ordering = _decision_ordering_refusal(
-        conn, candidate_set=latch.candidate_set, fill_session=fill_session)
+        conn, derivation=derivation, ticker=order.ticker,
+        fill_session=fill_session)
     if ordering is not None:
         # BEFORE the verdict is trusted: the as-of rule is about whether the
         # INPUT was admissible, not about what the ladder concluded from it.

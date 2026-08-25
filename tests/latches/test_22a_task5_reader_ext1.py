@@ -19,14 +19,21 @@ load-bearing rather than convenient:
   ledger is indistinguishable from NO decline.  Without it the resolver can
   admit a DECLINED mandate (plan S2.3.3b, review 22A-R15-03).
 
-**THE DEFAULTS ARE THE CONTRACT.**  Every existing production caller
-(``swing/cli_latches.py``, ``swing/web/routes/latches.py``,
-``swing/web/view_models/latches.py`` -- five call sites, established by
-``grep -rn build_latch_derivation swing/``) passes NONE of the three, so the
-default path must be byte-identical to what shipped.  ``None`` is NOT ``False``
-for the first parameter and the discriminator below says so: an implementation
-writing ``criteria_lapse_armed = bool(override)`` reads a config-armed rung as
-disarmed and passes every other test in this file.
+**THE DEFAULTS ARE THE CONTRACT.**  Every existing production caller passes
+NONE of the three, so the default path must be byte-identical to what shipped.
+``None`` is NOT ``False`` for the first parameter and the discriminator below
+says so: an implementation writing ``criteria_lapse_armed = bool(override)``
+reads a config-armed rung as disarmed and passes every other test in this file.
+
+**THE CALL-SITE COUNT WAS WRONG AND IS NOW MECHANICAL (Codex R1 minor).**  This
+docstring said FIVE.  There are SIX, and the sixth is a real production surface
+-- the broker-order fragment at ``swing/web/view_models/latches.py:2138``.  The
+number came from a grep whose seven lines were in front of me and were
+miscounted, which is the project's most-repeated defect arriving in the
+paragraph that names its own method.  So the roster below is ENUMERATED and a
+test walks the tree and asserts it, rather than a count being asserted in
+prose: a stated count is only as good as the read that produced it, and a read
+can be re-done wrong.
 
 FROZEN CLOCK.  Every derivation here is anchored by an explicit
 ``horizon_session_override`` or an explicit ``now``; nothing reads the wall
@@ -35,6 +42,7 @@ clock.
 from __future__ import annotations
 
 import dataclasses
+import re
 import inspect
 import sqlite3
 from datetime import date, datetime
@@ -368,3 +376,61 @@ def test_strict_decisions_leaves_a_healthy_derivation_untouched(
         two_filled_fires, cfg, horizon_session_override=HORIZON,
         strict_decisions=True)
     assert dataclasses.asdict(lenient) == dataclasses.asdict(strict)
+
+
+_CALL_RE = re.compile("[A-Za-z_]*build_latch_derivation[(]")
+
+PRODUCTION_CALL_SITES: tuple[str, ...] = (
+    "swing/cli_latches.py",
+    "swing/web/routes/latches.py",
+    "swing/web/routes/latches.py",
+    "swing/web/view_models/latches.py",
+    "swing/web/view_models/latches.py",
+    "swing/web/view_models/latches.py",
+)
+
+
+def test_every_production_call_site_still_passes_none_of_the_three() -> None:
+    """SIX shipped callers, ENUMERATED by walking the tree rather than counted.
+
+    The count in this module's docstring was wrong on its first writing, and a
+    prose count cannot fail.  This walks ``swing/`` for every
+    ``build_latch_derivation(`` call, excludes the definition and this arc's own
+    new caller in ``swing/trades/latched_origin.py``, and asserts BOTH that the
+    roster matches AND that not one of them mentions any of the three new
+    parameter names -- so "the defaults preserve behaviour" is checked against
+    the tree instead of asserted about it.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "swing"
+    found: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        rel = path.relative_to(root.parent).as_posix()
+        if rel == "swing/latches/reader.py":
+            continue                       # the definition, not a call site
+        for match in re.finditer(_CALL_RE, text):
+            # The call's full argument text, up to its closing paren.
+            depth, i = 0, match.end() - 1
+            while i < len(text):
+                if text[i] == "(":
+                    depth += 1
+                elif text[i] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            call = text[match.end():i]
+            if rel == "swing/trades/latched_origin.py":
+                continue                   # THIS arc's caller; it passes all three
+            found.append(rel)
+            for name in ("criteria_lapse_armed_override", "exclude_trade_ids",
+                         "strict_decisions"):
+                assert name not in call, (
+                    f"{rel} now passes {name}; the byte-for-byte default claim "
+                    f"in this module no longer covers it"
+                )
+    assert tuple(found) == PRODUCTION_CALL_SITES, (
+        f"the production call-site roster moved: {found}"
+    )

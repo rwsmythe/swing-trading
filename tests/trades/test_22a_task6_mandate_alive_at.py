@@ -982,3 +982,117 @@ def test_the_exclusion_set_is_a_required_keyword() -> None:
     parameter = inspect.signature(mandate_alive_at).parameters["exclude_trade_ids"]
     assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
     assert parameter.default is inspect.Parameter.empty
+
+
+# ---------------------------------------------------------------------------
+# Codex round 1 -- three majors and a minor, each with its regression
+# ---------------------------------------------------------------------------
+def test_a_post_fill_decision_on_a_SIBLING_latch_is_still_caught() -> None:
+    """Codex R1 (major): the as-of guard's SCOPE.
+
+    The fold consumes decisions with NO ``recorded_ts`` bound, so an intent that
+    post-dates the fill can CHANGE THE TOPOLOGY: a post-fill decline on fire A
+    closes A, and a same-pivot fire B that would have folded in as A's
+    RE-CONFIRMATION instead opens its own latch.  A guard scanning only the
+    SELECTED latch's ``candidate_set`` then never sees the offending decline --
+    it lives on the sibling latch the decline itself created -- and the probe
+    admits a mandate that was dead in the true as-of-fill topology.
+
+    Scanning every same-ticker latch catches it.  **The residual is declared:
+    this DETECTS and refuses; it cannot make the derivation as-of-correct,
+    which needs the fold to filter decisions by ``recorded_ts`` -- a FOURTH
+    EXT-1 parameter, and EXT-1 is approved as exactly three.**
+    """
+    import tempfile
+
+    root = Path(tempfile.mkdtemp())
+    conn, cfg, first = build_world(root, "sibling-topology")
+    try:
+        seed_run(conn, 133, date(2026, 7, 22))
+        cur = conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) "
+            "VALUES (133, ?, 'aplus', 17.02, ?, ?, 'universe')",
+            (TICKER, PIVOT, STOP))
+        second = int(cur.lastrowid)
+        # A decline against the FIRST fire, recorded AFTER the fill session.
+        record_decision(
+            conn, candidate_id=first, run_id=121, ticker=TICKER,
+            detection=ANCHOR, session=date(2026, 7, 21),
+            recorded_ts="2026-07-30T09:00:00")
+        conn.commit()
+
+        verdict = _probe(conn, cfg, order_for_candidate(conn, second))
+        assert verdict.admitted is False
+        assert verdict.decline_reason == "decision_evidence_post_dates_fill"
+    finally:
+        conn.close()
+
+
+def test_a_decision_outside_the_latchs_own_window_is_not_consulted() -> None:
+    """Codex R2 (major): the window is the LADDER's, imported.
+
+    ``_resolve_decline`` reads decisions through ``admissible_decisions`` with
+    ``decision_bounds_for``'s window, so an intent dated BEFORE the latch's
+    anchor is not about that latch at all.  A guard applying its own looser
+    window refuses ``decision_evidence_post_dates_fill`` on a decision the fold
+    correctly ignored -- naming an UNVERIFIABLE where the truth is an ordinary
+    ADMIT, and rung 8 blocks on unverifiable competitors while dropping
+    proven-dead ones, so the distinction is not cosmetic.
+    """
+    import tempfile
+
+    root = Path(tempfile.mkdtemp())
+    conn, cfg, candidate_id = build_world(root, "window-scoped")
+    try:
+        # action session BEFORE the latch's anchor -> outside its window;
+        # recorded AFTER the fill -> the OLD guard would have refused.
+        record_decision(
+            conn, candidate_id=candidate_id, run_id=121, ticker=TICKER,
+            detection=ANCHOR, session=date(2026, 7, 17),
+            recorded_ts="2026-07-30T09:00:00")
+        conn.commit()
+        verdict = _probe(conn, cfg, order_for_candidate(conn, candidate_id))
+        assert verdict.admitted is True, verdict.decline_reason
+    finally:
+        conn.close()
+
+
+def test_an_unrelated_corrupt_fire_does_not_block_the_entry_path() -> None:
+    """Codex R3 (major): cohort bookkeeping must never block a money-bearing
+    operation (``0036:26-38``), and this one could.
+
+    MEASURED, not hypothesised.  ``candidates``/``evaluation_runs`` impose no
+    exchange-calendar constraint and ``_validate_fire`` checks only ISO parsing
+    and price sanity, so a ``bucket='aplus'`` fire dated on a SATURDAY is
+    representable.  The fold then calls ``session_offset(anchor,
+    horizon_sessions)``, which raises ``NotSessionError`` -- and because
+    ``build_latch_derivation`` folds EVERY ticker, that aborts the probe for a
+    completely unrelated, perfectly good accepted order.
+
+    Post-fix the probe degrades fail-CLOSED to ``aliveness_unverifiable``: the
+    entry records with honest-unset cohort keys instead of being refused.
+    """
+    import tempfile
+
+    root = Path(tempfile.mkdtemp())
+    conn, cfg, candidate_id = build_world(root, "corrupt-sibling")
+    try:
+        seed_run(conn, 199, date(2026, 7, 24))
+        conn.execute(
+            "UPDATE evaluation_runs SET action_session_date = '2026-07-25' "
+            "WHERE id = 199")
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) "
+            "VALUES (199, 'ZZZZ', 'aplus', 10.0, 11.0, 9.0, 'universe')")
+        conn.commit()
+        assert not __import__(
+            "swing.evaluation.dates", fromlist=["is_trading_session"]
+        ).is_trading_session(date(2026, 7, 25))
+
+        verdict = _probe(conn, cfg, order_for_candidate(conn, candidate_id))
+        assert verdict.admitted is False
+        assert verdict.decline_reason == "aliveness_unverifiable"
+    finally:
+        conn.close()
