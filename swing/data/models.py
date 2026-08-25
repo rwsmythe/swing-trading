@@ -11,10 +11,6 @@ from typing import ClassVar
 from swing.latches.constants import (
     DERIVATION_FIELD_MANIFEST,
     DERIVATION_NULLABLE_ON_DECISION,
-    LATCH_FREEZE_TIERS,
-    PROVENANCE_ADMISSION_TIER_LAST_WORD,
-    PROVENANCE_ADMISSION_TIERS,
-    PROVENANCE_LATCH_CITATION_FIELDS,
 )
 from swing.latches.constants import (
     LATCH_ACTUAL_DURATIONS as _LATCH_ACTUAL_DURATIONS,
@@ -3000,6 +2996,51 @@ PROVENANCE_CORRECTED_FIELDS: tuple[str, ...] = (
 )
 
 PROVENANCE_CORRECTION_APPLIED_BY: str = "operator"
+
+# ---------------------------------------------------------------------------
+# 22-A (migration 0037): the order<->mandate link's FREEZE TIER, and the
+# correction surface's ADMISSION TIER.
+#
+# THEY LIVE HERE, beside the dataclasses whose columns they constrain, because
+# a schema enum's Python mirror belongs with the row it maps to -- and because
+# the resolver (``swing/trades/latched_origin.py``) can import DOWN into
+# ``swing.data`` while the reverse would invert the layering.  Two spellings of
+# one enum is exactly the mirror family this arc measured at TWELVE sites; a
+# single source is how it stays at one.
+#
+# The SQL halves live in migration 0037, and a drift test runs BOTH spellings
+# and asserts they hold the same values.  That comparator is the only mirror
+# that defends the set: it does not depend on anyone choosing the right grep.
+# ---------------------------------------------------------------------------
+# TWO-VALUED under SINGLE-STATE.  ``gap_era_reconstructed`` and the era model
+# it names are CARVED to 22-A2, so a pre-barrier reconstruction can never be
+# read as a post-barrier freeze and there is no third state to confuse with
+# either.
+FREEZE_TIER_LIVE_AT_ACCEPTANCE = "live_at_acceptance"
+FREEZE_TIER_PRE_BARRIER = "pre_barrier_reconstructed"
+LATCH_FREEZE_TIERS = frozenset(
+    {FREEZE_TIER_LIVE_AT_ACCEPTANCE, FREEZE_TIER_PRE_BARRIER}
+)
+
+# TWO-VALUED in 22-A; ``latch_ladder_tier2`` arrives with 22-A2 and the tier-2
+# evidence class it belongs to.
+PROVENANCE_ADMISSION_TIER_LAST_WORD = "last_word"
+PROVENANCE_ADMISSION_TIER_LATCH = "latch_ladder"
+PROVENANCE_ADMISSION_TIERS = frozenset(
+    {PROVENANCE_ADMISSION_TIER_LAST_WORD, PROVENANCE_ADMISSION_TIER_LATCH}
+)
+
+# The five citation columns 0037 adds to ``provenance_corrections``.  The
+# paired-NULL rule is stated ONCE, here, and consumed by the dataclass
+# validator and by the tests; the citation trigger is its SQL twin.
+PROVENANCE_LATCH_CITATION_FIELDS: tuple[str, ...] = (
+    "cited_latch_link_id",
+    "cited_latch_validity_intent_id",
+    "cited_latch_place_intent_id",
+    "cited_latch_broker_order_id",
+    "cited_latch_probe_json",
+)
+
 
 # The FULL `daily_recommendations` column roster the frozen snapshot must
 # carry (Codex R5 Minor 5). The snapshot is advertised as the WHOLE row and

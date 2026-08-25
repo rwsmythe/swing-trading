@@ -40,7 +40,7 @@ from __future__ import annotations
 import re
 import sqlite3
 
-from swing.trades.latched_origin import (
+from swing.data.models import (
     FREEZE_TIER_LIVE_AT_ACCEPTANCE,
     FREEZE_TIER_PRE_BARRIER,
 )

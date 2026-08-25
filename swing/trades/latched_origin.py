@@ -35,14 +35,16 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 
-from swing.latches.constants import (
+from swing.data.models import (
     FREEZE_TIER_LIVE_AT_ACCEPTANCE,
     FREEZE_TIER_PRE_BARRIER,
     LATCH_FREEZE_TIERS,
-    PRICE_DP,
     PROVENANCE_ADMISSION_TIER_LAST_WORD,
     PROVENANCE_ADMISSION_TIER_LATCH,
     PROVENANCE_ADMISSION_TIERS,
+)
+from swing.latches.constants import (
+    PRICE_DP,
     mandate_limit_price,
     zone_cap_for_pivot,
 )
@@ -64,10 +66,10 @@ TRUSTED_LATCH_FILL_ORIGINS = frozenset(
 
 # THE FREEZE-TIER AND ADMISSION-TIER ENUMS ARE RE-EXPORTED, NOT RE-DEFINED.
 # They were declared here when this module was the arc's only Python surface;
-# migration 0037 gave each a SQL CHECK and ``swing/data/models.py`` a dataclass
-# validator, and ``swing.data`` cannot import from ``swing.trades`` without
-# inverting the layering -- so the single source moved to the cycle-free
-# ``swing/latches/constants.py`` and every consumer reads it from there.  The
+# migration 0037 gave each a SQL CHECK and ``swing/data/models.py`` the
+# dataclasses those CHECKs constrain, so the single source moved THERE -- an
+# enum's Python mirror belongs beside the row it maps to, and ``swing.trades``
+# importing DOWN into ``swing.data`` is the layering's own direction.  The
 # names below are unchanged, so no caller had to move with them.
 __all__ = [
     "FREEZE_TIER_LIVE_AT_ACCEPTANCE",

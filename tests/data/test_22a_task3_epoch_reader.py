@@ -15,10 +15,17 @@ from pathlib import Path
 import pytest
 
 from swing.data.db import ensure_schema, open_connection, run_migrations
-from swing.data.models import LatchOrderMandateLink, ProvenanceCorrection
+from swing.data.models import (
+    FREEZE_TIER_LIVE_AT_ACCEPTANCE,
+    FREEZE_TIER_PRE_BARRIER,
+    LATCH_FREEZE_TIERS,
+    PROVENANCE_LATCH_CITATION_FIELDS,
+    LatchOrderMandateLink,
+    ProvenanceCorrection,
+)
 from swing.data.repos.candidates_immutability_epoch import (
-    BARRIER_TRIGGER_NAMES,
     _CANDIDATES_BARRIER_DDL,
+    BARRIER_TRIGGER_NAMES,
     barrier_installed,
     epoch_boundary,
     freeze_tier_for_candidate,
@@ -28,12 +35,6 @@ from swing.data.repos.latch_order_mandate_links import (
     get_link,
     list_links_for_broker_order,
     list_links_for_ticker,
-)
-from swing.latches.constants import (
-    FREEZE_TIER_LIVE_AT_ACCEPTANCE,
-    FREEZE_TIER_PRE_BARRIER,
-    LATCH_FREEZE_TIERS,
-    PROVENANCE_LATCH_CITATION_FIELDS,
 )
 from swing.trades.latched_origin import LATCH_PROBE_EVIDENCE_VERSION
 from tests._latch_link_fixtures_22a import (
