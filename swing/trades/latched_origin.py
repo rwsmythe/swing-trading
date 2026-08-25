@@ -43,11 +43,30 @@ from swing.data.models import (
     PROVENANCE_ADMISSION_TIER_LATCH,
     PROVENANCE_ADMISSION_TIERS,
 )
+from swing.evaluation.dates import is_trading_session, session_offset
 from swing.latches.constants import (
+    ARCHIVE_STATUS_OK,
     PRICE_DP,
     mandate_limit_price,
     zone_cap_for_pivot,
 )
+from swing.latches.reader import (
+    DecisionIntentsUnavailableError,
+    build_latch_derivation,
+)
+
+# THE TIE RULE IS THE LADDER'S OWN, IMPORTED, NEVER RE-SPELLED (#11). A private
+# second copy of the rank table or of the comparison is the comparator-vs-emitter
+# divergence 21-A and 21-B each paid for; the leading underscore says `_Terminal`
+# is internal to `swing.latches.service`, and importing it is a deliberate choice
+# to INHERIT the ladder rather than to re-derive it. `_CLEAR_REASON_RANK` is
+# inherited TRANSITIVELY -- `_Terminal.order_key` consults it -- so this module
+# holds no copy of the rank table at all, and if the ladder's ranks move this
+# module moves with them by construction (a function call, not a comment
+# promising inheritance -- #31). The task-6 suite pins the two properties the
+# tie rule actually depends on, so a rank change that would break it fails
+# LOUDLY rather than silently changing an admission.
+from swing.latches.service import _Terminal
 from swing.metrics.funnel import APLUS_TRADE_ORIGIN
 
 log = logging.getLogger(__name__)
@@ -89,6 +108,7 @@ __all__ = [
     "TRUSTED_LATCH_FILL_ORIGINS",
     "aplus_trade_origin",
     "assert_fill_consistent_with_order",
+    "mandate_alive_at",
     "broker_order_id_from_envelope",
     "instrument_symbol_from_envelope",
 ]
@@ -489,3 +509,420 @@ def assert_fill_consistent_with_order(
 def aplus_trade_origin() -> str:
     """``pipeline_aplus``, from the metrics module rather than a third spelling."""
     return APLUS_TRADE_ORIGIN
+
+
+# ---------------------------------------------------------------------------
+# THE PROBE -- ``mandate_alive_at``
+#
+# THREE-VALUED FOR ITS CALLERS, and rung 8 depends on the distinction (S2.4b):
+#
+#   PROVEN LIVE      -- ``admitted is True``
+#   PROVEN DEAD      -- ``decline_reason == 'mandate_not_alive'``
+#   UNPROVABLE       -- every other reason (coverage, decision evidence, the
+#                       snapshot, fire derivability, an ambiguous membership)
+#
+# An UNPROVABLE competitor must NOT be dropped as an absent one: that is the
+# exact inversion of this plan's posture everywhere else, and it would let the
+# selected order be admitted while two live mandates may have existed.
+# ---------------------------------------------------------------------------
+def _probe_refusal(
+    reason: str,
+    *,
+    order: AcceptedLatchOrder,
+    **fields,
+) -> LatchedProvenance:
+    """A recognised link whose aliveness could not be established."""
+    return LatchedProvenance(
+        admitted=False,
+        recognised_but_underivable=True,
+        decline_reason=reason,
+        order=order,
+        **fields,
+    )
+
+
+def _as_date(raw) -> date | None:
+    """The TEXT-column -> ``date`` boundary, converted at the callsite."""
+    if isinstance(raw, date):
+        return raw
+    try:
+        return date.fromisoformat(str(raw)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _decision_ordering_refusal(
+    conn, *, candidate_set, fill_session: date,
+) -> str | None:
+    """``None``, or the reason the decision ledger cannot be ordered against
+    the fill.
+
+    ``horizon_session_override`` scopes FIRES and BARS; it does NOT scope
+    DECISIONS. `admissible_decisions` filters on `action_session_date` and never
+    examines `recorded_ts`, while `_order_key` lets a LATER-RECORDED row win --
+    so a `place` recorded AFTER the fill can outrank an earlier `decline` and
+    make a historical probe admit a mandate that was dead when it filled.
+    Migration `0033` draws exactly this distinction: `action_session_date` says
+    WHICH SESSION'S MANDATE, `recorded_ts` says WHEN THE ANSWER HAPPENED.
+
+    THE COMPARISON IS DATE-TO-DATE IN ONE DOMAIN, DELIBERATELY COARSE.
+    `recorded_ts` is naive LOCAL and the entry carries only a DATE; inventing a
+    third clock domain to order them is what this arc declines to do (D37). So
+    the rule can only ever REFUSE, never admit something it should not.
+
+    THIS IS A SECOND READ OF THE LEDGER AND THAT IS SOUND, where a second read
+    of the ARCHIVE would not be: `latch_order_intents` carries
+    `trg_loi_no_update` / `trg_loi_no_delete`, so the rows cannot change between
+    the derivation's read and this one. The parquet has no such guarantee, which
+    is why coverage is computed from `derivation.archive_closes` instead.
+
+    A read failure here refuses `decision_evidence_unavailable` -- the same
+    reason the strict loader raises -- because the two are the same ignorance.
+    """
+    from swing.data.repos.latch_order_intents import list_intents_for_latch
+
+    post_dates: list[int] = []
+    unorderable: list[int] = []
+    for candidate_id in sorted(candidate_set):
+        try:
+            rows = list_intents_for_latch(conn, candidate_id=candidate_id)
+        except Exception as exc:  # noqa: BLE001 -- ignorance, not a crash
+            log.warning(
+                "22-A: decision-ledger read failed at candidate %s; the probe "
+                "cannot tell an absent decline from an unread one: %s",
+                candidate_id, exc)
+            return "decision_evidence_unavailable"
+        for intent in rows:
+            if intent.intent_kind not in ("place", "decline"):
+                continue
+            # Only intents the probe would ADMIT are in scope: one whose mandate
+            # session post-dates the fill was never about this fill.
+            mandate_session = _as_date(intent.action_session_date)
+            if mandate_session is not None and mandate_session > fill_session:
+                continue
+            recorded = _as_date(intent.recorded_ts)
+            if recorded is None or recorded == fill_session:
+                # An UNPARSEABLE stamp is as unorderable as a same-day one.
+                unorderable.append(intent.intent_id or 0)
+            elif recorded > fill_session:
+                post_dates.append(intent.intent_id or 0)
+    if post_dates:
+        # Named FIRST because it is the DEFINITE fact -- the evidence provably
+        # post-dates the fill -- while a same-day stamp is only an ambiguity.
+        log.warning(
+            "22-A: decision intents %s were recorded AFTER the fill session %s; "
+            "the probe refuses rather than judging a mandate on evidence that "
+            "had not happened when it filled", post_dates, fill_session)
+        return "decision_evidence_post_dates_fill"
+    if unorderable:
+        return "decision_ordering_ambiguous"
+    return None
+
+
+def _fill_wins(latch, fill_session: date) -> tuple[bool, str | None]:
+    """``(alive, admission_basis)`` -- the LADDER's comparison, not a local one.
+
+    A re-derivation of `_resolve_terminal`'s `fill.order_key <= nonfill.order_key`
+    with the SUBJECT's own `(fill_session, rank 0)` supplied, computed from the
+    imported `_Terminal` so it cannot drift from the rule it inherits.
+
+    `fill` is EXCLUDED from the widening: with the subject excluded from the
+    probe, a `fill` terminal is ANOTHER trade's fill -- a genuine consumption,
+    refused as such, never admitted.
+    """
+    if latch.clear_reason is None:
+        return True, "armed"
+    if latch.clear_reason == "fill":
+        return False, None
+    clear_session = latch.clear_session
+    if clear_session is None:
+        # A terminal with no date cannot be argued onto the fill session.
+        return False, None
+    subject = _Terminal("fill", fill_session)
+    nonfill = _Terminal(latch.clear_reason, clear_session)
+    if subject.order_key > nonfill.order_key:
+        return False, None
+    if clear_session != fill_session:
+        # UNREACHABLE through the production probe: `horizon_session_override`
+        # bounds every walk at-or-before the fill session, so a terminal cannot
+        # be dated LATER. Raised rather than branched on for the same reason
+        # `criteria_lapsed` is: the evidence contract binds the tie basis to
+        # `clear_session == fill_session`, and a silent branch here would mint a
+        # row the citation trigger must then reject.
+        raise LatchProbeInvariantError(
+            f"terminal {latch.clear_reason!r} is dated {clear_session}, AFTER "
+            f"the fill session {fill_session}; the probe's own horizon bound "
+            f"makes this impossible, so the bound did not take"
+        )
+    return True, "subject_fill_wins_same_session_tie"
+
+
+def _coverage_view(derivation, latch, *, ticker: str, fill_session: date):
+    """``(coverage_object, archive_status, missing_sessions)``.
+
+    Computed SOLELY from `derivation.archive_closes` / `archive_status` -- the
+    EXACT bars the fold judged -- and NEVER from a second `load_bars_with_status`
+    call. The parquet is mutable, so a second read can report a complete window
+    over bars the fold never saw: one read, one world.
+
+    `ok` does NOT imply COMPLETE. The reader permits an empty or partial bar set
+    on a successful read and `_eligible_bars` judges only the sessions it was
+    handed, so an `ok` archive missing an INTERIOR session silently hides a
+    breach.
+    """
+    status = derivation.archive_status.get(ticker)
+    required_upper = session_offset(fill_session, -1)
+    if required_upper < latch.anchor:
+        # THE WINDOW IS EMPTY and the mandate is alive BY CONSTRUCTION: no
+        # session has elapsed since the fire. This is the common good case --
+        # fire tonight, fill at tomorrow's open -- and a naive "require bars"
+        # rule refuses exactly it.
+        return {"window_empty": True}, status, []
+    expected: list[date] = []
+    cursor = latch.anchor
+    while cursor <= required_upper:
+        expected.append(cursor)
+        cursor = session_offset(cursor, 1)
+    closes = derivation.archive_closes.get(ticker) or {}
+    observed = [s for s in expected if s in closes]
+    missing = [s for s in expected if s not in closes]
+    coverage = {
+        "expected_sessions": [s.isoformat() for s in expected],
+        "observed_sessions": [s.isoformat() for s in observed],
+        "missing_sessions": [s.isoformat() for s in missing],
+    }
+    return coverage, status, missing
+
+
+def mandate_alive_at(
+    conn,
+    cfg,
+    *,
+    order: AcceptedLatchOrder,
+    fill_session: date,
+    exclude_trade_ids: frozenset[int],
+) -> LatchedProvenance:
+    """Was THIS mandate alive when THIS fill happened?
+
+    THE JUDGMENT IS DELEGATED; ONLY THE INPUTS ARE GUARDED. `derive_latches`
+    already implements RD's full precedence ladder including the invalidation
+    rung, so this function authors NO second invalidation comparison (S0(1)).
+    What it adds is the set of guards that make the delegated answer
+    trustworthy, each of which can REFUSE and each of which records the input it
+    judged in `probe_evidence`.
+
+    `exclude_trade_ids` has NO DEFAULT deliberately. On the CORRECTION path the
+    subject trade already exists, and `_match_fill`'s windowed rung admits any
+    NULL-candidate, same-ticker, in-zone entry -- so an unexcluded probe returns
+    `clear_reason='fill'` for the very mandate it is being asked about, and the
+    arc's own live application becomes unreachable. A defaulted parameter is how
+    that defect comes back silently.
+    """
+    if not is_trading_session(fill_session):
+        # An implementation skipping this walks `session_offset` from a weekend
+        # and shifts the WHOLE probe window.
+        return _probe_refusal(
+            "fill_session_not_a_session", order=order,
+            horizon_session=fill_session)
+
+    # THE SNAPSHOT NULL CHECK RUNS FIRST, BEFORE THE PROBE. A link with no
+    # frozen value can never be cross-checked whatever the probe answers; and a
+    # junk fire is DEGRADED by `derive_latches`, so a later check would report
+    # `fire_not_derivable` and hide the real defect behind a symptom.
+    if order.frozen_pivot is None or order.frozen_invalidation is None:
+        return _probe_refusal(
+            "frozen_value_unavailable", order=order,
+            horizon_session=fill_session, freeze_tier=order.freeze_tier)
+
+    try:
+        derivation = build_latch_derivation(
+            conn, cfg,
+            horizon_session_override=fill_session,
+            # RD's bound: a latch NEVER dies of drift, and `criteria_lapsed` IS
+            # the drift rung. Forced OFF rather than tolerated, because the
+            # ladder resolves EARLIEST-first: a lapse at D3 would MASK an
+            # invalidation at D5, so treating a lapse as "alive" would be blind
+            # rather than conservative.
+            criteria_lapse_armed_override=False,
+            exclude_trade_ids=frozenset(exclude_trade_ids),
+            # A lost decline ledger must not read as "no decline".
+            strict_decisions=True,
+        )
+    except DecisionIntentsUnavailableError as exc:
+        log.warning(
+            "22-A: the decision ledger could not be read for the %s probe at "
+            "%s, so an absent decline is indistinguishable from an unread one: "
+            "%s", order.ticker, fill_session, exc)
+        return _probe_refusal(
+            "decision_evidence_unavailable", order=order,
+            horizon_session=fill_session, freeze_tier=order.freeze_tier)
+
+    # SELECTION IS BY `candidate_set` MEMBERSHIP, NEVER BY IDENTITY. The set is
+    # "the opening fire PLUS every re-confirmation" and the fold keeps the
+    # OPENING candidate as the identity, so an accepted order placed against a
+    # same-pivot RE-CONFIRMATION would return `fire_not_derivable` under an
+    # identity match -- a refusal manufactured by the lookup, not by the mandate.
+    containing = [
+        latch for latch in derivation.latches
+        if order.candidate_id in latch.candidate_set
+    ]
+    common = {
+        "horizon_session": fill_session,
+        "bars_through": derivation.derivation_session,
+        "freeze_tier": order.freeze_tier,
+    }
+    if not containing:
+        return _probe_refusal("fire_not_derivable", order=order, **common)
+    if len(containing) > 1:
+        log.warning(
+            "22-A: fire %s is inside %d latches (%s); exactly one may contain "
+            "it", order.candidate_id, len(containing),
+            [lat.identity.candidate_id for lat in containing])
+        return _probe_refusal(
+            "ambiguous_fire_membership", order=order, **common)
+    latch = containing[0]
+
+    if latch.clear_reason == "criteria_lapsed":
+        # RAISED, NOT BRANCHED ON: the rung is forced off above, so seeing it
+        # back means the force did not take, and a silent branch would hide it.
+        raise LatchProbeInvariantError(
+            f"the probe returned clear_reason='criteria_lapsed' for candidate "
+            f"{order.candidate_id} with the rung forced OFF; the force did not "
+            f"take, and treating a drift-cleared latch as dead would violate "
+            f"RD's bound that a latch never dies of drift"
+        )
+
+    ordering = _decision_ordering_refusal(
+        conn, candidate_set=latch.candidate_set, fill_session=fill_session)
+    if ordering is not None:
+        # BEFORE the verdict is trusted: the as-of rule is about whether the
+        # INPUT was admissible, not about what the ladder concluded from it.
+        return _probe_refusal(ordering, order=order, **common)
+
+    alive, basis = _fill_wins(latch, fill_session)
+    if not alive:
+        evidence = dict(common)
+        if latch.clear_reason == "fill":
+            # THE `fill` TERMINAL IS WEAKER EVIDENCE THAN IT LOOKS: the windowed
+            # rung matches ANY NULL-candidate, same-ticker, in-zone entry and
+            # never inspects a broker order id. The refusal NAMES the matched
+            # trade and its basis so a heuristic-driven refusal is visible as
+            # one rather than presented as proof.
+            log.warning(
+                "22-A: the %s mandate reads CONSUMED at %s by trade %s matched "
+                "on %r; that rung never inspects a broker order id, so this "
+                "refusal is heuristic evidence, not proof",
+                order.ticker, latch.clear_session, latch.clear_trade_id,
+                latch.fill_link_basis)
+        return _probe_refusal(
+            "mandate_not_alive", order=order,
+            clear_reason=latch.clear_reason,
+            clear_session=latch.clear_session,
+            probe_evidence={
+                "fill_terminal_trade_id": latch.clear_trade_id,
+                "fill_terminal_link_basis": latch.fill_link_basis,
+            } if latch.clear_reason == "fill" else None,
+            **{k: v for k, v in evidence.items()},
+        )
+
+    coverage, status, missing = _coverage_view(
+        derivation, latch, ticker=order.ticker, fill_session=fill_session)
+    window_empty = coverage.get("window_empty", False) is True
+    if not window_empty and (status != ARCHIVE_STATUS_OK or missing):
+        # An interior hole could HIDE a breach, so an unverifiable window must
+        # not be read as a survival. Refusal-only asymmetry, as everywhere else.
+        log.warning(
+            "22-A: aliveness for %s at %s is UNVERIFIABLE (archive_status=%r, "
+            "missing sessions %s)", order.ticker, fill_session, status,
+            coverage.get("missing_sessions"))
+        return _probe_refusal(
+            "aliveness_unverifiable", order=order,
+            clear_reason=latch.clear_reason, clear_session=latch.clear_session,
+            window_empty=window_empty, archive_status=status,
+            probe_evidence={"coverage": coverage}, **common)
+
+    # THE SNAPSHOT CROSS-CHECK -- RD's gate, enforced AT the comparison, and
+    # THE ARC'S SINGLE ROUNDING AUTHORITY. It happens HERE, in Python, at
+    # PRICE_DP, ONCE. The citation trigger does NOT repeat it: it binds the RAW
+    # operands to their sources by identity and records THIS comparison's
+    # verdict as a datum. A SQL-side re-comparison is forbidden in both
+    # available forms -- raw equality refuses truthful sub-cent drift, and
+    # SQLite's `round()` is a DIFFERENT rounding rule from Python's.
+    #
+    # The comparison is the link's frozen value against the LATCH's, per RD
+    # constraint 1: the mandate is frozen at its OPENING fire, so that is the
+    # number the mandate actually declared. Where an order was placed against a
+    # re-confirmation whose stop had drifted from the opening fire's, the two
+    # differ and this refuses -- which is the correct, fail-closed answer.
+    invalidation_equal = (
+        round(float(order.frozen_invalidation), PRICE_DP)
+        == round(float(latch.latched_initial_stop), PRICE_DP))
+    pivot_equal = (
+        round(float(order.frozen_pivot), PRICE_DP)
+        == round(float(latch.latched_pivot), PRICE_DP))
+    if not (invalidation_equal and pivot_equal):
+        log.warning(
+            "22-A: frozen-value DRIFT for %s (link %s): frozen "
+            "(pivot=%r, invalidation=%r) vs latched (pivot=%r, invalidation=%r)",
+            order.ticker, order.link_id, order.frozen_pivot,
+            order.frozen_invalidation, latch.latched_pivot,
+            latch.latched_initial_stop)
+        return _probe_refusal(
+            "frozen_value_drift", order=order,
+            clear_reason=latch.clear_reason, clear_session=latch.clear_session,
+            window_empty=window_empty, archive_status=status,
+            probe_evidence={"coverage": coverage}, **common)
+
+    # The LIVE operands are read from the CANDIDATE the link cites, because that
+    # is what the citation trigger binds `$.live_*_raw` to. They agree with the
+    # latch's frozen pair for every row that reaches here -- the cross-check
+    # above is what makes that true rather than assumed.
+    live = conn.execute(
+        "SELECT pivot, initial_stop FROM candidates WHERE id = ?",
+        (order.candidate_id,),
+    ).fetchone()
+    live_pivot, live_invalidation = (None, None) if live is None else live
+
+    evidence = {
+        "evidence_version": LATCH_PROBE_EVIDENCE_VERSION,
+        "fire_candidate_id": order.candidate_id,
+        "ticker": order.ticker,
+        "fill_session": fill_session.isoformat(),
+        # `horizon_session` IS the fill session and is SQL-BOUND; `bars_through`
+        # is the exchange-calendar-derived prior session and is service-validated
+        # (a trigger cannot walk an exchange calendar). Collapsing the two into
+        # one `probe_session` gave it two incompatible definitions, under which a
+        # truthful correction could not have been written at all.
+        "horizon_session": fill_session.isoformat(),
+        "bars_through": derivation.derivation_session.isoformat(),
+        "clear_reason": latch.clear_reason,
+        "clear_session": (
+            latch.clear_session.isoformat()
+            if latch.clear_session is not None else None),
+        "admission_basis": basis,
+        "criteria_lapse_forced_off": 1,
+        "freeze_tier": order.freeze_tier,
+        "archive_status": status,
+        "frozen_invalidation_raw": order.frozen_invalidation,
+        "live_invalidation_raw": live_invalidation,
+        "frozen_pivot_raw": order.frozen_pivot,
+        "live_pivot_raw": live_pivot,
+        "invalidation_equal_at_dp": 1 if invalidation_equal else 0,
+        "pivot_equal_at_dp": 1 if pivot_equal else 0,
+        "compare_dp": PRICE_DP,
+        "coverage": coverage,
+    }
+    return LatchedProvenance(
+        admitted=True,
+        recognised_but_underivable=False,
+        decline_reason=None,
+        order=order,
+        clear_reason=latch.clear_reason,
+        clear_session=latch.clear_session,
+        horizon_session=fill_session,
+        bars_through=derivation.derivation_session,
+        window_empty=window_empty,
+        archive_status=status,
+        probe_evidence=evidence,
+        freeze_tier=order.freeze_tier,
+    )

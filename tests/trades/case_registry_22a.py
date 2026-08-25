@@ -128,6 +128,20 @@ N9  The plan's twin roster lists 15d-i, 30b and 30d as twinned.  All three
     are pure-function envelope-guard cases that never reach rung 9, so the
     convention's own scope exempts them -- see TWIN_ROSTER_REPAIR.  Twinning
     them is unbuildable at the task that owns them.
+N10 SEVEN `-pre` twins were owned by TASK 6 and are NOT runnable there.  A
+    twin asserts `pre_barrier_unproven`, which RUNG 9 emits, and rung 9 lives
+    in `authorize_accepted_order` -- task 4.  `mandate_alive_at` never reads a
+    freeze tier at all, so at task 6 the twin could only be written against a
+    reason its own task cannot produce.  That is 22A-R7-09's class (a task
+    accepting cases it cannot run) recurring inside the registry written to
+    close it, and it is caught by this module's OWN stated ownership rule --
+    "the EARLIEST task at which its FULL required outcome is assertable".
+    REPAIR: 8-pre, 10-pre, 24-pre, 27-pre, 28a-pre, 28b-pre and 28c-pre move
+    to task 4; their BASE cases stay at task 6.  Task 6 owns 24 cases; task 4
+    owns 25.  No case id is invented and none is deferred.  (22-pre / 29d-pre
+    were already task 4's, and 4c-i-pre / 23-pre stay at 6a with their bases,
+    which need rung 8 as well -- so the repair makes all fourteen twins
+    consistent rather than fixing seven of them.)
 """
 
 # --------------------------------------------------------------------------
@@ -159,15 +173,18 @@ _own("3", "25", "38", "50a", "50b", "50c", "50d", "50e")
 # Task 4 -- lookup + ten of the eleven rungs.
 _own("4", "4", "4b", "4d(i)", "4d(ii)", "13", "14", "22", "22b",
      "29a", "29b", "29c", "29d", "41a", "47a", "47b", "47c",
-     "22-pre", "29d-pre")
+     "22-pre", "29d-pre",
+     # N10: the SEVEN twins whose BASE cases are task 6's.  A `-pre` twin
+     # asserts `pre_barrier_unproven`, which RUNG 9 emits -- and rung 9 ships in
+     # THIS task.  See CLOSURE_FINDINGS N10.
+     "8-pre", "10-pre", "24-pre", "27-pre", "28a-pre", "28b-pre", "28c-pre")
 
 # Task 5 -- EXT-1: behaviour-preservation only; no plan case ids.
 
 # Task 6 -- mandate_alive_at, probe grain.
 _own("6", "7", "7b", "8", "9", "9b", "10", "11", "11b", "11c", "16",
      "19", "20", "24", "27", "28a", "28b", "28c", "28d'", "28e", "28f",
-     "41b", "41c", "41d", "41e",
-     "8-pre", "10-pre", "24-pre", "27-pre", "28a-pre", "28b-pre", "28c-pre")
+     "41b", "41c", "41d", "41e")
 
 # Task 6a -- rung 8, competitor liveness (three-valued).
 _own("6a", "4c-i", "4c-ii", "15f", "23", "23b", "23c", "23d",
@@ -321,13 +338,16 @@ R9-07  RESOLVED, and it was the one blocking a deterministic build.  The
        migration's closure list DERIVES from that roster and a test asserts
        they match, so neither is a hand-maintained copy of the other.
 
-R9-08  AGREED, unverified by execution (needs the migration).  Cases 9/9b
-       plant drift by dropping the barrier trigger, but rung 9 now refuses
-       barrier_not_installed whenever a barrier is absent OR ALTERED, so the
-       fixture would test the integrity guard instead of frozen_value_drift.
-       FIX DIRECTION, and the body check makes it exactly expressible:
-       re-create the CANONICAL trigger after planting the mutation and before
-       authorization -- a byte-identical restore passes by construction.
+R9-08  NOW VERIFIED BY EXECUTION (task 6, 2026-08-25).  Cases 9/9b plant the
+       drift through tests/_candidates_barrier_helper.py, which replays each
+       trigger body VERBATIM out of sqlite_master, and each case then asserts
+       barrier_installed(conn) is True BEFORE the probe runs -- so the
+       byte-identical restore is checked rather than assumed, and the fixture
+       cannot silently become a test of the integrity guard.  The helper's own
+       guarantee is now pinned too (tests/data/test_22a_candidates_barrier_
+       helper.py, eleven tests incl. a same-name NO-OP negative control), which
+       is what makes "passes by construction" a checked claim rather than a
+       prose one.
 
 R9-09  RE-VERIFIED against the restructured ladder.  See R9_09_REVERIFICATION.
 
