@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from pathlib import Path
 
 from swing.data.models import (
     FREEZE_TIER_LIVE_AT_ACCEPTANCE,
@@ -96,7 +97,75 @@ _CANDIDATES_BARRIER_DDL: dict[str, str] = {
     ),
 }
 
-BARRIER_TRIGGER_NAMES: tuple[str, ...] = tuple(_CANDIDATES_BARRIER_DDL)
+# ---------------------------------------------------------------------------
+# THE EPOCH'S OWN THREE TRIGGERS ARE PINNED TOO (Codex 22A-R3-01, VERIFIED BY
+# EXECUTION 2026-08-25).
+#
+# The reader pinned the three ``candidates`` triggers and IGNORED the three
+# that make the EPOCH immutable -- and the epoch's boundary is the thing that
+# stamps a fire pre- or post-barrier.  Measured: drop the three epoch triggers,
+# move ``max_candidate_id_at_barrier``, and ``freeze_tier_for_candidate``
+# returns a DIFFERENT tier while ``barrier_installed()`` still returns True.
+# All three of rung 9's operands then agree on a tier nothing backs, which is a
+# WRONG ACCEPTANCE -- the direction that contaminates H1 invisibly.
+#
+# It is the same failure as the name-only check CHARC already ruled on, one
+# table over: the guard looked present and was structurally unreachable for the
+# half of the proof it did not name.  "The barrier" is read as EVERY trigger
+# the structural claim rests on, and that is SIX rather than three.
+#
+# THE BODIES ARE READ OUT OF THE MIGRATION, NEVER RE-SPELLED HERE.  Hand-typing
+# a 400-character RAISE message is how a pinned copy drifts from its source in
+# whitespace nobody looks at; the module reads 0037 once at import and a test
+# asserts the file it read is the one the schema was built from.
+# ---------------------------------------------------------------------------
+_MIGRATION_0037 = (
+    Path(__file__).resolve().parents[1]
+    / "migrations" / "0037_latch_order_mandate_links.sql"
+)
+
+EPOCH_BARRIER_TRIGGER_NAMES: tuple[str, ...] = (
+    "trg_candidates_epoch_no_update",
+    "trg_candidates_epoch_no_delete",
+    "trg_candidates_epoch_no_insert",
+)
+
+
+def _pinned_from_migration(name: str) -> str:
+    """The trigger's canonical body, verbatim from ``0037``.
+
+    Raises rather than degrading: a reader that could not find its own pinned
+    body would otherwise certify a barrier it never compared.
+    """
+    text = _MIGRATION_0037.read_text(encoding="utf-8")
+    # THE PATTERN CARRIES NO BACKSLASH ESCAPE IN SOURCE, DELIBERATELY.
+    # A `\b` word boundary written here was transported into the file as a
+    # literal 0x08 BACKSPACE byte -- twice on this arc now, once in a
+    # call-site walker and once here -- and the regex then matches nothing
+    # while reading as correct.  The trigger name is followed by a space in
+    # every CREATE, so the boundary is spelled as one.
+    match = re.search(
+        "(CREATE TRIGGER " + re.escape(name) + " .*?END);", text, re.S)
+    if match is None:
+        raise RuntimeError(
+            f"migration 0037 does not define {name}; the barrier-integrity "
+            f"check cannot certify a body it cannot read")
+    return match.group(1)
+
+
+_EPOCH_BARRIER_DDL: dict[str, str] = {
+    name: _pinned_from_migration(name) for name in EPOCH_BARRIER_TRIGGER_NAMES
+}
+
+_ALL_BARRIER_DDL: dict[str, str] = {
+    **_CANDIDATES_BARRIER_DDL, **_EPOCH_BARRIER_DDL}
+
+_BARRIER_TABLE: dict[str, str] = {
+    **{name: "candidates" for name in _CANDIDATES_BARRIER_DDL},
+    **{name: "candidates_immutability_epoch" for name in _EPOCH_BARRIER_DDL},
+}
+
+BARRIER_TRIGGER_NAMES: tuple[str, ...] = tuple(_ALL_BARRIER_DDL)
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -111,7 +180,12 @@ def normalize_trigger_sql(sql: str) -> str:
 
 
 def barrier_installed(conn: sqlite3.Connection) -> bool:
-    """True iff EVERY barrier trigger is present, on ``candidates``, verbatim.
+    """True iff EVERY barrier trigger is present, on ITS table, verbatim.
+
+    SIX triggers, not three: the three that make ``candidates`` immutable
+    AND the three that make the EPOCH immutable.  The epoch's boundary is
+    what stamps a fire pre- or post-barrier, so a reader pinning only the
+    first three certified a tier the second three no longer backed.
 
     The claim rung 9 makes is about THIS admission, NOW -- which is why the
     check lives here rather than in a CI-time guard.  A CI guard proves the
@@ -127,12 +201,12 @@ def barrier_installed(conn: sqlite3.Connection) -> bool:
             BARRIER_TRIGGER_NAMES,
         )
     }
-    for name, pinned in _CANDIDATES_BARRIER_DDL.items():
+    for name, pinned in _ALL_BARRIER_DDL.items():
         found = rows.get(name)
         if found is None:
             return False
         tbl_name, sql = found
-        if tbl_name != "candidates":
+        if tbl_name != _BARRIER_TABLE[name]:
             return False
         if sql is None or normalize_trigger_sql(sql) != normalize_trigger_sql(pinned):
             return False

@@ -1149,3 +1149,105 @@ def test_a_non_pass_probe_guard_verdict_is_REJECTED(conn, guard_key) -> None:
     payload["cited_latch_probe_json"] = json.dumps(blob)
     with pytest.raises(sqlite3.IntegrityError):
         _insert_payload(conn, payload)
+
+
+# ---------------------------------------------------------------------------
+# ROUND-3 CRITICALS -- both VERIFIED BY EXECUTION before they were fixed.
+# NO CASE IDS: 50a-50e are the plan's barrier-integrity cases and they cover
+# the `candidates` triggers.  These are the same property on the surfaces the
+# plan's roster did not name, which is why they are additions rather than
+# re-labellings of an existing case.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("trigger", [
+    "trg_candidates_epoch_no_update",
+    "trg_candidates_epoch_no_delete",
+    "trg_candidates_epoch_no_insert",
+])
+def test_dropping_an_EPOCH_trigger_disarms_structural_admission(
+        conn, trigger) -> None:
+    """22A-R3-01 -- the EPOCH's own triggers are part of the barrier.
+
+    MEASURED BEFORE THE FIX: drop the three epoch triggers, move
+    ``max_candidate_id_at_barrier``, and ``freeze_tier_for_candidate`` returns
+    a DIFFERENT tier while ``barrier_installed()`` still returns True -- all
+    three of rung 9's operands agreeing on a tier nothing backs.  That is a
+    WRONG ACCEPTANCE, the direction that contaminates H1 invisibly.
+
+    The reader pinned three triggers and the structural claim rests on six.
+    """
+    from swing.data.repos.candidates_immutability_epoch import barrier_installed
+
+    assert barrier_installed(conn) is True
+    conn.execute(f"DROP TRIGGER {trigger}")
+    conn.commit()
+    assert barrier_installed(conn) is False
+
+
+def test_a_same_name_NOOP_epoch_trigger_does_not_satisfy_the_check(conn) -> None:
+    """AND THE DISCRIMINATOR THE BODY CHECK DEMANDS.
+
+    *A body check never exercised against a wrong body is the existence check
+    wearing better clothes.*  A name-only implementation counts six and admits.
+    """
+    from swing.data.repos.candidates_immutability_epoch import barrier_installed
+
+    conn.execute("DROP TRIGGER trg_candidates_epoch_no_update")
+    conn.execute(
+        "CREATE TRIGGER trg_candidates_epoch_no_update BEFORE UPDATE ON "
+        "candidates_immutability_epoch BEGIN SELECT 1; END")
+    conn.commit()
+    assert barrier_installed(conn) is False
+
+
+def test_the_link_table_is_closed_to_REPLACE(conn) -> None:
+    """22A-R3-10 -- the arc's OWN table was fail-open to INSERT OR REPLACE.
+
+    MEASURED BEFORE THE FIX at the DEFAULT ``recursive_triggers=0``: an
+    ``INSERT OR REPLACE`` rewrote ``frozen_pivot`` 18.34 -> 999.99 with BOTH
+    append-only triggers present and unfired, because REPLACE's implicit DELETE
+    does not fire DELETE triggers unless the pragma is ON.  This migration
+    repairs exactly that bypass for ``candidates`` and for the epoch and left
+    the link table -- the durable record the whole admission proof rests on --
+    open.
+    """
+    _assert_default_pragma(conn)
+    candidate_id = seed_fire(conn)
+    accept_order(conn, candidate_id)
+    conn.commit()
+    cols = [r[1] for r in conn.execute(
+        "PRAGMA table_info(latch_order_mandate_links)")]
+    row = dict(zip(cols, conn.execute(
+        "SELECT * FROM latch_order_mandate_links").fetchone(), strict=True))
+    row["frozen_pivot"] = 999.99
+    for verb in ("INSERT OR REPLACE INTO", "REPLACE INTO",
+                 "INSERT OR IGNORE INTO"):
+        with pytest.raises(sqlite3.IntegrityError, match="trg_loml_no_replace"):
+            conn.execute(
+                f"{verb} latch_order_mandate_links ({', '.join(row)}) "
+                f"VALUES ({', '.join('?' * len(row))})", tuple(row.values()))
+    assert conn.execute(
+        "SELECT frozen_pivot FROM latch_order_mandate_links").fetchone()[0] \
+        == PIVOT
+
+
+def test_a_SECOND_link_on_a_DIFFERENT_validity_row_still_INSERTS(conn) -> None:
+    """AND THE ACCEPTED BASELINE FOR THE NEW BARRIER.
+
+    A refusal-only test set cannot establish that a guard can EVER accept, and
+    a conflict-scoped barrier written one clause too wide would block the
+    MINTING TRIGGER itself -- every acceptance after the first.  Two genuine
+    acceptances on two fires must both mint.
+    """
+    first = seed_fire(conn)
+    accept_order(conn, first)
+    # A SECOND fire on the SAME (run, ticker) is impossible -- the
+    # conflict-scoped candidates barrier refuses it -- and a second fire on
+    # the same run with a different ticker breaks the identity trigger that
+    # binds an intent's block to its candidate.  Both were tried; the shape
+    # that exists in production is a LATER RUN re-firing the same ticker.
+    second = seed_fire(conn, run_id=199)
+    accept_order(conn, second, key="second-validity", place_key="second-place",
+                 run_id=199, actual_broker_order_id="second-order")
+    conn.commit()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM latch_order_mandate_links").fetchone()[0] == 2

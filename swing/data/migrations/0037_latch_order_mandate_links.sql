@@ -285,6 +285,26 @@ BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loml_no_update: latch_order_mandate_
 CREATE TRIGGER trg_loml_no_delete BEFORE DELETE ON latch_order_mandate_links
 BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loml_no_delete: latch_order_mandate_links is append-only. Deleting a link would erase the only durable record binding a broker order to its mandate. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
 
+-- AND THE CONFLICT-SCOPED INSERT THAT CLOSES REPLACE, on the arc's OWN table
+-- (Codex 22A-R3-03/R3-10, VERIFIED BY EXECUTION 2026-08-25). This migration
+-- repairs the REPLACE bypass carefully for `candidates` and for the epoch and
+-- LEFT ITS OWN LINK TABLE OPEN: at the default `recursive_triggers=0` an
+-- INSERT OR REPLACE deletes the conflicting row WITHOUT firing
+-- trg_loml_no_delete, then inserts a new one -- measured, rewriting
+-- frozen_pivot 18.34 -> 999.99 with both append-only triggers present and
+-- unfired. The durable order<->mandate record is the thing the whole admission
+-- proof rests on, so an append-only claim it does not have is worse here than
+-- anywhere else in the file.
+--
+-- BOTH UNIQUE KEYS ARE SCOPED: the PRIMARY KEY and the UNIQUE on
+-- validity_intent_id. Guarding only one leaves the other as a live REPLACE
+-- path, which is the same half-swept shape as the bypass itself.
+CREATE TRIGGER trg_loml_no_replace BEFORE INSERT ON latch_order_mandate_links
+WHEN EXISTS (SELECT 1 FROM latch_order_mandate_links
+              WHERE (NEW.link_id IS NOT NULL AND link_id = NEW.link_id)
+                 OR validity_intent_id = NEW.validity_intent_id)
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loml_no_replace: latch_order_mandate_links is append-only. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE) would DELETE the existing link, bypassing trg_loml_no_delete, and rewrite the frozen values the admission proof rests on. One acceptance mints one link and it is never replaced. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
 -- ============================================================================
 -- 4. THE MINTING TRIGGER, and the BACKFILL.
 --
