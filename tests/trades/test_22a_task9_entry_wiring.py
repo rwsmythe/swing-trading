@@ -231,28 +231,83 @@ def test_a_fill_with_no_latch_rows_falls_through_case_2(tmp_path) -> None:
 # ===========================================================================
 # CASE 3 -- never filled: the arc has NO effect where there is no fill
 # ===========================================================================
-def test_an_unfilled_mandate_is_untouched_by_the_arc_case_3(tmp_path) -> None:
-    """No trade, no fill, no acceptance -> nothing is written anywhere.
+_C3_TABLES = ("trades", "fills", "latch_order_mandate_links",
+              "latch_order_intents", "candidates", "provenance_corrections")
 
-    The class this guards is a PHANTOM LABEL on an unfilled mandate: the arc's
-    only write path is ``record_entry``, so a mandate nobody filled must leave
-    every table exactly as it found them.
+
+def test_an_unfilled_mandate_is_untouched_by_the_arc_case_3(tmp_path) -> None:
+    """No trade, no fill -> nothing is written anywhere, AND the derivation
+    the operator sees is unchanged.
+
+    THIS TEST WAS VACUOUS AND THE VACUITY WAS PROVED BY EXECUTION, NOT BY
+    READING (Codex 22A-R4-07).  It snapshotted two table counts with NO
+    operation between them; with ``find_accepted_latch_order`` edited to
+    ``return []`` unconditionally -- an arc that does nothing at all -- it
+    still passed.  A test that cannot fail against a gutted implementation
+    asserts nothing about the implementation.
+
+    THE REBUILD DRIVES THE ARC'S READ SURFACES over the unfilled mandate and
+    asserts they ENGAGE: the link is found, the mandate is ALIVE at a
+    hypothetical fill session, and the epoch reader reports a standing barrier.
+    That half fails against a do-nothing arc.  The other half is the case's own
+    claim -- that after all of it, every table count is unchanged, there is no
+    trade and no fill, and the derived latches are byte-identical to the
+    snapshot taken before the reads.
+
+    Stating both halves is the point: the "nothing happened" assertion is only
+    worth making once "something COULD have happened" is established, or the
+    case passes for the reason the mandate was unauthorizable.
     """
+    from dataclasses import asdict
+    from datetime import datetime
+
+    from swing.data.repos.candidates_immutability_epoch import (
+        freeze_tier_for_candidate,
+    )
+    from swing.latches.reader import build_latch_derivation
+    from swing.trades.latched_origin import (
+        find_accepted_latch_order,
+        mandate_alive_at,
+    )
+
     conn, cfg, candidate_id = build_world(tmp_path, "c3")
     accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
     conn.commit()
-    before = {
-        t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        for t in ("trades", "fills", "latch_order_mandate_links",
-                  "latch_order_intents", "candidates")
-    }
-    # the entry path is simply never entered
-    after = {
-        t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        for t in before
-    }
-    assert after == before
+
+    def counts() -> dict[str, int]:
+        return {
+            t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            for t in _C3_TABLES
+        }
+
+    # FROZEN CLOCK: the derivation's whole context comes from this one datetime.
+    frozen = datetime(2026, 7, 27, 9, 0, 0)
+    before = counts()
+    baseline = [asdict(latch)
+                for latch in build_latch_derivation(conn, cfg, now=frozen).latches]
+
+    # --- the arc's read surfaces, DRIVEN over the unfilled mandate ----------
+    found = find_accepted_latch_order(conn, broker_order_id=BROKER_ORDER_ID)
+    assert len(found) == 1, (
+        f"the arc did not recognise the accepted order ({len(found)} links); "
+        f"every 'nothing was written' assertion below would then be vacuous")
+    probe = mandate_alive_at(
+        conn, cfg, order=found[0], fill_session=FILL_SESSION,
+        exclude_trade_ids=frozenset())
+    assert probe.admitted, (
+        f"the mandate was not alive at {FILL_SESSION} "
+        f"({probe.decline_reason}); the case would then pass because nothing "
+        f"could have been admitted, not because nothing was filled")
+    tier, installed = freeze_tier_for_candidate(conn, candidate_id)
+    assert (tier, installed) == ("live_at_acceptance", True)
+
+    # --- and NOTHING moved -------------------------------------------------
+    assert counts() == before
     assert before["trades"] == 0 and before["fills"] == 0
+    assert [asdict(latch)
+            for latch in build_latch_derivation(conn, cfg, now=frozen).latches
+            ] == baseline, (
+        "the arc's reads changed the derivation the operator sees")
 
 
 # ===========================================================================
