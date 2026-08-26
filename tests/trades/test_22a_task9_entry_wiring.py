@@ -1269,7 +1269,8 @@ def test_the_pe_ladder_reads_nothing_from_the_latch_recognition_path() -> None:
     block = source[start:end]
     excised, count = re.subn(
         r"from swing\.trades\.latched_origin import\s+"
-        r"broker_order_id_from_envelope.*?_deferred_order_id is None:",
+        r"envelope_recognises_an_order.*?resolved_schwab_source_value_json,\s*"
+        r"\):",
         "", block, flags=re.S)
     assert count == 1, (
         "EXT-2's envelope rung was not found in the ladder block; the "
@@ -1496,7 +1497,7 @@ def test_a_padded_order_id_on_a_LINKED_fill_is_refused(tmp_path) -> None:
     """PRE-FIX the service stripped it, matched the link, and admitted -- while
     every SQL scan over the SAME envelope read the PADDED string and could
     therefore miss a real prior consumption.  POST-FIX the ladder refuses
-    `order_id_not_canonical`, RECOGNISED, so the row lands honest-unset rather
+    `envelope_not_canonical`, RECOGNISED, so the row lands honest-unset rather
     than falling through to TODAY's candidate.
     """
     conn, cfg, candidate_id = build_world(tmp_path, "r801")
@@ -1510,7 +1511,7 @@ def test_a_padded_order_id_on_a_LINKED_fill_is_refused(tmp_path) -> None:
     from swing.trades.latched_origin import resolve_latched_provenance
     verdict = resolve_latched_provenance(
         conn, cfg, req(schwab_source_value_json=padded))
-    assert verdict.decline_reason == "order_id_not_canonical"
+    assert verdict.decline_reason == "envelope_not_canonical"
     assert verdict.recognised_but_underivable is True
 
 
@@ -1547,7 +1548,7 @@ def test_a_DUPLICATE_order_id_key_on_a_LINKED_fill_is_refused(tmp_path) -> None:
     from swing.trades.latched_origin import resolve_latched_provenance
     verdict = resolve_latched_provenance(
         conn, cfg, req(schwab_source_value_json=duplicated))
-    assert verdict.decline_reason == "order_id_not_canonical"
+    assert verdict.decline_reason == "envelope_not_canonical"
     assert verdict.recognised_but_underivable is True
 
 
@@ -1683,7 +1684,7 @@ def test_the_REVERSED_duplicate_key_order_is_also_refused(tmp_path) -> None:
     from swing.trades.latched_origin import resolve_latched_provenance
     verdict = resolve_latched_provenance(
         conn, cfg, req(schwab_source_value_json=reversed_order))
-    assert verdict.decline_reason == "order_id_not_canonical"
+    assert verdict.decline_reason == "envelope_not_canonical"
     assert verdict.recognised_but_underivable is True
 
     result = enter(conn, cfg, req(schwab_source_value_json=reversed_order))
@@ -1742,3 +1743,191 @@ def test_a_RAISING_link_lookup_still_writes_the_entry(tmp_path) -> None:
     assert conn.execute(
         "SELECT COUNT(*) FROM fills WHERE trade_id = ?",
         (result.trade_id,)).fetchone()[0] == 1
+
+
+# ===========================================================================
+# SS-1 / SS-4 -- THE SELF-SWEEP'S RESIDUALS OF R8-01 AND R9-01
+#
+# NOT A COUNTED ROUND.  These come from the dedicated self-sweep the
+# gate-holder ruled after round 9's composition (four of seven findings were
+# residuals of round 8's own fixes).  Every one below was VERIFIED BY
+# EXECUTION before it was written.
+# ===========================================================================
+def _seed_todays_aplus_run(conn) -> int:
+    """A LATER complete run carrying the ticker as ``aplus``.
+
+    Without it the ordinary chain and the honest-unset path both land
+    ``manual_off_pipeline`` and no assertion below can discriminate.
+    """
+    from tests._latch_probe_world_22a import seed_run
+    from tests.trades._cohort_provenance_fixtures import seed_pipeline_run
+
+    seed_run(conn, 902, FILL_SESSION)
+    today = conn.execute(
+        "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+        "pivot, initial_stop, rs_method) VALUES (902, ?, 'aplus', 19.0, "
+        "19.5, 15.0, 'universe')", (TICKER,)).lastrowid
+    seed_pipeline_run(
+        conn, evaluation_run_id=902,
+        data_asof_date=date(2026, 7, 24).isoformat(),
+        action_session_date=FILL_SESSION.isoformat(),
+        started_ts="2026-07-24T17:30:00", finished_ts="2026-07-24T17:44:00")
+    conn.commit()
+    return int(today)
+
+
+def _slug(label: str) -> str:
+    return "".join(c for c in label.lower() if c.isalnum())[:12]
+
+
+_SS1_SHAPES = {
+    "the LAST duplicate is JSON null": '"schwab_order_id": null',
+    "the LAST duplicate is a NUMBER": '"schwab_order_id": 42',
+    "the LAST duplicate is the EMPTY string": '"schwab_order_id": ""',
+}
+
+
+@pytest.mark.parametrize("label", sorted(_SS1_SHAPES))
+def test_an_envelope_python_reads_as_ABSENT_but_sql_reads_as_LINKED(
+        tmp_path, label) -> None:
+    """SS-1: the canonicality guard was UNREACHABLE for the shapes that matter.
+
+    R8-01 refused an identity the two domains read differently and R9-01 moved
+    that question ABOVE the link lookup.  Both left it BELOW the order-id
+    READ -- so an envelope whose LAST duplicate key makes Python read ABSENCE
+    never reached the guard at all: `record_entry`'s reservation trigger and
+    the resolver both asked "did PYTHON find an id?", got None, and ran the
+    ordinary chain, while SQL reads the FIRST key and would have bound a real
+    mandate.
+
+    MEASURED, all three shapes: python=None, sqlite='<the linked order>'.
+
+    PRE-FIX the persisted row is `('pipeline_aplus', <today's candidate>)` --
+    the silent misattribution this arc exists to prevent, reachable through
+    the production form with a tampered hidden envelope.
+    POST-FIX it is `('manual_off_pipeline', None, None)`.
+    """
+    from swing.trades.latched_origin import (
+        broker_order_id_from_envelope,
+        resolve_latched_provenance,
+    )
+
+    conn, cfg, candidate_id = build_world(tmp_path, "ss1" + _slug(label))
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    today = _seed_todays_aplus_run(conn)
+
+    raw = ('{"schwab_instrument_symbol": "' + TICKER + '", '
+           '"schwab_order_id": "' + BROKER_ORDER_ID + '", '
+           + _SS1_SHAPES[label] + '}')
+    # THE PREMISE, MEASURED HERE, not inherited: the two domains really do
+    # disagree, and they disagree in the direction that matters.
+    assert broker_order_id_from_envelope(raw) is None
+    assert conn.execute(
+        "SELECT json_extract(?, '$.schwab_order_id')", (raw,)
+    ).fetchone()[0] == BROKER_ORDER_ID
+
+    verdict = resolve_latched_provenance(
+        conn, cfg, req(schwab_source_value_json=raw))
+    assert verdict.decline_reason == "envelope_not_canonical"
+    assert verdict.recognised_but_underivable is True
+
+    result = enter(conn, cfg, req(schwab_source_value_json=raw,
+                                  entry_path=EntryPath.HYP_RECS_BUTTON))
+    assert written(conn, result.trade_id) == (
+        "manual_off_pipeline", None, None), (
+        f"the ordinary chain wrote candidate {today} for a fill SQL reads as "
+        f"naming accepted order {BROKER_ORDER_ID}")
+
+
+
+def test_a_PADDED_instrument_symbol_is_refused_at_the_ladder(tmp_path) -> None:
+    """SS-4: R8-01's class, second instance -- the SYMBOL.
+
+    R8-01 stated the class once ("refuse an identity the two domains would
+    read differently") and fixed the ORDER-ID instance.  The citation trigger
+    binds `$.authorization.guard_envelope_symbol.input` to
+    `json_extract(f.schwab_source_value_json, '$.schwab_instrument_symbol')`
+    -- SQL, unstripped -- while the service reads the SAME key through
+    `instrument_symbol_from_envelope`, which STRIPS.  MEASURED: the service
+    admits `latch_ladder` and the trigger then ABORTS the whole correction
+    with the generic citation-graph message.
+
+    PRE-FIX: the entry ADMITS (`pipeline_aplus` + the fire's candidate) and a
+    later correction dies with an illegible structural refusal.
+    POST-FIX: refused HERE, recognised, with a reason that names the cause.
+    """
+    from swing.trades.latched_origin import resolve_latched_provenance
+
+    conn, cfg, candidate_id = build_world(tmp_path, "ss4")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    padded_symbol = json.dumps({
+        "schwab_order_id": BROKER_ORDER_ID,
+        "schwab_instrument_symbol": "  " + TICKER + "  "})
+    verdict = resolve_latched_provenance(
+        conn, cfg, req(schwab_source_value_json=padded_symbol))
+    assert verdict.decline_reason == "envelope_not_canonical"
+    assert verdict.recognised_but_underivable is True
+    result = enter(conn, cfg, req(schwab_source_value_json=padded_symbol))
+    assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
+
+
+def test_a_DUPLICATE_instrument_symbol_key_is_refused(tmp_path) -> None:
+    """SS-4's other half, and it needs no whitespace."""
+    from swing.trades.latched_origin import resolve_latched_provenance
+
+    conn, cfg, candidate_id = build_world(tmp_path, "ss4b")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    duplicated = ('{"schwab_order_id": "' + BROKER_ORDER_ID + '", '
+                  '"schwab_instrument_symbol": "ZZZZ", '
+                  '"schwab_instrument_symbol": "' + TICKER + '"}')
+    verdict = resolve_latched_provenance(
+        conn, cfg, req(schwab_source_value_json=duplicated))
+    assert verdict.decline_reason == "envelope_not_canonical"
+    assert verdict.recognised_but_underivable is True
+
+
+def test_a_clean_envelope_on_BOTH_keys_still_admits(tmp_path) -> None:
+    """THE CONTROL for SS-1 and SS-4 together, one dimension changed.
+
+    Without it a guard that refused every envelope would pass every case
+    above.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "ssctl")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    result = enter(conn, cfg, req())
+    origin, cand, _label = written(conn, result.trade_id)
+    assert (origin, cand) == ("pipeline_aplus", candidate_id)
+
+
+def test_a_deeply_nested_envelope_still_writes_the_ENTRY(tmp_path) -> None:
+    """SS-2 at the grain where it costs money.
+
+    The three envelope readers ran OUTSIDE the resolver's containment -- one
+    of them before `record_entry` opens a transaction at all -- and each
+    caught an ENUMERATED pair of exception types.  `json.loads` raises
+    `RecursionError`, a `RuntimeError`, on a deeply nested document, so the
+    escape reached `record_entry` and NEITHER THE TRADE NOR THE FILL LANDED.
+
+    That is 22A-R8-03's own ruling ("enumerating the raisable types is the
+    hand-maintained-roster failure") left unapplied at the sites its own fix
+    did not reach.
+
+    PRE-FIX: `RecursionError` propagates out of `record_entry`.
+    POST-FIX: honest-unset, with the trade AND the fill written.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "ss2")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    deep = ('{"schwab_order_id":' + '{"a":' * 20000 + '1' + '}' * 20000 + '}')
+    with pytest.raises(RecursionError):
+        json.loads(deep)                        # the PREMISE, measured here
+    result = enter(conn, cfg, req(schwab_source_value_json=deep))
+    assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE trade_id = ?",
+        (result.trade_id,)).fetchone()[0] == 1, (
+        "a blocked ENTRY and a blocked FILL are the same money-bearing "
+        "failure, and an unreadable audit blob must cost neither")

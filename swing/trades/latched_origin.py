@@ -118,7 +118,10 @@ __all__ = [
     "competitor_liveness_rung",
     "resolve_latched_provenance",
     "find_accepted_latch_order",
+    "ENVELOPE_KEYS_READ_BY_BOTH_DOMAINS",
     "broker_order_id_from_envelope",
+    "envelope_is_canonical",
+    "envelope_recognises_an_order",
     "instrument_symbol_from_envelope",
 ]
 
@@ -187,10 +190,14 @@ DECLINE_REASONS: frozenset[str] = frozenset({
     # returned `linked_validity_not_accepted` would ASSERT a fact about the
     # broker's answer that it precisely could not read.
     "validity_evidence_unavailable",
-    # The envelope names an order that PYTHON and SQL would read DIFFERENTLY
-    # (Codex 22A-R8-01): padded, or carrying duplicate keys. An identity two
-    # domains disagree about cannot bind a mandate.
-    "order_id_not_canonical",
+    # The envelope carries a value that PYTHON and SQL would read
+    # DIFFERENTLY (Codex 22A-R8-01, widened by self-sweep SS-1/SS-4): padded,
+    # blank, non-string, or carrying duplicate keys, on EITHER of the two keys
+    # both domains read. A value two domains disagree about cannot bind a
+    # mandate.  NAMED FOR THE ENVELOPE RATHER THAN THE ORDER ID because the
+    # symbol reaches it too, and a reason that says `order_id` while refusing
+    # a symbol divergence is the #31 class in a decline code.
+    "envelope_not_canonical",
 })
 
 
@@ -529,10 +536,23 @@ def broker_order_id_from_envelope(raw: str | None) -> str | None:
         return None
     try:
         payload = json.loads(raw)
-    except (ValueError, TypeError):
+    except Exception:  # noqa: BLE001 -- the TYPE ROSTER is the failure (SS-2)
+        # ENUMERATING THE RAISABLE TYPES IS THE HAND-MAINTAINED-ROSTER FAILURE
+        # -- 22A-R8-03's own ruling, applied to the readers that fix left
+        # behind.  This was `except (ValueError, TypeError)`, and `json.loads`
+        # raises `RecursionError`, a `RuntimeError`, on a deeply nested
+        # document (MEASURED on this interpreter).  These readers run BEFORE
+        # the resolver's containment, and one of them runs before
+        # `record_entry` opens a transaction at all, so an escape here rolled
+        # a money-bearing entry back over an unreadable audit blob.
+        #
+        # "Treat it as absent" is safe HERE only because
+        # `envelope_is_canonical` answers the SAME document FAIL-CLOSED, so
+        # the pair still RECOGNISES it and the row lands honest-unset instead
+        # of taking the ordinary chain.
         log.warning(
-            "22-A: fill envelope is not valid JSON; treating the order id as "
-            "absent (the fill still records, cohort bookkeeping degrades)"
+            "22-A: fill envelope could not be decoded; treating the order id "
+            "as absent (the fill still records, cohort bookkeeping degrades)"
         )
         return None
     if not isinstance(payload, dict):
@@ -553,25 +573,62 @@ def broker_order_id_from_envelope(raw: str | None) -> str | None:
     return value.strip()
 
 
-def envelope_order_id_is_canonical(raw: str | None) -> bool:
-    """Do PYTHON and SQL read the SAME order identity out of this envelope?
+# ---------------------------------------------------------------------------
+# THE ENVELOPE KEYS BOTH DOMAINS READ -- and this roster is CLOSURE-CHECKED,
+# never hand-maintained (self-sweep SS-4).
+#
+# A test parses migration 0037 for every `json_extract(<a fills envelope>,
+# '$.KEY')` and asserts each KEY is a member here.  That is the STATIC WALK the
+# recipe demands in place of a list: a fix whose shape is "maintain a roster"
+# is not the roster, it is the check that walks what the code actually
+# references.  Add a third key to the trigger and the walk fails until it is
+# added here.
+# ---------------------------------------------------------------------------
+ENVELOPE_KEYS_READ_BY_BOTH_DOMAINS: tuple[str, ...] = (
+    SCHWAB_ORDER_ID_ENVELOPE_KEY,
+    SCHWAB_SYMBOL_ENVELOPE_KEY,
+)
+
+
+def envelope_is_canonical(raw: str | None) -> bool:
+    """Do PYTHON and SQL read the SAME value for EVERY key both domains read?
 
     ONE AUTHORITY, APPLIED TO AN IDENTITY (Codex 22A-R8-01; it is AL-7's shape
-    one datum over).  The reader above STRIPS whitespace and ``json.loads``
-    keeps the LAST duplicate key; SQLite's ``json_extract`` strips nothing and
-    keeps the FIRST -- both MEASURED.  So a padded or duplicated envelope gives
-    the service one order id while the SQL scans a DIFFERENT one, and rung 6's
-    consumption check can miss a real prior consumption: a mandate REUSED,
-    which is the expensive direction.
+    one datum over).  The service STRIPS whitespace and ``json.loads`` keeps
+    the LAST duplicate key; SQLite's ``json_extract`` strips nothing and keeps
+    the FIRST -- both MEASURED.  So a padded or duplicated envelope gives the
+    service one value while every SQL scan over the same blob reads another.
 
     The answer is NOT to canonicalise harder in one domain -- that is the
     two-spellings-agree-today class.  It is to REFUSE an envelope the two
-    domains would read differently, so the identity is either unambiguous or
-    the admission does not happen.  ``False`` becomes a
-    recognised-but-underivable refusal, never a fall-through: the fill really
-    does name an order, and the ordinary chain would write TODAY's candidate.
+    domains would read differently, so the value is either unambiguous or the
+    admission does not happen.  ``False`` becomes a recognised-but-underivable
+    refusal, never a fall-through.
 
-    NEVER RAISES, for the same reason the reader does not.
+    THREE THINGS THE SELF-SWEEP CHANGED, each verified by execution:
+
+    * **THE ROSTER, NOT THE ORDER ID ALONE (SS-4).**  R8-01 stated the class
+      and fixed ONE instance.  The citation trigger ALSO binds
+      ``$.schwab_instrument_symbol`` by ``json_extract`` while the service
+      reads that key through ``instrument_symbol_from_envelope``, which
+      strips -- measured: the service admitted ``latch_ladder`` and the trigger
+      then ABORTED the correction with the generic citation-graph message, an
+      authorize-then-abort delivering an illegible refusal.
+    * **A NON-STRING VALUE IS A DISAGREEMENT, NOT AN ABSENCE (SS-1).**  The
+      earlier "the reader already returns None" line treated it as harmless.
+      It is not: ``json_extract`` yields a non-NULL scalar, and comparing that
+      to a TEXT column applies TEXT affinity -- MEASURED, an unquoted
+      ``1002937461`` MATCHES a link whose ``broker_order_id`` is the string
+      ``1002937461``.  Python reads absence; SQL reads a real mandate.
+    * **A BLANK OR PADDED VALUE LIKEWISE.**  Python strips it to nothing while
+      SQL returns the string.  Direction is a wrong REFUSAL on a shape that
+      names no order, which is the cheap one.
+
+    NEVER RAISES ON A DECODE FAILURE, and the breadth is deliberate: the
+    earlier ``except (ValueError, TypeError)`` was the hand-maintained-roster
+    failure 22A-R8-03 ruled against, applied to exception TYPES, and
+    ``json.loads`` raises ``RecursionError`` (a ``RuntimeError``, caught by
+    neither) on a deeply nested document -- MEASURED on this interpreter.
     """
     if not isinstance(raw, str) or not raw.strip():
         return True                    # no envelope: nothing to disagree about
@@ -579,9 +636,9 @@ def envelope_order_id_is_canonical(raw: str | None) -> bool:
     # `object_pairs_hook` fires for EVERY nested object, so a first version
     # counted a legitimate top-level id plus an unrelated nested field of the
     # same name as a duplicate -- a wrong REFUSAL manufactured by the guard.
-    # Both readers address `$.schwab_order_id` at the ROOT, so the root is the
-    # only place the two can disagree. The hook records EVERY object's pairs
-    # and the LAST one it returns is the root, because the decoder builds
+    # Both readers address `$.<key>` at the ROOT, so the root is the only
+    # place the two can disagree. The hook records EVERY object's pairs and
+    # the LAST one it returns is the root, because the decoder builds
     # inside-out.
     objects: list[list[tuple]] = []
 
@@ -592,27 +649,84 @@ def envelope_order_id_is_canonical(raw: str | None) -> bool:
     try:
         payload = json.loads(raw, object_pairs_hook=_hook)
     except (ValueError, TypeError):
-        return True                    # unusable JSON: the reader returns None
+        # A DOCUMENT NEITHER DOMAIN CAN READ AGREES WITH ITSELF.  Every SQL
+        # site wraps its extract in `CASE WHEN json_valid(...)`, which yields
+        # NULL here, and the service reader returns None -- both absent, so
+        # there is nothing to disagree about and the ordinary chain is right.
+        return True
+    except Exception:  # noqa: BLE001 -- fail-CLOSED on an UNANSWERED question
+        # NOT the same case. `RecursionError` and its kin mean the decoder
+        # stopped rather than judged, so the two domains' readings are
+        # UNKNOWN -- and an unanswerable question is not a pass. Refusing here
+        # is what keeps this function's "never raises" contract true by
+        # CONSTRUCTION rather than by enumerating the types it might meet.
+        log.exception(
+            "22-A: the fill envelope could not be decoded to judge whether "
+            "Python and SQL would read it alike; the identity is treated as "
+            "AMBIGUOUS and the entry records with honest-unset cohort keys")
+        return False
     if not isinstance(payload, dict) or not objects:
         return True
-    seen = [k for k, _v in objects[-1] if k == SCHWAB_ORDER_ID_ENVELOPE_KEY]
-    if len(seen) > 1:
-        log.warning(
-            "22-A: fill envelope carries %d %s keys; Python keeps the LAST and "
-            "SQLite keeps the FIRST, so the two domains would read DIFFERENT "
-            "order identities", len(seen), SCHWAB_ORDER_ID_ENVELOPE_KEY)
-        return False
-    value = payload.get(SCHWAB_ORDER_ID_ENVELOPE_KEY)
-    if not isinstance(value, str):
-        return True                    # the reader already returns None
-    if value != value.strip():
-        log.warning(
-            "22-A: fill envelope's %s is whitespace-padded (%r); the service "
-            "strips it and SQL does not, so the two domains would read "
-            "DIFFERENT order identities",
-            SCHWAB_ORDER_ID_ENVELOPE_KEY, value)
-        return False
+    root = objects[-1]
+    for key in ENVELOPE_KEYS_READ_BY_BOTH_DOMAINS:
+        seen = [k for k, _v in root if k == key]
+        if len(seen) > 1:
+            log.warning(
+                "22-A: fill envelope carries %d %s keys; Python keeps the LAST "
+                "and SQLite keeps the FIRST, so the two domains would read "
+                "DIFFERENT values", len(seen), key)
+            return False
+        if key not in payload:
+            continue                   # absent in BOTH domains
+        value = payload[key]
+        if value is None:
+            continue                   # JSON null: json_extract reads NULL too
+        if not isinstance(value, str):
+            log.warning(
+                "22-A: fill envelope's %s is a %s rather than a string (%r); "
+                "the service treats it as ABSENT while json_extract returns "
+                "it, and TEXT affinity can still match a stored identity",
+                key, type(value).__name__, value)
+            return False
+        if value != value.strip() or not value.strip():
+            log.warning(
+                "22-A: fill envelope's %s is whitespace-padded or blank (%r); "
+                "the service strips it and SQL does not, so the two domains "
+                "would read DIFFERENT values", key, value)
+            return False
     return True
+
+
+def envelope_recognises_an_order(raw: str | None) -> bool:
+    """THE ONE RECOGNITION TRIGGER, shared by every caller (self-sweep SS-1).
+
+    "Does this request carry a usable broker order id?" was asked at THREE
+    sites -- ``record_entry``'s reservation, the entry route's EXT-2 deferral,
+    and the resolver -- and all three asked it of the PYTHON reader ALONE.  So
+    an envelope Python reads as ABSENT and SQL reads as a REAL LINKED order
+    took no reservation, never reached the canonicality guard 22A-R8-01 added
+    for exactly that disagreement, and ran the ordinary current-candidate
+    chain.  MEASURED end to end on three shapes: the persisted row was
+    ``('pipeline_aplus', <today's candidate>)`` for a fill SQL binds to an
+    accepted mandate.
+
+    That is 22A-R9-01 one step further back.  R9-01 moved the canonicality
+    question above the link LOOKUP; it still sat below the order-id READ, and
+    the read is where a disagreeing envelope disappears.
+
+    The question therefore INCLUDES the disagreement: an envelope the two
+    domains read differently is RECOGNISED, so it is refused rather than
+    silently attributed.  Three spellings became one, which is also what stops
+    a fourth caller reintroducing the split.
+
+    PURE STRING READ, ZERO QUERIES -- LOCK clause (d), "a fill with no usable
+    broker order id costs ZERO additional database queries", is preserved by
+    construction, and its subject is unchanged: an envelope naming no order
+    and reading the same in both domains is still not recognised and still
+    takes the deferred ``with conn:`` exactly as before.
+    """
+    return (broker_order_id_from_envelope(raw) is not None
+            or not envelope_is_canonical(raw))
 
 
 def instrument_symbol_from_envelope(raw: str | None) -> str | None:
@@ -621,7 +735,20 @@ def instrument_symbol_from_envelope(raw: str | None) -> str | None:
         return None
     try:
         payload = json.loads(raw)
-    except (ValueError, TypeError):
+    except Exception:  # noqa: BLE001 -- the TYPE ROSTER is the failure (SS-2)
+        # ENUMERATING THE RAISABLE TYPES IS THE HAND-MAINTAINED-ROSTER FAILURE
+        # -- 22A-R8-03's own ruling, applied to the readers that fix left
+        # behind.  This was `except (ValueError, TypeError)`, and `json.loads`
+        # raises `RecursionError`, a `RuntimeError`, on a deeply nested
+        # document (MEASURED on this interpreter).  These readers run BEFORE
+        # the resolver's containment, and one of them runs before
+        # `record_entry` opens a transaction at all, so an escape here rolled
+        # a money-bearing entry back over an unreadable audit blob.
+        #
+        # "Treat it as absent" is safe HERE only because
+        # `envelope_is_canonical` answers the SAME document FAIL-CLOSED, so
+        # the pair still RECOGNISES it and the row lands honest-unset instead
+        # of taking the ordinary chain.
         return None
     if not isinstance(payload, dict):
         return None
@@ -1911,6 +2038,23 @@ def resolve_latched_provenance(
             admitted=False, recognised_but_underivable=False,
             decline_reason="no_envelope")
 
+    # CANONICALITY IS ASKED OF THE ENVELOPE, BEFORE ANYTHING IS READ OUT OF IT
+    # (self-sweep SS-1, a residual of 22A-R8-01 and 22A-R9-01).
+    #
+    # R9-01 moved this question above the link LOOKUP and left it below the
+    # order-id READ. That is where a disagreeing envelope DISAPPEARS: an
+    # envelope whose LAST duplicate key is null, numeric or blank gives the
+    # Python reader None, and `no_order_id` is NOT recognised -- so the
+    # ordinary chain wrote TODAY's candidate while `json_extract`, which keeps
+    # the FIRST key, binds a real accepted mandate. MEASURED on three shapes.
+    #
+    # The guard's own subject is the DOCUMENT, not the identity it happens to
+    # yield, so it runs first and it runs unconditionally.
+    if not envelope_is_canonical(envelope):
+        return LatchedProvenance(
+            admitted=False, recognised_but_underivable=True,
+            decline_reason="envelope_not_canonical")
+
     broker_order_id = broker_order_id_from_envelope(envelope)
     if broker_order_id is None:
         return LatchedProvenance(
@@ -1950,23 +2094,6 @@ def resolve_latched_provenance(
     # recognised and the ordinary path is intact, byte-for-byte, which is what
     # the LOCK is about. A link that EXISTS with no config is RECOGNISED and
     # refused, so the row lands honest-unset instead of wrong.
-    # CANONICALITY IS JUDGED BEFORE THE LOOKUP, NOT AFTER IT (Codex 22A-R9-01,
-    # a residual of my own 22A-R8-01 fix). Gated on `orders` being non-empty,
-    # the guard asked "did the PYTHON-selected id find a link?" -- so an
-    # envelope whose FIRST duplicate key is the linked one and whose LAST is
-    # not gave Python an unlinked id, an empty `orders`, and a FALL-THROUGH to
-    # the ordinary chain, while SQL would have read the linked mandate. The
-    # wrong-acceptance the guard exists to close, reachable by reversing the
-    # key order the first test happened to use.
-    #
-    # The question is about the IDENTITY, so it is asked of the identity:
-    # ambiguity refuses whether or not a link was found, RECOGNISED, with no
-    # order object because there is no unambiguous order to name.
-    if not envelope_order_id_is_canonical(envelope):
-        return LatchedProvenance(
-            admitted=False, recognised_but_underivable=True,
-            decline_reason="order_id_not_canonical")
-
     # THE LOOKUP IS INSIDE THE CONTAINMENT (Codex 22A-R9-04, a residual of my
     # own 22A-R8-03 fix). The broad handler began at `authorize_accepted_order`
     # and `find_accepted_latch_order` ran BEFORE it -- so a SQLite read error

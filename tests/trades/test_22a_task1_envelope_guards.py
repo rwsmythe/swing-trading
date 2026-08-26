@@ -180,7 +180,7 @@ def test_unusable_json_logs_a_warning_but_absence_does_not(caplog) -> None:
     assert not caplog.records
     with caplog.at_level(logging.WARNING):
         assert broker_order_id_from_envelope("not json") is None
-    assert any("not valid JSON" in r.getMessage() for r in caplog.records)
+    assert any("could not be decoded" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

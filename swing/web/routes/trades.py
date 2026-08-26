@@ -1305,11 +1305,17 @@ def entry_post(
         # there (see `swing/trades/entry.py`); a request with NO usable order
         # id keeps this route behaviour byte-for-byte, which is what bounds
         # the LOCK's scope.
-        from swing.trades.latched_origin import broker_order_id_from_envelope
-        _deferred_order_id = broker_order_id_from_envelope(
+        #
+        # THE PREDICATE IS THE RESOLVER'S OWN (self-sweep SS-1). It was
+        # `broker_order_id_from_envelope(...) is None`, the PYTHON reader
+        # alone -- so this route and `record_entry` could disagree about
+        # whether the same request names an order, which is the
+        # two-spellings-that-agree-today class 22A-R8-01 ruled against, on the
+        # very question that decides which mandate a fill is bound to.
+        from swing.trades.latched_origin import envelope_recognises_an_order
+        if not envelope_recognises_an_order(
             resolved_schwab_source_value_json,
-        )
-        if _deferred_order_id is None:
+        ):
             # Map UI origin → EntryPath before invoking derive_trade_origin.
             _ui_origin = origin_coerced
             if _ui_origin == "hyp-recs":

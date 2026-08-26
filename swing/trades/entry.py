@@ -377,7 +377,26 @@ def record_entry(
     # (LOCK clause (d)) and takes the deferred ``with conn:`` exactly as
     # before.
     # =====================================================================
-    from swing.trades.latched_origin import broker_order_id_from_envelope
+    from swing.trades.latched_origin import envelope_recognises_an_order
+
+    # THE RECOGNITION QUESTION IS THE RESOLVER'S OWN, NOT A SECOND SPELLING OF
+    # IT (self-sweep SS-1).
+    #
+    # This site asked `broker_order_id_from_envelope(...) is not None`, which
+    # is the PYTHON reader alone -- so an envelope Python reads as ABSENT and
+    # SQLite reads as a REAL LINKED order took NO reservation, never called the
+    # resolver at all, and ran the ordinary current-candidate chain. The
+    # canonicality guard 22A-R8-01 added for exactly that disagreement sat
+    # behind a door this line never opened. MEASURED end to end on three
+    # shapes (duplicate key whose LAST value is null / numeric / empty): the
+    # persisted row was `pipeline_aplus` + TODAY's candidate.
+    #
+    # `envelope_recognises_an_order` is that question asked ONCE, in the
+    # module that owns it. It stays a PURE STRING READ, so LOCK clause (d) --
+    # a request with no usable order id costs ZERO additional database
+    # queries -- is untouched, and so is its subject: an envelope naming no
+    # order that both domains read alike is still unrecognised and still takes
+    # the deferred `with conn:` exactly as before.
 
     # THE ORDER ID IS PARSED WHETHER OR NOT A CONFIG WAS SUPPLIED (Codex
     # 22A-R7-01).
@@ -397,7 +416,7 @@ def record_entry(
     # usable order id costs ZERO additional database queries" -- is untouched:
     # its subject is a request with NO ORDER ID, and that request still takes
     # the deferred `with conn:` exactly as before.
-    _recognised_order_id = broker_order_id_from_envelope(
+    _recognised_order_id = envelope_recognises_an_order(
         getattr(req, "schwab_source_value_json", None))
     # THE TRIGGER IS "THE REQUEST CARRIES A USABLE ORDER ID", NEVER "THE
     # RECOGNITION FOUND A LINK" (plan S2.2 rule 3, review 22A-R3-01).  A
@@ -405,7 +424,7 @@ def record_entry(
     # validity row before the INSERT and would otherwise take the ordinary
     # path on a stale negative.  A negative result is as perishable as a
     # positive one, and the reservation covers both (case 21b).
-    _reserve = _recognised_order_id is not None
+    _reserve = _recognised_order_id
     if _reserve and conn.in_transaction:
         raise CallerHeldEntryTransactionError(
             "record_entry owns BEGIN IMMEDIATE for an order-id-bearing "
