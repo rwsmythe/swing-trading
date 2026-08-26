@@ -883,10 +883,22 @@ def seed_latch_ladder_citation(conn: sqlite3.Connection) -> dict:
     place.update(ticker=CADL_TICKER, detection_date=session,
                  action_session_date=session, recorded_ts="2026-08-11T12:00:00")
     place_id = _insert_intent(conn, place)
+    # THE ACCEPTED QUANTITY MUST COVER THE FILL, or the baseline is a state the
+    # SERVICE could never produce: `assert_fill_consistent_with_order` refuses
+    # `quantity_exceeds_order` when the executed shares exceed the accepted
+    # order's own quantity, and the citation trigger now proves the same
+    # inequality (Codex 22A-R5-01). The 0033 fixture's default is 10 while
+    # CADL's entry fill is 19, so the value is READ from the fill rather than
+    # typed -- a fixture that quietly disagrees with the emitter is this
+    # project's most-repeated test defect.
+    accepted_quantity = int(conn.execute(
+        "SELECT quantity FROM fills WHERE trade_id = ? AND action = 'entry' "
+        "ORDER BY fill_id LIMIT 1", (ids["trade_id"],)).fetchone()[0])
     validity = _validity_row(candidate_id, place_id, run_id=run_id)
     validity.update(ticker=CADL_TICKER, detection_date=session,
                     action_session_date=session,
-                    recorded_ts="2026-08-11T12:05:00")
+                    recorded_ts="2026-08-11T12:05:00",
+                    actual_quantity=accepted_quantity)
     validity_id = _insert_intent(conn, validity)
     conn.commit()
 

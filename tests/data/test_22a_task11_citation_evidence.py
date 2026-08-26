@@ -419,10 +419,19 @@ def _mint_drifted_citation(
                  idempotency_key=f"{key}-place")
     place_id = insert_intent(conn_, place)
     validity = validity_row(candidate_id, place_id, run_id=run_id)
+    # The accepted quantity must COVER the fill, exactly as the baseline's
+    # does: the citation trigger proves `guard_quantity.input <= accepted`
+    # (Codex 22A-R5-01), and a re-minted order carrying the 0033 fixture's
+    # default 10 against CADL's 19-share fill would refuse for a reason that
+    # has nothing to do with either case's price geometry.
+    accepted_quantity = int(conn_.execute(
+        "SELECT quantity FROM fills WHERE fill_id = ?",
+        (payload["entry_fill_id_at_correction"],)).fetchone()[0])
     validity.update(ticker=CADL_TICKER, detection_date=session,
                     action_session_date=session,
                     recorded_ts="2026-08-11T12:25:00",
                     idempotency_key=f"{key}-validity",
+                    actual_quantity=accepted_quantity,
                     actual_broker_order_id=order_id)
     validity_id = insert_intent(conn_, validity)
     with candidates_barrier_lifted(conn_):
@@ -764,3 +773,282 @@ def _epoch_boundary_lifted(conn_: sqlite3.Connection):
     finally:
         for _name, sql in saved:
             conn_.execute(sql)
+
+
+# ===========================================================================
+# 22A-R5-01 -- INPUT FIDELITY IS NOT PREDICATE TRUTH
+#
+# Every clause below records an input BOUND to its source and every fidelity
+# case above already passes.  What was missing is the PREDICATE whose verdict
+# the entry claims: a fill of 100 shares can truthfully record input=100
+# against an accepted quantity of 2, and the row inserted.
+# ===========================================================================
+def test_a_truthful_quantity_input_exceeding_the_accepted_order_is_rejected(
+        conn) -> None:
+    """The reviewer's own headline scenario, built exactly.
+
+    The fill really does carry 100 shares and the recorded input really is
+    100, so EVERY fidelity check passes -- the input equals ``fills.quantity``
+    by subquery.  The accepted order's quantity is 19.  The production ladder
+    refuses this at ``assert_fill_consistent_with_order``
+    (``quantity_exceeds_order``); PRE-FIX the trigger accepted it, POST-FIX it
+    rejects, and both values are stated so the case distinguishes.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    accepted = conn.execute(
+        "SELECT actual_quantity FROM latch_order_mandate_links WHERE link_id = ?",
+        (payload["cited_latch_link_id"],)).fetchone()[0]
+    inflated = float(accepted) + 81.0
+    conn.execute("UPDATE fills SET quantity = ? WHERE fill_id = ?",
+                 (inflated, payload["entry_fill_id_at_correction"]))
+    conn.commit()
+    blob = _blob(payload)
+    blob["authorization"]["guard_quantity"]["input"] = inflated
+    _assert_rejected(conn, _with_blob(payload, blob))
+
+
+def test_a_quantity_at_the_accepted_bound_is_still_accepted(conn) -> None:
+    """THE CONTROL: the guard is an INEQUALITY, not an equality.
+
+    An accepted order legitimately fills fewer shares (a partial then a
+    cancel), and the boundary case -- executed EQUALS accepted -- must pass or
+    the new clause would refuse every ordinary fill.  Without this half a fix
+    that required ``<`` would pass the case above.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    accepted, fill_quantity = conn.execute(
+        "SELECT l.actual_quantity, f.quantity FROM latch_order_mandate_links l "
+        "JOIN fills f ON f.fill_id = ? WHERE l.link_id = ?",
+        (payload["entry_fill_id_at_correction"],
+         payload["cited_latch_link_id"])).fetchone()
+    assert float(fill_quantity) == float(accepted), (
+        "the baseline must sit exactly ON the bound for this control to be "
+        "about the bound")
+    _insert_payload(conn, payload)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM provenance_corrections").fetchone()[0] == 1
+
+
+def test_a_forged_link_field_is_rejected_even_with_a_truthful_blob(
+        conn) -> None:
+    """RUNG 3c IS ABOUT *EVERY* DUPLICATED LINK FIELD.
+
+    The link COPIES five fields held authoritatively elsewhere and the trigger
+    bound only the broker order id, so a raw link could cite a GENUINE accepted
+    validity row while carrying an INFLATED quantity -- and the submitted
+    envelope would then match the forgery rather than the acceptance.
+
+    The forgery is built the only way the schema allows: the mint trigger is
+    SUPPRESSED around a real acceptance and RESTORED VERBATIM out of
+    ``sqlite_master``, then the link is written by hand.  ``validity_intent_id``
+    is UNIQUE and the table is append-only, so neither a raw copy beside a
+    minted link nor an edit of one is representable.
+
+    Every recorded input is re-pointed at the forged order and stays TRUTHFUL,
+    so this is not a fidelity case: it is the predicate the fidelity checks
+    never asked.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    payload, blob = _forged_link_citation(
+        conn, payload, key="r501-forge", link_over={"actual_quantity": 2})
+    _assert_rejected(conn, _with_blob(payload, blob))
+
+
+def _forged_link_citation(conn_, payload: dict, *, key: str, link_over: dict):
+    """A HAND-WRITTEN link citing a GENUINE acceptance, with fields substituted.
+
+    Mirrors ``_mint_drifted_citation``'s re-pointing so the returned payload
+    differs from the baseline in the forged FIELD and nothing else.
+    """
+    from tests._latch_link_fixtures_22a import (
+        insert_intent,
+        place_row,
+        validity_row,
+    )
+    from tests.trades._cohort_provenance_fixtures import CADL_TICKER
+
+    blob = _blob(payload)
+    candidate_id = blob["fire_candidate_id"]
+    run_id, session = conn_.execute(
+        "SELECT c.evaluation_run_id, e.action_session_date FROM candidates c "
+        "JOIN evaluation_runs e ON e.id = c.evaluation_run_id WHERE c.id = ?",
+        (candidate_id,)).fetchone()
+    accepted_quantity = int(conn_.execute(
+        "SELECT quantity FROM fills WHERE fill_id = ?",
+        (payload["entry_fill_id_at_correction"],)).fetchone()[0])
+    order_id = f"{key}-order"
+    saved = conn_.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+        "AND name = 'trg_latch_link_mint_on_acceptance'").fetchone()[0]
+    conn_.execute("DROP TRIGGER trg_latch_link_mint_on_acceptance")
+    try:
+        place = place_row(candidate_id, run_id=run_id)
+        place.update(ticker=CADL_TICKER, detection_date=session,
+                     action_session_date=session,
+                     recorded_ts="2026-08-11T12:40:00",
+                     idempotency_key=f"{key}-place")
+        place_id = insert_intent(conn_, place)
+        validity = validity_row(candidate_id, place_id, run_id=run_id)
+        validity.update(ticker=CADL_TICKER, detection_date=session,
+                        action_session_date=session,
+                        recorded_ts="2026-08-11T12:45:00",
+                        idempotency_key=f"{key}-validity",
+                        actual_quantity=accepted_quantity,
+                        actual_broker_order_id=order_id)
+        validity_id = insert_intent(conn_, validity)
+        conn_.commit()
+    finally:
+        conn_.execute(saved)
+        conn_.commit()
+
+    pivot, stop = conn_.execute(
+        "SELECT pivot, initial_stop FROM candidates WHERE id = ?",
+        (candidate_id,)).fetchone()
+    row = {
+        "validity_intent_id": validity_id, "place_intent_id": place_id,
+        "candidate_id": candidate_id, "evaluation_run_id": int(run_id),
+        "ticker": CADL_TICKER, "detection_date": str(session),
+        "broker_order_id": order_id, "frozen_pivot": pivot,
+        "frozen_invalidation": stop,
+        "actual_quantity": accepted_quantity,
+        "freeze_tier": "live_at_acceptance",
+        "linked_at": "2026-08-11T12:45:00Z",
+    }
+    row.update(link_over)
+    conn_.execute(
+        f"INSERT INTO latch_order_mandate_links ({', '.join(row)}) "
+        f"VALUES ({', '.join('?' * len(row))})", tuple(row.values()))
+    link_id = int(conn_.execute(
+        "SELECT link_id FROM latch_order_mandate_links WHERE "
+        "validity_intent_id = ?", (validity_id,)).fetchone()[0])
+    conn_.execute(
+        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
+        (json.dumps({"schwab_order_id": order_id,
+                     "schwab_instrument_symbol": CADL_TICKER}),
+         payload["entry_fill_id_at_correction"]))
+    conn_.commit()
+
+    payload = dict(payload)
+    payload.update(
+        cited_latch_link_id=link_id,
+        cited_latch_validity_intent_id=validity_id,
+        cited_latch_place_intent_id=place_id,
+        cited_latch_broker_order_id=order_id,
+    )
+    blob["authorization"]["rung2_link_parent"]["input"] = place_id
+    blob["authorization"]["rung3b_latest_validity_child"]["input"] = validity_id
+    blob["authorization"]["rung3c_link_broker_order_id"]["input"] = order_id
+    blob["authorization"]["rung4_governing_place_intent"]["input"] = place_id
+    blob["authorization"]["guard_broker_limit_bound"]["input"] = (
+        validity["actual_limit_price"])
+    return payload, blob
+
+
+# ===========================================================================
+# 22A-R5-05 -- A CLAIMED SESSION STRING IS SYNTACTICALLY VALIDATED
+#
+# AL-5 says SQL cannot know the exchange CALENDAR. It says nothing about
+# whether the string is a DATE at all, and `json_type = 'text'` accepted
+# "garbage".
+# ===========================================================================
+def test_a_garbage_bars_through_is_rejected(conn) -> None:
+    """PRE-FIX ``bars_through = "garbage"`` inserted; POST-FIX it is rejected."""
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    blob = _blob(payload)
+    blob["bars_through"] = "garbage"
+    _assert_rejected(conn, _with_blob(payload, blob))
+
+
+def test_a_year_zero_bars_through_is_rejected(conn) -> None:
+    """The YEAR BOUND, which the three-predicate form omits.
+
+    ``'0000-01-01'`` has length 10, parses under SQLite's ``date()`` and
+    round-trips -- so length + parseable + round-trip ALL pass and only the
+    year bound refuses it.  The same guard on
+    ``latch_order_mandate_links.detection_date`` has always carried four
+    predicates; this is the fourth arriving where it was missing.
+    """
+    assert conn.execute("SELECT date('0000-01-01')").fetchone()[0] == "0000-01-01"
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    blob = _blob(payload)
+    blob["bars_through"] = "0000-01-01"
+    _assert_rejected(conn, _with_blob(payload, blob))
+
+
+def test_a_year_zero_coverage_session_is_rejected(conn) -> None:
+    """The same fourth predicate on the coverage arrays.
+
+    BOTH arrays carry the value, so the element-by-element equality still
+    holds and only the date guard can be what refuses it.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    blob = _blob(payload)
+    blob["coverage"] = {"expected_sessions": ["0000-01-01"],
+                        "observed_sessions": ["0000-01-01"],
+                        "missing_sessions": []}
+    _assert_rejected(conn, _with_blob(payload, blob))
+
+
+# ===========================================================================
+# 22A-R5-06 -- THE DECISION-ORDERING PAIRS ARE SHAPED AND BOUND
+#
+# COMPLETENESS stays service-validated (AL-3): no subquery can reproduce the
+# admissible fold. What SQL can do is refuse a claimed pair that is not a pair
+# or that names a row which does not exist.
+# ===========================================================================
+_DECISION_SHAPE_CASES = {
+    "a bare string": "not-a-pair",
+    "a one-element array": [1],
+    "a three-element array": [1, "2026-08-11T12:00:00", "extra"],
+    "a text id": ["1", "2026-08-11T12:00:00"],
+    "an object": {"intent_id": 1, "recorded_ts": "2026-08-11T12:00:00"},
+}
+
+
+@pytest.mark.parametrize("label", sorted(_DECISION_SHAPE_CASES))
+def test_a_malformed_decision_ordering_pair_is_rejected(conn, label) -> None:
+    """Five shapes the outer ``json_type = 'array'`` check accepted."""
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    blob = _blob(payload)
+    blob["probe_guards"]["decision_ordering"]["input"] = [
+        _DECISION_SHAPE_CASES[label]]
+    _assert_rejected(conn, _with_blob(payload, blob))
+
+
+def test_a_decision_ordering_pair_naming_no_intent_row_is_rejected(
+        conn) -> None:
+    """A WELL-SHAPED pair naming a row that does not exist.
+
+    This is the half a shape check alone would miss: the array is a pair, the
+    id is an integer, the stamp is text, and the record still names a decision
+    that was never written.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    blob = _blob(payload)
+    blob["probe_guards"]["decision_ordering"]["input"] = [
+        [987654, "2026-08-11T12:00:00"]]
+    _assert_rejected(conn, _with_blob(payload, blob))
+
+
+def test_a_decision_ordering_pair_with_the_wrong_stamp_is_rejected(
+        conn) -> None:
+    """The pair is bound on BOTH halves, not on the id alone.
+
+    The intent id is real; the recorded stamp is not that row's.  Binding only
+    the id would accept a record claiming the decision happened at a different
+    time from when it did -- which is the whole content of an ORDERING guard.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    blob = _blob(payload)
+    real_id = blob["probe_guards"]["decision_ordering"]["input"][0][0]
+    blob["probe_guards"]["decision_ordering"]["input"] = [
+        [real_id, "1999-01-01T00:00:00"]]
+    _assert_rejected(conn, _with_blob(payload, blob))

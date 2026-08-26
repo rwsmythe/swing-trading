@@ -712,7 +712,24 @@ FOR EACH ROW WHEN NOT (
          AND json_type(NEW.cited_latch_probe_json, '$.horizon_session') = 'text'
          AND json_extract(NEW.cited_latch_probe_json, '$.horizon_session')
              = NEW.entry_fill_session_date
+         -- `bars_through` IS SYNTACTICALLY VALIDATED (Codex 22A-R5-05). AL-5
+         -- says SQL cannot know the exchange CALENDAR; it says nothing about
+         -- whether a claimed session string is a DATE at all, and a
+         -- `json_type = 'text'` check accepted "garbage". The same
+         -- four-predicate guard this migration applies to
+         -- `latch_order_mandate_links.detection_date` -- length, parseable,
+         -- round-trips, and the YEAR BOUND that rejects SQLite's year-zero
+         -- dates -- applies here. Calendar truthfulness stays the service's.
          AND json_type(NEW.cited_latch_probe_json, '$.bars_through') = 'text'
+         AND length(json_extract(NEW.cited_latch_probe_json,
+                 '$.bars_through')) = 10
+         AND date(json_extract(NEW.cited_latch_probe_json,
+                 '$.bars_through')) IS NOT NULL
+         AND date(json_extract(NEW.cited_latch_probe_json,
+                 '$.bars_through'))
+             = json_extract(NEW.cited_latch_probe_json, '$.bars_through')
+         AND CAST(substr(json_extract(NEW.cited_latch_probe_json,
+                 '$.bars_through'), 1, 4) AS INTEGER) BETWEEN 1 AND 9999
 
          -- the lapse rung was FORCED OFF: RD's bound is that a latch never dies
          -- of drift, so an admission derived with the rung armed is a different
@@ -821,11 +838,18 @@ FOR EACH ROW WHEN NOT (
               AND (SELECT COUNT(DISTINCT value) FROM json_each(
                       NEW.cited_latch_probe_json, '$.coverage.expected_sessions'))
                   = json_array_length(NEW.cited_latch_probe_json, '$.coverage.expected_sessions')
+              -- THE YEAR BOUND IS PART OF THE GUARD (Codex 22A-R5-05). The
+              -- other three predicates accept SQLite's year-zero dates
+              -- ('0000-01-01' has length 10, parses, and round-trips), which
+              -- the same guard on `detection_date` rejects. Four predicates
+              -- here too, so the two spellings of "is this a date" agree.
               AND NOT EXISTS (
                   SELECT 1
                     FROM json_each(NEW.cited_latch_probe_json, '$.coverage.expected_sessions') e
                    WHERE e.type <> 'text' OR length(e.value) <> 10
-                      OR date(e.value) IS NULL OR date(e.value) <> e.value))
+                      OR date(e.value) IS NULL OR date(e.value) <> e.value
+                      OR CAST(substr(e.value, 1, 4) AS INTEGER)
+                         NOT BETWEEN 1 AND 9999))
          )
 
          -- ------------- $.probe_guards: THE PROBE'S OWN REFUSAL-CAPABLE
@@ -881,6 +905,27 @@ FOR EACH ROW WHEN NOT (
                  '$.probe_guards.decision_ordering.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
                  '$.probe_guards.decision_ordering.input') = 'array'
+         -- THE ELEMENT SHAPE IS VALIDATED AND EACH PAIR IS BOUND (Codex
+         -- 22A-R5-06). Typing only the OUTER value accepted strings, objects,
+         -- one-element arrays and nonexistent ids -- so the "consulted
+         -- decisions" record could name rows that do not exist while reading
+         -- as evidence. This does NOT ask SQL to reconstruct the admissible
+         -- fold topology: COMPLETENESS stays service-validated (AL-3), which
+         -- is the part no subquery can reach. What SQL can do is insist that
+         -- every claimed pair is `[integer intent_id, text recorded_ts]` and
+         -- that the pair MATCHES a real intent row on both halves.
+         AND NOT EXISTS (
+             SELECT 1
+               FROM json_each(NEW.cited_latch_probe_json,
+                              '$.probe_guards.decision_ordering.input') d
+              WHERE d.type <> 'array'
+                 OR json_array_length(d.value) <> 2
+                 OR json_type(d.value, '$[0]') <> 'integer'
+                 OR json_type(d.value, '$[1]') <> 'text'
+                 OR NOT EXISTS (
+                        SELECT 1 FROM latch_order_intents x
+                         WHERE x.intent_id = json_extract(d.value, '$[0]')
+                           AND x.recorded_ts = json_extract(d.value, '$[1]')))
 
          -- ------------- $.authorization: ONE ENTRY PER REFUSAL-CAPABLE CLAUSE
          -- If a clause can REFUSE an admission, the blob records the INPUT it
@@ -913,6 +958,14 @@ FOR EACH ROW WHEN NOT (
                  '$.authorization.rung1_link_ticker.input')
              = (SELECT l.ticker FROM latch_order_mandate_links l
                  WHERE l.link_id = NEW.cited_latch_link_id)
+         -- ...AND THE LINK'S TICKER IS THE TRADE'S (Codex 22A-R5-01). Binding
+         -- the input to `l.ticker` proves only that the row repeats itself;
+         -- rung 1 in the service compares the link's ticker to the REQUEST's,
+         -- and without this the trigger accepted a link carrying a forged
+         -- ticker while every other clause passed.
+         AND json_extract(NEW.cited_latch_probe_json,
+                 '$.authorization.rung1_link_ticker.input')
+             = (SELECT t.ticker FROM trades t WHERE t.id = NEW.trade_id)
 
          AND json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung2_link_parent'), '$.input', '$.verdict') = '{}'
@@ -969,6 +1022,26 @@ FOR EACH ROW WHEN NOT (
                  '$.authorization.rung3c_link_broker_order_id.input')
              = (SELECT v.actual_broker_order_id FROM latch_order_intents v
                  WHERE v.intent_id = NEW.cited_latch_validity_intent_id)
+         -- RUNG 3c IS ABOUT *EVERY* DUPLICATED LINK FIELD, and the recorded
+         -- entry can only carry one (Codex 22A-R5-01). The service binds all
+         -- five -- broker order id, quantity, ticker, evaluation run and
+         -- detection date -- back to the validity row and the candidate's own
+         -- run; the trigger bound the order id alone, so a raw link could cite
+         -- a GENUINE accepted validity row while carrying an inflated quantity
+         -- or a substituted run. The remaining four are bound HERE, under the
+         -- rung whose contract they are, rather than as a separate clause that
+         -- would read as belonging to nothing.
+         AND EXISTS (
+             SELECT 1 FROM latch_order_mandate_links l
+               JOIN latch_order_intents v
+                 ON v.intent_id = NEW.cited_latch_validity_intent_id
+               JOIN candidates ca ON ca.id = NEW.cited_candidate_id
+               JOIN evaluation_runs er ON er.id = ca.evaluation_run_id
+              WHERE l.link_id = NEW.cited_latch_link_id
+                AND l.actual_quantity IS v.actual_quantity
+                AND l.ticker = ca.ticker
+                AND l.evaluation_run_id = ca.evaluation_run_id
+                AND l.detection_date = er.action_session_date)
 
          -- THE GOVERNING PLACE CYCLE AS OF THE FILL. A later place opens a new
          -- cycle and RETIRES the earlier order regardless of what the earlier
@@ -1148,6 +1221,31 @@ FOR EACH ROW WHEN NOT (
                  '$.authorization.guard_quantity.input')
              = (SELECT f.quantity FROM fills f
                  WHERE f.fill_id = NEW.entry_fill_id_at_correction)
+         -- AND THE GUARD'S VERDICT, NOT ONLY ITS INPUT (Codex 22A-R5-01). A
+         -- fill of 100 could truthfully record input=100 against an accepted
+         -- quantity of 2 and the row inserted: input FIDELITY is not predicate
+         -- TRUTH, and both operands are SQL-reachable, so this is neither AL-3
+         -- nor the rounding limit.
+         --
+         -- THE NULL BRANCH MIRRORS THE SERVICE EXACTLY: `actual_quantity` is
+         -- nullable (0037's own CHECK is `IS NULL OR > 0`) and
+         -- `assert_fill_consistent_with_order` skips the inequality when it is
+         -- NULL. A bare `<=` would evaluate NULL, take the COALESCE to 0 and
+         -- REJECT a row the service admits -- a twin STRONGER than its reader,
+         -- which authorizes a correction that then aborts at the INSERT.
+         --
+         -- The `> 0` half of the service's guard is NOT restated: 0014 CHECKs
+         -- `fills.quantity > 0` and the clause above binds the input to that
+         -- column, so a non-positive input is schema-prevented rather than
+         -- unchecked. Cited rather than defended twice.
+         AND (
+             (SELECT l.actual_quantity FROM latch_order_mandate_links l
+               WHERE l.link_id = NEW.cited_latch_link_id) IS NULL
+             OR json_extract(NEW.cited_latch_probe_json,
+                    '$.authorization.guard_quantity.input')
+                <= (SELECT l.actual_quantity FROM latch_order_mandate_links l
+                     WHERE l.link_id = NEW.cited_latch_link_id)
+         )
 
          AND json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_framework_price_bound'), '$.input', '$.verdict') = '{}'
