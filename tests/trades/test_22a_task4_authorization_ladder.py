@@ -915,3 +915,40 @@ def test_a_same_session_cancel_of_a_DIFFERENT_order_does_not_refuse(
         assert _authorize(conn, cfg, order).admitted is True
     finally:
         conn.close()
+
+
+# ===========================================================================
+# 22A-R3-14 -- RUNG 3b'S LEDGER READ IS GUARDED LIKE EVERY OTHER ONE
+# ===========================================================================
+def test_an_unreadable_intent_ledger_refuses_rather_than_escaping(
+        tmp_path) -> None:
+    """PRE-FIX the exception ESCAPED and blocked a money-bearing entry.
+
+    The competitor loop and the probe both catch a failed
+    ``list_intents_for_latch``; rung 3b did not, so an unreadable ledger
+    propagated out of the whole ladder -- the `0036:26-38` inversion, in the
+    one rung that had not been swept.
+
+    PRE-FIX: ``RuntimeError`` out of ``authorize_accepted_order``.
+    POST-FIX: a fail-closed ``validity_evidence_unavailable`` refusal.
+    """
+    import swing.data.repos.latch_order_intents as repo
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r314")
+    try:
+        order = _accept(conn, candidate_id)
+        real = repo.list_intents_for_latch
+
+        def boom(*a, **kw):
+            raise RuntimeError("the ledger is unreadable")
+
+        repo.list_intents_for_latch = boom
+        try:
+            verdict = _authorize(conn, cfg, order)
+        finally:
+            repo.list_intents_for_latch = real
+        assert verdict.admitted is False
+        assert verdict.decline_reason == "validity_evidence_unavailable"
+        assert verdict.recognised_but_underivable is True
+    finally:
+        conn.close()

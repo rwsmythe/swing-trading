@@ -139,7 +139,7 @@ class LatchProbeInvariantError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# THE DECLINE-REASON ROSTER -- THIRTY-THREE.
+# THE DECLINE-REASON ROSTER -- THIRTY-FOUR.
 #
 # Counted by reading the members below, never by grepping for a word.  The
 # plan records why the method has to be stated: a ``^[a-z_]+$`` regex over an
@@ -181,6 +181,11 @@ DECLINE_REASONS: frozenset[str] = frozenset({
     "decision_evidence_post_dates_fill",
     "decision_ordering_ambiguous",
     "barrier_not_installed",
+    # Rung 3b's ledger read is IGNORANCE when it fails, not absence (Codex
+    # 22A-R3-14). Its own reason rather than a borrowed one: a rung that
+    # returned `linked_validity_not_accepted` would ASSERT a fact about the
+    # broker's answer that it precisely could not read.
+    "validity_evidence_unavailable",
 })
 
 
@@ -788,7 +793,22 @@ def competitor_liveness_rung(
             and i.validated_place_intent_id == link.place_intent_id
         ]
         if not siblings:
-            continue
+            # ZERO SIBLINGS IS INCOHERENCE, NOT ABSENCE (Codex 22A-R3-05).
+            # This link EXISTS, and a link is minted BY a validity insert, so
+            # a place with no validity children contradicts the link's own
+            # provenance -- the ledger cannot say whether the linked row is
+            # still the latest child because it cannot find the family at all.
+            # `continue` read that as "not a competitor" and DROPPED it, which
+            # is the two-valued inversion this rung exists to refuse: the
+            # selected order is then admitted while a live mandate may have
+            # stood beside it. Fail CLOSED, exactly as the unreadable-ledger
+            # and un-re-readable-link branches above and below do.
+            log.warning(
+                "22-A: competitor link %s cites place %s, which has NO "
+                "validity children; the link's own authority is UNPROVABLE",
+                link.link_id, link.place_intent_id)
+            scanned.append(int(link.link_id))
+            return "competitor_liveness_unverifiable", scanned
         if max(siblings, key=_order_key).intent_id != link.validity_intent_id:
             continue
 
@@ -921,8 +941,24 @@ def authorize_accepted_order(
     from swing.data.repos.latch_order_intents import list_intents_for_latch
     from swing.latches.classification import _order_key
 
+    # AND THE READ IS GUARDED, LIKE EVERY OTHER LEDGER READ ON THIS PATH
+    # (Codex 22A-R3-14). The competitor loop and the probe both catch a failed
+    # `list_intents_for_latch`; this one did not, so an unreadable ledger
+    # ESCAPED and blocked a money-bearing entry over cohort bookkeeping
+    # (`0036:26-38`) -- the asymmetry every other rung here honours. A failure
+    # is IGNORANCE, so it refuses (fail-closed) and can never admit.
+    try:
+        intents_for_fire = list_intents_for_latch(
+            conn, candidate_id=order.candidate_id)
+    except Exception as exc:  # noqa: BLE001 -- ignorance, not a crash
+        log.warning(
+            "22-A: the intent ledger for fire %s (link %s) could not be read "
+            "(%s: %s); whether the linked validity row is still the latest "
+            "child is UNPROVABLE",
+            order.candidate_id, order.link_id, type(exc).__name__, exc)
+        return _refuse("validity_evidence_unavailable", order)
     children = [
-        i for i in list_intents_for_latch(conn, candidate_id=order.candidate_id)
+        i for i in intents_for_fire
         if i.intent_kind == "validity"
         and i.validated_place_intent_id == order.place_intent_id
     ]

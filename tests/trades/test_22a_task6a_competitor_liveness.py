@@ -613,3 +613,87 @@ def test_a_post_barrier_dead_competitor_is_still_dropped(tmp_path) -> None:
             "rung8_competitor_link_ids"]["input"] == [rival_order.link_id]
     finally:
         conn.close()
+
+
+# ===========================================================================
+# 22A-R3-05 -- A COMPETITOR WITH NO VALIDITY SIBLINGS IS UNPROVABLE
+# ===========================================================================
+def test_a_competitor_link_with_no_validity_siblings_is_unprovable(
+        tmp_path) -> None:
+    """A link is MINTED BY a validity insert, so a link whose place has no
+    validity children contradicts its own provenance.
+
+    PRE-FIX the loop hit ``continue`` -- reading incoherence as ABSENCE and
+    dropping the competitor, after which the subject ADMITTED.  POST-FIX it is
+    UNPROVABLE and the subject refuses.  Both values are stated so the
+    assertion distinguishes; the two-valued reading is the exact inversion
+    this rung exists to refuse.
+
+    THE SHAPE IS BUILT THE ONLY WAY THE SCHEMA ALLOWS: the mint trigger is
+    SUPPRESSED around a real acceptance and RESTORED VERBATIM out of
+    ``sqlite_master``, then a link is written by hand pointing at a SECOND
+    place row that has no validity children.  ``validity_intent_id`` is UNIQUE
+    and the link table is append-only, so neither a raw copy of a minted link
+    nor an edit of one is representable.
+    """
+    from tests._latch_link_fixtures_22a import (
+        insert_intent,
+        place_row,
+        validity_row,
+    )
+
+    conn, cfg, subject = build_world(tmp_path, "r305")
+    try:
+        rival = dead_rival_fire(conn, run_id=140)
+        conn.commit()
+        subject_order = accept(conn, subject, key="r305-s",
+                               broker_order_id=BROKER_ORDER_ID)
+
+        saved = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+            "AND name = 'trg_latch_link_mint_on_acceptance'").fetchone()[0]
+        conn.execute("DROP TRIGGER trg_latch_link_mint_on_acceptance")
+        try:
+            common = {
+                "evaluation_run_id": 140, "ticker": TICKER,
+                "detection_date": DEAD_SESSION.isoformat(),
+                "action_session_date": ACCEPT_SESSION.isoformat(),
+                "recorded_ts": f"{ACCEPT_SESSION.isoformat()}T10:00:00",
+            }
+            real_place = insert_intent(conn, place_row(
+                rival, idempotency_key="r305-place", **common))
+            orphan_place = insert_intent(conn, place_row(
+                rival, idempotency_key="r305-orphan-place", **common))
+            validity_id = insert_intent(conn, validity_row(
+                rival, real_place, key="r305-validity",
+                actual_broker_order_id="r305-rival", **common))
+            conn.commit()
+        finally:
+            conn.execute(saved)
+            conn.commit()
+
+        pivot, stop = conn.execute(
+            "SELECT pivot, initial_stop FROM candidates WHERE id = ?",
+            (rival,)).fetchone()
+        conn.execute(
+            "INSERT INTO latch_order_mandate_links (validity_intent_id, "
+            "place_intent_id, candidate_id, evaluation_run_id, ticker, "
+            "detection_date, broker_order_id, frozen_pivot, "
+            "frozen_invalidation, actual_quantity, freeze_tier, linked_at) "
+            "VALUES (?, ?, ?, 140, ?, ?, 'r305-rival', ?, ?, 10, "
+            "'live_at_acceptance', '2026-07-24T12:00:00Z')",
+            (validity_id, orphan_place, rival, TICKER,
+             DEAD_SESSION.isoformat(), pivot, stop))
+        conn.commit()
+        assert conn.execute(
+            "SELECT COUNT(*) FROM latch_order_intents WHERE intent_kind = "
+            "'validity' AND validated_place_intent_id = ?",
+            (orphan_place,)).fetchone()[0] == 0, (
+            "the orphan place must have NO validity children, or the case is "
+            "about a different branch")
+
+        verdict = authorize(conn, cfg, subject_order)
+        assert verdict.admitted is False
+        assert verdict.decline_reason == "competitor_liveness_unverifiable"
+    finally:
+        conn.close()

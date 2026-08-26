@@ -1052,3 +1052,47 @@ def test_a_decision_ordering_pair_with_the_wrong_stamp_is_rejected(
     blob["probe_guards"]["decision_ordering"]["input"] = [
         [real_id, "1999-01-01T00:00:00"]]
     _assert_rejected(conn, _with_blob(payload, blob))
+
+
+def test_a_malformed_probe_blob_ABORTS_rather_than_raising(conn) -> None:
+    """22A-R3-12, verified by execution.
+
+    SQLite does NOT short-circuit ``AND`` for the purpose of skipping a JSON
+    function's error -- ``SELECT 0 AND json_extract('{bad','$.x')`` raises
+    "malformed JSON", measured in both operand orders.  So a non-NULL,
+    non-JSON blob made the WHOLE trigger die with an ``OperationalError``
+    instead of reaching its own ``RAISE(ABORT)``.
+
+    PRE-FIX: ``sqlite3.OperationalError: malformed JSON``.
+    POST-FIX: ``sqlite3.IntegrityError`` carrying the citation message.
+    Both are refusals -- the gain is a legible one -- and the assertion below
+    names the class as well as the message, because a test matching only the
+    message would pass under either if the engine's text ever overlapped.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    payload = dict(payload)
+    payload["cited_latch_probe_json"] = "{not json"
+    with pytest.raises(sqlite3.IntegrityError, match="citation graph"):
+        _insert_payload(conn, payload)
+
+
+def test_a_last_word_row_is_unaffected_by_the_json_guard(conn) -> None:
+    """THE CONTROL: ``json_valid(NULL)`` is NULL, not an error.
+
+    The ``last_word`` branch leaves all five citation columns NULL, so the
+    ``CASE WHEN`` must not turn a legal absence into a refusal.  Without this
+    half a wrapper placed one clause too high would break every ordinary
+    Demand-C correction.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    payload = dict(payload)
+    payload.update(admission_tier="last_word", cited_latch_link_id=None,
+                   cited_latch_validity_intent_id=None,
+                   cited_latch_place_intent_id=None,
+                   cited_latch_broker_order_id=None,
+                   cited_latch_probe_json=None)
+    _insert_payload(conn, payload)
+    assert conn.execute(
+        "SELECT admission_tier FROM provenance_corrections").fetchone() == (
+        "last_word",)

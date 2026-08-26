@@ -680,8 +680,25 @@ FOR EACH ROW WHEN NOT (
                        AND p.candidate_id = NEW.cited_candidate_id)
 
          -- ---------------- THE PROBE EVIDENCE, CLOSED AND BOUND -------------
-         AND json_valid(NEW.cited_latch_probe_json)
-         AND json_type(NEW.cited_latch_probe_json) = 'object'
+         --
+         -- EVERY BLOB CLAUSE SITS INSIDE A `CASE WHEN json_valid(...)` AND
+         -- THAT IS NOT COSMETIC (Codex 22A-R3-12, VERIFIED BY EXECUTION on
+         -- sqlite 3.50.4). SQLite does NOT short-circuit AND for the purpose
+         -- of skipping a JSON function's error: `SELECT 0 AND
+         -- json_extract('{bad','$.x')` RAISES "malformed JSON" -- measured,
+         -- both operand orders. So a raw INSERT carrying a non-NULL,
+         -- non-JSON `cited_latch_probe_json` made the WHOLE TRIGGER raise an
+         -- OperationalError instead of reaching its own RAISE(ABORT), and the
+         -- operator got an engine error in place of the citation message.
+         --
+         -- `CASE WHEN` DOES defer its branches (measured the same way), so
+         -- the guard now JUDGES the malformed value instead of dying on it.
+         -- DIRECTION, stated so the severity is not overclaimed: both
+         -- behaviours REFUSE the write, and this trigger is on
+         -- `provenance_corrections`, which the money-bearing entry path never
+         -- touches. The gain is a legible refusal, not a closed hole.
+         AND CASE WHEN json_valid(NEW.cited_latch_probe_json) THEN (
+             json_type(NEW.cited_latch_probe_json) = 'object'
          AND json_remove(NEW.cited_latch_probe_json,
                  '$.evidence_version', '$.fire_candidate_id', '$.ticker',
                  '$.fill_session', '$.horizon_session', '$.bars_through',
@@ -1274,6 +1291,7 @@ FOR EACH ROW WHEN NOT (
                  '$.authorization.guard_broker_limit_bound.input')
              IS (SELECT v.actual_limit_price FROM latch_order_intents v
                   WHERE v.intent_id = NEW.cited_latch_validity_intent_id)
+         ) ELSE 0 END
         )
     ), 0)
 )
