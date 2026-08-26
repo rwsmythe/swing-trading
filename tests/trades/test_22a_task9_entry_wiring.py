@@ -830,3 +830,69 @@ def test_the_relocated_pe_anchor_guard_judges_the_committed_world(
         "the fixture must make the PRELIMINARY answer non-manual, or the "
         "guard fires for a reason unrelated to the race")
     assert conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
+
+
+# ===========================================================================
+# CODEX 22A-R4-03 -- a commit that RAISES must still roll back
+#
+# `conn.commit()` sat in the `else:` clause, OUTSIDE the `except BaseException:`
+# handler, so a busy / disk-full / I-O failure at commit left the transaction
+# AND its write reservation open on a connection the caller goes on reusing.
+# ===========================================================================
+class _CommitRaises:
+    """A connection whose COMMIT fails and whose ROLLBACK is observable.
+
+    Only the four members `_entry_transaction` touches are proxied; anything
+    else raises `AttributeError` loudly rather than silently degrading, so the
+    stand-in cannot quietly diverge from the real connection's surface.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self.rolled_back = False
+
+    def execute(self, *args, **kwargs):
+        return self._conn.execute(*args, **kwargs)
+
+    def commit(self) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+        self._conn.rollback()
+
+    @property
+    def in_transaction(self) -> bool:
+        return self._conn.in_transaction
+
+
+def test_a_commit_that_raises_rolls_the_reservation_back(tmp_path) -> None:
+    """PRE-FIX: `rolled_back` is False and the connection is STILL in a
+    transaction after the raise -- the reservation leaks.  POST-FIX: the
+    rollback ran and the connection is clean.
+
+    The exception itself propagates either way, so asserting only the raise
+    would pass under both paths.
+    """
+    from swing.trades.entry import _entry_transaction
+
+    conn, _, _ = build_world(tmp_path, "r403")
+    conn.commit()
+    proxy = _CommitRaises(conn)
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        with _entry_transaction(proxy, immediate=True):
+            proxy.execute(
+                "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+                "action_session_date, tickers_evaluated, aplus_count, "
+                "watch_count, skip_count, excluded_count, error_count) "
+                "VALUES (8001, '2026-07-24T17:30:05', '2026-07-24', "
+                "'2026-07-27', 1, 0, 0, 1, 0, 0)")
+
+    assert proxy.rolled_back, (
+        "the commit raised OUTSIDE the rollback handler; the write "
+        "reservation is still held on a connection the caller reuses")
+    assert not conn.in_transaction
+    assert conn.execute(
+        "SELECT COUNT(*) FROM evaluation_runs WHERE id = 8001"
+    ).fetchone()[0] == 0

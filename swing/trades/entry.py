@@ -437,12 +437,17 @@ def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool):
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield
+        # THE COMMIT IS INSIDE THE HANDLER'S REACH (Codex 22A-R4-03).  It sat
+        # in an `else:` clause, OUTSIDE `except BaseException:` -- so a commit
+        # that raises (SQLITE_BUSY, disk-full, I/O) left the transaction AND
+        # its write reservation open on a connection the caller goes on
+        # reusing.  A failed COMMIT is exactly the moment a rollback matters
+        # most, and it was the one path that did not get one.
+        conn.commit()
     except BaseException:
         with contextlib.suppress(sqlite3.Error):
             conn.rollback()
         raise
-    else:
-        conn.commit()
 
 
 def _record_entry_inner(
