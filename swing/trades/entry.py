@@ -529,12 +529,37 @@ def _record_entry_inner(
     # THE AUTHORITATIVE RESOLUTION, inside the reservation.  The preliminary
     # answer computed outside it is DISCARDED -- it exists only to decide
     # whether to reserve.
-    latched = (
-        resolve_latched_provenance(conn, cfg, req) if reserve
-        else LatchedProvenance(
+    # THE UNRESERVED BRANCH ASKS THE SAME QUESTION, IN THE SAME WORDS (RD's
+    # 22A-R3-13 ruling). An absent envelope names no order, so it takes NO
+    # reservation -- LOCK clause (d) -- and therefore never reaches the
+    # resolver at all. The inconsistency check is a PURE, query-free predicate
+    # for exactly that reason, and it is IMPORTED rather than re-spelled here:
+    # two callers answering one question two ways is the class this arc has
+    # paid for repeatedly.
+    from swing.trades.latched_origin import (
+        origin_and_envelope_are_inconsistent,
+    )
+
+    _envelope = getattr(req, "schwab_source_value_json", None)
+    if reserve:
+        latched = resolve_latched_provenance(conn, cfg, req)
+    elif origin_and_envelope_are_inconsistent(
+            getattr(req, "fill_origin", "operator_typed"), _envelope):
+        log.warning(
+            "22-A: fill for %s claims origin %r, which carries a Schwab "
+            "envelope BY CONSTRUCTION, and its envelope is ABSENT (%r); no "
+            "production writer produces that pair, so the envelope was "
+            "stripped, tampered with or corrupted. The entry records with "
+            "honest-unset cohort keys rather than with the latest run's "
+            "candidate. WARRANTS INVESTIGATION",
+            req.ticker, getattr(req, "fill_origin", None), _envelope)
+        latched = LatchedProvenance(
+            admitted=False, recognised_but_underivable=True,
+            decline_reason="origin_envelope_inconsistent")
+    else:
+        latched = LatchedProvenance(
             admitted=False, recognised_but_underivable=False,
             decline_reason="no_config" if cfg is None else "no_order_id")
-    )
 
     # THE PE-ANCHOR GUARD, RELOCATED FROM THE ROUTE AND NOT MERELY DEFERRED
     # (review 22A-R9-03).  The route rejects a `pattern_evaluation_id` anchor

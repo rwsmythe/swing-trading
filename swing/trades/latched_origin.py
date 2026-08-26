@@ -143,7 +143,7 @@ class LatchProbeInvariantError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# THE DECLINE-REASON ROSTER -- THIRTY-FIVE.
+# THE DECLINE-REASON ROSTER -- THIRTY-SIX.
 #
 # Counted by reading the members below, never by grepping for a word.  The
 # plan records why the method has to be stated: a ``^[a-z_]+$`` regex over an
@@ -198,6 +198,11 @@ DECLINE_REASONS: frozenset[str] = frozenset({
     # symbol reaches it too, and a reason that says `order_id` while refusing
     # a symbol divergence is the #31 class in a decline code.
     "envelope_not_canonical",
+    # The fill's ORIGIN says a broker filled it and its ENVELOPE names nothing
+    # -- an INCONSISTENT EVIDENCE PAIR no production writer produces (RD, ruled
+    # on 22A-R3-13). Not "untrusted origin", which is a different sentence
+    # about a different fill.
+    "origin_envelope_inconsistent",
 })
 
 
@@ -709,6 +714,42 @@ def envelope_is_canonical(raw: str | None) -> bool:
                 "would read DIFFERENT values", key, value)
             return False
     return True
+
+
+def origin_and_envelope_are_inconsistent(fill_origin, raw) -> bool:
+    """A TRUSTED origin whose envelope names NOTHING (RD, ruled on 22A-R3-13).
+
+    THE DISCRIMINATOR IS THE INCONSISTENT EVIDENCE PAIR, NEVER THE ORIGIN.
+    A `schwab_auto` fill carries an envelope BY CONSTRUCTION -- established by
+    READING both writers, not by grepping:
+
+      * `swing/trades/entry_auto_fill.py` -- the `kind='populated'` branch of
+        `EntryAutoFillResult.__post_init__` REQUIRES
+        `fill_origin='schwab_auto'`, and the one `populated` return builds
+        `schwab_source_value_json` in the same expression that sets it.
+      * `swing/web/routes/trades.py` -- a trusted `resolved_fill_origin` is
+        stamped ONLY inside the block that also assigns
+        `resolved_schwab_source_value_json`, and that block is entered only
+        when the submitted envelope parsed to a dict.
+
+    So the pair is a state no production writer produces: the envelope was
+    STRIPPED, TAMPERED WITH or CORRUPTED.  Writing TODAY's candidate for such a
+    fill would be attribution from a TIMING COINCIDENCE -- gotcha #30's family,
+    and the exact misattribution this arc exists to prevent.
+
+    WHY NOT THE ORIGIN ALONE, which is the tempting rule: an envelope-BEARING
+    Schwab fill that simply never had a latch is the ORDINARY post-integration
+    state, and suppressing it would erase correct pipeline provenance across
+    the whole journal.  Both directions are pinned by cases, because the two
+    implementations agree on everything except the twin.
+
+    PURE, and query-free by construction: LOCK clause (d) says a request with
+    no usable order id costs ZERO additional database queries, and this
+    predicate is the reason the answer can be reached without reserving.
+    """
+    if fill_origin not in TRUSTED_LATCH_FILL_ORIGINS:
+        return False
+    return not (isinstance(raw, str) and raw.strip())
 
 
 def envelope_recognises_an_order(raw: str | None) -> bool:
@@ -2085,6 +2126,31 @@ def resolve_latched_provenance(
     about (verified against the live DB).
     """
     envelope = getattr(req, "schwab_source_value_json", None)
+    # THE INCONSISTENT EVIDENCE PAIR (RD, ruled on 22A-R3-13). See
+    # `origin_and_envelope_are_inconsistent` for why this is the pair and never
+    # the origin. The ENTRY proceeds; the keys land honest-unset; the warning
+    # NAMES the inconsistency, so the operator adjudicates a legible anomaly
+    # instead of inheriting a silent wrong label.
+    #
+    # EVERY NON-TRUSTED PATH IS UNTOUCHED, which is what bounds this: the
+    # predicate returns False for `operator_typed`, so an ordinary hand-typed
+    # entry with no envelope still returns `no_envelope`, unrecognised, and
+    # runs the ordinary chain byte-for-byte.
+    if origin_and_envelope_are_inconsistent(
+            getattr(req, "fill_origin", "operator_typed"), envelope):
+        log.warning(
+            "22-A: fill for %s claims origin %r, which carries a Schwab "
+            "envelope BY CONSTRUCTION, and its envelope is ABSENT (%r); no "
+            "production writer produces that pair, so the envelope was "
+            "stripped, tampered with or corrupted. The entry records with "
+            "honest-unset cohort keys rather than with the latest run's "
+            "candidate -- attributing it from a timing coincidence would be "
+            "exactly the misattribution this surface exists to prevent. "
+            "WARRANTS INVESTIGATION",
+            req.ticker, getattr(req, "fill_origin", None), envelope)
+        return LatchedProvenance(
+            admitted=False, recognised_but_underivable=True,
+            decline_reason="origin_envelope_inconsistent")
     if envelope is None:
         return LatchedProvenance(
             admitted=False, recognised_but_underivable=False,

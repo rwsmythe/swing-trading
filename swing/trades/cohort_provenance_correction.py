@@ -45,7 +45,7 @@ import contextlib
 import json
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date as _date
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -1739,6 +1739,31 @@ def _resolve_latch_citation(
         trade_id=trade_id,
         exclude_trade_ids=frozenset({trade_id}),
     )
+    if latched.decline_reason == "origin_envelope_inconsistent":
+        # RD'S 22A-R3-13 RULING IS SCOPED TO THE ENTRY PATH, AND THIS IS THE
+        # BOUNDARY (self-sweep, 2026-08-26).
+        #
+        # The ruling is about a fill whose ORIGIN says a broker filled it and
+        # whose ENVELOPE names nothing: the entry proceeds, the keys land
+        # honest-unset, and a WARNING names the inconsistency "so the operator
+        # adjudicates a legible anomaly". THIS SURFACE IS THAT ADJUDICATION.
+        # Letting the refusal below fire here would hand the operator a legible
+        # anomaly and simultaneously remove the only instrument for acting on
+        # it -- and it would do so on a SHIPPED, operator-witnessed path (the
+        # live CADL correction of 2026-08-13), which measured 278 test failures
+        # the first time it was written the other way.
+        #
+        # AND THE GUARD'S OWN SUBJECT DOES NOT REACH HERE. It exists to stop
+        # CITATION SHOPPING -- falling back to the last-word authority after a
+        # REAL mandate was refused. This reason names NO mandate; the message
+        # below would literally print "broker order ?" because there is no
+        # order to print. There is nothing to shop away from, so the last-word
+        # ladder proceeds exactly as it did before this arc.
+        #
+        # The warning is NOT lost: `resolve_latched_provenance` logs it before
+        # returning, so the anomaly is on the record either way.
+        latched = replace(
+            latched, recognised_but_underivable=False)
     if latched.recognised_but_underivable:
         order = latched.order
         detail = ""

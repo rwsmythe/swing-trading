@@ -617,3 +617,63 @@ def test_an_inverted_window_refuses_on_the_LATCH_path_too(tmp_path) -> None:
     with pytest.raises(CohortProvenanceCorrectionError) as last_word:
         _apply(control, None, control_ids)
     assert "inverted" in str(last_word.value)
+
+
+# ===========================================================================
+# THE 22A-R3-13 BOUNDARY -- the ruling is the ENTRY path's, and the correction
+# surface is the ADJUDICATION rather than a second place to refuse.
+# ===========================================================================
+def test_a_stripped_envelope_does_not_block_the_last_word_correction(
+        tmp_path) -> None:
+    """A `schwab_auto` fill with NO envelope still corrects at `last_word`.
+
+    RD's ruling gives such a fill honest-unset keys AT ENTRY and a warning
+    that names the inconsistency, "so the operator adjudicates a legible
+    anomaly".  THIS surface is that adjudication, and the first version of the
+    rule refused here too -- which would have handed the operator the anomaly
+    and removed the only instrument for acting on it, on the SHIPPED path the
+    live CADL correction used.  MEASURED: 278 tests, the whole Demand C
+    surface, because the live fixture's own fill carries exactly this shape.
+
+    PRE-FIX (rule applied to both paths):
+    ``CohortProvenanceCorrectionError ... (origin_envelope_inconsistent)``.
+    POST-FIX: ``admission_tier == 'last_word'`` with the five citation columns
+    NULL, which is the pre-22-A behaviour byte-for-byte.
+    """
+    conn, cfg, ids = build_world(tmp_path, "r313boundary")
+    conn.execute(
+        "UPDATE fills SET fill_origin = 'schwab_auto', "
+        "schwab_source_value_json = NULL WHERE fill_id = ?",
+        (ids["fill_id"],))
+    conn.commit()
+    result = _apply(conn, cfg, ids)
+    assert result.admission_tier == "last_word"
+    row = _stored(conn, ids["trade_id"])
+    assert row["cited_latch_link_id"] is None
+    assert row["cited_latch_probe_json"] is None
+
+
+def test_a_REFUSED_MANDATE_still_blocks_the_last_word_correction(
+        tmp_path) -> None:
+    """THE DISCRIMINATOR, and it is what bounds the exemption above.
+
+    The citation-shopping guard must still fire for a fill that NAMES a real
+    accepted order the ladder refused -- otherwise the exemption would have
+    disabled the guard rather than scoped it.  One dimension changed: the
+    envelope is PRESENT and names the linked order, and the mandate is made
+    unprovable by a non-finite frozen pivot.
+    """
+    from tests._candidates_barrier_helper import candidates_barrier_lifted
+
+    conn, cfg, ids = build_world(tmp_path, "r313boundaryctl")
+    with candidates_barrier_lifted(conn):
+        conn.execute("UPDATE candidates SET pivot = 9e999 WHERE id = ?",
+                     (ids["candidate_id"],))
+    conn.commit()
+    with pytest.raises(CohortProvenanceCorrectionError) as exc:
+        _apply(conn, cfg, ids)
+    # The GUARD's own sentence, and the order it names -- not a specific
+    # decline reason, because what this case is about is that a fill NAMING a
+    # refused mandate is still refused, whichever rung refused it.
+    assert "citation shopping" in str(exc.value)
+    assert ids["broker_order_id"] in str(exc.value)

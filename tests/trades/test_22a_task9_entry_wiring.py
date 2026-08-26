@@ -2024,3 +2024,111 @@ def test_rung6_admits_when_no_other_fill_names_the_order(tmp_path) -> None:
     result = enter(conn, cfg, req())
     origin, cand, _label = written(conn, result.trade_id)
     assert (origin, cand) == ("pipeline_aplus", candidate_id)
+
+
+# ===========================================================================
+# 22A-R3-13 -- RD RULED IT: THE DISCRIMINATOR IS THE INCONSISTENT EVIDENCE
+# PAIR, NEVER THE ORIGIN.
+#
+# A `schwab_auto` fill carries an envelope BY CONSTRUCTION -- verified by READ
+# at both writers: `entry_auto_fill`'s `kind='populated'` invariant requires
+# `fill_origin='schwab_auto'` and its only such return builds the envelope in
+# the same expression; the entry route stamps a trusted origin only inside the
+# block that also assigns `resolved_schwab_source_value_json`.  So trusted
+# origin + ABSENT envelope is a state NO PRODUCTION WRITER PRODUCES -- it is
+# stripped, tampered or corrupted.
+#
+# RULED: the ENTRY PROCEEDS; the keys land HONEST-UNSET; a WARNING names the
+# inconsistency, so the operator adjudicates a legible anomaly instead of
+# inheriting a silent wrong label.  Writing TODAY's candidate for such a fill
+# would be attribution from a timing coincidence -- gotcha #30's family, and
+# the exact misattribution this arc exists to prevent.
+# ===========================================================================
+@pytest.mark.parametrize(
+    "label,envelope_value",
+    [("absent", None), ("empty", ""), ("blank", "   ")])
+def test_a_trusted_origin_with_a_STRIPPED_envelope_lands_honest_unset(
+        tmp_path, caplog, label, envelope_value) -> None:
+    """CASE 1: the ticker IS in today's decision table, and it must NOT win it.
+
+    An implementation keying the ordinary chain on DATE ALONE fails this: the
+    fill session is a day this ticker is `aplus` in the latest complete run, so
+    the ordinary chain has a real, current, wrong answer to write.
+
+    PRE-FIX: `('pipeline_aplus', <today's candidate>, <a label>)`.
+    POST-FIX: `('manual_off_pipeline', None, None)` plus a warning that names
+    the inconsistency rather than a generic refusal.
+    """
+    import logging
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r313" + label)
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    today = _seed_todays_aplus_run(conn)
+
+    with caplog.at_level(logging.WARNING):
+        result = enter(conn, cfg, req(
+            fill_origin="schwab_auto",
+            schwab_source_value_json=envelope_value,
+            entry_path=EntryPath.HYP_RECS_BUTTON))
+    assert written(conn, result.trade_id) == (
+        "manual_off_pipeline", None, None), (
+        f"the ordinary chain wrote candidate {today} for a Schwab fill whose "
+        f"envelope is gone -- attribution from a timing coincidence")
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE trade_id = ?",
+        (result.trade_id,)).fetchone()[0] == 1, "the ENTRY must still proceed"
+    named = [r.getMessage() for r in caplog.records
+             if "schwab_auto" in r.getMessage()
+             and "envelope" in r.getMessage()]
+    assert named, (
+        "the warning must NAME the inconsistency -- a generic refusal leaves "
+        "the operator inheriting an anomaly he cannot see. Got: "
+        + repr([r.getMessage() for r in caplog.records]))
+
+
+def test_an_envelope_BEARING_schwab_fill_with_no_latch_runs_the_ordinary_chain(
+        tmp_path) -> None:
+    """CASE 2 -- THE OVER-SUPPRESSION TWIN, and it is why the rule is the PAIR.
+
+    An implementation suppressing on ORIGIN ALONE fails this: every Schwab
+    fill that never had a latch would land honest-unset, which would erase
+    correct pipeline provenance across the whole journal.
+
+    The envelope is present and well-formed and simply names an order NO LINK
+    knows, which is the ordinary post-Schwab-integration state.
+
+    PRE-FIX and POST-FIX are the SAME here on purpose -- the case exists to
+    fail an over-broad fix, and its value is that it distinguishes two
+    implementations that agree on case 1.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "r313twin")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    today = _seed_todays_aplus_run(conn)
+    unlinked = json.dumps({"schwab_order_id": "9999999999",
+                           "schwab_instrument_symbol": TICKER})
+    result = enter(conn, cfg, req(
+        fill_origin="schwab_auto", schwab_source_value_json=unlinked,
+        entry_path=EntryPath.HYP_RECS_BUTTON))
+    origin, cand, _label = written(conn, result.trade_id)
+    assert (origin, cand) == ("pipeline_aplus", today), (
+        "an envelope-bearing Schwab fill with no latch must run the ordinary "
+        "chain exactly as it does on main")
+
+
+def test_an_operator_typed_fill_with_no_envelope_is_untouched(
+        tmp_path) -> None:
+    """THE THIRD CONTROL: the ordinary, overwhelming case.
+
+    Every pre-22-A fill and every hand-typed entry is origin
+    `operator_typed` with no envelope, and the pair is CONSISTENT there.  A
+    rule keyed on envelope-absence alone would honest-unset the entire
+    journal.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "r313ctl")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    today = _seed_todays_aplus_run(conn)
+    result = enter(conn, cfg, req(
+        fill_origin="operator_typed", schwab_source_value_json=None,
+        entry_path=EntryPath.HYP_RECS_BUTTON))
+    origin, cand, _label = written(conn, result.trade_id)
+    assert (origin, cand) == ("pipeline_aplus", today)

@@ -155,10 +155,22 @@ def test_no_config_and_no_order_id_decline_with_their_own_reasons_case_18(
         assert no_key.decline_reason == "no_order_id"
         assert no_key.recognised_but_underivable is False
 
+        # AN ABSENT ENVELOPE IS TWO DIFFERENT SENTENCES, and RD's 22A-R3-13
+        # ruling is which one applies. On an `operator_typed` fill the pair is
+        # CONSISTENT and the ordinary chain runs -- the overwhelming case, and
+        # the LOCK's own subject. On a TRUSTED origin the pair is one no
+        # production writer produces, so the row lands honest-unset under a
+        # reason that names the inconsistency rather than the absence.
         absent = resolve_latched_provenance(
-            conn, cfg, _req(schwab_source_value_json=None))
+            conn, cfg, _req(schwab_source_value_json=None,
+                            fill_origin="operator_typed"))
         assert absent.decline_reason == "no_envelope"
         assert absent.recognised_but_underivable is False
+
+        stripped = resolve_latched_provenance(
+            conn, cfg, _req(schwab_source_value_json=None))
+        assert stripped.decline_reason == "origin_envelope_inconsistent"
+        assert stripped.recognised_but_underivable is True
 
         unmatched = resolve_latched_provenance(
             conn, cfg, _req(schwab_source_value_json=json.dumps(
@@ -357,14 +369,14 @@ def test_the_roster_has_no_member_no_rung_can_emit() -> None:
 
 
 def test_the_roster_size_is_stated_and_counted_by_reading_it() -> None:
-    """THIRTY-FIVE, counted from the members and not from a grep.
+    """THIRTY-SIX, counted from the members and not from a grep.
 
     The plan records why the method has to be stated: a ``^[a-z_]+$`` regex
     over an earlier version of this block returned one FEWER than the read,
     because one member contained a DIGIT -- a regex under-counting a roster in
     the very act of fixing an under-count.
     """
-    assert len(DECLINE_REASONS) == 35
+    assert len(DECLINE_REASONS) == 36
     source = _MODULE.read_text(encoding="utf-8")
     block = source.split("DECLINE_REASONS: frozenset[str] = frozenset({", 1)[1]
     block = block.split("})", 1)[0]
