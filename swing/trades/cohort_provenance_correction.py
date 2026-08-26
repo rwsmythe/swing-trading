@@ -48,10 +48,13 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import date as _date
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from swing.data.models import (
+    PROVENANCE_ADMISSION_TIER_LAST_WORD,
+    PROVENANCE_ADMISSION_TIER_LATCH,
     PROVENANCE_CORRECTED_FIELDS,
     PROVENANCE_CORRECTION_APPLIED_BY,
     ProvenanceCorrection,
@@ -63,6 +66,12 @@ from swing.data.repos.candidates import (
 from swing.data.repos.recommendations import get_daily_recommendation_by_id
 from swing.data.repos.trades import get_trade
 from swing.evaluation.dates import PIPELINE_LOCAL_TIMEZONE, is_trading_session
+# MODULE-LEVEL, DELIBERATELY. `latched_origin` imports THIS module only from
+# inside a function body, so there is no cycle; and a module-level binding is
+# what lets a test SUBSTITUTE the resolver to pin the arguments this surface
+# passes it (case 17's exclusion set) and the transaction it holds while
+# calling it (AL-2). A function-local import would make both unpinnable.
+from swing.trades.latched_origin import resolve_latched_provenance
 
 __all__ = [
     "APLUS_BUCKET",
@@ -849,6 +858,8 @@ def _anchor_half(
     trade_id: int,
     cited_candidate_id: int,
     cited_recommendation_id: int,
+    entry_fill: _EntryFill | None = None,
+    run_last_word_guard: bool = True,
 ) -> _Anchored:
     """Refusal-ladder rungs 1 and 4-14: eligibility and CONTEMPORANEITY.
 
@@ -875,11 +886,23 @@ def _anchor_half(
     anchors agree on all 182 live rows, but that equality is NOT
     schema-enforced, so it is a regularity rather than a guarantee and
     inferring one row's anchor from the other's is premise-by-neighbour.
+
+    ``entry_fill`` is the caller's ALREADY-RESOLVED fill and defaults to
+    resolving one. `_authorize` resolves it first because the 22-A tier
+    dispatch needs the SAME fill, and passing it through is what makes "the
+    same fill" a fact rather than a coincidence of two identical reads.
+
+    ``run_last_word_guard`` is the 22-A dispatch (S2.7): under the
+    ``latch_ladder`` tier the citation is FORCED to an append-only broker
+    acceptance's fire, so there is nothing to rank and rung 15 is not
+    consulted. The parameter DEFAULTS to True, so every pre-22-A caller keeps
+    the guard.
     """
     trade = _load_trade_or_refuse(conn, trade_id)
     _gate_on_unset_state(trade)
 
-    entry_fill = resolve_authoritative_entry_fill(conn, trade_id)
+    if entry_fill is None:
+        entry_fill = resolve_authoritative_entry_fill(conn, trade_id)
     fill_session_date = _require_session_date(
         entry_fill.session_date,
         what=f"the authoritative entry fill (fill {entry_fill.fill_id})'s "
@@ -982,13 +1005,17 @@ def _anchor_half(
             "record AFTER the trade was already filled."
         )
 
-    # Rung 15 -- the LAST-WORD guard.
-    _assert_last_word_before_the_fill(
-        conn,
-        ticker=trade_ticker,
-        fill_session=fill_session,
-        cited_candidate_id=cited_candidate_id,
-    )
+    # Rung 15 -- the LAST-WORD guard, unless the 22-A latch ladder is the
+    # authority. NOT skipped silently: `_authorize` decides, and the ONE thing
+    # that can turn it off is an admitted accepted-order mandate whose fire
+    # this citation must already equal.
+    if run_last_word_guard:
+        _assert_last_word_before_the_fill(
+            conn,
+            ticker=trade_ticker,
+            fill_session=fill_session,
+            cited_candidate_id=cited_candidate_id,
+        )
 
     return _Anchored(
         trade=trade,
@@ -1547,6 +1574,14 @@ class CohortProvenanceCorrectionPreview:
     post_values: dict[str, Any]
     na_criterion_suffix_note: str | None = None
     already_applied_correction_id: int | None = None
+    # THE 22-A TIER AND ITS CITATION. Defaulted to the `last_word` shape so an
+    # existing constructor site cannot silently produce a row claiming an
+    # admission it never made.
+    admission_tier: str = PROVENANCE_ADMISSION_TIER_LAST_WORD
+    cited_latch_link_id: int | None = None
+    cited_latch_validity_intent_id: int | None = None
+    cited_latch_place_intent_id: int | None = None
+    cited_latch_broker_order_id: str | None = None
 
 
 def _reason_or_refuse(reason: Any) -> str:
@@ -1556,11 +1591,142 @@ def _reason_or_refuse(reason: Any) -> str:
 
 
 @dataclass(frozen=True)
+class _LatchCitation:
+    """The `latch_ladder` tier's five citation columns, resolved.
+
+    ``None`` in place of this object means the tier is ``last_word``: the
+    correction is authorized by the framework's bucket series, the last-word
+    guard runs, and all five columns stay NULL. The paired-NULL rule is the
+    schema's (0037's citation trigger); this dataclass is what makes the two
+    states unrepresentable-in-between on the service side.
+    """
+
+    link_id: int
+    validity_intent_id: int
+    place_intent_id: int
+    broker_order_id: str
+    fire_candidate_id: int
+    probe_json: str
+
+
+def _resolve_latch_citation(
+    conn: sqlite3.Connection,
+    cfg: Any,
+    *,
+    trade: Any,
+    trade_id: int,
+    entry_fill: _EntryFill,
+) -> _LatchCitation | None:
+    """The 22-A ladder, run over the trade's AUTHORITATIVE ENTRY FILL (S2.7).
+
+    Returns a citation (tier ``latch_ladder``) or ``None`` (tier
+    ``last_word``). A RECOGNISED-BUT-REFUSED mandate returns NEITHER: it
+    RAISES.
+
+    THE THREE OUTCOMES, AND WHY THE MIDDLE ONE CANNOT FALL BACK.
+    ``resolve_latched_provenance`` is three-valued, and the correction path
+    maps the three onto DIFFERENT authorities:
+
+      * admitted                   -> ``latch_ladder``; the citation is FORCED
+        to the fire an append-only broker acceptance created, so there is
+        nothing for an operator to rank and the last-word guard is not run.
+      * recognised_but_underivable -> REFUSE the whole correction, naming the
+        decline reason. Falling through to ``last_word`` would let an operator
+        correct a trade whose mandate the ladder REFUSED -- citation shopping
+        through the back door, on the one surface that exists to close it.
+      * neither flag               -> ``last_word``, the pre-22-A ladder
+        byte-for-byte.
+
+    THE SUBJECT IS EXCLUDED, AND WITHOUT THAT THE SURFACE CANNOT WORK AT ALL.
+    The subject trade's own entry fill already exists here, and the fold's
+    windowed fill rung admits any NULL-candidate, same-ticker, in-zone entry --
+    so an unexcluded probe returns ``clear_reason='fill'`` for the very
+    mandate it is being asked about (measured; case 17 asserts both
+    directions). ``exclude_trade_ids`` is passed EXPLICITLY rather than left to
+    the resolver's ``trade_id``-derived default, because the parameter is the
+    clause case 17 exists for and a default is how it comes back silently.
+
+    THE REQUEST SHIM IS BUILT FROM THE FILL, NEVER FROM THE TRADE ROW.
+    ``trades.entry_date`` and ``trades.entry_price`` are OPERATOR-EDITABLE and,
+    on this surface, are among the values a correction may be repairing. The
+    fill is the broker's own record: its session, its price, its quantity, its
+    origin and its envelope. Reading the trade row instead would probe a
+    DIFFERENT world from the one the fill happened in.
+
+    ``cfg is None`` -> the resolver's own ``no_config`` outcome -> ``last_word``.
+    That is what keeps every pre-22-A caller byte-identical.
+    """
+    row = conn.execute(
+        "SELECT quantity, price, fill_origin, schwab_source_value_json "
+        "  FROM fills WHERE fill_id = ?",
+        (entry_fill.fill_id,),
+    ).fetchone()
+    if row is None:  # pragma: no cover -- the resolver just loaded this fill
+        raise _refuse(
+            f"the authoritative entry fill {entry_fill.fill_id} vanished "
+            "between resolution and the latch probe.")
+    quantity, price, fill_origin, envelope = row
+
+    req = SimpleNamespace(
+        ticker=str(trade.ticker),
+        entry_date=entry_fill.session_date,
+        entry_price=price,
+        shares=quantity,
+        fill_origin=fill_origin,
+        schwab_source_value_json=envelope,
+        hypothesis_label=None,
+    )
+    latched = resolve_latched_provenance(
+        conn, cfg, req,
+        trade_id=trade_id,
+        exclude_trade_ids=frozenset({trade_id}),
+    )
+    if latched.recognised_but_underivable:
+        order = latched.order
+        detail = ""
+        if latched.clear_reason is not None:
+            detail = (
+                f" The probe reports clear_reason={latched.clear_reason!r} on "
+                f"session {latched.clear_session}.")
+        raise _refuse(
+            f"trade {trade_id}'s entry fill names broker order "
+            f"{order.broker_order_id if order else '?'}, whose accepted latch "
+            f"mandate the 22-A ladder REFUSED ({latched.decline_reason})."
+            f"{detail} A refused mandate does not fall back to the last-word "
+            "ladder: correcting through the other authority would be citation "
+            "shopping, which is what this surface exists to prevent."
+        )
+    if not latched.admitted:
+        return None
+
+    order = latched.order
+    if order is None:  # pragma: no cover -- an admission always carries one
+        raise _refuse(
+            f"trade {trade_id}'s latch admission carries no order; the "
+            "citation cannot be recorded.")
+    return _LatchCitation(
+        link_id=int(order.link_id),
+        validity_intent_id=int(order.validity_intent_id),
+        place_intent_id=int(order.place_intent_id),
+        broker_order_id=str(order.broker_order_id),
+        fire_candidate_id=int(order.candidate_id),
+        probe_json=json.dumps(latched.probe_evidence, sort_keys=True),
+    )
+
+
+@dataclass(frozen=True)
 class _Authorized:
     trade: Any
     already_applied: Any = None       # ProvenanceCorrection | None
     anchored: _Anchored | None = None
     derived: _Derived | None = None
+    latch: _LatchCitation | None = None
+
+    @property
+    def admission_tier(self) -> str:
+        """The tier is DETECTED from the record and never chosen (S2.7)."""
+        return (PROVENANCE_ADMISSION_TIER_LAST_WORD if self.latch is None
+                else PROVENANCE_ADMISSION_TIER_LATCH)
 
 
 def _authorize(
@@ -1570,6 +1736,7 @@ def _authorize(
     cited_candidate_id: int,
     cited_recommendation_id: int,
     reason: Any,
+    cfg: Any = None,
 ) -> _Authorized:
     """Every read-only check, in refusal-ladder order. Writes nothing.
 
@@ -1634,14 +1801,41 @@ def _authorize(
     # every VERDICT before any INSTRUCTION -- applied to its own ladder.
     _gate_on_unset_state(trade)
     _reason_or_refuse(reason)
+
+    # THE TIER IS RESOLVED BEFORE THE LAST-WORD GUARD, AND THE GUARD IS WHAT
+    # THE DISPATCH TURNS OFF (plan S2.7). The last-word guard ranks the
+    # framework's BUCKET SERIES; the latch ladder is a DIFFERENT AUTHORITY the
+    # guard structurally cannot see -- an append-only row the broker's
+    # acceptance created. Under that authority the guard's refusal of an
+    # `aplus` citation superseded by a later `watch` row is CORRECT for what
+    # the guard is and WRONG for the question being asked, so the two are
+    # dispatched between rather than composed.
+    entry_fill = resolve_authoritative_entry_fill(conn, trade_id)
+    latch = _resolve_latch_citation(
+        conn, cfg, trade=trade, trade_id=trade_id, entry_fill=entry_fill)
     anchored = _anchor_half(
         conn,
         trade_id=trade_id,
         cited_candidate_id=cited_candidate_id,
         cited_recommendation_id=cited_recommendation_id,
+        entry_fill=entry_fill,
+        run_last_word_guard=latch is None,
     )
+    if latch is not None and latch.fire_candidate_id != cited_candidate_id:
+        # THE CITATION IS FORCED, NOT CHOSEN. Silently substituting the fire
+        # would write a correction the operator never asked for; refusing and
+        # NAMING it leaves the decision where it belongs.
+        raise _refuse(
+            f"candidate {cited_candidate_id} is not the fire this trade's "
+            f"accepted latch order was placed against: broker order "
+            f"{latch.broker_order_id} (link {latch.link_id}) names candidate "
+            f"{latch.fire_candidate_id}. Under the latch ladder the citation "
+            "is FORCED to the fire an append-only broker acceptance created; "
+            "there is nothing to choose among."
+        )
     return _Authorized(
-        trade=trade, anchored=anchored, derived=_derive(conn, anchored))
+        trade=trade, anchored=anchored, derived=_derive(conn, anchored),
+        latch=latch)
 
 
 def _na_suffix_note(anchored: _Anchored, derived: _Derived) -> str | None:
@@ -1677,6 +1871,7 @@ def preview_cohort_provenance_correction(
     cited_candidate_id: int,
     cited_recommendation_id: int,
     reason: str | None = None,
+    cfg: Any = None,
 ) -> CohortProvenanceCorrectionPreview:
     """``--dry-run``: every read-only check, writing nothing.
 
@@ -1712,10 +1907,12 @@ def preview_cohort_provenance_correction(
             cited_candidate_id=cited_candidate_id,
             cited_recommendation_id=cited_recommendation_id,
             reason=reason,
+            cfg=cfg,
         )
         if auth.already_applied is not None:
             return _preview_from_existing(auth.trade, auth.already_applied)
-        anchored, derived = auth.anchored, auth.derived
+        anchored, derived, latch = auth.anchored, auth.derived, auth.latch
+        tier = auth.admission_tier
     finally:
         if owns_read_tx:
             with contextlib.suppress(sqlite3.Error):
@@ -1752,6 +1949,14 @@ def preview_cohort_provenance_correction(
             "trades.trade_origin": derived.trade_origin,
         },
         na_criterion_suffix_note=_na_suffix_note(anchored, derived),
+        admission_tier=tier,
+        cited_latch_link_id=None if latch is None else latch.link_id,
+        cited_latch_validity_intent_id=(
+            None if latch is None else latch.validity_intent_id),
+        cited_latch_place_intent_id=(
+            None if latch is None else latch.place_intent_id),
+        cited_latch_broker_order_id=(
+            None if latch is None else latch.broker_order_id),
     )
 
 
@@ -1793,6 +1998,15 @@ def _preview_from_existing(trade: Any, existing: Any) -> CohortProvenanceCorrect
         pre_values=pre,
         post_values=applied,
         already_applied_correction_id=int(existing.provenance_correction_id),
+        # READ OFF THE FROZEN ROW, never re-derived. A replay's dry run must
+        # report the authority the LEDGER records, not the one a fresh probe
+        # would reach today -- the barrier could have been retired, or the
+        # order consumed, since.
+        admission_tier=str(existing.admission_tier),
+        cited_latch_link_id=existing.cited_latch_link_id,
+        cited_latch_validity_intent_id=existing.cited_latch_validity_intent_id,
+        cited_latch_place_intent_id=existing.cited_latch_place_intent_id,
+        cited_latch_broker_order_id=existing.cited_latch_broker_order_id,
     )
 
 
@@ -1807,6 +2021,11 @@ class CohortProvenanceCorrectionResult:
     applied_values: dict[str, Any]
     correction_reason: str
     follow_up_command: str
+    admission_tier: str = PROVENANCE_ADMISSION_TIER_LAST_WORD
+    cited_latch_link_id: int | None = None
+    cited_latch_validity_intent_id: int | None = None
+    cited_latch_place_intent_id: int | None = None
+    cited_latch_broker_order_id: str | None = None
 
 
 def _compose_reason(
@@ -1849,6 +2068,7 @@ def correct_cohort_provenance(
     cited_candidate_id: int,
     cited_recommendation_id: int,
     reason: str | None = None,
+    cfg: Any = None,
 ) -> CohortProvenanceCorrectionResult:
     """Outer: owns ``BEGIN IMMEDIATE`` / COMMIT / ROLLBACK, and REJECTS a
     caller-held transaction -- never auto-detects, because an auto-detect
@@ -1863,6 +2083,15 @@ def correct_cohort_provenance(
     one field nobody may supply is when it happened. The clock is stamped
     INSIDE the transaction; tests that need determinism patch
     ``_APPLIED_AT_CLOCK``.
+
+    ``cfg`` IS WHAT MAKES ``BEGIN IMMEDIATE`` LOAD-BEARING FOR THE 22-A LADDER
+    (AL-2 / review 22A-R2-03). The latch resolution issues its own ledger
+    SELECTs and the derivation issues more; they are ONE world only because
+    THIS function holds a write reservation across all of them. The resolver
+    cannot own a transaction itself -- the single-transaction contract makes it
+    the CALLER's, and auto-detecting an outer one re-introduces the race the
+    explicit lock closed -- so the obligation lands here, and a test pins it
+    rather than a comment promising it.
     """
     if conn.in_transaction:
         raise CallerHeldTransactionError(
@@ -1878,6 +2107,7 @@ def correct_cohort_provenance(
             cited_candidate_id=cited_candidate_id,
             cited_recommendation_id=cited_recommendation_id,
             reason=reason,
+            cfg=cfg,
         )
         conn.commit()
         return result
@@ -1894,6 +2124,7 @@ def _correct_cohort_provenance_inner(
     cited_candidate_id: int,
     cited_recommendation_id: int,
     reason: str | None = None,
+    cfg: Any = None,
 ) -> CohortProvenanceCorrectionResult:
     """Never commits. Every callee is repo-level, so no inner ``with conn:``
     can close the caller's transaction out from under it.
@@ -1929,6 +2160,7 @@ def _correct_cohort_provenance_inner(
         cited_candidate_id=cited_candidate_id,
         cited_recommendation_id=cited_recommendation_id,
         reason=reason,
+        cfg=cfg,
     )
     if auth.already_applied is not None:
         existing = auth.already_applied
@@ -1944,11 +2176,18 @@ def _correct_cohort_provenance_inner(
             correction_reason=str(existing.correction_reason),
             follow_up_command=(
                 f"swing journal provenance-corrections {trade_id}"),
+            admission_tier=str(existing.admission_tier),
+            cited_latch_link_id=existing.cited_latch_link_id,
+            cited_latch_validity_intent_id=(
+                existing.cited_latch_validity_intent_id),
+            cited_latch_place_intent_id=existing.cited_latch_place_intent_id,
+            cited_latch_broker_order_id=existing.cited_latch_broker_order_id,
         )
 
     anchored = auth.anchored
     derived = auth.derived
     trade = auth.trade
+    latch = auth.latch
 
     pre_values: dict[str, Any] = {
         "trades.hypothesis_label": trade.hypothesis_label,
@@ -2022,6 +2261,21 @@ def _correct_cohort_provenance_inner(
             applied_by=PROVENANCE_CORRECTION_APPLIED_BY,
             correction_reason=stored_reason,
             risk_policy_id_at_correction=_maybe_get_active_risk_policy_id(conn),
+            # THE TIER AND ITS CITATION MOVE TOGETHER OR NOT AT ALL. The
+            # paired-NULL rule is enforced three times over -- here by
+            # construction, in `ProvenanceCorrection.__post_init__`, and in
+            # 0037's citation trigger -- because a row claiming an admission
+            # whose evidence it cannot produce is exactly the contamination
+            # this arc exists to stop.
+            admission_tier=auth.admission_tier,
+            cited_latch_link_id=None if latch is None else latch.link_id,
+            cited_latch_validity_intent_id=(
+                None if latch is None else latch.validity_intent_id),
+            cited_latch_place_intent_id=(
+                None if latch is None else latch.place_intent_id),
+            cited_latch_broker_order_id=(
+                None if latch is None else latch.broker_order_id),
+            cited_latch_probe_json=None if latch is None else latch.probe_json,
         ),
     )
 
@@ -2035,6 +2289,14 @@ def _correct_cohort_provenance_inner(
         applied_values=applied_values,
         correction_reason=stored_reason,
         follow_up_command=f"swing journal provenance-corrections {trade_id}",
+        admission_tier=auth.admission_tier,
+        cited_latch_link_id=None if latch is None else latch.link_id,
+        cited_latch_validity_intent_id=(
+            None if latch is None else latch.validity_intent_id),
+        cited_latch_place_intent_id=(
+            None if latch is None else latch.place_intent_id),
+        cited_latch_broker_order_id=(
+            None if latch is None else latch.broker_order_id),
     )
 
 
