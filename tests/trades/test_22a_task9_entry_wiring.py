@@ -1458,3 +1458,202 @@ def test_a_linked_fill_with_NO_CONFIG_records_honest_unset(tmp_path) -> None:
     assert (origin, cand, label) == ("manual_off_pipeline", None, None), (
         f"the ordinary chain wrote candidate {today} for a fill whose own "
         f"envelope names an accepted order")
+
+
+# ===========================================================================
+# 22A-R8-01 -- AN ORDER IDENTITY THE TWO DOMAINS READ DIFFERENTLY IS REFUSED
+# ===========================================================================
+def test_python_and_sqlite_really_do_read_the_envelope_differently() -> None:
+    """THE PREMISE, MEASURED, before anything is built on it.
+
+    A finding is a lead until the code is the evidence, and this one is a
+    claim about two ENGINES rather than about this repo.  Both halves are
+    executed here so the guard below cannot rest on an inherited assertion --
+    and so it fails loudly on the day either engine changes, rather than
+    quietly guarding nothing.
+    """
+    import json as _json
+    import sqlite3 as _sqlite3
+
+    padded = '{"schwab_order_id": "  1002937461  "}'
+    assert _json.loads(padded)["schwab_order_id"] == "  1002937461  "
+    conn = _sqlite3.connect(":memory:")
+    assert conn.execute(
+        "SELECT json_extract(?, '$.schwab_order_id')", (padded,)
+    ).fetchone()[0] == "  1002937461  "
+    # ...and the SERVICE strips, which is where the two part company.
+    from swing.trades.latched_origin import broker_order_id_from_envelope
+    assert broker_order_id_from_envelope(padded) == "1002937461"
+
+    duplicated = '{"schwab_order_id": "A", "schwab_order_id": "B"}'
+    assert _json.loads(duplicated)["schwab_order_id"] == "B", "Python keeps LAST"
+    assert conn.execute(
+        "SELECT json_extract(?, '$.schwab_order_id')", (duplicated,)
+    ).fetchone()[0] == "A", "SQLite keeps FIRST"
+
+
+def test_a_padded_order_id_on_a_LINKED_fill_is_refused(tmp_path) -> None:
+    """PRE-FIX the service stripped it, matched the link, and admitted -- while
+    every SQL scan over the SAME envelope read the PADDED string and could
+    therefore miss a real prior consumption.  POST-FIX the ladder refuses
+    `order_id_not_canonical`, RECOGNISED, so the row lands honest-unset rather
+    than falling through to TODAY's candidate.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "r801")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    padded = json.dumps({"schwab_order_id": "  " + BROKER_ORDER_ID + "  ",
+                         "schwab_instrument_symbol": TICKER})
+    result = enter(conn, cfg, req(schwab_source_value_json=padded))
+    assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
+
+    from swing.trades.latched_origin import resolve_latched_provenance
+    verdict = resolve_latched_provenance(
+        conn, cfg, req(schwab_source_value_json=padded))
+    assert verdict.decline_reason == "order_id_not_canonical"
+    assert verdict.recognised_but_underivable is True
+
+
+def test_a_canonical_order_id_still_admits(tmp_path) -> None:
+    """THE CONTROL, one dimension changed: no padding, and the ladder admits.
+
+    Without it a guard that refused every envelope would pass the case above.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "r801ctl")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    result = enter(conn, cfg, req())
+    origin, cand, _label = written(conn, result.trade_id)
+    assert (origin, cand) == ("pipeline_aplus", candidate_id)
+
+
+def test_a_DUPLICATE_order_id_key_on_a_LINKED_fill_is_refused(tmp_path) -> None:
+    """The other half of the split, and it needs no whitespace.
+
+    Python keeps the LAST duplicate key and SQLite keeps the FIRST, so an
+    envelope naming two orders is read as two different mandates by the two
+    domains.  The raw JSON is built by hand because `json.dumps` cannot emit a
+    duplicate key -- which is exactly why the shape survives unnoticed: no
+    emitter in this repo produces it, and the guard is about what a BLOB may
+    contain rather than about what we write.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "r801dup")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    duplicated = (
+        '{"schwab_instrument_symbol": "' + TICKER + '", '
+        '"schwab_order_id": "not-a-real-order", '
+        '"schwab_order_id": "' + BROKER_ORDER_ID + '"}')
+    from swing.trades.latched_origin import resolve_latched_provenance
+    verdict = resolve_latched_provenance(
+        conn, cfg, req(schwab_source_value_json=duplicated))
+    assert verdict.decline_reason == "order_id_not_canonical"
+    assert verdict.recognised_but_underivable is True
+
+
+# ===========================================================================
+# 22A-R8-03 -- A NON-FINITE FROZEN PRICE CANNOT BLOCK A MONEY-BEARING ENTRY
+# ===========================================================================
+def test_an_infinite_frozen_pivot_writes_the_entry(tmp_path) -> None:
+    """`inf > 0` is TRUE, so the link CHECK and the model validator BOTH admit
+    a `+inf` frozen pivot -- and `zone_cap_for_pivot` then raises `ValueError`
+    on a non-finite input BY DESIGN.
+
+    PRE-FIX that `ValueError` escaped the ladder and rolled the trade AND the
+    fill back: cohort bookkeeping charging a money-bearing entry, on a value
+    the positivity guard was never going to catch.  POST-FIX the guard refuses
+    `frozen_value_unavailable` before any arithmetic, and the resolver's
+    containment is broad enough that a future arithmetic failure cannot do it
+    either.
+
+    The fire is moved through the barrier helper, because a `candidates` row
+    is structurally immutable and the mint COPIES its values into the link.
+    """
+    from tests._candidates_barrier_helper import candidates_barrier_lifted
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r803")
+    with candidates_barrier_lifted(conn):
+        conn.execute("UPDATE candidates SET pivot = 9e999 WHERE id = ?",
+                     (candidate_id,))
+    conn.commit()
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    frozen = conn.execute(
+        "SELECT frozen_pivot FROM latch_order_mandate_links").fetchone()[0]
+    assert frozen == float("inf"), (
+        "the mint must FREEZE the infinite pivot, or the case is about a "
+        "different value than the one it names")
+
+    result = enter(conn, cfg, req())
+    assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE trade_id = ?",
+        (result.trade_id,)).fetchone()[0] == 1
+
+
+def test_an_unexpected_authorization_exception_writes_the_entry(
+        tmp_path) -> None:
+    """AND THE CONTAINMENT IS BROAD, which is the durable half of R8-03.
+
+    R7-02 contained `LatchProbeInvariantError` and the very next round found a
+    DIFFERENT escape.  Enumerating the raisable types is the
+    hand-maintained-roster failure; this case substitutes an exception type the
+    arc has never seen, so it fails against any narrowed containment.
+    """
+    import swing.trades.latched_origin as lo
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r803b")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    real = lo.authorize_accepted_order
+
+    def boom(*a, **kw):
+        raise ZeroDivisionError("a type this arc has never raised")
+
+    lo.authorize_accepted_order = boom
+    try:
+        result = enter(conn, cfg, req())
+    finally:
+        lo.authorize_accepted_order = real
+    assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE trade_id = ?",
+        (result.trade_id,)).fetchone()[0] == 1
+
+
+# ===========================================================================
+# 22A-R8-04 -- THE SERVICE'S OWN JSON SCANS TAKE THE `CASE` FORM
+# ===========================================================================
+def test_a_malformed_envelope_on_another_trade_does_not_break_the_scans(
+        tmp_path) -> None:
+    """The two consumption scans read EVERY same-ticker entry fill's envelope.
+
+    22A-R3-12 measured that `json_valid(x) AND json_extract(x)` does NOT
+    protect the extract, and the migration was moved to `CASE`; the SERVICE
+    kept the unsafe form, so correctness depended on the query planner's
+    evaluation order.
+
+    MEASURED HONESTLY: the current plan spares these rows, so this case passes
+    under BOTH forms today and is therefore NOT a discriminator -- it is a
+    REGRESSION GUARD against the plan changing, and it is labelled as one
+    rather than counted as proof.  What the fix buys is that the guarantee
+    stops depending on the planner.
+    """
+    from tests._latch_probe_world_22a import seed_trade
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r804")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    # The other trade must be CLOSED: one open position per ticker is a
+    # pre-existing gate, and an open sibling would refuse the entry before the
+    # scans ever ran -- a test blocked for a reason unrelated to its clause.
+    seed_trade(conn, trade_id=777, entry_date=date(2026, 7, 22), price=17.0)
+    conn.execute("UPDATE trades SET state = 'closed' WHERE id = 777")
+    conn.execute(
+        "INSERT INTO fills (trade_id, fill_datetime, action, quantity, price, "
+        "reconciliation_status, fill_origin, schwab_source_value_json) VALUES "
+        "(777, '2026-07-22T14:30:00', 'entry', 2, 17.0, 'unreconciled', "
+        "'schwab_auto', '{not json')")
+    conn.commit()
+    result = enter(conn, cfg, req())
+    origin, cand, _label = written(conn, result.trade_id)
+    assert (origin, cand) == ("pipeline_aplus", candidate_id)

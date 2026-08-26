@@ -357,14 +357,14 @@ def test_the_roster_has_no_member_no_rung_can_emit() -> None:
 
 
 def test_the_roster_size_is_stated_and_counted_by_reading_it() -> None:
-    """THIRTY-FOUR, counted from the members and not from a grep.
+    """THIRTY-FIVE, counted from the members and not from a grep.
 
     The plan records why the method has to be stated: a ``^[a-z_]+$`` regex
     over an earlier version of this block returned one FEWER than the read,
     because one member contained a DIGIT -- a regex under-counting a roster in
     the very act of fixing an under-count.
     """
-    assert len(DECLINE_REASONS) == 34
+    assert len(DECLINE_REASONS) == 35
     source = _MODULE.read_text(encoding="utf-8")
     block = source.split("DECLINE_REASONS: frozenset[str] = frozenset({", 1)[1]
     block = block.split("})", 1)[0]

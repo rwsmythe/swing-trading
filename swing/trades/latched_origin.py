@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass
 from datetime import date
 
@@ -139,7 +140,7 @@ class LatchProbeInvariantError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# THE DECLINE-REASON ROSTER -- THIRTY-FOUR.
+# THE DECLINE-REASON ROSTER -- THIRTY-FIVE.
 #
 # Counted by reading the members below, never by grepping for a word.  The
 # plan records why the method has to be stated: a ``^[a-z_]+$`` regex over an
@@ -186,6 +187,10 @@ DECLINE_REASONS: frozenset[str] = frozenset({
     # returned `linked_validity_not_accepted` would ASSERT a fact about the
     # broker's answer that it precisely could not read.
     "validity_evidence_unavailable",
+    # The envelope names an order that PYTHON and SQL would read DIFFERENTLY
+    # (Codex 22A-R8-01): padded, or carrying duplicate keys. An identity two
+    # domains disagree about cannot bind a mandate.
+    "order_id_not_canonical",
 })
 
 
@@ -548,6 +553,59 @@ def broker_order_id_from_envelope(raw: str | None) -> str | None:
     return value.strip()
 
 
+def envelope_order_id_is_canonical(raw: str | None) -> bool:
+    """Do PYTHON and SQL read the SAME order identity out of this envelope?
+
+    ONE AUTHORITY, APPLIED TO AN IDENTITY (Codex 22A-R8-01; it is AL-7's shape
+    one datum over).  The reader above STRIPS whitespace and ``json.loads``
+    keeps the LAST duplicate key; SQLite's ``json_extract`` strips nothing and
+    keeps the FIRST -- both MEASURED.  So a padded or duplicated envelope gives
+    the service one order id while the SQL scans a DIFFERENT one, and rung 6's
+    consumption check can miss a real prior consumption: a mandate REUSED,
+    which is the expensive direction.
+
+    The answer is NOT to canonicalise harder in one domain -- that is the
+    two-spellings-agree-today class.  It is to REFUSE an envelope the two
+    domains would read differently, so the identity is either unambiguous or
+    the admission does not happen.  ``False`` becomes a
+    recognised-but-underivable refusal, never a fall-through: the fill really
+    does name an order, and the ordinary chain would write TODAY's candidate.
+
+    NEVER RAISES, for the same reason the reader does not.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return True                    # no envelope: nothing to disagree about
+    seen: list[str] = []
+
+    def _hook(pairs):
+        seen.extend(k for k, _v in pairs if k == SCHWAB_ORDER_ID_ENVELOPE_KEY)
+        return dict(pairs)
+
+    try:
+        payload = json.loads(raw, object_pairs_hook=_hook)
+    except (ValueError, TypeError):
+        return True                    # unusable JSON: the reader returns None
+    if not isinstance(payload, dict):
+        return True
+    if len(seen) > 1:
+        log.warning(
+            "22-A: fill envelope carries %d %s keys; Python keeps the LAST and "
+            "SQLite keeps the FIRST, so the two domains would read DIFFERENT "
+            "order identities", len(seen), SCHWAB_ORDER_ID_ENVELOPE_KEY)
+        return False
+    value = payload.get(SCHWAB_ORDER_ID_ENVELOPE_KEY)
+    if not isinstance(value, str):
+        return True                    # the reader already returns None
+    if value != value.strip():
+        log.warning(
+            "22-A: fill envelope's %s is whitespace-padded (%r); the service "
+            "strips it and SQL does not, so the two domains would read "
+            "DIFFERENT order identities",
+            SCHWAB_ORDER_ID_ENVELOPE_KEY, value)
+        return False
+    return True
+
+
 def instrument_symbol_from_envelope(raw: str | None) -> str | None:
     """The envelope's instrument symbol, degrading exactly as the order id does."""
     if not isinstance(raw, str) or not raw.strip():
@@ -609,7 +667,14 @@ def assert_fill_consistent_with_order(
     if order.actual_quantity is not None and shares > float(order.actual_quantity):
         return "quantity_exceeds_order"
 
-    if order.frozen_pivot is None:
+    # NON-FINITE IS UNAVAILABLE, AND POSITIVITY DOES NOT CATCH IT (Codex
+    # 22A-R8-03). `inf > 0` is True, so the link CHECK and the model validator
+    # both admit `+inf`; `zone_cap_for_pivot` then raises `ValueError` on a
+    # non-finite input BY DESIGN, and that exception escaped the whole ladder.
+    # Refused HERE, before any arithmetic, under the reason that says what is
+    # true: the frozen value cannot be used.
+    if (order.frozen_pivot is None
+            or not math.isfinite(float(order.frozen_pivot))):
         return "frozen_value_unavailable"
 
     # FRAMEWORK CONFORMITY.  The upper bound comes from ``mandate_limit_price``
@@ -837,8 +902,9 @@ def competitor_liveness_rung(
         consumed = conn.execute(
             "SELECT 1 FROM fills f WHERE f.action = 'entry' "
             "  AND f.schwab_source_value_json IS NOT NULL "
-            "  AND json_valid(f.schwab_source_value_json) "
-            "  AND json_extract(f.schwab_source_value_json, ?) = ? LIMIT 1",
+            "  AND CASE WHEN json_valid(f.schwab_source_value_json) "
+            "           THEN json_extract(f.schwab_source_value_json, ?) "
+            "           END = ? LIMIT 1",
             (f"$.{SCHWAB_ORDER_ID_ENVELOPE_KEY}", link.broker_order_id),
         ).fetchone()
         if consumed is not None:
@@ -1081,8 +1147,9 @@ def authorize_accepted_order(
     consuming = conn.execute(
         "SELECT f.trade_id FROM fills f "
         " WHERE f.action = 'entry' AND f.schwab_source_value_json IS NOT NULL "
-        "   AND json_valid(f.schwab_source_value_json) "
-        "   AND json_extract(f.schwab_source_value_json, ?) = ? "
+        "   AND CASE WHEN json_valid(f.schwab_source_value_json) "
+        "            THEN json_extract(f.schwab_source_value_json, ?) "
+        "            END = ? "
         " ORDER BY f.fill_id",
         (f"$.{SCHWAB_ORDER_ID_ENVELOPE_KEY}", order.broker_order_id),
     ).fetchall()
@@ -1875,6 +1942,10 @@ def resolve_latched_provenance(
     # the LOCK is about. A link that EXISTS with no config is RECOGNISED and
     # refused, so the row lands honest-unset instead of wrong.
     orders = find_accepted_latch_order(conn, broker_order_id=broker_order_id)
+    if orders and not envelope_order_id_is_canonical(envelope):
+        # RECOGNISED and refused, never a fall-through: the fill really does
+        # name an order, so the ordinary chain would write TODAY's candidate.
+        return _refuse("order_id_not_canonical", orders[0])
     if orders and cfg is None:
         log.warning(
             "22-A: broker order %s names %d accepted latch link(s) but NO "
@@ -1949,12 +2020,23 @@ def resolve_latched_provenance(
             trade_id=trade_id,
             competitor_rung=competitor_liveness_rung,
         )
-    except LatchProbeInvariantError:
+    except Exception:  # noqa: BLE001 -- see below; this is DELIBERATE
+        # BROAD ON PURPOSE, AND THE BREADTH IS THE POINT (Codex 22A-R8-03,
+        # generalizing 22A-R7-02). It was `except LatchProbeInvariantError`,
+        # and the VERY NEXT ROUND found a different escape: a `+inf` frozen
+        # pivot passes the schema's positivity CHECK, reaches
+        # `zone_cap_for_pivot`, and raises `ValueError` -- not a
+        # LatchProbeInvariantError, so it rolled the money-bearing trade back.
+        # Enumerating the raisable types is the hand-maintained-roster failure
+        # this project keeps paying for. Every branch here is fail-CLOSED
+        # (`aliveness_unverifiable` can never admit) and the log carries a
+        # traceback, so a real defect is LOUD rather than absorbed.
         log.exception(
-            "22-A: the latch probe reported an INVARIANT FAILURE for %s "
-            "(order %s, link %s) at %s; the entry records with honest-unset "
-            "cohort keys rather than being blocked, and this WARRANTS "
-            "INVESTIGATION -- the probe believes its own inputs are incoherent",
+            "22-A: the latch authorization RAISED for %s (order %s, link %s) "
+            "at %s; the entry records with honest-unset cohort keys rather "
+            "than being blocked, and this WARRANTS INVESTIGATION -- cohort "
+            "bookkeeping must never cost a money-bearing entry, and it must "
+            "also never fail silently",
             req.ticker, order.broker_order_id, order.link_id, fill_session)
         return _refuse("aliveness_unverifiable", order,
                        horizon_session=fill_session,
