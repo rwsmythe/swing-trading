@@ -702,3 +702,131 @@ def test_the_validator_never_keys_a_rule_on_the_trade_origin_VALUE() -> None:
     for line in hits:
         assert not re.search(r"trade_origin\s*(==|!=|in\s|not\s+in\s)", line), (
             f"a conditional rule is keyed on the trade_origin VALUE: {line!r}")
+
+
+# ===========================================================================
+# CODEX 22A-R4-01 -- the ORIGIN the reservation was taken for
+#
+# `derive_trade_origin` runs at :278, BEFORE `BEGIN IMMEDIATE` at :437, and its
+# value feeds BOTH the persisted ordinary origin AND the relocated PE-anchor
+# guard.  The guard's own comment claims it reads "the world the write lands
+# in".  It did not.  A comment asserting an invariant the code does not hold is
+# worse than no comment, because it reads true -- gotcha #31, arriving INSIDE a
+# fix written to avoid it.
+#
+# THE WINDOW IS REAL AND THESE TESTS OPEN IT AT ITS TRUE POSITION: the
+# concurrent commit fires from a SECOND connection during the PRELIMINARY
+# derivation, which is before the reservation exists.  Once `BEGIN IMMEDIATE`
+# is held no competing writer can commit at all -- which is the point of taking
+# it, and the reason the stale read is the only remaining hole.
+# ===========================================================================
+def _commit_a_newer_empty_run(db: Path) -> None:
+    """A LATER complete pipeline run in which the ticker does not appear.
+
+    `derive_trade_origin` reads the most-recent COMPLETE run and then that
+    run's candidate for the ticker.  With no candidate row the answer flips
+    `pipeline_aplus` -> `manual_off_pipeline`, which is the cheapest honest
+    flip available: it needs no `candidates` write at all, so the immutability
+    barrier is never asked to be less than it is.
+    """
+    other = open_connection(db)
+    try:
+        other.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, "
+            "watch_count, skip_count, excluded_count, error_count) "
+            "VALUES (7001, '2026-07-24T17:30:05', '2026-07-24', "
+            "'2026-07-27', 1, 0, 0, 1, 0, 0)")
+        from tests.trades._cohort_provenance_fixtures import seed_pipeline_run
+        seed_pipeline_run(
+            other, evaluation_run_id=7001, data_asof_date="2026-07-24",
+            action_session_date="2026-07-27",
+            started_ts="2026-07-24T17:30:00",
+            finished_ts="2026-07-24T17:44:59")
+        other.commit()
+    finally:
+        other.close()
+
+
+def _race_derive_trade_origin(monkeypatch, db: Path) -> list[str]:
+    """Commit the newer run AFTER the first derivation and BEFORE the next.
+
+    Returns the list of values each call returned, so a test can state how many
+    derivations happened rather than infer it.
+    """
+    import swing.trades.entry as entry_mod
+
+    real = entry_mod.derive_trade_origin
+    returned: list[str] = []
+
+    def _racing(conn, ticker, entry_path):
+        value = real(conn, ticker, entry_path)
+        if not returned:                       # the PRELIMINARY call only
+            _commit_a_newer_empty_run(db)
+        returned.append(value)
+        return value
+
+    monkeypatch.setattr(entry_mod, "derive_trade_origin", _racing)
+    return returned
+
+
+def test_the_persisted_origin_is_derived_inside_the_reservation(
+        tmp_path, monkeypatch) -> None:
+    """PRE-FIX the row lands `pipeline_aplus` with a NULL candidate -- an
+    origin claiming a pipeline mandate that the world the write landed in no
+    longer carries.  POST-FIX it lands `manual_off_pipeline`.
+
+    Both values are stated because a test that passes under both paths is
+    worthless.  The request carries a usable order id (so the reservation is
+    taken) and NO accepted link exists (so the ORDINARY chain writes the row) --
+    which is exactly the combination that persists the stale value.
+    """
+    conn, cfg, _ = build_world(tmp_path, "r401origin")
+    conn.commit()
+    db = tmp_path / "r401origin" / "swing.db"
+    returned = _race_derive_trade_origin(monkeypatch, db)
+
+    result = enter(conn, cfg, req())
+    origin, cand, label = written(conn, result.trade_id)
+    assert returned[0] == "pipeline_aplus", (
+        "the fixture must make the PRELIMINARY answer differ from the "
+        "committed one, or the case passes without opening the window")
+    assert (origin, cand, label) == ("manual_off_pipeline", None, None), (
+        "the persisted origin came from the pre-reservation world")
+    assert len(returned) == 2, (
+        f"the origin was derived {len(returned)} time(s); the reserved path "
+        f"must re-derive it inside the transaction")
+
+
+def test_the_relocated_pe_anchor_guard_judges_the_committed_world(
+        tmp_path, monkeypatch) -> None:
+    """The guard's comment, made TRUE.
+
+    PRE-FIX the guard sees `pipeline_aplus` (the pre-reservation world), does
+    not fire, and the row is WRITTEN carrying a `pattern_evaluation_id` anchor
+    the committed world no longer supports.  POST-FIX it sees
+    `manual_off_pipeline` and refuses, which is the live production rejection
+    22A-R9-03 relocated here rather than deleted.
+    """
+    conn, cfg, _ = build_world(tmp_path, "r401pe")
+    run_id = conn.execute(
+        "SELECT id FROM pipeline_runs ORDER BY id LIMIT 1").fetchone()[0]
+    conn.execute(
+        "INSERT INTO pattern_evaluations (id, pipeline_run_id, ticker, "
+        "pattern_class, detector_version, geometric_score, "
+        "geometric_score_json, composite_score, structural_evidence_json, "
+        "feature_distribution_log_json, window_start_date, window_end_date, "
+        "created_at) "
+        "VALUES (5, ?, ?, 'vcp', 'v1', 0.8, '{}', 0.8, '{}', '{}', "
+        "'2026-07-01', '2026-07-24', '2026-07-24T17:44:45')",
+        (run_id, TICKER))
+    conn.commit()
+    db = tmp_path / "r401pe" / "swing.db"
+    returned = _race_derive_trade_origin(monkeypatch, db)
+
+    with pytest.raises(PatternEvaluationAnchorError):
+        enter(conn, cfg, req(pattern_evaluation_id=5))
+    assert returned[0] == "pipeline_aplus", (
+        "the fixture must make the PRELIMINARY answer non-manual, or the "
+        "guard fires for a reason unrelated to the race")
+    assert conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0

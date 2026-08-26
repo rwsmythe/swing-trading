@@ -466,6 +466,27 @@ def _record_entry_inner(
 
     resolved_candidate_id: int | None = req.candidate_id
 
+    if reserve:
+        # THE ORIGIN IS RE-DERIVED INSIDE THE RESERVATION (Codex 22A-R4-01).
+        # The preliminary value at the call site above is computed BEFORE
+        # `BEGIN IMMEDIATE`, so a pipeline run can commit between the two --
+        # and that value fed BOTH the persisted ordinary origin AND the PE-
+        # anchor guard below, whose comment claimed it read "the world the
+        # write lands in".  It did not.  A comment asserting an invariant the
+        # code does not hold is worse than no comment, because it reads true
+        # (gotcha #31, inside a fix written to avoid it).
+        #
+        # THE PRELIMINARY VALUE IS STILL LOAD-BEARING and is NOT removed: the
+        # validator runs on it, before the reservation, and moving that read
+        # would move LOCK clause (c)'s ordering.  The validator requires
+        # `trade_origin` for PRESENCE and never keys a rule on its VALUE
+        # (pinned by `test_the_validator_never_keys_a_rule_on_the_trade_origin_VALUE`),
+        # so the two reads can differ without changing any pre-existing branch.
+        #
+        # ONLY the reserved path re-derives.  The unreserved path is the
+        # pre-arc path byte-for-byte and takes no reservation to be inside of.
+        derived_origin = derive_trade_origin(conn, req.ticker, req.entry_path)
+
     # THE AUTHORITATIVE RESOLUTION, inside the reservation.  The preliminary
     # answer computed outside it is DISCARDED -- it exists only to decide
     # whether to reserve.
@@ -485,10 +506,14 @@ def _record_entry_inner(
     # without-relocation implementation; every other case in the plan passes
     # one.
     #
-    # INSIDE THE TRANSACTION IS THE WHOLE POINT: the guard's input is
+    # INSIDE THE TRANSACTION IS THE WHOLE POINT, AND IT IS ONLY TRUE BECAUSE
+    # OF THE RE-DERIVATION ABOVE (Codex 22A-R4-01): the guard's input is
     # `derive_trade_origin`, which reads the latest evaluation run -- the same
-    # world the race can move.  Evaluated at the route it reads a world that
-    # may be stale by the time the row is written.
+    # world the race can move.  Relocating the guard inside the transaction
+    # while it judged the value computed OUTSIDE bought nothing; the comment
+    # read true and the code did not hold it.  What makes the claim honest is
+    # that `derived_origin` is re-read under the reservation, so the value the
+    # guard judges is the value the row is written with.
     if (
         reserve
         and not latched.admitted
