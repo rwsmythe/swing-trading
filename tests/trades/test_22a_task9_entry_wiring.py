@@ -1114,3 +1114,173 @@ def test_a_commit_that_raises_rolls_the_reservation_back(tmp_path) -> None:
     assert conn.execute(
         "SELECT COUNT(*) FROM evaluation_runs WHERE id = 8001"
     ).fetchone()[0] == 0
+
+
+# ===========================================================================
+# 22A-R9-03 x 22A-R4-06 -- THE RELOCATED GUARD FIRES ON THE ORDINARY PATH ONLY
+# (RD, ruled 2026-08-25)
+# ===========================================================================
+def _pe_anchored_world(tmp_path, name, *, closes):
+    """A recognised link, a `pattern_evaluation_id` anchor, a MANUAL origin.
+
+    All THREE conditions the relocated PE-anchor guard keys on, assembled
+    together so a test can vary one.  Each is established here rather than
+    assumed:
+
+      * the PE row is planted on the fixture's own pipeline run, so tier (b)'s
+        server re-derivation would resolve it;
+      * a LATER complete run is seeded WITHOUT the ticker, so
+        `derive_trade_origin` returns `manual_off_pipeline` -- the fire has
+        rolled out of the latest run, which is the real-world shape the guard
+        exists for.  Without this the FTRE fire is still `aplus` in the latest
+        run, the origin is `pipeline_aplus`, and every test below passes
+        because the guard's third condition was never met.
+    """
+    from tests._latch_probe_world_22a import seed_run
+    from tests.trades._cohort_provenance_fixtures import seed_pipeline_run
+
+    conn, cfg, candidate_id = build_world(tmp_path, name, closes=closes)
+    run_id = conn.execute(
+        "SELECT id FROM pipeline_runs ORDER BY id LIMIT 1").fetchone()[0]
+    conn.execute(
+        "INSERT INTO pattern_evaluations (id, pipeline_run_id, ticker, "
+        "pattern_class, detector_version, geometric_score, "
+        "geometric_score_json, composite_score, structural_evidence_json, "
+        "feature_distribution_log_json, window_start_date, window_end_date, "
+        "created_at) "
+        "VALUES (7, ?, ?, 'vcp', 'v1', 0.8, '{}', 0.8, '{}', '{}', "
+        "'2026-07-01', '2026-07-24', '2026-07-24T17:44:45')",
+        (run_id, TICKER))
+    seed_run(conn, 901, FILL_SESSION)
+    conn.execute(
+        "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+        "pivot, initial_stop, rs_method) VALUES (901, 'OTHR', 'aplus', 20.0, "
+        "20.5, 16.0, 'universe')")
+    seed_pipeline_run(
+        conn, evaluation_run_id=901,
+        data_asof_date=date(2026, 7, 24).isoformat(),
+        action_session_date=FILL_SESSION.isoformat(),
+        started_ts="2026-07-24T17:30:00", finished_ts="2026-07-24T17:44:00")
+    conn.commit()
+
+    from swing.trades.origin import derive_trade_origin
+    assert derive_trade_origin(
+        conn, TICKER, EntryPath.MANUAL_WEB_FORM) == "manual_off_pipeline", (
+        "the fixture must produce the MANUAL server origin the guard keys on, "
+        "or every case built on it passes for a reason unrelated to its clause")
+    return conn, cfg, candidate_id
+
+
+def test_a_recognised_and_refused_entry_is_written_not_refused(
+        tmp_path) -> None:
+    """RD's one-line ruling, encoded: the guard is for the ORDINARY path.
+
+    PRE-RULING the guard fired on ``not latched.admitted``, and
+    ``recognised_but_underivable`` IS a not-admitted state -- so an entry
+    whose mandate the ladder recognised and REFUSED raised
+    ``PatternEvaluationAnchorError`` and NO row was written.  POST-RULING the
+    honest-unset row is WRITTEN.  Both values are stated so the assertion
+    distinguishes.
+
+    RD's grounds: **cohort bookkeeping never blocks a money-bearing entry.**
+    The refusal is about the LABEL, never about the ENTRY -- so a guard whose
+    condition is "did not admit" is one clause too wide.  The plan says the
+    same thing at two sites (S5.2 outcome (c), S3.7 lens row 43).
+    """
+    conn, cfg, candidate_id = _pe_anchored_world(
+        tmp_path, "r9x", closes=_breach_closes(date(2026, 7, 23)))
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+
+    from swing.trades.latched_origin import resolve_latched_provenance
+    verdict = resolve_latched_provenance(conn, cfg, req(pattern_evaluation_id=7))
+    assert verdict.recognised_but_underivable, (
+        "the fixture must produce a RECOGNISED-AND-REFUSED verdict or the "
+        "case proves nothing about the clause it names")
+
+    result = enter(conn, cfg, req(pattern_evaluation_id=7))
+    assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
+
+
+def test_the_pe_backlink_survives_on_the_honest_unset_row_22a_r4_06(
+        tmp_path) -> None:
+    """RD's `22A-R4-06` ruling, with the criterion VERIFIED not inherited.
+
+    RULED: the honest-unset row KEEPS ``pattern_evaluation_id`` **iff** the PE
+    anchor was derived by its own independent ladder, and DROPS anything
+    derived FROM the refused latch recognition.  Grounds: the all-three-or-none
+    rule covers the COHORT TRIPLE -- three statements of ONE provenance claim
+    -- while the PE backlink is a DIFFERENT evidence chain, and categories
+    differing in evidence kind are never merged.
+
+    THE VERIFICATION, stated with the read that established it.  The 5-tier
+    ladder is ``swing/web/routes/trades.py`` from ``pe_anchor_raw = ...``
+    through ``resolved_pe_id = parsed_pe_id``.  Tier (a) parses the submitted
+    string; tier (b) reads ``pattern_evaluations`` BY ID; tier (c) compares
+    that row's ticker to the submitted ticker; tier (d) compares the
+    form-render ``pipeline_run_id`` anchor to that row's own
+    ``pipeline_run_id``; then ``resolved_pe_id = parsed_pe_id`` -- the value
+    comes from (a)/(b) and from nothing else.  Tier (e) is a REFUSAL gate that
+    contributes no value, and its 22-A skip condition reads the ENVELOPE
+    (``broker_order_id_from_envelope``), never the link table.  **No tier
+    touches latch_order_mandate_links, latch_order_intents or
+    resolve_latched_provenance.**  The ladder is INDEPENDENT, so the backlink
+    SURVIVES the refusal.
+
+    The three COHORT keys are asserted NULL in the same breath, because the
+    ruling's force is in the contrast: what dies is what the refused claim
+    produced; what lives is an independently-derived true fact.
+    """
+    conn, cfg, candidate_id = _pe_anchored_world(
+        tmp_path, "r406", closes=_breach_closes(date(2026, 7, 23)))
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    result = enter(conn, cfg, req(pattern_evaluation_id=7))
+    row = conn.execute(
+        "SELECT trade_origin, candidate_id, hypothesis_label, "
+        "pattern_evaluation_id FROM trades WHERE id = ?",
+        (result.trade_id,)).fetchone()
+    assert row == ("manual_off_pipeline", None, None, 7)
+
+
+def test_the_pe_ladder_reads_nothing_from_the_latch_recognition_path() -> None:
+    """AND THE CRITERION IS PINNED MECHANICALLY, not left to the docstring.
+
+    RD's ruling is conditional -- the backlink survives IFF the PE ladder is
+    independent -- so the test that matters is the one that FAILS on the day a
+    tier starts consulting the latch.  A prose claim about independence cannot
+    fail; this reads the ladder's source and asserts the absence.
+
+    SCOPE, STATED: the walk covers the 5-tier block only (from the
+    ``pe_anchor_raw`` assignment through the ``resolved_pe_id`` assignment),
+    because that is the span RD's criterion is about.  The route's OTHER latch
+    read -- EXT-2's envelope rung, which decides whether tier (e) runs -- is
+    outside it by design and is excised BY NAME below, so the boundary is a
+    decision rather than an oversight.
+    """
+    import re
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2]
+              / "swing" / "web" / "routes" / "trades.py").read_text(
+                  encoding="utf-8")
+    start = source.index("pe_anchor_raw = pattern_evaluation_id.strip()")
+    end = source.index("resolved_pe_id = parsed_pe_id", start)
+    block = source[start:end]
+    excised, count = re.subn(
+        r"from swing\.trades\.latched_origin import\s+"
+        r"broker_order_id_from_envelope.*?_deferred_order_id is None:",
+        "", block, flags=re.S)
+    assert count == 1, (
+        "EXT-2's envelope rung was not found in the ladder block; the "
+        "excision below would then be silently vacuous, which is the "
+        "existence-is-not-completeness class arriving in a scope carve-out")
+    forbidden = ("latch_order_mandate_links", "latch_order_intents",
+                 "resolve_latched_provenance", "latched_origin",
+                 "freeze_tier")
+    hits = [token for token in forbidden if token in excised]
+    assert not hits, (
+        f"the 5-tier PE ladder now reads the latch recognition path ({hits}); "
+        "RD's 22A-R4-06 ruling makes the honest-unset row's backlink "
+        "conditional on that ladder being INDEPENDENT, so this changes the "
+        "ruling's premise and must be re-routed, not patched")

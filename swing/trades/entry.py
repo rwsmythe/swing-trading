@@ -519,9 +519,24 @@ def _record_entry_inner(
     # read true and the code did not hold it.  What makes the claim honest is
     # that `derived_origin` is re-read under the reservation, so the value the
     # guard judges is the value the row is written with.
+    #
+    # AND IT FIRES ON THE ORDINARY PATH ONLY (RD, ruled 2026-08-25).  The
+    # condition was `not latched.admitted`, and `recognised_but_underivable`
+    # IS a not-admitted state -- so an entry whose mandate the ladder
+    # RECOGNISED and REFUSED was blocked, and no row was written.  That is the
+    # `0036:26-38` inversion: **cohort bookkeeping never blocks a
+    # money-bearing entry.**  A refusal here is about the LABEL, never about
+    # the ENTRY, so `recognised_but_underivable` is not-admitted AND must pass
+    # through to the honest-unset row.  One clause too wide, the same class
+    # this arc has already paid for twice.
+    #
+    # CASE 37c IS UNAFFECTED and is what proves the guard still bites: an
+    # UNMATCHED order id leaves BOTH flags false, so the ordinary path runs
+    # and the guard refuses exactly as the route does today.
     if (
         reserve
         and not latched.admitted
+        and not latched.recognised_but_underivable
         and req.pattern_evaluation_id is not None
         and derived_origin == "manual_off_pipeline"
     ):

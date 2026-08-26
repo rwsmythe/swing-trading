@@ -234,26 +234,25 @@ def test_a_recognised_and_refused_entry_passes_through_the_route_case_37(
     here.  See the module docstring: both a route rejection and a service
     refusal render the same 400, and the spy is what distinguishes them.
 
-    MEASURED DOWNSTREAM OUTCOME, RECORDED AND DELIBERATELY NOT ASSERTED.
-    End to end this request currently returns **400 carrying the PE-anchor
-    message, with NO row written**: the route defers (this test's claim), and
-    `record_entry`'s RELOCATED guard then refuses, because its condition is
-    "latch resolution did not admit" and `recognised_but_underivable` is a
-    not-admitted state.
+    THE DOWNSTREAM OUTCOME WAS REPORTED-NOT-PINNED HERE AND IS NOW RULED.
+    This docstring previously recorded that end to end the request returned
+    400 with the PE-anchor message and NO row written -- the route deferred,
+    and `record_entry`'s relocated guard then refused because its condition
+    was "did not admit" and `recognised_but_underivable` is a not-admitted
+    state.  The plan specified the opposite at two sites (S5.2 outcome (c),
+    S3.7 lens row 43), and the reconciliation was deliberately left to a
+    ruling rather than cemented by whichever test was written first.
 
-    THE PLAN SPECIFIES THE OPPOSITE END STATE AT TWO SITES -- S5.2's outcome
-    (c) ("pass through, do NOT reject ... the service's correct answer is the
-    honest-unset row") and S3.7 lens row 43 ("the route must NOT reject it, or
-    the service never writes the honest-unset row").  Reconciling them is a
-    ONE-LINE change to task 9's guard (fire on the ORDINARY path only, which
-    still refuses case 37c) and it collides with `22A-R4-06`, the open
-    measurement-semantics question about whether an honest-unset row may keep
-    a `pattern_evaluation_id` backlink at all.
-
-    So the outcome is REPORTED rather than pinned: asserting it here would
-    cement a contested reading in the test suite, and asserting the opposite
-    would ship an unruled behaviour change.  Whichever way it is ruled, the
-    ruling gets its own test.
+    **RD RULED IT 2026-08-25: the guard fires on the ORDINARY path only.**
+    Grounds: cohort bookkeeping never blocks a money-bearing entry -- the
+    refusal is about the LABEL, never about the ENTRY.  The ruling's own tests
+    live where the guard does, in
+    `tests/trades/test_22a_task9_entry_wiring.py`
+    (`test_a_recognised_and_refused_entry_is_written_not_refused` and the
+    `22A-R4-06` backlink pair).  This test's claim is UNCHANGED -- it is about
+    the ROUTE reaching the service -- and the paragraph is rewritten rather
+    than deleted because a stale "currently returns 400" would read true while
+    describing a behaviour the ruling replaced.
     """
     cfg, cfg_path = seeded_db
     _, pipeline_run_id = _build_route_world(
