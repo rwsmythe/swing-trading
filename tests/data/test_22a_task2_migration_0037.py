@@ -689,10 +689,24 @@ def test_an_existing_correction_row_survives_the_migration_as_last_word(
 
 def test_a_latch_ladder_row_with_no_citation_is_refused(conn) -> None:
     """The paired-NULL rule: the tier a row claims and the evidence it carries
-    may not disagree."""
+    may not disagree.
+
+    THE PLANTED ROW TARGETS A SECOND TRADE, and that is not cosmetic.  Copying
+    the seeded row onto its OWN trade_id collides with
+    ``ux_provenance_corrections_trade``, so the statement is refusable on two
+    independent grounds and the test would be asserting whichever BEFORE INSERT
+    trigger SQLite happened to fire first -- an order SQLite documents as
+    UNDEFINED.  Since ``trg_pc_no_replace`` landed it fires first in practice,
+    which is how this surfaced.  Retargeting the row makes it otherwise
+    insertable, so the citation-graph refusal is the ONLY one available and the
+    assertion means what it says.
+    """
     ids = _seed_correction(conn)
+    other = build_cadl_case(conn, ticker="ZZTOP")
     with pytest.raises(sqlite3.IntegrityError, match="citation graph"):
-        _insert_correction(conn, ids, admission_tier="latch_ladder")
+        _insert_correction(
+            conn, ids, admission_tier="latch_ladder",
+            trade_id=other["trade_id"], entry_fill_id=other["fill_id"])
 
 
 # ---------------------------------------------------------------------------
@@ -1251,3 +1265,248 @@ def test_a_SECOND_link_on_a_DIFFERENT_validity_row_still_INSERTS(conn) -> None:
     conn.commit()
     assert conn.execute(
         "SELECT COUNT(*) FROM latch_order_mandate_links").fetchone()[0] == 2
+
+
+# ---------------------------------------------------------------------------
+# THE REPLACE-BYPASS SWEEP REACHES TWO MORE TABLES (22A-R3-11 + the
+# CHARC-directed latch_order_intents probe, both VERIFIED BY EXECUTION here
+# before either trigger was written).
+#
+# NO CASE ID: neither table is a plan case.  ``provenance_corrections`` is
+# Demand C's audit table of record and ``latch_order_intents`` is the ledger
+# the minting trigger fires from -- 22-A's whole evidence chain rests on the
+# OII validity row.  Both carry no_update + no_delete and NO no_replace, each
+# with TWO conflict targets (a rowid PK and a UNIQUE), which is the same shape
+# this migration already repaired for ``candidates`` and for its own link
+# table.
+#
+# EVERY TABLE BELOW GETS BOTH DIRECTIONS.  A barrier proven only by refusals is
+# not proven: a guard one clause too wide blocks the production writer, and on
+# ``latch_order_intents`` the production writer's own conflict path is exactly
+# what a blanket guard changes.  So each table gets an ACCEPTED baseline driven
+# through its PRODUCTION writer, and the refusals are varied out of it.
+# ---------------------------------------------------------------------------
+def _pc_replace_payload(conn: sqlite3.Connection, row_id: int, **over):
+    cols = [r[1] for r in conn.execute(
+        "PRAGMA table_info(provenance_corrections)")]
+    vals = list(conn.execute(
+        "SELECT * FROM provenance_corrections "
+        "WHERE provenance_correction_id = ?", (row_id,)).fetchone())
+    payload = dict(zip(cols, vals, strict=True))
+    payload.update(over)
+    return payload, ", ".join(payload), ", ".join("?" * len(payload))
+
+
+@pytest.mark.parametrize("verb", ["INSERT OR REPLACE", "REPLACE"])
+@pytest.mark.parametrize("target", ["rowid_pk", "unique_trade"])
+def test_a_conflicting_insert_on_provenance_corrections_aborts(
+        conn, verb: str, target: str) -> None:
+    """22A-R3-11, reproduced then closed.
+
+    MEASURED before the trigger existed, on a fresh v37 fixture at the DEFAULT
+    ``recursive_triggers=0``: the direct UPDATE and DELETE are both blocked by
+    the 0036 append-only triggers, and ``INSERT OR REPLACE`` then rewrote
+    ``correction_reason`` on the live-shaped row with BOTH of those triggers
+    present and UNFIRED.  REPLACE's implicit DELETE does not fire a DELETE
+    trigger unless ``PRAGMA recursive_triggers`` is ON, and this repo never
+    turns it on.
+
+    BOTH conflict targets are exercised, because guarding one leaves the other
+    as a live REPLACE path -- the same half-swept shape as the bypass itself.
+    """
+    _assert_default_pragma(conn)
+    ids = _seed_correction(conn)
+    row_id = ids["row_id"]
+    before = conn.execute(
+        "SELECT provenance_correction_id, correction_reason "
+        "FROM provenance_corrections").fetchall()
+    over = {"correction_reason": "REWRITTEN BY REPLACE"}
+    if target == "unique_trade":
+        # collide ONLY on ux_provenance_corrections_trade, with the PK left to
+        # SQLite -- the shape that MOVES the audit row's own id
+        over["provenance_correction_id"] = None
+    payload, names, holes = _pc_replace_payload(conn, row_id, **over)
+    with pytest.raises(sqlite3.IntegrityError) as exc:
+        conn.execute(
+            f"{verb} INTO provenance_corrections ({names}) VALUES ({holes})",
+            tuple(payload.values()))
+    assert "trg_pc_no_replace" in str(exc.value)
+    assert conn.execute(
+        "SELECT provenance_correction_id, correction_reason "
+        "FROM provenance_corrections").fetchall() == before
+
+
+def test_the_production_correction_writer_still_appends(conn) -> None:
+    """THE ACCEPTED BASELINE, through the PRODUCTION service.
+
+    ``insert_provenance_correction`` issues a PLAIN INSERT and
+    ``correct_cohort_provenance`` refuses a second correction per trade at its
+    own ladder, so the trigger must never see a production conflict.  This is
+    the direction a refusal-only test set cannot establish, and it runs through
+    the real writer rather than a synthetic statement because the property
+    under test is that PRODUCTION still writes.
+    """
+    from swing.trades.cohort_provenance_correction import (
+        correct_cohort_provenance,
+    )
+
+    first = _seed_correction(conn)
+    second = build_cadl_case(conn, ticker="ZZTOP")
+    if conn.in_transaction:
+        conn.commit()
+    correct_cohort_provenance(
+        conn,
+        trade_id=second["trade_id"],
+        cited_candidate_id=second["candidate_id"],
+        cited_recommendation_id=second["daily_recommendation_id"],
+        reason="the ordinary append, on a DIFFERENT trade",
+    )
+    trades = {r[0] for r in conn.execute(
+        "SELECT trade_id FROM provenance_corrections")}
+    assert trades == {first["trade_id"], second["trade_id"]}
+
+
+@pytest.mark.parametrize(
+    "verb,target",
+    [("INSERT OR REPLACE", "rowid_pk"),
+     ("REPLACE", "rowid_pk"),
+     ("REPLACE", "unique_key")],
+)
+def test_a_conflicting_insert_on_latch_order_intents_aborts(
+        conn, verb: str, target: str) -> None:
+    """The CHARC-directed probe, reproduced then closed.
+
+    MEASURED before the trigger existed, on a fresh v37 fixture at the DEFAULT
+    pragma: a ``place`` intent with no minted link is fully REPLACE-exposed on
+    BOTH targets -- ``framework_limit_price`` rewritten 18.89 -> 999.99 through
+    the rowid PK, and a bare REPLACE colliding on ``UNIQUE(idempotency_key)``
+    additionally MOVED ``intent_id`` 1 -> 2.  ``trg_loi_no_update`` and
+    ``trg_loi_no_delete`` were present and unfired for every one.
+
+    THE FIXTURE IS THE UNLINKED SHAPE DELIBERATELY.  A row a link CITES is
+    blocked by ``latch_order_mandate_links``' ON DELETE RESTRICT FK -- the
+    INCIDENTAL protection this migration's own header warns about at
+    ``candidates``: it covers the post-acceptance population and leaves the
+    pre-acceptance one exposed.  Three of the five live intent rows are
+    unlinked ``place`` rows.  A test blocked by that FK proves nothing about
+    THIS guard, so the fixture asserts the link count is zero first.
+    """
+    _assert_default_pragma(conn)
+    cid = seed_fire(conn)
+    pid = insert_intent(conn, place_row(cid))
+    assert conn.execute(
+        "SELECT COUNT(*) FROM latch_order_mandate_links").fetchone()[0] == 0
+    cols = [r[1] for r in conn.execute(
+        "PRAGMA table_info(latch_order_intents)")]
+    vals = list(conn.execute(
+        "SELECT * FROM latch_order_intents WHERE intent_id = ?", (pid,)
+    ).fetchone())
+    payload = dict(zip(cols, vals, strict=True))
+    payload["framework_limit_price"] = 999.99
+    if target == "unique_key":
+        payload["intent_id"] = None
+    with pytest.raises(sqlite3.IntegrityError) as exc:
+        conn.execute(
+            f"{verb} INTO latch_order_intents ({', '.join(payload)}) "
+            f"VALUES ({', '.join('?' * len(payload))})",
+            tuple(payload.values()))
+    assert "trg_loi_no_replace" in str(exc.value)
+    assert conn.execute(
+        "SELECT intent_id, framework_limit_price FROM latch_order_intents"
+    ).fetchall() == [(pid, 18.89)]
+
+
+def test_the_production_intent_writer_still_appends_and_still_replays(
+        conn) -> None:
+    """THE ACCEPTED BASELINE, through ``record_intent`` itself.
+
+    TWO properties, and the second is what makes the blanket guard safe on this
+    table.  ``record_intent``'s ladder is SELECT-first: a REPLAY is answered by
+    step 1 and never reaches the INSERT, so the guard never sees it.  Without
+    that, a conflict-scoped trigger here would be exactly the "one clause too
+    wide" failure -- on this table the append path IS the production path.
+    """
+    from swing.data.models import LatchOrderIntent
+    from swing.data.repos.latch_order_intents import record_intent
+
+    cid = seed_fire(conn)
+    intent = LatchOrderIntent(intent_id=None, **place_row(cid))
+    first = record_intent(conn, intent=intent)
+    assert first.intent_id is not None
+    replayed = record_intent(conn, intent=intent)
+    assert replayed.intent_id == first.intent_id       # step 1, not the guard
+    second = record_intent(conn, intent=LatchOrderIntent(
+        intent_id=None, **place_row(cid, idempotency_key="key-place-2")))
+    assert second.intent_id != first.intent_id         # the ordinary append
+    assert conn.execute(
+        "SELECT COUNT(*) FROM latch_order_intents").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize(
+    "trigger", ["trg_pc_no_replace", "trg_loi_no_replace"])
+def test_the_two_new_barrier_messages_are_legible(conn, trigger: str) -> None:
+    """CHARC's CONDITION 2, asserted as CONTENT and never as a byte-string.
+
+    A byte-comparison against a pinned literal passes on a message that names
+    nothing, which is the failure mode legibility exists to prevent.
+    """
+    row = conn.execute(
+        "SELECT sql, tbl_name FROM sqlite_master "
+        "WHERE type = 'trigger' AND name = ?", (trigger,)).fetchone()
+    assert row is not None, f"{trigger} is not installed"
+    body, tbl = row
+    assert trigger in body, "the message must name the GUARD"
+    assert "22-A" in body, "the message must name the ARC"
+    assert "reversibility header" in body, "the message must name the RECOVERY"
+    assert "INSERT OR REPLACE" in body, "the message must name what it refuses"
+    assert tbl == {
+        "trg_pc_no_replace": "provenance_corrections",
+        "trg_loi_no_replace": "latch_order_intents",
+    }[trigger]
+
+
+def test_the_lost_race_no_op_survives_the_intents_barrier(conn) -> None:
+    """THE COMPOSITION, and it is the property the barrier's design rests on.
+
+    ``record_intent``'s step 1 SELECT answers an ordinary replay, so the test
+    above proves only that the guard is not reached on the COMMON path.  The
+    contract ``record_intent`` actually pins is the LOST RACE -- both requests
+    missing step 1 -- and that path DOES reach the INSERT.  MEASURED before the
+    companion change: under a conflict-scoped ``BEFORE INSERT`` barrier the
+    bare ``ON CONFLICT(idempotency_key) DO NOTHING`` ABORTS, because a BEFORE
+    INSERT trigger fires before conflict resolution and cannot see which
+    resolution algorithm the statement carries.
+
+    The race is simulated the same way the repo's own test simulates it -- by
+    making the step-1 read miss exactly once -- rather than by hand-writing the
+    statement, because the property under test is that the PRODUCTION writer
+    survives the barrier, and a synthetic statement would not see a divergence
+    in how the real writer spells it.
+    """
+    from swing.data.models import LatchOrderIntent
+    from swing.data.repos import latch_order_intents as repo
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' "
+        "AND name = 'trg_loi_no_replace'").fetchone()[0] == 1
+    cid = seed_fire(conn)
+    intent = LatchOrderIntent(intent_id=None, **place_row(cid))
+    winner = repo.record_intent(conn, intent=intent)
+
+    calls = {"n": 0}
+    real = repo.get_intent_by_key
+
+    def _miss_once(conn_, *, idempotency_key):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None                     # pretend step 1 missed
+        return real(conn_, idempotency_key=idempotency_key)
+
+    repo.get_intent_by_key = _miss_once
+    try:
+        loser = repo.record_intent(conn, intent=intent)
+    finally:
+        repo.get_intent_by_key = real
+    assert loser.intent_id == winner.intent_id
+    assert conn.execute(
+        "SELECT COUNT(*) FROM latch_order_intents").fetchone()[0] == 1

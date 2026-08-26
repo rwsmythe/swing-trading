@@ -111,12 +111,29 @@ def record_intent(
       1. SELECT by `idempotency_key` -- FOUND means REPLAY, return the existing
          row. The SELECT-first idempotency discipline: the terminal-state read
          precedes the write.
-      2. `INSERT ... ON CONFLICT(idempotency_key) DO NOTHING`. This is an
-         INSERT-time NO-OP, **NOT** `INSERT OR REPLACE` -- no DELETE, no new PK,
-         no cascade, so the append-only property holds.
+      2. `INSERT ... SELECT ... WHERE NOT EXISTS(<key>)
+         ON CONFLICT(idempotency_key) DO NOTHING`. This is an INSERT-time
+         NO-OP, **NOT** `INSERT OR REPLACE` -- no DELETE, no new PK, no
+         cascade, so the append-only property holds.
       3. re-SELECT by key and return THAT row. This covers the LOST RACE: two
          requests can both miss step 1, and the loser returns the winner's row
          rather than surfacing an IntegrityError.
+
+    WHY STEP 2 CARRIES A `WHERE NOT EXISTS` PRE-FILTER AS WELL AS THE UPSERT
+    CLAUSE (22-A, migration 0037).  `trg_loi_no_replace` is a CONFLICT-SCOPED
+    `BEFORE INSERT` barrier that closes a MEASURED `INSERT OR REPLACE` bypass
+    of `trg_loi_no_delete` (REPLACE's implicit DELETE does not fire DELETE
+    triggers at the default `PRAGMA recursive_triggers=OFF`).  A `BEFORE
+    INSERT` trigger fires BEFORE conflict resolution and SQLite gives it no way
+    to see which resolution algorithm the statement carries, so it cannot
+    distinguish `DO NOTHING` -- which deletes nothing -- from `REPLACE`, which
+    deletes the conflicting row.  MEASURED: a bare `ON CONFLICT ... DO NOTHING`
+    on a present key ABORTS under that barrier.  The pre-filter makes the
+    lost-race path insert ZERO ROWS instead of presenting a conflict, so the
+    barrier is never reached and step 3 returns the winner's row exactly as
+    before.  The `ON CONFLICT` clause is RETAINED rather than replaced: it
+    still documents and still expresses the no-op intent, and dropping it would
+    leave the statement's contract resting on the pre-filter alone.
     """
     existing = get_intent_by_key(conn, idempotency_key=intent.idempotency_key)
     if existing is not None:
@@ -124,8 +141,12 @@ def record_intent(
     placeholders = ",".join("?" * len(_INSERT_COLS))
     conn.execute(
         f"INSERT INTO latch_order_intents ({', '.join(_INSERT_COLS)}) "
-        f"VALUES ({placeholders}) ON CONFLICT(idempotency_key) DO NOTHING",
-        tuple(getattr(intent, name) for name in _INSERT_COLS),
+        f"SELECT {placeholders} "
+        f"WHERE NOT EXISTS (SELECT 1 FROM latch_order_intents "
+        f"WHERE idempotency_key = ?) "
+        f"ON CONFLICT(idempotency_key) DO NOTHING",
+        (*(getattr(intent, name) for name in _INSERT_COLS),
+         intent.idempotency_key),
     )
     stored = get_intent_by_key(conn, idempotency_key=intent.idempotency_key)
     if stored is None:  # pragma: no cover - defensive

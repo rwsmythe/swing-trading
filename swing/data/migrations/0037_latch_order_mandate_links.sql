@@ -29,6 +29,21 @@
 --
 --     DROP TRIGGER trg_candidates_no_replace;
 --
+-- The other conflict-scoped INSERT barriers this migration installs -- each on
+-- an append-only table whose 0033/0036/S3 DELETE trigger REPLACE was measured
+-- to bypass -- are retired one statement each:
+--
+--     DROP TRIGGER trg_loml_no_replace;   -- latch_order_mandate_links
+--     DROP TRIGGER trg_loi_no_replace;    -- latch_order_intents
+--     DROP TRIGGER trg_pc_no_replace;     -- provenance_corrections
+--
+-- NOTE the asymmetry, because it decides what a drop COSTS. Dropping either
+-- candidates barrier mechanically halts structural admission (the reader's
+-- body check sees it). Dropping any of these THREE does not: they guard
+-- append-only ledgers the reader does not introspect, so their loss is silent
+-- and the PROCEDURAL half -- a drop happens only inside a NEW numbered
+-- migration -- is the whole record.
+--
 -- A DROP ENDS the proven guarantee rather than falsifying it, so ANY DROP MUST
 -- ITSELF BE RECORDED: it is performed ONLY inside a NEW numbered migration,
 -- which is the record. That is the procedural half.
@@ -304,6 +319,80 @@ WHEN EXISTS (SELECT 1 FROM latch_order_mandate_links
               WHERE (NEW.link_id IS NOT NULL AND link_id = NEW.link_id)
                  OR validity_intent_id = NEW.validity_intent_id)
 BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loml_no_replace: latch_order_mandate_links is append-only. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE) would DELETE the existing link, bypassing trg_loml_no_delete, and rewrite the frozen values the admission proof rests on. One acceptance mints one link and it is never replaced. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
+
+-- ============================================================================
+-- 3b. THE REPLACE BYPASS ON latch_order_intents -- the LEDGER the minting
+--     trigger fires from (Codex 22A-R3-11's sibling; the probe CHARC directed,
+--     VERIFIED BY EXECUTION 2026-08-25).
+--
+-- 0033 gives this table trg_loi_no_update and trg_loi_no_delete and NO
+-- no_replace, which is the same shape this migration already repaired one
+-- table over. It matters more here than anywhere else in the file: the
+-- acceptance row IS what the minting trigger fires from and what a link's
+-- evidence cites, so 22-A's whole admission proof rests on it.
+--
+-- MEASURED at production settings (recursive_triggers default OFF), on a
+-- `place` intent with NO minted link:
+--
+--   control UPDATE / DELETE          -> BLOCKED by 0033's two triggers
+--   INSERT OR REPLACE on the rowid PK-> SUCCEEDS: framework_limit_price
+--                                       rewritten 18.89 -> 999.99
+--   REPLACE on UNIQUE(idempotency_key)
+--                                    -> SUCCEEDS and MOVES intent_id 1 -> 2
+--
+-- both barrier triggers present, canonical, and UNFIRED.
+--
+-- ONE THING INCIDENTALLY PROTECTS THE WRONG HALF, exactly as it does for
+-- `candidates`, and it must not be mistaken for a defence: once a link cites a
+-- row, latch_order_mandate_links' ON DELETE RESTRICT FKs block both REPLACE
+-- paths. So the FK covers the POST-acceptance population -- and leaves every
+-- `place` intent BEFORE its acceptance fully exposed. That is the window that
+-- matters, because the place row carries the framework's own prepared-order
+-- derivation and the validity row's parent pointer, and THREE of the five live
+-- intent rows are unlinked `place` rows.
+--
+-- BOTH CONFLICT TARGETS ARE SCOPED -- the rowid PK and UNIQUE(idempotency_key).
+-- Guarding one leaves the other live, which is the half-swept shape of the
+-- bypass itself.
+--
+-- THE PRODUCTION WRITER NEEDED A COMPANION CHANGE, and this is the ONE place
+-- this barrier differs from `candidates`. record_intent (swing/data/repos/
+-- latch_order_intents.py) issued
+-- "INSERT ... VALUES (...) ON CONFLICT(idempotency_key) DO NOTHING" -- the
+-- INSERT-time no-op that covers its documented LOST RACE, pinned by
+-- test_a_lost_race_returns_the_winners_row_without_an_integrity_error.
+-- MEASURED: a conflict-scoped BEFORE INSERT trigger ABORTS that statement,
+-- because a BEFORE INSERT trigger fires BEFORE conflict resolution and SQLite
+-- offers NO way for it to see which resolution algorithm the statement carries
+-- -- so it cannot distinguish DO NOTHING (which deletes nothing) from REPLACE
+-- (which deletes the conflicting row). On `candidates` this never arose:
+-- insert_candidates issues a plain INSERT.
+--
+-- THE REPAIR IS IN THE WRITER, NOT IN THE BARRIER, so the barrier stays
+-- blanket over BOTH conflict targets rather than being narrowed to fit.
+-- record_intent's step 2 now reads
+--
+--   INSERT INTO latch_order_intents (...) SELECT ?,?,...
+--    WHERE NOT EXISTS (SELECT 1 FROM latch_order_intents
+--                       WHERE idempotency_key = ?)
+--      ON CONFLICT(idempotency_key) DO NOTHING
+--
+-- so the lost-race path inserts ZERO ROWS instead of presenting a conflict:
+-- the barrier is never reached and step 3's re-SELECT returns the winner's row
+-- exactly as before. The ON CONFLICT clause is RETAINED, not replaced. BOTH
+-- pre-existing repo tests -- the lost-race contract and the trace-callback pin
+-- asserting the executed SQL still carries ON CONFLICT(idempotency_key) DO
+-- NOTHING and no OR REPLACE -- pass UNMODIFIED, which is the evidence that the
+-- observable contract did not move. A narrower barrier was the alternative and
+-- was REJECTED: it would have had to leave one of the two conflict targets
+-- live, and UNIQUE(idempotency_key) is the target measured to MOVE intent_id.
+-- ============================================================================
+CREATE TRIGGER trg_loi_no_replace BEFORE INSERT ON latch_order_intents
+WHEN EXISTS (SELECT 1 FROM latch_order_intents
+              WHERE (NEW.intent_id IS NOT NULL AND intent_id = NEW.intent_id)
+                 OR idempotency_key = NEW.idempotency_key)
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loi_no_replace: latch_order_intents is append-only. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing intent, bypassing trg_loi_no_delete at the default PRAGMA recursive_triggers=OFF, reusing its intent_id and rewriting the ledger row the minting trigger fires from and the link evidence cites. A correction is a NEW row under a NEW idempotency_key; a replay is answered by record_intent SELECT-first. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
 
 -- ============================================================================
 -- 4. THE MINTING TRIGGER, and the BACKFILL.
@@ -1133,6 +1222,53 @@ FOR EACH ROW WHEN NOT (
 BEGIN
     SELECT RAISE(ABORT, 'provenance_corrections is APPEND-ONLY: the only permitted UPDATE is the FK-driven nulling of entry_fill_id or risk_policy_id_at_correction. V1 records provenance ONCE per trade and there is no re-correction path.');
 END;
+
+
+-- ============================================================================
+-- THE REPLACE BYPASS ON provenance_corrections (Codex 22A-R3-11, VERIFIED BY
+-- EXECUTION 2026-08-25 -- the FOURTH confirmed member of the family and the
+-- one on Demand C's own audit table of record).
+--
+-- 0036 gives this table an append-only UPDATE trigger and an append-only
+-- DELETE trigger and NO no_replace. MEASURED at production settings
+-- (recursive_triggers default OFF) against the real correction shape, which
+-- carries TWO conflict targets -- provenance_correction_id INTEGER PRIMARY KEY
+-- AUTOINCREMENT and the UNIQUE index ux_provenance_corrections_trade:
+--
+--   control UPDATE      -> BLOCKED ("provenance_corrections is APPEND-ONLY")
+--   control DELETE      -> BLOCKED ("a correction cannot be deleted")
+--   INSERT OR REPLACE   -> SUCCEEDS: correction_reason rewritten in place
+--   bare REPLACE        -> SUCCEEDS: same
+--
+-- with BOTH append-only triggers present, canonical and UNFIRED. The DELETE
+-- trigger is bypassed because REPLACE's implicit DELETE does not fire DELETE
+-- triggers unless PRAGMA recursive_triggers is ON; it is OFF by default and
+-- this repo never turns it on.
+--
+-- WHY IT IS WORSE HERE THAN ALMOST ANYWHERE. This is the audit table of
+-- record: every row is a claim about WHY a trade's cohort keys were changed,
+-- and the whole point of 0036's two triggers is that such a claim can never be
+-- edited. A REPLACE through the UNIQUE additionally MOVES the correction's own
+-- id, which any citation of it then silently repoints -- the id-reuse class
+-- 0036's AUTOINCREMENT was chosen to avoid, arriving through the other door.
+--
+-- BOTH CONFLICT TARGETS ARE SCOPED. Guarding one leaves the other live.
+--
+-- NO PRODUCTION BEHAVIOUR CHANGE, and the search that establishes it:
+-- insert_provenance_correction (swing/data/repos/provenance_corrections.py) is
+-- the ONE writer and issues a PLAIN INSERT with no ON CONFLICT clause, and
+-- correct_cohort_provenance refuses a second correction per trade at its own
+-- SELECT-first ladder before reaching it. A case-insensitive grep for
+-- "insert or replace|replace into" across swing/ (*.py, *.sql) returns ZERO
+-- executable statements. The production writer is pinned by a test that drives
+-- correct_cohort_provenance on a SECOND trade and asserts the append lands.
+-- ============================================================================
+CREATE TRIGGER trg_pc_no_replace BEFORE INSERT ON provenance_corrections
+WHEN EXISTS (SELECT 1 FROM provenance_corrections
+              WHERE (NEW.provenance_correction_id IS NOT NULL
+                     AND provenance_correction_id = NEW.provenance_correction_id)
+                 OR trade_id = NEW.trade_id)
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_pc_no_replace: provenance_corrections is APPEND-ONLY. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE) would DELETE the existing correction, bypassing trg_provenance_corrections_append_only_delete at the default PRAGMA recursive_triggers=OFF, and rewrite or renumber the audit row of record for this trade. V1 records provenance ONCE per trade and has no re-correction path. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
 
 -- Schema version bump. MUST be the FINAL statement before COMMIT per the
 -- Phase 9 section A.0 precedent (a truncated transaction would leave the
