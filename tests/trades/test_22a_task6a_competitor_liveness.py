@@ -509,3 +509,107 @@ def test_the_subject_never_competes_with_itself(tmp_path) -> None:
         assert authorize(conn, cfg, order).admitted is True
     finally:
         conn.close()
+
+
+# ===========================================================================
+# 22A-R4-05 (second half) -- A PRE-BARRIER COMPETITOR IS UNPROVABLE, NEVER
+# PROVEN DEAD (CHARC, ruled 2026-08-25 -- the NARROW fix)
+# ===========================================================================
+def _mixed_barrier_world(tmp_path, name):
+    """A PRE-barrier rival and a POST-barrier subject, on ONE ticker.
+
+    The epoch boundary is stamped at migration time, so the ONLY way to build
+    a mixed world is to create the rival's fire on a v36 schema, migrate, and
+    create the subject's afterwards.  The boundary is then strictly between
+    them -- asserted below, because a fixture whose two fires landed on the
+    same side would make every assertion here vacuous.
+    """
+    root = tmp_path / name
+    root.mkdir(parents=True, exist_ok=True)
+    cfg = probe_cfg(root)
+    conn = open_connection(root / "swing.db")
+    run_migrations(conn, target_version=36)
+    rival = dead_rival_fire(conn, run_id=140)
+    conn.commit()
+    run_migrations(conn, target_version=37, backup_dir=root / "bak")
+    subject = seed_fire(conn)
+    conn.commit()
+    write_closes(cfg, BASE_CLOSES)
+    boundary = conn.execute(
+        "SELECT max_candidate_id_at_barrier FROM candidates_immutability_epoch"
+    ).fetchone()[0]
+    assert rival <= boundary < subject, (
+        f"the fixture put rival {rival} and subject {subject} on the same side "
+        f"of the barrier {boundary}; the case cannot then discriminate")
+    return conn, cfg, subject, rival
+
+
+def test_a_pre_barrier_competitor_is_unprovable_not_dead(tmp_path) -> None:
+    """CHARC's ruled NARROW fix, and the case that discriminates it.
+
+    The rival's mandate REALLY IS dead -- superseded on 2026-07-20, strictly
+    before the fill -- so the probe returns ``mandate_not_alive`` and rung 8
+    used to DROP it, admitting the subject.  But the rival's link is
+    ``pre_barrier_reconstructed``: its frozen pivot and stop were reconstructed
+    from a ``candidates`` row that was NOT immutable when they were read, so
+    "proven dead" rests on evidence AL-4 says does not exist.  Using a
+    pre-barrier mandate as PROOF is a wrong ACCEPTANCE, and the direction is
+    what makes it worth three lines.
+
+    PRE-FIX: ``admitted is True`` (the rival dropped as proven dead).
+    POST-FIX: ``competitor_liveness_unverifiable``.
+    Both values are stated so the assertion distinguishes.
+
+    THE CONTROL sits beside it: the byte-identical world with BOTH fires
+    post-barrier still ADMITS, so the refusal is the TIER's doing and not the
+    rival's mere presence.  Without that half a fix that refused every
+    competitor would pass.
+    """
+    conn, cfg, subject, rival = _mixed_barrier_world(tmp_path, "r405")
+    try:
+        subject_order = accept(conn, subject, key="r405-s",
+                               broker_order_id=BROKER_ORDER_ID)
+        rival_order = accept(conn, rival, key="r405-r",
+                             broker_order_id="r405-rival")
+        assert rival_order.freeze_tier == FREEZE_TIER_PRE_BARRIER
+        assert subject_order.freeze_tier == "live_at_acceptance"
+
+        # The rival's mandate is GENUINELY dead: that is what makes dropping
+        # it tempting, and it is why the case is about EVIDENCE rather than
+        # about liveness.
+        probe = mandate_alive_at(
+            conn, cfg, order=rival_order, fill_session=FILL_SESSION,
+            exclude_trade_ids=NO_EXCLUSIONS)
+        assert probe.decline_reason == "mandate_not_alive"
+        assert probe.clear_reason == "superseded"
+
+        verdict = authorize(conn, cfg, subject_order)
+        assert verdict.admitted is False
+        assert verdict.decline_reason == "competitor_liveness_unverifiable"
+    finally:
+        conn.close()
+
+
+def test_a_post_barrier_dead_competitor_is_still_dropped(tmp_path) -> None:
+    """THE CONTROL for the case above, in its own test so a failure names it.
+
+    ONE dimension differs -- both fires are created after the migration, so
+    both links mint ``live_at_acceptance`` -- and the subject ADMITS.  A fix
+    that treated EVERY dead competitor as unprovable would fail here while
+    passing the case it was written for.
+    """
+    conn, cfg, subject = build_world(tmp_path, "r405ctl")
+    try:
+        rival = dead_rival_fire(conn, run_id=140)
+        conn.commit()
+        subject_order = accept(conn, subject, key="r405c-s",
+                               broker_order_id=BROKER_ORDER_ID)
+        rival_order = accept(conn, rival, key="r405c-r",
+                             broker_order_id="r405c-rival")
+        assert rival_order.freeze_tier == "live_at_acceptance"
+        verdict = authorize(conn, cfg, subject_order)
+        assert verdict.admitted is True, verdict.decline_reason
+        assert verdict.probe_evidence["authorization"][
+            "rung8_competitor_link_ids"]["input"] == [rival_order.link_id]
+    finally:
+        conn.close()

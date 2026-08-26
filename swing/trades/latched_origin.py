@@ -822,7 +822,28 @@ def competitor_liveness_rung(
         if verdict.admitted:
             live.append(int(link.link_id))
         elif verdict.decline_reason == "mandate_not_alive":
-            continue  # PROVEN dead -- the only state that is dropped
+            # PROVEN DEAD IS THE ONLY STATE THAT IS DROPPED -- AND A
+            # PRE-BARRIER LINK CANNOT PROVE IT (Codex 22A-R4-05, CHARC ruled
+            # 2026-08-25).  `mandate_not_alive` rests on the frozen pivot and
+            # stop this link carries, and a `pre_barrier_reconstructed` link's
+            # pair was copied from a `candidates` row that was NOT immutable
+            # when it was read.  AL-4 says no structural evidence exists for a
+            # pre-barrier fire -- so treating one as PROOF of death, and
+            # admitting the subject beside it, is a WRONG ACCEPTANCE.
+            #
+            # NARROW BY RULING: a freeze-tier read on the competitor, three
+            # lines, fail-closed.  The reviewer's shared rung-2-to-9 classifier
+            # was DECLINED -- rung 8 already recurses through the probe, and a
+            # second recursive authority pass is a larger change than the hole.
+            if matches[0].freeze_tier != FREEZE_TIER_LIVE_AT_ACCEPTANCE:
+                log.warning(
+                    "22-A: competitor link %s on %s reads DEAD at %s, but its "
+                    "freeze tier is %r -- a pre-barrier link's frozen values "
+                    "cannot prove death, so its state is UNPROVABLE",
+                    link.link_id, order.ticker, fill_session,
+                    matches[0].freeze_tier)
+                return "competitor_liveness_unverifiable", scanned
+            continue
         else:
             log.warning(
                 "22-A: competitor link %s on %s is UNPROVABLE at %s (%s); the "
