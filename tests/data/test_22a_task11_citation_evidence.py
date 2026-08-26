@@ -26,6 +26,7 @@ trigger actually enforces rather than what the service happens to emit.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 
@@ -683,3 +684,83 @@ def test_a_cancel_of_THIS_order_still_rejects_the_citation(conn) -> None:
     payload = seed_latch_ladder_citation(conn)
     _cancel_naming(conn, payload, str(payload["cited_latch_broker_order_id"]))
     _assert_rejected(conn, payload)
+
+
+# ===========================================================================
+# 22A-R5-02 / 22A-R3-02 -- THE RUNG-9 TWIN RE-DERIVES
+#
+# The clause bound `input` to the link's STORED freeze_tier and then required
+# the literal. Both are statements about a stored value, so a link written
+# with the live tier for a PRE-barrier candidate satisfied every check and
+# inserted -- a structural admission for a fire AL-4 says has no evidence.
+# The Python ladder RE-DERIVES from the epoch boundary; the twin now does too.
+# ===========================================================================
+def test_a_forged_live_tier_on_a_PRE_barrier_candidate_is_rejected(
+        conn) -> None:
+    """THE EPOCH BOUNDARY IS RAISED so the CITED candidate falls at-or-below
+    it, and nothing else changes.
+
+    Every stored-value check still passes: the link's `freeze_tier` column
+    still reads `live_at_acceptance` and the blob's input still equals it.  A
+    twin that trusts the stored grade ACCEPTS.  A twin that re-derives from the
+    boundary REJECTS.
+
+    PRE-FIX: inserted.  POST-FIX: rejected.  Measured both ways.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    cited = int(payload["cited_candidate_id"])
+    with _epoch_boundary_lifted(conn):
+        conn.execute(
+            "UPDATE candidates_immutability_epoch "
+            "SET max_candidate_id_at_barrier = ? WHERE epoch_id = 1",
+            (cited,))
+    conn.commit()
+    # The stored grade is UNCHANGED and still says live_at_acceptance -- which
+    # is the whole point: the row is internally consistent and externally false.
+    assert conn.execute(
+        "SELECT freeze_tier FROM latch_order_mandate_links WHERE link_id = ?",
+        (payload["cited_latch_link_id"],)).fetchone()[0] == "live_at_acceptance"
+    _assert_rejected(conn, payload)
+
+
+def test_an_absent_epoch_row_rejects_the_citation(conn) -> None:
+    """FAIL-CLOSED, matching the reader's `boundary is None -> pre_barrier`.
+
+    An epoch row that has been deleted is not "no constraint"; it is the loss
+    of the only authority that can say a fire is post-barrier.  The reader
+    stamps PRE-barrier in that state, so the twin must reject rather than let
+    the `EXISTS` degrade into a pass.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    with _epoch_boundary_lifted(conn):
+        conn.execute("DELETE FROM candidates_immutability_epoch")
+    conn.commit()
+    _assert_rejected(conn, payload)
+
+
+@contextlib.contextmanager
+def _epoch_boundary_lifted(conn_: sqlite3.Connection):
+    """Drop the three epoch triggers, run the body, restore them VERBATIM.
+
+    The same technique as `tests/_candidates_barrier_helper.py`, one table
+    over: the epoch is immutable by its own three triggers, and the shapes
+    these cases need to plant are exactly the ones the barrier prevents from
+    ARISING.  The bodies are read out of `sqlite_master` and replayed, so this
+    helper can never drift from the migration -- it spells no trigger of its
+    own, and the admission reader compares each body against a pinned copy.
+    """
+    saved = conn_.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' "
+        "AND tbl_name = 'candidates_immutability_epoch'").fetchall()
+    assert saved, (
+        "no epoch triggers found; this helper would then be a no-op and both "
+        "cases above would pass for a reason unrelated to their clause")
+    for name, _sql in saved:
+        conn_.execute(f"DROP TRIGGER {name}")
+    try:
+        yield
+    finally:
+        for _name, sql in saved:
+            conn_.execute(sql)

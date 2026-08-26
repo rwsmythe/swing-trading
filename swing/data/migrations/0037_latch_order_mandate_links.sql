@@ -1061,6 +1061,32 @@ FOR EACH ROW WHEN NOT (
 
          -- RUNG 9 IS RD'S REFUSE-BY-DEFAULT, MADE STRUCTURAL IN THE AUDIT ROW.
          -- A latch_ladder correction may only cite a POST-barrier link.
+         --
+         -- AND THE TWIN RE-DERIVES RATHER THAN TRUSTING THE STORED GRADE
+         -- (Codex 22A-R5-02 / 22A-R3-02, CHARC ruled 2026-08-25). The clause
+         -- below binds `input` to `latch_order_mandate_links.freeze_tier` and
+         -- then requires the literal -- both of which are statements about a
+         -- STORED value. The Python ladder does not stop there: it RE-DERIVES
+         -- the tier at read time from the epoch boundary and requires BOTH to
+         -- say live_at_acceptance. A forged link written with the live tier
+         -- for a PRE-barrier candidate satisfied every stored-value check and
+         -- inserted -- a structural admission for a fire AL-4 says has no
+         -- evidence at all.
+         --
+         -- ONE COMPARISON closes it, ALONGSIDE the tier literal rather than
+         -- instead of it: the reader checks the GUARD is real, the trigger
+         -- checks the CLAIM is derivable, and both authorities are now
+         -- consulted where they live. The predicate MIRRORS
+         -- `freeze_tier_for_candidate`: STRICTLY GREATER THAN the boundary
+         -- (the boundary row itself is PRE-barrier, inherited finding
+         -- 22A-R9-02), and an ABSENT epoch row rejects -- which matches the
+         -- reader's `boundary is None -> pre_barrier` branch and fails closed.
+         --
+         -- WHAT IT STILL DOES NOT DO, stated rather than left to look
+         -- complete: it does not compare the barrier TRIGGER BODIES against
+         -- sqlite_master. That is R3-02's in-trigger body comparison, and it
+         -- is UNFIXED-NOT-REOPENED by the same ruling -- the reader owns the
+         -- guard-is-real question and a trigger cannot ask it cheaply.
          AND json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung9_stored_freeze_tier'), '$.input', '$.verdict') = '{}'
          AND json_extract(NEW.cited_latch_probe_json,
@@ -1073,6 +1099,9 @@ FOR EACH ROW WHEN NOT (
                  WHERE l.link_id = NEW.cited_latch_link_id)
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung9_stored_freeze_tier.input') = 'live_at_acceptance'
+         AND EXISTS (SELECT 1 FROM candidates_immutability_epoch e
+                     WHERE NEW.cited_candidate_id
+                           > e.max_candidate_id_at_barrier)
 
          -- THE FIVE ENVELOPE GUARDS, SEPARATELY ENUMERATED AND -- at CORRECTION
          -- time -- SQL-BOUND. Their inputs are operator-submitted at ENTRY, but
