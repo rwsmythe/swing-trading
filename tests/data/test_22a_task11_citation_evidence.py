@@ -626,3 +626,60 @@ def test_the_three_reachable_tie_reasons_are_all_accepted(conn) -> None:
             (reason,)).fetchone()[0] == 1, (
             f"the tie basis refused {reason!r}, which cases 28a-28c admit")
         conn.execute("DELETE FROM provenance_corrections")
+
+
+# ===========================================================================
+# 22A-R4-04 -- THE SQL TWIN IS ORDER-SCOPED TOO
+#
+# The service's rung 5 and the migration's rung-5 twin moved TOGETHER. A twin
+# encoding a DIFFERENT predicate from the reader is the same defect as a
+# missing twin; here the divergence would have authorized a correction that
+# then aborted at the INSERT, which is the worst of both.
+# ===========================================================================
+def _cancel_naming(conn_: sqlite3.Connection, payload: dict, order_id: str,
+                   *, when: str = "2026-08-11T09:00:00") -> None:
+    """A `cancel` intent through the PRODUCTION dataclass and repo.
+
+    Dated STRICTLY BEFORE the fill -- the position that kills -- so nothing but
+    the order-id binding can decide the verdict.
+    """
+    from swing.data.models import LatchOrderIntent
+    from swing.data.repos.latch_order_intents import record_intent
+
+    intent = LatchOrderIntent(
+        intent_id=None,
+        candidate_id=int(payload["cited_candidate_id"]),
+        evaluation_run_id=int(payload["cited_evaluation_run_id"]),
+        ticker="CADL",
+        detection_date="2026-08-11",
+        pipeline_run_id=None,
+        idempotency_key=f"cancel-{order_id}",
+        action_session_date="2026-08-11",
+        recorded_ts=when,
+        surface="latch_panel",
+        intent_kind="cancel",
+        actual_broker_order_id=order_id,
+    )
+    with conn_:
+        record_intent(conn_, intent=intent)
+
+
+def test_a_cancel_of_a_DIFFERENT_order_does_not_reject_the_citation(
+        conn) -> None:
+    """PRE-FIX the candidate-wide NOT EXISTS rejected this truthful row;
+    POST-FIX it inserts.  Both values are stated so the case distinguishes."""
+    payload = seed_latch_ladder_citation(conn)
+    _cancel_naming(conn, payload, "an-older-order")
+    _insert_payload(conn, payload)
+    assert conn.execute(
+        "SELECT admission_tier FROM provenance_corrections").fetchone() == (
+        "latch_ladder",)
+
+
+def test_a_cancel_of_THIS_order_still_rejects_the_citation(conn) -> None:
+    """THE CONTROL.  ONE dimension differs -- the cancel names the CITED order
+    -- and the trigger rejects.  Without it a twin that dropped the clause
+    entirely would pass the case above."""
+    payload = seed_latch_ladder_citation(conn)
+    _cancel_naming(conn, payload, str(payload["cited_latch_broker_order_id"]))
+    _assert_rejected(conn, payload)

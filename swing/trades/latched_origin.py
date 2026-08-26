@@ -252,7 +252,8 @@ AUTHORIZATION_CLAUSES: tuple[AuthorizationClause, ...] = (
     ),
     AuthorizationClause(
         "rung5_cancel_intent_id", SQL_BOUND, "integer", True,
-        "latch_order_intents cancel rows at-or-before the fill session",
+        "latch_order_intents cancel rows NAMING THIS broker order "
+        "at-or-before the fill session",
         "no cancellation of this broker order at-or-before the fill",
     ),
     AuthorizationClause(
@@ -974,23 +975,38 @@ def authorize_accepted_order(
             None if governing is None else governing[0])
         return _refuse("place_cycle_superseded", order)
 
-    # RUNG 5 -- CANCELLATION HISTORY.  Before the fill kills; ON the fill is
-    # UNORDERABLE and refuses rather than being counted either way; AFTER the
-    # fill is not consulted at all -- an implementation refusing on any cancel
-    # fails case 29d.
+    # RUNG 5 -- CANCELLATION HISTORY, AND A CANCEL NAMES ONE BROKER ORDER.
+    # Before the fill kills; ON the fill is UNORDERABLE and refuses rather than
+    # being counted either way; AFTER the fill is not consulted at all -- an
+    # implementation refusing on any cancel fails case 29d.
+    #
+    # THE SCAN IS ORDER-SCOPED, NOT CANDIDATE-SCOPED (Codex 22A-R4-04).  The
+    # model REQUIRES `actual_broker_order_id` on every cancel row -- *"there is
+    # no by-ticker cancel path"*, `swing/data/models.py`, and 0033 CHECKs it --
+    # so a candidate-wide scan makes the cancellation of an OLDER order on the
+    # same fire refuse a NEWER accepted one.  A place cycle can legitimately be
+    # placed, cancelled and re-placed; rung 4 already governs WHICH cycle is
+    # authoritative, and rung 5 asking a different question about a different
+    # order was the one clause too wide.
+    #
+    # BOTH HALVES MOVED TOGETHER: migration 0037's rung-5 twin carries the same
+    # binding.  Diverging them would let the service admit a row the trigger
+    # rejects -- a correction that authorizes and then aborts at the INSERT.
     cancel_before = conn.execute(
         "SELECT intent_id FROM latch_order_intents "
         " WHERE candidate_id = ? AND intent_kind = 'cancel' "
+        "   AND actual_broker_order_id = ? "
         "   AND date(recorded_ts) < ? ORDER BY intent_id LIMIT 1",
-        (order.candidate_id, fill_session.isoformat()),
+        (order.candidate_id, order.broker_order_id, fill_session.isoformat()),
     ).fetchone()
     if cancel_before is not None:
         return _refuse("order_cancelled", order)
     cancel_same_day = conn.execute(
         "SELECT intent_id FROM latch_order_intents "
         " WHERE candidate_id = ? AND intent_kind = 'cancel' "
+        "   AND actual_broker_order_id = ? "
         "   AND date(recorded_ts) = ? ORDER BY intent_id LIMIT 1",
-        (order.candidate_id, fill_session.isoformat()),
+        (order.candidate_id, order.broker_order_id, fill_session.isoformat()),
     ).fetchone()
     if cancel_same_day is not None:
         return _refuse("cancel_ordering_ambiguous", order)

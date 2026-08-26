@@ -993,9 +993,19 @@ FOR EACH ROW WHEN NOT (
                    AND date(x.recorded_ts) < NEW.entry_fill_session_date
                  ORDER BY x.recorded_ts DESC, x.intent_id DESC LIMIT 1)
 
-         -- NO CANCELLATION at-or-before the fill. The recorded input is JSON
-         -- null -- "none found" -- and the null is BOUND: the trigger asserts
-         -- there genuinely is none.
+         -- NO CANCELLATION OF *THIS BROKER ORDER* at-or-before the fill. The
+         -- recorded input is JSON null -- "none found" -- and the null is
+         -- BOUND: the trigger asserts there genuinely is none.
+         --
+         -- ORDER-SCOPED, NOT CANDIDATE-SCOPED (Codex 22A-R4-04). A cancel row
+         -- is REQUIRED by 0033's CHECK to name one broker order -- there is no
+         -- by-ticker cancel path -- so a candidate-wide NOT EXISTS rejects a
+         -- truthful citation whose fire had an OLDER order cancelled before
+         -- being re-placed. BOTH HALVES MOVED TOGETHER with the service's own
+         -- rung 5 (`swing/trades/latched_origin.py`); a twin that encoded a
+         -- DIFFERENT predicate from the reader is the same defect as a missing
+         -- twin, and here the divergence would authorize a correction that
+         -- then aborts at the INSERT.
          AND json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung5_cancel_intent_id'), '$.input', '$.verdict') = '{}'
          AND json_extract(NEW.cited_latch_probe_json,
@@ -1005,6 +1015,8 @@ FOR EACH ROW WHEN NOT (
          AND NOT EXISTS (SELECT 1 FROM latch_order_intents x
                          WHERE x.candidate_id = NEW.cited_candidate_id
                            AND x.intent_kind = 'cancel'
+                           AND x.actual_broker_order_id
+                               = NEW.cited_latch_broker_order_id
                            AND date(x.recorded_ts) <= NEW.entry_fill_session_date)
 
          -- NO OTHER TRADE HAS CONSUMED THIS ORDER. Order-linked, never

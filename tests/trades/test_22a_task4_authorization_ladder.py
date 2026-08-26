@@ -847,3 +847,71 @@ def test_seed_run_and_helpers_are_importable() -> None:
     silently drops a fixture helper fails here rather than in a later task."""
     assert callable(seed_run)
     assert callable(order_for_candidate)
+
+
+# ===========================================================================
+# 22A-R4-04 -- RUNG 5 IS ORDER-SCOPED. BOTH HALVES MOVED TOGETHER.
+# ===========================================================================
+def test_a_cancel_of_a_DIFFERENT_order_does_not_refuse(tmp_path) -> None:
+    """A cancel names ONE broker order (`swing/data/models.py`, 0033 CHECK).
+
+    A fire can legitimately be placed, cancelled and RE-PLACED, so the ledger
+    holds a cancel naming the OLD order beside a live acceptance of the new
+    one.  PRE-FIX rung 5 scanned by ``candidate_id`` alone and refused
+    ``order_cancelled``; POST-FIX it binds the cancel's own
+    ``actual_broker_order_id`` and ADMITS.  Both values are stated so the
+    assertion distinguishes.
+
+    The cancel is dated STRICTLY BEFORE the fill -- the position that kills --
+    so nothing but the order-id binding can be what admits it.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "r404")
+    try:
+        order = _accept(conn, candidate_id)
+        _cancel(conn, candidate_id, session=ACCEPT_SESSION,
+                recorded_ts=f"{ACCEPT_SESSION.isoformat()}T09:00:00",
+                broker_order_id="an-older-order")
+        verdict = _authorize(conn, cfg, order)
+        assert verdict.admitted is True, verdict.decline_reason
+        assert verdict.probe_evidence["authorization"][
+            "rung5_cancel_intent_id"]["input"] is None
+    finally:
+        conn.close()
+
+
+def test_a_cancel_of_THIS_order_still_refuses_after_the_narrowing(
+        tmp_path) -> None:
+    """THE CONTROL, in its own test so a failure names it.
+
+    ONE dimension differs from the case above -- the cancel names THIS order --
+    and the refusal returns.  Without this half a narrowing that dropped rung 5
+    entirely would pass.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "r404ctl")
+    try:
+        order = _accept(conn, candidate_id)
+        _cancel(conn, candidate_id, session=ACCEPT_SESSION,
+                recorded_ts=f"{ACCEPT_SESSION.isoformat()}T09:00:00",
+                broker_order_id=BROKER_ORDER_ID)
+        assert _authorize(conn, cfg, order).decline_reason == "order_cancelled"
+    finally:
+        conn.close()
+
+
+def test_a_same_session_cancel_of_a_DIFFERENT_order_does_not_refuse(
+        tmp_path) -> None:
+    """The unorderable branch is narrowed by the SAME binding.
+
+    A cancel stamped ON the fill session for a DIFFERENT order is not this
+    order's ambiguity.  PRE-FIX ``cancel_ordering_ambiguous``; POST-FIX admits.
+    Its control is case 29c, which is unchanged and still refuses.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "r404b")
+    try:
+        order = _accept(conn, candidate_id)
+        _cancel(conn, candidate_id, session=FILL_SESSION,
+                recorded_ts=f"{FILL_SESSION.isoformat()}T09:00:00",
+                broker_order_id="an-older-order")
+        assert _authorize(conn, cfg, order).admitted is True
+    finally:
+        conn.close()
