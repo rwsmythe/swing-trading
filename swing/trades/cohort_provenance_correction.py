@@ -1584,6 +1584,7 @@ class CohortProvenanceCorrectionPreview:
     cited_latch_validity_intent_id: int | None = None
     cited_latch_place_intent_id: int | None = None
     cited_latch_broker_order_id: str | None = None
+    cited_latch_admission_basis: str | None = None
 
 
 def _reason_or_refuse(reason: Any) -> str:
@@ -1609,6 +1610,12 @@ class _LatchCitation:
     broker_order_id: str
     fire_candidate_id: int
     probe_json: str
+    # THE PROBE'S VERDICT, carried to the operator surface (S2.7). `armed`
+    # means the mandate was alive with no terminal at all;
+    # `subject_fill_wins_same_session_tie` means a terminal landed ON the fill
+    # session and the fill won the tie. Those are DIFFERENT admissions and an
+    # operator reading only "latch_ladder" cannot tell them apart.
+    admission_basis: str | None = None
 
 
 def _resolve_latch_citation(
@@ -1706,14 +1713,33 @@ def _resolve_latch_citation(
         raise _refuse(
             f"trade {trade_id}'s latch admission carries no order; the "
             "citation cannot be recorded.")
+    evidence = latched.probe_evidence or {}
     return _LatchCitation(
         link_id=int(order.link_id),
         validity_intent_id=int(order.validity_intent_id),
         place_intent_id=int(order.place_intent_id),
         broker_order_id=str(order.broker_order_id),
         fire_candidate_id=int(order.candidate_id),
-        probe_json=json.dumps(latched.probe_evidence, sort_keys=True),
+        probe_json=json.dumps(evidence, sort_keys=True),
+        admission_basis=evidence.get("admission_basis"),
     )
+
+
+def _admission_basis_of(raw: Any) -> str | None:
+    """The stored blob's `$.admission_basis`, or ``None`` on any unreadable
+    shape. A READ surface must degrade rather than raise: the row is already
+    written and the trigger already vouched for it, so a parse failure here is
+    a display question, not an integrity one."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        blob = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(blob, dict):
+        return None
+    basis = blob.get("admission_basis")
+    return basis if isinstance(basis, str) else None
 
 
 @dataclass(frozen=True)
@@ -1959,6 +1985,8 @@ def preview_cohort_provenance_correction(
             None if latch is None else latch.place_intent_id),
         cited_latch_broker_order_id=(
             None if latch is None else latch.broker_order_id),
+        cited_latch_admission_basis=(
+            None if latch is None else latch.admission_basis),
     )
 
 
@@ -2009,6 +2037,8 @@ def _preview_from_existing(trade: Any, existing: Any) -> CohortProvenanceCorrect
         cited_latch_validity_intent_id=existing.cited_latch_validity_intent_id,
         cited_latch_place_intent_id=existing.cited_latch_place_intent_id,
         cited_latch_broker_order_id=existing.cited_latch_broker_order_id,
+        cited_latch_admission_basis=_admission_basis_of(
+            existing.cited_latch_probe_json),
     )
 
 
@@ -2028,6 +2058,7 @@ class CohortProvenanceCorrectionResult:
     cited_latch_validity_intent_id: int | None = None
     cited_latch_place_intent_id: int | None = None
     cited_latch_broker_order_id: str | None = None
+    cited_latch_admission_basis: str | None = None
 
 
 def _compose_reason(
@@ -2184,6 +2215,8 @@ def _correct_cohort_provenance_inner(
                 existing.cited_latch_validity_intent_id),
             cited_latch_place_intent_id=existing.cited_latch_place_intent_id,
             cited_latch_broker_order_id=existing.cited_latch_broker_order_id,
+            cited_latch_admission_basis=_admission_basis_of(
+                existing.cited_latch_probe_json),
         )
 
     anchored = auth.anchored
@@ -2299,6 +2332,8 @@ def _correct_cohort_provenance_inner(
             None if latch is None else latch.place_intent_id),
         cited_latch_broker_order_id=(
             None if latch is None else latch.broker_order_id),
+        cited_latch_admission_basis=(
+            None if latch is None else latch.admission_basis),
     )
 
 

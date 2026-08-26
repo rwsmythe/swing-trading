@@ -2372,6 +2372,41 @@ def journal_correct_entry_date_cmd(
 COHORT_FIELD_ORDER: tuple[str, ...] = PROVENANCE_CORRECTED_FIELDS
 
 
+def _echo_admission_tier(view) -> None:
+    """Print WHICH AUTHORITY admitted this correction, and its citation.
+
+    Spelled once and called from BOTH the dry run and the apply, so the two
+    surfaces cannot drift apart about what they show the operator -- the same
+    reason `COHORT_FIELD_ORDER` exists one line up.
+
+    The tier is DETECTED from the record and never chosen (plan S2.7): under
+    `latch_ladder` the citation is FORCED to the fire an append-only broker
+    acceptance created, so there is nothing for an operator to select. The
+    four ids and the probe's admission basis are printed because a correction
+    whose authority is invisible at the surface is one he cannot audit.
+
+    ASCII only -- Windows cp1252 stdout crashes on the arrows and section
+    signs that would otherwise be natural here.
+    """
+    tier = getattr(view, "admission_tier", "last_word")
+    click.echo(f"  admission tier                {tier}")
+    if tier == "last_word":
+        click.echo(
+            "                                (the framework's LAST WORD "
+            "before the fill; no accepted latch order)")
+        return
+    click.echo(
+        f"  cited latch link              {view.cited_latch_link_id} "
+        f"(broker order {view.cited_latch_broker_order_id})")
+    click.echo(
+        f"  cited latch intents           place "
+        f"{view.cited_latch_place_intent_id}, validity "
+        f"{view.cited_latch_validity_intent_id}")
+    click.echo(
+        f"  probe admission basis         "
+        f"{getattr(view, 'cited_latch_admission_basis', None)}")
+
+
 @journal_group.command("correct-cohort-provenance")
 @click.argument("trade_id", type=int)
 @click.option(
@@ -2455,6 +2490,11 @@ def journal_correct_cohort_provenance_cmd(
                     cited_candidate_id=cited_candidate_id,
                     cited_recommendation_id=cited_recommendation_id,
                     reason=reason,
+                    # 22-A: the config is what lets the ladder run at all.
+                    # WITHOUT it the resolver returns `no_config` and every
+                    # correction silently reports the `last_word` tier -- a
+                    # true statement about a probe that never happened.
+                    cfg=cfg,
                 )
             except CohortProvenanceCorrectionError as exc:
                 raise click.ClickException(str(exc)) from exc
@@ -2509,6 +2549,7 @@ def journal_correct_cohort_provenance_cmd(
                 f"  derivation rule               "
                 f"{preview.derivation_rule_version}"
             )
+            _echo_admission_tier(preview)
             click.echo("")
             click.echo("  field                        before -> after")
             for fname in COHORT_FIELD_ORDER:
@@ -2533,6 +2574,7 @@ def journal_correct_cohort_provenance_cmd(
                 cited_candidate_id=cited_candidate_id,
                 cited_recommendation_id=cited_recommendation_id,
                 reason=reason,
+                cfg=cfg,
             )
         except CohortProvenanceCorrectionError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -2561,6 +2603,7 @@ def journal_correct_cohort_provenance_cmd(
             f"  cited candidates {result.cited_candidate_id} + "
             f"daily_recommendations {result.cited_daily_recommendation_id}"
         )
+        _echo_admission_tier(result)
         for fname in COHORT_FIELD_ORDER:
             click.echo(
                 f"  {fname:<28} {result.pre_values[fname]!r} -> "

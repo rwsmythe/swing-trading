@@ -97,6 +97,18 @@ def test_help_is_still_available_even_though_it_is_not_in_params(
 
 
 def test_the_service_signature_accepts_no_cohort_VALUE() -> None:
+    """SIX parameters, and not one of them can carry a cohort key.
+
+    `cfg` joined the manifest with 22-A (task 11): it is the CONFIG HANDLE the
+    latch ladder needs to run its derivation at all, and it carries no value
+    this surface writes -- without it the resolver returns `no_config` and
+    every correction reports the `last_word` tier, which would be a true
+    statement about a probe that never happened.
+
+    The manifest is asserted as an EQUALITY rather than a set of absences on
+    purpose: a value parameter added under any spelling fails here, which a
+    grep for `--label` could never establish.
+    """
     import inspect
 
     from swing.trades.cohort_provenance_correction import (
@@ -105,7 +117,7 @@ def test_the_service_signature_accepts_no_cohort_VALUE() -> None:
     names = set(inspect.signature(correct_cohort_provenance).parameters)
     assert names == {
         "conn", "trade_id", "cited_candidate_id", "cited_recommendation_id",
-        "reason",
+        "reason", "cfg",
     }
     # `applied_at` is DELIBERATELY absent: an audit time a caller can supply
     # is an audit time a caller can falsify, and this table exists to hold
@@ -299,3 +311,65 @@ def test_all_command_output_is_ascii(
     reader = runner.invoke(
         main, ["--config", str(cfg), "journal", "provenance-corrections"])
     reader.output.encode("ascii")
+
+
+# ------------------------------------------------- 22-A: the ADMISSION TIER
+
+
+def test_both_surfaces_print_the_admission_tier(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The operator sees WHICH AUTHORITY admitted the correction.
+
+    On a trade with no accepted latch order the tier is `last_word` and the
+    line says what that means, so an operator reading the output never has to
+    infer the authority from the absence of a citation.  Both surfaces print
+    it from ONE helper, which is why the dry run and the apply cannot drift.
+    """
+    runner, cfg, db = _setup(tmp_path, monkeypatch)
+    ids = _seed(db)
+    dry = runner.invoke(main, _cmd(cfg, ids, "--reason", REASON, "--dry-run"))
+    assert dry.exit_code == 0, dry.output
+    assert "admission tier                last_word" in dry.output
+    assert "no accepted latch order" in dry.output
+
+    applied = runner.invoke(main, _cmd(cfg, ids, "--reason", REASON))
+    assert applied.exit_code == 0, applied.output
+    assert "admission tier                last_word" in applied.output
+
+
+def test_the_latch_tier_prints_its_full_citation() -> None:
+    """The `latch_ladder` branch, over the PRODUCTION result dataclass.
+
+    Building the whole probe world through the CLI would test the fixture; what
+    this pins is that the printer emits the four ids and the probe's admission
+    basis for a real `CohortProvenanceCorrectionResult` carrying them -- and
+    that the output is ASCII, which is the failure `CliRunner` hides.
+    """
+    from swing.cli import _echo_admission_tier
+    from swing.trades.cohort_provenance_correction import (
+        CohortProvenanceCorrectionResult,
+    )
+
+    result = CohortProvenanceCorrectionResult(
+        correction_id=1, trade_id=25, already_applied=False,
+        cited_candidate_id=12284, cited_daily_recommendation_id=7,
+        pre_values={}, applied_values={}, correction_reason="r",
+        follow_up_command="swing journal provenance-corrections 25",
+        admission_tier="latch_ladder",
+        cited_latch_link_id=3,
+        cited_latch_validity_intent_id=2,
+        cited_latch_place_intent_id=1,
+        cited_latch_broker_order_id="1007523377009",
+        cited_latch_admission_basis="armed",
+    )
+    runner = CliRunner()
+    with runner.isolation() as (out, _err, _):
+        _echo_admission_tier(result)
+        text = out.getvalue().decode("utf-8")
+    text.encode("ascii")
+    assert "admission tier                latch_ladder" in text
+    assert "cited latch link              3 (broker order 1007523377009)" in text
+    assert "cited latch intents           place 1, validity 2" in text
+    assert "probe admission basis         armed" in text
+    assert "no accepted latch order" not in text
