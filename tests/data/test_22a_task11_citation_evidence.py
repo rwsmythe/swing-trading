@@ -1301,3 +1301,122 @@ def test_a_malformed_SUBJECT_envelope_aborts_legibly(conn) -> None:
     conn.commit()
     with pytest.raises(sqlite3.IntegrityError, match="citation graph"):
         _insert_payload(conn, payload)
+
+
+# ===========================================================================
+# 22A-R9-03 -- THE TRIGGER IMPLEMENTS THE CANONICAL-ENVELOPE RULE TOO
+#
+# The self-sweep widened the SERVICE to refuse an envelope the two domains
+# read differently (SS-1/SS-4).  A twin that did not move with it would leave
+# the trigger WEAKER THAN ITS READER on exactly the class the sweep is about:
+# a RAW correction, which never touches the service, could still select its
+# authority by SQLite's FIRST duplicate key and write a permanently wrong
+# attribution into the audit table of record.
+#
+# "Both halves move together or neither" -- the arc's own rule at 22A-R3-15
+# and 22A-R4-04, applied to a reader this dispatch itself widened.
+# ===========================================================================
+_NON_CANONICAL_ENVELOPES = {
+    "duplicate order-id keys": (
+        '{{"schwab_order_id": "{order}", "schwab_order_id": "other", '
+        '"schwab_instrument_symbol": "{ticker}"}}'),
+    "duplicate order-id keys, reversed": (
+        '{{"schwab_order_id": "other", "schwab_order_id": "{order}", '
+        '"schwab_instrument_symbol": "{ticker}"}}'),
+    "a padded order id": (
+        '{{"schwab_order_id": "  {order}  ", '
+        '"schwab_instrument_symbol": "{ticker}"}}'),
+    "a padded symbol": (
+        '{{"schwab_order_id": "{order}", '
+        '"schwab_instrument_symbol": "  {ticker}  "}}'),
+    "duplicate symbol keys": (
+        '{{"schwab_order_id": "{order}", "schwab_instrument_symbol": "ZZZZ", '
+        '"schwab_instrument_symbol": "{ticker}"}}'),
+    "a numeric order id": (
+        '{{"schwab_order_id": 1002937461, '
+        '"schwab_instrument_symbol": "{ticker}"}}'),
+    "a blank symbol": (
+        '{{"schwab_order_id": "{order}", "schwab_instrument_symbol": "   "}}'),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_NON_CANONICAL_ENVELOPES))
+def test_a_correction_on_a_NON_CANONICAL_envelope_is_refused(
+        conn, label) -> None:
+    """MEASURED PRE-FIX, and only ONE of the seven flipped.
+
+    `duplicate order-id keys` -- whose FIRST value is the cited order -- was
+    ACCEPTED by the trigger; the other six were ALREADY refused by the
+    existing order-id and symbol bindings.  So six of these cases are
+    REGRESSION GUARDS rather than discriminators, and saying so is the point:
+    a parametrized family that passes under both paths would otherwise read as
+    seven proofs when it carries one.
+
+    Each shape leaves the citation graph otherwise intact -- the baseline
+    inserts first, and only the fill's envelope changes -- so where the
+    verdict does flip, the mutation is what flipped it.
+    """
+    from tests.trades._cohort_provenance_fixtures import CADL_TICKER
+
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    raw = _NON_CANONICAL_ENVELOPES[label].format(
+        order=payload["cited_latch_broker_order_id"], ticker=CADL_TICKER)
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
+        (raw, payload["entry_fill_id_at_correction"]))
+    conn.commit()
+    _assert_rejected(conn, payload)
+
+
+def test_an_ABSENT_envelope_does_not_trip_the_canonicality_clause(
+        conn) -> None:
+    """THE OVER-REFUSAL CONTROL, and it is the ordinary case.
+
+    Every pre-22-A fill carries no envelope at all, and the ``last_word``
+    ladder must keep working for them.  A canonicality clause that refused an
+    absent or unreadable envelope would block every correction this surface
+    was built for.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    conn.execute("DELETE FROM provenance_corrections")
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = NULL, "
+        "fill_origin = 'operator_typed' WHERE fill_id = ?",
+        (payload["entry_fill_id_at_correction"],))
+    conn.commit()
+    last_word = dict(payload)
+    last_word.update(admission_tier="last_word", cited_latch_link_id=None,
+                     cited_latch_validity_intent_id=None,
+                     cited_latch_place_intent_id=None,
+                     cited_latch_broker_order_id=None,
+                     cited_latch_probe_json=None)
+    _insert_payload(conn, last_word)
+    assert conn.execute(
+        "SELECT admission_tier FROM provenance_corrections").fetchone() == (
+        "last_word",)
+
+
+def test_a_NESTED_key_of_the_same_name_does_not_trip_the_clause(conn) -> None:
+    """The wrong-REFUSAL twin the service already carries (22A-R9-06).
+
+    ``json_each`` iterates the ROOT only -- measured -- so a nested field of
+    the same name is not a duplicate here either, and the two domains agree
+    about that too.
+    """
+    from tests.trades._cohort_provenance_fixtures import CADL_TICKER
+
+    payload = seed_latch_ladder_citation(conn)
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
+        (json.dumps({
+            "schwab_order_id": payload["cited_latch_broker_order_id"],
+            "schwab_instrument_symbol": CADL_TICKER,
+            "raw": {"schwab_order_id": "an unrelated nested field"}}),
+         payload["entry_fill_id_at_correction"]))
+    conn.commit()
+    _insert_payload(conn, payload)
+    assert conn.execute(
+        "SELECT admission_tier FROM provenance_corrections").fetchone() == (
+        "latch_ladder",)

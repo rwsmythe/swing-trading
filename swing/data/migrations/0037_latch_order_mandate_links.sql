@@ -637,6 +637,66 @@ FOR EACH ROW WHEN NOT (
                   AND t.ticker = (SELECT ca.ticker FROM candidates ca
                                   WHERE ca.id = NEW.cited_candidate_id))
 
+    -- ============== THE SUBJECT FILL'S ENVELOPE READS THE SAME IN BOTH
+    -- DOMAINS (Codex 22A-R9-03; the twin of self-sweep SS-1/SS-4).
+    --
+    -- Python's `json.loads` keeps the LAST duplicate key and the service
+    -- STRIPS; SQLite's `json_extract` keeps the FIRST and strips nothing --
+    -- both MEASURED. The SERVICE now refuses such an envelope outright
+    -- (`envelope_not_canonical`), so WITHOUT this clause the trigger would be
+    -- WEAKER THAN ITS READER on exactly the class the reader was widened for:
+    -- a RAW correction, which never touches the service, could select its
+    -- authority by SQLite's first duplicate key and write a permanently wrong
+    -- attribution into the audit table of record. Both halves move together
+    -- or neither (22A-R3-15, 22A-R4-04) -- and this reader was widened in
+    -- THIS dispatch, so the twin moves in it too.
+    --
+    -- MEASURED HONESTLY, seven shapes: only ONE of them -- duplicate
+    -- `schwab_order_id` keys whose FIRST value is the cited order -- reached
+    -- the INSERT before this clause. The other six were already refused by
+    -- the order-id and symbol bindings, so their cases are REGRESSION GUARDS
+    -- rather than discriminators, and are labelled as such.
+    --
+    -- IT MIRRORS `envelope_is_canonical` CLAUSE FOR CLAUSE: a duplicate ROOT
+    -- key on either guarded key, a value that is neither `null` nor `text`
+    -- (json_extract returns it while the service reads absence, and TEXT
+    -- affinity can still match a stored identity), or a text value that is
+    -- padded or blank (the service strips it and SQL does not).
+    --
+    -- ABSENT, UNREADABLE AND NON-OBJECT ENVELOPES PASS, and that is the
+    -- ordinary case rather than laxity: every SQL site reads them as NULL
+    -- under its own `json_valid` CASE and the service reader returns None, so
+    -- both domains read absence and there is nothing to disagree about. Every
+    -- pre-22-A fill is in exactly that state, and a clause refusing them
+    -- would block the `last_word` ladder this surface was built for.
+    --
+    -- `json_each` ITERATES THE ROOT ONLY (measured), which is what makes a
+    -- nested field of the same name not a duplicate here -- the same
+    -- wrong-REFUSAL 22A-R9-06 removed from the service.
+    --
+    -- THE `CASE WHEN json_valid(...)` FORM, NOT AN AND CHAIN (22A-R3-12,
+    -- measured): an AND chain does not protect a JSON function from a
+    -- malformed value, and this clause reads the SUBJECT FILL'S envelope,
+    -- which is exactly the source 22A-R7-04 had to move for the same reason.
+    AND NOT EXISTS (
+        SELECT 1 FROM fills f
+         WHERE f.fill_id = NEW.entry_fill_id_at_correction
+           AND f.schwab_source_value_json IS NOT NULL
+           AND CASE WHEN json_valid(f.schwab_source_value_json) THEN (
+                   json_type(f.schwab_source_value_json) = 'object'
+               AND EXISTS (
+                   SELECT 1 FROM json_each(f.schwab_source_value_json) k
+                    WHERE k.key IN ('schwab_order_id',
+                                    'schwab_instrument_symbol')
+                      AND ((SELECT count(*)
+                              FROM json_each(f.schwab_source_value_json) k2
+                             WHERE k2.key = k.key) > 1
+                           OR k.type NOT IN ('null', 'text')
+                           OR (k.type = 'text'
+                               AND (k.value <> trim(k.value)
+                                    OR length(trim(k.value)) = 0)))))
+                    ELSE 0 END)
+
     -- ===================== 22-A: THE TIER AND ITS CITATION ==================
     AND COALESCE((
         -- 'last_word': ALL FIVE citation columns NULL. The tier a row claims
@@ -1366,7 +1426,7 @@ FOR EACH ROW WHEN NOT (
     ), 0)
 )
 BEGIN
-    SELECT RAISE(ABORT, 'provenance_corrections: the cited rows exist but do not form the citation graph this correction asserts (candidate->run, recommendation->run/ticker/kind, pipeline->run, status-history->hypothesis, registry name, fill->trade, trade<->candidate ticker, and -- for admission_tier latch_ladder -- link->candidate/order/intents, the accepted validity row and its place parent, and a closed VERSIONED probe-evidence blob whose every bound field matches its source and whose $.authorization records one passing entry per refusal-capable clause). The citation is STRUCTURAL: a row may not claim a contemporaneous pair it does not have, nor an admission whose evidence it cannot produce.');
+    SELECT RAISE(ABORT, 'provenance_corrections: the cited rows exist but do not form the citation graph this correction asserts (candidate->run, recommendation->run/ticker/kind, pipeline->run, status-history->hypothesis, registry name, fill->trade, trade<->candidate ticker, and -- for admission_tier latch_ladder -- link->candidate/order/intents, the accepted validity row and its place parent, and a closed VERSIONED probe-evidence blob whose every bound field matches its source and whose $.authorization records one passing entry per refusal-capable clause). The citation is STRUCTURAL: a row may not claim a contemporaneous pair it does not have, nor an admission whose evidence it cannot produce. A correction is also refused when the Schwab envelope on the anchoring fill carries a duplicate, padded, blank or non-string schwab_order_id or schwab_instrument_symbol: Python and SQLite read such a document DIFFERENTLY, so the authority it names is ambiguous and no citation may rest on it.');
 END;
 
 -- ============================================================================
