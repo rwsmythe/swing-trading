@@ -349,6 +349,17 @@ DERIVATION_RULE_HISTORY: tuple[tuple[str, str], ...] = (
     # written under the old rule must keep saying so.
     ("2026-08-25.1",
      "7a2b15f5994c2402e7795076d1992cd5380ce4cd99ccf9db76116f254c198f36"),
+    # 2026-08-26.1 -- Codex 22A-R3-07. The INVERTED-WINDOW check moved out of
+    # the fill-specific `gate` and into the shared derivation's unconditional
+    # half. It is a statement about the RECORD -- a pipeline run that finished
+    # before its own evaluation run started bounds nothing, whoever is asking
+    # -- and the LATCH path passes no gate, so it was deriving labels from an
+    # inverted window in silence. This is a REAL rule change, not hash noise:
+    # the derivation now refuses a state it previously accepted on one of its
+    # two callers. Appended, never edited; correction row 1 keeps
+    # '2026-08-13.3' and the drift reader compares against the STORED value.
+    ("2026-08-26.1",
+     "324b514c45aa68c51f1b04714736c3e85082254353fe06c8490fde538ac65e53"),
 )
 DERIVATION_RULE_VERSION: str = DERIVATION_RULE_HISTORY[-1][0]
 DERIVATION_RULE_SOURCE_SHA256: str = DERIVATION_RULE_HISTORY[-1][1]
@@ -1356,6 +1367,20 @@ def derive_cohort_keys_for_fire(
         _require_naive_datetime(
             bound.snapshot["started_ts"],
             what=f"pipeline run {bound.pipeline_run_id}'s started_ts")
+    # THE INVERTED-WINDOW CHECK IS UNCONDITIONAL (Codex 22A-R3-07). It was
+    # classified as fill-specific and put in the `gate`, so the LATCH path --
+    # which passes `gate=None`, having no fill-vs-record ordering question --
+    # skipped it entirely. But a pipeline run that FINISHED before its own
+    # evaluation run STARTED is incoherent about the RECORD, not about the
+    # fill: the window it bounds is inverted whoever is asking, and a latch
+    # admission would have derived its label from it in silence.
+    if finished_parsed < run_ts_parsed:
+        raise _refuse(
+            f"pipeline run {bound.pipeline_run_id} finished "
+            f"({bound.finished_ts}) BEFORE evaluation run {run_id} started "
+            f"({run_ts_parsed.isoformat()}); the window is inverted and cannot "
+            "bound anything."
+        )
     if gate is not None:
         gate(bound, finished_parsed)
 
@@ -1467,14 +1492,11 @@ def _derive(
     at exactly the point they always did.
     """
     def _fill_gates(bound, finished_parsed) -> None:
-        run_id = int(anchored.cited.evaluation_run_id)
-        if finished_parsed < anchored.run_ts_parsed:
-            raise _refuse(
-                f"pipeline run {bound.pipeline_run_id} finished "
-                f"({bound.finished_ts}) BEFORE evaluation run {run_id} started "
-                f"({anchored.run_ts_raw}); the window is inverted and cannot bound "
-                "anything."
-            )
+        # THE INVERTED-WINDOW CHECK USED TO LIVE HERE and has MOVED into the
+        # shared derivation's unconditional half (Codex 22A-R3-07): it is a
+        # statement about the RECORD, so the latch path -- which passes no
+        # gate -- must run it too. What remains here is the ONE check that is
+        # genuinely about the FILL.
         # RUNG 14a -- THE SAME-SESSION CREATION-ORDER GATE (Codex R1 Major 1).
         #
         # `<=` is the Director's ruling and is NOT relitigated here. His REASON for

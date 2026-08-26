@@ -96,7 +96,17 @@ def test_the_history_gained_an_appended_entry_rather_than_an_edited_one() -> Non
     assert ("2026-08-13.3",
             "8b994668acfdccf758bb1e050f1728cfddc7beed330406edb3a071b2819a14a4"
             ) in DERIVATION_RULE_HISTORY
-    assert DERIVATION_RULE_VERSION == "2026-08-25.1"
+    # Task 7's own entry must SURVIVE the next bump, which is the property this
+    # test is really about: 22A-R3-07 moved the inverted-window check into the
+    # shared derivation and appended '2026-08-26.1' rather than editing task
+    # 7's digest.  Asserting the HEAD by literal would have to move on every
+    # bump and would say nothing about append-only-ness, so the head is
+    # asserted to be the LAST element and task 7's entry to still be present.
+    assert ("2026-08-25.1",
+            "7a2b15f5994c2402e7795076d1992cd5380ce4cd99ccf9db76116f254c198f36"
+            ) in DERIVATION_RULE_HISTORY
+    assert DERIVATION_RULE_VERSION == DERIVATION_RULE_HISTORY[-1][0]
+    assert len(DERIVATION_RULE_HISTORY) >= 6
 
 
 def test_the_gate_is_a_parameter_so_the_refusal_ORDER_is_preserved() -> None:

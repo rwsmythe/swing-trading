@@ -517,3 +517,49 @@ def test_the_service_blob_survives_the_shipped_citation_trigger(
     assert row["admission_tier"] == "latch_ladder"
     # The trigger fired on INSERT; the row's presence IS the proof.
     assert isinstance(row["cited_latch_probe_json"], str)
+
+
+def test_an_inverted_window_refuses_on_the_LATCH_path_too(tmp_path) -> None:
+    """22A-R3-07: the inverted-window check is about the RECORD.
+
+    A pipeline run that FINISHED before its own evaluation run STARTED bounds
+    nothing, whoever is asking.  The check lived in the fill-specific `gate`,
+    and the latch path passes `gate=None` -- so PRE-FIX this correction
+    ADMITTED at `latch_ladder` and derived its label from an inverted window
+    in silence.  POST-FIX it refuses, and the message names the inversion.
+
+    The control is the SAME world through the last-word tier (`cfg=None`),
+    which always refused: without it, a fix that moved the check somewhere
+    unreachable could pass by breaking both paths for a different reason.
+    """
+    conn, cfg, ids = build_world(tmp_path, "r307")
+    run_ts = conn.execute(
+        "SELECT run_ts FROM evaluation_runs WHERE id = ?",
+        (ids["evaluation_run_id"],)).fetchone()[0]
+    conn.execute(
+        "UPDATE pipeline_runs SET finished_ts = '2026-08-10T17:00:00' "
+        "WHERE evaluation_run_id = ?", (ids["evaluation_run_id"],))
+    conn.commit()
+    assert run_ts > "2026-08-10T17:00:00", (
+        "the fixture must INVERT the window or the case pins nothing")
+
+    with pytest.raises(CohortProvenanceCorrectionError) as latch:
+        _apply(conn, cfg, ids)
+    # The latch path reports it as `keys_not_derivable`, which is the resolver's
+    # own name for "the shared derivation refused": `_cohort_keys_for_fire`
+    # catches any refusal so cohort bookkeeping can never block an ENTRY, and
+    # the CORRECTION path then refuses on the recognised-but-underivable
+    # verdict.  The inner message is on the WARNING record; what matters here
+    # is that the correction is REFUSED at all, which pre-fix it was not.
+    assert "keys_not_derivable" in str(latch.value)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM provenance_corrections").fetchone()[0] == 0
+
+    control, _unused, control_ids = build_world(tmp_path, "r307ctl")
+    control.execute(
+        "UPDATE pipeline_runs SET finished_ts = '2026-08-10T17:00:00' "
+        "WHERE evaluation_run_id = ?", (control_ids["evaluation_run_id"],))
+    control.commit()
+    with pytest.raises(CohortProvenanceCorrectionError) as last_word:
+        _apply(control, None, control_ids)
+    assert "inverted" in str(last_word.value)

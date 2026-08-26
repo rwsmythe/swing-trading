@@ -1284,3 +1284,40 @@ def test_the_pe_ladder_reads_nothing_from_the_latch_recognition_path() -> None:
         "RD's 22A-R4-06 ruling makes the honest-unset row's backlink "
         "conditional on that ladder being INDEPENDENT, so this changes the "
         "ruling's premise and must be re-routed, not patched")
+
+
+def test_an_inverted_window_gives_the_ENTRY_honest_unset_keys(tmp_path) -> None:
+    """22A-R3-07 at the grain where it actually costs something.
+
+    The inverted-window check lived in the correction path's fill-specific
+    `gate`, and the LATCH path passes `gate=None`.  On the CORRECTION path the
+    model's own validator caught the incoherence at the last moment (with a
+    bare ValueError rather than this surface's refusal); on the ENTRY path
+    there is no such net -- the row was WRITTEN, carrying the fire's three
+    cohort keys derived through a window that bounds nothing.
+
+    PRE-FIX: ``('pipeline_aplus', <candidate>, 'A+ baseline ...')``.
+    POST-FIX: ``('manual_off_pipeline', None, None)`` -- the honest-unset row,
+    because a refusal inside the shared derivation is `keys_not_derivable` and
+    cohort bookkeeping never blocks the entry itself.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "r307e")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    run_ts = conn.execute(
+        "SELECT run_ts FROM evaluation_runs WHERE id = 121").fetchone()[0]
+    inverted = run_ts[:11] + "17:00:00"
+    conn.execute(
+        "UPDATE pipeline_runs SET finished_ts = ? WHERE evaluation_run_id = 121",
+        (inverted,))
+    conn.commit()
+    assert run_ts > inverted, (
+        "the fixture must INVERT the window or the case pins nothing")
+    # THE INVERSION IS SMALL ON PURPOSE (thirty minutes, MEASURED).  A large
+    # one -- an epoch-old finished_ts -- makes the AS-OF registry find no
+    # covering interval and the derivation refuses for THAT reason instead, so
+    # the case would pass pre-fix and prove nothing.  My first version used
+    # '2000-01-01' and did exactly that; it was caught by running it against
+    # the un-fixed derivation rather than by reading it.
+
+    result = enter(conn, cfg, req())
+    assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
