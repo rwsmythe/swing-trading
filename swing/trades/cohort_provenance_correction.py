@@ -2121,7 +2121,14 @@ def _compose_reason(
         f"{anchored.cited.evaluation_run_id}, action session "
         f"{anchored.candidate_anchor}) confirmed by daily_recommendations row "
         f"{anchored.recommendation.id} (action session "
-        f"{anchored.recommendation_anchor}); both pre-date the authoritative "
+        # "NEITHER POST-DATES", NOT "BOTH PRE-DATE" (Codex 22A-R7-05). The
+        # admission predicate is `<=`: an anchor EQUAL to the fill session is
+        # admissible, because a session-N record is normally produced on the
+        # EVENING of session N-1. So a valid same-session correction stored
+        # prose claiming STRICT precedence beside frozen anchor columns showing
+        # equality -- a permanently false sentence in the audit narrative,
+        # which is the one thing this table exists to not contain.
+        f"{anchored.recommendation_anchor}); NEITHER post-dates the "
         f"entry fill {anchored.entry_fill.fill_id}'s session "
         f"{anchored.fill_session}. Hypothesis {derived.hypothesis_id} "
         f"({derived.hypothesis_name}) was 'active' over "

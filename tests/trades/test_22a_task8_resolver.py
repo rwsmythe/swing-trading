@@ -114,10 +114,20 @@ def test_no_config_and_no_order_id_decline_with_their_own_reasons_case_18(
     shared reason would tell an operator only that the ladder did not run, and
     the two have different remedies (pass the config; re-fetch the order).
 
-    NEITHER is ``recognised_but_underivable``: no link was recognised, so the
-    ordinary candidate/origin chain must still run.  That flag is what
-    SUPPRESSES it, and setting it here would write honest-unset keys for a
-    trade the framework knows nothing unusual about.
+    THE RECOGNITION FLAG DEPENDS ON WHETHER A LINK EXISTS, and this case USED
+    TO ASSERT OTHERWISE ON A LINKED WORLD (Codex 22A-R7-01).  It built a real
+    link, called the resolver with ``cfg=None``, and required the result to be
+    UNRECOGNISED -- which sent an order-bearing fill down the ordinary
+    current-candidate chain and enshrined `cfg` as a fail-open switch.  The
+    config is needed to DERIVE the fold, not to RECOGNISE the order; the
+    envelope read and the link lookup need none.
+
+    So BOTH worlds are asserted here, because the distinction between them is
+    the whole content of the flag:
+      * a link EXISTS + no config -> RECOGNISED and refused, so the row lands
+        honest-unset rather than carrying TODAY's candidate;
+      * NO link + no config -> NOT recognised, and the ordinary chain runs
+        exactly as it does on ``main`` -- which is what the LOCK is about.
     """
     conn, cfg, candidate_id = build_world(tmp_path, "case18")
     try:
@@ -125,7 +135,19 @@ def test_no_config_and_no_order_id_decline_with_their_own_reasons_case_18(
 
         no_cfg = resolve_latched_provenance(conn, None, _req())
         assert no_cfg.decline_reason == "no_config"
-        assert no_cfg.recognised_but_underivable is False
+        assert no_cfg.recognised_but_underivable is True, (
+            "an order-bearing fill whose link EXISTS must not fall through to "
+            "the ordinary chain merely because a caller omitted the config")
+
+        # THE OTHER WORLD, one dimension changed: an order id no link names.
+        unmatched = resolve_latched_provenance(
+            conn, None, _req(schwab_source_value_json=json.dumps(
+                {"schwab_order_id": "no-link-names-this",
+                 "schwab_instrument_symbol": TICKER})))
+        assert unmatched.decline_reason == "no_config"
+        assert unmatched.recognised_but_underivable is False, (
+            "with no link there is nothing unusual to record, so the ordinary "
+            "chain must still run -- the LOCK's own subject")
 
         no_key = resolve_latched_provenance(
             conn, cfg, _req(schwab_source_value_json=json.dumps(

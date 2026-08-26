@@ -419,14 +419,30 @@ def test_no_cfg_on_a_LINKED_fill_is_refused_by_the_trigger(tmp_path) -> None:
     where a caller cannot opt out of it, which is strictly better than a
     service-side check a second caller could forget.
 
-    PRE-FIX: a `last_word` row landed.  POST-FIX: `sqlite3.IntegrityError`
-    naming the citation graph, and nothing is written.
+    AND SINCE 22A-R7-01 THE SERVICE REFUSES FIRST, WHICH IS BETTER STILL.
+    The resolver now RECOGNISES the order before consulting the config, so a
+    linked fill with no config returns `recognised_but_underivable` and the
+    correction refuses with a legible message naming `no_config` -- rather
+    than authorizing and then aborting at the INSERT.  The schema belt is
+    still there and still load-bearing (it is what closes the case for any
+    RAW writer), and it is asserted separately below so a regression in either
+    layer is named by its own failure.
+
+    PRE-FIX: a `last_word` row landed.  POST-FIX: refused, nothing written.
     """
     conn, _unused, ids = build_world(tmp_path, "nocfglinked")
-    with pytest.raises(sqlite3.IntegrityError, match="citation graph"):
+    with pytest.raises(CohortProvenanceCorrectionError) as exc:
         _apply(conn, None, ids)
+    assert "no_config" in str(exc.value)
     assert conn.execute(
         "SELECT COUNT(*) FROM provenance_corrections").fetchone()[0] == 0
+
+    # THE SCHEMA BELT IS EXERCISED SEPARATELY, not duplicated here.
+    # `tests/data/test_22a_task11_citation_evidence.py`
+    # `::test_a_last_word_DOWNGRADE_on_a_linked_fill_is_rejected` plants the
+    # RAW row this service refusal would otherwise be the only guard against,
+    # so a regression in either layer is named by its own failure rather than
+    # hidden behind the other.
 
 
 def test_a_recognised_but_refused_mandate_refuses_the_correction(
@@ -559,9 +575,13 @@ def test_an_inverted_window_refuses_on_the_LATCH_path_too(tmp_path) -> None:
     ADMITTED at `latch_ladder` and derived its label from an inverted window
     in silence.  POST-FIX it refuses, and the message names the inversion.
 
-    The control is the SAME world through the last-word tier (`cfg=None`),
-    which always refused: without it, a fix that moved the check somewhere
-    unreachable could pass by breaking both paths for a different reason.
+    The control is the SAME world through the LAST-WORD tier -- and it is
+    reached by STRIPPING THE ENVELOPE, not by passing `cfg=None`.  Since
+    22A-R7-01 a linked fill with no config is RECOGNISED and refuses
+    `no_config` before the derivation ever runs, so a `cfg=None` control would
+    pass for a reason unrelated to the inverted window.  Without the control
+    at all, a fix that moved the check somewhere unreachable could pass by
+    breaking both paths for different reasons.
     """
     conn, cfg, ids = build_world(tmp_path, "r307")
     run_ts = conn.execute(
@@ -590,6 +610,9 @@ def test_an_inverted_window_refuses_on_the_LATCH_path_too(tmp_path) -> None:
     control.execute(
         "UPDATE pipeline_runs SET finished_ts = '2026-08-10T17:00:00' "
         "WHERE evaluation_run_id = ?", (control_ids["evaluation_run_id"],))
+    control.execute(
+        "UPDATE fills SET schwab_source_value_json = NULL WHERE fill_id = ?",
+        (control_ids["fill_id"],))
     control.commit()
     with pytest.raises(CohortProvenanceCorrectionError) as last_word:
         _apply(control, None, control_ids)

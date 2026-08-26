@@ -379,11 +379,17 @@ def record_entry(
     # =====================================================================
     from swing.trades.latched_origin import broker_order_id_from_envelope
 
-    _recognised_order_id = (
-        None if cfg is None
-        else broker_order_id_from_envelope(
-            getattr(req, "schwab_source_value_json", None))
-    )
+    # THE ORDER ID IS PARSED WHETHER OR NOT A CONFIG WAS SUPPLIED (Codex
+    # 22A-R7-01). Gating the PARSE on `cfg` meant an order-bearing request
+    # from a caller who omitted the config took no reservation, never
+    # consulted the link table, and ran the ordinary current-candidate chain
+    # -- a wrong ACCEPTANCE reachable by leaving one keyword off. The parse
+    # is a pure string read and costs no query, so LOCK clause (d) -- "no
+    # usable order id costs ZERO additional database queries" -- is untouched:
+    # its subject is a request with NO ORDER ID, and that request still takes
+    # the deferred `with conn:` exactly as before.
+    _recognised_order_id = broker_order_id_from_envelope(
+        getattr(req, "schwab_source_value_json", None))
     # THE TRIGGER IS "THE REQUEST CARRIES A USABLE ORDER ID", NEVER "THE
     # RECOGNITION FOUND A LINK" (plan S2.2 rule 3, review 22A-R3-01).  A
     # request whose preliminary answer was NO LINK can acquire a matching

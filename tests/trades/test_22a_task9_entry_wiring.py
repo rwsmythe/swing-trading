@@ -1367,3 +1367,94 @@ def test_every_production_record_entry_call_site_passes_cfg() -> None:
         f"the production record_entry manifest moved: {sites}. Two is the "
         f"measured count (the CLI and the web route); a third surface is a "
         f"decision, not a drive-by")
+
+
+def test_a_probe_INVARIANT_FAILURE_still_writes_the_entry(tmp_path) -> None:
+    """22A-R7-02: a probe malfunction must not block a broker fill.
+
+    `LatchProbeInvariantError` is raised DELIBERATELY at two points inside the
+    probe, and both sit AFTER the broad fail-soft handler around
+    `build_latch_derivation`.  Nothing between there and `record_entry` caught
+    a `RuntimeError`, so PRE-FIX the transaction rolled back and NO TRADE AND
+    NO FILL LANDED -- the `0036:26-38` inversion in its purest form, on the
+    two states whose own message says the COHORT PROBE malfunctioned.
+
+    POST-FIX the resolver contains it and the honest-unset row is written.
+    Both values are stated so the assertion distinguishes; the raise itself is
+    unchanged and its probe-grain tests still pin it, because that is how a
+    probe defect stays LOUD.
+
+    The invariant is forced by SUBSTITUTING the probe rather than by building
+    a world that reaches it: the two raise sites are guarded by conditions the
+    fold makes unreachable in a healthy fixture, which is exactly why they are
+    invariants.  What this case is about is the COMPOSITION -- who pays when
+    one fires -- and a substitute is the honest way to ask that.
+    """
+    import swing.trades.latched_origin as lo
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r702")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+
+    real = lo.authorize_accepted_order
+
+    def boom(*a, **kw):
+        raise lo.LatchProbeInvariantError(
+            "the probe believes its own inputs are incoherent")
+
+    lo.authorize_accepted_order = boom
+    try:
+        result = enter(conn, cfg, req())
+    finally:
+        lo.authorize_accepted_order = real
+
+    assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE trade_id = ?",
+        (result.trade_id,)).fetchone()[0] == 1, (
+        "the fill must land too: a blocked ENTRY and a blocked FILL are the "
+        "same money-bearing failure")
+
+
+def test_a_linked_fill_with_NO_CONFIG_records_honest_unset(tmp_path) -> None:
+    """22A-R7-01 at the PERSISTED-ROW grain.
+
+    `cfg=None` gated the ORDER-ID PARSE, so an order-bearing request from a
+    caller who omitted the config took no reservation, never consulted the
+    link table, and ran the ordinary current-candidate chain.  Where the
+    ticker is `aplus` in the latest run that writes TODAY's candidate for a
+    fill that demonstrably came from an accepted order -- silent-wrong, which
+    is the direction the governing asymmetry forbids.
+
+    PRE-FIX: `('pipeline_aplus', <today's candidate>, <a label>)`.
+    POST-FIX: `('manual_off_pipeline', None, None)`.
+
+    Its control is one function up: with NO link, `cfg=None` still runs the
+    ordinary chain byte-for-byte, which is the LOCK's own subject.
+    """
+    from tests._latch_probe_world_22a import seed_run
+    from tests.trades._cohort_provenance_fixtures import seed_pipeline_run
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r701")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    # TODAY's run carries the ticker as `aplus`, so the ordinary chain has a
+    # DIFFERENT answer to write. Without it both paths land
+    # `manual_off_pipeline` and the case cannot discriminate.
+    seed_run(conn, 902, FILL_SESSION)
+    today = conn.execute(
+        "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+        "pivot, initial_stop, rs_method) VALUES (902, ?, 'aplus', 19.0, "
+        "19.5, 15.0, 'universe')", (TICKER,)).lastrowid
+    seed_pipeline_run(
+        conn, evaluation_run_id=902,
+        data_asof_date=date(2026, 7, 24).isoformat(),
+        action_session_date=FILL_SESSION.isoformat(),
+        started_ts="2026-07-24T17:30:00", finished_ts="2026-07-24T17:44:00")
+    conn.commit()
+
+    result = record_entry(conn, req(entry_path=EntryPath.HYP_RECS_BUTTON),
+                          soft_warn=SOFT, hard_cap=HARD, force=False)
+    origin, cand, label = written(conn, result.trade_id)
+    assert (origin, cand, label) == ("manual_off_pipeline", None, None), (
+        f"the ordinary chain wrote candidate {today} for a fill whose own "
+        f"envelope names an accepted order")

@@ -1175,13 +1175,24 @@ FOR EACH ROW WHEN NOT (
                  '$.authorization.rung6_consuming_trade_id.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
                  '$.authorization.rung6_consuming_trade_id.input') = 'null'
+         -- THE CASE FORM, NOT `json_valid(x) AND json_extract(x)` (Codex
+         -- 22A-R7-04, and 22A-R3-12 is the measurement behind it). An AND
+         -- chain does NOT protect a JSON function from a malformed value --
+         -- `SELECT 0 AND json_extract('{bad','$.x')` RAISES -- so ANY OTHER
+         -- trade's malformed envelope could abort this trigger with an engine
+         -- error instead of its own legible refusal. The class was stated once
+         -- for the probe blob and then re-grepped across the whole migration;
+         -- these were the two remaining sites and this one is the wider,
+         -- because its input is another ROW's data rather than the citation's.
          AND NOT EXISTS (SELECT 1 FROM fills f2
                          WHERE f2.action = 'entry'
                            AND f2.trade_id <> NEW.trade_id
-                           AND f2.schwab_source_value_json IS NOT NULL
-                           AND json_valid(f2.schwab_source_value_json)
-                           AND json_extract(f2.schwab_source_value_json, '$.schwab_order_id')
-                               = NEW.cited_latch_broker_order_id)
+                           AND CASE
+                                 WHEN f2.schwab_source_value_json IS NOT NULL
+                                  AND json_valid(f2.schwab_source_value_json)
+                                 THEN json_extract(f2.schwab_source_value_json,
+                                                   '$.schwab_order_id')
+                               END = NEW.cited_latch_broker_order_id)
 
          -- SERVICE-VALIDATED (L17). Rungs 7 and 8 rest on a scan result and on
          -- derivation state that no subquery can reach, so SQL asserts their
@@ -1276,8 +1287,12 @@ FOR EACH ROW WHEN NOT (
                  '$.authorization.guard_envelope_symbol.input') = 'text'
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_envelope_symbol.input')
-             = (SELECT json_extract(f.schwab_source_value_json,
-                                    '$.schwab_instrument_symbol')
+             = (SELECT CASE
+                         WHEN f.schwab_source_value_json IS NOT NULL
+                          AND json_valid(f.schwab_source_value_json)
+                         THEN json_extract(f.schwab_source_value_json,
+                                           '$.schwab_instrument_symbol')
+                       END
                   FROM fills f WHERE f.fill_id = NEW.entry_fill_id_at_correction)
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_envelope_symbol.input')

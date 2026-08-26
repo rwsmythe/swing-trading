@@ -1829,14 +1829,6 @@ def resolve_latched_provenance(
     rung returns `clear_reason='fill'` for the very mandate it is being asked
     about (verified against the live DB).
     """
-    if cfg is None:
-        # A DISTINCT REASON, NOT A SHARED ONE (case 18). "No config" and "no
-        # order id" are different ignorances, and an operator reading the log
-        # needs to know which one happened.
-        return LatchedProvenance(
-            admitted=False, recognised_but_underivable=False,
-            decline_reason="no_config")
-
     envelope = getattr(req, "schwab_source_value_json", None)
     if envelope is None:
         return LatchedProvenance(
@@ -1862,7 +1854,44 @@ def resolve_latched_provenance(
             admitted=False, recognised_but_underivable=True,
             decline_reason="fill_session_not_a_session")
 
+    # THE CONFIG GATE MOVED BELOW THE LINK LOOKUP (Codex 22A-R7-01), and the
+    # move is what stops `cfg=None` being a FAIL-OPEN SWITCH.
+    #
+    # `cfg` is needed to DERIVE the fold, not to RECOGNISE the order -- the
+    # envelope read and the link lookup need no configuration at all. Checked
+    # FIRST, a caller who simply omitted the config sent an order-bearing fill
+    # down the ORDINARY chain, which writes TODAY's candidate for a fill that
+    # demonstrably came from an accepted order: the silent misattribution this
+    # arc exists to prevent, reachable by leaving one keyword off.
+    #
+    # "Both production callers pass cfg" is a SERVICE-prevention argument, and
+    # the reviewer's answer to it is right: the manifest test that pins those
+    # two callers matches a syntactic NAME, so an alias, a wrapper or a future
+    # consumer bypasses it while the asserted count stays two. A grep bounds a
+    # family from below, and so does an AST walk keyed on a name.
+    #
+    # So the ladder now RECOGNISES first. No link -> `no_config` is still NOT
+    # recognised and the ordinary path is intact, byte-for-byte, which is what
+    # the LOCK is about. A link that EXISTS with no config is RECOGNISED and
+    # refused, so the row lands honest-unset instead of wrong.
     orders = find_accepted_latch_order(conn, broker_order_id=broker_order_id)
+    if orders and cfg is None:
+        log.warning(
+            "22-A: broker order %s names %d accepted latch link(s) but NO "
+            "config was supplied, so the mandate cannot be derived; the entry "
+            "records with honest-unset cohort keys rather than with TODAY's "
+            "candidate", broker_order_id, len(orders))
+        return LatchedProvenance(
+            admitted=False, recognised_but_underivable=True,
+            decline_reason="no_config", order=orders[0])
+    if cfg is None:
+        # A DISTINCT REASON, NOT A SHARED ONE (case 18). "No config" and "no
+        # order id" are different ignorances, and an operator reading the log
+        # needs to know which one happened. NOT recognised: no link names this
+        # order, so the ordinary chain runs exactly as it does on `main`.
+        return LatchedProvenance(
+            admitted=False, recognised_but_underivable=False,
+            decline_reason="no_config")
     if not orders:
         # NOT recognised: no link names this order, so the ordinary chain runs
         # exactly as it does on `main`. This is the ONLY refusal after an order
@@ -1886,19 +1915,50 @@ def resolve_latched_provenance(
         excluded = frozenset({trade_id})
     else:
         excluded = frozenset()
-    verdict = authorize_accepted_order(
-        conn, cfg,
-        order=order,
-        ticker=req.ticker,
-        fill_session=fill_session,
-        price=float(req.entry_price),
-        shares=float(req.shares),
-        fill_origin=getattr(req, "fill_origin", "operator_typed"),
-        envelope_symbol=instrument_symbol_from_envelope(envelope),
-        exclude_trade_ids=excluded,
-        trade_id=trade_id,
-        competitor_rung=competitor_liveness_rung,
-    )
+    # THE INVARIANT FAILURES ARE CONTAINED HERE (Codex 22A-R7-02).
+    # `LatchProbeInvariantError` is raised DELIBERATELY at two points inside
+    # the probe -- a `criteria_lapsed` terminal the rung was FORCED OFF, and a
+    # terminal dated LATER than the fill -- and both sit AFTER the broad
+    # fail-soft handler around `build_latch_derivation`. Nothing between here
+    # and `record_entry` catches a `RuntimeError`, so the transaction rolled
+    # back and NO TRADE AND NO FILL LANDED.
+    #
+    # The code's own message for those states is that the COHORT PROBE
+    # MALFUNCTIONED. Turning a probe malfunction into a blocked broker fill is
+    # the `0036:26-38` inversion in its purest form -- and the arc has now met
+    # it four times, which is why the containment is placed at the RESOLVER's
+    # boundary rather than at each raise site: a fifth invariant added later is
+    # contained by construction.
+    #
+    # THE RAISES ARE NOT REMOVED and their tests are unchanged: they are how a
+    # probe defect becomes LOUD at the probe grain. What changes is that the
+    # ENTRY does not pay for it. Fail-CLOSED -- `aliveness_unverifiable` can
+    # never admit -- and the log carries the exception type and a traceback so
+    # a real defect is investigated rather than absorbed.
+    try:
+        verdict = authorize_accepted_order(
+            conn, cfg,
+            order=order,
+            ticker=req.ticker,
+            fill_session=fill_session,
+            price=float(req.entry_price),
+            shares=float(req.shares),
+            fill_origin=getattr(req, "fill_origin", "operator_typed"),
+            envelope_symbol=instrument_symbol_from_envelope(envelope),
+            exclude_trade_ids=excluded,
+            trade_id=trade_id,
+            competitor_rung=competitor_liveness_rung,
+        )
+    except LatchProbeInvariantError:
+        log.exception(
+            "22-A: the latch probe reported an INVARIANT FAILURE for %s "
+            "(order %s, link %s) at %s; the entry records with honest-unset "
+            "cohort keys rather than being blocked, and this WARRANTS "
+            "INVESTIGATION -- the probe believes its own inputs are incoherent",
+            req.ticker, order.broker_order_id, order.link_id, fill_session)
+        return _refuse("aliveness_unverifiable", order,
+                       horizon_session=fill_session,
+                       freeze_tier=order.freeze_tier)
     if not verdict.admitted:
         return verdict
 

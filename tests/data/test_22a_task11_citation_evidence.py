@@ -1266,3 +1266,38 @@ def test_a_weekend_fill_session_is_ACCEPTED_and_the_limit_is_declared(
     assert conn.execute(
         "SELECT admission_tier FROM provenance_corrections").fetchone() == (
         "latch_ladder",)
+
+
+def test_a_malformed_SUBJECT_envelope_aborts_legibly(conn) -> None:
+    """22A-R7-04, and it is a RESIDUAL OF MY OWN CLASS FIX.
+
+    22A-R3-12 established by execution that an AND chain does NOT protect a
+    JSON function from a malformed value, and every probe-blob clause was
+    wrapped in ``CASE WHEN json_valid(...)``.  The SUBJECT FILL'S ENVELOPE is a
+    DIFFERENT JSON source and was left on the unguarded form at the
+    envelope-symbol binding, so a malformed envelope made the whole trigger die
+    with an engine error instead of reaching its own RAISE(ABORT).
+
+    "State the class once, then re-grep the whole artifact" -- and this is the
+    site the re-grep should have caught and did not.
+
+    PRE-FIX: ``sqlite3.OperationalError: malformed JSON``.
+    POST-FIX: ``sqlite3.IntegrityError`` carrying the citation message.  Both
+    refuse; the gain is a legible refusal, and the assertion names the CLASS
+    as well as the message so it cannot pass under the other.
+
+    THE RUNG-6 SCAN over EVERY OTHER trade's envelope was moved to the same
+    ``CASE`` form in the same commit.  MEASURED HONESTLY: a malformed envelope
+    on an unrelated trade does NOT currently raise there -- sqlite's
+    evaluation order inside that ``NOT EXISTS`` subquery happens to spare it --
+    so that change is DEFENSIVE BY CLASS rather than a demonstrated live
+    defect, and it is recorded as such rather than sold as a fix.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = '{not json' "
+        "WHERE fill_id = ?", (payload["entry_fill_id_at_correction"],))
+    conn.commit()
+    with pytest.raises(sqlite3.IntegrityError, match="citation graph"):
+        _insert_payload(conn, payload)
