@@ -66,11 +66,13 @@ from swing.data.repos.candidates import (
 from swing.data.repos.recommendations import get_daily_recommendation_by_id
 from swing.data.repos.trades import get_trade
 from swing.evaluation.dates import PIPELINE_LOCAL_TIMEZONE, is_trading_session
-# MODULE-LEVEL, DELIBERATELY. `latched_origin` imports THIS module only from
-# inside a function body, so there is no cycle; and a module-level binding is
-# what lets a test SUBSTITUTE the resolver to pin the arguments this surface
-# passes it (case 17's exclusion set) and the transaction it holds while
-# calling it (AL-2). A function-local import would make both unpinnable.
+
+# `resolve_latched_provenance` is imported MODULE-LEVEL, deliberately.
+# `latched_origin` imports THIS module only from inside a function body, so
+# there is no cycle; and a module-level binding is what lets a test SUBSTITUTE
+# the resolver to pin the arguments this surface passes it (case 17's exclusion
+# set) and the transaction it holds while calling it (AL-2). A function-local
+# import would make both unpinnable.
 from swing.trades.latched_origin import resolve_latched_provenance
 
 __all__ = [
