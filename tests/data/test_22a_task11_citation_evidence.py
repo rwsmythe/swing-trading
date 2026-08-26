@@ -375,60 +375,25 @@ def test_a_mismatched_validity_parent_is_rejected_case_34e(conn) -> None:
 # ===========================================================================
 # 34f / 34g -- THE SINGLE ROUNDING AUTHORITY (both ACCEPT)
 # ===========================================================================
-def test_a_false_equality_verdict_over_correct_raws_is_accepted_case_34f(
-        conn) -> None:
-    """THE DECLARED RESIDUAL (S8-L16), pinned rather than papered over.
+def _mint_drifted_citation(
+        conn_, payload: dict, *, frozen: float, live: float, key: str):
+    """Re-cite the correction onto a SECOND accepted order minted at ``frozen``,
+    with the candidate then drifted to ``live``.
 
-    SQL can no longer verify that ``_equal_at_dp`` is the CORRECT rounding of
-    the two raw operands: any SQL-side recomputation re-creates the
-    cross-domain comparison the rule exists to forbid.  A forger can assert
-    that two correctly-cited values compared equal when they did not -- and
-    NOTHING MORE, because both raws stay bound to the cited link and the cited
-    candidate, so he still cannot name a different mandate.
-    """
-    payload = seed_latch_ladder_citation(conn)
-    blob = _blob(payload)
-    assert blob["frozen_invalidation_raw"] is not None
-    assert blob["invalidation_equal_at_dp"] == 1
-    # The raws are UNTOUCHED and still bound to their sources; only the
-    # verdict over them is a lie.
-    _insert_payload(conn, _with_blob(payload, blob))
-    assert conn.execute(
-        "SELECT json_extract(cited_latch_probe_json, "
-        "'$.invalidation_equal_at_dp') FROM provenance_corrections"
-    ).fetchone()[0] == 1
+    THE GEOMETRY IS MINTED, NOT EDITED, because both sides are append-only:
+    ``latch_order_mandate_links`` and ``latch_order_intents`` each abort an
+    UPDATE (measured), and the link's frozen values are COPIED from the
+    candidate by the minting trigger.  So the candidate is moved to the frozen
+    value, an order is placed and accepted -- which mints a link freezing it --
+    and the candidate then moves to the live value.  The barrier is lifted and
+    RESTORED VERBATIM around each candidate write, the arc's own idiom for
+    planting a state the barrier now prevents from arising (cases 9/9b).
 
-
-def test_an_eighths_price_pair_equal_in_python_is_accepted_case_34g(
-        conn) -> None:
-    """THE CASE THAT WOULD HAVE CAUGHT THE DEFECT, AND ITS GEOMETRY IS
-    CORRECTED (inherited finding 22A-R9-05, verified by execution here).
-
-    The plan specifies frozen = live = ``22.125`` (the live WRBY geometry).
-    That does NOT discriminate: Python rounds ``22.125`` to ``22.12`` and
-    SQLite rounds it to ``22.13``, so the FORBIDDEN
-    ``round(...,2) = round(...,2)`` trigger evaluates ``22.13 = 22.13`` --
-    TRUE -- and ACCEPTS the very row the case exists to catch.
-
-    The discriminating pair needs two raws in ONE Python bucket and TWO SQLite
-    buckets: ``22.125`` / ``22.1249``.  Python ``22.12 == 22.12`` (the service
-    admits, truthfully); SQLite ``22.13 <> 22.12`` (the forbidden comparator
-    refuses).  Both arithmetics are ASSERTED below rather than asserted about,
-    so the case cannot silently stop discriminating if either engine changes.
+    Every binding the trigger checks is re-pointed at the new order, so the row
+    that comes back differs from the baseline in the two RAW PRICES and nothing
+    else.
     """
     from tests._candidates_barrier_helper import candidates_barrier_lifted
-
-    frozen, live = 22.125, 22.1249
-    assert round(frozen, 2) == round(live, 2), (
-        "the pair must be EQUAL in Python, or the service could not truthfully "
-        "have admitted it")
-    sql_frozen = conn.execute("SELECT round(?, 2)", (frozen,)).fetchone()[0]
-    sql_live = conn.execute("SELECT round(?, 2)", (live,)).fetchone()[0]
-    assert sql_frozen != sql_live, (
-        f"the pair must DIFFER in SQLite ({sql_frozen} vs {sql_live}), or the "
-        f"forbidden comparator would accept it and the case would not "
-        f"discriminate -- which is exactly what frozen == live == 22.125 does")
-
     from tests._latch_link_fixtures_22a import (
         insert_intent,
         place_row,
@@ -436,59 +401,48 @@ def test_an_eighths_price_pair_equal_in_python_is_accepted_case_34g(
     )
     from tests.trades._cohort_provenance_fixtures import CADL_TICKER
 
-    payload = seed_latch_ladder_citation(conn)
     blob = _blob(payload)
     candidate_id = blob["fire_candidate_id"]
-    run_id, session = conn.execute(
+    run_id, session = conn_.execute(
         "SELECT c.evaluation_run_id, e.action_session_date FROM candidates c "
         "JOIN evaluation_runs e ON e.id = c.evaluation_run_id WHERE c.id = ?",
         (candidate_id,)).fetchone()
-
-    # THE GEOMETRY IS MINTED, NOT EDITED, because both sides are append-only:
-    # `latch_order_mandate_links` and `latch_order_intents` each abort an
-    # UPDATE (measured), and the link's frozen values are copied FROM the
-    # candidate by the minting trigger. So the candidate is moved to the
-    # eighth, a SECOND accepted order is placed -- which mints a link freezing
-    # `22.125` -- and the candidate then drifts by a ten-thousandth. The
-    # barrier is lifted and RESTORED VERBATIM around each candidate write, the
-    # arc's own idiom for planting a state the barrier now prevents from
-    # arising (cases 9/9b).
-    order_id = "1009999888"
-    with candidates_barrier_lifted(conn):
-        conn.execute("UPDATE candidates SET initial_stop = ? WHERE id = ?",
-                     (frozen, candidate_id))
+    order_id = f"10099{abs(hash(key)) % 90000 + 10000}"
+    with candidates_barrier_lifted(conn_):
+        conn_.execute("UPDATE candidates SET initial_stop = ? WHERE id = ?",
+                      (frozen, candidate_id))
     place = place_row(candidate_id, run_id=run_id)
     place.update(ticker=CADL_TICKER, detection_date=session,
                  action_session_date=session,
                  recorded_ts="2026-08-11T12:20:00",
-                 idempotency_key="task11-34g-place")
-    place_id = insert_intent(conn, place)
+                 idempotency_key=f"{key}-place")
+    place_id = insert_intent(conn_, place)
     validity = validity_row(candidate_id, place_id, run_id=run_id)
     validity.update(ticker=CADL_TICKER, detection_date=session,
                     action_session_date=session,
                     recorded_ts="2026-08-11T12:25:00",
-                    idempotency_key="task11-34g-validity",
+                    idempotency_key=f"{key}-validity",
                     actual_broker_order_id=order_id)
-    validity_id = insert_intent(conn, validity)
-    with candidates_barrier_lifted(conn):
-        conn.execute("UPDATE candidates SET initial_stop = ? WHERE id = ?",
-                     (live, candidate_id))
+    validity_id = insert_intent(conn_, validity)
+    with candidates_barrier_lifted(conn_):
+        conn_.execute("UPDATE candidates SET initial_stop = ? WHERE id = ?",
+                      (live, candidate_id))
     link = dict(zip(
-        [r[1] for r in conn.execute(
+        [r[1] for r in conn_.execute(
             "PRAGMA table_info(latch_order_mandate_links)")],
-        conn.execute(
+        conn_.execute(
             "SELECT * FROM latch_order_mandate_links WHERE validity_intent_id "
             "= ?", (validity_id,)).fetchone(), strict=True))
     assert link["frozen_invalidation"] == frozen, (
-        f"the mint froze {link['frozen_invalidation']}, not the eighth; the "
+        f"the mint froze {link['frozen_invalidation']}, not {frozen}; the "
         f"case would then not carry its own geometry")
 
     fill_id = payload["entry_fill_id_at_correction"]
-    conn.execute(
+    conn_.execute(
         "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
         (json.dumps({"schwab_order_id": order_id,
                      "schwab_instrument_symbol": CADL_TICKER}), fill_id))
-    live_pivot = conn.execute(
+    live_pivot = conn_.execute(
         "SELECT pivot FROM candidates WHERE id = ?",
         (candidate_id,)).fetchone()[0]
 
@@ -512,6 +466,82 @@ def test_an_eighths_price_pair_equal_in_python_is_accepted_case_34g(
     blob["live_invalidation_raw"] = live
     blob["frozen_pivot_raw"] = link["frozen_pivot"]
     blob["live_pivot_raw"] = live_pivot
+    return payload, blob
+
+
+def test_a_false_equality_verdict_over_correct_raws_is_accepted_case_34f(
+        conn) -> None:
+    """THE DECLARED RESIDUAL (S8-L16), pinned rather than papered over.
+
+    SQL can no longer verify that ``_equal_at_dp`` is the CORRECT rounding of
+    the two raw operands: any SQL-side recomputation re-creates the
+    cross-domain comparison the rule exists to forbid.  A forger can assert
+    that two correctly-cited values compared equal when they did not -- and
+    NOTHING MORE, because both raws stay bound to the cited link and the cited
+    candidate, so he still cannot name a different mandate.
+
+    THE FIRST VERSION OF THIS TEST CONTAINED NO FALSE VERDICT (Codex
+    22A-R5-04, verified against my own test).  It loaded the truthful baseline
+    -- whose raws are EQUAL, so ``invalidation_equal_at_dp = 1`` is TRUE --
+    changed nothing, and inserted it, while its comment claimed "only the
+    verdict over them is a lie".  It passed whether or not SQL rejects an
+    actually false verdict: the vacuous-regression class, in the module
+    written one commit after the same class was fixed one module over.
+
+    The operands below are genuinely UNEQUAL at two decimals and both remain
+    BOUND to their sources, so the recorded ``1`` is a real lie and the
+    acceptance is the real residual.
+    """
+    frozen, live = 6.20, 7.90
+    assert round(frozen, 2) != round(live, 2), (
+        "the operands must DISAGREE at the compared precision, or the recorded "
+        "verdict is true and the case pins nothing")
+    payload = seed_latch_ladder_citation(conn)
+    payload, blob = _mint_drifted_citation(
+        conn, payload, frozen=frozen, live=live, key="task11-34f")
+    blob["invalidation_equal_at_dp"] = 1        # THE LIE
+    _insert_payload(conn, _with_blob(payload, blob))
+    stored = conn.execute(
+        "SELECT json_extract(cited_latch_probe_json, "
+        "'$.frozen_invalidation_raw'), json_extract(cited_latch_probe_json, "
+        "'$.live_invalidation_raw'), json_extract(cited_latch_probe_json, "
+        "'$.invalidation_equal_at_dp') FROM provenance_corrections").fetchone()
+    assert stored == (frozen, live, 1), (
+        "the row that landed does not carry the false verdict over unequal "
+        "bound raws, so it is not the residual this case claims to pin")
+
+
+def test_an_eighths_price_pair_equal_in_python_is_accepted_case_34g(
+        conn) -> None:
+    """THE CASE THAT WOULD HAVE CAUGHT THE DEFECT, AND ITS GEOMETRY IS
+    CORRECTED (inherited finding 22A-R9-05, verified by execution here).
+
+    The plan specifies frozen = live = ``22.125`` (the live WRBY geometry).
+    That does NOT discriminate: Python rounds ``22.125`` to ``22.12`` and
+    SQLite rounds it to ``22.13``, so the FORBIDDEN
+    ``round(...,2) = round(...,2)`` trigger evaluates ``22.13 = 22.13`` --
+    TRUE -- and ACCEPTS the very row the case exists to catch.
+
+    The discriminating pair needs two raws in ONE Python bucket and TWO SQLite
+    buckets: ``22.125`` / ``22.1249``.  Python ``22.12 == 22.12`` (the service
+    admits, truthfully); SQLite ``22.13 <> 22.12`` (the forbidden comparator
+    refuses).  Both arithmetics are ASSERTED below rather than asserted about,
+    so the case cannot silently stop discriminating if either engine changes.
+    """
+    frozen, live = 22.125, 22.1249
+    assert round(frozen, 2) == round(live, 2), (
+        "the pair must be EQUAL in Python, or the service could not truthfully "
+        "have admitted it")
+    sql_frozen = conn.execute("SELECT round(?, 2)", (frozen,)).fetchone()[0]
+    sql_live = conn.execute("SELECT round(?, 2)", (live,)).fetchone()[0]
+    assert sql_frozen != sql_live, (
+        f"the pair must DIFFER in SQLite ({sql_frozen} vs {sql_live}), or the "
+        f"forbidden comparator would accept it and the case would not "
+        f"discriminate -- which is exactly what frozen == live == 22.125 does")
+
+    payload = seed_latch_ladder_citation(conn)
+    payload, blob = _mint_drifted_citation(
+        conn, payload, frozen=frozen, live=live, key="task11-34g")
     blob["invalidation_equal_at_dp"] = 1
     _insert_payload(conn, _with_blob(payload, blob))
     assert conn.execute(
