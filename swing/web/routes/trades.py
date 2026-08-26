@@ -1381,6 +1381,10 @@ def entry_post(
                 soft_warn=cfg.position_limits.soft_warn_open,
                 hard_cap=cfg.position_limits.hard_cap_open,
                 force=(force == "true"),
+                # 22-A: see the CLI call site. This is the surface the
+                # operator actually uses, so an omission here would make the
+                # acceptance suite's green mean nothing in production.
+                cfg=cfg,
             )
         except MissingPreTradeFieldsException as exc:
             # Phase 7 Sub-C C.4 — non-bypassable pre-trade required-field

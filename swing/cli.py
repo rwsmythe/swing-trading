@@ -792,6 +792,11 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                 soft_warn=cfg.position_limits.soft_warn_open,
                 hard_cap=cfg.position_limits.hard_cap_open,
                 force=force,
+                # 22-A: the ONE signature change in the arc. Without `cfg` the
+                # resolver declines `no_config` and the latch mechanism is
+                # unreachable from this surface -- silently, because every
+                # persisted value stays valid.
+                cfg=cfg,
             )
         except MissingPreTradeFieldsException as exc:
             # B.8: structured-exception → click.UsageError mapping.

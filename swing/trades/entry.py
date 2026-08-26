@@ -1,6 +1,8 @@
 """Trade entry service — wraps repo with cap enforcement + watchlist archival."""
 from __future__ import annotations
 
+import contextlib
+import logging
 import sqlite3
 import unicodedata
 from dataclasses import dataclass
@@ -18,6 +20,9 @@ from swing.trades.state import (
     MissingPreTradeFieldsException,
     validate_for_operation,
 )
+
+log = logging.getLogger(__name__)
+
 
 # Re-export for callers: ``from swing.trades.entry import
 # MissingPreTradeFieldsException`` mirrors the route/CLI ergonomic pattern
@@ -242,7 +247,16 @@ def canonicalize_hypothesis_label(raw: str | None) -> str | None:
 def record_entry(
     conn: sqlite3.Connection, req: EntryRequest, *,
     soft_warn: int, hard_cap: int, force: bool,
+    cfg=None,
 ) -> EntryResult:
+    """22-A adds ONE keyword-only parameter, ``cfg``, and that is the whole
+    signature change in the arc.  Both production call sites already have it
+    (``swing/cli.py``, ``swing/web/routes/trades.py``).
+
+    ``cfg=None`` DECLINES the latch path with reason ``no_config`` and leaves
+    every persisted value byte-identical to the pre-arc behaviour, so every
+    pre-existing caller and test is unaffected.
+    """
     # Phase 7 Sub-B B.1 — non-bypassable pre-trade required-field gate. Per
     # spec §9.3, MissingPreTradeFieldsException is NOT force-bypassable; it
     # fires BEFORE the existing stop / duplicate / cap checks so an operator
@@ -351,9 +365,186 @@ def record_entry(
     # paired backlink semantics: ``pattern_evaluation_id`` validates
     # against the form-render run's id, but ``candidate_id`` would
     # bind to a NEWER run's candidate row for the same ticker.
+    # =====================================================================
+    # 22-A -- THE LATCH SEAM.  Everything above this line is UNTOUCHED, in
+    # its original order, so the LOCK's clause (c) -- every pre-existing
+    # failure branch raises the same exception, with the same message, at the
+    # same point -- is true by construction rather than by inspection.
+    #
+    # THE RECOGNITION READ IS OUTSIDE THE TRANSACTION AND QUERY-FREE.  It
+    # parses the operator-submitted envelope and nothing else, so a fill with
+    # no usable broker order id costs ZERO additional database queries
+    # (LOCK clause (d)) and takes the deferred ``with conn:`` exactly as
+    # before.
+    # =====================================================================
+    from swing.trades.latched_origin import broker_order_id_from_envelope
+
+    _recognised_order_id = (
+        None if cfg is None
+        else broker_order_id_from_envelope(
+            getattr(req, "schwab_source_value_json", None))
+    )
+    # THE TRIGGER IS "THE REQUEST CARRIES A USABLE ORDER ID", NEVER "THE
+    # RECOGNITION FOUND A LINK" (plan S2.2 rule 3, review 22A-R3-01).  A
+    # request whose preliminary answer was NO LINK can acquire a matching
+    # validity row before the INSERT and would otherwise take the ordinary
+    # path on a stale negative.  A negative result is as perishable as a
+    # positive one, and the reservation covers both (case 21b).
+    _reserve = _recognised_order_id is not None
+    if _reserve and conn.in_transaction:
+        raise CallerHeldEntryTransactionError(
+            "record_entry owns BEGIN IMMEDIATE for an order-id-bearing "
+            "request and REJECTS a caller-held transaction rather than "
+            "auto-detecting one; an auto-detect guard re-introduces the race "
+            "the explicit lock closed. Nothing was written."
+        )
+
+    with _entry_transaction(conn, immediate=_reserve):
+        return _record_entry_inner(
+            conn, req,
+            cfg=cfg,
+            derived_origin=derived_origin,
+            entry_iso=entry_iso,
+            warning=warning,
+            reserve=_reserve,
+        )
+
+
+class CallerHeldEntryTransactionError(RuntimeError):
+    """``record_entry`` was called with an open transaction on the latched
+    path.  Single-transaction services own ``BEGIN IMMEDIATE`` / COMMIT /
+    ROLLBACK and REJECT a caller-held transaction (CLAUDE.md)."""
+
+
+@contextlib.contextmanager
+def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool):
+    """The ONE transaction the entry row is written in.
+
+    ``immediate=False`` is the pre-arc path, byte-for-byte: Python's sqlite3
+    implicit DEFERRED transaction via ``with conn:``.
+
+    ``immediate=True`` is the latched path.  ``with conn:`` acquires NO write
+    reservation until its first write, so a resolution performed "inside" it
+    still reads without reserving and another connection can commit between
+    that read and the INSERT.  The explicit ``BEGIN IMMEDIATE`` takes the
+    reservation FIRST, following Demand C's shape verbatim including its
+    caller-held-transaction refusal.
+    """
+    if not immediate:
+        with conn:
+            yield
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        with contextlib.suppress(sqlite3.Error):
+            conn.rollback()
+        raise
+    else:
+        conn.commit()
+
+
+def _record_entry_inner(
+    conn: sqlite3.Connection, req: EntryRequest, *,
+    cfg,
+    derived_origin: str,
+    entry_iso: str,
+    warning: str | None,
+    reserve: bool,
+) -> EntryResult:
+    """Never opens or closes a transaction; the caller owns it.
+
+    Every read below therefore sees the world the write lands in, which is the
+    entire point of the reservation.
+    """
+    from swing.trades.latched_origin import (
+        LatchedProvenance,
+        resolve_latched_provenance,
+    )
     from swing.trades.origin import _latest_complete_evaluation_run_id
+
     resolved_candidate_id: int | None = req.candidate_id
-    if resolved_candidate_id is None and derived_origin != "manual_off_pipeline":
+
+    # THE AUTHORITATIVE RESOLUTION, inside the reservation.  The preliminary
+    # answer computed outside it is DISCARDED -- it exists only to decide
+    # whether to reserve.
+    latched = (
+        resolve_latched_provenance(conn, cfg, req) if reserve
+        else LatchedProvenance(
+            admitted=False, recognised_but_underivable=False,
+            decline_reason="no_config" if cfg is None else "no_order_id")
+    )
+
+    # THE PE-ANCHOR GUARD, RELOCATED FROM THE ROUTE AND NOT MERELY DEFERRED
+    # (review 22A-R9-03).  The route rejects a `pattern_evaluation_id` anchor
+    # whose server-derived origin is `manual_off_pipeline`; for order-id-
+    # bearing requests the route now defers to here, so WITHOUT this block the
+    # deferral would DELETE a live production rejection and the row would be
+    # written.  Case 37c is the stable no-link outcome that fails a deferral-
+    # without-relocation implementation; every other case in the plan passes
+    # one.
+    #
+    # INSIDE THE TRANSACTION IS THE WHOLE POINT: the guard's input is
+    # `derive_trade_origin`, which reads the latest evaluation run -- the same
+    # world the race can move.  Evaluated at the route it reads a world that
+    # may be stale by the time the row is written.
+    if (
+        reserve
+        and not latched.admitted
+        and req.pattern_evaluation_id is not None
+        and derived_origin == "manual_off_pipeline"
+    ):
+        raise PatternEvaluationAnchorError(_PE_ANCHOR_MESSAGE)
+
+    hypothesis_label = req.hypothesis_label
+    if latched.admitted:
+        # ALL THREE KEYS MOVE TOGETHER (plan S2.6).  A row carrying origin and
+        # candidate but a NULL label is incoherent AND permanently
+        # uncorrectable: Demand C's `_gate_on_unset_state` refuses a trade
+        # carrying any of the three.
+        log.info(
+            "22-A: fill for %s admitted from latched mandate %s (link %s, "
+            "order %s, validity intent %s); writing trade_origin=%s "
+            "candidate_id=%s",
+            req.ticker, latched.candidate_id,
+            latched.order.link_id if latched.order else None,
+            latched.order.broker_order_id if latched.order else None,
+            latched.order.validity_intent_id if latched.order else None,
+            latched.trade_origin, latched.candidate_id,
+        )
+        if req.candidate_id is not None and req.candidate_id != latched.candidate_id:
+            log.warning(
+                "22-A: caller-supplied candidate_id %s disagrees with the "
+                "latched fire %s for %s; THE LATCH WINS -- it is keyed to a "
+                "broker-accepted order rather than to a form render",
+                req.candidate_id, latched.candidate_id, req.ticker)
+        derived_origin = latched.trade_origin
+        resolved_candidate_id = latched.candidate_id
+        hypothesis_label = latched.hypothesis_label
+    elif latched.recognised_but_underivable:
+        # THE HONEST-UNSET ROW, and the ordinary candidate/origin chain is
+        # SUPPRESSED rather than allowed to fall back.  For a ticker that is
+        # `aplus` in TODAY's latest run the ordinary chain would write
+        # `pipeline_aplus` plus TODAY's candidate -- a DIFFERENT mandate from
+        # the one this fill demonstrably came from.  Silent-wrong, not
+        # honest-NULL (case 12).
+        log.warning(
+            "22-A: a latched mandate was RECOGNISED for %s (order %s) and "
+            "REFUSED (%s); the entry records honest-unset cohort keys rather "
+            "than the latest run's candidate, and the submitted "
+            "hypothesis_label %r is discarded -- a non-NULL label would make "
+            "the row permanently uncorrectable",
+            req.ticker,
+            latched.order.broker_order_id if latched.order else None,
+            latched.decline_reason, req.hypothesis_label)
+        derived_origin = "manual_off_pipeline"
+        resolved_candidate_id = None
+        hypothesis_label = None
+
+    if latched.admitted or latched.recognised_but_underivable:
+        pass                      # the ordinary chain is not consulted
+    elif resolved_candidate_id is None and derived_origin != "manual_off_pipeline":
         _eval_run_for_candidate: int | None = None
         if req.pattern_evaluation_id is not None:
             _chain_row = conn.execute(
@@ -387,7 +578,7 @@ def record_entry(
         watchlist_entry_target=req.watchlist_entry_target,
         watchlist_initial_stop=req.watchlist_initial_stop,
         notes=req.notes,
-        hypothesis_label=canonicalize_hypothesis_label(req.hypothesis_label),
+        hypothesis_label=canonicalize_hypothesis_label(hypothesis_label),
         # Snapshot AS-IS — no re-resolve here (spec §3.6 ToCToU fix).
         # The operator override re-uses canonicalize_hypothesis_label
         # because spec §3.6 specifies identical NFC + control-byte rules
@@ -438,71 +629,70 @@ def record_entry(
 
     archived = False
     try:
-        with conn:
-            trade_id = insert_trade_with_event(
-                conn, trade, event_ts=req.event_ts, rationale=req.rationale,
-            )
-            # Phase 9 T-A.7 — stamp risk_policy_id_at_lock from the active
-            # policy in the SAME transaction. Spec §3.1.1: preserves
-            # at-trade-time semantics for capital_floor / scratch_epsilon /
-            # trail-MA periods even when the policy is later superseded.
-            # When no active policy exists (operator manually flipped seed
-            # inactive), the SELECT sub-query returns NULL → column stays
-            # NULL; spec §9.4 backwards-compatibility contract says NULL is
-            # legal and read paths fall back to current active policy.
-            conn.execute(
-                "UPDATE trades SET risk_policy_id_at_lock = "
-                "(SELECT policy_id FROM risk_policy WHERE is_active = 1) "
-                "WHERE id = ?",
-                (trade_id,),
-            )
-            # Phase 7 Sub-B B.3 — atomic first entry-fill insert in the
-            # SAME transaction as the trade row. The fill's
-            # _recompute_aggregates updates trades.current_size,
-            # current_avg_cost, last_fill_at to authoritative values
-            # (fixing the R2 Minor 1 transient half-state that B.1's
-            # docstring on insert_trade_with_event warns OTHER callers
-            # about — record_entry now satisfies that contract).
-            insert_fill_with_event(
-                conn,
-                Fill(
-                    fill_id=None, trade_id=trade_id,
-                    # Codex R4 M1: fill_datetime keyed to entry_date for
-                    # chronology consistency (matches B.4 exit-side fix).
-                    fill_datetime=entry_iso,
-                    action="entry",
-                    quantity=float(req.shares),
-                    price=req.entry_price,
-                    manual_entry_confidence=req.manual_entry_confidence,
-                    # Phase 13 T3.SB1 T-B.1.4 — auto-fill provenance audit
-                    # columns. Per spec §6.4 + plan §G.2 T-B.1.4. Defaults
-                    # on the dataclass preserve backward-compat: when
-                    # EntryRequest is built without these fields (CLI tests
-                    # / bare cURL), Fill defaults to operator_typed + None.
-                    fill_origin=req.fill_origin,
-                    schwab_source_value_json=req.schwab_source_value_json,
-                    operator_corrected_value_json=(
-                        req.operator_corrected_value_json
-                    ),
-                    auto_fill_audit_at=req.auto_fill_audit_at,
+        trade_id = insert_trade_with_event(
+            conn, trade, event_ts=req.event_ts, rationale=req.rationale,
+        )
+        # Phase 9 T-A.7 — stamp risk_policy_id_at_lock from the active
+        # policy in the SAME transaction. Spec §3.1.1: preserves
+        # at-trade-time semantics for capital_floor / scratch_epsilon /
+        # trail-MA periods even when the policy is later superseded.
+        # When no active policy exists (operator manually flipped seed
+        # inactive), the SELECT sub-query returns NULL → column stays
+        # NULL; spec §9.4 backwards-compatibility contract says NULL is
+        # legal and read paths fall back to current active policy.
+        conn.execute(
+            "UPDATE trades SET risk_policy_id_at_lock = "
+            "(SELECT policy_id FROM risk_policy WHERE is_active = 1) "
+            "WHERE id = ?",
+            (trade_id,),
+        )
+        # Phase 7 Sub-B B.3 — atomic first entry-fill insert in the
+        # SAME transaction as the trade row. The fill's
+        # _recompute_aggregates updates trades.current_size,
+        # current_avg_cost, last_fill_at to authoritative values
+        # (fixing the R2 Minor 1 transient half-state that B.1's
+        # docstring on insert_trade_with_event warns OTHER callers
+        # about — record_entry now satisfies that contract).
+        insert_fill_with_event(
+            conn,
+            Fill(
+                fill_id=None, trade_id=trade_id,
+                # Codex R4 M1: fill_datetime keyed to entry_date for
+                # chronology consistency (matches B.4 exit-side fix).
+                fill_datetime=entry_iso,
+                action="entry",
+                quantity=float(req.shares),
+                price=req.entry_price,
+                manual_entry_confidence=req.manual_entry_confidence,
+                # Phase 13 T3.SB1 T-B.1.4 — auto-fill provenance audit
+                # columns. Per spec §6.4 + plan §G.2 T-B.1.4. Defaults
+                # on the dataclass preserve backward-compat: when
+                # EntryRequest is built without these fields (CLI tests
+                # / bare cURL), Fill defaults to operator_typed + None.
+                fill_origin=req.fill_origin,
+                schwab_source_value_json=req.schwab_source_value_json,
+                operator_corrected_value_json=(
+                    req.operator_corrected_value_json
                 ),
-                event_ts=req.event_ts,
-                rationale=req.rationale,
-                # Hotfix 2026-05-05 (operator-witnessed gate finding S3):
-                # insert_trade_with_event above already emitted an 'entry'
-                # trade_event row; suppress the duplicate emission here.
-                emit_event=False,
-            )
-            wl = get_watchlist_entry(conn, req.ticker)
-            if wl is not None:
-                archive_watchlist_entry(conn, WatchlistArchiveEntry(
-                    id=None, ticker=req.ticker, added_date=wl.added_date,
-                    removed_date=req.entry_date, reason="entered",
-                    qualification_count=wl.qualification_count,
-                    last_data_asof_date=wl.last_data_asof_date,
-                    notes=wl.notes,
-                ))
-                archived = True
+                auto_fill_audit_at=req.auto_fill_audit_at,
+            ),
+            event_ts=req.event_ts,
+            rationale=req.rationale,
+            # Hotfix 2026-05-05 (operator-witnessed gate finding S3):
+            # insert_trade_with_event above already emitted an 'entry'
+            # trade_event row; suppress the duplicate emission here.
+            emit_event=False,
+        )
+        wl = get_watchlist_entry(conn, req.ticker)
+        if wl is not None:
+            archive_watchlist_entry(conn, WatchlistArchiveEntry(
+                id=None, ticker=req.ticker, added_date=wl.added_date,
+                removed_date=req.entry_date, reason="entered",
+                qualification_count=wl.qualification_count,
+                last_data_asof_date=wl.last_data_asof_date,
+                notes=wl.notes,
+            ))
+            archived = True
     except sqlite3.IntegrityError as exc:
         # Schema-level safety net (ux_trades_one_open_per_ticker, migration 0004):
         # two concurrent record_entry calls raced past the app-layer list_open_trades
@@ -515,3 +705,23 @@ def record_entry(
         raise
 
     return EntryResult(trade_id=trade_id, warning=warning, watchlist_archived=archived)
+
+
+class PatternEvaluationAnchorError(ValueError):
+    """The request carries a ``pattern_evaluation_id`` anchor while the
+    server-derived origin is ``manual_off_pipeline`` and no latched mandate
+    admitted.
+
+    RELOCATED FROM THE ROUTE, not invented here (review 22A-R9-03).  The
+    message is the route's own, so the operator sees the same text whichever
+    surface makes the refusal.
+    """
+
+
+_PE_ANCHOR_MESSAGE = (
+    "Trade entry rejected: pattern_evaluation_id anchor "
+    "present but server-derived trade_origin is "
+    "manual_off_pipeline. The candidate row may have rolled "
+    "out of the latest pipeline run; the form has been "
+    "regenerated."
+)
