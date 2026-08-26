@@ -340,7 +340,10 @@ AUTHORIZATION_KEYS: tuple[str, ...] = tuple(c.key for c in AUTHORIZATION_CLAUSES
 #     contains the fire.  Exactly ONE is an admission; the reason
 #     ``ambiguous_fire_membership`` exists for the other case.
 #   * ``decision_ordering`` -- the admissible decisions the as-of rule judged,
-#     each as ``[intent_id, recorded_ts]``.  This carries R2-04's "consulted
+#     each as ``[intent_id, recorded_ts]``.  Its SQL twin binds every supplied
+#     pair to a real intent row and does NOT prove the set is complete; that
+#     limitation is declared in 0037 with its reason, and it is NOT AL-3
+#     (Codex 22A-R9-05).  This carries R2-04's "consulted
 #     decision IDs/timestamps" AND is the input the ordering verdict was
 #     reached over, so the snapshot and the verdict are one entry rather than
 #     two halves that could disagree.
@@ -384,8 +387,19 @@ PROBE_GUARD_CLAUSES: tuple[AuthorizationClause, ...] = (
         "exactly ONE latch's candidate_set contains the fire",
     ),
     AuthorizationClause(
+        # NOT AL-3, AND THE TWO-VALUED LABEL IS WHY THIS NOTE EXISTS (Codex
+        # 22A-R9-05). The binding enum has only SQL_BOUND and
+        # SERVICE_VALIDATED, so a PARTIALLY bound clause must pick one -- and
+        # picking SERVICE_VALIDATED invited the migration comment to cite
+        # AL-3, whose roster is rungs 7, 8 and `fire_membership` and does NOT
+        # name this clause. Every pair supplied here IS bound by subquery to a
+        # real intent row on both halves, which is strictly more than AL-3's
+        # clauses get; what is unbound is the COMPLETENESS of the supply, and
+        # that limitation is declared in 0037 beside the clause with its
+        # reason and its 22-A2 trigger rather than borrowed from AL-3.
         "decision_ordering", SERVICE_VALIDATED, "array", False,
-        "-- the admissible decisions consulted, [intent_id, recorded_ts]",
+        "-- pairs BOUND to latch_order_intents; the SET's completeness is not "
+        "(a declared limitation, banked to 22-A2 -- NOT AL-3)",
         "every consulted decision is orderable STRICTLY BEFORE the fill",
     ),
 )

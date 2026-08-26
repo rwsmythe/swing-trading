@@ -997,9 +997,12 @@ def test_a_year_zero_coverage_session_is_rejected(conn) -> None:
 # ===========================================================================
 # 22A-R5-06 -- THE DECISION-ORDERING PAIRS ARE SHAPED AND BOUND
 #
-# COMPLETENESS stays service-validated (AL-3): no subquery can reproduce the
-# admissible fold. What SQL can do is refuse a claimed pair that is not a pair
-# or that names a row which does not exist.
+# COMPLETENESS IS NOT PROVED, and it is NOT AL-3 (Codex 22A-R9-05, CHARC ruled
+# 2026-08-26).  AL-3's roster is rungs 7, 8 and `fire_membership`; this clause
+# carries its OWN declared limitation, exercised below rather than asserted:
+# the guard validates the CONSISTENCY of what the writer supplied and does not
+# enforce the COMPLETENESS of supply.  What SQL can do is refuse a claimed
+# pair that is not a pair or that names a row which does not exist.
 # ===========================================================================
 _DECISION_SHAPE_CASES = {
     "a bare string": "not-a-pair",
@@ -1420,3 +1423,57 @@ def test_a_NESTED_key_of_the_same_name_does_not_trip_the_clause(conn) -> None:
     assert conn.execute(
         "SELECT admission_tier FROM provenance_corrections").fetchone() == (
         "latch_ladder",)
+
+
+# ===========================================================================
+# 22A-R9-05 -- THE DECISION-ORDERING LIMITATION, EXERCISED RATHER THAN CLAIMED
+#
+# CHARC ruled 2026-08-26: AL-3 stands as written (rungs 7, 8 and
+# `fire_membership`) and does NOT extend to `decision_ordering`; the clause's
+# binding stays writer-supplied-pairs-only; and the vacuous-satisfaction
+# property is DECLARED as a limitation with its reason rather than closed by a
+# widening nobody has ruled.
+#
+# A declared limit that nothing EXECUTES is an unfalsifiable claim -- the
+# 22A-R6-06 lesson, one clause over.  These cases make it FAIL on the day the
+# behaviour changes, so the declaration in 0037 stays honest or stops being
+# green.
+# ===========================================================================
+def test_an_EMPTY_decision_ordering_array_is_accepted_the_declared_limit(
+        conn) -> None:
+    """THE LIMITATION ITSELF, executed.
+
+    An empty array satisfies the clause vacuously, because the guard validates
+    the CONSISTENCY of what was supplied and does not enforce the COMPLETENESS
+    of supply -- nothing in this schema specifies what the required decision
+    set IS, and a clause enforcing a set no authority has ruled would be a
+    guess wearing a constraint's clothing on a table where a wrong REFUSAL is
+    permanent.
+
+    BANKED TO 22-A2 with its trigger: when the proof machinery specifies the
+    required decision set, this guard gains its completeness half.  On the day
+    that lands, THIS TEST FAILS -- which is the point of writing it.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    blob = _blob(payload)
+    blob["probe_guards"]["decision_ordering"]["input"] = []
+    _insert_payload(conn, _with_blob(payload, blob))
+    assert conn.execute(
+        "SELECT admission_tier FROM provenance_corrections").fetchone() == (
+        "latch_ladder",)
+
+
+def test_the_clause_still_binds_every_pair_that_IS_supplied(conn) -> None:
+    """THE DISCRIMINATOR FOR THE CASE ABOVE.
+
+    Without it, "an empty array is accepted" would be equally satisfied by a
+    clause that checks NOTHING, and the declared limitation would read as a
+    hole twice its actual size.  A supplied pair naming no intent row is still
+    REFUSED, which is exactly what bounds the limitation to COMPLETENESS.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    blob = _blob(payload)
+    blob["probe_guards"]["decision_ordering"]["input"] = [
+        [987654, "2026-08-11T12:00:00"]]
+    _assert_rejected(conn, _with_blob(payload, blob))

@@ -1027,10 +1027,40 @@ FOR EACH ROW WHEN NOT (
                  '$.probe_guards.fire_membership.input') = 1
 
          -- THE DECISIONS THE AS-OF RULE ORDERED, each [intent_id,
-         -- recorded_ts]. SERVICE-VALIDATED (L17): the ADMISSIBLE subset is
-         -- computed by the ladder's own window and no subquery can reproduce
-         -- it, so SQL asserts presence, type and verdict. A fabricated array
-         -- is ACCEPTED -- a declared LIMIT, the same one rungs 7 and 8 carry.
+         -- recorded_ts].
+         --
+         -- THE BINDING IS WRITER-SUPPLIED-PAIRS-ONLY, AND IT IS NOT AL-3
+         -- (Codex 22A-R9-05; CHARC ruled 2026-08-26). This comment cited AL-3
+         -- -- "rungs 7, 8 and fire_membership are service-validated" -- for a
+         -- clause AL-3 does not name, which SILENTLY BROADENED a declared
+         -- limitation roster to cover something nobody had ruled on. AL-3
+         -- stands as written and does NOT extend here; this clause carries its
+         -- own declaration, below, which is narrower than AL-3 in one
+         -- direction and weaker in another and therefore cannot borrow it.
+         --
+         -- WHAT IS PROVED: every pair the writer DID supply is well-shaped and
+         -- MATCHES a real `latch_order_intents` row on BOTH halves. That is
+         -- more than AL-3's clauses get -- a fabricated pair is REJECTED here,
+         -- where a fabricated rung-7 array is accepted.
+         --
+         -- WHAT IS NOT PROVED, DECLARED AS A LIMITATION WITH ITS REASON: the
+         -- COMPLETENESS of the supply. An EMPTY array satisfies this clause
+         -- vacuously, and so does any SUBSET of the decisions the fold
+         -- actually consulted. The reason is exact: the guard validates the
+         -- CONSISTENCY of what was supplied and does not enforce the
+         -- COMPLETENESS of supply, because nothing in this schema specifies
+         -- what the required decision set IS. A clause enforcing a set no
+         -- authority has ruled would be a guess wearing a constraint's
+         -- clothing, and on this table a wrong REFUSAL is permanent.
+         --
+         -- BANKED TO 22-A2 WITH ITS TRIGGER: when the proof machinery
+         -- specifies the required decision set, this guard gains its
+         -- completeness half, where that authority will exist. The reviewer's
+         -- proposed anti-admission predicate -- refuse `latch_ladder` whenever
+         -- ANY same-ticker decision is recorded at-or-after the fill session --
+         -- is a real behaviour widening rather than a patch, and it is that
+         -- arc's question. It is written down here so the next reader meets
+         -- the limitation and its owner in the same paragraph.
          AND json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.probe_guards.decision_ordering'), '$.input', '$.verdict') = '{}'
          AND json_extract(NEW.cited_latch_probe_json,
@@ -1042,10 +1072,11 @@ FOR EACH ROW WHEN NOT (
          -- one-element arrays and nonexistent ids -- so the "consulted
          -- decisions" record could name rows that do not exist while reading
          -- as evidence. This does NOT ask SQL to reconstruct the admissible
-         -- fold topology: COMPLETENESS stays service-validated (AL-3), which
-         -- is the part no subquery can reach. What SQL can do is insist that
-         -- every claimed pair is `[integer intent_id, text recorded_ts]` and
-         -- that the pair MATCHES a real intent row on both halves.
+         -- fold topology -- see the COMPLETENESS limitation declared above,
+         -- which is this clause's own and is NOT AL-3's. What SQL can do is
+         -- insist that every claimed pair is `[integer intent_id, text
+         -- recorded_ts]` and that the pair MATCHES a real intent row on both
+         -- halves.
          AND NOT EXISTS (
              SELECT 1
                FROM json_each(NEW.cited_latch_probe_json,
