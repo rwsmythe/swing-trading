@@ -164,25 +164,90 @@ def test_a_latched_fill_labels_from_the_fire_case_1(tmp_path) -> None:
     assert label is not None and label.startswith("A+ baseline")
 
 
+def _label_derived_from(conn, candidate_id: int, evaluation_run_id: int) -> str:
+    """The hypothesis label Demand C's OWN derivation produces for one fire.
+
+    Used to build the EXPECTED value from the candidate row the case names,
+    rather than from the row the entry path happened to write -- which is the
+    circularity 22A-R4-08(a) found.  It is the same derivation the arc calls,
+    fed a DIFFERENT input, so the comparison discriminates the defect it is
+    written for (the label sourced from the drifted bucket row) without
+    re-spelling the label rule (#11).
+    """
+    from swing.data.repos.candidates import fetch_candidate_by_id
+    from swing.trades.cohort_provenance_correction import (
+        _require_naive_datetime,
+        derive_cohort_keys_for_fire,
+    )
+
+    cited = fetch_candidate_by_id(conn, candidate_id)
+    assert cited is not None, f"candidate {candidate_id} is absent"
+    run_ts = conn.execute(
+        "SELECT run_ts FROM evaluation_runs WHERE id = ?",
+        (evaluation_run_id,)).fetchone()[0]
+    return derive_cohort_keys_for_fire(
+        conn, candidate=cited.candidate, candidate_id=candidate_id,
+        evaluation_run_id=evaluation_run_id,
+        run_ts_parsed=_require_naive_datetime(run_ts, what="run_ts"),
+        gate=None,
+    ).hypothesis_label
+
+
 def test_bucket_drift_is_not_death_case_1(tmp_path) -> None:
     """A LATER `watch` row for the same ticker must not change the answer.
 
     If it does, something is reading the framework's BUCKET SERIES rather than
     the mandate -- which is the whole defect the arc exists to stop.
+
+    THE OLD ASSERTION WAS CIRCULAR (Codex 22A-R4-08(a)): it compared the stored
+    label to the same stored label, so a WATCH-derived wrong label passed.  The
+    expected value is now derived from the FIRE's candidate row through the
+    SHARED derivation -- the same code, a different input -- so the comparison
+    discriminates the defect without re-spelling the label rule (#11).
+
+    The drifted row's OWN label is not computed as a foil: measured, that
+    derivation RAISES (the watch candidate matches zero registry hypotheses as
+    of its cited record), so there is no second string to compare against.
+    What carries the discrimination instead is the pair the ordinary chain
+    WOULD have written -- asserted directly above as `pipeline_watch_manual`,
+    and asserted below to be absent from the row.
     """
     conn, cfg, candidate_id = build_world(tmp_path, "c1drift")
     accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
     from tests._latch_probe_world_22a import seed_run
     seed_run(conn, 999, date(2026, 7, 24))
-    conn.execute(
+    drifted_id = conn.execute(
         "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
         "pivot, initial_stop, rs_method) VALUES (999, ?, 'watch', 17.9, "
-        "18.34, 14.88, 'universe')", (TICKER,))
+        "18.34, 14.88, 'universe')", (TICKER,)).lastrowid
+    # THE DRIFTED RUN COMPLETES, which is what makes the case bite: with it,
+    # `derive_trade_origin` answers `pipeline_watch_manual` and the ORDINARY
+    # chain would write the drifted candidate and its watch label.  Without it
+    # the drifted row is inert and the case could pass while reading the bucket
+    # series.
+    from tests.trades._cohort_provenance_fixtures import (
+        rebase_status_history_recorded_at,
+        seed_pipeline_run,
+    )
+    seed_pipeline_run(
+        conn, evaluation_run_id=999, data_asof_date="2026-07-23",
+        action_session_date="2026-07-24",
+        started_ts="2026-07-23T17:30:00", finished_ts="2026-07-23T17:44:00")
+    rebase_status_history_recorded_at(conn)
     conn.commit()
+    from swing.trades.origin import derive_trade_origin
+    assert derive_trade_origin(
+        conn, TICKER, EntryPath.MANUAL_WEB_FORM) == "pipeline_watch_manual", (
+        "the fixture must make the ORDINARY chain answer differently from the "
+        "fire, or bucket drift is not being exercised at all")
+
+    from_fire = _label_derived_from(conn, candidate_id, 121)
+    assert from_fire == "A+ baseline (aplus)"
+
     result = enter(conn, cfg, req())
     assert written(conn, result.trade_id) == (
-        "pipeline_aplus", candidate_id,
-        written(conn, result.trade_id)[2])
+        "pipeline_aplus", candidate_id, from_fire)
+    assert candidate_id != drifted_id
 
 
 def test_a_pre_barrier_fire_records_honest_unset_case_1_pre(tmp_path) -> None:
@@ -650,25 +715,123 @@ def _persisted_row(conn, trade_id) -> dict:
     return dict(zip(cols, vals, strict=True))
 
 
+# ---------------------------------------------------------------------------
+# THE PRE-ARC REFERENCE ROW -- captured by RUNNING the base commit, not by
+# running this branch twice (Codex 22A-R4-08(b)).
+#
+# PROVENANCE.  Produced by executing `record_entry` in a detached checkout of
+# the arc's base commit `a18a3771` (schema v36, before migration 0037), against
+# a world built exactly as `build_world` builds it minus every 22-A-only
+# artefact -- the same evaluation run 121, the same FTRE `aplus` candidate with
+# the same close / pivot / stop, the same `seed_pipeline_run` +
+# `rebase_status_history_recorded_at`, and the same `EntryRequest` field values
+# `req(schwab_source_value_json=None, fill_origin="operator_typed")` produces.
+# Regenerate the same way: check out `a18a3771` detached, replay that fixture,
+# and dump `SELECT * FROM trades`.
+#
+# WHY A PINNED GOLDEN AND NOT A SECOND RUN.  The old test compared a
+# `cfg`-passed run against a `cfg=None` run of THIS branch's code.  Both are
+# post-change, so a regression shared by the two paths passes -- it proved
+# DETERMINISM, and clause (a) claims BYTE-IDENTITY WITH THE PRE-ARC ROW.  A
+# lock that cannot fail its own lock is not a lock.
+#
+# Every value here is deterministic: `id` and `candidate_id` come from a fresh
+# database's rowid sequence, and both timestamps derive from `entry_date`, not
+# from the wall clock.
+# ---------------------------------------------------------------------------
+LOCK_A_PRE_ARC_ROW: dict = {
+    "candidate_id": 1,
+    "catalyst": "technical_only",
+    "catalyst_other_description": None,
+    "chart_pattern_algo": None,
+    "chart_pattern_algo_confidence": None,
+    "chart_pattern_classification_pipeline_run_id": None,
+    "chart_pattern_operator": None,
+    "current_avg_cost": 18.5,
+    "current_size": 2.0,
+    "current_stop": 14.0,
+    "disqualifying_process_violation": None,
+    "emotional_state_pre_trade": '["calm"]',
+    "entry_date": "2026-07-27",
+    "entry_grade": None,
+    "entry_intent": None,
+    "entry_price": 18.5,
+    "event_date": None,
+    "event_handling": "not_applicable",
+    "event_risk_present": 0,
+    "event_type": None,
+    "exit_grade": None,
+    "expected_scenario": "20% in 4 weeks",
+    "failure_mode": None,
+    "gap_risk_handling": "not_applicable",
+    "gap_risk_present": 0,
+    "hypothesis_label": None,
+    "id": 1,
+    "industry": "",
+    "initial_shares": 2,
+    "initial_stop": 14.0,
+    "invalidation_condition": "break of the stop",
+    "last_fill_at": "2026-07-27T16:00:00",
+    "lesson_learned": None,
+    "management_grade": None,
+    "market_regime": "Bullish",
+    "mistake_cost_confidence": None,
+    "mistake_tags": None,
+    "notes": None,
+    "pattern_evaluation_id": None,
+    "planned_target_R": None,
+    "pre_trade_locked_at": "2026-07-27T16:00:00",
+    "premortem_additional": None,
+    "premortem_execution": "size too small",
+    "premortem_market_sector": "sector breaks",
+    "premortem_technical": "pivot fails",
+    "process_grade": None,
+    "realized_R_if_plan_followed": None,
+    "reviewed_at": None,
+    "risk_policy_id_at_lock": 1,
+    "sector": "",
+    "state": "entered",
+    "thesis": "the mandate fired",
+    "ticker": "FTRE",
+    "trade_origin": "pipeline_aplus",
+    "watchlist_entry_target": None,
+    "watchlist_initial_stop": None,
+    "why_now": "through the pivot",
+}
+
+
 def test_the_lock_a_an_unlatched_fill_is_byte_identical_with_cfg_passed(
         tmp_path) -> None:
-    """LOCK clause (a), tested with ``cfg`` PASSED -- the production path.
+    """LOCK clause (a), against the PRE-ARC row captured off `a18a3771`.
 
-    Testing it only with ``cfg=None`` would prove the arc is inert when it is
-    switched off, which is not the claim.
+    Both arms are asserted against the SAME external reference: `cfg` PASSED
+    (the production path -- testing only `cfg=None` would prove the arc is
+    inert when switched off, which is not the claim) and `cfg=None` (the
+    pre-existing caller). A regression shared by the two post-change paths
+    fails here and could not fail a two-run comparison.
+
+    The COLUMN SET is asserted too. If a later change adds a `trades` column,
+    a dict comparison would fail on the diff -- but a comparison written to
+    tolerate that (subset, or key intersection) would silently stop covering
+    the new column, so the failure is left loud and this line says why.
     """
     conn_a, cfg_a, _ = build_world(tmp_path, "lockA")
     conn_a.commit()
     a = _persisted_row(conn_a, enter(conn_a, cfg_a, req(
         schwab_source_value_json=None, fill_origin="operator_typed")).trade_id)
 
-    conn_b, cfg_b, _ = build_world(tmp_path, "lockB")
+    conn_b, _cfg_b, _ = build_world(tmp_path, "lockB")
     conn_b.commit()
     b = _persisted_row(conn_b, record_entry(
         conn_b, req(schwab_source_value_json=None,
                     fill_origin="operator_typed"),
         soft_warn=SOFT, hard_cap=HARD, force=False).trade_id)
-    assert a == b
+
+    assert set(a) == set(LOCK_A_PRE_ARC_ROW), (
+        "the `trades` column set moved relative to the pre-arc capture: "
+        f"{sorted(set(a) ^ set(LOCK_A_PRE_ARC_ROW))}")
+    assert a == LOCK_A_PRE_ARC_ROW, "cfg PASSED diverged from the pre-arc row"
+    assert b == LOCK_A_PRE_ARC_ROW, "cfg=None diverged from the pre-arc row"
 
 
 def test_the_lock_c_every_pre_existing_failure_branch_is_unchanged(
