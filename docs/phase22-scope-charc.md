@@ -110,7 +110,16 @@ standard (control + test, live-DB copy, default `recursive_triggers`). Confirmed
 if exposed — the arc's own evidence source). Banked to this sweep: `latch_view_events` + any
 guard the sweep enumerates. **The CONVENTION is the part that ends the class:** an append-only
 guard ships as a TRIPLE (`no_update` + `no_delete` + conflict-scoped `no_replace`), plus the
-NULL-`WHEN` coverage check on any `WHEN`-clause trigger. RD's framing binds: a REPLACE-mutable
+NULL-`WHEN` coverage check on any `WHEN`-clause trigger. **THE PRICED COST, up front (leg 5,
+measured): a `BEFORE INSERT` trigger CANNOT distinguish benign conflict resolution from
+destructive — `ON CONFLICT ... DO NOTHING` and `OR REPLACE` are indistinguishable to it. So any
+table whose production writer uses `ON CONFLICT` needs the WRITER adjusted (a `WHERE NOT EXISTS`
+pre-filter so the lost-race path presents no conflict, `ON CONFLICT` retained as the belt) —
+NEVER the barrier narrowed**, because narrowing leaves a live conflict target and the measured
+consequence of a live `UNIQUE` target is a MOVED id (the id-reuse class). A sweep that meets its
+first `ON CONFLICT` writer unpriced will be tempted into exactly the narrowing that silently
+reopens the hole. Both directors concur; the writer's observable contract must be pinned by
+tests that do not move with the repair. RD's framing binds: a REPLACE-mutable
 audit table makes the audit-trail check a writer-absence claim one level up.
 
 **22-H: D37+D38 timestamp sweep** — clock-domain normalization at COMPARISONS (never stored data)
