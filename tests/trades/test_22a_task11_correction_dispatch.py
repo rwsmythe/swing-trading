@@ -30,6 +30,7 @@ FROZEN CLOCK.  Every session is an explicit date; nothing reads the wall clock.
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -382,20 +383,50 @@ def test_the_latch_tier_skips_the_last_word_guard(tmp_path) -> None:
     assert result.cited_candidate_id == ids["candidate_id"]
 
 
-def test_no_cfg_keeps_the_last_word_tier(tmp_path) -> None:
-    """`cfg=None` is the pre-arc path byte-for-byte.
+def test_no_cfg_on_an_UNLINKED_fill_keeps_the_last_word_tier(tmp_path) -> None:
+    """`cfg=None` is the pre-arc path byte-for-byte, WHERE THERE IS NO LATCH.
 
     Every existing Demand-C caller passes no config, so the resolver returns
     `no_config`, the ladder falls through to the last-word guard, and the row
     lands `last_word` with all five citations NULL.  This is what makes the
-    whole existing suite a non-regression control rather than a rewrite.
+    whole existing suite a non-regression control rather than a rewrite -- and
+    the fill's envelope is STRIPPED here, because that is the world those
+    callers are actually in.
     """
     conn, _unused, ids = build_world(tmp_path, "nocfg")
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = NULL WHERE fill_id = ?",
+        (ids["fill_id"],))
+    conn.commit()
     result = _apply(conn, None, ids)
     assert result.admission_tier == "last_word"
     row = _stored(conn, ids["trade_id"])
     assert row["cited_latch_link_id"] is None
     assert row["cited_latch_probe_json"] is None
+
+
+def test_no_cfg_on_a_LINKED_fill_is_refused_by_the_trigger(tmp_path) -> None:
+    """22A-R6-04's correction half, closed STRUCTURALLY rather than by a rule.
+
+    `cfg=None` maps to `no_config` and therefore to the `last_word` tier, so a
+    caller who simply omitted the config could write a `last_word` correction
+    on a fill whose own envelope names an accepted order -- the authority made
+    caller-selectable.  MY OWN EARLIER TEST ASSERTED THAT THIS SUCCEEDS.
+
+    It no longer can, and not because the service learned a new rule: the
+    citation trigger's `last_word` branch now REQUIRES that the fill's order
+    resolve to no link (22A-R6-01).  So the guarantee sits in the schema,
+    where a caller cannot opt out of it, which is strictly better than a
+    service-side check a second caller could forget.
+
+    PRE-FIX: a `last_word` row landed.  POST-FIX: `sqlite3.IntegrityError`
+    naming the citation graph, and nothing is written.
+    """
+    conn, _unused, ids = build_world(tmp_path, "nocfglinked")
+    with pytest.raises(sqlite3.IntegrityError, match="citation graph"):
+        _apply(conn, None, ids)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM provenance_corrections").fetchone()[0] == 0
 
 
 def test_a_recognised_but_refused_mandate_refuses_the_correction(

@@ -2413,8 +2413,10 @@ def _echo_admission_tier(view) -> None:
     "--cited-candidate", "cited_candidate_id", type=int, required=True,
     help=(
         "The candidates.id this trade's cohort keys are DERIVED FROM. Must be "
-        "the framework's LAST WORD before the entry fill and must be an "
-        "`aplus` row."
+        "an `aplus` row. WHICH row is admissible depends on the authority: "
+        "with NO accepted latch order it must be the framework's LAST WORD "
+        "before the entry fill; with one, it must be that order's OWN fire, "
+        "which is allowed to have drifted out of the current bucket."
     ),
 )
 @click.option(
@@ -2465,9 +2467,16 @@ def journal_correct_cohort_provenance_cmd(
     two row ids and a reason; the framework supplies the values.
 
     A citation is admissible only if BOTH cited rows' own action_session_date
-    does not POST-DATE the session of the trade's authoritative entry fill,
-    the cited candidate is the framework's LAST WORD before that fill, and the
-    matched hypothesis was ACTIVE when the framework wrote the record.
+    does not POST-DATE the session of the trade's authoritative entry fill and
+    the matched hypothesis was ACTIVE when the framework wrote the record.
+
+    THE THIRD CONDITION DEPENDS ON THE AUTHORITY, and the tier is DETECTED
+    from the record rather than chosen. Where the entry fill names no accepted
+    latch order the tier is `last_word` and the cited candidate must be the
+    framework's LAST WORD before the fill. Where it names one, the tier is
+    `latch_ladder`: the citation is FORCED to that order's own fire -- which
+    may have drifted out of the current bucket, because a mandate does not die
+    of drift -- and the last-word ranking is not consulted at all.
 
     V1 records provenance ONCE per trade. There is no re-correction path, so
     the --dry-run reading is the decision point.

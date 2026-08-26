@@ -262,3 +262,21 @@ def test_accepted_validity_rows_cannot_carry_a_null_limit_price(tmp_path) -> Non
     normalized = " ".join(sql.split())
     assert "validity_outcome <> 'accepted_by_broker'" in normalized
     assert "actual_limit_price IS NOT NULL" in normalized
+
+
+def test_a_MISSING_envelope_symbol_fails_the_guard(tmp_path) -> None:
+    """22A-R6-05: unknown is not pass.
+
+    ``envelope_symbol is not None and envelope_symbol != ticker`` collapsed a
+    three-valued question to two, so an envelope with no
+    ``schwab_instrument_symbol`` PASSED and the evidence recorded a passing
+    guard whose input was ``null``.  It is also an authorize-then-abort: the
+    citation trigger requires that entry's input to be TEXT, so a correction
+    the service admitted aborted at the INSERT.
+
+    PRE-FIX: ``None`` (the guard passed).  POST-FIX: ``'ticker_mismatch'``.
+    Its control is one line down -- a symbol that AGREES still passes, so the
+    change refuses absence and not everything.
+    """
+    assert _judge(_order(), envelope_symbol=None) == "ticker_mismatch"
+    assert _judge(_order(), envelope_symbol=_order().ticker) is None

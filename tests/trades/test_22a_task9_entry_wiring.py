@@ -1321,3 +1321,49 @@ def test_an_inverted_window_gives_the_ENTRY_honest_unset_keys(tmp_path) -> None:
 
     result = enter(conn, cfg, req())
     assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
+
+
+def test_every_production_record_entry_call_site_passes_cfg() -> None:
+    """22A-R6-04's entry half, pinned as a CALLER-SIDE OBLIGATION (#31).
+
+    `cfg=None` is the pre-arc path byte-for-byte -- the LOCK requires that, and
+    it is what makes the whole pre-22-A suite a non-regression control.  The
+    cost is that a caller who OMITS the config gets the ordinary chain even for
+    an order-bearing fill, so the authority is caller-selectable in principle.
+
+    THE CORRECTION PATH IS NOW SCHEMA-PREVENTED (22A-R6-01: the `last_word`
+    branch requires the fill's order to resolve to no link), so the residual is
+    the ENTRY path alone, and it is SERVICE-prevented rather than
+    schema-prevented -- weaker, so it is pinned rather than declared.
+
+    THE SEARCH THAT ESTABLISHES THE MANIFEST is a STATIC AST walk of every
+    `.py` under `swing/`, not a token grep: a grep bounds a family from below,
+    and the whole point is that a NEW call site added without `cfg` must FAIL
+    here rather than be invisible.  Measured today: TWO production call sites,
+    `swing/cli.py` and `swing/web/routes/trades.py`, both passing `cfg`.
+    """
+    import ast
+
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "swing"
+    sites: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            if name != "record_entry":
+                continue
+            where = f"{path.relative_to(root.parent).as_posix()}:{node.lineno}"
+            sites.append(where)
+            assert any(k.arg == "cfg" for k in node.keywords), (
+                f"{where} calls record_entry WITHOUT cfg; the latch mechanism "
+                f"is then unreachable from that surface -- silently, because "
+                f"every persisted value stays valid")
+    assert len(sites) == 2, (
+        f"the production record_entry manifest moved: {sites}. Two is the "
+        f"measured count (the CLI and the web route); a third surface is a "
+        f"decision, not a drive-by")

@@ -1084,8 +1084,20 @@ def test_a_last_word_row_is_unaffected_by_the_json_guard(conn) -> None:
     ``CASE WHEN`` must not turn a legal absence into a refusal.  Without this
     half a wrapper placed one clause too high would break every ordinary
     Demand-C correction.
+
+    THE FIXTURE IS AN UNLINKED FILL, AND MY FIRST VERSION WAS NOT (Codex
+    22A-R6-01).  It started from the LATCH fixture, cleared the citations and
+    flipped the tier -- so it ASSERTED that an authority downgrade succeeds, on
+    the very row whose envelope names an accepted order.  A control that
+    enshrines the defect it sits beside is worse than no control.  The
+    envelope is stripped here so the fill has no latch authority to bypass,
+    which is the world ``last_word`` is actually for.
     """
     payload = seed_latch_ladder_citation(conn)
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = NULL WHERE fill_id = ?",
+        (payload["entry_fill_id_at_correction"],))
+    conn.commit()
     payload = dict(payload)
     payload.update(admission_tier="last_word", cited_latch_link_id=None,
                    cited_latch_validity_intent_id=None,
@@ -1096,3 +1108,161 @@ def test_a_last_word_row_is_unaffected_by_the_json_guard(conn) -> None:
     assert conn.execute(
         "SELECT admission_tier FROM provenance_corrections").fetchone() == (
         "last_word",)
+
+
+def test_a_last_word_DOWNGRADE_on_a_linked_fill_is_rejected(conn) -> None:
+    """22A-R6-01: the tier is not a label an operator may choose.
+
+    ONE dimension differs from the control above -- the fill KEEPS the envelope
+    naming its accepted order -- and the row is REJECTED.  PRE-FIX it inserted,
+    erasing every latch refusal on a mandate the ladder governs; POST-FIX the
+    ``last_word`` branch must prove the fill's own order resolves to NO link.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    payload = dict(payload)
+    payload.update(admission_tier="last_word", cited_latch_link_id=None,
+                   cited_latch_validity_intent_id=None,
+                   cited_latch_place_intent_id=None,
+                   cited_latch_broker_order_id=None,
+                   cited_latch_probe_json=None)
+    _assert_rejected(conn, payload)
+
+
+def test_a_citation_naming_an_order_the_FILL_does_not_is_rejected(
+        conn) -> None:
+    """22A-R6-02: the cited order must be the one the SUBJECT FILL names.
+
+    Every other clause binds the citation to ITSELF, and the only
+    subject-envelope field checked anywhere was the instrument SYMBOL.  Here
+    the envelope's order id is changed and NOTHING else: the link, both
+    intents, the candidate and the symbol all still agree with each other, and
+    the row must be REJECTED because the fill cannot prove it came from that
+    order.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
+        (json.dumps({"schwab_order_id": "a-different-order",
+                     "schwab_instrument_symbol": "CADL"}),
+         payload["entry_fill_id_at_correction"]))
+    conn.commit()
+    _assert_rejected(conn, payload)
+
+
+def test_a_cited_order_naming_TWO_links_is_rejected(conn) -> None:
+    """22A-R6-03: the trigger COUNTS, because the resolver counts.
+
+    ``broker_order_id`` is deliberately not unique and the resolver refuses
+    ``ambiguous_accepted_orders`` at two.  The trigger verified only that the
+    SELECTED link exists, so a raw correction could pick one of two ambiguous
+    mandates.  A SECOND link on the same order id is minted here through a
+    real acceptance -- never raw-inserted, because the duplicate this rung
+    guards is a duplicate BROKER ORDER, not a duplicate row.
+    """
+    from tests._latch_link_fixtures_22a import (
+        insert_intent,
+        place_row,
+        validity_row,
+    )
+    from tests.trades._cohort_provenance_fixtures import (
+        CADL_TICKER,
+        seed_candidate,
+        seed_evaluation_run,
+    )
+
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    other_run = seed_evaluation_run(
+        conn, run_ts="2026-08-07T17:30:26", data_asof_date="2026-08-06",
+        action_session_date="2026-08-07")
+    other = seed_candidate(conn, evaluation_run_id=other_run)
+    common = {"evaluation_run_id": other_run, "ticker": CADL_TICKER,
+              "detection_date": "2026-08-07",
+              "action_session_date": "2026-08-07",
+              "recorded_ts": "2026-08-07T12:00:00"}
+    place_id = insert_intent(conn, place_row(
+        other, run_id=other_run, idempotency_key="dup-place", **common))
+    insert_intent(conn, validity_row(
+        other, place_id, key="dup-validity", run_id=other_run,
+        actual_broker_order_id=payload["cited_latch_broker_order_id"],
+        **common))
+    conn.commit()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM latch_order_mandate_links WHERE "
+        "broker_order_id = ?",
+        (payload["cited_latch_broker_order_id"],)).fetchone()[0] == 2, (
+        "the fixture must produce TWO links on one order id or the case is "
+        "about a different clause")
+    _assert_rejected(conn, payload)
+
+
+# ===========================================================================
+# 22A-R6-06 -- THE PROBE-GUARD ROSTER'S BINDING LABELS ARE TRUE
+#
+# `fill_session_is_session` was labelled SQL_BOUND while the trigger checked
+# only that its verdict read 'pass' -- so a weekend or holiday fill could
+# assert `pass` and be admitted under a roster advertising SQL enforcement.
+# A false label is worse than a declared limit: an auditor reading the roster
+# concludes the predicate was proved.
+# ===========================================================================
+def test_the_probe_guard_roster_claims_no_verdict_sql_cannot_prove(
+        conn) -> None:
+    """Every SQL_BOUND probe guard's VERDICT must be provable in SQL.
+
+    The roster is walked rather than a list maintained beside it, and the
+    boundary is stated per member: the fill-session guard is
+    SERVICE_VALIDATED because no subquery can enumerate the NYSE calendar --
+    the same ground AL-5 carries one clause over, and the same ground the two
+    rounded price-bound guards carry.
+    """
+    from swing.trades.latched_origin import PROBE_GUARD_CLAUSES
+
+    by_key = {c.key: c for c in PROBE_GUARD_CLAUSES}
+    assert by_key["fill_session_is_session"].binding == SERVICE_VALIDATED
+    assert by_key["fire_membership"].binding == SERVICE_VALIDATED
+    assert by_key["decision_ordering"].binding == SERVICE_VALIDATED
+    # NOTHING in the probe-guard roster claims SQL enforcement, and that is an
+    # ASSERTION rather than an omission: the three clauses rest on the
+    # exchange calendar, on fold state and on the admissible-decision subset,
+    # none of which a trigger can reach.  A member added as SQL_BOUND fails
+    # here and has to justify itself.
+    assert not [c.key for c in PROBE_GUARD_CLAUSES if c.binding == SQL_BOUND]
+
+
+def test_a_weekend_fill_session_is_ACCEPTED_and_the_limit_is_declared(
+        conn) -> None:
+    """AND THE LIMIT IS EXERCISED, not merely labelled.
+
+    A raw citation whose fill session is a SATURDAY, with the guard's input
+    bound to it and the verdict still ``pass``, INSERTS.  That is the declared
+    residual of the reclassification above, and pinning it is what stops the
+    label from being an unfalsifiable claim -- if a later change DOES prove
+    the predicate in SQL, this case fails and the roster is revisited
+    deliberately rather than drifting.
+    """
+    import datetime
+
+    payload = seed_latch_ladder_citation(conn)
+    saturday = "2026-08-15"
+    assert datetime.date.fromisoformat(saturday).weekday() == 5
+    conn.execute(
+        "UPDATE fills SET fill_datetime = ? WHERE fill_id = ?",
+        (saturday + "T16:00:00", payload["entry_fill_id_at_correction"]))
+    conn.commit()
+    payload = dict(payload)
+    payload["entry_fill_session_date"] = saturday
+    # The frozen snapshot carries the fill's datetime and a 0036 CHECK ties it
+    # to `entry_fill_session_date`, so the snapshot moves WITH the fill or the
+    # row is refused for that reason instead of reaching the clause under test.
+    snapshot = json.loads(payload["entry_fill_snapshot_json"])
+    snapshot["fill_datetime"] = saturday + "T16:00:00"
+    payload["entry_fill_snapshot_json"] = json.dumps(snapshot, sort_keys=True)
+    blob = _blob(payload)
+    blob["fill_session"] = saturday
+    blob["horizon_session"] = saturday
+    blob["probe_guards"]["fill_session_is_session"]["input"] = saturday
+    _insert_payload(conn, _with_blob(payload, blob))
+    assert conn.execute(
+        "SELECT admission_tier FROM provenance_corrections").fetchone() == (
+        "latch_ladder",)

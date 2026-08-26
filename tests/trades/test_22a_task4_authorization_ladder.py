@@ -16,6 +16,7 @@ FROZEN CLOCK.  Every session is an explicit date; nothing reads the wall clock.
 """
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -313,7 +314,7 @@ def test_two_links_on_one_order_id_are_ambiguous_case_14(tmp_path) -> None:
     There is deliberately no UNIQUE on ``broker_order_id``, so the reader
     counts.  A ``fetchone()`` lookup silently picks one and looks correct.
     """
-    conn, _cfg, candidate_id = build_world(tmp_path, "case14")
+    conn, cfg, candidate_id = build_world(tmp_path, "case14")
     try:
         order = _accept(conn, candidate_id)
         # A SECOND acceptance naming the SAME broker order id.  It is minted
@@ -328,6 +329,34 @@ def test_two_links_on_one_order_id_are_ambiguous_case_14(tmp_path) -> None:
         found = find_accepted_latch_order(conn, broker_order_id=BROKER_ORDER_ID)
         assert len(found) == 2
         assert [o.link_id for o in found] == sorted(o.link_id for o in found)
+
+        # AND THE REFUSAL ITSELF, at the RESOLVER (Codex 22A-R6-09). Asserting
+        # only that the lookup returns two proves the READER counts; it says
+        # nothing about what the ladder DOES with two. Deleting the resolver's
+        # `len(orders) > 1` branch and taking `orders[0]` left this case green,
+        # and the roster tests do not close it either -- one finds the literal
+        # statically and the other constructs a verdict directly, so neither
+        # exercises the rung.
+        from types import SimpleNamespace
+
+        from swing.trades.latched_origin import resolve_latched_provenance
+
+        request = SimpleNamespace(
+            ticker=TICKER, entry_date=FILL_SESSION.isoformat(),
+            entry_price=GOOD_PRICE, shares=GOOD_SHARES,
+            fill_origin=GOOD_ORIGIN, hypothesis_label=None,
+            schwab_source_value_json=json.dumps({
+                "schwab_order_id": BROKER_ORDER_ID,
+                "schwab_instrument_symbol": TICKER}))
+        verdict = resolve_latched_provenance(conn, cfg, request)
+        assert verdict.admitted is False
+        assert verdict.recognised_but_underivable is True, (
+            "two links is RECOGNISED-and-refused; falling through to the "
+            "ordinary chain would write TODAY's candidate for a fill that "
+            "demonstrably came from an accepted order")
+        assert verdict.decline_reason == "ambiguous_accepted_orders"
+        assert (verdict.trade_origin, verdict.candidate_id,
+                verdict.hypothesis_label) == (None, None, None)
     finally:
         conn.close()
 

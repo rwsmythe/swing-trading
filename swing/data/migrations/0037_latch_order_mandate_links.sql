@@ -641,12 +641,40 @@ FOR EACH ROW WHEN NOT (
     AND COALESCE((
         -- 'last_word': ALL FIVE citation columns NULL. The tier a row claims
         -- and the evidence it carries may not disagree.
+        --
+        -- AND THE ABSENCE OF EVIDENCE MUST BE AN ABSENCE OF AUTHORITY (Codex
+        -- 22A-R6-01). Proving only that the five columns are NULL made the
+        -- tier an OPERATOR-SELECTABLE LABEL: a raw correction could set
+        -- 'last_word', erase the citation, and bypass every latch refusal on a
+        -- fill whose own envelope names an accepted order. That is the widest
+        -- wrong ACCEPTANCE in the arc -- the eleven-rung authority downgraded
+        -- by writing a different word in a column.
+        --
+        -- So the branch now REQUIRES that the authoritative fill's broker
+        -- order resolves to NO link. A fill with no envelope, invalid JSON or
+        -- no order id yields NULL from the CASE, `l.broker_order_id = NULL` is
+        -- NULL, NOT EXISTS holds, and last_word is admitted -- which is right:
+        -- no usable order id means no latch authority exists to bypass. The
+        -- `json_valid` CASE is load-bearing for the same reason it is
+        -- everywhere else in this trigger: a malformed envelope would RAISE
+        -- out of json_extract rather than be judged.
         (NEW.admission_tier = 'last_word'
          AND NEW.cited_latch_link_id IS NULL
          AND NEW.cited_latch_validity_intent_id IS NULL
          AND NEW.cited_latch_place_intent_id IS NULL
          AND NEW.cited_latch_broker_order_id IS NULL
-         AND NEW.cited_latch_probe_json IS NULL)
+         AND NEW.cited_latch_probe_json IS NULL
+         AND NOT EXISTS (
+             SELECT 1 FROM latch_order_mandate_links l
+              WHERE l.broker_order_id = (
+                  SELECT CASE
+                           WHEN f.schwab_source_value_json IS NOT NULL
+                            AND json_valid(f.schwab_source_value_json)
+                           THEN json_extract(f.schwab_source_value_json,
+                                             '$.schwab_order_id')
+                         END
+                    FROM fills f
+                   WHERE f.fill_id = NEW.entry_fill_id_at_correction)))
         OR
         -- 'latch_ladder': ALL FIVE present, each bound to its source.
         (NEW.admission_tier = 'latch_ladder'
@@ -678,6 +706,33 @@ FOR EACH ROW WHEN NOT (
                      WHERE p.intent_id = NEW.cited_latch_place_intent_id
                        AND p.intent_kind = 'place'
                        AND p.candidate_id = NEW.cited_candidate_id)
+
+         -- THE CITED ORDER IS THE ONE THE SUBJECT FILL NAMES (Codex
+         -- 22A-R6-02). Every clause above binds the citation to ITSELF -- the
+         -- link to its intents, the intents to each other -- and the only
+         -- subject-envelope field checked anywhere was the instrument SYMBOL.
+         -- So a raw correction could cite ANY otherwise-compatible accepted
+         -- link on the ticker while the fill's own envelope named a different
+         -- order, or none: a mandate the fill cannot prove it came from,
+         -- admitted structurally.
+         AND (SELECT CASE
+                       WHEN f.schwab_source_value_json IS NOT NULL
+                        AND json_valid(f.schwab_source_value_json)
+                       THEN json_extract(f.schwab_source_value_json,
+                                         '$.schwab_order_id')
+                     END
+                FROM fills f
+               WHERE f.fill_id = NEW.entry_fill_id_at_correction)
+             = NEW.cited_latch_broker_order_id
+
+         -- AND THE ORDER NAMES EXACTLY ONE LINK (Codex 22A-R6-03).
+         -- `broker_order_id` is deliberately NOT unique, and the resolver
+         -- COUNTS: two links refuse `ambiguous_accepted_orders`. The trigger
+         -- verified only that the SELECTED link exists, so a raw correction
+         -- could pick one of two ambiguous mandates and assign its cohort keys
+         -- permanently. The reader counts; so does the twin.
+         AND (SELECT COUNT(*) FROM latch_order_mandate_links l2
+               WHERE l2.broker_order_id = NEW.cited_latch_broker_order_id) = 1
 
          -- ---------------- THE PROBE EVIDENCE, CLOSED AND BOUND -------------
          --

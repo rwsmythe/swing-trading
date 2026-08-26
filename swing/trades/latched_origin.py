@@ -350,8 +350,20 @@ AUTHORIZATION_KEYS: tuple[str, ...] = tuple(c.key for c in AUTHORIZATION_CLAUSES
 # ---------------------------------------------------------------------------
 PROBE_GUARD_CLAUSES: tuple[AuthorizationClause, ...] = (
     AuthorizationClause(
-        "fill_session_is_session", SQL_BOUND, "text", False,
-        "provenance_corrections.entry_fill_session_date",
+        # SERVICE_VALIDATED, AND THE LABEL WAS FALSE UNTIL NOW (Codex
+        # 22A-R6-06). The trigger binds this entry's INPUT to
+        # `entry_fill_session_date` -- that part is real -- but it cannot check
+        # the VERDICT, because no subquery can enumerate the NYSE calendar. It
+        # required only `verdict = 'pass'`, so a weekend or holiday fill could
+        # assert `pass` and be admitted while the roster advertised the clause
+        # as SQL-bound. The honest options were a registered SQLite calendar
+        # function -- which makes every connection lacking it refuse, a new
+        # failure mode on every read path -- or truthful reclassification.
+        # Reclassified: the same ground as AL-5 one clause over, and the same
+        # ground the price-bound guards carry.
+        "fill_session_is_session", SERVICE_VALIDATED, "text", False,
+        "provenance_corrections.entry_fill_session_date (the INPUT is bound; "
+        "the VERDICT is not -- SQL cannot enumerate a session calendar)",
         "the fill session is an NYSE trading session",
     ),
     AuthorizationClause(
@@ -481,7 +493,8 @@ class LatchedProvenance:
         if self.decline_reason is not None and self.decline_reason not in DECLINE_REASONS:
             raise ValueError(
                 f"decline_reason {self.decline_reason!r} is not a member of the "
-                f"33-member roster; a reason no rung can emit is a roster "
+                f"{len(DECLINE_REASONS)}-member roster; a reason no rung can emit "
+                f"is a roster "
                 f"member whose case would be written against dead code"
             )
         if self.admitted and self.recognised_but_underivable:
@@ -575,7 +588,14 @@ def assert_fill_consistent_with_order(
         return "untrusted_fill_origin"
     if ticker != order.ticker:
         return "ticker_mismatch"
-    if envelope_symbol is not None and envelope_symbol != ticker:
+    # AN ABSENT SYMBOL FAILS THE GUARD, IT DOES NOT PASS IT (Codex 22A-R6-05).
+    # `envelope_symbol is not None and ...` collapsed a three-valued question to
+    # two: UNKNOWN read as PASS, and the evidence blob then recorded a PASSING
+    # guard whose input was `null`. It is also an authorize-then-abort: the
+    # citation trigger requires that entry's input to be TEXT, so a correction
+    # the service admitted aborted at the INSERT. Direction of the change is a
+    # wrong REFUSAL, which is the cheap one.
+    if envelope_symbol is None or envelope_symbol != ticker:
         return "ticker_mismatch"
 
     # QUANTITY IS AN INEQUALITY, NOT AN EQUALITY (review 22A-R5-04).  An

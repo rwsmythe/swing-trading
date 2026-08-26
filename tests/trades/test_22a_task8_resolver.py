@@ -307,7 +307,8 @@ def test_every_reason_the_module_constructs_is_a_roster_member() -> None:
     """
     stray = sorted(_constructed_reason_strings() - DECLINE_REASONS)
     assert not stray, (
-        f"latched_origin constructs decline reasons the 33-member roster does "
+        f"latched_origin constructs decline reasons the "
+        f"{len(DECLINE_REASONS)}-member roster does "
         f"not name: {stray}")
 
 

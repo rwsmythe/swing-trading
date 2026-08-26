@@ -360,6 +360,14 @@ DERIVATION_RULE_HISTORY: tuple[tuple[str, str], ...] = (
     # '2026-08-13.3' and the drift reader compares against the STORED value.
     ("2026-08-26.1",
      "324b514c45aa68c51f1b04714736c3e85082254353fe06c8490fde538ac65e53"),
+    # 2026-08-26.2 -- Codex 22A-R6-07. `_derive` gained `run_fill_gate`, so a
+    # `latch_ladder` correction no longer arms rung 14a's same-session
+    # creation-order gate: under that tier the citation is FORCED to the
+    # accepted order's fire, so there is nothing to rank and the gate produced
+    # an authorize-then-refuse divergence. A REAL rule change on one caller,
+    # not hash noise. Appended, never edited.
+    ("2026-08-26.2",
+     "5e0f5ec83eb5e8906047c2cf0b71ca3174605ba7fbc099dc79a54e6f565b2af5"),
 )
 DERIVATION_RULE_VERSION: str = DERIVATION_RULE_HISTORY[-1][0]
 DERIVATION_RULE_SOURCE_SHA256: str = DERIVATION_RULE_HISTORY[-1][1]
@@ -1481,16 +1489,27 @@ def derive_cohort_keys_for_fire(
 
 
 def _derive(
-    conn: sqlite3.Connection, anchored: _Anchored,
+    conn: sqlite3.Connection, anchored: _Anchored, *,
+    run_fill_gate: bool = True,
 ) -> _Derived:
     """Rungs 16-18, then the three values -- each a function of the record.
 
     THE DERIVATION ITSELF NOW LIVES IN ``derive_cohort_keys_for_fire``
     (22-A task 7, plan S2.6.1), shared with the latch ladder.  What stays
-    HERE is the pair of checks that are about the FILL rather than about
-    the fire, handed to the shared derivation as its ``gate`` so they run
-    at exactly the point they always did.
-    """
+    HERE is the check that is about the FILL rather than about the fire,
+    handed to the shared derivation as its ``gate`` so it runs at exactly the
+    point it always did.
+
+    ``run_fill_gate`` is the 22-A dispatch, and it is the SAME dispatch that
+    turns off the last-word guard (Codex 22A-R6-07).  Rung 14a asks whether
+    the cited record can be shown to PRE-DATE the fill -- a question about
+    ranking the framework's bucket series against the fill's session.  Under
+    ``latch_ladder`` the citation is FORCED to the fire an append-only broker
+    acceptance created, so there is nothing to rank and the question is moot;
+    leaving the gate armed produced an AUTHORIZE-THEN-REFUSE divergence in
+    which the ladder admitted and the derivation then refused.  The
+    INVERTED-WINDOW check is unaffected: it moved into the shared derivation's
+    unconditional half precisely because it is about the RECORD."""
     def _fill_gates(bound, finished_parsed) -> None:
         # THE INVERTED-WINDOW CHECK USED TO LIVE HERE and has MOVED into the
         # shared derivation's unconditional half (Codex 22A-R3-07): it is a
@@ -1544,7 +1563,8 @@ def _derive(
         conn, candidate=anchored.cited.candidate,
         candidate_id=int(anchored.cited.candidate_id),
         evaluation_run_id=int(anchored.cited.evaluation_run_id),
-        run_ts_parsed=anchored.run_ts_parsed, gate=_fill_gates)
+        run_ts_parsed=anchored.run_ts_parsed,
+        gate=_fill_gates if run_fill_gate else None)
     if int(anchored.cited.evaluation_run_id) != int(anchored.run.id):
         raise _refuse(  # pragma: no cover -- the run is fetched BY that id
             f"candidate {anchored.cited.candidate_id} belongs to evaluation "
@@ -1884,7 +1904,8 @@ def _authorize(
             "there is nothing to choose among."
         )
     return _Authorized(
-        trade=trade, anchored=anchored, derived=_derive(conn, anchored),
+        trade=trade, anchored=anchored,
+        derived=_derive(conn, anchored, run_fill_gate=latch is None),
         latch=latch)
 
 
