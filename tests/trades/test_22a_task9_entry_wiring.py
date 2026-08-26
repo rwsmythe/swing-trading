@@ -1931,3 +1931,96 @@ def test_a_deeply_nested_envelope_still_writes_the_ENTRY(tmp_path) -> None:
         (result.trade_id,)).fetchone()[0] == 1, (
         "a blocked ENTRY and a blocked FILL are the same money-bearing "
         "failure, and an unreadable audit blob must cost neither")
+
+
+# ===========================================================================
+# 22A-R9-02 -- PROVEN BY EXECUTION, NOT INHERITED AS AN INFERENCE
+#
+# The reviewer stated plainly that its reachability was an INFERENCE from
+# composed branches.  It is not: the pair below differs in exactly ONE
+# dimension and is built entirely through `record_entry`, with no raw UPDATE.
+# ===========================================================================
+def _consumer_on_another_ticker(conn, cfg, raw_envelope: str) -> int:
+    """An entry on a DIFFERENT ticker whose envelope names OUR broker order.
+
+    The other ticker is what makes rung 6 load-bearing: `_match_fill`'s
+    clearing and the one-open-position-per-ticker rule are both PER-TICKER,
+    so on the subject's own ticker they refuse first and rung 6 never
+    decides.  Rung 6 is the only ORDER-scoped rung, which is its whole reason
+    for existing.
+    """
+    result = enter(conn, cfg, req(ticker="ZZZZ",
+                                  schwab_source_value_json=raw_envelope))
+    conn.execute("UPDATE trades SET state = 'closed', current_size = 0 "
+                 "WHERE id = ?", (result.trade_id,))
+    conn.commit()
+    return int(result.trade_id)
+
+
+def test_rung6_sees_a_prior_consumer_whose_envelope_sql_reads_apart(
+        tmp_path) -> None:
+    """PRE-FIX the ladder ADMITTED; POST-FIX it refuses mandate_already_consumed.
+
+    Rung 6's scan compared SQLite's raw reading of every other fill's
+    envelope, so a PADDED envelope already persisted on a prior fill was
+    invisible as a consumption -- and that envelope is persisted by the
+    production entry path itself, which writes the fill even when the ladder
+    refuses the row's cohort keys.
+
+    The scan now asks BOTH domains and takes the UNION, which also makes the
+    service STRICTLY STRONGER than its SQL twin: a service that found FEWER
+    consumers than the citation trigger would authorize a correction that then
+    aborts.
+    """
+    from swing.trades.latched_origin import resolve_latched_provenance
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r902")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    padded = json.dumps({"schwab_order_id": "  " + BROKER_ORDER_ID + "  ",
+                         "schwab_instrument_symbol": "ZZZZ"})
+    prior = _consumer_on_another_ticker(conn, cfg, padded)
+    assert conn.execute(
+        "SELECT json_extract(schwab_source_value_json, '$.schwab_order_id') "
+        "FROM fills WHERE trade_id = ?", (prior,)
+    ).fetchone()[0] == "  " + BROKER_ORDER_ID + "  ", (
+        "the premise: SQL reads the PADDED string, so the raw-equality scan "
+        "cannot match it")
+
+    verdict = resolve_latched_provenance(conn, cfg, req())
+    assert verdict.admitted is False
+    assert verdict.decline_reason == "mandate_already_consumed"
+
+
+def test_rung6_still_sees_a_prior_consumer_whose_envelope_is_clean(
+        tmp_path) -> None:
+    """THE CONTROL, one dimension changed: the SAME world with a CANONICAL
+    prior envelope.  It refused before the fix and must refuse after, or the
+    pair above would be satisfied by a guard that simply refuses everything.
+    """
+    from swing.trades.latched_origin import resolve_latched_provenance
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r902ctl")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    clean = json.dumps({"schwab_order_id": BROKER_ORDER_ID,
+                        "schwab_instrument_symbol": "ZZZZ"})
+    _consumer_on_another_ticker(conn, cfg, clean)
+    verdict = resolve_latched_provenance(conn, cfg, req())
+    assert verdict.decline_reason == "mandate_already_consumed"
+
+
+def test_rung6_admits_when_no_other_fill_names_the_order(tmp_path) -> None:
+    """THE OTHER CONTROL: no prior consumer at all, and the ladder ADMITS.
+
+    Without it a scan that matched every envelope would pass both cases above.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "r902ctl2")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    unrelated = json.dumps({"schwab_order_id": "9999999999",
+                            "schwab_instrument_symbol": "ZZZZ"})
+    _consumer_on_another_ticker(conn, cfg, unrelated)
+    result = enter(conn, cfg, req())
+    origin, cand, _label = written(conn, result.trade_id)
+    assert (origin, cand) == ("pipeline_aplus", candidate_id)

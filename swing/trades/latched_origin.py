@@ -1035,15 +1035,25 @@ def competitor_liveness_rung(
 
         # CONSUMED?  A mandate another trade has already taken is not competing
         # for this one.  Order-linked, exactly as rung 6 is.
+        # BOTH DOMAINS, AS RUNG 6 DOES (Codex 22A-R9-02, the class re-grepped
+        # rather than fixed as an instance).  This scan asked the same
+        # raw-equality question, and a PADDED envelope already on disk is
+        # invisible to it.  Direction here is the CHEAP one -- a missed
+        # consumption leaves the competitor LIVE and refuses
+        # `ambiguous_ticker_orders` -- but two scans answering the same
+        # question two ways is the divergence this arc keeps paying for, and
+        # the grep says these are the only two.
         consumed = conn.execute(
-            "SELECT 1 FROM fills f WHERE f.action = 'entry' "
-            "  AND f.schwab_source_value_json IS NOT NULL "
-            "  AND CASE WHEN json_valid(f.schwab_source_value_json) "
-            "           THEN json_extract(f.schwab_source_value_json, ?) "
-            "           END = ? LIMIT 1",
-            (f"$.{SCHWAB_ORDER_ID_ENVELOPE_KEY}", link.broker_order_id),
-        ).fetchone()
-        if consumed is not None:
+            "SELECT CASE WHEN json_valid(f.schwab_source_value_json) "
+            "            THEN json_extract(f.schwab_source_value_json, ?) "
+            "            END, f.schwab_source_value_json "
+            "  FROM fills f WHERE f.action = 'entry' "
+            "   AND f.schwab_source_value_json IS NOT NULL",
+            (f"$.{SCHWAB_ORDER_ID_ENVELOPE_KEY}",),
+        ).fetchall()
+        if any(sql_view == link.broker_order_id
+               or broker_order_id_from_envelope(raw) == link.broker_order_id
+               for sql_view, raw in consumed):
             continue
 
         scanned.append(int(link.link_id))
@@ -1280,18 +1290,46 @@ def authorize_accepted_order(
     # caller may widen for its own reasons, and honouring it HERE could turn a
     # genuine second consumer into an ACCEPTANCE.  A wrong refusal costs a
     # message; a wrong acceptance contaminates H1.
+    # THE SCAN ASKS BOTH DOMAINS AND TAKES THE UNION (Codex 22A-R9-02, PROVEN
+    # BY EXECUTION rather than inherited as the reviewer's inference).
+    #
+    # It compared SQLite's RAW reading alone. The production entry path
+    # PERSISTS the fill even when the ladder refuses the row's cohort keys, so
+    # a PADDED envelope naming this very order is already on disk and
+    # `json_extract` reads `'  <id>  '`, which no raw equality matches.
+    # MEASURED, one dimension apart, built entirely through `record_entry`: the
+    # padded prior consumer ADMITTED the mandate a second time; the identical
+    # world with a clean envelope refused `mandate_already_consumed`. The
+    # composition that makes rung 6 load-bearing is a prior fill on ANOTHER
+    # ticker -- `_match_fill`'s clearing and the one-open-position rule are
+    # both per-ticker and refuse first on the subject's own.
+    #
+    # BOTH READINGS, because either one alone is a partial view: SQL sees what
+    # every trigger sees, and the Python reader sees what this service bound
+    # the mandate by. The union also keeps the service STRICTLY STRONGER than
+    # its SQL twin in the citation trigger -- a service finding FEWER consumers
+    # than the trigger would authorize a correction that then aborts, the
+    # authorize-then-abort shape this arc has now met four times.
+    #
+    # NOT A SECOND SPELLING OF SQLITE: the SQL view is computed BY SQLITE, in
+    # the SELECT list, under the same `json_valid` CASE the migration uses.
     consuming = conn.execute(
-        "SELECT f.trade_id FROM fills f "
-        " WHERE f.action = 'entry' AND f.schwab_source_value_json IS NOT NULL "
-        "   AND CASE WHEN json_valid(f.schwab_source_value_json) "
+        "SELECT f.trade_id, "
+        "       CASE WHEN json_valid(f.schwab_source_value_json) "
         "            THEN json_extract(f.schwab_source_value_json, ?) "
-        "            END = ? "
+        "            END, "
+        "       f.schwab_source_value_json "
+        "  FROM fills f "
+        " WHERE f.action = 'entry' AND f.schwab_source_value_json IS NOT NULL "
         " ORDER BY f.fill_id",
-        (f"$.{SCHWAB_ORDER_ID_ENVELOPE_KEY}", order.broker_order_id),
+        (f"$.{SCHWAB_ORDER_ID_ENVELOPE_KEY}",),
     ).fetchall()
+    subject = trade_id if trade_id is not None else -1
     others = [
         int(r[0]) for r in consuming
-        if r[0] is not None and int(r[0]) != (trade_id if trade_id is not None else -1)
+        if r[0] is not None and int(r[0]) != subject
+        and (r[1] == order.broker_order_id
+             or broker_order_id_from_envelope(r[2]) == order.broker_order_id)
     ]
     if others:
         log.warning(
