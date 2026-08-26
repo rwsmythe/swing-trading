@@ -23,6 +23,7 @@ from swing.trades.entry import (
     EntryRequest,
     HardCapError,
     MissingPreTradeFieldsException,
+    PatternEvaluationAnchorError,
     SoftWarnError,
     record_entry,
 )
@@ -1073,6 +1074,38 @@ def entry_post(
                     "an integer). The form has been regenerated; please "
                     "re-submit."
                 )
+        # 22-A EXT-2(b) — THE ``schwab_order_id`` SHAPE RUNG (plan S2.4.1 /
+        # F4). The ladder above validates entry_date / entry_price / shares
+        # and did NOT validate ``schwab_order_id`` at all. That was harmless
+        # while nothing read it; this arc makes it decide PROVENANCE, so a
+        # tampered value silently changes which mandate a fill is bound to.
+        #
+        # PRESENT-BUT-MALFORMED is the refusal; ABSENT and JSON-NULL are
+        # ACCEPTED, and that is deliberate rather than lax:
+        # ``entry_auto_fill`` writes the key from
+        # ``getattr(chosen, "order_id", None)``, so a JSON null is a shape
+        # THE SERVER ITSELF RENDERS, and an absent key is every pre-22-A
+        # envelope. A rung refusing either would refuse the form's own
+        # output.
+        if isinstance(anchor_envelope, dict) and claimed_auto_fill:
+            from swing.trades.latched_origin import (
+                SCHWAB_ORDER_ID_ENVELOPE_KEY,
+            )
+            if SCHWAB_ORDER_ID_ENVELOPE_KEY in anchor_envelope:
+                _v_order_id = anchor_envelope[SCHWAB_ORDER_ID_ENVELOPE_KEY]
+                _order_id_ok = _v_order_id is None or (
+                    isinstance(_v_order_id, str)
+                    and not isinstance(_v_order_id, bool)
+                    and bool(_v_order_id.strip())
+                )
+                if not _order_id_ok:
+                    return _reject_anchor(
+                        "Trade entry rejected: fill_origin_at_form_render="
+                        f"{fill_origin_at_form_render!r} claims auto-fill "
+                        "provenance but schwab_source_value_json carries a "
+                        "schwab_order_id that is not a non-empty string. The "
+                        "form has been regenerated; please re-submit."
+                    )
         # Codex R4 Major #1 fix — require ``claimed_auto_fill`` to be true
         # before any non-operator_typed fill_origin stamping. Without this
         # gate, an attacker can submit a valid-JSON anchor with EMPTY
@@ -1252,28 +1285,53 @@ def entry_post(
                 "has been regenerated; please re-submit."
             )
         # Tier (e) — server-derived trade_origin guard (per R6 MAJOR #1).
-        # Map UI origin → EntryPath before invoking derive_trade_origin.
-        _ui_origin = origin_coerced
-        if _ui_origin == "hyp-recs":
-            _mapped_path = EntryPath.HYP_RECS_BUTTON
-        else:
-            _mapped_path = EntryPath.MANUAL_WEB_FORM
-        _conn = connect(cfg.paths.db_path)
-        try:
-            from swing.trades.origin import derive_trade_origin
-            _server_origin = derive_trade_origin(
-                _conn, ticker.upper(), _mapped_path,
-            )
-        finally:
-            _conn.close()
-        if _server_origin == "manual_off_pipeline":
-            return _reject_pe_anchor(
-                "Trade entry rejected: pattern_evaluation_id anchor "
-                "present but server-derived trade_origin is "
-                "manual_off_pipeline. The candidate row may have rolled "
-                "out of the latest pipeline run; the form has been "
-                "regenerated."
-            )
+        #
+        # 22-A EXT-2(a) — SKIPPED ENTIRELY FOR A REQUEST CARRYING A USABLE
+        # BROKER ORDER ID, and this is a NARROWING rather than a deletion.
+        #
+        # WHY (review 22A-R7-10 + 22A-R9-03). This block opens its OWN
+        # connection, computes a verdict and closes it BEFORE `record_entry`
+        # opens another, so the route could observe "no link + manual origin",
+        # reject, and never reach the authoritative transaction at all --
+        # even for a link that landed immediately afterwards. `BEGIN
+        # IMMEDIATE` inside `record_entry` closes the SERVICE race and does
+        # nothing for this one. Worse, for a genuinely latched fill submitted
+        # WITH a `pattern_evaluation_id` anchor, the rejection made the arc's
+        # own mechanism UNREACHABLE through the production form (#31,
+        # cross-site composition).
+        #
+        # THE GUARD IS NOT DELETED. `record_entry` now holds it, evaluated
+        # inside the transaction that also writes, on the origin re-derived
+        # there (see `swing/trades/entry.py`); a request with NO usable order
+        # id keeps this route behaviour byte-for-byte, which is what bounds
+        # the LOCK's scope.
+        from swing.trades.latched_origin import broker_order_id_from_envelope
+        _deferred_order_id = broker_order_id_from_envelope(
+            resolved_schwab_source_value_json,
+        )
+        if _deferred_order_id is None:
+            # Map UI origin → EntryPath before invoking derive_trade_origin.
+            _ui_origin = origin_coerced
+            if _ui_origin == "hyp-recs":
+                _mapped_path = EntryPath.HYP_RECS_BUTTON
+            else:
+                _mapped_path = EntryPath.MANUAL_WEB_FORM
+            _conn = connect(cfg.paths.db_path)
+            try:
+                from swing.trades.origin import derive_trade_origin
+                _server_origin = derive_trade_origin(
+                    _conn, ticker.upper(), _mapped_path,
+                )
+            finally:
+                _conn.close()
+            if _server_origin == "manual_off_pipeline":
+                return _reject_pe_anchor(
+                    "Trade entry rejected: pattern_evaluation_id anchor "
+                    "present but server-derived trade_origin is "
+                    "manual_off_pipeline. The candidate row may have rolled "
+                    "out of the latest pipeline run; the form has been "
+                    "regenerated."
+                )
         resolved_pe_id = parsed_pe_id
 
     # Claim-consistency gate per §C.5.
@@ -1755,6 +1813,16 @@ def entry_post(
                 {"error_message": str(exc)},
                 status_code=400,
             )
+        except PatternEvaluationAnchorError as exc:
+            # 22-A EXT-2 — THE RELOCATED GUARD'S REFUSAL, RENDERED AS THE
+            # SAME 400 THIS ROUTE USED TO MAKE (review 22A-R9-03).
+            #
+            # `PatternEvaluationAnchorError` subclasses `ValueError`, so
+            # WITHOUT this clause the handler below re-raises it (its message
+            # carries no "chart_pattern") and the operator gets a 500 on a
+            # refusal the system means to make. The clause must stay ABOVE the
+            # `except ValueError` for the same reason.
+            return _reject_pe_anchor(str(exc))
         except ValueError as exc:
             # Code-review I1 (plan §Task 5.4 lines 3801-3802) —
             # _validate_chart_pattern_invariant in
