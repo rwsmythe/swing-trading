@@ -194,10 +194,31 @@ BEGIN SELECT RAISE(ABORT, '22-A barrier trg_candidates_no_delete: candidates row
 -- hit is a comment FORBIDDING the idiom) and insert_candidates uses a plain
 -- INSERT. That is SERVICE-prevention at an incidence of zero, which is exactly
 -- the posture the barrier exists to replace.
+--
+-- THE PK CONFLICT CLAUSE READS `NEW.<pk> != -1`, AND THE `IS NOT NULL` FORM IT
+-- REPLACES NEVER FIRED (Codex 22A-R8-02; CHARC-ruled 2026-08-26). In a BEFORE
+-- INSERT trigger an OMITTED `INTEGER PRIMARY KEY` -- and an explicit NULL --
+-- both present as `-1`, reproduced independently on sqlite 3.50.4. So
+-- `NEW.<pk> IS NULL` is ALWAYS false: the old clause was dead text that
+-- happened to work, and the moment a row at id `-1` exists it ABORTS every
+-- ordinary id-omitting append. All four no-REPLACE barriers in this migration
+-- use the `!= -1` form, and each ships the three-direction discriminating set
+-- the ruling names -- an ordinary append SUCCEEDS, a conflicting REPLACE
+-- ABORTS, an explicit conflicting id ABORTS.
+--
+-- THE RESIDUAL ON AN EXISTING TABLE, DECLARED: `candidates`,
+-- `latch_order_intents` and `provenance_corrections` cannot carry a
+-- `CHECK (pk > 0)` without a table rebuild, so on those three an EXPLICIT `-1`
+-- INSERT is indistinguishable from an omitted one and would re-open exactly
+-- the hazard above. INCIDENCE ZERO, established by READING each production
+-- writer's column list rather than by grepping for the column name -- all
+-- three omit the PK entirely, and a test reads those three lists so the
+-- declaration cannot rot into prose. `latch_order_mandate_links` is NEW and
+-- carries the CHECK instead.
 CREATE TRIGGER trg_candidates_no_replace BEFORE INSERT ON candidates
 WHEN EXISTS (SELECT 1 FROM candidates
               WHERE (evaluation_run_id = NEW.evaluation_run_id AND ticker = NEW.ticker)
-                 OR (NEW.id IS NOT NULL AND id = NEW.id))
+                 OR (NEW.id != -1 AND id = NEW.id))
 BEGIN SELECT RAISE(ABORT, '22-A barrier trg_candidates_no_replace: candidates rows are PERMANENT from migration 0037. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE) would DELETE the existing row, bypassing trg_candidates_no_delete, reusing its id and cascade-wiping candidate_criteria. A re-evaluation APPENDS a new row under a new evaluation_run_id. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
 
 -- ============================================================================
@@ -280,6 +301,18 @@ CREATE TABLE latch_order_mandate_links (
     CHECK (actual_quantity     IS NULL OR actual_quantity     > 0),
     CHECK (length(trim(ticker)) > 0),
     CHECK (length(trim(broker_order_id)) > 0),
+    -- THE SENTINEL IS UNAMBIGUOUS ON THIS TABLE FOREVER (CHARC-ruled
+    -- 2026-08-26, on 22A-R8-02). An OMITTED INTEGER PRIMARY KEY presents as
+    -- `-1` in a BEFORE INSERT trigger, not NULL -- reproduced independently on
+    -- sqlite 3.50.4 -- which is why `trg_loml_no_replace` spells its PK
+    -- conflict clause `NEW.link_id != -1 AND link_id = NEW.link_id`. This
+    -- CHECK runs on the STORED value AFTER assignment, so an omitted id
+    -- (assigned a positive AUTOINCREMENT rowid) passes while a negative id can
+    -- never exist, and the barrier's sentinel can therefore never collide with
+    -- a real row. A NEW table can carry this; an EXISTING one cannot without a
+    -- table rebuild, which is why the three existing tables declare the
+    -- residual instead (see the no-REPLACE barriers above and their tests).
+    CHECK (link_id > 0),
     CHECK (evaluation_run_id > 0),
     -- The three-predicate date guard, per 0033's own lesson: length, parseable,
     -- and round-trips. date('2026-08-32') is NULL; date('2026-8-1') parses but
@@ -316,7 +349,7 @@ BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loml_no_delete: latch_order_mandate_
 -- path, which is the same half-swept shape as the bypass itself.
 CREATE TRIGGER trg_loml_no_replace BEFORE INSERT ON latch_order_mandate_links
 WHEN EXISTS (SELECT 1 FROM latch_order_mandate_links
-              WHERE (NEW.link_id IS NOT NULL AND link_id = NEW.link_id)
+              WHERE (NEW.link_id != -1 AND link_id = NEW.link_id)
                  OR validity_intent_id = NEW.validity_intent_id)
 BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loml_no_replace: latch_order_mandate_links is append-only. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE) would DELETE the existing link, bypassing trg_loml_no_delete, and rewrite the frozen values the admission proof rests on. One acceptance mints one link and it is never replaced. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
 
@@ -390,7 +423,7 @@ BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loml_no_replace: latch_order_mandate
 -- ============================================================================
 CREATE TRIGGER trg_loi_no_replace BEFORE INSERT ON latch_order_intents
 WHEN EXISTS (SELECT 1 FROM latch_order_intents
-              WHERE (NEW.intent_id IS NOT NULL AND intent_id = NEW.intent_id)
+              WHERE (NEW.intent_id != -1 AND intent_id = NEW.intent_id)
                  OR idempotency_key = NEW.idempotency_key)
 BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loi_no_replace: latch_order_intents is append-only. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing intent, bypassing trg_loi_no_delete at the default PRAGMA recursive_triggers=OFF, reusing its intent_id and rewriting the ledger row the minting trigger fires from and the link evidence cites. A correction is a NEW row under a NEW idempotency_key; a replay is answered by record_intent SELECT-first. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
 
@@ -1583,7 +1616,7 @@ END;
 -- ============================================================================
 CREATE TRIGGER trg_pc_no_replace BEFORE INSERT ON provenance_corrections
 WHEN EXISTS (SELECT 1 FROM provenance_corrections
-              WHERE (NEW.provenance_correction_id IS NOT NULL
+              WHERE (NEW.provenance_correction_id != -1
                      AND provenance_correction_id = NEW.provenance_correction_id)
                  OR trade_id = NEW.trade_id)
 BEGIN SELECT RAISE(ABORT, '22-A barrier trg_pc_no_replace: provenance_corrections is APPEND-ONLY. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE) would DELETE the existing correction, bypassing trg_provenance_corrections_append_only_delete at the default PRAGMA recursive_triggers=OFF, and rewrite or renumber the audit row of record for this trade. V1 records provenance ONCE per trade and has no re-correction path. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;

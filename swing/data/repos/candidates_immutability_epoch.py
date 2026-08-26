@@ -46,88 +46,9 @@ from swing.data.models import (
     FREEZE_TIER_PRE_BARRIER,
 )
 
-# ---------------------------------------------------------------------------
-# THE PINNED CANONICAL DDL -- byte-for-byte as migration 0037 writes it, minus
-# the trailing semicolon SQLite strips when it stores the text.
-#
-# ALL THREE BARRIER TRIGGERS ARE PINNED, and the third one is why this comment
-# exists.  CHARC's requirement was written when the barrier was
-# UPDATE + DELETE; his own later generalisation -- that any DELETE-trigger
-# barrier in this codebase is fail-open to REPLACE -- added
-# ``trg_candidates_no_replace``, and it is the trigger that closes the MEASURED
-# bypass (INSERT OR REPLACE moved the id, rewrote pivot/stop and cascade-wiped
-# candidate_criteria with both other triggers present and unfired).  A body
-# check that omitted it would certify a barrier that can be walked around, so
-# "the barrier triggers" is read as the barrier AS IT NOW STANDS.  That is a
-# strengthening in the fail-CLOSED direction and it is declared rather than
-# absorbed.
-# ---------------------------------------------------------------------------
-_CANDIDATES_BARRIER_DDL: dict[str, str] = {
-    "trg_candidates_no_update": (
-        "CREATE TRIGGER trg_candidates_no_update BEFORE UPDATE ON candidates\n"
-        "BEGIN SELECT RAISE(ABORT, '22-A barrier trg_candidates_no_update: "
-        "candidates rows are IMMUTABLE from migration 0037. A re-evaluation "
-        "APPENDS a new row; it never edits an existing one. To change a fire''s "
-        "recorded values you must add an evaluation run. To retire the barrier "
-        "see the reversibility header of 0037_latch_order_mandate_links.sql.'); "
-        "END"
-    ),
-    "trg_candidates_no_delete": (
-        "CREATE TRIGGER trg_candidates_no_delete BEFORE DELETE ON candidates\n"
-        "BEGIN SELECT RAISE(ABORT, '22-A barrier trg_candidates_no_delete: "
-        "candidates rows are PERMANENT from migration 0037. The latch identity "
-        "space and every provenance citation address rows by a REUSABLE rowid, "
-        "so a delete would silently repoint them. Pruning is a migration-level "
-        "operation -- see the reversibility header of "
-        "0037_latch_order_mandate_links.sql.'); END"
-    ),
-    "trg_candidates_no_replace": (
-        "CREATE TRIGGER trg_candidates_no_replace BEFORE INSERT ON candidates\n"
-        "WHEN EXISTS (SELECT 1 FROM candidates\n"
-        "              WHERE (evaluation_run_id = NEW.evaluation_run_id AND "
-        "ticker = NEW.ticker)\n"
-        "                 OR (NEW.id IS NOT NULL AND id = NEW.id))\n"
-        "BEGIN SELECT RAISE(ABORT, '22-A barrier trg_candidates_no_replace: "
-        "candidates rows are PERMANENT from migration 0037. A conflicting "
-        "INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE) would DELETE "
-        "the existing row, bypassing trg_candidates_no_delete, reusing its id "
-        "and cascade-wiping candidate_criteria. A re-evaluation APPENDS a new "
-        "row under a new evaluation_run_id. To retire the barrier see the "
-        "reversibility header of 0037_latch_order_mandate_links.sql.'); END"
-    ),
-}
-
-# ---------------------------------------------------------------------------
-# THE EPOCH'S OWN THREE TRIGGERS ARE PINNED TOO (Codex 22A-R3-01, VERIFIED BY
-# EXECUTION 2026-08-25).
-#
-# The reader pinned the three ``candidates`` triggers and IGNORED the three
-# that make the EPOCH immutable -- and the epoch's boundary is the thing that
-# stamps a fire pre- or post-barrier.  Measured: drop the three epoch triggers,
-# move ``max_candidate_id_at_barrier``, and ``freeze_tier_for_candidate``
-# returns a DIFFERENT tier while ``barrier_installed()`` still returns True.
-# All three of rung 9's operands then agree on a tier nothing backs, which is a
-# WRONG ACCEPTANCE -- the direction that contaminates H1 invisibly.
-#
-# It is the same failure as the name-only check CHARC already ruled on, one
-# table over: the guard looked present and was structurally unreachable for the
-# half of the proof it did not name.  "The barrier" is read as EVERY trigger
-# the structural claim rests on, and that is SIX rather than three.
-#
-# THE BODIES ARE READ OUT OF THE MIGRATION, NEVER RE-SPELLED HERE.  Hand-typing
-# a 400-character RAISE message is how a pinned copy drifts from its source in
-# whitespace nobody looks at; the module reads 0037 once at import and a test
-# asserts the file it read is the one the schema was built from.
-# ---------------------------------------------------------------------------
 _MIGRATION_0037 = (
     Path(__file__).resolve().parents[1]
     / "migrations" / "0037_latch_order_mandate_links.sql"
-)
-
-EPOCH_BARRIER_TRIGGER_NAMES: tuple[str, ...] = (
-    "trg_candidates_epoch_no_update",
-    "trg_candidates_epoch_no_delete",
-    "trg_candidates_epoch_no_insert",
 )
 
 
@@ -151,6 +72,76 @@ def _pinned_from_migration(name: str) -> str:
             f"migration 0037 does not define {name}; the barrier-integrity "
             f"check cannot certify a body it cannot read")
     return match.group(1)
+
+
+# ---------------------------------------------------------------------------
+# THE PINNED CANONICAL DDL -- READ OUT OF MIGRATION 0037, never re-spelled.
+#
+# ALL THREE BARRIER TRIGGERS ARE PINNED, and the third one is why this comment
+# exists.  CHARC's requirement was written when the barrier was
+# UPDATE + DELETE; his own later generalisation -- that any DELETE-trigger
+# barrier in this codebase is fail-open to REPLACE -- added
+# ``trg_candidates_no_replace``, and it is the trigger that closes the MEASURED
+# bypass (INSERT OR REPLACE moved the id, rewrote pivot/stop and cascade-wiped
+# candidate_criteria with both other triggers present and unfired).  A body
+# check that omitted it would certify a barrier that can be walked around, so
+# "the barrier triggers" is read as the barrier AS IT NOW STANDS.  That is a
+# strengthening in the fail-CLOSED direction and it is declared rather than
+# absorbed.
+#
+# THESE THREE WERE HAND-TYPED LITERALS UNTIL 2026-08-26, AND THEY DRIFTED THE
+# FIRST TIME THE MIGRATION MOVED (self-sweep SS-6).  The paragraph over the
+# EPOCH roster below already said why -- *"hand-typing a 400-character RAISE
+# message is how a pinned copy drifts from its source in whitespace nobody
+# looks at"* -- while the block it sat under did exactly that, one roster up.
+# The `-1` PK-idiom correction changed `trg_candidates_no_replace` in 0037 and
+# `barrier_installed()` immediately returned False against a copy nobody had
+# touched: every structural admission on the box would have refused
+# `barrier_not_installed`, and the cause would have been a comment that was
+# true about the wrong block.  Both rosters now read the ONE source.
+# ---------------------------------------------------------------------------
+CANDIDATES_BARRIER_TRIGGER_ROSTER: tuple[str, ...] = (
+    "trg_candidates_no_update",
+    "trg_candidates_no_delete",
+    "trg_candidates_no_replace",
+)
+
+_CANDIDATES_BARRIER_DDL: dict[str, str] = {
+    name: _pinned_from_migration(name)
+    for name in CANDIDATES_BARRIER_TRIGGER_ROSTER
+}
+
+# ---------------------------------------------------------------------------
+# THE EPOCH'S OWN THREE TRIGGERS ARE PINNED TOO (Codex 22A-R3-01, VERIFIED BY
+# EXECUTION 2026-08-25).
+#
+# The reader pinned the three ``candidates`` triggers and IGNORED the three
+# that make the EPOCH immutable -- and the epoch's boundary is the thing that
+# stamps a fire pre- or post-barrier.  Measured: drop the three epoch triggers,
+# move ``max_candidate_id_at_barrier``, and ``freeze_tier_for_candidate``
+# returns a DIFFERENT tier while ``barrier_installed()`` still returns True.
+# All three of rung 9's operands then agree on a tier nothing backs, which is a
+# WRONG ACCEPTANCE -- the direction that contaminates H1 invisibly.
+#
+# It is the same failure as the name-only check CHARC already ruled on, one
+# table over: the guard looked present and was structurally unreachable for the
+# half of the proof it did not name.  "The barrier" is read as EVERY trigger
+# the structural claim rests on, and that is SIX rather than three.
+#
+# THE BODIES ARE READ OUT OF THE MIGRATION, NEVER RE-SPELLED HERE -- and
+# since 2026-08-26 that is true of the CANDIDATES roster above too, which
+# this paragraph used to describe while sitting below a hand-typed copy of
+# it (self-sweep SS-6).  Hand-typing
+# a 400-character RAISE message is how a pinned copy drifts from its source in
+# whitespace nobody looks at; the module reads 0037 once at import and a test
+# asserts the file it read is the one the schema was built from.
+# ---------------------------------------------------------------------------
+
+EPOCH_BARRIER_TRIGGER_NAMES: tuple[str, ...] = (
+    "trg_candidates_epoch_no_update",
+    "trg_candidates_epoch_no_delete",
+    "trg_candidates_epoch_no_insert",
+)
 
 
 _EPOCH_BARRIER_DDL: dict[str, str] = {

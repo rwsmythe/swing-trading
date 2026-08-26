@@ -41,6 +41,7 @@ from swing.trades.latched_origin import (
 )
 from tests._latch_link_fixtures_22a import (
     BROKER_ORDER_ID,
+    DETECTION_DATE,
     INITIAL_STOP,
     PIVOT,
     accept_order,
@@ -1522,3 +1523,367 @@ def test_the_lost_race_no_op_survives_the_intents_barrier(conn) -> None:
     assert loser.intent_id == winner.intent_id
     assert conn.execute(
         "SELECT COUNT(*) FROM latch_order_intents").fetchone()[0] == 1
+
+
+# ===========================================================================
+# THE `-1` PRIMARY-KEY CONTRACT (CHARC-ruled 2026-08-26, on 22A-R8-02)
+#
+# 22A-R8-02 measured that an OMITTED `INTEGER PRIMARY KEY` presents as `-1` in
+# a `BEFORE INSERT` trigger, not NULL, and its `> 0` narrowing was reverted
+# because it failed 56 tests at the end of a dispatch.  The measurement was
+# right and the revert was right; the ruling supplies the encoding.
+#
+# THE CONTRACT, and the discriminating set IS the ruling -- an encoding that
+# passes all three directions is correct whatever its spelling:
+#   1. an ordinary append SUCCEEDS
+#   2. a conflicting REPLACE ABORTS
+#   3. an explicit conflicting id ABORTS
+#
+# Plus the two halves the ruling attaches: a NEW table additionally carries
+# `CHECK (pk > 0)`, so a negative id can never exist and the sentinel is
+# unambiguous forever; an EXISTING table -- where a CHECK would mean a table
+# rebuild this convention forbids -- verifies no-negative-ids and DECLARES the
+# residual.
+# ===========================================================================
+_NO_REPLACE_PK = {
+    "trg_candidates_no_replace": ("candidates", "id"),
+    "trg_loml_no_replace": ("latch_order_mandate_links", "link_id"),
+    "trg_loi_no_replace": ("latch_order_intents", "intent_id"),
+    "trg_pc_no_replace": ("provenance_corrections", "provenance_correction_id"),
+}
+
+
+def test_an_omitted_integer_primary_key_presents_as_minus_one() -> None:
+    """THE PREMISE, MEASURED HERE, because the whole idiom rests on it.
+
+    Reproduced independently rather than inherited: an omitted PK AND an
+    explicit `NULL` both arrive as `-1`, and `NEW.<pk> IS NULL` is FALSE for
+    both -- so the `IS NOT NULL` form NEVER FIRES and is dead text.  It also
+    shows the live hazard: with a row at id `-1` present, the old idiom aborts
+    an ORDINARY append.
+    """
+    probe = sqlite3.connect(":memory:")
+    try:
+        probe.executescript(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT);"
+            "CREATE TABLE seen (raw TEXT, is_null INT, ne_minus_one INT);"
+            "CREATE TRIGGER trg BEFORE INSERT ON t BEGIN"
+            "  INSERT INTO seen VALUES (CAST(NEW.id AS TEXT),"
+            "                           NEW.id IS NULL, NEW.id != -1);"
+            "END;")
+        probe.execute("INSERT INTO t (v) VALUES ('omitted')")
+        probe.execute("INSERT INTO t (id, v) VALUES (NULL, 'explicit null')")
+        probe.execute("INSERT INTO t (id, v) VALUES (7, 'explicit')")
+        assert probe.execute("SELECT * FROM seen").fetchall() == [
+            ("-1", 0, 0), ("-1", 0, 0), ("7", 0, 1)]
+
+        hazard = sqlite3.connect(":memory:")
+        hazard.executescript(
+            "CREATE TABLE u (id INTEGER PRIMARY KEY, v TEXT);"
+            "CREATE TRIGGER u_old BEFORE INSERT ON u"
+            " WHEN EXISTS (SELECT 1 FROM u"
+            "               WHERE (NEW.id IS NOT NULL AND id = NEW.id))"
+            " BEGIN SELECT RAISE(ABORT, 'the retired idiom fired'); END;")
+        hazard.execute("INSERT INTO u (id, v) VALUES (-1, 'sentinel')")
+        with pytest.raises(sqlite3.IntegrityError, match="retired idiom"):
+            hazard.execute("INSERT INTO u (v) VALUES ('ordinary append')")
+        hazard.close()
+    finally:
+        probe.close()
+
+
+@pytest.mark.parametrize("trigger", sorted(_NO_REPLACE_PK))
+def test_the_pk_conflict_clause_uses_the_minus_one_idiom(
+        conn, trigger: str) -> None:
+    """Every no-REPLACE barrier spells the PK clause the ONE way that fires.
+
+    Asserted as CONTENT rather than as a byte-string: the presence of the
+    working form AND the absence of the dead one, because a body could carry
+    both and read as guarded.
+    """
+    _table, pk = _NO_REPLACE_PK[trigger]
+    body = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+        (trigger,)).fetchone()
+    assert body is not None, f"{trigger} is not installed"
+    body = " ".join(body[0].split())
+    assert f"NEW.{pk} != -1 AND {pk} = NEW.{pk}" in body, (
+        f"{trigger} does not carry the -1 idiom on {pk}")
+    assert f"NEW.{pk} IS NOT NULL" not in body, (
+        f"{trigger} still carries the IS NOT NULL form on {pk}, which never "
+        f"fires and is dead text")
+
+
+# --------------------------------------------------------------------------
+# SITE 1 -- candidates (EXISTING table; the residual is declared below)
+# --------------------------------------------------------------------------
+def _second_run(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+        "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+        "skip_count, excluded_count, error_count) "
+        "VALUES (999, '2026-07-18T20:06:25', '2026-07-18', '2026-07-21', "
+        "1, 1, 0, 0, 0, 0)")
+
+
+def test_candidates_the_three_directions(conn) -> None:
+    """DIRECTION 1 append, DIRECTION 2 REPLACE, DIRECTION 3 explicit id."""
+    cid = seed_fire(conn)
+    _second_run(conn)
+    conn.execute(                                             # 1
+        "INSERT INTO candidates (evaluation_run_id, ticker, bucket, rs_method)"
+        " VALUES (999, 'AAAA', 'aplus', 'universe')")
+    with pytest.raises(sqlite3.IntegrityError,               # 2
+                       match="trg_candidates_no_replace"):
+        conn.execute(
+            "INSERT OR REPLACE INTO candidates (evaluation_run_id, ticker, "
+            "bucket, pivot, rs_method) "
+            "VALUES (121, 'FTRE', 'aplus', 99.0, 'universe')")
+    with pytest.raises(sqlite3.IntegrityError,               # 3
+                       match="trg_candidates_no_replace"):
+        # a DIFFERENT run and ticker, so ONLY the PK clause can fire
+        conn.execute(
+            "INSERT INTO candidates (id, evaluation_run_id, ticker, bucket, "
+            "rs_method) VALUES (?, 999, 'BBBB', 'aplus', 'universe')", (cid,))
+
+
+def test_candidates_an_ordinary_append_survives_a_minus_one_row(conn) -> None:
+    """THE DISCRIMINATOR the idiom exists for.
+
+    PRE-FIX (`NEW.id IS NOT NULL AND id = NEW.id`): the ordinary append ABORTS,
+    because the omitted id arrives as `-1` and matches the sentinel row.
+    POST-FIX it succeeds.  One row, one dimension.
+    """
+    seed_fire(conn)
+    _second_run(conn)
+    conn.execute(
+        "INSERT INTO candidates (id, evaluation_run_id, ticker, bucket, "
+        "rs_method) VALUES (-1, 999, 'CCCC', 'aplus', 'universe')")
+    conn.execute(
+        "INSERT INTO candidates (evaluation_run_id, ticker, bucket, rs_method)"
+        " VALUES (999, 'DDDD', 'aplus', 'universe')")
+    assert conn.execute(
+        "SELECT COUNT(*) FROM candidates WHERE evaluation_run_id = 999"
+    ).fetchone()[0] == 2
+
+
+# --------------------------------------------------------------------------
+# SITE 2 -- latch_order_intents (EXISTING table)
+# --------------------------------------------------------------------------
+def _intent_payload(conn: sqlite3.Connection, source: int, **over) -> dict:
+    cols = [r[1] for r in conn.execute(
+        "PRAGMA table_info(latch_order_intents)")]
+    vals = list(conn.execute(
+        "SELECT * FROM latch_order_intents WHERE intent_id = ?",
+        (source,)).fetchone())
+    payload = dict(zip(cols, vals, strict=True))
+    payload.update(over)
+    return payload
+
+
+def _insert_raw(conn: sqlite3.Connection, table: str, payload: dict) -> None:
+    conn.execute(
+        f"INSERT INTO {table} ({', '.join(payload)}) "
+        f"VALUES ({', '.join('?' * len(payload))})", tuple(payload.values()))
+
+
+def test_latch_order_intents_the_three_directions(conn) -> None:
+    cid = seed_fire(conn)
+    pid = insert_intent(conn, place_row(cid))
+    insert_intent(conn, place_row(cid, idempotency_key="key-place-append"))  # 1
+    with pytest.raises(sqlite3.IntegrityError,                               # 2
+                       match="trg_loi_no_replace"):
+        _insert_raw(conn, "latch_order_intents",
+                    _intent_payload(conn, pid, framework_limit_price=999.99))
+    with pytest.raises(sqlite3.IntegrityError,                               # 3
+                       match="trg_loi_no_replace"):
+        # a DIFFERENT idempotency key, so ONLY the PK clause can fire
+        _insert_raw(conn, "latch_order_intents",
+                    _intent_payload(conn, pid,
+                                    idempotency_key="key-place-explicit"))
+
+
+def test_latch_order_intents_an_ordinary_append_survives_a_minus_one_row(
+        conn) -> None:
+    """The same discriminator, one table over.
+
+    ``record_intent`` is the PRODUCTION writer and it omits the PK, so under
+    the retired idiom a single `-1` row would have blocked every subsequent
+    acceptance record on this box.
+    """
+    from swing.data.models import LatchOrderIntent
+    from swing.data.repos.latch_order_intents import record_intent
+
+    cid = seed_fire(conn)
+    pid = insert_intent(conn, place_row(cid))
+    _insert_raw(conn, "latch_order_intents",
+                _intent_payload(conn, pid, intent_id=-1,
+                                idempotency_key="key-sentinel"))
+    appended = record_intent(conn, intent=LatchOrderIntent(
+        intent_id=None, **place_row(cid, idempotency_key="key-after")))
+    assert appended.intent_id is not None and appended.intent_id > 0
+
+
+# --------------------------------------------------------------------------
+# SITE 3 -- latch_order_mandate_links (the NEW table: it carries the CHECK)
+# --------------------------------------------------------------------------
+def _mint_second_link(conn: sqlite3.Connection) -> tuple[int, int]:
+    """A SECOND acceptance on a second fire, minted by the trigger itself."""
+    cid2 = seed_fire(conn, run_id=777, ticker="AAAA",
+                     action_session_date=DETECTION_DATE)
+    place2 = insert_intent(conn, place_row(
+        cid2, run_id=777, ticker="AAAA", idempotency_key="key-place-2"))
+    insert_intent(conn, validity_row(
+        cid2, place2, run_id=777, ticker="AAAA",
+        idempotency_key="key-validity-2",
+        actual_broker_order_id="2002937461"))
+    row = conn.execute(
+        "SELECT link_id, validity_intent_id FROM latch_order_mandate_links "
+        "WHERE candidate_id = ?", (cid2,)).fetchone()
+    assert row is not None, "the minting trigger did not fire for the 2nd fire"
+    return int(row[0]), int(row[1])
+
+
+def _link_payload(conn: sqlite3.Connection, source: int, **over) -> dict:
+    cols = [r[1] for r in conn.execute(
+        "PRAGMA table_info(latch_order_mandate_links)")]
+    vals = list(conn.execute(
+        "SELECT * FROM latch_order_mandate_links WHERE link_id = ?",
+        (source,)).fetchone())
+    payload = dict(zip(cols, vals, strict=True))
+    payload.update(over)
+    return payload
+
+
+def test_latch_order_mandate_links_the_three_directions(conn) -> None:
+    cid = seed_fire(conn)
+    place = insert_intent(conn, place_row(cid))
+    insert_intent(conn, validity_row(cid, place))
+    first = int(conn.execute(
+        "SELECT link_id FROM latch_order_mandate_links").fetchone()[0])
+    second, second_validity = _mint_second_link(conn)                     # 1
+    assert second != first
+    with pytest.raises(sqlite3.IntegrityError,                            # 2
+                       match="trg_loml_no_replace"):
+        _insert_raw(conn, "latch_order_mandate_links",
+                    _link_payload(conn, first, frozen_pivot=99.0))
+    with pytest.raises(sqlite3.IntegrityError,                            # 3
+                       match="trg_loml_no_replace"):
+        # the SECOND link's validity id, so ONLY the PK clause can fire
+        _insert_raw(conn, "latch_order_mandate_links",
+                    _link_payload(conn, second, link_id=first,
+                                  validity_intent_id=second_validity))
+
+
+def test_a_negative_link_id_can_never_exist(conn) -> None:
+    """THE NEW TABLE CARRIES THE CHECK, which is the half an existing table
+    cannot have without a rebuild.
+
+    It runs on the STORED value AFTER assignment, so an omitted id (assigned a
+    positive rowid) passes while an explicit `-1` is refused outright -- and
+    the `-1` sentinel is therefore unambiguous on this table FOREVER, rather
+    than by convention.
+    """
+    cid = seed_fire(conn)
+    place = insert_intent(conn, place_row(cid))
+    insert_intent(conn, validity_row(cid, place))
+    first = int(conn.execute(
+        "SELECT link_id FROM latch_order_mandate_links").fetchone()[0])
+    assert first > 0, "an omitted AUTOINCREMENT id must still land positive"
+    # A `validity_intent_id` NO LINK CITES, so `trg_loml_no_replace` cannot
+    # fire and the CHECK is demonstrably what refuses. The place intent is
+    # such a row: the FK only requires a `latch_order_intents` id.
+    with pytest.raises(sqlite3.IntegrityError, match="link_id > 0"):
+        _insert_raw(conn, "latch_order_mandate_links",
+                    _link_payload(conn, first, link_id=-1,
+                                  validity_intent_id=place))
+
+
+# --------------------------------------------------------------------------
+# SITE 4 -- provenance_corrections (EXISTING table)
+# --------------------------------------------------------------------------
+def test_provenance_corrections_the_three_directions(conn) -> None:
+    """DIRECTIONS 1 and 2 restate the shipped pair here so the SET is legible
+    as a set; DIRECTION 3 is new.
+
+    WHAT DIRECTION 3 DOES NOT ISOLATE, stated rather than left implicit: this
+    payload conflicts on the PK *and* on ``ux_provenance_corrections_trade``,
+    because isolating the PK clause needs a VALID citation graph for a trade
+    that has no correction yet, and the citation-graph trigger is precisely
+    what stops such a payload being faked.  The DIRECTION is proved; the
+    clause attribution is not, and the two are different claims.
+    """
+    from swing.trades.cohort_provenance_correction import (
+        correct_cohort_provenance,
+    )
+
+    first = _seed_correction(conn)
+    row_id = int(first["row_id"])
+    second = build_cadl_case(conn, ticker="ZZTOP")
+    if conn.in_transaction:
+        conn.commit()
+    correct_cohort_provenance(                                            # 1
+        conn, trade_id=second["trade_id"],
+        cited_candidate_id=second["candidate_id"],
+        cited_recommendation_id=second["daily_recommendation_id"],
+        reason="the ordinary append, on a DIFFERENT trade")
+    second_row = int(conn.execute(
+        "SELECT provenance_correction_id FROM provenance_corrections "
+        "WHERE trade_id = ?", (second["trade_id"],)).fetchone()[0])
+
+    payload, names, holes = _pc_replace_payload(                          # 2
+        conn, row_id, correction_reason="REWRITTEN BY REPLACE")
+    with pytest.raises(sqlite3.IntegrityError, match="trg_pc_no_replace"):
+        conn.execute(
+            f"INSERT OR REPLACE INTO provenance_corrections ({names}) "
+            f"VALUES ({holes})", tuple(payload.values()))
+
+    payload, names, holes = _pc_replace_payload(                          # 3
+        conn, second_row, provenance_correction_id=row_id)
+    with pytest.raises(sqlite3.IntegrityError, match="trg_pc_no_replace"):
+        conn.execute(
+            f"INSERT INTO provenance_corrections ({names}) VALUES ({holes})",
+            tuple(payload.values()))
+
+
+# --------------------------------------------------------------------------
+# THE DECLARED RESIDUAL, for the three EXISTING tables
+# --------------------------------------------------------------------------
+def test_the_three_existing_tables_have_no_negative_ids_by_their_writers(
+) -> None:
+    """THE RESIDUAL, DECLARED AND VERIFIED AT ITS SOURCE (CHARC's ruling).
+
+    A `CHECK (pk > 0)` on `candidates`, `latch_order_intents` or
+    `provenance_corrections` would mean a TABLE REBUILD, which this migration
+    convention forbids.  So the sentinel's unambiguity on those three rests on
+    a weaker fact, and the weakness is stated: **an explicit `-1` INSERT is
+    indistinguishable from an omitted one**, and the barrier would then refuse
+    ordinary appends exactly as the retired idiom did.
+
+    INCIDENCE ZERO, ESTABLISHED BY READING EACH WRITER'S COLUMN LIST rather
+    than by grepping for the column name -- a name grep cannot see a writer
+    that never mentions the PK, which is the shape all three have:
+
+      * `swing/data/repos/candidates.py` -- the `candidates` INSERT names 17
+        columns and `id` is not among them.
+      * `swing/data/repos/latch_order_intents.py` -- `_INSERT_COLS` is
+        `_COL_NAMES[1:]`, the PK sliced off by construction.
+      * `swing/data/repos/provenance_corrections.py` -- `_COLUMNS` excludes
+        `provenance_correction_id`; it appears only in `_SELECT`.
+
+    This test READS those three column lists so the declaration cannot rot
+    into prose: a writer that starts naming its PK fails here.
+    """
+    from swing.data.repos.latch_order_intents import _INSERT_COLS
+    from swing.data.repos.provenance_corrections import _COLUMNS
+
+    assert "intent_id" not in _INSERT_COLS
+    assert "provenance_correction_id" not in _COLUMNS
+    candidates_src = (
+        Path(__file__).resolve().parents[2] / "swing" / "data" / "repos"
+        / "candidates.py").read_text(encoding="utf-8")
+    insert = candidates_src[candidates_src.index("INSERT INTO candidates"):]
+    column_list = insert[insert.index("(") + 1:insert.index(")")]
+    assert "id" not in [c.strip() for c in column_list.split(",")], (
+        "the candidates writer now names its own primary key; the declared "
+        "residual above assumed it did not")
