@@ -101,6 +101,18 @@ decides, §3 pass rides it).
 (D34 + BANK-1 + BANK-3). **22-G: unactionable-surface sweep** — surfaces presenting what the
 operator cannot act on (fixed advisory + BANK-2/D35 + BANK-4); RD's framing rides: an unactionable
 surface produces no record of the fill it failed to offer, so it is a measurement gap too.
+**22-I: THE REPLACE-EXPOSURE SWEEP (added 2026-08-26, four confirmed instances + one directed
+probe).** Every append-only/immutability guard in the schema verified against conflict-resolution
+bypass (`INSERT OR REPLACE` / bare `REPLACE` / `INSERT OR IGNORE`), with the measured-probe
+standard (control + test, live-DB copy, default `recursive_triggers`). Confirmed exposed:
+`candidates` (fixed, 0037) · the epoch (fixed, 0037) · `latch_order_mandate_links` (fixed, leg 4) ·
+`provenance_corrections` (fix ruled into 0037). Directed probe: `latch_order_intents` (joins 0037
+if exposed — the arc's own evidence source). Banked to this sweep: `latch_view_events` + any
+guard the sweep enumerates. **The CONVENTION is the part that ends the class:** an append-only
+guard ships as a TRIPLE (`no_update` + `no_delete` + conflict-scoped `no_replace`), plus the
+NULL-`WHEN` coverage check on any `WHEN`-clause trigger. RD's framing binds: a REPLACE-mutable
+audit table makes the audit-trail check a writer-absence claim one level up.
+
 **22-H: D37+D38 timestamp sweep** — clock-domain normalization at COMPARISONS (never stored data)
 off the new `PIPELINE_LOCAL_TIMEZONE` constant + the lexical-TEXT-predicate rule (§3.0 of the
 Demand-C plan) applied repo-wide. Scoping input: the orchestrator's READ manifest — 10 live-code
