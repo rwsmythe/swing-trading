@@ -119,7 +119,16 @@ NEVER the barrier narrowed**, because narrowing leaves a live conflict target an
 consequence of a live `UNIQUE` target is a MOVED id (the id-reuse class). A sweep that meets its
 first `ON CONFLICT` writer unpriced will be tempted into exactly the narrowing that silently
 reopens the hole. Both directors concur; the writer's observable contract must be pinned by
-tests that do not move with the repair. RD's framing binds: a REPLACE-mutable
+tests that do not move with the repair. **SECOND PRICED COST (2026-08-26, measured): an OMITTED
+`INTEGER PRIMARY KEY` presents as `-1` inside a `BEFORE INSERT` trigger, NOT NULL** — so a PK
+conflict clause testing `NEW.<pk>` sees `-1` on every ordinary append, and a stored row with id
+`-1` would abort the append path. **The ruled idiom:** the PK clause reads
+`(NEW.<pk> != -1 AND <pk> = NEW.<pk>)`; NEW tables additionally carry `CHECK (<pk> > 0)` so a
+negative-id row can never exist and the sentinel is unambiguous; EXISTING tables verify
+no-negative-ids at sweep time and DECLARE the residual (an explicit `-1` insert is
+indistinguishable from omitted; no production writer passes explicit ids). Every site ships the
+three-direction discriminating set: ordinary append SUCCEEDS · conflicting REPLACE ABORTS ·
+explicit conflicting id ABORTS. RD's framing binds: a REPLACE-mutable
 audit table makes the audit-trail check a writer-absence claim one level up.
 
 **22-H: D37+D38 timestamp sweep** — clock-domain normalization at COMPARISONS (never stored data)
