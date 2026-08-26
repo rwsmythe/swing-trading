@@ -380,7 +380,16 @@ def record_entry(
     from swing.trades.latched_origin import broker_order_id_from_envelope
 
     # THE ORDER ID IS PARSED WHETHER OR NOT A CONFIG WAS SUPPLIED (Codex
-    # 22A-R7-01). Gating the PARSE on `cfg` meant an order-bearing request
+    # 22A-R7-01).
+    #
+    # AND `cfg=None` IS NO LONGER "THE PRE-ARC PATH" WITHOUT QUALIFICATION
+    # (Codex 22A-R9-07): it is the pre-arc path for a request whose envelope
+    # resolves to NO LINK. A request whose order IS linked is RECOGNISED and
+    # refused, and the row lands honest-unset. Stated here because the earlier
+    # unqualified sentence was a security-relevant caller contract that the
+    # 22A-R7-01 fix had made false while it still read true (#31).
+    #
+    # Gating the PARSE on `cfg` meant an order-bearing request
     # from a caller who omitted the config took no reservation, never
     # consulted the link table, and ran the ordinary current-candidate chain
     # -- a wrong ACCEPTANCE reachable by leaving one keyword off. The parse

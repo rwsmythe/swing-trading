@@ -1657,3 +1657,88 @@ def test_a_malformed_envelope_on_another_trade_does_not_break_the_scans(
     result = enter(conn, cfg, req())
     origin, cand, _label = written(conn, result.trade_id)
     assert (origin, cand) == ("pipeline_aplus", candidate_id)
+
+
+def test_the_REVERSED_duplicate_key_order_is_also_refused(tmp_path) -> None:
+    """22A-R9-01: the canonicality question is about the IDENTITY, not the hit.
+
+    Gated on `orders` being non-empty, the guard asked "did the PYTHON-selected
+    id find a link?"  So an envelope whose FIRST duplicate key is the LINKED
+    one and whose LAST is not gave Python an unlinked id, an empty result, and
+    a FALL-THROUGH to the ordinary chain -- while SQL would have read the
+    linked mandate.  The wrong acceptance the guard exists to close, reachable
+    by REVERSING the key order the first test happened to use.
+
+    PRE-FIX: the ordinary chain ran (`pipeline_aplus` + today's candidate on a
+    ticker that is `aplus` in the latest run).  POST-FIX: refused, recognised,
+    honest-unset.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "r901")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    reversed_order = (
+        '{"schwab_instrument_symbol": "' + TICKER + '", '
+        '"schwab_order_id": "' + BROKER_ORDER_ID + '", '
+        '"schwab_order_id": "not-a-real-order"}')
+    from swing.trades.latched_origin import resolve_latched_provenance
+    verdict = resolve_latched_provenance(
+        conn, cfg, req(schwab_source_value_json=reversed_order))
+    assert verdict.decline_reason == "order_id_not_canonical"
+    assert verdict.recognised_but_underivable is True
+
+    result = enter(conn, cfg, req(schwab_source_value_json=reversed_order))
+    assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
+
+
+def test_a_NESTED_key_of_the_same_name_is_not_a_duplicate(tmp_path) -> None:
+    """22A-R9-06: the count is the ROOT object's, not the document's.
+
+    ``object_pairs_hook`` fires for every nested object, so a first version
+    counted a legitimate top-level id plus an unrelated NESTED field of the
+    same name as a duplicate -- a wrong REFUSAL manufactured by the guard.
+    Both readers address ``$.schwab_order_id`` at the ROOT, so the root is the
+    only place they can disagree.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "r906")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    nested = json.dumps({
+        "schwab_order_id": BROKER_ORDER_ID,
+        "schwab_instrument_symbol": TICKER,
+        "raw": {"schwab_order_id": "an unrelated nested field"}})
+    result = enter(conn, cfg, req(schwab_source_value_json=nested))
+    origin, cand, _label = written(conn, result.trade_id)
+    assert (origin, cand) == ("pipeline_aplus", candidate_id)
+
+
+def test_a_RAISING_link_lookup_still_writes_the_entry(tmp_path) -> None:
+    """22A-R9-04: a boundary asserted at ONE call site is not a boundary.
+
+    The broad containment began at `authorize_accepted_order`, and
+    `find_accepted_latch_order` ran BEFORE it -- so a read error or a
+    hydration failure escaped the resolver and `record_entry` rolled the trade
+    and the fill back.  The round-8 containment test substituted
+    `authorize_accepted_order` and therefore could not see the hole.
+
+    PRE-FIX: the exception propagated and nothing landed.
+    POST-FIX: honest-unset, with the trade AND the fill written.
+    """
+    import swing.trades.latched_origin as lo
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r904")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    real = lo.find_accepted_latch_order
+
+    def boom(*a, **kw):
+        raise sqlite3.OperationalError("the link table is unreadable")
+
+    lo.find_accepted_latch_order = boom
+    try:
+        result = enter(conn, cfg, req())
+    finally:
+        lo.find_accepted_latch_order = real
+    assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE trade_id = ?",
+        (result.trade_id,)).fetchone()[0] == 1

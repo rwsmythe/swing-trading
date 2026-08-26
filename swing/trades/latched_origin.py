@@ -575,18 +575,27 @@ def envelope_order_id_is_canonical(raw: str | None) -> bool:
     """
     if not isinstance(raw, str) or not raw.strip():
         return True                    # no envelope: nothing to disagree about
-    seen: list[str] = []
+    # THE COUNT IS THE ROOT OBJECT'S, NOT THE DOCUMENT'S (Codex 22A-R9-06).
+    # `object_pairs_hook` fires for EVERY nested object, so a first version
+    # counted a legitimate top-level id plus an unrelated nested field of the
+    # same name as a duplicate -- a wrong REFUSAL manufactured by the guard.
+    # Both readers address `$.schwab_order_id` at the ROOT, so the root is the
+    # only place the two can disagree. The hook records EVERY object's pairs
+    # and the LAST one it returns is the root, because the decoder builds
+    # inside-out.
+    objects: list[list[tuple]] = []
 
     def _hook(pairs):
-        seen.extend(k for k, _v in pairs if k == SCHWAB_ORDER_ID_ENVELOPE_KEY)
+        objects.append(list(pairs))
         return dict(pairs)
 
     try:
         payload = json.loads(raw, object_pairs_hook=_hook)
     except (ValueError, TypeError):
         return True                    # unusable JSON: the reader returns None
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or not objects:
         return True
+    seen = [k for k, _v in objects[-1] if k == SCHWAB_ORDER_ID_ENVELOPE_KEY]
     if len(seen) > 1:
         log.warning(
             "22-A: fill envelope carries %d %s keys; Python keeps the LAST and "
@@ -1941,11 +1950,45 @@ def resolve_latched_provenance(
     # recognised and the ordinary path is intact, byte-for-byte, which is what
     # the LOCK is about. A link that EXISTS with no config is RECOGNISED and
     # refused, so the row lands honest-unset instead of wrong.
-    orders = find_accepted_latch_order(conn, broker_order_id=broker_order_id)
-    if orders and not envelope_order_id_is_canonical(envelope):
-        # RECOGNISED and refused, never a fall-through: the fill really does
-        # name an order, so the ordinary chain would write TODAY's candidate.
-        return _refuse("order_id_not_canonical", orders[0])
+    # CANONICALITY IS JUDGED BEFORE THE LOOKUP, NOT AFTER IT (Codex 22A-R9-01,
+    # a residual of my own 22A-R8-01 fix). Gated on `orders` being non-empty,
+    # the guard asked "did the PYTHON-selected id find a link?" -- so an
+    # envelope whose FIRST duplicate key is the linked one and whose LAST is
+    # not gave Python an unlinked id, an empty `orders`, and a FALL-THROUGH to
+    # the ordinary chain, while SQL would have read the linked mandate. The
+    # wrong-acceptance the guard exists to close, reachable by reversing the
+    # key order the first test happened to use.
+    #
+    # The question is about the IDENTITY, so it is asked of the identity:
+    # ambiguity refuses whether or not a link was found, RECOGNISED, with no
+    # order object because there is no unambiguous order to name.
+    if not envelope_order_id_is_canonical(envelope):
+        return LatchedProvenance(
+            admitted=False, recognised_but_underivable=True,
+            decline_reason="order_id_not_canonical")
+
+    # THE LOOKUP IS INSIDE THE CONTAINMENT (Codex 22A-R9-04, a residual of my
+    # own 22A-R8-03 fix). The broad handler began at `authorize_accepted_order`
+    # and `find_accepted_latch_order` ran BEFORE it -- so a SQLite read error
+    # or a row-hydration failure escaped `resolve_latched_provenance` entirely
+    # and `record_entry` rolled the trade and the fill back. The containment
+    # test substituted `authorize_accepted_order` and therefore could not see
+    # the hole: a boundary asserted at ONE call site is not a boundary.
+    #
+    # Fail-CLOSED and RECOGNISED: the request carries a usable order id, so a
+    # lookup we could not perform is IGNORANCE about a real order, never
+    # licence to write TODAY's candidate.
+    try:
+        orders = find_accepted_latch_order(
+            conn, broker_order_id=broker_order_id)
+    except Exception:  # noqa: BLE001 -- ignorance, not a crash
+        log.exception(
+            "22-A: the link lookup for broker order %s RAISED; the entry "
+            "records with honest-unset cohort keys rather than being blocked, "
+            "and this WARRANTS INVESTIGATION", broker_order_id)
+        return LatchedProvenance(
+            admitted=False, recognised_but_underivable=True,
+            decline_reason="aliveness_unverifiable")
     if orders and cfg is None:
         log.warning(
             "22-A: broker order %s names %d accepted latch link(s) but NO "

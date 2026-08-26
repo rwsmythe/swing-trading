@@ -1704,8 +1704,15 @@ def _resolve_latch_citation(
     origin and its envelope. Reading the trade row instead would probe a
     DIFFERENT world from the one the fill happened in.
 
-    ``cfg is None`` -> the resolver's own ``no_config`` outcome -> ``last_word``.
-    That is what keeps every pre-22-A caller byte-identical.
+    ``cfg is None`` -> the resolver's ``no_config`` outcome. THAT IS ONLY
+    ``last_word`` WHERE THE FILL'S ORDER RESOLVES TO NO LINK (Codex 22A-R9-07,
+    correcting a sentence the 22A-R7-01 fix made false while it still read
+    true). A LINKED fill with no config is RECOGNISED and refused, so this
+    function RAISES rather than quietly selecting the other authority -- and
+    the citation trigger's ``last_word`` branch refuses such a row anyway, so
+    the guarantee does not depend on this path having been reached. What
+    ``cfg=None`` still keeps byte-identical is the UNLINKED case, which is
+    every pre-22-A caller's world.
     """
     row = conn.execute(
         "SELECT quantity, price, fill_origin, schwab_source_value_json "
