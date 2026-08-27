@@ -516,7 +516,21 @@ BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loi_no_replace: latch_order_intents 
 -- consumer addresses, and it is what makes the lookup single-valued.
 -- ============================================================================
 CREATE TABLE fill_envelope_identity (
-    identity_id INTEGER PRIMARY KEY,
+    -- CHECK (identity_id > 0) IS THE OTHER HALF OF THE SENTINEL CONTRACT, and
+    -- it was MISSING here while the link table carried it (Codex 22A-R11-06).
+    -- REPRODUCED on sqlite 3.50.4 at the default recursive_triggers=0: insert
+    -- a row explicitly at -1, then INSERT OR REPLACE a -1 row with a DIFFERENT
+    -- (fill_id, envelope_raw); the first row was SILENTLY DELETED and
+    -- replaced, trg_fei_no_delete never fired, and this table's append-only
+    -- guarantee -- the whole reason a stored reading can be trusted -- was
+    -- false. The barrier below must ignore NEW.identity_id = -1 because an
+    -- OMITTED integer primary key presents as -1 rather than NULL, so the
+    -- sentinel has to be impossible as a STORED value. A NEW table can
+    -- guarantee that with a CHECK; the three EXISTING tables cannot without a
+    -- rebuild this convention forbids, which is why they DECLARE the residual
+    -- and every NEW table closes it by construction. A test walks both new
+    -- tables rather than the one that happened to be remembered.
+    identity_id INTEGER PRIMARY KEY CHECK (identity_id > 0),
 
     -- NO FOREIGN KEY ON fill_id, AND THAT IS MEASURED RATHER THAN CASUAL.
     -- `split_into_partials` DELETEs the consolidated fill and rebuilds it as
@@ -582,6 +596,9 @@ BEGIN SELECT RAISE(ABORT, '22-A barrier trg_fei_no_delete: fill_envelope_identit
 -- same half-swept shape as the bypass itself. The `!= -1` spelling is the
 -- CHARC-ruled sentinel contract: an OMITTED INTEGER PRIMARY KEY presents as
 -- -1 in a BEFORE INSERT trigger, not NULL (reproduced on sqlite 3.50.4).
+-- The ignore is only SAFE because the table's CHECK (identity_id > 0) makes a
+-- stored -1 impossible; without it the sentinel collides with a real row and
+-- the barrier can be walked straight past (Codex 22A-R11-06, measured).
 CREATE TRIGGER trg_fei_no_replace BEFORE INSERT ON fill_envelope_identity
 WHEN EXISTS (SELECT 1 FROM fill_envelope_identity
               WHERE (NEW.identity_id != -1 AND identity_id = NEW.identity_id)

@@ -1559,7 +1559,56 @@ _NO_REPLACE_PK = {
     "trg_loml_no_replace": ("latch_order_mandate_links", "link_id"),
     "trg_loi_no_replace": ("latch_order_intents", "intent_id"),
     "trg_pc_no_replace": ("provenance_corrections", "provenance_correction_id"),
+    # THE FIFTH MEMBER, ADDED BY THE CLOSURE CHECK BELOW (self-sweep SS-12).
+    # `fill_envelope_identity` shipped with a no-REPLACE barrier in the
+    # persist-canonical reshape and this roster did not grow with it, so the
+    # `-1` idiom and the three-direction set were never asserted on the one
+    # table where they had NEVER been checked at all.
+    "trg_fei_no_replace": ("fill_envelope_identity", "identity_id"),
 }
+
+# NEW tables additionally carry `CHECK (pk > 0)`; an EXISTING table cannot
+# without a rebuild.  Kept as data so the closure check below can hold every
+# barrier to the half of the ruling that applies to it.
+_NEW_TABLES_WITH_PK_CHECK = {
+    "latch_order_mandate_links": "link_id",
+    "fill_envelope_identity": "identity_id",
+}
+
+
+def test_the_no_replace_roster_is_CLOSED_over_the_installed_barriers(
+        conn) -> None:
+    """THE ROSTER IS NOT THE FIX; THE CLOSURE CHECK IS (self-sweep SS-12).
+
+    A hand-maintained roster is the same instrument as the count it replaced
+    and it fails the same way -- this one shipped one member short the moment a
+    fifth barrier landed, and every parametrized case above went on passing
+    because a roster cannot report what is missing from it.  So the roster is
+    held against what the SCHEMA actually installs: every trigger whose name
+    ends `_no_replace` must be a member, and every member must be installed.
+    """
+    installed = {
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+            "  AND name LIKE '%_no_replace'")
+    }
+    assert installed == set(_NO_REPLACE_PK), (
+        f"only in the schema: {sorted(installed - set(_NO_REPLACE_PK))}; "
+        f"only in the roster: {sorted(set(_NO_REPLACE_PK) - installed)}")
+
+
+@pytest.mark.parametrize("table", sorted(_NEW_TABLES_WITH_PK_CHECK))
+def test_every_new_table_carries_the_pk_positivity_CHECK(
+        conn, table: str) -> None:
+    """The half of the `-1` ruling a NEW table can hold, asserted on ALL of
+    them rather than on the one that happened to be remembered."""
+    pk = _NEW_TABLES_WITH_PK_CHECK[table]
+    ddl = " ".join(conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,)).fetchone()[0].split())
+    assert f"CHECK ({pk} > 0)" in ddl, (
+        f"{table} is a NEW table and does not carry CHECK ({pk} > 0), so its "
+        f"no-REPLACE barrier's `-1` sentinel can collide with a real row")
 
 
 def test_an_omitted_integer_primary_key_presents_as_minus_one() -> None:
@@ -1809,6 +1858,66 @@ def test_a_negative_link_id_can_never_exist(conn) -> None:
 
 
 # --------------------------------------------------------------------------
+# SITE 3b -- fill_envelope_identity (NEW table; Codex 22A-R11-06)
+# --------------------------------------------------------------------------
+_FEI_COLS = ("fill_id, envelope_raw, envelope_state, broker_order_id, "
+             "instrument_symbol, canonicalizer_version, recorded_ts")
+
+
+def _fei(conn, *, identity_id=None, fill_id=11, raw="docA", order="ORDER-A"):
+    cols = _FEI_COLS if identity_id is None else "identity_id, " + _FEI_COLS
+    vals = [fill_id, raw, "canonical", order, "AAA", "v1", "2026-08-26T00:00Z"]
+    if identity_id is not None:
+        vals.insert(0, identity_id)
+    holes = ", ".join("?" * len(vals))
+    return cols, holes, vals
+
+
+def test_fill_envelope_identity_the_three_directions(conn) -> None:
+    """DIRECTION 1 append, DIRECTION 2 REPLACE, DIRECTION 3 explicit id."""
+    cols, holes, vals = _fei(conn)
+    conn.execute(                                                         # 1
+        f"INSERT INTO fill_envelope_identity ({cols}) VALUES ({holes})", vals)
+    first = int(conn.execute(
+        "SELECT identity_id FROM fill_envelope_identity").fetchone()[0])
+    cols, holes, vals = _fei(conn, order="REWRITTEN")
+    with pytest.raises(sqlite3.IntegrityError,                            # 2
+                       match="trg_fei_no_replace"):
+        conn.execute(
+            f"INSERT OR REPLACE INTO fill_envelope_identity ({cols}) "
+            f"VALUES ({holes})", vals)
+    # a DIFFERENT (fill_id, envelope_raw), so ONLY the PK clause can fire
+    cols, holes, vals = _fei(conn, identity_id=first, fill_id=22, raw="docB")
+    with pytest.raises(sqlite3.IntegrityError,                            # 3
+                       match="trg_fei_no_replace"):
+        conn.execute(
+            f"INSERT INTO fill_envelope_identity ({cols}) VALUES ({holes})",
+            vals)
+
+
+def test_a_negative_identity_id_can_never_exist(conn) -> None:
+    """22A-R11-06, REPRODUCED FIRST on sqlite 3.50.4 at recursive_triggers=0.
+
+    PRE-FIX: insert an identity explicitly at `-1`, then `INSERT OR REPLACE` a
+    `-1` row with a DIFFERENT `(fill_id, envelope_raw)`; the first row was
+    SILENTLY DELETED and replaced, `trg_fei_no_delete` never fired, and the
+    table's own append-only guarantee was false.  The barrier ignores
+    `NEW.identity_id = -1` because an OMITTED integer primary key presents as
+    `-1`, so the sentinel MUST be impossible as a stored value -- which a NEW
+    table can guarantee with a CHECK and an existing one cannot.
+
+    POST-FIX the FIRST insert is refused, so the bypass has no state to start
+    from.  Asserted on the CHECK by name, and the `(fill_id, envelope_raw)`
+    pair is fresh so `trg_fei_no_replace` cannot be what fires.
+    """
+    cols, holes, vals = _fei(conn, identity_id=-1, fill_id=33, raw="docC")
+    with pytest.raises(sqlite3.IntegrityError, match="identity_id > 0"):
+        conn.execute(
+            f"INSERT INTO fill_envelope_identity ({cols}) VALUES ({holes})",
+            vals)
+
+
+# --------------------------------------------------------------------------
 # SITE 4 -- provenance_corrections (EXISTING table)
 # --------------------------------------------------------------------------
 def test_provenance_corrections_the_three_directions(conn) -> None:
@@ -1868,6 +1977,14 @@ def test_the_three_existing_tables_have_no_negative_ids_by_their_writers(
     a weaker fact, and the weakness is stated: **an explicit `-1` INSERT is
     indistinguishable from an omitted one**, and the barrier would then refuse
     ordinary appends exactly as the retired idiom did.
+
+    AND THE SCOPE IS EXACTLY THREE, WHICH IS NOW TRUE BY CONSTRUCTION RATHER
+    THAN BY THE ROSTER HAPPENING TO BE RIGHT (Codex 22A-R11-06).  When this
+    declaration was written the arc had ONE new table; `fill_envelope_identity`
+    then shipped WITHOUT the CHECK, so the residual silently covered a fourth
+    table nobody had declared.  Every NEW table now carries the CHECK, and
+    `test_every_new_table_carries_the_pk_positivity_CHECK` walks them, so a
+    future new table cannot join this residual by omission.
 
     INCIDENCE ZERO, ESTABLISHED BY READING EACH WRITER'S COLUMN LIST rather
     than by grepping for the column name -- a name grep cannot see a writer
