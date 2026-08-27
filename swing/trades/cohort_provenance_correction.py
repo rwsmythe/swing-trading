@@ -1884,7 +1884,14 @@ def _authorize(
     reason: Any,
     cfg: Any = None,
 ) -> _Authorized:
-    """Every read-only check, in refusal-ladder order. Writes nothing.
+    """Every authorization check, in refusal-ladder order.
+
+    IT WRITES, AND THIS SENTENCE USED TO SAY IT DID NOT (self-sweep SS-10, the
+    same class as Codex 22A-R11-05 one caller up). PERSIST-CANONICAL made the
+    ladder persist the AUTHORITY'S reading of the subject fill's envelope, and
+    rung 6 populate the whole entry-fill reading population, so this is a
+    WRITING function that both entry points -- apply and dry-run -- share. The
+    apply owns ``BEGIN IMMEDIATE``; the dry run unwinds through a SAVEPOINT.
 
     SELECT-FIRST IDEMPOTENCY LEADS THE LADDER, and it sits ABOVE ``--reason``
     validation, not merely above the unset-state gate. CLAUDE.md states the
@@ -2011,6 +2018,11 @@ def _na_suffix_note(anchored: _Anchored, derived: _Derived) -> str | None:
     )
 
 
+# The dry run's unwind point. Named rather than inlined so the ROLLBACK TO and
+# the RELEASE cannot drift apart, which is how a savepoint leaks.
+_PREVIEW_SAVEPOINT = "cohort_provenance_preview_sp"
+
+
 def preview_cohort_provenance_correction(
     conn: sqlite3.Connection,
     *,
@@ -2020,11 +2032,25 @@ def preview_cohort_provenance_correction(
     reason: str | None = None,
     cfg: Any = None,
 ) -> CohortProvenanceCorrectionPreview:
-    """``--dry-run``: every read-only check, writing nothing.
+    """``--dry-run``: NET-ZERO, and that is a weaker claim than write-free.
 
     Raises the SAME refusals the write path raises, because both call the same
     authorization function -- one authorization function, two entry points, so
     ``--dry-run`` cannot diverge from apply.
+
+    IT IS NO LONGER A READ-ONLY LADDER, AND THE TEXT SAYS SO (Codex
+    22A-R11-05).  PERSIST-CANONICAL made the SHARED authorization WRITE: it
+    canonicalises the subject fill's envelope and persists that reading, and
+    behind it the latch rungs can populate the whole entry-fill reading
+    population.  So this docstring's predecessor -- *"every read-only check,
+    writing nothing"*, beside a comment claiming *"still takes no write
+    lock"* -- was FALSE while it still read TRUE, which is gotcha #31 inside
+    the very function the reshape moved.
+
+    WHAT IS GUARANTEED NOW, precisely: every write this call makes is unwound
+    before it returns, in EVERY transaction posture, by a SAVEPOINT rolled
+    back unconditionally.  What is NOT guaranteed, and is stated rather than
+    implied: for the duration of the call the connection takes a WRITE LOCK.
     """
     # A DRY RUN MUST AT LEAST BE COHERENT WITH ITSELF (Codex R2 Major 4). The
     # authorization ladder runs a dozen separate SELECTs, and under sqlite3's
@@ -2032,8 +2058,17 @@ def preview_cohort_provenance_correction(
     # so a pipeline run, a status transition or a reconciliation landing
     # MID-LADDER could make the preview report a mix of two worlds. A DEFERRED
     # read transaction pins ONE snapshot for the whole ladder and is rolled
-    # back unconditionally, so the preview still writes nothing and still takes
-    # no write lock.
+    # back unconditionally.
+    #
+    # AND THE UNWIND IS A SAVEPOINT, NOT THE `owns_read_tx` ROLLBACK (Codex
+    # 22A-R11-05). That rollback fires only when this function OWNS the
+    # transaction; called inside a caller-held one it fired not at all, so the
+    # dry run's writes survived and the CALLER'S OWN COMMIT made them durable
+    # -- a `--dry-run` that persists. MEASURED: one `fill_envelope_identity`
+    # row remained after the caller committed. The savepoint unwinds the same
+    # way in both postures, and the caller's transaction is LEFT OPEN, because
+    # closing someone else's transaction would be a second defect wearing this
+    # one's clothes.
     #
     # WHAT THIS DOES NOT BUY, stated rather than implied: it does not bind the
     # preview to a LATER apply. The apply re-runs the ENTIRE ladder, so it can
@@ -2047,6 +2082,7 @@ def preview_cohort_provenance_correction(
     owns_read_tx = not conn.in_transaction
     if owns_read_tx:
         conn.execute("BEGIN DEFERRED")
+    conn.execute(f"SAVEPOINT {_PREVIEW_SAVEPOINT}")
     try:
         auth = _authorize(
             conn,
@@ -2061,6 +2097,9 @@ def preview_cohort_provenance_correction(
         anchored, derived, latch = auth.anchored, auth.derived, auth.latch
         tier = auth.admission_tier
     finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.execute(f"ROLLBACK TO {_PREVIEW_SAVEPOINT}")
+            conn.execute(f"RELEASE {_PREVIEW_SAVEPOINT}")
         if owns_read_tx:
             with contextlib.suppress(sqlite3.Error):
                 conn.rollback()

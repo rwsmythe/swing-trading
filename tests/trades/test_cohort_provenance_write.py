@@ -1043,20 +1043,89 @@ def test_R2M3_a_recorded_at_inside_the_margin_REFUSES(conn) -> None:
     assert "within 24 hours of the" in msg
 
 
-def test_R2M4_the_preview_leaves_no_transaction_open(conn) -> None:
-    """It pins ONE read snapshot for the whole ladder and rolls back
-    unconditionally, so it still writes nothing and takes no write lock."""
-    ids = build_cadl_case(conn)
+def _row_counts(conn) -> dict[str, int]:
+    """Every user table's row count -- a CLOSURE CHECK, not a hand-list.
+
+    The preview's "writes nothing" guarantee was pinned by counting ONE table,
+    and the persist-canonical reshape then taught the shared authorization to
+    write to a DIFFERENT one (self-sweep SS-11).  A named-table assertion is
+    the same instrument as the count it replaced and fails the same way; this
+    walks what the schema actually contains.
+    """
+    names = [
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "  AND name NOT LIKE 'sqlite_%' ORDER BY name")
+    ]
+    return {
+        n: conn.execute(f"SELECT COUNT(*) FROM \"{n}\"").fetchone()[0]
+        for n in names
+    }
+
+
+def _make_the_envelope_unread(conn, fill_id: int, order_id: str) -> None:
+    """A fill whose envelope the authority has NEVER READ.
+
+    The raw UPDATE is deliberate and the fixture's own docstring names it: it
+    writes the document and no reading, which is exactly the state the
+    preview's shared authorization must canonicalise -- i.e. WRITE -- before it
+    can answer anything.  Seeding through `set_fill_envelope` would record the
+    reading up front and the preview would have nothing left to write, which
+    is why this case builds the world the other way.
+    """
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
+        ('{"schwab_order_id": "%s"}' % order_id, fill_id))
     conn.commit()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fill_envelope_identity").fetchone()[0] == 0
+
+
+def test_R2M4_the_preview_leaves_no_transaction_open(conn) -> None:
+    """It pins ONE read snapshot for the whole ladder and unwinds every write
+    it made, so the DRY RUN is still net-zero across the WHOLE schema."""
+    ids = build_cadl_case(conn)
+    _make_the_envelope_unread(conn, ids["fill_id"], "77001")
     assert not conn.in_transaction
+    before = _row_counts(conn)
     preview_cohort_provenance_correction(
         conn, trade_id=ids["trade_id"],
         cited_candidate_id=ids["candidate_id"],
         cited_recommendation_id=ids["daily_recommendation_id"],
         reason=REASON)
     assert not conn.in_transaction
-    assert conn.execute(
-        "SELECT COUNT(*) FROM provenance_corrections").fetchone()[0] == 0
+    assert _row_counts(conn) == before
+
+
+def test_R11M5_the_preview_writes_nothing_INSIDE_A_CALLER_TRANSACTION(
+        conn) -> None:
+    """PRE-FIX the unwind was gated on `owns_read_tx`, so a caller-held
+    transaction kept every row the dry run wrote and the caller's own COMMIT
+    made them durable -- a `--dry-run` that persists.
+
+    The identity row is the concrete instance: the shared authorization
+    canonicalises the subject envelope, which is a WRITE, and the ladder can
+    reach the whole entry-fill population pass behind it.  The assertion is the
+    WHOLE schema for the reason above.
+    """
+    ids = build_cadl_case(conn)
+    _make_the_envelope_unread(conn, ids["fill_id"], "77002")
+    before = _row_counts(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        preview_cohort_provenance_correction(
+            conn, trade_id=ids["trade_id"],
+            cited_candidate_id=ids["candidate_id"],
+            cited_recommendation_id=ids["daily_recommendation_id"],
+            reason=REASON)
+        assert conn.in_transaction, (
+            "the preview must LEAVE the caller's transaction open; closing it "
+            "would be a different defect wearing this one's clothes")
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    assert _row_counts(conn) == before
 
 
 def test_R2M5_a_bucket_change_on_the_cited_candidate_is_reported(conn) -> None:
