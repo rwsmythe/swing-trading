@@ -1623,6 +1623,96 @@ def test_an_unexpected_authorization_exception_writes_the_entry(
 
 
 # ===========================================================================
+# 22A-R11-02 -- THE IDENTITY WRITE MAY NEVER COST A MONEY-BEARING FILL
+#
+# THE CLASS, NAMED: **THE GUARD MOVED AND ITS TEST DID NOT.**  The containment
+# case directly above substitutes `authorize_accepted_order`, which is the
+# boundary the RESOLVER owns.  The persist-canonical reshape opened a SECOND
+# failure boundary, in `insert_fill_with_event`, that runs AFTER authorization
+# and AFTER the fill INSERT -- so no amount of patching authorization can reach
+# it, and the existing case passed while the new hole was live.  A boundary
+# asserted at ONE call site is not a boundary (22A-R9-04's own sentence, and
+# this is its third instance).
+# ===========================================================================
+def test_an_identity_write_failure_does_not_roll_back_the_entry(
+        tmp_path, monkeypatch) -> None:
+    """MEASURED PRE-FIX: `fills` = 0 and `trades` = 0.
+
+    `record_identity` raising a `sqlite3.OperationalError` escaped
+    `insert_fill_with_event`, escaped `record_entry`, and the transaction
+    rolled the trade AND the fill back -- cohort bookkeeping blocking a
+    money-bearing fill, which `0036:26-38` and this arc's own headline rule
+    forbid outright.
+
+    POST-FIX the fill lands AND the ladder's verdict is UNCHANGED, which is
+    the discriminating half.  The ladder itself did nothing wrong here -- rung
+    6's population pass had no other envelope-bearing entry fill to read in
+    this world, so it never touched the patched writer -- and an implementation
+    that degraded the cohort keys because an AUDIT row failed would be the
+    same inversion in the opposite direction.  What is missing is exactly one
+    thing: the audit row.  The next case proves that its absence fails CLOSED.
+    """
+    import swing.data.repos.fill_envelope_identity as fei
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r1102")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+
+    def boom(*a, **kw):
+        raise sqlite3.OperationalError("simulated identity write failure")
+
+    monkeypatch.setattr(fei, "record_identity", boom)
+    result = enter(conn, cfg, req())
+    origin, cand, label = written(conn, result.trade_id)
+    assert (origin, cand) == ("pipeline_aplus", candidate_id)
+    assert label is not None
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE trade_id = ?",
+        (result.trade_id,)).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fill_envelope_identity").fetchone()[0] == 0, (
+        "the write FAILED in this case; a row here would mean the test is "
+        "measuring a path where nothing was broken")
+
+
+def test_a_prior_consumer_whose_reading_was_never_written_still_blocks(
+        tmp_path) -> None:
+    """THE CONTAINMENT ABOVE IS ONLY SAFE BECAUSE OF THIS.
+
+    Swallowing the identity write would be a fail-OPEN if the scans could not
+    see a fill whose reading is absent -- an unread population reads as EMPTY,
+    which is the widest wrong acceptance available at rung 6.  What closes it
+    is that rung 6 runs `ensure_entry_fill_identities` FIRST, inside the same
+    reservation, so a fill the writer never got to is re-read before either
+    scan looks at it.
+
+    The prior consumer is on ANOTHER TICKER because rung 6 is the only
+    ORDER-scoped rung: probed on the subject's own ticker, `_match_fill`'s
+    clearing and the one-open-position rule refuse first and rung 6 never
+    decides (22A-R9-02's own measurement).
+    """
+    from tests._latch_probe_world_22a import seed_trade
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r1102b")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    seed_trade(conn, trade_id=777, entry_date=date(2026, 7, 22), price=17.0)
+    conn.execute("UPDATE trades SET state = 'closed' WHERE id = 777")
+    conn.execute(
+        "INSERT INTO fills (trade_id, fill_datetime, action, quantity, price, "
+        "reconciliation_status, fill_origin, schwab_source_value_json) VALUES "
+        "(777, '2026-07-22T14:30:00', 'entry', 2, 17.0, 'unreconciled', "
+        "'schwab_auto', ?)", (envelope(),))
+    conn.commit()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fill_envelope_identity").fetchone()[0] == 0, (
+        "the prior consumer must start with NO stored reading, or this case "
+        "is not about the repair")
+
+    result = enter(conn, cfg, req())
+    assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
+
+
+# ===========================================================================
 # 22A-R8-04 -- THE SERVICE'S OWN JSON SCANS TAKE THE `CASE` FORM
 # ===========================================================================
 def test_a_malformed_envelope_on_another_trade_does_not_break_the_scans(

@@ -241,3 +241,55 @@ def test_the_authority_canonicalises_the_whole_entry_fill_population(
     assert dict(conn.execute(
         "SELECT fill_id, envelope_state FROM fill_envelope_identity"
     ).fetchall()) == {a: "canonical", b: "refused"}
+
+
+# ===========================================================================
+# 22A-R11-02 -- THE IDENTITY WRITE IS CONTAINED AT THE SOLE FILLS WRITER
+#
+# `insert_fill_with_event` is shared by EVERY fill-bearing surface -- entry,
+# exit, and the reconciliation split handler's rebuilt partials -- so an
+# uncontained failure here charges cohort bookkeeping against a money-bearing
+# execution on all three.  The entry half is measured end to end in
+# `tests/trades/test_22a_task9_entry_wiring.py`; this is the SHARED WRITER's
+# own boundary, on the EXIT action, which no entry-path case can reach.
+# ===========================================================================
+def test_an_identity_write_failure_does_not_roll_back_an_exit_fill(
+        conn, monkeypatch) -> None:
+    """PRE-FIX the exception escaped `insert_fill_with_event` outright.
+
+    The assertion is the FILL, not the absence of an exception: a version that
+    caught and re-raised would still pass a `pytest.raises`-shaped test.
+    """
+    import swing.data.repos.fill_envelope_identity as fei
+
+    def boom(*a, **kw):
+        raise sqlite3.OperationalError("simulated identity write failure")
+
+    monkeypatch.setattr(fei, "record_identity", boom)
+    fid = _insert_via_repo(
+        conn, '{"schwab_order_id": "1007523377009"}', trade_id=9,
+        action="exit")
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE fill_id = ?", (fid,)
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fill_envelope_identity").fetchone()[0] == 0
+
+
+def test_a_table_probe_failure_is_contained_the_same_way(
+        conn, monkeypatch) -> None:
+    """The containment covers the ENTIRE identity block, not the write alone.
+
+    `table_exists` is a query too, and a boundary drawn around one of the two
+    statements is the same half-swept shape this arc has paid for repeatedly.
+    """
+    import swing.data.repos.fill_envelope_identity as fei
+
+    def boom(*a, **kw):
+        raise sqlite3.OperationalError("simulated sqlite_master failure")
+
+    monkeypatch.setattr(fei, "table_exists", boom)
+    fid = _insert_via_repo(conn, '{"schwab_order_id": "A"}', trade_id=10)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE fill_id = ?", (fid,)
+    ).fetchone()[0] == 1

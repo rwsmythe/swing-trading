@@ -8,10 +8,13 @@ transaction; the caller wraps with `with conn:`.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime as _datetime
 
 from swing.data.models import Fill
+
+log = logging.getLogger(__name__)
 
 
 def insert_fill_with_event(
@@ -100,23 +103,20 @@ def insert_fill_with_event(
     # partials, which task 11a taught to preserve the envelope, get theirs for
     # free.
     #
-    # THE LOCK IS PRESERVED BY THE GUARD, NOT BY LUCK.  Clause (a) says an
-    # unlatched fill's persisted rows are byte-identical and clause (d) says a
-    # fill with no usable order id costs ZERO additional queries; a fill with no
-    # envelope takes neither the import nor a statement, and the `trades`/`fills`
-    # rows are untouched in every case.
+    # WHAT THE LOCK ACTUALLY SAYS, QUOTED RATHER THAN PARAPHRASED (self-sweep
+    # SS-13; the first version of this comment widened both clauses and then
+    # justified the widened claim with a fact that does not establish it).
+    # Clause (a) is about the persisted `trades` and `fills` ROWS, which are
+    # byte-identical here in every case; clause (d) is about **the RESOLVER**
+    # issuing zero additional database queries when the envelope carries no
+    # usable broker order id, and this block is not the resolver.  So the LOCK
+    # is intact as written -- and the honest statement of the NEW cost is that
+    # an envelope-BEARING fill whose envelope names no order id now pays a
+    # `sqlite_master` probe, a lookup and an INSERT that it did not pay before.
+    # A fill with NO envelope still takes neither the import nor a statement.
     if fill.schwab_source_value_json is not None:
-        from swing.data.repos.fill_envelope_identity import (
-            record_identity,
-            table_exists,
-        )
-        # Pre-0037 fixtures run at earlier target versions; the reading has
-        # nowhere to go and the fill is unaffected, exactly as the fill_origin
-        # branch above degrades.
-        if table_exists(conn):
-            record_identity(
-                conn, fill_id=fill_id,
-                envelope_raw=fill.schwab_source_value_json)
+        _record_envelope_identity_or_log(
+            conn, fill_id, fill.schwab_source_value_json)
 
     _recompute_aggregates(conn, fill.trade_id)
 
@@ -143,6 +143,56 @@ def insert_fill_with_event(
             ),
         )
     return fill_id
+
+
+def _record_envelope_identity_or_log(
+    conn: sqlite3.Connection, fill_id: int, envelope_raw: str,
+) -> None:
+    """Persist the authority's reading, and NEVER let it cost the fill.
+
+    THE GOVERNING ASYMMETRY, AND IT IS NOT NEGOTIABLE (`0036:26-38`, and this
+    arc's own headline rule): **cohort bookkeeping never blocks a money-bearing
+    execution.**  Codex 22A-R11-02 measured the inversion end to end -- with
+    `record_identity` raising, `record_entry`'s transaction rolled back and
+    `SELECT COUNT(*) FROM fills` returned **0**.  The reading is an audit
+    artefact; the fill is the broker's own record of money that moved.
+
+    THE CONTAINMENT COVERS THE WHOLE BLOCK, including the `table_exists` probe
+    and the deferred import.  A boundary drawn around the write alone would be
+    the same half-swept shape the arc has met repeatedly, and `table_exists`
+    issues a query of its own.  It is BROAD for the reason 22A-R8-03 ruled:
+    enumerating the raisable types is the hand-maintained-roster failure.
+
+    AND THE MISSING READING FAILS CLOSED RATHER THAN OPEN, which is what makes
+    swallowing it safe.  Every scan that consumes stored readings runs INSIDE
+    rung 6, and rung 6 runs `ensure_entry_fill_identities` FIRST, in the same
+    reservation -- so an entry fill whose reading this call failed to write is
+    re-read before any scan looks at it, and if THAT fails too the resolver's
+    broad containment refuses `aliveness_unverifiable`, which can never admit.
+    The population pass covers `action = 'entry'` only; an EXIT fill's reading
+    is never retried and nothing consumes it, which is stated rather than left
+    to be discovered.
+
+    Pre-0037 fixtures run at earlier target versions; the reading has nowhere
+    to go and the fill is unaffected, exactly as the `fill_origin` branch
+    degrades.
+    """
+    try:
+        from swing.data.repos.fill_envelope_identity import (
+            record_identity,
+            table_exists,
+        )
+        if table_exists(conn):
+            record_identity(
+                conn, fill_id=fill_id, envelope_raw=envelope_raw)
+    except Exception:  # noqa: BLE001 -- the fill outranks its bookkeeping
+        log.exception(
+            "22-A: the authority's reading of fill %s's Schwab envelope could "
+            "not be persisted; the FILL IS KEPT and the reading is left for "
+            "the population pass inside rung 6, which re-reads it before any "
+            "consumption scan looks at it. WARRANTS INVESTIGATION -- cohort "
+            "bookkeeping must never cost a money-bearing execution, and it "
+            "must also never fail silently", fill_id)
 
 
 def _recompute_aggregates(conn: sqlite3.Connection, trade_id: int) -> None:
