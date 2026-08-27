@@ -22,7 +22,7 @@ fill with NO envelope pays nothing at all -- LOCK clause (d)'s subject.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 TABLE = "fill_envelope_identity"
 
@@ -93,7 +93,7 @@ def record_identity(
         " recorded_ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (int(fill_id), envelope_raw, identity.state, identity.broker_order_id,
          identity.instrument_symbol, ENVELOPE_CANONICALIZER_VERSION,
-         datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
+         datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")),
     )
     return current
 

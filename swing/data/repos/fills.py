@@ -107,7 +107,8 @@ def insert_fill_with_event(
     # rows are untouched in every case.
     if fill.schwab_source_value_json is not None:
         from swing.data.repos.fill_envelope_identity import (
-            record_identity, table_exists,
+            record_identity,
+            table_exists,
         )
         # Pre-0037 fixtures run at earlier target versions; the reading has
         # nowhere to go and the fill is unaffected, exactly as the fill_origin
