@@ -518,7 +518,29 @@ BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loi_no_replace: latch_order_intents 
 CREATE TABLE fill_envelope_identity (
     identity_id INTEGER PRIMARY KEY,
 
-    fill_id      INTEGER NOT NULL REFERENCES fills(fill_id) ON DELETE RESTRICT,
+    -- NO FOREIGN KEY ON fill_id, AND THAT IS MEASURED RATHER THAN CASUAL.
+    -- `split_into_partials` DELETEs the consolidated fill and rebuilds it as
+    -- partials (reconciliation_auto_correct.py:2966), and task 11a now
+    -- PRESERVES the envelope onto the rebuilt rows -- so an envelope-bearing
+    -- fill genuinely does get deleted on a supported operational path. All
+    -- THREE delete actions block it, verified by execution on sqlite 3.50.4 at
+    -- the default PRAGMA recursive_triggers=0: RESTRICT and NO ACTION raise
+    -- `FOREIGN KEY constraint failed`, and CASCADE DOES fire this table's own
+    -- BEFORE DELETE trigger and aborts with the append-only message. A
+    -- reference of any kind would therefore convert a legitimate reconciliation
+    -- into a hard failure -- cohort bookkeeping blocking an operational
+    -- correction, which 0036:26-38 already ruled against.
+    --
+    -- THE ORPHAN IT PERMITS IS HARMLESS BY CONSTRUCTION, and the reason is the
+    -- same reason envelope_raw exists. fills.fill_id is a plain rowid alias and
+    -- IS reused; a stale reading whose fill was deleted can therefore be
+    -- addressed again. But every consumer joins on BOTH fill_id AND
+    -- envelope_raw, so a reused id carrying a DIFFERENT document does not match
+    -- at all, and a reused id carrying the SAME document is the same document,
+    -- for which the stale reading is the correct reading. The only way the two
+    -- could differ is a canonicaliser change, and record_identity RAISES on
+    -- exactly that rather than preferring either answer.
+    fill_id      INTEGER NOT NULL,
     envelope_raw TEXT    NOT NULL,
 
     envelope_state TEXT NOT NULL

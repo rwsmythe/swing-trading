@@ -132,6 +132,21 @@ __all__ = [
 # literal in the migration equals this constant (#11).
 LATCH_PROBE_EVIDENCE_VERSION = "2026-08-25.1"
 
+# THE ENVELOPE CANONICALISER'S OWN VERSION (22-A round 11, PERSIST-CANONICAL).
+# Every stored reading records the version that produced it, so a reading made
+# under an older grammar is DISTINGUISHABLE rather than silently trusted.  Bump
+# this whenever `canonical_envelope_identity` would answer a document
+# differently; `record_identity` then RAISES on the disagreement instead of
+# preferring either answer.
+ENVELOPE_CANONICALIZER_VERSION = "2026-08-26.1"
+
+ENVELOPE_CANONICAL = "canonical"
+ENVELOPE_REFUSED = "refused"
+# Mirrored by migration 0037's `CHECK (envelope_state IN (...))` (#11 -- the
+# schema CHECK, the Python constant and the writer land in ONE task).
+ENVELOPE_STATES: frozenset[str] = frozenset({
+    ENVELOPE_CANONICAL, ENVELOPE_REFUSED})
+
 
 class LatchProbeInvariantError(RuntimeError):
     """The probe returned a state the forced configuration makes impossible.
@@ -714,6 +729,48 @@ def envelope_is_canonical(raw: str | None) -> bool:
                 "would read DIFFERENT values", key, value)
             return False
     return True
+
+
+@dataclass(frozen=True)
+class EnvelopeIdentity:
+    """The authority's ONE reading of one envelope document."""
+
+    state: str                        # ENVELOPE_CANONICAL | ENVELOPE_REFUSED
+    broker_order_id: str | None
+    instrument_symbol: str | None
+
+
+def canonical_envelope_identity(raw: str | None) -> EnvelopeIdentity:
+    """THE ONE DERIVATION.  Everything downstream compares its STORED OUTPUT.
+
+    PERSIST-CANONICAL (CHARC + RD, 2026-08-26).  Ten review rounds never
+    converged because migration 0037 was made to RE-DERIVE this function's
+    judgment in SQL, and the two engines disagree in at least three independent
+    ways -- ``json.loads`` accepts ``NaN`` where ``json_valid`` rejects the
+    document; ``str.strip`` removes tab/newline/NBSP where ``trim()`` removes
+    ASCII space only; ``1002937461 == '1002937461'`` is False in Python and
+    True in SQL against a TEXT-affinity column.  Three rounds, three
+    divergences, each found only after the previous was fixed, and nothing said
+    three was the last.  So the mirror is gone: this function decides, its
+    answer is PERSISTED against the exact document it read
+    (``fill_envelope_identity.envelope_raw``), and SQL compares stored values.
+
+    IT IS COMPOSED OF THE THREE EXISTING READERS AND ADDS NO FOURTH SPELLING.
+    ``envelope_is_canonical`` still asks whether the document can be read to a
+    single unambiguous value; the two readers still say what it says.  What
+    changed is that nothing asks the question TWICE.
+
+    NEVER RAISES: every constituent contains its own decode failure, and
+    ``envelope_is_canonical`` answers a document it cannot decode with
+    ``False`` -- fail CLOSED, because an unanswerable question is not a pass.
+    """
+    if not envelope_is_canonical(raw):
+        return EnvelopeIdentity(ENVELOPE_REFUSED, None, None)
+    return EnvelopeIdentity(
+        ENVELOPE_CANONICAL,
+        broker_order_id_from_envelope(raw),
+        instrument_symbol_from_envelope(raw),
+    )
 
 
 def origin_and_envelope_are_inconsistent(fill_origin, raw) -> bool:

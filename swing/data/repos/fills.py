@@ -90,6 +90,33 @@ def insert_fill_with_event(
         )
     fill_id = int(cur.lastrowid)
 
+    # 22-A round 11, PERSIST-CANONICAL: a fill that carries a Schwab envelope
+    # carries the AUTHORITY'S ONE READING of it from birth.
+    #
+    # WHY HERE AND NOT IN record_entry.  This is the sole INSERT INTO fills in
+    # the whole package (grep: two statements, both in this function, one the
+    # pre-v20 legacy branch), so writing the reading here is the CLOSURE rather
+    # than a roster of callers to maintain -- and the split handler's rebuilt
+    # partials, which task 11a taught to preserve the envelope, get theirs for
+    # free.
+    #
+    # THE LOCK IS PRESERVED BY THE GUARD, NOT BY LUCK.  Clause (a) says an
+    # unlatched fill's persisted rows are byte-identical and clause (d) says a
+    # fill with no usable order id costs ZERO additional queries; a fill with no
+    # envelope takes neither the import nor a statement, and the `trades`/`fills`
+    # rows are untouched in every case.
+    if fill.schwab_source_value_json is not None:
+        from swing.data.repos.fill_envelope_identity import (
+            record_identity, table_exists,
+        )
+        # Pre-0037 fixtures run at earlier target versions; the reading has
+        # nowhere to go and the fill is unaffected, exactly as the fill_origin
+        # branch above degrades.
+        if table_exists(conn):
+            record_identity(
+                conn, fill_id=fill_id,
+                envelope_raw=fill.schwab_source_value_json)
+
     _recompute_aggregates(conn, fill.trade_id)
 
     if emit_event:

@@ -39,9 +39,9 @@ def _seed_fill(conn, *, trade_id=1, envelope=None, action="entry"):
         "INSERT OR IGNORE INTO trades (id, ticker, entry_date, entry_price, "
         " initial_shares, initial_stop, current_stop, state, trade_origin, "
         " pre_trade_locked_at) "
-        "VALUES (?, 'FTRE', '2026-08-17', 18.50, 2, 17.00, 17.00, 'entered', "
+        "VALUES (?, ?, '2026-08-17', 18.50, 2, 17.00, 17.00, 'entered', "
         " 'manual_off_pipeline', '2026-08-17T13:00:00')",
-        (trade_id,),
+        (trade_id, f"TK{trade_id:02d}"),
     )
     cur = conn.execute(
         "INSERT INTO fills (trade_id, fill_datetime, action, quantity, price, "
@@ -141,3 +141,103 @@ def test_one_reading_per_fill_and_document(conn) -> None:
             " envelope_state, broker_order_id, canonicalizer_version, "
             " recorded_ts) VALUES (?, 'DOC', 'canonical', 'B', 'v1', 'T')",
             (fid,))
+
+
+# ---------------------------------------------------------------------------
+# THE WRITER: every envelope-bearing fill carries its reading from birth.
+# ---------------------------------------------------------------------------
+def _insert_via_repo(conn, envelope, *, trade_id=1, action="entry"):
+    from swing.data.models import Fill
+    from swing.data.repos.fills import insert_fill_with_event
+    conn.execute(
+        "INSERT OR IGNORE INTO trades (id, ticker, entry_date, entry_price, "
+        " initial_shares, initial_stop, current_stop, state, trade_origin, "
+        " pre_trade_locked_at) "
+        "VALUES (?, ?, '2026-08-17', 18.50, 2, 17.00, 17.00, 'entered', "
+        " 'manual_off_pipeline', '2026-08-17T13:00:00')",
+        (trade_id, f"TK{trade_id:02d}"),
+    )
+    return insert_fill_with_event(
+        conn,
+        Fill(fill_id=None, trade_id=trade_id,
+             fill_datetime="2026-08-17T14:30:00",
+             action=action, quantity=2, price=18.50,
+             fill_origin="schwab_auto" if envelope else "operator_typed",
+             schwab_source_value_json=envelope),
+        event_ts="2026-08-17T14:30:00", emit_event=False,
+    )
+
+
+def test_the_fills_writer_persists_the_reading_for_an_envelope_bearing_fill(
+        conn) -> None:
+    fid = _insert_via_repo(
+        conn,
+        '{"schwab_order_id": "1007523377009", '
+        '"schwab_instrument_symbol": "FTRE"}')
+    row = conn.execute(
+        "SELECT envelope_state, broker_order_id, instrument_symbol "
+        "  FROM fill_envelope_identity WHERE fill_id = ?", (fid,)).fetchone()
+    assert row == ("canonical", "1007523377009", "FTRE")
+
+
+def test_a_fill_with_no_envelope_writes_no_reading_at_all(conn) -> None:
+    """LOCK clause (a)/(d)'s subject: the ordinary path is untouched, and
+    'untouched' includes writing nothing extra."""
+    _insert_via_repo(conn, None)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fill_envelope_identity").fetchone()[0] == 0
+
+
+def test_a_refused_document_is_recorded_as_refused_not_omitted(conn) -> None:
+    """The difference between 'the authority refused this' and 'nobody has
+    looked yet' is the whole reason the state column exists."""
+    fid = _insert_via_repo(conn, '{"schwab_order_id": 1002937461}')
+    assert conn.execute(
+        "SELECT envelope_state, broker_order_id FROM fill_envelope_identity "
+        " WHERE fill_id = ?", (fid,)).fetchone() == ("refused", None)
+
+
+def test_recording_the_same_document_twice_is_idempotent(conn) -> None:
+    from swing.data.repos.fill_envelope_identity import record_identity
+    raw = '{"schwab_order_id": "A"}'
+    fid = _insert_via_repo(conn, raw)
+    record_identity(conn, fill_id=fid, envelope_raw=raw)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fill_envelope_identity").fetchone()[0] == 1
+
+
+def test_a_stored_reading_that_disagrees_with_the_authority_RAISES(
+        conn) -> None:
+    """Append-only plus document-bound means the two can only diverge through
+    a canonicaliser change or a forged row -- and either is loud."""
+    from swing.data.repos.fill_envelope_identity import (
+        EnvelopeIdentityDriftError, record_identity,
+    )
+    raw = '{"schwab_order_id": "A"}'
+    fid = _seed_fill(conn, envelope=raw)
+    conn.execute(
+        "INSERT INTO fill_envelope_identity (fill_id, envelope_raw, "
+        " envelope_state, broker_order_id, canonicalizer_version, recorded_ts) "
+        "VALUES (?, ?, 'canonical', 'FORGED', 'v0', 'T')", (fid, raw))
+    with pytest.raises(EnvelopeIdentityDriftError):
+        record_identity(conn, fill_id=fid, envelope_raw=raw)
+
+
+def test_the_authority_canonicalises_the_whole_entry_fill_population(
+        conn) -> None:
+    """Migration 0037 ships the table EMPTY; the SERVICE fills it.  A scan that
+    consumes stored readings would otherwise treat an unread population as
+    empty, which is the silent-absence failure this arc keeps meeting."""
+    from swing.data.repos.fill_envelope_identity import (
+        ensure_entry_fill_identities,
+    )
+    a = _seed_fill(conn, trade_id=1, envelope='{"schwab_order_id": "A"}')
+    b = _seed_fill(conn, trade_id=2, envelope='{"schwab_order_id": 7}')
+    _seed_fill(conn, trade_id=3, envelope=None)
+    _seed_fill(conn, trade_id=4, envelope='{"schwab_order_id": "Z"}',
+               action="exit")
+    assert ensure_entry_fill_identities(conn) == 2
+    assert ensure_entry_fill_identities(conn) == 0        # idempotent
+    assert dict(conn.execute(
+        "SELECT fill_id, envelope_state FROM fill_envelope_identity"
+    ).fetchall()) == {a: "canonical", b: "refused"}
