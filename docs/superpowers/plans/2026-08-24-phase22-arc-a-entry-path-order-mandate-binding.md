@@ -3620,6 +3620,47 @@ Repeated verbatim in every review prompt, with challenge invited.
   single-operator local application; the realistic failure is a stale or mis-copied envelope, which
   every guard must simultaneously fail to catch. **What still gets through is named in S2.4.1.**
   V2 fix: a server-side nonce or a POST-time re-fetch. **Flagged for CHARC/RD.**
+* **L18 -- THE CITATION TRIGGER CAN NO LONGER JUDGE A FILL'S ENVELOPE AT ALL; IT VERIFIES ONLY
+  THAT THE AUTHORITY'S STORED READING AND THE CITATION AGREE. A RAW WRITER STORING TWO
+  EQUAL-BUT-WRONG VALUES PASSES THE EQUALITY CHECK.** *(Declared at the PERSIST-CANONICAL reshape,
+  CHARC + RD 2026-08-26, as a condition of the ruling -- stated NOW rather than discovered later.)*
+
+  *Reason:* ten review rounds never converged, and three CONSECUTIVE rounds each produced a
+  DISTINCT engine-semantic divergence between Python and SQLite -- `json.loads` ACCEPTS a document
+  containing `NaN` where `json_valid` REJECTS it; `str.strip()` removes tab/newline/NBSP where
+  `trim()` removes ASCII space only; `1002937461 == '1002937461'` is False in Python and True in
+  SQL against a TEXT-affinity column. All three reproduced independently. Zero findings were ever
+  reopened across 74, so this was never careless execution: it is a structural property of
+  mirroring a nontrivial predicate across engines that disagree in at least three independent ways,
+  and nothing said three was the last. **RD's sentence, adopted verbatim by CHARC into the
+  convention: SQL VERIFIES A FACT; IT MUST NEVER RE-DERIVE A JUDGMENT ACROSS AN ENGINE BOUNDARY --
+  the twin mirrors the AUTHORITY by consuming its OUTPUT, not by reimplementing its reasoning.**
+
+  **WHAT WAS LOST, EXACTLY.** The trigger previously re-derived, in SQL, whether the subject fill's
+  envelope was canonical (duplicate root keys, value type, padding, blankness) and what order id it
+  named. It can no longer detect ANY of that. What it detects instead is DISAGREEMENT between two
+  stored places: `fill_envelope_identity` (the authority's reading, bound to the exact document by
+  `envelope_raw`) and the correction row's citation columns.
+
+  **AND THIS IS THE SAME TRUST BOUNDARY AS BEFORE, which is why the loss is acceptable rather than
+  merely accepted.** The old clause could equally be satisfied by a FORGED ENVELOPE: a raw writer
+  who wrote a clean, canonical envelope naming an order it never came from passed every one of
+  those checks. **The trigger never could judge truth -- only CONSISTENCY.** What changed is which
+  two artefacts must agree, not whether truth was ever verifiable in SQL.
+
+  **What it still catches, and these are not small:** a citation naming a different order than the
+  stored reading; a reading the authority REFUSED; a document the authority has NOT read (the raw
+  writer's own shape); and a document that CHANGED after its reading was taken -- the join is on
+  the fill AND the document, so a substituted envelope stops matching and the surface fails CLOSED.
+
+  **Pinned, not merely written down:** `tests/data/test_22a_task11_citation_evidence.py::
+  test_THE_DECLARED_LIMITATION_two_equal_but_wrong_values_are_ACCEPTED` asserts the acceptance. If a
+  later change makes that row REJECT, the limitation is narrower than declared and **the
+  declaration must be corrected, not the test silenced.**
+
+  *V2 fix:* none available in SQL, by construction. The only instrument that could close it is an
+  authenticated envelope (L10's server-side nonce or POST-time re-fetch), which would make the
+  document itself trustworthy and is the same fix L10 already names.
 
 ---
 

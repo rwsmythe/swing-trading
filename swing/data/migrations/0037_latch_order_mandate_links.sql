@@ -729,8 +729,37 @@ ALTER TABLE provenance_corrections ADD COLUMN cited_latch_probe_json TEXT;
 -- same idiom for the same reason; this is that trap arriving one layer up, in
 -- the construct whose failure mode is silence rather than an error.
 --
--- WHAT THIS TRIGGER CLAIMS, NARROWED TO WHAT IT CAN ESTABLISH. Three limits,
--- stated here rather than only in the plan:
+-- WHAT THIS TRIGGER CLAIMS, NARROWED TO WHAT IT CAN ESTABLISH. Four limits,
+-- stated here rather than only in the plan (the fourth is the PERSIST-CANONICAL
+-- declaration and it is stated FIRST because it is the widest):
+--   (0) IT CANNOT JUDGE A FILL'S ENVELOPE AT ALL. It verifies that the
+--       AUTHORITY'S STORED READING and the row's CITATION agree, and nothing
+--       more. A RAW WRITER THAT STORES TWO EQUAL-BUT-WRONG VALUES -- a forged
+--       fill_envelope_identity row plus a citation matching it -- PASSES THE
+--       EQUALITY CHECK. Declared at the reshape as a condition of the ruling,
+--       CHARC + RD 2026-08-26, rather than discovered later.
+--
+--       AND IT IS THE SAME TRUST BOUNDARY AS BEFORE, which is why the loss is
+--       acceptable rather than merely accepted: the clause this replaced could
+--       equally be satisfied by a FORGED ENVELOPE -- a clean, canonical
+--       document naming an order the fill never came from passed every one of
+--       its checks. The trigger never could judge TRUTH, only CONSISTENCY.
+--       What changed is which two artefacts must agree.
+--
+--       WHAT IT STILL CATCHES: a citation naming a different order than the
+--       stored reading; a reading the authority REFUSED; a document the
+--       authority has NOT read (the raw writer's own shape); and a document
+--       that CHANGED after its reading was taken, because the join is on the
+--       fill AND the document. The acceptance is PINNED by
+--       test_THE_DECLARED_LIMITATION_two_equal_but_wrong_values_are_ACCEPTED;
+--       if that ever starts REJECTING, correct this declaration rather than
+--       silencing the test.
+--
+--       There is no SQL fix, by construction. The only instrument that could
+--       close it is an AUTHENTICATED envelope (a server-side nonce or a
+--       POST-time broker re-fetch), which is the same V2 fix limitation L10
+--       already names for the document itself.
+--
 --   (1) Element-wise equality of expected_sessions and observed_sessions proves
 --       the two arrays agree with EACH OTHER, not with the NYSE calendar or
 --       with the archive. Two identical fabricated arrays pass -- including two
