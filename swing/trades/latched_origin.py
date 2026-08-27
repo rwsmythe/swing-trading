@@ -663,6 +663,11 @@ def envelope_is_canonical(raw: str | None) -> bool:
     failure 22A-R8-03 ruled against, applied to exception TYPES, and
     ``json.loads`` raises ``RecursionError`` (a ``RuntimeError``, caught by
     neither) on a deeply nested document -- MEASURED on this interpreter.
+
+    AND EVERY DECODE FAILURE ANSWERS ``False`` (Codex 22A-R11-01).  A document
+    the authority cannot decode is an UNANSWERED question, not an agreement;
+    see the handler below for what the split cost and why the mirror-shape
+    ground for the old ``True`` died with the mirror.
     """
     if not isinstance(raw, str) or not raw.strip():
         return True                    # no envelope: nothing to disagree about
@@ -682,22 +687,37 @@ def envelope_is_canonical(raw: str | None) -> bool:
 
     try:
         payload = json.loads(raw, object_pairs_hook=_hook)
-    except (ValueError, TypeError):
-        # A DOCUMENT NEITHER DOMAIN CAN READ AGREES WITH ITSELF.  Every SQL
-        # site wraps its extract in `CASE WHEN json_valid(...)`, which yields
-        # NULL here, and the service reader returns None -- both absent, so
-        # there is nothing to disagree about and the ordinary chain is right.
-        return True
     except Exception:  # noqa: BLE001 -- fail-CLOSED on an UNANSWERED question
-        # NOT the same case. `RecursionError` and its kin mean the decoder
-        # stopped rather than judged, so the two domains' readings are
-        # UNKNOWN -- and an unanswerable question is not a pass. Refusing here
-        # is what keeps this function's "never raises" contract true by
-        # CONSTRUCTION rather than by enumerating the types it might meet.
+        # THE TWO DECODE BRANCHES ARE ONE (Codex 22A-R11-01).  This was split:
+        # a `ValueError`/`TypeError` returned True on the ground that "a
+        # document NEITHER DOMAIN can read agrees with itself -- both read
+        # absence", while a `RecursionError` returned False.  The first ground
+        # was TRUE OF THE MIRROR SHAPE and died with it.  Under PERSIST-
+        # CANONICAL there is no second domain to agree with: SQL never opens
+        # the document, so the question is no longer "do the two engines read
+        # it alike" but "can the AUTHORITY say what this document names", and
+        # for a document it cannot decode it cannot.
+        #
+        # WHAT THE SPLIT COST, MEASURED: `canonical_envelope_identity('{bad')`
+        # stored `state='canonical'` with both ids NULL -- indistinguishable
+        # from a decodable document that genuinely names nothing.  Rung 6's
+        # consumption scan matches on an order id such a row does not carry,
+        # and its unreadable-scan matches on `refused`, which it was not, so an
+        # UNREADABLE prior consumer was invisible to both and read as evidence
+        # of ABSENCE at the one rung that exists to stop a second consumer of
+        # one mandate.  Ignorance fails CLOSED here as it does everywhere else
+        # on this ladder.
+        #
+        # A DECODABLE document that names no order is UNAFFECTED and must be:
+        # `[1, 2, 3]` and `{}` are still canonical, because the authority READ
+        # them and they name nothing, which is a statement rather than a
+        # silence.  That distinction is what keeps the last_word ladder open
+        # for every pre-22-A fill.
         log.exception(
-            "22-A: the fill envelope could not be decoded to judge whether "
-            "Python and SQL would read it alike; the identity is treated as "
-            "AMBIGUOUS and the entry records with honest-unset cohort keys")
+            "22-A: the fill envelope could not be DECODED, so the authority "
+            "cannot say what it names; the reading is REFUSED and the entry "
+            "records with honest-unset cohort keys rather than with the "
+            "latest run's candidate")
         return False
     if not isinstance(payload, dict) or not objects:
         return True

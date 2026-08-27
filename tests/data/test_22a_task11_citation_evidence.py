@@ -1302,10 +1302,12 @@ def test_a_malformed_SUBJECT_envelope_aborts_legibly(conn) -> None:
     """
     payload = seed_latch_ladder_citation(conn)
     _assert_baseline_inserts(conn, payload)
-    # The AUTHORITY reads this document too, and reads it as naming nothing --
-    # so the row is refused by the order-identity clause rather than by an
-    # absent reading.  Recording it is what keeps the malformed document the
-    # subject of the test.
+    # The AUTHORITY reads this document too, and since 22A-R11-01 it REFUSES
+    # it: an undecodable document is one the authority cannot speak for.  So
+    # the row is refused by the envelope-readable clause -- the reading exists
+    # and is not `canonical` -- rather than by an ABSENT reading, and either
+    # way the refusal is the trigger's own legible ABORT rather than an engine
+    # error.  Recording it is what keeps the malformed document the subject.
     set_fill_envelope(conn, payload["entry_fill_id_at_correction"],
                       "{not json")
     conn.commit()

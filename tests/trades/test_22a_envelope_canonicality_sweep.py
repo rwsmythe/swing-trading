@@ -119,15 +119,28 @@ _ENVELOPES: dict[str, tuple[str, tuple[str, str | None, str | None]]] = {
         '"schwab_instrument_symbol": "FTRE"}',
         (ENVELOPE_REFUSED, None, None)),
 
+    # ---------- AN UNDECODABLE DOCUMENT IS REFUSED, NOT CANONICAL (Codex
+    # 22A-R11-01).  Under the OLD mirror shape the question was "do the two
+    # engines agree", and for a document NEITHER could read the answer was yes
+    # -- both read absence.  PERSIST-CANONICAL deleted the second engine, so
+    # the question is now "can the AUTHORITY say what this document names",
+    # and for an undecodable document it cannot.  Answering `canonical` with
+    # both identities NULL makes an UNREADABLE prior consumer indistinguishable
+    # from a document that genuinely names nothing, and rung 6 then reads
+    # ignorance as evidence of ABSENCE.
+    "malformed JSON": ('{bad', (ENVELOPE_REFUSED, None, None)),
+    "a bare truncated array": ('[1, 2', (ENVELOPE_REFUSED, None, None)),
+
     # ---------- THE WRONG-REFUSAL CONTROLS.  A canonicaliser that counted
-    # NESTED keys, or that refused a document it merely could not decode, would
+    # NESTED keys, or that refused a DECODABLE document naming no order, would
     # fail here -- and either would block the last_word ladder for a real fill.
+    # `[1, 2, 3]` stays CANONICAL precisely because it DECODES: the authority
+    # read it and it names nothing, which is a statement rather than a silence.
     "a NESTED key of the same name": (
         json.dumps({"schwab_order_id": ID,
                     "raw": {"schwab_order_id": "unrelated"}}),
         (ENVELOPE_CANONICAL, ID, None)),
     "not an object": ('[1, 2, 3]', (ENVELOPE_CANONICAL, None, None)),
-    "malformed JSON": ('{bad', (ENVELOPE_CANONICAL, None, None)),
 
     # ---------- DIVERGENCE 1, MEASURED: python json.loads ACCEPTS NaN and
     # sqlite json_valid REJECTS the whole document.  It is CANONICALISED at the

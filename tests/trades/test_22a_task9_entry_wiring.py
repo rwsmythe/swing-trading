@@ -1713,22 +1713,31 @@ def test_a_prior_consumer_whose_reading_was_never_written_still_blocks(
 
 
 # ===========================================================================
-# 22A-R8-04 -- THE SERVICE'S OWN JSON SCANS TAKE THE `CASE` FORM
+# 22A-R11-01 -- AN UNREADABLE PRIOR CONSUMER IS IGNORANCE, NOT ABSENCE
+#
+# THIS CASE PREVIOUSLY ASSERTED THE OPPOSITE AND PASSED.  It was written for
+# 22A-R8-04 (the service's own JSON scans taking the `CASE` form); the reshape
+# then DELETED every service-side JSON scan, so the clause it guarded ceased to
+# exist while the admission it asserted became live.  The suite ENSHRINED a
+# wrong acceptance -- a test that survives the mechanism it was written for is
+# no longer evidence about anything.
 # ===========================================================================
-def test_a_malformed_envelope_on_another_trade_does_not_break_the_scans(
+def test_a_malformed_envelope_on_another_trade_REFUSES_the_subject(
         tmp_path) -> None:
-    """The two consumption scans read EVERY same-ticker entry fill's envelope.
+    """PRE-FIX: `('pipeline_aplus', <the fire's candidate>)` -- MEASURED.
 
-    22A-R3-12 measured that `json_valid(x) AND json_extract(x)` does NOT
-    protect the extract, and the migration was moved to `CASE`; the SERVICE
-    kept the unsafe form, so correctness depended on the query planner's
-    evaluation order.
+    The other trade's entry fill carries a document the authority cannot
+    decode.  It may name this very broker order; nobody can say.  Stored as
+    `canonical` with a NULL order id it was invisible to BOTH consumption
+    scans -- `consuming_entry_fills` matches on an id it does not have, and
+    `unreadable_entry_fills` matches on `refused`, which it was not -- so an
+    unreadable prior consumer read as evidence of ABSENCE at the one rung that
+    exists to stop a second consumer of one mandate.
 
-    MEASURED HONESTLY: the current plan spares these rows, so this case passes
-    under BOTH forms today and is therefore NOT a discriminator -- it is a
-    REGRESSION GUARD against the plan changing, and it is labelled as one
-    rather than counted as proof.  What the fix buys is that the guarantee
-    stops depending on the planner.
+    POST-FIX the stored reading is `refused`, the second scan sees it, and rung
+    6 refuses `consumption_evidence_unavailable`.  The entry still LANDS --
+    cohort bookkeeping never blocks a money-bearing fill -- with honest-unset
+    keys, and that is asserted too.
     """
     from tests._latch_probe_world_22a import seed_trade
 
@@ -1746,8 +1755,14 @@ def test_a_malformed_envelope_on_another_trade_does_not_break_the_scans(
         "'schwab_auto', '{not json')")
     conn.commit()
     result = enter(conn, cfg, req())
-    origin, cand, _label = written(conn, result.trade_id)
-    assert (origin, cand) == ("pipeline_aplus", candidate_id)
+    assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
+    assert conn.execute(
+        "SELECT envelope_state FROM fill_envelope_identity fei "
+        " JOIN fills f ON f.fill_id = fei.fill_id WHERE f.trade_id = 777"
+    ).fetchone() == ("refused",)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE trade_id = ?",
+        (result.trade_id,)).fetchone()[0] == 1
 
 
 def test_the_REVERSED_duplicate_key_order_is_also_refused(tmp_path) -> None:
