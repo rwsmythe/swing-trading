@@ -37,6 +37,19 @@
 --     DROP TRIGGER trg_loi_no_replace;    -- latch_order_intents
 --     DROP TRIGGER trg_pc_no_replace;     -- provenance_corrections
 --
+-- The stored-canonical reading table installed by section 3d carries the same
+-- three-barrier set, retired one statement each:
+--
+--     DROP TRIGGER trg_fei_no_update;
+--     DROP TRIGGER trg_fei_no_delete;
+--     DROP TRIGGER trg_fei_no_replace;
+--
+-- DROPPING THESE THREE IS NOT SILENT, unlike the three above it: the citation
+-- trigger compares against fill_envelope_identity rows, so an edited or
+-- substituted reading changes what a correction is allowed to claim. Their loss
+-- is a loss of the ONLY structural guarantee that the value SQL compares is the
+-- value the authority actually derived.
+--
 -- NOTE the asymmetry, because it decides what a drop COSTS. Dropping either
 -- candidates barrier mechanically halts structural admission (the reader's
 -- body check sees it). Dropping any of these THREE does not: they guard
@@ -75,6 +88,18 @@
 --     columns. His ruling, verbatim: "A transactional DROP+CREATE that replaces
 --     a guard with an EQUAL-OR-STRONGER guard is not a DROP in Condition-4's
 --     sense -- but it is ALWAYS DECLARED, NEVER SILENT."
+--   EXCEPTION 3 -- A SECOND NEW TABLE, fill_envelope_identity (section 3d),
+--     with its three append-only triggers, added at the PERSIST-CANONICAL
+--     reshape (CHARC + RD, 2026-08-26). DECLARED HERE RATHER THAN ABSORBED,
+--     under EXCEPTION 1's own reasoning read across from triggers to tables:
+--     a second CREATE TABLE meets CONDITION 4's criterion exactly as the first
+--     did -- nothing rebuilt, nothing dropped, NO EXISTING ROW TOUCHED -- so
+--     the count moving is not a widening of the condition's KIND. It carries
+--     NO BACKFILL precisely so that "no existing row touched" stays literally
+--     true and so that no judgment is ever made in SQL; the service fills it.
+--     The alternative shape -- ADD COLUMN on `fills` plus an UPDATE backfill --
+--     WAS rejected on this ground: the UPDATE would have touched 51 existing
+--     rows, which is a different KIND and would have had to be routed.
 
 BEGIN;
 
@@ -426,6 +451,122 @@ WHEN EXISTS (SELECT 1 FROM latch_order_intents
               WHERE (NEW.intent_id != -1 AND intent_id = NEW.intent_id)
                  OR idempotency_key = NEW.idempotency_key)
 BEGIN SELECT RAISE(ABORT, '22-A barrier trg_loi_no_replace: latch_order_intents is append-only. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing intent, bypassing trg_loi_no_delete at the default PRAGMA recursive_triggers=OFF, reusing its intent_id and rewriting the ledger row the minting trigger fires from and the link evidence cites. A correction is a NEW row under a NEW idempotency_key; a replay is answered by record_intent SELECT-first. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
+-- ============================================================================
+-- 3d. THE STORED CANONICAL READING OF A FILL'S ENVELOPE -- PERSIST-CANONICAL.
+--
+-- THE RULING THIS TABLE EXISTS TO ENCODE (CHARC 2026-08-26, adopting RD's
+-- sentence verbatim):
+--
+--     SQL VERIFIES A FACT; IT MUST NEVER RE-DERIVE A JUDGMENT ACROSS AN ENGINE
+--     BOUNDARY -- the twin mirrors the AUTHORITY by consuming its OUTPUT, not
+--     by reimplementing its reasoning.
+--
+-- WHAT IT REPLACES, AND WHY THE REPLACEMENT IS STRUCTURAL RATHER THAN ANOTHER
+-- FIX. Ten review rounds ran without converging, and three CONSECUTIVE rounds
+-- each produced a DISTINCT engine-semantic divergence -- every one real, every
+-- one found only after the previous had been fixed:
+--
+--   NaN inside a document   python json.loads ACCEPTS  |  sqlite json_valid REJECTS
+--   trim/strip ASCII space  both strip                 |  AGREE
+--   trim/strip tab/NL/NBSP  python strips              |  sqlite does NOT
+--   1002937461 == '..'      python False               |  SQL (TEXT affinity) True
+--
+-- Zero findings were ever reopened, so this was not careless execution: it is a
+-- structural property of mirroring a nontrivial predicate across two engines
+-- that disagree in at least three independent ways, and nothing said three was
+-- the last. So the mirror is REMOVED. The SERVICE canonicalises a fill's
+-- envelope ONCE, PERSISTS its reading here, and every SQL site downstream
+-- compares a STORED VALUE instead of parsing the document again.
+--
+-- envelope_raw IS THE BINDING, AND IT IS THE REASON THIS IS A FACT CHECK.
+-- The row records WHICH DOCUMENT was judged, verbatim. Every consumer joins on
+-- `fei.envelope_raw = fills.schwab_source_value_json` -- a plain TEXT equality,
+-- no parsing, no normalisation, no coercion -- so a reading whose document
+-- later changed simply stops matching and the surface fails CLOSED. That is
+-- what lets a trigger consume a judgment it is forbidden to make.
+--
+-- TWO STATES, NOT THREE. 'canonical' means the authority read the document and
+-- these are its values (either may be NULL: a well-formed envelope naming no
+-- order is canonical and names nothing). 'refused' means the authority could
+-- NOT read it to a single unambiguous value. A fill whose envelope is NULL has
+-- NO ROW AT ALL and needs none -- `schwab_source_value_json IS NULL` is itself
+-- a fact, and it is how every pre-22-A fill passes.
+--
+-- NO BACKFILL, DELIBERATELY, and this is the load-bearing consequence of the
+-- ruling. A SQL backfill would have to decide, in SQL, what each existing
+-- envelope says -- which is the re-derivation this table exists to delete,
+-- merely moved from verification time to migration time. So the migration
+-- creates the table EMPTY and the SERVICE fills it: existing fills are
+-- canonicalised on demand by the one authority, inside the same write
+-- reservation that consumes the result. CONDITION 4 is satisfied exactly as
+-- section 3's own backfill satisfies it -- nothing rebuilt, nothing dropped,
+-- NO EXISTING ROW TOUCHED.
+--
+-- WHAT THIS TABLE CANNOT DO, declared here rather than discovered later: a raw
+-- writer that stores an identity row AND a citation that AGREE WITH EACH OTHER
+-- but disagree with the envelope passes every check below. That is the SAME
+-- trust boundary as before -- the trigger never could judge truth, only
+-- CONSISTENCY -- and stating it is the condition on which the reshape was
+-- ruled. See section 6's limitations block for the full statement.
+--
+-- identity_id is a plain INTEGER PRIMARY KEY (a rowid alias): nothing cites an
+-- identity row by id, so the AUTOINCREMENT reuse hazard the link table pays
+-- for does not apply here. UNIQUE(fill_id, envelope_raw) is the key every
+-- consumer addresses, and it is what makes the lookup single-valued.
+-- ============================================================================
+CREATE TABLE fill_envelope_identity (
+    identity_id INTEGER PRIMARY KEY,
+
+    fill_id      INTEGER NOT NULL REFERENCES fills(fill_id) ON DELETE RESTRICT,
+    envelope_raw TEXT    NOT NULL,
+
+    envelope_state TEXT NOT NULL
+        CHECK (envelope_state IN ('canonical', 'refused')),
+
+    broker_order_id   TEXT,
+    instrument_symbol TEXT,
+
+    canonicalizer_version TEXT NOT NULL,
+    recorded_ts           TEXT NOT NULL,
+
+    -- A REFUSAL CARRIES NO IDENTITY. Without this a raw writer could record
+    -- "the authority refused this document" and simultaneously hand the
+    -- trigger an order id to compare against -- a refusal that still admits.
+    CHECK (envelope_state = 'canonical'
+           OR (broker_order_id IS NULL AND instrument_symbol IS NULL)),
+    -- A STORED IDENTITY IS PRESENT OR ABSENT, never blank. `length(x) > 0` is
+    -- a fact about the stored string and NOT a normalisation: it does not
+    -- trim, fold or coerce anything, so it cannot disagree with Python.
+    CHECK (broker_order_id   IS NULL OR length(broker_order_id)   > 0),
+    CHECK (instrument_symbol IS NULL OR length(instrument_symbol) > 0),
+
+    UNIQUE (fill_id, envelope_raw)
+);
+
+CREATE INDEX ix_fei_broker_order_id ON fill_envelope_identity(broker_order_id);
+
+CREATE TRIGGER trg_fei_no_update BEFORE UPDATE ON fill_envelope_identity
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_fei_no_update: fill_envelope_identity is append-only. A row records what the authority read out of ONE document at one instant; editing it would silently re-point every citation that compares against it. A new document is a NEW row. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
+CREATE TRIGGER trg_fei_no_delete BEFORE DELETE ON fill_envelope_identity
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_fei_no_delete: fill_envelope_identity is append-only. Deleting a reading would erase the only record of what the authority read, and every consumer would then fail closed with no way to tell erasure from absence. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
+-- THE CONFLICT-SCOPED INSERT BARRIER, for the reason measured three times in
+-- this same file: at the default PRAGMA recursive_triggers=OFF an
+-- INSERT OR REPLACE DELETES the conflicting row WITHOUT firing the DELETE
+-- trigger. Both unique keys are scoped -- the rowid PK and UNIQUE(fill_id,
+-- envelope_raw) -- because guarding one leaves the other live, which is the
+-- same half-swept shape as the bypass itself. The `!= -1` spelling is the
+-- CHARC-ruled sentinel contract: an OMITTED INTEGER PRIMARY KEY presents as
+-- -1 in a BEFORE INSERT trigger, not NULL (reproduced on sqlite 3.50.4).
+CREATE TRIGGER trg_fei_no_replace BEFORE INSERT ON fill_envelope_identity
+WHEN EXISTS (SELECT 1 FROM fill_envelope_identity
+              WHERE (NEW.identity_id != -1 AND identity_id = NEW.identity_id)
+                 OR (fill_id = NEW.fill_id
+                     AND envelope_raw = NEW.envelope_raw))
+BEGIN SELECT RAISE(ABORT, '22-A barrier trg_fei_no_replace: fill_envelope_identity is append-only. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE) would DELETE the existing reading, bypassing trg_fei_no_delete at the default PRAGMA recursive_triggers=OFF, and substitute a different identity for the same document -- which is exactly the forgery the stored reading exists to make impossible. To retire the barrier see the reversibility header of 0037_latch_order_mandate_links.sql.'); END;
+
 
 -- ============================================================================
 -- 4. THE MINTING TRIGGER, and the BACKFILL.
