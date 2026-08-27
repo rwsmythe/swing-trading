@@ -138,6 +138,17 @@ LATCH_PROBE_EVIDENCE_VERSION = "2026-08-25.1"
 # this whenever `canonical_envelope_identity` would answer a document
 # differently; `record_identity` then RAISES on the disagreement instead of
 # preferring either answer.
+#
+# AND THE SENTENCE ABOVE NAMES ITS ENFORCEMENT (Codex 22A-R11-03).  It used to
+# be true only of the two callers that ask about ONE document -- the fills
+# writer and the correction subject -- while the population pass that walks
+# EVERY OTHER trade's entry fill, which is exactly what the consumption scans
+# consult, excluded any row that already had a reading.  A stale reading was
+# therefore neither re-checked nor filtered, and it ADMITTED A SECOND CONSUMER
+# of one mandate (measured).  `ensure_entry_fill_identities` now re-verifies
+# the whole population through the same drift check, so bumping this constant
+# is LOUD on every document whose answer moved and SILENT on every document
+# whose answer did not -- the discriminator is the ANSWER, never the label.
 ENVELOPE_CANONICALIZER_VERSION = "2026-08-26.1"
 
 ENVELOPE_CANONICAL = "canonical"

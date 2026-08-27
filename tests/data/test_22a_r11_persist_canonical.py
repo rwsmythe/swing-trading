@@ -293,3 +293,62 @@ def test_a_table_probe_failure_is_contained_the_same_way(
     assert conn.execute(
         "SELECT COUNT(*) FROM fills WHERE fill_id = ?", (fid,)
     ).fetchone()[0] == 1
+
+
+# ===========================================================================
+# 22A-R11-03 -- THE POPULATION PASS RE-VERIFIES, IT DOES NOT ONLY POPULATE
+#
+# `ENVELOPE_CANONICALIZER_VERSION`'s own comment says a reading made under an
+# older grammar is "DISTINGUISHABLE rather than silently trusted".  That was
+# true only for the two callers that ASK about one document -- the fills writer
+# and the correction subject.  The population pass selected `fei.identity_id IS
+# NULL`, so every OTHER trade's existing reading -- precisely the population
+# rung 6 and rung 8 consume -- was excluded from the one check that would have
+# tested the claim.
+# ===========================================================================
+def test_the_population_pass_RE_READS_every_existing_reading(conn) -> None:
+    """PRE-FIX this returned 0 and raised nothing: the drifted row was excluded
+    by the very `IS NULL` filter, and the test asserting the second call
+    returns 0 was the bypass written down as a guarantee.
+
+    The stale row is planted with a RAW INSERT because that is what a stale row
+    IS -- a row the current writer would never produce.  What it MODELS is a
+    reading written by an earlier canonicaliser, which is why its
+    `canonicalizer_version` differs.
+    """
+    from swing.data.repos.fill_envelope_identity import (
+        EnvelopeIdentityDriftError, ensure_entry_fill_identities,
+    )
+    raw = '{"schwab_order_id": "1002937461"}'
+    fid = _seed_fill(conn, trade_id=1, envelope=raw)
+    conn.execute(
+        "INSERT INTO fill_envelope_identity (fill_id, envelope_raw, "
+        " envelope_state, broker_order_id, canonicalizer_version, recorded_ts) "
+        "VALUES (?, ?, 'canonical', NULL, '2026-01-01.0', 'T')", (fid, raw))
+    with pytest.raises(EnvelopeIdentityDriftError, match="append-only"):
+        ensure_entry_fill_identities(conn)
+
+
+def test_an_agreeing_older_reading_is_left_alone(conn) -> None:
+    """THE OVER-REFUSAL CONTROL, and it is what bounds the fix.
+
+    The check discriminates by ANSWER, never by version LABEL.  A grammar
+    change that does not change what THIS document says is not a disagreement,
+    and treating a version string as the trigger would fail every historical
+    reading closed on the day the constant moves -- a refusal manufactured by
+    the guard.
+    """
+    from swing.data.repos.fill_envelope_identity import (
+        ensure_entry_fill_identities,
+    )
+    raw = '{"schwab_order_id": "1002937461"}'
+    fid = _seed_fill(conn, trade_id=1, envelope=raw)
+    conn.execute(
+        "INSERT INTO fill_envelope_identity (fill_id, envelope_raw, "
+        " envelope_state, broker_order_id, canonicalizer_version, recorded_ts) "
+        "VALUES (?, ?, 'canonical', '1002937461', '2026-01-01.0', 'T')",
+        (fid, raw))
+    assert ensure_entry_fill_identities(conn) == 0
+    assert conn.execute(
+        "SELECT canonicalizer_version FROM fill_envelope_identity "
+        " WHERE fill_id = ?", (fid,)).fetchone() == ("2026-01-01.0",)

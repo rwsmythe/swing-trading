@@ -99,7 +99,7 @@ def record_identity(
 
 
 def ensure_entry_fill_identities(conn: sqlite3.Connection) -> int:
-    """Canonicalise every ENTRY fill that carries an envelope and lacks a row.
+    """Read EVERY envelope-bearing ENTRY fill, appending or RE-VERIFYING.
 
     THIS IS THE 'BACKFILL', AND IT IS PERFORMED BY THE AUTHORITY.  The scans
     that consume the stored reading (rung 6 and rung 8's consumption check, and
@@ -108,20 +108,48 @@ def ensure_entry_fill_identities(conn: sqlite3.Connection) -> int:
     would silently treat as empty.  Called from inside the ladder's write
     reservation, so the set it establishes cannot move under it.
 
-    Returns the number of readings appended.
+    IT RE-VERIFIES, IT DOES NOT ONLY POPULATE (Codex 22A-R11-03, PROVEN BY
+    EXECUTION).  This selected `fei.identity_id IS NULL`, so an EXISTING
+    reading never passed through ``record_identity``'s drift check -- and the
+    rows it excluded are exactly the population the consumption scans consult:
+    OTHER trades' entry fills.  ``ENVELOPE_CANONICALIZER_VERSION``'s own
+    comment claims a reading made under an older grammar is "DISTINGUISHABLE
+    rather than silently trusted"; the pass that walks that population was the
+    one place the claim was never tested.
+
+    MEASURED, one dimension apart on the same world: a reading written by the
+    PRODUCTION writer under an older grammar -- `(canonical, None)` -- let a
+    SECOND trade be admitted from a mandate the first trade's entry fill
+    already consumes, where the current-grammar reading refuses it
+    `mandate_already_consumed`.  Only the CODE was advanced, which is what a
+    canonicaliser bump IS; the data was never forged.
+
+    THE DISCRIMINATOR IS THE ANSWER, NEVER THE VERSION LABEL.  An older reading
+    that says the SAME thing is left exactly as it is -- filtering on the
+    version string would fail every historical reading closed on the day the
+    constant moves, a refusal manufactured by the guard.  A disagreement RAISES
+    (append-only: the row cannot be corrected in place), and every caller on
+    the ladder contains that raise into a fail-CLOSED refusal.
+
+    Returns the number of readings APPENDED; re-verified rows are not counted,
+    so an idempotent second call still returns 0.
     """
     if not table_exists(conn):
         return 0
     rows = conn.execute(
-        "SELECT f.fill_id, f.schwab_source_value_json FROM fills f "
+        "SELECT f.fill_id, f.schwab_source_value_json, fei.identity_id "
+        "  FROM fills f "
         f" LEFT JOIN {TABLE} fei ON fei.fill_id = f.fill_id "
         "        AND fei.envelope_raw = f.schwab_source_value_json "
         " WHERE f.action = 'entry' AND f.schwab_source_value_json IS NOT NULL "
-        "   AND fei.identity_id IS NULL ORDER BY f.fill_id",
+        " ORDER BY f.fill_id",
     ).fetchall()
-    for fill_id, raw in rows:
+    appended = 0
+    for fill_id, raw, existing_id in rows:
         record_identity(conn, fill_id=int(fill_id), envelope_raw=raw)
-    return len(rows)
+        if existing_id is None:
+            appended += 1
+    return appended
 
 
 def consuming_entry_fills(

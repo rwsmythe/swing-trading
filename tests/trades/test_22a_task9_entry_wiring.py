@@ -2336,3 +2336,61 @@ def test_an_operator_typed_fill_with_no_envelope_is_untouched(
         entry_path=EntryPath.HYP_RECS_BUTTON))
     origin, cand, _label = written(conn, result.trade_id)
     assert (origin, cand) == ("pipeline_aplus", today)
+
+
+# ===========================================================================
+# 22A-R11-03 -- A STALE READING ADMITTED A SECOND CONSUMER OF ONE MANDATE
+#
+# PROVEN BY EXECUTION rather than carried as the reviewer's own inference: the
+# reading below is written by the PRODUCTION writer, and only the CODE is
+# advanced -- which is exactly what bumping `ENVELOPE_CANONICALIZER_VERSION`
+# means.  Nothing about the data is forged.
+# ===========================================================================
+def test_a_reading_from_an_older_grammar_cannot_admit_a_second_consumer(
+        tmp_path, monkeypatch) -> None:
+    """MEASURED, both arms, on the SAME world one dimension apart:
+
+    * stale reading `(canonical, None)` under version `2026-01-01.0`
+      -> PRE-FIX `('pipeline_aplus', <the fire>, 'A+ baseline (aplus)')`
+    * current reading `(canonical, '1002937461')`
+      -> `('manual_off_pipeline', None, None)` (`mandate_already_consumed`)
+
+    So the stale row admitted a SECOND consumer of a mandate trade 777's entry
+    fill already consumes.  POST-FIX the population pass re-reads it, the
+    disagreement RAISES, the resolver's broad containment refuses
+    `aliveness_unverifiable`, and the entry lands honest-unset with its fill.
+    """
+    import swing.trades.latched_origin as lo
+    from swing.data.repos.fill_envelope_identity import record_identity
+    from tests._latch_probe_world_22a import seed_trade
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r1103")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    seed_trade(conn, trade_id=777, entry_date=date(2026, 7, 22), price=17.0)
+    conn.execute("UPDATE trades SET state = 'closed' WHERE id = 777")
+    conn.execute(
+        "INSERT INTO fills (trade_id, fill_datetime, action, quantity, price, "
+        "reconciliation_status, fill_origin, schwab_source_value_json) VALUES "
+        "(777, '2026-07-22T14:30:00', 'entry', 2, 17.0, 'unreconciled', "
+        "'schwab_auto', ?)", (envelope(),))
+    fid = conn.execute(
+        "SELECT fill_id FROM fills WHERE trade_id = 777").fetchone()[0]
+
+    # THE OLD GRAMMAR, THROUGH THE PRODUCTION WRITER.
+    monkeypatch.setattr(
+        lo, "canonical_envelope_identity",
+        lambda raw: lo.EnvelopeIdentity(lo.ENVELOPE_CANONICAL, None, None))
+    monkeypatch.setattr(lo, "ENVELOPE_CANONICALIZER_VERSION", "2026-01-01.0")
+    record_identity(conn, fill_id=int(fid), envelope_raw=envelope())
+    conn.commit()
+    monkeypatch.undo()                       # THE CODE IS NOW BUMPED
+    assert conn.execute(
+        "SELECT envelope_state, broker_order_id, canonicalizer_version "
+        "  FROM fill_envelope_identity WHERE fill_id = ?",
+        (fid,)).fetchone() == ("canonical", None, "2026-01-01.0")
+
+    result = enter(conn, cfg, req())
+    assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fills WHERE trade_id = ?",
+        (result.trade_id,)).fetchone()[0] == 1
