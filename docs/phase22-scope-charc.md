@@ -140,7 +140,7 @@ move with the code).
 ## TIER 4 — riders + leftovers
 
 Wave items 6 (D32 backups retention; composition gate named against item 5's backup default) and
-7 (D9 ambient-state sweep) · the **#11-SQL-twin gotcha amendment** (docs-only; **refined by 22-A R5-02: a twin that EXISTS but encodes a WEAKER predicate — trusting a stored grade where the model re-derives — is the same defect; the twin must mirror the AUTHORITY, not the column**; 4 instances in one
+7 (D9 ambient-state sweep) · the **#11-SQL-twin gotcha amendment** (docs-only; **refined by 22-A R5-02: a twin that EXISTS but encodes a WEAKER predicate — trusting a stored grade where the model re-derives — is the same defect; the twin must mirror the AUTHORITY, not the column — **and ACROSS AN ENGINE BOUNDARY, mirroring the authority means CONSUMING ITS OUTPUT, never reimplementing its reasoning** (2026-08-26 ruling: three engine-semantic divergences in three rounds — NaN-JSON, whitespace-strip, type affinity — each a different mechanism; the service computes and PERSISTS the canonical form, SQL compares STORED EQUALITY — a FACT, never a re-derived JUDGMENT)**; 4 instances in one
 loop of a model-side rule added without its schema twin) · D33 stays banked (trigger: equity ≥
 $7,500).
 
