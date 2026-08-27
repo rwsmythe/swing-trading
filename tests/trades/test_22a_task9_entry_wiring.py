@@ -1957,35 +1957,134 @@ def _consumer_on_another_ticker(conn, cfg, raw_envelope: str) -> int:
     return int(result.trade_id)
 
 
-def test_rung6_sees_a_prior_consumer_whose_envelope_sql_reads_apart(
-        tmp_path) -> None:
-    """PRE-FIX the ladder ADMITTED; POST-FIX it refuses mandate_already_consumed.
+# --- THE THREE MEASURED DIVERGENCES, END TO END THROUGH `record_entry` ------
+#
+# PERSIST-CANONICAL (CHARC + RD, 2026-08-26).  Each of the three shapes that
+# ended a ten-round review loop is now either CANONICALISED at the service or
+# REFUSED at it, and each is exercised here through the production entry path
+# with no raw UPDATE anywhere.  Two of the three reach the ladder through a
+# prior consumer on ANOTHER ticker, which is what makes rung 6 -- the only
+# ORDER-scoped rung -- the deciding one.
+@pytest.mark.parametrize("label,order_value", [
+    # DIVERGENCE 2: python str.strip removes these; sqlite trim() removes
+    # ASCII space ONLY.  The predecessor built the whole whitespace class out
+    # of the one character the engines agree about, so every test it wrote
+    # passed.  All four are refused by the ONE authority now.
+    ("ASCII space", "  " + BROKER_ORDER_ID + "  "),
+    ("TAB", "\t" + BROKER_ORDER_ID + "\t"),
+    ("NEWLINE", "\n" + BROKER_ORDER_ID + "\n"),
+    ("NBSP", "\u00a0" + BROKER_ORDER_ID + "\u00a0"),
+])
+def test_rung6_refuses_when_a_prior_consumers_document_is_unreadable(
+        tmp_path, label, order_value) -> None:
+    """A prior consumer the AUTHORITY could not read is IGNORANCE, not absence.
 
-    Rung 6's scan compared SQLite's raw reading of every other fill's
-    envelope, so a PADDED envelope already persisted on a prior fill was
-    invisible as a consumption -- and that envelope is persisted by the
-    production entry path itself, which writes the fill even when the ladder
-    refuses the row's cohort keys.
+    PRE-ARC the ladder ADMITTED this world: the padded envelope is persisted by
+    the production entry path itself (which writes the fill even when the
+    ladder refuses its cohort keys), and a raw-equality scan could not match
+    it.  Round 9 fixed that with a two-domain UNION, and round 10 showed the
+    union's "SQL arm" was SQL's value judged by PYTHON's rules.
 
-    The scan now asks BOTH domains and takes the UNION, which also makes the
-    service STRICTLY STRONGER than its SQL twin: a service that found FEWER
-    consumers than the citation trigger would authorize a correction that then
-    aborts.
+    POST-RESHAPE there is one reading and it is a REFUSAL, so the honest answer
+    is not "consumed by trade N" -- the authority declines to say which order
+    that document names -- but "I cannot prove this order is unconsumed".  The
+    mandate is refused either way; what changed is that the refusal no longer
+    asserts an identity nothing derived.
+
+    THE TAB / NEWLINE / NBSP ROWS ARE THE ONES THAT WOULD HAVE PASSED WRONGLY:
+    `trim()` leaves them untouched, so the SQL twin saw an unpadded, canonical
+    document and admitted a `last_word` downgrade for a latch-governed fill.
     """
-    from swing.trades.latched_origin import resolve_latched_provenance
+    from swing.trades.latched_origin import (
+        canonical_envelope_identity,
+        resolve_latched_provenance,
+    )
 
-    conn, cfg, candidate_id = build_world(tmp_path, "r902")
+    conn, cfg, candidate_id = build_world(tmp_path, "r1102" + label[:3])
     accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
     conn.commit()
-    padded = json.dumps({"schwab_order_id": "  " + BROKER_ORDER_ID + "  ",
+    padded = json.dumps({"schwab_order_id": order_value,
                          "schwab_instrument_symbol": "ZZZZ"})
+    # THE PREMISE, MEASURED IN THE ENGINE THAT DECIDES IT.  The predecessor's
+    # version of this assertion fetched SQLite's json_extract INTO PYTHON and
+    # compared it there -- SQL's value judged by Python's rules, on the very
+    # arm meant to preserve SQL's semantics.  There is now exactly one engine
+    # with an opinion, so the premise is asked of it.
+    assert canonical_envelope_identity(padded).state == "refused"
     prior = _consumer_on_another_ticker(conn, cfg, padded)
     assert conn.execute(
-        "SELECT json_extract(schwab_source_value_json, '$.schwab_order_id') "
-        "FROM fills WHERE trade_id = ?", (prior,)
-    ).fetchone()[0] == "  " + BROKER_ORDER_ID + "  ", (
-        "the premise: SQL reads the PADDED string, so the raw-equality scan "
-        "cannot match it")
+        "SELECT envelope_state FROM fill_envelope_identity fei "
+        " JOIN fills f ON f.fill_id = fei.fill_id WHERE f.trade_id = ?",
+        (prior,)).fetchone()[0] == "refused", (
+        "the production writer must have persisted the REFUSAL, or the scan "
+        "below would be reading an unread population")
+
+    verdict = resolve_latched_provenance(conn, cfg, req())
+    assert verdict.admitted is False
+    assert verdict.decline_reason == "consumption_evidence_unavailable"
+
+
+def test_rung6_refuses_when_a_prior_consumers_order_id_is_NUMERIC(
+        tmp_path) -> None:
+    """DIVERGENCE 3, end to end: `1002937461` vs `'1002937461'`.
+
+    MEASURED: Python says the two are unequal and SQL, against a TEXT-affinity
+    column, says they are equal.  The round-9 union missed this consumer in
+    BOTH arms -- its "SQL arm" had already been fetched into Python -- so the
+    mandate was ADMITTED A SECOND TIME, which is a wrong ACCEPTANCE and the
+    worst direction available at this rung.
+
+    POST-RESHAPE the authority refuses a non-string identity, the refusal is
+    persisted, and the scan reports that it cannot prove non-consumption.
+    """
+    from swing.trades.latched_origin import (
+        canonical_envelope_identity,
+        resolve_latched_provenance,
+    )
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r1103num")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    numeric = ('{"schwab_order_id": %s, "schwab_instrument_symbol": "ZZZZ"}'
+               % BROKER_ORDER_ID)
+    assert canonical_envelope_identity(numeric).state == "refused"
+    _consumer_on_another_ticker(conn, cfg, numeric)
+    verdict = resolve_latched_provenance(conn, cfg, req())
+    assert verdict.admitted is False
+    assert verdict.decline_reason == "consumption_evidence_unavailable"
+
+
+def test_rung6_sees_a_prior_consumer_carrying_a_NaN_document(tmp_path) -> None:
+    """DIVERGENCE 1, end to end, AND IT IS THE CANONICALISED ONE.
+
+    MEASURED: `json.loads` ACCEPTS a document containing `NaN`; SQLite's
+    `json_valid` REJECTS it outright.  Under the old shape the trigger read
+    NULL, saw no order, and would have admitted a `last_word` downgrade for a
+    fill the service binds to a real mandate.
+
+    POST-RESHAPE the authority READS it -- SQL never opens the document again,
+    so nothing can disagree -- and the stored order id makes this prior fill a
+    VISIBLE consumer.  The refusal is therefore the specific one,
+    `mandate_already_consumed`, not the ignorance one: this is the branch of
+    the ruling that says a divergence may be canonicalised rather than refused.
+    """
+    from swing.trades.latched_origin import (
+        canonical_envelope_identity,
+        resolve_latched_provenance,
+    )
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r1101nan")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    nan_doc = ('{"schwab_order_id": "%s", "schwab_instrument_symbol": "ZZZZ",'
+               ' "x": NaN}' % BROKER_ORDER_ID)
+    assert json.loads(nan_doc)["x"] != json.loads(nan_doc)["x"], (
+        "the premise: python accepts NaN and this document really carries one")
+    identity = canonical_envelope_identity(nan_doc)
+    assert (identity.state, identity.broker_order_id) == (
+        "canonical", BROKER_ORDER_ID)
+    prior = _consumer_on_another_ticker(conn, cfg, nan_doc)
+    assert prior
 
     verdict = resolve_latched_provenance(conn, cfg, req())
     assert verdict.admitted is False

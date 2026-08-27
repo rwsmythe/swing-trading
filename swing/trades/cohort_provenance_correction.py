@@ -1725,6 +1725,33 @@ def _resolve_latch_citation(
             "between resolution and the latch probe.")
     quantity, price, fill_origin, envelope = row
 
+    # THE AUTHORITY READS THE SUBJECT FILL'S ENVELOPE HERE, AND THE READING IS
+    # PERSISTED BEFORE ANY ROW CITES IT (PERSIST-CANONICAL, CHARC + RD
+    # 2026-08-26).
+    #
+    # Migration 0037's citation trigger no longer PARSES the envelope -- it
+    # compares the authority's STORED reading of the exact document on the
+    # fill.  Every fill written since 0037 carries its reading from birth
+    # (`insert_fill_with_event`), but every fill that EXISTED at 0037 does not:
+    # the migration ships the table empty precisely so that no judgment is ever
+    # made in SQL.  So the service canonicalises the subject on demand, inside
+    # its own BEGIN IMMEDIATE, before it builds a citation that will be
+    # compared against the result.
+    #
+    # IT RUNS FOR BOTH TIERS, and that is the discriminating part.  The
+    # `last_word` branch ALSO consults the stored reading -- to prove the fill's
+    # order resolves to no link -- so an envelope-bearing fill whose reading is
+    # missing aborts on the LAST_WORD path too, which is the path most
+    # corrections take.
+    if envelope is not None:
+        from swing.data.repos.fill_envelope_identity import (
+            record_identity,
+            table_exists,
+        )
+        if table_exists(conn):
+            record_identity(
+                conn, fill_id=int(entry_fill.fill_id), envelope_raw=envelope)
+
     req = SimpleNamespace(
         ticker=str(trade.ticker),
         entry_date=entry_fill.session_date,

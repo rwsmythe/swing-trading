@@ -295,7 +295,7 @@ AUTHORIZATION_CLAUSES: tuple[AuthorizationClause, ...] = (
     ),
     AuthorizationClause(
         "rung6_consuming_trade_id", SQL_BOUND, "integer", True,
-        "fills.schwab_source_value_json order id on OTHER trades",
+        "fill_envelope_identity.broker_order_id on OTHER trades",
         "no other trade has consumed THIS ORDER",
     ),
     AuthorizationClause(
@@ -320,7 +320,7 @@ AUTHORIZATION_CLAUSES: tuple[AuthorizationClause, ...] = (
     ),
     AuthorizationClause(
         "guard_envelope_symbol", SQL_BOUND, "text", False,
-        "json_extract(fills.schwab_source_value_json, '$.schwab_instrument_symbol')",
+        "fill_envelope_identity.instrument_symbol",
         "the envelope's instrument symbol equals the request's ticker",
     ),
     AuthorizationClause(
@@ -1146,26 +1146,23 @@ def competitor_liveness_rung(
             continue
 
         # CONSUMED?  A mandate another trade has already taken is not competing
-        # for this one.  Order-linked, exactly as rung 6 is.
-        # BOTH DOMAINS, AS RUNG 6 DOES (Codex 22A-R9-02, the class re-grepped
-        # rather than fixed as an instance).  This scan asked the same
-        # raw-equality question, and a PADDED envelope already on disk is
-        # invisible to it.  Direction here is the CHEAP one -- a missed
-        # consumption leaves the competitor LIVE and refuses
-        # `ambiguous_ticker_orders` -- but two scans answering the same
-        # question two ways is the divergence this arc keeps paying for, and
-        # the grep says these are the only two.
-        consumed = conn.execute(
-            "SELECT CASE WHEN json_valid(f.schwab_source_value_json) "
-            "            THEN json_extract(f.schwab_source_value_json, ?) "
-            "            END, f.schwab_source_value_json "
-            "  FROM fills f WHERE f.action = 'entry' "
-            "   AND f.schwab_source_value_json IS NOT NULL",
-            (f"$.{SCHWAB_ORDER_ID_ENVELOPE_KEY}",),
-        ).fetchall()
-        if any(sql_view == link.broker_order_id
-               or broker_order_id_from_envelope(raw) == link.broker_order_id
-               for sql_view, raw in consumed):
+        # for this one.  Order-linked, exactly as rung 6 is -- AND READING THE
+        # SAME STORED REPRESENTATION rung 6 does (PERSIST-CANONICAL).  This
+        # scan asked the same question in a second spelling, and the class was
+        # re-grepped rather than fixed as an instance: `swing/` now contains
+        # ZERO SQL reads INTO a fill envelope (method: grep
+        # `json_(extract|valid|each|type)\([^)]*schwab_source_value_json`
+        # across swing/*.py and swing/**/*.sql -- the only surviving hits are
+        # THIS comment and the AuthorizationClause `source` labels, both prose;
+        # a test asserts the same property against migration 0037 directly).
+        #
+        # NO TRADE IS EXCLUDED HERE, deliberately: this asks whether ANY trade
+        # consumed the COMPETITOR's order, and the subject consuming it would
+        # equally retire it as a competitor.  `-1` is a sentinel that matches
+        # no trade_id (trades.id is a positive rowid).
+        from swing.data.repos.fill_envelope_identity import consuming_entry_fills
+        if consuming_entry_fills(
+                conn, link.broker_order_id, exclude_trade_id=-1):
             continue
 
         scanned.append(int(link.link_id))
@@ -1402,52 +1399,58 @@ def authorize_accepted_order(
     # caller may widen for its own reasons, and honouring it HERE could turn a
     # genuine second consumer into an ACCEPTANCE.  A wrong refusal costs a
     # message; a wrong acceptance contaminates H1.
-    # THE SCAN ASKS BOTH DOMAINS AND TAKES THE UNION (Codex 22A-R9-02, PROVEN
-    # BY EXECUTION rather than inherited as the reviewer's inference).
+    # THE SCAN READS ONE STORED READING PER DOCUMENT (PERSIST-CANONICAL,
+    # CHARC + RD 2026-08-26; it REPLACES the both-domains union of 22A-R9-02).
     #
-    # It compared SQLite's RAW reading alone. The production entry path
-    # PERSISTS the fill even when the ladder refuses the row's cohort keys, so
-    # a PADDED envelope naming this very order is already on disk and
-    # `json_extract` reads `'  <id>  '`, which no raw equality matches.
-    # MEASURED, one dimension apart, built entirely through `record_entry`: the
-    # padded prior consumer ADMITTED the mandate a second time; the identical
-    # world with a clean envelope refused `mandate_already_consumed`. The
-    # composition that makes rung 6 load-bearing is a prior fill on ANOTHER
-    # ticker -- `_match_fill`'s clearing and the one-open-position rule are
-    # both per-ticker and refuse first on the subject's own.
+    # WHY THE UNION HAD TO GO, and it indicted its own author. The union's "SQL
+    # arm" fetched SQLite's `json_extract` result INTO PYTHON and compared it
+    # there -- so the arm written to PRESERVE SQL's TEXT affinity was SQL's
+    # value judged by PYTHON's rules, and a NUMERIC order id read
+    # `1002937461 == '1002937461'` -> False in both arms while the same
+    # comparison IN SQL against a TEXT-affinity column is True (Codex
+    # 22A-R10-03, reproduced by execution). Two readings of one document is
+    # the class; one stored reading is the answer.
     #
-    # BOTH READINGS, because either one alone is a partial view: SQL sees what
-    # every trigger sees, and the Python reader sees what this service bound
-    # the mandate by. The union also keeps the service STRICTLY STRONGER than
-    # its SQL twin in the citation trigger -- a service finding FEWER consumers
-    # than the trigger would authorize a correction that then aborts, the
-    # authorize-then-abort shape this arc has now met four times.
+    # THE PERSISTED POPULATION IS ESTABLISHED FIRST, and that is not an
+    # optimisation. A scan over stored readings can only see documents the
+    # authority has READ, so an unread population would be silently treated as
+    # EMPTY -- the widest wrong acceptance available here. This call runs
+    # inside the reservation, so the set it establishes cannot move under it.
     #
-    # NOT A SECOND SPELLING OF SQLITE: the SQL view is computed BY SQLITE, in
-    # the SELECT list, under the same `json_valid` CASE the migration uses.
-    consuming = conn.execute(
-        "SELECT f.trade_id, "
-        "       CASE WHEN json_valid(f.schwab_source_value_json) "
-        "            THEN json_extract(f.schwab_source_value_json, ?) "
-        "            END, "
-        "       f.schwab_source_value_json "
-        "  FROM fills f "
-        " WHERE f.action = 'entry' AND f.schwab_source_value_json IS NOT NULL "
-        " ORDER BY f.fill_id",
-        (f"$.{SCHWAB_ORDER_ID_ENVELOPE_KEY}",),
-    ).fetchall()
+    # THE SUBJECT IS EXCLUDED BY `trade_id`, NEVER BY `exclude_trade_ids`
+    # (unchanged): the latter is the PROBE's parameter, a set a caller may
+    # widen for its own reasons, and honouring it here could turn a genuine
+    # second consumer into an ACCEPTANCE.
+    from swing.data.repos.fill_envelope_identity import (
+        consuming_entry_fills,
+        ensure_entry_fill_identities,
+        unreadable_entry_fills,
+    )
+    ensure_entry_fill_identities(conn)
     subject = trade_id if trade_id is not None else -1
-    others = [
-        int(r[0]) for r in consuming
-        if r[0] is not None and int(r[0]) != subject
-        and (r[1] == order.broker_order_id
-             or broker_order_id_from_envelope(r[2]) == order.broker_order_id)
-    ]
+    others = consuming_entry_fills(
+        conn, order.broker_order_id, exclude_trade_id=subject)
     if others:
         log.warning(
             "22-A: broker order %s is already consumed by trade(s) %s; one "
             "trade per mandate", order.broker_order_id, others)
         return _refuse("mandate_already_consumed", order)
+
+    # AND A DOCUMENT THE AUTHORITY REFUSED IS IGNORANCE, NOT ABSENCE.
+    # A refused envelope stores no order id, so a consumption hiding inside one
+    # is invisible to the scan above. The ladder's three-valued rule says an
+    # unprovable negative fails CLOSED -- the same shape rung 7 uses for
+    # evidence the split handler destroyed, and the same reason. It also keeps
+    # the SERVICE at least as strong as the citation trigger's twin, which
+    # cannot compensate this way; a service weaker than its twin is the
+    # authorize-then-abort shape this arc met four times.
+    unreadable = unreadable_entry_fills(conn, exclude_trade_id=subject)
+    if unreadable:
+        log.warning(
+            "22-A: entry fills %s carry an envelope the authority REFUSED to "
+            "read, so the consumption scan cannot prove that broker order %s "
+            "is unconsumed", unreadable, order.broker_order_id)
+        return _refuse("consumption_evidence_unavailable", order)
 
     # RUNG 7 -- AND THE EVIDENCE FOR RUNG 6 IS DESTRUCTIBLE.  The supported
     # split-into-partials handler REBUILT replacement fills without

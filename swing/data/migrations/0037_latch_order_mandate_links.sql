@@ -833,65 +833,47 @@ FOR EACH ROW WHEN NOT (
                   AND t.ticker = (SELECT ca.ticker FROM candidates ca
                                   WHERE ca.id = NEW.cited_candidate_id))
 
-    -- ============== THE SUBJECT FILL'S ENVELOPE READS THE SAME IN BOTH
-    -- DOMAINS (Codex 22A-R9-03; the twin of self-sweep SS-1/SS-4).
+    -- ========== THE SUBJECT FILL'S ENVELOPE HAS BEEN READ BY THE AUTHORITY,
+    -- AND THIS CLAUSE ASKS ONLY THAT (PERSIST-CANONICAL, CHARC + RD
+    -- 2026-08-26; it REPLACES the canonicality twin of 22A-R9-03/SS-4).
     --
-    -- Python's `json.loads` keeps the LAST duplicate key and the service
-    -- STRIPS; SQLite's `json_extract` keeps the FIRST and strips nothing --
-    -- both MEASURED. The SERVICE now refuses such an envelope outright
-    -- (`envelope_not_canonical`), so WITHOUT this clause the trigger would be
-    -- WEAKER THAN ITS READER on exactly the class the reader was widened for:
-    -- a RAW correction, which never touches the service, could select its
-    -- authority by SQLite's first duplicate key and write a permanently wrong
-    -- attribution into the audit table of record. Both halves move together
-    -- or neither (22A-R3-15, 22A-R4-04) -- and this reader was widened in
-    -- THIS dispatch, so the twin moves in it too.
+    -- WHAT THE TWIN USED TO DO, AND WHY IT COULD NOT BE MADE TO WORK. It
+    -- re-implemented `envelope_is_canonical` in SQL -- json_valid, json_type,
+    -- json_each duplicate-counting, trim(), a type roster -- so that a RAW
+    -- correction could not pick an authority SQLite reads differently from
+    -- the service. It was correct in intent and structurally unfinishable:
+    -- three consecutive review rounds each found a NEW way the two engines
+    -- disagree (NaN documents, tab/newline/NBSP whitespace, integer-vs-TEXT
+    -- affinity), every one real, every one invisible until the previous was
+    -- fixed. RD's sentence, adopted by CHARC as the convention: SQL VERIFIES
+    -- A FACT; IT MUST NEVER RE-DERIVE A JUDGMENT ACROSS AN ENGINE BOUNDARY.
     --
-    -- MEASURED HONESTLY, seven shapes: only ONE of them -- duplicate
-    -- `schwab_order_id` keys whose FIRST value is the cited order -- reached
-    -- the INSERT before this clause. The other six were already refused by
-    -- the order-id and symbol bindings, so their cases are REGRESSION GUARDS
-    -- rather than discriminators, and are labelled as such.
+    -- SO THE CLAUSE NOW ASKS A FACT. Either the fill carries NO envelope --
+    -- `IS NULL` is a fact, not a reading -- or the authority has read the
+    -- EXACT document on the fill and did not refuse it. Nothing here parses,
+    -- normalises or coerces anything.
     --
-    -- IT MIRRORS `envelope_is_canonical` CLAUSE FOR CLAUSE: a duplicate ROOT
-    -- key on either guarded key, a value that is neither `null` nor `text`
-    -- (json_extract returns it while the service reads absence, and TEXT
-    -- affinity can still match a stored identity), or a text value that is
-    -- padded or blank (the service strips it and SQL does not).
+    -- `fei.envelope_raw = f.schwab_source_value_json` IS THE LOAD-BEARING
+    -- HALF. It binds the stored reading to the document it was read from, so
+    -- a reading whose document later changed stops matching and this clause
+    -- fails CLOSED. Without it the stored value would be a floating claim
+    -- about a fill rather than a statement about a document.
     --
-    -- ABSENT, UNREADABLE AND NON-OBJECT ENVELOPES PASS, and that is the
-    -- ordinary case rather than laxity: every SQL site reads them as NULL
-    -- under its own `json_valid` CASE and the service reader returns None, so
-    -- both domains read absence and there is nothing to disagree about. Every
-    -- pre-22-A fill is in exactly that state, and a clause refusing them
-    -- would block the `last_word` ladder this surface was built for.
-    --
-    -- `json_each` ITERATES THE ROOT ONLY (measured), which is what makes a
-    -- nested field of the same name not a duplicate here -- the same
-    -- wrong-REFUSAL 22A-R9-06 removed from the service.
-    --
-    -- THE `CASE WHEN json_valid(...)` FORM, NOT AN AND CHAIN (22A-R3-12,
-    -- measured): an AND chain does not protect a JSON function from a
-    -- malformed value, and this clause reads the SUBJECT FILL'S envelope,
-    -- which is exactly the source 22A-R7-04 had to move for the same reason.
-    AND NOT EXISTS (
-        SELECT 1 FROM fills f
-         WHERE f.fill_id = NEW.entry_fill_id_at_correction
-           AND f.schwab_source_value_json IS NOT NULL
-           AND CASE WHEN json_valid(f.schwab_source_value_json) THEN (
-                   json_type(f.schwab_source_value_json) = 'object'
-               AND EXISTS (
-                   SELECT 1 FROM json_each(f.schwab_source_value_json) k
-                    WHERE k.key IN ('schwab_order_id',
-                                    'schwab_instrument_symbol')
-                      AND ((SELECT count(*)
-                              FROM json_each(f.schwab_source_value_json) k2
-                             WHERE k2.key = k.key) > 1
-                           OR k.type NOT IN ('null', 'text')
-                           OR (k.type = 'text'
-                               AND (k.value <> trim(k.value)
-                                    OR length(trim(k.value)) = 0)))))
-                    ELSE 0 END)
+    -- ABSENT ENVELOPES STILL PASS, and that is still the ordinary case: every
+    -- pre-22-A fill is in exactly that state and the `last_word` ladder this
+    -- surface was built for depends on it. What changed is that an envelope
+    -- the authority REFUSED, or one it has never seen, no longer passes --
+    -- previously an unreadable document passed on the ground that both
+    -- domains read absence, which was true only while SQL was still reading.
+    AND (
+        (SELECT f.schwab_source_value_json FROM fills f
+          WHERE f.fill_id = NEW.entry_fill_id_at_correction) IS NULL
+        OR EXISTS (
+            SELECT 1 FROM fill_envelope_identity fei
+              JOIN fills f2 ON f2.fill_id = fei.fill_id
+             WHERE fei.fill_id = NEW.entry_fill_id_at_correction
+               AND fei.envelope_raw = f2.schwab_source_value_json
+               AND fei.envelope_state = 'canonical'))
 
     -- ===================== 22-A: THE TIER AND ITS CITATION ==================
     AND COALESCE((
@@ -907,13 +889,19 @@ FOR EACH ROW WHEN NOT (
         -- by writing a different word in a column.
         --
         -- So the branch now REQUIRES that the authoritative fill's broker
-        -- order resolves to NO link. A fill with no envelope, invalid JSON or
-        -- no order id yields NULL from the CASE, `l.broker_order_id = NULL` is
-        -- NULL, NOT EXISTS holds, and last_word is admitted -- which is right:
-        -- no usable order id means no latch authority exists to bypass. The
-        -- `json_valid` CASE is load-bearing for the same reason it is
-        -- everywhere else in this trigger: a malformed envelope would RAISE
-        -- out of json_extract rather than be judged.
+        -- order resolves to NO link. A fill with no envelope, or one whose
+        -- STORED reading names no order, yields NULL, `l.broker_order_id =
+        -- NULL` is NULL, NOT EXISTS holds, and last_word is admitted -- which
+        -- is right: no usable order id means no latch authority exists to
+        -- bypass.
+        --
+        -- PERSIST-CANONICAL: this reads the AUTHORITY'S STORED ANSWER, never
+        -- the document. The `json_valid` CASE that used to guard a
+        -- `json_extract` here is gone with the extract it protected; both
+        -- sides of the comparison are now TEXT columns, so equality is plain
+        -- and neither engine has a reading to disagree about. The clause
+        -- above has already established that the reading exists and was not
+        -- refused, so a document nobody has read cannot reach this branch.
         (NEW.admission_tier = 'last_word'
          AND NEW.cited_latch_link_id IS NULL
          AND NEW.cited_latch_validity_intent_id IS NULL
@@ -923,14 +911,12 @@ FOR EACH ROW WHEN NOT (
          AND NOT EXISTS (
              SELECT 1 FROM latch_order_mandate_links l
               WHERE l.broker_order_id = (
-                  SELECT CASE
-                           WHEN f.schwab_source_value_json IS NOT NULL
-                            AND json_valid(f.schwab_source_value_json)
-                           THEN json_extract(f.schwab_source_value_json,
-                                             '$.schwab_order_id')
-                         END
-                    FROM fills f
-                   WHERE f.fill_id = NEW.entry_fill_id_at_correction)))
+                  SELECT fei.broker_order_id
+                    FROM fill_envelope_identity fei
+                    JOIN fills f ON f.fill_id = fei.fill_id
+                   WHERE fei.fill_id = NEW.entry_fill_id_at_correction
+                     AND fei.envelope_raw = f.schwab_source_value_json
+                     AND fei.envelope_state = 'canonical')))
         OR
         -- 'latch_ladder': ALL FIVE present, each bound to its source.
         (NEW.admission_tier = 'latch_ladder'
@@ -971,14 +957,18 @@ FOR EACH ROW WHEN NOT (
          -- link on the ticker while the fill's own envelope named a different
          -- order, or none: a mandate the fill cannot prove it came from,
          -- admitted structurally.
-         AND (SELECT CASE
-                       WHEN f.schwab_source_value_json IS NOT NULL
-                        AND json_valid(f.schwab_source_value_json)
-                       THEN json_extract(f.schwab_source_value_json,
-                                         '$.schwab_order_id')
-                     END
-                FROM fills f
-               WHERE f.fill_id = NEW.entry_fill_id_at_correction)
+         --
+         -- PERSIST-CANONICAL: the fill's order id is the one the AUTHORITY
+         -- stored against this exact document, compared TEXT to TEXT. This
+         -- clause is where the reshape's guarantee is cashed: a raw writer
+         -- whose citation names a DIFFERENT order than the stored reading
+         -- aborts here, which is condition (2) of the ruling.
+         AND (SELECT fei.broker_order_id
+                FROM fill_envelope_identity fei
+                JOIN fills f ON f.fill_id = fei.fill_id
+               WHERE fei.fill_id = NEW.entry_fill_id_at_correction
+                 AND fei.envelope_raw = f.schwab_source_value_json
+                 AND fei.envelope_state = 'canonical')
              = NEW.cited_latch_broker_order_id
 
          -- AND THE ORDER NAMES EXACTLY ONE LINK (Codex 22A-R6-03).
@@ -1144,13 +1134,19 @@ FOR EACH ROW WHEN NOT (
          -- "malformed JSON" on a bare date string (measured).
          AND json_type(NEW.cited_latch_probe_json, '$.coverage') = 'object'
          AND (
-             (json_remove(json_extract(NEW.cited_latch_probe_json, '$.coverage'),
+             (CASE WHEN json_type(NEW.cited_latch_probe_json, '$.coverage')
+                        = 'object'
+                   THEN json_remove(json_extract(NEW.cited_latch_probe_json, '$.coverage'),
                           '$.window_empty') = '{}'
+                   ELSE 0 END
               AND json_type(NEW.cited_latch_probe_json, '$.coverage.window_empty') = 'true')
              OR
-             (json_remove(json_extract(NEW.cited_latch_probe_json, '$.coverage'),
+             (CASE WHEN json_type(NEW.cited_latch_probe_json, '$.coverage')
+                        = 'object'
+                   THEN json_remove(json_extract(NEW.cited_latch_probe_json, '$.coverage'),
                           '$.expected_sessions', '$.observed_sessions',
                           '$.missing_sessions') = '{}'
+                   ELSE 0 END
               AND json_type(NEW.cited_latch_probe_json, '$.coverage.expected_sessions') = 'array'
               AND json_type(NEW.cited_latch_probe_json, '$.coverage.observed_sessions') = 'array'
               AND json_type(NEW.cited_latch_probe_json, '$.coverage.missing_sessions') = 'array'
@@ -1193,14 +1189,20 @@ FOR EACH ROW WHEN NOT (
          -- SQL-to-emitter -- a key-set check that derives its expectation from
          -- THIS FILE cannot catch a key missing from both halves.
          AND json_type(NEW.cited_latch_probe_json, '$.probe_guards') = 'object'
-         AND json_remove(json_extract(NEW.cited_latch_probe_json, '$.probe_guards'),
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.probe_guards')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json, '$.probe_guards'),
                  '$.fill_session_is_session', '$.fire_membership',
                  '$.decision_ordering') = '{}'
+                  ELSE 0 END
 
          -- THE FILL SESSION THE GUARD JUDGED IS THE ROW'S OWN. An unbound copy
          -- would let a row attest a check it ran against a different date.
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.probe_guards.fill_session_is_session')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.probe_guards.fill_session_is_session'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.probe_guards.fill_session_is_session.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1213,8 +1215,11 @@ FOR EACH ROW WHEN NOT (
          -- is derivation state no subquery can reach, so SQL binds the VALUE
          -- (it must be 1) rather than re-deriving it; two is the shape
          -- ambiguous_fire_membership refuses and is not an admission.
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.probe_guards.fire_membership')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.probe_guards.fire_membership'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.probe_guards.fire_membership.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1257,8 +1262,11 @@ FOR EACH ROW WHEN NOT (
          -- is a real behaviour widening rather than a patch, and it is that
          -- arc's question. It is written down here so the next reader meets
          -- the limitation and its owner in the same paragraph.
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.probe_guards.decision_ordering')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.probe_guards.decision_ordering'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.probe_guards.decision_ordering.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1294,7 +1302,9 @@ FOR EACH ROW WHEN NOT (
          -- have their recorded input bound by subquery to its source, so a
          -- fabricated input is rejected too.
          AND json_type(NEW.cited_latch_probe_json, '$.authorization') = 'object'
-         AND json_remove(json_extract(NEW.cited_latch_probe_json, '$.authorization'),
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json, '$.authorization'),
                  '$.rung1_link_ticker', '$.rung2_link_parent',
                  '$.rung3_validity_outcome', '$.rung3b_latest_validity_child',
                  '$.rung3c_link_broker_order_id', '$.rung4_governing_place_intent',
@@ -1304,11 +1314,15 @@ FOR EACH ROW WHEN NOT (
                  '$.guard_envelope_symbol', '$.guard_quantity',
                  '$.guard_framework_price_bound',
                  '$.guard_broker_limit_bound') = '{}'
+                  ELSE 0 END
 
          -- every entry is closed to exactly {input, verdict} and every verdict
          -- is 'pass' (a non-pass entry contradicts the admission it sits in)
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung1_link_ticker')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung1_link_ticker'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung1_link_ticker.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1326,8 +1340,11 @@ FOR EACH ROW WHEN NOT (
                  '$.authorization.rung1_link_ticker.input')
              = (SELECT t.ticker FROM trades t WHERE t.id = NEW.trade_id)
 
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung2_link_parent')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung2_link_parent'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung2_link_parent.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1337,8 +1354,11 @@ FOR EACH ROW WHEN NOT (
              = (SELECT l.place_intent_id FROM latch_order_mandate_links l
                  WHERE l.link_id = NEW.cited_latch_link_id)
 
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung3_validity_outcome')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung3_validity_outcome'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung3_validity_outcome.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1355,8 +1375,11 @@ FOR EACH ROW WHEN NOT (
          -- _order_key -- spelled here as ORDER BY ... DESC LIMIT 1 rather than
          -- MAX(intent_id), which is a DIFFERENT order whenever a later-inserted
          -- row carries an earlier recorded_ts.
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung3b_latest_validity_child')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung3b_latest_validity_child'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung3b_latest_validity_child.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1371,8 +1394,11 @@ FOR EACH ROW WHEN NOT (
                    AND x.intent_kind = 'validity'
                  ORDER BY x.recorded_ts DESC, x.intent_id DESC LIMIT 1)
 
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung3c_link_broker_order_id')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung3c_link_broker_order_id'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung3c_link_broker_order_id.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1408,8 +1434,11 @@ FOR EACH ROW WHEN NOT (
          -- BEFORE the fill session, the same date-only clock policy the service
          -- applies: an intent recorded ON the fill session is UNORDERABLE
          -- against it and refuses rather than being counted either way.
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung4_governing_place_intent')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung4_governing_place_intent'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung4_governing_place_intent.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1438,8 +1467,11 @@ FOR EACH ROW WHEN NOT (
          -- DIFFERENT predicate from the reader is the same defect as a missing
          -- twin, and here the divergence would authorize a correction that
          -- then aborts at the INSERT.
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung5_cancel_intent_id')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung5_cancel_intent_id'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung5_cancel_intent_id.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1456,47 +1488,61 @@ FOR EACH ROW WHEN NOT (
          -- candidate_id from pipeline provenance with no accepted order
          -- anywhere near it, so a count would let an unrelated trade falsely
          -- block the real order-linked fill.
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung6_consuming_trade_id')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung6_consuming_trade_id'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung6_consuming_trade_id.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
                  '$.authorization.rung6_consuming_trade_id.input') = 'null'
-         -- THE CASE FORM, NOT `json_valid(x) AND json_extract(x)` (Codex
-         -- 22A-R7-04, and 22A-R3-12 is the measurement behind it). An AND
-         -- chain does NOT protect a JSON function from a malformed value --
-         -- `SELECT 0 AND json_extract('{bad','$.x')` RAISES -- so ANY OTHER
-         -- trade's malformed envelope could abort this trigger with an engine
-         -- error instead of its own legible refusal. The class was stated once
-         -- for the probe blob and then re-grepped across the whole migration;
-         -- these were the two remaining sites and this one is the wider,
-         -- because its input is another ROW's data rather than the citation's.
-         AND NOT EXISTS (SELECT 1 FROM fills f2
+         -- PERSIST-CANONICAL, AND IT DISSOLVES 22A-R7-04's HAZARD RATHER
+         -- THAN GUARDING IT. This scan's input used to be ANOTHER ROW's
+         -- operator-submitted document, so a malformed envelope on an
+         -- unrelated trade could abort this trigger with an engine error
+         -- instead of its own legible refusal -- which is why it carried the
+         -- CASE-not-AND-chain form. It now reads STORED readings, which are
+         -- never parsed, so there is no JSON function left to protect.
+         --
+         -- WHAT IT CANNOT SEE, stated because the service compensates for it:
+         -- an entry fill whose envelope the authority REFUSED stores no order
+         -- id, so a consumption hiding inside such a document is invisible
+         -- here. The service's rung 6 refuses on exactly that population
+         -- (`consumption_evidence_unavailable`), which keeps the SERVICE at
+         -- least as strong as its twin -- the direction that never produces
+         -- an authorize-then-abort.
+         AND NOT EXISTS (SELECT 1 FROM fill_envelope_identity fei
+                         JOIN fills f2 ON f2.fill_id = fei.fill_id
                          WHERE f2.action = 'entry'
                            AND f2.trade_id <> NEW.trade_id
-                           AND CASE
-                                 WHEN f2.schwab_source_value_json IS NOT NULL
-                                  AND json_valid(f2.schwab_source_value_json)
-                                 THEN json_extract(f2.schwab_source_value_json,
-                                                   '$.schwab_order_id')
-                               END = NEW.cited_latch_broker_order_id)
+                           AND fei.envelope_raw = f2.schwab_source_value_json
+                           AND fei.envelope_state = 'canonical'
+                           AND fei.broker_order_id
+                               = NEW.cited_latch_broker_order_id)
 
          -- SERVICE-VALIDATED (L17). Rungs 7 and 8 rest on a scan result and on
          -- derivation state that no subquery can reach, so SQL asserts their
          -- PRESENCE, TYPE and verdict and nothing more. A fabricated input on
          -- either is ACCEPTED -- that is a LIMIT of the trigger, declared, not
          -- a guarantee.
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung7_consumption_scan_fill_ids')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung7_consumption_scan_fill_ids'),
                  '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung7_consumption_scan_fill_ids.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
                  '$.authorization.rung7_consumption_scan_fill_ids.input') = 'array'
 
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung8_competitor_link_ids')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung8_competitor_link_ids'),
                  '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung8_competitor_link_ids.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1530,8 +1576,11 @@ FOR EACH ROW WHEN NOT (
          -- sqlite_master. That is R3-02's in-trigger body comparison, and it
          -- is UNFIXED-NOT-REOPENED by the same ruling -- the reader owns the
          -- guard-is-real question and a trigger cannot ask it cheaply.
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung9_stored_freeze_tier')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung9_stored_freeze_tier'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.rung9_stored_freeze_tier.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1552,8 +1601,11 @@ FOR EACH ROW WHEN NOT (
          -- this row already names (entry_fill_id_at_correction), so a subquery
          -- CAN reach them and a fabricated input is rejected rather than merely
          -- present.
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.guard_fill_origin')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_fill_origin'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_fill_origin.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1566,27 +1618,39 @@ FOR EACH ROW WHEN NOT (
                  '$.authorization.guard_fill_origin.input')
              IN ('schwab_auto', 'schwab_auto_then_operator_corrected')
 
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.guard_envelope_symbol')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_envelope_symbol'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_envelope_symbol.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
                  '$.authorization.guard_envelope_symbol.input') = 'text'
+         -- PERSIST-CANONICAL. The `json_extract` on the LEFT stays: the probe
+         -- blob is the AUTHORITY'S OWN OUTPUT, and reading a value the service
+         -- wrote is consuming its output, which is precisely what the ruling
+         -- endorses. The `json_extract` that USED to be on the right read the
+         -- OPERATOR'S document and re-derived the service's symbol reading;
+         -- that one is gone, replaced by the stored reading of the same
+         -- document.
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_envelope_symbol.input')
-             = (SELECT CASE
-                         WHEN f.schwab_source_value_json IS NOT NULL
-                          AND json_valid(f.schwab_source_value_json)
-                         THEN json_extract(f.schwab_source_value_json,
-                                           '$.schwab_instrument_symbol')
-                       END
-                  FROM fills f WHERE f.fill_id = NEW.entry_fill_id_at_correction)
+             = (SELECT fei.instrument_symbol
+                  FROM fill_envelope_identity fei
+                  JOIN fills f ON f.fill_id = fei.fill_id
+                 WHERE fei.fill_id = NEW.entry_fill_id_at_correction
+                   AND fei.envelope_raw = f.schwab_source_value_json
+                   AND fei.envelope_state = 'canonical')
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_envelope_symbol.input')
              = (SELECT t.ticker FROM trades t WHERE t.id = NEW.trade_id)
 
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.guard_quantity')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_quantity'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_quantity.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1621,8 +1685,11 @@ FOR EACH ROW WHEN NOT (
                      WHERE l.link_id = NEW.cited_latch_link_id)
          )
 
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.guard_framework_price_bound')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_framework_price_bound'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_framework_price_bound.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,
@@ -1637,8 +1704,11 @@ FOR EACH ROW WHEN NOT (
          -- an accepted_by_broker row carries actual_limit_price NOT NULL, so
          -- the null branch is defensive against a shape the schema forbids --
          -- stated rather than left to look like an oversight.
-         AND json_remove(json_extract(NEW.cited_latch_probe_json,
+         AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.guard_broker_limit_bound')
+                       = 'object'
+                  THEN json_remove(json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_broker_limit_bound'), '$.input', '$.verdict') = '{}'
+                  ELSE 0 END
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_broker_limit_bound.verdict') = 'pass'
          AND json_type(NEW.cited_latch_probe_json,

@@ -50,7 +50,10 @@ from tests._latch_link_fixtures_22a import (
     seed_fire,
     validity_row,
 )
-from tests.trades._cohort_provenance_fixtures import build_cadl_case
+from tests.trades._cohort_provenance_fixtures import (
+    build_cadl_case,
+    set_fill_envelope,
+)
 
 MIGRATION = (
     Path(__file__).resolve().parents[2]
@@ -808,7 +811,10 @@ def _seed_correction(conn: sqlite3.Connection) -> dict:
     tests operate on the shape production actually stores.
     """
     from swing.trades.cohort_provenance_correction import correct_cohort_provenance
-    from tests.trades._cohort_provenance_fixtures import build_cadl_case
+    from tests.trades._cohort_provenance_fixtures import (
+    build_cadl_case,
+    set_fill_envelope,
+)
 
     ids = build_cadl_case(conn)
     if conn.in_transaction:
@@ -918,11 +924,14 @@ def seed_latch_ladder_citation(conn: sqlite3.Connection) -> dict:
     # envelope guards are SQL-BOUND to it at CORRECTION time, because by then
     # the operator-submitted values are PERSISTED on the fill this row already
     # anchors on (inherited finding 22A-R9-06).
-    conn.execute(
-        "UPDATE fills SET fill_origin = 'schwab_auto', "
-        "schwab_source_value_json = ? WHERE fill_id = ?",
-        (json.dumps({"schwab_order_id": link["broker_order_id"],
-                     "schwab_instrument_symbol": CADL_TICKER}), fill_id))
+    conn.execute("UPDATE fills SET fill_origin = 'schwab_auto' "
+                 " WHERE fill_id = ?", (fill_id,))
+    # THE READING IS WRITTEN WITH THE DOCUMENT, as production writes them
+    # (PERSIST-CANONICAL): migration 0037 compares the AUTHORITY'S stored
+    # reading of the envelope, never the envelope.
+    set_fill_envelope(conn, fill_id, json.dumps(
+        {"schwab_order_id": link["broker_order_id"],
+         "schwab_instrument_symbol": CADL_TICKER}))
     conn.commit()
     quantity, price = conn.execute(
         "SELECT quantity, price FROM fills WHERE fill_id = ?",

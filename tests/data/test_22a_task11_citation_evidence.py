@@ -32,6 +32,8 @@ import sqlite3
 
 import pytest
 
+from tests.trades._cohort_provenance_fixtures import set_fill_envelope
+
 from swing.trades.latched_origin import (
     AUTHORIZATION_CLAUSES,
     AUTHORIZATION_KEYS,
@@ -448,10 +450,9 @@ def _mint_drifted_citation(
         f"case would then not carry its own geometry")
 
     fill_id = payload["entry_fill_id_at_correction"]
-    conn_.execute(
-        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
-        (json.dumps({"schwab_order_id": order_id,
-                     "schwab_instrument_symbol": CADL_TICKER}), fill_id))
+    set_fill_envelope(conn_, fill_id, json.dumps(
+        {"schwab_order_id": order_id,
+         "schwab_instrument_symbol": CADL_TICKER}))
     live_pivot = conn_.execute(
         "SELECT pivot FROM candidates WHERE id = ?",
         (candidate_id,)).fetchone()[0]
@@ -923,11 +924,10 @@ def _forged_link_citation(conn_, payload: dict, *, key: str, link_over: dict):
     link_id = int(conn_.execute(
         "SELECT link_id FROM latch_order_mandate_links WHERE "
         "validity_intent_id = ?", (validity_id,)).fetchone()[0])
-    conn_.execute(
-        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
-        (json.dumps({"schwab_order_id": order_id,
-                     "schwab_instrument_symbol": CADL_TICKER}),
-         payload["entry_fill_id_at_correction"]))
+    set_fill_envelope(
+        conn_, payload["entry_fill_id_at_correction"],
+        json.dumps({"schwab_order_id": order_id,
+                    "schwab_instrument_symbol": CADL_TICKER}))
     conn_.commit()
 
     payload = dict(payload)
@@ -1144,11 +1144,15 @@ def test_a_citation_naming_an_order_the_FILL_does_not_is_rejected(
     """
     payload = seed_latch_ladder_citation(conn)
     _assert_baseline_inserts(conn, payload)
-    conn.execute(
-        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
-        (json.dumps({"schwab_order_id": "a-different-order",
-                     "schwab_instrument_symbol": "CADL"}),
-         payload["entry_fill_id_at_correction"]))
+    # THE READING IS RECORDED TOO, and that is what makes this test about
+    # what it says.  Post-PERSIST-CANONICAL a bare document with no stored
+    # reading is rejected for a DIFFERENT reason -- nobody has read it -- so
+    # writing only the document would leave the test green while no longer
+    # exercising the order-mismatch clause at all.
+    set_fill_envelope(
+        conn, payload["entry_fill_id_at_correction"],
+        json.dumps({"schwab_order_id": "a-different-order",
+                    "schwab_instrument_symbol": "CADL"}))
     conn.commit()
     _assert_rejected(conn, payload)
 
@@ -1298,9 +1302,12 @@ def test_a_malformed_SUBJECT_envelope_aborts_legibly(conn) -> None:
     """
     payload = seed_latch_ladder_citation(conn)
     _assert_baseline_inserts(conn, payload)
-    conn.execute(
-        "UPDATE fills SET schwab_source_value_json = '{not json' "
-        "WHERE fill_id = ?", (payload["entry_fill_id_at_correction"],))
+    # The AUTHORITY reads this document too, and reads it as naming nothing --
+    # so the row is refused by the order-identity clause rather than by an
+    # absent reading.  Recording it is what keeps the malformed document the
+    # subject of the test.
+    set_fill_envelope(conn, payload["entry_fill_id_at_correction"],
+                      "{not json")
     conn.commit()
     with pytest.raises(sqlite3.IntegrityError, match="citation graph"):
         _insert_payload(conn, payload)
@@ -1365,9 +1372,11 @@ def test_a_correction_on_a_NON_CANONICAL_envelope_is_refused(
     _assert_baseline_inserts(conn, payload)
     raw = _NON_CANONICAL_ENVELOPES[label].format(
         order=payload["cited_latch_broker_order_id"], ticker=CADL_TICKER)
-    conn.execute(
-        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
-        (raw, payload["entry_fill_id_at_correction"]))
+    # PERSIST-CANONICAL: the AUTHORITY is given each document and its verdict
+    # is STORED, so the rejection below is caused by the stored state -- which
+    # is the mechanism under test -- and not by the absence of a reading, which
+    # would reject every shape here for the same uninformative reason.
+    set_fill_envelope(conn, payload["entry_fill_id_at_correction"], raw)
     conn.commit()
     _assert_rejected(conn, payload)
 
@@ -1402,22 +1411,23 @@ def test_an_ABSENT_envelope_does_not_trip_the_canonicality_clause(
 
 
 def test_a_NESTED_key_of_the_same_name_does_not_trip_the_clause(conn) -> None:
-    """The wrong-REFUSAL twin the service already carries (22A-R9-06).
+    """The wrong-REFUSAL control, now decided by ONE engine (22A-R9-06).
 
-    ``json_each`` iterates the ROOT only -- measured -- so a nested field of
-    the same name is not a duplicate here either, and the two domains agree
-    about that too.
+    The clause this once exercised re-derived the service's canonicality
+    judgment in SQL and had to iterate the ROOT only, or a nested field of the
+    same name would have been read as a duplicate.  PERSIST-CANONICAL deletes
+    that whole question: the AUTHORITY decides, once, and the trigger compares
+    its stored answer.  The control survives because the OVER-REFUSAL it
+    guards against is still available -- a canonicaliser that counted nested
+    keys would store ``refused`` and this admission would fail.
     """
     from tests.trades._cohort_provenance_fixtures import CADL_TICKER
 
     payload = seed_latch_ladder_citation(conn)
-    conn.execute(
-        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
-        (json.dumps({
-            "schwab_order_id": payload["cited_latch_broker_order_id"],
-            "schwab_instrument_symbol": CADL_TICKER,
-            "raw": {"schwab_order_id": "an unrelated nested field"}}),
-         payload["entry_fill_id_at_correction"]))
+    set_fill_envelope(conn, payload["entry_fill_id_at_correction"], json.dumps({
+        "schwab_order_id": payload["cited_latch_broker_order_id"],
+        "schwab_instrument_symbol": CADL_TICKER,
+        "raw": {"schwab_order_id": "an unrelated nested field"}}))
     conn.commit()
     _insert_payload(conn, payload)
     assert conn.execute(
@@ -1477,3 +1487,197 @@ def test_the_clause_still_binds_every_pair_that_IS_supplied(conn) -> None:
     blob["probe_guards"]["decision_ordering"]["input"] = [
         [987654, "2026-08-11T12:00:00"]]
     _assert_rejected(conn, _with_blob(payload, blob))
+
+
+# ===========================================================================
+# 22A-R11 -- PERSIST-CANONICAL: THE THREE MEASURED DIVERGENCES, AS RAW WRITES
+#
+# CHARC + RD, 2026-08-26.  Condition (2) of the ruling: each of the three
+# engine divergences must now be canonicalised-at-service or refused-at-service,
+# AND a raw write storing DIVERGENT values must ABORT on the trigger's equality
+# check.  A raw write is one that never touches the service -- the only writer
+# the trigger exists to police -- so these are the tests that say the reshape
+# closed the class rather than merely relocating it.
+# ===========================================================================
+_LAST_WORD_NULLS = dict(
+    admission_tier="last_word", cited_latch_link_id=None,
+    cited_latch_validity_intent_id=None, cited_latch_place_intent_id=None,
+    cited_latch_broker_order_id=None, cited_latch_probe_json=None)
+
+
+def _raw_envelope(conn_, fill_id: int, raw: str) -> None:
+    """Write the DOCUMENT and nothing else -- a writer that bypassed the
+    service entirely, which is the threat model."""
+    conn_.execute(
+        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
+        (raw, fill_id))
+
+
+def test_a_NaN_document_naming_an_accepted_order_cannot_claim_last_word(
+        conn) -> None:
+    """DIVERGENCE 1 (Codex 22A-R10-01), and the reshape's answer to it.
+
+    MEASURED: ``json.loads`` ACCEPTS ``NaN``; SQLite's ``json_valid`` REJECTS
+    the whole document.  PRE-RESHAPE the ``last_word`` branch extracted the
+    order id under a ``json_valid`` CASE, got NULL, found no link, and ADMITTED
+    -- a permanent ``last_word`` downgrade for a fill the service binds to a
+    real mandate, written into the audit table of record by a writer that never
+    consulted the service.
+
+    POST-RESHAPE the AUTHORITY reads the document (SQL never opens it again),
+    stores the order id, and the branch's stored-equality check finds the link.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    order = payload["cited_latch_broker_order_id"]
+    nan_doc = ('{"schwab_order_id": "%s", "schwab_instrument_symbol": "CADL",'
+               ' "x": NaN}' % order)
+    assert conn.execute("SELECT json_valid(?)", (nan_doc,)).fetchone()[0] == 0, (
+        "the premise: sqlite rejects this document outright")
+    set_fill_envelope(conn, payload["entry_fill_id_at_correction"], nan_doc)
+    conn.commit()
+    _assert_rejected(conn, {**payload, **_LAST_WORD_NULLS})
+
+
+@pytest.mark.parametrize("label,pad", [
+    ("ASCII space", "  "), ("TAB", "\t"), ("NEWLINE", "\n"),
+    ("NBSP", " "),
+])
+def test_a_padded_document_naming_an_accepted_order_cannot_claim_last_word(
+        conn, label, pad) -> None:
+    """DIVERGENCE 2 (Codex 22A-R10-02): sqlite ``trim()`` strips ASCII SPACE
+    ONLY; python ``str.strip()`` also strips tab, newline and NBSP.
+
+    PRE-RESHAPE the canonicality twin asked ``k.value <> trim(k.value)`` and,
+    for the three non-space characters, saw NO PADDING -- so it called the
+    document canonical while the service refused it, and the ``last_word``
+    branch's exact-match link check found nothing.  The predecessor's tests all
+    passed because the whole class was built out of ASCII space, the ONE
+    character the two engines agree about.
+
+    POST-RESHAPE the stored reading is a REFUSAL for all four, and a refused
+    reading fails the subject-envelope clause outright.  The ASCII-space row is
+    kept as the control: it was already refused, and it must stay refused.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    order = payload["cited_latch_broker_order_id"]
+    doc = json.dumps({"schwab_order_id": f"{pad}{order}{pad}",
+                      "schwab_instrument_symbol": "CADL"})
+    set_fill_envelope(conn, payload["entry_fill_id_at_correction"], doc)
+    conn.commit()
+    _assert_rejected(conn, {**payload, **_LAST_WORD_NULLS})
+
+
+def test_a_numeric_order_id_cannot_claim_last_word(conn) -> None:
+    """DIVERGENCE 3 (Codex 22A-R10-03) at the trigger.
+
+    STATED HONESTLY: this direction was ALREADY refused pre-reshape -- the
+    canonicality twin rejected a value whose ``json_each`` type was neither
+    ``null`` nor ``text``.  What R10-03 found was the SERVICE side, where the
+    union's SQL arm had been fetched into Python and ``1002937461 ==
+    '1002937461'`` came back False in both arms.  The mechanism here therefore
+    CHANGED (a stored refusal rather than a re-derived type check) while the
+    verdict did not, and saying so is the point: a test that claimed a new
+    refusal here would be claiming a fix that is not this one.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    doc = ('{"schwab_order_id": %s, "schwab_instrument_symbol": "CADL"}'
+           % payload["cited_latch_broker_order_id"])
+    set_fill_envelope(conn, payload["entry_fill_id_at_correction"], doc)
+    conn.commit()
+    _assert_rejected(conn, {**payload, **_LAST_WORD_NULLS})
+
+
+@pytest.mark.parametrize("label,doc_template", [
+    # A document nobody has read: the raw writer's own shape, and the state
+    # condition (2) turns into an ABORT.
+    ("an extra key", '{"schwab_order_id": "%s", '
+                     '"schwab_instrument_symbol": "CADL", "note": "raw"}'),
+    # SAME MEANING, DIFFERENT BYTES.  The binding is to the DOCUMENT, not to
+    # what the document means -- which is precisely why a stored value may
+    # stand in for a judgment SQL is forbidden to make.
+    ("re-ordered keys", '{"schwab_instrument_symbol": "CADL", '
+                        '"schwab_order_id": "%s"}'),
+])
+def test_a_document_the_authority_has_not_read_is_refused(
+        conn, label, doc_template) -> None:
+    """``envelope_raw`` is the binding, and this is what it buys.
+
+    A reading already exists for the document the seeder wrote.  A raw writer
+    then substitutes a different document -- semantically IDENTICAL in the
+    second case -- and the join, which is on the FILL AND THE DOCUMENT, no
+    longer matches.  The surface fails CLOSED.
+
+    It also proves the ``set_fill_envelope`` fixtures elsewhere in this file
+    are not decorative: without a matching reading, every envelope test here
+    would reject for THIS reason instead of the one it names.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    _raw_envelope(conn, payload["entry_fill_id_at_correction"],
+                  doc_template % payload["cited_latch_broker_order_id"])
+    conn.commit()
+    _assert_rejected(conn, payload)
+
+
+def test_a_citation_that_diverges_from_the_stored_reading_ABORTS(conn) -> None:
+    """CONDITION (2), stated at the equality it names.
+
+    The AUTHORITY's stored reading says one order; the citation claims another.
+    Every other relation in the graph agrees with itself -- the link, both
+    intents, the candidate, the symbol -- so this clause is the only thing that
+    can reject, and it does.
+
+    This is the clause the whole reshape is cashed at: it replaced a
+    ``json_extract`` over the operator's document with a comparison of two
+    stored TEXT values, and there is nothing left for two engines to read
+    apart.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    set_fill_envelope(conn, payload["entry_fill_id_at_correction"], json.dumps(
+        {"schwab_order_id": "some-other-order",
+         "schwab_instrument_symbol": "CADL"}))
+    conn.commit()
+    _assert_rejected(conn, payload)
+
+
+def test_THE_DECLARED_LIMITATION_two_equal_but_wrong_values_are_ACCEPTED(
+        conn) -> None:
+    """CONDITION (3), PINNED RATHER THAN ONLY WRITTEN DOWN.
+
+    CHARC's words, carried into the migration header and into S8: *a raw writer
+    storing two equal-but-wrong values passes the equality check.*  That is the
+    SAME trust boundary as before -- the trigger never could judge truth, only
+    CONSISTENCY -- and it is the condition on which the reshape was ruled.
+
+    Here the fill's document names order X.  A raw writer appends a reading
+    claiming it names Y, and cites Y.  Reading and citation agree, so the row
+    is ACCEPTED.  Nothing in SQL can catch this, and nothing in the previous
+    shape could either: the old trigger could equally be satisfied by a forged
+    ENVELOPE.  The test exists so the limitation cannot silently stop being
+    true -- if a later change makes this REJECT, the limitation is narrower
+    than declared and the declaration must be corrected, not the test.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    fill_id = payload["entry_fill_id_at_correction"]
+    honest = json.dumps({"schwab_order_id": "an-order-nobody-accepted",
+                         "schwab_instrument_symbol": "CADL"})
+    _raw_envelope(conn, fill_id, honest)
+    conn.execute(
+        "INSERT INTO fill_envelope_identity (fill_id, envelope_raw, "
+        " envelope_state, broker_order_id, instrument_symbol, "
+        " canonicalizer_version, recorded_ts) "
+        "VALUES (?, ?, 'canonical', ?, 'CADL', 'forged', 'T')",
+        (fill_id, honest, payload["cited_latch_broker_order_id"]))
+    conn.commit()
+    _insert_payload(conn, payload)
+    assert conn.execute(
+        "SELECT admission_tier FROM provenance_corrections").fetchone() == (
+        "latch_ladder",), (
+        "the declared limitation stopped being true; correct the declaration "
+        "in migration 0037's section 3d and in the plan's S8, do not silence "
+        "this test")

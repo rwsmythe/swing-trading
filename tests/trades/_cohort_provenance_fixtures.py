@@ -264,18 +264,71 @@ def seed_fill(
     price: float = 10.81,
     fill_origin: str = "schwab_auto",
     reason: str | None = None,
+    schwab_source_value_json: str | None = None,
 ) -> int:
+    """Seed a fill.  THE ENVELOPE IS MODELLED EXPLICITLY (RD, 2026-08-26).
+
+    This helper defaulted ``fill_origin='schwab_auto'`` and did not model
+    ``schwab_source_value_json`` AT ALL, and that silence was an unresolved
+    fact rather than a neutral omission: ``schwab_auto`` carries an envelope BY
+    CONSTRUCTION (both production writers build the two in one expression), so
+    every fixture built on this helper was quietly asserting a pair no
+    production writer produces -- the INCONSISTENT EVIDENCE PAIR of RD's own
+    22A-R3-13 ruling.  The parameter makes the choice VISIBLE at each call
+    site: ``None`` now means "this fixture deliberately models an
+    envelope-less fill", which is a statement rather than a default.
+
+    AND WHEN AN ENVELOPE IS SET, ITS STORED READING IS SET WITH IT.  Migration
+    0037's citation trigger compares the AUTHORITY'S PERSISTED reading of the
+    envelope, never the document (PERSIST-CANONICAL); production writes the two
+    together in ``insert_fill_with_event``.  A fixture that wrote only the
+    document would be modelling a state no writer produces and would fail
+    closed -- correctly, but for a reason about the fixture rather than about
+    the code under test.
+    """
     cur = conn.execute(
         """
         INSERT INTO fills (
             trade_id, fill_datetime, action, quantity, price, reason,
-            reconciliation_status, fill_origin
-        ) VALUES (?, ?, ?, ?, ?, ?, 'unreconciled', ?)
+            reconciliation_status, fill_origin, schwab_source_value_json
+        ) VALUES (?, ?, ?, ?, ?, ?, 'unreconciled', ?, ?)
         """,
         (trade_id, fill_datetime, action, quantity, price, reason,
-         fill_origin),
+         fill_origin, schwab_source_value_json),
     )
-    return int(cur.lastrowid)
+    fill_id = int(cur.lastrowid)
+    if schwab_source_value_json is not None:
+        _record_envelope_identity(conn, fill_id, schwab_source_value_json)
+    return fill_id
+
+
+def _record_envelope_identity(
+    conn: sqlite3.Connection, fill_id: int, envelope: str,
+) -> None:
+    from swing.data.repos.fill_envelope_identity import (
+        record_identity,
+        table_exists,
+    )
+    if table_exists(conn):
+        record_identity(conn, fill_id=fill_id, envelope_raw=envelope)
+
+
+def set_fill_envelope(
+    conn: sqlite3.Connection, fill_id: int, envelope: str | None,
+) -> None:
+    """Put an envelope on an EXISTING fill the way production does.
+
+    A raw ``UPDATE fills SET schwab_source_value_json = ...`` writes the
+    document and no reading, which post-0037 is a fill whose envelope the
+    authority has never seen -- a state the citation trigger refuses.  Tests
+    that want the ORDINARY shape use this; a test that wants the unread state
+    writes the raw UPDATE deliberately and says so.
+    """
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
+        (envelope, fill_id))
+    if envelope is not None:
+        _record_envelope_identity(conn, fill_id, envelope)
 
 
 def rebase_status_history_recorded_at(
