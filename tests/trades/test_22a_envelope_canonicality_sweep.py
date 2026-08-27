@@ -292,3 +292,145 @@ def test_the_walk_can_still_find_the_form_it_forbids() -> None:
         "the permitted form -- a plain TEXT equality against the stored "
         "reading's document -- must NOT be flagged, or the check forbids the "
         "shape the ruling prescribes")
+
+
+# ---------------------------------------------------------------------------
+# THE EXCEPTION-ROSTER CLOSURE CHECK (Codex 22A-R10-04)
+#
+# A HAND-ENUMERATED ROSTER IS THE SAME INSTRUMENT AS THE COUNT IT REPLACED.
+# SS-2 stated this class -- enumerating the types ``json.loads`` can raise is a
+# roster, and ``RecursionError`` is not on it -- then swept "the three envelope
+# readers" and stopped at the service boundary.  The production ENTRY ROUTE was
+# left on the roster and 500ed a money-bearing POST over an unreadable audit
+# blob; the EXIT route, the D31 correction surface and the exit-envelope reader
+# in the entry-form VM were all in the same state.
+#
+# So the fix is not the four sites.  It is this walk: every reader of a fill's
+# envelope, anywhere in the declared envelope, found by following the ONE token
+# that identifies such a reader, with its containment asserted rather than
+# remembered.
+# ---------------------------------------------------------------------------
+_ENVELOPE_READER_ROOTS = (
+    "swing/trades", "swing/data", "swing/cli.py", "swing/latches",
+    "swing/web/routes/trades.py", "swing/web/view_models/trades.py",
+)
+_TYPE_ROSTER = re.compile(
+    r"^\s*except \((?:ValueError, TypeError|TypeError, ValueError)\)")
+_LOADS = re.compile(r"(?<![.\w])(?:_?json)\.loads\(")
+
+
+def _roster_contained_loads(lines: list[str]) -> list[int]:
+    """1-based indices of every ``except (ValueError, TypeError)`` whose OWN
+    ``try`` body parses JSON.
+
+    THE WINDOW IS THE TRY BODY, NOT THE FUNCTION.  A first version of this walk
+    flagged any roster anywhere in a function that also parsed an envelope
+    somewhere, and it produced two false positives on the first run -- a
+    ``fromisoformat`` guard and a numeric-coercion guard, both correct.  A
+    check that cries wolf is a check people learn to override, which is the
+    failure mode a mechanical assertion exists to avoid.
+    """
+    hits: list[int] = []
+    for i, ln in enumerate(lines):
+        if not _TYPE_ROSTER.match(ln):
+            continue
+        j = i - 1
+        while j >= 0:
+            stripped = lines[j].strip()
+            if not stripped or stripped.startswith("#"):
+                j -= 1
+                continue
+            if stripped.startswith(("try:", "except", "def ", "async def ")):
+                break
+            if _LOADS.search(lines[j]):
+                hits.append(i + 1)
+                break
+            j -= 1
+    return hits
+
+
+def _envelope_reader_files() -> list[Path]:
+    out: list[Path] = []
+    for root in _ENVELOPE_READER_ROOTS:
+        path = REPO_ROOT / root
+        if path.is_file():
+            out.append(path)
+            continue
+        out += [f for f in path.rglob("*.py") if "__pycache__" not in f.parts]
+    return sorted(set(out))
+
+
+def test_no_fill_envelope_reader_is_contained_by_a_TYPE_ROSTER() -> None:
+    """Every function in the declared envelope that names
+    ``schwab_source_value_json`` and parses JSON must contain its decode
+    failure by CLASS, not by an enumerated tuple of types.
+
+    The scope is deliberately the ENVELOPE READERS and not every
+    ``json.loads`` in the tree: a reader of a blob THIS FRAMEWORK produced with
+    ``json.dumps`` cannot be handed a 20000-deep document by an operator, and
+    widening the sweep to those would be defensive dead code (the
+    Expansion-#13 cascade).  The other such sites are enumerated in the return
+    report with their blob source rather than silently swept.
+    """
+    offenders: dict[str, list[int]] = {}
+    for f in _envelope_reader_files():
+        lines = f.read_text(encoding="utf-8").splitlines()
+        # The function-sized window: a module may legitimately parse other
+        # blobs, and only the functions that touch a fill envelope are in
+        # scope.
+        bounds = [i for i, ln in enumerate(lines)
+                  if ln.lstrip().startswith(("def ", "async def "))]
+        bounds.append(len(lines))
+        for start_i, end_i in zip(bounds, bounds[1:], strict=False):
+            body = lines[start_i:end_i]
+            if not any("schwab_source_value_json" in ln for ln in body):
+                continue
+            for offset in _roster_contained_loads(body):
+                offenders.setdefault(
+                    str(f.relative_to(REPO_ROOT)), []).append(
+                        start_i + offset)
+    assert not offenders, (
+        f"a fill-envelope reader still enumerates its decode failures: "
+        f"{offenders}. `json.loads` raises `RecursionError` -- a "
+        f"`RuntimeError` -- on a deeply nested document, and neither arm of "
+        f"that tuple catches it")
+
+
+def test_the_roster_walk_finds_the_form_it_forbids_and_only_that_form(
+) -> None:
+    """The walk's OWN discriminator, over the REAL shapes it met.
+
+    The true positive is the entry route's pre-fix text, verbatim.  The two
+    false positives are the guards the first version of this walk wrongly
+    flagged -- both real code from the same two files, both correct.
+    """
+    true_positive = [
+        "        try:",
+        "            anchor_envelope = _json.loads(schwab_source_value_json)",
+        "        except (ValueError, TypeError):",
+        "            anchor_envelope = None",
+    ]
+    assert _roster_contained_loads(true_positive) == [3]
+
+    fixed = list(true_positive)
+    fixed[2] = "        except Exception:  # noqa: BLE001"
+    assert _roster_contained_loads(fixed) == []
+
+    a_date_guard = [
+        "            if exit_date_ok:",
+        "                try:",
+        "                    _date_cls.fromisoformat(v_exit_date)",
+        "                except (TypeError, ValueError):",
+        "                    exit_date_ok = False",
+    ]
+    assert _roster_contained_loads(a_date_guard) == []
+
+    a_numeric_guard = [
+        "                                quantity=float(fill_qty),",
+        "                            )",
+        "                        )",
+        "                except (TypeError, ValueError):",
+        "                    continue",
+    ]
+    assert _roster_contained_loads(a_numeric_guard) == []
+    assert _envelope_reader_files(), "the file walk found nothing to check"

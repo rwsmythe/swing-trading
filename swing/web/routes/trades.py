@@ -953,7 +953,23 @@ def entry_post(
     if schwab_source_value_json.strip():
         try:
             anchor_envelope = _json.loads(schwab_source_value_json)
-        except (ValueError, TypeError):
+        except Exception:  # noqa: BLE001 -- the TYPE ROSTER is the failure
+            # Codex 22A-R10-04, and the MISS was this arc's own.  SS-2 stated
+            # the class -- enumerating the types `json.loads` can raise is the
+            # hand-maintained-roster failure 22A-R8-03 ruled against -- and
+            # widened "the three envelope readers" in the SERVICE.  The re-grep
+            # stopped at the service boundary and never entered `swing/web/`,
+            # so the PRODUCTION ENTRY ROUTE kept the roster: a deeply nested
+            # envelope raises `RecursionError` (a `RuntimeError`) HERE, before
+            # `record_entry` is reached, and the operator gets a 500 with no
+            # trade, no fill and no legible refusal over an unreadable audit
+            # blob.  A blocked ENTRY and a blocked FILL are the same
+            # money-bearing failure.
+            #
+            # `None` is exactly the malformed-anchor state the ladder below
+            # already handles: with a claim it becomes a 400 naming the anchor,
+            # and without one it flows through as `operator_typed` as it always
+            # has.
             anchor_envelope = None
         # Codex R2 Major #1 fix — reject non-dict JSON (e.g., ``[]``, ``"x"``)
         # when the claim is auto-fill. Without this guard, a valid-JSON
@@ -2147,7 +2163,14 @@ async def exit_post(
     if schwab_source_value_json.strip():
         try:
             anchor_envelope = _json.loads(schwab_source_value_json)
-        except (ValueError, TypeError):
+        except Exception:  # noqa: BLE001 -- the TYPE ROSTER is the failure
+            # THE SAME CLASS, THE SAME FILE, THE OTHER ROUTE (22A-R10-04's
+            # whole-envelope re-grep).  The exit form carries the identical
+            # hidden anchor and the identical four-tier rejection ladder, so a
+            # deeply nested envelope 500s the exit POST for the same reason it
+            # 500ed the entry POST.  Found by re-grepping the class across the
+            # WHOLE declared envelope instead of stopping at the instance the
+            # reviewer named -- which is how the entry site survived SS-2.
             anchor_envelope = None
 
         # (a) malformed JSON + claim → 400

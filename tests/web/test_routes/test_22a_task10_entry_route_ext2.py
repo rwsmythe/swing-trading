@@ -414,3 +414,92 @@ def test_an_absent_or_null_order_id_is_accepted_by_the_shape_rung(
     # and tier (e) still refuses them -- which is the previous test's claim,
     # asserted here only to show the rung is not what stopped them.
     assert calls == []
+
+
+# ===========================================================================
+# Codex 22A-R10-04 -- THE EXCEPTION ROSTER AT THE PRODUCTION WEB SURFACE
+#
+# SS-2 stated the class -- enumerating the exception types `json.loads` can
+# raise is the hand-maintained-roster failure 22A-R8-03 ruled against -- and
+# swept "the three envelope readers" in the SERVICE.  The re-grep stopped at
+# the service boundary and never entered `swing/web/`, so the ENTRY ROUTE kept
+# `except (ValueError, TypeError)` around its hidden-anchor parse.  A deeply
+# nested envelope raises `RecursionError`, a `RuntimeError`, which neither arm
+# catches.
+#
+# WHY THE EXISTING DEEP TEST COULD NOT SEE IT: it calls `record_entry`
+# DIRECTLY, and the escape happens BEFORE `record_entry` is reached.  The
+# discriminator therefore has to be a ROUTE test, which is what this is.
+# ===========================================================================
+def _deep_envelope(depth: int = 20000) -> str:
+    """A document `json.loads` cannot decode without exhausting the stack.
+
+    The premise is measured in the test rather than assumed, because the depth
+    at which CPython gives up is an interpreter property and a shallower value
+    would make the whole case vacuous while still reading as a proof.
+    """
+    return ('{"schwab_order_id":' + '{"a":' * depth + '1'
+            + '}' * depth + '}')
+
+
+def test_a_deeply_nested_envelope_does_not_500_the_ENTRY_route(
+        seeded_db) -> None:
+    """PRE-FIX: `RecursionError` escapes and the POST 500s -- no trade, no
+    fill, no legible refusal, over an audit blob that is not money.
+    POST-FIX: the anchor is unreadable, the claim is present, and the route
+    renders its own 400 naming the malformed anchor.
+
+    A blocked ENTRY and a blocked FILL are the same money-bearing failure.
+    """
+    deep = _deep_envelope()
+    with pytest.raises(RecursionError):
+        json.loads(deep)                    # the PREMISE, measured here
+
+    cfg, cfg_path = seeded_db
+    pipeline_run_id = _build_route_world(cfg, with_link=True)[1]
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/trades/entry",
+            data=_post_data(pipeline_run_id=pipeline_run_id, envelope=deep),
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 400, (
+        f"the route answered {resp.status_code}; a 500 here is the "
+        f"RecursionError escaping the anchor parse")
+    assert "malformed" in resp.text.lower()
+
+
+def test_a_deeply_nested_envelope_does_not_500_the_EXIT_route(
+        seeded_db) -> None:
+    """THE SAME CLASS, THE OTHER ROUTE, found by re-grepping the WHOLE declared
+    envelope instead of stopping at the instance the reviewer named.
+
+    The exit form carries the identical hidden anchor and the identical
+    four-tier rejection ladder, so it 500ed for the identical reason.  This
+    site is PRE-EXISTING and outside the arc's mechanism; it is fixed here
+    because it is the same class in the same file, and stating the class once
+    then leaving an instance live is what let the entry site survive SS-2.
+    """
+    deep = _deep_envelope()
+    cfg, cfg_path = seeded_db
+    _build_route_world(cfg, with_link=True)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/trades/999999/exit",
+            data={
+                "exit_date": FILL_SESSION.isoformat(),
+                "exit_price": "20.00",
+                "shares": "2",
+                "reason": "target",
+                "schwab_source_value_json": deep,
+                "fill_origin_at_form_render": "schwab_auto",
+                "auto_fill_audit_at": f"{FILL_SESSION.isoformat()}T09:00:00",
+            },
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+    assert resp.status_code != 500, (
+        "the exit route 500ed; the RecursionError escaped its anchor parse")

@@ -774,7 +774,13 @@ def _assert_evidence_is_this_fills_order(
         )
     try:
         envelope = json.loads(source_envelope or "")
-    except (TypeError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 -- the TYPE ROSTER is the failure
+        # 22A-R10-04's class, third instance, found by the whole-envelope
+        # re-grep.  This reader consumes a fill's PERSISTED Schwab envelope on
+        # an operator-facing correction surface; a `RecursionError` escaping
+        # here replaces this function's own named, actionable
+        # `EntryDateCorrectionError` with a raw traceback, which is the same
+        # illegible-refusal defect one layer up from the route.
         raise EntryDateCorrectionError(
             f"fill {disc.fill_id} claims Schwab provenance but its "
             "schwab_source_value_json is missing or unparseable; the cited "

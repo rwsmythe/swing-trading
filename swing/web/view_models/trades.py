@@ -1055,7 +1055,13 @@ def build_exit_form_vm(
         ):
             try:
                 env = json.loads(env_json) if env_json else None
-            except (ValueError, TypeError):
+            except Exception:  # noqa: BLE001 -- the TYPE ROSTER is the failure
+                # 22A-R10-04's class, fourth and last instance in the declared
+                # envelope.  This reads PERSISTED exit envelopes to build the
+                # duplicate-detection advisory; an escape here 500s a PAGE
+                # RENDER over a blob that is only ever advisory, and the
+                # degrade-to-None path immediately below is what the render
+                # already expects for an unreadable envelope.
                 env = None
             # WHAT THIS READ DOES NOT DO, AND MUST NOT BE "FIXED" TO DO
             # (RD, 2026-08-11, correcting his own earlier wording; the
