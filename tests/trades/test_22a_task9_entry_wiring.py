@@ -848,9 +848,18 @@ def test_the_lock_c_every_pre_existing_failure_branch_is_unchanged(
     assert conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
 
 
-def test_the_lock_d_an_envelope_without_an_order_id_costs_zero_queries(
+def test_the_lock_d_a_fill_with_NO_ENVELOPE_costs_zero_queries(
         tmp_path) -> None:
     """LOCK clause (d), asserted by COUNTING STATEMENTS on the connection.
+
+    RENAMED TO WHAT IT MEASURES (self-sweep SS-13).  It was called
+    `..._an_envelope_without_an_order_id_...` while its body passes
+    `schwab_source_value_json=None` -- no envelope at all.  The two were the
+    same thing until PERSIST-CANONICAL, which taught the sole fills writer to
+    persist a reading for any fill that CARRIES an envelope; the case the old
+    NAME described now costs three statements, and the case the body actually
+    runs still costs none.  The name went on reading true.  The next case
+    covers the other half.
 
     The recognition read parses the operator-submitted envelope and nothing
     else, so a fill with no usable broker order id must issue no additional
@@ -879,6 +888,57 @@ def test_the_lock_d_an_envelope_without_an_order_id_costs_zero_queries(
     assert len(seen) == len(baseline), (
         f"the seam issued {len(seen) - len(baseline)} extra statements on a "
         f"fill with no usable order id")
+
+
+def _identity_related(sql: str) -> bool:
+    return ("fill_envelope_identity" in sql) or ("sqlite_master" in sql)
+
+
+def test_the_lock_d_an_envelope_naming_no_order_costs_ONLY_the_reading(
+        tmp_path) -> None:
+    """THE CASE THE OTHER TEST'S NAME CLAIMED, measured honestly (SS-13).
+
+    LOCK clause (d)'s subject is **the RESOLVER**: *"when the envelope carries
+    no usable broker order id, the resolver issues ZERO additional database
+    queries"*.  That is still exactly true -- such a request is not recognised,
+    takes no reservation and never reaches the resolver at all.
+
+    What DID change is outside the clause and must not hide behind it: the
+    fills writer now persists the authority's reading for any fill that
+    CARRIES an envelope.  So this asserts the clause where it lives -- every
+    statement in the delta is an identity-table statement, i.e. the resolver
+    and the ordinary chain added nothing -- rather than asserting a total that
+    would quietly absorb a future resolver query.
+    """
+    conn, cfg, _ = build_world(tmp_path, "lockD3")
+    conn.commit()
+    baseline: list[str] = []
+    conn.set_trace_callback(baseline.append)
+    try:
+        enter(conn, cfg, req(ticker="ZZAB", schwab_source_value_json=None,
+                             fill_origin="operator_typed"))
+    finally:
+        conn.set_trace_callback(None)
+
+    conn2, cfg2, _ = build_world(tmp_path, "lockD4")
+    conn2.commit()
+    seen: list[str] = []
+    conn2.set_trace_callback(seen.append)
+    try:
+        enter(conn2, cfg2,
+              req(ticker="ZZAB",
+                  schwab_source_value_json='{"schwab_instrument_symbol": "Z"}',
+                  fill_origin="operator_typed"))
+    finally:
+        conn2.set_trace_callback(None)
+
+    assert [s for s in seen if _identity_related(s)], (
+        "this case is about the reading's cost; if nothing identity-related "
+        "ran, it is measuring a world where the reshape did not apply")
+    assert (len([s for s in seen if not _identity_related(s)])
+            == len([s for s in baseline if not _identity_related(s)])), (
+        "a NON-identity statement was added for a fill whose envelope names "
+        "no order id, which is LOCK clause (d)'s own subject")
 
 
 def test_a_caller_held_transaction_is_rejected_on_the_latched_path(
