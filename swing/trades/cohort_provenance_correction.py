@@ -1743,14 +1743,31 @@ def _resolve_latch_citation(
     # order resolves to no link -- so an envelope-bearing fill whose reading is
     # missing aborts on the LAST_WORD path too, which is the path most
     # corrections take.
+    #
+    # AND THE FAILURE IS THIS SURFACE'S OWN REFUSAL, NEVER A TRACEBACK (Codex
+    # 22A-R11-04).  `record_identity` RAISES `EnvelopeIdentityDriftError` on a
+    # stored reading that disagrees with today's authority -- the exact state
+    # the new repository exists to DETECT -- and the CLI maps only
+    # `CohortProvenanceCorrectionError`, so a legitimate detection reached the
+    # operator as an unhandled traceback: a broken refusal on the one condition
+    # the instrument was built for.  The underlying message is CARRIED, not
+    # summarised, because it names the fill, both readings and the version.
     if envelope is not None:
         from swing.data.repos.fill_envelope_identity import (
             record_identity,
             table_exists,
         )
-        if table_exists(conn):
-            record_identity(
-                conn, fill_id=int(entry_fill.fill_id), envelope_raw=envelope)
+        try:
+            if table_exists(conn):
+                record_identity(
+                    conn, fill_id=int(entry_fill.fill_id),
+                    envelope_raw=envelope)
+        except Exception as exc:  # noqa: BLE001 -- the TYPE ROSTER is the failure
+            raise _refuse(
+                f"trade {trade_id}'s entry fill {entry_fill.fill_id} carries a "
+                f"Schwab envelope whose authoritative reading could not be "
+                f"established: {exc}"
+            ) from exc
 
     req = SimpleNamespace(
         ticker=str(trade.ticker),

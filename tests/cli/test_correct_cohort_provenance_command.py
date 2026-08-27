@@ -373,3 +373,65 @@ def test_the_latch_tier_prints_its_full_citation() -> None:
     assert "cited latch intents           place 1, validity 2" in text
     assert "probe admission basis         armed" in text
     assert "no accepted latch order" not in text
+
+
+# ===========================================================================
+# 22A-R11-04 -- A DRIFT DETECTION IS A LEGIBLE REFUSAL, NOT A TRACEBACK
+#
+# The subject canonicalisation in `_resolve_latch_citation` sat OUTSIDE any
+# conversion to `CohortProvenanceCorrectionError`, and the CLI maps only that
+# exception -- so `EnvelopeIdentityDriftError`, the exact state the new
+# repository exists to DETECT, reached the operator as an unhandled traceback.
+# A broken refusal on the one condition the instrument was built for.
+# ===========================================================================
+_FORGED_DOC = '{"schwab_order_id": "1002937461"}'
+
+
+def _plant_a_forged_reading(db_path: Path, fill_id: int) -> None:
+    """The document with a reading that DISAGREES with today's authority.
+
+    Written raw on purpose: the append-only barriers make this state
+    unreachable through the writer, which is precisely why the repository
+    treats it as a forgery rather than re-deriving it.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
+            (_FORGED_DOC, fill_id))
+        conn.execute(
+            "INSERT INTO fill_envelope_identity (fill_id, envelope_raw, "
+            " envelope_state, broker_order_id, canonicalizer_version, "
+            " recorded_ts) VALUES (?, ?, 'canonical', 'A DIFFERENT ORDER', "
+            " 'v0', '2026-08-01T00:00:00Z')", (fill_id, _FORGED_DOC))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("extra", [("--dry-run",), ()])
+def test_a_drifted_subject_reading_refuses_legibly(
+        tmp_path, monkeypatch, extra) -> None:
+    """PRE-FIX both arms raised `EnvelopeIdentityDriftError` out of the command.
+
+    BOTH arms are run because the dry-run and the apply reach the subject
+    canonicalisation through the SAME `_authorize`, and a fix applied at one
+    entry point would leave the other exactly as it was.
+    """
+    runner, cfg, db = _setup(tmp_path, monkeypatch)
+    ids = _seed(db)
+    _plant_a_forged_reading(db, ids["fill_id"])
+
+    r = runner.invoke(main, _cmd(cfg, ids, "--reason", REASON, *extra))
+    assert r.exit_code != 0
+    assert r.exception is None or isinstance(r.exception, SystemExit), (
+        f"an unhandled {type(r.exception).__name__} reached the operator")
+    assert "disagrees with what the canonicaliser" in r.output, r.output
+    assert "Nothing was written." in r.output, r.output
+
+    conn = sqlite3.connect(db)
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM provenance_corrections").fetchone()[0] == 0
+    finally:
+        conn.close()
