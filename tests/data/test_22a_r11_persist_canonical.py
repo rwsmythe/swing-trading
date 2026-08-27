@@ -352,3 +352,37 @@ def test_an_agreeing_older_reading_is_left_alone(conn) -> None:
     assert conn.execute(
         "SELECT canonicalizer_version FROM fill_envelope_identity "
         " WHERE fill_id = ?", (fid,)).fetchone() == ("2026-01-01.0",)
+
+
+# ===========================================================================
+# SELF-SWEEP SS-14 -- A FILL'S DOCUMENT CAN CHANGE, AND THE READING FOLLOWS IT
+#
+# The whole reshape rests on `fei.envelope_raw = f.schwab_source_value_json`:
+# a reading is a statement about a DOCUMENT, not a floating claim about a fill.
+# So the case that matters is the one where the document moves.  It moves on a
+# supported path today -- the split handler carries the envelope onto rebuilt
+# partials -- and it is reachable in principle through the tier-1 corrector's
+# DYNAMIC single-column UPDATE, which no column-name grep can see (the D36
+# class).  MEASURED INCIDENCE OF THAT SECOND ROUTE: zero; no emitter names the
+# column (`grep -rn "field_name.*schwab_source_value_json"` over `swing/` and
+# a read of `_RESERVED_JOURNAL_FIELDS` -> no hits), so it is service-prevented
+# rather than schema-prevented, and the property is pinned anyway because a
+# future emitter would arm it silently.
+# ===========================================================================
+def test_a_rewritten_envelope_gets_its_OWN_reading_and_the_old_one_survives(
+        conn) -> None:
+    from swing.data.repos.fill_envelope_identity import (
+        ensure_entry_fill_identities,
+    )
+    first = '{"schwab_order_id": "AAA"}'
+    second = '{"schwab_order_id": "BBB"}'
+    fid = _seed_fill(conn, trade_id=1, envelope=first)
+    assert ensure_entry_fill_identities(conn) == 1
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
+        (second, fid))
+    assert ensure_entry_fill_identities(conn) == 1
+    assert sorted(conn.execute(
+        "SELECT envelope_raw, broker_order_id FROM fill_envelope_identity "
+        " WHERE fill_id = ?", (fid,)).fetchall()) == [
+        (first, "AAA"), (second, "BBB")]
