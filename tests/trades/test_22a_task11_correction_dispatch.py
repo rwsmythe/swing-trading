@@ -677,3 +677,85 @@ def test_a_REFUSED_MANDATE_still_blocks_the_last_word_correction(
     # refused mandate is still refused, whichever rung refused it.
     assert "citation shopping" in str(exc.value)
     assert ids["broker_order_id"] in str(exc.value)
+
+
+# ===========================================================================
+# RD, 2026-08-26 -- THE FIXTURES MODEL THE ENVELOPE EXPLICITLY
+#
+# `_cohort_provenance_fixtures.seed_fill` defaulted `fill_origin='schwab_auto'`
+# and did not model `schwab_source_value_json` at all, so every fixture built on
+# it asserted a state NO PRODUCTION WRITER PRODUCES: a trusted origin whose
+# envelope names nothing -- the INCONSISTENT EVIDENCE PAIR of RD's own
+# 22A-R3-13 ruling.  Its silence was the unresolved fact.
+#
+# MEASURED ON THE LIVE LEDGER (read-only, 2026-08-26): pair incidence is ZERO.
+# All trusted-origin fills carry envelopes; all 25 `operator_typed` fills lack
+# them, as expected.  So the pair has never occurred in production, which is
+# what makes R3-13 a FORWARD guard against tampering or degradation rather than
+# a remediation -- and what makes the fixture's default the odd one out.
+# ===========================================================================
+def test_the_live_CADL_shape_is_a_pair_a_writer_actually_produces(
+        tmp_path) -> None:
+    """The fixture, given the LIVE envelope, models a producible fill.
+
+    Both directions are asserted from ONE fixture call each, because a test
+    naming only the good direction passes an implementation that treats every
+    fill as consistent.
+    """
+    from swing.trades.latched_origin import (
+        canonical_envelope_identity,
+        origin_and_envelope_are_inconsistent,
+    )
+    from tests.trades._cohort_provenance_fixtures import (
+        CADL_LIVE_ENVELOPE,
+        build_cadl_case,
+    )
+
+    root = tmp_path / "rdlive"
+    root.mkdir(parents=True, exist_ok=True)
+    conn = ensure_schema(root / "swing.db")
+    ids = build_cadl_case(conn, fill_envelope=CADL_LIVE_ENVELOPE)
+    origin, envelope = conn.execute(
+        "SELECT fill_origin, schwab_source_value_json FROM fills "
+        " WHERE fill_id = ?", (ids["fill_id"],)).fetchone()
+    assert origin == "schwab_auto"
+    assert envelope == CADL_LIVE_ENVELOPE
+    assert origin_and_envelope_are_inconsistent(origin, envelope) is False, (
+        "the fixture still models a pair no production writer produces")
+
+    # AND THE READING WAS PERSISTED WITH THE DOCUMENT, as production writes
+    # them -- otherwise the citation trigger would refuse every correction
+    # built on this fixture, for a reason about the fixture.
+    stored = conn.execute(
+        "SELECT envelope_state, broker_order_id, instrument_symbol "
+        "  FROM fill_envelope_identity WHERE fill_id = ?",
+        (ids["fill_id"],)).fetchone()
+    expected = canonical_envelope_identity(CADL_LIVE_ENVELOPE)
+    assert stored == (expected.state, expected.broker_order_id,
+                      expected.instrument_symbol)
+    assert stored == ("canonical", "1007547048146", "CADL")
+
+
+def test_the_default_fixture_still_models_the_ABSENT_envelope(
+        tmp_path) -> None:
+    """The other direction, and the reason the default was left alone.
+
+    The correction-surface cases were written against an envelope-less fill and
+    RD's ruling is scoped to the ENTRY path, so the default is a STATEMENT --
+    a deliberately modelled absent envelope -- not an omission.
+    """
+    from swing.trades.latched_origin import origin_and_envelope_are_inconsistent
+    from tests.trades._cohort_provenance_fixtures import build_cadl_case
+
+    root = tmp_path / "rdabsent"
+    root.mkdir(parents=True, exist_ok=True)
+    conn = ensure_schema(root / "swing.db")
+    ids = build_cadl_case(conn)
+    origin, envelope = conn.execute(
+        "SELECT fill_origin, schwab_source_value_json FROM fills "
+        " WHERE fill_id = ?", (ids["fill_id"],)).fetchone()
+    assert envelope is None
+    assert origin_and_envelope_are_inconsistent(origin, envelope) is True
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fill_envelope_identity WHERE fill_id = ?",
+        (ids["fill_id"],)).fetchone()[0] == 0

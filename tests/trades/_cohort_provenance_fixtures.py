@@ -254,6 +254,28 @@ def seed_trade(
     return int(cur.lastrowid)
 
 
+# THE LIVE CADL ENTRY FILL'S ENVELOPE, VERBATIM (RD, 2026-08-26).
+#
+# Read read-only off the operator's database on 2026-08-26:
+#
+#     SELECT schwab_source_value_json FROM fills WHERE fill_id = 45
+#
+# fill 45 / trade 23 / CADL / action='entry' / fill_origin='schwab_auto'.
+# Reproduced here rather than invented, because a fixture that quietly
+# disagrees with the emitter is this project's most-repeated test defect.
+#
+# WHY THIS CONSTANT EXISTS AT ALL. `seed_fill` defaulted `fill_origin` to
+# `schwab_auto` and did not model the envelope, so every fixture built on it
+# asserted a pair NO PRODUCTION WRITER PRODUCES -- a trusted origin with no
+# envelope, which is RD's own 22A-R3-13 INCONSISTENT EVIDENCE PAIR. The
+# silence was the unresolved fact; naming the live shape is what resolves it.
+CADL_LIVE_ENVELOPE = (
+    '{"entry_date": "2026-08-12", "entry_date_source": "execution_leg", '
+    '"entry_price": 10.82, "schwab_instrument_symbol": "CADL", '
+    '"schwab_order_id": "1007547048146", "shares": 18}'
+)
+
+
 def seed_fill(
     conn: sqlite3.Connection,
     *,
@@ -368,6 +390,7 @@ def build_cadl_case(
     contemporaneous_history: bool = True,
     entry_intent: str | None = "standard",
     ticker: str = CADL_TICKER,
+    fill_envelope: str | None = None,
 ) -> dict[str, Any]:
     """The full ACCEPTING CADL shape, with every knob a refusal test needs.
 
@@ -375,6 +398,24 @@ def build_cadl_case(
     non-pass criterion is `TT8_rs_rank='na'`, a same-run `today_decision`
     recommendation, an entry fill on 2026-08-12, and a single COMPLETE
     pipeline run bounding the persistence window.
+
+    ``fill_envelope`` IS MODELLED EXPLICITLY AND DEFAULTS TO ABSENT (RD,
+    2026-08-26), AND THE DEFAULT IS A STATEMENT RATHER THAN A GAP.
+
+    The live fill CARRIES an envelope -- ``CADL_LIVE_ENVELOPE`` above, read
+    verbatim off the row -- so "reproduces the live case exactly" was never
+    true of this field, and the fixture was modelling a trusted origin with no
+    envelope: the pair RD's 22A-R3-13 ruling exists to flag, which no writer
+    produces. The DEFAULT stays absent because the correction-surface cases
+    built on it were written against that world and the ruling is scoped to the
+    ENTRY path, so flipping the default would re-point roughly a hundred tests
+    that are about something else. Callers that want the LIVE shape now say so,
+    and ``test_the_live_CADL_shape_is_a_pair_a_writer_actually_produces``
+    exercises it.
+
+    When an envelope IS supplied, its stored reading is written with it --
+    production writes the two together, and migration 0037's citation trigger
+    compares the reading rather than the document (PERSIST-CANONICAL).
     """
     if non_pass is None:
         non_pass = {"TT8_rs_rank": "na"}
@@ -405,6 +446,7 @@ def build_cadl_case(
     )
     fill_id = seed_fill(
         conn, trade_id=trade_id, fill_datetime=fill_datetime,
+        schwab_source_value_json=fill_envelope,
     )
     if contemporaneous_history:
         rebase_status_history_recorded_at(conn)
