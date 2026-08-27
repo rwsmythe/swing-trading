@@ -2454,3 +2454,44 @@ def test_a_reading_from_an_older_grammar_cannot_admit_a_second_consumer(
     assert conn.execute(
         "SELECT COUNT(*) FROM fills WHERE trade_id = ?",
         (result.trade_id,)).fetchone()[0] == 1
+
+
+# ===========================================================================
+# SELF-SWEEP SS-15 -- THE POPULATION IS ESTABLISHED BEFORE EVERY SCAN
+#
+# Every consumption scan reads STORED readings, so a population the authority
+# has not read is a population the scan silently treats as EMPTY -- the widest
+# wrong acceptance available at rung 6, and the property the identity write's
+# containment (22A-R11-02) leans on to be safe.  It is pinned at RUNTIME rather
+# than asserted in a comment, because a comment promising an ordering is the
+# #31 class.
+# ===========================================================================
+def test_the_reading_population_is_established_before_any_scan(
+        tmp_path, monkeypatch) -> None:
+    """Rung 8's scan is covered by the same guarantee without a second world:
+    it sits BELOW rung 6 in one function's linear flow, and every exit between
+    them is a refusal that skips the scan as well."""
+    import swing.data.repos.fill_envelope_identity as fei
+
+    seq: list[str] = []
+
+    def _spy(name, real):
+        def wrapper(*a, **kw):
+            seq.append(name)
+            return real(*a, **kw)
+        return wrapper
+
+    for name in ("ensure_entry_fill_identities", "consuming_entry_fills",
+                 "unreadable_entry_fills"):
+        monkeypatch.setattr(fei, name, _spy(name, getattr(fei, name)))
+
+    conn, cfg, candidate_id = build_world(tmp_path, "ss15")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    enter(conn, cfg, req())
+
+    assert seq, "no scan ran; this world does not reach rung 6"
+    assert seq[0] == "ensure_entry_fill_identities", (
+        f"a scan ran before the population was established: {seq}")
+    assert "ensure_entry_fill_identities" not in seq[1:], (
+        f"the population pass ran more than once inside one ladder: {seq}")
