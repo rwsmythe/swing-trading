@@ -1845,6 +1845,49 @@ def test_a_padded_document_naming_an_accepted_order_cannot_claim_last_word(
     _assert_rejected(conn, {**payload, **_LAST_WORD_NULLS})
 
 
+def test_a_BLOB_document_naming_an_accepted_order_cannot_claim_last_word(
+        conn) -> None:
+    """22A-R13-01 AT THE TRIGGER -- the wrong acceptance this closes.
+
+    SQLite does not enforce column affinity and no migration carries a
+    ``typeof(schwab_source_value_json) = 'text'`` CHECK, so a BLOB survives in
+    the TEXT column and returns to Python as ``bytes``.  PRE-FIX
+    ``envelope_is_canonical`` answered ``True`` for any non-``str``, the
+    PRODUCTION writer stored ``('canonical', NULL, NULL)`` for a document it
+    had never opened, and this ``last_word`` claim was ACCEPTED -- a permanent
+    downgrade for a fill whose own document names the accepted order.
+
+    POST-FIX the stored reading is a REFUSAL and the subject-envelope clause
+    rejects.  The same bytes decoded as a ``str`` still read
+    ``(canonical, <order>)``, which is what makes the pre-fix row a wrong
+    ACCEPTANCE rather than a harmless unknown.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    order = payload["cited_latch_broker_order_id"]
+    doc = json.dumps({"schwab_order_id": order,
+                      "schwab_instrument_symbol": "CADL"})
+    set_fill_envelope(conn, payload["entry_fill_id_at_correction"],
+                      doc.encode())
+    fill_id = payload["entry_fill_id_at_correction"]
+    assert conn.execute(
+        "SELECT typeof(schwab_source_value_json) FROM fills WHERE fill_id = ?",
+        (fill_id,)).fetchone() == ("blob",), (
+        "the premise: the TEXT column really does hold a BLOB")
+    # ADDRESSED BY (fill_id, envelope_raw), because that is what a reading IS
+    # -- a statement about a DOCUMENT.  The seeder's own str document already
+    # has a reading on this fill, and a fill_id-only lookup would return THAT
+    # row and never see the one under test.
+    assert conn.execute(
+        "SELECT envelope_state, broker_order_id FROM fill_envelope_identity "
+        " WHERE fill_id = ? AND envelope_raw = ?",
+        (fill_id, doc.encode())).fetchone() == ("refused", None), (
+        "the authority must record that it could not read this document, "
+        "never that the document names no order")
+    conn.commit()
+    _assert_rejected(conn, {**payload, **_LAST_WORD_NULLS})
+
+
 def test_a_numeric_order_id_cannot_claim_last_word(conn) -> None:
     """DIVERGENCE 3 (Codex 22A-R10-03) at the trigger.
 

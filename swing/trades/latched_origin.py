@@ -684,9 +684,29 @@ def envelope_is_canonical(raw: str | None) -> bool:
     the authority cannot decode is an UNANSWERED question, not an agreement;
     see the handler below for what the split cost and why the mirror-shape
     ground for the old ``True`` died with the mirror.
+
+    AND AN UNREADABLE **TYPE** IS A DECODE FAILURE TOO (Codex 22A-R13-01).
+    This began ``if not isinstance(raw, str) or not raw.strip(): return True``
+    -- one predicate answering TWO different questions, and the "nothing to
+    disagree about" ground is true of the first and false of the second.
+    SQLite does not enforce column affinity and no migration carries a
+    ``typeof(schwab_source_value_json) = 'text'`` CHECK, so a BLOB bound into
+    that TEXT column returns as ``bytes``; the readers answered ``None`` for
+    it, this guard answered ``True``, and ``canonical_envelope_identity``
+    PERSISTED ``('canonical', NULL, NULL)`` -- the authority recording "I read
+    this and it names no order" for a document it never opened.  Downstream,
+    the ``last_word`` branch admits on exactly that stored absence.  It is
+    R11-01's class on the WRONG-TYPE branch, which R11-01's merge of the two
+    decode branches left answering ``canonical``.
     """
-    if not isinstance(raw, str) or not raw.strip():
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
         return True                    # no envelope: nothing to disagree about
+    if not isinstance(raw, str):
+        log.warning(
+            "22-A: the fill envelope is a %s rather than a string, so the "
+            "authority cannot read it; the reading is REFUSED rather than "
+            "recorded as an absence of any order", type(raw).__name__)
+        return False
     # THE COUNT IS THE ROOT OBJECT'S, NOT THE DOCUMENT'S (Codex 22A-R9-06).
     # `object_pairs_hook` fires for EVERY nested object, so a first version
     # counted a legitimate top-level id plus an unrelated nested field of the

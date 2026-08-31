@@ -635,3 +635,86 @@ def test_the_retired_regex_DID_recognise_the_one_spelling_it_knew() -> None:
     """
     assert _RETIRED_TYPE_ROSTER.match("        except (ValueError, TypeError):")
     assert _RETIRED_TYPE_ROSTER.match("    except (TypeError, ValueError):")
+
+
+# ---------------------------------------------------------------------------
+# 22A-R13-01 -- THE AUTHORITY MUST NOT CERTIFY A DOCUMENT IT NEVER READ
+#
+# `envelope_is_canonical` answered `True` for ANY non-`str`, on the ground that
+# "no envelope means nothing to disagree about".  That ground is TRUE OF `None`
+# and of a blank string and FALSE of a value of the wrong TYPE: a BLOB bound
+# into the TEXT column `fills.schwab_source_value_json` comes back as `bytes`
+# (SQLite does not enforce column affinity, and there is no
+# `typeof(...) = 'text'` CHECK anywhere in the migrations -- measured), the
+# readers return `None` for it, and the identity persisted was
+# `('canonical', NULL, NULL)`: "I read this document and it names no order",
+# recorded for a document the authority never opened.
+#
+# It is 22A-R11-01's class -- IGNORANCE MUST NOT BE RECORDED AS ABSENCE --
+# arriving on the WRONG-TYPE branch, which R11-01's merge of the two decode
+# branches left answering `canonical`.  Direction: WRONG ACCEPTANCE.
+# ---------------------------------------------------------------------------
+_BLOB_DOC = json.dumps({"schwab_order_id": ID, "schwab_instrument_symbol":
+                        "FTRE"})
+
+
+def test_a_TEXT_column_really_does_return_a_BLOB_as_bytes() -> None:
+    """THE PREMISE, MEASURED HERE rather than asserted in a comment.
+
+    If SQLite ever began enforcing TEXT affinity the finding would be
+    schema-prevented and the guard below would be defensive dead code, so the
+    premise is a row of its own and fails loudly if it stops holding.
+    """
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE TABLE t (v TEXT)")
+        conn.execute("INSERT INTO t (v) VALUES (?)", (_BLOB_DOC.encode(),))
+        value, kind = conn.execute("SELECT v, typeof(v) FROM t").fetchone()
+    finally:
+        conn.close()
+    assert kind == "blob"
+    assert isinstance(value, bytes)
+    assert value == _BLOB_DOC.encode()
+
+
+@pytest.mark.parametrize("raw", [
+    pytest.param(_BLOB_DOC.encode(), id="bytes-naming-an-order"),
+    pytest.param(b"{}", id="bytes-naming-nothing"),
+    pytest.param(bytearray(_BLOB_DOC.encode()), id="bytearray"),
+    pytest.param(memoryview(_BLOB_DOC.encode()), id="memoryview"),
+    pytest.param(1002937461, id="int"),
+    pytest.param({"schwab_order_id": ID}, id="an-already-parsed-dict"),
+])
+def test_an_UNREADABLE_TYPE_is_REFUSED_not_certified(raw) -> None:
+    """PRE-FIX every row here returned `True` and persisted
+    `('canonical', None, None)` -- MEASURED on the bytes row, whose same bytes
+    as a `str` yield `('canonical', '1002937461', 'FTRE')`.
+
+    POST-FIX the authority says what is true: it could not read this, so it
+    refuses, and the ladder's three-valued rule turns the refusal into an
+    honest-unset entry rather than into today's candidate.
+    """
+    assert envelope_is_canonical(raw) is False
+    identity = canonical_envelope_identity(raw)
+    assert (identity.state, identity.broker_order_id,
+            identity.instrument_symbol) == (ENVELOPE_REFUSED, None, None)
+
+
+@pytest.mark.parametrize("raw", [
+    pytest.param(None, id="None"),
+    pytest.param("", id="empty-string"),
+    pytest.param("   \t\n", id="whitespace-only"),
+])
+def test_a_GENUINE_ABSENCE_still_passes_and_that_bounds_the_fix(raw) -> None:
+    """THE OVER-REFUSAL CONTROL, and it is what keeps the fix three lines wide.
+
+    Every pre-22-A fill has NO envelope, and the whole `last_word` ladder
+    depends on that state passing.  A fix that refused `None` would refuse the
+    entire journal -- a wrong REFUSAL manufactured by the guard, which is the
+    failure mode this arc has now met on four separate rosters.
+    """
+    assert envelope_is_canonical(raw) is True
+    identity = canonical_envelope_identity(raw)
+    assert (identity.state, identity.broker_order_id,
+            identity.instrument_symbol) == (ENVELOPE_CANONICAL, None, None)
