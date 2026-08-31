@@ -413,3 +413,72 @@ def test_the_boundness_walk_can_tell_the_two_apart() -> None:
     assert bound["rung7_consumption_scan_fill_ids"] is False
     assert bound["fire_membership"] is False
     assert set(bound.values()) == {True, False}
+
+
+# ===========================================================================
+# THIS CHECK IS A **HEURISTIC DETECTOR**, AND THIS IS ITS DECLARED RESIDUAL
+# BLINDNESS (22A-R13-05; operator-ruled 2026-08-31).
+#
+# DECLARE, DO NOT WIDEN -- and the ground is the same one that governs the two
+# envelope walks.  The proposed fix is "make each SQL-bound clause assert its
+# specific authoritative operand and predicate shape", which is a per-clause
+# assertion for NINETEEN clauses along the one axis the finding named: the
+# unbounded widening that answers the example rather than the class.  The
+# reviewer that raised it also reported that it looked for a MISLABELLED
+# member and found NONE, so what is recorded here is test QUALITY, not a
+# demonstrated present acceptance.
+#
+# WHAT THE CHECK DOES ESTABLISH, and it earned its place on its first run:
+# it found `fill_session_is_session` service-validated in the code and named
+# NOWHERE in AL-3, found the anchoring-fill clause that no walk over the blob
+# rosters could ever have surfaced, found two stale prose counts, found a
+# declared member with no acceptance pin at all, and found a defect in its own
+# boundness walk through its own both-directions assertion.
+#
+# WHAT IT CANNOT ESTABLISH, named one by one:
+#
+#   1. THAT A BOUND OPERAND IS THE *AUTHORITATIVE* ONE, or that the predicate
+#      over it proves the service's rule.  `_input_bound()` asks only whether
+#      the clause's span contains a subquery or a non-probe `NEW.` reference.
+#      The pin below MEASURES this: rung 3b keeps its `SELECT` and loses the
+#      ordering that makes it the LATEST validity child, and the walk still
+#      answers True.
+#   2. THAT THE SELF-DISCRIMINATORS EXERCISE THE PRODUCTION INPUT.  Two of the
+#      three mutate locally reconstructed sets rather than the real roster or
+#      migration.  (The instrument written AFTER this one --
+#      `tests/data/test_22a_canonicalizer_version_closure.py` -- splices into
+#      the REAL migration text instead, which is the pattern 22-A2 should
+#      apply here uniformly rather than one of three by hand at round 14.)
+#   3. THAT A PIN IS COLLECTED BY PYTEST OR ASSERTS AN ACCEPTANCE.  The pin
+#      check proves a `def` of that name exists in that file.
+#
+# ROUTED TO 22-A2 with the two envelope walks (plan S12.4): predicate-shape
+# assertions, real-input discriminators, and pins validated through collection.
+# ===========================================================================
+def test_DECLARED_the_boundness_walk_cannot_see_a_WEAKENED_predicate(
+        tmp_path, monkeypatch) -> None:
+    """The declared blind spot, measured on the REAL migration text.
+
+    Rung 3b binds its recorded input to *the LATEST validity child of the
+    cited place intent*.  Strip the ordering and the limit -- leaving the
+    `SELECT` -- and it binds to ANY validity child, which is strictly weaker
+    than the service.  ``_input_bound()`` cannot tell the two apart.
+
+    DIRECTION, deliberately: this asserts the walk STILL answers True.  If a
+    later change makes it answer False, the walk has become sharper than this
+    declaration says -- correct the declaration, never silence the test.
+    """
+    weakened = MIGRATION_0037.read_text(encoding="utf-8").replace(
+        "                   AND x.intent_kind = 'validity'\n"
+        "                 ORDER BY x.recorded_ts DESC, x.intent_id DESC "
+        "LIMIT 1)",
+        "                   AND x.intent_kind = 'validity')", 1)
+    assert weakened != MIGRATION_0037.read_text(encoding="utf-8"), (
+        "the weakening matched nothing, so this measures nothing")
+    copy = tmp_path / "0037_weakened.sql"
+    copy.write_text(weakened, encoding="utf-8")
+    monkeypatch.setattr(
+        "tests.data.test_22a_al3_closure.MIGRATION_0037", copy)
+    assert _input_bound()["rung3b_latest_validity_child"] is True, (
+        "the walk now distinguishes a weakened predicate; the declaration "
+        "above is stale and must be corrected")
