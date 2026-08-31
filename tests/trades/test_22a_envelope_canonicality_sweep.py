@@ -241,6 +241,35 @@ _SQL_READS_ENVELOPE = re.compile(
 SWING_ROOT = REPO_ROOT / "swing"
 
 
+def _sql_envelope_reads(text: str) -> list[int]:
+    """1-based line numbers of every SQL read of a fill envelope in ``text``.
+
+    THE WINDOW IS THE WHOLE BODY, NEVER THE LINE (Codex 22A-R12-04).  The
+    predecessor iterated ``splitlines()`` and searched each line on its own, so
+    a forbidden expression spelled across two lines -- ``json_extract(`` on one
+    and the column on the next -- passed.  The pattern already carried ``re.S``
+    and the ``\s*`` that make the split form matchable; only the per-line
+    iteration prevented it from ever meeting one.
+
+    COMMENT-ONLY LINES ARE BLANKED RATHER THAN DROPPED, so the reported line
+    numbers stay true to the file while prose naming the forbidden form is
+    still not a hit.  Blanking cannot HIDE an occurrence: a comment sitting
+    inside a genuine split spelling leaves ``\s*`` matching across the blank,
+    which ``_SPLIT_WITH_A_COMMENT_INSIDE`` asserts.
+
+    RESIDUAL, STATED RATHER THAN LEFT TO LOOK COMPLETE: a forbidden form typed
+    as a TRAILING comment on an otherwise-live line is still a hit, exactly as
+    it was under the per-line rule.  That direction is a wrong REFUSAL -- loud,
+    cheap and fixable at the offending line -- and the tree currently contains
+    none, measured by this walk returning empty.
+    """
+    scrubbed = "\n".join(
+        "" if line.lstrip().startswith(("#", "--")) else line
+        for line in text.splitlines())
+    return [scrubbed.count("\n", 0, m.start()) + 1
+            for m in _SQL_READS_ENVELOPE.finditer(scrubbed)]
+
+
 def test_migration_0037_never_reads_a_fill_envelope() -> None:
     """SQL VERIFIES A FACT; IT MUST NEVER RE-DERIVE A JUDGMENT ACROSS AN
     ENGINE BOUNDARY (CHARC, adopting RD's sentence verbatim, 2026-08-26).
@@ -249,8 +278,7 @@ def test_migration_0037_never_reads_a_fill_envelope() -> None:
     persisted reading, bound to the exact document it was read from -- and
     compares stored values.  It parses nothing out of the operator's envelope.
     """
-    hits = _SQL_READS_ENVELOPE.findall(
-        MIGRATION_0037.read_text(encoding="utf-8"))
+    hits = _sql_envelope_reads(MIGRATION_0037.read_text(encoding="utf-8"))
     assert not hits, (
         f"migration 0037 reads a fill's envelope in SQL ({len(hits)} site(s)); "
         "the twin must consume the authority's stored OUTPUT, never "
@@ -271,15 +299,12 @@ def test_no_sql_anywhere_in_swing_reads_a_fill_envelope() -> None:
     for path in sorted(SWING_ROOT.rglob("*")):
         if path.suffix not in (".py", ".sql") or "__pycache__" in path.parts:
             continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            stripped = line.lstrip()
-            if stripped.startswith(("#", "--")):
-                continue          # prose naming the forbidden form is not it
-            if _SQL_READS_ENVELOPE.search(line):
-                offenders.setdefault(
-                    str(path.relative_to(REPO_ROOT)), []).append(line.strip())
+        hits = _sql_envelope_reads(path.read_text(encoding="utf-8"))
+        if hits:
+            offenders[str(path.relative_to(REPO_ROOT))] = hits
     assert not offenders, (
-        f"SQL reads a fill's envelope at {offenders}; the stored reading in "
+        f"SQL reads a fill's envelope at {offenders} (path -> 1-based line "
+        f"numbers); the stored reading in "
         "fill_envelope_identity is the single derivation and every consumer "
         "compares it")
 
@@ -305,6 +330,58 @@ def test_the_walk_can_still_find_the_form_it_forbids() -> None:
         "the permitted form -- a plain TEXT equality against the stored "
         "reading's document -- must NOT be flagged, or the check forbids the "
         "shape the ruling prescribes")
+
+
+def _per_line_reads(text: str) -> list[int]:
+    """The RETIRED per-line rule, kept as the discriminator's control.
+
+    A regression test is worth nothing unless it distinguishes, so the
+    superseded rule is measured beside the new one on the same input rather
+    than described in a comment.
+    """
+    return [n for n, line in enumerate(text.splitlines(), 1)
+            if not line.lstrip().startswith(("#", "--"))
+            and _SQL_READS_ENVELOPE.search(line)]
+
+
+_SPLIT_ACROSS_LINES = """         AND json_extract(
+                 f.schwab_source_value_json,
+                 '$.schwab_order_id') = l.broker_order_id
+"""
+
+_SPLIT_WITH_A_COMMENT_INSIDE = """         AND json_extract(
+                 -- an innocent-looking note
+                 f.schwab_source_value_json, '$.x')
+"""
+
+
+def test_the_walk_finds_a_forbidden_form_SPLIT_ACROSS_LINES() -> None:
+    """THE EVASION THE WALK NOW CATCHES, AND IT USED TO PASS (22A-R12-04).
+
+    The whole-tree check compiled its pattern with ``re.S`` and searched each
+    source line SEPARATELY, so a forbidden expression spelled across two lines
+    passed a check whose docstring promised it caught every SQL read.  Its own
+    discriminator agreed, because the discriminator only ever offered it
+    single-line spellings -- an instrument whose evasion case is untested is
+    the same defect one level down.
+
+    The retired rule is run on the SAME inputs below.  It finds NEITHER split
+    spelling, so a revert to line iteration fails HERE rather than in some
+    future reviewer's imagination; and both rules agree on the single-line
+    spelling and on prose, so the change is a WIDENING and not a different
+    check.
+    """
+    assert _sql_envelope_reads(_SPLIT_ACROSS_LINES) == [1]
+    assert _sql_envelope_reads(_SPLIT_WITH_A_COMMENT_INSIDE) == [1]
+
+    assert _per_line_reads(_SPLIT_ACROSS_LINES) == []
+    assert _per_line_reads(_SPLIT_WITH_A_COMMENT_INSIDE) == []
+
+    single = "AND json_valid(f.schwab_source_value_json)\n"
+    assert _sql_envelope_reads(single) == _per_line_reads(single) == [1]
+
+    prose = "-- json_extract(f.schwab_source_value_json, '$.schwab_order_id')"
+    assert _sql_envelope_reads(prose) == _per_line_reads(prose) == []
 
 
 # ---------------------------------------------------------------------------
