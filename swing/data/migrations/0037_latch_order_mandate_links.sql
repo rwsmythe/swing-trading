@@ -1278,12 +1278,23 @@ FOR EACH ROW WHEN NOT (
          --
          -- THE BINDING IS WRITER-SUPPLIED-PAIRS-ONLY, AND IT IS NOT AL-3
          -- (Codex 22A-R9-05; CHARC ruled 2026-08-26). This comment cited AL-3
-         -- -- "rungs 7, 8 and fire_membership are service-validated" -- for a
-         -- clause AL-3 does not name, which SILENTLY BROADENED a declared
-         -- limitation roster to cover something nobody had ruled on. AL-3
-         -- stands as written and does NOT extend here; this clause carries its
-         -- own declaration, below, which is narrower than AL-3 in one
-         -- direction and weaker in another and therefore cannot borrow it.
+         -- for a clause AL-3 does not name, which SILENTLY BROADENED a
+         -- declared limitation roster to cover something nobody had ruled
+         -- on. AL-3 does NOT extend here; this clause carries its own
+         -- declaration, below, which is narrower than AL-3 in one direction
+         -- and weaker in another and therefore cannot borrow it.
+         --
+         -- THE ROSTER IS NOT RESTATED IN THIS FILE, and that is the durable
+         -- half of the fix (operator-ruled 2026-08-27). This comment used to
+         -- QUOTE AL-3's membership, so a reader had TWO places to learn the
+         -- roster and they could disagree -- which is how the broadening
+         -- happened in the first place. The ONE roster is the
+         -- closure-checked region in plan limitation L17, held against
+         -- AUTHORIZATION_CLAUSES + PROBE_GUARD_CLAUSES and against THIS
+         -- FILE's bindings, in BOTH directions, by
+         -- `tests/data/test_22a_al3_closure.py`. That roster has since been
+         -- CORRECTED: this clause is a REASONED EXCLUSION there, named with
+         -- the ground CHARC ruled, rather than an unexplained silence.
          --
          -- WHAT IS PROVED: every pair the writer DID supply is well-shaped and
          -- MATCHES a real `latch_order_intents` row on BOTH halves. That is
@@ -1598,11 +1609,19 @@ FOR EACH ROW WHEN NOT (
                            AND fei.broker_order_id
                                = NEW.cited_latch_broker_order_id)
 
-         -- SERVICE-VALIDATED (L17). Rungs 7 and 8 rest on a scan result and on
-         -- derivation state that no subquery can reach, so SQL asserts their
-         -- PRESENCE, TYPE and verdict and nothing more. A fabricated input on
-         -- either is ACCEPTED -- that is a LIMIT of the trigger, declared, not
-         -- a guarantee.
+         -- SERVICE-VALIDATED (L17 / AL-3). These TWO rest on a scan result
+         -- and on derivation state that no subquery can reach, so SQL
+         -- asserts their PRESENCE, TYPE and verdict and nothing more. A
+         -- fabricated input on either is ACCEPTED -- that is a LIMIT of the
+         -- trigger, declared, not a guarantee.
+         --
+         -- L17's ROSTER IS CLOSURE-CHECKED AND IS NOT COPIED HERE: this
+         -- comment names only the two clauses it sits above, so it can never
+         -- again read as a statement of the WHOLE roster. Membership lives
+         -- in the marked region inside L17 and is held against this file by
+         -- `tests/data/test_22a_al3_closure.py`, which asserts that every
+         -- clause the code calls service-validated is declared there AND
+         -- that every clause declared SQL-bound really binds its input HERE.
          AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung7_consumption_scan_fill_ids')
                        = 'object'
                   THEN json_remove(json_extract(NEW.cited_latch_probe_json,

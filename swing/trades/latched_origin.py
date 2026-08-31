@@ -422,8 +422,13 @@ PROBE_GUARD_CLAUSES: tuple[AuthorizationClause, ...] = (
         # 22A-R9-05). The binding enum has only SQL_BOUND and
         # SERVICE_VALIDATED, so a PARTIALLY bound clause must pick one -- and
         # picking SERVICE_VALIDATED invited the migration comment to cite
-        # AL-3, whose roster is rungs 7, 8 and `fire_membership` and does NOT
-        # name this clause. Every pair supplied here IS bound by subquery to a
+        # AL-3, which does NOT name this clause. (AL-3's roster is NOT
+        # restated here: it is the CLOSURE-CHECKED region inside plan
+        # limitation L17, held against this file's `binding` fields by
+        # `tests/data/test_22a_al3_closure.py`. A second hand-copy is a
+        # second thing to drift, which is how the mis-citation this note
+        # corrects happened.) Every pair supplied here IS bound by
+        # subquery to a
         # real intent row on both halves, which is strictly more than AL-3's
         # clauses get; what is unbound is the COMPLETENESS of the supply, and
         # that limitation is declared in 0037 beside the clause with its

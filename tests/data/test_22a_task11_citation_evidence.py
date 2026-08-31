@@ -998,8 +998,9 @@ def test_a_year_zero_coverage_session_is_rejected(conn) -> None:
 # 22A-R5-06 -- THE DECISION-ORDERING PAIRS ARE SHAPED AND BOUND
 #
 # COMPLETENESS IS NOT PROVED, and it is NOT AL-3 (Codex 22A-R9-05, CHARC ruled
-# 2026-08-26).  AL-3's roster is rungs 7, 8 and `fire_membership`; this clause
-# carries its OWN declared limitation, exercised below rather than asserted:
+# 2026-08-26).  AL-3 does not name this clause -- its roster is the
+# closure-checked region in plan limitation L17, never a copy typed here --
+# and this clause carries its OWN declared limitation, exercised below:
 # the guard validates the CONSISTENCY of what the writer supplied and does not
 # enforce the COMPLETENESS of supply.  What SQL can do is refuse a claimed
 # pair that is not a pair or that names a row which does not exist.
@@ -1202,6 +1203,153 @@ def test_a_cited_order_naming_TWO_links_is_rejected(conn) -> None:
         "the fixture must produce TWO links on one order id or the case is "
         "about a different clause")
     _assert_rejected(conn, payload)
+
+
+# ===========================================================================
+# AL-3's THIRD MEMBER HAD NO ACCEPTANCE PIN, and the closure check's PIN
+# requirement is what surfaced that.  `fire_membership` was declared
+# service-validated and the only test naming it asserted a REJECTION -- an
+# input of 2 -- which pins the clause that IS enforced and says nothing about
+# the one that is not.  A declared limitation whose only test is of the
+# opposite direction is unfalsifiable in exactly the way L18's convention
+# exists to prevent.
+# ===========================================================================
+def test_THE_DECLARED_LIMITATION_a_fabricated_fire_membership_is_ACCEPTED(
+        conn) -> None:
+    """AL-3: SQL requires the count to SAY one; it cannot check that it IS.
+
+    ``fire_membership`` is the number of latches whose ``candidate_set``
+    contains the fire.  That is fold state no subquery can walk, so the trigger
+    binds the recorded input to the LITERAL 1 and stops.
+
+    The world built here is one where the count is NOT derivably one: a SECOND
+    accepted broker order is minted on the SAME candidate through a real
+    acceptance, which is precisely the state the service's resolver refuses as
+    ``ambiguous_accepted_orders``.  The citation still INSERTS on the asserted
+    ``{"input": 1, "verdict": "pass"}`` -- the service refuses and the trigger
+    accepts, which is the declared limit stated as an observation.
+
+    If a later change gives SQL an authority over the fold, this REJECTS and
+    the declaration must be corrected rather than this test silenced.
+    """
+    from tests._latch_link_fixtures_22a import (
+        insert_intent,
+        place_row,
+        validity_row,
+    )
+    from tests.trades._cohort_provenance_fixtures import CADL_TICKER
+
+    payload = seed_latch_ladder_citation(conn)
+    candidate_id = payload["cited_candidate_id"]
+    run_id = payload["cited_evaluation_run_id"]
+    session = conn.execute(
+        "SELECT action_session_date FROM evaluation_runs WHERE id = ?",
+        (run_id,)).fetchone()[0]
+    # RECORDED EARLIER THAN THE CITED CYCLE, deliberately: a LATER place opens
+    # a new cycle and rung 4 would then refuse the citation for that reason
+    # instead of reaching the clause under test -- a rejection for the wrong
+    # reason proves nothing about the guard it claims to exercise.
+    common = {"evaluation_run_id": run_id, "ticker": CADL_TICKER,
+              "detection_date": session, "action_session_date": session}
+    place_id = insert_intent(conn, place_row(
+        candidate_id, run_id=run_id, idempotency_key="second-place",
+        recorded_ts="2026-08-11T11:00:00", **common))
+    insert_intent(conn, validity_row(
+        candidate_id, place_id, key="second-validity", run_id=run_id,
+        actual_broker_order_id="2002937462",
+        recorded_ts="2026-08-11T11:05:00", **common))
+    conn.commit()
+
+    # THE DISCRIMINATOR: the candidate now carries TWO accepted orders, so
+    # "exactly one latch contains the fire" is not derivable from this world.
+    assert conn.execute(
+        "SELECT COUNT(*) FROM latch_order_mandate_links WHERE candidate_id = ?",
+        (candidate_id,)).fetchone()[0] == 2, (
+        "the fixture must produce TWO accepted links on the candidate or the "
+        "case is about nothing")
+    blob = _blob(payload)
+    assert blob["probe_guards"]["fire_membership"] == {
+        "input": 1, "verdict": "pass"}
+
+    _insert_payload(conn, payload)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM provenance_corrections "
+        "WHERE admission_tier = 'latch_ladder'").fetchone()[0] == 1, (
+        "the fabricated membership was REJECTED, so AL-3 is now narrower "
+        "than it declares")
+
+
+# ===========================================================================
+# 22A-R12-02 -- THE ANCHORING FILL IS PROVED TO BE *AN* ENTRY FILL, NEVER
+# *THE AUTHORITATIVE* ONE.  DECLARED AT AL-3, AND PINNED HERE.
+#
+# The citation-graph clause (0037, inherited VERBATIM from 0036) proves that
+# `entry_fill_id_at_correction` is an entry fill of THIS trade on the frozen
+# session.  The SERVICE means something narrower: the FIRST entry fill by
+# (parsed fill_datetime, fill_id) after refusing any malformed sibling --
+# `resolve_authoritative_entry_fill`, cohort_provenance_correction.py.
+#
+# THERE IS NO SQL FIX BY CONSTRUCTION, which is why this is a declared limit
+# rather than an unfixed defect.  The ordering is a PYTHON PARSE over an
+# unconstrained TEXT column, and the repo helper's lexical ORDER BY mis-ranks a
+# schema-legal basic-form timestamp -- its own docstring says so and says why it
+# is not reused.  Re-deriving that ordering in SQL is exactly the engine-boundary
+# violation the persist-canonical ruling forbids: SQL VERIFIES A FACT; IT MUST
+# NEVER RE-DERIVE A JUDGMENT ACROSS AN ENGINE BOUNDARY.  Persisting the judgment
+# does not help either -- the column IS the persisted judgment, and a raw writer
+# forges it and its citation together, which is AL-10's shape exactly.
+# ===========================================================================
+def test_THE_DECLARED_LIMITATION_a_non_authoritative_anchor_is_ACCEPTED(
+        conn) -> None:
+    """AL-3: the anchoring-fill clause proves membership, not authority.
+
+    A LATER scale-in fill on the same trade and session, carrying the same
+    broker envelope, is cited as the anchor.  Every clause passes and the row
+    INSERTS.  The discriminator is the second assertion: the service's own
+    resolver is asked which fill is authoritative, so this case cannot pass by
+    accidentally citing the right one.
+
+    If a later change makes this REJECT, the limitation is narrower than
+    declared and the DECLARATION must be corrected, not this test silenced.
+    """
+    from swing.trades.cohort_provenance_correction import (
+        resolve_authoritative_entry_fill,
+    )
+
+    payload = seed_latch_ladder_citation(conn)
+    trade_id = payload["trade_id"]
+    anchor_id = payload["entry_fill_id_at_correction"]
+    session, envelope, quantity, price = conn.execute(
+        "SELECT fill_datetime, schwab_source_value_json, quantity, price "
+        "  FROM fills WHERE fill_id = ?", (anchor_id,)).fetchone()
+
+    later = conn.execute(
+        "INSERT INTO fills (trade_id, fill_datetime, action, quantity, price, "
+        " fill_origin) VALUES (?, ?, 'entry', ?, ?, 'schwab_auto')",
+        (trade_id, session[:10] + "T19:59:00", quantity, price))
+    later_id = int(later.lastrowid)
+    set_fill_envelope(conn, later_id, envelope)
+    conn.commit()
+
+    # THE DISCRIMINATOR: the SERVICE says the ORIGINAL fill is authoritative.
+    assert resolve_authoritative_entry_fill(conn, trade_id).fill_id == anchor_id
+    assert later_id != anchor_id
+
+    payload = dict(payload)
+    payload["entry_fill_id_at_correction"] = later_id
+    snapshot = json.loads(payload["entry_fill_snapshot_json"])
+    snapshot["fill_id"] = later_id
+    snapshot["fill_datetime"] = session[:10] + "T19:59:00"
+    payload["entry_fill_snapshot_json"] = json.dumps(snapshot, sort_keys=True)
+    if payload.get("entry_fill_id") is not None:
+        payload["entry_fill_id"] = later_id
+
+    _insert_payload(conn, payload)
+    assert conn.execute(
+        "SELECT entry_fill_id_at_correction FROM provenance_corrections"
+    ).fetchone() == (later_id,), (
+        "the non-authoritative anchor was accepted, which is the declared "
+        "limitation -- if it was REJECTED, AL-3 is now narrower than it says")
 
 
 # ===========================================================================
@@ -1564,11 +1712,13 @@ def test_a_NESTED_key_of_the_same_name_does_not_trip_the_clause(conn) -> None:
 # ===========================================================================
 # 22A-R9-05 -- THE DECISION-ORDERING LIMITATION, EXERCISED RATHER THAN CLAIMED
 #
-# CHARC ruled 2026-08-26: AL-3 stands as written (rungs 7, 8 and
-# `fire_membership`) and does NOT extend to `decision_ordering`; the clause's
-# binding stays writer-supplied-pairs-only; and the vacuous-satisfaction
-# property is DECLARED as a limitation with its reason rather than closed by a
-# widening nobody has ruled.
+# CHARC ruled 2026-08-26: AL-3 does NOT extend to `decision_ordering`; the
+# clause's binding stays writer-supplied-pairs-only; and the
+# vacuous-satisfaction property is DECLARED as a limitation with its reason
+# rather than closed by a widening nobody has ruled.  The clause is a named
+# REASONED EXCLUSION in L17's closure-checked roster, which is the ONE place
+# membership is written -- this comment used to copy it, and was the SEVENTH
+# such copy, found only by re-grepping after the other six were replaced.
 #
 # A declared limit that nothing EXECUTES is an unfalsifiable claim -- the
 # 22A-R6-06 lesson, one clause over.  These cases make it FAIL on the day the

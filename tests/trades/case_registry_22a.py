@@ -326,9 +326,14 @@ R9-06  CONFIRMED AS TO FACT; L17's stated REASON is wrong.  L17 says the five
        fills carries quantity, price, fill_origin and
        schwab_source_value_json.  DISPOSED: the five guards are declared
        SQL_BOUND in AUTHORIZATION_CLAUSES (see swing/trades/latched_origin.py)
-       so the migration binds them; L17 narrows from SEVEN clauses to the TWO
-       genuinely service-validated ones (rungs 7 and 8), and case 49j's scope
-       narrows with it.  No plan case id is invented.
+       so the migration binds them; L17 narrows away from those five, and
+       case 49j's scope narrows with it.  No plan case id is invented.
+       AMENDED 2026-08-27 (Codex 22A-R12-02/03): this entry used to say L17
+       narrows "to the TWO genuinely service-validated ones", which was a
+       THIRD hand-copy of a roster that has been wrong three times.  L17's
+       membership is restated nowhere now -- it is the closure-checked
+       region inside L17, held against the code and the migration in both
+       directions by tests/data/test_22a_al3_closure.py.
 
 R9-07  RESOLVED, and it was the one blocking a deterministic build.  The
        $.authorization schema is now WRITTEN OUT as

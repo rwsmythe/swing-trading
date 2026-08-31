@@ -2468,13 +2468,18 @@ CHECK-semantics surprises and this repo verifies rather than assumes.
   written to enforce it.
 
   **SQL-BOUND vs SERVICE-VALIDATED, and this line now carries an OBLIGATION rather than only a
-  disclosure.** **SQL-BOUND** -- rungs 1, 2, 3, 3b, 3c, 4, 5, 6 and 9: the recorded `input` is
-  itself **bound by subquery to its source** (the link, the two intents, the candidate, the epoch
-  row and the link's stored `freeze_tier`), so a fabricated input is rejected, not merely present.
-  **SERVICE-VALIDATED** -- rungs 7 and 8 and the five envelope guards rest on scans and on
-  operator-submitted values that no subquery can reach; SQL asserts their PRESENCE, TYPE and
-  `verdict='pass'` and nothing more, **and the plan says so rather than implying SQL validates all
-  of it.**
+  disclosure.** **SQL-BOUND** means the recorded `input` is **bound by subquery to its source**
+  (the link, the two intents, the candidate, the fill, the epoch row, the link's stored
+  `freeze_tier`), so a fabricated input is rejected rather than merely present.
+  **SERVICE-VALIDATED** means SQL asserts PRESENCE, TYPE and `verdict='pass'` and nothing more,
+  **and the plan says so rather than implying SQL validates all of it.**
+
+  **THE MEMBERSHIP IS NOT LISTED HERE.** It was, and the list rotted: this paragraph said *"rungs
+  7 and 8 and the five envelope guards"* while `22A-R9-06` had already moved all five guards to
+  SQL_BOUND and the migration binds them. The single roster is **L17's closure-checked region**
+  (S8), derived from `AUTHORIZATION_CLAUSES` + `PROBE_GUARD_CLAUSES` and held against migration
+  0037 in both directions by `tests/data/test_22a_al3_closure.py`. *Measured at that check: 14
+  SQL-bound and 5 service-validated of 19 clauses.*
 
   > **WHY THIS PARAGRAPH EXISTS: THE CLOSURE I AUTHORED TO ENFORCE THE AUDIT RULE DID NOT ITSELF
   > CLOSE (review 22A-R8-05 -- the R7-05 class recurring ON R7-05's own fix, one day later).**
@@ -2497,11 +2502,14 @@ CHECK-semantics surprises and this repo verifies rather than assumes.
     different place intent in rung 2's, a `rejected_by_broker` outcome in rung 3's, and so on.
     **Each must be REJECTED by the binding subquery. Every one of them PASSES against the
     presence-only implementation, which is the whole of review 22A-R8-05.**
-  * **49j -- the SERVICE-VALIDATED LIMIT, pinned honestly (ACCEPT).** A fabricated `input` on rung
-    7, 8 or an envelope guard is **ACCEPTED** by the trigger, and the case's docstring says so: SQL
-    cannot reach a scan result or an operator-submitted value, so this is a LIMIT of the trigger
-    and not a guarantee -- the same shape as 34a/34b/34f. **Declared at S8-L17 with its reason**,
-    because a limit stated in a docstring and nowhere else is how a limit becomes a surprise.
+  * **49j -- the SERVICE-VALIDATED LIMIT, pinned honestly (ACCEPT).** A fabricated `input` on a
+    SERVICE-VALIDATED clause is **ACCEPTED** by the trigger, and the case's docstring says so:
+    SQL cannot reach a scan result or fold state, so this is a LIMIT of the trigger and not a
+    guarantee -- the same shape as 34a/34b/34f. **Declared at S8-L17 with its reason**, because
+    a limit stated in a docstring and nowhere else is how a limit becomes a surprise. *The case
+    DERIVES its scope from `AUTHORIZATION_CLAUSES` rather than naming members; this bullet used
+    to say "rung 7, 8 or an envelope guard", which `22A-R9-06` had already falsified -- the
+    EIGHTH hand-copy of this roster, and the one no token grep for the others could find.*
 
   `$.archive_status = 'ok'` unless the window is empty. Same
   `CASE WHEN json_valid(...) THEN COALESCE(..., 0) ELSE 0 END` idiom, for the same
@@ -3564,13 +3572,73 @@ Repeated verbatim in every review prompt, with challenge invited.
   genuinely-correct raw values and fabricate the verdict over them. **Strictly smaller than the
   exposure it replaced** -- the raws stay bound to the cited link and candidate, so no forgery can
   name a different mandate. Case 34f pins the limit; case 34g pins the rule.
-* **L17 -- The `$.authorization` evidence for rungs 7 and 8 and the five envelope guards is
-  PRESENCE-checked, not INPUT-checked** (S4.3, review 22A-R8-05). *Reason:* those rungs rest on
-  envelope scans and operator-submitted values that no trigger subquery can reach. The nine
-  SQL-bound rungs DO bind their recorded input to its source (cases 49a-49i); these seven do not,
-  and case 49j pins that a fabricated input on them is ACCEPTED. **Stated because the alternative
-  -- implying SQL validates the whole ladder -- is the exact "passed vs never ran" ambiguity the
-  standing evidence rule forbids.**
+* **L17 (AL-3) -- SOME CITATION-TRIGGER CLAUSES ARE SERVICE-VALIDATED: SQL asserts presence, type
+  and verdict, and the judgment rests on state no subquery can reach. A FABRICATED value is
+  ACCEPTED on every member below.** *Reason, per member, is stated with the member -- a roster
+  whose entries share one borrowed reason is how `22A-R9-05` happened.*
+
+  **THE ROSTER BELOW IS CLOSURE-CHECKED, NOT HAND-MAINTAINED** (operator-ruled 2026-08-27).
+  `tests/data/test_22a_al3_closure.py` holds it against what the CODE classifies
+  (`AUTHORIZATION_CLAUSES` + `PROBE_GUARD_CLAUSES`, the `binding` field) and against what the
+  MIGRATION actually binds, **in both directions**: a clause added later as service-validated with
+  no entry here FAILS, an entry claiming a clause the code SQL-binds FAILS, an entry whose declared
+  AXIS disagrees with the migration FAILS, and an entry with no executing PIN FAILS. *This roster
+  said "exactly those three" through eleven dispatches while the code classified FIVE; the check
+  named the two missing members on its first run. It has been wrong three times in both
+  directions -- `22A-R9-05` broadened it, `SS-12` was the same shape one member short on the
+  barrier roster, `22A-R12-02`/`22A-R12-03` found it short by two -- and* **the roster is not the
+  fix; the closure check is.**
+
+  **THE AXIS IS PART OF THE DECLARATION, because a two-valued SQL_BOUND/SERVICE_VALIDATED label
+  cannot say WHICH half is unproved** -- and that ambiguity is exactly how a clause whose INPUT is
+  bound and whose VERDICT is not stayed unnamed. `INPUT_UNBOUND`: the migration binds nothing, so
+  any value passes. `VERDICT_UNPROVEN`: the input IS bound to its source and the predicate over it
+  is not proved. `PREDICATE_WEAKER_THAN_THE_SERVICE`: a citation-graph clause outside the probe
+  blob whose SQL predicate admits strictly more than the service's. `SET_INCOMPLETE`: every
+  supplied element is bound and the COMPLETENESS of the supply is not.
+
+<!-- AL3-ROSTER-BEGIN -->
+  * `rung7_consumption_scan_fill_ids` -- INPUT_UNBOUND -- the consumption scan's RESULT; no
+    subquery can reach it. PIN: `tests/data/test_22a_task11_citation_evidence.py::test_a_fabricated_input_on_a_service_validated_rung_is_accepted_case_49j`
+  * `rung8_competitor_link_ids` -- INPUT_UNBOUND -- derivation state; no subquery can walk the
+    fold. PIN: `tests/data/test_22a_task11_citation_evidence.py::test_a_fabricated_input_on_a_service_validated_rung_is_accepted_case_49j`
+  * `fire_membership` -- INPUT_UNBOUND -- the COUNT of latches whose `candidate_set` contains the
+    fire is fold state, so SQL binds the input to the literal 1 and cannot check that the count IS
+    one. The pin builds a world carrying TWO accepted orders on the candidate -- the state the
+    service refuses as `ambiguous_accepted_orders` -- and the citation still inserts.
+    PIN: `tests/data/test_22a_task11_citation_evidence.py::test_THE_DECLARED_LIMITATION_a_fabricated_fire_membership_is_ACCEPTED`
+  * `fill_session_is_session` -- VERDICT_UNPROVEN -- the input IS bound to
+    `entry_fill_session_date`, and no trigger can enumerate an exchange-session calendar, so a
+    fabricated weekend or holiday session asserting `pass` is admitted. Same ground as AL-5 one
+    clause over. *Reclassified in the code at `22A-R6-06` and named here only at `22A-R12-03`: the
+    code was truthful and this declaration was not.*
+    PIN: `tests/data/test_22a_task11_citation_evidence.py::test_a_weekend_fill_session_is_ACCEPTED_and_the_limit_is_declared`
+  * `anchoring_fill_is_authoritative` -- PREDICATE_WEAKER_THAN_THE_SERVICE -- the citation-graph
+    clause proves `entry_fill_id_at_correction` is AN entry fill of this trade on the frozen
+    session; the service means THE FIRST by (parsed `fill_datetime`, `fill_id`) after refusing any
+    malformed sibling (`resolve_authoritative_entry_fill`). A later scale-in fill can therefore
+    anchor a citation the service would never build. *Inherited VERBATIM from 0036 and not
+    introduced here.* **There is no SQL fix by construction:** the ordering is a Python parse over
+    an unconstrained TEXT column -- the repo's lexical `ORDER BY` mis-ranks a schema-legal
+    basic-form timestamp, which is why the service does not reuse it -- so re-deriving it in SQL is
+    the engine-boundary violation the persist-canonical ruling forbids, and persisting the judgment
+    does not help because the column IS the persisted judgment and a raw writer forges it with its
+    citation (L18's shape). *V2 fix: a constrained timestamp column, which is a migration beyond
+    this arc.* ANCHOR: `-- the anchoring fill is an ENTRY fill of THIS trade on the frozen session`
+    PIN: `tests/data/test_22a_task11_citation_evidence.py::test_THE_DECLARED_LIMITATION_a_non_authoritative_anchor_is_ACCEPTED`
+<!-- AL3-ROSTER-END -->
+
+  **REASONED EXCLUSION -- service-validated in the code roster and DELIBERATELY NOT AL-3.** Listed
+  rather than omitted, because an unstated boundary is the hand-enumerated-roster failure again:
+
+<!-- AL3-EXCLUSIONS-BEGIN -->
+  * `decision_ordering` -- SET_INCOMPLETE -- every pair the writer SUPPLIED is bound by subquery to
+    a real `latch_order_intents` row on BOTH halves, which is strictly MORE than any AL-3 member
+    gets; what is unproved is the COMPLETENESS of the supply, and an EMPTY array satisfies the
+    clause vacuously. *CHARC ruled 2026-08-26 (`22A-R9-05`) that AL-3 does NOT extend here and that
+    this clause carries its own declaration, which is AL-3b. Banked to 22-A2 with its trigger.*
+    PIN: `tests/data/test_22a_task11_citation_evidence.py::test_an_EMPTY_decision_ordering_array_is_accepted_the_declared_limit`
+<!-- AL3-EXCLUSIONS-END -->
 * **L14 -- Consumption has no durable record; it is INFERRED from surviving evidence.** *Reason:*
   the durable order-to-trade table is new schema beyond this arc. Consequence: the mechanism can
   refuse where it cannot prove non-consumption (fail-closed), and after Task 11a it cannot silently
