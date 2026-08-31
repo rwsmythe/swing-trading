@@ -718,3 +718,138 @@ def test_a_GENUINE_ABSENCE_still_passes_and_that_bounds_the_fix(raw) -> None:
     identity = canonical_envelope_identity(raw)
     assert (identity.state, identity.broker_order_id,
             identity.instrument_symbol) == (ENVELOPE_CANONICAL, None, None)
+
+
+# ===========================================================================
+# BOTH WALKS ABOVE ARE **HEURISTIC DETECTORS**, AND THIS IS THEIR DECLARED
+# RESIDUAL BLINDNESS (22A-R13-03 / 22A-R13-04; operator-ruled 2026-08-31).
+#
+# WHY A DECLARATION AND NOT A THIRD WIDENING.  Each walk was already widened
+# ONCE along the ONE axis its finding named -- `22A-R12-04` gave the SQL walk a
+# whole-body window, `22A-R12-05` gave the roster walk an AST shape test -- and
+# round 13 immediately produced FIVE more SQL spellings the first still misses
+# and TWO more shapes that evade the second.  Widening an instrument along the
+# reported axis answers the EXAMPLE, not the CLASS, and a third widening loses
+# the same argument to a text matcher again.  **The principle was never "make
+# every instrument exact"; it is "do not claim exact when you are not."**  A
+# walk DECLARED as a heuristic with its blindness named is honest; a walk
+# widened and called closed is the false claim this arc exists to remove.
+#
+# WHAT THEY DO ESTABLISH, MEASURED rather than asserted -- see
+# `test_the_walk_finds_a_forbidden_form_SPLIT_ACROSS_LINES` and the roster
+# family: a SQL read split across two lines of a triple-quoted statement is
+# CAUGHT by the current walk and was MISSED by the retired per-line rule, and
+# five handler spellings that regressed the containment ruling undetected are
+# CAUGHT by the AST shape test and missed by the retired regex.  A detector
+# that catches real instances and declares its blind spots is a useful
+# instrument.  Neither walk's blindness has any PRODUCTION occurrence today:
+# both return empty over the whole `swing/` tree, which the two whole-tree
+# tests above measure on every run.
+#
+# THE CLASS-LEVEL FIX -- SQL-TOKEN-AWARE SCANNING (a real tokenizer rather than
+# a regex) AND CALL-FOLLOWING (resolve a handler's parser through local helpers
+# and import aliases) -- IS ROUTED TO 22-A2, with the cases below as its
+# founding evidence (plan S12.4).
+#
+# PINNED, NOT MERELY WRITTEN DOWN, and the direction is deliberate: the cases
+# below assert that each form is currently MISSED.  If a later change makes one
+# of them caught, THIS FAILS -- and the right response is to correct the
+# declaration, never to silence the test.  That is the L18 convention applied
+# to an instrument instead of to a trigger.
+# ===========================================================================
+_SQL_SPELLINGS_NOT_DETECTED = {
+    "UPPERCASE function name":
+        "AND JSON_EXTRACT(f.schwab_source_value_json, '$.schwab_order_id')",
+    "whitespace before the paren":
+        "AND json_extract (f.schwab_source_value_json, '$.schwab_order_id')",
+    "SQLite's ->> operator, no function at all":
+        "AND f.schwab_source_value_json ->> '$.schwab_order_id' = l.x",
+    "a CAST wrapper around the column":
+        "AND json_extract(CAST(f.schwab_source_value_json AS TEXT), '$.x')",
+    "a double-quoted identifier":
+        'AND json_extract(f."schwab_source_value_json", \'$.x\')',
+    # THE SIXTH, FOUND HERE RATHER THAN REPORTED, and it is the one that
+    # matters most in THIS repo: every SQL string in `swing/**/*.py` is written
+    # as ADJACENT STRING LITERALS, so a read split at the paren puts a quote
+    # between `json_extract(` and the column and `\s*` cannot cross it.
+    # MEASURED: the triple-quoted split IS caught and this one is NOT.
+    "split across two adjacent Python string literals":
+        'conn.execute(\n    "SELECT json_extract("\n'
+        '    "  f.schwab_source_value_json, \'$.x\') FROM fills")',
+}
+
+
+@pytest.mark.parametrize("label", sorted(_SQL_SPELLINGS_NOT_DETECTED))
+def test_DECLARED_the_sql_walk_does_not_detect_this_spelling(label) -> None:
+    """One declared blind spot per row, each measured on the real walk."""
+    assert _sql_envelope_reads(_SQL_SPELLINGS_NOT_DETECTED[label]) == [], (
+        f"the SQL walk now DETECTS {label!r}. That is an improvement -- and "
+        f"the declaration above says it does not, so correct the declaration "
+        f"(and drop this row) rather than silencing the check")
+
+
+_ROSTER_SHAPES_NOT_DETECTED = {
+    # The handler is found, then DISCARDED by the function-sized scope filter,
+    # because only `consume` names the envelope.
+    "a narrow handler moved into a parser helper": """
+import json
+
+def parse_blob(raw):
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+def consume(schwab_source_value_json):
+    return parse_blob(schwab_source_value_json)
+""",
+    # `_json_loads_in` matches `json.loads` / `_json.loads` attribute calls
+    # only, so a bare imported name is not a JSON parse as far as it can tell.
+    "a bare `from json import loads` alias": """
+from json import loads
+
+def consume(schwab_source_value_json):
+    try:
+        return loads(schwab_source_value_json)
+    except (ValueError, TypeError):
+        return None
+""",
+}
+
+
+@pytest.mark.parametrize("label", sorted(_ROSTER_SHAPES_NOT_DETECTED))
+def test_DECLARED_the_roster_walk_does_not_detect_this_shape(label) -> None:
+    """Either shape restores the money-bearing unhandled-``RecursionError``
+    path with every closure test green -- which is exactly why it is declared
+    here rather than left to be rediscovered."""
+    source = _ROSTER_SHAPES_NOT_DETECTED[label]
+    hits = _roster_contained_loads(source)
+    in_scope = [
+        fn for fn in ast.walk(ast.parse(source))
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and "schwab_source_value_json" in (
+            ast.get_source_segment(source, fn) or "")
+    ]
+    reported = [h for h in hits
+                if any(fn.lineno <= h <= (fn.end_lineno or fn.lineno)
+                       for fn in in_scope)]
+    assert reported == [], (
+        f"the roster walk now REPORTS {label!r}. Correct the declaration "
+        f"above rather than silencing this row")
+
+
+def test_the_declared_blindness_is_BLINDNESS_and_not_a_broken_walk() -> None:
+    """THE CONTROL ON THE DECLARATION.
+
+    A walk that had simply stopped working would satisfy every row above while
+    reading as a careful limitation.  So the two forms each walk DOES catch are
+    asserted right beside the ones it does not, on the same helpers.
+    """
+    triple_quoted_split = (
+        'sql = """SELECT json_extract(\n'
+        "    f.schwab_source_value_json, '$.x') FROM fills f\"\"\"")
+    assert _sql_envelope_reads(triple_quoted_split) == [1]
+    assert _per_line_reads(triple_quoted_split) == [], (
+        "the retired per-line rule must MISS it, or this proves nothing about "
+        "what the widening bought")
+    assert _roster_contained_loads(_TRUE_POSITIVE) != []
