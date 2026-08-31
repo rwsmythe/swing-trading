@@ -25,6 +25,7 @@ FROZEN CLOCK: nothing here reads a clock at all.
 """
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -242,7 +243,7 @@ SWING_ROOT = REPO_ROOT / "swing"
 
 
 def _sql_envelope_reads(text: str) -> list[int]:
-    """1-based line numbers of every SQL read of a fill envelope in ``text``.
+    r"""1-based line numbers of every SQL read of a fill envelope in ``text``.
 
     THE WINDOW IS THE WHOLE BODY, NEVER THE LINE (Codex 22A-R12-04).  The
     predecessor iterated ``splitlines()`` and searched each line on its own, so
@@ -404,39 +405,67 @@ _ENVELOPE_READER_ROOTS = (
     "swing/trades", "swing/data", "swing/cli.py", "swing/latches",
     "swing/web/routes/trades.py", "swing/web/view_models/trades.py",
 )
-_TYPE_ROSTER = re.compile(
-    r"^\s*except \((?:ValueError, TypeError|TypeError, ValueError)\)")
-_LOADS = re.compile(r"(?<![.\w])(?:_?json)\.loads\(")
+_BROAD_CONTAINMENT = frozenset({"Exception", "BaseException"})
 
 
-def _roster_contained_loads(lines: list[str]) -> list[int]:
-    """1-based indices of every ``except (ValueError, TypeError)`` whose OWN
-    ``try`` body parses JSON.
+def _json_loads_in(stmts: list[ast.stmt]) -> bool:
+    """Does this statement list parse JSON in its OWN body?
 
-    THE WINDOW IS THE TRY BODY, NOT THE FUNCTION.  A first version of this walk
-    flagged any roster anywhere in a function that also parsed an envelope
-    somewhere, and it produced two false positives on the first run -- a
-    ``fromisoformat`` guard and a numeric-coercion guard, both correct.  A
-    check that cries wolf is a check people learn to override, which is the
-    failure mode a mechanical assertion exists to avoid.
+    Nested ``try`` subtrees are NOT descended into: an inner ``try`` carries
+    its own containment, and charging the outer handler for it would flag
+    correct code -- the false-positive direction a mechanical check cannot
+    afford, because a check that cries wolf is one people learn to override.
+    """
+    stack: list[ast.AST] = list(stmts)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Try):
+            continue
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "loads"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in ("json", "_json")):
+            return True
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
+def _is_broad(handler: ast.ExceptHandler) -> bool:
+    """A bare ``except:`` or a single ``Exception`` / ``BaseException``.
+
+    EVERYTHING ELSE IS A ROSTER, whatever its arity or spelling (Codex
+    22A-R12-05).  The predecessor matched the literal text
+    ``except (ValueError, TypeError)`` and its reversal and nothing else, so
+    ``(ValueError, TypeError, RecursionError)``, ``(json.JSONDecodeError,
+    TypeError)`` and a bare ``except ValueError`` all regressed the
+    containment ruling undetected -- and its self-discriminator tested only
+    the one spelling it recognised.  Asking the SHAPE instead of the SPELLING
+    is what makes this a closure check rather than a longer roster: the fix
+    for a hand-maintained list is never a better list.
+    """
+    if handler.type is None:
+        return True
+    return (isinstance(handler.type, ast.Name)
+            and handler.type.id in _BROAD_CONTAINMENT)
+
+
+def _roster_contained_loads(source: str) -> list[int]:
+    """1-based line numbers of every ROSTER handler protecting a JSON parse.
+
+    THE WINDOW IS THE ``try`` BODY, NOT THE FUNCTION.  A first version of this
+    walk flagged any roster anywhere in a function that also parsed an envelope
+    somewhere, and it produced two false positives on its first run -- a
+    ``fromisoformat`` guard and a numeric-coercion guard, both correct.  The
+    AST asks the question exactly: does THIS ``try`` parse JSON, and is THIS
+    handler narrower than the class.
     """
     hits: list[int] = []
-    for i, ln in enumerate(lines):
-        if not _TYPE_ROSTER.match(ln):
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Try) or not _json_loads_in(node.body):
             continue
-        j = i - 1
-        while j >= 0:
-            stripped = lines[j].strip()
-            if not stripped or stripped.startswith("#"):
-                j -= 1
-                continue
-            if stripped.startswith(("try:", "except", "def ", "async def ")):
-                break
-            if _LOADS.search(lines[j]):
-                hits.append(i + 1)
-                break
-            j -= 1
-    return hits
+        hits += [h.lineno for h in node.handlers if not _is_broad(h)]
+    return sorted(hits)
 
 
 def _envelope_reader_files() -> list[Path]:
@@ -464,21 +493,25 @@ def test_no_fill_envelope_reader_is_contained_by_a_TYPE_ROSTER() -> None:
     """
     offenders: dict[str, list[int]] = {}
     for f in _envelope_reader_files():
-        lines = f.read_text(encoding="utf-8").splitlines()
-        # The function-sized window: a module may legitimately parse other
+        source = f.read_text(encoding="utf-8")
+        hits = _roster_contained_loads(source)      # REAL line numbers
+        if not hits:
+            continue
+        # The FUNCTION-sized window: a module may legitimately parse other
         # blobs, and only the functions that touch a fill envelope are in
-        # scope.
-        bounds = [i for i, ln in enumerate(lines)
-                  if ln.lstrip().startswith(("def ", "async def "))]
-        bounds.append(len(lines))
-        for start_i, end_i in zip(bounds, bounds[1:], strict=False):
-            body = lines[start_i:end_i]
-            if not any("schwab_source_value_json" in ln for ln in body):
-                continue
-            for offset in _roster_contained_loads(body):
+        # scope.  A function's span contains any nested function, so an inner
+        # reader inherits the outer's scope rather than escaping it.
+        in_scope = [
+            fn for fn in ast.walk(ast.parse(source))
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and "schwab_source_value_json" in (
+                ast.get_source_segment(source, fn) or "")
+        ]
+        for lineno in hits:
+            if any(fn.lineno <= lineno <= (fn.end_lineno or fn.lineno)
+                   for fn in in_scope):
                 offenders.setdefault(
-                    str(f.relative_to(REPO_ROOT)), []).append(
-                        start_i + offset)
+                    str(f.relative_to(REPO_ROOT)), []).append(lineno)
     assert not offenders, (
         f"a fill-envelope reader still enumerates its decode failures: "
         f"{offenders}. `json.loads` raises `RecursionError` -- a "
@@ -486,41 +519,119 @@ def test_no_fill_envelope_reader_is_contained_by_a_TYPE_ROSTER() -> None:
         f"that tuple catches it")
 
 
+# The entry route's PRE-FIX text, verbatim, wrapped so it parses.  It 500ed a
+# money-bearing POST over an unreadable audit blob, which is why it is the
+# walk's true positive rather than an invented one.
+_TRUE_POSITIVE = """
+def _entry_form_vm(row):
+    schwab_source_value_json = row["schwab_source_value_json"]
+    try:
+        anchor_envelope = _json.loads(schwab_source_value_json)
+    except (ValueError, TypeError):
+        anchor_envelope = None
+    return anchor_envelope
+"""
+
+# The two guards the FIRST version of this walk wrongly flagged.  Both are real
+# code from the same two files, both correct, and both sit in functions that
+# also read a fill envelope -- which is exactly why a function-sized window was
+# the wrong instrument and the try body is the right one.
+_A_DATE_GUARD = """
+def _exit_form(row):
+    envelope = json.loads(row["schwab_source_value_json"] or "{}")
+    exit_date_ok = True
+    try:
+        _date_cls.fromisoformat(v_exit_date)
+    except (TypeError, ValueError):
+        exit_date_ok = False
+    return envelope, exit_date_ok
+"""
+
+_A_NUMERIC_GUARD = """
+def _fill_rows(rows):
+    out = []
+    for row in rows:
+        envelope = json.loads(row["schwab_source_value_json"] or "{}")
+        try:
+            out.append(float(row["fill_qty"]))
+        except (TypeError, ValueError):
+            continue
+    return out, envelope
+"""
+
+# EVERY ONE OF THESE EVADED THE RETIRED REGEX (Codex 22A-R12-05), and each is a
+# real regression of the containment ruling: `json.loads` raises
+# `RecursionError` -- a `RuntimeError` -- on a deeply nested document, and no
+# member of any of these rosters catches it.
+_EVASIONS = {
+    "a THREE-member tuple": "except (ValueError, TypeError, RecursionError):",
+    "a REORDERED three-member tuple":
+        "except (TypeError, RecursionError, ValueError):",
+    "a QUALIFIED name": "except (json.JSONDecodeError, TypeError):",
+    "a SINGLE narrow name": "except ValueError:",
+    "a FOUR-member tuple":
+        "except (ValueError, TypeError, KeyError, AttributeError):",
+}
+
+# The retired rule, kept as the control so the change is measured and not
+# merely asserted.
+_RETIRED_TYPE_ROSTER = re.compile(
+    r"^\s*except \((?:ValueError, TypeError|TypeError, ValueError)\)")
+
+
+def _lineno_of(source: str, needle: str) -> int:
+    for n, line in enumerate(source.splitlines(), 1):
+        if needle in line:
+            return n
+    raise AssertionError(f"{needle!r} is not in the snippet")
+
+
 def test_the_roster_walk_finds_the_form_it_forbids_and_only_that_form(
 ) -> None:
     """The walk's OWN discriminator, over the REAL shapes it met.
 
-    The true positive is the entry route's pre-fix text, verbatim.  The two
-    false positives are the guards the first version of this walk wrongly
-    flagged -- both real code from the same two files, both correct.
+    The true positive is the entry route's pre-fix text.  The two false
+    positives are the guards the first version of this walk wrongly flagged.
     """
-    true_positive = [
-        "        try:",
-        "            anchor_envelope = _json.loads(schwab_source_value_json)",
-        "        except (ValueError, TypeError):",
-        "            anchor_envelope = None",
-    ]
-    assert _roster_contained_loads(true_positive) == [3]
+    assert _roster_contained_loads(_TRUE_POSITIVE) == [
+        _lineno_of(_TRUE_POSITIVE, "except (ValueError, TypeError):")]
 
-    fixed = list(true_positive)
-    fixed[2] = "        except Exception:  # noqa: BLE001"
+    fixed = _TRUE_POSITIVE.replace(
+        "except (ValueError, TypeError):", "except Exception:")
     assert _roster_contained_loads(fixed) == []
 
-    a_date_guard = [
-        "            if exit_date_ok:",
-        "                try:",
-        "                    _date_cls.fromisoformat(v_exit_date)",
-        "                except (TypeError, ValueError):",
-        "                    exit_date_ok = False",
-    ]
-    assert _roster_contained_loads(a_date_guard) == []
-
-    a_numeric_guard = [
-        "                                quantity=float(fill_qty),",
-        "                            )",
-        "                        )",
-        "                except (TypeError, ValueError):",
-        "                    continue",
-    ]
-    assert _roster_contained_loads(a_numeric_guard) == []
+    assert _roster_contained_loads(_A_DATE_GUARD) == []
+    assert _roster_contained_loads(_A_NUMERIC_GUARD) == []
     assert _envelope_reader_files(), "the file walk found nothing to check"
+
+
+@pytest.mark.parametrize("label", sorted(_EVASIONS))
+def test_the_roster_walk_catches_EVERY_spelling_of_a_roster(label) -> None:
+    """AN INSTRUMENT WHOSE EVASION CASE IS UNTESTED IS THE SAME DEFECT ONE
+    LEVEL DOWN (Codex 22A-R12-05).
+
+    The retired rule recognised exactly two spellings, so a roster could be
+    widened, reordered, qualified or narrowed to a single name and regress the
+    containment ruling while a discriminator audit read green.  Each spelling
+    below is asserted BOTH ways: the AST walk finds it, and the retired regex
+    does NOT -- which is what makes this a regression test rather than a
+    restatement.
+    """
+    handler = _EVASIONS[label]
+    source = _TRUE_POSITIVE.replace("except (ValueError, TypeError):", handler)
+    assert _roster_contained_loads(source) == [_lineno_of(source, handler)], (
+        f"{label} evaded the closure walk")
+    assert not _RETIRED_TYPE_ROSTER.match("        " + handler), (
+        f"{label} is not an evasion of the RETIRED rule, so this case does "
+        f"not distinguish the fix from what it replaced")
+
+
+def test_the_retired_regex_DID_recognise_the_one_spelling_it_knew() -> None:
+    """The control on the control.
+
+    If the retired pattern matched nothing at all, every assertion above would
+    pass vacuously and the parametrized family would read as five proofs while
+    carrying none.
+    """
+    assert _RETIRED_TYPE_ROSTER.match("        except (ValueError, TypeError):")
+    assert _RETIRED_TYPE_ROSTER.match("    except (TypeError, ValueError):")
