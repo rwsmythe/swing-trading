@@ -79,7 +79,17 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
 
 > **Archive companion (2026-05-18 Phase 12.5 #3 T-3.3 split — zero-yield):** This section inspected for pre-2026-05-13 entries during the Phase 12.5 #3 archive-split pass; ZERO entries qualified (all "Prior state" snapshots are dated 2026-05-17 or later). No content moved from this section; pointer retained for symmetry with the "Lessons captured" pointer below + audit-trail integrity. See [`docs/orchestrator-context-archive.md`](docs/orchestrator-context-archive.md) for archive companion structure.
 
-### Currently in-flight: DEMAND C MERGED + LIVE-APPLIED (2026-08-13) — no active arc
+### Currently in-flight: PHASE 22 ACTIVE — **22-A EXECUTING is PAUSED mid-flight** (2026-08-27)
+
+**THERE IS AN ACTIVE ARC. Do NOT commission over it.** 22-A (entry-path order↔mandate binding) is **paused on the operator's weekly token budget at a clean boundary** — branch **`22-a-exec` @ `d74f378e`**, worktree `.worktrees/22-a-exec`, **66 commits**, tree clean, zero trailer-bearing commits, suite **11,831 passed / 0 failed**, **146 of 146 plan cases each traced to a PASSING node id**, `DEFERRED_CASES` empty across ten dispatches. **Live DB UNTOUCHED at v36 — migration `0037` is UNAPPLIED, which is the fact that keeps the amendment-before-merge ruling alive; re-verify it at the merge gate.**
+
+**The single authoritative resume document is [`docs/phase22-arc-a-executing-resume.md`](phase22-arc-a-executing-resume.md) (`552a42fd`)** — state, the five open findings with file:line, leg 11's scope, the transport fallback, the gate sequence, and the standing rulings a cold resumer must NOT re-derive. **Read it before touching the arc.** The review ledger (1,993 lines, twelve counted rounds) and every transcript are gitignored and were preserved to `~/swing-data/review-transcripts/22-a-exec/`.
+
+**What remains:** one leg — make `AL-3` closure-checked rather than hand-maintained (reusing `SS-12`'s walk), two evadable closure walks, one write-path residual — then round 13, orchestrator QA, the orchestrator's own second eye (reviewer B), the merge gate where both directors wait, then S9 step 0 (a BLOCKING live pipeline run) and the operator-witnessed application. **The arc corrects NEITHER trade 24 NOR trade 25**; both carry as named pending rows into the September read, per RD.
+
+*(This heading previously read "no active arc" while the arc was mid-flight — the same stale claim CHARC corrected in his own pointer at `886e116f`. A section-of-record that orients the next generation is exactly where that claim does the most damage.)*
+
+#### (superseded) DEMAND C MERGED + LIVE-APPLIED (2026-08-13)
 
 **DEMAND C (cohort-key provenance surface) MERGED at `f133ba2a`, schema v35→**v36** (migration 0036 `provenance_corrections`), live-migrated and operator-witnessed 2026-08-13.** Merged-head suite **11113/7/0**, ruff clean, trailer audit 0. **Correction 1 is applied to trade 23 (CADL):** `hypothesis_label` NULL→`'A+ baseline (aplus); failed: TT8_rs_rank'` (the faithful derivation per RD's ruling, not the clean sibling string), `candidate_id` NULL→12341, `trade_origin` `manual_off_pipeline`→`pipeline_aplus`. Cohort arithmetic verified against the pre-migration backup as the before-image: **`current_sample` 2→2 (unchanged — it counts CLOSED trades) and `in_flight` 0→1**, exactly RD's predicted shape. Backup `~/swing-data/backups/swing-20260813T055901.db` verified RESTORABLE (integrity ok, v35 pre-image), not merely present. V1 records provenance ONCE per trade — there is no supported re-correction path.
 
