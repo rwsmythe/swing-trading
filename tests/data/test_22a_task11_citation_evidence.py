@@ -1845,6 +1845,53 @@ def test_a_padded_document_naming_an_accepted_order_cannot_claim_last_word(
     _assert_rejected(conn, {**payload, **_LAST_WORD_NULLS})
 
 
+def test_THE_DECLARED_LIMITATION_a_stale_grammar_reading_is_ACCEPTED(
+        conn, monkeypatch) -> None:
+    """L19 (AL-11), PINNED -- and the acceptance is the declaration.
+
+    No trigger consumer of `fill_envelope_identity` checks
+    `canonicalizer_version`: the column appeared EXACTLY ONCE in the migration,
+    its own declaration, while SEVEN sites referenced the table.  The SERVICE
+    is stricter -- `ensure_entry_fill_identities` re-runs the current
+    canonicaliser over the population and `record_identity` RAISES on
+    disagreement -- so after a bump whose ANSWER changes, a RAW correction can
+    be accepted on a reading the service would refuse.
+
+    THE READING BELOW IS WRITTEN BY THE PRODUCTION WRITER; only the version
+    label is older, which is exactly what a canonicaliser bump leaves behind.
+    Nothing is forged, so this is not AL-10.
+
+    **IF THIS EVER REJECTS, THE LIMITATION IS NARROWER THAN DECLARED AND L19
+    MUST BE CORRECTED -- NOT THIS TEST SILENCED.**  The obvious narrowing (a
+    version filter in every consumer) is measured and rejected in L19: it
+    INVERTS at the two clauses that read absence, and it manufactures a refusal
+    on the service path at the other four.
+    """
+    import swing.trades.latched_origin as lo
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    order = payload["cited_latch_broker_order_id"]
+    # A DIFFERENT DOCUMENT, same meaning: the reading binds to the DOCUMENT,
+    # and the seeder's own document already carries a current-grammar reading.
+    doc = ('{"schwab_instrument_symbol": "CADL", "schwab_order_id": "%s"}'
+           % order)
+    monkeypatch.setattr(lo, "ENVELOPE_CANONICALIZER_VERSION", "2026-01-01.0")
+    set_fill_envelope(conn, payload["entry_fill_id_at_correction"], doc)
+    monkeypatch.undo()                       # THE CODE IS NOW BUMPED
+    assert conn.execute(
+        "SELECT envelope_state, broker_order_id, canonicalizer_version "
+        "  FROM fill_envelope_identity WHERE fill_id = ? AND envelope_raw = ?",
+        (payload["entry_fill_id_at_correction"], doc)).fetchone() == (
+        "canonical", order, "2026-01-01.0"), (
+        "the premise: a reading under a grammar the current code no longer is")
+    assert lo.ENVELOPE_CANONICALIZER_VERSION != "2026-01-01.0"
+    conn.commit()
+    _insert_payload(conn, payload)           # THE DECLARED ACCEPTANCE
+    assert conn.execute(
+        "SELECT COUNT(*) FROM provenance_corrections WHERE trade_id = ?",
+        (payload["trade_id"],)).fetchone()[0] == 1
+
+
 def test_a_BLOB_document_naming_an_accepted_order_cannot_claim_last_word(
         conn) -> None:
     """22A-R13-01 AT THE TRIGGER -- the wrong acceptance this closes.

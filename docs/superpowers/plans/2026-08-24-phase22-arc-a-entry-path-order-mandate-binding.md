@@ -3730,6 +3730,80 @@ Repeated verbatim in every review prompt, with challenge invited.
   authenticated envelope (L10's server-side nonce or POST-time re-fetch), which would make the
   document itself trustworthy and is the same fix L10 already names.
 
+* **L19 (AL-11) -- NO CONSUMER OF A STORED READING CHECKS THE CANONICALISER VERSION IT WAS WRITTEN
+  UNDER, IN SQL OR IN PYTHON.** *(Codex `22A-R13-02`, round 13. `canonicalizer_version` appeared
+  EXACTLY ONCE in the shipped migration -- its column declaration -- while SEVEN trigger sites
+  referenced the table; the round-12 clause that prompted this became the seventh by copying its
+  neighbour's shape including its omission.)*
+
+  *Reason:* the SERVICE is strictly stronger and cannot be mirrored here. `ensure_entry_fill_identities`
+  re-runs the CURRENT canonicaliser over the whole population before any scan and `record_identity`
+  RAISES when a stored answer disagrees with today's; SQL cannot re-run anything, and re-deriving
+  the reading in SQL is the engine-boundary violation L18 forbids. **What is exposed:** after a
+  canonicaliser bump whose ANSWER changes for some document, a RAW correction can be accepted on the
+  older reading the service would refuse. **Direction: WRONG ACCEPTANCE, raw path only.**
+
+  **THE OBVIOUS FIX -- "require the current version in every consumer" -- WAS MEASURED AND
+  REJECTED, in both of its halves, and that is why this is a declaration rather than a patch:**
+  1. **At TWO of the six it INVERTS.** `last_word_subject_order_id` and `rung6_consumption_scan`
+     read a stored reading as EVIDENCE OF ABSENCE. Filtering them on the version makes a stale
+     reading INVISIBLE, which WIDENS acceptance. A blanket sweep of "all seven" would have shipped
+     exactly that -- the reason the treatment is a per-site READ and not a global edit.
+  2. **At the other four it manufactures a REFUSAL ON THE SERVICE PATH.** An AGREEING older reading
+     is deliberately left in place (`test_an_agreeing_older_reading_is_left_alone` -- filtering on
+     the version LABEL would fail every historical reading on the day the constant moves). The
+     service would authorize and the trigger would then ABORT: authorize-then-abort, met four times
+     on this arc already.
+
+  **SO THE ARMING ACTION IS CLOSED INSTEAD, MECHANICALLY.** A reading can only be stale if
+  `ENVELOPE_CANONICALIZER_VERSION` MOVED between two writes; a row bearing a version nobody shipped
+  is a forged identity row, which is L10/AL-10's class. `0037` therefore carries a
+  `CANONICALIZER-VERSION-ANCHOR` mirroring the Python constant, and
+  `tests/data/test_22a_canonicalizer_version_closure.py` compares the two representations -- so a
+  bump FAILS THE SUITE, naming the required work, **before any stale row can exist.** *(Gotcha #11's
+  rule applied: the only mirror that defends the set is the comparator. Gotcha #31's rule applied: a
+  comment promising future work is unenforceable; a failing test is not.)*
+
+  **THE ROSTER BELOW IS CLOSURE-CHECKED, NOT HAND-MAINTAINED.** Every `FROM`/`JOIN` reference to
+  `fill_envelope_identity` in `0037` carries an inline `-- FEI-CONSUMER <key> :: <claim>` marker;
+  the test walks the migration, asserts markers and references INTERLEAVE one-for-one, asserts each
+  marker's CLAIM against what its span actually contains, and holds the whole marker set against
+  this roster **in both directions** -- a consumer added later without an entry FAILS, an entry
+  naming no marker FAILS, and a clause that GAINS a version check while still declared blind FAILS.
+
+<!-- AL11-ROSTER-BEGIN -->
+  * `barrier_no_replace_conflict_scope` -- NOT_A_READING -- the append-only conflict scope addresses
+    the UNIQUE KEY, never a reading. A version filter here would admit a SECOND row for the same
+    document under a different version, defeating the append-only guarantee. **This one must stay
+    version-blind even after 22-A2's re-attestation.**
+  * `subject_reading_is_canonical` -- VERSION_BLIND -- the subject fill's reading exists and is not
+    a refusal; a stale reading satisfies it.
+  * `last_word_subject_order_id` -- VERSION_BLIND -- **evidence of ABSENCE**; filtering WIDENS.
+  * `cited_order_is_the_subject_order` -- VERSION_BLIND -- the citation's order equals the stored
+    reading's order, whatever grammar produced it.
+  * `rung6_population_has_been_read` -- VERSION_BLIND -- population completeness; a stale reading
+    counts as read.
+  * `rung6_consumption_scan` -- VERSION_BLIND -- **evidence of ABSENCE**; filtering WIDENS.
+  * `guard_envelope_symbol_binding` -- VERSION_BLIND -- the probe's symbol equals the stored
+    reading's symbol.
+<!-- AL11-ROSTER-END -->
+
+  **THE PYTHON HALF IS THE SAME LIMITATION AND IS NOT OMITTED** (a boundary stated is a boundary
+  that cannot be assumed away): `stored_identity`, `consuming_entry_fills` and
+  `unreadable_entry_fills` in `swing/data/repos/fill_envelope_identity.py` are version-blind too.
+  They are SAFE where the SQL is not, because every ladder caller runs
+  `ensure_entry_fill_identities` first, which re-verifies the population and raises on disagreement
+  -- and the test asserts they carry no version filter, so ADDING one would fail here and force this
+  declaration to be corrected rather than silently narrowed.
+
+  **PINNED, not merely written down:**
+  `tests/data/test_22a_task11_citation_evidence.py::test_THE_DECLARED_LIMITATION_a_stale_grammar_reading_is_ACCEPTED`
+  asserts the acceptance. *V2 fix, CARVED TO 22-A2 (S12.4):* an APPEND-ONLY RE-ATTESTATION design --
+  `UNIQUE(fill_id, envelope_raw, canonicalizer_version)`, a writer that APPENDS a current-grammar
+  reading instead of leaving an older one, and version-addressed consumers. That is a schema
+  redesign of a table this arc introduces, and it is the only thing that closes the class without
+  inverting two clauses or manufacturing a refusal.
+
 ---
 
 ## S9. THE OPERATOR GATE (post-merge, one step at a time)

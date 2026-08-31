@@ -563,6 +563,58 @@ CREATE TABLE fill_envelope_identity (
     broker_order_id   TEXT,
     instrument_symbol TEXT,
 
+    -- ====================================================================
+    -- THE VERSION IS RECORDED AND NO TRIGGER READS IT -- STATED ONCE, HERE,
+    -- AND HELD AGAINST THIS FILE BY A CLOSURE WALK (Codex 22A-R13-02).
+    --
+    -- THE CLASS, not the clause.  Round 12's new rung-6 population clause
+    -- checked `envelope_state = 'canonical'` and not the version -- and so did
+    -- every OTHER trigger consumer of this table, six of them, written across
+    -- four earlier rounds.  The new clause copied its neighbour's shape
+    -- INCLUDING its omission, which is why the fix is a re-read of the whole
+    -- artifact and a check, never a patch to the one clause that was reported.
+    --
+    -- WHAT IS EXPOSED, precisely.  The SERVICE re-runs the current
+    -- canonicaliser over the whole population before it scans
+    -- (`ensure_entry_fill_identities`) and `record_identity` RAISES when a
+    -- stored answer disagrees with today's.  SQL cannot re-run anything.  So
+    -- after a canonicaliser bump whose ANSWER changes for some document, a RAW
+    -- correction can be accepted on the older reading that the service would
+    -- refuse.  Direction: WRONG ACCEPTANCE, reachable only through the raw
+    -- path.  It is declared at plan limitation L19 with its reason.
+    --
+    -- WHY NOT SIMPLY REQUIRE THE CURRENT VERSION IN EVERY CONSUMER -- the
+    -- obvious fix, MEASURED AND REJECTED, in both of its halves:
+    --
+    --  1. AT TWO OF THE SIX IT INVERTS.  `last_word`'s no-link check and rung
+    --     6's consumption scan read a stored reading as EVIDENCE OF ABSENCE.
+    --     Filtering those on the version makes a stale reading INVISIBLE to
+    --     them, which does not tighten the guard -- it WIDENS acceptance,
+    --     which is the very direction the finding is about.  A blanket sweep
+    --     would have shipped that.
+    --  2. AT THE OTHER FOUR IT MANUFACTURES A REFUSAL ON THE SERVICE PATH.
+    --     An AGREEING older reading is deliberately LEFT ALONE by the service
+    --     (`test_an_agreeing_older_reading_is_left_alone`: filtering on the
+    --     version label would fail every historical reading closed on the day
+    --     the constant moves).  The service would therefore authorize a
+    --     correction and the trigger would then ABORT it -- the
+    --     authorize-then-abort shape this arc has already met four times.
+    --     Closing it properly needs an APPEND-ONLY RE-ATTESTATION design (a
+    --     three-column key plus version-addressed consumers), which is a
+    --     schema redesign of this table.  ROUTED TO 22-A2 (plan S12.4).
+    --
+    -- SO THE EXPOSURE IS CLOSED AT ITS ONLY ARMING ACTION INSTEAD.  A reading
+    -- can only be "stale" if the constant MOVED between two writes; a row
+    -- written under a version nobody ever shipped is a forged identity row,
+    -- which is L10/AL-10's declared class.  The anchor below therefore mirrors
+    -- `ENVELOPE_CANONICALIZER_VERSION` into this file, and
+    -- `tests/data/test_22a_canonicalizer_version_closure.py` compares the two
+    -- representations -- the drift-test discipline: a bump FAILS THE SUITE
+    -- with the required work named, before any stale row can exist.  A comment
+    -- promising future work is unenforceable (gotcha #31); a failing test is
+    -- not.
+    --
+    -- CANONICALIZER-VERSION-ANCHOR: 2026-08-26.1
     canonicalizer_version TEXT NOT NULL,
     recorded_ts           TEXT NOT NULL,
 
@@ -599,6 +651,12 @@ BEGIN SELECT RAISE(ABORT, '22-A barrier trg_fei_no_delete: fill_envelope_identit
 -- The ignore is only SAFE because the table's CHECK (identity_id > 0) makes a
 -- stored -1 impossible; without it the sentinel collides with a real row and
 -- the barrier can be walked straight past (Codex 22A-R11-06, measured).
+-- FEI-CONSUMER barrier_no_replace_conflict_scope :: NOT_A_READING
+-- It addresses the UNIQUE KEY, never a stored reading, so a version filter
+-- here would LET A SECOND ROW FOR THE SAME DOCUMENT THROUGH under a different
+-- version -- the append-only guarantee defeated by the guard meant to widen
+-- it.  This is the one occurrence in the file that must stay version-blind
+-- even after 22-A2's re-attestation lands.
 CREATE TRIGGER trg_fei_no_replace BEFORE INSERT ON fill_envelope_identity
 WHEN EXISTS (SELECT 1 FROM fill_envelope_identity
               WHERE (NEW.identity_id != -1 AND identity_id = NEW.identity_id)
@@ -914,6 +972,7 @@ FOR EACH ROW WHEN NOT (
     AND (
         (SELECT f.schwab_source_value_json FROM fills f
           WHERE f.fill_id = NEW.entry_fill_id_at_correction) IS NULL
+        -- FEI-CONSUMER subject_reading_is_canonical :: VERSION_BLIND
         OR EXISTS (
             SELECT 1 FROM fill_envelope_identity fei
               JOIN fills f2 ON f2.fill_id = fei.fill_id
@@ -954,6 +1013,9 @@ FOR EACH ROW WHEN NOT (
          AND NEW.cited_latch_place_intent_id IS NULL
          AND NEW.cited_latch_broker_order_id IS NULL
          AND NEW.cited_latch_probe_json IS NULL
+         -- FEI-CONSUMER last_word_subject_order_id :: VERSION_BLIND
+         -- READS THE STORED READING AS EVIDENCE OF ABSENCE, so a version
+         -- filter here WIDENS acceptance rather than tightening it (L19).
          AND NOT EXISTS (
              SELECT 1 FROM latch_order_mandate_links l
               WHERE l.broker_order_id = (
@@ -1009,6 +1071,7 @@ FOR EACH ROW WHEN NOT (
          -- clause is where the reshape's guarantee is cashed: a raw writer
          -- whose citation names a DIFFERENT order than the stored reading
          -- aborts here, which is condition (2) of the ruling.
+         -- FEI-CONSUMER cited_order_is_the_subject_order :: VERSION_BLIND
          AND (SELECT fei.broker_order_id
                 FROM fill_envelope_identity fei
                 JOIN fills f ON f.fill_id = fei.fill_id
@@ -1593,6 +1656,7 @@ FOR EACH ROW WHEN NOT (
               WHERE f3.action = 'entry'
                 AND (f3.trade_id IS NULL OR f3.trade_id <> NEW.trade_id)
                 AND f3.schwab_source_value_json IS NOT NULL
+                -- FEI-CONSUMER rung6_population_has_been_read :: VERSION_BLIND
                 AND NOT EXISTS (
                     SELECT 1 FROM fill_envelope_identity fei3
                      WHERE fei3.fill_id = f3.fill_id
@@ -1600,6 +1664,10 @@ FOR EACH ROW WHEN NOT (
                            = f3.schwab_source_value_json
                        AND fei3.envelope_state = 'canonical'))
 
+         -- FEI-CONSUMER rung6_consumption_scan :: VERSION_BLIND
+         -- The SECOND clause that reads a stored reading as evidence of
+         -- ABSENCE; filtering it on the version hides a stale consumer from
+         -- the one scan that exists to find one (L19).
          AND NOT EXISTS (SELECT 1 FROM fill_envelope_identity fei
                          JOIN fills f2 ON f2.fill_id = fei.fill_id
                          WHERE f2.action = 'entry'
@@ -1732,6 +1800,7 @@ FOR EACH ROW WHEN NOT (
          -- document.
          AND json_extract(NEW.cited_latch_probe_json,
                  '$.authorization.guard_envelope_symbol.input')
+             -- FEI-CONSUMER guard_envelope_symbol_binding :: VERSION_BLIND
              = (SELECT fei.instrument_symbol
                   FROM fill_envelope_identity fei
                   JOIN fills f ON f.fill_id = fei.fill_id
