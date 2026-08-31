@@ -1551,13 +1551,44 @@ FOR EACH ROW WHEN NOT (
          -- CASE-not-AND-chain form. It now reads STORED readings, which are
          -- never parsed, so there is no JSON function left to protect.
          --
-         -- WHAT IT CANNOT SEE, stated because the service compensates for it:
-         -- an entry fill whose envelope the authority REFUSED stores no order
-         -- id, so a consumption hiding inside such a document is invisible
-         -- here. The service's rung 6 refuses on exactly that population
-         -- (`consumption_evidence_unavailable`), which keeps the SERVICE at
-         -- least as strong as its twin -- the direction that never produces
-         -- an authorize-then-abort.
+         -- THE SCAN'S POPULATION IS ESTABLISHED FIRST, IN SQL TOO (Codex
+         -- 22A-R12-01). A scan over STORED readings can only see documents the
+         -- authority has READ, so a competing entry fill whose reading is
+         -- MISSING or REFUSED is ignorance -- and the scan below would read
+         -- that ignorance as ABSENCE and admit the widest wrong acceptance
+         -- available here: a raw correction claiming a mandate as unconsumed
+         -- while another trade already consumes it.
+         --
+         -- ONLY THE `refused` HALF WAS EVER DECLARED, and the MISSING half
+         -- became reachable in this same arc when the entry path's identity
+         -- write was CONTAINED (22A-R11-02) -- "envelope present, reading
+         -- absent" is a state the writer can now leave behind. A limitation
+         -- declared for one of two reachable populations is the roster defect
+         -- one level down.
+         --
+         -- THE TWIN IS BROUGHT UP TO THE SERVICE, NEVER PAST IT. The service's
+         -- rung 6 runs `ensure_entry_fill_identities` over exactly this
+         -- population (`action='entry' AND schwab_source_value_json IS NOT
+         -- NULL`) BEFORE it scans, and then refuses on any `refused` reading
+         -- (`consumption_evidence_unavailable`). So on the service path this
+         -- clause is satisfied by construction and there is no state the
+         -- service admits and the trigger then aborts -- the
+         -- authorize-then-abort shape this arc met four times. A fill with NO
+         -- envelope is excluded on BOTH sides, because it never gets a reading
+         -- and never should; a clause requiring one would refuse every
+         -- ordinary manual trade in the book.
+         AND NOT EXISTS (
+             SELECT 1 FROM fills f3
+              WHERE f3.action = 'entry'
+                AND (f3.trade_id IS NULL OR f3.trade_id <> NEW.trade_id)
+                AND f3.schwab_source_value_json IS NOT NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM fill_envelope_identity fei3
+                     WHERE fei3.fill_id = f3.fill_id
+                       AND fei3.envelope_raw
+                           = f3.schwab_source_value_json
+                       AND fei3.envelope_state = 'canonical'))
+
          AND NOT EXISTS (SELECT 1 FROM fill_envelope_identity fei
                          JOIN fills f2 ON f2.fill_id = fei.fill_id
                          WHERE f2.action = 'entry'

@@ -1205,6 +1205,130 @@ def test_a_cited_order_naming_TWO_links_is_rejected(conn) -> None:
 
 
 # ===========================================================================
+# 22A-R12-01 -- THE RUNG-6 TWIN COULD NOT SEE AN UNREAD COMPETING ENVELOPE
+#
+# The twin scans `fill_envelope_identity` for CANONICAL readings naming the
+# cited order, so a competing entry fill whose envelope the authority has never
+# read -- or refused -- is invisible to it and the scan reads its ignorance as
+# ABSENCE.  The SERVICE compensates in both directions (it runs
+# `ensure_entry_fill_identities` before the scan, then refuses on any refused
+# reading), but the twin exists precisely to constrain the RAW inserts the
+# service never touches, and only the `refused` half was ever declared.
+#
+# DIRECTION: a WRONG ACCEPTANCE, and the widest one available here -- a raw
+# correction claims a mandate as unconsumed while another trade may already
+# consume it, contaminating the cohort permanently.
+#
+# THE TWIN IS BROUGHT UP TO THE SERVICE, NEVER PAST IT.  The service's
+# population pass writes a reading for every envelope-bearing entry fill before
+# it scans, so on the service path the trigger meets a fully-read population and
+# the new clause is satisfied by construction; there is no state the service
+# admits and the trigger then aborts -- the authorize-then-abort shape this arc
+# met four times.
+# ===========================================================================
+def _plant_competing_entry_fill(
+        conn_: sqlite3.Connection, *, envelope: str, read: bool,
+        trade_id: int = 99001) -> int:
+    """ANOTHER trade's entry fill carrying `envelope`, read or unread.
+
+    The insert is RAW on purpose: the production writer persists the reading,
+    and the state under test is exactly the one where it did not.
+    """
+    conn_.execute(
+        "INSERT OR IGNORE INTO trades (id, ticker, entry_date, entry_price, "
+        " initial_shares, initial_stop, current_stop, state, trade_origin, "
+        " pre_trade_locked_at) "
+        "VALUES (?, 'ZZZZ', '2026-08-17', 18.50, 2, 17.00, 17.00, 'entered', "
+        " 'manual_off_pipeline', '2026-08-17T13:00:00')", (trade_id,))
+    cur = conn_.execute(
+        "INSERT INTO fills (trade_id, fill_datetime, action, quantity, price, "
+        " fill_origin, schwab_source_value_json) "
+        "VALUES (?, '2026-08-17T14:30:00', 'entry', 2, 18.50, 'schwab_auto', "
+        " ?)", (trade_id, envelope))
+    fill_id = int(cur.lastrowid)
+    if read:
+        # THE PRODUCTION WRITER, never a hand-built row: a reading whose shape
+        # a fixture invented would test the fixture, and the whole subject here
+        # is what the AUTHORITY leaves behind.
+        from swing.data.repos.fill_envelope_identity import record_identity
+        record_identity(conn_, fill_id=fill_id, envelope_raw=envelope)
+    conn_.commit()
+    return fill_id
+
+
+_UNRELATED_ENVELOPE = json.dumps({"schwab_order_id": "9999999999"})
+
+
+def test_a_competing_entry_fill_with_NO_stored_reading_is_REFUSED(conn) -> None:
+    """22A-R12-01: ignorance is not absence, and the twin now says so.
+
+    PRE-FIX this inserted.  The competing fill carries a perfectly ordinary
+    envelope naming an UNRELATED order -- so the case is about the READING
+    being absent, not about a second consumer -- and the rung-6 twin's
+    canonical scan simply did not see it.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    _plant_competing_entry_fill(
+        conn, envelope=_UNRELATED_ENVELOPE, read=False)
+    _assert_rejected(conn, payload)
+
+
+def test_a_competing_entry_fill_with_a_REFUSED_reading_is_REFUSED(
+        conn) -> None:
+    """The half the twin's own comment DECLARED and did not enforce.
+
+    A refused document stores no order id, so a consumption hiding inside one
+    is invisible to the canonical scan.  The service refuses on exactly this
+    population (`consumption_evidence_unavailable`); the twin now does too.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    fill_id = _plant_competing_entry_fill(conn, envelope="{bad", read=True)
+    assert conn.execute(
+        "SELECT envelope_state FROM fill_envelope_identity WHERE fill_id = ?",
+        (fill_id,)).fetchone() == ("refused",), (
+        "the authority must REFUSE this document or the case is about "
+        "something else")
+    _assert_rejected(conn, payload)
+
+
+def test_a_competing_entry_fill_that_HAS_been_read_still_INSERTS(conn) -> None:
+    """THE WRONG-REFUSAL CONTROL, and it is what stops this being a blunt ban.
+
+    The same competing fill with a CURRENT canonical reading naming an
+    unrelated order is the ordinary post-population state -- exactly what the
+    service leaves behind before it inserts -- and the citation must still be
+    accepted.  Without this case the two above are satisfied by a clause that
+    refuses whenever any other entry fill exists at all.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _plant_competing_entry_fill(
+        conn, envelope=_UNRELATED_ENVELOPE, read=True)
+    _insert_payload(conn, payload)
+    assert conn.execute(
+        "SELECT admission_tier FROM provenance_corrections").fetchone() == (
+        "latch_ladder",)
+
+
+def test_a_competing_entry_fill_with_NO_envelope_at_all_still_INSERTS(
+        conn) -> None:
+    """The second wrong-refusal control: a NULL envelope is not ignorance.
+
+    `ensure_entry_fill_identities` selects `schwab_source_value_json IS NOT
+    NULL`, so a fill with no envelope never gets a reading and never should.
+    A clause requiring a reading for EVERY competing entry fill would refuse
+    every ordinary manual trade in the book.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _plant_competing_entry_fill(conn, envelope=None, read=False)
+    _insert_payload(conn, payload)
+    assert conn.execute(
+        "SELECT admission_tier FROM provenance_corrections").fetchone() == (
+        "latch_ladder",)
+
+
+# ===========================================================================
 # 22A-R6-06 -- THE PROBE-GUARD ROSTER'S BINDING LABELS ARE TRUE
 #
 # `fill_session_is_session` was labelled SQL_BOUND while the trigger checked
