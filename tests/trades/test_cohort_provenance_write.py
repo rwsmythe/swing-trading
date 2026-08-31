@@ -1128,6 +1128,74 @@ def test_R11M5_the_preview_writes_nothing_INSIDE_A_CALLER_TRANSACTION(
     assert _row_counts(conn) == before
 
 
+# ===========================================================================
+# 22A-R13-06 -- A FAILED UNWIND MUST NOT BE SWALLOWED
+#
+# `ROLLBACK TO` and `RELEASE` sat inside ONE `contextlib.suppress(sqlite3.Error)`,
+# so a failing rollback swallowed the error AND skipped the release -- and the
+# preview returned normally with its identity writes still pending on the
+# CALLER'S transaction, which the caller then commits.  That contradicts
+# R11-05's shipped claim in this very function's docstring: *"every write this
+# call makes is unwound before it returns, in EVERY transaction posture."*  The
+# existing cases exercise only successful cleanup, so they cannot support an
+# unconditional claim -- the refusal-only-set failure in its other direction.
+# ===========================================================================
+class _FailingCleanupConn:
+    """Delegates everything, and fails ONE savepoint verb.
+
+    A proxy rather than a monkeypatched module function, because what must be
+    exercised is the production `finally` block reacting to a REAL sqlite
+    error on the REAL statement it issues.
+    """
+
+    def __init__(self, real: sqlite3.Connection, verb: str) -> None:
+        self._real = real
+        self._verb = verb
+        self.attempts: list[str] = []
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def execute(self, sql, *args):
+        if sql.startswith(self._verb):
+            self.attempts.append(sql)
+            raise sqlite3.OperationalError(
+                f"no such savepoint (planted on {self._verb})")
+        return self._real.execute(sql, *args)
+
+
+@pytest.mark.parametrize("verb", ["ROLLBACK TO", "RELEASE"])
+def test_R13M6_a_failed_preview_unwind_RAISES_and_is_not_suppressed(
+        conn, verb) -> None:
+    """PRE-FIX both rows returned a preview with the dry run's writes still
+    pending; the `ROLLBACK TO` row also SKIPPED the `RELEASE`, leaving the
+    savepoint live inside the caller's transaction.
+
+    POST-FIX the caller is told, so it cannot unknowingly commit a compromised
+    dry run.  The caller's transaction is still LEFT OPEN -- closing someone
+    else's transaction would be a second defect wearing this one's clothes --
+    which is precisely why the failure has to be LOUD instead.
+    """
+    ids = build_cadl_case(conn)
+    _make_the_envelope_unread(conn, ids["fill_id"], "77003")
+    before = _row_counts(conn)
+    proxy = _FailingCleanupConn(conn, verb)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="planted on"):
+            preview_cohort_provenance_correction(
+                proxy, trade_id=ids["trade_id"],
+                cited_candidate_id=ids["candidate_id"],
+                cited_recommendation_id=ids["daily_recommendation_id"],
+                reason=REASON)
+        assert proxy.attempts, (
+            "the planted verb was never issued, so this case measures "
+            "nothing about the unwind")
+    finally:
+        conn.rollback()
+    assert _row_counts(conn) == before
+
+
 def test_R2M5_a_bucket_change_on_the_cited_candidate_is_reported(conn) -> None:
     """No current UPDATE site is not immutability, and a migration or an
     operator repair is where an audit reader earns its keep. The label is

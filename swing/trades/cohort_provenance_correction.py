@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import re
 import sqlite3
 from dataclasses import dataclass, replace
@@ -74,6 +75,8 @@ from swing.evaluation.dates import PIPELINE_LOCAL_TIMEZONE, is_trading_session
 # set) and the transaction it holds while calling it (AL-2). A function-local
 # import would make both unpinnable.
 from swing.trades.latched_origin import resolve_latched_provenance
+
+log = logging.getLogger(__name__)
 
 __all__ = [
     "APLUS_BUCKET",
@@ -2097,12 +2100,52 @@ def preview_cohort_provenance_correction(
         anchored, derived, latch = auth.anchored, auth.derived, auth.latch
         tier = auth.admission_tier
     finally:
-        with contextlib.suppress(sqlite3.Error):
+        # A FAILED UNWIND IS NOT SUPPRESSED (Codex 22A-R13-06).  Both verbs
+        # used to sit inside ONE `contextlib.suppress(sqlite3.Error)`, so a
+        # failing `ROLLBACK TO` swallowed the error AND skipped the `RELEASE`
+        # -- and this function then RETURNED, with its identity writes still
+        # pending on the CALLER'S transaction for the caller to commit.  That
+        # is the `--dry-run` that persists, which R11-05 shipped a savepoint to
+        # close, surviving in the one path R11-05's tests did not exercise:
+        # cleanup that FAILS.  A guarantee stated unconditionally in the
+        # docstring above cannot rest on tests that only ever see it succeed.
+        #
+        # THE VERBS ARE SEPARATE because their failures are different: a failed
+        # ROLLBACK TO means the writes are still live, and a failed RELEASE
+        # after a successful rollback means the savepoint is still open.  Both
+        # are reported; the first is attempted even if it is the one that
+        # fails, so the second is never skipped by an early exit.
+        #
+        # THE CALLER'S TRANSACTION IS STILL LEFT OPEN -- closing someone else's
+        # transaction would be a second defect wearing this one's clothes --
+        # which is exactly why the failure must be LOUD instead.  When this
+        # call OWNS the transaction it can and does roll the whole thing back
+        # before re-raising.
+        #
+        # Raising from `finally` does not lose an in-flight authorization
+        # error: Python chains it as `__context__`, so the operator sees both
+        # the refusal and the fact that the dry run could not be unwound.
+        cleanup_error: sqlite3.Error | None = None
+        try:
             conn.execute(f"ROLLBACK TO {_PREVIEW_SAVEPOINT}")
+        except sqlite3.Error as exc:
+            cleanup_error = exc
+        try:
             conn.execute(f"RELEASE {_PREVIEW_SAVEPOINT}")
+        except sqlite3.Error as exc:
+            cleanup_error = cleanup_error or exc
         if owns_read_tx:
-            with contextlib.suppress(sqlite3.Error):
+            try:
                 conn.rollback()
+            except sqlite3.Error as exc:
+                cleanup_error = cleanup_error or exc
+        if cleanup_error is not None:
+            log.error(
+                "22-A: the cohort-provenance PREVIEW could not unwind its own "
+                "savepoint (%s). Its writes may still be pending on this "
+                "connection; the caller MUST NOT commit. Nothing about the "
+                "preview's answer is trustworthy.", cleanup_error)
+            raise cleanup_error
     trade = anchored.trade
     return CohortProvenanceCorrectionPreview(
         trade_id=trade_id,
