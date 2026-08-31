@@ -4055,6 +4055,25 @@ been caught thirteen times on this arc, and a re-scope is the largest opportunit
 | **R8-09** | **STAYS -- LIVE IN 22-A**, and much reduced: with no tier-2, the exemption roster loses 32i-32k and 46a-46c entirely. `5b-pre` is still owed. |
 | **R8-10** | **STAYS -- LIVE IN 22-A, and it is MINE to close now (RD, explicit).** The frozen-vs-live SQL binding in the citation trigger SURVIVES the carve (S4.3), so a Python-computes / SQL-validates price boundary remains. **Checked rather than assumed, which is what he asked for.** |
 
+### S12.2b ROUND-13 ITEMS ROUTED TO 22-A2 -- with their founding evidence, so the brief lifts them rather than re-deriving
+
+**Operator-ruled 2026-08-31, and the ruling's ground is the AL-3 lesson stated correctly: the
+principle was never *make every instrument exact*, it is *do not claim exact when you are not*.** A
+walk DECLARED as a heuristic detector with its residual blindness named is honest; a walk WIDENED
+and claimed closed is the same false claim this arc refused to ship at AL-3. Each item below was
+declared in place, pinned in the direction that fails if the blindness ever narrows, and carved
+here rather than widened a third time. *(The pattern that produced the ruling: each walk had
+already been widened ONCE along the one axis its finding named, and the very next review round
+produced five more spellings and two more shapes. Widening along the reported axis answers the
+EXAMPLE, not the CLASS.)*
+
+| item | what 22-A2 owes | founding evidence, MEASURED |
+|---|---|---|
+| **`22A-R13-02`** | **AN APPEND-ONLY RE-ATTESTATION DESIGN** for `fill_envelope_identity`: `UNIQUE(fill_id, envelope_raw, canonicalizer_version)`, a writer that APPENDS a current-grammar reading rather than leaving an older one in place, and version-addressed consumers. It is the only thing that closes L19 without inverting two clauses or manufacturing a refusal. | `canonicalizer_version` appeared ONCE in `0037`; SEVEN sites referenced the table; SIX consume a reading and NONE checks the version. Splicing `AND fei.canonicalizer_version = '<current>'` into the subject-reading clause of the real migration made a truthful citation over an agreeing older reading REJECT (`IntegrityError`) -- the authorize-then-abort direction. Declared at **L19 (AL-11)** with a closure-checked roster and an arming tripwire. |
+| **`22A-R13-03`** | **SQL-TOKEN-AWARE SCANNING** in place of a regex, for the whole-tree "SQL never reads a fill envelope" walk. | SIX spellings measured blind, each pinned as a declared row in `tests/trades/test_22a_envelope_canonicality_sweep.py`: `JSON_EXTRACT(` (case), `json_extract (` (space), `->>` (operator, no function), a `CAST(...)` wrapper, a `"quoted"` identifier -- and a SIXTH found here rather than reported, **a read split across two ADJACENT PYTHON STRING LITERALS**, which is how every SQL string in `swing/**/*.py` is actually written. Zero production occurrences today (both whole-tree walks return empty on every run). |
+| **`22A-R13-04`** | **CALL-FOLLOWING** for the exception-roster closure walk: resolve a handler's parser through local helper functions and through import aliases. | TWO shapes measured blind: a narrow handler moved into a `parse_blob` helper (found, then DISCARDED by the function-sized scope filter) and `from json import loads` + a bare `loads(...)` (not recognised as a JSON parse at all). Either restores the money-bearing unhandled-`RecursionError` path with every closure test green. |
+| **`22A-R13-05`** | **PREDICATE-SHAPE ASSERTIONS** for the AL-3 closure (each SQL_BOUND clause asserts its authoritative operand and predicate), **REAL-INPUT DISCRIMINATORS** (mutate the production roster/migration, not a local reconstruction), and **PINS VALIDATED THROUGH COLLECTION** rather than by text-searching for `def`. | `_input_bound()` asks only whether a clause's span contains a subquery or a non-probe `NEW.` reference. Pinned by execution: strip the `ORDER BY ... LIMIT 1` that makes rung 3b *the LATEST* validity child, leaving its `SELECT`, and the walk still answers True. The reviewer looked for a mislabelled member and found none, so this is test QUALITY, not a demonstrated acceptance. *(The pattern to apply: `tests/data/test_22a_canonicalizer_version_closure.py`, written after it, splices into the REAL migration text.)* |
+
 ### S12.3 WHAT 22-A2 ALSO INHERITS AS SCHEMA
 
 The `cited_frozen_value_evidence_json` column * the third tier value `gap_era_reconstructed` * the
