@@ -101,17 +101,35 @@ def _blanked(text: str) -> list[str]:
             for ln in text.splitlines()]
 
 
-SEEDING_INSERT = re.compile(
-    r"INSERT\s+(?:OR\s+\w+\s+)?INTO\s+fill_envelope_identity\b", re.IGNORECASE)
+# EVERY STATEMENT FORM SQLITE OFFERS FOR WRITING ROWS INTO A NAMED TABLE, AND
+# `REPLACE INTO` IS NOT SPELLED `INSERT` (Codex 22A-R15-05).
+#
+# This was `SEEDING_INSERT`, matching `INSERT [OR ...] INTO` alone -- so a bare
+# `REPLACE INTO`, which SQLite accepts as a synonym for
+# `INSERT OR REPLACE INTO`, seeded the table with the ships-empty pin AND its
+# splice discriminator both GREEN.  MEASURED.  That is CLAUDE.md's own
+# `REPLACE` gotcha (REPLACE is DELETE + INSERT, and it is NOT spelled INSERT)
+# landing inside an instrument this arc wrote, for the second time in this arc.
+#
+# THE NAME MOVED WITH THE PATTERN.  A constant called `..._INSERT` that also
+# matches `REPLACE` is the misleading-name class one layer down, and the whole
+# defect was someone reading the name and believing it.
+SEEDING_WRITE = re.compile(
+    r"(?:INSERT\s+(?:OR\s+\w+\s+)?INTO|REPLACE\s+INTO)"
+    r"\s+fill_envelope_identity\b", re.IGNORECASE)
 
 
-def _seeding_inserts(blanked_body: str) -> list[str]:
-    """Every INSERT into the table, over COMMENT-BLANKED, JOINED text.
+def _seeding_writes(blanked_body: str) -> list[str]:
+    """Every row-write into the table, over COMMENT-BLANKED, JOINED text.
 
     Joined rather than per-line for 22A-R14-03's reason: a statement split
     across lines is one statement, and `\\s+` crosses a newline.
+
+    What it does NOT see is DECLARED at
+    ``test_the_seeding_walk_is_DECLARED_not_claimed_exact`` rather than
+    implied by the pattern's shape.
     """
-    return SEEDING_INSERT.findall(blanked_body)
+    return SEEDING_WRITE.findall(blanked_body)
 
 
 def _markers(text: str) -> list[tuple[int, str, str]]:
@@ -330,17 +348,37 @@ def test_the_migration_SHIPS_THE_TABLE_EMPTY() -> None:
     assert "CREATE TABLE fill_envelope_identity" in body, (
         "the migration no longer creates the table, so its emptiness proves "
         "nothing about this arc")
-    assert not _seeding_inserts(body), (
-        f"0037 now seeds fill_envelope_identity: {_seeding_inserts(body)}. "
+    assert not _seeding_writes(body), (
+        f"0037 now seeds fill_envelope_identity: {_seeding_writes(body)}. "
         f"The re-attestation carve-out recorded at the "
         f"CANONICALIZER-VERSION-ANCHOR rests on the table shipping EMPTY")
 
 
-def test_the_ships_empty_check_can_FAIL(monkeypatch) -> None:
-    """Spliced into the REAL migration text, per this module's convention."""
+@pytest.mark.parametrize(
+    "verb",
+    ["INSERT INTO", "INSERT OR REPLACE INTO", "INSERT OR IGNORE INTO",
+     "REPLACE INTO", "replace into"],
+    ids=["insert", "insert-or-replace", "insert-or-ignore", "replace",
+         "replace-lowercase"])
+def test_the_ships_empty_check_can_FAIL(monkeypatch, verb) -> None:
+    """Spliced into the REAL migration text, per this module's convention.
+
+    **`REPLACE INTO` IS THE ROW THAT WAS MISSING** (Codex 22A-R15-05).  The
+    walk matched ``INSERT [OR ...] INTO`` only, and a bare ``REPLACE INTO`` --
+    which SQLite accepts as a synonym for ``INSERT OR REPLACE INTO``, and which
+    is NOT SPELLED ``INSERT`` -- seeded the table with the ships-empty pin AND
+    its own discriminator both GREEN.  MEASURED before the fix:
+    ``REPLACE INTO fill_envelope_identity (a) VALUES (1);`` matched nothing.
+
+    This is CLAUDE.md's own ``REPLACE`` gotcha -- *REPLACE is DELETE + INSERT,
+    and it is not spelled INSERT* -- landing inside an instrument this arc
+    wrote, for the SECOND time in this arc.  The single-verb discriminator is
+    why it survived: a discriminator exercising ONE spelling of a family proves
+    the check can fail, never that it can fail on the FAMILY.
+    """
     text = _sql().replace(
         "CREATE INDEX ix_fei_broker_order_id ON fill_envelope_identity",
-        "INSERT INTO\n  fill_envelope_identity (fill_id) VALUES (1);\n"
+        verb + "\n  fill_envelope_identity (fill_id) VALUES (1);\n"
         "CREATE INDEX ix_fei_broker_order_id ON fill_envelope_identity",
         1)
     assert text != _sql(), "the splice matched nothing"
@@ -349,6 +387,28 @@ def test_the_ships_empty_check_can_FAIL(monkeypatch) -> None:
         lambda: text)
     with pytest.raises(AssertionError, match="now seeds"):
         test_the_migration_SHIPS_THE_TABLE_EMPTY()
+
+
+def test_the_seeding_walk_is_DECLARED_not_claimed_exact() -> None:
+    """WHAT THE WALK DOES NOT SEE, said out loud rather than widened away.
+
+    The pattern matches the two statement forms SQLite offers for writing rows
+    into a NAMED table.  It does NOT see a seed arriving through
+    ``CREATE TABLE fill_envelope_identity AS SELECT ...`` -- which would also
+    have to replace the migration's own ``CREATE TABLE ... (`` declaration, and
+    the pin asserts that declaration is present -- nor one written by a TRIGGER
+    body on some other table, nor one arriving after the migration from any
+    other writer.  The pin's subject is THIS FILE at ship time; the anchor
+    comparison, not this walk, is what enforces the carve-out once a reading
+    exists.
+
+    Declared with its blindness NAMED rather than widened along the reported
+    axis and called closed.
+    """
+    assert not SEEDING_WRITE.search(
+        "CREATE TABLE fill_envelope_identity AS SELECT * FROM t;"), (
+        "the CREATE-TABLE-AS-SELECT shape is the DECLARED blind spot; if it "
+        "is now matched, correct the declaration rather than deleting it")
 
 
 # ---------------------------------------------------------------------------
