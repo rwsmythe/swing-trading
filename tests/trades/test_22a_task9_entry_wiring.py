@@ -3030,3 +3030,75 @@ def caplog_at_error():
         yield records
     finally:
         root.removeHandler(sink)
+
+
+class _RollbackAfterEffect:
+    """Performs the REAL rollback and then raises -- the after-effect shape."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self.rolled = False
+
+    def execute(self, *a, **kw):
+        return self._conn.execute(*a, **kw)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+        self.rolled = True
+        raise KeyboardInterrupt("planted just after rollback")
+
+    @property
+    def in_transaction(self) -> bool:
+        return self._conn.in_transaction
+
+
+def test_B_the_cleanup_warning_is_RE_DERIVED_not_assumed(tmp_path) -> None:
+    """**A CLEANUP WARNING THAT IS WRONG ABOUT THE STATE TEACHES AN OPERATOR
+    TO DISTRUST THE RIGHT ONES** (Codex 22A-FIX-R9-05).
+
+    An AFTER-EFFECT exception -- SQLite performing the rollback and the
+    interrupt landing as the call returns -- leaves the transaction CLOSED and
+    the partial row GONE.  The first version of this handler announced
+    "STILL OPEN with a partial row in it" anyway, because it inferred the
+    state from the fact that `rollback()` raised rather than asking the
+    connection.
+
+    Both halves are asserted: the state is genuinely clean, and the message
+    SAYS so.  The `in_transaction`-true branch keeps its own wording and is
+    pinned by `test_B_a_failed_rollback_after_a_failed_write_is_SURFACED_and_CHAINED`.
+    """
+    import logging
+
+    from swing.trades.entry import _entry_transaction
+
+    conn, _, _ = build_world(tmp_path, "b-after")
+    conn.commit()
+    proxy = _RollbackAfterEffect(conn)
+
+    with caplog_at_error() as records:
+        with pytest.raises(KeyboardInterrupt, match="planted just after"):
+            with _entry_transaction(proxy, immediate=True):
+                proxy.execute(
+                    "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+                    "action_session_date, tickers_evaluated, aplus_count, "
+                    "watch_count, skip_count, excluded_count, error_count) "
+                    "VALUES (8003, '2026-07-24T17:30:05', '2026-07-24', "
+                    "'2026-07-27', 1, 0, 0, 1, 0, 0)")
+                raise ValueError("the write failed")
+
+    assert proxy.rolled, "the planted rollback never took effect"
+    assert not conn.in_transaction, "the premise: the rollback DID take effect"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM evaluation_runs WHERE id = 8003"
+    ).fetchone()[0] == 0, "the premise: nothing partial survived"
+
+    messages = [r.getMessage() for r in records
+                if r.levelno >= logging.ERROR]
+    assert messages, "the cleanup failure was not reported at all"
+    assert any("TOOK EFFECT" in m for m in messages), messages
+    assert not any("STILL OPEN" in m for m in messages), (
+        "the warning claims an open transaction and a visible partial row "
+        "while the connection is clean and the row is gone")

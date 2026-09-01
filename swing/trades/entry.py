@@ -512,13 +512,30 @@ def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool):
             try:
                 conn.rollback()
             except BaseException as cleanup_error:  # noqa: BLE001 -- the CLASS
-                log.error(
-                    "22-A: the entry write failed (%s) AND could not be "
-                    "rolled back (%s). The WRITE transaction is STILL OPEN "
-                    "with a partial row in it, its reservation still held, "
-                    "and this connection MUST BE DISCARDED rather than "
-                    "reused -- a later commit on it would make the partial "
-                    "row durable.", write_error, cleanup_error)
+                # THE MESSAGE IS RE-DERIVED FROM THE CONNECTION, NOT ASSUMED
+                # FROM THE FACT THAT ROLLBACK RAISED (Codex 22A-FIX-R9-05).
+                # An AFTER-EFFECT exception -- SQLite performing the rollback
+                # and the interrupt landing as the call returns -- leaves the
+                # transaction CLOSED and the partial row GONE, and the first
+                # version of this handler still announced "STILL OPEN with a
+                # partial row in it".  A cleanup warning that is WRONG about
+                # the state teaches an operator to distrust the right ones.
+                if conn.in_transaction:
+                    log.error(
+                        "22-A: the entry write failed (%s) AND could not be "
+                        "rolled back (%s). The WRITE transaction is STILL "
+                        "OPEN with a partial row in it, its reservation still "
+                        "held, and this connection MUST BE DISCARDED rather "
+                        "than reused -- a later commit on it would make the "
+                        "partial row durable.", write_error, cleanup_error)
+                else:
+                    log.error(
+                        "22-A: the entry write failed (%s) and the rollback "
+                        "TOOK EFFECT but then raised (%s). The transaction is "
+                        "CLOSED and nothing partial is visible; the failure "
+                        "is reported because a connection whose rollback "
+                        "raises is of unknown health and should not be "
+                        "reused silently.", write_error, cleanup_error)
                 raise cleanup_error from write_error
         raise
 

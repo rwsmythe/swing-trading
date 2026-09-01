@@ -2587,6 +2587,31 @@ def test_SS2_the_ENTRY_PATH_takes_BaseException_too() -> None:
         f"sqlite3.Error ROSTER: {live}. An interrupt is exactly the failure a "
         f"cleanup path must survive, and this one writes a TRADE.")
 
+    # **AND THE SHAPE, NOT TWO SPELLINGS OF IT (Codex 22A-FIX-R9-06, verified
+    # by mutation).**  The string scan above is a ROSTER OF TWO STRINGS, and
+    # regressing this handler to `except Exception` left it GREEN -- the
+    # roster-versus-shape lesson, inside the check written to enforce it, one
+    # hour after I wrote the check.  `Exception` also catches the
+    # `OperationalError` the behavioural row plants, so that test stayed green
+    # too: only a walk over the HANDLER ITSELF distinguishes them.
+    import ast
+
+    fn = next(
+        (n for n in ast.parse(source).body
+         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+         and n.name == "_entry_transaction"), None)
+    assert fn is not None, "_entry_transaction is no longer module-level"
+    handlers = [h for h in ast.walk(fn) if isinstance(h, ast.ExceptHandler)]
+    assert handlers, "_entry_transaction has no exception handler at all"
+    for handler in handlers:
+        assert (isinstance(handler.type, ast.Name)
+                and handler.type.id == "BaseException"), (
+            f"_entry_transaction catches "
+            f"{ast.unparse(handler.type) if handler.type else 'bare'} at line "
+            f"{handler.lineno}, not BaseException. `Exception` misses "
+            f"KeyboardInterrupt / SystemExit / GeneratorExit -- exactly the "
+            f"failures a cleanup path on the MONEY-BEARING entry must survive.")
+
 
 def test_SS2_every_cleanup_catch_in_the_module_takes_BaseException() -> None:
     """THE SWEEP'S OWN CLOSURE CHECK, so the class cannot come back one

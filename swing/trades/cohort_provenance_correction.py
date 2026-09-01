@@ -2684,12 +2684,26 @@ def correct_cohort_provenance(
                 conn.rollback()
             # SELF-SWEEP SS-22A-FIX-2: `BaseException`, not the roster.
             except BaseException as cleanup_error:  # noqa: BLE001
-                log.error(
-                    "22-A: the cohort-provenance correction failed (%s) AND "
-                    "could not roll back (%s). The WRITE transaction is STILL "
-                    "OPEN, its reservation still held, and this connection "
-                    "MUST BE DISCARDED rather than reused.",
-                    write_error, cleanup_error)
+                # RE-DERIVED FROM THE CONNECTION (Codex 22A-FIX-R9-05, which
+                # named this site as the entry path's exact mirror).  An
+                # after-effect exception leaves the transaction CLOSED, and
+                # announcing "STILL OPEN" then teaches an operator to
+                # distrust the accurate warnings too.
+                if conn.in_transaction:
+                    log.error(
+                        "22-A: the cohort-provenance correction failed (%s) "
+                        "AND could not roll back (%s). The WRITE transaction "
+                        "is STILL OPEN, its reservation still held, and this "
+                        "connection MUST BE DISCARDED rather than reused.",
+                        write_error, cleanup_error)
+                else:
+                    log.error(
+                        "22-A: the cohort-provenance correction failed (%s) "
+                        "and the rollback TOOK EFFECT but then raised (%s). "
+                        "The transaction is CLOSED and nothing partial is "
+                        "visible; the failure is reported because a "
+                        "connection whose rollback raises is of unknown "
+                        "health.", write_error, cleanup_error)
                 raise cleanup_error from write_error
         raise
 
