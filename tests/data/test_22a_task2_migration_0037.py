@@ -373,25 +373,38 @@ def test_the_low_id_tier_is_conservative_not_exact_case_33(conn) -> None:
     when the barrier was installed, so the comparison is STRICTLY GREATER THAN.
     A ``>=`` implementation stamps it ``live_at_acceptance`` and mints a false
     structural-proof label for the one row the boundary is named after.
+
+    **THIS ROW WAS VACUOUS AND COULD NOT FAIL** (semantic re-audit
+    2026-08-31, upgraded from WEAKER at QA).  It SELECTed a
+    ``CASE WHEN ? > (...)`` expression THE TEST ITSELF WROTE and asserted on
+    its own expression; the only production input was
+    ``max_candidate_id_at_barrier``.  A ``>=`` in the `0037` minting trigger
+    or in ``freeze_tier_for_candidate`` left it GREEN -- and its own docstring
+    NAMES that defect as the thing it exists to catch.  It now asks the
+    PRODUCTION READER, on both sides of the boundary, so the strictness it
+    describes is the strictness it measures.
     """
+    from swing.data.repos.candidates_immutability_epoch import (
+        freeze_tier_for_candidate,
+    )
+
     boundary = conn.execute(
         "SELECT max_candidate_id_at_barrier FROM candidates_immutability_epoch"
     ).fetchone()[0]
-    at = seed_fire(conn, candidate_id=boundary + 1, run_id=131,
-                   action_session_date="2026-07-20")
-    assert at == boundary + 1
-    tier_at_boundary = conn.execute(
-        "SELECT CASE WHEN ? > (SELECT max_candidate_id_at_barrier FROM "
-        "candidates_immutability_epoch WHERE epoch_id = 1) "
-        "THEN 'live_at_acceptance' ELSE 'pre_barrier_reconstructed' END",
-        (boundary,)).fetchone()[0]
-    tier_above = conn.execute(
-        "SELECT CASE WHEN ? > (SELECT max_candidate_id_at_barrier FROM "
-        "candidates_immutability_epoch WHERE epoch_id = 1) "
-        "THEN 'live_at_acceptance' ELSE 'pre_barrier_reconstructed' END",
-        (boundary + 1,)).fetchone()[0]
-    assert tier_at_boundary == "pre_barrier_reconstructed"
-    assert tier_above == "live_at_acceptance"
+    above = seed_fire(conn, candidate_id=boundary + 1, run_id=131,
+                      action_session_date="2026-07-20")
+    assert above == boundary + 1
+
+    tier_at_boundary, installed = freeze_tier_for_candidate(conn, boundary)
+    assert installed is True, (
+        "the barrier must be standing, or the reader answers pre-barrier for "
+        "a reason unrelated to the comparison")
+    assert tier_at_boundary == "pre_barrier_reconstructed", (
+        "the BOUNDARY ROW ITSELF must be pre-barrier; a `>=` reader mints a "
+        "false structural-proof label for the row the boundary is named after")
+    assert freeze_tier_for_candidate(conn, above)[0] == "live_at_acceptance", (
+        "the reader refuses everything, so the row above is not what proves "
+        "the boundary is strict")
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +417,16 @@ def test_every_barrier_message_is_legible_case_36(conn) -> None:
     Each message must name its own trigger, the ARC, and the recovery path.
     Byte-comparing the message would make an IMPROVEMENT to the wording a false
     red, which is how a legibility requirement decays into a string pin.
+
+    **THE TRIGGER-NAME CLAUSE WAS UNFALSIFIABLE** (semantic re-audit
+    2026-08-31, upgraded from WEAKER at QA and verified BY EXECUTION).  It
+    asked ``name in body`` where ``body`` was the WHOLE ``sqlite_master.sql``
+    -- which BEGINS ``CREATE TRIGGER <name>`` -- so the clause could not fail
+    for any trigger, ever.  Measured over the six ``trg_candidates*`` rows:
+    every header contains the name AND every RAISE message contains it too, so
+    the intended property genuinely holds today; an edit removing the name
+    from the MESSAGE simply left the row green.  All three clauses now read
+    the text AFTER ``BEGIN``, which is the body the operator sees.
     """
     bodies = {
         name: sql for name, sql in conn.execute(
@@ -412,10 +435,14 @@ def test_every_barrier_message_is_legible_case_36(conn) -> None:
     guarded = (*BARRIER_TRIGGERS, *EPOCH_TRIGGERS,
                "trg_loml_no_update", "trg_loml_no_delete")
     for name in guarded:
-        body = bodies[name]
-        assert name in body, f"{name} does not name itself in its own message"
-        assert "22-A" in body, f"{name} does not name the arc"
-        assert "reversibility header" in body, (
+        header, sep, message = bodies[name].partition("BEGIN")
+        assert sep, f"{name} has no BEGIN, so its message cannot be located"
+        assert name in header, f"{name} is not the trigger it claims to be"
+        assert name in message, (
+            f"{name} does not name itself in its own MESSAGE; the header names "
+            f"it by construction, which is what made this clause vacuous")
+        assert "22-A" in message, f"{name} does not name the arc"
+        assert "reversibility header" in message, (
             f"{name} does not name the recovery path")
 
 
