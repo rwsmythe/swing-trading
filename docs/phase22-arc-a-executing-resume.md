@@ -1,52 +1,67 @@
-# 22-A EXECUTING — resume record (paused 2026-08-27, weekly token budget)
+# 22-A EXECUTING — resume record (rewritten 2026-08-31 at a generational handoff)
 
-**The arc is PAUSED at a clean boundary, not abandoned.** Nothing is half-written; the branch is coherent and the suite is green. This file exists so a cold resumer needs no conversation history.
+**The arc is at a clean boundary and is NOT mergeable yet.** Nothing is half-written; branch coherent, suite green. This file is written so a cold resumer needs no conversation history. **It supersedes the 2026-08-27 version, which was stale on state.**
 
 ## STATE
 
-- **Branch `22-a-exec`**, worktree `.worktrees/22-a-exec`, base `a18a3771`, **HEAD `d74f378e`**, **66 commits**, tree clean, **zero trailer-bearing commits**.
-- **Suite: 11,831 passed / 12 skipped / 0 failed.** `ruff check swing/` clean.
-- **146 of 146 plan cases implemented**, each traced to a **PASSING pytest node id** (219 distinct ids, 303 passed) — verified by RUNNING, never by the static closure meter, which counts a case implemented the moment a file mentions its id. **`DEFERRED_CASES` is EMPTY** and has been for ten consecutive dispatches.
-- **Live DB UNTOUCHED at `schema_version = 36`; `0037` is UNAPPLIED.** That is what keeps the amendment-before-merge ruling alive — the migration remains editable in place, and that fact must be **re-verified at the merge gate** before anything lands.
-- **The plan is on `main`**: `docs/superpowers/plans/2026-08-24-phase22-arc-a-entry-path-order-mandate-binding.md`.
+- **Branch `22-a-exec`**, worktree `.worktrees/22-a-exec`, base `a18a3771`, **HEAD `403ea9ff`**, **81 commits**, tree clean, **zero trailer-bearing commits** (filtered on the trailer KEY).
+- **Suite: 11,937 passed / 13 skipped / 0 failed.** `ruff check swing/` clean.
+- **Live DB UNTOUCHED at `schema_version = 36`; migration `0037` is UNAPPLIED.** That fact is what keeps the amendment-before-merge ruling alive — the migration is still editable in place. **Re-verify it at the merge gate.**
+- `main` is at `081c7de4`, **44 commits ahead of origin, unpushed**.
+- **Fifteen counted review rounds; thirteen of them full-diff; NONE clean. 102 findings, zero reopened, zero reverted, zero dismissed.** The loop never misbehaved.
 
-## ARTIFACTS PRESERVED OUTSIDE THE REPO
+## ⚠ A CLAIM THIS DOCUMENT PREVIOUSLY MADE IS FALSE
 
-The review ledger and all round transcripts are **gitignored** and would die with the worktree. Copied to **`~/swing-data/review-transcripts/22-a-exec/`** (22 MB): `.copowers-findings.md` (**1,993 lines** — twelve counted rounds, every finding with its disposition), `.codex-review-r1..r12`, the prompts, and `.codex-probes/` (the call-graph walk and the case-to-node-id trace).
+Earlier versions — and every status report the prior orchestrator gave — said **"146 of 146 cases implemented, each traced to a passing node id."** **That figure is NAME COVERAGE, NOT SEMANTIC IMPLEMENTATION.** The closure gate binds a case id because a test *function is named* `..._case_N`; it cannot see whether the test measures what the case specifies.
 
-## WHAT REMAINS — five findings, and leg 11's scope
+**Demonstrated:** the plan's **S3.4 specifies case 4 as "RHI — place-intent WITHOUT a validity row → falls through."** The test named `..._case_4` builds **a broker-ACCEPTED order and asserts ADMISSION** — the opposite. Case `4b` asserts only that the lookup returns empty, never the end-to-end persisted outcome S3.4 requires.
 
-**Leg 11 was dispatched and stopped before doing any work. Its scope was ONE IDEA: make the arc's own instruments un-foolable.** Round 12's three open non-residual findings are one class in three costumes:
+**Do not restate 146/146 until case 4 is fixed AND the other 145 bindings are re-audited for the same shape.** A gate that can bind a name to a contradicting test has probably done it more than once.
 
-1. **`R12-02` / `R12-03` — the `AL-3` roster declares itself EXACT and is INCOMPLETE.** Two trigger clauses are service-validated in exactly AL-3's sense and named nowhere: the **anchoring-fill clause** (`0037:869-875`) proves the cited fill is *an* entry fill of the trade on the frozen session but never that it is **the authoritative one** (`resolve_authoritative_entry_fill`, `cohort_provenance_correction.py:593`); and **`probe_guards.fill_session_is_session`** (`0037:1252`), whose verdict is read as `pass` with no exchange-calendar membership proved.
-2. **`R12-04`** — the whole-tree SQL closure walk matches **per LINE**, so a two-line spelling passes it.
-3. **`R12-05`** — `_TYPE_ROSTER` matches only the **exact two-type tuple**.
-4. **`R12-01`** — a residual of the write-path class; see the ledger entry.
+## REVIEWER B RAN FOR THE FIRST TIME (2026-08-31) — and it is the reason the arc is not mergeable
 
-**THE OPERATOR RULED THE FIX (2026-08-27): make `AL-3` CLOSURE-CHECKED rather than hand-maintained**, and the same for the two evadable walks — **reusing the walk `SS-12` already built** rather than authoring a fourth instrument. The implementer's own sentence at `SS-12` is the instruction: *"the roster is not the fix; the closure check is."*
+Fifteen rounds of Reviewer A had run; **B — the orchestrator's own gate, required by CHARC charter §2.9 — had never run.** It ran CLAIMS_FIRST (the artifact's own headline promises measured end-to-end before any code-level lens) and returned `NEW_CRITICAL_MAJOR_FOUND`.
 
-**His ground for choosing this over shipping, which a resumer should not re-litigate:** merging a roster that says "exact" while we know it is not would ship **a false claim in the document whose entire job is to state what is true** — the precise defect this arc spent twelve rounds eliminating everywhere else, including inside its own instruments.
+**Its output is preserved at `~/swing-data/review-transcripts/22-a-exec/REVIEWER-B-cold-audit-2026-08-31.txt`** (25,137 lines) with its prompt beside it. **It was written to a session scratchpad and would have been lost; it is the only B pass this arc has had.**
 
-**Target shape:** every trigger clause reading a service-supplied value is **either SQL-bound or named in AL-3**, asserted mechanically **in both directions**, so a clause added later without a roster entry fails loudly instead of silently widening or narrowing a declared limitation. Each walk ships a **discriminator that fails against the evasion it now catches** (a two-line spelling; a reordered tuple) — an instrument whose evasion case is untested is the same defect one level down.
+**Of five headline claims: one HELD, four failed — but TWO of those failures were the orchestrator's imprecise claim WORDING, not the code.** Claim 1 was stated without the post-barrier qualifier the design always had (B: *"for an eligible post-barrier link, the path itself is clean"*). Claim 4 said "structurally immutable" where `0037` **declares that exact residual itself** (B: *"the declared residual is accurate"*). **B's own summary is the fair one: the L-series limitations accurately describe their instruments; the headline claims are broader than those limitations permit.**
 
-**Why this roster specifically:** it has been wrong **three times, in both directions**. `R9-05` BROADENED it (the migration records this against itself at `0037:1279-1283` — *"silently broadened a declared limitation roster to cover something nobody had ruled on"*); `SS-12` was the same shape on the barrier roster, one member short; `R12-02/03` are AL-3 short by two.
+## THE OPEN LIST
 
-## THEN: ROUND 13, AND THE GATES AFTER IT
+**MUST FIX before merge:**
 
-Twelve rounds are counted; **on the FULL diff the loop has run ten (rounds 3–12) and none was clean.** Binding convergence is a **clean verdict on the full diff** `a18a3771..HEAD` — per-leg rounds over a growing subset do not sum to a reviewed whole (orchestrator-ruled, both directors endorsed).
+1. **A money-bearing web entry can still be blocked by cohort metadata** (B, P2). `swing/web/routes/trades.py:1106` returns HTTP 400 **before `record_entry`** when a submitted envelope carries a numeric/blank/non-string order id — and the arc's own test at `tests/web/test_routes/test_22a_task10_entry_route_ext2.py:352` *proves* no trade is written. **Production-reachable** via a stale or tampered form. **This is RD's governing principle — cohort bookkeeping never blocks a money-bearing entry — for the FOURTH time in this arc, and the first time shipped.**
+2. **Case 4's test measures the opposite of its specification** (B, P2; §above). Fix it, then re-audit all 146 bindings.
+3. **`22A-R15-03`** (A, major) — `contextlib.suppress(sqlite3.Error)` around `conn.rollback()` in `cohort_provenance_correction.py:2185-2192`: when savepoint creation *and* rollback both fail, the owned deferred transaction leaks. **It contradicts `AL-15`, written four commits earlier in the same leg.** ~6 lines plus a both-verbs-fail proxy row.
+4. Cheap: **`except Exception` → `BaseException`** in the correction rollback (B, P3, `cohort_provenance_correction.py:2463`).
 
-**Transport:** the full `-U8` diff is **1,207,126 chars** against Codex's **1,048,576** cap. Use the recipe §3 **`$HOME` staging fallback** — stage the diff, the `--stat` and a working-tree copy in WSL `$HOME`, run codex from there, prompt only on stdin. **Do NOT improvise a split** (CHARC-ruled, with that measurement as the reason). A capped delivery shows **banner + echoed input + no footer** and **is NOT a round.**
+**ROUTE TO CHARC:** the citation trigger still **re-derives** latest-validity-child (`0037:1507`), governing place cycle (`:1565`) and freeze-tier verdict (`:1729`) — against his own *SQL verifies a FACT, never re-derives a JUDGMENT* ruling. Raw-write-only; the migration acknowledges the gap at `:1752-1756`. His line between fact and judgment (the R5-02 epoch comparison SURVIVES as a fact comparison) is the frame.
 
-After a clean round 13: **orchestrator QA against disk → the orchestrator's own second eye (reviewer B — NOT the implementer's) → the merge gate, where both directors are waiting → then S9 step 0, a BLOCKING full live pipeline run, then the operator-witnessed step-by-step application.**
+**DECLARED AND ACCURATE — do not "fix":** the `-1` REPLACE residual (B confirmed the declaration is correct).
 
-**This arc corrects NEITHER trade 24 NOR trade 25** — both carry as named pending rows until 22-A2.
+**ROUND 15's SEVEN** (A) are in the ledger, classified production-vs-instrument, **with no owner assigned** — assigning them is the operator's call. Measured since: `R15-02`'s live incidence is **ZERO** (0 of 5 latch intents carry a non-finite limit; the mechanism is real — `+inf` passes `CHECK (p > 0)`, `json.dumps` emits bare `Infinity`, `json_valid` rejects it).
 
-## STANDING RULINGS A RESUMER MUST NOT RE-DERIVE
+## ARTIFACTS
 
-- **SQL verifies a FACT; it must never re-derive a JUDGMENT across an engine boundary** — the twin mirrors the authority by consuming its OUTPUT, not by reimplementing its reasoning. (The persist-canonical reshape; **verified: zero SQL reads into a fill envelope remain.**)
-- **`R5-02`'s epoch-boundary comparison SURVIVES** — a stored fire position against a stored boundary is a FACT comparison. What died is parsing, normalization, coercion.
-- **Cohort bookkeeping never blocks a money-bearing entry** (RD, ruled twice).
-- **A commit message is a CLAIM, and staging a file is not changing it** — read the DIFF of the commit you just made, not the exit code of the script that made it (CHARC, against his own work).
-- **`-1` PK contract:** the clause reads `(NEW.pk != -1 AND pk = NEW.pk)`; NEW tables carry `CHECK (pk > 0)`; every site ships the three-direction set — ordinary append SUCCEEDS, conflicting REPLACE ABORTS, explicit conflicting id ABORTS.
-- **A refusal-only test set cannot establish that a guard can EVER accept** — prove a truthful payload accepts, then vary one field out of that baseline.
+`~/swing-data/review-transcripts/22-a-exec/` — the ledger `.copowers-findings.md` (**2,728 lines, fifteen rounds**), `.codex-review-r1..r15`, prompts, probes, **and reviewer B's audit**. All gitignored in the worktree and would die with it. The worktree copy is the working one.
+
+## STANDING RULINGS — INHERIT, DO NOT RE-DERIVE
+
+- **SQL verifies a FACT; it must never re-derive a JUDGMENT across an engine boundary** — the twin mirrors the authority by consuming its OUTPUT, not reimplementing its reasoning. (`R5-02`'s epoch-boundary comparison SURVIVES: stored position vs stored boundary is a fact.)
+- **Cohort bookkeeping never blocks a money-bearing entry** (RD, ruled twice; violated four times).
+- **A commit message is a CLAIM; staging a file is not changing it** — read the DIFF of the commit you just made (CHARC, against his own work).
+- **`-1` PK contract:** `(NEW.pk != -1 AND pk = NEW.pk)`; NEW tables carry `CHECK (pk > 0)`; every site ships the three-direction set (ordinary append SUCCEEDS · conflicting REPLACE ABORTS · explicit conflicting id ABORTS).
+- **A refusal-only test set cannot establish that a guard can EVER accept.**
 - **A trigger whose `WHEN` can evaluate to NULL does not fire — it fails open, silently.**
+- **Do not claim exact when you are not.** A heuristic declared with its blindness named is honest; one widened and called closed is not. Widening an instrument along the reported axis answers the EXAMPLE, not the CLASS.
+
+## TRANSPORT AND HARNESS HAZARDS (all measured on this arc)
+
+- Full diff **1,382,975 chars** vs Codex's **1,048,576** cap → use recipe §3's **`$HOME` staging fallback**; never improvise a split. A capped delivery shows banner + echoed input + **no footer** and is NOT a round.
+- **FIVE distinct exit-0-and-nothing-happened mechanisms:** the dead npm shim · a missing redirect target · CRLF line endings · MSYS path-mangling · **passing WSL a Windows `C:/...` path instead of `/mnt/c/...`** (the orchestrator did this on the first B launch — it printed "No such file or directory" and exited 0; caught only by checking the redirect target). **Always verify the redirect target is non-empty BEFORE reading it.**
+- The harness **collapses `\\` → `\` inside a bash heredoc, including a quoted `<<'EOF'`**. Exit codes stay 0; corruption surfaces only on execution. Use Edit/Write for content with backslashes; `printf` + `file` for shell scripts.
+- Poll the **exit file**, never the transcript tail; use the anti-self-match `pgrep -af codex | grep -v 'pgrep\|grep'`.
+
+## WHAT A RESUMER DOES NEXT
+
+Fix items 1–4, re-audit the case bindings, route the trigger question to CHARC, then **one confirming round**. Then: orchestrator QA → the merge gate (both directors waiting) → **S9 step 0, a BLOCKING full live pipeline run** → the operator-witnessed step-by-step application. **This arc corrects NEITHER trade 24 NOR trade 25**; both carry as named pending rows into RD's September read.
