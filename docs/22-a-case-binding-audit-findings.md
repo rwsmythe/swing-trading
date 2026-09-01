@@ -16,7 +16,7 @@ Every row was produced **spec first**. For each case I located the plan's text f
 
 **What this audit can establish:** whether the assertions in the bound test measure the outcome the plan specifies for that case. **What it cannot:** whether the specification is right (out of scope by the brief), whether the production code is right (a faithful test can still be green against a defect the case does not reach), and whether a case's fixture leaves a free dimension the plan's own S3.8 audit would catch. Where a test is faithful but a sibling property is unpinned I said so in the row's note rather than moving the verdict.
 
-**Context, so the counts are not read as a suite verdict:** all twenty `test_22a_*.py` modules are green on this tree -- 101 + 126 + 394 = 621 tests across the three runs used here, zero failures. A `WEAKER` or `CONTRADICTS` verdict is a statement about what the test MEASURES, never about whether it passes.
+**Context, so the counts are not read as a suite verdict:** all twenty `test_22a_*.py` modules on disk are green on this tree. Method, because the first version of this sentence claimed twenty from a run covering thirteen: four runs, 101 + 126 + 394 + 182 = **803 passed, 8 skipped, 0 failed**, and the module list was checked against `find tests -name 'test_22a_*.py'` rather than against the modules I happened to have opened. A `WEAKER` or `CONTRADICTS` verdict is a statement about what a test MEASURES, never about whether it passes.
 
 ## Counts
 
