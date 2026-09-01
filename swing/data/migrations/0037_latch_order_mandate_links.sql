@@ -1598,6 +1598,29 @@ FOR EACH ROW WHEN NOT (
          -- _order_key -- spelled here as ORDER BY ... DESC LIMIT 1 rather than
          -- MAX(intent_id), which is a DIFFERENT order whenever a later-inserted
          -- row carries an earlier recorded_ts.
+         --
+         -- THIS ORDERING IS A **FACT**, NOT A RE-DERIVED JUDGMENT, AND THE
+         -- REASON IS THE SCHEMA (CHARC, ruled 2026-09-01). The rule that SQL
+         -- must never re-derive a judgment across an engine boundary targets
+         -- INTERPRETATION -- parsing, normalization, coercion, semantic
+         -- predicates -- where the two engines hold independent opinions. An
+         -- ordering over STORED KEYS is a QUERY ABOUT THE TABLE, provided the
+         -- key carries no interpretive freedom, and here it carries none:
+         -- `recorded_ts` is FORMAT-CONSTRAINED by `0033:704-712` (length
+         -- exactly 19, a GLOB fixing all 19 positions, `datetime()` non-null,
+         -- both date halves, and per-component ranges), so it is a FIXED-WIDTH
+         -- canonical ISO string, which orders LEXICALLY exactly as it orders
+         -- CHRONOLOGICALLY. Python's authority compares the same strings by
+         -- the same tuple. The engines cannot disagree because the schema
+         -- removed the degree of freedom.
+         --
+         -- WHERE THE KEY IS AN UNCONSTRAINED TEXT TIMESTAMP THE RULE DOES
+         -- BIND -- the query is then an interpretation wearing a query's
+         -- clothes (D38). Read this as a decision with its ground, not as a
+         -- violation to be "fixed": removing the ordering loses a real defense
+         -- against a forger citing a genuine-but-not-GOVERNING row, and its
+         -- only divergence direction would be a wrong REFUSAL of a truthful
+         -- row -- cheap, legible and adjudicable.
          AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung3b_latest_validity_child')
                        = 'object'
                   THEN json_remove(json_extract(NEW.cited_latch_probe_json,
@@ -1657,6 +1680,20 @@ FOR EACH ROW WHEN NOT (
          -- BEFORE the fill session, the same date-only clock policy the service
          -- applies: an intent recorded ON the fill session is UNORDERABLE
          -- against it and refuses rather than being counted either way.
+         --
+         -- THIS ORDERING IS A **FACT**, NOT A RE-DERIVED JUDGMENT, FOR THE
+         -- SAME REASON AS RUNG 3b ABOVE (CHARC, ruled 2026-09-01).
+         -- `recorded_ts` is FORMAT-CONSTRAINED by `0033:704-712` -- length
+         -- exactly 19, a GLOB fixing all 19 positions, `datetime()` non-null,
+         -- both date halves, per-component ranges -- so it is a FIXED-WIDTH
+         -- canonical ISO string whose LEXICAL order IS its CHRONOLOGICAL
+         -- order, and Python's authority (`swing/latches/classification.py`
+         -- `_order_key`) compares the same strings by the same tuple. An
+         -- ordering over a key with no interpretive freedom is a QUERY ABOUT
+         -- THE TABLE; the engine-boundary rule targets INTERPRETATION, and it
+         -- WOULD bind here if `recorded_ts` were an unconstrained TEXT
+         -- timestamp (D38). Read this as a decision with its ground, not as a
+         -- violation to be "fixed".
          AND CASE WHEN json_type(NEW.cited_latch_probe_json, '$.authorization.rung4_governing_place_intent')
                        = 'object'
                   THEN json_remove(json_extract(NEW.cited_latch_probe_json,
