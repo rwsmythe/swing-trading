@@ -280,3 +280,41 @@ def test_a_MISSING_envelope_symbol_fails_the_guard(tmp_path) -> None:
     """
     assert _judge(_order(), envelope_symbol=None) == "ticker_mismatch"
     assert _judge(_order(), envelope_symbol=_order().ticker) is None
+
+
+# ---------------------------------------------------------------------------
+# 22A-R15-02 (NARROW) -- A NON-FINITE BROKER LIMIT IS AN AUTHORIZE-THEN-ABORT
+#
+# `0033:414` is `CHECK (actual_limit_price IS NULL OR actual_limit_price > 0)`
+# and `+inf > 0` is TRUE in SQLite, so an infinite broker limit is SCHEMA-LEGAL.
+# The guard then rounded it to infinity and accepted any finite fill price
+# below it; the citation evidence writer serialised the bare token `Infinity`,
+# `json_valid()` read FALSE, and the citation INSERT ABORTED -- AFTER the
+# service had authorized.  The operator got a raw `sqlite3` error where a typed
+# refusal belonged: the authorize-then-abort shape this arc met five times.
+#
+# LIVE INCIDENCE IS MEASURED ZERO.  The mechanism is what is fixed; the CLASS
+# fix is the trigger-predicate closure check, not a sixth patch at one site.
+#
+# It is the SAME shape as `frozen_pivot`'s guard four lines above, and it
+# carries the SAME reason: `actual_limit_price` is a value FROZEN on the
+# accepted validity row, and what is true of it is that it cannot be used.
+# ---------------------------------------------------------------------------
+def test_a_non_finite_broker_limit_refuses_before_any_arithmetic() -> None:
+    """PRE-FIX: `None` -- the guard ACCEPTED, and the abort landed at the
+    citation INSERT with an engine error.  POST-FIX: a typed refusal.
+
+    Both infinities, because `-inf` passes `> 0` in neither direction but is
+    equally unusable, and a value-set sweep that checked only `+inf` would
+    leave the mirror case live.
+    """
+    for limit in (float("inf"), float("-inf")):
+        assert _judge(_order(actual_limit_price=limit)) == (
+            "frozen_value_unavailable"), limit
+
+
+def test_a_FINITE_broker_limit_is_still_accepted() -> None:
+    """THE CONTROL.  A refusal-only pair cannot establish that the guard can
+    still accept the ordinary order, which is every real one."""
+    assert _judge(_order(actual_limit_price=55.59)) is None
+    assert _judge(_order(actual_limit_price=None)) is None

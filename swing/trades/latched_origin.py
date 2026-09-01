@@ -1003,6 +1003,32 @@ def assert_fill_consistent_with_order(
             or not math.isfinite(float(order.frozen_pivot))):
         return "frozen_value_unavailable"
 
+    # AND THE BROKER'S OWN LIMIT IS THE SAME SHAPE, ONE COLUMN OVER (Codex
+    # 22A-R15-02, NARROW).  `0033:414` is
+    # `CHECK (actual_limit_price IS NULL OR actual_limit_price > 0)` and
+    # `+inf > 0` is TRUE in SQLite, so an infinite broker limit is
+    # SCHEMA-LEGAL.  The `broker_cap` block below then rounded it to infinity
+    # and accepted any finite fill price under it; the citation evidence
+    # writer serialised the bare token `Infinity`, `json_valid()` read FALSE,
+    # and the citation INSERT ABORTED -- AFTER the service had authorized.
+    # The operator got a raw `sqlite3` error where a typed refusal belonged:
+    # the authorize-then-abort shape this arc has met five times.
+    #
+    # LIVE INCIDENCE IS MEASURED ZERO.  This closes the MECHANISM at the
+    # authorization boundary; the CLASS -- the trigger's predicate set must be
+    # a SUBSET of the service's admission predicates -- is CHARC's ruled
+    # closure check, not a sixth patch at one site.
+    #
+    # THE REASON IS THE EXISTING ONE and that is deliberate.
+    # `actual_limit_price` is a value FROZEN on the accepted validity row, and
+    # what is true of it is exactly what is true of a non-finite frozen pivot:
+    # the frozen value cannot be used.  A new decline reason would widen a
+    # mirror family (the S5.1 reason view, the citation trigger's roster, the
+    # CHECK enum) for a distinction the operator does not need.
+    if (order.actual_limit_price is not None
+            and not math.isfinite(float(order.actual_limit_price))):
+        return "frozen_value_unavailable"
+
     # FRAMEWORK CONFORMITY.  The upper bound comes from ``mandate_limit_price``
     # -- IMPORTED, NEVER RE-ROUNDED.  ``round(zone_cap, 2)`` is a SECOND
     # rounding rule for a quantity that already has one, and on the live VSTS
