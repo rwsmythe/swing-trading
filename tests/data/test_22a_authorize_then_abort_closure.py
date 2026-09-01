@@ -704,3 +704,67 @@ def test_R4M4_the_comment_stripper_is_STRING_AWARE() -> None:
         "a block comment must PRESERVE its newlines, or every line number "
         "this module reports drifts")
     assert _strip_sql_comments("SELECT 'it''s' -- gone") == "SELECT 'it''s' "
+
+
+@pytest.mark.parametrize("operand", ["entry_price", "shares"])
+def test_SS1_a_numeric_LOOKING_blob_REQUEST_operand_is_refused(
+        tmp_path, operand) -> None:
+    """SELF-SWEEP SS-22A-FIX-1 -- the storage-class class, RE-GREPPED.
+
+    `R3-01` fixed the broker limit and `R4-03` the two frozen operands; the
+    RESOLVER was still coercing the request's own `entry_price` / `shares`
+    through `float()` before authorization.  `fills.price` / `fills.quantity`
+    are REAL columns SQLite does not apply affinity to, so a numeric-LOOKING
+    BLOB is schema-legal under their `> 0` CHECKs, converts cleanly, and
+    reaches the evidence blob as `bytes` -- where `json.dumps` dies and the
+    citation trigger's `json_type` binding refuses.  The SAME
+    authorize-then-abort, on the request's operands.
+
+    It is a REFUSAL and not an exception, so the entry still records
+    honest-unset: the reasons are the ones the ladder already owns for these
+    two operands.
+    """
+    import json
+    from datetime import date
+    from types import SimpleNamespace
+
+    from swing.trades.latched_origin import resolve_latched_provenance
+    from tests._latch_probe_world_22a import (
+        BROKER_ORDER_ID,
+        FILL_SESSION,
+        TICKER,
+        accept_and_link,
+    )
+    from tests.trades.test_22a_task8_resolver import build_world
+
+    blob = b"50.50" if operand == "entry_price" else b"2"
+    assert math.isfinite(float(blob)), "the Python premise: float() accepts it"
+
+    conn, cfg, candidate_id = build_world(tmp_path, f"ss1{operand}")
+    try:
+        accept_and_link(conn, candidate_id, session=date(2026, 7, 24))
+        conn.commit()
+
+        fields = dict(
+            ticker=TICKER, entry_date=FILL_SESSION.isoformat(),
+            entry_price=18.50, shares=2, fill_origin="schwab_auto",
+            hypothesis_label=None, candidate_id=None,
+            schwab_source_value_json=json.dumps(
+                {"schwab_order_id": BROKER_ORDER_ID,
+                 "schwab_instrument_symbol": TICKER}))
+        assert resolve_latched_provenance(
+            conn, cfg, SimpleNamespace(**fields)).admitted is True, (
+            "the control: the ordinary request still ADMITS, so the refusal "
+            "below is the storage class's doing")
+
+        fields[operand] = blob
+        verdict = resolve_latched_provenance(conn, cfg, SimpleNamespace(**fields))
+        assert verdict.admitted is False
+        assert verdict.decline_reason in (
+            "fill_outside_frozen_zone", "quantity_exceeds_order"), (
+            verdict.decline_reason)
+        assert verdict.recognised_but_underivable is True, (
+            "the request names an order, so the refusal must land honest-unset "
+            "rather than falling through to the ordinary chain")
+    finally:
+        conn.close()

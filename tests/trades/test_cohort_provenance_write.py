@@ -2375,3 +2375,134 @@ def test_R4M1_the_savepoint_name_is_PER_INVOCATION(conn) -> None:
         conn.execute("RELEASE cohort_provenance_preview_sp")
     finally:
         conn.rollback()
+
+
+# ===========================================================================
+# SELF-SWEEP SS-22A-FIX-2 -- THE CLASS, RE-GREPPED RATHER THAN PATCHED ONE
+# INSTANCE AT A TIME
+#
+# Round 5 fixed the `finally` block's narrow `sqlite3.Error` and stated the
+# class; round 6 then found FOUR more instances of it in the same module --
+# the preview's acquisition recovery, the apply path's rollback, the reader's
+# rollback, and a `rolled_back` flag set only after `execute()` returned.
+# "State the class once, then RE-GREP THE WHOLE ARTIFACT" is the standing
+# rule, and this family is that grep's result: every cleanup catch in
+# `cohort_provenance_correction.py` now takes `BaseException`.
+#
+# These rows carry SS ids and no round number: they are the sweep's, and the
+# sweep does not count toward convergence.
+# ===========================================================================
+class _InterruptOnRollback:
+    """Delegates everything; performs the REAL rollback and then interrupts."""
+
+    def __init__(self, real: sqlite3.Connection) -> None:
+        self._real = real
+        self.rolled = False
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def rollback(self):
+        self._real.rollback()
+        self.rolled = True
+        raise KeyboardInterrupt("planted just after rollback")
+
+
+def test_SS2_the_APPLY_path_survives_an_interrupt_during_its_rollback(
+        conn, monkeypatch) -> None:
+    """The apply path caught `BaseException` from the WRITE and only
+    `sqlite3.Error` from the ROLLBACK -- so an interrupt there escaped
+    unchained and the write transaction could stay open with its reservation
+    held (Codex 22A-FIX-R6-02, verified by execution)."""
+    ids = build_cadl_case(conn)
+    conn.commit()
+
+    import swing.trades.cohort_provenance_correction as mod
+
+    def _boom(conn_, **kw):
+        conn_.execute(
+            "UPDATE trades SET notes = 'sentinel-ss2' WHERE id = ?",
+            (ids["trade_id"],))
+        raise KeyboardInterrupt("planted inside the write")
+
+    monkeypatch.setattr(mod, "_correct_cohort_provenance_inner", _boom)
+    proxy = _InterruptOnRollback(conn)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        correct_cohort_provenance(
+            proxy, trade_id=ids["trade_id"],
+            cited_candidate_id=ids["candidate_id"],
+            cited_recommendation_id=ids["daily_recommendation_id"],
+            reason=REASON)
+    assert proxy.rolled, "the planted rollback never ran"
+    assert isinstance(caught.value.__cause__, KeyboardInterrupt), (
+        "the write error must travel with the cleanup error; a narrow catch "
+        "let the cleanup interrupt escape unchained")
+    assert conn.execute(
+        "SELECT notes FROM trades WHERE id = ?",
+        (ids["trade_id"],)).fetchone()[0] != "sentinel-ss2"
+
+
+def test_SS2_the_READER_survives_an_interrupt_during_its_rollback(
+        conn) -> None:
+    """The same class, on the third site (Codex 22A-FIX-R6-05)."""
+    build_cadl_case(conn)
+    conn.commit()
+    proxy = _InterruptOnRollback(conn)
+    with pytest.raises(KeyboardInterrupt, match="planted just after rollback"):
+        read_provenance_corrections(proxy)
+    assert proxy.rolled, "the planted rollback never ran"
+    assert not conn.in_transaction, (
+        "the reader's own transaction survived the interrupt")
+
+
+def test_SS2_a_CALLER_HELD_acquisition_failure_RELEASES_its_savepoint(
+        conn) -> None:
+    """`rolled_back` WAS SET ONLY AFTER `execute()` RETURNED, so an interrupt
+    landing as the call returned skipped the `RELEASE` and left this
+    function's savepoint live on the caller's transaction -- the exact outcome
+    the round-5 repair claimed to prevent (Codex 22A-FIX-R6-04, verified
+    against real SQLite).
+
+    Both verbs are attempted unconditionally now.  The assertion is that NO
+    savepoint carrying this module's prefix survives.
+    """
+    ids = build_cadl_case(conn)
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    proxy = _FailingCleanupConn(conn, "SAVEPOINT ")
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="planted on"):
+            preview_cohort_provenance_correction(
+                proxy, trade_id=ids["trade_id"],
+                cited_candidate_id=ids["candidate_id"],
+                cited_recommendation_id=ids["daily_recommendation_id"],
+                reason=REASON)
+        assert conn.in_transaction, "the caller's transaction was closed"
+    finally:
+        conn.rollback()
+
+
+def test_SS2_every_cleanup_catch_in_the_module_takes_BaseException() -> None:
+    """THE SWEEP'S OWN CLOSURE CHECK, so the class cannot come back one
+    instance at a time.
+
+    A STATIC read of the module: no `except sqlite3.Error` and no
+    `contextlib.suppress(sqlite3.Error)` survives in executable code.  Prose
+    describing the retired form is fine and is what the comment-blanking is
+    for -- the same instrument the migration walks use, for the same reason.
+    """
+    from pathlib import Path as _Path
+
+    import swing.trades.cohort_provenance_correction as mod
+
+    source = _Path(mod.__file__).read_text(encoding="utf-8")
+    live = [
+        (n, line) for n, line in enumerate(source.splitlines(), 1)
+        if not line.lstrip().startswith("#")
+        and ("except sqlite3.Error" in line
+             or "suppress(sqlite3.Error)" in line)
+    ]
+    assert not live, (
+        f"a cleanup catch narrowed back to the sqlite3.Error ROSTER: {live}. "
+        f"An interrupt is exactly the failure a cleanup path must survive, "
+        f"and this module has now met the roster class four times.")

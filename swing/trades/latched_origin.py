@@ -2612,6 +2612,39 @@ def resolve_latched_provenance(
     # ENTRY does not pay for it. Fail-CLOSED -- `aliveness_unverifiable` can
     # never admit -- and the log carries the exception type and a traceback so
     # a real defect is investigated rather than absorbed.
+    #
+    # SELF-SWEEP SS-22A-FIX-1 (the class Codex 22A-FIX-R3-01 / -R4-03 named,
+    # re-grepped rather than fixed one instance at a time).  `float(x)` is not
+    # a type test, and `fills.price` / `fills.quantity` are REAL columns
+    # SQLite does not apply affinity to -- so a numeric-LOOKING BLOB is
+    # schema-legal under their `> 0` CHECKs, converts cleanly, and reaches the
+    # evidence blob as `bytes` where `json.dumps` dies and the citation
+    # trigger's `json_type` binding refuses.  The SAME authorize-then-abort,
+    # on the REQUEST's operands rather than on the link's frozen ones.
+    #
+    # It is a REFUSAL, never an exception: the guard returns the reasons the
+    # ladder already owns for these two operands, so the entry still records
+    # honest-unset instead of paying for cohort bookkeeping.
+    if (isinstance(req.entry_price, bool)
+            or not isinstance(req.entry_price, (int, float))
+            or not math.isfinite(float(req.entry_price))):
+        log.warning(
+            "22-A: the fill's price for %s is %s, not a finite number; the "
+            "mandate cannot be judged against it and the entry records with "
+            "honest-unset cohort keys",
+            req.ticker, type(req.entry_price).__name__)
+        return _refuse("fill_outside_frozen_zone", order,
+                       freeze_tier=order.freeze_tier)
+    if (isinstance(req.shares, bool)
+            or not isinstance(req.shares, (int, float))
+            or not math.isfinite(float(req.shares))):
+        log.warning(
+            "22-A: the fill's quantity for %s is %s, not a finite number; the "
+            "mandate cannot be judged against it and the entry records with "
+            "honest-unset cohort keys",
+            req.ticker, type(req.shares).__name__)
+        return _refuse("quantity_exceeds_order", order,
+                       freeze_tier=order.freeze_tier)
     try:
         verdict = authorize_accepted_order(
             conn, cfg,

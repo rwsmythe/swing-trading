@@ -2128,6 +2128,22 @@ def _na_suffix_note(anchored: _Anchored, derived: _Derived) -> str | None:
 _PREVIEW_SAVEPOINT_PREFIX = "cohort_provenance_preview_sp"
 
 
+def _try(conn, sql: str) -> BaseException | None:
+    """Run a cleanup statement; return its failure rather than raising it.
+
+    SELF-SWEEP SS-22A-FIX-2.  Every cleanup verb on this path must be
+    ATTEMPTED even when an earlier one failed, and `BaseException` is the
+    class rather than `sqlite3.Error` -- an interrupt is exactly the failure a
+    cleanup path has to survive, and enumerating the raisable types is the
+    hand-maintained-roster failure this module has now met four times.
+    """
+    try:
+        conn.execute(sql)
+    except BaseException as exc:  # noqa: BLE001 -- the CLASS, not a roster
+        return exc
+    return None
+
+
 def _new_preview_savepoint() -> str:
     """A savepoint name no caller can already hold.
 
@@ -2249,7 +2265,8 @@ def preview_cohort_provenance_correction(
             # recovery ran at all travels with it.
             try:
                 conn.rollback()
-            except sqlite3.Error as cleanup_error:
+            # SELF-SWEEP SS-22A-FIX-2: `BaseException`, not the roster.
+            except BaseException as cleanup_error:  # noqa: BLE001
                 log.error(
                     "22-A: the cohort-provenance PREVIEW could not create its "
                     "savepoint (%s) AND could not roll back the transaction it "
@@ -2285,24 +2302,34 @@ def preview_cohort_provenance_correction(
             # during the recovery `ROLLBACK TO` used to skip the `RELEASE`
             # that follows it, leaving the very savepoint this branch exists
             # to clean up alive on someone else's transaction.
-            rolled_back = False
-            try:
-                conn.execute(f"ROLLBACK TO {savepoint}")
-                rolled_back = True
-            except BaseException:  # noqa: BLE001 -- the CLASS, not a roster
-                pass
-            if rolled_back:
-                try:
-                    conn.execute(f"RELEASE {savepoint}")
-                except BaseException as release_error:  # noqa: BLE001
+            # **BOTH VERBS ARE ATTEMPTED UNCONDITIONALLY (Codex
+            # 22A-FIX-R6-04, verified by execution).**  The predecessor set
+            # `rolled_back` only AFTER `execute()` RETURNED, so an interrupt
+            # landing as the call returned left the flag False and SKIPPED the
+            # `RELEASE` -- leaving live, on the caller's transaction, the very
+            # savepoint the branch exists to remove.  Measured: the caller
+            # could still `RELEASE` it afterwards, which is the proof it
+            # leaked.  No preview write has happened at this point, so
+            # releasing a savepoint that does exist is safe.
+            #
+            # THE TWO OUTCOMES ARE DISTINGUISHED.  BOTH failing is the
+            # ORDINARY path -- the savepoint was never created, which is what
+            # brought us here -- and stays quiet.  Any other combination means
+            # a savepoint existed and the cleanup did not finish, which is
+            # LOUD.
+            rollback_error = _try(conn, f"ROLLBACK TO {savepoint}")
+            release_error = _try(conn, f"RELEASE {savepoint}")
+            if not (rollback_error and release_error):
+                anomaly = rollback_error or release_error
+                if anomaly is not None:
                     log.error(
                         "22-A: the cohort-provenance PREVIEW could not create "
-                        "its savepoint (%s) and then could not RELEASE the "
-                        "savepoint it had already opened (%s) inside a "
-                        "CALLER-HELD transaction. The nested savepoint %s is "
-                        "still live; this connection MUST BE DISCARDED.",
-                        savepoint_error, release_error, savepoint)
-                    raise release_error from savepoint_error
+                        "its savepoint (%s) and could not finish unwinding "
+                        "the one it had opened (%s) inside a CALLER-HELD "
+                        "transaction. The nested savepoint %s may still be "
+                        "live; this connection MUST BE DISCARDED.",
+                        savepoint_error, anomaly, savepoint)
+                    raise anomaly from savepoint_error
         raise
     try:
         auth = _authorize(
@@ -2627,7 +2654,8 @@ def correct_cohort_provenance(
         if conn.in_transaction:
             try:
                 conn.rollback()
-            except sqlite3.Error as cleanup_error:
+            # SELF-SWEEP SS-22A-FIX-2: `BaseException`, not the roster.
+            except BaseException as cleanup_error:  # noqa: BLE001
                 log.error(
                     "22-A: the cohort-provenance correction failed (%s) AND "
                     "could not roll back (%s). The WRITE transaction is STILL "
@@ -3266,7 +3294,8 @@ def read_provenance_corrections(
         if owns_read_tx and conn.in_transaction:
             try:
                 conn.rollback()
-            except sqlite3.Error as cleanup_error:
+            # SELF-SWEEP SS-22A-FIX-2: `BaseException`, not the roster.
+            except BaseException as cleanup_error:  # noqa: BLE001
                 log.error(
                     "22-A: the cohort-provenance READER could not roll back "
                     "the read transaction it opened (%s). It is STILL OPEN "
