@@ -211,8 +211,17 @@ def case_ids_in_source(source: str, filename: str = "<source>") -> set[str]:
             if fn.name.endswith(f"_case_{suffix}"):
                 covered.add(case_id)
 
+    # ONLY A ``test*`` FUNCTION'S REFERENCE BINDS (Codex 22A-FIX-R1-04,
+    # verified by executing this algorithm against a two-line module).  With
+    # ANY module-level function counting, a dead helper that merely returns
+    # `FOO_CASE_IDS` made every id in that list read as implemented -- and the
+    # G1 discriminator could not see it, because stripping all functions
+    # removes the helper too.  A roster is bound by a TEST referencing it, not
+    # by anything at all referencing it.
     referenced: set[str] = set()
     for fn in functions:
+        if not fn.name.startswith("test"):
+            continue
         for node in ast.walk(fn):
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
                 referenced.add(node.id)
@@ -340,6 +349,35 @@ def test_G1_a_module_with_no_functions_implements_no_cases(module) -> None:
         f"{module} still reports {sorted(stripped)} with EVERY function "
         f"removed; the binding is a literal somebody typed, not a test that "
         f"runs")
+
+
+def test_G1b_a_helper_only_reference_does_not_bind_a_roster() -> None:
+    """Codex 22A-FIX-R1-04: the reference requirement was one notch too loose.
+
+    A DEAD HELPER that merely returns a roster made every id in it read as
+    implemented, and the G1 discriminator was structurally blind to it --
+    stripping every function removes the helper along with the tests, so the
+    module reported nothing either way.  Only a ``test*`` function's reference
+    binds now, and the control below proves the walk did not simply stop.
+    """
+    real = sorted(PLAN_CASES)[0]
+    helper_only = "\n".join([
+        f"X_CASE_IDS = [{real!r}]",
+        "def helper():",
+        "    return X_CASE_IDS",
+        "",
+    ])
+    assert case_ids_in_source(helper_only) == set(), (
+        "a roster referenced only by a non-test helper still binds its ids")
+
+    by_a_test = helper_only + "\n".join([
+        "def test_uses_it():",
+        "    return X_CASE_IDS",
+        "",
+    ])
+    assert case_ids_in_source(by_a_test) == {real}, (
+        "the control: a TEST's reference must still bind, or the walk has "
+        "stopped working rather than tightened")
 
 
 def test_G2_a_binding_inside_a_function_or_class_body_does_not_count() -> None:

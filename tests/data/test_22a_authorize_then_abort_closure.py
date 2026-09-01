@@ -206,26 +206,41 @@ def test_R15M2_a_non_finite_broker_limit_is_refused_by_the_SERVICE() -> None:
         "the control: a FINITE limit is still accepted")
 
 
-def test_SS4_the_envelope_the_two_domains_read_differently_is_RECOGNISED(
-) -> None:
-    """SS-4's shape, at the boundary that answers it.
+def test_SS4_a_padded_envelope_is_REFUSED_BY_THE_RESOLVER(tmp_path) -> None:
+    """SS-4's shape, proved THROUGH THE SERVICE (Codex 22A-FIX-R1-07).
 
-    The service STRIPPED whitespace on a key the trigger BINDS by
-    ``json_extract``, which strips nothing -- so the service admitted and the
-    trigger aborted with the generic citation-graph message.  The answer is
-    that such an envelope is RECOGNISED rather than read: it is refused as
-    recognised-but-underivable, so the correction is never authorized on a
-    value the two engines disagree about.
+    The service STRIPPED whitespace on a key the citation trigger BINDS by
+    ``json_extract``, which strips nothing -- so the service ADMITTED and the
+    trigger then ABORTED the correction with the generic citation-graph
+    message: an authorize-then-abort delivering an ILLEGIBLE refusal, named as
+    such in this arc's own ledger.
+
+    **THE FIRST VERSION OF THIS ROW ASSERTED ONLY THAT TWO HELPER PREDICATES
+    ANSWER ``False`` AND ``True``** -- a resolver that recognised the envelope
+    and then omitted or bypassed the canonicality refusal passed a case
+    claiming to be a negative-satisfiability proof.  It runs the RESOLVER now,
+    on a world whose link the padded document names, and asserts the typed
+    refusal the service must produce BEFORE the trigger can see the row.
     """
     import json
+    from datetime import date
+    from types import SimpleNamespace
 
     from swing.trades.latched_origin import (
         envelope_is_canonical,
         envelope_recognises_an_order,
+        resolve_latched_provenance,
     )
+    from tests._latch_probe_world_22a import (
+        BROKER_ORDER_ID,
+        FILL_SESSION,
+        TICKER,
+        accept_and_link,
+    )
+    from tests.trades.test_22a_task8_resolver import build_world
 
-    padded = json.dumps({"schwab_order_id": " 1002937461 ",
-                         "schwab_instrument_symbol": "OII"})
+    padded = json.dumps({"schwab_order_id": f" {BROKER_ORDER_ID} ",
+                         "schwab_instrument_symbol": TICKER})
     assert envelope_is_canonical(padded) is False, (
         "the two domains must READ this document differently, or the case is "
         "about a shape the divergence does not reach")
@@ -233,10 +248,37 @@ def test_SS4_the_envelope_the_two_domains_read_differently_is_RECOGNISED(
         "a document the domains read differently must be RECOGNISED, so the "
         "ladder refuses it rather than letting the ordinary chain run")
 
-    clean = json.dumps({"schwab_order_id": "1002937461",
-                        "schwab_instrument_symbol": "OII"})
-    assert envelope_is_canonical(clean) is True, (
-        "the control: an unambiguous document is still canonical")
+    conn, cfg, candidate_id = build_world(tmp_path, "ss4")
+    try:
+        accept_and_link(conn, candidate_id, session=date(2026, 7, 24))
+        conn.commit()
+
+        def _req(envelope):
+            return SimpleNamespace(
+                ticker=TICKER, entry_date=FILL_SESSION.isoformat(),
+                entry_price=18.50, shares=2, fill_origin="schwab_auto",
+                hypothesis_label=None, candidate_id=None,
+                schwab_source_value_json=envelope)
+
+        verdict = resolve_latched_provenance(conn, cfg, _req(padded))
+        assert verdict.admitted is False
+        assert verdict.decline_reason == "envelope_not_canonical", (
+            "the SERVICE must refuse this document; if it admits, the "
+            "citation trigger is the first thing to refuse it and the "
+            "operator gets a raw sqlite error")
+        assert verdict.recognised_but_underivable is True, (
+            "a recognised-and-refused envelope must land honest-unset rather "
+            "than falling through to the ordinary chain")
+
+        # THE CONTROL: the SAME world with the UNPADDED document ADMITS, so
+        # the refusal is the padding's doing and not the fixture's.
+        clean = json.dumps({"schwab_order_id": BROKER_ORDER_ID,
+                            "schwab_instrument_symbol": TICKER})
+        assert envelope_is_canonical(clean) is True
+        assert resolve_latched_provenance(
+            conn, cfg, _req(clean)).admitted is True
+    finally:
+        conn.close()
 
 
 @pytest.mark.parametrize("key", sorted(SERVICE_SIDE_REFUSAL))

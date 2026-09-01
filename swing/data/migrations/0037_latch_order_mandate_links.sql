@@ -981,14 +981,40 @@ FOR EACH ROW WHEN NOT (
     -- 'null'), and that is exactly the distinction the omission case turns on.
     --
     -- THE `'object'` BRANCH IS THE FREEZER'S DECLARED DIGEST ESCAPE, AND IT IS
-    -- NOT A HOLE.  `_json_safe_operand` writes a type-tagged object when the
-    -- value cannot be written as JSON -- a BLOB (SQLite does not enforce
-    -- column affinity; 22A-R13-01 measured that shape reaching production) or
-    -- a non-finite REAL (`json.dumps(inf)` emits the bare token `Infinity`,
-    -- which `json_valid` reads FALSE, so a truthful freeze would be rejected
-    -- by the row's own CHECK).  So the escape is admitted ONLY when the column
-    -- genuinely holds one of those two -- both `typeof()` FACTS -- and a
-    -- forger cannot use it to skip the binding on an ordinary scalar.
+    -- CLOSED AND TYPE-BOUND (Codex 22A-FIX-R1-01).  `_json_safe_operand`
+    -- writes a type-tagged object when the value cannot be written as JSON --
+    -- a BLOB (SQLite does not enforce column affinity; 22A-R13-01 measured
+    -- that shape reaching production) or a non-finite REAL (`json.dumps(inf)`
+    -- emits the bare token `Infinity`, which `json_valid` reads FALSE, so a
+    -- truthful freeze would be rejected by the row's own CHECK).
+    --
+    -- **THE FIRST DRAFT ADMITTED *ANY* OBJECT once the column was a BLOB or an
+    -- infinity, and that was a REACHABLE WRONG ACCEPTANCE at the raw-write
+    -- trust boundary** -- a forger could freeze `{}` beside a BLOB column and
+    -- satisfy the clause the binding exists to enforce.  MEASURED by the
+    -- reviewer against this exact predicate shape.  The escape now requires:
+    --   * the column's `typeof()` to be the one that MAKES the escape legal;
+    --   * the object to be CLOSED to the freezer's own key pair (`json_remove`
+    --     of the two keys is `'{}'`), so no third key can ride along;
+    --   * the `type` tag to be one the freezer actually writes for that
+    --     `typeof()`; and
+    --   * for a non-finite REAL, the `repr` to be the EXACT sign the column
+    --     carries -- `'inf'` or `'-inf'`, which is what Python's `repr` emits
+    --     (measured), so the two infinities cannot be interchanged.
+    --
+    -- **THE RESIDUAL, DECLARED: SQLite HAS NO `sha256`, so the BLOB digest's
+    -- VALUE is not verified -- only its SHAPE (64 lower-case hex characters)
+    -- and its type tag.**  That is AL-10's boundary exactly (the trigger
+    -- verifies CONSISTENCY, never TRUTH) and it is strictly smaller than what
+    -- the any-object branch exposed: a forger must now produce a well-formed
+    -- digest object beside a genuinely BLOB column rather than an empty one.
+    --
+    -- `fill_origin` GETS NO ESCAPE AT ALL, and that is SCHEMA-PREVENTION
+    -- rather than an omission: `fills.fill_origin` carries a five-value
+    -- `CHECK (fill_origin IN (...))` (migration `0020:394`), and MEASURED by
+    -- execution, that CHECK rejects BOTH a BLOB and an infinity -- SQLite
+    -- compares a BLOB to TEXT as unequal, so no enum member matches.  A
+    -- column that cannot hold either value needs no escape from either.
     --
     -- FAIL-CLOSED BY CONSTRUCTION.  A malformed snapshot cannot reach a JSON
     -- function (the `json_valid` CASE, 22A-R3-12's class), and any NULL
@@ -1006,36 +1032,96 @@ FOR EACH ROW WHEN NOT (
                     IS NOT NULL
             AND (json_extract(NEW.entry_fill_snapshot_json, '$.quantity')
                      IS f.quantity
-                 OR (json_type(NEW.entry_fill_snapshot_json, '$.quantity')
-                         = 'object'
-                     AND (typeof(f.quantity) = 'blob'
-                          OR (typeof(f.quantity) = 'real'
-                              AND (f.quantity = 9e999
-                                   OR f.quantity = -9e999)))))
+                 OR (typeof(f.quantity) = 'real'
+                     AND (f.quantity = 9e999 OR f.quantity = -9e999)
+                     AND json_type(NEW.entry_fill_snapshot_json,
+                             '$.quantity') = 'object'
+                     AND json_remove(json_extract(
+                             NEW.entry_fill_snapshot_json, '$.quantity'),
+                             '$.type', '$.repr') = '{}'
+                     AND json_extract(NEW.entry_fill_snapshot_json,
+                             '$.quantity.type') = 'float'
+                     AND json_extract(NEW.entry_fill_snapshot_json,
+                             '$.quantity.repr')
+                         = CASE WHEN f.quantity = 9e999 THEN 'inf'
+                                ELSE '-inf' END)
+                 OR (typeof(f.quantity) = 'blob'
+                     AND json_type(NEW.entry_fill_snapshot_json,
+                             '$.quantity') = 'object'
+                     AND json_remove(json_extract(
+                             NEW.entry_fill_snapshot_json, '$.quantity'),
+                             '$.type', '$.sha256') = '{}'
+                     AND json_extract(NEW.entry_fill_snapshot_json,
+                             '$.quantity.type')
+                         IN ('bytes', 'bytearray', 'memoryview')
+                     AND length(json_extract(
+                             NEW.entry_fill_snapshot_json,
+                             '$.quantity.sha256')) = 64
+                     AND NOT json_extract(
+                             NEW.entry_fill_snapshot_json,
+                             '$.quantity.sha256') GLOB '*[^0-9a-f]*'))
             AND (json_extract(NEW.entry_fill_snapshot_json, '$.price')
                      IS f.price
-                 OR (json_type(NEW.entry_fill_snapshot_json, '$.price')
-                         = 'object'
-                     AND (typeof(f.price) = 'blob'
-                          OR (typeof(f.price) = 'real'
-                              AND (f.price = 9e999
-                                   OR f.price = -9e999)))))
-            AND (json_extract(NEW.entry_fill_snapshot_json, '$.fill_origin')
-                     IS f.fill_origin
-                 OR (json_type(NEW.entry_fill_snapshot_json, '$.fill_origin')
-                         = 'object'
-                     AND (typeof(f.fill_origin) = 'blob'
-                          OR (typeof(f.fill_origin) = 'real'
-                              AND (f.fill_origin = 9e999
-                                   OR f.fill_origin = -9e999)))))
+                 OR (typeof(f.price) = 'real'
+                     AND (f.price = 9e999 OR f.price = -9e999)
+                     AND json_type(NEW.entry_fill_snapshot_json,
+                             '$.price') = 'object'
+                     AND json_remove(json_extract(
+                             NEW.entry_fill_snapshot_json, '$.price'),
+                             '$.type', '$.repr') = '{}'
+                     AND json_extract(NEW.entry_fill_snapshot_json,
+                             '$.price.type') = 'float'
+                     AND json_extract(NEW.entry_fill_snapshot_json,
+                             '$.price.repr')
+                         = CASE WHEN f.price = 9e999 THEN 'inf'
+                                ELSE '-inf' END)
+                 OR (typeof(f.price) = 'blob'
+                     AND json_type(NEW.entry_fill_snapshot_json,
+                             '$.price') = 'object'
+                     AND json_remove(json_extract(
+                             NEW.entry_fill_snapshot_json, '$.price'),
+                             '$.type', '$.sha256') = '{}'
+                     AND json_extract(NEW.entry_fill_snapshot_json,
+                             '$.price.type')
+                         IN ('bytes', 'bytearray', 'memoryview')
+                     AND length(json_extract(
+                             NEW.entry_fill_snapshot_json,
+                             '$.price.sha256')) = 64
+                     AND NOT json_extract(
+                             NEW.entry_fill_snapshot_json,
+                             '$.price.sha256') GLOB '*[^0-9a-f]*'))
+            AND json_extract(NEW.entry_fill_snapshot_json,
+                    '$.fill_origin') IS f.fill_origin
             AND (json_extract(NEW.entry_fill_snapshot_json, '$.envelope')
                      IS f.schwab_source_value_json
-                 OR (json_type(NEW.entry_fill_snapshot_json, '$.envelope')
-                         = 'object'
-                     AND (typeof(f.schwab_source_value_json) = 'blob'
-                          OR (typeof(f.schwab_source_value_json) = 'real'
-                              AND (f.schwab_source_value_json = 9e999
-                                   OR f.schwab_source_value_json = -9e999)))))
+                 OR (typeof(f.schwab_source_value_json) = 'real'
+                     AND (f.schwab_source_value_json = 9e999 OR f.schwab_source_value_json = -9e999)
+                     AND json_type(NEW.entry_fill_snapshot_json,
+                             '$.envelope') = 'object'
+                     AND json_remove(json_extract(
+                             NEW.entry_fill_snapshot_json, '$.envelope'),
+                             '$.type', '$.repr') = '{}'
+                     AND json_extract(NEW.entry_fill_snapshot_json,
+                             '$.envelope.type') = 'float'
+                     AND json_extract(NEW.entry_fill_snapshot_json,
+                             '$.envelope.repr')
+                         = CASE WHEN f.schwab_source_value_json = 9e999 THEN 'inf'
+                                ELSE '-inf' END)
+                 OR (typeof(f.schwab_source_value_json) = 'blob'
+                     AND json_type(NEW.entry_fill_snapshot_json,
+                             '$.envelope') = 'object'
+                     AND json_remove(json_extract(
+                             NEW.entry_fill_snapshot_json, '$.envelope'),
+                             '$.type', '$.sha256') = '{}'
+                     AND json_extract(NEW.entry_fill_snapshot_json,
+                             '$.envelope.type')
+                         IN ('bytes', 'bytearray', 'memoryview')
+                     AND length(json_extract(
+                             NEW.entry_fill_snapshot_json,
+                             '$.envelope.sha256')) = 64
+                     AND NOT json_extract(
+                             NEW.entry_fill_snapshot_json,
+                             '$.envelope.sha256') GLOB '*[^0-9a-f]*'))
         ) ELSE 0 END
           FROM fills f
          WHERE f.fill_id = NEW.entry_fill_id_at_correction), 0)

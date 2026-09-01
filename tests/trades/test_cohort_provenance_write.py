@@ -284,13 +284,23 @@ def test_a_BASE_exception_mid_write_still_rolls_the_transaction_back(
     disagree about it.
 
     PRE-FIX ``conn.in_transaction`` is True after the raise.
+
+    **AND A SENTINEL WRITE IS WHAT MAKES THIS A ROLLBACK TEST** (Codex
+    22A-FIX-R1-01's sibling finding).  ``not conn.in_transaction`` alone proves
+    the transaction was CLOSED, not that it was UNWOUND -- a handler calling
+    ``commit()`` on ``KeyboardInterrupt`` satisfies it exactly.  The planted
+    function therefore WRITES before it raises, and the row's absence
+    afterwards is the assertion.
     """
     ids = build_cadl_case(conn)
     conn.commit()
 
     import swing.trades.cohort_provenance_correction as mod
 
-    def _interrupted(*a, **kw):
+    def _interrupted(conn_, **kw):
+        conn_.execute(
+            "UPDATE trades SET notes = 'sentinel-r1-02' WHERE id = ?",
+            (ids["trade_id"],))
         raise KeyboardInterrupt("planted between BEGIN IMMEDIATE and COMMIT")
 
     monkeypatch.setattr(mod, "_correct_cohort_provenance_inner", _interrupted)
@@ -303,6 +313,11 @@ def test_a_BASE_exception_mid_write_still_rolls_the_transaction_back(
     assert not conn.in_transaction, (
         "the write transaction leaked; the next caller inherits a write "
         "reservation it did not take")
+    assert conn.execute(
+        "SELECT notes FROM trades WHERE id = ?",
+        (ids["trade_id"],)).fetchone()[0] != "sentinel-r1-02", (
+        "the transaction was CLOSED but not UNWOUND -- a handler that commits "
+        "on BaseException passes an in_transaction assertion alone")
 
 
 def test_a_failure_mid_sequence_leaves_no_partial_write(conn, monkeypatch):

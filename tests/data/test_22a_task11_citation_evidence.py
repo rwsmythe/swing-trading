@@ -2183,6 +2183,10 @@ def test_THE_DECLARED_LIMITATION_two_equal_but_wrong_values_are_ACCEPTED(
 # service's own tuple, so a fifth operand added there fails this family until
 # the trigger and the roster below move together (#11).
 # ===========================================================================
+from swing.trades.cohort_provenance_correction import (  # noqa: E402
+    ENTRY_FILL_OPERAND_KEYS,
+)
+
 _OPERAND_SOURCE_COLUMN = {
     "quantity": "quantity",
     "price": "price",
@@ -2208,14 +2212,17 @@ def test_the_operand_family_covers_every_key_the_service_freezes() -> None:
     operand cannot be added without a case appearing for it -- and this row
     fails loudly if the roster and the column map here ever diverge.
     """
-    from swing.trades.cohort_provenance_correction import (
-        ENTRY_FILL_OPERAND_KEYS,
-    )
-
     assert set(_OPERAND_SOURCE_COLUMN) == set(ENTRY_FILL_OPERAND_KEYS), (
         "the operand roster moved and this module's source-column map did "
         "not: "
         f"{sorted(set(_OPERAND_SOURCE_COLUMN) ^ set(ENTRY_FILL_OPERAND_KEYS))}")
+    # AND THE FORGERY MAP, which is what makes the FIDELITY family closed too.
+    # Both parametrizations iterate a roster now; before this the two families
+    # hard-coded today's four keys, so a fifth operand would have added a
+    # source column, kept this row green, and gone untested in both
+    # directions (Codex 22A-FIX-R1-03).
+    assert set(_OPERAND_FORGERIES) == set(ENTRY_FILL_OPERAND_KEYS), (
+        f"{sorted(set(_OPERAND_FORGERIES) ^ set(ENTRY_FILL_OPERAND_KEYS))}")
 
 
 def test_the_truthful_baseline_carries_all_four_operands_bound_to_the_fill(
@@ -2247,8 +2254,7 @@ def test_the_truthful_baseline_carries_all_four_operands_bound_to_the_fill(
         "latch_ladder",)
 
 
-@pytest.mark.parametrize(
-    "key", ["quantity", "price", "fill_origin", "envelope"])
+@pytest.mark.parametrize("key", sorted(ENTRY_FILL_OPERAND_KEYS))
 def test_an_omitted_fill_side_operand_is_rejected(conn, key) -> None:
     """PRE-FIX every one of these INSERTED.
 
@@ -2265,18 +2271,28 @@ def test_an_omitted_fill_side_operand_is_rejected(conn, key) -> None:
     _assert_rejected(conn, _with_snapshot(payload, snapshot))
 
 
-@pytest.mark.parametrize(
-    "key, forged",
-    [("quantity", 1.0), ("price", 0.01), ("fill_origin", "operator_typed"),
-     ("envelope", '{"schwab_order_id": "9999999999"}')],
-    ids=["quantity", "price", "fill_origin", "envelope"])
-def test_a_falsified_fill_side_operand_is_rejected(conn, key, forged) -> None:
+# One FORGERY per operand, each a legal value of the column's own type so
+# nothing but the binding can refuse it.  The map is held against the SERVICE's
+# roster below rather than re-typed, so a fifth operand has no forgery until
+# someone writes one -- which is the closure half Codex 22A-FIX-R1-03 found
+# missing when both families hard-coded today's four keys.
+_OPERAND_FORGERIES: dict[str, object] = {
+    "quantity": 1.0,
+    "price": 0.01,
+    "fill_origin": "operator_typed",
+    "envelope": '{"schwab_order_id": "9999999999"}',
+}
+
+
+@pytest.mark.parametrize("key", sorted(_OPERAND_FORGERIES))
+def test_a_falsified_fill_side_operand_is_rejected(conn, key) -> None:
     """PRESENCE IS NOT FIDELITY -- the same distinction the `$.authorization`
     rungs already draw, on the operands nobody was binding.
 
     Each forged value is a legal value of the column's own type, so nothing
     but the binding to the cited fill can refuse it.
     """
+    forged = _OPERAND_FORGERIES[key]
     payload = seed_latch_ladder_citation(conn)
     _assert_baseline_inserts(conn, payload)
     snapshot = _snapshot(payload)
@@ -2376,3 +2392,131 @@ def test_every_named_case_roster_has_its_function_in_this_module() -> None:
             missing[roster] = absent
     assert not missing, (
         f"a roster names a case with no function in this module: {missing}")
+
+
+# ===========================================================================
+# 22A-FIX-R1-01 -- THE DIGEST ESCAPE IS CLOSED AND TYPE-BOUND
+#
+# The first draft admitted ANY object once the column was a BLOB or an
+# infinity, so a forger could freeze `{}` beside a BLOB column and satisfy the
+# clause the binding exists to enforce.  Measured by the reviewer against the
+# predicate shape.  Every row below plants the shape through a RAW UPDATE,
+# because a BLOB in a TEXT column and a `+inf` in a REAL one are exactly the
+# states the service never writes and the schema does not forbid.
+# ===========================================================================
+def _set_raw(conn_, fill_id: int, column: str, value) -> None:
+    conn_.execute(
+        f"UPDATE fills SET {column} = ? WHERE fill_id = ?", (value, fill_id))
+    conn_.commit()
+
+
+def _escape_world(conn_, value):
+    """A `last_word` payload whose cited fill carries ``value`` in ``quantity``.
+
+    THREE FIXTURE DIMENSIONS, each forced for a stated reason -- a test blocked
+    for an unrelated reason proves nothing about the guard it names:
+
+      * the column is ``quantity`` and not ``envelope``: a BLOB in the envelope
+        column is refused by the PERSIST-CANONICAL clause, correctly and for a
+        different reason;
+      * the tier is ``last_word``: at ``latch_ladder`` the ``$.authorization``
+        block binds ``guard_quantity`` to this very column;
+      * the fill's envelope is STRIPPED, because a ``last_word`` claim on a
+        fill whose order resolves to a link is refused outright (22A-R6-01).
+
+    The TRUTHFUL freeze comes from the PRODUCTION freezer over the mutated
+    column, so the accepted shape is the emitter's rather than this test's
+    opinion of it.
+    """
+    payload = seed_latch_ladder_citation(conn_)
+    fill_id = payload["entry_fill_id_at_correction"]
+    _raw_envelope(conn_, fill_id, None)
+    _set_raw(conn_, fill_id, "quantity", value)
+    payload = {**_refreeze(conn_, payload), **_LAST_WORD_NULLS}
+    return payload, fill_id
+
+
+def test_a_BLOB_column_still_needs_a_WELL_FORMED_digest(conn) -> None:
+    """PRE-FIX `{}` was accepted; POST-FIX only the freezer's own shape is."""
+    import hashlib
+
+    blob = bytes([0, 255]) + b"not-a-number"
+    payload, fill_id = _escape_world(conn, blob)
+    assert conn.execute(
+        "SELECT typeof(quantity) FROM fills WHERE fill_id = ?",
+        (fill_id,)).fetchone()[0] == "blob", (
+        "the premise: a BLOB is SCHEMA-LEGAL in this REAL column -- SQLite "
+        "does not enforce affinity and no CHECK covers it")
+    truthful = _snapshot(payload)["quantity"]
+    assert truthful == {
+        "type": "bytes", "sha256": hashlib.sha256(blob).hexdigest()}, truthful
+
+    # THE TRUTHFUL FREEZE STILL INSERTS -- the escape exists for it, and a
+    # refusal-only set could not establish that it still works.
+    _insert_payload(conn, payload)
+    conn.execute("DELETE FROM provenance_corrections")
+
+    snapshot = _snapshot(payload)
+    for _label, forged in (
+        ("an empty object", {}),
+        ("a third key", {**truthful, "extra": 1}),
+        ("a wrong type tag", {"type": "str", "sha256": truthful["sha256"]}),
+        ("a short digest", {"type": "bytes", "sha256": "abc"}),
+        ("a non-hex digest", {"type": "bytes", "sha256": "z" * 64}),
+        ("an upper-case digest",
+         {"type": "bytes", "sha256": truthful["sha256"].upper()}),
+    ):
+        snapshot["quantity"] = forged
+        with pytest.raises(sqlite3.IntegrityError, match="citation graph"):
+            _insert_payload(conn, _with_snapshot(payload, snapshot))
+
+
+def test_an_INFINITE_column_binds_the_SIGN_and_not_merely_the_shape(
+        conn) -> None:
+    """`+inf` and `-inf` are DIFFERENT values with the same `typeof()`, so a
+    shape-only escape lets them be interchanged."""
+    payload, fill_id = _escape_world(conn, float("inf"))
+    assert conn.execute(
+        "SELECT typeof(quantity), quantity = 9e999 FROM fills "
+        " WHERE fill_id = ?", (fill_id,)).fetchone() == ("real", 1), (
+        "the premise: an infinity is SCHEMA-LEGAL in this REAL column")
+    assert _snapshot(payload)["quantity"] == {"type": "float", "repr": "inf"}
+
+    _insert_payload(conn, payload)
+    conn.execute("DELETE FROM provenance_corrections")
+
+    snapshot = _snapshot(payload)
+    for _label, forged in (
+        ("the WRONG sign", {"type": "float", "repr": "-inf"}),
+        ("an empty object", {}),
+        ("a third key", {"type": "float", "repr": "inf", "extra": 1}),
+        ("a wrong type tag", {"type": "bytes", "repr": "inf"}),
+    ):
+        snapshot["quantity"] = forged
+        with pytest.raises(sqlite3.IntegrityError, match="citation graph"):
+            _insert_payload(conn, _with_snapshot(payload, snapshot))
+
+
+def test_fill_origin_has_NO_escape_and_the_CHECK_is_why(conn) -> None:
+    """The schema-prevention citation, VERIFIED rather than assumed.
+
+    ``fills.fill_origin`` carries a five-value CHECK, and it rejects BOTH a
+    BLOB and an infinity -- so the column cannot reach either state and needs
+    no escape from either.  Asserting the constraint here is what keeps the
+    omission a citation rather than a gap (the 18-E lesson: never ASSUME a
+    defense).
+    """
+    payload = seed_latch_ladder_citation(conn)
+    fill_id = payload["entry_fill_id_at_correction"]
+    for value in (b"\x00\xff", float("inf")):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "UPDATE fills SET fill_origin = ? WHERE fill_id = ?",
+                (value, fill_id))
+        conn.rollback()
+
+    # AND AN OBJECT FREEZE IS REFUSED OUTRIGHT for that key, whatever the
+    # column holds -- the escape is absent, not merely unreachable.
+    snapshot = _snapshot(payload)
+    snapshot["fill_origin"] = {"type": "str", "repr": "schwab_auto"}
+    _assert_rejected(conn, _with_snapshot(payload, snapshot))
