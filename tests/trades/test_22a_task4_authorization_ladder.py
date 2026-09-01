@@ -67,7 +67,8 @@ GOOD_ORIGIN = "schwab_auto"
 ACCEPT_SESSION = date(2026, 7, 24)
 
 
-def build_world(tmp_path: Path, name: str, *, closes=None, pre_barrier=False):
+def build_world(tmp_path: Path, name: str, *, closes=None, pre_barrier=False,
+                horizon_sessions: int = 30):
     """A fire, an archive and a config.  Returns ``(conn, cfg, candidate_id)``.
 
     ``pre_barrier=True`` builds the world THE PRODUCTION WAY -- the fire is
@@ -80,7 +81,7 @@ def build_world(tmp_path: Path, name: str, *, closes=None, pre_barrier=False):
     """
     root = tmp_path / name
     root.mkdir(parents=True, exist_ok=True)
-    cfg = probe_cfg(root)
+    cfg = probe_cfg(root, horizon_sessions=horizon_sessions)
     if pre_barrier:
         conn = open_connection(root / "swing.db")
         run_migrations(conn, target_version=36)
@@ -254,17 +255,87 @@ def _forged_link(conn, candidate_id, *, key: str, validity_over=None,
 # ===========================================================================
 # THE LOOKUP -- CARDINALITY BY COUNT
 # ===========================================================================
-def test_an_armed_latch_admits_through_the_whole_ladder_case_4() -> None:
-    """CASE 4 -- RHI's shape: a broker-accepted order on a mandate that is
-    ARMED at its fill session ADMITS, and the admission is reached through the
-    ORDER's identity rather than through "any armed latch".
+def test_a_place_intent_without_a_validity_row_falls_through_case_4(
+        tmp_path) -> None:
+    """CASE 4 -- **RHI's REAL SHAPE** (trade 24, LIVE): a `place` intent
+    present, NO validity row and therefore NO link -> the request FALLS
+    THROUGH, decline reason `no_accepted_latch_order`.
 
-    Lens clause 3b.  An implementation matching on "the ticker has an armed
-    latch" passes this and fails case 4b, which is why both exist.
+    **THIS ROW USED TO MEASURE THE OPPOSITE** (semantic re-audit 2026-08-31,
+    the exemplar finding).  It built a broker-ACCEPTED order with `_accept`
+    and asserted ADMISSION -- the opposite outcome in the opposite world --
+    while S3.4 (`PLAN:1930`) specifies a place intent with no validity row
+    falling through byte-identically to the pre-fix row.  **It also inverted
+    the lens clause it cited:** clause 3b names case 4 as the case that FAILS
+    an implementation matching on *"the ticker has an armed latch"*, and RHI
+    is precisely the shape such an implementation would wrongly ADMIT.  As
+    written it passed under BOTH the correct and the omitting implementation,
+    so it discriminated nothing.
+
+    **THE FALL-THROUGH IS `recognised_but_underivable is False`, and that is
+    the whole of S3.4's byte-identical claim** at this module's grain: it is
+    the flag that decides whether `record_entry` suppresses the ordinary
+    candidate/origin chain (honest-unset) or lets it run (the pre-fix row).
+    The persisted row itself is task 9's grain and is asserted there; what is
+    bound to case 4 here is the resolver verdict that determines it.
+
+    **THE LATCH IS ARMED**, which is what makes this discriminating: the fire
+    exists, its stop is never breached over `BASE_CLOSES`, and a
+    "the ticker has an armed latch" implementation therefore admits.
+    """
+    from types import SimpleNamespace
+
+    from swing.trades.latched_origin import resolve_latched_provenance
+
+    conn, cfg, candidate_id = build_world(tmp_path, "case4")
+    try:
+        # A place intent WITHOUT a validity child -- the operator prepared an
+        # order and no broker acceptance was ever recorded.  RHI's real shape.
+        insert_intent(conn, place_row(
+            candidate_id, idempotency_key="case4-place",
+            action_session_date=ACCEPT_SESSION.isoformat(),
+            recorded_ts=f"{ACCEPT_SESSION.isoformat()}T10:00:00",
+            detection_date=ANCHOR.isoformat()))
+        conn.commit()
+        assert conn.execute(
+            "SELECT COUNT(*) FROM latch_order_mandate_links").fetchone()[0] == 0, (
+            "the fixture minted a link; case 4's whole shape is that there is "
+            "none")
+
+        verdict = resolve_latched_provenance(conn, cfg, SimpleNamespace(
+            ticker=TICKER,
+            entry_date=FILL_SESSION.isoformat(),
+            entry_price=GOOD_PRICE,
+            shares=GOOD_SHARES,
+            fill_origin=GOOD_ORIGIN,
+            hypothesis_label=None,
+            candidate_id=None,
+            schwab_source_value_json=json.dumps(
+                {"schwab_order_id": BROKER_ORDER_ID,
+                 "schwab_instrument_symbol": TICKER}),
+        ))
+        assert verdict.admitted is False, (
+            "an armed latch is not an accepted order; an implementation "
+            "keying on the armed latch admits here")
+        assert verdict.decline_reason == "no_accepted_latch_order"
+        assert verdict.recognised_but_underivable is False, (
+            "the request must FALL THROUGH to the ordinary chain, or the row "
+            "lands honest-unset instead of byte-identical to the pre-fix row")
+    finally:
+        conn.close()
+
+
+def test_an_armed_latch_with_an_accepted_order_admits_through_the_ladder(
+) -> None:
+    """THE LADDER'S POSITIVE CONTROL -- and it carries NO case id.
+
+    A refusal-only set cannot establish that the ladder can ever admit, so
+    this row stays.  What it is NOT is case 4: it builds a broker-ACCEPTED
+    order, which is the world case 4 exists to exclude.
     """
     import tempfile
     conn, cfg, candidate_id = build_world(
-        Path(tempfile.mkdtemp()), "case4")
+        Path(tempfile.mkdtemp()), "ladder-admits")
     try:
         order = _accept(conn, candidate_id)
         verdict = _authorize(conn, cfg, order)
@@ -287,9 +358,18 @@ def test_an_in_zone_fill_with_no_accepted_order_finds_nothing_case_4b(
     A NULL-candidate, same-ticker, IN-ZONE entry with NO validity row anywhere.
     The shipped ``derive_latches`` windowed rung would MATCH it on price; this
     arc's lookup is keyed on the BROKER ORDER ID and finds nothing at all.
-    ``find_accepted_latch_order`` returning an EMPTY list is the whole assertion
-    -- there is no accepted link for the ladder to authorize.
+
+    **THE EMPTY LOOKUP WAS THE WHOLE ASSERTION, AND IT IS ONLY THE
+    PRECONDITION** (semantic re-audit 2026-08-31).  S3.4b (`PLAN:1953`)
+    specifies that the entry must DECLINE; an empty lookup is necessary for
+    that decline and is not it, and the docstring said so in as many words.
+    The decline is now asserted end to end on the SAME fixture, so the row
+    measures what the case specifies rather than a step on the way to it.
     """
+    from types import SimpleNamespace
+
+    from swing.trades.latched_origin import resolve_latched_provenance
+
     conn, _cfg, candidate_id = build_world(tmp_path, "case4b")
     try:
         # A place intent WITHOUT a validity child: the operator prepared an
@@ -304,6 +384,26 @@ def test_an_in_zone_fill_with_no_accepted_order_finds_nothing_case_4b(
         conn.commit()
         assert find_accepted_latch_order(
             conn, broker_order_id=BROKER_ORDER_ID) == []
+
+        # THE DECLINE ITSELF, on the shape the price heuristic would match:
+        # NULL candidate, in-zone price, matching quantity.
+        verdict = resolve_latched_provenance(conn, _cfg, SimpleNamespace(
+            ticker=TICKER,
+            entry_date=FILL_SESSION.isoformat(),
+            entry_price=GOOD_PRICE,
+            shares=GOOD_SHARES,
+            fill_origin=GOOD_ORIGIN,
+            hypothesis_label=None,
+            candidate_id=None,
+            schwab_source_value_json=json.dumps(
+                {"schwab_order_id": BROKER_ORDER_ID,
+                 "schwab_instrument_symbol": TICKER}),
+        ))
+        assert verdict.admitted is False, (
+            "an implementation reusing the shipped windowed price heuristic "
+            "matches this fill on price and admits it")
+        assert verdict.decline_reason == "no_accepted_latch_order"
+        assert verdict.recognised_but_underivable is False
     finally:
         conn.close()
 
@@ -509,11 +609,35 @@ def test_a_mismatched_ticker_copy_is_unbound_case_47c(tmp_path) -> None:
     copies of the fire's own, and rung 1 compares the link to the REQUEST --
     so a link whose ticker matches the request but NOT the candidate passes
     rung 1 and is caught only here.
+
+    **THE TICKER LEG WAS THE ONE THE DOCSTRING DESCRIBED AND THE FIXTURE DID
+    NOT BUILD** (semantic re-audit 2026-08-31).  The row exercised the clause
+    on a SIBLING field -- a drifted ``detection_date`` -- while its own
+    docstring described the ticker shape, and lens clause 62 / S5.1 name
+    *"a raw link NAMING A DIFFERENT TICKER from the candidate's own"*.  Both
+    legs run now: the specified one first, its sibling kept as the control
+    that the clause covers the whole copied set rather than one field.
     """
     conn, cfg, candidate_id = build_world(tmp_path, "case47c")
     try:
-        # A plausible-looking but WRONG detection date: one session off the
-        # fire's own.  Rung 1 compares the link to the REQUEST and passes.
+        # THE SPECIFIED LEG.  The link names ZZZZ and so does the REQUEST, so
+        # rung 1 (link-vs-request) PASSES and only the candidate binding can
+        # refuse -- which is exactly the shape the clause exists for.
+        mismatched = _forged_link(conn, candidate_id, key="47c-ticker",
+                                  ticker="ZZZZ")
+        assert mismatched.ticker == "ZZZZ"
+        assert conn.execute(
+            "SELECT ticker FROM candidates WHERE id = ?",
+            (candidate_id,)).fetchone()[0] == TICKER, (
+            "the candidate must keep its OWN ticker, or the link is not "
+            "mismatched against it")
+        assert _authorize(conn, cfg, mismatched, ticker="ZZZZ",
+                          envelope_symbol="ZZZZ").decline_reason == (
+            "link_field_unbound"), (
+            "the ticker half of rung 3c's binding set is unexercised")
+
+        # THE SIBLING LEG, kept: a plausible-looking but WRONG detection date,
+        # one session off the fire's own.
         drifted = _forged_link(conn, candidate_id, key="47c",
                                detection_date="2026-07-21")
         assert drifted.detection_date == "2026-07-21"
@@ -701,11 +825,30 @@ def test_a_stripped_envelope_makes_consumption_unprovable_case_22b(
 # ===========================================================================
 def test_a_pre_barrier_link_refuses_outright_case_22_pre(tmp_path) -> None:
     """``22-pre`` -- rung 9 refuses BEFORE the ordinary-trade question is even
-    asked.  Under Option C there is NO tier-2 escape."""
+    asked.  Under Option C there is NO tier-2 escape.
+
+    **THE ORDINARY TRADE IS NOW IN THE FIXTURE, AND IT WAS NOT** (semantic
+    re-audit 2026-08-31).  The docstring's claim is about the ordinary-trade
+    question never being asked, and the world contained no ordinary trade to
+    ask about -- so the sentence described a fixture that did not exist and
+    the row was a second copy of the bare pre-barrier case.  Case 22's own
+    seeding is reproduced verbatim, including its PINNED session: the other
+    trade is dated AFTER the fill, where the probe's windowed fill rung cannot
+    see it and rung 6 still can.
+    """
     conn, cfg, candidate_id = build_world(tmp_path, "22pre", pre_barrier=True)
     try:
         order = _accept(conn, candidate_id)
         assert order.freeze_tier == FREEZE_TIER_PRE_BARRIER
+        seed_trade(conn, trade_id=42, entry_date=date(2026, 7, 28),
+                   price=18.10, candidate_id=candidate_id)
+        _entry_fill(conn, fill_id=42, trade_id=42, envelope=None,
+                    session=date(2026, 7, 28))
+        assert conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE candidate_id = ?",
+            (candidate_id,)).fetchone()[0] == 1, (
+            "the ordinary same-candidate trade is what this twin's claim is "
+            "about; without it the row is case 22-pre in name only")
         verdict = _authorize(conn, cfg, order)
         assert verdict.admitted is False
         assert verdict.decline_reason == "pre_barrier_unproven"
@@ -730,19 +873,228 @@ def test_a_pre_barrier_link_refuses_despite_a_late_cancel_case_29d_pre(
         conn.close()
 
 
+# ---------------------------------------------------------------------------
 # The SEVEN twins relocated from task 6 by registry finding N10.  Their BASE
 # cases live in the task-6 module and assert what the PROBE answers; the twins
-# assert that rung 9 refuses FIRST, so the probe's answer never matters.  They
-# are parametrized because the assertion is identical and only the world that
-# would otherwise have admitted differs -- and the world is what each base case
-# already pins.
+# assert that rung 9 refuses FIRST, so the probe's answer never matters.
+#
+# **EACH TWIN NOW BUILDS ITS BASE CASE'S OWN WORLD, AND IT DID NOT BEFORE**
+# (semantic re-audit 2026-08-31, pattern A).  One parametrized body called
+# `build_world(tmp_path, twin.replace('-','_'), pre_barrier=True)` -- the case
+# id used ONLY AS A DIRECTORY NAME -- with `closes` defaulting to
+# `BASE_CLOSES` and nothing base-case-specific seeded.  All seven runs executed
+# BYTE-IDENTICAL code, and were byte-identical to
+# `test_a_pre_barrier_link_refuses_outright_case_22_pre` besides.  The
+# docstring's discriminating claim -- *"each twin's world is the one its base
+# case proved ADMITS"* -- was FALSE ON DISK.  It is a ROSTER FAILURE of the
+# family this project keeps meeting: `29d-pre`, `4c-i-pre` and `5b-pre` do it
+# correctly in the same tree, so the shape was known.
+#
+# Each builder below reproduces its base case's DISTINGUISHING DIMENSION,
+# named at its site, and returns the order plus any authorize kwargs the base
+# case varies.  The dimension is what makes seven runs seven cases.
+# ---------------------------------------------------------------------------
 RELOCATED_TWIN_CASE_IDS = [
     "8-pre", "10-pre", "24-pre", "27-pre", "28a-pre", "28b-pre", "28c-pre",
 ]
 
 
+def _twin_world_8_pre(tmp_path, monkeypatch):
+    """CASE 8's dimension: an EMPTY judging window and a fill on the ANCHOR
+    session -- no session has elapsed since the fire.
+
+    THE ACCEPTANCE MOVES WITH THE FILL.  A ``place`` is a DECISION row and
+    rung 4 requires the governing place STRICTLY BEFORE the fill session, so
+    the module default (2026-07-24) would refuse ``place_cycle_superseded``
+    at rung 4 -- before rung 9 ever runs -- and the twin would pass for a
+    reason unrelated to its own subject.  MEASURED: it did.  The base case
+    does not meet this because it builds its order as a dataclass and never
+    inserts intents at all.
+    """
+    from swing.evaluation.dates import session_offset
+
+    conn, cfg, cid = build_world(
+        tmp_path, "8_pre", closes={}, pre_barrier=True)
+    early = session_offset(ANCHOR, -1)
+    accept_and_link(conn, cid, session=early)
+    orders = find_accepted_latch_order(conn, broker_order_id=BROKER_ORDER_ID)
+    assert len(orders) == 1, orders
+    return conn, cfg, orders[0], {"fill_session": ANCHOR}
+
+
+def _twin_world_10_pre(tmp_path, monkeypatch):
+    """CASE 10's dimension: ``criteria_lapse_armed=True`` over a
+    LAPSE-QUALIFYING latch -- the shipped T5.6 geometry, reused rather than
+    re-invented, exactly as the base case reuses it."""
+    import dataclasses
+
+    import swing.data.ohlcv_archive as archive
+    from swing.config import load
+    from tests.latches.test_structural_verdicts import (
+        _bars_frame,
+        _seed_lapse_geometry,
+    )
+
+    root = tmp_path / "10_pre"
+    root.mkdir(parents=True, exist_ok=True)
+    conn = open_connection(root / "swing.db")
+    run_migrations(conn, target_version=36)
+    days, _ = _seed_lapse_geometry(conn)
+    conn.commit()
+    run_migrations(conn, target_version=37, backup_dir=root / "bak")
+
+    frame = _bars_frame(days, [16.50, 16.20, 15.90, 15.60, 15.30, 15.00])
+    monkeypatch.setattr(
+        archive, "resolve_ohlcv_window",
+        lambda ticker, **kw: (frame, {"provider": "test"}))
+
+    base = load(Path(__file__).resolve().parents[2] / "swing.config.toml")
+    cfg = dataclasses.replace(
+        base,
+        paths=dataclasses.replace(base.paths, prices_cache_dir=root),
+        latches=dataclasses.replace(base.latches, criteria_lapse_armed=True))
+    assert cfg.latches.criteria_lapse_armed is True, (
+        "the lapse rung must be ARMED, or this twin's world is case 22's")
+
+    cid = int(conn.execute(
+        "SELECT id FROM candidates WHERE evaluation_run_id = 100").fetchone()[0])
+    ticker = conn.execute(
+        "SELECT ticker FROM candidates WHERE id = ?", (cid,)).fetchone()[0]
+    accept_and_link(conn, cid, session=days[0])
+    orders = find_accepted_latch_order(conn, broker_order_id=BROKER_ORDER_ID)
+    assert len(orders) == 1, orders
+    from swing.evaluation.dates import session_offset
+    return conn, cfg, orders[0], {
+        "ticker": ticker, "envelope_symbol": ticker,
+        "fill_session": session_offset(days[5], 1),
+    }
+
+
+def _twin_world_24_pre(tmp_path, monkeypatch):
+    """CASE 24's dimension: a COUNTING archive stub whose SECOND read differs
+    from its first -- the split-world false admission the base case forbids."""
+    import pandas as pd
+
+    import swing.data.ohlcv_archive as archive
+
+    conn, cfg, cid = build_world(
+        tmp_path, "24_pre", closes={}, pre_barrier=True)
+
+    def _frame(sessions):
+        return pd.DataFrame([
+            {"asof_date": s.isoformat(), "open": c, "high": c + 0.1,
+             "low": c - 0.1, "close": c, "volume": 100.0}
+            for s, c in sorted(sessions.items())
+        ])
+
+    gapped = _frame({s: c for s, c in BASE_CLOSES.items()
+                     if s != date(2026, 7, 22)})
+    complete = _frame(BASE_CLOSES)
+    calls: list[str] = []
+
+    def _counting(ticker, **kw):
+        calls.append(ticker)
+        return (gapped if len(calls) == 1 else complete,
+                {"provider": "test"})
+
+    monkeypatch.setattr(archive, "resolve_ohlcv_window", _counting)
+    return conn, cfg, _accept(conn, cid), {}
+
+
+def _twin_world_27_pre(tmp_path, monkeypatch):
+    """CASE 27's dimension: the accepted order sits on a SAME-PIVOT
+    RE-CONFIRMATION fire, which the fold keeps in ``candidate_set`` while the
+    latch's identity stays the OPENING fire's.
+
+    THE RE-CONFIRMATION FIRE IS SEEDED BEFORE THE MIGRATION, or it lands
+    ABOVE the epoch boundary and mints ``live_at_acceptance`` -- the twin
+    would then be a POST-barrier case wearing a ``-pre`` name.  MEASURED: it
+    did, on the first draft.  The whole world is therefore built here rather
+    than through ``build_world``, whose v36 phase seeds only the opening fire.
+    """
+    from tests._latch_probe_world_22a import STOP
+
+    root = tmp_path / "27_pre"
+    root.mkdir(parents=True, exist_ok=True)
+    cfg = probe_cfg(root)
+    conn = open_connection(root / "swing.db")
+    run_migrations(conn, target_version=36)
+    first = seed_fire(conn)
+    seed_run(conn, 122, date(2026, 7, 22))
+    second = int(conn.execute(
+        "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+        "pivot, initial_stop, rs_method) "
+        "VALUES (122, ?, 'aplus', 17.02, ?, ?, 'universe')",
+        (TICKER, PIVOT, STOP)).lastrowid)
+    conn.commit()
+    run_migrations(conn, target_version=37, backup_dir=root / "bak")
+    write_closes(cfg, BASE_CLOSES)
+    assert second != first
+    return conn, cfg, _accept(conn, second), {}
+
+
+def _twin_world_28a_pre(tmp_path, monkeypatch):
+    """CASE 28a's dimension: ``horizon_sessions=5``, so the horizon expiry
+    lands EXACTLY ON the fill session."""
+    from swing.evaluation.dates import session_offset
+
+    conn, cfg, cid = build_world(
+        tmp_path, "28a_pre", pre_barrier=True, horizon_sessions=5)
+    assert session_offset(ANCHOR, 5) == FILL_SESSION, (
+        "the expiry must land ON the fill session or the dimension is absent")
+    return conn, cfg, _accept(conn, cid), {}
+
+
+def _twin_world_28b_pre(tmp_path, monkeypatch):
+    """CASE 28b's dimension: a DECLINE recorded for the fill session (the
+    evening before, which is the production shape the as-of rule permits)."""
+    from tests._latch_probe_world_22a import record_decision
+
+    conn, cfg, cid = build_world(tmp_path, "28b_pre", pre_barrier=True)
+    record_decision(
+        conn, candidate_id=cid, run_id=121, ticker=TICKER,
+        detection=ANCHOR, session=FILL_SESSION,
+        recorded_ts="2026-07-24T18:00:00")
+    return conn, cfg, _accept(conn, cid), {}
+
+
+def _twin_world_28c_pre(tmp_path, monkeypatch):
+    """CASE 28c's dimension: a RE-FIRE dated ON the fill session, which
+    re-bases the mandate that same day."""
+    conn, cfg, cid = build_world(tmp_path, "28c_pre", pre_barrier=True)
+    seed_run(conn, 124, FILL_SESSION)
+    conn.execute(
+        "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+        "pivot, initial_stop, rs_method) "
+        "VALUES (124, ?, 'aplus', 17.31, 19.90, 16.10, 'universe')",
+        (TICKER,))
+    conn.commit()
+    return conn, cfg, _accept(conn, cid), {}
+
+
+_TWIN_WORLDS = {
+    "8-pre": _twin_world_8_pre,
+    "10-pre": _twin_world_10_pre,
+    "24-pre": _twin_world_24_pre,
+    "27-pre": _twin_world_27_pre,
+    "28a-pre": _twin_world_28a_pre,
+    "28b-pre": _twin_world_28b_pre,
+    "28c-pre": _twin_world_28c_pre,
+}
+
+
+def test_every_relocated_twin_has_its_OWN_world() -> None:
+    """THE CLOSURE CHECK ON THE ROSTER, and it is what stops pattern A
+    recurring: a twin added to the case-id list without a world builder fails
+    HERE rather than silently running the default world."""
+    assert set(_TWIN_WORLDS) == set(RELOCATED_TWIN_CASE_IDS), (
+        "a relocated twin has no world builder: "
+        f"{sorted(set(_TWIN_WORLDS) ^ set(RELOCATED_TWIN_CASE_IDS))}")
+
+
 @pytest.mark.parametrize("twin", RELOCATED_TWIN_CASE_IDS)
-def test_every_relocated_twin_refuses_at_rung_nine(tmp_path, twin) -> None:
+def test_every_relocated_twin_refuses_at_rung_nine(
+        tmp_path, monkeypatch, twin) -> None:
     """The seven ``-pre`` twins whose BASE cases are task 6's.
 
     N10's repair, and it is caught by the registry's OWN ownership rule: *the
@@ -754,16 +1106,21 @@ def test_every_relocated_twin_refuses_at_rung_nine(tmp_path, twin) -> None:
     to close it.
 
     WHAT MAKES THIS DISCRIMINATING rather than seven copies of one assertion:
-    each twin's world is the one its base case proved ADMITS, so an
-    implementation that omitted rung 9 would ADMIT all seven.  The pre-barrier
-    state is planted on BOTH halves (stored tier AND epoch boundary), so the
-    refusal is rung 9's ruling rather than one of its operands.
+    **each twin's world is now its base case's own** -- the empty window, the
+    armed lapse geometry, the counting archive, the re-confirmation fire, the
+    on-the-fill-session expiry, decline and re-fire.  Rung 9 refuses FIRST in
+    every one of them, so the probe's answer never matters; an implementation
+    that omitted rung 9 would produce SEVEN DIFFERENT downstream answers here
+    and none of them ``pre_barrier_unproven``.
+
+    The pre-barrier state is planted on BOTH halves (stored tier AND epoch
+    boundary), so the refusal is rung 9's ruling rather than one of its
+    operands.
     """
-    conn, cfg, candidate_id = build_world(
-        tmp_path, twin.replace("-", "_"), pre_barrier=True)
+    conn, cfg, order, kwargs = _TWIN_WORLDS[twin](tmp_path, monkeypatch)
     try:
-        order = _accept(conn, candidate_id)
-        verdict = _authorize(conn, cfg, order)
+        assert order.freeze_tier == FREEZE_TIER_PRE_BARRIER, twin
+        verdict = _authorize(conn, cfg, order, **kwargs)
         assert verdict.admitted is False, twin
         assert verdict.decline_reason == "pre_barrier_unproven", twin
         assert verdict.freeze_tier == FREEZE_TIER_PRE_BARRIER, twin
