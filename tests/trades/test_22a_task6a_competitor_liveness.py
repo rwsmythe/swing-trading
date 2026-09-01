@@ -467,14 +467,49 @@ def test_a_dead_rival_does_not_rescue_a_pre_barrier_link_case_4c_i_pre(
 
 def test_a_filtered_population_does_not_rescue_a_pre_barrier_link_case_23_pre(
         tmp_path) -> None:
-    """``23-pre`` -- case 23's twin, same shape and same ruling."""
+    """``23-pre`` -- case 23's twin, same shape and same ruling.
+
+    **ALL THREE RIVALS ARE BUILT, AND ONLY ONE WAS** (semantic re-audit
+    2026-08-31).  The docstring said *"same shape"* while the world carried
+    the dead rival alone, so two of the three filter paths the base case
+    exists for -- the SUPERSEDED-validity link and the CONSUMED link -- were
+    unexercised in the twin.  Case 23's own seeding is reproduced here, and
+    the assertion is that rung 9 refuses FIRST over the whole population
+    rather than over the one third of it the shorter fixture happened to
+    contain.
+    """
+    from tests._latch_link_fixtures_22a import insert_intent, validity_row
+
     conn, cfg, subject = build_world(tmp_path, "23pre", pre_barrier=True)
     try:
         dead = dead_rival_fire(conn, run_id=171)
+        superseded = live_rival_fire(conn, run_id=172, session=date(2026, 7, 22))
+        consumed = live_rival_fire(conn, run_id=173, session=date(2026, 7, 23))
         conn.commit()
         subject_order = accept(conn, subject, key="23pre-s",
                                broker_order_id=BROKER_ORDER_ID)
         accept(conn, dead, key="23pre-d", broker_order_id="23pre-dead")
+
+        sup = accept(conn, superseded, key="23pre-sup",
+                     broker_order_id="23pre-sup")
+        insert_intent(conn, validity_row(
+            superseded, sup.place_intent_id, key="23pre-sup-later",
+            run_id=172, ticker=TICKER, detection_date="2026-07-22",
+            action_session_date=ACCEPT_SESSION.isoformat(),
+            recorded_ts=f"{ACCEPT_SESSION.isoformat()}T15:00:00",
+            validity_outcome="rejected_by_broker",
+            actual_order_type=None, actual_duration=None,
+            actual_stop_price=None, actual_limit_price=None,
+            actual_quantity=None, actual_broker_order_id=None))
+        conn.commit()
+
+        con = accept(conn, consumed, key="23pre-con",
+                     broker_order_id="23pre-con")
+        seed_trade(conn, trade_id=61, entry_date=date(2026, 7, 28), price=18.10)
+        _entry_fill(conn, fill_id=61, trade_id=61,
+                    order_id=con.broker_order_id, session=date(2026, 7, 28))
+
+        assert subject_order.freeze_tier == FREEZE_TIER_PRE_BARRIER
         assert authorize(conn, cfg, subject_order).decline_reason == (
             "pre_barrier_unproven")
     finally:

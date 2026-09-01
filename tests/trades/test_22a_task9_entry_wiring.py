@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from swing.data.db import ensure_schema, open_connection, run_migrations
+from swing.data.models import FREEZE_TIER_LIVE_AT_ACCEPTANCE
 from swing.trades.entry import (
     EntryRequest,
     PatternEvaluationAnchorError,
@@ -55,7 +56,8 @@ SOFT, HARD = 8, 12
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-def build_world(tmp_path: Path, name: str, *, closes=None, pre_barrier=False):
+def build_world(tmp_path: Path, name: str, *, closes=None, pre_barrier=False,
+                initial_stop=None):
     """A fire, its archive, the pipeline row the SHARED derivation needs.
 
     ``pre_barrier=True`` builds the world THE PRODUCTION WAY -- the fire is
@@ -73,15 +75,19 @@ def build_world(tmp_path: Path, name: str, *, closes=None, pre_barrier=False):
     root = tmp_path / name
     root.mkdir(parents=True, exist_ok=True)
     cfg = probe_cfg(root)
+    # `initial_stop` is a per-case dimension for exactly one case (the case-6
+    # display-precision variant, whose whole subject is the frozen stop's
+    # third decimal); every other caller leaves it at the fire's own.
+    _fire_over = {} if initial_stop is None else {"initial_stop": initial_stop}
     if pre_barrier:
         conn = open_connection(root / "swing.db")
         run_migrations(conn, target_version=36)
-        candidate_id = seed_fire(conn)
+        candidate_id = seed_fire(conn, **_fire_over)
         conn.commit()
         run_migrations(conn, target_version=37, backup_dir=root / "bak")
     else:
         conn = ensure_schema(root / "swing.db")
-        candidate_id = seed_fire(conn)
+        candidate_id = seed_fire(conn, **_fire_over)
     run = conn.execute(
         "SELECT data_asof_date, action_session_date FROM evaluation_runs "
         "WHERE id = 121").fetchone()
@@ -153,10 +159,56 @@ def test_a_latched_fill_labels_from_the_fire_case_1(tmp_path) -> None:
     """PRE-FIX the row lands ``manual_off_pipeline`` + NULL + NULL, because the
     fire has rolled out of the latest complete run.  POST-FIX it carries the
     fire's three keys.  Both values are stated so the assertion distinguishes.
+
+    **S3.1'S RESOLUTION HALF IS ASSERTED HERE TOO, AND IT WAS ASSERTED BY NO
+    TEST BOUND TO CASE 1** (semantic re-audit 2026-08-31).  S3.1 names the two
+    intent ids, the broker order id, `clear_reason`, `bars_through`,
+    `horizon_session` and the freeze tier as part of the required outcome; the
+    persisted-row half was pinned well and that half was not.  `bars_through`
+    was asserted exactly ONCE in the whole arc, in a task-6 test carrying no
+    case id.
+
+    THE VALUES ARE THE PROBE WORLD'S, not OII's -- the module docstring
+    declares that substitution with its reasoning -- so what is bound here is
+    the SHAPE S3.1 specifies over this fixture's own rows: every id is read
+    back from the ledger rather than typed, so a fixture that quietly stopped
+    matching the emitter fails instead of agreeing with itself.
     """
+    from swing.trades.latched_origin import resolve_latched_provenance
+
     conn, cfg, candidate_id = build_world(tmp_path, "c1")
     accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
     conn.commit()
+
+    verdict = resolve_latched_provenance(conn, cfg, req())
+    assert verdict.admitted is True, verdict.decline_reason
+    place_id, validity_id, order_id = conn.execute(
+        "SELECT place_intent_id, validity_intent_id, broker_order_id "
+        "  FROM latch_order_mandate_links").fetchone()
+    assert verdict.order.place_intent_id == place_id
+    assert verdict.order.validity_intent_id == validity_id
+    assert verdict.order.broker_order_id == order_id
+    assert verdict.clear_reason is None, (
+        "an admitted mandate carries NO terminal; a non-None value here is a "
+        "same-session tie admission wearing an armed admission's clothes")
+    assert verdict.clear_session is None
+    assert verdict.freeze_tier == FREEZE_TIER_LIVE_AT_ACCEPTANCE
+    # The judging window is [anchor, fill_session - 1] and the horizon is the
+    # fill session itself: two DIFFERENT sessions, and collapsing them into one
+    # field with two definitions is the defect S2 records by name.
+    assert verdict.horizon_session == FILL_SESSION
+    assert verdict.bars_through == max(
+        s for s in BASE_CLOSES if s < FILL_SESSION), (
+        "bars_through must be the last session the derivation actually judged")
+    assert verdict.bars_through < verdict.horizon_session
+    assert verdict.window_empty is False
+    assert verdict.archive_status == "ok"
+    # THE SNAPSHOT EQUALITY: the link's frozen pair IS the fire's own.
+    assert (verdict.order.frozen_pivot, verdict.order.frozen_invalidation) == \
+        conn.execute(
+            "SELECT pivot, initial_stop FROM candidates WHERE id = ?",
+            (candidate_id,)).fetchone()
+
     result = enter(conn, cfg, req())
     origin, cand, label = written(conn, result.trade_id)
     assert origin == "pipeline_aplus"
@@ -253,12 +305,54 @@ def test_bucket_drift_is_not_death_case_1(tmp_path) -> None:
 def test_a_pre_barrier_fire_records_honest_unset_case_1_pre(tmp_path) -> None:
     """RD's refuse-by-default, at the PERSISTED-ROW grain.
 
-    This is what the live entry path does on every fire that exists today, and
-    the plan does not let the acceptance suite's green imply otherwise.
+    **THIS IS TRADE 25'S LIVE OUTCOME, NOT A SYNTHETIC TWIN'S HYGIENE.**  Under
+    Option C every fire that exists today is PRE-BARRIER, so this row is what
+    the live entry path does on trade 25 the day `0037` lands, and **S9's
+    operator gate is written around exactly it** (RD, ruled 2026-09-01).
+
+    **THE PERSISTED ROW IS IDENTICAL UNDER EVERY REFUSAL REASON.**
+    `pre_barrier_unproven`, `no_accepted_latch_order`, `mandate_not_alive`,
+    `aliveness_unverifiable` and the R3-13 inconsistent-pair refusal all land
+    on `("manual_off_pipeline", None, None)` BY RD'S OWN RULING -- so a row
+    asserting only the persisted triple passes an implementation refusing for
+    entirely the wrong reason.  Three things are required and all three are
+    here:
+
+    * **(a)** the reason `pre_barrier_unproven` SPECIFICALLY, not merely
+      non-admission;
+    * **(b)** that the refusal came from **RUNG 9**, copying `5b-pre`'s
+      pattern -- `clear_reason` `None` and NO aliveness evidence recorded.
+      Without it an implementation that PROBES FIRST and refuses later passes
+      on the reason string alone, which is the exact hole `5b-pre` was written
+      to close;
+    * **(c)** this docstring, saying which of the two it is.
+
+    RD's diagnosis of the cause is worth keeping at the site: **case 2, forty
+    lines below in this same file, states this exact defect in its own
+    docstring and pairs itself with a byte-identity control.**  The knowledge
+    was present in the file and was not applied one function earlier -- the
+    per-clause discriminator rule needs applying per CASE, not per FILE.
     """
+    from swing.trades.latched_origin import resolve_latched_provenance
+
     conn, cfg, candidate_id = build_world(tmp_path, "c1pre", pre_barrier=True)
     accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
     conn.commit()
+
+    verdict = resolve_latched_provenance(conn, cfg, req())
+    assert verdict.decline_reason == "pre_barrier_unproven", (
+        "the row lands honest-unset under EVERY refusal reason, so the reason "
+        "is what this case is about")
+    assert verdict.clear_reason is None, (
+        "a terminal was reported, so the probe RAN -- rung 9 must refuse "
+        "before it")
+    assert verdict.probe_evidence is None, (
+        "aliveness evidence was recorded, so the implementation probed first "
+        "and refused later; it would pass on the reason string alone")
+
+    # The SUBMITTED label is non-NULL, which is the discriminator for the
+    # persisted half: an implementation that kept it would write a row Demand
+    # C's `_gate_on_unset_state` can never correct.
     result = enter(conn, cfg, req(hypothesis_label="Broad-watch baseline (watch)"))
     assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
 
@@ -395,11 +489,31 @@ def test_a_breach_on_a_prior_session_refuses_case_5a(tmp_path) -> None:
 
     An implementation OMITTING the invalidation comparison ADMITS this case and
     writes the fire's keys.  That is the point of the case.
+
+    **THE INVALIDATION-SPECIFIC HALF WAS MISSING** (semantic re-audit
+    2026-08-31).  S3.5 states the required result IN FULL --
+    `mandate_not_alive` with `clear_reason='invalidation'` and its
+    `clear_session` -- and it states it in full precisely to prevent what this
+    row did: assert only the persisted triple, which is identical under ANY
+    refusal reason, so a fixture that refused for a coverage hole or an
+    unreadable ledger passed.  The breach SESSION is named too, because the
+    difference between 5a and 5b is which session carries it.
     """
+    from swing.trades.latched_origin import resolve_latched_provenance
+
+    breach_session = date(2026, 7, 23)
     conn, cfg, candidate_id = build_world(
-        tmp_path, "c5a", closes=_breach_closes(date(2026, 7, 23)))
+        tmp_path, "c5a", closes=_breach_closes(breach_session))
     accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
     conn.commit()
+
+    verdict = resolve_latched_provenance(conn, cfg, req())
+    assert verdict.decline_reason == "mandate_not_alive"
+    assert verdict.clear_reason == "invalidation", (
+        "the row lands honest-unset under every refusal reason; the "
+        "invalidation is what this case is about")
+    assert verdict.clear_session == breach_session
+
     result = enter(
         conn, cfg, req(hypothesis_label="Broad-watch baseline (watch)"))
     assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
@@ -497,15 +611,86 @@ def test_a_close_exactly_at_the_invalidation_admits_case_6(tmp_path) -> None:
     assert (origin, cand) == ("pipeline_aplus", candidate_id)
 
 
+def test_the_display_precision_variant_varies_BOTH_operands_case_6(
+        tmp_path) -> None:
+    """CASE 6's DISPLAY-PRECISION VARIANT -- lens clauses 7 and 30, and S3.6's
+    own last bullet (added by review 22A-R15-13).
+
+    **THIS WAS ABSENT FROM THE ARC** (semantic re-audit 2026-08-31): the
+    strict-inequality half was asserted and the BOTH-OPERANDS rounding half was
+    not, measured by grep over all twenty `test_22a_*` modules.
+
+    **WHY BOTH OPERANDS.**  A variant that rounds only the CLOSE is passed by
+    a close-only implementation, which is how the earlier geometry failed to
+    discriminate.  The fixture needs a frozen stop and a close that are
+    UNEQUAL raw and EQUAL at display precision, with the close BELOW the stop,
+    so that every partial implementation refuses and only the both-operands
+    one admits:
+
+        raw           14.8799 <  14.884   -> refuse
+        close-only    14.88   <  14.884   -> refuse
+        stop-only     14.8799 <  14.88    -> refuse
+        BOTH          14.88   <  14.88    -> ADMIT
+
+    The plan states the geometry on OII's scale (`41.424` / `41.4199`); this
+    module's fire is FTRE, so the same DIGIT PATTERN is applied to its own
+    stop rather than re-pointing the whole fixture at another ticker.  Both
+    arithmetics are ASSERTED below rather than asserted about, so the case
+    cannot silently stop discriminating.
+    """
+    frozen_stop = 14.884
+    equal_at_dp = 14.8799
+    assert round(frozen_stop, 2) == round(equal_at_dp, 2) == 14.88, (
+        "the operands must be EQUAL at display precision or the variant is "
+        "the strict-inequality case again")
+    assert equal_at_dp < frozen_stop, (
+        "the close must be BELOW the stop raw, or a no-rounding "
+        "implementation admits and the case discriminates nothing")
+
+    closes = dict(BASE_CLOSES)
+    closes[date(2026, 7, 23)] = equal_at_dp
+    conn, cfg, candidate_id = build_world(
+        tmp_path, "c6dp", closes=closes, initial_stop=frozen_stop)
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    assert conn.execute(
+        "SELECT frozen_invalidation FROM latch_order_mandate_links"
+    ).fetchone()[0] == frozen_stop, (
+        "the mint did not freeze the third-decimal stop, so the case is about "
+        "a different value than the one it names")
+
+    result = enter(conn, cfg, req())
+    origin, cand, _ = written(conn, result.trade_id)
+    assert (origin, cand) == ("pipeline_aplus", candidate_id), (
+        "a close-only, stop-only or no-rounding invalidation comparison "
+        "refuses here")
+
+
 def test_the_pre_barrier_twin_of_the_boundary_refuses_case_6_pre(
         tmp_path) -> None:
-    """ONE dimension varies from case 6: the epoch boundary."""
+    """ONE dimension varies from case 6: the epoch boundary.
+
+    **THE FIXTURE WAS ALREADY THE BASE CASE'S -- WHAT WAS MISSING IS THE
+    REASON** (semantic re-audit 2026-08-31).  `pre_barrier_unproven` is the
+    thing the twin convention exists to PIN, and the persisted row is
+    identical under every refusal reason, so an implementation that refused
+    case 6 for a coverage or drift reason passed this twin.  `5b-pre`, in this
+    same module, shows the shape and it is copied here.
+    """
+    from swing.trades.latched_origin import resolve_latched_provenance
+
     closes = dict(BASE_CLOSES)
     closes[date(2026, 7, 23)] = STOP
     conn, cfg, candidate_id = build_world(
         tmp_path, "c6pre", closes=closes, pre_barrier=True)
     accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
     conn.commit()
+    verdict = resolve_latched_provenance(conn, cfg, req())
+    assert verdict.decline_reason == "pre_barrier_unproven"
+    assert verdict.clear_reason is None
+    assert verdict.probe_evidence is None, (
+        "rung 9 must refuse BEFORE the probe, or the twin passes on the "
+        "reason string alone")
     result = enter(conn, cfg, req())
     assert written(conn, result.trade_id) == ("manual_off_pipeline", None, None)
 
@@ -612,11 +797,23 @@ def test_a_no_link_preliminary_still_reserves_case_21b(tmp_path) -> None:
     the row is being written: a second connection cannot acquire the write lock
     at any point during ``record_entry`` for an order-id-bearing request whose
     preliminary answer was NO LINK.
+
+    **AND THE LINK NOW ACTUALLY ARRIVES** (semantic re-audit 2026-08-31).  The
+    reservation half was asserted and the ARRIVAL -- the event lens clause 38b
+    names the case for -- was NOT BUILT: the spy carried the comment *"and NOW
+    the link arrives"* followed only by a delegation to the real lookup, so
+    the world contained no link at any point and the row that landed was the
+    ordinary one.  The link is planted INSIDE the spy, on the reserved
+    connection, exactly as T10's case 37b plants one at the route -- and the
+    written row is asserted to reflect it, which is the half the case exists
+    for.  Planting it on a SECOND connection is impossible BY CONSTRUCTION
+    here, and that is the same reservation this row's first half proves.
     """
     conn, cfg, candidate_id = build_world(tmp_path, "c21b")
     conn.commit()
     db = tmp_path / "c21b" / "swing.db"
     observed: list[bool] = []
+    arrived: list[int] = []
 
     import swing.trades.latched_origin as lo
     real = lo.find_accepted_latch_order
@@ -633,7 +830,12 @@ def test_a_no_link_preliminary_still_reserves_case_21b(tmp_path) -> None:
         finally:
             other.close()
         # and NOW the link arrives, after the preliminary answer would have
-        # been "no link"
+        # been "no link".  On the RESERVED connection, because no other one
+        # can write -- which is precisely what the assertion above measured.
+        if not arrived:
+            order = accept_and_link(conn_, candidate_id,
+                                    session=ACCEPT_SESSION)
+            arrived.append(int(order.link_id))
         return real(conn_, broker_order_id=broker_order_id)
 
     lo.find_accepted_latch_order = _observe
@@ -644,12 +846,15 @@ def test_a_no_link_preliminary_still_reserves_case_21b(tmp_path) -> None:
     assert observed and all(observed), (
         "the authoritative read ran WITHOUT a write reservation; a competing "
         "writer could commit between it and the INSERT")
-    # The row itself is the ORDINARY one -- there was no link.  What the case
-    # pins is that the reservation was taken ANYWAY, on the strength of the
-    # order id alone.
-    assert conn.execute(
-        "SELECT COUNT(*) FROM trades WHERE id = ?",
-        (result.trade_id,)).fetchone()[0] == 1
+    assert arrived, "the link never arrived, so the case's own event is absent"
+    # THE ARRIVED LINK IS WHAT THE ROW REFLECTS.  An implementation that
+    # reserved only on the recognised-latched path would have taken the
+    # ordinary chain on the stale negative and written
+    # ('manual_off_pipeline', None) -- the fire has rolled out of the latest
+    # complete run, so the two outcomes are distinguishable here.
+    assert written(conn, result.trade_id)[:2] == (
+        "pipeline_aplus", candidate_id), (
+        "the row does not reflect the link that arrived inside the window")
 
 
 # ===========================================================================
