@@ -111,7 +111,22 @@ _BOUND_INPUT = re.compile(
 
 
 def _migration_sql() -> str:
-    return MIGRATION_0037.read_text(encoding="utf-8")
+    """The migration with COMMENT LINES BLANKED (Codex 22A-FIX-R3-02).
+
+    **A COMMENT IS NOT A PREDICATE, and both walks used to read one as one.**
+    MEASURED by the reviewer's mutation: appending a comment line containing
+    `json_extract(..., '$.authorization.comment_only_guard.input') =
+    NEW.some_column` made BOTH extractors report a clause that does not exist
+    -- so the "exact" SQL-side membership check could be satisfied by PROSE.
+    That is worse than the semantic-equivalence limitation the module already
+    declares: there, the clause exists and may differ; here it need not exist.
+
+    BLANKED RATHER THAN DROPPED, so any line number this module ever reports
+    stays true to the file -- the same discipline the sibling walks use.
+    """
+    return "\n".join(
+        "" if line.lstrip().startswith("--") else line
+        for line in MIGRATION_0037.read_text(encoding="utf-8").splitlines())
 
 
 def _migration_clause_keys() -> set[str]:
@@ -469,3 +484,104 @@ def test_the_migration_walks_find_something_at_all() -> None:
     assert _migration_clause_keys(), "the clause-path walk found nothing"
     assert _migration_bound_keys(), "the bound-input walk found nothing"
     assert "rung1_link_ticker" in _migration_bound_keys()
+
+
+def test_R3M1_a_numeric_LOOKING_blob_limit_is_refused_by_the_SERVICE(
+        tmp_path) -> None:
+    """THE STORAGE CLASS IS PART OF THE GUARD (Codex 22A-FIX-R3-01).
+
+    `math.isfinite(float(x))` is not a type test.  SQLite does NOT apply
+    affinity to a BLOB, so a numeric-LOOKING blob is schema-legal under
+    `0033:414` -- the CHECK compares a BLOB to `0` and the row inserts -- and
+    `float(b"18.89")` succeeds.  Authorization ADMITTED, and `json.dumps` then
+    raised a bare `TypeError` at the evidence writer: the SAME
+    authorize-then-abort the non-finite guard was added to close, one storage
+    class over.
+
+    Both premises are MEASURED here rather than argued: the blob survives the
+    migrated schema, and Python's conversion accepts it.
+    """
+    import json
+    from pathlib import Path as _Path
+    import tempfile
+
+    from swing.data.db import ensure_schema
+    from tests._latch_link_fixtures_22a import (
+        insert_intent,
+        place_row,
+        validity_row,
+    )
+    from tests._latch_probe_world_22a import seed_fire
+
+    blob = b"18.89"
+    assert math.isfinite(float(blob)), (
+        "the Python premise: `float()` accepts a numeric-looking blob")
+    with pytest.raises(TypeError):
+        json.dumps({"input": blob})
+
+    conn = ensure_schema(_Path(tempfile.mkdtemp()) / "blob.db")
+    try:
+        candidate_id = seed_fire(conn)
+        place_id = insert_intent(conn, place_row(candidate_id))
+        row = validity_row(candidate_id, place_id)
+        row["actual_limit_price"] = blob
+        insert_intent(conn, row)
+        conn.commit()
+        assert conn.execute(
+            "SELECT typeof(actual_limit_price) FROM latch_order_intents "
+            " WHERE intent_kind = 'validity'").fetchone()[0] == "blob", (
+            "the SCHEMA premise: `0033:414`'s CHECK admits a BLOB, because "
+            "SQLite does not apply affinity to one")
+    finally:
+        conn.close()
+
+    assert _judge(_order(actual_limit_price=blob)) == (
+        SERVICE_SIDE_REFUSAL["guard_broker_limit_bound"])
+    assert _judge(_order(actual_limit_price=55.59)) is None, (
+        "the control: an ordinary finite limit is still accepted")
+
+
+def test_R3M2_a_COMMENT_ONLY_clause_satisfies_neither_walk(monkeypatch) -> None:
+    """THE MUTATION CONTROL, over the REAL migration text.
+
+    Both walks read raw SQL, so a comment mentioning a clause path was
+    reported as a real clause AND as a real binding -- the "exact" SQL-side
+    membership check satisfiable by PROSE (Codex 22A-FIX-R3-02, measured).
+
+    The control beside it is what stops the blanking from silently disabling
+    the walks: the same line WITHOUT its comment marker IS seen.
+    """
+    real = MIGRATION_0037.read_text(encoding="utf-8")
+    clause = ("         AND json_extract(NEW.cited_latch_probe_json, "
+              "'$.authorization.comment_only_guard.input') = NEW.trade_id")
+
+    monkeypatch.setattr(
+        "tests.data.test_22a_authorize_then_abort_closure.MIGRATION_0037",
+        _WriteOnce(real + "\n-- " + clause + "\n"))
+    assert "comment_only_guard" not in _migration_clause_keys(), (
+        "a COMMENT is reported as a clause; the exact membership check can be "
+        "satisfied by prose")
+    assert "comment_only_guard" not in _migration_bound_keys()
+
+    monkeypatch.setattr(
+        "tests.data.test_22a_authorize_then_abort_closure.MIGRATION_0037",
+        _WriteOnce(real + "\n" + clause + "\n"))
+    assert "comment_only_guard" in _migration_clause_keys(), (
+        "the control: LIVE SQL must still be seen, or the blanking has "
+        "disabled the walk rather than corrected it")
+    assert "comment_only_guard" in _migration_bound_keys()
+
+
+class _WriteOnce:
+    """A stand-in for the migration path whose ``read_text`` returns a string.
+
+    A real temp file would work equally well; this keeps the mutation in
+    memory so the control cannot accidentally leave a mutated migration on
+    disk -- the failure mode that would poison every other row in the suite.
+    """
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def read_text(self, encoding: str = "utf-8") -> str:
+        return self._text

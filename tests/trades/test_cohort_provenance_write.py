@@ -2239,3 +2239,84 @@ def caplog_at_error():
         yield records
     finally:
         root.removeHandler(sink)
+
+
+# ===========================================================================
+# 22A-FIX-R3-04 / -05 / -06 -- THE THIRD SITE, AND THE SAVEPOINT THE CALLER
+# WAS LEFT HOLDING
+# ===========================================================================
+def test_R3M4_the_READER_does_not_leak_its_read_transaction_at_acquisition(
+        conn) -> None:
+    """A THIRD site of the acquisition-window class, not the settled
+    `_entry_transaction` one.
+
+    A library caller reusing the connection would inherit a read transaction
+    it did not open -- a stale WAL snapshot, and a later transaction-owning
+    call refusing -- and be told nothing.  The CLI happens to close its
+    connection; the function's connection-taking API promises nothing.
+    """
+    build_cadl_case(conn)
+    conn.commit()
+    assert not conn.in_transaction, "the premise: nothing is open"
+    proxy = _InterruptAtAcquisitionConn(conn, "BEGIN DEFERRED")
+    with pytest.raises(KeyboardInterrupt, match="planted just after"):
+        read_provenance_corrections(proxy)
+    assert proxy.began, "the planted verb never opened a transaction"
+    assert not conn.in_transaction, (
+        "the reader opened a read transaction and left it open")
+
+
+def test_R3M5_the_READER_surfaces_a_failed_rollback(conn) -> None:
+    """`AL-15`'s standard, on the third site -- it silently suppressed the
+    failure while the two paths beside it had just been repaired."""
+    import logging
+
+    build_cadl_case(conn)
+    conn.commit()
+    proxy = _FailingCleanupConn(conn, "@@never@@", fail_rollback=True)
+    try:
+        with caplog_at_error() as records:
+            with pytest.raises(sqlite3.OperationalError,
+                               match="planted on rollback"):
+                read_provenance_corrections(proxy)
+        assert any("discard" in r.getMessage().lower() for r in records
+                   if r.levelno >= logging.ERROR), (
+            "the reader returned or raised without saying the connection is "
+            "unusable")
+    finally:
+        conn.rollback()
+
+
+def test_R3M6_a_CALLER_HELD_transaction_keeps_its_transaction_and_loses_the_savepoint(
+        conn) -> None:
+    """THE JUSTIFICATION COVERED THE TRANSACTION, NEVER THE SAVEPOINT.
+
+    If ``SAVEPOINT`` takes effect and the interrupt arrives as the statement
+    returns, the caller kept an unowned NESTED savepoint -- and the name is
+    fixed, so repeated previews stack it and a caller using the same name has
+    its own rollback target shadowed.
+
+    Both halves are asserted: the caller's transaction is STILL OPEN (the
+    settled posture), and the savepoint is GONE.  ``RELEASE`` on an absent
+    savepoint raises, which is what makes the second half measurable.
+    """
+    ids = build_cadl_case(conn)
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    proxy = _InterruptAtAcquisitionConn(
+        conn, "SAVEPOINT cohort_provenance_preview_sp")
+    try:
+        with pytest.raises(KeyboardInterrupt, match="planted just after"):
+            preview_cohort_provenance_correction(
+                proxy, trade_id=ids["trade_id"],
+                cited_candidate_id=ids["candidate_id"],
+                cited_recommendation_id=ids["daily_recommendation_id"],
+                reason=REASON)
+        assert proxy.began, "the planted verb never created the savepoint"
+        assert conn.in_transaction, (
+            "the caller's transaction was closed -- the settled posture is "
+            "that someone else's transaction is left alone")
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("RELEASE cohort_provenance_preview_sp")
+    finally:
+        conn.rollback()

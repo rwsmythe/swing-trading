@@ -2232,6 +2232,25 @@ def preview_cohort_provenance_correction(
                     "the next caller would inherit a transaction it did not "
                     "open.", savepoint_error, cleanup_error)
                 raise cleanup_error from savepoint_error
+        else:
+            # A CALLER-HELD TRANSACTION IS LEFT OPEN -- BUT THIS FUNCTION'S OWN
+            # SAVEPOINT IS NOT (Codex 22A-FIX-R3-06).  The "leave someone
+            # else's transaction alone" justification covers the TRANSACTION;
+            # it never covered a savepoint THIS call created.  If `SAVEPOINT`
+            # took effect and the interrupt arrived as the statement returned,
+            # the caller kept an unowned nested savepoint -- and because the
+            # name is fixed, repeated previews stack it and a caller using the
+            # same name has its own rollback target shadowed.
+            #
+            # BOTH VERBS ARE ATTEMPTED AND BOTH FAILURES ARE TOLERATED HERE,
+            # deliberately: on the ordinary path the savepoint does NOT exist
+            # (its creation is what failed), so `ROLLBACK TO` raising is the
+            # EXPECTED case rather than a defect, and the savepoint error is
+            # the one the caller needs.  What must not happen is a live
+            # savepoint surviving silently.
+            for verb in ("ROLLBACK TO", "RELEASE"):
+                with contextlib.suppress(sqlite3.Error):
+                    conn.execute(f"{verb} {_PREVIEW_SAVEPOINT}")
         raise
     try:
         auth = _authorize(
@@ -3157,15 +3176,39 @@ def read_provenance_corrections(
     # WAL gives a read transaction a consistent snapshot without blocking the
     # writer, so this costs concurrency nothing. Rolled back unconditionally:
     # the reader still writes nothing and still takes no write lock.
+    #
+    # THE ACQUISITION IS INSIDE THE PROTECTED REGION, AND A FAILED UNWIND IS
+    # NOT SUPPRESSED (Codex 22A-FIX-R3-04 / 22A-FIX-R3-05).  This reader
+    # carried BOTH residuals the preview and apply paths were repaired for --
+    # `BEGIN DEFERRED` outside the `try`, and a rollback failure swallowed --
+    # and it is a THIRD site of the same class, not the settled
+    # `_entry_transaction` one.  A library caller reusing the connection would
+    # inherit a read transaction it did not open (a stale WAL snapshot, and a
+    # later transaction-owning call refusing), told nothing.  The CLI happens
+    # to close its connection; the function's connection-taking API promises
+    # nothing of the sort.
+    #
+    # `conn.in_transaction` rather than the remembered flag alone, for R2-03's
+    # reason: on the interrupted-acquisition path only the connection knows
+    # whether the transaction opened.
     owns_read_tx = not conn.in_transaction
-    if owns_read_tx:
-        conn.execute("BEGIN DEFERRED")
     try:
+        if owns_read_tx:
+            conn.execute("BEGIN DEFERRED")
         return _read_provenance_corrections_inner(conn, trade_id=trade_id)
     finally:
-        if owns_read_tx:
-            with contextlib.suppress(sqlite3.Error):
+        if owns_read_tx and conn.in_transaction:
+            try:
                 conn.rollback()
+            except sqlite3.Error as cleanup_error:
+                log.error(
+                    "22-A: the cohort-provenance READER could not roll back "
+                    "the read transaction it opened (%s). It is STILL OPEN "
+                    "and this connection MUST BE DISCARDED rather than "
+                    "reused -- the next caller inherits a transaction it did "
+                    "not open, on a snapshot that no longer moves.",
+                    cleanup_error)
+                raise
 
 
 def _read_provenance_corrections_inner(

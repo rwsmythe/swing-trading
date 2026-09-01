@@ -1026,8 +1026,19 @@ def assert_fill_consistent_with_order(
     # the frozen value cannot be used.  A new decline reason would widen a
     # mirror family (the S5.1 reason view, the citation trigger's roster, the
     # CHECK enum) for a distinction the operator does not need.
-    if (order.actual_limit_price is not None
-            and not math.isfinite(float(order.actual_limit_price))):
+    #
+    # AND THE STORAGE CLASS IS CHECKED BEFORE THE CONVERSION (Codex
+    # 22A-FIX-R3-01, verified by execution).  `math.isfinite(float(x))` is not
+    # a type test: SQLite does NOT apply affinity to a BLOB, so a numeric-
+    # LOOKING blob -- `b"18.89"` -- is schema-legal under `0033:414` (the
+    # CHECK compares a BLOB to 0 and the row inserts), and `float(b"18.89")`
+    # succeeds.  Authorization then ADMITTED, and `json.dumps` raised a bare
+    # `TypeError` at the evidence writer: the SAME authorize-then-abort this
+    # guard was added to close, one storage class over.
+    if order.actual_limit_price is not None and (
+            isinstance(order.actual_limit_price, bool)
+            or not isinstance(order.actual_limit_price, (int, float))
+            or not math.isfinite(float(order.actual_limit_price))):
         return "frozen_value_unavailable"
 
     # FRAMEWORK CONFORMITY.  The upper bound comes from ``mandate_limit_price``

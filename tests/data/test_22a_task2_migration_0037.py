@@ -340,17 +340,15 @@ _THE_35_WRITE_PATHS = {
             "INSERT OR IGNORE INTO candidates_immutability_epoch "
             "VALUES (1, 0, 'x')"],
 }
-_THE_35_PARAMS = [
-    (cid, sql) for cid in THE_35_CASE_IDS for sql in _THE_35_WRITE_PATHS[cid]
-]
-
-
-@pytest.mark.parametrize(
-    ("case_id", "sql"), _THE_35_PARAMS,
-    ids=[f"{cid}-{n}" for cid in THE_35_CASE_IDS
-         for n in range(len(_THE_35_WRITE_PATHS[cid]))],
-)
-def test_the_epoch_refuses_every_write_path(conn, case_id: str, sql: str) -> None:
+# THE CASE ID IS WHAT ITERATES, and it is the `argvalues` (Codex
+# 22A-FIX-R3-03).  The predecessor parametrized over a FLATTENED (case, sql)
+# list and named the roster only in `ids=` -- which is DISPLAY.  MEASURED by
+# the reviewer: emptying `35a`'s write-path list and adding a second path to
+# `35b` kept the roster/table agreement green, kept the total at six, EXECUTED
+# NO `35a` TEST, and still bound `35a` as implemented.  With the case id as the
+# argvalue, a member with no write path produces a parameter that FAILS.
+@pytest.mark.parametrize("case_id", THE_35_CASE_IDS)
+def test_the_epoch_refuses_every_write_path(conn, case_id: str) -> None:
     """Cases 35a, 35b, 35c, 35n, 35p -- at the DEFAULT pragma.
 
     A TWO-trigger implementation passes 35a, 35b and 35n and FAILS 35c and 35p.
@@ -360,21 +358,29 @@ def test_the_epoch_refuses_every_write_path(conn, case_id: str, sql: str) -> Non
     mechanism that exists to make the proof honest.
     """
     _assert_default_pragma(conn)
-    before = conn.execute(
-        "SELECT * FROM candidates_immutability_epoch").fetchall()
-    with pytest.raises(sqlite3.IntegrityError):
-        conn.execute(sql)
-    assert conn.execute(
-        "SELECT * FROM candidates_immutability_epoch").fetchall() == before
+    paths = _THE_35_WRITE_PATHS[case_id]
+    assert paths, (
+        f"{case_id} has NO write path, so this parameter executes nothing -- "
+        f"the exact shape a display-only `ids=` binding used to hide")
+    for sql in paths:
+        before = conn.execute(
+            "SELECT * FROM candidates_immutability_epoch").fetchall()
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(sql)
+        assert conn.execute(
+            "SELECT * FROM candidates_immutability_epoch").fetchall() == before
 
 
 def test_the_35_roster_and_its_write_paths_agree() -> None:
     """The closure check on the pair, so neither can grow without the other."""
     assert set(THE_35_CASE_IDS) == set(_THE_35_WRITE_PATHS), (
         f"{sorted(set(THE_35_CASE_IDS) ^ set(_THE_35_WRITE_PATHS))}")
-    assert len(_THE_35_PARAMS) == 6, (
+    assert sum(len(v) for v in _THE_35_WRITE_PATHS.values()) == 6, (
         "35p carries two conflict spellings; a table that lost one would "
         "still satisfy the set comparison above")
+    assert all(_THE_35_WRITE_PATHS.values()), (
+        "a member with an EMPTY path list executes nothing while every set "
+        "comparison stays green")
 
 
 def test_the_epoch_boundary_is_seeded_from_the_live_max_candidate_id(

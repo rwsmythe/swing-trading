@@ -172,16 +172,30 @@ def _arc_test_files() -> list[Path]:
 _FUNC_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
 
 
-def _is_parametrize(decorator: ast.AST) -> bool:
-    """``@pytest.mark.parametrize(...)`` in any of its spellings.
+def _parametrize_argvalues(decorator: ast.AST) -> list[ast.AST]:
+    """The ``argvalues`` expression of a ``parametrize`` decorator, if any.
 
     Matched on the ATTRIBUTE NAME rather than on the full dotted path, so a
     ``from pytest import mark`` or a module alias still counts -- the shape,
-    not the spelling (the same reasoning as the roster-vs-shape lesson the
-    exception walk records).
+    not the spelling (the roster-vs-shape lesson the exception walk records).
+
+    **``argvalues`` ONLY -- NEVER ``ids=`` (Codex 22A-FIX-R3-03, verified by
+    mutation).**  `ids=` is DISPLAY: a roster appearing only there names the
+    parameters without generating any.  Measured on the 35-family, whose real
+    argvalues are `_THE_35_PARAMS`: emptying `35a`'s write-path list and
+    adding a second to `35b` kept the roster/table check green, kept the total
+    at six, EXECUTED NO `35a` TEST, and still bound `35a` as implemented.
     """
     node = decorator.func if isinstance(decorator, ast.Call) else decorator
-    return isinstance(node, ast.Attribute) and node.attr == "parametrize"
+    if not (isinstance(node, ast.Attribute) and node.attr == "parametrize"):
+        return []
+    if not isinstance(decorator, ast.Call):
+        return []
+    positional = [a for a in decorator.args]
+    out = positional[1:2]                       # argvalues is the 2nd arg
+    out += [kw.value for kw in decorator.keywords
+            if kw.arg == "argvalues"]
+    return out
 
 
 def case_ids_in_source(source: str, filename: str = "<source>") -> set[str]:
@@ -250,12 +264,11 @@ def case_ids_in_source(source: str, filename: str = "<source>") -> set[str]:
         if not fn.name.startswith("test"):
             continue
         for decorator in fn.decorator_list:
-            if not _is_parametrize(decorator):
-                continue
-            for node in ast.walk(decorator):
-                if isinstance(node, ast.Name) and isinstance(
-                        node.ctx, ast.Load):
-                    referenced.add(node.id)
+            for argvalues in _parametrize_argvalues(decorator):
+                for node in ast.walk(argvalues):
+                    if isinstance(node, ast.Name) and isinstance(
+                            node.ctx, ast.Load):
+                        referenced.add(node.id)
 
     for node in tree.body:
         if not isinstance(node, ast.Assign):
@@ -507,3 +520,46 @@ def test_G1c_deleting_ONE_parametrized_implementation_unbinds_its_cases(
     assert not still, (
         f"deleting {victim} left {still} still reporting implemented; the "
         f"companion count/table test is keeping the roster's reference alive")
+
+
+def test_G1d_a_roster_named_only_in_ids_binds_nothing() -> None:
+    """``ids=`` IS DISPLAY, NOT IMPLEMENTATION (Codex 22A-FIX-R3-03).
+
+    A roster appearing only in `ids=` names the parameters without generating
+    any, so a case can produce ZERO parameters and still read as implemented.
+    Measured on the 35-family before the repair; the family now parametrizes
+    over the case ids themselves, and this row pins the WALK's half of it.
+    """
+    real = sorted(PLAN_CASES)[0]
+    ids_only = "\n".join([
+        f"IDS_CASE_IDS = [{real!r}]",
+        "OTHER = [('x',)]",
+        "@pytest.mark.parametrize('p', OTHER, ids=IDS_CASE_IDS)",
+        "def test_display_only(p):",
+        "    return p",
+        "",
+    ])
+    assert case_ids_in_source(ids_only) == set(), (
+        "a roster named only in `ids=` still binds; a case can then generate "
+        "zero parameters and read as implemented")
+
+    argvalues = "\n".join([
+        f"ARG_CASE_IDS = [{real!r}]",
+        "@pytest.mark.parametrize('p', ARG_CASE_IDS)",
+        "def test_real(p):",
+        "    return p",
+        "",
+    ])
+    assert case_ids_in_source(argvalues) == {real}, (
+        "the control: an ARGVALUES reference must still bind")
+
+    keyword = "\n".join([
+        f"KW_CASE_IDS = [{real!r}]",
+        "@pytest.mark.parametrize(argnames='p', argvalues=KW_CASE_IDS)",
+        "def test_kw(p):",
+        "    return p",
+        "",
+    ])
+    assert case_ids_in_source(keyword) == {real}, (
+        "the keyword spelling of argvalues must bind too -- the SHAPE, not "
+        "one spelling of it")
