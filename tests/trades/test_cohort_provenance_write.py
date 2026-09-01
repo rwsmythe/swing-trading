@@ -1311,9 +1311,11 @@ class _FailingCleanupConn:
     error on the REAL statement it issues.
     """
 
-    def __init__(self, real: sqlite3.Connection, verb: str) -> None:
+    def __init__(self, real: sqlite3.Connection, verb: str, *,
+                 fail_rollback: bool = False) -> None:
         self._real = real
         self._verb = verb
+        self._fail_rollback = fail_rollback
         self.attempts: list[str] = []
 
     def __getattr__(self, name):
@@ -1325,6 +1327,17 @@ class _FailingCleanupConn:
             raise sqlite3.OperationalError(
                 f"no such savepoint (planted on {self._verb})")
         return self._real.execute(sql, *args)
+
+    def rollback(self):
+        """``rollback`` is a METHOD, not a statement, so a verb-matching
+        ``execute`` proxy structurally CANNOT reach it -- which is exactly why
+        the two R13-06/R14-07 rows fail one verb each and never compose
+        (Codex 22A-R15-03)."""
+        if self._fail_rollback:
+            self.attempts.append("rollback()")
+            raise sqlite3.OperationalError(
+                "cannot rollback (planted on rollback)")
+        return self._real.rollback()
 
 
 @pytest.mark.parametrize("verb", ["ROLLBACK TO", "RELEASE"])
@@ -1406,6 +1419,65 @@ def test_R14M7_a_CALLER_HELD_transaction_is_still_left_open(conn) -> None:
         assert conn.in_transaction, "the caller's transaction was closed"
     finally:
         conn.rollback()
+
+
+# ===========================================================================
+# 22A-R15-03 -- BOTH VERBS FAIL, AND THE LEAK IS NOT SILENT
+#
+# The R14-07 guard wrapped its `conn.rollback()` in
+# `contextlib.suppress(sqlite3.Error)`, so when savepoint CREATION and the
+# recovery rollback BOTH fail, the owned deferred transaction leaks while the
+# caller hears only about the savepoint.  **That contradicts `AL-15`, written
+# four commits earlier in the same leg**, which declares a cleanup failure the
+# MORE DANGEROUS condition -- the one that must surface loudly -- and it is
+# the same reasoning the `finally` block above already follows.
+#
+# THE TWO EXISTING PROXY ROWS STRUCTURALLY CANNOT REACH THIS.  Both plant a
+# failing SQL VERB through `execute`, and `conn.rollback()` is a METHOD that
+# the proxy delegates straight through; no parametrization over verbs can
+# compose the two.  That is why the proxy grew a `rollback` override rather
+# than the case list growing a row.
+# ===========================================================================
+def test_R15M3_a_failed_SAVEPOINT_and_a_failed_ROLLBACK_surface_BOTH(
+        conn, caplog) -> None:
+    """PRE-FIX: the rollback error was suppressed, the savepoint error was
+    raised alone, and NOTHING told the caller its connection still held an
+    open transaction it did not open.
+
+    POST-FIX the CLEANUP error is what surfaces (`AL-15`'s standard: the
+    cleanup failure is the more dangerous of the two) with the savepoint error
+    chained as its `__cause__`, so neither is lost, and an ERROR record says
+    the connection must be discarded.
+    """
+    import logging
+
+    ids = build_cadl_case(conn)
+    conn.commit()
+    assert not conn.in_transaction, "the premise: the preview must OWN the tx"
+    proxy = _FailingCleanupConn(conn, "SAVEPOINT", fail_rollback=True)
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(sqlite3.OperationalError,
+                               match="planted on rollback") as caught:
+                preview_cohort_provenance_correction(
+                    proxy, trade_id=ids["trade_id"],
+                    cited_candidate_id=ids["candidate_id"],
+                    cited_recommendation_id=ids["daily_recommendation_id"],
+                    reason=REASON)
+        assert proxy.attempts == [
+            "SAVEPOINT cohort_provenance_preview_sp", "rollback()"], (
+            "both planted failures must actually have been reached, or this "
+            "row measures nothing about the composition")
+        # THE SAVEPOINT ERROR IS CARRIED, NOT REPLACED.  A fix that raised the
+        # cleanup error bare would lose the reason the recovery ran at all.
+        cause = caught.value.__cause__
+        assert isinstance(cause, sqlite3.OperationalError), cause
+        assert "planted on SAVEPOINT" in str(cause)
+        assert any("discard" in r.getMessage().lower()
+                   for r in caplog.records if r.levelno >= logging.ERROR), (
+            "nothing told the operator the connection is unusable")
+    finally:
+        conn.rollback()             # the REAL connection; the proxy refused
 
 
 # ===========================================================================

@@ -2184,12 +2184,36 @@ def preview_cohort_provenance_correction(
     # else's transaction would be a second defect wearing this one's clothes.
     try:
         conn.execute(f"SAVEPOINT {_PREVIEW_SAVEPOINT}")
-    except BaseException:
+    except BaseException as savepoint_error:
         if owns_read_tx:
-            # The savepoint error is the informative one and is re-raised; a
-            # rollback that also fails must not replace it.
-            with contextlib.suppress(sqlite3.Error):
+            # A FAILED RECOVERY ROLLBACK IS NOT SUPPRESSED (Codex 22A-R15-03),
+            # AND THIS RECONCILES THE GUARD WITH `AL-15`.
+            #
+            # This was `with contextlib.suppress(sqlite3.Error): conn.rollback()`,
+            # on the ground that "the savepoint error is the informative one".
+            # It is not, when the rollback ALSO fails: then the transaction
+            # this call opened is STILL OPEN on a connection the caller goes on
+            # reusing, and the caller hears only about a savepoint it never
+            # cared about.  `AL-15` -- declared four commits earlier in this
+            # same leg, and followed by the `finally` block below -- says a
+            # CLEANUP failure is the MORE DANGEROUS of two simultaneous
+            # conditions and must surface loudly.  A declaration and a guard
+            # written in one leg cannot contradict each other.
+            #
+            # NEITHER ERROR IS LOST: the cleanup error is what propagates, with
+            # the savepoint error CHAINED as its `__cause__`, so the reason the
+            # recovery ran at all travels with it.
+            try:
                 conn.rollback()
+            except sqlite3.Error as cleanup_error:
+                log.error(
+                    "22-A: the cohort-provenance PREVIEW could not create its "
+                    "savepoint (%s) AND could not roll back the transaction it "
+                    "had just opened (%s). The transaction is STILL OPEN and "
+                    "this connection MUST BE DISCARDED rather than reused -- "
+                    "the next caller would inherit a transaction it did not "
+                    "open.", savepoint_error, cleanup_error)
+                raise cleanup_error from savepoint_error
         raise
     try:
         auth = _authorize(
