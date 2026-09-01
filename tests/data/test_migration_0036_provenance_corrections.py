@@ -293,10 +293,21 @@ def _seed_parents(conn: sqlite3.Connection) -> dict[str, int]:
         ("2026-04-25T00:00:00.000", "2026-04-25T00:00:00.000"),
     )
     conn.commit()
+    # THE FOUR FILL-SIDE OPERANDS, READ OFF THE SEEDED FILL (Codex 22A-R15-01).
+    # 0037's citation trigger binds the frozen snapshot's quantity / price /
+    # fill_origin / envelope to the cited fill's own columns, so a hand-built
+    # four-key snapshot no longer inserts.  They are READ rather than typed --
+    # a fixture that quietly disagrees with the row it describes is this
+    # project's most-repeated test defect.
+    quantity, price, fill_origin, envelope = conn.execute(
+        "SELECT quantity, price, fill_origin, schwab_source_value_json "
+        "  FROM fills WHERE fill_id = ?", (fill,)).fetchone()
     return {
         "run": int(run), "pipeline": int(pipe), "candidate": int(cand),
         "dr": int(dr), "trade": int(trade), "fill": int(fill),
         "dr_snapshot": snapshot_recommendation_row(conn, int(dr)),
+        "operands": {"quantity": quantity, "price": price,
+                     "fill_origin": fill_origin, "envelope": envelope},
     }
 
 
@@ -309,6 +320,7 @@ def _row_kwargs(ids: dict[str, int], **overrides):
         entry_fill_snapshot_json=json.dumps({
             "fill_id": ids["fill"], "trade_id": ids["trade"],
             "action": "entry", "fill_datetime": FILL_DATETIME,
+            **ids["operands"],
         }, sort_keys=True),
         cited_candidate_id=ids["candidate"],
         cited_daily_recommendation_id=ids["dr"],

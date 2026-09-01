@@ -951,6 +951,95 @@ FOR EACH ROW WHEN NOT (
                   AND t.ticker = (SELECT ca.ticker FROM candidates ca
                                   WHERE ca.id = NEW.cited_candidate_id))
 
+    -- ===== THE AUTHORIZATION'S FOUR FILL-SIDE OPERANDS: PRESENT, AND BOUND
+    -- ===== TO THE CITED FILL (Codex 22A-R15-01).
+    --
+    -- `R14-02` added quantity / price / fill_origin / envelope to the frozen
+    -- entry-fill snapshot because the latch ladder's every rung reads them and
+    -- a stored proof whose operands are not frozen is not a proof.  NOTHING
+    -- OUTSIDE THE SERVICE then required them: `swing/data/models.py`'s
+    -- validator and `0036:390-397`'s CHECK both require only fill_id /
+    -- trade_id / action (+ fill_datetime).  So a RAW correction -- the AL-10
+    -- trust boundary this whole trigger exists to police -- could carry an
+    -- SQL-bound latch probe with the operands OMITTED or FALSIFIED, and every
+    -- layer read green.
+    --
+    -- INSERT-TIME RULE.  The five live pre-operand rows are untouched: they
+    -- were written before the freeze existed and no UPDATE or DELETE path
+    -- changes here.  The drift reader already reports them by name.
+    --
+    -- IT VERIFIES A FACT, NEVER A JUDGMENT.  Each freeze is compared to the
+    -- fill's OWN column, in SQL's own domain, with the NULL-safe `IS` -- same
+    -- value, same domain, no rounding and no cross-engine re-derivation.  It
+    -- is the identical shape as the four RAW OPERANDS block further down.
+    --
+    -- THE PRESENCE ASSERTION IS SEPARATE AND IS LOAD-BEARING.  `json_extract`
+    -- on an ABSENT path returns SQL NULL, so `IS <column>` alone reads an
+    -- OMITTED operand as agreement whenever the column is itself NULL --
+    -- which is every pre-22-A envelope.  `json_type(...) IS NOT NULL`
+    -- distinguishes an absent path (NULL) from a JSON `null` VALUE (the text
+    -- 'null'), and that is exactly the distinction the omission case turns on.
+    --
+    -- THE `'object'` BRANCH IS THE FREEZER'S DECLARED DIGEST ESCAPE, AND IT IS
+    -- NOT A HOLE.  `_json_safe_operand` writes a type-tagged object when the
+    -- value cannot be written as JSON -- a BLOB (SQLite does not enforce
+    -- column affinity; 22A-R13-01 measured that shape reaching production) or
+    -- a non-finite REAL (`json.dumps(inf)` emits the bare token `Infinity`,
+    -- which `json_valid` reads FALSE, so a truthful freeze would be rejected
+    -- by the row's own CHECK).  So the escape is admitted ONLY when the column
+    -- genuinely holds one of those two -- both `typeof()` FACTS -- and a
+    -- forger cannot use it to skip the binding on an ordinary scalar.
+    --
+    -- FAIL-CLOSED BY CONSTRUCTION.  A malformed snapshot cannot reach a JSON
+    -- function (the `json_valid` CASE, 22A-R3-12's class), and any NULL
+    -- anywhere in the chain collapses through `COALESCE(..., 0)` to a REFUSAL
+    -- rather than to a trigger that silently does not fire.
+    AND COALESCE((
+        SELECT CASE WHEN json_valid(NEW.entry_fill_snapshot_json) THEN (
+                json_type(NEW.entry_fill_snapshot_json, '$.quantity')
+                    IS NOT NULL
+            AND json_type(NEW.entry_fill_snapshot_json, '$.price')
+                    IS NOT NULL
+            AND json_type(NEW.entry_fill_snapshot_json, '$.fill_origin')
+                    IS NOT NULL
+            AND json_type(NEW.entry_fill_snapshot_json, '$.envelope')
+                    IS NOT NULL
+            AND (json_extract(NEW.entry_fill_snapshot_json, '$.quantity')
+                     IS f.quantity
+                 OR (json_type(NEW.entry_fill_snapshot_json, '$.quantity')
+                         = 'object'
+                     AND (typeof(f.quantity) = 'blob'
+                          OR (typeof(f.quantity) = 'real'
+                              AND (f.quantity = 9e999
+                                   OR f.quantity = -9e999)))))
+            AND (json_extract(NEW.entry_fill_snapshot_json, '$.price')
+                     IS f.price
+                 OR (json_type(NEW.entry_fill_snapshot_json, '$.price')
+                         = 'object'
+                     AND (typeof(f.price) = 'blob'
+                          OR (typeof(f.price) = 'real'
+                              AND (f.price = 9e999
+                                   OR f.price = -9e999)))))
+            AND (json_extract(NEW.entry_fill_snapshot_json, '$.fill_origin')
+                     IS f.fill_origin
+                 OR (json_type(NEW.entry_fill_snapshot_json, '$.fill_origin')
+                         = 'object'
+                     AND (typeof(f.fill_origin) = 'blob'
+                          OR (typeof(f.fill_origin) = 'real'
+                              AND (f.fill_origin = 9e999
+                                   OR f.fill_origin = -9e999)))))
+            AND (json_extract(NEW.entry_fill_snapshot_json, '$.envelope')
+                     IS f.schwab_source_value_json
+                 OR (json_type(NEW.entry_fill_snapshot_json, '$.envelope')
+                         = 'object'
+                     AND (typeof(f.schwab_source_value_json) = 'blob'
+                          OR (typeof(f.schwab_source_value_json) = 'real'
+                              AND (f.schwab_source_value_json = 9e999
+                                   OR f.schwab_source_value_json = -9e999)))))
+        ) ELSE 0 END
+          FROM fills f
+         WHERE f.fill_id = NEW.entry_fill_id_at_correction), 0)
+
     -- ========== THE SUBJECT FILL'S ENVELOPE HAS BEEN READ BY THE AUTHORITY,
     -- AND THIS CLAUSE ASKS ONLY THAT (PERSIST-CANONICAL, CHARC + RD
     -- 2026-08-26; it REPLACES the canonicality twin of 22A-R9-03/SS-4).
@@ -1902,7 +1991,7 @@ FOR EACH ROW WHEN NOT (
     ), 0)
 )
 BEGIN
-    SELECT RAISE(ABORT, 'provenance_corrections: the cited rows exist but do not form the citation graph this correction asserts (candidate->run, recommendation->run/ticker/kind, pipeline->run, status-history->hypothesis, registry name, fill->trade, trade<->candidate ticker, and -- for admission_tier latch_ladder -- link->candidate/order/intents, the accepted validity row and its place parent, and a closed VERSIONED probe-evidence blob whose every bound field matches its source and whose $.authorization records one passing entry per refusal-capable clause). The citation is STRUCTURAL: a row may not claim a contemporaneous pair it does not have, nor an admission whose evidence it cannot produce. A correction is also refused when the Schwab envelope on the anchoring fill carries a duplicate, padded, blank or non-string schwab_order_id or schwab_instrument_symbol: Python and SQLite read such a document DIFFERENTLY, so the authority it names is ambiguous and no citation may rest on it.');
+    SELECT RAISE(ABORT, 'provenance_corrections: the cited rows exist but do not form the citation graph this correction asserts (candidate->run, recommendation->run/ticker/kind, pipeline->run, status-history->hypothesis, registry name, fill->trade, trade<->candidate ticker, the frozen entry-fill snapshot''s four authorization operands (quantity, price, fill_origin, envelope) present and equal to the cited fill''s own columns, and -- for admission_tier latch_ladder -- link->candidate/order/intents, the accepted validity row and its place parent, and a closed VERSIONED probe-evidence blob whose every bound field matches its source and whose $.authorization records one passing entry per refusal-capable clause). The citation is STRUCTURAL: a row may not claim a contemporaneous pair it does not have, nor an admission whose evidence it cannot produce. A correction is also refused when the Schwab envelope on the anchoring fill carries a duplicate, padded, blank or non-string schwab_order_id or schwab_instrument_symbol: Python and SQLite read such a document DIFFERENTLY, so the authority it names is ambiguous and no citation may rest on it.');
 END;
 
 -- ============================================================================

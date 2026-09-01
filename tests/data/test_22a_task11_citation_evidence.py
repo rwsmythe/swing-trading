@@ -74,6 +74,34 @@ def _with_blob(payload: dict, blob: dict) -> dict:
     return payload
 
 
+def _refreeze(conn_: sqlite3.Connection, payload: dict) -> dict:
+    """Re-freeze the entry-fill snapshot from the fill AS IT NOW STANDS.
+
+    THE TRIGGER BINDS THE FOUR FILL-SIDE OPERANDS AT INSERT TIME (Codex
+    22A-R15-01), so any case that MUTATES the anchoring fill to build its world
+    -- a different envelope, a stripped one, a re-minted order -- must move the
+    freeze with it or the row is refused for a reason that has nothing to do
+    with the clause the case is about.  In production the freeze and the INSERT
+    happen inside one transaction, so this is what the service does by
+    construction; here it has to be said out loud.
+
+    ``_EntryFill.snapshot()`` is the PRODUCTION freezer, so no case hand-builds
+    a snapshot dict that could drift from the emitter's shape.
+    """
+    from swing.trades.cohort_provenance_correction import (
+        resolve_authoritative_entry_fill,
+    )
+
+    entry_fill = resolve_authoritative_entry_fill(conn_, payload["trade_id"])
+    assert entry_fill.fill_id == payload["entry_fill_id_at_correction"], (
+        "this helper freezes the AUTHORITATIVE fill; the payload anchors on a "
+        "different one, so re-freezing would silently repoint the snapshot")
+    payload = dict(payload)
+    payload["entry_fill_snapshot_json"] = json.dumps(
+        entry_fill.snapshot(), sort_keys=True)
+    return payload
+
+
 def _assert_baseline_inserts(conn_: sqlite3.Connection, payload: dict) -> None:
     """The mutation is what flipped the verdict, and this is how we know.
 
@@ -457,7 +485,7 @@ def _mint_drifted_citation(
         "SELECT pivot FROM candidates WHERE id = ?",
         (candidate_id,)).fetchone()[0]
 
-    payload = dict(payload)
+    payload = _refreeze(conn_, payload)
     payload.update(
         cited_latch_link_id=link["link_id"],
         cited_latch_validity_intent_id=validity_id,
@@ -1102,7 +1130,7 @@ def test_a_last_word_row_is_unaffected_by_the_json_guard(conn) -> None:
         "UPDATE fills SET schwab_source_value_json = NULL WHERE fill_id = ?",
         (payload["entry_fill_id_at_correction"],))
     conn.commit()
-    payload = dict(payload)
+    payload = _refreeze(conn, payload)
     payload.update(admission_tier="last_word", cited_latch_link_id=None,
                    cited_latch_validity_intent_id=None,
                    cited_latch_place_intent_id=None,
@@ -1672,7 +1700,7 @@ def test_an_ABSENT_envelope_does_not_trip_the_canonicality_clause(
         "fill_origin = 'operator_typed' WHERE fill_id = ?",
         (payload["entry_fill_id_at_correction"],))
     conn.commit()
-    last_word = dict(payload)
+    last_word = _refreeze(conn, payload)
     last_word.update(admission_tier="last_word", cited_latch_link_id=None,
                      cited_latch_validity_intent_id=None,
                      cited_latch_place_intent_id=None,
@@ -1703,7 +1731,7 @@ def test_a_NESTED_key_of_the_same_name_does_not_trip_the_clause(conn) -> None:
         "schwab_instrument_symbol": CADL_TICKER,
         "raw": {"schwab_order_id": "an unrelated nested field"}}))
     conn.commit()
-    _insert_payload(conn, payload)
+    _insert_payload(conn, _refreeze(conn, payload))
     assert conn.execute(
         "SELECT admission_tier FROM provenance_corrections").fetchone() == (
         "latch_ladder",)
@@ -1901,7 +1929,9 @@ def test_THE_DECLARED_LIMITATION_a_stale_AGREEING_LABEL_is_ACCEPTED(
         "the premise: a reading under a grammar the current code no longer is")
     assert lo.ENVELOPE_CANONICALIZER_VERSION != "2026-01-01.0"
     conn.commit()
-    _insert_payload(conn, payload)           # THE DECLARED ACCEPTANCE
+    # THE DECLARED ACCEPTANCE.  The document on the fill moved, so the freeze
+    # moves with it -- the operand binding is not what this case is about.
+    _insert_payload(conn, _refreeze(conn, payload))
     assert conn.execute(
         "SELECT COUNT(*) FROM provenance_corrections WHERE trade_id = ?",
         (payload["trade_id"],)).fetchone()[0] == 1
@@ -1969,7 +1999,7 @@ def test_THE_DECLARED_LIMITATION_a_stale_DISAGREEING_reading_is_ACCEPTED(
     assert lo.canonical_envelope_identity(doc).state == "refused", (
         "and the contradiction survives the undo, or nothing is stale")
     conn.commit()
-    _insert_payload(conn, {**payload, **_LAST_WORD_NULLS})
+    _insert_payload(conn, {**_refreeze(conn, payload), **_LAST_WORD_NULLS})
     assert conn.execute(
         "SELECT COUNT(*) FROM provenance_corrections WHERE trade_id = ?",
         (payload["trade_id"],)).fetchone()[0] == 1
@@ -2123,10 +2153,183 @@ def test_THE_DECLARED_LIMITATION_two_equal_but_wrong_values_are_ACCEPTED(
         "VALUES (?, ?, 'canonical', ?, 'CADL', 'forged', 'T')",
         (fill_id, honest, payload["cited_latch_broker_order_id"]))
     conn.commit()
-    _insert_payload(conn, payload)
+    _insert_payload(conn, _refreeze(conn, payload))
     assert conn.execute(
         "SELECT admission_tier FROM provenance_corrections").fetchone() == (
         "latch_ladder",), (
         "the declared limitation stopped being true; correct the declaration "
         "in migration 0037's section 3d and in the plan's S8, do not silence "
         "this test")
+
+
+# ===========================================================================
+# 22A-R15-01 -- THE FOUR FILL-SIDE OPERANDS ARE REQUIRED, AND BOUND
+#
+# `R14-02` added `quantity` / `price` / `fill_origin` / `envelope` to the
+# frozen entry-fill snapshot because the latch ladder's every rung reads them
+# and a stored proof whose operands are not frozen is not a proof.  Nothing
+# OUTSIDE THE SERVICE then required them: `models.py`'s validator and
+# `0036:390-397`'s CHECK both require only `fill_id` / `trade_id` / `action`
+# (+ `fill_datetime`).  So a RAW correction -- the AL-10 trust boundary the
+# whole citation trigger exists to police -- could carry an SQL-bound latch
+# probe with the operands OMITTED or FALSIFIED, and every layer read green.
+#
+# The rule is an INSERT-time one, so the five live pre-operand rows are
+# untouched; `test_a_pre_operand_correction_row_is_reported_not_silently_clean`
+# in `tests/trades/test_cohort_provenance_write.py` still plants one by UPDATE
+# and still reports it.
+#
+# THE ROSTER IS IMPORTED, NEVER RETYPED.  `ENTRY_FILL_OPERAND_KEYS` is the
+# service's own tuple, so a fifth operand added there fails this family until
+# the trigger and the roster below move together (#11).
+# ===========================================================================
+_OPERAND_SOURCE_COLUMN = {
+    "quantity": "quantity",
+    "price": "price",
+    "fill_origin": "fill_origin",
+    "envelope": "schwab_source_value_json",
+}
+
+
+def _snapshot(payload: dict) -> dict:
+    return json.loads(payload["entry_fill_snapshot_json"])
+
+
+def _with_snapshot(payload: dict, snapshot: dict) -> dict:
+    payload = dict(payload)
+    payload["entry_fill_snapshot_json"] = json.dumps(snapshot, sort_keys=True)
+    return payload
+
+
+def test_the_operand_family_covers_every_key_the_service_freezes() -> None:
+    """The closure check, not a hand-maintained list.
+
+    Both families below parametrize over the SERVICE's roster, so a fifth
+    operand cannot be added without a case appearing for it -- and this row
+    fails loudly if the roster and the column map here ever diverge.
+    """
+    from swing.trades.cohort_provenance_correction import (
+        ENTRY_FILL_OPERAND_KEYS,
+    )
+
+    assert set(_OPERAND_SOURCE_COLUMN) == set(ENTRY_FILL_OPERAND_KEYS), (
+        "the operand roster moved and this module's source-column map did "
+        "not: "
+        f"{sorted(set(_OPERAND_SOURCE_COLUMN) ^ set(ENTRY_FILL_OPERAND_KEYS))}")
+
+
+def test_the_truthful_baseline_carries_all_four_operands_bound_to_the_fill(
+        conn) -> None:
+    """THE ACCEPTANCE THIS FAMILY RESTS ON.
+
+    A refusal-only set cannot establish that a guard can ever accept, and a
+    rejection case starting from a row that was never acceptable proves
+    nothing.  This also pins the fixture repair: the payload's frozen operands
+    ARE the cited fill's own columns at insert time.
+    """
+    from swing.trades.cohort_provenance_correction import (
+        ENTRY_FILL_OPERAND_KEYS,
+    )
+
+    payload = seed_latch_ladder_citation(conn)
+    snapshot = _snapshot(payload)
+    columns = [_OPERAND_SOURCE_COLUMN[k] for k in ENTRY_FILL_OPERAND_KEYS]
+    live = conn.execute(
+        f"SELECT {', '.join(columns)} FROM fills WHERE fill_id = ?",
+        (payload["entry_fill_id_at_correction"],)).fetchone()
+    for key, value in zip(ENTRY_FILL_OPERAND_KEYS, live, strict=True):
+        assert key in snapshot, f"the freezer stopped writing {key}"
+        assert snapshot[key] == value, (
+            f"the frozen {key} is not the cited fill's own value")
+    _insert_payload(conn, payload)
+    assert conn.execute(
+        "SELECT admission_tier FROM provenance_corrections").fetchone() == (
+        "latch_ladder",)
+
+
+@pytest.mark.parametrize(
+    "key", ["quantity", "price", "fill_origin", "envelope"])
+def test_an_omitted_fill_side_operand_is_rejected(conn, key) -> None:
+    """PRE-FIX every one of these INSERTED.
+
+    Omission is the sharper half: `json_extract` on an ABSENT path returns SQL
+    NULL, which a naive `IS <column>` binding reads as agreement whenever the
+    column is itself NULL -- so the presence assertion (`json_type(...) IS NOT
+    NULL`, which tells an absent path from a JSON `null` VALUE) is what makes
+    the binding mean anything.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    snapshot = _snapshot(payload)
+    del snapshot[key]
+    _assert_rejected(conn, _with_snapshot(payload, snapshot))
+
+
+@pytest.mark.parametrize(
+    "key, forged",
+    [("quantity", 1.0), ("price", 0.01), ("fill_origin", "operator_typed"),
+     ("envelope", '{"schwab_order_id": "9999999999"}')],
+    ids=["quantity", "price", "fill_origin", "envelope"])
+def test_a_falsified_fill_side_operand_is_rejected(conn, key, forged) -> None:
+    """PRESENCE IS NOT FIDELITY -- the same distinction the `$.authorization`
+    rungs already draw, on the operands nobody was binding.
+
+    Each forged value is a legal value of the column's own type, so nothing
+    but the binding to the cited fill can refuse it.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    snapshot = _snapshot(payload)
+    assert snapshot[key] != forged, "the forgery must differ from the truth"
+    snapshot[key] = forged
+    _assert_rejected(conn, _with_snapshot(payload, snapshot))
+
+
+def test_a_JSON_NULL_operand_against_a_NON_NULL_column_is_rejected(
+        conn) -> None:
+    """OMISSION WEARING A VALUE'S CLOTHES.
+
+    A JSON `null` and an ABSENT path are different documents that
+    `json_extract` renders identically, so this is the case that separates the
+    presence assertion from the binding: the key IS present, and it lies.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    assert conn.execute(
+        "SELECT schwab_source_value_json FROM fills WHERE fill_id = ?",
+        (payload["entry_fill_id_at_correction"],)).fetchone()[0] is not None, (
+        "the premise: the cited fill DOES carry a document")
+    snapshot = _snapshot(payload)
+    snapshot["envelope"] = None
+    _assert_rejected(conn, _with_snapshot(payload, snapshot))
+
+
+def test_the_PRE_22A_shape_a_null_envelope_on_a_null_column_still_inserts(
+        conn) -> None:
+    """THE OTHER DIRECTION, AND IT IS THE ORDINARY CASE.
+
+    Every pre-22-A fill has a NULL envelope, and the SERVICE freezes JSON
+    `null` for it.  A presence assertion written as "the value is not null"
+    rather than "the key is present" would refuse the production writer's own
+    output on every correction the framework has ever made -- so the
+    acceptance is pinned rather than assumed.
+
+    Written through the PRODUCTION service, so the row that reaches the
+    trigger is the emitter's, not a hand-built dict.
+    """
+    from tests.data.test_22a_task2_migration_0037 import _seed_correction
+
+    ids = _seed_correction(conn)
+    tier, frozen, fill_id = conn.execute(
+        "SELECT admission_tier, entry_fill_snapshot_json, "
+        "       entry_fill_id_at_correction "
+        "  FROM provenance_corrections WHERE provenance_correction_id = ?",
+        (ids["row_id"],)).fetchone()
+    assert tier == "last_word"
+    assert conn.execute(
+        "SELECT schwab_source_value_json FROM fills WHERE fill_id = ?",
+        (fill_id,)).fetchone()[0] is None, "the premise: no document"
+    snapshot = json.loads(frozen)
+    assert "envelope" in snapshot and snapshot["envelope"] is None, (
+        "the service froze something other than a JSON null for an absent "
+        "envelope; the acceptance this row pins is about that shape")

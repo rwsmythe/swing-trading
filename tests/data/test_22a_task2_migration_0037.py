@@ -933,6 +933,21 @@ def seed_latch_ladder_citation(conn: sqlite3.Connection) -> dict:
         {"schwab_order_id": link["broker_order_id"],
          "schwab_instrument_symbol": CADL_TICKER}))
     conn.commit()
+    # THE FILL SNAPSHOT IS RE-FROZEN FROM THE FILL AS IT NOW STANDS, through
+    # the PRODUCTION freezer (Codex 22A-R15-01).  The correction row this
+    # payload is copied from was written BEFORE the two UPDATEs above, so its
+    # frozen `envelope` operand is the pre-update value -- a payload truthful
+    # about every other source and STALE about this one.  The citation trigger
+    # now binds the four fill-side operands to the cited fill, so a stale
+    # freeze would make the baseline unacceptable and every mutation case
+    # built on it undiscriminating.  `_EntryFill.snapshot()` is the production
+    # emitter, not a hand-written dict.
+    from swing.trades.cohort_provenance_correction import (
+        resolve_authoritative_entry_fill,
+    )
+    row["entry_fill_snapshot_json"] = json.dumps(
+        resolve_authoritative_entry_fill(conn, row["trade_id"]).snapshot(),
+        sort_keys=True)
     quantity, price = conn.execute(
         "SELECT quantity, price FROM fills WHERE fill_id = ?",
         (fill_id,)).fetchone()

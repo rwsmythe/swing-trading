@@ -36,7 +36,6 @@ from swing.data.repos.recommendations import (
 from swing.data.repos.trades import update_cohort_provenance
 from tests.trades._cohort_provenance_fixtures import (
     CADL_ACTION_SESSION,
-    CADL_FILL_DATETIME,
     CADL_F,
     CADL_PIPELINE_FINISHED_LOCAL,
     CADL_RUN_TS_LOCAL,
@@ -230,17 +229,27 @@ def test_update_cohort_provenance_refuses_a_non_enum_origin(conn) -> None:
 # ------------------------------------------------------------- audit-row repo
 
 
-def _correction(ids: dict, **overrides) -> ProvenanceCorrection:
-    """A correction built from the PRODUCTION snapshot writer."""
+def _correction(conn, ids: dict, **overrides) -> ProvenanceCorrection:
+    """A correction built from the PRODUCTION snapshot writer.
+
+    THE ENTRY-FILL SNAPSHOT COMES FROM THE PRODUCTION FREEZER (Codex
+    22A-R15-01).  It was a hand-built four-key dict, and 0037's citation
+    trigger now binds the frozen quantity / price / fill_origin / envelope to
+    the cited fill's own columns -- so a hand-built snapshot is refused, and
+    correctly: it asserts operands it never read.
+    """
+    from swing.trades.cohort_provenance_correction import (
+        resolve_authoritative_entry_fill,
+    )
+
     base = dict(
         provenance_correction_id=None,
         trade_id=ids["trade_id"],
         entry_fill_id=ids["fill_id"],
         entry_fill_id_at_correction=ids["fill_id"],
-        entry_fill_snapshot_json=json.dumps({
-            "fill_id": ids["fill_id"], "trade_id": ids["trade_id"],
-            "action": "entry", "fill_datetime": CADL_FILL_DATETIME,
-        }, sort_keys=True),
+        entry_fill_snapshot_json=json.dumps(
+            resolve_authoritative_entry_fill(
+                conn, ids["trade_id"]).snapshot(), sort_keys=True),
         cited_candidate_id=ids["candidate_id"],
         cited_daily_recommendation_id=ids["daily_recommendation_id"],
         cited_evaluation_run_id=ids["evaluation_run_id"],
@@ -302,7 +311,7 @@ def _correction(ids: dict, **overrides) -> ProvenanceCorrection:
 
 def test_insert_then_read_back_round_trips_every_column(conn) -> None:
     ids = build_cadl_case(conn)
-    row = _correction(ids)
+    row = _correction(conn, ids)
     cid = insert_provenance_correction(conn, row)
     assert cid > 0
     back = get_correction_for_trade(conn, ids["trade_id"])
@@ -322,8 +331,8 @@ def test_get_correction_for_trade_is_none_when_absent(conn) -> None:
 def test_list_provenance_corrections_filters_by_trade(conn) -> None:
     a = build_cadl_case(conn)
     b = build_cadl_case(conn, ticker="VSTS")
-    insert_provenance_correction(conn, _correction(a))
-    insert_provenance_correction(conn, _correction(b))
+    insert_provenance_correction(conn, _correction(conn, a))
+    insert_provenance_correction(conn, _correction(conn, b))
     assert len(list_provenance_corrections(conn)) == 2
     only = list_provenance_corrections(conn, trade_id=b["trade_id"])
     assert [r.trade_id for r in only] == [b["trade_id"]]
@@ -336,7 +345,7 @@ def test_repo_does_not_commit(conn) -> None:
     ids = build_cadl_case(conn)
     conn.commit()
     conn.execute("BEGIN IMMEDIATE")
-    insert_provenance_correction(conn, _correction(ids))
+    insert_provenance_correction(conn, _correction(conn, ids))
     update_cohort_provenance(
         conn, trade_id=ids["trade_id"], hypothesis_label="x",
         candidate_id=ids["candidate_id"], trade_origin="pipeline_aplus")
