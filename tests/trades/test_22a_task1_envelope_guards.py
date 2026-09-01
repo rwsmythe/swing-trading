@@ -149,17 +149,27 @@ ABSENT_ENVELOPE_SHAPES = [
 
 
 @pytest.mark.parametrize("raw", ABSENT_ENVELOPE_SHAPES)
-def test_malformed_or_absent_envelope_yields_no_order_id_case_15e(raw) -> None:
-    """Case 15e -- every unusable envelope shape degrades to ``None``, never raises.
+def test_malformed_or_absent_envelope_yields_no_order_id(raw) -> None:
+    """Every unusable envelope shape degrades to ``None``, never raises.
 
     PRE-FIX a naive ``json.loads(raw)["schwab_order_id"]`` raises on eight of
     these eleven shapes, and a raising read-only consumer takes down a
     money-bearing entry over cohort bookkeeping.
+
+    **THE CASE-15e BINDING MOVED TO TASK 8, and this row lost its suffix**
+    (semantic re-audit 2026-08-31).  S5.1's reason view assigns the reason
+    `no_envelope` to case 15e, and NO assertion here reaches a decline reason
+    at all: task 1's cell ships the READER and the four shape guards, so the
+    case's full required outcome is not assertable at this task.  That is the
+    registry's OWN ownership rule -- *the EARLIEST task at which its FULL
+    required outcome is assertable* -- pointing at task 8, exactly as N10's
+    seven twins pointed at task 4.  The reader half is what this module can
+    prove and it stays; the case id sits where the outcome can be measured.
     """
     assert broker_order_id_from_envelope(raw) is None
 
 
-def test_well_formed_envelope_yields_the_order_id_case_15e_positive() -> None:
+def test_well_formed_envelope_yields_the_order_id() -> None:
     raw = (
         '{"entry_date": "2026-08-17", "entry_price": 53.98, '
         '"schwab_instrument_symbol": "OII", '

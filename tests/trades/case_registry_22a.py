@@ -142,6 +142,16 @@ N10 SEVEN `-pre` twins were owned by TASK 6 and are NOT runnable there.  A
     were already task 4's, and 4c-i-pre / 23-pre stay at 6a with their bases,
     which need rung 8 as well -- so the repair makes all fourteen twins
     consistent rather than fixing seven of them.)
+N11 `15e` was owned by TASK 1 and its FULL required outcome is not assertable
+    there.  S5.1's reason view assigns it `no_envelope` -- a RESOLVER verdict
+    -- while task 1's cell ships the envelope READER and the four shape
+    guards, so the bound row could only ever assert that the reader returns
+    `None`.  Same ownership rule and same shape as N10, found by the semantic
+    re-audit 2026-08-31 rather than by a registry read.
+    REPAIR: `15e` moves to task 8, where the resolver runs; task 1's reader
+    rows stay and keep their subject, losing only the case-id suffix.  Task 1
+    owns 10 cases; task 8 owns 3.  No case id is invented and none is
+    deferred.
 """
 
 # --------------------------------------------------------------------------
@@ -160,7 +170,12 @@ def _own(task: str, *ids: str) -> None:
 
 
 # Task 1 -- envelope-shape guards: PURE functions over a hand-built order.
-_own("1", "15a", "15b", "15c", "15d-i", "15d-ii", "15e",
+# N11 (semantic re-audit 2026-08-31): `15e` MOVED to task 8.  S5.1's reason
+# view assigns it `no_envelope`, and task 1's cell ships the READER and the
+# four shape guards -- nothing that can produce a decline reason -- so the
+# case's FULL required outcome is not assertable here.  Same ownership rule,
+# same shape as N10.
+_own("1", "15a", "15b", "15c", "15d-i", "15d-ii",
      "30a", "30b", "30c", "30d")
 
 # Task 2 -- migration 0037, schema grain.
@@ -193,7 +208,7 @@ _own("6a", "4c-i", "4c-ii", "15f", "23", "23b", "23c", "23d",
 # Task 7 -- derive_cohort_keys_for_fire extraction: no plan case ids.
 
 # Task 8 -- resolver composition.
-_own("8", "18", "5c")
+_own("8", "18", "5c", "15e")           # 15e relocated from task 1 -- see N11
 
 # Task 9 -- record_entry wiring, end-to-end / persisted-row grain.
 _own("9", "1", "2", "3", "5a", "5b", "6", "12", "21", "21b", "37c",

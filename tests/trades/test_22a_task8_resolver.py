@@ -392,3 +392,71 @@ def test_every_roster_member_is_accepted_by_the_verdict_validator(
     verdict = latched_origin.LatchedProvenance(
         admitted=False, recognised_but_underivable=True, decline_reason=reason)
     assert verdict.decline_reason == reason
+
+
+# ===========================================================================
+# CASE 15e -- RELOCATED HERE FROM TASK 1 (semantic re-audit 2026-08-31)
+#
+# S5.1's reason view assigns `no_envelope` to case 15e.  The row bound to it
+# lived in the task-1 module and asserted only that
+# `broker_order_id_from_envelope` returns `None` for eleven unusable shapes --
+# the READER half.  No assertion in it reached a decline reason at all,
+# because task 1's cell ships the reader and the four shape guards and nothing
+# that can produce one.  **The registry's OWN ownership rule -- the EARLIEST
+# task at which its FULL required outcome is assertable -- points here**,
+# exactly as N10's seven `-pre` twins pointed at task 4.  The reader rows stay
+# where they are and keep proving what that module can prove; the case id
+# moves to where the outcome can be measured.
+# ===========================================================================
+def test_every_unusable_envelope_shape_declines_and_never_raises_case_15e(
+        tmp_path) -> None:
+    """The eleven shapes, END TO END, and the reason view's own entry with it.
+
+    **THE ELEVEN SHAPES DO NOT ALL REACH ONE REASON, and that is measured
+    rather than asserted away.**  `no_envelope` is the reason for a genuinely
+    ABSENT envelope on an operator-typed fill -- which is the shape S5.1's
+    entry names -- while a padded, blank or numeric order id reaches
+    `envelope_not_canonical` (22A-R8-01: the two domains would read it
+    differently) and an unreadable-but-present document reaches
+    `no_order_id`.  All three are DECLINES; what the case pins is that no
+    shape RAISES and no shape ADMITS, plus the specific reason for the shape
+    the reason view names.
+
+    **THE ORIGIN IS NAMED, because the answer is a property of the PAIR** (RD's
+    22A-R3-13 ruling): an absent envelope on a TRUSTED origin is an
+    inconsistent evidence pair no production writer produces, so it refuses
+    `origin_envelope_inconsistent` instead.  A row asserting `no_envelope`
+    without naming the origin would be pinning one of two true answers and
+    calling it the answer -- the same omission the 4c-i seat canon records.
+    """
+    from tests.trades.test_22a_task1_envelope_guards import (
+        ABSENT_ENVELOPE_SHAPES,
+    )
+
+    conn, cfg, _ = build_world(tmp_path, "case15e")
+    try:
+        for raw in ABSENT_ENVELOPE_SHAPES:
+            verdict = resolve_latched_provenance(
+                conn, cfg, _req(schwab_source_value_json=raw,
+                                fill_origin="operator_typed"))
+            assert verdict.admitted is False, raw
+            assert verdict.decline_reason is not None, raw
+            assert verdict.order is None, raw
+
+        # THE REASON VIEW'S OWN ENTRY, on the shape it names.
+        absent = resolve_latched_provenance(
+            conn, cfg, _req(schwab_source_value_json=None,
+                            fill_origin="operator_typed"))
+        assert absent.decline_reason == "no_envelope"
+        assert absent.recognised_but_underivable is False, (
+            "an absent envelope on an operator-typed fill is the ORDINARY "
+            "non-Schwab case and must leave the ordinary chain intact")
+
+        # ...and the SAME shape on a TRUSTED origin is a different sentence.
+        inconsistent = resolve_latched_provenance(
+            conn, cfg, _req(schwab_source_value_json=None,
+                            fill_origin="schwab_auto"))
+        assert inconsistent.decline_reason == "origin_envelope_inconsistent"
+        assert inconsistent.recognised_but_underivable is True
+    finally:
+        conn.close()
