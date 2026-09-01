@@ -776,6 +776,15 @@ _SQL_SPELLINGS_NOT_DETECTED = {
     "split across two adjacent Python string literals":
         'conn.execute(\n    "SELECT json_extract("\n'
         '    "  f.schwab_source_value_json, \'$.x\') FROM fills")',
+    # THE SEVENTH (Codex 22A-R15-06), and it is the cheapest evasion of all:
+    # SQLite accepts a parenthesised expression wherever it accepts a column,
+    # so ONE character on each side of the name defeats the pattern's
+    # `(?:\w+\.)?` prefix.  Verified by execution against `_sql_envelope_reads`
+    # before it was declared.  Same class as the six above and NOT a new one --
+    # which is precisely why the answer is another declared row rather than an
+    # eighth widening of a regex that keeps losing to a parser's job.
+    "a parenthesised column expression":
+        "AND json_extract((f.schwab_source_value_json), '$.schwab_order_id')",
 }
 
 
@@ -811,6 +820,21 @@ from json import loads
 def consume(schwab_source_value_json):
     try:
         return loads(schwab_source_value_json)
+    except (ValueError, TypeError):
+        return None
+""",
+    # THE THIRD (Codex 22A-R15-06).  `_json_loads_in` recognises the ATTRIBUTE
+    # call `<name>.loads` where `<name>` is `json` or `_json` -- a two-member
+    # roster of MODULE ALIASES sitting inside a walk written to replace a
+    # roster of exception TYPES.  `import json as j` keeps the attribute shape
+    # and moves the name, so the parse is invisible and the narrow handler
+    # over it is never charged.  Verified by execution before declaring.
+    "an `import json as j` module alias": """
+import json as j
+
+def consume(schwab_source_value_json):
+    try:
+        return j.loads(schwab_source_value_json)
     except (ValueError, TypeError):
         return None
 """,

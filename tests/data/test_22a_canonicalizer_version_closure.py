@@ -689,3 +689,71 @@ def test_the_CONTROL_the_python_half_walk_still_catches_the_single_line() -> Non
     caught = _version_projections(
         '        "SELECT fei.canonicalizer_version FROM fill_envelope_identity"\n')
     assert len(caught) == 1, caught
+
+
+# ---------------------------------------------------------------------------
+# TWO MORE CLASSES BEYOND THE THREE ABOVE (Codex 22A-R15-07) -- residuals of
+# the DECLARATION written this leg, which is why they are added to it rather
+# than fixed.
+#
+# `REFERENCE` is CASE-SENSITIVE and matches the UNQUALIFIED table name only.
+# SQL keywords are case-insensitive and `main.` is a legal schema qualifier, so
+# either spelling adds a consumer that is neither COUNTED nor required to carry
+# a marker -- the walk's own interleaving assertion stays green because the
+# reference it cannot see is not in the list it interleaves.  The version-
+# column substring test inherits the same case-sensitivity.
+#
+# Both verified by execution before being declared, and neither occurs in
+# 0037 today: the file is uniformly upper-case and unqualified, which is what
+# makes these blind spots rather than live holes.  The class-level fix stays
+# the routed SQL-token-aware inspection (22-A2, plan S12.2b) -- widening the
+# regex with `re.I` and an optional `main\\.` answers these two EXAMPLES and
+# leaves `"fill_envelope_identity"`, a CTE alias and a view behind it.
+# ---------------------------------------------------------------------------
+_REFERENCE_SPELLINGS_NOT_DETECTED = {
+    "a lower-case FROM keyword":
+        "         AND EXISTS (SELECT 1 from fill_envelope_identity fei",
+    "a mixed-case JOIN keyword":
+        "           Join fill_envelope_identity fei ON fei.fill_id = f.fill_id",
+    "a `main.`-qualified table name":
+        "         AND EXISTS (SELECT 1 FROM main.fill_envelope_identity fei",
+    "a double-quoted identifier":
+        '         AND EXISTS (SELECT 1 FROM "fill_envelope_identity" fei',
+}
+
+
+@pytest.mark.parametrize("label", sorted(_REFERENCE_SPELLINGS_NOT_DETECTED))
+def test_DECLARED_the_reference_walk_does_not_detect_this_spelling(
+        label) -> None:
+    """One declared blind spot per row, each measured on the REAL walk.
+
+    Pinned in the direction that fails if the blindness ever narrows: if a
+    later change catches one of these, correct the declaration rather than
+    silencing the row.
+    """
+    assert not REFERENCE.search(_REFERENCE_SPELLINGS_NOT_DETECTED[label]), (
+        f"the reference walk now DETECTS {label!r}. That is an improvement -- "
+        f"correct the declaration (and drop this row) rather than silencing "
+        f"the check")
+
+
+def test_DECLARED_the_version_span_test_is_case_sensitive_too() -> None:
+    """The same class, one helper over.
+
+    `_span_checks_version` asks `VERSION_COLUMN in <span>` -- a case-sensitive
+    substring test -- so a span filtering on `CANONICALIZER_VERSION` measures
+    VERSION_BLIND and a span declared VERSION_CHECKED would report a
+    disagreement it does not have.
+    """
+    assert VERSION_COLUMN not in "AND fei.CANONICALIZER_VERSION = ?", (
+        "the version test is now case-insensitive; correct the declaration")
+
+
+def test_the_CONTROL_the_reference_walk_still_catches_the_shipped_form(
+) -> None:
+    """A declared blindness must never be indistinguishable from a walk that
+    quietly stopped working -- and the shipped form is what it is FOR."""
+    assert REFERENCE.search(
+        "         AND EXISTS (SELECT 1 FROM fill_envelope_identity fei")
+    assert len(_references(_sql())) >= 7, (
+        "the real migration's references stopped being counted")
