@@ -2455,29 +2455,103 @@ def test_SS2_the_READER_survives_an_interrupt_during_its_rollback(
         "the reader's own transaction survived the interrupt")
 
 
-def test_SS2_a_CALLER_HELD_acquisition_failure_RELEASES_its_savepoint(
-        conn) -> None:
-    """`rolled_back` WAS SET ONLY AFTER `execute()` RETURNED, so an interrupt
-    landing as the call returned skipped the `RELEASE` and left this
-    function's savepoint live on the caller's transaction -- the exact outcome
-    the round-5 repair claimed to prevent (Codex 22A-FIX-R6-04, verified
-    against real SQLite).
+class _InterruptAfterEffect:
+    """Delegates everything; runs each named verb FOR REAL and then raises.
 
-    Both verbs are attempted unconditionally now.  The assertion is that NO
-    savepoint carrying this module's prefix survives.
+    THE AFTER-EFFECT SHAPE, and it is the one that matters (Codex
+    22A-FIX-R7-02 / -R7-03).  A proxy that raises INSTEAD of executing tests a
+    statement that never happened; SQLite can PERFORM the statement and the
+    interrupt land as it returns, which is how a savepoint and its rollback
+    can both take effect while both calls raise.
+    """
+
+    def __init__(self, real: sqlite3.Connection, verbs: tuple[str, ...]) -> None:
+        self._real = real
+        self._verbs = verbs
+        self.executed: list[str] = []
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def execute(self, sql, *args):
+        for verb in self._verbs:
+            if sql.startswith(verb):
+                self._real.execute(sql, *args)
+                self.executed.append(sql)
+                raise KeyboardInterrupt(f"planted just after {verb}")
+        return self._real.execute(sql, *args)
+
+
+def test_SS2_a_CALLER_HELD_after_effect_interrupt_is_LOUD_not_assumed(
+        conn) -> None:
+    """**THE SEQUENCE THE PREDECESSOR ASSUMED AWAY** (Codex 22A-FIX-R7-02),
+    and the row that replaces a VACUOUS one (`-R7-03`).
+
+    The row this replaces used a proxy that raised BEFORE executing
+    `SAVEPOINT`, so no savepoint ever existed: it asserted only that the
+    caller's transaction stayed open, and BOTH the flag-based implementation
+    and the corrected one passed it.  A test that cannot fail against the
+    defect it names is worse than none.
+
+    Here `SAVEPOINT` and `ROLLBACK TO` BOTH TAKE EFFECT and both raise, and
+    `RELEASE` then raises before taking effect.  The predecessor read "both
+    verbs failed" as proof the savepoint never existed, stayed SILENT, and
+    left it LIVE on the caller's transaction.  The repair verifies the quiet
+    path instead of inferring it: only SQLite explicitly saying the name does
+    not exist is silence, so this sequence is LOUD.
+    """
+    ids = build_cadl_case(conn)
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    proxy = _InterruptAfterEffect(
+        conn, ("SAVEPOINT ", "ROLLBACK TO ", "RELEASE "))
+    try:
+        with pytest.raises(BaseException) as caught:
+            preview_cohort_provenance_correction(
+                proxy, trade_id=ids["trade_id"],
+                cited_candidate_id=ids["candidate_id"],
+                cited_recommendation_id=ids["daily_recommendation_id"],
+                reason=REASON)
+        assert len(proxy.executed) >= 2, (
+            f"the sequence never reached the ROLLBACK TO; this row measures "
+            f"nothing about the after-effect window: {proxy.executed}")
+        assert proxy.executed[0].startswith("SAVEPOINT ")
+        assert proxy.executed[1].startswith("ROLLBACK TO ")
+        assert isinstance(caught.value.__cause__, KeyboardInterrupt), (
+            "the cleanup anomaly must surface CHAINED from the acquisition "
+            "failure; a silent return would tell the caller nothing about a "
+            "savepoint that may still be live")
+        assert conn.in_transaction, (
+            "the caller's transaction was closed -- the settled posture is "
+            "that someone else's transaction is left alone")
+    finally:
+        conn.rollback()
+
+
+def test_SS2_the_ORDINARY_acquisition_failure_stays_QUIET(conn) -> None:
+    """THE CONTROL ON THE LOUDNESS, and it is what keeps the repair narrow.
+
+    On the ordinary path the savepoint was never created -- its creation is
+    what failed -- so both verbs raise SQLite's own "no such savepoint" and
+    the caller must hear the SAVEPOINT error, not a cleanup anomaly about a
+    savepoint that does not exist.
     """
     ids = build_cadl_case(conn)
     conn.commit()
     conn.execute("BEGIN IMMEDIATE")
     proxy = _FailingCleanupConn(conn, "SAVEPOINT ")
     try:
-        with pytest.raises(sqlite3.OperationalError, match="planted on"):
+        with pytest.raises(sqlite3.OperationalError,
+                           match="planted on SAVEPOINT") as caught:
             preview_cohort_provenance_correction(
                 proxy, trade_id=ids["trade_id"],
                 cited_candidate_id=ids["candidate_id"],
                 cited_recommendation_id=ids["daily_recommendation_id"],
                 reason=REASON)
-        assert conn.in_transaction, "the caller's transaction was closed"
+        assert caught.value.__cause__ is None, (
+            "an ordinary acquisition failure must not be dressed as a cleanup "
+            "anomaly; the savepoint genuinely never existed")
+        assert conn.in_transaction
     finally:
         conn.rollback()
 

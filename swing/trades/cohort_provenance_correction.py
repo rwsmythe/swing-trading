@@ -2128,6 +2128,20 @@ def _na_suffix_note(anchored: _Anchored, derived: _Derived) -> str | None:
 _PREVIEW_SAVEPOINT_PREFIX = "cohort_provenance_preview_sp"
 
 
+def _is_no_such_savepoint(exc: BaseException) -> bool:
+    """SQLite explicitly saying the savepoint name does not exist.
+
+    The ONE failure this path may treat as silence (Codex 22A-FIX-R7-02).
+    Matched on the engine's own message rather than on the exception TYPE,
+    because `sqlite3.OperationalError` covers a busy database and a dozen
+    other conditions that are NOT proof the savepoint is gone -- and the
+    difference between "it never existed" and "I could not check" is exactly
+    what the caller needs.
+    """
+    return (isinstance(exc, sqlite3.OperationalError)
+            and "no such savepoint" in str(exc).lower())
+
+
 def _try(conn, sql: str) -> BaseException | None:
     """Run a cleanup statement; return its failure rather than raising it.
 
@@ -2312,24 +2326,38 @@ def preview_cohort_provenance_correction(
             # leaked.  No preview write has happened at this point, so
             # releasing a savepoint that does exist is safe.
             #
-            # THE TWO OUTCOMES ARE DISTINGUISHED.  BOTH failing is the
-            # ORDINARY path -- the savepoint was never created, which is what
-            # brought us here -- and stays quiet.  Any other combination means
-            # a savepoint existed and the cleanup did not finish, which is
-            # LOUD.
+            # THE TWO OUTCOMES ARE DISTINGUISHED, AND THE QUIET ONE IS
+            # *VERIFIED*, NOT INFERRED (Codex 22A-FIX-R7-02).
+            #
+            # The predecessor treated "both verbs failed" as proof that the
+            # savepoint never existed.  That inference is INVALID for an
+            # AFTER-EFFECT exception: SQLite can perform the statement and the
+            # interrupt land as it returns, so `SAVEPOINT` and `ROLLBACK TO`
+            # can BOTH take effect and BOTH raise, while `RELEASE` raises
+            # before taking effect -- two non-null errors, a LIVE savepoint,
+            # and a caller told nothing.  Measured: a subsequent
+            # `RELEASE <generated name>` SUCCEEDED, which is the proof it
+            # leaked.
+            #
+            # So the ONLY silence is SQLite explicitly saying the name does not
+            # exist.  Anything else -- an interrupt, a busy database, a failure
+            # this code has never seen -- is a cleanup anomaly and is LOUD,
+            # because the honest thing to say about a savepoint we could not
+            # verify is that the connection must be discarded.
             rollback_error = _try(conn, f"ROLLBACK TO {savepoint}")
             release_error = _try(conn, f"RELEASE {savepoint}")
-            if not (rollback_error and release_error):
-                anomaly = rollback_error or release_error
-                if anomaly is not None:
-                    log.error(
-                        "22-A: the cohort-provenance PREVIEW could not create "
-                        "its savepoint (%s) and could not finish unwinding "
-                        "the one it had opened (%s) inside a CALLER-HELD "
-                        "transaction. The nested savepoint %s may still be "
-                        "live; this connection MUST BE DISCARDED.",
-                        savepoint_error, anomaly, savepoint)
-                    raise anomaly from savepoint_error
+            anomaly = next(
+                (e for e in (rollback_error, release_error)
+                 if e is not None and not _is_no_such_savepoint(e)), None)
+            if anomaly is not None:
+                log.error(
+                    "22-A: the cohort-provenance PREVIEW could not create "
+                    "its savepoint (%s) and could not VERIFY that the one it "
+                    "had opened is gone (%s) inside a CALLER-HELD "
+                    "transaction. The nested savepoint %s may still be live; "
+                    "this connection MUST BE DISCARDED.",
+                    savepoint_error, anomaly, savepoint)
+                raise anomaly from savepoint_error
         raise
     try:
         auth = _authorize(
