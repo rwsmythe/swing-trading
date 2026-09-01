@@ -478,6 +478,35 @@ def _tier1_price_correction(conn, fill_id: int, new_price: float) -> None:
     _update_journal_field(conn, "fills", fill_id, "price", new_price)
 
 
+def test_R14M2_the_operand_roster_is_COMPLETE_and_ORDERED(conn) -> None:
+    """The comparator, because the local literal above is only a sample.
+
+    `_OPERAND_KEYS` here is written independently, so a production REORDER
+    makes the value comparison below fail.  What a fixed local literal cannot
+    catch is a production ADDITION -- a fifth operand would leave every
+    assertion green while going unfrozen -- so the two rosters are held equal,
+    and the SQL column roster is held against the LIVE `fills` table so a
+    column rename cannot silently empty it.
+    """
+    from swing.trades.cohort_provenance_correction import (
+        ENTRY_FILL_OPERAND_COLUMNS,
+        ENTRY_FILL_OPERAND_KEYS,
+    )
+
+    assert tuple(ENTRY_FILL_OPERAND_KEYS) == _OPERAND_KEYS, (
+        f"the production operand roster is {ENTRY_FILL_OPERAND_KEYS} and this "
+        f"module compares {_OPERAND_KEYS}. An operand added on one side only "
+        f"is an operand nobody freezes or nobody checks")
+    assert len(ENTRY_FILL_OPERAND_COLUMNS) == len(ENTRY_FILL_OPERAND_KEYS), (
+        "the column roster and the snapshot-key roster are paired POSITIONALLY "
+        "in `snapshot()`; different lengths mean the pairing is wrong")
+    live_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(fills)").fetchall()}
+    missing = sorted(set(ENTRY_FILL_OPERAND_COLUMNS) - live_columns)
+    assert not missing, (
+        f"the operand roster names columns `fills` does not have: {missing}")
+
+
 def test_R14M2_the_snapshot_freezes_every_authorization_OPERAND(conn) -> None:
     """The four the ladder's request shim is BUILT from, plus the identity.
 
