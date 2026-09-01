@@ -2556,6 +2556,38 @@ def test_SS2_the_ORDINARY_acquisition_failure_stays_QUIET(conn) -> None:
         conn.rollback()
 
 
+def test_SS2_the_ENTRY_PATH_takes_BaseException_too() -> None:
+    """THE SAME CLOSURE CHECK, EXTENDED TO THE PATH THAT WRITES A TRADE.
+
+    `_entry_transaction` is ARC-INTRODUCED (`ed897bc5`; zero occurrences on
+    `main`), and it carried BOTH residuals this module was repaired for while
+    the repairs went only here -- one standard for the correction path and
+    another for the money-bearing one.  Reviewer B found it on the post-fix
+    tree.  `swing/trades/entry.py` now holds zero narrow cleanup catches in
+    executable code, and this row is what keeps it that way.
+
+    Scoped to the ONE module the fix touched.  The same shape survives at ~20
+    sites across five other modules, all verified PRE-EXISTING on `main` and
+    all banked to the debt register -- widening this walk to them would be a
+    different edit than the one B's finding names.
+    """
+    from pathlib import Path as _Path
+
+    import swing.trades.entry as mod
+
+    source = _Path(mod.__file__).read_text(encoding="utf-8")
+    live = [
+        (n, line) for n, line in enumerate(source.splitlines(), 1)
+        if not line.lstrip().startswith("#")
+        and ("except sqlite3.Error" in line
+             or "suppress(sqlite3.Error)" in line)
+    ]
+    assert not live, (
+        f"a cleanup catch on the ENTRY path narrowed back to the "
+        f"sqlite3.Error ROSTER: {live}. An interrupt is exactly the failure a "
+        f"cleanup path must survive, and this one writes a TRADE.")
+
+
 def test_SS2_every_cleanup_catch_in_the_module_takes_BaseException() -> None:
     """THE SWEEP'S OWN CLOSURE CHECK, so the class cannot come back one
     instance at a time.

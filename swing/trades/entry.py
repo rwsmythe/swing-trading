@@ -468,8 +468,20 @@ def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool):
         with conn:
             yield
         return
-    conn.execute("BEGIN IMMEDIATE")
+    # THE ACQUISITION IS INSIDE THE PROTECTED REGION (reviewer B, post-fix
+    # tree; ARC-INTRODUCED by `ed897bc5`, so fixed here rather than banked).
+    # `BEGIN IMMEDIATE` sat OUTSIDE this `try`, so an interrupt landing
+    # between the statement TAKING THE WRITE RESERVATION and the `try` being
+    # entered skipped the handler entirely -- and B reproduced exactly that
+    # with a proxy executing the real `BEGIN` and then raising:
+    # `conn.in_transaction` stayed TRUE.  On the MONEY-BEARING entry path
+    # that is a reservation held on a connection the caller goes on using.
+    #
+    # This is the shape `cohort_provenance_correction.py` already carries at
+    # both of its transaction sites; the entry path is the one that writes a
+    # TRADE, and it was the one left out.
     try:
+        conn.execute("BEGIN IMMEDIATE")
         yield
         # THE COMMIT IS INSIDE THE HANDLER'S REACH (Codex 22A-R4-03).  It sat
         # in an `else:` clause, OUTSIDE `except BaseException:` -- so a commit
@@ -478,9 +490,36 @@ def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool):
         # reusing.  A failed COMMIT is exactly the moment a rollback matters
         # most, and it was the one path that did not get one.
         conn.commit()
-    except BaseException:
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+    except BaseException as write_error:
+        # AND THE ROLLBACK'S OWN FAILURE IS NOT SUPPRESSED (reviewer B).
+        # This was `contextlib.suppress(sqlite3.Error)`: B reproduced an inner
+        # write plus a `ValueError` with `rollback()` raising, and the
+        # reported exception carried NO cleanup cause, `in_transaction` stayed
+        # true, and the PARTIAL ROW stayed visible for a later accidental
+        # commit.  `AL-15`'s standard -- a cleanup failure is the MORE
+        # DANGEROUS of two simultaneous conditions and must surface loudly --
+        # was applied three times in the correction module and not here.
+        #
+        # THE ROUTE'S `finally: conn.close()` IS NOT A REASON TO LEAVE IT
+        # (B's reachability line): it contains the open transaction for the
+        # web surface, and `record_entry` TAKES a connection rather than
+        # owning one, so every reusable service caller stays exposed.
+        #
+        # `conn.in_transaction` rather than a remembered flag: on the
+        # interrupted-acquisition path only the connection knows whether the
+        # transaction opened.
+        if conn.in_transaction:
+            try:
+                conn.rollback()
+            except BaseException as cleanup_error:  # noqa: BLE001 -- the CLASS
+                log.error(
+                    "22-A: the entry write failed (%s) AND could not be "
+                    "rolled back (%s). The WRITE transaction is STILL OPEN "
+                    "with a partial row in it, its reservation still held, "
+                    "and this connection MUST BE DISCARDED rather than "
+                    "reused -- a later commit on it would make the partial "
+                    "row durable.", write_error, cleanup_error)
+                raise cleanup_error from write_error
         raise
 
 

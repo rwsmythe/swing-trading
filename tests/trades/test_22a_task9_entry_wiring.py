@@ -20,6 +20,7 @@ FROZEN CLOCK.  Every session is an explicit date; nothing reads the wall clock.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from datetime import date
@@ -2864,3 +2865,168 @@ def test_the_seam_property_covers_the_WHOLE_reason_roster() -> None:
     from swing.trades.latched_origin import DECLINE_REASONS
 
     assert len(DECLINE_REASONS) >= 33, len(DECLINE_REASONS)
+
+
+# ===========================================================================
+# REVIEWER B (post-fix tree) -- THE TWO TRANSACTION DEFECTS ON THE
+# MONEY-BEARING ENTRY PATH.  **ARC-INTRODUCED, NOT PRE-EXISTING.**
+#
+# `_entry_transaction` has ZERO occurrences in `main:swing/trades/entry.py`
+# and `main`'s `entry.py` contains no `BEGIN IMMEDIATE` at all: the whole
+# contextmanager arrived with `ed897bc5` ("Task 9 -- record_entry consults the
+# mandate, inside BEGIN IMMEDIATE"), a commit in THIS arc's exec leg.  Under
+# the introduced-versus-banked boundary that means FIX IN THE ARC, never cite
+# -- and the fix leg had already repaired this exact shape THREE TIMES in
+# `cohort_provenance_correction.py` while leaving it here, on the path that
+# writes a trade.
+#
+# THE PROXY FAILS BOTH VERBS.  A proxy failing one cannot reach the
+# composition -- the `22A-R15-03` lesson, which this module now inherits.
+# ===========================================================================
+class _EntryTxProxy:
+    """Delegates the four members `_entry_transaction` touches, and can fail
+    the ACQUISITION (after it really takes effect) and/or the ROLLBACK.
+
+    ``begin`` performs the REAL statement before raising: a proxy that raised
+    INSTEAD of beginning would test a transaction that never opened, which is
+    a different window from the one-bytecode gap between the statement taking
+    the reservation and the ``try`` being entered.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, *,
+                 interrupt_begin: bool = False,
+                 fail_rollback: bool = False) -> None:
+        self._conn = conn
+        self._interrupt_begin = interrupt_begin
+        self._fail_rollback = fail_rollback
+        self.began = False
+        self.rollback_attempted = False
+
+    def execute(self, sql, *args, **kwargs):
+        if self._interrupt_begin and sql.startswith("BEGIN IMMEDIATE"):
+            self._conn.execute(sql, *args, **kwargs)
+            self.began = True
+            raise KeyboardInterrupt("planted just after BEGIN IMMEDIATE")
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self.rollback_attempted = True
+        if self._fail_rollback:
+            raise sqlite3.OperationalError("cannot rollback (planted)")
+        self._conn.rollback()
+
+    @property
+    def in_transaction(self) -> bool:
+        return self._conn.in_transaction
+
+
+def test_B_an_interrupt_AT_ACQUISITION_does_not_leak_the_reservation(
+        tmp_path) -> None:
+    """**FIX (2).**  `BEGIN IMMEDIATE` sat OUTSIDE the `try`, so an interrupt
+    landing between the statement TAKING THE WRITE RESERVATION and the `try`
+    being entered skipped the handler entirely.
+
+    Reviewer B reproduced it with a connection proxy that executes the real
+    `BEGIN` and then raises: `conn.in_transaction` stayed TRUE.  On the
+    money-bearing entry path that is a write reservation held on a connection
+    the caller goes on using.
+
+    PRE-FIX: `in_transaction` is True and `rollback` was never attempted.
+    POST-FIX: the recovery ran and the connection is clean.  Both values are
+    stated so the assertion distinguishes.
+    """
+    from swing.trades.entry import _entry_transaction
+
+    conn, _, _ = build_world(tmp_path, "b-acq")
+    conn.commit()
+    assert not conn.in_transaction, "the premise: nothing is open"
+    proxy = _EntryTxProxy(conn, interrupt_begin=True)
+
+    with pytest.raises(KeyboardInterrupt, match="planted just after BEGIN"):
+        with _entry_transaction(proxy, immediate=True):
+            raise AssertionError("the body must never run")
+
+    assert proxy.began, (
+        "the planted BEGIN never took effect, so this row measures nothing "
+        "about the acquisition window")
+    assert proxy.rollback_attempted, (
+        "the interrupt landed outside the protected region and no recovery "
+        "ran at all")
+    assert not conn.in_transaction, (
+        "the write reservation leaked onto a connection the caller reuses")
+
+
+def test_B_a_failed_rollback_after_a_failed_write_is_SURFACED_and_CHAINED(
+        tmp_path) -> None:
+    """**FIX (3).**  The rollback failure was swallowed by
+    `contextlib.suppress(sqlite3.Error)`.
+
+    Reviewer B reproduced an inner write followed by `ValueError`, with
+    `rollback()` raising `OperationalError`: the reported exception carried NO
+    cleanup cause, `in_transaction` stayed true, and the partial row stayed
+    visible for a later accidental commit.
+
+    **B's reachability line is the reason the route's mitigation is not a
+    reason to leave it:** the web route's `finally: conn.close()` contains the
+    open transaction, but REUSABLE SERVICE CALLERS remain exposed -- and
+    `record_entry` takes a connection rather than owning one.
+
+    This is `AL-15`'s standard, which this leg applied three times in
+    `cohort_provenance_correction.py` and not here: a cleanup failure is the
+    MORE DANGEROUS of two simultaneous conditions and must surface loudly.
+    """
+    import logging
+
+    from swing.trades.entry import _entry_transaction
+
+    conn, _, _ = build_world(tmp_path, "b-rb")
+    conn.commit()
+    proxy = _EntryTxProxy(conn, fail_rollback=True)
+
+    with caplog_at_error() as records:
+        with pytest.raises(sqlite3.OperationalError,
+                           match="cannot rollback") as caught:
+            with _entry_transaction(proxy, immediate=True):
+                proxy.execute(
+                    "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+                    "action_session_date, tickers_evaluated, aplus_count, "
+                    "watch_count, skip_count, excluded_count, error_count) "
+                    "VALUES (8002, '2026-07-24T17:30:05', '2026-07-24', "
+                    "'2026-07-27', 1, 0, 0, 1, 0, 0)")
+                raise ValueError("the write failed")
+
+    assert proxy.rollback_attempted
+    assert isinstance(caught.value.__cause__, ValueError), (
+        "the WRITE error must travel with the cleanup error, or the reason "
+        "the recovery ran at all is lost -- which is what a bare "
+        "`suppress(sqlite3.Error)` did")
+    assert "the write failed" in str(caught.value.__cause__)
+    assert any("discard" in r.getMessage().lower() for r in records
+               if r.levelno >= logging.ERROR), (
+        "nothing told the caller the connection is unusable while its "
+        "transaction is still open with a partial row in it")
+    conn.rollback()
+
+
+@contextlib.contextmanager
+def caplog_at_error():
+    """A minimal ERROR-record collector, so this module's rows keep their
+    existing signatures rather than growing a `caplog` parameter."""
+    import logging
+
+    records: list[logging.LogRecord] = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    sink = _Sink(level=logging.ERROR)
+    root = logging.getLogger()
+    root.addHandler(sink)
+    try:
+        yield records
+    finally:
+        root.removeHandler(sink)
