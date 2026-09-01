@@ -41,7 +41,6 @@ under a SAVEPOINT.
 """
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import logging
@@ -2281,14 +2280,21 @@ def preview_cohort_provenance_correction(
             # SUCCEEDS the savepoint is real, and a failing `RELEASE` after
             # that leaves a live nested savepoint on someone else's
             # transaction: that one is LOUD.
+            #
+            # `BaseException` HERE TOO (Codex 22A-FIX-R5-01): an interrupt
+            # during the recovery `ROLLBACK TO` used to skip the `RELEASE`
+            # that follows it, leaving the very savepoint this branch exists
+            # to clean up alive on someone else's transaction.
             rolled_back = False
-            with contextlib.suppress(sqlite3.Error):
+            try:
                 conn.execute(f"ROLLBACK TO {savepoint}")
                 rolled_back = True
+            except BaseException:  # noqa: BLE001 -- the CLASS, not a roster
+                pass
             if rolled_back:
                 try:
                     conn.execute(f"RELEASE {savepoint}")
-                except sqlite3.Error as release_error:
+                except BaseException as release_error:  # noqa: BLE001
                     log.error(
                         "22-A: the cohort-provenance PREVIEW could not create "
                         "its savepoint (%s) and then could not RELEASE the "
@@ -2352,19 +2358,33 @@ def preview_cohort_provenance_correction(
         # direction went unmeasured -- it is measured now, in both directions,
         # at `test_R14M8_*` (including the control that the typed refusal is
         # still what surfaces when the unwind WORKS).
-        cleanup_error: sqlite3.Error | None = None
+        #
+        # **EVERY CLEANUP ACTION CATCHES `BaseException`, NOT `sqlite3.Error`
+        # (Codex 22A-FIX-R5-01, verified by execution).**  A `KeyboardInterrupt`
+        # arriving during `ROLLBACK TO` left this `finally` IMMEDIATELY --
+        # skipping the `RELEASE` and, when this call owns the transaction, the
+        # outer `conn.rollback()` -- so the function's UNCONDITIONAL unwind
+        # guarantee failed on the one path nobody was catching.  MEASURED:
+        # after a real `ROLLBACK TO` followed by an interrupt,
+        # `conn.in_transaction` stayed True and the next `BEGIN IMMEDIATE`
+        # raised "cannot start a transaction within a transaction".
+        #
+        # The narrow `sqlite3.Error` was the same mistake `BaseException` was
+        # already ruled against twice in this module -- an exception ROSTER
+        # standing in for the class.
+        cleanup_error: BaseException | None = None
         try:
             conn.execute(f"ROLLBACK TO {savepoint}")
-        except sqlite3.Error as exc:
+        except BaseException as exc:  # noqa: BLE001 -- the CLASS, not a roster
             cleanup_error = exc
         try:
             conn.execute(f"RELEASE {savepoint}")
-        except sqlite3.Error as exc:
+        except BaseException as exc:  # noqa: BLE001
             cleanup_error = cleanup_error or exc
         if owns_read_tx:
             try:
                 conn.rollback()
-            except sqlite3.Error as exc:
+            except BaseException as exc:  # noqa: BLE001
                 cleanup_error = cleanup_error or exc
         if cleanup_error is not None:
             log.error(
