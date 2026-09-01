@@ -130,6 +130,18 @@ def _references(text: str) -> list[int]:
             if REFERENCE.search(line)]
 
 
+def _version_projections(source: str) -> list[str]:
+    """Python source lines that both SELECT and name the version column.
+
+    PER LINE -- and that is a DECLARED limitation, measured at
+    ``test_DECLARED_the_python_half_walk_misses_this_shape``.  Extracted from
+    the test that used it so the declaration measures THE SAME CODE the
+    production check runs, never a re-implementation of it.
+    """
+    return [ln for ln in source.splitlines()
+            if VERSION_COLUMN in ln and "SELECT" in ln.upper()]
+
+
 def _span_checks_version(text: str, start: int, end: int) -> bool:
     """Does the reference's own span filter on ``canonicalizer_version``?
 
@@ -485,8 +497,7 @@ def test_the_repo_readers_are_version_blind_and_L19_says_so() -> None:
     for reader in ("def stored_identity", "def consuming_entry_fills",
                    "def unreadable_entry_fills"):
         assert reader in source, f"{reader} has moved; re-derive L19's claim"
-    selects = [ln for ln in source.splitlines()
-               if VERSION_COLUMN in ln and "SELECT" in ln.upper()]
+    selects = _version_projections(source)
     assert not selects, (
         f"a repo reader now filters or projects {VERSION_COLUMN}: {selects}. "
         f"That may be correct -- but L19 declares these readers version-blind, "
@@ -496,3 +507,125 @@ def test_the_repo_readers_are_version_blind_and_L19_says_so() -> None:
     assert "THE PYTHON HALF IS THE SAME LIMITATION" in plan, (
         "L19 no longer declares the Python half, so the boundary is stated in "
         "the code and not in the limitation")
+
+
+# ===========================================================================
+# THE CLOSURE WALK IS A **HEURISTIC DETECTOR**, AND THIS IS ITS DECLARED
+# RESIDUAL BLINDNESS (22A-R14-03 / 22A-R14-04 / 22A-R14-05; operator-ruled
+# 2026-08-31, the same ruling that produced the two walk declarations at
+# 22A-R13-03 / 22A-R13-04 one round earlier).
+#
+# WHY A DECLARATION AND NOT A WIDENING.  This walk WAS the widening: it was
+# written in the round that declared `22A-R12-04`'s per-line class, and round
+# 14 immediately produced THREE more evasions of it -- two references on one
+# physical line, an inert token inside a span, and a two-line Python
+# projection.  Widening along the reported axis answers the EXAMPLE, not the
+# CLASS, and a text matcher loses this argument every time it is asked to
+# decide a question that belongs to a PARSER.  The principle is unchanged:
+# **do not claim exact when you are not.**
+#
+# THE CLASS-LEVEL FIX -- occurrence-level matching with offsets, alias-scoped
+# predicate detection, and statement-level (AST + SQL-token) inspection of the
+# Python half -- IS ROUTED TO 22-A2 (plan S12.2b), with the cases below as its
+# founding evidence.
+#
+# PINNED IN THE DIRECTION THAT FAILS IF THE BLINDNESS EVER NARROWS.  Each case
+# asserts the form is CURRENTLY MISSED.  If a later change catches one, THIS
+# FAILS -- and the right response is to correct the declaration, never to
+# silence the test.
+#
+# WHAT THE WALK DOES ESTABLISH IS MEASURED TOO, above and here, so a
+# declaration can never be mistaken for an excuse: the unmarked-reference
+# splice, the gained-version-filter splice and the seeding splice all run
+# against the REAL migration text and all report.
+# ===========================================================================
+def test_DECLARED_two_references_on_ONE_LINE_count_as_one() -> None:
+    """22A-R14-03 -- the per-line rule, one level down from R12-04.
+
+    `_references` runs ONE `REFERENCE.search` per line, so an eighth consumer
+    spliced onto an EXISTING reference line leaves the count unchanged and the
+    positional interleaving intact -- it passes both assertions the walk
+    makes.
+    """
+    real = _sql()
+    anchor = "         AND NOT EXISTS (SELECT 1 FROM fill_envelope_identity fei\n"
+    assert real.count(anchor) >= 1, "the anchor line has moved"
+    text = real.replace(
+        anchor,
+        "         AND NOT EXISTS (SELECT 1 FROM fill_envelope_identity fei8 "
+        "WHERE fei8.fill_id = -1) AND NOT EXISTS "
+        "(SELECT 1 FROM fill_envelope_identity fei\n",
+        1)
+    occurrences_before = len(REFERENCE.findall("\n".join(_blanked(real))))
+    occurrences_after = len(REFERENCE.findall("\n".join(_blanked(text))))
+    assert occurrences_after == occurrences_before + 1, (
+        "the splice did not add a table reference, so this measures nothing")
+    assert _references(text) == _references(real), (
+        "the walk now COUNTS the same-line second reference. That is an "
+        "improvement -- correct the declaration (and drop this row) rather "
+        "than silencing the check")
+
+
+@pytest.mark.parametrize("label,inert", [
+    ("an inert string literal",
+     "                       AND 'canonicalizer_version' <> ''"),
+    ("an unrelated alias's column",
+     "                       AND zz.canonicalizer_version IS NOT NULL"),
+])
+def test_DECLARED_an_INERT_token_flips_a_span_to_VERSION_CHECKED(
+        monkeypatch, label, inert) -> None:
+    """22A-R14-04 -- `_span_checks_version` is a bare substring test.
+
+    THE DIRECTION IS STATED BECAUSE IT BOUNDS THE EXPOSURE: on its own this
+    fails LOUDLY, since a span declared VERSION_BLIND that measures
+    VERSION_CHECKED is a disagreement the walk reports.  The SILENT version
+    needs the roster edited to match -- at which point L19 asserts a check
+    that does not exist.  So the pin is on the MEASUREMENT being foolable,
+    not on a shipped false claim.
+    """
+    text = _sql().replace(
+        "                       AND fei3.envelope_state = 'canonical'))",
+        f"                       AND fei3.envelope_state = 'canonical'\n"
+        f"{inert}))",
+        1)
+    assert text != _sql(), "the splice matched nothing"
+    monkeypatch.setattr(
+        "tests.data.test_22a_canonicalizer_version_closure._sql",
+        lambda: text)
+    assert _measured()["rung6_population_has_been_read"] == VERSION_CHECKED, (
+        f"the walk now distinguishes {label!r} from a real predicate. That is "
+        f"an improvement -- correct the declaration rather than silencing it")
+
+
+_PYTHON_HALF_NOT_DETECTED = {
+    "a multiline projection": (
+        '        "SELECT DISTINCT f.trade_id, "\n'
+        '        " fei.canonicalizer_version FROM fills f "\n'
+    ),
+    "a multiline WHERE": (
+        '        "SELECT fei.fill_id FROM fill_envelope_identity fei "\n'
+        '        " WHERE fei.canonicalizer_version = ? "\n'
+    ),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_PYTHON_HALF_NOT_DETECTED))
+def test_DECLARED_the_python_half_walk_misses_this_shape(label) -> None:
+    """22A-R14-05 -- and the shape is not exotic: it is how EVERY SQL string
+    in `swing/**/*.py` is written, as adjacent literals one per line.
+
+    Measured against `_version_projections`, the SAME function the production
+    assertion calls, so this cannot drift from what is actually checked.  The
+    control below proves the walk still catches the single-line form.
+    """
+    assert _version_projections(_PYTHON_HALF_NOT_DETECTED[label]) == [], (
+        f"the python-half walk now detects {label!r}. Correct the declaration "
+        f"(and drop this row) rather than silencing the check")
+
+
+def test_the_CONTROL_the_python_half_walk_still_catches_the_single_line() -> None:
+    """A declared blindness must never be indistinguishable from a walk that
+    quietly stopped working."""
+    caught = _version_projections(
+        '        "SELECT fei.canonicalizer_version FROM fill_envelope_identity"\n')
+    assert len(caught) == 1, caught

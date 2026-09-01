@@ -1845,9 +1845,24 @@ def test_a_padded_document_naming_an_accepted_order_cannot_claim_last_word(
     _assert_rejected(conn, {**payload, **_LAST_WORD_NULLS})
 
 
-def test_THE_DECLARED_LIMITATION_a_stale_grammar_reading_is_ACCEPTED(
+def test_THE_DECLARED_LIMITATION_a_stale_AGREEING_LABEL_is_ACCEPTED(
         conn, monkeypatch) -> None:
-    """L19 (AL-11), PINNED -- and the acceptance is the declaration.
+    """L19 (AL-11), the BENIGN arm -- RENAMED TO WHAT IT MEASURES (22A-R14-06).
+
+    THIS CASE MOVES ONLY THE VERSION LABEL.  The canonicaliser is untouched, so
+    the stored answer AGREES with today's answer for the same document: what is
+    pinned is the acceptance of an AGREEING OLD LABEL, which is benign and
+    which L19 deliberately preserves (`test_an_agreeing_older_reading_is_left
+    _alone` -- filtering on the label would fail every historical reading on
+    the day the constant moves).
+
+    ITS OLD NAME CLAIMED MORE THAN IT MEASURED.  It said "a stale grammar
+    READING", which reads as a stale ANSWER -- the DANGEROUS arm AL-11
+    describes, and the one a fix would have to close.  A fix that rejected
+    disagreeing readings while continuing to accept agreeing old labels would
+    have closed the material exposure WITHOUT MAKING THIS FAIL.  The case its
+    name claimed now exists, immediately below.  (The SS-13 treatment: rename
+    to what it measures, then write the case the name promised.)
 
     No trigger consumer of `fill_envelope_identity` checks
     `canonicalizer_version`: the column appeared EXACTLY ONCE in the migration,
@@ -1887,6 +1902,74 @@ def test_THE_DECLARED_LIMITATION_a_stale_grammar_reading_is_ACCEPTED(
     assert lo.ENVELOPE_CANONICALIZER_VERSION != "2026-01-01.0"
     conn.commit()
     _insert_payload(conn, payload)           # THE DECLARED ACCEPTANCE
+    assert conn.execute(
+        "SELECT COUNT(*) FROM provenance_corrections WHERE trade_id = ?",
+        (payload["trade_id"],)).fetchone()[0] == 1
+
+
+def test_THE_DECLARED_LIMITATION_a_stale_DISAGREEING_reading_is_ACCEPTED(
+        conn, monkeypatch) -> None:
+    """L19 (AL-11), THE DANGEROUS ARM -- the case AL-11 actually describes.
+
+    22A-R14-06: the arm above moves only the LABEL, so the stored answer
+    AGREES with today's and the acceptance is benign.  **This one plants an
+    answer that DISAGREES**, which is what a canonicaliser bump leaves behind
+    and what the whole limitation is about.
+
+    THE DISAGREEMENT IS THIS ARC'S OWN, not an invented one.  The retired
+    pre-`22A-R13-01` predicate is restored verbatim -- ``if not
+    isinstance(raw, str) or not raw.strip(): return True``, one predicate
+    answering two questions -- and under it the PRODUCTION WRITER stores
+    ``('canonical', NULL, NULL)`` for a BLOB document.  Today's authority reads
+    the same document ``refused``.  Nothing is forged: every value was written
+    by `record_identity`, so this is not AL-10.
+
+    AND THE CONTRAST IS THE POINT.  `test_a_BLOB_document_naming_an_accepted
+    _order_cannot_claim_last_word` runs the SAME document and the SAME payload
+    with a CURRENT reading and is REJECTED.  The only difference here is that
+    the stored reading is stale, and the trigger accepts -- a permanent
+    `last_word` downgrade for a fill whose own document names the accepted
+    order, admitted on a reading the service would refuse.
+
+    **IF THIS EVER REJECTS, THE LIMITATION IS NARROWER THAN DECLARED AND L19
+    MUST BE CORRECTED -- NOT THIS TEST SILENCED.**  Closing it is 22-A2's
+    append-only re-attestation (plan S12.2b); a version filter in the
+    consumers is measured and rejected in L19, in both of its halves.
+    """
+    import swing.trades.latched_origin as lo
+    payload = seed_latch_ladder_citation(conn)
+    _assert_baseline_inserts(conn, payload)
+    fill_id = payload["entry_fill_id_at_correction"]
+    order = payload["cited_latch_broker_order_id"]
+    doc = json.dumps({"schwab_order_id": order,
+                      "schwab_instrument_symbol": "CADL"}).encode()
+    assert lo.canonical_envelope_identity(doc).state == "refused", (
+        "the premise: TODAY's authority refuses a document it cannot read")
+
+    real = lo.envelope_is_canonical
+
+    def pre_r13_01(raw):
+        if not isinstance(raw, str) or not raw.strip():
+            return True
+        return real(raw)
+
+    monkeypatch.setattr(lo, "envelope_is_canonical", pre_r13_01)
+    monkeypatch.setattr(lo, "ENVELOPE_CANONICALIZER_VERSION", "2026-01-01.0")
+    assert lo.canonical_envelope_identity(doc).state == "canonical", (
+        "the older grammar must ANSWER DIFFERENTLY, or this is the benign "
+        "label case wearing a new name")
+    set_fill_envelope(conn, fill_id, doc)    # THE PRODUCTION WRITER
+    monkeypatch.undo()                       # THE CODE IS NOW BUMPED
+
+    assert conn.execute(
+        "SELECT envelope_state, broker_order_id, canonicalizer_version "
+        "  FROM fill_envelope_identity WHERE fill_id = ? AND envelope_raw = ?",
+        (fill_id, doc)).fetchone() == ("canonical", None, "2026-01-01.0"), (
+        "the premise: a stored ANSWER the current canonicaliser contradicts")
+    assert lo.canonical_envelope_identity(doc).state == "refused", (
+        "and the contradiction survives the undo, or nothing is stale")
+    conn.commit()
+    _insert_payload(conn, {**payload, **_LAST_WORD_NULLS})
     assert conn.execute(
         "SELECT COUNT(*) FROM provenance_corrections WHERE trade_id = ?",
         (payload["trade_id"],)).fetchone()[0] == 1
