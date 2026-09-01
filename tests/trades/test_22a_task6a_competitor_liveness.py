@@ -950,3 +950,192 @@ def test_R4M2_a_FORGED_live_stored_tier_does_not_prove_the_subject_dead(
         assert verdict.clear_reason is None
     finally:
         conn.close()
+
+
+def _forge_link(conn, candidate_id, *, key: str, broker_order_id: str,
+                freeze_tier: str):
+    """Place + accept, then write the LINK BY HAND with a chosen freeze tier.
+
+    The minting trigger is SUPPRESSED around the acceptance and RESTORED
+    VERBATIM out of ``sqlite_master``, the arc's own idiom: a helper that
+    spells its own copy of a shipped trigger drifts from the migration
+    silently.  A hand-written link is the AL-10 raw-writer boundary, which is
+    the only place a stored tier and the read-time verdict can disagree.
+    """
+    from tests._latch_link_fixtures_22a import (
+        insert_intent, place_row, validity_row,
+    )
+
+    run_id, ticker, detection = conn.execute(
+        "SELECT c.evaluation_run_id, c.ticker, e.action_session_date "
+        "FROM candidates c JOIN evaluation_runs e "
+        "ON e.id = c.evaluation_run_id WHERE c.id = ?",
+        (candidate_id,)).fetchone()
+    common = {
+        "evaluation_run_id": int(run_id), "ticker": str(ticker),
+        "detection_date": str(detection),
+        "action_session_date": ACCEPT_SESSION.isoformat(),
+        "recorded_ts": f"{ACCEPT_SESSION.isoformat()}T10:00:00",
+    }
+    saved = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+        "AND name = 'trg_latch_link_mint_on_acceptance'").fetchone()[0]
+    conn.execute("DROP TRIGGER trg_latch_link_mint_on_acceptance")
+    try:
+        place_id = insert_intent(conn, place_row(
+            candidate_id, idempotency_key=f"{key}-place", **common))
+        validity_id = insert_intent(conn, validity_row(
+            candidate_id, place_id, key=f"{key}-validity",
+            actual_broker_order_id=broker_order_id, **common))
+        pivot, stop = conn.execute(
+            "SELECT pivot, initial_stop FROM candidates WHERE id = ?",
+            (candidate_id,)).fetchone()
+        conn.execute(
+            "INSERT INTO latch_order_mandate_links (validity_intent_id, "
+            "place_intent_id, candidate_id, evaluation_run_id, ticker, "
+            "detection_date, broker_order_id, frozen_pivot, "
+            "frozen_invalidation, actual_quantity, freeze_tier, linked_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 10, ?, "
+            "'2026-07-24T12:00:00Z')",
+            (validity_id, place_id, candidate_id, int(run_id), str(ticker),
+             str(detection), broker_order_id, pivot, stop, freeze_tier))
+        conn.commit()
+    finally:
+        conn.execute(saved)
+        conn.commit()
+
+    found = [o for o in find_accepted_latch_order(
+        conn, broker_order_id=broker_order_id)
+        if o.candidate_id == candidate_id]
+    assert len(found) == 1, found
+    assert found[0].freeze_tier == freeze_tier
+    return found[0]
+
+
+def test_R5M2_a_FORGED_live_COMPETITOR_tier_does_not_prove_it_dead(
+        tmp_path) -> None:
+    """**THE MIRROR OF `R4-02`, ON THE COMPETITOR SEAT** (Codex 22A-FIX-R5-02;
+    orchestrator-ruled IN SCOPE 2026-09-01).
+
+    `R4-02` hardened the SUBJECT's enrichment to require BOTH the stored tier
+    and the READ-TIME verdict.  The competitor branch still read
+    `matches[0].freeze_tier` and nothing else -- so **this leg CREATED an
+    asymmetry inside one rung**: one half hardened, the other not, which is
+    precisely the composition class no review rung catches.
+
+    THE DIRECTION IS A WRONG ACCEPTANCE, which is what separates it from every
+    other item this arc deferred.  A RAW link forging `live_at_acceptance` on
+    a PRE-BARRIER candidate reads DEAD through the probe -- over frozen values
+    copied from a `candidates` row that was not immutable when it was read --
+    and was DROPPED as proven-dead, admitting the subject beside a mandate
+    whose death `AL-4` says cannot be established.
+
+    PRE-FIX: `admitted is True`.  POST-FIX:
+    `competitor_liveness_unverifiable`.  Both values are stated so the
+    assertion distinguishes, and the honestly-minted control one function up
+    (`test_a_pre_barrier_competitor_is_unprovable_not_dead`) cannot reach this
+    shape -- an honest mint on a pre-barrier fire stores the honest tier.
+    """
+    conn, cfg, subject, rival = _mixed_barrier_world(tmp_path, "r5m2")
+    try:
+        subject_order = accept(conn, subject, key="r5m2-s",
+                               broker_order_id=BROKER_ORDER_ID)
+        assert subject_order.freeze_tier == "live_at_acceptance"
+
+        forged = _forge_link(conn, rival, key="r5m2-r",
+                             broker_order_id="r5m2-rival",
+                             freeze_tier="live_at_acceptance")
+
+        from swing.data.repos.candidates_immutability_epoch import (
+            freeze_tier_for_candidate,
+        )
+        read_time, installed = freeze_tier_for_candidate(conn, rival)
+        assert installed and read_time == FREEZE_TIER_PRE_BARRIER, (
+            "the READ-TIME verdict must DISAGREE with the forged stored "
+            "attestation, or this row measures nothing")
+
+        # THE PREMISE: the competitor really does read DEAD, which is what
+        # made dropping it tempting.  The case is about EVIDENCE, not liveness.
+        probe = mandate_alive_at(
+            conn, cfg, order=forged, fill_session=FILL_SESSION,
+            exclude_trade_ids=NO_EXCLUSIONS)
+        assert probe.decline_reason == "mandate_not_alive", probe.decline_reason
+
+        verdict = authorize(conn, cfg, subject_order)
+        assert verdict.admitted is False, (
+            "the subject was ADMITTED beside a competitor whose death rests "
+            "on a FORGED stored tier -- a wrong acceptance at the AL-10 "
+            "raw-writer boundary")
+        assert verdict.decline_reason == "competitor_liveness_unverifiable"
+    finally:
+        conn.close()
+
+
+def test_R5M2_THE_CONTROL_an_honestly_live_competitor_is_still_dropped(
+        tmp_path) -> None:
+    """WITHOUT THIS THE FIX COULD REFUSE EVERY DEAD COMPETITOR.
+
+    A POST-barrier competitor whose stored tier and READ-TIME verdict AGREE
+    and whose mandate is genuinely dead is still DROPPED, and the subject
+    still ADMITS.  That is case 4c-i's world, asserted here against the
+    hardened branch so the repair is a narrowing and not a blanket refusal.
+    """
+    conn, cfg, subject = build_world(tmp_path, "r5m2-control")
+    try:
+        rival = dead_rival_fire(conn, run_id=190)
+        conn.commit()
+        subject_order = accept(conn, subject, key="r5m2c-s",
+                               broker_order_id=BROKER_ORDER_ID)
+        rival_order = accept(conn, rival, key="r5m2c-r",
+                             broker_order_id="r5m2c-rival")
+        assert rival_order.freeze_tier == "live_at_acceptance"
+
+        verdict = authorize(conn, cfg, subject_order)
+        assert verdict.admitted is True, verdict.decline_reason
+        assert verdict.probe_evidence["authorization"][
+            "rung8_competitor_link_ids"]["input"] == [rival_order.link_id]
+    finally:
+        conn.close()
+
+
+def test_BOTH_halves_of_rung_eight_consult_the_read_time_tier() -> None:
+    """THE COMMENT'S OWN CLAIM, PINNED (gotcha #31 applied to this leg).
+
+    `_subject_death_if_proven`'s docstring asserts that BOTH halves of rung 8
+    read the stored attestation AND the read-time verdict.  For four rounds
+    the previous version of that paragraph asserted the opposite pairing and
+    STILL READ TRUE -- `22A-FIX-R4-02` hardened one half and left the other,
+    and no test could see it because the claim was prose about a sibling.
+
+    **Pin the obligation, not the absence.**  A STATIC read of the module
+    asserts each function's own body references the epoch reader, so removing
+    it from either half fails HERE rather than in a reviewer's imagination
+    four rounds later.
+    """
+    import ast
+    from pathlib import Path as _Path
+
+    import swing.trades.latched_origin as lo
+
+    source = _Path(lo.__file__).read_text(encoding="utf-8")
+    bodies = {
+        node.name: node for node in ast.parse(source).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    for name in ("_subject_death_if_proven", "competitor_liveness_rung"):
+        assert name in bodies, f"{name} is no longer a module-level function"
+        names = {
+            n.id for n in ast.walk(bodies[name]) if isinstance(n, ast.Name)
+        } | {
+            n.attr for n in ast.walk(bodies[name])
+            if isinstance(n, ast.Attribute)
+        } | {
+            alias.name for n in ast.walk(bodies[name])
+            if isinstance(n, ast.ImportFrom) for alias in n.names
+        }
+        assert "freeze_tier_for_candidate" in names, (
+            f"{name} no longer consults the READ-TIME tier. A stored "
+            f"freeze_tier is an ATTESTATION a raw link can forge; one half of "
+            f"rung 8 hardened and the other not is the asymmetry 22A-FIX-R5-02 "
+            f"closed, and the docstring at _subject_death_if_proven claims "
+            f"both halves read it.")

@@ -1117,6 +1117,25 @@ def find_accepted_latch_order(
     ``actual_limit_price`` comes from the validity JOIN this lookup already
     performs, so the envelope guards stay a PURE function over the dataclass
     (plan S5.1) rather than growing a connection argument.
+
+    **THE FIVE FIELDS RUNG 3c BINDS ARE CARRIED AS STORED, NOT COERCED (Codex
+    22A-FIX-R7-01; orchestrator-ruled IN SCOPE 2026-09-01).**  ``int()`` and
+    ``str()`` are LOSSY on exactly the values rung 3c exists to catch: SQLite
+    applies no affinity to a REAL written into an ``INTEGER`` column, so a raw
+    link carrying ``evaluation_run_id = 121.5`` or ``actual_quantity = 2.5``
+    is schema-legal under those columns' own ``> 0`` CHECKs -- and ``int()``
+    collapsed them to ``121`` / ``2``, which then MATCHED the authoritative
+    ``121`` / ``2`` in rung 3c's Python comparison.  The citation trigger
+    compares the STORED values and refuses, so the service ADMITTED and SQL
+    aborted: the authorize-then-abort shape, on the very rung whose job is to
+    bind the link's duplicated fields back to their sources.
+
+    Carrying them as stored makes the two domains answer alike -- a drifted
+    value now FAILS rung 3c with ``link_field_unbound``, which is the refusal
+    the trigger already gives.  The IDENTITY fields (``link_id``, the two
+    intent ids, ``candidate_id``) keep their coercion: they are not rung-3c
+    bindings, they are keys this module indexes and logs by, and widening the
+    change to them would be a different edit than the one this finding names.
     """
     rows = conn.execute(
         "SELECT l.link_id, l.validity_intent_id, l.place_intent_id, "
@@ -1134,10 +1153,13 @@ def find_accepted_latch_order(
         AcceptedLatchOrder(
             link_id=int(r[0]), validity_intent_id=int(r[1]),
             place_intent_id=int(r[2]), candidate_id=int(r[3]),
-            evaluation_run_id=int(r[4]), ticker=str(r[5]),
-            detection_date=str(r[6]), broker_order_id=str(r[7]),
+            # AS STORED -- see the docstring.  These five are rung 3c's
+            # bindings, and a coercion here answers a different question from
+            # the one the citation trigger asks of the same columns.
+            evaluation_run_id=r[4], ticker=r[5],
+            detection_date=r[6], broker_order_id=r[7],
             frozen_pivot=r[8], frozen_invalidation=r[9],
-            actual_quantity=None if r[10] is None else int(r[10]),
+            actual_quantity=r[10],
             freeze_tier=str(r[11]), actual_limit_price=r[12],
         )
         for r in rows
@@ -1193,13 +1215,27 @@ def _subject_death_if_proven(
     state nothing established.  ``test_an_UNPROVABLE_subject_beside_a_live_
     rival_stays_AMBIGUOUS`` is what fails it.
 
-    **AL-4 APPLIES TO THE SUBJECT EXACTLY AS RUNG 8 ALREADY APPLIES IT TO A
-    COMPETITOR, and this REUSES that encoding rather than authoring a second.**
+    **AL-4 APPLIES TO THE SUBJECT AND TO A COMPETITOR ALIKE, and BOTH HALVES
+    OF RUNG 8 NOW READ THE STORED ATTESTATION *AND* THE READ-TIME VERDICT.**
     ``mandate_not_alive`` rests on the frozen pivot and stop the link carries,
     and a ``pre_barrier_reconstructed`` link's pair was copied from a
     ``candidates`` row that was NOT immutable when it was read -- so a
-    pre-barrier link's death is UNPROVABLE.  The STORED tier is what is read,
-    which is the competitor branch's own predicate verbatim.
+    pre-barrier link's death is UNPROVABLE.  A RAW link can store
+    ``live_at_acceptance`` for a pre-barrier candidate, so the stored column
+    alone proves nothing; the reader consulted here is the one rung 9 consults,
+    and all three sites therefore cannot drift.
+
+    **THIS PARAGRAPH WAS FALSE FOR FOUR ROUNDS AND STILL READ TRUE, WHICH IS
+    WHY IT IS WRITTEN OUT RATHER THAN QUIETLY CORRECTED (gotcha #31, inside
+    this arc's own new code).**  It used to say AL-4 applied here *"exactly as
+    rung 8 already applies it to a competitor"* and that the stored tier was
+    *"the competitor branch's own predicate verbatim"*.  Both were TRUE when
+    written.  ``22A-FIX-R4-02`` then hardened THIS function and left the
+    competitor branch on the stored column, so a comment asserting the two
+    halves agreed survived the change that made them disagree -- and a
+    comment that reads true is worse than none, because nobody re-checks it.
+    ``22A-FIX-R5-02`` hardened the competitor branch, so the sentence is true
+    again; it is true of the STRONGER predicate now, and it says so.
 
     THE VERDICT IS RETURNED, NEVER RE-SPELLED.  ``clear_reason`` and
     ``clear_session`` come from the authority that derived them, so the ladder
@@ -1428,13 +1464,50 @@ def competitor_liveness_rung(
             # lines, fail-closed.  The reviewer's shared rung-2-to-9 classifier
             # was DECLINED -- rung 8 already recurses through the probe, and a
             # second recursive authority pass is a larger change than the hole.
-            if matches[0].freeze_tier != FREEZE_TIER_LIVE_AT_ACCEPTANCE:
+            #
+            # **BOTH THE STORED ATTESTATION AND THE READ-TIME VERDICT (Codex
+            # 22A-FIX-R5-02; orchestrator-ruled IN SCOPE 2026-09-01).**  This
+            # branch read the STORED column alone, which a RAW link can carry
+            # for a pre-barrier candidate -- so a forged `live_at_acceptance`
+            # made a competitor's death read as PROVEN, dropped it, and
+            # ADMITTED the subject beside a mandate whose death `AL-4` says
+            # cannot be established.  A WRONG ACCEPTANCE at the AL-10
+            # raw-writer boundary, and the direction is what put it in scope
+            # when the other deferrals stayed out.
+            #
+            # IT IS ALSO THE ASYMMETRY THIS ARC CREATED.  Before `22A-FIX-R4-02`
+            # both halves of rung 8 trusted the stored tier -- one known,
+            # symmetric posture.  Hardening the SUBJECT and leaving the
+            # COMPETITOR left one rung holding two different rules, which is
+            # the composition class no review rung catches.
+            #
+            # The reader is the one rung 9 consults, so the three sites cannot
+            # drift; a reader FAILURE is IGNORANCE and refuses, exactly as the
+            # ledger-read and re-read branches around it do.
+            from swing.data.repos.candidates_immutability_epoch import (
+                freeze_tier_for_candidate,
+            )
+            try:
+                competitor_tier, barrier_installed = freeze_tier_for_candidate(
+                    conn, link.candidate_id)
+            except Exception as exc:  # noqa: BLE001 -- ignorance, not a crash
+                log.warning(
+                    "22-A: the epoch reader failed for competitor link %s "
+                    "(%s: %s); its tier is UNPROVABLE and it must not be "
+                    "dropped as proven-dead",
+                    link.link_id, type(exc).__name__, exc)
+                return "competitor_liveness_unverifiable", scanned
+            if (matches[0].freeze_tier != FREEZE_TIER_LIVE_AT_ACCEPTANCE
+                    or not barrier_installed
+                    or competitor_tier != FREEZE_TIER_LIVE_AT_ACCEPTANCE):
                 log.warning(
                     "22-A: competitor link %s on %s reads DEAD at %s, but its "
-                    "freeze tier is %r -- a pre-barrier link's frozen values "
-                    "cannot prove death, so its state is UNPROVABLE",
+                    "stored freeze tier is %r and its READ-TIME tier is %r "
+                    "(barrier installed: %s) -- a pre-barrier link's frozen "
+                    "values cannot prove death, so its state is UNPROVABLE",
                     link.link_id, order.ticker, fill_session,
-                    matches[0].freeze_tier)
+                    matches[0].freeze_tier, competitor_tier,
+                    barrier_installed)
                 return "competitor_liveness_unverifiable", scanned
             continue
         else:

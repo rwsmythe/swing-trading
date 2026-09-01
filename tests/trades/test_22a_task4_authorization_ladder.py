@@ -1338,3 +1338,115 @@ def test_an_unreadable_intent_ledger_refuses_rather_than_escaping(
         assert verdict.recognised_but_underivable is True
     finally:
         conn.close()
+
+
+# ===========================================================================
+# 22A-FIX-R7-01 -- THE LOOKUP'S COERCIONS WERE LOSSY ON EXACTLY THE VALUES
+# RUNG 3c EXISTS TO CATCH (orchestrator-ruled IN SCOPE 2026-09-01)
+#
+# SQLite applies NO affinity to a REAL written into an INTEGER column, so a raw
+# link carrying `evaluation_run_id = 121.5` or `actual_quantity = 2.5` is
+# SCHEMA-LEGAL under those columns' own `> 0` CHECKs -- and
+# `find_accepted_latch_order`'s `int()` collapsed them to `121` / `2`, which
+# then MATCHED the authoritative values in rung 3c's Python comparison.  The
+# citation trigger compares the STORED values and refuses, so the service
+# ADMITTED and SQL aborted: authorize-then-abort, on the very rung whose job is
+# to bind the link's duplicated fields back to their sources.
+# ===========================================================================
+def _raw_link_with(conn, candidate_id, *, key: str, **column_over):
+    """A raw link on a GENUINE accepted validity row, with columns SUBSTITUTED.
+
+    The minting trigger is suppressed and RESTORED VERBATIM from
+    ``sqlite_master``; `_forged_link` above cannot serve here because it goes
+    through the dataclass, and the whole subject is what the COLUMNS hold.
+    """
+    saved = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+        "AND name = 'trg_latch_link_mint_on_acceptance'").fetchone()[0]
+    conn.execute("DROP TRIGGER trg_latch_link_mint_on_acceptance")
+    try:
+        common = {
+            "action_session_date": ACCEPT_SESSION.isoformat(),
+            "recorded_ts": f"{ACCEPT_SESSION.isoformat()}T10:00:00",
+            "detection_date": ANCHOR.isoformat(),
+        }
+        place_id = insert_intent(conn, place_row(
+            candidate_id, idempotency_key=f"{key}-place", **common))
+        validity_id = insert_intent(conn, validity_row(
+            candidate_id, place_id, key=f"{key}-validity",
+            actual_broker_order_id=BROKER_ORDER_ID, **common))
+        run_id, ticker, pivot, stop = conn.execute(
+            "SELECT evaluation_run_id, ticker, pivot, initial_stop "
+            "  FROM candidates WHERE id = ?", (candidate_id,)).fetchone()
+        columns = {
+            "validity_intent_id": validity_id, "place_intent_id": place_id,
+            "candidate_id": candidate_id, "evaluation_run_id": run_id,
+            "ticker": ticker, "detection_date": ANCHOR.isoformat(),
+            "broker_order_id": BROKER_ORDER_ID, "frozen_pivot": pivot,
+            "frozen_invalidation": stop, "actual_quantity": 10,
+            "freeze_tier": FREEZE_TIER_LIVE_AT_ACCEPTANCE,
+            "linked_at": "2026-07-24T12:00:00Z",
+        }
+        columns.update(column_over)
+        conn.execute(
+            f"INSERT INTO latch_order_mandate_links ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' * len(columns))})",
+            tuple(columns.values()))
+        conn.commit()
+    finally:
+        conn.execute(saved)
+        conn.commit()
+    orders = find_accepted_latch_order(conn, broker_order_id=BROKER_ORDER_ID)
+    assert len(orders) == 1, orders
+    return orders[0]
+
+
+@pytest.mark.parametrize(
+    "column, raw, collapses_to",
+    [("evaluation_run_id", 121.5, 121), ("actual_quantity", 2.5, 2)],
+    ids=["evaluation_run_id", "actual_quantity"])
+def test_a_fractional_raw_link_field_is_unbound_R7_01(
+        tmp_path, column, raw, collapses_to) -> None:
+    """PRE-FIX the ladder ADMITTED and the citation trigger then aborted.
+
+    Every premise is MEASURED rather than argued: the value survives the
+    column's own CHECK as a REAL, `int()` collapses it onto the authoritative
+    value, and the raw comparison the trigger makes is FALSE.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, f"r701{column}")
+    try:
+        order = _raw_link_with(conn, candidate_id, key="r701",
+                               **{column: raw})
+        stored, kind = conn.execute(
+            f"SELECT {column}, typeof({column}) FROM latch_order_mandate_links"
+        ).fetchone()
+        assert (stored, kind) == (raw, "real"), (
+            "the SCHEMA premise: a REAL is legal in this INTEGER column, "
+            "because SQLite applies no affinity to it")
+        assert int(raw) == collapses_to and collapses_to != raw, (
+            "the COERCION premise: int() lands the forgery on the "
+            "authoritative value")
+
+        assert getattr(order, column) == raw, (
+            f"the lookup still coerces {column}; a drifted raw value is "
+            f"invisible to rung 3c while the trigger refuses it")
+        assert _authorize(conn, cfg, order).decline_reason == (
+            "link_field_unbound"), (
+            "the ladder ADMITTED a forged raw link the citation trigger "
+            "refuses -- authorize-then-abort on rung 3c's own subject")
+    finally:
+        conn.close()
+
+
+def test_THE_CONTROL_an_honest_link_still_admits_R7_01(tmp_path) -> None:
+    """The repair must be a NARROWING, not a blanket refusal.
+
+    The same raw-INSERT path with every column TRUTHFUL still admits, so the
+    two rows above fail on the substituted value and not on the technique.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "r701ok")
+    try:
+        order = _raw_link_with(conn, candidate_id, key="r701ok")
+        assert _authorize(conn, cfg, order).admitted is True
+    finally:
+        conn.close()
