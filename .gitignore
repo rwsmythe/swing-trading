@@ -195,6 +195,13 @@ swing-pre-phase11-schwab-migration-*.db
 .codex-*
 # The .codex/ local Codex CLI session/config dir (Phase-19 close H4, 2026-07-06).
 .codex/
+# Reviewer B (the orchestrator's own second eye) scratch. The review-artifact
+# ignores above cover Reviewer A's `.codex-*` / `.copowers-findings.md` only, so
+# B's transcript and prompt were the one review surface left TRACKABLE -- and a
+# `git add -A` in a worktree swept 34,886 lines of B evidence onto a branch
+# (22-A, 2026-09-01). Caught and untracked, but the asymmetry was the cause.
+.reviewer-b-*
+REVIEWER-B-*
 .codex-review-*
 .codex-r2-prompt.txt
 .live-db-query.py
