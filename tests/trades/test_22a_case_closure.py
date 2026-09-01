@@ -169,35 +169,78 @@ def _arc_test_files() -> list[Path]:
     return files
 
 
-def implemented_case_ids() -> set[str]:
-    """Collect covered case ids by parsing, never by importing or running.
+_FUNC_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def case_ids_in_source(source: str, filename: str = "<source>") -> set[str]:
+    """Covered case ids in ONE module's source, by parsing.  Never imports.
 
     Two conventions, both statically visible:
-      * a test function named ``..._case_<slug>``;
-      * a module-level literal list/tuple bound to a name ending
-        ``_CASE_IDS`` whose elements are case-id strings (for parametrized
-        families, where one function covers many cases).
+      * a **module-level** test function named ``..._case_<slug>``;
+      * a **module-level** literal list/tuple bound to a name ending
+        ``_CASE_IDS`` **that a module-level function REFERENCES** (in its body
+        or in a decorator) -- the parametrized-family convention, where one
+        function covers many cases.
+
+    **THE REFERENCE REQUIREMENT IS G1'S REPAIR, AND IT IS WHAT MAKES THIS A
+    GATE** (audit finding G1, verified BY EXECUTION at orchestrator QA).  The
+    list alone used to bind, so six of the nine ``*_CASE_IDS`` lists were DEAD
+    LITERALS with exactly ONE occurrence -- their own assignment -- and for
+    `35a/35b/35c/35n/35p` and `51a`-`51e` that dead literal was the ONLY
+    binding.  **Measured: stripping EVERY ``FunctionDef`` from
+    ``test_22a_task2_migration_0037.py`` still reported 10 of 10 implemented.**
+    A gate that can report green with zero functions is not a gate.  A
+    decorator is a child of the ``FunctionDef`` it decorates, so removing the
+    functions removes every reference and the ids stop binding.
+
+    **THE SCOPE TEST IS G2'S REPAIR.**  The docstring said *module-level* and
+    the walk used ``ast.walk`` with no scope test, so an ``Assign`` inside a
+    function or a class body bound its ids, as did a nested ``def``.
+    Unexploited when it was found, and it is the same shape as G1 one level
+    down: a binding nobody meant to write.
     """
     by_slug = {slug(c): c for c in PLAN_CASES}
+    tree = ast.parse(source, filename=filename)
+    functions = [n for n in tree.body if isinstance(n, _FUNC_NODES)]
+
+    covered: set[str] = set()
+    for fn in functions:
+        if not fn.name.startswith("test"):
+            continue
+        for suffix, case_id in by_slug.items():
+            if fn.name.endswith(f"_case_{suffix}"):
+                covered.add(case_id)
+
+    referenced: set[str] = set()
+    for fn in functions:
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                referenced.add(node.id)
+
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not (isinstance(target, ast.Name)
+                    and target.id.endswith("_CASE_IDS")):
+                continue
+            if target.id not in referenced:
+                continue
+            if isinstance(node.value, (ast.List, ast.Tuple)):
+                for element in node.value.elts:
+                    if isinstance(element, ast.Constant) and isinstance(
+                        element.value, str
+                    ):
+                        covered.add(element.value)
+    return covered
+
+
+def implemented_case_ids() -> set[str]:
+    """Every covered case id across the walked arc modules."""
     covered: set[str] = set()
     for path in _arc_test_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name.startswith("test"):
-                for suffix, case_id in by_slug.items():
-                    if node.name.endswith(f"_case_{suffix}"):
-                        covered.add(case_id)
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if not (isinstance(target, ast.Name)
-                            and target.id.endswith("_CASE_IDS")):
-                        continue
-                    if isinstance(node.value, (ast.List, ast.Tuple)):
-                        for element in node.value.elts:
-                            if isinstance(element, ast.Constant) and isinstance(
-                                element.value, str
-                            ):
-                                covered.add(element.value)
+        covered |= case_ids_in_source(
+            path.read_text(encoding="utf-8"), filename=str(path))
     return covered
 
 
@@ -252,3 +295,82 @@ def test_case_slug_round_trips(case_id: str) -> None:
     assert re.fullmatch(r"[0-9a-z_]+", slug(case_id)), case_id
     collisions = [c for c in PLAN_CASES if c != case_id and slug(c) == slug(case_id)]
     assert not collisions, f"slug collision: {case_id} vs {collisions}"
+
+
+# ---------------------------------------------------------------------------
+# THE GATE'S OWN DISCRIMINATORS (audit findings G1 / G2)
+#
+# "A gate that can report green with zero functions is not a gate" (CHARC).
+# Both rows below run the PRODUCTION walk over MUTATED REAL SOURCE, never over
+# an invented snippet, so a change to the walk cannot pass them by being
+# correct about a shape the arc does not contain.
+# ---------------------------------------------------------------------------
+def _strip_functions(source: str) -> str:
+    """The same module with every module-level ``def`` removed.
+
+    Emitted with ``ast.unparse`` from the REAL parse tree, so what is measured
+    is the arc's own module minus its functions rather than a hand-written
+    approximation of one.
+    """
+    tree = ast.parse(source)
+    tree.body = [n for n in tree.body if not isinstance(n, _FUNC_NODES)]
+    return ast.unparse(ast.fix_missing_locations(tree))
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["tests/data/test_22a_task2_migration_0037.py",
+     "tests/data/test_22a_task11_citation_evidence.py",
+     "tests/trades/test_22a_task4_authorization_ladder.py"])
+def test_G1_a_module_with_no_functions_implements_no_cases(module) -> None:
+    """**MEASURED BEFORE THE FIX: stripping every ``FunctionDef`` from
+    ``test_22a_task2_migration_0037.py`` still reported 10 of 10 implemented.**
+
+    Its ten case ids were bound by two DEAD LITERALS -- ``THE_35_CASE_IDS`` and
+    ``THE_51_CASE_IDS``, each occurring exactly once, at its own assignment --
+    so the gate was reporting a list somebody typed rather than a test that
+    runs.  The three modules below are the ones carrying ``*_CASE_IDS`` lists;
+    each must report NOTHING once its functions are gone.
+    """
+    source = (REPO_ROOT / module).read_text(encoding="utf-8")
+    assert case_ids_in_source(source, module), (
+        f"{module} binds no case ids at all, so this row measures nothing")
+    stripped = case_ids_in_source(_strip_functions(source), module)
+    assert stripped == set(), (
+        f"{module} still reports {sorted(stripped)} with EVERY function "
+        f"removed; the binding is a literal somebody typed, not a test that "
+        f"runs")
+
+
+def test_G2_a_binding_inside_a_function_or_class_body_does_not_count() -> None:
+    """``implemented_case_ids`` said *module-level* and used ``ast.walk`` with
+    no scope test, so a nested ``def`` and an ``Assign`` inside a function or a
+    class body both bound their ids.
+
+    Unexploited in the arc when it was found -- which is why the repair is the
+    scope test rather than a rule about where people may write things.
+    """
+    real = sorted(PLAN_CASES)[0]
+    nested = (
+        "def outer():\n"
+        f"    NESTED_CASE_IDS = [{real!r}]\n"
+        f"    def test_inner_case_{slug(real)}():\n"
+        "        return NESTED_CASE_IDS\n"
+        "\n"
+        "class Holder:\n"
+        f"    CLASS_CASE_IDS = [{real!r}]\n"
+        f"    def test_method_case_{slug(real)}(self):\n"
+        "        return Holder.CLASS_CASE_IDS\n"
+    )
+    assert case_ids_in_source(nested) == set(), (
+        "a binding written inside a function or a class body still counts")
+
+    # THE CONTROL: the SAME id at module level, referenced by a module-level
+    # function, DOES count -- so the row above is a scope test and not a walk
+    # that stopped working.
+    top = (
+        f"TOP_CASE_IDS = [{real!r}]\n"
+        "def test_top():\n"
+        "    return TOP_CASE_IDS\n"
+    )
+    assert case_ids_in_source(top) == {real}

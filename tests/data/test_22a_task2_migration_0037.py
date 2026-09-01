@@ -205,17 +205,29 @@ def test_delete_and_reinsert_of_the_same_identity_aborts_at_the_delete_case_26(
     assert row == (PIVOT, INITIAL_STOP)
 
 
+# THE CASE-ID LIST IS THE PARAMETRIZE'S OWN SOURCE (audit finding G1).  It was
+# a DEAD LITERAL below this function with exactly ONE occurrence -- its own
+# assignment -- and that literal was the ONLY thing binding 51a-51e to a test.
+# MEASURED: stripping every function from this module still reported ten of ten
+# implemented.  The list now DRIVES the parametrization, so a case id present
+# here and absent from the table (or the reverse) fails at collection.
+THE_51_CASE_IDS = ["51a", "51b", "51c", "51d", "51e"]
+
+_THE_51_TABLE = {
+    # 51a / 51b: the nightly's OWN shapes, which must keep working.
+    "51a": ("ordinary INSERT, new run, same ticker", False),
+    "51b": ("ordinary INSERT, new ticker, same run", False),
+    # 51c / 51d / 51e: every conflict flavour.
+    "51c": ("INSERT OR REPLACE on the UNIQUE", True),
+    "51d": ("bare REPLACE on the rowid PK", True),
+    "51e": ("INSERT OR IGNORE on a duplicate", True),
+}
+
+
 @pytest.mark.parametrize(
     ("case_id", "statement", "must_abort"),
-    [
-        # 51a / 51b: the nightly's OWN shapes, which must keep working.
-        ("51a", "ordinary INSERT, new run, same ticker", False),
-        ("51b", "ordinary INSERT, new ticker, same run", False),
-        # 51c / 51d / 51e: every conflict flavour.
-        ("51c", "INSERT OR REPLACE on the UNIQUE", True),
-        ("51d", "bare REPLACE on the rowid PK", True),
-        ("51e", "INSERT OR IGNORE on a duplicate", True),
-    ],
+    [(cid, *_THE_51_TABLE[cid]) for cid in THE_51_CASE_IDS],
+    ids=THE_51_CASE_IDS,
 )
 def test_the_conflict_scoped_insert_barrier(
         conn, case_id: str, statement: str, must_abort: bool) -> None:
@@ -269,7 +281,10 @@ def test_the_conflict_scoped_insert_barrier(
         conn.execute(sql)  # must NOT raise: this is the nightly's own path
 
 
-THE_51_CASE_IDS = ["51a", "51b", "51c", "51d", "51e"]
+def test_the_51_roster_and_its_table_agree() -> None:
+    """The closure check on the pair, so neither can grow without the other."""
+    assert set(THE_51_CASE_IDS) == set(_THE_51_TABLE), (
+        f"{sorted(set(THE_51_CASE_IDS) ^ set(_THE_51_TABLE))}")
 
 
 def test_insert_candidates_still_works_through_the_production_repo(
@@ -308,20 +323,32 @@ def test_insert_candidates_still_works_through_the_production_repo(
 # ---------------------------------------------------------------------------
 # The epoch
 # ---------------------------------------------------------------------------
+# THE CASE-ID LIST IS THE PARAMETRIZE'S OWN SOURCE (audit finding G1) -- see
+# the note on `THE_51_CASE_IDS` above.  35p carries TWO statements because the
+# same case names two conflict spellings, so the table maps a case id to a
+# LIST and the parametrization flattens it: the case id is what iterates.
+THE_35_CASE_IDS = ["35a", "35b", "35c", "35n", "35p"]
+
+_THE_35_WRITE_PATHS = {
+    "35a": ["UPDATE candidates_immutability_epoch "
+            "SET max_candidate_id_at_barrier = 0"],
+    "35b": ["DELETE FROM candidates_immutability_epoch"],
+    "35c": ["INSERT OR REPLACE INTO candidates_immutability_epoch "
+            "VALUES (1, 0, 'x')"],
+    "35n": ["INSERT INTO candidates_immutability_epoch VALUES (2, 0, 'x')"],
+    "35p": ["REPLACE INTO candidates_immutability_epoch VALUES (1, 0, 'x')",
+            "INSERT OR IGNORE INTO candidates_immutability_epoch "
+            "VALUES (1, 0, 'x')"],
+}
+_THE_35_PARAMS = [
+    (cid, sql) for cid in THE_35_CASE_IDS for sql in _THE_35_WRITE_PATHS[cid]
+]
+
+
 @pytest.mark.parametrize(
-    ("case_id", "sql"),
-    [
-        ("35a", "UPDATE candidates_immutability_epoch "
-                "SET max_candidate_id_at_barrier = 0"),
-        ("35b", "DELETE FROM candidates_immutability_epoch"),
-        ("35c", "INSERT OR REPLACE INTO candidates_immutability_epoch "
-                "VALUES (1, 0, 'x')"),
-        ("35n", "INSERT INTO candidates_immutability_epoch VALUES (2, 0, 'x')"),
-        ("35p-replace", "REPLACE INTO candidates_immutability_epoch "
-                        "VALUES (1, 0, 'x')"),
-        ("35p-ignore", "INSERT OR IGNORE INTO candidates_immutability_epoch "
-                       "VALUES (1, 0, 'x')"),
-    ],
+    ("case_id", "sql"), _THE_35_PARAMS,
+    ids=[f"{cid}-{n}" for cid in THE_35_CASE_IDS
+         for n in range(len(_THE_35_WRITE_PATHS[cid]))],
 )
 def test_the_epoch_refuses_every_write_path(conn, case_id: str, sql: str) -> None:
     """Cases 35a, 35b, 35c, 35n, 35p -- at the DEFAULT pragma.
@@ -341,7 +368,13 @@ def test_the_epoch_refuses_every_write_path(conn, case_id: str, sql: str) -> Non
         "SELECT * FROM candidates_immutability_epoch").fetchall() == before
 
 
-THE_35_CASE_IDS = ["35a", "35b", "35c", "35n", "35p"]
+def test_the_35_roster_and_its_write_paths_agree() -> None:
+    """The closure check on the pair, so neither can grow without the other."""
+    assert set(THE_35_CASE_IDS) == set(_THE_35_WRITE_PATHS), (
+        f"{sorted(set(THE_35_CASE_IDS) ^ set(_THE_35_WRITE_PATHS))}")
+    assert len(_THE_35_PARAMS) == 6, (
+        "35p carries two conflict spellings; a table that lost one would "
+        "still satisfy the set comparison above")
 
 
 def test_the_epoch_boundary_is_seeded_from_the_live_max_candidate_id(

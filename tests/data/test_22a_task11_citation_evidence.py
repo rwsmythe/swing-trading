@@ -2333,3 +2333,46 @@ def test_the_PRE_22A_shape_a_null_envelope_on_a_null_column_still_inserts(
     assert "envelope" in snapshot and snapshot["envelope"] is None, (
         "the service froze something other than a JSON null for an absent "
         "envelope; the acceptance this row pins is about that shape")
+
+
+# ===========================================================================
+# THE FOUR NON-PARAMETRIZED ROSTERS, CONSUMED (audit finding G1)
+#
+# `COVERAGE_CASE_IDS`, `ROUNDING_CASE_IDS`, `TIE_BASIS_CASE_IDS` and
+# `SERVICE_LIMIT_CASE_IDS` were DEAD LITERALS -- one occurrence each, their own
+# assignment -- so the closure gate bound their ids off a list somebody typed.
+# The gate's repair makes an unreferenced list bind nothing, which leaves these
+# four inert; this row makes them LOAD-BEARING instead of deleting them, by
+# asserting each id has a function in THIS module that carries its case suffix.
+#
+# A roster is not the fix; the CLOSURE CHECK over it is.  This one walks the
+# module's own AST rather than trusting the manifests, so a function renamed or
+# deleted fails here.
+# ===========================================================================
+def test_every_named_case_roster_has_its_function_in_this_module() -> None:
+    """Each id in each roster is implemented by a function named for it."""
+    import ast as _ast
+    from pathlib import Path as _Path
+
+    source = _Path(__file__).read_text(encoding="utf-8")
+    names = {
+        node.name for node in _ast.parse(source).body
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef))
+    }
+    rosters = {
+        "COVERAGE_CASE_IDS": COVERAGE_CASE_IDS,
+        "ROUNDING_CASE_IDS": ROUNDING_CASE_IDS,
+        "TIE_BASIS_CASE_IDS": TIE_BASIS_CASE_IDS,
+        "SERVICE_LIMIT_CASE_IDS": SERVICE_LIMIT_CASE_IDS,
+    }
+    missing: dict[str, list[str]] = {}
+    for roster, ids in rosters.items():
+        absent = [
+            case_id for case_id in ids
+            if not any(n.endswith(f"_case_{case_id.replace('-', '_')}")
+                       for n in names)
+        ]
+        if absent:
+            missing[roster] = absent
+    assert not missing, (
+        f"a roster names a case with no function in this module: {missing}")
