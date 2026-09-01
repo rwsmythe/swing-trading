@@ -2520,3 +2520,104 @@ def test_fill_origin_has_NO_escape_and_the_CHECK_is_why(conn) -> None:
     snapshot = _snapshot(payload)
     snapshot["fill_origin"] = {"type": "str", "repr": "schwab_auto"}
     _assert_rejected(conn, _with_snapshot(payload, snapshot))
+
+
+# ===========================================================================
+# 22A-FIX-R2-01 / -02 -- THE STORAGE CLASS IS PART OF THE BINDING
+# ===========================================================================
+def test_a_TYPE_CHANGED_operand_is_rejected_even_at_the_same_value(
+        conn) -> None:
+    """``IS`` APPLIES THE SOURCE COLUMN'S AFFINITY, so a value comparison
+    alone is blind to the freeze's own storage class.
+
+    MEASURED (reviewer, and re-measured in the premises below): JSON text
+    ``"2.0"`` compares EQUAL to a REAL ``2.0``, and a JSON OBJECT compares
+    EQUAL to a TEXT column holding the same MINIFIED document.  Production
+    freezes an envelope as a JSON STRING and never as that object -- so both
+    are snapshots the freezer COULD NOT EMIT, passing the clause written to
+    require its output.
+
+    **THE MINIFICATION IS LOAD-BEARING AND IS FORCED HERE.**
+    ``json_extract`` re-serialises an object WITHOUT the separators
+    ``json.dumps`` writes by default, so the coercion only bites when the
+    column already holds the minified spelling.  The seeded fixture's envelope
+    is spaced, and a case built on it would have been REFUSED FOR THE WRONG
+    REASON -- a test blocked by an incidental difference proving nothing about
+    the clause it names.  The document is set minified, and the premise is
+    then asserted rather than assumed.
+    """
+    payload = seed_latch_ladder_citation(conn)
+    fill_id = payload["entry_fill_id_at_correction"]
+    minified = json.dumps(
+        {"schwab_order_id": payload["cited_latch_broker_order_id"],
+         "schwab_instrument_symbol": "CADL"}, separators=(",", ":"))
+    set_fill_envelope(conn, fill_id, minified)
+    conn.commit()
+    payload = _refreeze(conn, payload)
+    _assert_baseline_inserts(conn, payload)
+
+    quantity = conn.execute(
+        "SELECT quantity FROM fills WHERE fill_id = ?",
+        (fill_id,)).fetchone()[0]
+
+    # THE PREMISES, re-measured HERE: a bare `IS` accepts BOTH forgeries.
+    forged = json.dumps({"q": str(quantity), "e": json.loads(minified)})
+    assert conn.execute(
+        "SELECT json_extract(?, '$.q') IS quantity, "
+        "       json_extract(?, '$.e') IS schwab_source_value_json "
+        "  FROM fills WHERE fill_id = ?",
+        (forged, forged, fill_id)).fetchone() == (1, 1), (
+        "the affinity coercion this case is about no longer happens; if "
+        "SQLite has changed, the type-agreement clause is now belt-only and "
+        "the migration comment should say so")
+
+    snapshot = _snapshot(payload)
+    snapshot["quantity"] = str(quantity)          # REAL frozen as TEXT
+    _assert_rejected(conn, _with_snapshot(payload, snapshot))
+
+    snapshot = _snapshot(payload)
+    snapshot["envelope"] = json.loads(minified)   # TEXT frozen as an OBJECT
+    _assert_rejected(conn, _with_snapshot(payload, snapshot))
+
+    snapshot = _snapshot(payload)
+    snapshot["fill_origin"] = 1                   # TEXT frozen as a number
+    _assert_rejected(conn, _with_snapshot(payload, snapshot))
+
+
+def test_the_BLOB_escape_accepts_the_bytes_tag_and_ONLY_that_tag(
+        conn) -> None:
+    """``sqlite3`` returns a BLOB column as Python ``bytes`` for EVERY
+    binding, so ``_json_safe_operand`` can only ever tag a CITED FILL
+    ``'bytes'`` -- and the premise is MEASURED rather than argued.
+
+    Admitting ``'bytearray'`` / ``'memoryview'`` left the declared type-tag
+    consistency unverifiable in exactly the way the digest's VALUE already is,
+    which is one declared residual too many (Codex 22A-FIX-R2-02).
+    """
+    import hashlib
+
+    probe = sqlite3.connect(":memory:")
+    try:
+        probe.execute("CREATE TABLE t (v)")
+        for value in (b"ab", bytearray(b"ab"), memoryview(b"ab")):
+            probe.execute("DELETE FROM t")
+            probe.execute("INSERT INTO t VALUES (?)", (value,))
+            got = probe.execute("SELECT v FROM t").fetchone()[0]
+            assert type(got) is bytes, (
+                f"a {type(value).__name__} bound into SQLite came back as "
+                f"{type(got).__name__}; the tag roster's narrowing rests on "
+                f"it always being `bytes`")
+    finally:
+        probe.close()
+
+    blob = bytes([0, 255]) + b"not-a-number"
+    payload, _ = _escape_world(conn, blob)
+    digest = hashlib.sha256(blob).hexdigest()
+    _insert_payload(conn, payload)                 # `bytes` -- the truth
+    conn.execute("DELETE FROM provenance_corrections")
+
+    snapshot = _snapshot(payload)
+    for tag in ("bytearray", "memoryview", "str", "float"):
+        snapshot["quantity"] = {"type": tag, "sha256": digest}
+        with pytest.raises(sqlite3.IntegrityError, match="citation graph"):
+            _insert_payload(conn, _with_snapshot(payload, snapshot))

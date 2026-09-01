@@ -2171,9 +2171,19 @@ def preview_cohort_provenance_correction(
     # out of the operator's hands. Recorded as a V2 dependency; the apply
     # prints the anchors it actually used so a divergence is visible at the
     # moment of the write.
+    # THE ACQUISITION IS INSIDE THE PROTECTED REGION (Codex 22A-FIX-R2-03).
+    # `BEGIN DEFERRED` used to sit OUTSIDE this `try`, so a `KeyboardInterrupt`
+    # landing between the statement OPENING the transaction and the `try` being
+    # entered -- or a signal arriving immediately after the call returns --
+    # skipped the handler entirely and left the owned transaction open.  The
+    # window is one bytecode wide and the recovery is the same recovery, so
+    # there is no reason to leave it outside.
+    #
+    # THE RECOVERY ASKS THE CONNECTION, NEVER A REMEMBERED FLAG: `owns_read_tx`
+    # was computed BEFORE the `BEGIN`, so on the interrupted-acquisition path
+    # it cannot say whether the transaction actually opened.  `in_transaction`
+    # is the fact.
     owns_read_tx = not conn.in_transaction
-    if owns_read_tx:
-        conn.execute("BEGIN DEFERRED")
     # THE SAVEPOINT'S CREATION IS INSIDE THE OWNERSHIP GUARD (Codex
     # 22A-R14-07).  Both verbs used to execute BEFORE any `try`, so a failure
     # creating the savepoint returned with the transaction this call had just
@@ -2183,9 +2193,17 @@ def preview_cohort_provenance_correction(
     # transaction is still left alone, for R11-05's reason: closing someone
     # else's transaction would be a second defect wearing this one's clothes.
     try:
+        if owns_read_tx:
+            conn.execute("BEGIN DEFERRED")
         conn.execute(f"SAVEPOINT {_PREVIEW_SAVEPOINT}")
     except BaseException as savepoint_error:
-        if owns_read_tx:
+        # `conn.in_transaction`, NOT `owns_read_tx` (Codex 22A-FIX-R2-03): the
+        # flag says whether this call SET OUT to own the transaction, and on an
+        # interrupted acquisition only the connection knows whether it actually
+        # opened one.  A caller-held transaction still leaves both False-and-
+        # untouched, because `owns_read_tx` is False and this branch is
+        # additionally gated on it.
+        if owns_read_tx and conn.in_transaction:
             # A FAILED RECOVERY ROLLBACK IS NOT SUPPRESSED (Codex 22A-R15-03),
             # AND THIS RECONCILES THE GUARD WITH `AL-15`.
             #
@@ -2484,8 +2502,14 @@ def correct_cohort_provenance(
             "transaction; compose via _correct_cohort_provenance_inner inside "
             "an existing tx. Nothing was written."
         )
-    conn.execute("BEGIN IMMEDIATE")
+    # THE ACQUISITION IS INSIDE THE PROTECTED REGION (Codex 22A-FIX-R2-03).
+    # ``BEGIN IMMEDIATE`` sat OUTSIDE this ``try``, so a ``KeyboardInterrupt``
+    # landing between the statement TAKING the write reservation and the
+    # ``try`` being entered skipped the handler and left the reservation held
+    # on a connection the CLI goes on using.  Same one-bytecode window as the
+    # preview path, same recovery, and the two now agree.
     try:
+        conn.execute("BEGIN IMMEDIATE")
         result = _correct_cohort_provenance_inner(
             conn,
             trade_id=trade_id,
@@ -2496,17 +2520,36 @@ def correct_cohort_provenance(
         )
         conn.commit()
         return result
-    except BaseException:
+    except BaseException as write_error:
         # ``BaseException``, NOT ``Exception`` (reviewer B, P3).
         # ``KeyboardInterrupt`` / ``SystemExit`` / ``GeneratorExit`` derive
         # from ``BaseException`` alone, so a Ctrl-C landing between
         # ``BEGIN IMMEDIATE`` and ``COMMIT`` skipped this rollback and left an
         # open WRITE transaction -- holding the reservation -- on a connection
-        # the CLI goes on using.  ``_entry_transaction``
-        # (``swing/trades/entry.py``) already catches ``BaseException`` for
-        # this exact reason; two write paths cannot disagree about it.
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+        # the CLI goes on using.
+        #
+        # AND THE ROLLBACK'S OWN FAILURE IS NOT SUPPRESSED EITHER (Codex
+        # 22A-FIX-R2-04).  This was `contextlib.suppress(sqlite3.Error)`, which
+        # is the EXACT composition the preview path one function up declares
+        # MORE DANGEROUS and surfaces with a chained error -- `AL-15`'s
+        # standard, applied to the preview four commits earlier and not to the
+        # path that actually WRITES.  A leg cannot hold one standard for its
+        # dry run and another for its apply.
+        #
+        # `conn.in_transaction` rather than a remembered flag, for R2-03's
+        # reason: on the interrupted-acquisition path only the connection knows
+        # whether the transaction opened.
+        if conn.in_transaction:
+            try:
+                conn.rollback()
+            except sqlite3.Error as cleanup_error:
+                log.error(
+                    "22-A: the cohort-provenance correction failed (%s) AND "
+                    "could not roll back (%s). The WRITE transaction is STILL "
+                    "OPEN, its reservation still held, and this connection "
+                    "MUST BE DISCARDED rather than reused.",
+                    write_error, cleanup_error)
+                raise cleanup_error from write_error
         raise
 
 

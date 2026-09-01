@@ -408,6 +408,12 @@ def test_a_malformed_order_id_refuses_the_latch_binding_not_the_entry(
     assert _SHAPE_RUNG_MESSAGE not in response.text, (
         "the shape rung still refuses the ENTRY; RD ruled the refusal moves "
         "to the LATCH BINDING")
+    # THE STATUS IS PART OF THE OUTCOME (Codex 22A-FIX-R2-09).  A route that
+    # writes the trade and then hands the operator a failure page is not an
+    # accepted entry -- he retries it, and the second submit meets the
+    # one-open-position gate.  Asserting only the row and the spy would pass
+    # that.
+    assert response.status_code == 200, response.status_code
     assert calls == [TICKER], "a malformed order id never reached the service"
     assert _written(cfg) == [(TICKER, "manual_off_pipeline", None, None)], (
         "the entry was blocked, or it was stamped from the ordinary chain")
@@ -439,12 +445,15 @@ def test_a_malformed_order_id_records_the_entry_honest_unset_case_rd(
     app = create_app(cfg, cfg_path)
     with caplog.at_level(logging.WARNING):
         with TestClient(app) as client:
-            client.post(
+            response = client.post(
                 "/trades/entry",
                 data=_post_data(pipeline_run_id=pipeline_run_id,
                                 envelope=_envelope(order_id=1002937461)),
                 headers={"HX-Request": "true"})
 
+    assert response.status_code == 200, (
+        "the entry was recorded and the operator was shown a failure; he "
+        "retries, and the second submit meets the one-open-position gate")
     assert calls == [TICKER], "the route refused a money-bearing entry"
     assert _written(cfg) == [(TICKER, "manual_off_pipeline", None, None)], (
         "the row is not honest-unset; a fall-through would have stamped "
@@ -575,3 +584,66 @@ def test_a_deeply_nested_envelope_does_not_500_the_EXIT_route(
         )
     assert resp.status_code != 500, (
         "the exit route 500ed; the RecursionError escaped its anchor parse")
+
+
+# ===========================================================================
+# THE ENTRY-OR-LABEL SEAM, AT THE ROUTE (Codex 22A-FIX-R2-10)
+#
+# The service-side property in `tests/trades/test_22a_task9_entry_wiring.py`
+# calls `record_entry` directly, so it CANNOT observe a route-level early
+# return -- and the route is exactly where the FOURTH recurrence lived.  A
+# claim that the property stops a fifth guard "wherever it is written" was one
+# surface too broad; this row is the missing surface.
+#
+# The property here is the one the route can hold: **for every envelope shape
+# the arc recognises as naming an order, the ROUTE reaches `record_entry`.**
+# It cannot be a persisted-row property, because what the SERVICE then answers
+# is task 9's and is pinned there -- the module docstring's own boundary.
+# ===========================================================================
+_RECOGNISED_ENVELOPE_SHAPES = [
+    pytest.param(BROKER_ORDER_ID, id="a-usable-order-id"),
+    pytest.param("", id="empty"),
+    pytest.param("   ", id="whitespace"),
+    pytest.param(1002937461, id="int"),
+    pytest.param(1.5, id="float"),
+    pytest.param(True, id="bool"),
+    pytest.param(["1002937461"], id="list"),
+    pytest.param({"id": "1"}, id="dict"),
+    pytest.param("not-a-real-order", id="unmatched-but-usable"),
+]
+
+
+@pytest.mark.parametrize("order_id", _RECOGNISED_ENVELOPE_SHAPES)
+def test_the_ROUTE_reaches_the_service_for_EVERY_recognised_envelope(
+        seeded_db, monkeypatch, order_id) -> None:
+    """A ROUTE-LEVEL guard that early-returns on any of these is the fourth
+    recurrence happening again, and the service-side seam property cannot see
+    it.
+
+    The premise is asserted per shape rather than assumed: each envelope must
+    be RECOGNISED by the arc's one recognition predicate, or the row is about
+    a request the route is allowed to decide itself (tier (e)'s subject).
+    """
+    from swing.trades.latched_origin import envelope_recognises_an_order
+
+    envelope = _envelope(order_id=order_id)
+    assert envelope_recognises_an_order(envelope) is True, (
+        "this shape names no order, so the route MAY decide it and the row "
+        "is about tier (e) rather than about the cohort-guard seam")
+
+    cfg, cfg_path = seeded_db
+    _, pipeline_run_id = _build_route_world(cfg, with_link=True)
+    calls = _spy_record_entry(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        client.post(
+            "/trades/entry",
+            data=_post_data(pipeline_run_id=pipeline_run_id,
+                            envelope=envelope),
+            headers={"HX-Request": "true"})
+
+    assert calls == [TICKER], (
+        "the ROUTE decided this request itself. Cohort bookkeeping never "
+        "blocks a money-bearing entry -- and a route-level early return is "
+        "invisible to the service-side seam property in task 9.")

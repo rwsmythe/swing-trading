@@ -980,6 +980,18 @@ FOR EACH ROW WHEN NOT (
     -- distinguishes an absent path (NULL) from a JSON `null` VALUE (the text
     -- 'null'), and that is exactly the distinction the omission case turns on.
     --
+    -- THE ORDINARY BRANCH BINDS THE **JSON TYPE** AS WELL AS THE VALUE (Codex
+    -- 22A-FIX-R2-01, verified by execution twice -- by the reviewer and here).
+    -- `IS` applies the SOURCE COLUMN'S AFFINITY, so a bare value comparison is
+    -- blind to the freeze's own storage class: MEASURED, JSON text `"2.0"`
+    -- compares EQUAL to a REAL `2.0`, and -- the sharper one -- a JSON OBJECT
+    -- compares EQUAL to a TEXT column holding the same minified document.
+    -- Production freezes an envelope as a JSON STRING and never as that
+    -- object, so both shapes are snapshots the freezer could not emit passing
+    -- the clause written to require its output.  Each ordinary branch
+    -- therefore pairs the value comparison with a `json_type` that must AGREE
+    -- with the column's `typeof()`, one storage class at a time.
+    --
     -- THE `'object'` BRANCH IS THE FREEZER'S DECLARED DIGEST ESCAPE, AND IT IS
     -- CLOSED AND TYPE-BOUND (Codex 22A-FIX-R1-01).  `_json_safe_operand`
     -- writes a type-tagged object when the value cannot be written as JSON --
@@ -996,8 +1008,14 @@ FOR EACH ROW WHEN NOT (
     --   * the column's `typeof()` to be the one that MAKES the escape legal;
     --   * the object to be CLOSED to the freezer's own key pair (`json_remove`
     --     of the two keys is `'{}'`), so no third key can ride along;
-    --   * the `type` tag to be one the freezer actually writes for that
-    --     `typeof()`; and
+    --   * the `type` tag to be the one the freezer actually writes for that
+    --     `typeof()` -- **`'bytes'` EXACTLY** (Codex 22A-FIX-R2-02, verified by
+    --     execution): `sqlite3` returns a BLOB column as Python `bytes` for
+    --     EVERY binding, including a `bytearray` or a `memoryview` written in,
+    --     so `_json_safe_operand` can only ever tag a CITED FILL `'bytes'`.
+    --     Admitting the other two tags left the declared type-tag consistency
+    --     unverifiable in exactly the way the digest's VALUE already is, which
+    --     is one declared residual too many; and
     --   * for a non-finite REAL, the `repr` to be the EXACT sign the column
     --     carries -- `'inf'` or `'-inf'`, which is what Python's `repr` emits
     --     (measured), so the two infinities cannot be interchanged.
@@ -1030,8 +1048,20 @@ FOR EACH ROW WHEN NOT (
                     IS NOT NULL
             AND json_type(NEW.entry_fill_snapshot_json, '$.envelope')
                     IS NOT NULL
-            AND (json_extract(NEW.entry_fill_snapshot_json, '$.quantity')
-                     IS f.quantity
+            AND ((json_extract(NEW.entry_fill_snapshot_json,
+                          '$.quantity') IS f.quantity
+                  AND ((typeof(f.quantity) = 'null'
+                        AND json_type(NEW.entry_fill_snapshot_json,
+                                '$.quantity') = 'null')
+                    OR (typeof(f.quantity) = 'text'
+                        AND json_type(NEW.entry_fill_snapshot_json,
+                                '$.quantity') = 'text')
+                    OR (typeof(f.quantity) = 'integer'
+                        AND json_type(NEW.entry_fill_snapshot_json,
+                                '$.quantity') = 'integer')
+                    OR (typeof(f.quantity) = 'real'
+                        AND json_type(NEW.entry_fill_snapshot_json,
+                                '$.quantity') = 'real')))
                  OR (typeof(f.quantity) = 'real'
                      AND (f.quantity = 9e999 OR f.quantity = -9e999)
                      AND json_type(NEW.entry_fill_snapshot_json,
@@ -1052,16 +1082,27 @@ FOR EACH ROW WHEN NOT (
                              NEW.entry_fill_snapshot_json, '$.quantity'),
                              '$.type', '$.sha256') = '{}'
                      AND json_extract(NEW.entry_fill_snapshot_json,
-                             '$.quantity.type')
-                         IN ('bytes', 'bytearray', 'memoryview')
+                             '$.quantity.type') = 'bytes'
                      AND length(json_extract(
                              NEW.entry_fill_snapshot_json,
                              '$.quantity.sha256')) = 64
                      AND NOT json_extract(
                              NEW.entry_fill_snapshot_json,
                              '$.quantity.sha256') GLOB '*[^0-9a-f]*'))
-            AND (json_extract(NEW.entry_fill_snapshot_json, '$.price')
-                     IS f.price
+            AND ((json_extract(NEW.entry_fill_snapshot_json,
+                          '$.price') IS f.price
+                  AND ((typeof(f.price) = 'null'
+                        AND json_type(NEW.entry_fill_snapshot_json,
+                                '$.price') = 'null')
+                    OR (typeof(f.price) = 'text'
+                        AND json_type(NEW.entry_fill_snapshot_json,
+                                '$.price') = 'text')
+                    OR (typeof(f.price) = 'integer'
+                        AND json_type(NEW.entry_fill_snapshot_json,
+                                '$.price') = 'integer')
+                    OR (typeof(f.price) = 'real'
+                        AND json_type(NEW.entry_fill_snapshot_json,
+                                '$.price') = 'real')))
                  OR (typeof(f.price) = 'real'
                      AND (f.price = 9e999 OR f.price = -9e999)
                      AND json_type(NEW.entry_fill_snapshot_json,
@@ -1082,8 +1123,7 @@ FOR EACH ROW WHEN NOT (
                              NEW.entry_fill_snapshot_json, '$.price'),
                              '$.type', '$.sha256') = '{}'
                      AND json_extract(NEW.entry_fill_snapshot_json,
-                             '$.price.type')
-                         IN ('bytes', 'bytearray', 'memoryview')
+                             '$.price.type') = 'bytes'
                      AND length(json_extract(
                              NEW.entry_fill_snapshot_json,
                              '$.price.sha256')) = 64
@@ -1092,8 +1132,22 @@ FOR EACH ROW WHEN NOT (
                              '$.price.sha256') GLOB '*[^0-9a-f]*'))
             AND json_extract(NEW.entry_fill_snapshot_json,
                     '$.fill_origin') IS f.fill_origin
-            AND (json_extract(NEW.entry_fill_snapshot_json, '$.envelope')
-                     IS f.schwab_source_value_json
+            AND json_type(NEW.entry_fill_snapshot_json,
+                    '$.fill_origin') = 'text'
+            AND ((json_extract(NEW.entry_fill_snapshot_json,
+                          '$.envelope') IS f.schwab_source_value_json
+                  AND ((typeof(f.schwab_source_value_json) = 'null'
+                        AND json_type(NEW.entry_fill_snapshot_json,
+                                '$.envelope') = 'null')
+                    OR (typeof(f.schwab_source_value_json) = 'text'
+                        AND json_type(NEW.entry_fill_snapshot_json,
+                                '$.envelope') = 'text')
+                    OR (typeof(f.schwab_source_value_json) = 'integer'
+                        AND json_type(NEW.entry_fill_snapshot_json,
+                                '$.envelope') = 'integer')
+                    OR (typeof(f.schwab_source_value_json) = 'real'
+                        AND json_type(NEW.entry_fill_snapshot_json,
+                                '$.envelope') = 'real')))
                  OR (typeof(f.schwab_source_value_json) = 'real'
                      AND (f.schwab_source_value_json = 9e999 OR f.schwab_source_value_json = -9e999)
                      AND json_type(NEW.entry_fill_snapshot_json,
@@ -1114,8 +1168,7 @@ FOR EACH ROW WHEN NOT (
                              NEW.entry_fill_snapshot_json, '$.envelope'),
                              '$.type', '$.sha256') = '{}'
                      AND json_extract(NEW.entry_fill_snapshot_json,
-                             '$.envelope.type')
-                         IN ('bytes', 'bytearray', 'memoryview')
+                             '$.envelope.type') = 'bytes'
                      AND length(json_extract(
                              NEW.entry_fill_snapshot_json,
                              '$.envelope.sha256')) = 64

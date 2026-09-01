@@ -6,6 +6,7 @@ asserts the drift line.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from pathlib import Path
@@ -2103,3 +2104,138 @@ def test_R5m6_a_churn_column_on_the_pipeline_row_is_NOT_drift(conn) -> None:
         (ids["pipeline_run_id"],))
     [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
     assert report.drift_lines == ()
+
+
+# ===========================================================================
+# 22A-FIX-R2-03 / -04 -- THE ACQUISITION WINDOW, AND THE APPLY PATH'S OWN
+# CLEANUP FAILURE
+#
+# `BEGIN DEFERRED` / `BEGIN IMMEDIATE` sat OUTSIDE their `try` blocks, so an
+# interrupt landing between the statement OPENING the transaction and the
+# `try` being entered skipped the handler entirely -- and on the apply path the
+# WRITE RESERVATION stayed held.  The R15-03 row could not reach that window
+# because it raises from inside `_correct_cohort_provenance_inner`.
+#
+# And the apply path still SUPPRESSED a failing rollback, which is the exact
+# composition the preview path declares more dangerous four commits earlier --
+# `AL-15`'s standard held for the dry run and not for the path that writes.
+# ===========================================================================
+class _InterruptAtAcquisitionConn:
+    """Delegates everything; performs the REAL ``BEGIN`` and then interrupts.
+
+    The BEGIN is issued before raising, so the connection is genuinely IN a
+    transaction when the handler runs -- which is the whole point.  A proxy
+    that merely raised INSTEAD of beginning would test a different window.
+    """
+
+    def __init__(self, real: sqlite3.Connection, verb: str) -> None:
+        self._real = real
+        self._verb = verb
+        self.began = False
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def execute(self, sql, *args):
+        if sql.startswith(self._verb):
+            result = self._real.execute(sql, *args)
+            self.began = True
+            raise KeyboardInterrupt(f"planted just after {self._verb}")
+        return self._real.execute(sql, *args)
+
+
+@pytest.mark.parametrize(
+    "verb, call",
+    [("BEGIN IMMEDIATE", "apply"), ("BEGIN DEFERRED", "preview")],
+    ids=["apply", "preview"])
+def test_R2M3_an_interrupt_AT_ACQUISITION_does_not_leak_the_transaction(
+        conn, verb, call) -> None:
+    """PRE-FIX the transaction was open and the handler never ran."""
+    ids = build_cadl_case(conn)
+    conn.commit()
+    assert not conn.in_transaction, "the premise: nothing is open"
+    proxy = _InterruptAtAcquisitionConn(conn, verb)
+    fn = (correct_cohort_provenance if call == "apply"
+          else preview_cohort_provenance_correction)
+    with pytest.raises(KeyboardInterrupt, match="planted just after"):
+        fn(proxy, trade_id=ids["trade_id"],
+           cited_candidate_id=ids["candidate_id"],
+           cited_recommendation_id=ids["daily_recommendation_id"],
+           reason=REASON)
+    assert proxy.began, (
+        "the planted verb never opened a transaction, so this row measures "
+        "nothing about the acquisition window")
+    assert not conn.in_transaction, (
+        f"{verb} opened a transaction and the interrupt landed before the "
+        f"`try`, so the handler never ran and the transaction leaked")
+
+
+def test_R2M4_the_APPLY_path_surfaces_a_failed_rollback_too(conn) -> None:
+    """`AL-15` again, on the path that WRITES rather than the one that
+    pretends to.
+
+    PRE-FIX the rollback error was suppressed and the caller heard only the
+    interrupt while the WRITE RESERVATION stayed held.  POST-FIX the cleanup
+    error surfaces with the write error chained, and an ERROR record says the
+    connection must be discarded -- the same shape the preview path got at
+    `22A-R15-03`.
+    """
+    import logging
+
+    ids = build_cadl_case(conn)
+    conn.commit()
+
+    import swing.trades.cohort_provenance_correction as mod
+
+    def _boom(conn_, **kw):
+        conn_.execute(
+            "UPDATE trades SET notes = 'sentinel-r2-04' WHERE id = ?",
+            (ids["trade_id"],))
+        raise KeyboardInterrupt("planted inside the write")
+
+    monkeypatch_target = "_correct_cohort_provenance_inner"
+    real_inner = getattr(mod, monkeypatch_target)
+    setattr(mod, monkeypatch_target, _boom)
+    proxy = _FailingCleanupConn(conn, "@@never@@", fail_rollback=True)
+    try:
+        with caplog_at_error() as records:
+            with pytest.raises(sqlite3.OperationalError,
+                               match="planted on rollback") as caught:
+                correct_cohort_provenance(
+                    proxy, trade_id=ids["trade_id"],
+                    cited_candidate_id=ids["candidate_id"],
+                    cited_recommendation_id=ids["daily_recommendation_id"],
+                    reason=REASON)
+        assert isinstance(caught.value.__cause__, KeyboardInterrupt), (
+            "the write error must travel with the cleanup error, or the "
+            "reason the recovery ran at all is lost")
+        assert any("discard" in r.getMessage().lower() for r in records
+                   if r.levelno >= logging.ERROR), (
+            "nothing told the operator the connection is unusable")
+    finally:
+        setattr(mod, monkeypatch_target, real_inner)
+        conn.rollback()                  # the REAL connection; the proxy refused
+
+
+@contextlib.contextmanager
+def caplog_at_error():
+    """A minimal ERROR-record collector.
+
+    `caplog` is not used because this module's other rows do not take it and
+    the collection is three lines; the point is only that the log line exists.
+    """
+    import logging
+
+    records: list[logging.LogRecord] = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    sink = _Sink(level=logging.ERROR)
+    root = logging.getLogger()
+    root.addHandler(sink)
+    try:
+        yield records
+    finally:
+        root.removeHandler(sink)

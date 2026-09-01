@@ -172,6 +172,18 @@ def _arc_test_files() -> list[Path]:
 _FUNC_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
 
 
+def _is_parametrize(decorator: ast.AST) -> bool:
+    """``@pytest.mark.parametrize(...)`` in any of its spellings.
+
+    Matched on the ATTRIBUTE NAME rather than on the full dotted path, so a
+    ``from pytest import mark`` or a module alias still counts -- the shape,
+    not the spelling (the same reasoning as the roster-vs-shape lesson the
+    exception walk records).
+    """
+    node = decorator.func if isinstance(decorator, ast.Call) else decorator
+    return isinstance(node, ast.Attribute) and node.attr == "parametrize"
+
+
 def case_ids_in_source(source: str, filename: str = "<source>") -> set[str]:
     """Covered case ids in ONE module's source, by parsing.  Never imports.
 
@@ -211,20 +223,39 @@ def case_ids_in_source(source: str, filename: str = "<source>") -> set[str]:
             if fn.name.endswith(f"_case_{suffix}"):
                 covered.add(case_id)
 
-    # ONLY A ``test*`` FUNCTION'S REFERENCE BINDS (Codex 22A-FIX-R1-04,
-    # verified by executing this algorithm against a two-line module).  With
-    # ANY module-level function counting, a dead helper that merely returns
-    # `FOO_CASE_IDS` made every id in that list read as implemented -- and the
-    # G1 discriminator could not see it, because stripping all functions
-    # removes the helper too.  A roster is bound by a TEST referencing it, not
-    # by anything at all referencing it.
+    # ONLY A ``parametrize`` DECORATOR'S REFERENCE BINDS (Codex 22A-FIX-R1-04,
+    # then 22A-FIX-R2-06 -- and the second finding is why the rule is this
+    # narrow rather than "a test references it").
+    #
+    # R1-04: with ANY module-level function counting, a dead HELPER returning
+    # `FOO_CASE_IDS` made every id in it read as implemented, and the G1
+    # discriminator was blind to it because stripping all functions removes
+    # the helper too.
+    #
+    # **R2-06: narrowing to `test*` was still one notch too loose.**  The
+    # rosters have COMPANION count/table tests -- `assert len(FOO_CASE_IDS)
+    # == ...`, the roster/table agreement rows -- and those reference the
+    # roster too.  MEASURED by the reviewer against mutated real source:
+    # deleting ONLY the parametrized function that exercises the behaviour
+    # left **42 cases** still reporting implemented, because the companion
+    # test kept the reference alive.  The "remove every function"
+    # discriminator cannot see that, since it removes the companion as well.
+    #
+    # The convention the roster exists FOR is a parametrized family, so the
+    # binding is the `@pytest.mark.parametrize` decorator that consumes it.
+    # A count test is documentation about the roster; it is not an
+    # implementation of the cases in it.
     referenced: set[str] = set()
     for fn in functions:
         if not fn.name.startswith("test"):
             continue
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                referenced.add(node.id)
+        for decorator in fn.decorator_list:
+            if not _is_parametrize(decorator):
+                continue
+            for node in ast.walk(decorator):
+                if isinstance(node, ast.Name) and isinstance(
+                        node.ctx, ast.Load):
+                    referenced.add(node.id)
 
     for node in tree.body:
         if not isinstance(node, ast.Assign):
@@ -370,14 +401,28 @@ def test_G1b_a_helper_only_reference_does_not_bind_a_roster() -> None:
     assert case_ids_in_source(helper_only) == set(), (
         "a roster referenced only by a non-test helper still binds its ids")
 
-    by_a_test = helper_only + "\n".join([
+    by_a_test_body = helper_only + "\n".join([
         "def test_uses_it():",
         "    return X_CASE_IDS",
         "",
     ])
-    assert case_ids_in_source(by_a_test) == {real}, (
-        "the control: a TEST's reference must still bind, or the walk has "
-        "stopped working rather than tightened")
+    assert case_ids_in_source(by_a_test_body) == set(), (
+        "**22A-FIX-R2-06**: a test BODY's reference must not bind either. The "
+        "rosters have companion COUNT tests, and the reviewer MEASURED that "
+        "deleting only the parametrized implementation left 42 cases green "
+        "because the companion kept the reference alive -- and the "
+        "remove-every-function discriminator cannot see it, since it removes "
+        "the companion too.")
+
+    by_parametrize = helper_only + "\n".join([
+        "@pytest.mark.parametrize('x', X_CASE_IDS)",
+        "def test_uses_it(x):",
+        "    return x",
+        "",
+    ])
+    assert case_ids_in_source(by_parametrize) == {real}, (
+        "the control: a PARAMETRIZE decorator's reference must still bind, or "
+        "the walk has stopped working rather than tightened")
 
 
 def test_G2_a_binding_inside_a_function_or_class_body_does_not_count() -> None:
@@ -403,12 +448,62 @@ def test_G2_a_binding_inside_a_function_or_class_body_does_not_count() -> None:
     assert case_ids_in_source(nested) == set(), (
         "a binding written inside a function or a class body still counts")
 
-    # THE CONTROL: the SAME id at module level, referenced by a module-level
-    # function, DOES count -- so the row above is a scope test and not a walk
-    # that stopped working.
+    # THE CONTROL: the SAME id at module level, consumed by a module-level
+    # test's `parametrize`, DOES count -- so the row above is a scope test and
+    # not a walk that stopped working.
     top = (
         f"TOP_CASE_IDS = [{real!r}]\n"
-        "def test_top():\n"
-        "    return TOP_CASE_IDS\n"
+        "@pytest.mark.parametrize('x', TOP_CASE_IDS)\n"
+        "def test_top(x):\n"
+        "    return x\n"
     )
     assert case_ids_in_source(top) == {real}
+
+
+@pytest.mark.parametrize(
+    "module, victim, cases",
+    [
+        ("tests/data/test_22a_task2_migration_0037.py",
+         "test_the_epoch_refuses_every_write_path",
+         {"35a", "35b", "35c", "35n", "35p"}),
+        ("tests/data/test_22a_task2_migration_0037.py",
+         "test_the_conflict_scoped_insert_barrier",
+         {"51a", "51b", "51c", "51d", "51e"}),
+        ("tests/data/test_22a_task11_citation_evidence.py",
+         "test_an_omitted_authorization_entry_is_rejected",
+         {"48a", "48p"}),
+        ("tests/trades/test_22a_task4_authorization_ladder.py",
+         "test_every_relocated_twin_refuses_at_rung_nine",
+         {"8-pre", "10-pre", "24-pre", "27-pre",
+          "28a-pre", "28b-pre", "28c-pre"}),
+    ],
+    ids=["35-family", "51-family", "48-family", "relocated-twins"])
+def test_G1c_deleting_ONE_parametrized_implementation_unbinds_its_cases(
+        module, victim, cases) -> None:
+    """**MEASURED BEFORE THE FIX: deleting only the parametrized function that
+    exercises the behaviour left 42 cases still reporting implemented**, because
+    each roster has a COMPANION count/table test whose body references it and
+    the earlier rule counted any `test*` body (Codex 22A-FIX-R2-06).
+
+    The "remove every function" discriminator is structurally blind to this --
+    it removes the companion as well -- so this row removes exactly ONE
+    function and leaves everything else, including the companion, in place.
+    """
+    source = (REPO_ROOT / module).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assert any(isinstance(n, _FUNC_NODES) and n.name == victim
+               for n in tree.body), (
+        f"{victim} is not a module-level function of {module}; the row names "
+        f"a target that no longer exists")
+
+    before = case_ids_in_source(source, module)
+    assert cases <= before, sorted(cases - before)
+
+    tree.body = [n for n in tree.body
+                 if not (isinstance(n, _FUNC_NODES) and n.name == victim)]
+    after = case_ids_in_source(
+        ast.unparse(ast.fix_missing_locations(tree)), module)
+    still = sorted(cases & after)
+    assert not still, (
+        f"deleting {victim} left {still} still reporting implemented; the "
+        f"companion count/table test is keeping the roster's reference alive")

@@ -7,23 +7,35 @@ Every guard written to protect the cohort keys defaulted to BLOCKING THE ENTRY,
 and each was found individually, by a different reviewer, on a different round.
 **That is not four slips; it is a default that must be inverted at the seam.**
 
-TWO INSTRUMENTS, and this module is the SECOND of them:
+THREE INSTRUMENTS, and this module is the THIRD.  **EACH COVERS ONE SURFACE,
+and saying which is which is the point** -- the first draft of this docstring
+claimed the SERVICE property stops a fifth guard "even when nobody recognises
+it as a cohort guard", full stop.  **That claim was one surface too broad
+(Codex 22A-FIX-R2-10): the service property calls `record_entry` DIRECTLY, so
+it cannot observe a route-level early return -- and the route is exactly where
+the FOURTH recurrence lived.**
 
-  1. **The PROPERTY** -- `tests/trades/test_22a_task9_entry_wiring.py`
+  1. **The SERVICE PROPERTY** -- `tests/trades/test_22a_task9_entry_wiring.py`
      (`test_EVERY_refusal_reason_still_writes_the_entry_*`): for every member of
-     `DECLINE_REASONS`, in both recognition states, the trade row is still
-     WRITTEN.  That is what actually stops a fifth instance, because it fails
-     whether or not anyone recognised the new code as a cohort guard.
-  2. **This DECLARATION WALK**, which is the standing requirement itself made
+     `DECLINE_REASONS`, in both recognition states and both request shapes, the
+     trade row is still WRITTEN.  **Its surface is `record_entry` and inward.**
+  2. **The ROUTE PROPERTY** --
+     `tests/web/test_routes/test_22a_task10_entry_route_ext2.py`
+     (`test_the_ROUTE_reaches_the_service_for_EVERY_recognised_envelope`): for
+     every envelope shape the arc recognises as naming an order, the ROUTE
+     reaches `record_entry`.  **Its surface is the entry route**, which is the
+     one instrument (1) is blind to.
+  3. **This DECLARATION WALK**, the standing requirement itself made
      mechanical: every site in `swing/` that cites the governing principle
      carries a `COHORT-GUARD REFUSES: <ENTRY|LABEL|n/a>` line, so the next one
      is a VISIBLE LINE rather than an invisible hole.
 
 **WHAT THIS WALK IS, HONESTLY: a HEURISTIC DETECTOR over the arc's own
 citation token, not a proof.**  It finds sites that CITE `0036:26-38`.  A guard
-written without citing it is invisible here -- which is exactly why instrument
-(1) exists and is the one that bites.  Declared with its blindness named rather
-than widened along the axis it misses.
+written without citing it is invisible here -- which is why (1) and (2) exist
+and are the ones that bite, each on its own surface.  A guard on a THIRD
+surface (a CLI entry point, a future importer) is covered by none of the
+three, and that is stated rather than left to be discovered.
 
 FROZEN CLOCK: nothing here reads a clock.
 """
