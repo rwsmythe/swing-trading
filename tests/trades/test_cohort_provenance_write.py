@@ -1330,6 +1330,119 @@ def test_R13M6_a_failed_preview_unwind_RAISES_and_is_not_suppressed(
     assert _row_counts(conn) == before
 
 
+# ===========================================================================
+# 22A-R14-07 -- A FAILED SAVEPOINT **CREATION** MUST NOT LEAK THE TRANSACTION
+#
+# `BEGIN DEFERRED` and `SAVEPOINT` both executed BEFORE the `try`, so a failure
+# creating the savepoint exited with the newly-opened transaction still open.
+# No dry-run write has happened at that point, so this leaks transaction
+# OWNERSHIP rather than data -- and on a reused connection the next caller
+# inherits a transaction it did not open and did not expect.
+# ===========================================================================
+def test_R14M7_a_failed_SAVEPOINT_CREATION_closes_the_owned_transaction(
+        conn) -> None:
+    """PRE-FIX: `conn.in_transaction` was True after the raise."""
+    ids = build_cadl_case(conn)
+    conn.commit()                    # the preview must OWN the transaction
+    assert not conn.in_transaction, "the premise: nothing is open"
+    proxy = _FailingCleanupConn(conn, "SAVEPOINT")
+    with pytest.raises(sqlite3.OperationalError, match="planted on SAVEPOINT"):
+        preview_cohort_provenance_correction(
+            proxy, trade_id=ids["trade_id"],
+            cited_candidate_id=ids["candidate_id"],
+            cited_recommendation_id=ids["daily_recommendation_id"],
+            reason=REASON)
+    assert proxy.attempts == ["SAVEPOINT cohort_provenance_preview_sp"], (
+        "the planted verb was never issued, so this measures nothing")
+    assert not conn.in_transaction, (
+        "the preview opened BEGIN DEFERRED, failed to create its savepoint, "
+        "and left the transaction it owns open")
+
+
+def test_R14M7_a_CALLER_HELD_transaction_is_still_left_open(conn) -> None:
+    """The control that bounds the fix: the rollback fires ONLY when this call
+    owns the transaction.  Closing someone else's would be a second defect
+    wearing this one's clothes -- the posture R11-05 already settled."""
+    ids = build_cadl_case(conn)
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    proxy = _FailingCleanupConn(conn, "SAVEPOINT")
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="planted on"):
+            preview_cohort_provenance_correction(
+                proxy, trade_id=ids["trade_id"],
+                cited_candidate_id=ids["candidate_id"],
+                cited_recommendation_id=ids["daily_recommendation_id"],
+                reason=REASON)
+        assert conn.in_transaction, "the caller's transaction was closed"
+    finally:
+        conn.rollback()
+
+
+# ===========================================================================
+# 22A-R14-08 -- THE COMPOSITION, MEASURED IN BOTH DIRECTIONS AND **DECLARED**
+#
+# The R13-06 rows exercise SUCCESSFUL authorization plus cleanup failure and
+# never REFUSAL plus cleanup failure, so what an operator sees when both go
+# wrong was unmeasured either way.  It is measured here and NOT changed:
+# raising the cleanup error replaces an in-flight typed
+# `CohortProvenanceCorrectionError` with a raw `sqlite3.Error`, and the CLI
+# (`cli.py:2495`) catches only the typed one -- so a refusal that would print a
+# legible `ClickException` prints a traceback instead.
+#
+# DECLARED DELIBERATE, with its reason: a preview whose savepoint will not
+# unwind has PENDING WRITES on a connection the caller may commit.  That is a
+# should-never-happen condition where the loud, unhandled surface is the
+# correct one, and the refusal is NOT lost -- Python chains it as
+# `__context__`, which the case below asserts rather than assumes.  Downgrading
+# it to a legible message would make the more dangerous of the two conditions
+# look like the ordinary one.
+# ===========================================================================
+@pytest.mark.parametrize("verb", ["ROLLBACK TO", "RELEASE"])
+def test_R14M8_a_REFUSAL_plus_a_cleanup_failure_surfaces_the_CLEANUP_error(
+        conn, verb) -> None:
+    """The second direction of the R13-06 composition.
+
+    `reason=""` refuses inside the `try` (an unset-state trade passes the gate
+    above it), and the planted verb then fails in the `finally`.
+    """
+    ids = build_cadl_case(conn)
+    conn.commit()
+    proxy = _FailingCleanupConn(conn, verb)
+    with pytest.raises(sqlite3.OperationalError, match="planted on") as caught:
+        preview_cohort_provenance_correction(
+            proxy, trade_id=ids["trade_id"],
+            cited_candidate_id=ids["candidate_id"],
+            cited_recommendation_id=ids["daily_recommendation_id"],
+            reason="")
+    assert proxy.attempts, "the planted verb was never issued"
+    # THE REFUSAL IS CARRIED, NOT LOST -- and it is carried as CONTEXT, which
+    # is precisely why the CLI's typed handler does not see it.
+    assert isinstance(caught.value.__context__,
+                      CohortProvenanceCorrectionError), caught.value.__context__
+    assert "--reason" in str(caught.value.__context__)
+    assert not isinstance(caught.value, CohortProvenanceCorrectionError), (
+        "DECLARED: the raw sqlite error is what reaches the CLI boundary, "
+        "which catches only CohortProvenanceCorrectionError. If this ever "
+        "becomes typed, correct the declaration above rather than deleting "
+        "the assertion")
+
+
+def test_R14M8_the_CONTROL_a_refusal_with_a_WORKING_unwind_stays_typed(
+        conn) -> None:
+    """Without this, the row above could pass against a surface that had
+    stopped raising the typed refusal at all."""
+    ids = build_cadl_case(conn)
+    conn.commit()
+    with pytest.raises(CohortProvenanceCorrectionError, match="--reason"):
+        preview_cohort_provenance_correction(
+            conn, trade_id=ids["trade_id"],
+            cited_candidate_id=ids["candidate_id"],
+            cited_recommendation_id=ids["daily_recommendation_id"],
+            reason="")
+    assert not conn.in_transaction
+
+
 def test_R2M5_a_bucket_change_on_the_cited_candidate_is_reported(conn) -> None:
     """No current UPDATE site is not immutability, and a migration or an
     operator repair is where an audit reader earns its keep. The label is

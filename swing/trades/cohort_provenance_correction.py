@@ -2174,7 +2174,23 @@ def preview_cohort_provenance_correction(
     owns_read_tx = not conn.in_transaction
     if owns_read_tx:
         conn.execute("BEGIN DEFERRED")
-    conn.execute(f"SAVEPOINT {_PREVIEW_SAVEPOINT}")
+    # THE SAVEPOINT'S CREATION IS INSIDE THE OWNERSHIP GUARD (Codex
+    # 22A-R14-07).  Both verbs used to execute BEFORE any `try`, so a failure
+    # creating the savepoint returned with the transaction this call had just
+    # opened still OPEN.  No dry-run write has happened yet, so what leaks is
+    # transaction OWNERSHIP rather than data -- and on a reused connection the
+    # next caller inherits a transaction it did not open.  A CALLER-HELD
+    # transaction is still left alone, for R11-05's reason: closing someone
+    # else's transaction would be a second defect wearing this one's clothes.
+    try:
+        conn.execute(f"SAVEPOINT {_PREVIEW_SAVEPOINT}")
+    except BaseException:
+        if owns_read_tx:
+            # The savepoint error is the informative one and is re-raised; a
+            # rollback that also fails must not replace it.
+            with contextlib.suppress(sqlite3.Error):
+                conn.rollback()
+        raise
     try:
         auth = _authorize(
             conn,
@@ -2214,6 +2230,21 @@ def preview_cohort_provenance_correction(
         # Raising from `finally` does not lose an in-flight authorization
         # error: Python chains it as `__context__`, so the operator sees both
         # the refusal and the fact that the dry run could not be unwound.
+        #
+        # AND THE COMPOSITION IS DECLARED, NOT ASSUMED (Codex 22A-R14-08).
+        # Raising here REPLACES an in-flight typed
+        # `CohortProvenanceCorrectionError` with a raw `sqlite3.Error`, and the
+        # CLI (`cli.py:2495`) catches only the typed one -- so a refusal that
+        # would print a legible `ClickException` prints a TRACEBACK instead.
+        # That is DELIBERATE: a preview whose savepoint will not unwind has
+        # PENDING WRITES on a connection the caller may commit, which is a
+        # should-never-happen condition where the loud surface is the correct
+        # one; downgrading it would make the more dangerous of the two look
+        # like the ordinary one.  The R13-06 cases only ever exercised
+        # SUCCESSFUL authorization plus cleanup failure, so the other
+        # direction went unmeasured -- it is measured now, in both directions,
+        # at `test_R14M8_*` (including the control that the typed refusal is
+        # still what surfaces when the unwind WORKS).
         cleanup_error: sqlite3.Error | None = None
         try:
             conn.execute(f"ROLLBACK TO {_PREVIEW_SAVEPOINT}")
