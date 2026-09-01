@@ -30,6 +30,7 @@ from tests._latch_probe_world_22a import (
     BASE_CLOSES,
     BROKER_ORDER_ID,
     FILL_SESSION,
+    PIVOT,
     STOP,
     TICKER,
     accept_and_link,
@@ -49,7 +50,10 @@ DRIFT_RUN = 900
 _SHAPE_RUNG_MESSAGE = "schwab_order_id that is not a non-empty string"
 
 
-def _build_route_world(cfg, *, closes=None, with_link: bool) -> tuple[int, int]:
+def _build_route_world(
+    cfg, *, closes=None, with_link: bool,
+    ticker_in_todays_run: bool = False,
+) -> tuple[int, int]:
     """The probe world, inside the REAL app config.
 
     Returns ``(candidate_id, pipeline_run_id_of_the_drift_run)``.
@@ -58,6 +62,13 @@ def _build_route_world(cfg, *, closes=None, with_link: bool) -> tuple[int, int]:
     for the ticker, so ``derive_trade_origin`` answers ``manual_off_pipeline``
     and tier (e) is armed.  Without that the route would pass the request
     through for a reason unrelated to EXT-2.
+
+    ``ticker_in_todays_run=True`` INVERTS that one dimension: the later run
+    carries the ticker as ``aplus``, so the ORDINARY chain would write
+    ``pipeline_aplus`` plus TODAY's candidate.  That is what makes an
+    honest-unset assertion discriminating -- with the ticker rolled out, a
+    fall-through and a refusal land on the same row and the test proves
+    nothing (RD's discriminating case, 2026-09-01).
     """
     from tests.trades._cohort_provenance_fixtures import (
         rebase_status_history_recorded_at,
@@ -94,6 +105,12 @@ def _build_route_world(cfg, *, closes=None, with_link: bool) -> tuple[int, int]:
             "VALUES (77, ?, ?, 'vcp', 'v1', 0.8, '{}', 0.8, '{}', '{}', "
             "'2026-07-01', '2026-07-24', '2026-07-24T17:44:45')",
             (pipeline_run_id, TICKER))
+        if ticker_in_todays_run:
+            conn.execute(
+                "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+                "close, pivot, initial_stop, rs_method) "
+                "VALUES (?, ?, 'aplus', 17.10, ?, ?, 'universe')",
+                (DRIFT_RUN, TICKER, PIVOT, STOP))
         rebase_status_history_recorded_at(conn)
         if with_link:
             accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
@@ -101,7 +118,9 @@ def _build_route_world(cfg, *, closes=None, with_link: bool) -> tuple[int, int]:
 
         from swing.trades.origin import EntryPath, derive_trade_origin
         derived = derive_trade_origin(conn, TICKER, EntryPath.MANUAL_WEB_FORM)
-        assert derived == "manual_off_pipeline", (
+        expected = (
+            "pipeline_aplus" if ticker_in_todays_run else "manual_off_pipeline")
+        assert derived == expected, (
             f"the fixture must arm tier (e) (got {derived}), or the route "
             f"passes the request through for a reason unrelated to EXT-2")
     finally:
@@ -343,21 +362,36 @@ def test_a_request_without_an_order_id_is_still_rejected_by_the_route(
 
 
 # ===========================================================================
-# EXT-2(b) -- the `schwab_order_id` SHAPE RUNG
+# EXT-2(b) -- the `schwab_order_id` SHAPE RUNG, RE-DISPOSITIONED
 #
 # The ladder validated `entry_date` / `entry_price` / `shares` and NOT
 # `schwab_order_id`.  Harmless until this arc, which promotes the key to
 # provenance-bearing (plan S2.4.1 / F4).
+#
+# THE DETECTION IS RIGHT; THE DISPOSITION WAS THE ERROR (RD, ruled
+# 2026-09-01, after reviewer B's P2).  The rung as shipped returned HTTP 400
+# BEFORE `record_entry` -- so a malformed cohort key blocked a MONEY-BEARING
+# ENTRY, which is RD's governing principle for the FOURTH time in this arc.
+# A malformed `schwab_order_id` REFUSES THE LATCH BINDING, never the ENTRY:
+# the trade is recorded, the cohort keys land honest-unset, and a warning
+# names the malformed envelope.  Same shape as R3-13 and 37c.
 # ===========================================================================
 @pytest.mark.parametrize(
     "bad", ["", "   ", 1002937461, 1.5, True, ["1002937461"], {"id": "1"}],
     ids=["empty", "whitespace", "int", "float", "bool", "list", "dict"])
-def test_a_malformed_order_id_in_the_envelope_is_rejected(
+def test_a_malformed_order_id_refuses_the_latch_binding_not_the_entry(
         seeded_db, monkeypatch, bad) -> None:
     """Every non-string and every blank string, not just the empty one.
 
     A value-set sweep that checked only ``""`` would miss the numeric case,
     which is the LIKELY tamper: Schwab order ids read as numbers.
+
+    PRE-FIX: 400, `record_entry` never called, zero trades.  POST-FIX: the
+    route decides nothing about the ENTRY, the service is reached, and every
+    one of the seven shapes lands honest-unset -- because
+    `envelope_recognises_an_order` answers TRUE for all seven (the value is
+    non-canonical, so the two domains would read it differently) and the
+    resolver refuses `envelope_not_canonical`.
     """
     cfg, cfg_path = seeded_db
     _, pipeline_run_id = _build_route_world(cfg, with_link=True)
@@ -371,16 +405,54 @@ def test_a_malformed_order_id_in_the_envelope_is_rejected(
                             envelope=_envelope(order_id=bad)),
             headers={"HX-Request": "true"})
 
-    assert response.status_code == 400
-    # THE MESSAGE, NOT THE KEY NAME.  Tier (e) refuses this request anyway
-    # (a malformed id is not a usable one), and the re-rendered form echoes
-    # the envelope, so `"schwab_order_id" in response.text` would pass for a
-    # reason unrelated to the rung -- a test blocked for an unrelated reason
-    # proves nothing.
-    assert _SHAPE_RUNG_MESSAGE in response.text, (
-        "the request was refused, but not by the shape rung")
-    assert calls == [], "a malformed order id reached the service"
-    assert _written(cfg) == []
+    assert _SHAPE_RUNG_MESSAGE not in response.text, (
+        "the shape rung still refuses the ENTRY; RD ruled the refusal moves "
+        "to the LATCH BINDING")
+    assert calls == [TICKER], "a malformed order id never reached the service"
+    assert _written(cfg) == [(TICKER, "manual_off_pipeline", None, None)], (
+        "the entry was blocked, or it was stamped from the ordinary chain")
+
+
+def test_a_malformed_order_id_records_the_entry_honest_unset_case_rd(
+        seeded_db, monkeypatch, caplog) -> None:
+    """RD's DISCRIMINATING CASE, verbatim (ruled 2026-09-01).
+
+    A submitted envelope with a NUMERIC ``schwab_order_id``, ticker IN
+    today's decision table -> the trade IS written, the keys land
+    honest-unset, and a warning names the malformation.
+
+    **THE TICKER MUST BE IN TODAY'S DECISION TABLE OR THE CASE PROVES
+    NOTHING.**  With the fire rolled out, the ordinary chain also answers
+    ``manual_off_pipeline`` and a fall-through is indistinguishable from a
+    refusal.  Here the ordinary chain would write ``pipeline_aplus`` plus
+    TODAY's candidate, so THREE implementations fail this row: the shipped
+    400 (no trade at all), a fall-through (``pipeline_aplus`` + a candidate),
+    and a silent refusal that names nothing in the log.
+    """
+    import logging
+
+    cfg, cfg_path = seeded_db
+    _, pipeline_run_id = _build_route_world(
+        cfg, with_link=True, ticker_in_todays_run=True)
+    calls = _spy_record_entry(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with caplog.at_level(logging.WARNING):
+        with TestClient(app) as client:
+            client.post(
+                "/trades/entry",
+                data=_post_data(pipeline_run_id=pipeline_run_id,
+                                envelope=_envelope(order_id=1002937461)),
+                headers={"HX-Request": "true"})
+
+    assert calls == [TICKER], "the route refused a money-bearing entry"
+    assert _written(cfg) == [(TICKER, "manual_off_pipeline", None, None)], (
+        "the row is not honest-unset; a fall-through would have stamped "
+        "pipeline_aplus and TODAY's candidate")
+    warnings = [r.getMessage() for r in caplog.records
+                if r.levelno >= logging.WARNING]
+    assert any("schwab_order_id" in m for m in warnings), (
+        "no warning named the malformed envelope key")
 
 
 def test_an_absent_or_null_order_id_is_accepted_by_the_shape_rung(

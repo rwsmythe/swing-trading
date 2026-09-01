@@ -1096,13 +1096,41 @@ def entry_post(
         # while nothing read it; this arc makes it decide PROVENANCE, so a
         # tampered value silently changes which mandate a fill is bound to.
         #
-        # PRESENT-BUT-MALFORMED is the refusal; ABSENT and JSON-NULL are
-        # ACCEPTED, and that is deliberate rather than lax:
+        # PRESENT-BUT-MALFORMED is the finding; ABSENT and JSON-NULL are
+        # UNREMARKABLE, and that is deliberate rather than lax:
         # ``entry_auto_fill`` writes the key from
         # ``getattr(chosen, "order_id", None)``, so a JSON null is a shape
         # THE SERVER ITSELF RENDERS, and an absent key is every pre-22-A
-        # envelope. A rung refusing either would refuse the form's own
+        # envelope. A rung remarking on either would flag the form's own
         # output.
+        #
+        # ============ THIS GUARD REFUSES THE **LATCH BINDING**, NEVER THE
+        # ============ **ENTRY** (RD, ruled 2026-09-01; the standing
+        # ============ ENTRY-or-LABEL site declaration).
+        #
+        # As introduced by `bc85c5e1` this rung `return`ed a 400 BEFORE
+        # `record_entry` — so a malformed cohort key BLOCKED A MONEY-BEARING
+        # ENTRY. That is RD's governing principle (`0036:26-38`, cohort
+        # bookkeeping never blocks a money-bearing entry) for the FOURTH time
+        # in this one arc, and the class he named from it is that every guard
+        # written to protect the cohort keys has defaulted to blocking the
+        # entry. The detection is right; the DISPOSITION was the error.
+        #
+        # WHAT HAPPENS INSTEAD, and it needs no new machinery. Every
+        # malformed shape here — blank, whitespace, int, float, bool, list,
+        # dict — is NON-CANONICAL, so `envelope_recognises_an_order` answers
+        # TRUE (Python reads absence where `json_extract` reads a value), the
+        # request RESERVES, and `resolve_latched_provenance` refuses
+        # `envelope_not_canonical` as recognised-but-underivable. The row
+        # therefore lands honest-unset — `manual_off_pipeline` + NULL
+        # candidate + NULL label — rather than taking the ordinary chain and
+        # being stamped with TODAY's candidate. MEASURED for all seven
+        # shapes. JSON-null and absent are canonical and unrecognised, so
+        # they still take the ordinary path exactly as before.
+        #
+        # The warning is what remains of the rung: the malformation is named
+        # at the surface that saw it, so the operator's entry succeeds and
+        # the tamper is still on the record.
         if isinstance(anchor_envelope, dict) and claimed_auto_fill:
             from swing.trades.latched_origin import (
                 SCHWAB_ORDER_ID_ENVELOPE_KEY,
@@ -1115,12 +1143,14 @@ def entry_post(
                     and bool(_v_order_id.strip())
                 )
                 if not _order_id_ok:
-                    return _reject_anchor(
-                        "Trade entry rejected: fill_origin_at_form_render="
-                        f"{fill_origin_at_form_render!r} claims auto-fill "
-                        "provenance but schwab_source_value_json carries a "
-                        "schwab_order_id that is not a non-empty string. The "
-                        "form has been regenerated; please re-submit."
+                    log.warning(
+                        "22-A: the submitted entry envelope for %s carries a "
+                        "schwab_order_id that is not a non-empty string "
+                        "(%s); the LATCH BINDING is refused and the entry "
+                        "records with honest-unset cohort keys. The ENTRY is "
+                        "NOT refused -- cohort bookkeeping never blocks a "
+                        "money-bearing entry. WARRANTS INVESTIGATION",
+                        ticker.upper(), type(_v_order_id).__name__,
                     )
         # Codex R4 Major #1 fix — require ``claimed_auto_fill`` to be true
         # before any non-operator_typed fill_origin stamping. Without this
