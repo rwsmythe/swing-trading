@@ -520,6 +520,7 @@ class AcceptedLatchOrder:
     NULL rather than aborting the LEDGER write on a junk fire.  Cohort
     bookkeeping must never block a money-bearing operation (0036:26-38);
     admission later refuses ``frozen_value_unavailable``.
+    COHORT-GUARD REFUSES: LABEL.
 
     NO CAP COLUMN.  The buy-zone cap is a pure function of the frozen pivot
     (``zone_cap_for_pivot``), so storing it would duplicate arithmetic into SQL
@@ -1279,6 +1280,8 @@ def competitor_liveness_rung(
             # not be read must not be dropped as though it had none.  Letting
             # the exception escape would ALSO block the entry path over cohort
             # bookkeeping (`0036:26-38`).
+            # COHORT-GUARD REFUSES: LABEL -- the rung returns a reason; the
+            # entry still records honest-unset.
             log.warning(
                 "22-A: the intent ledger for competitor link %s could not be "
                 "read (%s: %s); its authority is UNPROVABLE",
@@ -1451,6 +1454,7 @@ def authorize_accepted_order(
     # (Codex 22A-R3-14). The competitor loop and the probe both catch a failed
     # `list_intents_for_latch`; this one did not, so an unreadable ledger
     # ESCAPED and blocked a money-bearing entry over cohort bookkeeping
+    # COHORT-GUARD REFUSES: LABEL.
     # (`0036:26-38`) -- the asymmetry every other rung here honours. A failure
     # is IGNORANCE, so it refuses (fail-closed) and can never admit.
     try:
@@ -2127,6 +2131,7 @@ def mandate_alive_at(
             horizon_session=fill_session, freeze_tier=order.freeze_tier)
     except Exception as exc:  # noqa: BLE001 -- see below; this is DELIBERATE
         # THE ENTRY PATH MUST NEVER BE BLOCKED BY COHORT BOOKKEEPING
+        # COHORT-GUARD REFUSES: LABEL.
         # (`0036:26-38`), and the derivation folds EVERY ticker, so one
         # unrelated corrupt fire can abort a probe about a perfectly good order.
         # MEASURED, not hypothesised: a `bucket='aplus'` candidate whose run is
@@ -2532,6 +2537,8 @@ def resolve_latched_provenance(
     #
     # The code's own message for those states is that the COHORT PROBE
     # MALFUNCTIONED. Turning a probe malfunction into a blocked broker fill is
+    # COHORT-GUARD REFUSES: LABEL -- the containment sits at the RESOLVER's
+    # boundary, so a fifth invariant added later is contained by construction.
     # the `0036:26-38` inversion in its purest form -- and the arc has now met
     # it four times, which is why the containment is placed at the RESOLVER's
     # boundary rather than at each raise site: a fifth invariant added later is
@@ -2607,6 +2614,8 @@ def resolve_latched_provenance(
     submitted = getattr(req, "hypothesis_label", None)
     if submitted is not None and submitted != keys.hypothesis_label:
         # THE DERIVED LABEL WINS, AND THE SUBSTITUTION IS LOUD (S2.6.3).
+        # COHORT-GUARD REFUSES: LABEL -- the submitted label is REPLACED, not
+        # the entry refused.
         # Refusing the entry instead would invert the priority `0036:26-38`
         # establishes: cohort bookkeeping must not block a money-bearing
         # operation.

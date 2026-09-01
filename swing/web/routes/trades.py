@@ -1104,6 +1104,7 @@ def entry_post(
         # envelope. A rung remarking on either would flag the form's own
         # output.
         #
+        # COHORT-GUARD REFUSES: LABEL.
         # ============ THIS GUARD REFUSES THE **LATCH BINDING**, NEVER THE
         # ============ **ENTRY** (RD, ruled 2026-09-01; the standing
         # ============ ENTRY-or-LABEL site declaration).

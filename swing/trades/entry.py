@@ -583,6 +583,12 @@ def _record_entry_inner(
     # condition was `not latched.admitted`, and `recognised_but_underivable`
     # IS a not-admitted state -- so an entry whose mandate the ladder
     # RECOGNISED and REFUSED was blocked, and no row was written.  That is the
+    # COHORT-GUARD REFUSES: ENTRY -- and it is the ONE declared exception,
+    # ruled by RD: this is a PRE-EXISTING production rejection RELOCATED
+    # from the route (22A-R9-03), not a cohort-provenance guard, and it
+    # fires on the ORDINARY path only.  Pinned at
+    # `test_THE_DECLARED_EXCEPTION_the_pe_anchor_guard_still_bites_on_the_ordinary_path`.
+    #
     # `0036:26-38` inversion: **cohort bookkeeping never blocks a
     # money-bearing entry.**  A refusal here is about the LABEL, never about
     # the ENTRY, so `recognised_but_underivable` is not-admitted AND must pass

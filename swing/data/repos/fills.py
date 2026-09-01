@@ -150,6 +150,9 @@ def _record_envelope_identity_or_log(
 ) -> None:
     """Persist the authority's reading, and NEVER let it cost the fill.
 
+    COHORT-GUARD REFUSES: n/a -- this is the PRINCIPLE stated, not a guard
+    implementing it; the reader below cannot refuse anything.
+
     THE GOVERNING ASYMMETRY, AND IT IS NOT NEGOTIABLE (`0036:26-38`, and this
     arc's own headline rule): **cohort bookkeeping never blocks a money-bearing
     execution.**  Codex 22A-R11-02 measured the inversion end to end -- with

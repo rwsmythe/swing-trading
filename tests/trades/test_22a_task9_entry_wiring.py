@@ -2700,3 +2700,167 @@ def test_the_reading_population_is_established_before_any_scan(
         f"a scan ran before the population was established: {seq}")
     assert "ensure_entry_fill_identities" not in seq[1:], (
         f"the population pass ran more than once inside one ladder: {seq}")
+
+
+# ===========================================================================
+# THE ENTRY-OR-LABEL SEAM, ENFORCED RATHER THAN DECLARED (RD, ruled twice;
+# violated FOUR times in this arc -- `NotSessionError`, 37c, `R11-02`'s
+# uncontained `record_identity`, and the entry route's `schwab_order_id` rung)
+#
+# **THAT IS NOT FOUR SLIPS; IT IS A DEFAULT THAT MUST BE INVERTED AT THE SEAM.**
+# Every guard written to protect the cohort keys defaulted to blocking the
+# ENTRY, and each was found individually, by a different reviewer, on a
+# different round.  A standing requirement that each guard STATE which of ENTRY
+# or LABEL it refuses is a prose rule, and a prose rule is exactly what the
+# four instances each satisfied in spirit and broke in code.
+#
+# So the seam carries a PROPERTY instead: **for EVERY member of
+# `DECLINE_REASONS`, in BOTH recognition states, the trade row is still
+# WRITTEN.**  A fifth guard added anywhere in the resolution -- whatever it is
+# called, whatever it refuses over -- fails here the moment it prevents the
+# row, without anyone having to notice it was a cohort guard.
+# ===========================================================================
+def _every_refusal_still_writes(tmp_path, monkeypatch, *, recognised: bool,
+                               pe_anchored: bool):
+    """``pe_anchored`` ARMS THE RELOCATED PE-ANCHOR GUARD, and without it this
+    property could not have caught the instance it is written for.
+
+    37c's guard fires only when a `pattern_evaluation_id` anchor is present
+    AND the server-derived origin is `manual_off_pipeline`; a bare request
+    never meets it, so a seam property run only on bare requests would have
+    gone green against the very code RD ruled against.  Both request shapes
+    run -- the BOTH-MODES requirement applied to the arming condition rather
+    than to a config flag.
+    """
+    from swing.trades import latched_origin as lo
+
+    name = f"seam{int(recognised)}{int(pe_anchored)}"
+    if pe_anchored:
+        conn, cfg, candidate_id = _pe_anchored_world(
+            tmp_path, name, closes=BASE_CLOSES)
+    else:
+        conn, cfg, candidate_id = build_world(tmp_path, name)
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    if pe_anchored:
+        from swing.trades.origin import derive_trade_origin
+        assert derive_trade_origin(
+            conn, TICKER, EntryPath.MANUAL_WEB_FORM) == "manual_off_pipeline", (
+            "the PE-anchor guard's third condition is unmet, so this arming "
+            "proves nothing")
+
+    written_rows: dict[str, tuple] = {}
+    for reason in sorted(lo.DECLINE_REASONS):
+        def _refuse(_conn, _cfg, _req, reason=reason):
+            return lo.LatchedProvenance(
+                admitted=False, recognised_but_underivable=recognised,
+                decline_reason=reason)
+
+        monkeypatch.setattr(lo, "resolve_latched_provenance", _refuse)
+        monkeypatch.setattr(
+            "swing.trades.entry.resolve_latched_provenance", _refuse,
+            raising=False)
+        result = enter(conn, cfg, req(
+            hypothesis_label="a submitted label",
+            **({"pattern_evaluation_id": 7} if pe_anchored else {})))
+        assert result.trade_id is not None, reason
+        written_rows[reason] = written(conn, result.trade_id)
+        # ONE OPEN POSITION PER TICKER is a PRE-EXISTING production gate
+        # (`ux_trades_one_open_per_ticker`, migration 0014) and has nothing to
+        # do with cohort bookkeeping, so the row is removed between reasons
+        # rather than the world rebuilt thirty-six times.  Raw, because the
+        # row's existence is what was just measured and its disposal is not
+        # part of the property.
+        conn.execute("DELETE FROM fills WHERE trade_id = ?",
+                     (result.trade_id,))
+        conn.execute("DELETE FROM trades WHERE id = ?", (result.trade_id,))
+        conn.commit()
+    conn.close()
+    return written_rows
+
+
+@pytest.mark.parametrize("pe_anchored", [False, True],
+                         ids=["bare", "pe-anchored"])
+def test_EVERY_refusal_reason_still_writes_the_entry_recognised(
+        tmp_path, monkeypatch, pe_anchored) -> None:
+    """RECOGNISED-AND-REFUSED: the row lands HONEST-UNSET for every reason.
+
+    Honest-unset is `('manual_off_pipeline', None, None)` -- all three keys
+    move together, because a row carrying origin and candidate but a NULL
+    label is incoherent AND permanently uncorrectable (Demand C's
+    `_gate_on_unset_state` refuses a trade carrying any of the three).
+    """
+    rows = _every_refusal_still_writes(
+        tmp_path, monkeypatch, recognised=True, pe_anchored=pe_anchored)
+    assert rows, "no reason was exercised, so this row measures nothing"
+    for reason, row in rows.items():
+        assert row == ("manual_off_pipeline", None, None), (
+            f"refusal {reason!r} did not land honest-unset: {row}")
+
+
+def test_EVERY_refusal_reason_still_writes_the_entry_fall_through(
+        tmp_path, monkeypatch) -> None:
+    """NOT-RECOGNISED: the ordinary chain runs and the row is still written.
+
+    The two recognition states are exercised separately because they take
+    DIFFERENT branches -- suppression versus fall-through -- and a guard added
+    to either one would be invisible to a test that only ran the other.
+
+    **THE PE-ANCHORED SHAPE IS DELIBERATELY NOT RUN HERE, AND ITS ABSENCE IS A
+    RULING RATHER THAN A GAP** -- see the declared exception below.  A
+    parametrization that ran it would assert the opposite of what RD ruled.
+    """
+    rows = _every_refusal_still_writes(
+        tmp_path, monkeypatch, recognised=False, pe_anchored=False)
+    assert rows, "no reason was exercised, so this row measures nothing"
+    for reason, row in rows.items():
+        assert row[0] is not None, (
+            f"refusal {reason!r} blocked the entry; cohort bookkeeping never "
+            f"blocks a money-bearing entry")
+
+
+def test_THE_DECLARED_EXCEPTION_the_pe_anchor_guard_still_bites_on_the_ordinary_path(
+        tmp_path, monkeypatch) -> None:
+    """THE ONE COMBINATION THE SEAM PROPERTY DOES NOT ASSERT, with its reason.
+
+    On the ORDINARY (not-recognised) path a `pattern_evaluation_id` anchor
+    whose server-derived origin is `manual_off_pipeline` STILL refuses, and
+    **RD ruled that deliberately**: the guard is a PRE-EXISTING production
+    rejection RELOCATED from the route (`22A-R9-03`), not a cohort-provenance
+    guard, and deleting it would remove a live production rejection rather
+    than invert a default.  Case 37c is the same property from the other side.
+
+    It is pinned in the DIRECTION THAT FAILS IF THE EXCEPTION EVER STOPS
+    HOLDING, so the seam property's scope cannot silently widen or narrow: if
+    this ever stops refusing, the exception is no longer real and the
+    parametrization above should grow the `pe-anchored` case rather than this
+    row being deleted.
+    """
+    from swing.trades import latched_origin as lo
+
+    conn, cfg, candidate_id = _pe_anchored_world(
+        tmp_path, "seam-declared", closes=BASE_CLOSES)
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+
+    def _fall_through(_conn, _cfg, _req):
+        return lo.LatchedProvenance(
+            admitted=False, recognised_but_underivable=False,
+            decline_reason="no_accepted_latch_order")
+
+    monkeypatch.setattr(
+        "swing.trades.entry.resolve_latched_provenance", _fall_through,
+        raising=False)
+    monkeypatch.setattr(lo, "resolve_latched_provenance", _fall_through)
+    with pytest.raises(PatternEvaluationAnchorError):
+        enter(conn, cfg, req(pattern_evaluation_id=7))
+    conn.close()
+
+
+def test_the_seam_property_covers_the_WHOLE_reason_roster() -> None:
+    """The closure half: the property above iterates the LIVE roster, so a
+    thirty-seventh reason is covered the day it is added rather than the day
+    somebody remembers to add a case for it."""
+    from swing.trades.latched_origin import DECLINE_REASONS
+
+    assert len(DECLINE_REASONS) >= 33, len(DECLINE_REASONS)

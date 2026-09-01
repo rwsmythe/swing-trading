@@ -3263,6 +3263,8 @@ class LatchOrderMandateLink:
     acceptance record.  Cohort bookkeeping must never block a money-bearing
     operation (0036:26-38); admission later refuses
     ``frozen_value_unavailable``.
+    COHORT-GUARD REFUSES: LABEL -- the mint lands NULL frozen values and
+    the LEDGER WRITE succeeds; the admission is what refuses later.
 
     THERE IS NO CAP FIELD.  The buy-zone cap is a pure function of the frozen
     pivot, so storing it would duplicate arithmetic into SQL and carry a false
