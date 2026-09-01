@@ -614,7 +614,21 @@ CREATE TABLE fill_envelope_identity (
     -- promising future work is unenforceable (gotcha #31); a failing test is
     -- not.
     --
-    -- CANONICALIZER-VERSION-ANCHOR: 2026-08-26.1
+    -- THE BUMP TO 2026-08-31.1 OWED NOTHING, AND THE REASON IS A FACT ABOUT
+    -- THIS FILE (Codex 22A-R14-01).  `22A-R13-01` changed what
+    -- `canonical_envelope_identity` ANSWERS -- a non-`str` document now reads
+    -- `refused` where it read `canonical` -- which is exactly the trigger the
+    -- constant's own contract names, so the constant moved with it.  The work
+    -- a bump normally owes is RE-ATTESTATION of readings taken under the older
+    -- grammar, and this migration CREATES `fill_envelope_identity` and inserts
+    -- NOTHING into it: there is no such reading anywhere, on any database, so
+    -- there is nothing to re-attest.  That is asserted mechanically rather
+    -- than claimed -- see
+    -- `test_the_migration_SHIPS_THE_TABLE_EMPTY_which_is_what_made_the_bump_free`.
+    -- ONCE 0037 IS APPLIED AND THE FIRST READING IS WRITTEN, THE CARVE-OUT IS
+    -- SPENT and the next bump owes the full re-attestation above.
+    --
+    -- CANONICALIZER-VERSION-ANCHOR: 2026-08-31.1
     canonicalizer_version TEXT NOT NULL,
     recorded_ts           TEXT NOT NULL,
 

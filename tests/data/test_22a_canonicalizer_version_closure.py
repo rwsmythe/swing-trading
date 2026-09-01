@@ -20,13 +20,26 @@ Full reasoning, both halves measured: plan limitation **L19 (AL-11)**.
 
 SO THIS MODULE DOES TWO THINGS:
 
-1. **THE ARMING TRIPWIRE.**  A reading can only be STALE if
-   `ENVELOPE_CANONICALIZER_VERSION` moved between two writes.  The migration
-   mirrors the constant in a `CANONICALIZER-VERSION-ANCHOR` marker and this
-   module COMPARES THE TWO REPRESENTATIONS, so a bump fails the suite -- with
-   the required work named -- before a stale row can exist.  A comment
-   promising future work is unenforceable (gotcha #31); a failing test is not,
-   and the comparator is the only mirror that defends a set (gotcha #11).
+1. **THE ARMING TRIPWIRE -- AND IT IS A LABEL COMPARATOR, NOT A STALENESS
+   DETECTOR (declared 22A-R14-01; operator-ruled 2026-08-31).**  It compares
+   `ENVELOPE_CANONICALIZER_VERSION` to the migration's
+   `CANONICALIZER-VERSION-ANCHOR` marker, so **it detects a LABEL DISAGREEMENT
+   between two hand-maintained copies -- it does NOT detect a BEHAVIOUR
+   CHANGE.  A canonicaliser edit that changes what the function ANSWERS,
+   without a version bump, is INVISIBLE to it.**  That is not a hypothetical:
+   **this arc is its own counterexample.**  `22A-R13-01` made
+   `canonical_envelope_identity` answer `refused` where it answered
+   `canonical` for every non-`str` document, the constant did not move, and
+   this tripwire -- shipped in the very next commit -- passed.  For six
+   commits the migration carried a claim its own arc had already falsified.
+   Declared here rather than widened, because *"do not claim exact when you
+   are not"* is the principle, and a comparator over the canonicaliser's
+   ANSWERS is a different instrument: it is routed to 22-A2 (plan S12.2b)
+   with R14-01 as its founding evidence.  What the tripwire DOES buy is real
+   and is measured below: a bump fails the suite, with the required work
+   named, before a stale row can exist.  A comment promising future work is
+   unenforceable (gotcha #31); a failing test is not, and the comparator is
+   the only mirror that defends a set (gotcha #11).
 2. **THE CLOSURE WALK.**  Every `FROM`/`JOIN` reference to the table in 0037
    carries an inline `-- FEI-CONSUMER <key> :: <claim>` marker.  Markers and
    references must INTERLEAVE one-for-one; each marker's CLAIM is measured
@@ -86,6 +99,19 @@ def _blanked(text: str) -> list[str]:
     """
     return ["" if ln.lstrip().startswith("--") else ln
             for ln in text.splitlines()]
+
+
+SEEDING_INSERT = re.compile(
+    r"INSERT\s+(?:OR\s+\w+\s+)?INTO\s+fill_envelope_identity\b", re.IGNORECASE)
+
+
+def _seeding_inserts(blanked_body: str) -> list[str]:
+    """Every INSERT into the table, over COMMENT-BLANKED, JOINED text.
+
+    Joined rather than per-line for 22A-R14-03's reason: a statement split
+    across lines is one statement, and `\\s+` crosses a newline.
+    """
+    return SEEDING_INSERT.findall(blanked_body)
 
 
 def _markers(text: str) -> list[tuple[int, str, str]]:
@@ -163,7 +189,7 @@ def _roster() -> dict[str, str]:
 # 1. THE ARMING TRIPWIRE
 # ---------------------------------------------------------------------------
 def test_the_migration_anchor_MIRRORS_the_python_constant() -> None:
-    """THE ONLY ACTION THAT CAN ARM L19, AND IT NOW FAILS LOUDLY.
+    """THE DECLARED-LABEL COMPARATOR -- it fails loudly on a LABEL move.
 
     Every consumer in 0037 was written against ONE canonicaliser grammar.  A
     stored reading can only become STALE if this constant moves between two
@@ -175,6 +201,12 @@ def test_the_migration_anchor_MIRRORS_the_python_constant() -> None:
     that re-creates the six consumers against the new grammar.  A version
     filter in the triggers is NOT the remedy -- L19 measures why, in both of
     its halves.
+
+    **WHAT IT DOES NOT DO, stated at the assertion rather than a section
+    away:** it compares two hand-maintained copies of a LABEL.  A
+    canonicaliser edit that changes the ANSWER without moving the label passes
+    it, and `test_DECLARED_a_behaviour_change_WITHOUT_a_bump_is_invisible`
+    measures exactly that on this very function.
     """
     found = ANCHOR.search(_sql())
     assert found, (
@@ -187,7 +219,12 @@ def test_the_migration_anchor_MIRRORS_the_python_constant() -> None:
         f"under the older grammar is now UNVERIFIABLE BY SQL, and the six "
         f"trigger consumers accept it (plan L19). Do NOT simply update this "
         f"anchor: a bump owes either 22-A2's append-only re-attestation "
-        f"design or a migration that re-attests the population.")
+        f"design or a migration that re-attests the population. THE ONE "
+        f"EXCEPTION, and it is a FACT rather than a judgment: while 0037 is "
+        f"UNAPPLIED there is no reading to re-attest, because the migration "
+        f"creates the table and inserts nothing into it -- which "
+        f"test_the_migration_SHIPS_THE_TABLE_EMPTY asserts. Once the first "
+        f"reading is written that carve-out is SPENT.")
 
 
 def test_the_anchor_check_can_FAIL(monkeypatch) -> None:
@@ -201,6 +238,105 @@ def test_the_anchor_check_can_FAIL(monkeypatch) -> None:
         "ENVELOPE_CANONICALIZER_VERSION", "9999-01-01.0")
     with pytest.raises(AssertionError, match="UNVERIFIABLE BY SQL"):
         test_the_migration_anchor_MIRRORS_the_python_constant()
+
+
+# ---------------------------------------------------------------------------
+# THE TRIPWIRE'S **DECLARED** SCOPE -- 22A-R14-01, operator-ruled 2026-08-31.
+#
+# The finding: the tripwire above passed through the one leg in which the
+# canonicaliser's ANSWER actually moved.  `22A-R13-01` made
+# `canonical_envelope_identity` return `refused` for every non-`str` document
+# where it had returned `canonical`, the version constant did not move, and
+# this tripwire -- written in the very next commit -- was green.  It compares a
+# Python constant to a SQL COMMENT: **two hand-maintained copies of a LABEL,
+# and neither of them is the canonicaliser's BEHAVIOUR.**
+#
+# DECLARED, NOT WIDENED, on the ruling that produced the two walk declarations
+# one round earlier: **the principle was never "make every instrument exact";
+# it is "do not claim exact when you are not."**  A tripwire declared as a
+# label comparator is honest.  One presented as a staleness detector is the
+# false claim this arc exists to remove -- and the counterexample is already in
+# the ledger, in this arc's own history.  The class-level fix -- binding the
+# version to a DIGEST of the canonicaliser and its dependencies, with an
+# append-only `(version, digest)` history, exactly as
+# `DERIVATION_RULE_HISTORY` already does for `_derive` -- is routed to 22-A2
+# (plan S12.2b) with R14-01 as its founding evidence.
+#
+# PINNED IN THE DIRECTION THAT FAILS IF IT EVER NARROWS: the case below asserts
+# the blindness is CURRENTLY REAL.  If a later change makes a behaviour move
+# visible to the tripwire, THIS FAILS -- and the right response is to correct
+# the declaration, never to silence the test.  The L18 convention applied to an
+# instrument instead of to a trigger.
+# ---------------------------------------------------------------------------
+def test_DECLARED_a_behaviour_change_WITHOUT_a_bump_is_invisible(
+        monkeypatch) -> None:
+    """The counterexample, EXECUTED rather than described.
+
+    The retired predicate is restored verbatim -- ``if not isinstance(raw, str)
+    or not raw.strip(): return True``, one predicate answering two questions --
+    and the SAME document then reads `canonical` where today it reads
+    `refused`.  That IS a canonicaliser bump by the constant's own contract.
+    The label does not move, and the tripwire passes.
+    """
+    import swing.trades.latched_origin as lo
+
+    doc = b'{"schwab_order_id": "1002937461"}'
+    assert lo.canonical_envelope_identity(doc).state == "refused", (
+        "the premise: today's authority REFUSES a document it cannot read")
+    before = lo.ENVELOPE_CANONICALIZER_VERSION
+
+    real = lo.envelope_is_canonical
+
+    def pre_r13_01(raw):
+        if not isinstance(raw, str) or not raw.strip():
+            return True
+        return real(raw)
+
+    monkeypatch.setattr(lo, "envelope_is_canonical", pre_r13_01)
+    assert lo.canonical_envelope_identity(doc).state == "canonical", (
+        "the behaviour change did not take, so this measures nothing")
+    assert lo.ENVELOPE_CANONICALIZER_VERSION == before, (
+        "the label must NOT move -- an unbumped behaviour change is the "
+        "whole subject")
+    # AND THE TRIPWIRE IS GREEN.  Called directly rather than asserted about,
+    # so the claim is the production check's own verdict.
+    test_the_migration_anchor_MIRRORS_the_python_constant()
+
+
+def test_the_migration_SHIPS_THE_TABLE_EMPTY() -> None:
+    """The FACT that made the 2026-08-31.1 bump owe no re-attestation.
+
+    A bump normally owes re-attestation of every reading taken under the older
+    grammar.  0037 CREATES `fill_envelope_identity` and inserts nothing into
+    it, so on any database that has just applied 0037 there is no such reading
+    -- and 0037 is unapplied, so there is none anywhere.  That is a fact about
+    this file, which is why it is asserted here rather than argued in a commit
+    message.  **Once the first reading is written the carve-out is SPENT**, and
+    this test is not what enforces that -- the anchor comparison above is.
+    """
+    body = "\n".join(_blanked(_sql()))
+    assert "CREATE TABLE fill_envelope_identity" in body, (
+        "the migration no longer creates the table, so its emptiness proves "
+        "nothing about this arc")
+    assert not _seeding_inserts(body), (
+        f"0037 now seeds fill_envelope_identity: {_seeding_inserts(body)}. "
+        f"The re-attestation carve-out recorded at the "
+        f"CANONICALIZER-VERSION-ANCHOR rests on the table shipping EMPTY")
+
+
+def test_the_ships_empty_check_can_FAIL(monkeypatch) -> None:
+    """Spliced into the REAL migration text, per this module's convention."""
+    text = _sql().replace(
+        "CREATE INDEX ix_fei_broker_order_id ON fill_envelope_identity",
+        "INSERT INTO\n  fill_envelope_identity (fill_id) VALUES (1);\n"
+        "CREATE INDEX ix_fei_broker_order_id ON fill_envelope_identity",
+        1)
+    assert text != _sql(), "the splice matched nothing"
+    monkeypatch.setattr(
+        "tests.data.test_22a_canonicalizer_version_closure._sql",
+        lambda: text)
+    with pytest.raises(AssertionError, match="now seeds"):
+        test_the_migration_SHIPS_THE_TABLE_EMPTY()
 
 
 # ---------------------------------------------------------------------------

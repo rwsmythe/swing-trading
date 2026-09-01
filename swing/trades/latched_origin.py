@@ -149,7 +149,29 @@ LATCH_PROBE_EVIDENCE_VERSION = "2026-08-25.1"
 # the whole population through the same drift check, so bumping this constant
 # is LOUD on every document whose answer moved and SILENT on every document
 # whose answer did not -- the discriminator is the ANSWER, never the label.
-ENVELOPE_CANONICALIZER_VERSION = "2026-08-26.1"
+#
+# 2026-08-31.1 -- Codex 22A-R14-01, AND THE BUMP IS AN ADMISSION.  `22A-R13-01`
+# changed what this canonicaliser ANSWERS: a non-`str` document reads `refused`
+# where it read `canonical` (measured, both arms, in that commit's message).
+# That is precisely the trigger the paragraph above names, and the constant did
+# NOT move in the leg that changed the answer -- so for six commits the
+# migration carried a claim ("a reading can only be stale if the constant
+# MOVED") that its own arc had already falsified.  NOTHING DETECTED IT, because
+# the tripwire compares this constant to a SQL COMMENT: two hand-maintained
+# copies of a LABEL, and neither of them is the canonicaliser's BEHAVIOUR.
+# That is the hand-maintained-roster class -- met four times on rosters in this
+# arc -- arriving on a version constant.  The instrument's scope is DECLARED
+# where it is asserted (`tests/data/test_22a_canonicalizer_version_closure.py`)
+# and a comparator over the canonicaliser's ANSWERS is routed to 22-A2 (plan
+# S12.2b).
+#
+# WHAT THIS PARTICULAR BUMP OWED: nothing, and the reason is a fact rather than
+# a judgment.  A bump normally owes RE-ATTESTATION of readings taken under the
+# older grammar; migration 0037 CREATES `fill_envelope_identity` and inserts
+# NOTHING into it, and it is unapplied, so no reading exists under either
+# grammar on any database.  That emptiness is asserted mechanically by the
+# closure module rather than claimed here.
+ENVELOPE_CANONICALIZER_VERSION = "2026-08-31.1"
 
 ENVELOPE_CANONICAL = "canonical"
 ENVELOPE_REFUSED = "refused"

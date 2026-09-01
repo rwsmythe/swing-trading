@@ -3755,14 +3755,37 @@ Repeated verbatim in every review prompt, with challenge invited.
      service would authorize and the trigger would then ABORT: authorize-then-abort, met four times
      on this arc already.
 
-  **SO THE ARMING ACTION IS CLOSED INSTEAD, MECHANICALLY.** A reading can only be stale if
+  **SO THE ARMING ACTION IS GUARDED INSTEAD -- BY A LABEL COMPARATOR, AND THAT IS WHAT IT IS CALLED
+  (amended 22A-R14-01, operator-ruled 2026-08-31).** A reading can only be stale if
   `ENVELOPE_CANONICALIZER_VERSION` MOVED between two writes; a row bearing a version nobody shipped
   is a forged identity row, which is L10/AL-10's class. `0037` therefore carries a
   `CANONICALIZER-VERSION-ANCHOR` mirroring the Python constant, and
   `tests/data/test_22a_canonicalizer_version_closure.py` compares the two representations -- so a
-  bump FAILS THE SUITE, naming the required work, **before any stale row can exist.** *(Gotcha #11's
-  rule applied: the only mirror that defends the set is the comparator. Gotcha #31's rule applied: a
-  comment promising future work is unenforceable; a failing test is not.)*
+  LABEL bump FAILS THE SUITE, naming the required work, before any stale row can exist.
+
+  **WHAT IT DOES NOT DO, AND THE COUNTEREXAMPLE IS THIS ARC'S OWN.** It compares a Python constant
+  to a SQL COMMENT: **two hand-maintained copies of a LABEL, neither of which is the canonicaliser's
+  BEHAVIOUR. A canonicaliser change without a version bump is INVISIBLE to it.** `22A-R13-01` made
+  `canonical_envelope_identity` answer `refused` where it answered `canonical` for every non-`str`
+  document; the constant did not move; and this tripwire -- shipped in the very next commit --
+  passed. For six commits the paragraph above was FALSE while it still read TRUE. **This section
+  previously said the exposure was "CLOSED"; it is not, and the earlier sentence was the same false
+  claim this arc exists to remove**, which is why the wording is amended rather than the instrument
+  widened: *the principle was never "make every instrument exact"; it is "do not claim exact when
+  you are not."* The blindness is now PINNED, executed rather than described
+  (`test_DECLARED_a_behaviour_change_WITHOUT_a_bump_is_invisible` restores the retired predicate,
+  measures the moved answer, and calls the tripwire, which is green). A comparator over the
+  canonicaliser's ANSWERS is **routed to 22-A2 (S12.2b)** with R14-01 as its founding evidence.
+  *(Gotcha #11's rule applied and then read carefully: the only mirror that defends a set is the
+  comparator -- but only over the representation it actually compares.)*
+
+  **THE 2026-08-31.1 BUMP, AND WHY IT OWED NOTHING.** `R13-01` moved the answer, so the constant had
+  to move with it. A bump normally owes re-attestation of readings taken under the older grammar;
+  `0037` **creates `fill_envelope_identity` and inserts NOTHING into it** (asserted by
+  `test_the_migration_SHIPS_THE_TABLE_EMPTY`, with a splice discriminator on the real file), and the
+  migration is unapplied, so **no reading exists under either grammar on any database.** Once 0037
+  is applied and the first reading is written, **that carve-out is SPENT** and the next bump owes
+  the full re-attestation.
 
   **THE ROSTER BELOW IS CLOSURE-CHECKED, NOT HAND-MAINTAINED.** Every `FROM`/`JOIN` reference to
   `fill_envelope_identity` in `0037` carries an inline `-- FEI-CONSUMER <key> :: <claim>` marker;
@@ -4055,7 +4078,7 @@ been caught thirteen times on this arc, and a re-scope is the largest opportunit
 | **R8-09** | **STAYS -- LIVE IN 22-A**, and much reduced: with no tier-2, the exemption roster loses 32i-32k and 46a-46c entirely. `5b-pre` is still owed. |
 | **R8-10** | **STAYS -- LIVE IN 22-A, and it is MINE to close now (RD, explicit).** The frozen-vs-live SQL binding in the citation trigger SURVIVES the carve (S4.3), so a Python-computes / SQL-validates price boundary remains. **Checked rather than assumed, which is what he asked for.** |
 
-### S12.2b ROUND-13 ITEMS ROUTED TO 22-A2 -- with their founding evidence, so the brief lifts them rather than re-deriving
+### S12.2b ROUND-13 AND ROUND-14 ITEMS ROUTED TO 22-A2 -- with their founding evidence, so the brief lifts them rather than re-deriving
 
 **Operator-ruled 2026-08-31, and the ruling's ground is the AL-3 lesson stated correctly: the
 principle was never *make every instrument exact*, it is *do not claim exact when you are not*.** A
@@ -4072,6 +4095,7 @@ EXAMPLE, not the CLASS.)*
 | **`22A-R13-02`** | **AN APPEND-ONLY RE-ATTESTATION DESIGN** for `fill_envelope_identity`: `UNIQUE(fill_id, envelope_raw, canonicalizer_version)`, a writer that APPENDS a current-grammar reading rather than leaving an older one in place, and version-addressed consumers. It is the only thing that closes L19 without inverting two clauses or manufacturing a refusal. | `canonicalizer_version` appeared ONCE in `0037`; SEVEN sites referenced the table; SIX consume a reading and NONE checks the version. Splicing `AND fei.canonicalizer_version = '<current>'` into the subject-reading clause of the real migration made a truthful citation over an agreeing older reading REJECT (`IntegrityError`) -- the authorize-then-abort direction. Declared at **L19 (AL-11)** with a closure-checked roster and an arming tripwire. |
 | **`22A-R13-03`** | **SQL-TOKEN-AWARE SCANNING** in place of a regex, for the whole-tree "SQL never reads a fill envelope" walk. | SIX spellings measured blind, each pinned as a declared row in `tests/trades/test_22a_envelope_canonicality_sweep.py`: `JSON_EXTRACT(` (case), `json_extract (` (space), `->>` (operator, no function), a `CAST(...)` wrapper, a `"quoted"` identifier -- and a SIXTH found here rather than reported, **a read split across two ADJACENT PYTHON STRING LITERALS**, which is how every SQL string in `swing/**/*.py` is actually written. Zero production occurrences today (both whole-tree walks return empty on every run). |
 | **`22A-R13-04`** | **CALL-FOLLOWING** for the exception-roster closure walk: resolve a handler's parser through local helper functions and through import aliases. | TWO shapes measured blind: a narrow handler moved into a `parse_blob` helper (found, then DISCARDED by the function-sized scope filter) and `from json import loads` + a bare `loads(...)` (not recognised as a JSON parse at all). Either restores the money-bearing unhandled-`RecursionError` path with every closure test green. |
+| **`22A-R14-01`** | **A BEHAVIOUR COMPARATOR FOR THE CANONICALISER.** Bind `ENVELOPE_CANONICALIZER_VERSION` to a DIGEST of `canonical_envelope_identity` and every dependency its answer is a function of (`envelope_is_canonical`, both extraction helpers, their key constants), with an append-only `(version, digest)` history -- **the shape `DERIVATION_RULE_HISTORY` already runs at `swing/trades/cohort_provenance_correction.py:300-376` for `_derive`**, so this is a second instance of a pattern this codebase has already proven, not a new design. Then a canonicaliser edit without a bump FAILS THE SUITE. | **The arc is its own counterexample, measured.** `22A-R13-01` changed the answer (`canonical` -> `refused` for every non-`str` document, both arms measured in that commit); the constant did NOT move; the tripwire shipped in the very NEXT commit passed, because it compares a Python constant to a SQL COMMENT -- two hand-maintained copies of a LABEL. For six commits `0037` carried the claim *"a reading can only be stale if the constant MOVED"*, already falsified by its own arc. Declared at **L19 (AL-11)** and PINNED by execution: `test_DECLARED_a_behaviour_change_WITHOUT_a_bump_is_invisible` restores the retired predicate, asserts the answer moved and the label did not, and calls the tripwire -- green. It is the hand-maintained-roster class (four rosters in this arc) arriving on a VERSION CONSTANT. |
 | **`22A-R13-05`** | **PREDICATE-SHAPE ASSERTIONS** for the AL-3 closure (each SQL_BOUND clause asserts its authoritative operand and predicate), **REAL-INPUT DISCRIMINATORS** (mutate the production roster/migration, not a local reconstruction), and **PINS VALIDATED THROUGH COLLECTION** rather than by text-searching for `def`. | `_input_bound()` asks only whether a clause's span contains a subquery or a non-probe `NEW.` reference. Pinned by execution: strip the `ORDER BY ... LIMIT 1` that makes rung 3b *the LATEST* validity child, leaving its `SELECT`, and the walk still answers True. The reviewer looked for a mislabelled member and found none, so this is test QUALITY, not a demonstrated acceptance. *(The pattern to apply: `tests/data/test_22a_canonicalizer_version_closure.py`, written after it, splices into the REAL migration text.)* |
 
 ### S12.3 WHAT 22-A2 ALSO INHERITS AS SCHEMA
