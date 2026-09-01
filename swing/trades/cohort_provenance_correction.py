@@ -42,8 +42,10 @@ under a SAVEPOINT.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
+import math
 import re
 import sqlite3
 from dataclasses import dataclass, replace
@@ -573,24 +575,103 @@ def _to_utc_naive(local_naive: datetime) -> datetime:
 # ---------------------------------------------------------------------------
 
 
+# THE AUTHORIZATION'S FILL-SIDE OPERANDS, NAMED ONCE (Codex 22A-R14-02).
+# `_resolve_latch_citation` builds the ladder's request shim out of exactly
+# these four columns plus the session, and every rung that admits or declines
+# reads them.  The snapshot freezes them, the drift reader compares them, and
+# the roster is spelled here so the two halves cannot drift apart (#11).
+ENTRY_FILL_OPERAND_COLUMNS: tuple[str, ...] = (
+    "quantity", "price", "fill_origin", "schwab_source_value_json",
+)
+# The snapshot's own key for each column.  `schwab_source_value_json` is
+# frozen under the shorter `envelope`, which is what every message and every
+# piece of prose in this module calls it.
+ENTRY_FILL_OPERAND_KEYS: tuple[str, ...] = (
+    "quantity", "price", "fill_origin", "envelope",
+)
+
+
+def _json_safe_operand(value: Any) -> Any:
+    """One operand, JSON-safe and EXACT, or a tagged digest when it cannot be.
+
+    `fills.quantity` / `price` are REAL and `fill_origin` /
+    `schwab_source_value_json` are TEXT, and SQLite does not enforce column
+    affinity, so any of the four can come back as a type `json.dumps` cannot
+    write -- `bytes` most obviously (22A-R13-01 measured that exact shape
+    reaching the canonicaliser).  A non-finite float is worse than an error:
+    `json.dumps(inf)` writes the token `Infinity`, which `json_valid()` reads
+    as FALSE, so the audit row's own CHECK would reject a truthful freeze.
+
+    Both cases are frozen as a TYPE-TAGGED digest rather than refused, because
+    this function runs on the write path of a money-bearing correction and a
+    freeze that cannot represent a legal value must not be the thing that
+    blocks it.  A digest still compares exactly, which is all the drift reader
+    needs; the value itself is still on the fill.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return {"type": "float", "repr": repr(value)}
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return {"type": type(value).__name__,
+                "sha256": hashlib.sha256(bytes(value)).hexdigest()}
+    return {"type": type(value).__name__, "repr": repr(value)}
+
+
 @dataclass(frozen=True)
 class _EntryFill:
+    """The anchor's identity AND the operands the authorization consults.
+
+    THE OPERANDS ARE LOADED HERE, BY THE ONE RESOLVER, and that is the whole
+    point of putting them on this object (Codex 22A-R14-02).  They used to be
+    re-SELECTed inside `_resolve_latch_citation`, so "the values that were
+    frozen" and "the values the ladder ran on" were two reads that happened to
+    agree; now they are one read, and the agreement is structural.
+    """
+
     fill_id: int
     trade_id: int
     fill_datetime: str
     parsed: datetime
+    quantity: Any = None
+    price: Any = None
+    fill_origin: Any = None
+    envelope: Any = None
 
     @property
     def session_date(self) -> str:
         return self.fill_datetime[:10]
 
     def snapshot(self) -> dict[str, Any]:
-        return {
+        """What this correction anchored on AND what authorized it.
+
+        THE FOUR OPERANDS ARE NOT DECORATION (Codex 22A-R14-02). This froze
+        the anchor's IDENTITY alone -- id, owner, role, datetime -- while the
+        latch ladder's every rung reads the fill's QUANTITY, PRICE, ORIGIN and
+        ENVELOPE. Tier-1 reconciliation writes `fills.price` through a dynamic
+        single-column UPDATE, so a LEGITIMATE later correction could move a
+        value outside the bound the citation was authorized against while the
+        drift reader reported CLEAN, the stored probe kept the obsolete value,
+        and V1's existing-correction shortcut returned without re-authorizing.
+        **A stored proof whose operands are not frozen.**
+
+        Adjacent to gotcha #30 and distinct from it: there a run-level stamp
+        stood in for a per-row value; here the per-row values are read
+        correctly and were simply never frozen.
+        """
+        frozen = {
             "fill_id": self.fill_id,
             "trade_id": self.trade_id,
             "action": "entry",
             "fill_datetime": self.fill_datetime,
         }
+        for key, value in zip(
+            ENTRY_FILL_OPERAND_KEYS,
+            (self.quantity, self.price, self.fill_origin, self.envelope),
+            strict=True,
+        ):
+            frozen[key] = _json_safe_operand(value)
+        return frozen
 
 
 def resolve_authoritative_entry_fill(
@@ -611,10 +692,16 @@ def resolve_authoritative_entry_fill(
 
     THE SAME RESOLVER SERVES BOTH AUTHORIZATION AND THE DRIFT READER, or the
     two would disagree about which fill is authoritative.
+
+    IT LOADS THE AUTHORIZATION'S OPERANDS TOO (Codex 22A-R14-02), so the
+    values frozen into the audit row and the values the latch ladder actually
+    ran on come from ONE read of ONE row rather than from two reads that
+    happen to agree.
     """
     rows = conn.execute(
-        "SELECT fill_id, trade_id, fill_datetime FROM fills "
-        "WHERE trade_id = ? AND action = 'entry'",
+        "SELECT fill_id, trade_id, fill_datetime, "
+        f"       {', '.join(ENTRY_FILL_OPERAND_COLUMNS)} "
+        "  FROM fills WHERE trade_id = ? AND action = 'entry'",
         (trade_id,),
     ).fetchall()
     if not rows:
@@ -623,12 +710,14 @@ def resolve_authoritative_entry_fill(
             "session to be contemporaneous WITH."
         )
     fills: list[_EntryFill] = []
-    for fill_id, owner, raw in rows:
+    for fill_id, owner, raw, quantity, price, origin, envelope in rows:
         parsed = _require_naive_datetime(
             raw, what=f"fill {int(fill_id)}'s fill_datetime")
         fills.append(_EntryFill(
             fill_id=int(fill_id), trade_id=int(owner),
             fill_datetime=str(raw).strip(), parsed=parsed,
+            quantity=quantity, price=price, fill_origin=origin,
+            envelope=envelope,
         ))
     fills.sort(key=lambda f: (f.parsed, f.fill_id))
     return fills[0]
@@ -1717,16 +1806,16 @@ def _resolve_latch_citation(
     ``cfg=None`` still keeps byte-identical is the UNLINKED case, which is
     every pre-22-A caller's world.
     """
-    row = conn.execute(
-        "SELECT quantity, price, fill_origin, schwab_source_value_json "
-        "  FROM fills WHERE fill_id = ?",
-        (entry_fill.fill_id,),
-    ).fetchone()
-    if row is None:  # pragma: no cover -- the resolver just loaded this fill
-        raise _refuse(
-            f"the authoritative entry fill {entry_fill.fill_id} vanished "
-            "between resolution and the latch probe.")
-    quantity, price, fill_origin, envelope = row
+    # THE OPERANDS COME OFF THE RESOLVED FILL, NOT OFF A SECOND SELECT (Codex
+    # 22A-R14-02).  They used to be re-read here, so "the values frozen into
+    # the audit row" and "the values the ladder ran on" were two reads that
+    # agreed by circumstance; the snapshot's whole claim is that they are the
+    # SAME values, and one read is what makes that structural rather than
+    # coincidental.
+    quantity = entry_fill.quantity
+    price = entry_fill.price
+    fill_origin = entry_fill.fill_origin
+    envelope = entry_fill.envelope
 
     # THE AUTHORITY READS THE SUBJECT FILL'S ENVELOPE HERE, AND THE READING IS
     # PERSISTED BEFORE ANY ROW CITES IT (PERSIST-CANONICAL, CHARC + RD
@@ -2887,6 +2976,7 @@ def _fill_anchor_drift(
     frozen = json.loads(correction.entry_fill_snapshot_json)
     live = current.snapshot()
     # The WHOLE frozen snapshot, not an id-and-date pair.
+    identity_moved = False
     for field in ("fill_id", "trade_id", "action", "fill_datetime"):
         if frozen.get(field) != live.get(field):
             lines.append(
@@ -2894,7 +2984,39 @@ def _fill_anchor_drift(
                 f"{frozen.get(field)!r} at correction time and the trade's "
                 f"authoritative entry fill now reports {live.get(field)!r} "
                 f"(fill {current.fill_id}).")
-    if lines:
+            identity_moved = True
+    # THE AUTHORIZATION'S OPERANDS (Codex 22A-R14-02), and the THIRD ANSWER a
+    # pre-operand row forces.  A correction written before the operands were
+    # frozen carries only the four identity keys.  Comparing the absent keys
+    # would report FALSE DRIFT on it forever; SKIPPING them would report CLEAN
+    # about operands nobody froze -- the "reader manufactures a clean answer"
+    # failure this module already refuses on a malformed fill.  So the gap is
+    # NAMED.  It is not a mixed verdict: the identity half above still runs,
+    # because the identity WAS frozen on those rows.
+    missing = [k for k in ENTRY_FILL_OPERAND_KEYS if k not in frozen]
+    if missing:
+        lines.append(
+            f"{CITATION_ANCHOR_UNVERIFIABLE}: correction "
+            f"{correction.provenance_correction_id} predates the freezing of "
+            f"the authorization's fill-side operands, so {', '.join(missing)} "
+            "cannot be re-checked. The anchor's IDENTITY is still compared; "
+            "the values the latch ladder ran on were never recorded.")
+    else:
+        for field in ENTRY_FILL_OPERAND_KEYS:
+            if frozen.get(field) != live.get(field):
+                lines.append(
+                    f"{CITATION_ANCHOR_DRIFT}: entry_fill.{field} was "
+                    f"{frozen.get(field)!r} when this correction was "
+                    f"authorized and fill {current.fill_id} now carries "
+                    f"{live.get(field)!r}. The latch ladder read that value; "
+                    "the authorization was never re-run against the new one.")
+    # THE CONTEMPORANEITY ESCALATION IS SCOPED TO IDENTITY DRIFT, and stays
+    # scoped now that the operand comparison can also produce lines: it asks
+    # whether the CURRENT authoritative fill's SESSION still covers the cited
+    # anchors, which only an identity move can change.  Firing it off an
+    # operand line would attach a verdict about the session to a finding that
+    # is not about the session.
+    if identity_moved:
         new_session = current.session_date
         for column, name in (
             (correction.cited_candidate_action_session_date,

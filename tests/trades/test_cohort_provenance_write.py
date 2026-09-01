@@ -445,6 +445,140 @@ def test_a_malformed_fill_makes_the_anchor_UNVERIFIABLE_not_clean(conn) -> None:
     assert CITATION_ANCHOR_DRIFT not in joined
 
 
+# ===========================================================================
+# 22A-R14-02 -- A STORED PROOF WHOSE OPERANDS ARE NOT FROZEN
+#
+# `_EntryFill.snapshot()` froze the anchor's IDENTITY -- `fill_id`,
+# `trade_id`, `action`, `fill_datetime` -- and nothing the authorization
+# actually consulted.  `_resolve_latch_citation` builds the ladder's request
+# out of the fill's QUANTITY, PRICE, FILL_ORIGIN and ENVELOPE, and every rung
+# that admits or declines reads them.  None was frozen, so a LEGITIMATE later
+# correction of any of the four could disprove the stored authorization while
+# `_fill_anchor_drift` reported CLEAN, the probe kept the obsolete value, and
+# V1's existing-correction shortcut returned without re-authorizing.
+#
+# The mutation is REAL, not hypothetical: tier-1 reconciliation writes
+# `fills.price` through `_update_journal_field`'s dynamic single-column
+# UPDATE, and `("fills", "price")` is NOT in `_RESERVED_JOURNAL_FIELDS`.
+# That private function is the PRODUCTION writer and is called directly here
+# for the same reason `_FailingCleanupConn` proxies a real connection: what
+# must be exercised is the real statement, not a hand-written stand-in.
+#
+# It is adjacent to gotcha #30 and distinct from it: there the per-row value
+# was read from a run-level aggregate; here the per-row values are read
+# CORRECTLY and simply never frozen.
+# ===========================================================================
+_OPERAND_KEYS = ("quantity", "price", "fill_origin", "envelope")
+
+
+def _tier1_price_correction(conn, fill_id: int, new_price: float) -> None:
+    """The REAL tier-1 single-column journal write."""
+    from swing.trades.reconciliation_auto_correct import _update_journal_field
+
+    _update_journal_field(conn, "fills", fill_id, "price", new_price)
+
+
+def test_R14M2_the_snapshot_freezes_every_authorization_OPERAND(conn) -> None:
+    """The four the ladder's request shim is BUILT from, plus the identity.
+
+    Read off the persisted audit row rather than off the dataclass, because
+    the audit row is what the drift reader and every later reader consult.
+    """
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    frozen = json.loads(row.entry_fill_snapshot_json)
+    live = conn.execute(
+        "SELECT quantity, price, fill_origin, schwab_source_value_json "
+        "  FROM fills WHERE fill_id = ?", (ids["fill_id"],)).fetchone()
+    assert [frozen.get(k) for k in _OPERAND_KEYS] == list(live), (
+        f"the snapshot froze {sorted(frozen)} and the authorization consulted "
+        f"quantity/price/fill_origin/envelope: {live}")
+
+
+def test_R14M2_a_tier1_PRICE_correction_is_reported_as_anchor_drift(
+        conn) -> None:
+    """PRE-FIX: the price moved through the production tier-1 writer and the
+    drift reader said nothing at all."""
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    assert not read_provenance_corrections(
+        conn, trade_id=ids["trade_id"])[0].drift_lines, "baseline must be clean"
+    _tier1_price_correction(conn, ids["fill_id"], 99.99)
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    joined = "\n".join(report.drift_lines)
+    assert f"{CITATION_ANCHOR_DRIFT}: entry_fill.price" in joined, (
+        report.drift_lines)
+    assert "99.99" in joined
+
+
+def test_R14M2_a_QUANTITY_correction_is_reported_as_anchor_drift(conn) -> None:
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    from swing.trades.reconciliation_auto_correct import _update_journal_field
+    _update_journal_field(conn, "fills", ids["fill_id"], "quantity", 3.0)
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    assert f"{CITATION_ANCHOR_DRIFT}: entry_fill.quantity" in "\n".join(
+        report.drift_lines), report.drift_lines
+
+
+def test_R14M2_an_ENVELOPE_swap_is_reported_as_anchor_drift(conn) -> None:
+    """The envelope is frozen VERBATIM, so a re-serialisation that changes no
+    meaning is still reported -- the same posture the candidate snapshot takes,
+    and for the same reason: the reader cannot know which edits are benign."""
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    conn.execute(
+        "UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
+        ('{"schwab_order_id": "9999999999"}', ids["fill_id"]))
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    assert f"{CITATION_ANCHOR_DRIFT}: entry_fill.envelope" in "\n".join(
+        report.drift_lines), report.drift_lines
+
+
+def test_R14M2_an_UNTOUCHED_fill_still_reports_NOTHING(conn) -> None:
+    """The control that bounds the fix.  A freeze compared too eagerly turns
+    every correction into permanent noise, and noise is how a real drift line
+    stops being read."""
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    assert tuple(report.drift_lines) == ()
+
+
+def test_R14M2_a_PRE_OPERAND_snapshot_is_UNVERIFIABLE_never_clean(
+        conn) -> None:
+    """THE LIVE ROW'S SHAPE, and the third answer it forces.
+
+    Correction 1 on the live DB was written under the four-key snapshot, so a
+    reader that compared the new keys would report FALSE DRIFT on it forever,
+    and one that skipped absent keys would report CLEAN about operands nobody
+    froze.  Neither is true.  The row is planted here by RAW UPDATE of the
+    audit table's snapshot column -- `provenance_corrections` is append-only,
+    so the barrier is lifted and restored VERBATIM by the shared helper, which
+    never spells a trigger body of its own -- and the assertion is that the
+    reader NAMES the gap.
+    """
+    ids = build_cadl_case(conn)
+    _apply(conn, ids)
+    row = get_correction_for_trade(conn, ids["trade_id"])
+    legacy = {k: v for k, v in json.loads(row.entry_fill_snapshot_json).items()
+              if k not in _OPERAND_KEYS}
+    assert sorted(legacy) == ["action", "fill_datetime", "fill_id", "trade_id"]
+    with candidates_barrier_lifted(
+            conn, triggers=("trg_provenance_corrections_append_only_update",)):
+        conn.execute(
+            "UPDATE provenance_corrections SET entry_fill_snapshot_json = ? "
+            "WHERE provenance_correction_id = ?",
+            (json.dumps(legacy, sort_keys=True),
+             row.provenance_correction_id))
+    [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
+    joined = "\n".join(report.drift_lines)
+    assert CITATION_ANCHOR_UNVERIFIABLE in joined, report.drift_lines
+    assert "predates" in joined
+    assert f"{CITATION_ANCHOR_DRIFT}: entry_fill.price" not in joined
+
+
 def test_the_reader_uses_the_LOCAL_resolver_not_the_lexical_repo_helper(
     conn,
 ) -> None:
