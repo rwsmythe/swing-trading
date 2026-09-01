@@ -1401,17 +1401,35 @@ def _raw_link_with(conn, candidate_id, *, key: str, **column_over):
     return orders[0]
 
 
+# THE FORGERY MUST COLLAPSE ONTO THE **AUTHORITATIVE** VALUE, and the
+# `actual_quantity` arm did not (Codex 22A-FIX-R8-01, a post-convergence
+# minor, found in a row written an hour earlier).  Its first version injected
+# `2.5`, which `int()` collapses to `2` -- but the authoritative validity row
+# carries `actual_quantity = 10` (`tests/_latch_link_fixtures_22a.py:128`), so
+# rung 3c compared `2` with `10` and refused BEFORE and AFTER the fix.  The
+# arm passed under both implementations and confirmed nothing.  `10.5` lands
+# on the authoritative `10`, which is the only value that makes the pre-fix
+# comparison SUCCEED and the case discriminating.
+_R7_01_FORGERIES = [
+    # (column, raw, the AUTHORITATIVE value it must collapse onto)
+    ("evaluation_run_id", 121.5, 121),
+    ("actual_quantity", 10.5, 10),
+]
+
+
 @pytest.mark.parametrize(
-    "column, raw, collapses_to",
-    [("evaluation_run_id", 121.5, 121), ("actual_quantity", 2.5, 2)],
-    ids=["evaluation_run_id", "actual_quantity"])
+    "column, raw, collapses_to", _R7_01_FORGERIES,
+    ids=[c for c, _, _ in _R7_01_FORGERIES])
 def test_a_fractional_raw_link_field_is_unbound_R7_01(
         tmp_path, column, raw, collapses_to) -> None:
     """PRE-FIX the ladder ADMITTED and the citation trigger then aborted.
 
     Every premise is MEASURED rather than argued: the value survives the
-    column's own CHECK as a REAL, `int()` collapses it onto the authoritative
-    value, and the raw comparison the trigger makes is FALSE.
+    column's own CHECK as a REAL, `int()` collapses it onto the value rung 3c
+    compares against, and that value is read from the AUTHORITATIVE SOURCE
+    rather than typed here -- a fixture that quietly disagrees with the row it
+    describes is this project's most-repeated test defect, and it is what made
+    the `actual_quantity` arm vacuous on its first outing.
     """
     conn, cfg, candidate_id = build_world(tmp_path, f"r701{column}")
     try:
@@ -1423,9 +1441,21 @@ def test_a_fractional_raw_link_field_is_unbound_R7_01(
         assert (stored, kind) == (raw, "real"), (
             "the SCHEMA premise: a REAL is legal in this INTEGER column, "
             "because SQLite applies no affinity to it")
-        assert int(raw) == collapses_to and collapses_to != raw, (
-            "the COERCION premise: int() lands the forgery on the "
-            "authoritative value")
+        # THE AUTHORITATIVE VALUE, READ from the source rung 3c binds against:
+        # `actual_quantity` from the validity row, `evaluation_run_id` from
+        # the candidate.  Asserting only `int(raw) == collapses_to` is the
+        # test agreeing with its own arithmetic.
+        authoritative = conn.execute(
+            "SELECT v.actual_quantity FROM latch_order_intents v "
+            " WHERE v.intent_kind = 'validity'"
+            if column == "actual_quantity" else
+            "SELECT c.evaluation_run_id FROM candidates c WHERE c.id = ?",
+            () if column == "actual_quantity" else (candidate_id,),
+        ).fetchone()[0]
+        assert int(raw) == collapses_to == authoritative, (
+            f"the COERCION premise: int({raw}) must land on the AUTHORITATIVE "
+            f"{column} ({authoritative}), or rung 3c refuses the forgery "
+            f"anyway and this arm confirms nothing")
 
         assert getattr(order, column) == raw, (
             f"the lookup still coerces {column}; a drifted raw value is "
