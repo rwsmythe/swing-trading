@@ -2112,7 +2112,33 @@ def _na_suffix_note(anchored: _Anchored, derived: _Derived) -> str | None:
 
 # The dry run's unwind point. Named rather than inlined so the ROLLBACK TO and
 # the RELEASE cannot drift apart, which is how a savepoint leaks.
-_PREVIEW_SAVEPOINT = "cohort_provenance_preview_sp"
+#
+# **THE NAME IS PER-INVOCATION, NOT FIXED (Codex 22A-FIX-R4-01, verified by
+# execution against real SQLite savepoint behaviour).**  A fixed name is a NAME
+# COLLISION waiting for a caller: when this call runs inside a caller-held
+# transaction and its own `SAVEPOINT` fails BEFORE taking effect, the
+# acquisition recovery's `ROLLBACK TO` / `RELEASE` target whatever savepoint of
+# that name already exists -- **the CALLER'S** -- discarding unrelated caller
+# work and releasing a nesting level it owns.  Measured: with the authorizer
+# denying only the new savepoint, an uncommitted caller row was rolled back and
+# the caller's savepoint released.  A fixed name also STACKS across repeated
+# previews inside one caller transaction, which is the other half of it.
+#
+# The PREFIX stays stable so a leaked savepoint is still identifiable by name
+# in a log or an inspection; only the suffix moves.
+_PREVIEW_SAVEPOINT_PREFIX = "cohort_provenance_preview_sp"
+
+
+def _new_preview_savepoint() -> str:
+    """A savepoint name no caller can already hold.
+
+    ``uuid4().hex`` rather than a counter: a counter is per-PROCESS, and two
+    processes sharing a database file (the CLI and the web app) can hold the
+    same caller transaction chain in sequence.
+    """
+    import uuid
+
+    return f"{_PREVIEW_SAVEPOINT_PREFIX}_{uuid.uuid4().hex}"
 
 
 def preview_cohort_provenance_correction(
@@ -2192,10 +2218,11 @@ def preview_cohort_provenance_correction(
     # next caller inherits a transaction it did not open.  A CALLER-HELD
     # transaction is still left alone, for R11-05's reason: closing someone
     # else's transaction would be a second defect wearing this one's clothes.
+    savepoint = _new_preview_savepoint()
     try:
         if owns_read_tx:
             conn.execute("BEGIN DEFERRED")
-        conn.execute(f"SAVEPOINT {_PREVIEW_SAVEPOINT}")
+        conn.execute(f"SAVEPOINT {savepoint}")
     except BaseException as savepoint_error:
         # `conn.in_transaction`, NOT `owns_read_tx` (Codex 22A-FIX-R2-03): the
         # flag says whether this call SET OUT to own the transaction, and on an
@@ -2242,15 +2269,34 @@ def preview_cohort_provenance_correction(
             # name is fixed, repeated previews stack it and a caller using the
             # same name has its own rollback target shadowed.
             #
-            # BOTH VERBS ARE ATTEMPTED AND BOTH FAILURES ARE TOLERATED HERE,
-            # deliberately: on the ordinary path the savepoint does NOT exist
-            # (its creation is what failed), so `ROLLBACK TO` raising is the
-            # EXPECTED case rather than a defect, and the savepoint error is
-            # the one the caller needs.  What must not happen is a live
-            # savepoint surviving silently.
-            for verb in ("ROLLBACK TO", "RELEASE"):
-                with contextlib.suppress(sqlite3.Error):
-                    conn.execute(f"{verb} {_PREVIEW_SAVEPOINT}")
+            # THE NAME IS THIS INVOCATION'S OWN, so neither verb can reach a
+            # caller's savepoint even when the caller uses this prefix (Codex
+            # 22A-FIX-R4-01).
+            #
+            # `ROLLBACK TO` IS WHAT ESTABLISHES WHETHER THE SAVEPOINT EXISTS,
+            # and the two failures are therefore treated DIFFERENTLY.  On the
+            # ordinary path the savepoint does not exist -- its creation is
+            # what failed -- so `ROLLBACK TO` raising is EXPECTED, and the
+            # savepoint error is the one the caller needs.  Once `ROLLBACK TO`
+            # SUCCEEDS the savepoint is real, and a failing `RELEASE` after
+            # that leaves a live nested savepoint on someone else's
+            # transaction: that one is LOUD.
+            rolled_back = False
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute(f"ROLLBACK TO {savepoint}")
+                rolled_back = True
+            if rolled_back:
+                try:
+                    conn.execute(f"RELEASE {savepoint}")
+                except sqlite3.Error as release_error:
+                    log.error(
+                        "22-A: the cohort-provenance PREVIEW could not create "
+                        "its savepoint (%s) and then could not RELEASE the "
+                        "savepoint it had already opened (%s) inside a "
+                        "CALLER-HELD transaction. The nested savepoint %s is "
+                        "still live; this connection MUST BE DISCARDED.",
+                        savepoint_error, release_error, savepoint)
+                    raise release_error from savepoint_error
         raise
     try:
         auth = _authorize(
@@ -2308,11 +2354,11 @@ def preview_cohort_provenance_correction(
         # still what surfaces when the unwind WORKS).
         cleanup_error: sqlite3.Error | None = None
         try:
-            conn.execute(f"ROLLBACK TO {_PREVIEW_SAVEPOINT}")
+            conn.execute(f"ROLLBACK TO {savepoint}")
         except sqlite3.Error as exc:
             cleanup_error = exc
         try:
-            conn.execute(f"RELEASE {_PREVIEW_SAVEPOINT}")
+            conn.execute(f"RELEASE {savepoint}")
         except sqlite3.Error as exc:
             cleanup_error = cleanup_error or exc
         if owns_read_tx:

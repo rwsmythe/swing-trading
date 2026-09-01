@@ -1444,8 +1444,12 @@ def test_R14M7_a_failed_SAVEPOINT_CREATION_closes_the_owned_transaction(
             cited_candidate_id=ids["candidate_id"],
             cited_recommendation_id=ids["daily_recommendation_id"],
             reason=REASON)
-    assert proxy.attempts == ["SAVEPOINT cohort_provenance_preview_sp"], (
-        "the planted verb was never issued, so this measures nothing")
+    assert len(proxy.attempts) == 1, proxy.attempts
+    assert proxy.attempts[0].startswith(
+        "SAVEPOINT cohort_provenance_preview_sp_"), (
+        "the planted verb was never issued, so this measures nothing. The "
+        "name carries a PER-INVOCATION suffix (22A-FIX-R4-01), so the prefix "
+        "is what a test may spell.")
     assert not conn.in_transaction, (
         "the preview opened BEGIN DEFERRED, failed to create its savepoint, "
         "and left the transaction it owns open")
@@ -1514,8 +1518,10 @@ def test_R15M3_a_failed_SAVEPOINT_and_a_failed_ROLLBACK_surface_BOTH(
                     cited_candidate_id=ids["candidate_id"],
                     cited_recommendation_id=ids["daily_recommendation_id"],
                     reason=REASON)
-        assert proxy.attempts == [
-            "SAVEPOINT cohort_provenance_preview_sp", "rollback()"], (
+        assert len(proxy.attempts) == 2, proxy.attempts
+        assert proxy.attempts[0].startswith(
+            "SAVEPOINT cohort_provenance_preview_sp_")
+        assert proxy.attempts[1] == "rollback()", (
             "both planted failures must actually have been reached, or this "
             "row measures nothing about the composition")
         # THE SAVEPOINT ERROR IS CARRIED, NOT REPLACED.  A fix that raised the
@@ -2132,14 +2138,18 @@ class _InterruptAtAcquisitionConn:
         self._real = real
         self._verb = verb
         self.began = False
+        # The SQL actually issued, because the savepoint's name is now
+        # PER-INVOCATION (22A-FIX-R4-01) and a test cannot spell it in advance.
+        self.began_sql: str | None = None
 
     def __getattr__(self, name):
         return getattr(self._real, name)
 
     def execute(self, sql, *args):
         if sql.startswith(self._verb):
-            result = self._real.execute(sql, *args)
+            self._real.execute(sql, *args)
             self.began = True
+            self.began_sql = sql
             raise KeyboardInterrupt(f"planted just after {self._verb}")
         return self._real.execute(sql, *args)
 
@@ -2303,8 +2313,7 @@ def test_R3M6_a_CALLER_HELD_transaction_keeps_its_transaction_and_loses_the_save
     ids = build_cadl_case(conn)
     conn.commit()
     conn.execute("BEGIN IMMEDIATE")
-    proxy = _InterruptAtAcquisitionConn(
-        conn, "SAVEPOINT cohort_provenance_preview_sp")
+    proxy = _InterruptAtAcquisitionConn(conn, "SAVEPOINT ")
     try:
         with pytest.raises(KeyboardInterrupt, match="planted just after"):
             preview_cohort_provenance_correction(
@@ -2316,7 +2325,53 @@ def test_R3M6_a_CALLER_HELD_transaction_keeps_its_transaction_and_loses_the_save
         assert conn.in_transaction, (
             "the caller's transaction was closed -- the settled posture is "
             "that someone else's transaction is left alone")
+        assert proxy.began_sql is not None
+        released = proxy.began_sql.split("SAVEPOINT ", 1)[1].strip()
+        assert released.startswith("cohort_provenance_preview_sp_"), released
         with pytest.raises(sqlite3.OperationalError):
-            conn.execute("RELEASE cohort_provenance_preview_sp")
+            conn.execute(f"RELEASE {released}")
+    finally:
+        conn.rollback()
+
+
+def test_R4M1_the_savepoint_name_is_PER_INVOCATION(conn) -> None:
+    """A FIXED NAME IS A COLLISION WAITING FOR A CALLER (Codex 22A-FIX-R4-01,
+    verified by execution against real SQLite savepoint behaviour).
+
+    When this call runs inside a caller-held transaction and its own
+    ``SAVEPOINT`` fails BEFORE taking effect, the acquisition recovery's
+    ``ROLLBACK TO`` / ``RELEASE`` targeted whatever savepoint of that name
+    already existed -- **the CALLER'S** -- discarding unrelated caller work
+    and releasing a nesting level it owns.
+
+    The fixture is the collision itself: the caller holds a savepoint under
+    the module's own PREFIX and has uncommitted work inside it.  Both halves
+    are asserted -- the caller's work SURVIVES, and its savepoint is still
+    RELEASABLE (so it was not consumed).
+    """
+    ids = build_cadl_case(conn)
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("SAVEPOINT cohort_provenance_preview_sp")
+    conn.execute("UPDATE trades SET notes = 'callers-own-work' WHERE id = ?",
+                 (ids["trade_id"],))
+
+    proxy = _FailingCleanupConn(conn, "SAVEPOINT ")
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="planted on"):
+            preview_cohort_provenance_correction(
+                proxy, trade_id=ids["trade_id"],
+                cited_candidate_id=ids["candidate_id"],
+                cited_recommendation_id=ids["daily_recommendation_id"],
+                reason=REASON)
+        assert proxy.attempts, "the planted verb was never issued"
+        assert conn.execute(
+            "SELECT notes FROM trades WHERE id = ?",
+            (ids["trade_id"],)).fetchone()[0] == "callers-own-work", (
+            "the recovery rolled back to the CALLER's same-named savepoint "
+            "and discarded work this call never touched")
+        # AND THE CALLER'S SAVEPOINT IS STILL ITS OWN: releasing it must
+        # succeed, which it cannot if the recovery already released it.
+        conn.execute("RELEASE cohort_provenance_preview_sp")
     finally:
         conn.rollback()

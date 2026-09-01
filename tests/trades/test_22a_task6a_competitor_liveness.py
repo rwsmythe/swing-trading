@@ -859,3 +859,94 @@ def test_a_PRE_BARRIER_subject_cannot_prove_its_own_death_either(
             "a pre-barrier subject's death was reported as PROVEN")
     finally:
         conn.close()
+
+
+def test_R4M2_a_FORGED_live_stored_tier_does_not_prove_the_subject_dead(
+        tmp_path) -> None:
+    """**THE STORED TIER IS AN ATTESTATION; THE READ-TIME TIER IS A VERDICT**
+    (Codex 22A-FIX-R4-02) -- and PROVEN DEATH needs BOTH.
+
+    Rung 9 says this in as many words and checks both.  The rung-8 enrichment
+    checked only the STORED column, which a RAW link can carry for a
+    PRE-BARRIER candidate: with a live rival the ladder reaches rung 8 FIRST,
+    so the enrichment would have declared `mandate_not_alive` -- a death
+    derived from frozen values `AL-4` says prove nothing -- before rung 9 ever
+    ran.  The three-valued answer for a pre-barrier subject is UNPROVABLE,
+    which falls through to `ambiguous_ticker_orders`.
+
+    The link is FORGED by raw INSERT with the minting trigger suppressed and
+    RESTORED VERBATIM, because an honestly minted link on a pre-barrier fire
+    carries the honest tier -- which is exactly why the existing pre-barrier
+    row could not reach this.
+    """
+    from tests._latch_link_fixtures_22a import (
+        insert_intent, place_row, validity_row,
+    )
+
+    conn, cfg, subject, rival = _mixed_barrier_world(tmp_path, "r4m2")
+    try:
+        # The PRE-barrier fire is `rival`; make it the SUBJECT of the ladder
+        # and give the POST-barrier fire a genuine live order to compete.
+        accept(conn, subject, key="r4m2-live", broker_order_id="r4m2-live")
+
+        run_id, ticker, detection = conn.execute(
+            "SELECT c.evaluation_run_id, c.ticker, e.action_session_date "
+            "FROM candidates c JOIN evaluation_runs e "
+            "ON e.id = c.evaluation_run_id WHERE c.id = ?",
+            (rival,)).fetchone()
+        common = {
+            "evaluation_run_id": int(run_id), "ticker": str(ticker),
+            "detection_date": str(detection),
+            "action_session_date": ACCEPT_SESSION.isoformat(),
+            "recorded_ts": f"{ACCEPT_SESSION.isoformat()}T10:00:00",
+        }
+        saved = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+            "AND name = 'trg_latch_link_mint_on_acceptance'").fetchone()[0]
+        conn.execute("DROP TRIGGER trg_latch_link_mint_on_acceptance")
+        try:
+            place_id = insert_intent(conn, place_row(
+                rival, idempotency_key="r4m2-s-place", **common))
+            validity_id = insert_intent(conn, validity_row(
+                rival, place_id, key="r4m2-s-validity",
+                actual_broker_order_id=BROKER_ORDER_ID, **common))
+            pivot, stop = conn.execute(
+                "SELECT pivot, initial_stop FROM candidates WHERE id = ?",
+                (rival,)).fetchone()
+            conn.execute(
+                "INSERT INTO latch_order_mandate_links (validity_intent_id, "
+                "place_intent_id, candidate_id, evaluation_run_id, ticker, "
+                "detection_date, broker_order_id, frozen_pivot, "
+                "frozen_invalidation, actual_quantity, freeze_tier, linked_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 10, "
+                "'live_at_acceptance', '2026-07-24T12:00:00Z')",
+                (validity_id, place_id, rival, int(run_id), str(ticker),
+                 str(detection), BROKER_ORDER_ID, pivot, stop))
+            conn.commit()
+        finally:
+            conn.execute(saved)
+            conn.commit()
+
+        forged = [o for o in find_accepted_latch_order(
+            conn, broker_order_id=BROKER_ORDER_ID) if o.candidate_id == rival]
+        assert len(forged) == 1, forged
+        order = forged[0]
+        assert order.freeze_tier == "live_at_acceptance", (
+            "the forgery must CARRY the live tier, or the case is about an "
+            "honestly minted link")
+
+        from swing.data.repos.candidates_immutability_epoch import (
+            freeze_tier_for_candidate,
+        )
+        read_time, installed = freeze_tier_for_candidate(conn, rival)
+        assert installed and read_time == FREEZE_TIER_PRE_BARRIER, (
+            "the READ-TIME verdict must disagree with the stored attestation, "
+            "or this row measures nothing")
+
+        verdict = authorize(conn, cfg, order)
+        assert verdict.decline_reason == "ambiguous_ticker_orders", (
+            "the enrichment declared a death proven from a FORGED stored "
+            "tier, over frozen values AL-4 says prove nothing")
+        assert verdict.clear_reason is None
+    finally:
+        conn.close()

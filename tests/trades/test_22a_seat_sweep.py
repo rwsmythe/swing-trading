@@ -25,11 +25,19 @@ feeling (recipe §5, "report every count with the method that produced it"):
      which is the whole point: the next omission is a VISIBLE LINE.
 
 **MEASURED 2026-09-01 on the leg's FINAL tree, and the numbers are the sweep's
-result: 74 functions pin a refusal reason; 16 of them build more than one
+result: 76 functions pin a refusal reason; 18 of them build more than one
 accepted order; 1 was CHANGED** -- `4c-i`, whose second leg had been resolved
 at the PROBE grain with the divergence declared in its docstring (honest, and
-a resolution nobody had ruled).  The other fifteen each pass an explicitly
+a resolution nobody had ruled).  The other seventeen each pass an explicitly
 named order into the ladder, so the seat is stated in the call.
+
+**AND THE BUILDER ROSTER ITSELF FAILED ONCE, which is worth recording in the
+module whose subject IS roster failure (Codex 22A-FIX-R4-05).**  A fixture that
+suppresses the minting trigger and writes `latch_order_mandate_links` by hand
+creates a SECOND accepted link -- a second seat -- while calling ONE NAMED
+builder, so the walk classified it single-order and never asked for its seat.
+The walk counts raw link INSERTs as well as builder calls now, and the
+multi-order count moved 16 -> 18.
 
 **AN EARLIER RUN OF THIS SWEEP REPORTED 57 AND 8, AND BOTH HALVES OF THE
 DIFFERENCE ARE WORTH RECORDING.**  Eight of the extra multi-order cases became
@@ -54,6 +62,7 @@ FROZEN CLOCK: nothing here reads a clock.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -91,6 +100,16 @@ ORDER_BUILDERS = frozenset({
     "accept", "_accept", "accept_and_link", "_accept_no_assert",
     "_forged_link", "order_for_candidate", "_mint_drifted_citation",
 })
+
+# AND A RAW LINK INSERT IS AN ORDER TOO (Codex 22A-FIX-R4-05, verified by
+# executing this sweep against the test it missed).  A fixture that suppresses
+# the minting trigger and writes `latch_order_mandate_links` by hand creates a
+# SECOND accepted link -- a second seat -- while calling ONE named builder, so
+# the walk classified it single-order and never asked for its seat.  That is
+# the roster failure this module exists to prevent, arriving through the
+# roster the module itself keeps.
+_RAW_LINK_INSERT = re.compile(
+    r"INSERT\s+INTO\s+latch_order_mandate_links\b", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # THE DECLARED ROSTER: every reason-pinning test whose world has MORE THAN ONE
@@ -158,6 +177,17 @@ SEATS: dict[tuple[str, str], str] = {
     (_T6A, "test_two_live_orders_on_one_ticker_are_ambiguous_case_4c_ii"):
         "the subject's seat -- and 4c-ii is the case where BOTH seats give "
         "the SAME reason, which is why it is the cardinality half",
+    # TWO MORE, found when the walk learned to see a RAW LINK INSERT (Codex
+    # 22A-FIX-R4-05).  Both build their second accepted link by suppressing
+    # the minting trigger and writing the row by hand, so they called ONE
+    # named builder and were classified single-order.
+    (_T6A, "test_a_competitor_link_with_no_validity_siblings_is_unprovable"):
+        "the subject's seat; the orphan-place link is population, and its own "
+        "seat is never evaluated",
+    (_T6A,
+     "test_R4M2_a_FORGED_live_stored_tier_does_not_prove_the_subject_dead"):
+        "the PRE-BARRIER subject's seat, with the forged live tier -- the "
+        "post-barrier fire's order is the live rival that makes rung 8 fire",
 }
 
 
@@ -195,6 +225,8 @@ def _reason_pinning_functions() -> dict[tuple[str, str], int]:
                         else getattr(node.func, "attr", ""))
                 if name in ORDER_BUILDERS:
                     calls += 1
+            segment = ast.get_source_segment(source, fn) or ""
+            calls += len(_RAW_LINK_INSERT.findall(segment))
             out[(module, fn.name)] = calls
     return out
 
@@ -250,11 +282,15 @@ def test_the_sweep_numbers_and_the_method_that_produced_them() -> None:
     make both directions above vacuous.
     """
     pins = _reason_pinning_functions()
-    assert len(pins) >= 74, (
-        f"the walk finds {len(pins)} reason-pinning tests; it found 74 when "
+    assert len(pins) >= 76, (
+        f"the walk finds {len(pins)} reason-pinning tests; it found 76 when "
         f"the sweep was run, so it has stopped matching")
-    assert len(_multi_order_pins()) >= 16, len(_multi_order_pins())
+    assert len(_multi_order_pins()) >= 18, len(_multi_order_pins())
     assert ORDER_BUILDERS, "the builder roster is empty; nothing can be multi"
+    assert _RAW_LINK_INSERT.search(
+        "INSERT INTO latch_order_mandate_links (a) VALUES (1)"), (
+        "the raw-link matcher has stopped matching, which would silently "
+        "return the sweep to its 16-case blind spot")
 
 
 def _first_function(source: str):

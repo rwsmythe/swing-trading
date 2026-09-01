@@ -110,23 +110,73 @@ _BOUND_INPUT = re.compile(
     r"\s*(?:=|IS)\s*(?:\(SELECT|NEW\.)")
 
 
-def _migration_sql() -> str:
-    """The migration with COMMENT LINES BLANKED (Codex 22A-FIX-R3-02).
+_NL = chr(10)
+
+
+def _strip_sql_comments(text: str) -> str:
+    """SQL with ``--`` tails and ``/* */`` blocks removed, NEWLINES PRESERVED.
 
     **A COMMENT IS NOT A PREDICATE, and both walks used to read one as one.**
-    MEASURED by the reviewer's mutation: appending a comment line containing
-    `json_extract(..., '$.authorization.comment_only_guard.input') =
-    NEW.some_column` made BOTH extractors report a clause that does not exist
-    -- so the "exact" SQL-side membership check could be satisfied by PROSE.
-    That is worse than the semantic-equivalence limitation the module already
-    declares: there, the clause exists and may differ; here it need not exist.
+    Round 3 blanked FULL-LINE comments; round 4 measured the residual (Codex
+    22A-FIX-R4-04): an INLINE tail --
 
-    BLANKED RATHER THAN DROPPED, so any line number this module ever reports
-    stays true to the file -- the same discipline the sibling walks use.
+        SELECT 1 -- AND json_extract(..., '$.authorization.k.input') = NEW.x
+
+    -- was still reported by both extractors, so an existing predicate could be
+    DISABLED while its path survived in the comment beside it and both
+    advertised SQL directions stayed green.
+
+    STRING-AWARE, because SQL paths live inside single-quoted literals and a
+    naive `--` strip would cut a legitimate clause containing one.  A doubled
+    `''` inside a literal is SQLite's own escape and is handled by simply
+    toggling: the second quote re-opens and the third closes, which lands on
+    the same state at the literal's end.
+
+    NEWLINES ARE PRESERVED so any line number this module reports stays true
+    to the file -- the same discipline the sibling walks use.
     """
-    return "\n".join(
-        "" if line.lstrip().startswith("--") else line
-        for line in MIGRATION_0037.read_text(encoding="utf-8").splitlines())
+    out: list[str] = []
+    in_string = False
+    in_block = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if in_block:
+            if ch == "*" and nxt == "/":
+                in_block = False
+                i += 2
+                continue
+            out.append(ch if ch == _NL else " ")
+            i += 1
+            continue
+        if in_string:
+            out.append(ch)
+            if ch == "'":
+                in_string = False
+            i += 1
+            continue
+        if ch == "'":
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "-" and nxt == "-":
+            while i < n and text[i] != _NL:
+                i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            in_block = True
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _migration_sql() -> str:
+    return _strip_sql_comments(MIGRATION_0037.read_text(encoding="utf-8"))
 
 
 def _migration_clause_keys() -> set[str]:
@@ -555,13 +605,22 @@ def test_R3M2_a_COMMENT_ONLY_clause_satisfies_neither_walk(monkeypatch) -> None:
     clause = ("         AND json_extract(NEW.cited_latch_probe_json, "
               "'$.authorization.comment_only_guard.input') = NEW.trade_id")
 
-    monkeypatch.setattr(
-        "tests.data.test_22a_authorize_then_abort_closure.MIGRATION_0037",
-        _WriteOnce(real + "\n-- " + clause + "\n"))
-    assert "comment_only_guard" not in _migration_clause_keys(), (
-        "a COMMENT is reported as a clause; the exact membership check can be "
-        "satisfied by prose")
-    assert "comment_only_guard" not in _migration_bound_keys()
+    for label, text in (
+        ("a FULL-LINE comment", real + "\n-- " + clause + "\n"),
+        # 22A-FIX-R4-04: the residual round 3's full-line blanking left.  An
+        # INLINE tail can DISABLE an existing predicate while its path
+        # survives beside it, and both advertised SQL directions stay green.
+        ("an INLINE comment tail",
+         real + "\n         SELECT 1 --" + clause + "\n"),
+        ("a BLOCK comment", real + "\n/*" + clause + "*/\n"),
+    ):
+        monkeypatch.setattr(
+            "tests.data.test_22a_authorize_then_abort_closure.MIGRATION_0037",
+            _WriteOnce(text))
+        assert "comment_only_guard" not in _migration_clause_keys(), (
+            f"{label} is reported as a clause; the exact membership check can "
+            f"be satisfied by prose")
+        assert "comment_only_guard" not in _migration_bound_keys(), label
 
     monkeypatch.setattr(
         "tests.data.test_22a_authorize_then_abort_closure.MIGRATION_0037",
@@ -585,3 +644,63 @@ class _WriteOnce:
 
     def read_text(self, encoding: str = "utf-8") -> str:
         return self._text
+
+
+@pytest.mark.parametrize("field", ["frozen_pivot", "frozen_invalidation"])
+def test_R4M3_a_numeric_LOOKING_blob_FROZEN_value_is_refused(field) -> None:
+    """THE SAME CLASS AS `R3-01`, ON THE FROZEN OPERANDS (Codex
+    22A-FIX-R4-03).
+
+    The broker-limit guard got a storage-class check and these two did not.
+    A numeric-looking BLOB is schema-legal under the link table's own
+    `REAL ... > 0` checks -- SQLite does not apply affinity to a BLOB -- and
+    `float(b"18.34")` succeeds, so the guard PASSED, the snapshot cross-check
+    agreed, the `bytes` survived into the probe evidence, and `json.dumps`
+    raised a bare `TypeError` at the citation writer.
+
+    `frozen_invalidation` had NO finiteness check at all; it is nullable by
+    construction, so the guard has to admit `None` and refuse everything else
+    that is not a real number.  Both halves are asserted.
+    """
+    blob = b"18.34" if field == "frozen_pivot" else b"14.88"
+    assert math.isfinite(float(blob)), "the Python premise"
+    assert _judge(_order(**{field: blob})) == "frozen_value_unavailable"
+    assert _judge(_order(**{field: float("inf")})) == "frozen_value_unavailable"
+    assert _judge(_order()) is None, (
+        "the control: the ordinary order still passes, so the guard refuses "
+        "these shapes and not everything")
+
+
+def test_R4M3_a_NULL_frozen_invalidation_is_still_accepted() -> None:
+    """THE OVER-REFUSAL CONTROL, and it is what keeps the new check narrow.
+
+    `frozen_invalidation` is NULLABLE BY CONSTRUCTION -- the minting trigger
+    lands NULL rather than aborting the operator's ledger write on a junk fire
+    -- so a guard that refused `None` would refuse a shape production mints.
+    """
+    assert _judge(_order(frozen_invalidation=None)) is None
+
+
+def test_R4M4_the_comment_stripper_is_STRING_AWARE() -> None:
+    """A NAIVE `--` STRIP WOULD CUT A LEGITIMATE CLAUSE.
+
+    SQL paths live inside single-quoted literals, and this migration's own
+    clauses contain `'$.authorization....'`.  A stripper that did not track
+    string state would truncate at the first `--` inside one -- turning a
+    correction into a silent under-count, which is the direction that makes
+    both SQL directions vacuous rather than loud.
+
+    The block-comment and doubled-quote arms are asserted too, because a
+    hand-written scanner's edge cases are exactly what nobody re-reads.
+    """
+    live = "SELECT x FROM t WHERE k = '$.a--b' AND y = 1"
+    assert _strip_sql_comments(live) == live, (
+        "a `--` INSIDE a string literal was treated as a comment")
+
+    assert _strip_sql_comments("SELECT 1 -- gone" + _NL + "SELECT 2") == (
+        "SELECT 1 " + _NL + "SELECT 2")
+    assert _strip_sql_comments("SELECT /* gone */ 1").split() == ["SELECT", "1"]
+    assert _NL in _strip_sql_comments("a /* x" + _NL + "y */ b"), (
+        "a block comment must PRESERVE its newlines, or every line number "
+        "this module reports drifts")
+    assert _strip_sql_comments("SELECT 'it''s' -- gone") == "SELECT 'it''s' "

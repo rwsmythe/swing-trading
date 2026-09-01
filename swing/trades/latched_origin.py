@@ -1000,8 +1000,28 @@ def assert_fill_consistent_with_order(
     # non-finite input BY DESIGN, and that exception escaped the whole ladder.
     # Refused HERE, before any arithmetic, under the reason that says what is
     # true: the frozen value cannot be used.
+    #
+    # AND THE STORAGE CLASS IS CHECKED BEFORE THE CONVERSION HERE TOO (Codex
+    # 22A-FIX-R4-03).  `math.isfinite(float(x))` is not a type test: a
+    # numeric-LOOKING BLOB is schema-legal under the link table's own
+    # `REAL ... > 0` checks (SQLite does not apply affinity to a BLOB), and
+    # `float(b"18.34")` succeeds -- so the guard PASSED, the snapshot
+    # cross-check agreed, the `bytes` survived into the probe evidence, and
+    # `json.dumps` raised a bare `TypeError` at the citation writer.  The
+    # authorize-then-abort shape again, on the FROZEN operands rather than on
+    # the broker limit.
     if (order.frozen_pivot is None
+            or isinstance(order.frozen_pivot, bool)
+            or not isinstance(order.frozen_pivot, (int, float))
             or not math.isfinite(float(order.frozen_pivot))):
+        return "frozen_value_unavailable"
+    # THE INVALIDATION IS THE SAME OPERAND CLASS and was never checked at all:
+    # it is nullable by construction, it is read by the probe's snapshot
+    # cross-check, and it reaches the same evidence blob.
+    if order.frozen_invalidation is not None and (
+            isinstance(order.frozen_invalidation, bool)
+            or not isinstance(order.frozen_invalidation, (int, float))
+            or not math.isfinite(float(order.frozen_invalidation))):
         return "frozen_value_unavailable"
 
     # AND THE BROKER'S OWN LIMIT IS THE SAME SHAPE, ONE COLUMN OVER (Codex
@@ -1190,6 +1210,38 @@ def _subject_death_if_proven(
     entry, and an escape here would charge that entry for cohort bookkeeping.
     """
     if order.freeze_tier != FREEZE_TIER_LIVE_AT_ACCEPTANCE:
+        return None
+    # **THE STORED TIER IS AN ATTESTATION; THE READ-TIME TIER IS A VERDICT --
+    # AND PROVEN DEATH NEEDS BOTH (Codex 22A-FIX-R4-02).**  Rung 9 says this
+    # in as many words and checks both; this enrichment checked only the
+    # stored column, which a RAW link can carry for a PRE-BARRIER candidate.
+    # With a live rival the ladder reaches rung 8 FIRST, so the enrichment
+    # would have declared `mandate_not_alive` -- a death derived from frozen
+    # values `AL-4` says prove nothing -- before rung 9 ever ran.  The
+    # three-valued answer for a pre-barrier subject is UNPROVABLE, which falls
+    # through to `ambiguous_ticker_orders`.
+    #
+    # The read is the SAME reader rung 9 consults, so the two cannot drift.
+    from swing.data.repos.candidates_immutability_epoch import (
+        freeze_tier_for_candidate,
+    )
+    try:
+        read_time_tier, installed = freeze_tier_for_candidate(
+            conn, order.candidate_id)
+    except Exception as exc:  # noqa: BLE001 -- ignorance, not a crash
+        log.warning(
+            "22-A: the epoch reader failed while choosing a refusal reason "
+            "for link %s (%s: %s); the tier is UNPROVABLE and the ladder "
+            "keeps the less specific reason",
+            order.link_id, type(exc).__name__, exc)
+        return None
+    if not installed or read_time_tier != FREEZE_TIER_LIVE_AT_ACCEPTANCE:
+        log.warning(
+            "22-A: link %s stores %r but the READ-TIME tier is %r "
+            "(barrier installed: %s); a stored tier is an attestation, so "
+            "this subject's death is UNPROVABLE and the ladder keeps "
+            "ambiguous_ticker_orders",
+            order.link_id, order.freeze_tier, read_time_tier, installed)
         return None
     try:
         verdict = mandate_alive_at(
