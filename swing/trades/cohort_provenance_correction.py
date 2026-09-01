@@ -2496,7 +2496,15 @@ def correct_cohort_provenance(
         )
         conn.commit()
         return result
-    except Exception:
+    except BaseException:
+        # ``BaseException``, NOT ``Exception`` (reviewer B, P3).
+        # ``KeyboardInterrupt`` / ``SystemExit`` / ``GeneratorExit`` derive
+        # from ``BaseException`` alone, so a Ctrl-C landing between
+        # ``BEGIN IMMEDIATE`` and ``COMMIT`` skipped this rollback and left an
+        # open WRITE transaction -- holding the reservation -- on a connection
+        # the CLI goes on using.  ``_entry_transaction``
+        # (``swing/trades/entry.py``) already catches ``BaseException`` for
+        # this exact reason; two write paths cannot disagree about it.
         with contextlib.suppress(sqlite3.Error):
             conn.rollback()
         raise

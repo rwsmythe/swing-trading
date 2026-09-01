@@ -271,6 +271,40 @@ def test_a_caller_held_transaction_is_REJECTED_not_auto_detected(conn) -> None:
     conn.rollback()
 
 
+def test_a_BASE_exception_mid_write_still_rolls_the_transaction_back(
+        conn, monkeypatch) -> None:
+    """Reviewer B, P3: the handler caught ``Exception``, not ``BaseException``.
+
+    ``KeyboardInterrupt``, ``SystemExit`` and ``GeneratorExit`` derive from
+    ``BaseException`` alone, so a Ctrl-C landing between ``BEGIN IMMEDIATE``
+    and the ``COMMIT`` skipped the rollback entirely and left an open write
+    transaction -- holding the reservation -- on a connection the CLI goes on
+    using.  ``_entry_transaction`` in ``swing/trades/entry.py`` already catches
+    ``BaseException`` for exactly this reason; the two write paths cannot
+    disagree about it.
+
+    PRE-FIX ``conn.in_transaction`` is True after the raise.
+    """
+    ids = build_cadl_case(conn)
+    conn.commit()
+
+    import swing.trades.cohort_provenance_correction as mod
+
+    def _interrupted(*a, **kw):
+        raise KeyboardInterrupt("planted between BEGIN IMMEDIATE and COMMIT")
+
+    monkeypatch.setattr(mod, "_correct_cohort_provenance_inner", _interrupted)
+    with pytest.raises(KeyboardInterrupt, match="planted between"):
+        correct_cohort_provenance(
+            conn, trade_id=ids["trade_id"],
+            cited_candidate_id=ids["candidate_id"],
+            cited_recommendation_id=ids["daily_recommendation_id"],
+            reason=REASON)
+    assert not conn.in_transaction, (
+        "the write transaction leaked; the next caller inherits a write "
+        "reservation it did not take")
+
+
 def test_a_failure_mid_sequence_leaves_no_partial_write(conn, monkeypatch):
     """Forced by patching the audit INSERT to raise, then asserting the trade
     row is unchanged after rollback -- so the UPDATE cannot commit alone."""
