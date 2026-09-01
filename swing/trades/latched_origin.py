@@ -1134,6 +1134,67 @@ def _refuse(reason: str, order: AcceptedLatchOrder, **fields) -> LatchedProvenan
         decline_reason=reason, order=order, **fields)
 
 
+def _subject_death_if_proven(
+    conn,
+    cfg,
+    *,
+    order: AcceptedLatchOrder,
+    fill_session: date,
+    exclude_trade_ids: frozenset[int],
+) -> LatchedProvenance | None:
+    """The SUBJECT's own probe verdict when its mandate is PROVEN DEAD, else
+    ``None`` -- rung 8's legibility enrichment (case 4c-i).
+
+    **THE SELECTION IS THREE-VALUED, AND THAT IS CHARC'S BINDING ADDITION.**
+    The subject's own liveness is the same three-valued quantity S2.4b already
+    ruled on for the competitor POPULATION:
+
+        proven DEAD  -> the specific reason (this function's return)
+        proven LIVE  -> fall through to ``ambiguous_ticker_orders``
+        UNPROVABLE   -> fall through to ``ambiguous_ticker_orders``
+
+    A two-valued *"the probe did not admit, so it is dead"* check reintroduces
+    exactly the inversion ``R3-03`` corrected in the population rule -- the
+    same defect, in the same file, ONE RUNG OVER.  It was written, run and
+    discarded: on the junk-pivot fixture it answered ``frozen_value_unavailable``
+    where the world supports only ``ambiguous_ticker_orders``, asserting a
+    state nothing established.  ``test_an_UNPROVABLE_subject_beside_a_live_
+    rival_stays_AMBIGUOUS`` is what fails it.
+
+    **AL-4 APPLIES TO THE SUBJECT EXACTLY AS RUNG 8 ALREADY APPLIES IT TO A
+    COMPETITOR, and this REUSES that encoding rather than authoring a second.**
+    ``mandate_not_alive`` rests on the frozen pivot and stop the link carries,
+    and a ``pre_barrier_reconstructed`` link's pair was copied from a
+    ``candidates`` row that was NOT immutable when it was read -- so a
+    pre-barrier link's death is UNPROVABLE.  The STORED tier is what is read,
+    which is the competitor branch's own predicate verbatim.
+
+    THE VERDICT IS RETURNED, NEVER RE-SPELLED.  ``clear_reason`` and
+    ``clear_session`` come from the authority that derived them, so the ladder
+    cannot report a terminal the probe did not produce.
+
+    A PROBE FAILURE IS IGNORANCE, NOT DEATH.  Containment is by CLASS, not by
+    a type roster (SS-2): this runs on the refusal path of a money-bearing
+    entry, and an escape here would charge that entry for cohort bookkeeping.
+    """
+    if order.freeze_tier != FREEZE_TIER_LIVE_AT_ACCEPTANCE:
+        return None
+    try:
+        verdict = mandate_alive_at(
+            conn, cfg, order=order, fill_session=fill_session,
+            exclude_trade_ids=exclude_trade_ids)
+    except Exception as exc:  # noqa: BLE001 -- ignorance, not a crash
+        log.warning(
+            "22-A: the subject's own liveness probe failed while choosing a "
+            "refusal reason for link %s (%s: %s); the state is UNPROVABLE and "
+            "the ladder keeps the less specific reason",
+            order.link_id, type(exc).__name__, exc)
+        return None
+    if verdict.admitted or verdict.decline_reason != "mandate_not_alive":
+        return None
+    return verdict
+
+
 def _authorization_block(inputs: dict) -> dict:
     """``{key: {"input": ..., "verdict": "pass"}}`` over the WHOLE roster."""
     missing = sorted(set(AUTHORIZATION_KEYS) - set(inputs))
@@ -1590,6 +1651,29 @@ def authorize_accepted_order(
             conn, cfg, order=order, fill_session=fill_session,
             exclude_trade_ids=exclude_trade_ids)
         if reason is not None:
+            # WHERE TWO REFUSALS ARE BOTH TRUE, PREFER THE MORE SPECIFIC
+            # (orchestrator-proposed, CHARC-approved 2026-09-01; case 4c-i).
+            #
+            # S3.4c says the envelope naming the DEAD order refuses
+            # `mandate_not_alive`.  From the dead order's SEAT the subject is
+            # a genuinely proven-LIVE competitor, so rung 8 fires first and
+            # the ladder answered `ambiguous_ticker_orders` -- and BOTH are
+            # true of that world.  A LADDER EVALUATED FROM A SEAT MAKES THE
+            # REFUSAL REASON A PROPERTY OF `(world, seat)`, NOT OF THE WORLD;
+            # S3.4c pinned a reason without naming whose seat, and that one
+            # missing word read as a contradiction, then as a fixture defect,
+            # then as a rung-ordering question.
+            #
+            # Rung 8 STILL RUNS FIRST AND STILL REFUSES.  This only chooses a
+            # better reason, so IT CAN NEVER CONVERT A REFUSAL INTO AN
+            # ADMISSION -- the safe direction under the governing asymmetry,
+            # and the reason reordering rung 9 before rung 8 was rejected.
+            if reason == "ambiguous_ticker_orders":
+                specific = _subject_death_if_proven(
+                    conn, cfg, order=order, fill_session=fill_session,
+                    exclude_trade_ids=exclude_trade_ids)
+                if specific is not None:
+                    return specific
             return _refuse(reason, order)
 
     # RUNG 9 -- RD'S REFUSE-BY-DEFAULT, and CHARC's read-time existence check.

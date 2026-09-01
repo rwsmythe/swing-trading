@@ -193,6 +193,20 @@ def test_a_dead_rival_is_dropped_and_its_own_leg_refuses_case_4c_i(
     and its terminal session (2026-07-20, strictly before the fill).  A rival
     whose window also contained the fill was the free dimension that once made
     an identity test pass an identity-IGNORING implementation.
+
+    **THE SECOND LEG IS AT THE LADDER GRAIN S3.4c SPECIFIES, AND THE GRAIN DID
+    NOT MOVE** (semantic re-audit 2026-08-31; ruled 2026-09-01).  This
+    docstring previously recorded that the ladder answers
+    ``ambiguous_ticker_orders`` from the rival's seat and that asserting it
+    here would pin the wrong half -- honest at the time, and a resolution
+    NOBODY HAD RULED, which is why the audit graded the row UNVERIFIABLE.
+    Both refusals were TRUE of that world, because a ladder evaluated from a
+    SEAT makes the reason a property of ``(world, seat)``: from the dead
+    order's seat the subject is a genuinely proven-LIVE competitor.  Rung 8
+    now prefers the MORE SPECIFIC of two true refusals, so S3.4c is satisfied
+    as written, at the ladder grain, with no grain change -- and the probe leg
+    is kept beside it, so the ladder cannot pass by returning a string that
+    merely matches.
     """
     conn, cfg, subject = build_world(tmp_path, "4ci")
     try:
@@ -208,13 +222,18 @@ def test_a_dead_rival_is_dropped_and_its_own_leg_refuses_case_4c_i(
         assert verdict.probe_evidence["authorization"][
             "rung8_competitor_link_ids"]["input"] == [rival_order.link_id]
 
-        # THE SECOND LEG, taken at the PROBE and not at the whole ladder.
-        # The rival's own mandate really is dead -- which is what makes
-        # dropping it correct rather than merely convenient.  Running the FULL
-        # ladder on the rival returns `ambiguous_ticker_orders` instead, and
-        # that is not a defect: from the rival's seat the SUBJECT is a live
-        # competing order, so rung 8 fires before the probe ever runs.
-        # Asserting the ladder's reason here would have pinned the wrong half.
+        # THE SECOND LEG, AT THE LADDER GRAIN S3.4c SPECIFIES.
+        ladder = authorize(conn, cfg, rival_order)
+        assert ladder.admitted is False, (
+            "the more-specific-reason rule must never convert a refusal into "
+            "an admission")
+        assert ladder.decline_reason == "mandate_not_alive"
+        assert ladder.clear_reason == "superseded"
+        assert ladder.clear_session == ANCHOR
+
+        # AND THE PROBE AGREES.  Kept beside the ladder leg so the ladder
+        # cannot pass by producing a reason string that merely matches: the
+        # terminal it reports comes from the authority that derived it.
         other = mandate_alive_at(
             conn, cfg, order=rival_order, fill_session=FILL_SESSION,
             exclude_trade_ids=NO_EXCLUSIONS)
@@ -695,5 +714,113 @@ def test_a_competitor_link_with_no_validity_siblings_is_unprovable(
         verdict = authorize(conn, cfg, subject_order)
         assert verdict.admitted is False
         assert verdict.decline_reason == "competitor_liveness_unverifiable"
+    finally:
+        conn.close()
+
+
+# ===========================================================================
+# THE RUNG-8 LEGIBILITY ENRICHMENT -- WHERE TWO REFUSALS ARE BOTH TRUE, PREFER
+# THE MORE SPECIFIC (orchestrator-proposed, CHARC-approved 2026-09-01)
+#
+# S3.4c's second leg says the envelope naming the DEAD order refuses
+# `mandate_not_alive`.  From the dead order's SEAT the SUBJECT is a genuinely
+# proven-LIVE competitor, so rung 8 fired first and the ladder answered
+# `ambiguous_ticker_orders` -- and the audit graded 4c-i UNVERIFIABLE on that
+# disagreement.  **A LADDER EVALUATED FROM A SEAT MAKES THE REFUSAL REASON A
+# PROPERTY OF `(world, seat)`, NOT OF THE WORLD** (CHARC, now canon): S3.4c
+# pinned a reason without naming whose seat, and that one missing word read as
+# a contradiction, then a fixture defect, then a rung-ordering question.
+#
+# The fix chooses a better REASON and can never convert a refusal into an
+# admission -- the safe direction under the governing asymmetry -- so S3.4c is
+# satisfied AS WRITTEN, at the LADDER grain, with no grain change.
+#
+# **THE SELECTION IS THREE-VALUED, AND THAT IS CHARC'S BINDING ADDITION.**
+#     proven DEAD -> the specific reason
+#     proven LIVE -> fall through to `ambiguous_ticker_orders`
+#     UNPROVABLE  -> fall through to `ambiguous_ticker_orders`
+# A two-valued "dead or not-dead" check reintroduces exactly the inversion
+# `R3-03` corrected in the POPULATION rule -- the same defect, in the same
+# file, one rung over.  The discriminating case below is what fails it.
+# ===========================================================================
+def test_an_UNPROVABLE_subject_beside_a_live_rival_stays_AMBIGUOUS(
+        tmp_path) -> None:
+    """**THE DISCRIMINATING CASE, AND IT IS MANDATORY** (CHARC).
+
+    The subject's own fire carries a JUNK pivot, so the minting trigger lands
+    NULL frozen values and its own probe answers `frozen_value_unavailable` --
+    UNPROVABLE, not dead.  Beside it stands a genuinely live accepted order.
+
+    A THREE-VALUED selection falls through to `ambiguous_ticker_orders`.  A
+    two-valued "the probe did not admit, so it is dead" selection answers
+    `mandate_not_alive` and asserts a death nothing established -- which is
+    `R3-03`'s inversion, in the same file, one rung over.
+
+    The junk link's freeze tier is asserted LIVE so the case cannot pass for
+    the unrelated reason that the pre-barrier gate short-circuited it before
+    the probe ran.
+    """
+    conn, cfg, ordinary = build_world(tmp_path, "unprovable-subject")
+    try:
+        junk = seed_fire(conn, run_id=162, action_session=date(2026, 7, 22),
+                         ticker=TICKER, pivot=-1.0, initial_stop=13.00)
+        conn.commit()
+        accept(conn, ordinary, key="ups-o", broker_order_id=BROKER_ORDER_ID)
+        junk_order = accept(conn, junk, key="ups-j",
+                            broker_order_id="ups-junk")
+        assert junk_order.frozen_pivot is None, "the trigger's CASE did not fire"
+        assert junk_order.freeze_tier == "live_at_acceptance", (
+            "the case must reach the PROBE, not stop at the pre-barrier gate")
+
+        # THE PREMISE, measured: the subject's own state is UNPROVABLE, and it
+        # is specifically NOT `mandate_not_alive`.
+        own = mandate_alive_at(
+            conn, cfg, order=junk_order, fill_session=FILL_SESSION,
+            exclude_trade_ids=NO_EXCLUSIONS)
+        assert own.admitted is False
+        assert own.decline_reason == "frozen_value_unavailable", (
+            f"the fixture must be UNPROVABLE, not dead (got "
+            f"{own.decline_reason})")
+
+        verdict = authorize(conn, cfg, junk_order)
+        assert verdict.decline_reason == "ambiguous_ticker_orders", (
+            "an UNPROVABLE subject was reported DEAD; the selection is "
+            "two-valued and has reintroduced R3-03's inversion one rung over")
+        assert verdict.clear_reason is None, (
+            "a terminal was reported for a mandate whose state was never "
+            "established")
+    finally:
+        conn.close()
+
+
+def test_a_PRE_BARRIER_subject_cannot_prove_its_own_death_either(
+        tmp_path) -> None:
+    """AL-4, applied to the SUBJECT exactly as rung 8 already applies it to a
+    COMPETITOR.
+
+    `mandate_not_alive` rests on the frozen pivot and stop the link carries,
+    and a `pre_barrier_reconstructed` link's pair was copied from a
+    `candidates` row that was NOT immutable when it was read -- so a
+    pre-barrier subject's death is UNPROVABLE and the ladder must not name it.
+
+    Rung 9 would refuse `pre_barrier_unproven` for this order anyway, which is
+    exactly why this row asserts the RUNG-8 reason: it pins that the
+    enrichment did not reach past its own gate and mint a death claim the
+    arc's own limitation forbids.
+    """
+    conn, cfg, subject = build_world(
+        tmp_path, "pre-barrier-subject", pre_barrier=True)
+    try:
+        live = live_rival_fire(conn, run_id=170, session=date(2026, 7, 22))
+        conn.commit()
+        accept(conn, live, key="pbs-live", broker_order_id="pbs-live-order")
+        pre = accept(conn, subject, key="pbs-s",
+                     broker_order_id=BROKER_ORDER_ID)
+        assert pre.freeze_tier == FREEZE_TIER_PRE_BARRIER, (
+            "the fixture must carry the pre-barrier tier or it measures "
+            "nothing about AL-4")
+        verdict = authorize(conn, cfg, pre)
+        assert verdict.decline_reason == "ambiguous_ticker_orders", (
+            "a pre-barrier subject's death was reported as PROVEN")
     finally:
         conn.close()

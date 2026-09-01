@@ -1280,8 +1280,28 @@ declined entry says which one fired**:
 | 5 | **no cancellation of this broker order at-or-before the fill** (S2.4c) | `order_cancelled` / `cancel_ordering_ambiguous` |
 | 6 | **no other trade has consumed THIS ORDER** (S2.4a) | `mandate_already_consumed` |
 | 7 | **consumption evidence is INTACT for every fill it must scan** (S2.4a) | `consumption_evidence_unavailable` |
-| 8 | **exactly ONE competitor-free accepted link on this TICKER** (S2.4b) | `ambiguous_ticker_orders` / `competitor_liveness_unverifiable` |
+| 8 | **exactly ONE competitor-free accepted link on this TICKER** (S2.4b) | `ambiguous_ticker_orders` / `competitor_liveness_unverifiable` / `mandate_not_alive` (see below) |
 | 9 | **the link's STORED `freeze_tier` is `live_at_acceptance`, AND both barrier triggers exist at READ time** (S2.4d, S2.4d.1) | `pre_barrier_unproven` / `barrier_not_installed` |
+
+**RUNG 8'S LEGIBILITY ENRICHMENT -- WHERE TWO REFUSALS ARE BOTH TRUE, PREFER THE MORE SPECIFIC
+(orchestrator-proposed, CHARC-approved 2026-09-01; case 4c-i).** When rung 8 is about to refuse
+`ambiguous_ticker_orders`, it evaluates the SUBJECT's own liveness and refuses with
+`mandate_not_alive` (carrying its `clear_reason` / `clear_session`) if the subject's own mandate is
+PROVEN dead. **Rung 8 still runs first and still refuses; it only chooses a better reason, so it can
+never convert a refusal into an admission** -- the safe direction under the governing asymmetry, and
+why reordering rung 9 before rung 8 was rejected (that trade would swap wrong-acceptance posture for
+legibility).
+
+> **THE SELECTION IS THREE-VALUED, AND THAT IS BINDING (CHARC).** The subject's own liveness is the
+> same three-valued quantity S2.4b already ruled on for the competitor POPULATION:
+> **proven DEAD -> the specific reason; proven LIVE -> fall through to `ambiguous_ticker_orders`;
+> UNPROVABLE -> fall through to `ambiguous_ticker_orders`.** A two-valued *"dead or not-dead"* check
+> reintroduces exactly the inversion `R3-03` corrected in the population rule -- the same defect, in
+> the same file, one rung over. Its discriminating case is mandatory and lives at
+> `tests/trades/test_22a_task6a_competitor_liveness.py::test_an_UNPROVABLE_subject_beside_a_live_rival_stays_AMBIGUOUS`.
+> **AL-4 binds here too:** a `pre_barrier_reconstructed` link's frozen pair was copied from a
+> `candidates` row that was not immutable when it was read, so a pre-barrier subject's death is
+> UNPROVABLE and the enrichment does not name it -- the competitor branch's own predicate, reused.
 
 **THE LINK DUPLICATES; RUNG 3c BINDS THE DUPLICATES BACK (review 22A-R7-04).** The link table copies
 `broker_order_id`, `actual_quantity`, `ticker`, `evaluation_run_id` and `detection_date` from rows
@@ -1934,10 +1954,30 @@ implementation refuses on per-ticker cardinality -- and an implementation that I
 submitted order id but implements the same cardinality rung produces the identical verdict.
 
 * **4c-i (identity, cardinality NOT engaged):** two accepted links on the same ticker, but only
-  ONE is live at the fill session (the other is horizon-expired, so it is not a competitor under
+  ONE is live at the fill session (the other is SUPERSEDED, so it is not a competitor under
   S2.4's population rule). The envelope names the LIVE one -> ADMIT, and assert the admitted fire
-  is that order's. Then the same fixture with the envelope naming the DEAD one -> refuse
-  `mandate_not_alive`. An implementation ignoring the order id cannot produce both verdicts.
+  is that order's. Then the same fixture with the envelope naming the DEAD one, **evaluated FROM
+  THAT ORDER'S OWN SEAT** -> refuse `mandate_not_alive`. An implementation ignoring the order id
+  cannot produce both verdicts.
+
+  > **AMENDMENT 2026-09-01, DECLARED WITH ITS REASON (fixture-nit ruling, CHARC).** This bullet
+  > said *"the other is horizon-expired"*; the shipped fixture builds a SUPERSEDED rival, and the
+  > example moved to the code rather than the code to the example. **Both are proven-dead** --
+  > S2.4b's table at `PLAN:1469ff` lists horizon-expired and superseded under the same
+  > classification -- so the leg this case discriminates is IDENTICAL either way, which is the
+  > boundary the amendment respects: **an incidental example may move to the code when the case's
+  > DISCRIMINATING PURPOSE is provably unchanged; a specified VERDICT, GRAIN, or the property
+  > under test never may.** The test of that is whether the change alters what an implementation
+  > must do to pass, and it does not.
+  >
+  > **AND THE SEAT IS NOW NAMED, which is the substantive half.** *"Refuse `mandate_not_alive`"*
+  > was written without saying whose seat, and **a ladder evaluated from a SEAT makes the refusal
+  > reason a property of `(world, seat)`, not of the world** (CHARC, canon): from the dead order's
+  > seat the subject is a genuinely proven-LIVE competitor, so rung 8 fires and both refusals are
+  > true. That one missing word read as a contradiction, then as a fixture defect, then as a
+  > rung-ordering question -- three readings of one omission. Rung 8 now prefers the MORE SPECIFIC
+  > of two true refusals (S2.4 rung 8), so this bullet is satisfied **as written, at the LADDER
+  > grain, with no grain change.**
 * **4c-ii (cardinality, identity satisfied):** two accepted links BOTH live at the fill session ->
   refuse `ambiguous_ticker_orders` regardless of which the envelope names.
 
