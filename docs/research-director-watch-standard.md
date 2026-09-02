@@ -180,3 +180,46 @@ The nightly step refreshes `latest.json` every pipeline run; the 18-F staleness 
 - **§3 read-discipline addition:** a decision-read / study / golden-gate verification that CITES a shadow-expectancy engine artifact **COPIES the cited ledger files** (`summary.md` / `manifest.json` / `results.csv` / `per_session.csv`) **into the citing study's tracked location** (`research/studies/<study-slug>/artifacts/<artifact-ts>/`) **and commits them with the read.** Rationale: `exports/research/shadow-expectancy-*/` is fully EPHEMERAL (gitignored + keep-90 pruned since `0d560822`) — cited = committed = prune-proof; an uncommitted citation is evidence with a ~2-month fuse.
 - **Contract enforcement:** `tests/research/shadow_expectancy/test_study_doc.py::test_cited_artifacts_are_git_tracked` asserts the cited set is git-tracked (the REAL contract; the old allowlist assertion was aspirational — zero artifacts had ever been committed).
 - **Location convention:** an artifact cited by a non-study doc (e.g. the §2.2 T3 golden gate, cited by THIS standard) lives in the artifacts dir of the study whose program it evidences (the T4 study dir) rather than a bespoke location — RD location-call 2026-07-07.
+
+## Version 2.2 — 2026-09-02 (the maturity gate + two read disciplines; owed by read #2, paid before read #3)
+
+### §3/§5 supplement — THE T4-CLASS MATURITY GATE (binding on every decision read)
+
+A decision read (T4, H1, H2, H4, or any §5 gate) **may not BANK a verdict from a cohort below
+maturity.** The August withdrawal is the evidence: a FIXED cohort's closed-only mean moved
+−1.00 → +0.21 purely by aging, because losers resolve in days at `initial_stop` while winners
+trail out over weeks via `ma_close_below` — a young cohort's closed set measures RESOLUTION
+SPEED, not edge, and maturity dominated the estimate by ~1.2R.
+
+Operationalization (the curve/bracket instrument, `research/studies/2026-08-01-t4-maturity-withdrawal/`):
+
+1. The read reports the **age-bracket table** (closed-only mean R by minimum cohort age in NYSE
+   sessions) and, where a longitudinal artifact series exists, the **fixed-cohort maturity curve**.
+2. The decision number is the bracket at or past the **winner-resolution window** — re-derived
+   per ruleset from the exit-mix columns (the age at which `ma_close_below`-class exits reach
+   steady share), never inherited as a constant. On the current operational ruleset the evidence
+   says ≈30 NYSE sessions.
+3. **BANKING requires BOTH:** (i) cohort age past the winner-resolution window, AND (ii) the
+   decision bracket's confidence width smaller than its distance to the decision boundary.
+   Below either: the verdict is **UNDETERMINED — trajectory reported, nothing banked.**
+4. This amends the READ, not the registry: the frozen criteria are untouched (§5 — a watch read
+   never adjusts a criterion). What changes is what a read may CLAIM from an immature cohort,
+   exactly as the 2026-08-01 withdrawal practiced.
+
+### §3 supplement — THE ARMING-READ DISCIPLINE (item-3 lower bound, generalized)
+
+Any read that decides to **ARM a rule** from a report-only instrument observes this asymmetry:
+report-only would-fire counts are a **LOWER BOUND on armed churn** (topology change under-counts,
+biasing TOWARD arming). A safe-looking bound is therefore **NOT sufficient to arm** — corroborate
+on the topology-stable subset first. A costly-looking bound **IS sufficient not to arm.** The
+asymmetry is the rule; citing the bare would-fire count as arming evidence is the violation.
+
+### §3 supplement — LAPSED LIVE-VS-SHADOW DIVERGENCE IS THE RULE'S MEASURED VALUE (OQ-3)
+
+Once `criteria_lapsed` (or any live-only lifecycle rung) arms, live-vs-shadow divergence on the
+affected cohort is the EXPECTED product of the rule operating — the shadow does not lapse, the
+live does, and **the divergence IS the rule's measured value.** A future read reports it as the
+rule's effect, never as a parity anomaly to reconcile away. Standing corollary (ruled 2026-08-25,
+binding from read #3 onward): the shadow A+ arm's stop geometry (entry-bar-low) differs from the
+live mandate doctrine (frozen candidate stop) BY DESIGN — the arm's mean measures ITS OWN
+geometry, and any report of that mean carries the caveat plus the live-vs-shadow pair table.
