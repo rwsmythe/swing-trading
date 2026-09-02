@@ -181,7 +181,7 @@ The nightly step refreshes `latest.json` every pipeline run; the 18-F staleness 
 - **Contract enforcement:** `tests/research/shadow_expectancy/test_study_doc.py::test_cited_artifacts_are_git_tracked` asserts the cited set is git-tracked (the REAL contract; the old allowlist assertion was aspirational — zero artifacts had ever been committed).
 - **Location convention:** an artifact cited by a non-study doc (e.g. the §2.2 T3 golden gate, cited by THIS standard) lives in the artifacts dir of the study whose program it evidences (the T4 study dir) rather than a bespoke location — RD location-call 2026-07-07.
 
-## Version 2.2 — 2026-09-02 (the maturity gate + two read disciplines; owed by read #2, paid before read #3)
+## Version 2.2 — 2026-09-02 (the maturity gate + two read disciplines; owed by read #2, paid before read #3; OPERATOR-ACKNOWLEDGED 2026-09-02 per §6.5)
 
 ### §3/§5 supplement — THE T4-CLASS MATURITY GATE (binding on every decision read)
 
