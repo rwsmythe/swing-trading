@@ -238,6 +238,30 @@ RD's sharpest observation on `R10-02`: the rollback-failure branch logs *"it MUS
 6. **`22A-R15-04`** and the **`-1` REPLACE residual** — both declared and confirmed accurate by Reviewer B.
 7. **The seat sweep's completeness rests on a builder roster**, which failed once this leg and is now backed
    by a raw-INSERT matcher with its own control.
+8. **`record_entry` RE-RAISES over a row that may already be durable when the commit's own return is lost**
+   — the reverted clause 2, per the §4.4 ruling. **The two reproductions are on record, both by execution
+   against the shipped helpers:** `22A-FIX-R10-02` (VISIBILITY — a rollback that raised *before* taking
+   effect left `_settle_lost_commit` returning `True` with `conn.in_transaction` still `True`: a FALSE
+   SUCCESS carrying a "DURABLE" warning over a merely-pending row) and `22A-FIX-R10-03` (IDENTITY — trade 1
+   was rolled back, a second connection inserted ticker `OTHER` and was issued **id 1**, and the helper
+   confirmed that row as ours; a rolled-back rowid is REUSABLE because `sqlite_sequence` rolls back with the
+   insert). **The direction of the residual is the one the belt covers:** the caller is told the entry
+   failed, retries, and `ux_trades_one_open_per_ticker` REFUSES naming the existing position — a confusing
+   error, not a double position. **The belt does NOT cover a ticker CLOSED between the two attempts**, and
+   that is the uncovered direction. The attempt-identity primitive is the ruled FOLLOW-ON (§4.4 item 3); it
+   is deliberately NOT built here. Pinned in code by
+   `test_CONTRACT_a_commit_whose_own_return_was_LOST_re_raises` (both paths) and declared at the site, above
+   `_entry_transaction` in `swing/trades/entry.py`.
+
+**What clause 1's two boundary defects cost, now that they are fixed:** `R10-01` was the post-commit guard
+opening one frame too late — it began only after the `with _entry_transaction(...)` statement had fully
+exited, so an exception on the context manager's own return/unwind escaped it **on both paths**, with the
+row durable. The `try` now opens **before** the `with`, and the gate is `_CommitOutcome.committed` — an
+observation of the commit's own return, which needs neither visibility nor identity and is therefore
+admissible where the clause-2 read was not. `R10-04` was `log.error` running outside containment on the
+degraded path, so a failing sink converted a confirmed durable result into a failure; the degraded result is
+now built first, the log call is contained, and a log failure is itself surfaced as a second warning rather
+than swallowed.
 
 **Registry edit flagged for RD, not silently taken:** case `15e`'s ownership moved task 1 → task 8 (registry
 N11) on the implementer's judgment, because S5.1's reason view assigns it `no_envelope` — a RESOLVER verdict
