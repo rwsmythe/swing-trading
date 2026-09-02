@@ -206,6 +206,12 @@ RD's sharpest observation on `R10-02`: the rollback-failure branch logs *"it MUS
 2. **CLAUSE 2 REVERTS TO RE-RAISE** — pre-contract behaviour, belt-mitigated, and **HONEST: it never claims a row exists.** Now canon (RD): **alarm-never-assert at the transaction boundary — the function may RAISE the alarm (indeterminate) but may never ASSERT durability from evidence that cannot identify the attempt.** The residual is **DECLARED** with the `R10` reproductions on record, in the one direction the belt covers.
 3. **The attempt-identity primitive is a FOLLOW-ON** with its constraints already ruled: **CO-DURABLE** (written in the same transaction as the row it identifies; anything else is a stamp — gotcha #30), **UNIQUE PER ATTEMPT** (survives rollback-and-retry without collision; rowid fails by construction), **DURABLE-VISIBILITY READ** (a fresh connection, or after a PROVEN resolution). CHARC's preferred shape, to be *verified not inherited* at commissioning: a client-generated `attempt_id` on the entry row written in the same INSERT, nullable for legacy rows, UNIQUE partial index `WHERE NOT NULL` — additive, no rebuild; a §3 schema tripwire getting its own pass. Clause 2 returns on top of it, gated by RD's two discriminators: **rollback-raises-then-read must NOT return SUCCESS**, and **a concurrent insert taking the same id must NOT be confirmed as ours.**
 
+**THE SPLIT IS IMPLEMENTED** (`098ba319` + `e6464a60`): `_settle_lost_commit` and `_entry_is_durable` are DELETED with both call sites (verified — the three remaining name-mentions in `entry.py` are the declaration's own prose recording what was removed); `R10-01` fixed by opening `record_entry`'s `try` BEFORE the `with _entry_transaction(...)` so the generator's unwind is inside the guard, gated on a `committed` flag set on both paths; `R10-04` fixed by building the degraded result first and containing the log call.
+
+**AND CLAUSE 1 DOES NOT YET REACH THE OPERATOR — a limitation this request states rather than lets the ruling imply otherwise.** Round 11's `R11-02`, verified by the orchestrator at the sites: **`post_commit_warnings` has ZERO readers anywhere in `swing/`** (it appears only inside `entry.py` itself), and `swing/web/routes/trades.py:1490` calls `record_entry(...)` **with no assignment at all** — the `EntryResult` is discarded, and `build_dashboard` plus four template renders follow, any of which can 500 **over a durable trade**. `swing/cli.py:790` assigns the result and never reads the field.
+
+**So clause 1 closes the failure-conversion direction INSIDE THE SERVICE and stops at the service boundary.** The "do NOT retry" signal reaches nobody. That does not make keeping clause 1 wrong — the service contract is the precondition for the caller work, and it needs no attempt identity — but **the claim "clause 1 closes the failure-conversion direction" is broader than what ships**, and this arc has been caught by exactly that gap often enough that it gets written down instead of assumed. **Commissioning the caller half is the FIRST follow-on, ahead of the attempt-identity primitive: a contract with no reader is not yet a contract.**
+
 **THE PRECONDITION CANON, landed at `bf403b05` — this arc's most transferable output:**
 
 > **A RULING THAT PRESCRIBES A MECHANISM STATES THE PRECONDITIONS THAT MAKE ITS EVIDENCE ADMISSIBLE, AND NAMES WHICH OF THEM EXIST TODAY.** A precondition that does not yet exist converts the mechanism into a follow-on with a primitive to build first, not a clause to implement now.
@@ -261,7 +267,31 @@ Continuing generates more instrument findings, not more safety.
 
 ## 7. GATE STATE
 
-*(Final numbers land here when the `R9-03` delta returns; everything above is settled.)*
+**Branch `22-a-fix` @ `e6464a60` — 114 commits off the arc base `a18a3771`, tree clean.**
+
+| | measured by the orchestrator, not carried from any agent's claim |
+|---|---|
+| **Fast suite** | **12,077 passed / 13 skipped / 0 failed** (22m42s, independent re-run on the final head) |
+| **`ruff check swing/`** | All checks passed |
+| **`Co-Authored-By` trailers** | **0** across `a18a3771..22-a-fix`, filtered on the trailer KEY |
+| **Live DB** | **`schema_version = 36`** — re-read at the gate, not carried forward |
+| **`0037` tables** | `fill_envelope_identity` **ABSENT** · `latch_order_mandate_links` **ABSENT** · `candidates_immutability_epoch` **ABSENT** |
+| **Migration `0037`** | **UNAPPLIED** — the fact that kept it editable in place all arc, and three fixes depended on it |
+| **`main`** | 75 commits ahead of origin, UNPUSHED |
+
+**A-loop rounds: 15 (exec) + 11 (fix) = 26, plus 2 Reviewer B passes.** Round 8 was the only clean A verdict. Rounds 7, 8, 9, 10 and 11 each found residuals of the immediately preceding fix — **six consecutive rounds with the cascade signature**, which is the evidence the operator's stop rests on.
+
+**Round 11's six are dispositioned, none fixed** (per the stop): `R11-01` DECLARE (a one-bytecode window between `commit()` returning and the flag assignment — **strictly smaller than the window it replaced**, and no shipped comment overclaims it) · **`R11-02` COMMISSION FIRST** (the caller half; see §4.4) · `R11-03` COMMISSION (the `R9-05` cleanup logs need the same containment applied to their twin — the asymmetry this arc has paid for three times) · `R11-04` DECLARE (**reachability measured NIL**: zero `__repr__` overrides in `swing/`, twelve candidate classes resolved by execution to `BaseException.__repr__`) · `R11-05`, `R11-06` BANK as prose.
+
+## STILL REQUIRED AFTER AUTHORIZATION — in order, none of it done
+
+1. **Rebase `22-a-fix` onto `main`, then `merge --ff-only`.** `main` has moved (director docs, the gotchas at `bf403b05`, the `.gitignore` fix).
+2. **Re-run the fast suite ON THE MERGED HEAD** and read the result before claiming green. **A branch pass count is not a merged-head pass count** — that is a standing project rule bought with a real false-green.
+3. **S9 step 0 — a BLOCKING full live pipeline run.**
+4. **The operator-witnessed step-by-step application**, one step at a time. `0037` takes the live DB v36 → v37.
+5. **Push.** 75 commits are unpushed.
+
+**This arc corrects NEITHER trade 24 NOR trade 25.** Both carry as named pending rows into RD's September read.
 
 **To re-verify at the gate, not to carry forward from this document:**
 - `schema_version = 36` on the live DB and `0037` UNAPPLIED — **this is the fact that kept the migration
