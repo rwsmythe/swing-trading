@@ -191,7 +191,26 @@ retry against a durable entry hits the index and REFUSES rather than duplicating
 before this contract was a confusing retry error, not a double position.** It does not cover a ticker closed
 between attempts. RD endorsed the contract from his lane: resolve-by-read is admissibility logic.
 
-*(Delta and its confirming round: filled at §7 on return.)*
+**THE CONTRACT WAS IMPLEMENTED FAITHFULLY, AND IMPLEMENTING IT CLOSED ONE DEFECT AND OPENED FOUR — two of them FALSE-SUCCESS paths on the money-bearing path. THE SPLIT IS RULED (CHARC + RD, 2026-09-02).**
+
+**Why clause 2 was never implementable as ruled.** *"Resolve by read"* decomposes into two admissibility preconditions neither director stated at ruling time:
+
+- **VISIBILITY** — the confirming read must observe DURABLE state. A read on the writer's own connection inside an unresolved transaction observes the writer's own uncommitted view: **the writer quoting itself.** A failed rollback VOIDS the read; it does not license "read anyway."
+- **IDENTITY** — the read must identify OUR attempt. `SELECT 1 FROM trades WHERE id = ?` establishes only that *a* row with that id exists, and **a rolled-back rowid is REUSABLE** (`sqlite_sequence` rolls back with the insert, so `AUTOINCREMENT` does not pin it). **This precondition does not exist in the schema today.**
+
+RD's sharpest observation on `R10-02`: the rollback-failure branch logs *"it MUST BE DISCARDED rather than reused"* and **the next line reuses it for the confirming read** — the site's own comment states the invariant and the except branch walks past it.
+
+**THE RULING:**
+
+1. **CLAUSES 1 AND 3 STAND.** Post-commit best-effort with `post_commit_warnings`; both paths bound. **`R10-01` and `R10-04` are boundary defects INSIDE clause 1's own contract and are FIXED in this leg** (the guard covers the generator's unwind; the log call becomes best-effort as clause 1 already says it is). Neither needs attempt identity.
+2. **CLAUSE 2 REVERTS TO RE-RAISE** — pre-contract behaviour, belt-mitigated, and **HONEST: it never claims a row exists.** Now canon (RD): **alarm-never-assert at the transaction boundary — the function may RAISE the alarm (indeterminate) but may never ASSERT durability from evidence that cannot identify the attempt.** The residual is **DECLARED** with the `R10` reproductions on record, in the one direction the belt covers.
+3. **The attempt-identity primitive is a FOLLOW-ON** with its constraints already ruled: **CO-DURABLE** (written in the same transaction as the row it identifies; anything else is a stamp — gotcha #30), **UNIQUE PER ATTEMPT** (survives rollback-and-retry without collision; rowid fails by construction), **DURABLE-VISIBILITY READ** (a fresh connection, or after a PROVEN resolution). CHARC's preferred shape, to be *verified not inherited* at commissioning: a client-generated `attempt_id` on the entry row written in the same INSERT, nullable for legacy rows, UNIQUE partial index `WHERE NOT NULL` — additive, no rebuild; a §3 schema tripwire getting its own pass. Clause 2 returns on top of it, gated by RD's two discriminators: **rollback-raises-then-read must NOT return SUCCESS**, and **a concurrent insert taking the same id must NOT be confirmed as ours.**
+
+**THE PRECONDITION CANON, landed at `bf403b05` — this arc's most transferable output:**
+
+> **A RULING THAT PRESCRIBES A MECHANISM STATES THE PRECONDITIONS THAT MAKE ITS EVIDENCE ADMISSIBLE, AND NAMES WHICH OF THEM EXIST TODAY.** A precondition that does not yet exist converts the mechanism into a follow-on with a primitive to build first, not a clause to implement now.
+
+**Three instances in one week, across both directors, each self-reported:** RD's P1 ruled without its reason (cost: B re-finding it); RD's clause-2 endorsement taking "present" as a primitive; CHARC's clause 2 itself. **Two SQLite facts are now CLAUDE.md gotchas** rather than discoveries: the reusable rolled-back rowid, and the writer quoting itself.
 
 ---
 
