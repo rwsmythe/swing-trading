@@ -16,7 +16,7 @@
 
 **Two things caught at S9 by the discipline, both recorded in the register:** the migration is itself a WRITE SURFACE (D43 amended — the 0037 arc mirror landed in the live `swing-data` root when the copy was migrated; benign by ordering only, and the near-miss is the lesson) · D41 biting live (no recommendations row exists for a watch/hyp-rec entry, so its aplus check is unreachable). Plus the `swing web` server that had held the DB since 08-28, caught by a pre-flight write-lock probe before the migration.
 
-**Trades 24 and 25 remain named pending rows; PBF (28) is a named pending member of H2's reads.** 22-A corrected none of them by design — that is 22-A2's. **NEXT COMMISSIONING IS THE OPERATOR'S CALL:** the follow-on queue is ordered caller-half-first (the `post_commit_warnings` reader), then the attempt-identity primitive; the Phase-22 queue (#4) stands.
+**Trades 24 and 25 remain named pending rows; PBF (28) is a named pending member of H2's reads.** 22-A corrected none of them by design — that is 22-A2's. **COMMISSIONED 2026-09-02 (operator: "let's get working on those in your proposed order"): 22-A3 the caller half — DISPATCHED to the orchestrator; 22-A4 the attempt-identity primitive — dispatches AFTER 22-A3 merges** (brief committed first: [`phase22-arc-a3-a4-commissioning-brief.md`](phase22-arc-a3-a4-commissioning-brief.md)). The Phase-22 queue (#4) stands behind them.
 
 ## #2 — MY RULINGS THIS ARC (a cold resumer inherits these as DECISIONS, never re-derives them)
 

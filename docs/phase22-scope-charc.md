@@ -83,6 +83,8 @@ recent CRITICALs in the proof machinery; round 8 the clean experiment (no ruling
 three criticals in the interval authored one round earlier); 97 findings with ZERO
 oscillation — scope, not instability.
 
+**22-A3 + 22-A4 (commissioned 2026-09-02, operator-authorized, STRICTLY SEQUENCED — brief: [`phase22-arc-a3-a4-commissioning-brief.md`](phase22-arc-a3-a4-commissioning-brief.md)).** **22-A3, the CALLER HALF** of the `record_entry` contract: `post_commit_warnings` has ZERO readers and `trades.py:1490` discards the result, so a post-entry render failure presents as an entry failure over a DURABLE trade — the route and CLI consume the result (degraded-success, never a 500 over a durable row), plus R11-03's twin containment at five cleanup-log sites. No schema. **22-A4, the ATTEMPT-IDENTITY PRIMITIVE** — dispatches only after 22-A3 merges: `trades.attempt_id` written in the same INSERT (co-durable), client-generated uuid4 (unique per attempt), confirming read on a FRESH connection (durable-visibility) — RD's three constraints binding; migration 0038 additive; then clause 2 (resolve-by-read on a raising commit) returns on top of it. §3 pass rides the plan; RD's evidence gate rides it too.
+
 ## TIER 2 — surfaces that lie
 
 **22-D: trail-surface one-voice** (operator-ratified). The advisory gates on the SAME eligibility
