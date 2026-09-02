@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import logging
 import sqlite3
 import unicodedata
@@ -199,9 +200,19 @@ class EntryRequest:
 
 @dataclass(frozen=True)
 class EntryResult:
+    """**A STATEMENT ABOUT THE DURABLE STATE OF THE LEDGER, never about
+    whether every subsequent step succeeded** (CHARC's contract, ruled
+    2026-09-01, from Codex 22A-FIX-R9-03).
+
+    ``post_commit_warnings`` carries what went wrong AFTER the entry became
+    durable.  It defaults to empty, so every existing caller and construction
+    is unchanged; a caller that wants to surface them reads the field.
+    """
+
     trade_id: int
     warning: str | None
     watchlist_archived: bool
+    post_commit_warnings: tuple[str, ...] = ()
 
 
 def canonicalize_hypothesis_label(raw: str | None) -> str | None:
@@ -433,14 +444,61 @@ def record_entry(
             "the explicit lock closed. Nothing was written."
         )
 
-    with _entry_transaction(conn, immediate=_reserve):
-        return _record_entry_inner(
+    # THE RESULT IS A STATEMENT ABOUT THE DURABLE STATE OF THE LEDGER
+    # (CHARC's contract, ruled 2026-09-01, from Codex 22A-FIX-R9-03).
+    #
+    # `outcome` is how the transaction wrapper tells this function what the
+    # LEDGER says when the commit's own return was lost: it carries the
+    # identity to read back and collects the warnings a durable-but-degraded
+    # write earns.  It is a mutable carrier rather than a return value because
+    # the commit happens in the context manager's exit, AFTER the inner
+    # function has already produced its result.
+    outcome = _CommitOutcome()
+    with _entry_transaction(conn, immediate=_reserve, outcome=outcome):
+        result = _record_entry_inner(
             conn, req,
             cfg=cfg,
             derived_origin=derived_origin,
             entry_iso=entry_iso,
             warning=warning,
             reserve=_reserve,
+        )
+        outcome.trade_id = result.trade_id
+
+    # ================= EVERYTHING BELOW THIS LINE IS POST-COMMIT ============
+    #
+    # **CLAUSE 1: AFTER A SUCCESSFUL COMMIT, NOTHING MAY CONVERT THE RESULT TO
+    # FAILURE.**  Every post-commit step -- event emission, identity
+    # recording, cache invalidation, logging -- is BEST-EFFORT: it is caught,
+    # logged at ERROR with the `trade_id` and the step that failed, and the
+    # SUCCESS result returns carrying the warning.
+    #
+    # CHARC's reason, kept at the site because it is the whole argument:
+    # *the operator sees what is TRUE -- the entry exists.  Reporting a
+    # durable write as a failure is not conservative; it is a wrong answer in
+    # the direction that causes a DOUBLE ENTRY, which is the expensive
+    # direction.*
+    #
+    # THERE IS NO POST-COMMIT STEP TODAY, and the guard is here anyway: the
+    # region is where the next one goes, and the contract is a property of
+    # this function rather than of the steps that happen to exist.  A step
+    # added outside it re-opens the exposure silently.
+    try:
+        return dataclasses.replace(
+            result, post_commit_warnings=tuple(outcome.warnings))
+    except BaseException as post_commit_error:  # noqa: BLE001 -- the CLASS
+        log.error(
+            "22-A: trade %s IS DURABLE and a POST-COMMIT step failed "
+            "(assembling the result: %s). The entry exists; the failure is "
+            "reported as a warning and NOT as a failed entry -- reporting a "
+            "durable write as a failure is what causes a double entry.",
+            outcome.trade_id, post_commit_error)
+        return EntryResult(
+            trade_id=result.trade_id, warning=result.warning,
+            watchlist_archived=result.watchlist_archived,
+            post_commit_warnings=tuple(outcome.warnings) + (
+                f"a post-commit step failed after the entry became durable: "
+                f"{post_commit_error!r}",),
         )
 
 
@@ -450,8 +508,87 @@ class CallerHeldEntryTransactionError(RuntimeError):
     ROLLBACK and REJECT a caller-held transaction (CLAUDE.md)."""
 
 
+@dataclass
+class _CommitOutcome:
+    """What the LEDGER says, carried out of the transaction wrapper.
+
+    ``trade_id`` is the identity the resolve-by-read looks for; it is set by
+    ``record_entry`` once the inner function has produced its row and BEFORE
+    the commit runs on context exit, which is exactly the window clause 2 is
+    about.
+    """
+
+    trade_id: int | None = None
+    warnings: list[str] = dataclasses.field(default_factory=list)
+
+
+def _entry_is_durable(conn, trade_id: int | None) -> bool:
+    """Does the ledger hold this trade, on a FRESH statement?
+
+    **CLAUSE 2: RESOLVE BY READ -- never report indeterminate when a read can
+    settle it** (CHARC).  *The fact is in the table, and the exception is not
+    evidence about it either way.*
+
+    THE READ IS TAKEN ONLY AFTER THE TRANSACTION IS RESOLVED, which is the
+    trap this helper exists to avoid: on the SAME connection an OPEN
+    transaction sees its own uncommitted write, so a read taken while the
+    failed commit's transaction is still open would report a row that is
+    about to vanish -- turning a genuine failure into a false SUCCESS, the
+    one direction the contract must not produce.  The caller rolls back
+    first; after that, a visible row can only be a committed one.
+
+    A failure of the READ ITSELF is not evidence of durability: it answers
+    False, and the original error is what surfaces.
+    """
+    if trade_id is None:
+        return False
+    try:
+        return conn.execute(
+            "SELECT 1 FROM trades WHERE id = ?", (trade_id,)
+        ).fetchone() is not None
+    except BaseException as read_error:  # noqa: BLE001 -- the CLASS
+        log.error(
+            "22-A: the commit for trade %s did not return, and the read that "
+            "would settle whether it landed ALSO failed (%s). The original "
+            "failure is what surfaces; this entry's durability is genuinely "
+            "unknown and the ledger must be inspected before any retry.",
+            trade_id, read_error)
+        return False
+
+
+def _settle_lost_commit(conn, outcome: _CommitOutcome,
+                        commit_error: BaseException) -> bool:
+    """A commit whose own return was lost: did the write land?
+
+    Returns True when the ledger holds the row -- the caller then SWALLOWS the
+    exception and returns SUCCESS with a warning.  Returns False when it does
+    not, and the caller re-raises.
+    """
+    if conn.in_transaction:
+        # The commit did NOT complete, so its write is still uncommitted and
+        # would be visible to our own read.  Resolving the transaction first
+        # is what makes the read mean something.
+        try:
+            conn.rollback()
+        except BaseException as cleanup_error:  # noqa: BLE001 -- the CLASS
+            log.error(
+                "22-A: the entry commit failed (%s) and the connection could "
+                "not be rolled back (%s); it MUST BE DISCARDED rather than "
+                "reused.", commit_error, cleanup_error)
+    if not _entry_is_durable(conn, outcome.trade_id):
+        return False
+    warning = (
+        f"the entry is DURABLE (trade {outcome.trade_id}) but the commit's "
+        f"own return was lost ({commit_error!r}); the write was confirmed by "
+        f"reading the ledger. Do NOT retry -- the entry exists.")
+    log.error("22-A: %s", warning)
+    outcome.warnings.append(warning)
+    return True
+
+
 @contextlib.contextmanager
-def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool):
+def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool,
+                       outcome: _CommitOutcome):
     """The ONE transaction the entry row is written in.
 
     ``immediate=False`` is the pre-arc path, byte-for-byte: Python's sqlite3
@@ -465,8 +602,19 @@ def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool):
     caller-held-transaction refusal.
     """
     if not immediate:
-        with conn:
-            yield
+        # **CLAUSE 3: THE CONTRACT BINDS BOTH PATHS** (CHARC).  `with conn:`
+        # COMMITS ON CONTEXT EXIT and therefore has the IDENTICAL post-commit
+        # exposure -- an exception delivered as that commit returns leaves a
+        # durable entry and a reported failure.  Binding only the latched path
+        # would make the PRE-ARC path the one that double-enters, which is the
+        # opposite of a conservative change.
+        try:
+            with conn:
+                yield
+        except BaseException as commit_error:
+            if _settle_lost_commit(conn, outcome, commit_error):
+                return
+            raise
         return
     # THE ACQUISITION IS INSIDE THE PROTECTED REGION (reviewer B, post-fix
     # tree; ARC-INTRODUCED by `ed897bc5`, so fixed here rather than banked).
@@ -489,7 +637,27 @@ def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool):
         # its write reservation open on a connection the caller goes on
         # reusing.  A failed COMMIT is exactly the moment a rollback matters
         # most, and it was the one path that did not get one.
-        conn.commit()
+        #
+        # AND A COMMIT WHOSE OWN RETURN WAS LOST IS SETTLED BY READ, NOT BY
+        # ASSUMPTION (CHARC's clause 2, from Codex 22A-FIX-R9-03).  An
+        # exception delivered as `commit()` returns previously produced a
+        # DURABLE money-bearing entry reported as a FAILURE -- and the caller
+        # can then be shown an error and retry against an entry that already
+        # exists.  R4-03's rollback property is PRESERVED: `_settle_lost_commit`
+        # rolls back first whenever the transaction is still open, which is
+        # also what makes its read meaningful.
+        try:
+            conn.commit()
+        except BaseException as commit_error:
+            # A SETTLED-DURABLE commit returns NORMALLY from here, so the
+            # outer handler is never entered and nothing downstream can turn
+            # the durable write into a failure.  There is deliberately no
+            # `committed` flag: once this branch returns, control leaves the
+            # outer `try` normally, so a flag guarding the outer handler would
+            # be unreachable -- defensive dead code, which this arc rules
+            # against as firmly as it rules against the hole.
+            if not _settle_lost_commit(conn, outcome, commit_error):
+                raise
     except BaseException as write_error:
         # AND THE ROLLBACK'S OWN FAILURE IS NOT SUPPRESSED (reviewer B).
         # This was `contextlib.suppress(sqlite3.Error)`: B reproduced an inner

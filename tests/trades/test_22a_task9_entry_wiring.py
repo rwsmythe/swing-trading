@@ -31,6 +31,7 @@ import pytest
 from swing.data.db import ensure_schema, open_connection, run_migrations
 from swing.data.models import FREEZE_TIER_LIVE_AT_ACCEPTANCE
 from swing.trades.entry import (
+    DuplicateOpenPositionError,
     EntryRequest,
     PatternEvaluationAnchorError,
     record_entry,
@@ -1358,14 +1359,15 @@ def test_a_commit_that_raises_rolls_the_reservation_back(tmp_path) -> None:
     The exception itself propagates either way, so asserting only the raise
     would pass under both paths.
     """
-    from swing.trades.entry import _entry_transaction
+    from swing.trades.entry import _CommitOutcome, _entry_transaction
 
     conn, _, _ = build_world(tmp_path, "r403")
     conn.commit()
     proxy = _CommitRaises(conn)
 
     with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
-        with _entry_transaction(proxy, immediate=True):
+        with _entry_transaction(
+            proxy, immediate=True, outcome=_CommitOutcome()):
             proxy.execute(
                 "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
                 "action_session_date, tickers_evaluated, aplus_count, "
@@ -2938,7 +2940,7 @@ def test_B_an_interrupt_AT_ACQUISITION_does_not_leak_the_reservation(
     POST-FIX: the recovery ran and the connection is clean.  Both values are
     stated so the assertion distinguishes.
     """
-    from swing.trades.entry import _entry_transaction
+    from swing.trades.entry import _CommitOutcome, _entry_transaction
 
     conn, _, _ = build_world(tmp_path, "b-acq")
     conn.commit()
@@ -2946,7 +2948,8 @@ def test_B_an_interrupt_AT_ACQUISITION_does_not_leak_the_reservation(
     proxy = _EntryTxProxy(conn, interrupt_begin=True)
 
     with pytest.raises(KeyboardInterrupt, match="planted just after BEGIN"):
-        with _entry_transaction(proxy, immediate=True):
+        with _entry_transaction(
+            proxy, immediate=True, outcome=_CommitOutcome()):
             raise AssertionError("the body must never run")
 
     assert proxy.began, (
@@ -2980,7 +2983,7 @@ def test_B_a_failed_rollback_after_a_failed_write_is_SURFACED_and_CHAINED(
     """
     import logging
 
-    from swing.trades.entry import _entry_transaction
+    from swing.trades.entry import _CommitOutcome, _entry_transaction
 
     conn, _, _ = build_world(tmp_path, "b-rb")
     conn.commit()
@@ -2989,7 +2992,8 @@ def test_B_a_failed_rollback_after_a_failed_write_is_SURFACED_and_CHAINED(
     with caplog_at_error() as records:
         with pytest.raises(sqlite3.OperationalError,
                            match="cannot rollback") as caught:
-            with _entry_transaction(proxy, immediate=True):
+            with _entry_transaction(
+            proxy, immediate=True, outcome=_CommitOutcome()):
                 proxy.execute(
                     "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
                     "action_session_date, tickers_evaluated, aplus_count, "
@@ -3072,7 +3076,7 @@ def test_B_the_cleanup_warning_is_RE_DERIVED_not_assumed(tmp_path) -> None:
     """
     import logging
 
-    from swing.trades.entry import _entry_transaction
+    from swing.trades.entry import _CommitOutcome, _entry_transaction
 
     conn, _, _ = build_world(tmp_path, "b-after")
     conn.commit()
@@ -3080,7 +3084,8 @@ def test_B_the_cleanup_warning_is_RE_DERIVED_not_assumed(tmp_path) -> None:
 
     with caplog_at_error() as records:
         with pytest.raises(KeyboardInterrupt, match="planted just after"):
-            with _entry_transaction(proxy, immediate=True):
+            with _entry_transaction(
+            proxy, immediate=True, outcome=_CommitOutcome()):
                 proxy.execute(
                     "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
                     "action_session_date, tickers_evaluated, aplus_count, "
@@ -3102,3 +3107,205 @@ def test_B_the_cleanup_warning_is_RE_DERIVED_not_assumed(tmp_path) -> None:
     assert not any("STILL OPEN" in m for m in messages), (
         "the warning claims an open transaction and a visible partial row "
         "while the connection is clean and the row is gone")
+
+
+# ===========================================================================
+# CHARC'S CONTRACT (ruled 2026-09-01, from Codex 22A-FIX-R9-03)
+#
+# **`record_entry`'s result is a statement about the DURABLE STATE OF THE
+# LEDGER, never about whether every subsequent step succeeded.**
+#
+# THE TRAP CHARC NAMED: a test asserting only "no exception" passes an
+# implementation that swallows EVERYTHING.  Each row below asserts the RESULT
+# SHAPE and the ROW COUNT.
+#
+# THE STRUCTURAL BELT, named so it is not mistaken for the fix:
+# `ux_trades_one_open_per_ticker` (UNIQUE on ticker WHERE state IN
+# entered/managing/partial_exited) means a retry against a durable entry hits
+# the index and REFUSES rather than duplicating -- so today's worst case was a
+# confusing retry error, not a double position.  **It covers only an OPEN
+# same-ticker trade, not a ticker CLOSED between attempts.**  The contract is
+# the fix; the belt is why this was not a live disaster, and its existence
+# does not soften clause 1.
+# ===========================================================================
+class _RaiseAfterCommit:
+    """Performs the REAL commit and then raises -- the post-commit window.
+
+    A proxy that raised INSTEAD of committing would test a transaction that
+    never landed, which is a DIFFERENT case (and is case (c) below).
+    """
+
+    def __init__(self, conn: sqlite3.Connection, exc: BaseException) -> None:
+        self._conn = conn
+        self._exc = exc
+        self.committed = False
+
+    def execute(self, *a, **kw):
+        return self._conn.execute(*a, **kw)
+
+    def commit(self) -> None:
+        self._conn.commit()
+        self.committed = True
+        raise self._exc
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    # THE PRE-ARC PATH COMMITS THROUGH `with conn:`, NOT THROUGH `.commit()`
+    # -- `sqlite3.Connection.__exit__` commits the C-level connection
+    # directly, so a proxy that only overrode `commit()` would never reach
+    # that path's post-commit window at all.  Delegating the real `__exit__`
+    # and THEN raising is what reproduces "the commit landed, then an
+    # exception arrived" on the path clause 3 exists for.
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._conn.__exit__(exc_type, exc, tb)
+        if exc_type is None:
+            self.committed = True
+            raise self._exc
+        return False
+
+    @property
+    def in_transaction(self) -> bool:
+        return self._conn.in_transaction
+
+
+def _trade_rows(conn, ticker: str = TICKER) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM trades WHERE ticker = ?", (ticker,)).fetchone()[0]
+
+
+@pytest.mark.parametrize("immediate", [True, False],
+                         ids=["latched-path", "pre-arc-path"])
+def test_CONTRACT_a_post_commit_failure_returns_SUCCESS_with_a_warning(
+        tmp_path, immediate) -> None:
+    """**CLAUSE 1 + CLAUSE 3.**  An exception delivered AFTER the commit
+    landed must NOT convert the result to failure -- on BOTH paths.
+
+    CHARC's reason: reporting a durable write as a failure is not
+    conservative; it is a wrong answer in the direction that causes a DOUBLE
+    ENTRY, which is the expensive direction.
+
+    ``immediate=False`` is ``with conn:``, which COMMITS ON CONTEXT EXIT and
+    has the identical exposure -- binding only the latched path would make the
+    PRE-ARC path the one that double-enters.
+
+    THREE ASSERTIONS, because "it did not raise" passes an implementation that
+    swallows everything: the RESULT SHAPE (a real ``trade_id`` and a warning
+    naming the lost commit), the ROW COUNT (exactly one), and the RETRY (the
+    belt refuses it and names the existing position).
+    """
+    conn, cfg, candidate_id = build_world(
+        tmp_path, "contract1" + str(int(immediate)))
+    if immediate:
+        accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    assert _trade_rows(conn) == 0, "the premise: no entry yet"
+
+    proxy = _RaiseAfterCommit(conn, KeyboardInterrupt("after the commit"))
+    request = req() if immediate else req(
+        schwab_source_value_json=None, fill_origin="operator_typed")
+
+    result = enter(proxy, cfg, request)
+
+    assert proxy.committed, (
+        "the planted commit never ran, so this row measures nothing about "
+        "the post-commit window")
+    assert result.trade_id is not None and result.trade_id > 0, (
+        "the durable entry was reported as a failure")
+    assert result.post_commit_warnings, (
+        "the result claims an unqualified success; the caller cannot surface "
+        "what went wrong after the write landed")
+    assert any("DURABLE" in w for w in result.post_commit_warnings), (
+        result.post_commit_warnings)
+    assert _trade_rows(conn) == 1, (
+        "exactly one entry must exist -- this is the whole point")
+
+    # THE RETRY, which is what the wrong answer would have provoked.  The belt
+    # refuses it and names the existing position; the contract is why the
+    # operator is not driven here in the first place.
+    with pytest.raises(DuplicateOpenPositionError, match=TICKER):
+        enter(conn, cfg, request)
+    assert _trade_rows(conn) == 1, "the retry created a SECOND position"
+
+
+def test_CONTRACT_a_lost_commit_with_the_row_LANDED_is_resolved_by_READ(
+        tmp_path) -> None:
+    """**CLAUSE 2, the SUCCESS half.**  The fact is in the table, and the
+    exception is not evidence about it either way.
+
+    ``commit()`` itself raises, and the row DID land.  The implementation
+    reads for it on a fresh statement and returns SUCCESS with a warning that
+    the commit's own return was lost -- never indeterminate when a read can
+    settle it.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "contract2")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    proxy = _RaiseAfterCommit(conn, sqlite3.OperationalError("commit lost"))
+
+    result = enter(proxy, cfg, req())
+
+    assert proxy.committed
+    assert result.trade_id is not None
+    assert any("own return was lost" in w
+               for w in result.post_commit_warnings), (
+        result.post_commit_warnings)
+    assert any("Do NOT retry" in w for w in result.post_commit_warnings), (
+        "the warning must tell the operator not to retry a durable entry")
+    assert _trade_rows(conn) == 1
+    assert not conn.in_transaction
+
+
+class _CommitNeverLands:
+    """``commit()`` raises WITHOUT committing -- the write is still pending."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self.rolled_back = False
+
+    def execute(self, *a, **kw):
+        return self._conn.execute(*a, **kw)
+
+    def commit(self) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+        self._conn.rollback()
+
+    @property
+    def in_transaction(self) -> bool:
+        return self._conn.in_transaction
+
+
+def test_CONTRACT_a_lost_commit_with_the_row_ABSENT_re_raises(tmp_path) -> None:
+    """**CLAUSE 2, the FAILURE half -- and the one that keeps the resolution
+    honest.**
+
+    ``commit()`` raises and the write did NOT land.  The read must NOT see the
+    pending row: on the same connection an OPEN transaction sees its own
+    uncommitted write, so the resolution rolls back FIRST and only then reads.
+    Without that ordering this case would return a FALSE SUCCESS, which is the
+    one direction the contract must never produce.
+
+    The row count is asserted at ZERO, because "it raised" alone would pass an
+    implementation that raised while leaving the write pending.
+    """
+    conn, cfg, candidate_id = build_world(tmp_path, "contract3")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    proxy = _CommitNeverLands(conn)
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        enter(proxy, cfg, req())
+
+    assert proxy.rolled_back, (
+        "the failed commit left its write reservation held")
+    assert not conn.in_transaction
+    assert _trade_rows(conn) == 0, (
+        "a write that never committed is visible; the resolution read saw the "
+        "pending row and would report a FALSE SUCCESS")
