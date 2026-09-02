@@ -1,0 +1,349 @@
+{
+  "funnel": {
+    "detection_level": {
+      "collapsed_duplicate_detection": 4752,
+      "total_detections": 5940,
+      "unique_signals": 1188
+    },
+    "per_hypothesis": {
+      "A+ baseline": {
+        "closed": 6,
+        "excluded": {
+          "degenerate_risk": 1,
+          "missing_observations": 1
+        },
+        "never_triggered": 4,
+        "open_at_horizon": 1
+      },
+      "Broad-watch baseline": {
+        "closed": 588,
+        "excluded": {
+          "degenerate_risk": 20,
+          "insufficient_forward_depth": 7,
+          "invalid_ohlc": 69,
+          "missing_observations": 18
+        },
+        "never_triggered": 383,
+        "open_at_horizon": 74
+      },
+      "Near-A+ defensible: extension test": {
+        "closed": 10,
+        "excluded": {
+          "insufficient_forward_depth": 2
+        },
+        "never_triggered": 4,
+        "open_at_horizon": 0
+      }
+    },
+    "unattributed": {}
+  },
+  "harness_version": "0.1.0",
+  "l2_lock_preserved": true,
+  "ohlc_clamp": {
+    "clamped_bar_count": 221,
+    "clamped_bar_events": 838,
+    "max_pct_threshold": 1.0,
+    "samples": [
+      {
+        "clamp_pct": 0.9754,
+        "session": "2026-07-13",
+        "ticker": "ADEA"
+      },
+      {
+        "clamp_pct": 0.1905,
+        "session": "2026-08-20",
+        "ticker": "AMBP"
+      },
+      {
+        "clamp_pct": 0.3824,
+        "session": "2026-08-26",
+        "ticker": "AMBP"
+      },
+      {
+        "clamp_pct": 0.0294,
+        "session": "2026-07-13",
+        "ticker": "AMN"
+      },
+      {
+        "clamp_pct": 0.19,
+        "session": "2026-07-16",
+        "ticker": "AMN"
+      },
+      {
+        "clamp_pct": 0.453,
+        "session": "2026-08-19",
+        "ticker": "AMN"
+      },
+      {
+        "clamp_pct": 0.1928,
+        "session": "2026-07-16",
+        "ticker": "APLE"
+      },
+      {
+        "clamp_pct": 0.2091,
+        "session": "2026-08-07",
+        "ticker": "ARKG"
+      },
+      {
+        "clamp_pct": 0.1364,
+        "session": "2026-08-20",
+        "ticker": "ARKG"
+      },
+      {
+        "clamp_pct": 0.1589,
+        "session": "2026-08-19",
+        "ticker": "ARMK"
+      },
+      {
+        "clamp_pct": 0.1421,
+        "session": "2026-08-31",
+        "ticker": "ARMK"
+      },
+      {
+        "clamp_pct": 0.7935,
+        "session": "2026-08-06",
+        "ticker": "ASH"
+      },
+      {
+        "clamp_pct": 0.0272,
+        "session": "2026-08-18",
+        "ticker": "ASH"
+      },
+      {
+        "clamp_pct": 0.0137,
+        "session": "2026-08-20",
+        "ticker": "ASH"
+      },
+      {
+        "clamp_pct": 0.2347,
+        "session": "2026-08-07",
+        "ticker": "ATEN"
+      },
+      {
+        "clamp_pct": 0.1158,
+        "session": "2026-08-17",
+        "ticker": "BAX"
+      },
+      {
+        "clamp_pct": 0.0037,
+        "session": "2026-08-19",
+        "ticker": "BCS"
+      },
+      {
+        "clamp_pct": 0.0369,
+        "session": "2026-08-26",
+        "ticker": "BCS"
+      },
+      {
+        "clamp_pct": 0.7821,
+        "session": "2026-08-24",
+        "ticker": "BFLY"
+      },
+      {
+        "clamp_pct": 0.2535,
+        "session": "2026-08-31",
+        "ticker": "BFLY"
+      }
+    ]
+  },
+  "params": {
+    "breakeven_r": 1.0,
+    "horizon_sessions": 126,
+    "ma_staging": [
+      10,
+      20
+    ],
+    "partial_session_n": 3,
+    "risk_floor_adr_ratio": 0.15
+  },
+  "scorecard": {
+    "A+ baseline": {
+      "ambiguous_count": 6,
+      "avg_loss_r": -0.8,
+      "avg_win_r": 0.4432995974901634,
+      "entry_bar_weak_close_count": 4,
+      "headline_realistic_closed_only": -0.5927834004183061,
+      "median_holding_sessions": 3,
+      "payoff_ratio": 0.5541244968627043,
+      "per_signal_expectancy": {
+        "favorable_reprice": -0.3740903555308321,
+        "realistic": -0.3740903555308321
+      },
+      "profit_factor": {
+        "suppressed": false,
+        "value": 0.11082489937254085
+      },
+      "same_bar_adverse_mean_r": {
+        "favorable_reprice": -1.0,
+        "realistic": -1.0
+      },
+      "scenarios": {
+        "closed_only": {
+          "favorable_reprice": -0.5927834004183061,
+          "n": 6,
+          "realistic": -0.5927834004183061,
+          "suppressed": false
+        },
+        "forced_exit_at_horizon_open": {
+          "favorable_reprice": -0.5878562729770218,
+          "n": 7,
+          "realistic": -0.5878562729770218,
+          "suppressed": false
+        },
+        "mtm_at_horizon": {
+          "favorable_reprice": -0.5878562729770218,
+          "n": 7,
+          "realistic": -0.5878562729770218,
+          "suppressed": false
+        },
+        "stop_level_adverse": {
+          "favorable_reprice": -0.6509572003585481,
+          "n": 7,
+          "realistic": -0.6509572003585481,
+          "suppressed": false
+        }
+      },
+      "trigger_rate": {
+        "rate": 0.6363636363636364,
+        "signals": 11,
+        "triggered": 7
+      },
+      "win_rate": {
+        "k": 1,
+        "n": 6,
+        "suppressed": false,
+        "wilson": {
+          "lower": 0.03005336974830658,
+          "point": 0.16666666666666666,
+          "upper": 0.5635028221864702
+        }
+      }
+    },
+    "Broad-watch baseline": {
+      "ambiguous_count": 588,
+      "avg_loss_r": -0.9524672980301341,
+      "avg_win_r": 1.5978083671272278,
+      "entry_bar_weak_close_count": 384,
+      "headline_realistic_closed_only": -0.3973052484720689,
+      "median_holding_sessions": 3.0,
+      "payoff_ratio": 1.6775466941823303,
+      "per_signal_expectancy": {
+        "favorable_reprice": -0.11255081268573944,
+        "realistic": -0.16926755978580219
+      },
+      "profit_factor": {
+        "suppressed": false,
+        "value": 0.4667956018594311
+      },
+      "same_bar_adverse_mean_r": {
+        "favorable_reprice": -1.0,
+        "realistic": -1.0
+      },
+      "scenarios": {
+        "closed_only": {
+          "favorable_reprice": -0.2965076282006988,
+          "n": 588,
+          "realistic": -0.3973052484720689,
+          "suppressed": false
+        },
+        "forced_exit_at_horizon_open": {
+          "favorable_reprice": -0.17766706836344065,
+          "n": 662,
+          "realistic": -0.26719728093076023,
+          "suppressed": false
+        },
+        "mtm_at_horizon": {
+          "favorable_reprice": -0.17766706836344065,
+          "n": 662,
+          "realistic": -0.26719728093076023,
+          "suppressed": false
+        },
+        "stop_level_adverse": {
+          "favorable_reprice": -0.26761035494725716,
+          "n": 662,
+          "realistic": -0.3571405675145768,
+          "suppressed": false
+        }
+      },
+      "trigger_rate": {
+        "rate": 0.6334928229665072,
+        "signals": 1045,
+        "triggered": 662
+      },
+      "win_rate": {
+        "k": 128,
+        "n": 588,
+        "suppressed": false,
+        "wilson": {
+          "lower": 0.18622205953358845,
+          "point": 0.21768707482993196,
+          "upper": 0.2528169008975637
+        }
+      }
+    },
+    "Near-A+ defensible: extension test": {
+      "ambiguous_count": 10,
+      "avg_loss_r": -1.0,
+      "avg_win_r": 0.5634398244739706,
+      "entry_bar_weak_close_count": 4,
+      "headline_realistic_closed_only": -0.5309680526578089,
+      "median_holding_sessions": 2.0,
+      "payoff_ratio": 0.5634398244739706,
+      "per_signal_expectancy": {
+        "favorable_reprice": -0.3792628947555778,
+        "realistic": -0.3792628947555778
+      },
+      "profit_factor": {
+        "suppressed": false,
+        "value": 0.24147421048884452
+      },
+      "same_bar_adverse_mean_r": {
+        "favorable_reprice": -1.0,
+        "realistic": -1.0
+      },
+      "scenarios": {
+        "closed_only": {
+          "favorable_reprice": -0.5309680526578089,
+          "n": 10,
+          "realistic": -0.5309680526578089,
+          "suppressed": false
+        },
+        "forced_exit_at_horizon_open": {
+          "favorable_reprice": -0.5309680526578089,
+          "n": 10,
+          "realistic": -0.5309680526578089,
+          "suppressed": false
+        },
+        "mtm_at_horizon": {
+          "favorable_reprice": -0.5309680526578089,
+          "n": 10,
+          "realistic": -0.5309680526578089,
+          "suppressed": false
+        },
+        "stop_level_adverse": {
+          "favorable_reprice": -0.5309680526578089,
+          "n": 10,
+          "realistic": -0.5309680526578089,
+          "suppressed": false
+        }
+      },
+      "trigger_rate": {
+        "rate": 0.7142857142857143,
+        "signals": 14,
+        "triggered": 10
+      },
+      "win_rate": {
+        "k": 3,
+        "n": 10,
+        "suppressed": false,
+        "wilson": {
+          "lower": 0.10779126740630099,
+          "point": 0.3,
+          "upper": 0.6032218525388546
+        }
+      }
+    }
+  },
+  "source": "pipeline",
+  "started_iso_utc": "20260902T035031Z"
+}
