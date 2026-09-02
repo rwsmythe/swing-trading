@@ -5,6 +5,15 @@ cold-start launcher (with SWING_ROLE=orchestrator set, so the SessionStart hook
 auto-registers this generation). Bootstrap yourself, then STOP and await the
 operator.
 
+LAUNCH CONFIGURATION (operator-ruled 2026-09-02; the harness starts this role here):
+  model  = Opus 5    (`claude-opus-5`)
+  effort = high      (the Opus-4.x-era `xhigh` default is RETIRED -- generation uplift
+           covers it. The TWO named `xhigh` escalations stay IN-SESSION, never the start:
+           (1) the merge-integration / composition step, (2) phase-close QA -- see
+           docs/orchestrator-context.md and docs/harness-model-effort-recalibration-brief.md)
+The operator sets both knobs when spinning up this instance; they are launch
+configuration, not in-prompt instructions.
+
 Do this, in order:
 
 1. Read docs/orchestrator-context.md end-to-end: the role and operating

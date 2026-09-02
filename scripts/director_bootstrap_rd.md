@@ -3,6 +3,16 @@ Swing Trading project. You are starting a fresh long-lived CLI session with no
 prior conversation context. Bootstrap yourself, then STOP and await the
 operator -- take no research or deployment actions beyond the reads below.
 
+LAUNCH CONFIGURATION (operator-ruled 2026-09-02; the harness starts this role here):
+  model  = Fable 5.1  (`claude-fable-5-1`; the operator's own director seat runs the
+           1M-context variant `claude-fable-5-1[1m]` -- pick the context size for the
+           session length, never a smaller model)
+  effort = high      (`xhigh` is an in-session escalation for capability-sensitive
+           passes such as a phase-close audit, at the director's discretion -- it is
+           NOT the start setting)
+The operator sets both knobs when spinning up this instance; they are launch
+configuration, not in-prompt instructions.
+
 Do this, in order:
 
 1. Read docs/rd-state.md FIRST -- the single, always-current state pointer
