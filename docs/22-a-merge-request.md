@@ -325,3 +325,41 @@ Continuing generates more instrument findings, not more safety.
 
 **This arc corrects NEITHER trade 24 NOR trade 25.** Both carry as named pending rows into RD's September
 read.
+
+---
+
+## 8. S9 GATE EXECUTION RECORD (2026-09-02)
+
+**Steps 0–4 executed. Steps 0–3 were the SAFETY gates and all passed. The live DB is at v37.**
+
+| step | result |
+|---|---|
+| **0** full live pipeline on a v37 COPY | **PASS** — zero barrier aborts; `_step_evaluate` APPENDED 55 candidates (13,591 → 13,646) |
+| **1** live migration | **PASS** — `schema_version = 37`; backup **restorable** (`swing-20260902T000318.db`, integrity ok, v36 pre-image); backfill exactly ONE link row `(1, 12284, 'OII', 'pre_barrier_reconstructed')` |
+| **2** refuse-by-default (trade 25) | **PASS** — `pre_barrier_unproven`, refusing the last-word fallback as **citation shopping**; nothing written |
+| **3** barrier-existence (on the copy) | **PASS** — `barrier_not_installed`, a reason DISTINCT from step 2's, from the same command on the same data |
+| **4** post-barrier admission (on the copy) | **ADMITTED** — `freeze_tier='live_at_acceptance'`, `pipeline_aplus`, candidate 13626, six counterfactuals |
+| **5** unseeded default | **BLOCKED — premise stale, routed to CHARC** (trade 24's cohort keys are already populated, so a dry-run refuses at Demand C's already-set gate before reaching the last-word guard) |
+| **6** browser gate | pending |
+
+**Step 1 caught a live holder before it mattered:** a `swing web` server had held the production DB since 2026-08-28. A pre-flight write-lock probe found it; the operator stopped it before the migration ran. That is the WinError-32 self-lock family, and the step-by-step witness discipline is what surfaced it.
+
+**Step 3 is the arc's cleanest discriminator.** Same command, same trade, same data — only `trg_candidates_no_update`'s presence differs — and the reason moved `pre_barrier_unproven` → `barrier_not_installed`. **The reader genuinely CHECKS the barrier rather than inferring it.** The trigger was dropped on the COPY only and restored from the LIVE DB's own DDL, byte-compared identical.
+
+### 8.1 STEP 4 — THE ADMISSION IS REAL, AND ITS BOUND IS BIGGER THAN THE DEMONSTRATION
+
+**The ladder ADMITTED** a post-barrier fire at `live_at_acceptance` with all sixteen `$.authorization` clauses passing, and admitted **for the ORDER'S OWN IDENTITY** rather than for "any armed latch" — proven by counterfactuals against the same world: changing ONE DIGIT of the broker order id gives `no_accepted_latch_order` (not recognised at all); an out-of-zone fill gives `fill_outside_frozen_zone`; excess quantity gives `quantity_exceeds_order`; **and the pre-barrier OII link on the identical code path gives `pre_barrier_unproven`, the only difference being which side of boundary 13591 the cited candidate falls on.** The link row was **minted by the migration's own trigger**, not inserted. **The refusal-only test set is no longer the whole record.**
+
+**THE MATERIAL LIMITATION, surfaced by the implementer against its own interest and verified independently by the orchestrator:**
+
+**The world is one the production panel CANNOT AUTHOR.** Candidate 13626 is a post-barrier *re-confirmation* of a latch whose *opening fire* (13578) is pre-barrier. There are exactly **two** construction sites for `LatchOrderIntent` repo-wide (`repos/latch_order_intents.py:43`, the row hydrator; `web/routes/latches.py:1273`, the route), and the route writes **`candidate_id=latch.identity.candidate_id`** — the opening fire — so a POST naming 13626 is rejected 400. The ladder's verdict is genuine; the route to that world is not currently walkable.
+
+**THE CALIBRATION, and it must not be read past — verified on the LIVE DB by the orchestrator: the epoch boundary is 13591 and the maximum live candidate id IS 13591, so there are ZERO candidates above the boundary.** Every latch identity available today is therefore **pre-barrier**, every link the operator can create through the panel mints `pre_barrier_reconstructed`, and every such entry refuses `pre_barrier_unproven` with honest-unset keys.
+
+> **DO NOT READ STEP 4 AS "THE ENTRY PATH NOW WORKS."** It establishes that the guard CAN accept. **The admission path stays DORMANT until a latch OPENS above the boundary** — a new ticker firing A+, or a re-fire at a different pivot on a later session — **not merely until a post-barrier candidate exists.** That is the arc's declared Option-C behaviour and it is fail-closed.
+
+**Hand-written where no production writer was reachable, stated because it bounds the proof:** the validity row's broker-snapshot envelope (built in production from a live Schwab order fetch; digest computed with the production `_broker_book_digest`, no ladder rung reads it), both `recorded_ts` stamps (evening-of-09-01, the production shape — rung 4 requires `date(recorded_ts) < fill_session`), the broker order id and fill price (operator-supplied in production too), and a `hard_cap` raised by one at the call site because the copy holds 6 open positions against a cap of 6.
+
+**A further bound the implementer stated and did not measure away:** `_snapshot_agrees` compares the link's frozen values against the *latch's*, which come from the opening fire. Here they are numerically identical, so it passed — meaning `live_at_acceptance` attests that *the cited candidate's* row is immutable and does not, on a composite latch, by itself attest the same of the opening fire. The cross-check is fail-closed (a drifted opening fire refuses `frozen_value_drift`), so this is a bound on the label's scope, not a hole.
+
+**The copy is no longer pristine** — the append-only barriers make intents 7–8, link 2, trade 29 and fill 54 permanent on it. Steps 0–3 were already witnessed and steps 5–6 run against the live DB, so this is recorded rather than repaired.
