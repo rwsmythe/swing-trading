@@ -3110,10 +3110,18 @@ def test_B_the_cleanup_warning_is_RE_DERIVED_not_assumed(tmp_path) -> None:
 
 
 # ===========================================================================
-# CHARC'S CONTRACT (ruled 2026-09-01, from Codex 22A-FIX-R9-03)
+# CHARC'S CONTRACT (ruled 2026-09-01, from Codex 22A-FIX-R9-03), AS SPLIT BY
+# CHARC + RD 2026-09-02 -- `docs/22-a-merge-request.md` S4.4
 #
 # **`record_entry`'s result is a statement about the DURABLE STATE OF THE
 # LEDGER, never about whether every subsequent step succeeded.**
+#
+# CLAUSES 1 AND 3 STAND: post-commit steps are best-effort and BOTH paths are
+# bound.  **CLAUSE 2 (resolve a lost commit BY READ) IS REVERTED TO RE-RAISE**
+# -- it was never implementable as ruled, because the read has neither
+# VISIBILITY (on the writer's own connection an unresolved transaction shows
+# the writer its own uncommitted row) nor IDENTITY (a rolled-back rowid is
+# REUSABLE).  The residual is DECLARED, and pinned by the re-raise row below.
 #
 # THE TRAP CHARC NAMED: a test asserting only "no exception" passes an
 # implementation that swallows EVERYTHING.  Each row below asserts the RESULT
@@ -3180,23 +3188,40 @@ def _trade_rows(conn, ticker: str = TICKER) -> int:
 
 @pytest.mark.parametrize("immediate", [True, False],
                          ids=["latched-path", "pre-arc-path"])
-def test_CONTRACT_a_post_commit_failure_returns_SUCCESS_with_a_warning(
+def test_CONTRACT_a_commit_whose_own_return_was_LOST_re_raises(
         tmp_path, immediate) -> None:
-    """**CLAUSE 1 + CLAUSE 3.**  An exception delivered AFTER the commit
-    landed must NOT convert the result to failure -- on BOTH paths.
+    """**CLAUSE 2 IS REVERTED TO RE-RAISE** (CHARC + RD, ruled 2026-09-02 --
+    `docs/22-a-merge-request.md` S4.4).  The commit LANDED and its own return
+    was lost; ``record_entry`` RAISES rather than claiming the row exists.
 
-    CHARC's reason: reporting a durable write as a failure is not
-    conservative; it is a wrong answer in the direction that causes a DOUBLE
-    ENTRY, which is the expensive direction.
+    WHY, because a bare "it raises" reads like the defect it replaced.
+    "Resolve by read" needs two admissibility preconditions:
 
-    ``immediate=False`` is ``with conn:``, which COMMITS ON CONTEXT EXIT and
-    has the identical exposure -- binding only the latched path would make the
-    PRE-ARC path the one that double-enters.
+      * **VISIBILITY** -- the confirming read must observe DURABLE state.  A
+        read on the writer's OWN connection inside an unresolved transaction
+        observes the writer's own uncommitted view: *the writer quoting
+        itself*.  A failed rollback VOIDS that read; it does not license
+        reading anyway.
+      * **IDENTITY** -- the read must identify OUR attempt.  ``SELECT 1 FROM
+        trades WHERE id = ?`` establishes only that *a* row with that id
+        exists, and a **rolled-back rowid is REUSABLE** (``sqlite_sequence``
+        rolls back with the insert, so ``AUTOINCREMENT`` does not pin it).
 
-    THREE ASSERTIONS, because "it did not raise" passes an implementation that
-    swallows everything: the RESULT SHAPE (a real ``trade_id`` and a warning
-    naming the lost commit), the ROW COUNT (exactly one), and the RETRY (the
-    belt refuses it and names the existing position).
+    Identity does not exist in the schema today, so the honest answer is the
+    alarm: **ALARM-NEVER-ASSERT at the transaction boundary** -- the function
+    may RAISE the indeterminate, never ASSERT durability from evidence that
+    cannot identify the attempt.
+
+    THE DECLARED RESIDUAL, PINNED rather than merely described: the row IS
+    durable while the caller is told the entry failed, so the caller may
+    RETRY -- and the retry hits ``ux_trades_one_open_per_ticker`` and REFUSES,
+    naming the existing position.  That is the one direction the belt covers,
+    and this row is the evidence under the declaration.
+
+    Both paths, because clause 3 binds both: on the latched path the raise
+    comes from ``commit()``, on the pre-arc path from ``with conn:``'s exit,
+    and NEITHER can tell "the commit failed" from "the commit landed and then
+    the exception arrived" -- which is exactly why neither may claim success.
     """
     conn, cfg, candidate_id = build_world(
         tmp_path, "contract1" + str(int(immediate)))
@@ -3205,59 +3230,27 @@ def test_CONTRACT_a_post_commit_failure_returns_SUCCESS_with_a_warning(
     conn.commit()
     assert _trade_rows(conn) == 0, "the premise: no entry yet"
 
-    proxy = _RaiseAfterCommit(conn, KeyboardInterrupt("after the commit"))
+    proxy = _RaiseAfterCommit(conn, sqlite3.OperationalError("commit lost"))
     request = req() if immediate else req(
         schwab_source_value_json=None, fill_origin="operator_typed")
 
-    result = enter(proxy, cfg, request)
+    with pytest.raises(sqlite3.OperationalError, match="commit lost"):
+        enter(proxy, cfg, request)
 
     assert proxy.committed, (
         "the planted commit never ran, so this row measures nothing about "
-        "the post-commit window")
-    assert result.trade_id is not None and result.trade_id > 0, (
-        "the durable entry was reported as a failure")
-    assert result.post_commit_warnings, (
-        "the result claims an unqualified success; the caller cannot surface "
-        "what went wrong after the write landed")
-    assert any("DURABLE" in w for w in result.post_commit_warnings), (
-        result.post_commit_warnings)
+        "the lost-return window")
     assert _trade_rows(conn) == 1, (
-        "exactly one entry must exist -- this is the whole point")
+        "THE RESIDUAL ITSELF: the row is durable.  If this is ever 0 the "
+        "declaration is describing a different defect")
+    assert not conn.in_transaction
 
-    # THE RETRY, which is what the wrong answer would have provoked.  The belt
-    # refuses it and names the existing position; the contract is why the
-    # operator is not driven here in the first place.
+    # THE DIRECTION THE BELT COVERS.  The caller was told the entry failed and
+    # retries; the unique index refuses and names the existing position, so
+    # the residual costs a confusing error rather than a double position.
     with pytest.raises(DuplicateOpenPositionError, match=TICKER):
         enter(conn, cfg, request)
     assert _trade_rows(conn) == 1, "the retry created a SECOND position"
-
-
-def test_CONTRACT_a_lost_commit_with_the_row_LANDED_is_resolved_by_READ(
-        tmp_path) -> None:
-    """**CLAUSE 2, the SUCCESS half.**  The fact is in the table, and the
-    exception is not evidence about it either way.
-
-    ``commit()`` itself raises, and the row DID land.  The implementation
-    reads for it on a fresh statement and returns SUCCESS with a warning that
-    the commit's own return was lost -- never indeterminate when a read can
-    settle it.
-    """
-    conn, cfg, candidate_id = build_world(tmp_path, "contract2")
-    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
-    conn.commit()
-    proxy = _RaiseAfterCommit(conn, sqlite3.OperationalError("commit lost"))
-
-    result = enter(proxy, cfg, req())
-
-    assert proxy.committed
-    assert result.trade_id is not None
-    assert any("own return was lost" in w
-               for w in result.post_commit_warnings), (
-        result.post_commit_warnings)
-    assert any("Do NOT retry" in w for w in result.post_commit_warnings), (
-        "the warning must tell the operator not to retry a durable entry")
-    assert _trade_rows(conn) == 1
-    assert not conn.in_transaction
 
 
 class _CommitNeverLands:
@@ -3283,17 +3276,18 @@ class _CommitNeverLands:
 
 
 def test_CONTRACT_a_lost_commit_with_the_row_ABSENT_re_raises(tmp_path) -> None:
-    """**CLAUSE 2, the FAILURE half -- and the one that keeps the resolution
-    honest.**
+    """A commit that raises WITHOUT landing: re-raise, and leave NOTHING
+    pending.
 
-    ``commit()`` raises and the write did NOT land.  The read must NOT see the
-    pending row: on the same connection an OPEN transaction sees its own
-    uncommitted write, so the resolution rolls back FIRST and only then reads.
-    Without that ordering this case would return a FALSE SUCCESS, which is the
-    one direction the contract must never produce.
+    This is the R4-03 rollback property held at the same boundary as the row
+    above: ``commit()`` raises, the write did not land, and the failed
+    commit's write reservation must not stay held on a connection the caller
+    goes on reusing.
 
     The row count is asserted at ZERO, because "it raised" alone would pass an
-    implementation that raised while leaving the write pending.
+    implementation that raised while leaving the write pending -- and a
+    pending row is what a same-connection read would have reported as
+    DURABLE, which is the visibility half of why clause 2 was reverted.
     """
     conn, cfg, candidate_id = build_world(tmp_path, "contract3")
     accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
@@ -3309,3 +3303,145 @@ def test_CONTRACT_a_lost_commit_with_the_row_ABSENT_re_raises(tmp_path) -> None:
     assert _trade_rows(conn) == 0, (
         "a write that never committed is visible; the resolution read saw the "
         "pending row and would report a FALSE SUCCESS")
+
+
+# ===========================================================================
+# CODEX 22A-FIX-R10-01 + 22A-FIX-R10-04 -- THE TWO BOUNDARY DEFECTS INSIDE
+# CLAUSE 1'S OWN CONTRACT.  Both are FIXED (CHARC + RD, ruled 2026-09-02 --
+# `docs/22-a-merge-request.md` S4.4: *"boundary defects INSIDE clause 1's own
+# contract"*), and NEITHER needs the attempt identity clause 2 lacked.
+#
+# `R10-01`: the post-commit guard opened only AFTER the
+# `with _entry_transaction(...)` statement had fully exited, so an exception
+# delivered on the context manager's OWN return/unwind -- after the real
+# commit -- escaped it on BOTH paths.  Codex reproduced it by raising on the
+# generator-return event.  These rows inject at the identical boundary by
+# DELEGATING THE PRODUCTION CONTEXT MANAGER and raising as it returns, which
+# is what an interrupt landing there looks like from `record_entry`.  The
+# production `_entry_transaction` still runs, so `outcome.committed` is set
+# by the real commit and not by the harness.
+#
+# `R10-04`: clause 1 names logging a best-effort post-commit step, and the
+# `log.error` on the degraded path was not best-effort IN FACT -- a failing
+# sink converted a confirmed durable result into a failure.
+# ===========================================================================
+@contextlib.contextmanager
+def _raise_as_the_transaction_returns(real, exc: BaseException, fired: list):
+    """Delegate the REAL context manager, then raise AS IT RETURNS.
+
+    The delegation is the point: a stand-in that skipped the production
+    transaction would prove nothing about where the guard opens, because the
+    commit -- and therefore `outcome.committed` -- would never have happened.
+    """
+    with real:
+        yield
+    fired.append(True)
+    raise exc
+
+
+def _inject_after_the_commit(monkeypatch, exc: BaseException) -> list:
+    """Wrap `swing.trades.entry._entry_transaction` at the unwind boundary."""
+    import swing.trades.entry as entry_mod
+
+    real_factory = entry_mod._entry_transaction
+    fired: list = []
+
+    def _wrapped(conn, *, immediate, outcome):
+        return _raise_as_the_transaction_returns(
+            real_factory(conn, immediate=immediate, outcome=outcome),
+            exc, fired)
+
+    monkeypatch.setattr(entry_mod, "_entry_transaction", _wrapped)
+    return fired
+
+
+@pytest.mark.parametrize("immediate", [True, False],
+                         ids=["latched-path", "pre-arc-path"])
+def test_R10_01_an_exception_on_the_TRANSACTION_UNWIND_returns_SUCCESS(
+        tmp_path, monkeypatch, immediate) -> None:
+    """**CLAUSE 1 AT ITS OWN BOUNDARY, ON BOTH PATHS** (clause 3).
+
+    PRE-FIX the `KeyboardInterrupt` propagates out of `record_entry` while the
+    trade row is DURABLE -- a durable write reported as a failure, which is
+    the double-entry direction.  POST-FIX `record_entry` returns SUCCESS
+    carrying a post-commit warning, and exactly one row exists.  Both values
+    are stated so the assertion distinguishes.
+
+    `BaseException` rather than `Exception` deliberately: the reproduction is
+    an INTERRUPT, and a guard catching only `Exception` would pass a row
+    written with `ValueError` while leaving the real window open.
+    """
+    conn, cfg, candidate_id = build_world(
+        tmp_path, "r1001" + str(int(immediate)))
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+    assert _trade_rows(conn) == 0, "the premise: no entry yet"
+
+    fired = _inject_after_the_commit(
+        monkeypatch, KeyboardInterrupt("on the transaction's own return"))
+    request = req() if immediate else req(
+        schwab_source_value_json=None, fill_origin="operator_typed")
+
+    result = enter(conn, cfg, request)
+
+    assert fired, (
+        "the planted exception never landed, so this row measures nothing "
+        "about the unwind boundary")
+    assert result.trade_id is not None and result.trade_id > 0, (
+        "the durable entry was reported as a failure")
+    assert any("DURABLE" in w for w in result.post_commit_warnings), (
+        result.post_commit_warnings)
+    assert any("do NOT retry" in w for w in result.post_commit_warnings), (
+        "the warning must tell the operator not to retry a durable entry")
+    assert _trade_rows(conn) == 1, (
+        "exactly one entry must exist -- this is the whole point")
+    assert not conn.in_transaction
+
+
+def test_R10_04_a_failing_LOG_SINK_cannot_undo_a_durable_entry(
+        tmp_path, monkeypatch) -> None:
+    """**CLAUSE 1 SAYS LOGGING IS BEST-EFFORT; THIS MAKES IT BEST-EFFORT IN
+    FACT** (Codex 22A-FIX-R10-04, reproduced by execution with a handler whose
+    `emit()` raises).
+
+    A logging sink is caller-installed infrastructure that the entry service
+    does not control, and it is reachable on exactly the path that has just
+    confirmed a durable money-bearing row.  PRE-FIX the sink's `RuntimeError`
+    propagates and the durable write is reported as a failure.  POST-FIX the
+    result returns, carrying BOTH the durable warning and a second warning
+    naming the log that could not be emitted -- the failure is contained, not
+    swallowed, because a silent `pass` would trade one invisible failure for
+    another.
+    """
+    import logging
+
+    conn, cfg, candidate_id = build_world(tmp_path, "r1004")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+
+    fired = _inject_after_the_commit(
+        monkeypatch, KeyboardInterrupt("on the transaction's own return"))
+
+    class _BrokenSink(logging.Handler):
+        def emit(self, record):
+            raise RuntimeError("logging sink failed")
+
+    sink = _BrokenSink(level=logging.ERROR)
+    root = logging.getLogger()
+    root.addHandler(sink)
+    try:
+        result = enter(conn, cfg, req())
+    finally:
+        root.removeHandler(sink)
+
+    assert fired, "the planted exception never landed"
+    assert result.trade_id is not None and result.trade_id > 0, (
+        "a failing LOG SINK converted a confirmed durable entry into a "
+        "failure -- logging is declared best-effort by clause 1")
+    assert any("DURABLE" in w for w in result.post_commit_warnings), (
+        result.post_commit_warnings)
+    assert any("could not be emitted" in w
+               for w in result.post_commit_warnings), (
+        "the log failure was swallowed silently; the caller cannot tell that "
+        "the ERROR record never reached a sink")
+    assert _trade_rows(conn) == 1

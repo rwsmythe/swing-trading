@@ -445,27 +445,21 @@ def record_entry(
         )
 
     # THE RESULT IS A STATEMENT ABOUT THE DURABLE STATE OF THE LEDGER
-    # (CHARC's contract, ruled 2026-09-01, from Codex 22A-FIX-R9-03).
+    # (CHARC's contract, ruled 2026-09-01, from Codex 22A-FIX-R9-03), AS
+    # SPLIT BY CHARC + RD 2026-09-02 -- `docs/22-a-merge-request.md` S4.4.
+    # **CLAUSES 1 AND 3 STAND** and are what this region implements.  CLAUSE 2
+    # (settle a lost commit BY READ) IS REVERTED to re-raise; the declaration,
+    # with both reproductions, sits above `_entry_transaction`.
     #
-    # `outcome` is how the transaction wrapper tells this function what the
-    # LEDGER says when the commit's own return was lost: it carries the
-    # identity to read back and collects the warnings a durable-but-degraded
-    # write earns.  It is a mutable carrier rather than a return value because
-    # the commit happens in the context manager's exit, AFTER the inner
-    # function has already produced its result.
+    # `outcome` is how the transaction wrapper tells this function the ONE
+    # fact it cannot otherwise observe -- whether the COMMIT ITSELF RETURNED.
+    # It is a mutable carrier rather than a return value because the commit
+    # happens in the context manager's exit, AFTER the inner function has
+    # already produced its result, so there is no return value left to carry
+    # it.
+    result: EntryResult | None = None
     outcome = _CommitOutcome()
-    with _entry_transaction(conn, immediate=_reserve, outcome=outcome):
-        result = _record_entry_inner(
-            conn, req,
-            cfg=cfg,
-            derived_origin=derived_origin,
-            entry_iso=entry_iso,
-            warning=warning,
-            reserve=_reserve,
-        )
-        outcome.trade_id = result.trade_id
-
-    # ================= EVERYTHING BELOW THIS LINE IS POST-COMMIT ============
+    # ===================== THE GUARDED REGION STARTS HERE ==================
     #
     # **CLAUSE 1: AFTER A SUCCESSFUL COMMIT, NOTHING MAY CONVERT THE RESULT TO
     # FAILURE.**  Every post-commit step -- event emission, identity
@@ -479,27 +473,78 @@ def record_entry(
     # the direction that causes a DOUBLE ENTRY, which is the expensive
     # direction.*
     #
+    # **THE `try` OPENS BEFORE THE `with`, NOT AFTER IT** (Codex
+    # 22A-FIX-R10-01, reproduced by execution on BOTH paths).  A guard that
+    # began only after the `with` statement had fully exited did not cover the
+    # context manager's OWN return/unwind: an exception delivered on
+    # `_entry_transaction`'s generator-return event, AFTER the real commit,
+    # escaped it on both paths and left a durable entry reported as a failure
+    # -- the exact hazard clause 1 exists to close, one frame outside the
+    # thing built to close it.  The `with` statement itself is therefore
+    # INSIDE the region.
+    #
     # THERE IS NO POST-COMMIT STEP TODAY, and the guard is here anyway: the
     # region is where the next one goes, and the contract is a property of
     # this function rather than of the steps that happen to exist.  A step
     # added outside it re-opens the exposure silently.
     try:
-        return dataclasses.replace(
-            result, post_commit_warnings=tuple(outcome.warnings))
+        with _entry_transaction(conn, immediate=_reserve, outcome=outcome):
+            result = _record_entry_inner(
+                conn, req,
+                cfg=cfg,
+                derived_origin=derived_origin,
+                entry_iso=entry_iso,
+                warning=warning,
+                reserve=_reserve,
+            )
+        # ---- everything from here to the return is POST-COMMIT ----
+        return result
     except BaseException as post_commit_error:  # noqa: BLE001 -- the CLASS
-        log.error(
-            "22-A: trade %s IS DURABLE and a POST-COMMIT step failed "
-            "(assembling the result: %s). The entry exists; the failure is "
-            "reported as a warning and NOT as a failed entry -- reporting a "
-            "durable write as a failure is what causes a double entry.",
-            outcome.trade_id, post_commit_error)
-        return EntryResult(
-            trade_id=result.trade_id, warning=result.warning,
-            watchlist_archived=result.watchlist_archived,
-            post_commit_warnings=tuple(outcome.warnings) + (
-                f"a post-commit step failed after the entry became durable: "
-                f"{post_commit_error!r}",),
+        # **THE GATE IS THE COMMIT'S OWN RETURN, NEVER A READ OF THE LEDGER.**
+        # `outcome.committed` is set on the statement after `commit()` returns
+        # normally; it is this function's own call reporting what it did, not
+        # the writer reading the table to decide what its call must have done
+        # (which is the reverted clause 2 -- see the declaration below).
+        #
+        # Both conditions are stated because the gate must assert what is
+        # TRUE rather than what their coupling implies: `result is None` says
+        # the body never finished, `not outcome.committed` says the commit
+        # never returned.  Either one means there is no entry to report, and
+        # the honest answer is the original exception.
+        if result is None or not outcome.committed:
+            raise
+        warning_text = (
+            f"the entry is DURABLE (trade {result.trade_id}) and a step "
+            f"AFTER the commit failed ({post_commit_error!r}). The entry "
+            f"exists -- do NOT retry.")
+        degraded = dataclasses.replace(
+            result,
+            post_commit_warnings=result.post_commit_warnings + (
+                warning_text,),
         )
+        # **THE LOG CALL IS BEST-EFFORT IN FACT, NOT ONLY IN THE PROSE**
+        # (Codex 22A-FIX-R10-04, reproduced: a logging handler whose `emit()`
+        # raised propagated out over a committed row).  Clause 1 names logging
+        # as a best-effort post-commit step, so a failing sink may not convert
+        # a durable write into a failure.  The degraded result is BUILT FIRST
+        # and the failure of the log is itself surfaced as a warning rather
+        # than swallowed -- a silent `pass` here would trade one invisible
+        # failure for another.
+        try:
+            log.error(
+                "22-A: trade %s IS DURABLE and a POST-COMMIT step failed "
+                "(%s). The entry exists; the failure is reported as a warning "
+                "and NOT as a failed entry -- reporting a durable write as a "
+                "failure is what causes a double entry.",
+                result.trade_id, post_commit_error)
+        except BaseException as log_error:  # noqa: BLE001 -- the CLASS
+            degraded = dataclasses.replace(
+                degraded,
+                post_commit_warnings=degraded.post_commit_warnings + (
+                    f"the ERROR log for the warning above could not be "
+                    f"emitted ({log_error!r}); the ledger is unaffected.",),
+            )
+        return degraded
 
 
 class CallerHeldEntryTransactionError(RuntimeError):
@@ -510,80 +555,85 @@ class CallerHeldEntryTransactionError(RuntimeError):
 
 @dataclass
 class _CommitOutcome:
-    """What the LEDGER says, carried out of the transaction wrapper.
+    """The ONE thing the transaction wrapper knows and its caller cannot ask
+    for afterwards: **did the COMMIT ITSELF RETURN?**
 
-    ``trade_id`` is the identity the resolve-by-read looks for; it is set by
-    ``record_entry`` once the inner function has produced its row and BEFORE
-    the commit runs on context exit, which is exactly the window clause 2 is
-    about.
+    ``record_entry``'s post-commit guard has to tell "the write never landed"
+    from "the write landed and an exception arrived afterwards", and once the
+    context manager has exited there is nothing left to interrogate.  The
+    connection cannot answer it either: ``in_transaction`` reads False for a
+    COMMITTED transaction and for a ROLLED-BACK one alike.
+
+    **It is an OBSERVATION, never an inference.**  It is set on the statement
+    after the commit call returns normally, on each path, and nothing else
+    sets it.  That is exactly why it is admissible where the reverted
+    resolve-by-read was not: it is the writer reporting what its OWN CALL
+    did, not the writer reading the ledger to decide what its own call must
+    have done.
     """
 
-    trade_id: int | None = None
-    warnings: list[str] = dataclasses.field(default_factory=list)
+    committed: bool = False
 
 
-def _entry_is_durable(conn, trade_id: int | None) -> bool:
-    """Does the ledger hold this trade, on a FRESH statement?
-
-    **CLAUSE 2: RESOLVE BY READ -- never report indeterminate when a read can
-    settle it** (CHARC).  *The fact is in the table, and the exception is not
-    evidence about it either way.*
-
-    THE READ IS TAKEN ONLY AFTER THE TRANSACTION IS RESOLVED, which is the
-    trap this helper exists to avoid: on the SAME connection an OPEN
-    transaction sees its own uncommitted write, so a read taken while the
-    failed commit's transaction is still open would report a row that is
-    about to vanish -- turning a genuine failure into a false SUCCESS, the
-    one direction the contract must not produce.  The caller rolls back
-    first; after that, a visible row can only be a committed one.
-
-    A failure of the READ ITSELF is not evidence of durability: it answers
-    False, and the original error is what surfaces.
-    """
-    if trade_id is None:
-        return False
-    try:
-        return conn.execute(
-            "SELECT 1 FROM trades WHERE id = ?", (trade_id,)
-        ).fetchone() is not None
-    except BaseException as read_error:  # noqa: BLE001 -- the CLASS
-        log.error(
-            "22-A: the commit for trade %s did not return, and the read that "
-            "would settle whether it landed ALSO failed (%s). The original "
-            "failure is what surfaces; this entry's durability is genuinely "
-            "unknown and the ledger must be inspected before any retry.",
-            trade_id, read_error)
-        return False
-
-
-def _settle_lost_commit(conn, outcome: _CommitOutcome,
-                        commit_error: BaseException) -> bool:
-    """A commit whose own return was lost: did the write land?
-
-    Returns True when the ledger holds the row -- the caller then SWALLOWS the
-    exception and returns SUCCESS with a warning.  Returns False when it does
-    not, and the caller re-raises.
-    """
-    if conn.in_transaction:
-        # The commit did NOT complete, so its write is still uncommitted and
-        # would be visible to our own read.  Resolving the transaction first
-        # is what makes the read mean something.
-        try:
-            conn.rollback()
-        except BaseException as cleanup_error:  # noqa: BLE001 -- the CLASS
-            log.error(
-                "22-A: the entry commit failed (%s) and the connection could "
-                "not be rolled back (%s); it MUST BE DISCARDED rather than "
-                "reused.", commit_error, cleanup_error)
-    if not _entry_is_durable(conn, outcome.trade_id):
-        return False
-    warning = (
-        f"the entry is DURABLE (trade {outcome.trade_id}) but the commit's "
-        f"own return was lost ({commit_error!r}); the write was confirmed by "
-        f"reading the ledger. Do NOT retry -- the entry exists.")
-    log.error("22-A: %s", warning)
-    outcome.warnings.append(warning)
-    return True
+# ===========================================================================
+# **THE DECLARED RESIDUAL: A COMMIT WHOSE OWN RETURN IS LOST RE-RAISES OVER A
+# ROW THAT MAY BE DURABLE.**  (CHARC + RD, ruled 2026-09-02 --
+# `docs/22-a-merge-request.md` S4.4.)
+#
+# CLAUSE 2 -- *"if `commit()` itself raises, RESOLVE BY READ"* -- was
+# implemented here as `_entry_is_durable` + `_settle_lost_commit`, and is
+# REVERTED.  It was never implementable as ruled, and BOTH reasons were
+# reproduced by execution against the shipped helpers:
+#
+#   * **VISIBILITY** -- the confirming read must observe DURABLE state.  A
+#     read taken on the writer's OWN connection inside an unresolved
+#     transaction observes the writer's own uncommitted view: THE WRITER
+#     QUOTING ITSELF.  Reproduced (Codex 22A-FIX-R10-02): with a rollback
+#     that raised BEFORE taking effect, `_settle_lost_commit` returned True
+#     with `conn.in_transaction` still True -- a FALSE SUCCESS carrying a
+#     "DURABLE" warning over a merely-pending row, which is the one direction
+#     the contract says must never be produced.  The helper's own docstring
+#     said the resolution "rolls back FIRST and only then reads"; it handled
+#     the rollback SUCCEEDING and not the rollback FAILING.  A failed
+#     rollback VOIDS the read -- it does not license reading anyway.
+#   * **IDENTITY** -- the read must identify OUR attempt.  `SELECT 1 FROM
+#     trades WHERE id = ?` establishes only that *a* row with that id exists,
+#     and A ROLLED-BACK ROWID IS REUSABLE (`sqlite_sequence` rolls back with
+#     the insert, so even `AUTOINCREMENT` does not pin it).  Reproduced
+#     (Codex 22A-FIX-R10-03): trade 1 was rolled back, a second connection
+#     inserted ticker `OTHER` and was issued id 1, and `_settle_lost_commit`
+#     confirmed that row as ours.  **THIS PRECONDITION DOES NOT EXIST IN THE
+#     SCHEMA TODAY.**
+#
+# SO THE HONEST ANSWER IS THE ALARM.  Canon (RD): **ALARM-NEVER-ASSERT AT THE
+# TRANSACTION BOUNDARY** -- the function may RAISE the indeterminate, and may
+# never ASSERT durability from evidence that cannot identify the attempt.
+# Re-raise is the pre-arc behaviour, and it is honest in the way the read was
+# not: it never claims a row exists.
+#
+# WHAT THE RESIDUAL COSTS, stated rather than implied: the row can be durable
+# while the caller is told the entry failed, so the caller may RETRY -- and
+# the retry hits `ux_trades_one_open_per_ticker` (UNIQUE on ticker WHERE
+# state IN entered/managing/partial_exited) and REFUSES, naming the existing
+# position.  A confusing error, not a double position.  **THE BELT DOES NOT
+# COVER A TICKER CLOSED BETWEEN THE TWO ATTEMPTS**, and that is the uncovered
+# direction of this declaration.
+#
+# THE FOLLOW-ON, ruled and deliberately NOT built here: a CO-DURABLE
+# (written in the same transaction as the row it identifies -- anything else
+# is a stamp, gotcha #30), UNIQUE-PER-ATTEMPT (survives rollback-and-retry
+# without collision; rowid fails by construction) attempt identity, resolved
+# on a DURABLE-VISIBILITY read (a fresh connection, or after a PROVEN
+# resolution).  Clause 2 returns on top of that primitive, gated by RD's two
+# discriminators -- rollback-raises-then-read must NOT return SUCCESS, and a
+# concurrent insert taking the same id must NOT be confirmed as ours.
+#
+# WHAT IS *NOT* REVERTED: clauses 1 and 3.  The post-commit region in
+# `record_entry` still guarantees that a commit which RETURNED cannot be
+# turned into a reported failure, on BOTH paths.  That guarantee rests on the
+# commit's own return (`_CommitOutcome.committed`), which needs neither
+# visibility nor identity.
+# ===========================================================================
 
 
 @contextlib.contextmanager
@@ -600,6 +650,12 @@ def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool,
     that read and the INSERT.  The explicit ``BEGIN IMMEDIATE`` takes the
     reservation FIRST, following Demand C's shape verbatim including its
     caller-held-transaction refusal.
+
+    ``outcome.committed`` is set on the statement AFTER the commit returns
+    normally, on BOTH paths (clause 3).  That single fact is everything
+    ``record_entry``'s post-commit guard needs, and it costs neither of the
+    two preconditions the reverted clause-2 read could not meet -- it is an
+    observation of THIS function's own call, not a reading of the ledger.
     """
     if not immediate:
         # **CLAUSE 3: THE CONTRACT BINDS BOTH PATHS** (CHARC).  `with conn:`
@@ -608,13 +664,12 @@ def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool,
         # durable entry and a reported failure.  Binding only the latched path
         # would make the PRE-ARC path the one that double-enters, which is the
         # opposite of a conservative change.
-        try:
-            with conn:
-                yield
-        except BaseException as commit_error:
-            if _settle_lost_commit(conn, outcome, commit_error):
-                return
-            raise
+        with conn:
+            yield
+        # `sqlite3.Connection.__exit__` COMMITTED and returned; a failure of
+        # that commit propagates from the `with` above and never reaches
+        # here, so this line is reached only after a commit that returned.
+        outcome.committed = True
         return
     # THE ACQUISITION IS INSIDE THE PROTECTED REGION (reviewer B, post-fix
     # tree; ARC-INTRODUCED by `ed897bc5`, so fixed here rather than banked).
@@ -638,26 +693,23 @@ def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool,
         # reusing.  A failed COMMIT is exactly the moment a rollback matters
         # most, and it was the one path that did not get one.
         #
-        # AND A COMMIT WHOSE OWN RETURN WAS LOST IS SETTLED BY READ, NOT BY
-        # ASSUMPTION (CHARC's clause 2, from Codex 22A-FIX-R9-03).  An
-        # exception delivered as `commit()` returns previously produced a
-        # DURABLE money-bearing entry reported as a FAILURE -- and the caller
-        # can then be shown an error and retry against an entry that already
-        # exists.  R4-03's rollback property is PRESERVED: `_settle_lost_commit`
-        # rolls back first whenever the transaction is still open, which is
-        # also what makes its read meaningful.
-        try:
-            conn.commit()
-        except BaseException as commit_error:
-            # A SETTLED-DURABLE commit returns NORMALLY from here, so the
-            # outer handler is never entered and nothing downstream can turn
-            # the durable write into a failure.  There is deliberately no
-            # `committed` flag: once this branch returns, control leaves the
-            # outer `try` normally, so a flag guarding the outer handler would
-            # be unreachable -- defensive dead code, which this arc rules
-            # against as firmly as it rules against the hole.
-            if not _settle_lost_commit(conn, outcome, commit_error):
-                raise
+        # A COMMIT THAT RAISES RE-RAISES, over a row that may well be durable
+        # -- the DECLARED RESIDUAL above, and the reverted clause 2.  This
+        # site does NOT try to settle it: neither the exception nor a
+        # same-connection read is evidence about what the commit did.
+        conn.commit()
+        # **AND THE COMMIT'S OWN RETURN IS RECORDED HERE** (Codex
+        # 22A-FIX-R10-01).  An earlier version deliberately carried no
+        # `committed` flag, on the reasoning that control leaving this `try`
+        # normally made any such flag unreachable.  That reasoning was about
+        # THIS function's outer handler and it is still true of it -- but
+        # `record_entry`'s post-commit guard lives one frame OUT, and the
+        # window between this commit and that guard is reachable: an
+        # exception on the generator's own return/unwind was reproduced on
+        # both paths, escaping with a durable entry and a reported failure.
+        # The flag is what lets the caller tell "never landed" from "landed,
+        # then an exception arrived".
+        outcome.committed = True
     except BaseException as write_error:
         # AND THE ROLLBACK'S OWN FAILURE IS NOT SUPPRESSED (reviewer B).
         # This was `contextlib.suppress(sqlite3.Error)`: B reproduced an inner
