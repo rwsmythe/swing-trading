@@ -2504,12 +2504,22 @@ and split the two Schwab settings across the two files, **because `load()` DELET
 the gate's own refusal script FAIL EVERY TIME (`A3-R4-02`):
 
 **In the SCRATCH `swing.config.toml`** (tracked-style; `marketdata_ladder_enabled` IS read from
-here):
+here) — **REPLACE the existing key; do NOT insert a second one:**
 
 ```toml
 [integrations.schwab]
-marketdata_ladder_enabled = false
+marketdata_ladder_enabled = false   # <- REPLACE swing.config.toml:151, do not ADD
 ```
+
+> **RUNBOOK DEFECT CORRECTED 2026-09-03, measured at the gate's first run (orchestrator).** An
+> earlier version of this step said to ADD this key to the `[integrations.schwab]` section. **The
+> tracked `swing.config.toml` ALREADY SETS IT at line 151** (`marketdata_ladder_enabled = true`), so
+> inserting a second one produces `tomllib.TOMLDecodeError: Cannot overwrite a value` and **the gate
+> cannot start at all** — `db-migrate` dies before the scratch DB exists. The redirect script must
+> REPLACE the existing assignment (`t.replace("marketdata_ladder_enabled = true",
+> "marketdata_ladder_enabled = false", 1)`), exactly as it replaces the seven `[paths]` keys and the
+> two `[position_limits]` keys. **Verify the scratch config PARSES (`tomllib.loads`) before step 3**
+> — the failure is a hard stop, not a degraded run, and it costs nothing to catch it one step early.
 
 **In `<SCRATCH ROOT>/swing-data/user-config.toml`** (created by the gate; this is the file
 `apply_overrides()` reads, and the scratch home makes it empty unless the gate writes it):
