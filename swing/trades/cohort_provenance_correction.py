@@ -2450,7 +2450,17 @@ def preview_cohort_provenance_correction(
             except BaseException as exc:  # noqa: BLE001
                 cleanup_error = cleanup_error or exc
         if cleanup_error is not None:
-            log.error(
+            # R11-03 CONTAINMENT (22-A3 Task 4). **THIS SITE WAS NOT IN THE
+            # 22-A3 BRIEF'S ROSTER OF FIVE.** It is the same class by
+            # construction -- an ERROR log immediately followed by
+            # `raise <a specific object>` -- and it is reachable on this
+            # function's SUCCESS path as well as its failure path, because
+            # this is a `finally`. Found by reading every logging call in the
+            # module rather than by matching the brief's line anchors; a
+            # hand-enumerated roster is the same instrument as the count it
+            # replaced. Ratified 2026-09-02: the roster was a FLOOR.
+            log_contained_note(
+                log, cleanup_error,
                 "22-A: the cohort-provenance PREVIEW could not unwind its own "
                 "savepoint (%s). Its writes may still be pending on this "
                 "connection; the caller MUST NOT commit. Nothing about the "
@@ -2697,15 +2707,18 @@ def correct_cohort_provenance(
                 # after-effect exception leaves the transaction CLOSED, and
                 # announcing "STILL OPEN" then teaches an operator to
                 # distrust the accurate warnings too.
+                # R11-03 CONTAINMENT (22-A3 Task 4), BOTH BRANCHES.
                 if conn.in_transaction:
-                    log.error(
+                    log_contained_note(
+                        log, cleanup_error,
                         "22-A: the cohort-provenance correction failed (%s) "
                         "AND could not roll back (%s). The WRITE transaction "
                         "is STILL OPEN, its reservation still held, and this "
                         "connection MUST BE DISCARDED rather than reused.",
                         write_error, cleanup_error)
                 else:
-                    log.error(
+                    log_contained_note(
+                        log, cleanup_error,
                         "22-A: the cohort-provenance correction failed (%s) "
                         "and the rollback TOOK EFFECT but then raised (%s). "
                         "The transaction is CLOSED and nothing partial is "
@@ -3346,7 +3359,11 @@ def read_provenance_corrections(
                 conn.rollback()
             # SELF-SWEEP SS-22A-FIX-2: `BaseException`, not the roster.
             except BaseException as cleanup_error:  # noqa: BLE001
-                log.error(
+                # R11-03 CONTAINMENT (22-A3 Task 4). This one runs on the
+                # reader's SUCCESS path too -- the read completed and only the
+                # unwind failed.
+                log_contained_note(
+                    log, cleanup_error,
                     "22-A: the cohort-provenance READER could not roll back "
                     "the read transaction it opened (%s). It is STILL OPEN "
                     "and this connection MUST BE DISCARDED rather than "

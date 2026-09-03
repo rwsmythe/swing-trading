@@ -666,10 +666,18 @@ def record_entry(
         # the honest answer is the original exception.
         if result is None or not outcome.committed:
             raise
+        # **`safe_text`, NOT `{post_commit_error!r}`** (22-A3 Task 4, ruled
+        # 2026-09-02: *"the envelope covers outcome-corrupting
+        # exception-formatting on the post-commit path of `record_entry`,
+        # wherever it occurs in the function."*).  A post-commit failure whose
+        # `__repr__` RAISES made this line raise BEFORE the degraded
+        # `EntryResult` existed at all -- so `record_entry` reported a failure
+        # over a durable entry, which is clause 1's own subject, one line
+        # above the guard that implements it.
         warning_text = (
             f"the entry is DURABLE (trade {result.trade_id}) and a step "
-            f"AFTER the commit failed ({post_commit_error!r}). The entry "
-            f"exists -- do NOT retry.")
+            f"AFTER the commit failed ({safe_text(post_commit_error)}). The "
+            f"entry exists -- do NOT retry.")
         degraded = dataclasses.replace(
             result,
             post_commit_warnings=result.post_commit_warnings + (
@@ -694,8 +702,15 @@ def record_entry(
             degraded = dataclasses.replace(
                 degraded,
                 post_commit_warnings=degraded.post_commit_warnings + (
+                    # `safe_text` for the same ruled reason as the warning
+                    # above: if the SINK's own exception has a hostile
+                    # `__repr__`, this formatting raised INSIDE the `except`
+                    # clause, over a durable row -- a raising logging handler
+                    # still changing the function's result at the one site
+                    # R10-04 had declared safe.
                     f"the ERROR log for the warning above could not be "
-                    f"emitted ({log_error!r}); the ledger is unaffected.",),
+                    f"emitted ({safe_text(log_error)}); the ledger is "
+                    f"unaffected.",),
             )
         return degraded
 

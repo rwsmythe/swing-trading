@@ -387,3 +387,258 @@ def test_d3_a_broken_sink_cannot_change_what_escapes_the_caller_held_preview(
     assert any("could not be emitted" in n
                for n in getattr(excinfo.value, "__notes__", ())), (
         "the log failure was swallowed silently")
+
+
+def test_d4_a_broken_sink_cannot_change_what_escapes_the_apply_rollback(
+        broken_sink, monkeypatch):
+    """cohort site 4 -- the apply-path rollback handler.
+
+    Parametrized over BOTH message branches at the call below; the two share
+    one raise statement (`raise cleanup_error from write_error`), so the
+    chaining assertion is the same for both.
+    """
+    import swing.trades.cohort_provenance_correction as mod
+
+    write_error = ValueError("22-A3 PROBE: the correction failed")
+    rollback_error = sqlite3.OperationalError("22-A3 PROBE: rollback failed")
+
+    def _raiser(conn, **kwargs):
+        raise write_error
+
+    monkeypatch.setattr(mod, "_correct_cohort_provenance_inner", _raiser)
+    proxy = _Proxy(rollback_error=rollback_error,
+                   in_transaction=(False, True, True))
+
+    with pytest.raises(sqlite3.OperationalError) as excinfo:
+        mod.correct_cohort_provenance(
+            proxy, trade_id=1, cited_candidate_id=2,
+            cited_recommendation_id=3)
+
+    assert excinfo.value is rollback_error
+    assert not isinstance(excinfo.value, RuntimeError)
+    assert excinfo.value.__cause__ is write_error
+    assert any("could not be emitted" in n
+               for n in getattr(excinfo.value, "__notes__", ()))
+
+
+def test_d4b_the_TOOK_EFFECT_branch_is_contained_too(broken_sink, monkeypatch):
+    """cohort site 4's SECOND branch -- fixing one twin and leaving the other
+    is this arc's named repeat failure, so both branches get a red."""
+    import swing.trades.cohort_provenance_correction as mod
+
+    write_error = ValueError("22-A3 PROBE: the correction failed")
+    rollback_error = sqlite3.OperationalError("22-A3 PROBE: rollback failed")
+
+    def _raiser(conn, **kwargs):
+        raise write_error
+
+    monkeypatch.setattr(mod, "_correct_cohort_provenance_inner", _raiser)
+    proxy = _Proxy(rollback_error=rollback_error,
+                   in_transaction=(False, True, False))
+
+    with pytest.raises(sqlite3.OperationalError) as excinfo:
+        mod.correct_cohort_provenance(
+            proxy, trade_id=1, cited_candidate_id=2,
+            cited_recommendation_id=3)
+
+    assert excinfo.value is rollback_error
+    assert not isinstance(excinfo.value, RuntimeError)
+    assert excinfo.value.__cause__ is write_error
+    assert any("could not be emitted" in n
+               for n in getattr(excinfo.value, "__notes__", ()))
+
+
+def test_d5_a_broken_sink_cannot_change_what_escapes_the_reader_unwind(
+        broken_sink, monkeypatch):
+    """cohort site 5 -- the reader's `finally` unwind, ON THE SUCCESS PATH.
+
+    The clearest statement of what the class costs: the read SUCCEEDED and
+    only the unwind failed.  Chaining matrix: a BARE `raise`, so there is no
+    `from` and no other exception is in flight -- `__cause__ is None`.
+    """
+    import swing.trades.cohort_provenance_correction as mod
+
+    rollback_error = sqlite3.OperationalError("22-A3 PROBE: rollback failed")
+    monkeypatch.setattr(mod, "_read_provenance_corrections_inner",
+                        lambda conn, **kw: [])
+    proxy = _Proxy(rollback_error=rollback_error,
+                   in_transaction=(False, True))
+
+    with pytest.raises(sqlite3.OperationalError) as excinfo:
+        mod.read_provenance_corrections(proxy, trade_id=1)
+
+    assert excinfo.value is rollback_error
+    assert not isinstance(excinfo.value, RuntimeError)
+    assert excinfo.value.__cause__ is None
+    assert any("could not be emitted" in n
+               for n in getattr(excinfo.value, "__notes__", ()))
+
+
+@pytest.mark.parametrize("posture", ["failure", "success"])
+def test_d6_a_broken_sink_cannot_change_what_escapes_the_preview_finally(
+        broken_sink, monkeypatch, posture):
+    """cohort site 6 -- the preview `finally` unwind. **NOT IN THE 22-A3
+    BRIEF'S ROSTER OF FIVE**, ratified 2026-09-02: a roster in a brief is a
+    FLOOR.
+
+    PARAMETRIZED OVER BOTH POSTURES because the argument for including this
+    site is that its `finally` runs on the function's SUCCESS path too -- a
+    test that only ever drove the failure posture would leave that specific
+    claim untested.
+
+    Chaining matrix: `raise cleanup_error` -- `__cause__ is None`; on the
+    FAILURE posture `__context__ is` the authorization error (the declared
+    R14-08 composition, which this arc must NOT change).
+    """
+    from types import SimpleNamespace
+
+    import swing.trades.cohort_provenance_correction as mod
+
+    auth_error = mod.CohortProvenanceCorrectionError("22-A3 PROBE: refused")
+
+    def _authorize_failure(conn, **kwargs):
+        raise auth_error
+
+    def _authorize_success(conn, **kwargs):
+        return SimpleNamespace(
+            already_applied=None, anchored=object(), derived=object(),
+            latch=object(), admission_tier="probe")
+
+    monkeypatch.setattr(
+        mod, "_authorize",
+        _authorize_failure if posture == "failure" else _authorize_success)
+
+    rollback_error = sqlite3.OperationalError(
+        "22-A3 PROBE: ROLLBACK TO failed")
+    proxy = _Proxy(fail_on={"ROLLBACK TO": rollback_error},
+                   in_transaction=(True,))
+
+    with pytest.raises(sqlite3.OperationalError) as excinfo:
+        mod.preview_cohort_provenance_correction(
+            proxy, trade_id=1, cited_candidate_id=2,
+            cited_recommendation_id=3)
+
+    assert excinfo.value is rollback_error
+    assert not isinstance(excinfo.value, RuntimeError)
+    assert excinfo.value.__cause__ is None
+    if posture == "failure":
+        assert excinfo.value.__context__ is auth_error
+    else:
+        assert excinfo.value.__context__ is None
+    assert any("could not be emitted" in n
+               for n in getattr(excinfo.value, "__notes__", ()))
+
+
+# ===========================================================================
+# (p) and (q) -- THE TWO `entry.py` `!r` FORMATTING SITES ON THE POST-COMMIT
+# PATH, authorised by the 2026-09-02 ruling:
+#
+#   "The envelope covers outcome-corrupting exception-formatting on the
+#    post-commit path of `record_entry`, wherever it occurs in the function."
+#
+# They get TWO SEPARATE TESTS because the two sites fail on DIFFERENT
+# injections and neither test reaches the other's line -- one test for both
+# would watch one of them pass for the wrong reason.
+# ===========================================================================
+
+
+class _HostileText(RuntimeError):
+    """Both `__repr__` and `__str__` raise.  Constructible, and the values
+    these two sites format are exceptions raised by arbitrary code."""
+
+    def __repr__(self):
+        raise ValueError("22-A3 PROBE: repr boom")
+
+    def __str__(self):
+        raise ValueError("22-A3 PROBE: str boom")
+
+
+def test_p_a_hostile_SINK_error_cannot_break_the_degraded_result(
+        tmp_path, monkeypatch):
+    """The `({log_error!r})` site inside the degraded handler's own `except`.
+
+    TWO INJECTIONS ARE REQUIRED and an earlier draft specified one: the site
+    runs ONLY after a post-commit error has already entered the degraded
+    handler, so a broken sink alone never reaches it on an ordinary
+    successful entry.
+
+    PRE-FIX the `{log_error!r}` formatting raises INSIDE the `except` clause,
+    over a durable row, and `record_entry` reports a failure.  POST-FIX
+    `safe_text` yields its fixed literal and the degraded result returns.
+    """
+    from tests.trades.test_22a_task9_entry_wiring import (
+        ACCEPT_SESSION,
+        _inject_after_the_commit,
+        _trade_rows,
+        accept_and_link,
+        build_world,
+        enter,
+        req,
+    )
+
+    conn, cfg, candidate_id = build_world(tmp_path, "a3p")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+
+    fired = _inject_after_the_commit(
+        monkeypatch, KeyboardInterrupt("on the transaction's own return"))
+
+    class _HostileSink(logging.Handler):
+        def emit(self, record):
+            raise _HostileText("22-A3 PROBE: hostile sink")
+
+    sink = _HostileSink(level=logging.ERROR)
+    root = logging.getLogger()
+    root.addHandler(sink)
+    try:
+        result = enter(conn, cfg, req())
+    finally:
+        root.removeHandler(sink)
+
+    assert fired, "the planted exception never landed"
+    assert result.trade_id is not None and result.trade_id > 0
+    assert len(result.post_commit_warnings) == 2, result.post_commit_warnings
+    assert any("DURABLE" in w for w in result.post_commit_warnings)
+    assert any("could not be emitted" in w
+               for w in result.post_commit_warnings)
+    assert any("both raised" in w for w in result.post_commit_warnings), (
+        result.post_commit_warnings)
+    assert _trade_rows(conn) == 1
+
+
+def test_q_a_hostile_POST_COMMIT_error_cannot_break_the_degraded_result(
+        tmp_path, monkeypatch):
+    """The `({post_commit_error!r})` site that BUILDS the degraded warning.
+
+    NO broken sink is installed: this site raises BEFORE any `EntryResult`
+    exists, so the pre-fix failure is NOT the same as (p)'s.
+
+    PRE-FIX the warning-text construction raises over a committed row and
+    `record_entry` reports a failure.  POST-FIX `safe_text` yields its fixed
+    literal, the degraded result returns, and exactly one durable row exists.
+    """
+    from tests.trades.test_22a_task9_entry_wiring import (
+        ACCEPT_SESSION,
+        _inject_after_the_commit,
+        _trade_rows,
+        accept_and_link,
+        build_world,
+        enter,
+        req,
+    )
+
+    conn, cfg, candidate_id = build_world(tmp_path, "a3q")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+
+    fired = _inject_after_the_commit(
+        monkeypatch, _HostileText("22-A3 PROBE: hostile post-commit error"))
+
+    result = enter(conn, cfg, req())
+
+    assert fired, "the planted exception never landed"
+    assert result.trade_id is not None and result.trade_id > 0
+    durable = [w for w in result.post_commit_warnings if "DURABLE" in w]
+    assert len(durable) == 1, result.post_commit_warnings
+    assert "both raised" in durable[0], durable[0]
+    assert _trade_rows(conn) == 1
