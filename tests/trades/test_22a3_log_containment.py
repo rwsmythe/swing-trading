@@ -642,3 +642,171 @@ def test_q_a_hostile_POST_COMMIT_error_cannot_break_the_degraded_result(
     assert len(durable) == 1, result.post_commit_warnings
     assert "both raised" in durable[0], durable[0]
     assert _trade_rows(conn) == 1
+
+
+# ===========================================================================
+# CODEX ROUND 1 -- the findings that survived adjudication, each with a test
+# that was RED against the shipped code and is GREEN against the fix.
+# ===========================================================================
+
+
+class _Decoded:
+    def decode(self, *a, **k):
+        return "bad \ud800 surrogate"
+
+
+class _PoisonStr(str):
+    """A `str` SUBCLASS overriding `encode`. Legal: `__repr__` need only
+    return `str`, and a subclass IS a `str`."""
+
+    def encode(self, *a, **k):
+        return _Decoded()
+
+
+class _PoisonRepr(RuntimeError):
+    def __repr__(self):
+        return _PoisonStr("poison-repr")
+
+
+def test_A3_AR_01_ascii_safe_is_not_defeated_by_a_hostile_str_subclass():
+    """Codex A3-AR-01 (MAJOR), REPRODUCED BY EXECUTION before the fix.
+
+    `text.encode(...)` and `.decode(...)` are VIRTUAL. A `str` subclass can
+    override `encode` to return an object whose `decode` returns a lone
+    surrogate, so the arc's own coercion returned a NON-ASCII string.
+
+    PRE-fix measured: `ascii_safe(_PoisonStr(...))` returned
+    `'bad \\ud800 surrogate'` with `.isascii()` False, and `safe_text` of an
+    exception whose `__repr__` returns that subclass did the same -- which
+    reaches `HTMLResponse` through the route's degraded path and raises
+    `UnicodeEncodeError` INSIDE the outer `except`, where nothing catches it.
+    POST-fix both are exact ASCII `str`.
+    """
+    from swing.trades.entry import ascii_safe, safe_text
+
+    out = ascii_safe(_PoisonStr("poison"))
+    assert type(out) is str
+    assert out.isascii(), out
+    assert "ud800" not in out, (
+        "the subclass override supplied the payload instead of the base slot")
+
+    out2 = safe_text(_PoisonRepr("x"))
+    assert type(out2) is str
+    assert out2.isascii(), out2
+
+
+def test_A3_AR_01b_the_postcondition_is_checked_not_argued():
+    """The helper's contract is "the result is safe to interpolate", so it
+    ESTABLISHES that at the boundary rather than reasoning about which
+    methods the base slots dispatch to."""
+    from swing.trades.entry import ascii_safe
+
+    class _NotAStr:
+        def encode(self, *a, **k):
+            raise AssertionError("must not be reached via the base slot")
+
+    out = ascii_safe(_NotAStr())          # type: ignore[arg-type]
+    assert out == "<a value that could not be rendered as text>"
+
+
+def test_A3_AR_03_a_hostile_container_notes_does_not_lose_the_sink_failure(
+        broken_sink):
+    """Codex A3-AR-03 (MINOR), REPRODUCED BY EXECUTION before the fix.
+
+    A `tuple` SUBCLASS whose `__iter__` raises made `list(existing)` raise
+    inside the repair branch, and the outer guard then discarded the sink
+    failure SILENTLY -- the invisible failure this helper exists to refuse.
+
+    POST-fix the note lands: anything that is not one of the four EXACT
+    built-in containers is rendered through `safe_text`, which is total.
+    """
+    from swing.trades.entry import log_contained_note
+
+    class _BadIter(tuple):
+        def __iter__(self):
+            raise TypeError("iter raises")
+
+    escaping = RuntimeError("cleanup")
+    escaping.__notes__ = _BadIter(("a",))
+    log_contained_note(logging.getLogger("t22a3.baditer"), escaping, "boom")
+
+    notes = BaseException.__getattribute__(escaping, "__notes__")
+    assert isinstance(notes, list)
+    assert any("could not be emitted" in n for n in notes), notes
+
+
+def test_A3_AR_03b_a_notes_DATA_DESCRIPTOR_is_the_declared_residue(
+        broken_sink):
+    """The narrowed limitation, pinned so it cannot silently widen again.
+
+    An exception defining `__notes__` as a DATA DESCRIPTOR whose getter AND
+    setter both raise cannot receive a note at all -- the base slots consult
+    the descriptor, so there is no representation left to write into. This is
+    the THIRD time this limitation's stated reason has been disproved by
+    review, and what the test pins is the property that still holds: the
+    helper RETURNS NORMALLY and the escaping exception is untouched.
+    """
+    from swing.trades.entry import log_contained_note
+
+    class _DescriptorNotes(RuntimeError):
+        @property
+        def __notes__(self):
+            raise TypeError("notes getter raises")
+
+        @__notes__.setter
+        def __notes__(self, value):
+            raise TypeError("notes setter raises")
+
+    escaping = _DescriptorNotes("x")
+    log_contained_note(logging.getLogger("t22a3.desc"), escaping, "boom")
+
+    assert type(escaping) is _DescriptorNotes
+    assert escaping.args == ("x",)
+
+
+def test_A3_AR_06_the_log_failure_wording_is_OBSERVATION_ONLY(broken_sink):
+    """Codex A3-AR-06 (MINOR), REPRODUCED BY EXECUTION before the fix.
+
+    `logger.error` raising means A HANDLER raised -- NOT that no sink received
+    the record. Measured: an earlier handler emitted the record successfully
+    before a later one raised. A flat "could not be emitted" is the same
+    after-effect fallacy this project already corrected for rollback messages,
+    and a cleanup warning that is WRONG about the state teaches an operator to
+    distrust the right ones.
+
+    PRE-fix the note said only "could not be emitted"; POST-fix it names the
+    OBSERVATION (a handler raised) and declines to claim the outcome.
+    """
+    from swing.trades.entry import log_contained_note
+
+    escaping = KeyError("cleanup")
+    log_contained_note(logging.getLogger("t22a3.wording"), escaping, "boom")
+    note = "\n".join(getattr(escaping, "__notes__", ()))
+
+    assert "a logging handler RAISED" in note, note
+    assert "Some sinks may have received the record" in note, note
+
+
+def test_A3_AR_06b_an_EARLIER_handler_can_emit_before_a_LATER_one_raises():
+    """The measurement the wording change rests on, kept as a test so the
+    justification cannot rot into an assertion nobody re-checks."""
+    emitted: list[str] = []
+
+    class _Good(logging.Handler):
+        def emit(self, record):
+            emitted.append(record.getMessage())
+
+    good, bad = _Good(level=logging.ERROR), _BrokenSink(level=logging.ERROR)
+    root = logging.getLogger()
+    root.addHandler(good)
+    root.addHandler(bad)
+    try:
+        with pytest.raises(RuntimeError):
+            logging.getLogger("t22a3.order").error("the record")
+    finally:
+        root.removeHandler(good)
+        root.removeHandler(bad)
+
+    assert emitted == ["the record"], (
+        "the GOOD handler emitted before the bad one raised, so "
+        "'could not be emitted' would be a false statement")

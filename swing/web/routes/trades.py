@@ -232,7 +232,8 @@ def _emit_sector_tamper_audit(
     return disc_id
 
 
-def _post_commit_warnings(result, close_error) -> tuple[str, ...]:
+def _post_commit_warnings(result, close_error,
+                          close_log_error=None) -> tuple[str, ...]:
     """The durable-entry warnings, ASCII-coerced, plus the contained close.
 
     TOTAL BY CONSTRUCTION: `ascii_safe` and `safe_text` cannot raise, tuple
@@ -261,6 +262,17 @@ def _post_commit_warnings(result, close_error) -> tuple[str, ...]:
             f"the entry is DURABLE (trade {result.trade_id}) and CLOSING the "
             f"database connection afterwards RAISED "
             f"({safe_text(close_error)}); the ledger is unaffected.",)
+    # **THE CLOSE FAILURE'S OWN ERROR LOG IS SURFACED TOO** (Codex A3-AR-05).
+    # The close-failure path reaches the SUCCESS branch when the refresh
+    # works, and that branch emitted no ERROR record at all -- so the declared
+    # limitation "the ERROR log is the only durable trace" was FALSE for a
+    # reachable degraded outcome: there was no durable trace whatsoever.
+    if close_log_error is not None:
+        warnings = warnings + (
+            f"the ERROR log for the close failure above could not be emitted "
+            f"cleanly -- a logging handler RAISED "
+            f"({safe_text(close_log_error)}). Some sinks may have received "
+            f"the record and some may not; the ledger is unaffected.",)
     return warnings
 
 
@@ -329,8 +341,11 @@ def _entry_notice_html(templates, request, *, trade_id: int,
         # all about the log that could not record it.
         if notice_log_error is not None:
             warnings = tuple(warnings) + (
-                f"the ERROR log for this notice failure could not be emitted "
-                f"({safe_text(notice_log_error)}); the ledger is unaffected.",)
+                f"the ERROR log for this notice failure could not be "
+                f"emitted cleanly -- a logging handler RAISED "
+                f"({safe_text(notice_log_error)}). Some sinks may have "
+                f"received the record and some may not; the ledger is "
+                f"unaffected.",)
         if warnings:
             parts.append('<ul>')
             for warning in warnings:
@@ -1595,6 +1610,7 @@ def entry_post(
     # can tell "the entry is durable" from "nothing landed".
     result = None
     close_error = None
+    close_log_error = None
     # ================= ONE CONTINUOUS OUTER GUARD =================
     #
     # It opens BEFORE the connection and closes only after the response has
@@ -2110,6 +2126,16 @@ def entry_post(
                 if result is None:
                     raise
                 close_error = exc
+                # AND IT IS RECORDED DURABLY, NOT ONLY SHOWN (Codex
+                # A3-AR-05). When the refresh SUCCEEDS this path returns an
+                # ordinary 200 carrying the warning, and before this call it
+                # left NO durable trace at all.
+                close_log_error = log_contained(
+                    log,
+                    "22-A3: trade %s IS DURABLE and CLOSING the database "
+                    "connection afterwards RAISED (%s); the ledger is "
+                    "unaffected and a degraded-success response is returned.",
+                    result.trade_id, exc)
 
         # ============ POST-DURABILITY, INSIDE THE SAME OUTER TRY ============
         #
@@ -2121,7 +2147,8 @@ def entry_post(
         # the same surface, class and position the duplicate-position and
         # hard-cap REFUSALS use. The operator could not tell a refused entry
         # from a durable one, and the refusal reading is retry-inviting.
-        post_commit_warnings = _post_commit_warnings(result, close_error)
+        post_commit_warnings = _post_commit_warnings(
+            result, close_error, close_log_error)
 
         # Bug-fix-AB (2026-04-29): pure-OOB response architecture.
         #
@@ -2242,12 +2269,14 @@ def entry_post(
             "reporting a durable write as a failure is what causes a double "
             "entry.",
             result.trade_id, post_bind_error)
-        notice_warnings = _post_commit_warnings(result, close_error)
+        notice_warnings = _post_commit_warnings(
+            result, close_error, close_log_error)
         if log_error is not None:
             notice_warnings = notice_warnings + (
                 f"the ERROR log for this degraded response could not be "
-                f"emitted ({safe_text(log_error)}); the ledger is "
-                f"unaffected.",)
+                f"emitted cleanly -- a logging handler RAISED "
+                f"({safe_text(log_error)}). Some sinks may have received the "
+                f"record and some may not; the ledger is unaffected.",)
         return HTMLResponse(Markup(_entry_notice_html(
             templates, request, trade_id=result.trade_id,
             warnings=notice_warnings,

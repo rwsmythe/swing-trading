@@ -794,3 +794,105 @@ def test_e_CONTROL_the_belt_still_refuses_a_same_ticker_retry(
     assert second.status_code == 400, second.text[:400]
     assert "Already an open position in ZZZ" in second.text
     assert _trade_count(cfg) == 1
+
+
+# ===========================================================================
+# CODEX ROUND 1 -- the route-side halves.
+# ===========================================================================
+
+
+class _PoisonStr(str):
+    """A `str` SUBCLASS overriding `encode`; `__repr__` may legally return
+    one, because a subclass IS a `str`."""
+
+    def encode(self, *a, **k):
+        class _Decoded:
+            def decode(self, *aa, **kk):
+                return "bad \ud800 surrogate"
+        return _Decoded()
+
+
+class _PoisonReprError(RuntimeError):
+    def __repr__(self):
+        return _PoisonStr("poison-repr")
+
+
+def test_A3_AR_01_a_hostile_str_subclass_repr_cannot_break_the_degraded_response(
+        seeded_db, monkeypatch):
+    """Codex A3-AR-01 (MAJOR) end-to-end.
+
+    The unit half lives in tests/trades. THIS is why it was a MAJOR: pre-fix
+    `safe_text(post_bind_error)` returned a non-ASCII string, it reached
+    `HTMLResponse` from INSIDE the outer `except` -- where nothing catches it
+    -- and the durable-row-plus-500 outcome the whole arc exists to remove
+    came straight back.
+
+    PRE-fix 500; POST-fix 200 naming the trade.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+    _raise_from_build_dashboard(monkeypatch, _PoisonReprError("probe"))
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(client)
+
+    assert _trade_count(cfg) == 1
+    trade_id = _only_trade_id(cfg)
+    assert resp.status_code == 200, resp.text[:400]
+    assert f"Trade #{trade_id}" in resp.text
+
+
+def test_A3_AR_05_a_close_failure_leaves_a_DURABLE_TRACE_in_the_log(
+        seeded_db, monkeypatch, caplog):
+    """Codex A3-AR-05 (MINOR).
+
+    When the close fails but the REFRESH SUCCEEDS the route returns an
+    ordinary 200 carrying the warning -- and before the fix it emitted no
+    ERROR record at all, so the declared limitation "the ERROR log is the only
+    durable trace" was FALSE for that reachable path: there was no durable
+    trace whatsoever. A notice is transient; the log is not.
+
+    PRE-fix `caplog` carries no ERROR from this logger; POST-fix it does.
+    """
+    import logging
+
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+    _patch_connect_to_raise_on_close(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with caplog.at_level(logging.ERROR, logger="swing.web.routes.trades"):
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = _post_entry(client)
+
+    assert resp.status_code == 200, resp.text[:400]
+    assert _trade_count(cfg) == 1
+    assert "CLOSING the database" in caplog.text, caplog.text
+    assert "close failed" in caplog.text, caplog.text
+
+
+def test_A3_AR_06_the_route_log_failure_wording_is_OBSERVATION_ONLY(
+        seeded_db, monkeypatch):
+    """Codex A3-AR-06 (MINOR), on the route's own two warning strings.
+
+    `logger.error` raising proves a HANDLER raised, not that no sink received
+    the record. PRE-fix the operator-facing text asserted the outcome; POST-fix
+    it reports the observation.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+    _raise_from_build_dashboard(
+        monkeypatch, RuntimeError("22-A3 PROBE: dashboard rebuild failed"))
+
+    app = create_app(cfg, cfg_path)
+    with _RaisingHandler("swing.web.routes.trades"):
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = _post_entry(client)
+
+    assert resp.status_code == 200, resp.text[:400]
+    assert "a logging handler RAISED" in resp.text
+    assert "Some sinks may have received" in resp.text

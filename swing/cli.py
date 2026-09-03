@@ -655,6 +655,7 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         MissingPreTradeFieldsException,
         SoftWarnError,
         ascii_safe,
+        log_contained,
         record_entry,
         safe_text,
     )
@@ -672,6 +673,7 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
     # necessity.
     result = None
     close_error = None
+    close_log_error = None
     # ONE CONTINUOUS OUTER GUARD, opened before the connection and closed only
     # after the LAST line is printed. Two adjacent guards would leave an
     # uncovered instruction boundary between them.
@@ -855,6 +857,15 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                 if result is None:
                     raise
                 close_error = exc
+                # AND IT IS RECORDED DURABLY, NOT ONLY PRINTED (Codex
+                # A3-AR-05): CLI output is not retained, so without this the
+                # close failure left no durable trace anywhere.
+                close_log_error = log_contained(
+                    _pe_backfill_logging.getLogger(__name__),
+                    "22-A3: trade %s IS DURABLE and CLOSING the database "
+                    "connection afterwards RAISED (%s); the ledger is "
+                    "unaffected and the command still exits 0.",
+                    result.trade_id, exc)
 
         # ---- POST-DURABILITY OUTPUT, INSIDE THE SAME OUTER TRY ----
         #
@@ -882,16 +893,26 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                 f"the entry is DURABLE (trade {result.trade_id}) and CLOSING "
                 f"the database connection afterwards RAISED "
                 f"({safe_text(close_error)}); the ledger is unaffected.",)
+        if close_log_error is not None:
+            post_commit_warnings = post_commit_warnings + (
+                f"the ERROR log for the close failure above could not be "
+                f"emitted cleanly -- a logging handler RAISED "
+                f"({safe_text(close_log_error)}). Some sinks may have "
+                f"received the record and some may not; the ledger is "
+                f"unaffected.",)
+        # EVERY LINE IS ATTEMPTED (Codex A3-AR-02): a failed stderr warning
+        # must not suppress the stdout confirmation that a durable
+        # money-bearing row exists.
         for post_commit_warning in post_commit_warnings:
-            click.echo(
+            _echo_contained(
                 ascii_safe(f"WARN (post-commit): {post_commit_warning}"),
                 err=True)
         if result.warning:
-            click.echo(ascii_safe(f"WARN: {result.warning}"), err=True)
+            _echo_contained(ascii_safe(f"WARN: {result.warning}"), err=True)
         if result.watchlist_archived:
-            click.echo(ascii_safe(
+            _echo_contained(ascii_safe(
                 f"Watchlist row for {ticker} archived (reason: entered)"))
-        click.echo(ascii_safe(
+        _echo_contained(ascii_safe(
             f"Trade id {result.trade_id}: {ticker} {shares} sh @ "
             f"${entry_price:.2f}, stop ${initial_stop:.2f}"))
     except BaseException:  # noqa: BLE001 -- the CLASS
@@ -905,6 +926,29 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         # write, so the exit code becomes the only remaining signal, which is
         # exactly why it must be the TRUE one.
         return
+
+
+def _echo_contained(text: str, *, err: bool = False) -> bool:
+    """ONE output attempt, contained. Returns whether it succeeded.
+
+    **PER-LINE, NOT PER-BLOCK** (Codex A3-AR-02).  The post-durability output
+    block used to sit inside a single guard, so the FIRST failing write
+    skipped every later one -- and the accepted-limitation argument for that
+    ("there is nowhere left to write") is FALSE, because stdout and stderr are
+    INDEPENDENT: a closed stderr made the first post-commit warning fail while
+    stdout was still perfectly usable, and the durable entry's confirmation
+    line was then never even attempted.  Each line now gets its own attempt,
+    so a broken stderr cannot suppress the stdout confirmation that a
+    money-bearing row exists.
+
+    The text arrives ALREADY ASCII-coerced (`ascii_safe` is total), so the
+    only thing this can contain is the write itself.
+    """
+    try:
+        click.echo(text, err=err)
+    except BaseException:  # noqa: BLE001 -- the CLASS, not a roster
+        return False
+    return True
 
 
 @trade_group.command("exit")

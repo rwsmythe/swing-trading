@@ -58,11 +58,33 @@ def ascii_safe(text: str) -> str:
     `backslashreplace` is lossless-to-the-reader and cannot itself fail on
     a surrogate (measured: `'bad \\ud800 repr'` round-trips to the literal
     text `bad \\ud800 repr`).
+
+    **THE BUILT-IN SLOTS, NOT THE VIRTUAL METHODS** (Codex A3-AR-01, VERIFIED
+    BY EXECUTION).  `text.encode(...)` and `.decode(...)` are overridable, and
+    an exception's `__repr__` may LEGALLY return a `str` SUBCLASS whose
+    `encode` returns an object whose `decode` returns a lone surrogate.
+    Measured on this runtime: that string came back from `ascii_safe` with
+    `.isascii()` False, reached `HTMLResponse` through the route's degraded
+    path, and raised `UnicodeEncodeError` encoding the body -- INSIDE the
+    outer `except`, where nothing catches it, i.e. the exact
+    durable-row-plus-500 outcome this idiom exists to remove.  `str.encode`
+    and `bytes.decode` called as unbound base functions cannot be overridden
+    away.
+
+    **AND THE POSTCONDITION IS ASSERTED RATHER THAN ARGUED**: the return is
+    checked to be an EXACT `str` that is ASCII, because a helper whose whole
+    contract is "the result is safe to interpolate" should establish that by
+    measurement at the boundary, not by a chain of reasoning about which
+    methods the base slots dispatch to.
     """
     try:
-        return text.encode("ascii", "backslashreplace").decode("ascii")
+        out = bytes.decode(
+            str.encode(text, "ascii", "backslashreplace"), "ascii")
     except BaseException:  # noqa: BLE001 -- the CLASS, not a roster
         return "<a value that could not be rendered as text>"
+    if type(out) is not str or not out.isascii():
+        return "<a value that could not be rendered as text>"
+    return out
 
 
 def safe_text(value: object) -> str:
@@ -129,13 +151,31 @@ def log_contained_note(logger: logging.Logger, escaping: BaseException,
     __notes__ is not a list`).  So a malformed `__notes__` is REPAIRED
     in place -- every existing note preserved -- and the attach retried
     once.
+
+    **THE RESIDUE, MEASURED AND DECLARED** (Codex A3-AR-03).  An exception
+    that defines `__notes__` as a DATA DESCRIPTOR whose getter AND setter both
+    raise cannot receive a note at all: a data descriptor is consulted by the
+    base slots themselves, so there is no representation left to write into.
+    Verified by execution.  The load-bearing property is UNAFFECTED -- the
+    original exception still escapes with its type, args and chaining intact;
+    what is lost in that case is the diagnostic note, and this docstring says
+    so rather than claiming the earlier, DISPROVED "only a non-BaseException
+    defeats it".
     """
     log_error = log_contained(logger, msg, *args)
     if log_error is None:
         return
+    # **OBSERVATION-ONLY WORDING** (Codex A3-AR-06, VERIFIED BY EXECUTION):
+    # `logger.error` raising means A HANDLER raised, NOT that no sink received
+    # the record -- measured, an earlier handler emitted successfully before a
+    # later one raised. A flat "could not be emitted" is the same after-effect
+    # fallacy this project already corrected for rollback messages two arcs
+    # ago, and a cleanup warning that is WRONG about the state teaches an
+    # operator to distrust the right ones.
     note = (f"the ERROR log for this cleanup failure could not be emitted "
-            f"({safe_text(log_error)}); the condition it described is "
-            f"unchanged.")
+            f"cleanly -- a logging handler RAISED ({safe_text(log_error)}). "
+            f"Some sinks may have received the record and some may not; the "
+            f"condition it described is unchanged.")
     try:
         BaseException.add_note(escaping, note)
         return
@@ -154,13 +194,25 @@ def log_contained_note(logger: logging.Logger, escaping: BaseException,
         # Read and write both go through the base slots, symmetrically.
         try:
             existing = BaseException.__getattribute__(escaping, "__notes__")
-        except AttributeError:
+        except BaseException:  # noqa: BLE001 -- read it as ABSENT
+            # `BaseException` rather than `AttributeError` (Codex A3-AR-03,
+            # verified by execution): a subclass can define `__notes__` as a
+            # DATA DESCRIPTOR whose getter raises `TypeError`, and the base
+            # slot consults the descriptor, so the narrower clause let the
+            # read escape into the outer guard and the sink failure was lost
+            # without even attempting the write.
             existing = None
-        if isinstance(existing, list):
+        # **EXACT TYPES ONLY** (Codex A3-AR-03, verified by execution): a
+        # `tuple` SUBCLASS whose `__iter__` raises made `list(existing)` raise,
+        # and the outer guard then discarded the sink failure silently -- the
+        # invisible failure this helper exists to refuse. Anything that is not
+        # one of the four exact built-in containers is rendered through
+        # `safe_text`, which is total.
+        if type(existing) is list:
             repaired = list(existing)
         elif existing is None:
             repaired = []
-        elif isinstance(existing, (tuple, set, frozenset)):
+        elif type(existing) in (tuple, set, frozenset):
             repaired = list(existing)
         else:
             repaired = [safe_text(existing)]
@@ -709,7 +761,9 @@ def record_entry(
                     # still changing the function's result at the one site
                     # R10-04 had declared safe.
                     f"the ERROR log for the warning above could not be "
-                    f"emitted ({safe_text(log_error)}); the ledger is "
+                    f"emitted cleanly -- a logging handler RAISED "
+                    f"({safe_text(log_error)}). Some sinks may have received "
+                    f"the record and some may not; the ledger is "
                     f"unaffected.",),
             )
         return degraded

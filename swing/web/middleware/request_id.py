@@ -1,6 +1,7 @@
 """Request-id middleware and rotating web.log setup."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 import uuid
@@ -61,7 +62,16 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
             # (try-except-pass) is in the selected `B` ruleset, and a header
             # stamp is both lint-clean and strictly better -- it makes the
             # swallowed failure observable to the very test that pins it.
-            response.headers["X-Access-Log-Failed"] = "1"
+            #
+            # **AND THE STAMP ITSELF IS CONTAINED** (Codex A3-AR-04). It is a
+            # DOUBLE-FAULT path -- header mutation failing while a logging
+            # failure is already being handled -- but an unguarded stamp
+            # inside the guard falsifies the containment claim exactly one
+            # statement after making it: the observability write would
+            # destroy the completed response it exists to annotate.
+            # Observability is best-effort; the RESPONSE is not.
+            with contextlib.suppress(BaseException):
+                response.headers["X-Access-Log-Failed"] = "1"
         return response
 
 

@@ -315,3 +315,79 @@ def test_c3_control_a_REFUSAL_with_a_failing_echo_still_exits_non_zero(
 
     assert second.exit_code != 0
     assert len(_trade_rows(cfg)) == 1
+
+
+# ===========================================================================
+# CODEX ROUND 1 -- the CLI-side halves.
+# ===========================================================================
+
+
+def test_A3_AR_02_a_failed_stderr_write_does_not_suppress_the_stdout_line(
+        tmp_path, monkeypatch):
+    """Codex A3-AR-02 (MAJOR).
+
+    The whole output block used to sit inside ONE guard, so the FIRST failing
+    write skipped every later one -- and the accepted-limitation reason for
+    that ("there is nowhere left to write") is FALSE: **stdout and stderr are
+    INDEPENDENT.** A closed stderr made the first post-commit WARNING fail
+    while stdout was still perfectly usable, and the durable entry's
+    confirmation line was then never even attempted.
+
+    The pre-existing `test_c3` injects the same one-shot failure but asserts
+    only the exit status, so it BLESSED the premature abort rather than
+    catching it. This test asserts what was actually lost.
+
+    PRE-fix: the `Trade id` line is never attempted and is absent from stdout.
+    POST-fix: the warning write fails, and the confirmation line still lands.
+    """
+    import click
+
+    runner, cfg = _setup(tmp_path)
+    _inject_post_commit_warning(monkeypatch, "22-A3 PROBE: durable")
+
+    real_echo = click.echo
+    attempted: list[str] = []
+    failed_once: list[bool] = []
+
+    def _wrapped(message="", *a, **kw):
+        attempted.append(str(message))
+        if not failed_once:
+            failed_once.append(True)
+            raise BrokenPipeError("22-A3 PROBE: stderr is closed")
+        return real_echo(message, *a, **kw)
+
+    monkeypatch.setattr(click, "echo", _wrapped)
+    result = runner.invoke(main, _entry_argv(cfg))
+
+    rows = _trade_rows(cfg)
+    assert len(rows) == 1, rows          # under BOTH paths; the premise
+    trade_id = rows[0][0]
+    assert failed_once, "the one-shot output failure never fired"
+    assert result.exit_code == 0, result.output
+    assert any(f"Trade id {trade_id}" in a for a in attempted), (
+        f"the durable entry's confirmation line was never ATTEMPTED after an "
+        f"unrelated stderr write failed; attempted={attempted}")
+    assert f"Trade id {trade_id}" in result.output, (
+        "the confirmation line was attempted but did not reach stdout")
+
+
+def test_A3_AR_05_a_cli_close_failure_leaves_a_DURABLE_TRACE_in_the_log(
+        tmp_path, monkeypatch, caplog):
+    """Codex A3-AR-05 (MINOR), the CLI half.
+
+    CLI output is not retained anywhere, so before the fix a post-durable
+    close failure left NO durable trace at all -- which falsifies the declared
+    limitation that the ERROR log is the only one.
+    """
+    import logging
+
+    runner, cfg = _setup(tmp_path)
+    _patch_connect_to_raise_on_close(monkeypatch)
+
+    with caplog.at_level(logging.ERROR, logger="swing.cli"):
+        result = runner.invoke(main, _entry_argv(cfg))
+
+    assert result.exit_code == 0, result.output
+    assert len(_trade_rows(cfg)) == 1
+    assert "CLOSING the database" in caplog.text, caplog.text
+    assert "close failed" in caplog.text, caplog.text
