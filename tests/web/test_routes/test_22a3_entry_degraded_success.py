@@ -923,3 +923,58 @@ def test_A3R2_04_the_literal_fallback_makes_no_REFRESH_claim(
     assert f"Trade #{trade_id}" in resp.text
     assert "the page was refreshed" not in resp.text
     assert "do NOT enter it again" in resp.text
+
+
+class _HostileWarnings(tuple):
+    """A `tuple` SUBCLASS that raises from `__iter__` and `__bool__`.
+
+    `post_commit_warnings` is a plain dataclass field on a PUBLIC result
+    object, so its annotation constrains nothing.
+    """
+
+    def __iter__(self):
+        raise RuntimeError("22-A3 PROBE: __iter__ raised")
+
+    def __bool__(self):
+        raise RuntimeError("22-A3 PROBE: __bool__ raised")
+
+
+def test_A3R4_04_a_hostile_warnings_container_cannot_break_the_response(
+        seeded_db, monkeypatch):
+    """Codex A3R4-04 (MINOR).
+
+    `_post_commit_warnings` iterated the field virtually and
+    `_entry_notice_html`'s literal fallback tested and iterated it again
+    OUTSIDE any further guard -- so a hostile container escaped from inside
+    the handler documented as unable to raise, restoring the
+    durable-row-plus-500 outcome.
+
+    PRE-fix 500 over a durable row; POST-fix 200 naming the trade.
+    """
+    import dataclasses
+
+    import swing.web.routes.trades as routes
+
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+
+    real = routes.record_entry
+
+    def _wrapped(*a, **kw):
+        res = real(*a, **kw)
+        return dataclasses.replace(
+            res, post_commit_warnings=_HostileWarnings(("x",)))
+
+    monkeypatch.setattr(routes, "record_entry", _wrapped)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(client)
+
+    assert _trade_count(cfg) == 1
+    trade_id = _only_trade_id(cfg)
+    assert resp.status_code == 200, resp.text[:400]
+    assert f"Trade #{trade_id}" in resp.text
+    assert "could not be read" in resp.text, (
+        "the unreadable warnings must be REPORTED, not silently dropped")

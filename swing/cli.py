@@ -672,8 +672,8 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
     # argument does not apply here and the guard is not symmetry, it is
     # necessity.
     result = None
-    close_error = None
-    close_log_error = None
+    close_error_text = None
+    close_log_error_text = None
     confirmed = False
     # ONE CONTINUOUS OUTER GUARD, opened before the connection and closed only
     # after the LAST line is printed. Two adjacent guards would leave an
@@ -857,16 +857,24 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
             except BaseException as exc:  # noqa: BLE001 -- the CLASS
                 if result is None:
                     raise
-                close_error = exc
                 # AND IT IS RECORDED DURABLY, NOT ONLY PRINTED (Codex
                 # A3-AR-05): CLI output is not retained, so without this the
                 # close failure left no durable trace anywhere.
-                close_log_error = log_contained(
+                #
+                # Rendered ONCE, before logging, and the logger is given the
+                # STRING (Codex A3R4-05): handing the exception OBJECT to a
+                # formatting handler lets a hostile `__str__` mutate it, so
+                # the warning built from it afterwards would describe a
+                # failure other than the one caught.
+                close_error_text = safe_text(exc)
+                _close_log_error = log_contained(
                     _pe_backfill_logging.getLogger(__name__),
                     "22-A3: trade %s IS DURABLE and CLOSING the database "
                     "connection afterwards RAISED (%s); the ledger is "
                     "unaffected and the command still exits 0.",
-                    result.trade_id, exc)
+                    result.trade_id, close_error_text)
+                if _close_log_error is not None:
+                    close_log_error_text = safe_text(_close_log_error)
 
         # ---- POST-DURABILITY OUTPUT, INSIDE THE SAME OUTER TRY ----
         #
@@ -888,17 +896,27 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         # never that the connection "could not be closed" -- `close()` can
         # TAKE EFFECT and then raise, and a cleanup warning that is WRONG
         # about the state teaches an operator to distrust the right ones.
-        post_commit_warnings = result.post_commit_warnings
-        if close_error is not None:
+        # The same boundary normalisation the route helper does (Codex
+        # A3R4-04): `post_commit_warnings` is an unconstrained public
+        # dataclass field, and a tuple SUBCLASS can raise from `__iter__`.
+        try:
+            _raw = result.post_commit_warnings
+            post_commit_warnings = tuple(
+                list(tuple.__iter__(_raw)) if type(_raw) is tuple
+                else list(_raw))
+        except BaseException:  # noqa: BLE001 -- the CLASS
+            post_commit_warnings = (
+                "<the post-commit warnings could not be read>",)
+        if close_error_text is not None:
             post_commit_warnings = post_commit_warnings + (
                 f"the entry is DURABLE (trade {result.trade_id}) and CLOSING "
                 f"the database connection afterwards RAISED "
-                f"({safe_text(close_error)}); the ledger is unaffected.",)
-        if close_log_error is not None:
+                f"({close_error_text}); the ledger is unaffected.",)
+        if close_log_error_text is not None:
             post_commit_warnings = post_commit_warnings + (
                 f"the ERROR log for the close failure above could not be "
                 f"emitted cleanly -- a logging handler RAISED "
-                f"({safe_text(close_log_error)}). Some sinks may have "
+                f"({close_log_error_text}). Some sinks may have "
                 f"received the record and some may not; the ledger is "
                 f"unaffected.",)
         # EVERY LINE IS ATTEMPTED (Codex A3-AR-02): a failed stderr warning

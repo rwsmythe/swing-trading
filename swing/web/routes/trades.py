@@ -232,8 +232,30 @@ def _emit_sector_tamper_audit(
     return disc_id
 
 
-def _post_commit_warnings(result, close_error,
-                          close_log_error=None) -> tuple[str, ...]:
+def _as_exact_text_tuple(value) -> tuple[str, ...]:
+    """Any CLAIMED sequence of warnings -> an EXACT tuple of EXACT ASCII str.
+
+    **TOTALITY BEGINS AT THE BOUNDARY** (Codex A3R4-04).
+    `post_commit_warnings` is a plain dataclass field on a PUBLIC result
+    object, so its annotation constrains nothing: a `tuple` SUBCLASS can raise
+    from `__iter__` or `__bool__` and defeat every helper downstream that is
+    documented as unable to raise.  `record_entry` itself builds exact tuples
+    of exact strings -- that is a SERVICE-level prevention, not a
+    schema-level one, and it does not bind a caller constructing an
+    `EntryResult` directly, which the dataclass permits.
+    """
+    try:
+        items = (list(tuple.__iter__(value)) if type(value) is tuple
+                 else list(value))
+    except BaseException:  # noqa: BLE001 -- the CLASS
+        return ("<the post-commit warnings could not be read>",)
+    return tuple(
+        ascii_safe(item) if type(item) is str else ascii_safe(safe_text(item))
+        for item in items)
+
+
+def _post_commit_warnings(result, close_error_text,
+                          close_log_error_text=None) -> tuple[str, ...]:
     """The durable-entry warnings, ASCII-coerced, plus the contained close.
 
     TOTAL BY CONSTRUCTION: `ascii_safe` and `safe_text` cannot raise, tuple
@@ -261,22 +283,22 @@ def _post_commit_warnings(result, close_error,
     PRESERVES a lone surrogate (measured), and `HTMLResponse` then raises
     `UnicodeEncodeError` encoding the body -- outside every guard here.
     """
-    warnings = tuple(ascii_safe(w) for w in result.post_commit_warnings)
-    if close_error is not None:
+    warnings = _as_exact_text_tuple(result.post_commit_warnings)
+    if close_error_text is not None:
         warnings = warnings + (
             f"the entry is DURABLE (trade {result.trade_id}) and CLOSING the "
             f"database connection afterwards RAISED "
-            f"({safe_text(close_error)}); the ledger is unaffected.",)
+            f"({close_error_text}); the ledger is unaffected.",)
     # **THE CLOSE FAILURE'S OWN ERROR LOG IS SURFACED TOO** (Codex A3-AR-05).
     # The close-failure path reaches the SUCCESS branch when the refresh
     # works, and that branch emitted no ERROR record at all -- so the declared
     # limitation "the ERROR log is the only durable trace" was FALSE for a
     # reachable degraded outcome: there was no durable trace whatsoever.
-    if close_log_error is not None:
+    if close_log_error_text is not None:
         warnings = warnings + (
             f"the ERROR log for the close failure above could not be emitted "
             f"cleanly -- a logging handler RAISED "
-            f"({safe_text(close_log_error)}). Some sinks may have received "
+            f"({close_log_error_text}). Some sinks may have received "
             f"the record and some may not; the ledger is unaffected.",)
     return warnings
 
@@ -308,62 +330,100 @@ def _entry_notice_html(templates, request, *, trade_id: int,
         ).render(request=request, trade_id=trade_id,
                  warnings=list(warnings), render_failure=render_failure)
     except BaseException as notice_error:  # noqa: BLE001 -- the CLASS
-        # **THE NOTICE'S OWN FAILURE IS NAMED AND LOGGED, NEVER SILENT.**
-        # An earlier draft returned an EMPTY wrapper when there were no
-        # warnings, so a render failure on an ordinary entry looked exactly
-        # like an ordinary entry: a degraded event with no banner and no log.
-        # An OOB-partial failure becomes a degraded success NAMING the trade
-        # and the failure, and "no warnings" does not exempt it.
-        notice_log_error = log_contained(
-            log,
-            "22-A3: trade %s IS DURABLE and its operator notice could not be "
-            "rendered (%s); the literal fallback was used.",
-            trade_id, notice_error)
-        parts = [
+        return _entry_notice_literal(trade_id, warnings, render_failure,
+                                     notice_error)
+
+
+def _entry_notice_literal(trade_id, warnings, render_failure,
+                          notice_error) -> str:
+    """The hand-built fallback, itself wrapped in a last-resort guard.
+
+    **THE FALLBACK'S OWN CONSTRUCTION CAN FAIL** (Codex A3R4-04): it tests
+    `if warnings`, iterates it, and escapes `render_failure`, and a hostile
+    `__bool__` / `__iter__` / `str` subclass makes any of those raise -- from
+    inside the handler that exists precisely so that nothing raises.  The
+    innermost literal interpolates ONE `int` and nothing else.
+    """
+    try:
+        return _entry_notice_literal_inner(
+            trade_id, warnings, render_failure, notice_error)
+    except BaseException:  # noqa: BLE001 -- the CLASS
+        try:
+            _id = int(trade_id)
+        except BaseException:  # noqa: BLE001
+            _id = -1
+        return (
             f'<div id="entry-notice" hx-swap-oob="true">'
             f'<div class="banner banner-degraded" role="alert">'
-            f'<strong>Trade #{html.escape(safe_text(trade_id))} WAS '
-            f'RECORDED.</strong> This notice could not be rendered '
-            f'({html.escape(safe_text(notice_error))}).'
-        ]
-        # Every interpolated value below is already ASCII (`ascii_safe` /
-        # `safe_text`), which is what keeps `HTMLResponse` from raising
-        # `UnicodeEncodeError` on a lone surrogate one frame outside this
-        # guard.  MEASURED: `html.escape` PRESERVES a lone surrogate.
-        if render_failure is not None:
-            parts.append(
-                f' The page could not be refreshed afterwards '
-                f'({html.escape(render_failure)}). The entry EXISTS -- do NOT '
-                f'enter it again. Reload the page.')
-        else:
-            # **NO REFRESH CLAIM** (Codex A3R2-04). The four OOB chunks
-            # rendering is not the same as THIS page having refreshed:
-            # `/watchlist` carries none of their target ids, and the entry
-            # form is reachable from there, so "the page was refreshed" was a
-            # false statement on exactly the surface the notice container was
-            # put in `base.html.j2` to serve.
-            parts.append(
-                ' The entry EXISTS -- do NOT enter it again. Reload the page '
-                'if the updated position is not visible.')
-        # THE SECONDARY DIAGNOSTIC IS SURFACED, NOT DISCARDED.
-        # `log_contained` RETURNS the sink's failure precisely so a caller
-        # does not trade one invisible failure for another, and dropping it
-        # would leave the operator seeing the notice failure and nothing at
-        # all about the log that could not record it.
-        if notice_log_error is not None:
-            warnings = tuple(warnings) + (
-                f"the ERROR log for this notice failure could not be "
-                f"emitted cleanly -- a logging handler RAISED "
-                f"({safe_text(notice_log_error)}). Some sinks may have "
-                f"received the record and some may not; the ledger is "
-                f"unaffected.",)
-        if warnings:
-            parts.append('<ul>')
-            for warning in warnings:
-                parts.append(f'<li>{html.escape(ascii_safe(warning))}</li>')
-            parts.append('</ul>')
-        parts.append('</div></div>')
-        return "".join(parts)
+            f'<strong>Trade #{_id} WAS RECORDED.</strong> '
+            f'The entry EXISTS -- do NOT enter it again. This notice could '
+            f'not be rendered and its own fallback could not be built '
+            f'either; see the application log.'
+            f'</div></div>')
+
+
+def _entry_notice_literal_inner(trade_id, warnings, render_failure,
+                                notice_error) -> str:
+    # **THE NOTICE'S OWN FAILURE IS NAMED AND LOGGED, NEVER SILENT.**
+    # An earlier draft returned an EMPTY wrapper when there were no
+    # warnings, so a render failure on an ordinary entry looked exactly
+    # like an ordinary entry: a degraded event with no banner and no log.
+    # An OOB-partial failure becomes a degraded success NAMING the trade
+    # and the failure, and "no warnings" does not exempt it.
+    # Rendered ONCE, before logging, and the logger is given the STRING
+    # (Codex A3R4-05): a formatting handler must not be able to mutate the
+    # object this fallback then describes.
+    notice_error_text = safe_text(notice_error)
+    notice_log_error = log_contained(
+        log,
+        "22-A3: trade %s IS DURABLE and its operator notice could not be "
+        "rendered (%s); the literal fallback was used.",
+        trade_id, notice_error_text)
+    parts = [
+        f'<div id="entry-notice" hx-swap-oob="true">'
+        f'<div class="banner banner-degraded" role="alert">'
+        f'<strong>Trade #{html.escape(safe_text(trade_id))} WAS '
+        f'RECORDED.</strong> This notice could not be rendered '
+        f'({html.escape(notice_error_text)}).'
+    ]
+    # Every interpolated value below is already ASCII (`ascii_safe` /
+    # `safe_text`), which is what keeps `HTMLResponse` from raising
+    # `UnicodeEncodeError` on a lone surrogate one frame outside this
+    # guard.  MEASURED: `html.escape` PRESERVES a lone surrogate.
+    if render_failure is not None:
+        parts.append(
+            f' The page could not be refreshed afterwards '
+            f'({html.escape(render_failure)}). The entry EXISTS -- do NOT '
+            f'enter it again. Reload the page.')
+    else:
+        # **NO REFRESH CLAIM** (Codex A3R2-04). The four OOB chunks
+        # rendering is not the same as THIS page having refreshed:
+        # `/watchlist` carries none of their target ids, and the entry
+        # form is reachable from there, so "the page was refreshed" was a
+        # false statement on exactly the surface the notice container was
+        # put in `base.html.j2` to serve.
+        parts.append(
+            ' The entry EXISTS -- do NOT enter it again. Reload the page '
+            'if the updated position is not visible.')
+    # THE SECONDARY DIAGNOSTIC IS SURFACED, NOT DISCARDED.
+    # `log_contained` RETURNS the sink's failure precisely so a caller
+    # does not trade one invisible failure for another, and dropping it
+    # would leave the operator seeing the notice failure and nothing at
+    # all about the log that could not record it.
+    if notice_log_error is not None:
+        warnings = tuple(warnings) + (
+            f"the ERROR log for this notice failure could not be "
+            f"emitted cleanly -- a logging handler RAISED "
+            f"({safe_text(notice_log_error)}). Some sinks may have "
+            f"received the record and some may not; the ledger is "
+            f"unaffected.",)
+    if warnings:
+        parts.append('<ul>')
+        for warning in warnings:
+            parts.append(f'<li>{html.escape(ascii_safe(warning))}</li>')
+        parts.append('</ul>')
+    parts.append('</div></div>')
+    return "".join(parts)
 
 
 def _rerender_entry_form_with_error(
@@ -1620,8 +1680,8 @@ def entry_post(
     # 22-A3: bound BEFORE the outer try so the `finally` and the outer handler
     # can tell "the entry is durable" from "nothing landed".
     result = None
-    close_error = None
-    close_log_error = None
+    close_error_text = None
+    close_log_error_text = None
     # ================= ONE CONTINUOUS OUTER GUARD =================
     #
     # It opens BEFORE the connection and closes only after the response has
@@ -2136,17 +2196,28 @@ def entry_post(
             except BaseException as exc:  # noqa: BLE001 -- the CLASS
                 if result is None:
                     raise
-                close_error = exc
                 # AND IT IS RECORDED DURABLY, NOT ONLY SHOWN (Codex
                 # A3-AR-05). When the refresh SUCCEEDS this path returns an
                 # ordinary 200 carrying the warning, and before this call it
                 # left NO durable trace at all.
-                close_log_error = log_contained(
+                #
+                # **THE DIAGNOSTIC IS RENDERED BEFORE LOGGING, AND THE LOGGER
+                # IS GIVEN THE STRING** (Codex A3R4-05). Handing the exception
+                # OBJECT to a formatting handler lets a hostile `__str__`
+                # mutate it, so a warning built from it AFTERWARDS would
+                # describe a failure other than the one caught. The six
+                # cleanup sites got full evidence preservation; these
+                # arc-owned diagnostic paths get the cheaper half of the same
+                # idea -- render once, then log the render.
+                close_error_text = safe_text(exc)
+                _close_log_error = log_contained(
                     log,
                     "22-A3: trade %s IS DURABLE and CLOSING the database "
                     "connection afterwards RAISED (%s); the ledger is "
                     "unaffected and a degraded-success response is returned.",
-                    result.trade_id, exc)
+                    result.trade_id, close_error_text)
+                if _close_log_error is not None:
+                    close_log_error_text = safe_text(_close_log_error)
 
         # ============ POST-DURABILITY, INSIDE THE SAME OUTER TRY ============
         #
@@ -2159,7 +2230,7 @@ def entry_post(
         # hard-cap REFUSALS use. The operator could not tell a refused entry
         # from a durable one, and the refusal reading is retry-inviting.
         post_commit_warnings = _post_commit_warnings(
-            result, close_error, close_log_error)
+            result, close_error_text, close_log_error_text)
 
         # Bug-fix-AB (2026-04-29): pure-OOB response architecture.
         #
@@ -2273,15 +2344,17 @@ def entry_post(
     except BaseException as post_bind_error:  # noqa: BLE001 -- the CLASS
         if result is None:
             raise
+        # Rendered ONCE, before logging (Codex A3R4-05).
+        post_bind_error_text = safe_text(post_bind_error)
         log_error = log_contained(
             log,
             "22-A3: trade %s IS DURABLE and a step AFTER the entry failed "
             "(%s). A DEGRADED-SUCCESS response is returned naming the trade; "
             "reporting a durable write as a failure is what causes a double "
             "entry.",
-            result.trade_id, post_bind_error)
+            result.trade_id, post_bind_error_text)
         notice_warnings = _post_commit_warnings(
-            result, close_error, close_log_error)
+            result, close_error_text, close_log_error_text)
         if log_error is not None:
             notice_warnings = notice_warnings + (
                 f"the ERROR log for this degraded response could not be "
@@ -2291,7 +2364,7 @@ def entry_post(
         return HTMLResponse(Markup(_entry_notice_html(
             templates, request, trade_id=result.trade_id,
             warnings=notice_warnings,
-            render_failure=safe_text(post_bind_error))))
+            render_failure=post_bind_error_text)))
 
 
 @router.get("/trades/{trade_id}/exit/form", response_class=HTMLResponse)

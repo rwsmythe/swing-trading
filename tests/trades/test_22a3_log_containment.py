@@ -1136,3 +1136,128 @@ def test_A3R3_04_a_STATEFUL_descriptor_that_discards_once_still_gets_the_note():
     notes = BaseException.__getattribute__(escaping, "__notes__")
     assert any("could not be emitted" in n for n in notes), (
         f"the repair write was not verified and the note was lost: {notes}")
+
+
+# ===========================================================================
+# CODEX ROUND 4 -- three more residuals of the loop's own hardening.
+# ===========================================================================
+
+
+def test_A3R4_01_a_DECOY_evidence_property_cannot_defeat_the_snapshot():
+    """Codex A3R4-01 (MAJOR), VERIFIED BY EXECUTION, and it corrects a claim
+    this module carried from the day the idiom was written.
+
+    `BaseException.__getattribute__` does NOT bypass a subclass DATA
+    DESCRIPTOR -- it performs ordinary lookup on the type. The claim held for
+    `__notes__` (no base descriptor; a plain instance attribute) and was
+    wrongly generalised to `args` / `__cause__` / `__context__`, which DO have
+    base descriptors.
+
+    The discriminator is a DECOY: `__cause__`'s getter returns a fixed
+    stand-in while its setter writes the real slot, and a formatting handler
+    drives a `__str__` that clears the real slot.
+
+      PRE-fix  the snapshot captures the DECOY, the comparison after the log
+               sees the DECOY again, concludes "unchanged", and skips the
+               write -- so the real slot stays CLEARED.
+      POST-fix both go through `BaseException.__dict__[name].__get__/__set__`,
+               which run no user code, so the real cause is seen to have
+               changed and is put back.
+
+    A first draft of this test used a property whose SETTER was a no-op, so
+    the real slot was never corrupted and the test passed under its own
+    mutation. Caught by running the mutation -- the third time in this loop.
+    """
+    from swing.trades.entry import log_contained_note
+
+    _DECOY = ValueError("a decoy cause")
+    _CAUSE_SLOT = BaseException.__dict__["__cause__"]
+
+    class _DecoyCause(RuntimeError):
+        @property
+        def __cause__(self):
+            return _DECOY
+
+        @__cause__.setter
+        def __cause__(self, value):
+            _CAUSE_SLOT.__set__(self, value)
+
+        def __str__(self):
+            _CAUSE_SLOT.__set__(self, None)
+            raise RuntimeError("format failed")
+
+    cause = ValueError("the real cause")
+    escaping = _DecoyCause("the real args")
+    _CAUSE_SLOT.__set__(escaping, cause)
+
+    sink = _FormattingSink(level=logging.ERROR)
+    logging.getLogger().addHandler(sink)
+    try:
+        log_contained_note(
+            logging.getLogger("t22a3.decoy"), escaping, "boom %s", escaping)
+    finally:
+        logging.getLogger().removeHandler(sink)
+
+    assert _CAUSE_SLOT.__get__(escaping, type(escaping)) is cause, (
+        "the snapshot read a DECOY through the subclass property, so the "
+        "restore concluded nothing had changed and the REAL slot stayed "
+        "cleared")
+
+
+def test_A3R4_02_args_cannot_hold_a_mutable_value_MEASURED():
+    """Codex A3R4-02's premise, HALF REFUTED by measurement.
+
+    The finding said `BaseException.args` "can legally be assigned a mutable
+    value". It cannot: the base setter COERCES to a tuple. This test pins the
+    measurement, because the declared residue (an element INSIDE the tuple
+    being mutated in place) rests on it -- and a residue whose justification
+    is a language fact should fail loudly if that fact ever changes.
+    """
+    escaping = RuntimeError("x")
+    escaping.args = [1, 2]
+    assert type(escaping.args) is tuple
+    assert escaping.args == (1, 2)
+
+
+def test_A3R4_03_an_EQ_spoofing_note_cannot_fake_a_landed_note():
+    """Codex A3R4-03 (MINOR).
+
+    `any(n is note or n == note ...)` let a `str` subclass whose `__eq__`
+    returns True for everything read as "the note landed", so the repair was
+    skipped even though its setter WOULD have stored the real note -- a false
+    success in the one helper whose job is refusing invisible failures.
+    """
+    from swing.trades.entry import log_contained_note
+
+    class _EqualEverything(str):
+        def __eq__(self, other):
+            return True
+
+        def __hash__(self):
+            return 0
+
+    class _SpoofingNotes(RuntimeError):
+        def __init__(self, *a):
+            super().__init__(*a)
+            object.__setattr__(self, "_stored", [_EqualEverything("nope")])
+
+        @property
+        def __notes__(self):
+            return list(object.__getattribute__(self, "_stored"))
+
+        @__notes__.setter
+        def __notes__(self, value):
+            object.__setattr__(self, "_stored", list(value))
+
+    sink = _BrokenSink(level=logging.ERROR)
+    logging.getLogger().addHandler(sink)
+    try:
+        escaping = _SpoofingNotes("x")
+        log_contained_note(
+            logging.getLogger("t22a3.spoof"), escaping, "boom")
+    finally:
+        logging.getLogger().removeHandler(sink)
+
+    stored = object.__getattribute__(escaping, "_stored")
+    assert any(type(n) is str and "could not be emitted" in n for n in stored), (
+        f"an equality-spoofing placeholder faked the attach: {stored!r}")

@@ -69,9 +69,14 @@ def ascii_safe(text: str) -> str:
       guard in the degraded path, producing exactly the durable-row-plus-500
       outcome 22-A3 exists to remove.
 
-    `backslashreplace` is lossless-to-the-reader and cannot itself fail on
-    a surrogate (measured: `'bad \\ud800 repr'` round-trips to the literal
-    text `bad \\ud800 repr`).
+    `backslashreplace` is ASCII-SAFE AND VISIBLY ESCAPED -- **not lossless,
+    and the earlier word was wrong** (Codex A3R4-08): the mapping is NOT
+    injective, because an input that already contains the six literal
+    characters of an escape and an input carrying the character it denotes
+    both render identically.  It is a DIAGNOSTIC rendering, not an encoding
+    the original can be recovered from, and nothing here needs it to be.  It
+    cannot itself fail on a surrogate (measured: a lone surrogate renders as
+    literal escape text).
 
     **THE BUILT-IN SLOTS, NOT THE VIRTUAL METHODS** (Codex A3-AR-01, VERIFIED
     BY EXECUTION).  `text.encode(...)` and `.decode(...)` are overridable, and
@@ -120,8 +125,26 @@ def safe_text(value: object) -> str:
     return "<an object whose repr() and str() both raised>"
 
 
-#: The evidence a cleanup site's caller is judged on.
+#: The evidence a cleanup site's caller is judged on, paired with the ACTUAL
+#: base getset descriptors.
+#:
+#: **`BaseException.__getattribute__` DOES NOT BYPASS A SUBCLASS DATA
+#: DESCRIPTOR** (Codex A3R4-01, VERIFIED BY EXECUTION -- and it corrects a
+#: claim this module carried from the day the idiom was written).  It performs
+#: ORDINARY lookup on `type(escaping)`, so a subclass `@property` named `args`
+#: IS consulted and returns whatever it likes.  The claim happened to hold for
+#: `__notes__`, which has NO base descriptor and is therefore a plain instance
+#: attribute, and was wrongly generalised to these three, which DO have one.
+#: Measured: `BaseException.__getattribute__(e, "args")` returned the
+#: PROPERTY's value, while `BaseException.__dict__["args"].__get__(e, ...)`
+#: returned the real slot and `.__set__` wrote it.
+#:
+#: Using the descriptors directly also closes the CASCADE the same finding
+#: named: with generic access, restoring field N could run field N+1's hostile
+#: GETTER, which re-corrupts field N after it was already put back.  A base
+#: getset descriptor runs no user code at all.
 _EVIDENCE_FIELDS = ("args", "__cause__", "__context__")
+_EVIDENCE_SLOTS = tuple(BaseException.__dict__[_n] for _n in _EVIDENCE_FIELDS)
 #: "this field could not be read", distinct from a legitimate `None`.
 _UNREADABLE = object()
 
@@ -138,9 +161,9 @@ def _evidence_snapshot(escaping: BaseException) -> tuple:
     field costs exactly itself.
     """
     out = []
-    for name in _EVIDENCE_FIELDS:
+    for slot in _EVIDENCE_SLOTS:
         try:
-            out.append(BaseException.__getattribute__(escaping, name))
+            out.append(slot.__get__(escaping, type(escaping)))
         except BaseException:  # noqa: BLE001 -- the CLASS
             out.append(_UNREADABLE)
     return tuple(out)
@@ -151,13 +174,24 @@ def _restore_evidence(escaping: BaseException, snapshot: tuple) -> None:
 
     Never raises.  A field that could not be READ is skipped rather than
     written with a sentinel.
+
+    **WHAT IS RESTORED IS THE EXCEPTION'S OWN FIELDS, NOT THE OBJECT GRAPH
+    UNDER THEM** (Codex A3R4-02, adjudicated with a MEASUREMENT that refutes
+    half its premise).  The finding said `args` "can legally be assigned a
+    mutable value"; it cannot -- `BaseException`'s own setter COERCES to a
+    tuple (measured: assigning a two-element list reads back as an exact
+    two-element tuple), and the base descriptor is what this function writes
+    through.  What survives is narrower and is DECLARED: if an element INSIDE
+    the args tuple is itself mutable and something mutates it in place, the
+    tuple's identity is unchanged and nothing here notices.  Deep-copying an
+    arbitrary object graph on a cleanup path would cost more than it protects.
     """
-    for name, value in zip(_EVIDENCE_FIELDS, snapshot, strict=True):
+    for slot, value in zip(_EVIDENCE_SLOTS, snapshot, strict=True):
         if value is _UNREADABLE:
             continue
         try:
-            if BaseException.__getattribute__(escaping, name) is not value:
-                BaseException.__setattr__(escaping, name, value)
+            if slot.__get__(escaping, type(escaping)) is not value:
+                slot.__set__(escaping, value)
         except BaseException:  # noqa: BLE001 -- the CLASS
             continue
 
@@ -178,7 +212,14 @@ def _note_landed(escaping: BaseException, note: str) -> bool:
     except BaseException:  # noqa: BLE001 -- the CLASS
         return False
     try:
-        return any(n is note or n == note for n in list(notes))
+        # **IDENTITY, OR EXACT-`str` EQUALITY -- NEVER BARE `==`** (Codex
+        # A3R4-03).  A `str` subclass whose `__eq__` returns True for
+        # everything made a synthesizing getter's placeholder read as "the
+        # note landed", skipping the repair whose setter WOULD have stored the
+        # real one -- a false success in the one helper whose entire job is
+        # refusing invisible failures.
+        return any(n is note or (type(n) is str and n == note)
+                   for n in list(notes))
     except BaseException:  # noqa: BLE001 -- a hostile iterator reads as absent
         return False
 

@@ -35,9 +35,18 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         # response -- and a raising handler here turns a correct 200 into a
         # 500 via `ServerErrorMiddleware`, one frame outside every guard a
         # route can install. 22-A3's acceptance criterion is that the
-        # operator SEES the degraded-success response; this is the LAST
-        # IDENTIFIED IN-PROCESS PRE-SEND site it can be taken from him --
-        # response DELIVERY is still beyond reach.
+        # operator SEES the degraded-success response.
+        #
+        # **THIS IS NOT "THE LAST PRE-SEND SITE", AND THE COMMENT HERE
+        # USED TO SAY IT WAS** (Codex A3R4-06). The `X-Request-ID` stamp
+        # on the line above is itself unguarded, and a response whose
+        # headers reject mutation would be destroyed there -- one
+        # statement before this guard. That correction is OUTSIDE the
+        # single-call bound this arc was given, so it is BANKED with the
+        # rest of the middleware sweep rather than taken here. The comment
+        # is corrected NOW, because a comment that reads true while being
+        # false is a failure mode this codebase names by number.
+        # Response DELIVERY remains beyond any in-process guard.
         #
         # THE GUARD IS INLINE RATHER THAN `swing.trades.entry.log_contained`
         # ON PURPOSE: a web middleware must not import the trades service --

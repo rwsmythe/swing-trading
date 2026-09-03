@@ -217,8 +217,12 @@ def test_c4_a_non_ascii_ticker_is_coerced_on_the_success_line(
     assert result.exit_code == 0, result.output   # CONTROL, both paths
     assert len(_trade_rows(cfg)) == 1
     assert result.output.isascii(), (
-        "the raw non-ASCII ticker reached stdout; Windows cp1252 raises on "
-        "it and pytest's capsys hides that")
+        "the raw non-ASCII ticker reached stdout. NOTE what this asserts "
+        "(Codex A3R4-07): cp1252 ENCODES E-acute perfectly well, so this "
+        "ticker does NOT reproduce a Windows encoder failure. What it "
+        "enforces is the stronger, encoding-INDEPENDENT project policy "
+        "that CLI output is ASCII -- which is what survives every console "
+        "codec, and capsys bypasses the OS encoder either way")
     assert ascii_safe(ticker) in result.output
     assert "archived" in result.output, (
         "the watchlist-archive line must fire too -- it is one of the lines "
