@@ -25,6 +25,159 @@ from swing.trades.state import (
 log = logging.getLogger(__name__)
 
 
+# ===========================================================================
+# 22-A3 -- THE LOG-CONTAINMENT IDIOM, STATED ONCE.
+#
+# **A FAILING LOGGING HANDLER MUST NEVER CHANGE A FUNCTION'S RESULT OR WHICH
+# EXCEPTION PROPAGATES** (Codex 22A-R11-03).  Six CLEANUP-log sites share the
+# class -- two here and four in `cohort_provenance_correction.py` -- so the
+# fix is a shared idiom rather than six local edits, and "did site N get it"
+# becomes a mechanical question.  `ascii_safe` / `safe_text` are PART of the
+# idiom rather than adjacent to it: a containment guard that formats a value
+# which can raise, or which produces a string that cannot be encoded, is a
+# containment guard that can raise.
+#
+# These four are NOT in `__all__`: that list is the entry service's
+# caller-facing surface.
+# ===========================================================================
+
+
+def ascii_safe(text: str) -> str:
+    """ASCII-only, and NEVER an exception.
+
+    Two independent reasons, both MEASURED rather than reasoned about:
+
+    * Windows `cp1252` stdout raises on non-ASCII, and these strings reach
+      `click.echo` (CLAUDE.md; `pytest`'s `capsys` hides it).
+    * A custom `__repr__` may return a string containing a LONE SURROGATE.
+      `html.escape` preserves it and `HTMLResponse` then raises
+      `UnicodeEncodeError` encoding the body -- one frame OUTSIDE every
+      guard in the degraded path, producing exactly the durable-row-plus-500
+      outcome 22-A3 exists to remove.
+
+    `backslashreplace` is lossless-to-the-reader and cannot itself fail on
+    a surrogate (measured: `'bad \\ud800 repr'` round-trips to the literal
+    text `bad \\ud800 repr`).
+    """
+    try:
+        return text.encode("ascii", "backslashreplace").decode("ascii")
+    except BaseException:  # noqa: BLE001 -- the CLASS, not a roster
+        return "<a value that could not be rendered as text>"
+
+
+def safe_text(value: object) -> str:
+    """`repr(value)`, ASCII-coerced, and NEVER an exception.
+
+    Measured: an exception class overriding `__repr__` (and `__str__`) to
+    raise is constructible, and the values formatted by the containment
+    idiom and by the web route's degraded notice are exceptions raised by
+    arbitrary code.
+    """
+    try:
+        return ascii_safe(repr(value))
+    except BaseException:  # noqa: BLE001
+        pass
+    try:
+        return ascii_safe(str(value))
+    except BaseException:  # noqa: BLE001
+        pass
+    return "<an object whose repr() and str() both raised>"
+
+
+def log_contained(logger: logging.Logger, msg: str,
+                  *args: object) -> BaseException | None:
+    """Emit an ERROR record, containing a failure OF THE SINK.
+
+    **A FAILING LOGGING HANDLER MUST NEVER CHANGE A FUNCTION'S RESULT OR
+    WHICH EXCEPTION PROPAGATES** (Codex 22A-R11-03).  A logging sink is
+    caller-installed infrastructure this package does not control, and
+    every call site is a CLEANUP handler -- the place where an exception is
+    already in flight and its identity is the caller's only evidence about
+    what happened.  Measured pre-fix: a sink whose `emit()` raised replaced
+    a `KeyError` cleanup error with its own `RuntimeError` and dropped the
+    `raise ... from ...` chaining with it.
+
+    Returns the sink's exception, or `None`.  It is RETURNED rather than
+    swallowed because a silent `pass` trades one invisible failure for
+    another (the R10-04 standard); each caller decides how to surface it.
+    """
+    try:
+        logger.error(msg, *args)
+    except BaseException as log_error:  # noqa: BLE001 -- the CLASS
+        return log_error
+    return None
+
+
+def log_contained_note(logger: logging.Logger, escaping: BaseException,
+                       msg: str, *args: object) -> None:
+    """`log_contained` for a site that is about to RAISE `escaping`.
+
+    The sink's failure is attached as a NOTE, so it travels in the
+    traceback while the exception's TYPE, its args, its `__cause__` and its
+    `__context__` are untouched -- the property the six call sites are
+    judged on.
+
+    **The attach goes through `BaseException.add_note` EXPLICITLY, not
+    through `escaping.add_note`.**  `add_note` is overridable, and an
+    overriding subclass that raises would otherwise make this helper
+    SWALLOW the sink failure entirely -- the invisible failure its own
+    docstring forbids.  Measured: the base implementation lands the note on
+    exactly such a subclass.
+
+    **AND THE BASE IMPLEMENTATION ITSELF CAN RAISE** (measured: assigning a
+    TUPLE to `__notes__` makes it raise `TypeError: Cannot add note:
+    __notes__ is not a list`).  So a malformed `__notes__` is REPAIRED
+    in place -- every existing note preserved -- and the attach retried
+    once.
+    """
+    log_error = log_contained(logger, msg, *args)
+    if log_error is None:
+        return
+    note = (f"the ERROR log for this cleanup failure could not be emitted "
+            f"({safe_text(log_error)}); the condition it described is "
+            f"unchanged.")
+    try:
+        BaseException.add_note(escaping, note)
+        return
+    except BaseException:  # noqa: BLE001 -- the CLASS, not a roster
+        pass
+    try:
+        # **THE READ BYPASSES `__getattribute__` TOO** (Codex 22A3-R6-05,
+        # verified by execution).  A subclass overriding
+        # `__getattribute__` to raise for `__notes__` defeats BOTH
+        # `BaseException.add_note` (which reads the attribute through the
+        # override) AND a plain `getattr(..., None)` -- whose default
+        # swallows only `AttributeError`, and the override raises
+        # `TypeError`.  MEASURED: `BaseException.__getattribute__` raises
+        # a plain `AttributeError` on such an object, i.e. "absent", and
+        # `BaseException.__setattr__` then installs the list successfully.
+        # Read and write both go through the base slots, symmetrically.
+        try:
+            existing = BaseException.__getattribute__(escaping, "__notes__")
+        except AttributeError:
+            existing = None
+        if isinstance(existing, list):
+            repaired = list(existing)
+        elif existing is None:
+            repaired = []
+        elif isinstance(existing, (tuple, set, frozenset)):
+            repaired = list(existing)
+        else:
+            repaired = [safe_text(existing)]
+        repaired.append(note)
+        # **`BaseException.__setattr__`, NOT `escaping.__notes__ = ...`**
+        # (Codex 22A3-R5-04).  A subclass overriding `__setattr__` to
+        # raise would otherwise defeat the repair -- and the base slot
+        # bypasses the override for exactly the reason
+        # `BaseException.add_note` does one line up.  MEASURED on this
+        # runtime: a class whose `__setattr__` always raises rejects
+        # `add_note`, and the direct base `__setattr__` still installs the
+        # repaired list.
+        BaseException.__setattr__(escaping, "__notes__", repaired)
+    except BaseException:  # noqa: BLE001
+        return
+
+
 # Re-export for callers: ``from swing.trades.entry import
 # MissingPreTradeFieldsException`` mirrors the route/CLI ergonomic pattern
 # used for the other entry-service exceptions (SoftWarnError etc.).
