@@ -165,3 +165,594 @@ def test_j_the_notice_partial_renders_escapes_and_carries_its_OOB_contract(
     assert "could not be refreshed" not in html, (
         "render_failure is None -- the refresh SUCCEEDED and the notice must "
         "not claim otherwise")
+
+
+# ===========================================================================
+# Shared machinery for the route tests.
+# ===========================================================================
+
+SENTINEL = "22-A3 PROBE: the entry is DURABLE -- do NOT retry."
+
+
+def _post_entry(client, ticker="ZZZ", **fields):
+    from tests.web.conftest import full_phase7_entry_payload
+    base = full_phase7_entry_payload(
+        ticker=ticker, entry_date="2026-05-19", entry_price="150.25",
+        shares="100", initial_stop="140.00", rationale="aplus-setup",
+        notes="")
+    base.update({k: ("" if v is None else str(v)) for k, v in fields.items()})
+    return client.post(
+        "/trades/entry", data=base, headers={"HX-Request": "true"})
+
+
+def _trade_count(cfg):
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _only_trade_id(cfg):
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = conn.execute("SELECT id FROM trades ORDER BY id").fetchall()
+        assert len(rows) == 1, rows
+        return int(rows[0][0])
+    finally:
+        conn.close()
+
+
+def _inject_post_commit_warnings(monkeypatch, *warnings):
+    """Wrap the REAL service and add ONLY the field under test.
+
+    THE LOAD-BEARING FIXTURE CHOICE: it produces a REAL durable row through
+    the REAL production path, so the test cannot pass because a stub
+    fabricated a result.
+    """
+    import dataclasses
+
+    import swing.web.routes.trades as routes
+    real = routes.record_entry
+
+    def _wrapped(*a, **kw):
+        result = real(*a, **kw)
+        return dataclasses.replace(
+            result, post_commit_warnings=tuple(warnings))
+
+    monkeypatch.setattr(routes, "record_entry", _wrapped)
+
+
+def _raise_from_build_dashboard(monkeypatch, exc):
+    import swing.web.routes.trades as routes
+
+    def _raiser(*a, **kw):
+        raise exc
+
+    monkeypatch.setattr(routes, "build_dashboard", _raiser)
+
+
+def _break_notice_template_only(app, exc):
+    """Raise ONLY for `partials/entry_notice.html.j2`; delegate otherwise.
+
+    PRE-FIX this wrapper NEVER FIRES -- the route does not ask for that
+    template at all, because the result is discarded -- so the pre-fix
+    response is an ordinary 200 with FOUR chunks, NOT a 500.
+    """
+    templates = app.state.templates
+    real = templates.get_template
+
+    def _wrapped(name, *a, **kw):
+        if name == "partials/entry_notice.html.j2":
+            raise exc
+        return real(name, *a, **kw)
+
+    templates.get_template = _wrapped
+
+
+class _RaisingHandler:
+    """Attach a raising ERROR handler to a NAMED logger, as a context manager,
+    so the (m)/(r) injections cannot leak into sibling tests."""
+
+    def __init__(self, logger_name):
+        import logging
+        self._logger = logging.getLogger(logger_name)
+
+        class _Sink(logging.Handler):
+            def emit(self, record):
+                raise RuntimeError("22-A3 PROBE: route log sink failed")
+
+        self._handler = _Sink(level=logging.ERROR)
+
+    def __enter__(self):
+        self._logger.addHandler(self._handler)
+        return self
+
+    def __exit__(self, *exc):
+        self._logger.removeHandler(self._handler)
+        return False
+
+
+class _CloseRaises:
+    """A forwarding proxy over the REAL connection whose `close()` performs
+    the real close and THEN raises.
+
+    The real transaction still commits, so the trade is genuinely durable --
+    which is the whole premise of (b2).  The wording of the resulting warning
+    is OBSERVATION-ONLY for exactly this reason: `close()` can TAKE EFFECT and
+    then raise.
+    """
+
+    def __init__(self, real):
+        object.__setattr__(self, "_real", real)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+    def __enter__(self):
+        object.__getattribute__(self, "_real").__enter__()
+        return self
+
+    def __exit__(self, *a):
+        return object.__getattribute__(self, "_real").__exit__(*a)
+
+    def close(self):
+        import sqlite3
+        object.__getattribute__(self, "_real").close()
+        raise sqlite3.OperationalError("22-A3 PROBE: close failed")
+
+
+def _patch_connect_to_raise_on_close(monkeypatch):
+    import swing.web.routes.trades as routes
+    real_connect = routes.connect
+
+    def _wrapped(*a, **kw):
+        return _CloseRaises(real_connect(*a, **kw))
+
+    monkeypatch.setattr(routes, "connect", _wrapped)
+
+
+def _notice_chunk(text):
+    """The `#entry-notice` OOB chunk, sliced out of the response body."""
+    start = text.find('<div id="entry-notice"')
+    assert start >= 0, "no #entry-notice chunk in the response"
+    return text[start:]
+
+
+# ===========================================================================
+# (a) -- a post-commit warning reaches the operator through the response.
+# ===========================================================================
+
+
+def test_a_a_post_commit_warning_reaches_the_web_response(
+        seeded_db, monkeypatch):
+    """PRE-fix the sentinel is ABSENT from a 200 (the result is discarded at
+    the `record_entry` call site); POST-fix it is present."""
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+    _inject_post_commit_warnings(monkeypatch, SENTINEL)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_entry(client)
+
+    assert resp.status_code == 200, resp.text[:400]   # CONTROL, both paths
+    assert SENTINEL in resp.text
+    assert 'id="entry-notice"' in resp.text
+    assert resp.text.lstrip().startswith('<div id="entry-notice"'), (
+        "this is the ONE path where the notice travels beside OOB <table> "
+        "chunks, so it is the one path where a <tr> at fragment root would "
+        "fire Bug B")
+    assert _trade_count(cfg) == 1                     # CONTROL, both paths
+
+
+# ===========================================================================
+# (b) -- a `build_dashboard` failure becomes a DEGRADED SUCCESS.
+# ===========================================================================
+
+
+def test_b_a_build_dashboard_failure_is_a_degraded_success(
+        seeded_db, monkeypatch):
+    """PRE-fix 500 with the refusal-shaped `trade_form_error` fragment painted
+    into the entry form's own row; POST-fix 200 naming the trade.
+
+    `raise_server_exceptions=False` is REQUIRED: with the default the
+    `ServerErrorMiddleware` re-raises after the app's handler runs, so the
+    PRE-fix run would raise the probe out of `client.post(...)` and the test
+    would assert on an exception rather than a status.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+    _raise_from_build_dashboard(
+        monkeypatch, RuntimeError("22-A3 PROBE: dashboard rebuild failed"))
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(client)
+
+    assert _trade_count(cfg) == 1, (
+        "the premise: the row was durable in the pre-fix run too")
+    trade_id = _only_trade_id(cfg)
+    assert resp.status_code == 200, resp.text[:400]
+    assert f"Trade #{trade_id}" in resp.text
+    assert "do NOT" in resp.text
+    assert "<tr" not in resp.text, (
+        "S2.1: never a <tr> at fragment root on the degraded path")
+
+
+# ===========================================================================
+# (b2) -- a `conn.close()` failure AFTER a durable entry (web half).
+# ===========================================================================
+
+
+def test_b2_a_close_failure_after_a_durable_entry_is_a_degraded_success(
+        seeded_db, monkeypatch):
+    """PRE-fix 500 over one durable row; POST-fix 200 naming the trade, with
+    the contained close REPORTED rather than swallowed."""
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+    _patch_connect_to_raise_on_close(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(client)
+
+    assert _trade_count(cfg) == 1, "the whole premise"
+    trade_id = _only_trade_id(cfg)
+    assert resp.status_code == 200, resp.text[:400]
+    assert f"Trade #{trade_id}" in resp.text
+    assert "close failed" in resp.text
+
+
+def test_b2_control_a_REFUSAL_still_propagates_its_close_failure(
+        seeded_db, monkeypatch):
+    """THE ASYMMETRY, KEPT HONEST. `result` is None on a refusal, so the close
+    failure must STILL propagate -- 500, unchanged from today.
+
+    On the WEB path this control genuinely DISCRIMINATES (its CLI twin does
+    not): the duplicate handler RETURNS a 400 from inside the `try`, so an
+    implementation containing the close UNCONDITIONALLY would swallow the
+    close error and let that 400 stand. 400 versus 500 is the discriminator.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        first = _post_entry(client)
+        assert first.status_code == 200, first.text[:400]
+        _patch_connect_to_raise_on_close(monkeypatch)
+        second = _post_entry(client)
+
+    assert second.status_code == 500, (
+        "a refusal has no durable result to protect, so the close failure "
+        "must propagate; a 400 here means the containment is unconditional")
+    assert _trade_count(cfg) == 1
+
+
+# ===========================================================================
+# (f) -- an ordinary success carries an EMPTY notice chunk.
+# ===========================================================================
+
+
+def test_f_an_ordinary_success_carries_an_EMPTY_notice_chunk(
+        seeded_db, monkeypatch):
+    """PRE-fix FOUR OOB chunks and no notice; POST-fix FIVE, the fifth EMPTY.
+
+    This flipped from an invariant into a discriminator when the notice
+    container was found to be STATEFUL: a prior warning response replaces the
+    empty container with a visible banner and KEEPS THE ID, so an ordinary
+    entry must emit the wrapper (to clear it) with no content.
+
+    The four-refresh-chunk half is a pure blast-radius pin and passes under
+    BOTH paths; the count and the notice's presence are what discriminate.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_entry(client)
+
+    assert resp.status_code == 200, resp.text[:400]
+    assert resp.text.count('hx-swap-oob="true"') == 5
+    assert 'id="entry-notice"' in resp.text
+    chunk = _notice_chunk(resp.text)
+    assert "banner-degraded" not in chunk
+    assert "WAS RECORDED" not in resp.text
+
+    # blast radius: the four refresh chunks, unchanged in identity, count and
+    # order (true under BOTH paths).
+    idents = ('id="status-strip"', 'id="open-positions"',
+              'id="watchlist-top5"', 'id="hypothesis-recommendations"')
+    for ident in idents:
+        assert resp.text.count(ident) == 1, ident
+    positions = [resp.text.index(i) for i in idents]
+    assert positions == sorted(positions)
+
+
+# ===========================================================================
+# (l) -- the notice CLEARS itself across two requests.
+# ===========================================================================
+
+
+def test_l_a_warning_entry_followed_by_an_ORDINARY_entry_clears_the_banner(
+        seeded_db, monkeypatch):
+    """PRE-fix the second response contains NO notice chunk at all; POST-fix
+    it is present and EMPTY.
+
+    WHAT THIS DOES NOT PROVE: TestClient applies no HTMX swaps and holds no
+    DOM, so this establishes only the SERVER-SIDE CONTRACT across two
+    requests. That the operator's browser actually REPLACES the old banner is
+    provable only at gate Step 5b.
+    """
+    import dataclasses
+
+    import swing.web.routes.trades as routes
+
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+
+    real = routes.record_entry
+    inject = [True]
+
+    def _wrapped(*a, **kw):
+        result = real(*a, **kw)
+        if inject[0]:
+            return dataclasses.replace(
+                result, post_commit_warnings=(SENTINEL,))
+        return result
+
+    monkeypatch.setattr(routes, "record_entry", _wrapped)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        first = _post_entry(client, ticker="AAA")
+        assert first.status_code == 200, first.text[:400]
+        assert SENTINEL in first.text
+        inject[0] = False
+        second = _post_entry(client, ticker="BBB")
+
+    assert second.status_code == 200, second.text[:400]
+    assert 'id="entry-notice"' in second.text
+    chunk = _notice_chunk(second.text)
+    assert SENTINEL not in chunk
+    assert "banner-degraded" not in chunk
+
+
+# ===========================================================================
+# (g) -- the notice helper is TOTAL when ONLY the notice partial fails.
+# ===========================================================================
+
+
+def test_g_the_notice_helper_is_total_when_only_the_notice_partial_fails(
+        seeded_db, monkeypatch):
+    """THE REACHABLE CASE: the dashboard and all four partials render, the
+    result carries warnings, and only the notice render fails.
+
+    THE PRE-FIX VALUE IS 200, NOT 500: pre-fix the route never asks for
+    `partials/entry_notice.html.j2` at all, so the raising wrapper never fires
+    and the response is an ordinary 200 with FOUR chunks. Status is a CONTROL
+    here; the chunk count and the sentinel are the discriminators.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+    _inject_post_commit_warnings(monkeypatch, "<script>" + SENTINEL)
+
+    app = create_app(cfg, cfg_path)
+    _break_notice_template_only(
+        app, RuntimeError("22-A3 PROBE: notice render failed"))
+    with TestClient(app) as client:
+        resp = _post_entry(client)
+
+    assert resp.status_code == 200, resp.text[:400]      # CONTROL
+    assert resp.text.count('hx-swap-oob="true"') == 5
+    assert SENTINEL in resp.text, (
+        "the literal fallback must CARRY the warnings; dropping them ships "
+        "this arc's own failure mode inside the fix for it")
+    assert "could not be refreshed" not in resp.text, (
+        "the refresh did NOT fail, and a fallback that says it did is a "
+        "false statement to the operator")
+    assert "&lt;" in resp.text, "the fallback escapes with html.escape"
+    assert "notice render failed" in resp.text, (
+        "the fallback NAMES what failed rather than discarding the cause")
+
+
+def test_g3_only_the_notice_partial_fails_and_there_is_nothing_else_to_say(
+        seeded_db, monkeypatch, caplog):
+    """An ordinary entry whose ONLY problem is that the notice template broke.
+
+    An earlier draft returned an EMPTY wrapper in exactly this posture, so a
+    degraded event rendered as an ordinary success with no banner and no log
+    -- the arc's own failure mode, reached through its own fallback.
+    """
+    import logging
+
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    _break_notice_template_only(
+        app, RuntimeError("22-A3 PROBE: notice render failed"))
+    with caplog.at_level(logging.ERROR, logger="swing.web.routes.trades"):
+        with TestClient(app) as client:
+            resp = _post_entry(client)
+
+    trade_id = _only_trade_id(cfg)
+    assert resp.status_code == 200, resp.text[:400]      # CONTROL
+    assert f"Trade #{trade_id}" in resp.text
+    assert "notice render failed" in resp.text
+    assert "could not be refreshed" not in resp.text
+    assert "could not be rendered" in caplog.text, caplog.text
+
+
+def test_g2_the_notice_helper_is_total_when_the_whole_template_layer_fails(
+        seeded_db, monkeypatch):
+    """PRE-fix 500; POST-fix 200 naming the trade, via the LITERAL.
+
+    The phrase asserted below exists ONLY in the literal, so it discriminates
+    against a half-fix in which the guard exists but the helper is not total.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+
+    def _raiser(*a, **kw):
+        raise RuntimeError("22-A3 PROBE: the template layer failed")
+
+    monkeypatch.setattr(app.state.templates, "get_template", _raiser)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(client)
+
+    assert _trade_count(cfg) == 1
+    trade_id = _only_trade_id(cfg)
+    assert resp.status_code == 200, resp.text[:400]
+    assert f"Trade #{trade_id}" in resp.text
+    # PLAN DEFECT, reported: S3(g2) states this assertion in lowercase while
+    # the plan's own Task-6 helper code emits the sentence-initial capital
+    # ("This notice could not be rendered"). The production string is the
+    # authority; a lowercase mid-sentence phrase would be the wrong fix.
+    assert "This notice could not be rendered" in resp.text
+
+
+# ===========================================================================
+# (m) -- the ROUTE's degraded path really uses `log_contained`.
+# ===========================================================================
+
+
+def test_m_the_degraded_path_contains_its_OWN_error_log(
+        seeded_db, monkeypatch):
+    """A half-fix writing a plain `log.error(...)` there passes (a), (b),
+    (b2), (f), (g), (g2) and (k) -- and then a raising handler converts the
+    durable entry straight back into a 500, which is this arc's subject."""
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+    _raise_from_build_dashboard(
+        monkeypatch, RuntimeError("22-A3 PROBE: dashboard rebuild failed"))
+
+    app = create_app(cfg, cfg_path)
+    with _RaisingHandler("swing.web.routes.trades"):
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = _post_entry(client)
+
+    assert _trade_count(cfg) == 1
+    trade_id = _only_trade_id(cfg)
+    assert resp.status_code == 200, resp.text[:400]
+    assert f"Trade #{trade_id}" in resp.text
+    assert "could not be emitted" in resp.text, (
+        "the log failure is surfaced as a second warning, not swallowed")
+
+
+# ===========================================================================
+# (r) -- the notice render AND the route logger fail TOGETHER.
+# ===========================================================================
+
+
+def test_r_the_notice_render_and_the_route_logger_fail_together(
+        seeded_db, monkeypatch):
+    """Without this, a version that DROPS `log_contained`'s return value in
+    the notice helper passes every other test -- and the operator sees the
+    first failure and nothing at all about the second.
+
+    POST-fix only; PRE this path returns the ordinary 200 that (g3)'s control
+    establishes.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    _break_notice_template_only(
+        app, RuntimeError("22-A3 PROBE: notice render failed"))
+    with _RaisingHandler("swing.web.routes.trades"):
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = _post_entry(client)
+
+    trade_id = _only_trade_id(cfg)
+    assert resp.status_code == 200, resp.text[:400]
+    assert f"Trade #{trade_id}" in resp.text
+    assert "notice render failed" in resp.text
+    assert "could not be emitted" in resp.text, (
+        "the SECONDARY diagnostic was discarded: log_contained RETURNS the "
+        "sink's failure precisely so a caller does not trade one invisible "
+        "failure for another")
+
+
+# ===========================================================================
+# (k) and (n) -- the lone surrogate, at TWO DIFFERENT call sites.
+# ===========================================================================
+
+
+class _SurrogateRepr(RuntimeError):
+    """A LEGAL custom `__repr__` returning a string containing a lone
+    surrogate. MEASURED: `html.escape` PRESERVES it and `HTMLResponse` then
+    raises `UnicodeEncodeError` encoding the body -- one frame OUTSIDE every
+    guard in the route."""
+
+    def __repr__(self):
+        return "bad \ud800 repr"
+
+
+def test_k_a_lone_surrogate_repr_cannot_break_the_degraded_response(
+        seeded_db, monkeypatch):
+    """PRE-fix 500; POST-fix 200, and a REAL `HTMLResponse` is constructed.
+
+    End-to-end rather than a unit test: the failure it pins happens when
+    Starlette ENCODES the body, inside `HTMLResponse`, which is outside every
+    guard the route can install.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+    _raise_from_build_dashboard(monkeypatch, _SurrogateRepr("probe"))
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(client)
+
+    assert _trade_count(cfg) == 1
+    trade_id = _only_trade_id(cfg)
+    assert resp.status_code == 200, resp.text[:400]
+    assert f"Trade #{trade_id}" in resp.text
+    assert "ud800" in resp.text
+
+
+def test_n_a_lone_surrogate_IN_A_WARNING_cannot_break_the_SUCCESS_response(
+        seeded_db, monkeypatch):
+    """A DIFFERENT CALL SITE from (k)'s. (k) drives the surrogate through the
+    `build_dashboard` exception, which exercises `safe_text(post_bind_error)`
+    -- NOT the warning-assembly coercion. A half-fix that drops `ascii_safe`
+    from the warning assembly passes every other specified web test.
+
+    PRE-fix the status is 200 and NOT a 500: pre-fix the route DISCARDS the
+    result, so the injected warning is never read, never rendered and never
+    encoded. THE 500 BELONGS TO THE MUTATION, not to the pre-fix path.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+    _inject_post_commit_warnings(
+        monkeypatch, "22-A3 PROBE: a warning carrying \ud800 directly")
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = _post_entry(client)
+
+    assert resp.status_code == 200, resp.text[:400]      # CONTROL
+    assert 'id="entry-notice"' in resp.text
+    assert "ud800" in resp.text
+    assert resp.text.count('hx-swap-oob="true"') == 5
+    assert _trade_count(cfg) == 1

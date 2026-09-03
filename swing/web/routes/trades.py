@@ -3,6 +3,7 @@ endpoints are added in later tasks. All write endpoints require HX-Request
 under strict OriginGuard (spec §3.3)."""
 from __future__ import annotations
 
+import html
 import logging
 import sqlite3
 from datetime import datetime, timedelta
@@ -25,7 +26,10 @@ from swing.trades.entry import (
     MissingPreTradeFieldsException,
     PatternEvaluationAnchorError,
     SoftWarnError,
+    ascii_safe,
+    log_contained,
     record_entry,
+    safe_text,
 )
 from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason, ExitRequest, record_exit
@@ -226,6 +230,114 @@ def _emit_sector_tamper_audit(
     finally:
         conn.close()
     return disc_id
+
+
+def _post_commit_warnings(result, close_error) -> tuple[str, ...]:
+    """The durable-entry warnings, ASCII-coerced, plus the contained close.
+
+    TOTAL BY CONSTRUCTION: `ascii_safe` and `safe_text` cannot raise, tuple
+    concatenation on strings cannot fail, and `trade_id` is an int.  It is a
+    function rather than three inline statements so that nothing at all sits
+    between the connection `finally` and the guarded refresh region, and so
+    the guard's own `except` branch can rebuild the identical list.
+
+    **THE WORDING IS OBSERVATION-ONLY**: it says the close RAISED, never that
+    the connection "could not be closed".  Because the guard catches
+    asynchronous `BaseException`, `close()` can TAKE EFFECT and then raise as
+    control returns -- the same after-effect fallacy this project already
+    corrected for rollback messages in `swing/trades/entry.py` and
+    `swing/trades/cohort_provenance_correction.py`.  A cleanup warning that is
+    WRONG about the state teaches an operator to distrust the right ones.
+
+    THE COERCION IS NOT COSMETIC: `record_entry` builds its warning strings
+    with a raw `{exc!r}`, so a custom `__repr__` returning a lone surrogate
+    reaches the TEMPLATE path as readily as the literal one, and
+    `html.escape` preserves it until `HTMLResponse` raises
+    `UnicodeEncodeError` encoding the body -- outside every guard.
+    """
+    warnings = tuple(ascii_safe(w) for w in result.post_commit_warnings)
+    if close_error is not None:
+        warnings = warnings + (
+            f"the entry is DURABLE (trade {result.trade_id}) and CLOSING the "
+            f"database connection afterwards RAISED "
+            f"({safe_text(close_error)}); the ledger is unaffected.",)
+    return warnings
+
+
+def _entry_notice_html(templates, request, *, trade_id: int,
+                       warnings: tuple[str, ...],
+                       render_failure: str | None) -> str:
+    """The durable-entry notice, as an OOB chunk.
+
+    **THIS FUNCTION MAY NOT RAISE.**  It runs on the path that has just
+    confirmed a durable money-bearing row, and a guard that produces its
+    degraded response BY RENDERING A TEMPLATE re-introduces the exposure one
+    layer in: if the template machinery is what failed, the guard raises, the
+    app-wide handler renders a `banner-degraded` alert into the form's own row
+    at 500, and the operator reads a durable entry as a refusal.
+
+    THE FALLBACK NAMES ITS OWN FAILURE, CARRIES THE WARNINGS, AND DOES NOT
+    INVENT A REFRESH FAILURE.  The reachable case is: the dashboard and all
+    four partials rendered, the result carries post-commit warnings, and only
+    THIS partial failed.  A fallback that dropped the warnings would ship this
+    arc's own failure mode -- a warning with no reader -- inside the fix for
+    it, and one that said "the page could not be refreshed" would be telling
+    the operator something false.  Escaping is `html.escape` from the stdlib,
+    deliberately: Jinja is the machinery that just failed.
+    """
+    try:
+        return templates.get_template(
+            "partials/entry_notice.html.j2"
+        ).render(request=request, trade_id=trade_id,
+                 warnings=list(warnings), render_failure=render_failure)
+    except BaseException as notice_error:  # noqa: BLE001 -- the CLASS
+        # **THE NOTICE'S OWN FAILURE IS NAMED AND LOGGED, NEVER SILENT.**
+        # An earlier draft returned an EMPTY wrapper when there were no
+        # warnings, so a render failure on an ordinary entry looked exactly
+        # like an ordinary entry: a degraded event with no banner and no log.
+        # An OOB-partial failure becomes a degraded success NAMING the trade
+        # and the failure, and "no warnings" does not exempt it.
+        notice_log_error = log_contained(
+            log,
+            "22-A3: trade %s IS DURABLE and its operator notice could not be "
+            "rendered (%s); the literal fallback was used.",
+            trade_id, notice_error)
+        parts = [
+            f'<div id="entry-notice" hx-swap-oob="true">'
+            f'<div class="banner banner-degraded" role="alert">'
+            f'<strong>Trade #{html.escape(safe_text(trade_id))} WAS '
+            f'RECORDED.</strong> This notice could not be rendered '
+            f'({html.escape(safe_text(notice_error))}).'
+        ]
+        # Every interpolated value below is already ASCII (`ascii_safe` /
+        # `safe_text`), which is what keeps `HTMLResponse` from raising
+        # `UnicodeEncodeError` on a lone surrogate one frame outside this
+        # guard.  MEASURED: `html.escape` PRESERVES a lone surrogate.
+        if render_failure is not None:
+            parts.append(
+                f' The page could not be refreshed afterwards '
+                f'({html.escape(render_failure)}). The entry EXISTS -- do NOT '
+                f'enter it again. Reload the page.')
+        else:
+            parts.append(
+                ' The entry EXISTS and the page was refreshed. Do NOT enter '
+                'it again.')
+        # THE SECONDARY DIAGNOSTIC IS SURFACED, NOT DISCARDED.
+        # `log_contained` RETURNS the sink's failure precisely so a caller
+        # does not trade one invisible failure for another, and dropping it
+        # would leave the operator seeing the notice failure and nothing at
+        # all about the log that could not record it.
+        if notice_log_error is not None:
+            warnings = tuple(warnings) + (
+                f"the ERROR log for this notice failure could not be emitted "
+                f"({safe_text(notice_log_error)}); the ledger is unaffected.",)
+        if warnings:
+            parts.append('<ul>')
+            for warning in warnings:
+                parts.append(f'<li>{html.escape(ascii_safe(warning))}</li>')
+            parts.append('</ul>')
+        parts.append('</div></div>')
+        return "".join(parts)
 
 
 def _rerender_entry_form_with_error(
@@ -1479,582 +1591,667 @@ def entry_post(
         manual_entry_confidence=manual_entry_confidence or None,
     )
 
-    conn = connect(cfg.paths.db_path)
+    # 22-A3: bound BEFORE the outer try so the `finally` and the outer handler
+    # can tell "the entry is durable" from "nothing landed".
+    result = None
+    close_error = None
+    # ================= ONE CONTINUOUS OUTER GUARD =================
+    #
+    # It opens BEFORE the connection and closes only after the response has
+    # been returned. TWO ADJACENT guarded regions would leave an uncovered
+    # instruction boundary between their exception-table ranges -- exactly
+    # where a pending asynchronous exception can land.
+    #
+    # `BaseException`, not a roster: this is `record_entry`'s own post-commit
+    # guard continued one frame out, and the contract's direction governs --
+    # a durable money-bearing row reported as a failed entry is the direction
+    # that causes a DOUBLE ENTRY.
+    #
+    # WHAT THIS DOES NOT COVER, stated rather than implied by the word
+    # "continuous": the frame's own terminal return handoff lies outside this
+    # suite's exception-table range, and RESPONSE DELIVERY (ASGI send,
+    # streaming, client disconnect) happens after the route returns at all.
+    # The guarantee is about what this route CONSTRUCTS and RETURNS.
     try:
+        conn = connect(cfg.paths.db_path)
         try:
-            # Bug-fix-AB: result.trade_id is no longer needed — the
-            # dashboard rebuild's open_positions partial picks the new row
-            # up via list_open_trades. Soft-warn / duplicate / hard-cap /
-            # ValueError paths raise to the except blocks below; the
-            # success path returns into the OOB-only response below.
-            record_entry(
-                conn, req,
-                soft_warn=cfg.position_limits.soft_warn_open,
-                hard_cap=cfg.position_limits.hard_cap_open,
-                force=(force == "true"),
-                # 22-A: see the CLI call site. This is the surface the
-                # operator actually uses, so an omission here would make the
-                # acceptance suite's green mean nothing in production.
-                cfg=cfg,
-            )
-        except MissingPreTradeFieldsException as exc:
-            # Phase 7 Sub-C C.4 — non-bypassable pre-trade required-field
-            # gate (spec §9.3). Re-render the FULL entry form fragment
-            # so the operator sees:
-            #   1. an inline banner naming the missing fields,
-            #   2. per-field error class markers on the missing inputs
-            #      (template gates on `{% if name in vm.missing_fields %}`),
-            #   3. their typed values round-tripped via the `draft_*`
-            #      preservation fields (rationale/notes pattern extended
-            #      to the 18 new pre-trade fields).
-            # On `vm is None` (watchlist row vanished between GET and POST),
-            # fall through to the banner-only error fragment — there's no
-            # form context to re-render against.
-            from dataclasses import replace as dc_replace
-            vm = build_entry_form_vm(
-                ticker=ticker.upper(), cfg=cfg, cache=cache,
-                executor=executor, origin=origin_coerced,
-            )
-            error_message = (
-                "Missing required pre-trade fields: "
-                + ", ".join(exc.missing_fields)
-            )
-            if vm is not None:
-                vm = dc_replace(
-                    vm,
-                    entry_date=entry_date,
-                    entry_price=entry_price,
-                    initial_stop=initial_stop,
-                    input_shares=shares,
-                    rationale=rationale,
-                    notes=notes or "",
-                    # 18 pre-trade field draft preservation:
-                    draft_thesis=thesis or "",
-                    draft_why_now=why_now or "",
-                    draft_invalidation_condition=invalidation_condition or "",
-                    draft_expected_scenario=expected_scenario or "",
-                    draft_premortem_technical=premortem_technical or "",
-                    draft_premortem_market_sector=premortem_market_sector or "",
-                    draft_premortem_execution=premortem_execution or "",
-                    draft_premortem_additional=premortem_additional or "",
-                    draft_event_risk_present=event_risk_present,
-                    draft_event_handling=event_handling or "",
-                    draft_event_type=event_type or "",
-                    draft_event_date=event_date or "",
-                    draft_gap_risk_present=gap_risk_present,
-                    draft_gap_risk_handling=gap_risk_handling or "",
-                    draft_emotional_state_pre_trade=tuple(emo_clean),
-                    draft_manual_entry_confidence=manual_entry_confidence or "",
-                    draft_market_regime=market_regime or "",
-                    draft_catalyst=catalyst or "",
-                    draft_catalyst_other_description=(
+            try:
+                # Bug-fix-AB: result.trade_id is no longer needed — the
+                # dashboard rebuild's open_positions partial picks the new row
+                # up via list_open_trades. Soft-warn / duplicate / hard-cap /
+                # ValueError paths raise to the except blocks below; the
+                # success path returns into the OOB-only response below.
+                #
+                # **22-A3 RESTORES THE ASSIGNMENT**, for a DIFFERENT reason
+                # than Bug-fix-AB removed it: `EntryResult` is a statement
+                # about the DURABLE STATE OF THE LEDGER, the refresh below is
+                # best-effort, and the degraded response must NAME the trade.
+                result = record_entry(
+                    conn, req,
+                    soft_warn=cfg.position_limits.soft_warn_open,
+                    hard_cap=cfg.position_limits.hard_cap_open,
+                    force=(force == "true"),
+                    # 22-A: see the CLI call site. This is the surface the
+                    # operator actually uses, so an omission here would make the
+                    # acceptance suite's green mean nothing in production.
+                    cfg=cfg,
+                )
+            except MissingPreTradeFieldsException as exc:
+                # Phase 7 Sub-C C.4 — non-bypassable pre-trade required-field
+                # gate (spec §9.3). Re-render the FULL entry form fragment
+                # so the operator sees:
+                #   1. an inline banner naming the missing fields,
+                #   2. per-field error class markers on the missing inputs
+                #      (template gates on `{% if name in vm.missing_fields %}`),
+                #   3. their typed values round-tripped via the `draft_*`
+                #      preservation fields (rationale/notes pattern extended
+                #      to the 18 new pre-trade fields).
+                # On `vm is None` (watchlist row vanished between GET and POST),
+                # fall through to the banner-only error fragment — there's no
+                # form context to re-render against.
+                from dataclasses import replace as dc_replace
+                vm = build_entry_form_vm(
+                    ticker=ticker.upper(), cfg=cfg, cache=cache,
+                    executor=executor, origin=origin_coerced,
+                )
+                error_message = (
+                    "Missing required pre-trade fields: "
+                    + ", ".join(exc.missing_fields)
+                )
+                if vm is not None:
+                    vm = dc_replace(
+                        vm,
+                        entry_date=entry_date,
+                        entry_price=entry_price,
+                        initial_stop=initial_stop,
+                        input_shares=shares,
+                        rationale=rationale,
+                        notes=notes or "",
+                        # 18 pre-trade field draft preservation:
+                        draft_thesis=thesis or "",
+                        draft_why_now=why_now or "",
+                        draft_invalidation_condition=invalidation_condition or "",
+                        draft_expected_scenario=expected_scenario or "",
+                        draft_premortem_technical=premortem_technical or "",
+                        draft_premortem_market_sector=premortem_market_sector or "",
+                        draft_premortem_execution=premortem_execution or "",
+                        draft_premortem_additional=premortem_additional or "",
+                        draft_event_risk_present=event_risk_present,
+                        draft_event_handling=event_handling or "",
+                        draft_event_type=event_type or "",
+                        draft_event_date=event_date or "",
+                        draft_gap_risk_present=gap_risk_present,
+                        draft_gap_risk_handling=gap_risk_handling or "",
+                        draft_emotional_state_pre_trade=tuple(emo_clean),
+                        draft_manual_entry_confidence=manual_entry_confidence or "",
+                        draft_market_regime=market_regime or "",
+                        draft_catalyst=catalyst or "",
+                        draft_catalyst_other_description=(
+                            catalyst_other_description or ""
+                        ),
+                        missing_fields=frozenset(exc.missing_fields),
+                        # Tuition-vs-error (Task 3): round-trip the SUBMITTED
+                        # design-intent verbatim (possibly "") so the re-rendered
+                        # <select> pre-selects the operator's choice -- NOT the
+                        # suggestion. An explicit "" (Unclassified) survives the
+                        # force resubmit because the template discriminates on
+                        # `is not none` (Codex R1-Major-1: NULL != standard).
+                        draft_entry_intent=entry_intent,
+                        # Phase 13 T3.SB1 Codex R1 Major #3 fix — preserve
+                        # the submitted auto-fill anchors so the
+                        # MissingPreTradeFieldsException re-render carries
+                        # them back into the form (force=true retry replays
+                        # the same anchor instead of substituting a fresh
+                        # Schwab fetch's result).
+                        # Codex R2 Minor #1 fix — also restore kind +
+                        # clear advisory text when the submitted claim is
+                        # populated, so the banner doesn't drift to "no
+                        # match" while the hidden anchor still claims
+                        # auto-fill.
+                        auto_fill_schwab_source_value_json=(
+                            schwab_source_value_json or None
+                        ),
+                        auto_fill_audit_at=auto_fill_audit_at or None,
+                        auto_fill_fill_origin=(
+                            fill_origin_at_form_render or "operator_typed"
+                        ),
+                        auto_fill_kind=(
+                            "populated"
+                            if (
+                                schwab_source_value_json
+                                and fill_origin_at_form_render in (
+                                    "schwab_auto",
+                                    "schwab_auto_then_operator_corrected",
+                                )
+                            )
+                            else vm.auto_fill_kind
+                        ),
+                        auto_fill_advisory_text=(
+                            None
+                            if (
+                                schwab_source_value_json
+                                and fill_origin_at_form_render in (
+                                    "schwab_auto",
+                                    "schwab_auto_then_operator_corrected",
+                                )
+                            )
+                            else vm.auto_fill_advisory_text
+                        ),
+                    )
+                    return templates.TemplateResponse(
+                        request, "partials/trade_entry_form.html.j2",
+                        {"vm": vm, "error_message": error_message},
+                        status_code=400,
+                    )
+                return templates.TemplateResponse(
+                    request, "partials/trade_form_error.html.j2",
+                    {
+                        "error_message": error_message,
+                        "missing_fields": list(exc.missing_fields),
+                    },
+                    status_code=400,
+                )
+            except SoftWarnError:
+                # First submit at soft cap — render the 2-step confirm fragment.
+                # Re-serialize the submitted form values so the next submit carries
+                # them + force=true (spec §4.3 step 4).
+                # R2 Minor 1: show the ACTUAL open_count in the banner numerator,
+                # not the threshold — "5/4" when 5 are open with soft_warn=4.
+                conn_count = connect(cfg.paths.db_path)
+                try:
+                    # 20-A B-2 (Codex R8) — a voided (phantom) open trade must not
+                    # inflate the soft-warn "actual open" count.
+                    from swing.trades.voided_trades import voided_trade_ids
+                    _voided_oc = voided_trade_ids(conn_count)
+                    actual_open = len([
+                        t for t in list_open_trades(conn_count)
+                        if t.id not in _voided_oc
+                    ])
+                finally:
+                    conn_count.close()
+                # Codex R1 Major 2 — soft-warn confirm must preserve the
+                # chart_pattern snapshot AS-IS (spec §3.6). Without these 5
+                # fields, the force=true resubmit drops the snapshot →
+                # persists NULL columns or trips the cached-only gate
+                # differently than what the operator saw at first submit.
+                # Use the raw incoming form values (not the canonicalized
+                # ``cp_*_value`` locals) so the second submit re-runs the
+                # exact same canonicalization path as the first — single
+                # source of truth.
+                form_values = {
+                    "ticker": req.ticker,
+                    "entry_date": req.entry_date,
+                    "entry_price": req.entry_price,
+                    "shares": req.shares,
+                    "initial_stop": req.initial_stop,
+                    "rationale": req.rationale,
+                    "notes": req.notes or "",
+                    "watchlist_target": req.watchlist_entry_target or "",
+                    "watchlist_stop": req.watchlist_initial_stop or "",
+                    "chart_pattern_algo": chart_pattern_algo or "",
+                    "chart_pattern_algo_confidence": (
+                        chart_pattern_algo_confidence
+                        if chart_pattern_algo_confidence is not None else ""
+                    ),
+                    "chart_pattern_classification_pipeline_run_id": (
+                        chart_pattern_classification_pipeline_run_id
+                        if chart_pattern_classification_pipeline_run_id is not None
+                        else ""
+                    ),
+                    "chart_pattern_operator": chart_pattern_operator or "",
+                    "chart_pattern_operator_other": chart_pattern_operator_other or "",
+                    # Task 6 — sector/industry must round-trip through the
+                    # soft-warn confirm so the force=true resubmit persists
+                    # the original snapshot AS-IS. soft_warn_confirm.html.j2
+                    # iterates form_values with an exclusion list; adding
+                    # these keys auto-emits hidden inputs.
+                    "sector": sector,
+                    "industry": industry,
+                    # Phase 9 Sub-bundle D Codex R3 Critical #1 — the
+                    # sector/industry tamper-hardening anchor must also
+                    # round-trip through soft-warn confirm. Without it the
+                    # ``force=true`` resubmit arrives with no anchor and
+                    # falls into the bare-cURL backward-compat skip path,
+                    # silently accepting tampered sector/industry on the
+                    # confirm submit. Re-emit as "" when None so the hidden
+                    # input is consistent with the form's GET render.
+                    "sector_industry_evaluation_run_id": (
+                        sector_industry_evaluation_run_id
+                        if sector_industry_evaluation_run_id is not None
+                        else ""
+                    ),
+                    # Phase 4.5 — hypothesis_label must round-trip through
+                    # the soft-warn confirm so the force=true resubmit
+                    # persists the SAME label the operator saw at first
+                    # submit. Without this entry, soft_warn_confirm.html.j2
+                    # would emit no hidden input for the field, the second
+                    # POST's hypothesis_label would default to "", and the
+                    # persisted Trade.hypothesis_label would be NULL —
+                    # silently dropping the snapshot. Multi-path-data-
+                    # ingestion lesson 2026-04-29.
+                    "hypothesis_label": hypothesis_label,
+                    # Tuition-vs-error (Task 3): entry_intent must round-trip
+                    # through the soft-warn confirm so a force=true resubmit
+                    # persists the operator's design-intent choice (and an
+                    # explicit Unclassified "" stays "" -> NULL, never re-
+                    # suggested). Verbatim submitted string; the confirm
+                    # template's form_values.items() loop auto-emits the hidden
+                    # input (recurring CLAUDE.md gotcha: hidden anchors driving
+                    # POST-time behavior MUST round-trip through form_values).
+                    "entry_intent": entry_intent,
+                    # Task 8 (R4-Major-1) — origin must round-trip through the
+                    # soft-warn confirm so (a) the force=true resubmit's POST
+                    # carries origin back; (b) the confirm partial's colspan +
+                    # Cancel target match the originating surface. The
+                    # form_values.items() loop in soft_warn_confirm.html.j2
+                    # auto-emits the hidden <input name="origin"> because
+                    # 'origin' is not in the banner-only exclusion list.
+                    "origin": origin_coerced,
+                    # Phase 7 Sub-C C.4 follow-up — the 18 pre-trade fields
+                    # must round-trip through the soft-warn confirm fragment
+                    # so the force=true resubmit carries them back through.
+                    # Without this, the second POST loses the operator's
+                    # typed values → MissingPreTradeFieldsException → 400 +
+                    # data loss. ``or ""`` is correct here (these are HTML
+                    # form values; the route's downstream ``or None`` coerces
+                    # empty strings to NULL where columns allow it). The
+                    # int-typed event/gap_risk_present fields render as "0"
+                    # / "1" / "" so the second POST's ``int | None = Form()``
+                    # binding succeeds.
+                    "thesis": thesis or "",
+                    "why_now": why_now or "",
+                    "invalidation_condition": invalidation_condition or "",
+                    "expected_scenario": expected_scenario or "",
+                    "premortem_technical": premortem_technical or "",
+                    "premortem_market_sector": premortem_market_sector or "",
+                    "premortem_execution": premortem_execution or "",
+                    "premortem_additional": premortem_additional or "",
+                    "event_risk_present": (
+                        str(event_risk_present)
+                        if event_risk_present is not None else ""
+                    ),
+                    "event_handling": event_handling or "",
+                    "event_type": event_type or "",
+                    "event_date": event_date or "",
+                    "gap_risk_present": (
+                        str(gap_risk_present)
+                        if gap_risk_present is not None else ""
+                    ),
+                    "gap_risk_handling": gap_risk_handling or "",
+                    # Multi-select: store as list so the template emits ONE
+                    # hidden input per vocabulary value selected. The
+                    # soft_warn_confirm.html.j2 special-cases list values to
+                    # avoid the str(["calm","focused"]) → "['calm', 'focused']"
+                    # round-trip-lossy degenerate case.
+                    "emotional_state_pre_trade": list(emo_clean),
+                    "manual_entry_confidence": manual_entry_confidence or "",
+                    "market_regime": market_regime or "",
+                    "catalyst": catalyst or "",
+                    "catalyst_other_description": (
                         catalyst_other_description or ""
                     ),
-                    missing_fields=frozenset(exc.missing_fields),
-                    # Tuition-vs-error (Task 3): round-trip the SUBMITTED
-                    # design-intent verbatim (possibly "") so the re-rendered
-                    # <select> pre-selects the operator's choice -- NOT the
-                    # suggestion. An explicit "" (Unclassified) survives the
-                    # force resubmit because the template discriminates on
-                    # `is not none` (Codex R1-Major-1: NULL != standard).
-                    draft_entry_intent=entry_intent,
-                    # Phase 13 T3.SB1 Codex R1 Major #3 fix — preserve
-                    # the submitted auto-fill anchors so the
-                    # MissingPreTradeFieldsException re-render carries
-                    # them back into the form (force=true retry replays
-                    # the same anchor instead of substituting a fresh
-                    # Schwab fetch's result).
-                    # Codex R2 Minor #1 fix — also restore kind +
-                    # clear advisory text when the submitted claim is
-                    # populated, so the banner doesn't drift to "no
-                    # match" while the hidden anchor still claims
-                    # auto-fill.
-                    auto_fill_schwab_source_value_json=(
-                        schwab_source_value_json or None
+                    # Phase 13 T3.SB1 T-B.1.4 — auto-fill hidden anchors MUST
+                    # round-trip through the soft-warn confirm fragment per
+                    # CLAUDE.md gotcha "Form-render hidden anchors driving
+                    # POST-time validation MUST round-trip through soft-warn
+                    # confirm form_values dict" + Phase 9 Sub-bundle D R3
+                    # Critical #1 LOCK + dispatch brief §5 watch item 9.
+                    # Without this, a tampered force=true resubmit would
+                    # silently drop the anchors → fill_origin defaults to
+                    # 'operator_typed' on the persisted fill row even when
+                    # the original submit was 'schwab_auto'.
+                    "schwab_source_value_json": schwab_source_value_json or "",
+                    "auto_fill_audit_at": auto_fill_audit_at or "",
+                    "fill_origin_at_form_render": (
+                        fill_origin_at_form_render or ""
                     ),
-                    auto_fill_audit_at=auto_fill_audit_at or None,
-                    auto_fill_fill_origin=(
-                        fill_origin_at_form_render or "operator_typed"
-                    ),
-                    auto_fill_kind=(
-                        "populated"
-                        if (
-                            schwab_source_value_json
-                            and fill_origin_at_form_render in (
-                                "schwab_auto",
-                                "schwab_auto_then_operator_corrected",
-                            )
-                        )
-                        else vm.auto_fill_kind
-                    ),
-                    auto_fill_advisory_text=(
-                        None
-                        if (
-                            schwab_source_value_json
-                            and fill_origin_at_form_render in (
-                                "schwab_auto",
-                                "schwab_auto_then_operator_corrected",
-                            )
-                        )
-                        else vm.auto_fill_advisory_text
-                    ),
-                )
+                    # Phase 13 T2.SB6c T-A.6c.4 Codex R1 MAJOR #1 closure —
+                    # PE anchor fields MUST round-trip through the soft-warn
+                    # confirm fragment. Without these 3 keys, a hyp-rec-
+                    # anchored entry that hits the soft cap would resubmit
+                    # with force=true but no pattern_evaluation_id; the
+                    # 5-tier ladder treats anchor-absent as bare-cURL path
+                    # and persists trade with pattern_evaluation_id=NULL,
+                    # violating OQ-12 closure + the recurring CLAUDE.md
+                    # gotcha "Form-render hidden anchors driving POST-time
+                    # validation MUST round-trip through soft-warn confirm".
+                    # Values come verbatim from the operator-submitted form;
+                    # the force=true resubmit re-validates via the 5-tier
+                    # ladder so any tampered anchor is rejected.
+                    "pattern_evaluation_id": pe_anchor_raw,
+                    "claimed_pattern_evaluation_anchor": pe_claim_raw,
+                    "pipeline_run_id_at_form_render": pe_pipeline_raw,
+                    "open_count": actual_open,
+                    "soft_warn": cfg.position_limits.soft_warn_open,
+                    "hard_cap": cfg.position_limits.hard_cap_open,
+                }
                 return templates.TemplateResponse(
-                    request, "partials/trade_entry_form.html.j2",
-                    {"vm": vm, "error_message": error_message},
+                    request, "partials/soft_warn_confirm.html.j2",
+                    {"form_values": form_values},
+                )
+            except DuplicateOpenPositionError as exc:
+                # Spec §5.1 case 1: re-render form with submitted values preserved
+                # so the user sees the conflict without losing typed inputs.
+                # Task 8 (R4-Major-1): pass ``origin=origin_coerced`` so the
+                # re-render's colspan + Cancel target match the originating
+                # surface (hyp-recs vs watchlist).
+                from dataclasses import replace as dc_replace
+                vm = build_entry_form_vm(
+                    ticker=ticker.upper(), cfg=cfg, cache=cache, executor=executor,
+                    origin=origin_coerced,
+                )
+                if vm is not None:
+                    vm = dc_replace(
+                        vm,
+                        entry_date=entry_date,
+                        entry_price=entry_price,
+                        initial_stop=initial_stop,
+                        # user's submitted value; suggested_shares stays as server computed
+                        input_shares=shares,
+                        rationale=rationale,
+                        notes=notes or "",
+                        # Phase 13 T3.SB1 Codex R1 Major #3 + R2 Minor #1
+                        # fix — preserve the submitted auto-fill anchors AND
+                        # restore kind/advisory on the duplicate-position
+                        # re-render path so the operator's original anchor +
+                        # banner state isn't overwritten by a fresh Schwab
+                        # fetch's stale advisory.
+                        auto_fill_schwab_source_value_json=(
+                            schwab_source_value_json or None
+                        ),
+                        auto_fill_audit_at=auto_fill_audit_at or None,
+                        auto_fill_fill_origin=(
+                            fill_origin_at_form_render or "operator_typed"
+                        ),
+                        auto_fill_kind=(
+                            "populated"
+                            if (
+                                schwab_source_value_json
+                                and fill_origin_at_form_render in (
+                                    "schwab_auto",
+                                    "schwab_auto_then_operator_corrected",
+                                )
+                            )
+                            else vm.auto_fill_kind
+                        ),
+                        auto_fill_advisory_text=(
+                            None
+                            if (
+                                schwab_source_value_json
+                                and fill_origin_at_form_render in (
+                                    "schwab_auto",
+                                    "schwab_auto_then_operator_corrected",
+                                )
+                            )
+                            else vm.auto_fill_advisory_text
+                        ),
+                    )
+                    return templates.TemplateResponse(
+                        request, "partials/trade_entry_form.html.j2",
+                        {"vm": vm, "error_message": str(exc)},
+                        status_code=400,
+                    )
+                # Fallback (watchlist row gone between GET and POST): use banner-only fragment.
+                return templates.TemplateResponse(
+                    request, "partials/trade_form_error.html.j2",
+                    {"error_message": str(exc)},
                     status_code=400,
                 )
-            return templates.TemplateResponse(
-                request, "partials/trade_form_error.html.j2",
-                {
-                    "error_message": error_message,
-                    "missing_fields": list(exc.missing_fields),
-                },
-                status_code=400,
-            )
-        except SoftWarnError:
-            # First submit at soft cap — render the 2-step confirm fragment.
-            # Re-serialize the submitted form values so the next submit carries
-            # them + force=true (spec §4.3 step 4).
-            # R2 Minor 1: show the ACTUAL open_count in the banner numerator,
-            # not the threshold — "5/4" when 5 are open with soft_warn=4.
-            conn_count = connect(cfg.paths.db_path)
-            try:
-                # 20-A B-2 (Codex R8) — a voided (phantom) open trade must not
-                # inflate the soft-warn "actual open" count.
-                from swing.trades.voided_trades import voided_trade_ids
-                _voided_oc = voided_trade_ids(conn_count)
-                actual_open = len([
-                    t for t in list_open_trades(conn_count)
-                    if t.id not in _voided_oc
-                ])
-            finally:
-                conn_count.close()
-            # Codex R1 Major 2 — soft-warn confirm must preserve the
-            # chart_pattern snapshot AS-IS (spec §3.6). Without these 5
-            # fields, the force=true resubmit drops the snapshot →
-            # persists NULL columns or trips the cached-only gate
-            # differently than what the operator saw at first submit.
-            # Use the raw incoming form values (not the canonicalized
-            # ``cp_*_value`` locals) so the second submit re-runs the
-            # exact same canonicalization path as the first — single
-            # source of truth.
-            form_values = {
-                "ticker": req.ticker,
-                "entry_date": req.entry_date,
-                "entry_price": req.entry_price,
-                "shares": req.shares,
-                "initial_stop": req.initial_stop,
-                "rationale": req.rationale,
-                "notes": req.notes or "",
-                "watchlist_target": req.watchlist_entry_target or "",
-                "watchlist_stop": req.watchlist_initial_stop or "",
-                "chart_pattern_algo": chart_pattern_algo or "",
-                "chart_pattern_algo_confidence": (
-                    chart_pattern_algo_confidence
-                    if chart_pattern_algo_confidence is not None else ""
-                ),
-                "chart_pattern_classification_pipeline_run_id": (
-                    chart_pattern_classification_pipeline_run_id
-                    if chart_pattern_classification_pipeline_run_id is not None
-                    else ""
-                ),
-                "chart_pattern_operator": chart_pattern_operator or "",
-                "chart_pattern_operator_other": chart_pattern_operator_other or "",
-                # Task 6 — sector/industry must round-trip through the
-                # soft-warn confirm so the force=true resubmit persists
-                # the original snapshot AS-IS. soft_warn_confirm.html.j2
-                # iterates form_values with an exclusion list; adding
-                # these keys auto-emits hidden inputs.
-                "sector": sector,
-                "industry": industry,
-                # Phase 9 Sub-bundle D Codex R3 Critical #1 — the
-                # sector/industry tamper-hardening anchor must also
-                # round-trip through soft-warn confirm. Without it the
-                # ``force=true`` resubmit arrives with no anchor and
-                # falls into the bare-cURL backward-compat skip path,
-                # silently accepting tampered sector/industry on the
-                # confirm submit. Re-emit as "" when None so the hidden
-                # input is consistent with the form's GET render.
-                "sector_industry_evaluation_run_id": (
-                    sector_industry_evaluation_run_id
-                    if sector_industry_evaluation_run_id is not None
-                    else ""
-                ),
-                # Phase 4.5 — hypothesis_label must round-trip through
-                # the soft-warn confirm so the force=true resubmit
-                # persists the SAME label the operator saw at first
-                # submit. Without this entry, soft_warn_confirm.html.j2
-                # would emit no hidden input for the field, the second
-                # POST's hypothesis_label would default to "", and the
-                # persisted Trade.hypothesis_label would be NULL —
-                # silently dropping the snapshot. Multi-path-data-
-                # ingestion lesson 2026-04-29.
-                "hypothesis_label": hypothesis_label,
-                # Tuition-vs-error (Task 3): entry_intent must round-trip
-                # through the soft-warn confirm so a force=true resubmit
-                # persists the operator's design-intent choice (and an
-                # explicit Unclassified "" stays "" -> NULL, never re-
-                # suggested). Verbatim submitted string; the confirm
-                # template's form_values.items() loop auto-emits the hidden
-                # input (recurring CLAUDE.md gotcha: hidden anchors driving
-                # POST-time behavior MUST round-trip through form_values).
-                "entry_intent": entry_intent,
-                # Task 8 (R4-Major-1) — origin must round-trip through the
-                # soft-warn confirm so (a) the force=true resubmit's POST
-                # carries origin back; (b) the confirm partial's colspan +
-                # Cancel target match the originating surface. The
-                # form_values.items() loop in soft_warn_confirm.html.j2
-                # auto-emits the hidden <input name="origin"> because
-                # 'origin' is not in the banner-only exclusion list.
-                "origin": origin_coerced,
-                # Phase 7 Sub-C C.4 follow-up — the 18 pre-trade fields
-                # must round-trip through the soft-warn confirm fragment
-                # so the force=true resubmit carries them back through.
-                # Without this, the second POST loses the operator's
-                # typed values → MissingPreTradeFieldsException → 400 +
-                # data loss. ``or ""`` is correct here (these are HTML
-                # form values; the route's downstream ``or None`` coerces
-                # empty strings to NULL where columns allow it). The
-                # int-typed event/gap_risk_present fields render as "0"
-                # / "1" / "" so the second POST's ``int | None = Form()``
-                # binding succeeds.
-                "thesis": thesis or "",
-                "why_now": why_now or "",
-                "invalidation_condition": invalidation_condition or "",
-                "expected_scenario": expected_scenario or "",
-                "premortem_technical": premortem_technical or "",
-                "premortem_market_sector": premortem_market_sector or "",
-                "premortem_execution": premortem_execution or "",
-                "premortem_additional": premortem_additional or "",
-                "event_risk_present": (
-                    str(event_risk_present)
-                    if event_risk_present is not None else ""
-                ),
-                "event_handling": event_handling or "",
-                "event_type": event_type or "",
-                "event_date": event_date or "",
-                "gap_risk_present": (
-                    str(gap_risk_present)
-                    if gap_risk_present is not None else ""
-                ),
-                "gap_risk_handling": gap_risk_handling or "",
-                # Multi-select: store as list so the template emits ONE
-                # hidden input per vocabulary value selected. The
-                # soft_warn_confirm.html.j2 special-cases list values to
-                # avoid the str(["calm","focused"]) → "['calm', 'focused']"
-                # round-trip-lossy degenerate case.
-                "emotional_state_pre_trade": list(emo_clean),
-                "manual_entry_confidence": manual_entry_confidence or "",
-                "market_regime": market_regime or "",
-                "catalyst": catalyst or "",
-                "catalyst_other_description": (
-                    catalyst_other_description or ""
-                ),
-                # Phase 13 T3.SB1 T-B.1.4 — auto-fill hidden anchors MUST
-                # round-trip through the soft-warn confirm fragment per
-                # CLAUDE.md gotcha "Form-render hidden anchors driving
-                # POST-time validation MUST round-trip through soft-warn
-                # confirm form_values dict" + Phase 9 Sub-bundle D R3
-                # Critical #1 LOCK + dispatch brief §5 watch item 9.
-                # Without this, a tampered force=true resubmit would
-                # silently drop the anchors → fill_origin defaults to
-                # 'operator_typed' on the persisted fill row even when
-                # the original submit was 'schwab_auto'.
-                "schwab_source_value_json": schwab_source_value_json or "",
-                "auto_fill_audit_at": auto_fill_audit_at or "",
-                "fill_origin_at_form_render": (
-                    fill_origin_at_form_render or ""
-                ),
-                # Phase 13 T2.SB6c T-A.6c.4 Codex R1 MAJOR #1 closure —
-                # PE anchor fields MUST round-trip through the soft-warn
-                # confirm fragment. Without these 3 keys, a hyp-rec-
-                # anchored entry that hits the soft cap would resubmit
-                # with force=true but no pattern_evaluation_id; the
-                # 5-tier ladder treats anchor-absent as bare-cURL path
-                # and persists trade with pattern_evaluation_id=NULL,
-                # violating OQ-12 closure + the recurring CLAUDE.md
-                # gotcha "Form-render hidden anchors driving POST-time
-                # validation MUST round-trip through soft-warn confirm".
-                # Values come verbatim from the operator-submitted form;
-                # the force=true resubmit re-validates via the 5-tier
-                # ladder so any tampered anchor is rejected.
-                "pattern_evaluation_id": pe_anchor_raw,
-                "claimed_pattern_evaluation_anchor": pe_claim_raw,
-                "pipeline_run_id_at_form_render": pe_pipeline_raw,
-                "open_count": actual_open,
-                "soft_warn": cfg.position_limits.soft_warn_open,
-                "hard_cap": cfg.position_limits.hard_cap_open,
-            }
-            return templates.TemplateResponse(
-                request, "partials/soft_warn_confirm.html.j2",
-                {"form_values": form_values},
-            )
-        except DuplicateOpenPositionError as exc:
-            # Spec §5.1 case 1: re-render form with submitted values preserved
-            # so the user sees the conflict without losing typed inputs.
-            # Task 8 (R4-Major-1): pass ``origin=origin_coerced`` so the
-            # re-render's colspan + Cancel target match the originating
-            # surface (hyp-recs vs watchlist).
-            from dataclasses import replace as dc_replace
-            vm = build_entry_form_vm(
-                ticker=ticker.upper(), cfg=cfg, cache=cache, executor=executor,
-                origin=origin_coerced,
-            )
-            if vm is not None:
-                vm = dc_replace(
-                    vm,
-                    entry_date=entry_date,
-                    entry_price=entry_price,
-                    initial_stop=initial_stop,
-                    # user's submitted value; suggested_shares stays as server computed
-                    input_shares=shares,
-                    rationale=rationale,
-                    notes=notes or "",
-                    # Phase 13 T3.SB1 Codex R1 Major #3 + R2 Minor #1
-                    # fix — preserve the submitted auto-fill anchors AND
-                    # restore kind/advisory on the duplicate-position
-                    # re-render path so the operator's original anchor +
-                    # banner state isn't overwritten by a fresh Schwab
-                    # fetch's stale advisory.
-                    auto_fill_schwab_source_value_json=(
-                        schwab_source_value_json or None
-                    ),
-                    auto_fill_audit_at=auto_fill_audit_at or None,
-                    auto_fill_fill_origin=(
-                        fill_origin_at_form_render or "operator_typed"
-                    ),
-                    auto_fill_kind=(
-                        "populated"
-                        if (
-                            schwab_source_value_json
-                            and fill_origin_at_form_render in (
-                                "schwab_auto",
-                                "schwab_auto_then_operator_corrected",
-                            )
-                        )
-                        else vm.auto_fill_kind
-                    ),
-                    auto_fill_advisory_text=(
-                        None
-                        if (
-                            schwab_source_value_json
-                            and fill_origin_at_form_render in (
-                                "schwab_auto",
-                                "schwab_auto_then_operator_corrected",
-                            )
-                        )
-                        else vm.auto_fill_advisory_text
-                    ),
-                )
+            except HardCapError as exc:
+                # Hard cap: do NOT re-render the form — re-submitting won't succeed
+                # until a position is closed (spec §8 "No UI bypass for hard-cap").
                 return templates.TemplateResponse(
-                    request, "partials/trade_entry_form.html.j2",
-                    {"vm": vm, "error_message": str(exc)},
+                    request, "partials/trade_form_error.html.j2",
+                    {"error_message": str(exc)},
                     status_code=400,
                 )
-            # Fallback (watchlist row gone between GET and POST): use banner-only fragment.
-            return templates.TemplateResponse(
-                request, "partials/trade_form_error.html.j2",
-                {"error_message": str(exc)},
-                status_code=400,
-            )
-        except HardCapError as exc:
-            # Hard cap: do NOT re-render the form — re-submitting won't succeed
-            # until a position is closed (spec §8 "No UI bypass for hard-cap").
-            return templates.TemplateResponse(
-                request, "partials/trade_form_error.html.j2",
-                {"error_message": str(exc)},
-                status_code=400,
-            )
-        except PatternEvaluationAnchorError as exc:
-            # 22-A EXT-2 — THE RELOCATED GUARD'S REFUSAL, RENDERED AS THE
-            # SAME 400 THIS ROUTE USED TO MAKE (review 22A-R9-03).
+            except PatternEvaluationAnchorError as exc:
+                # 22-A EXT-2 — THE RELOCATED GUARD'S REFUSAL, RENDERED AS THE
+                # SAME 400 THIS ROUTE USED TO MAKE (review 22A-R9-03).
+                #
+                # `PatternEvaluationAnchorError` subclasses `ValueError`, so
+                # WITHOUT this clause the handler below re-raises it (its message
+                # carries no "chart_pattern") and the operator gets a 500 on a
+                # refusal the system means to make. The clause must stay ABOVE the
+                # `except ValueError` for the same reason.
+                return _reject_pe_anchor(str(exc))
+            except ValueError as exc:
+                # Code-review I1 (plan §Task 5.4 lines 3801-3802) —
+                # _validate_chart_pattern_invariant in
+                # swing/data/repos/trades.py raises ValueError when a tampered
+                # POST passes the cached-only gate but violates the
+                # cross-column rule (e.g. algo='flag' + confidence=None +
+                # valid run_id). Convert to the standard 400 + re-rendered
+                # form pattern so a hand-crafted POST cannot produce a generic
+                # 500. Only catch chart_pattern-flagged messages — re-raise
+                # any other ValueError from deeper service/persistence layers
+                # so we don't silently swallow unrelated failures as if they
+                # were operator input errors.
+                if "chart_pattern" not in str(exc):
+                    raise
+                return _rerender_entry_form_with_error(
+                    request=request, templates=templates, cfg=cfg, cache=cache,
+                    executor=executor, ticker=ticker, entry_date=entry_date,
+                    entry_price=entry_price, shares=shares,
+                    initial_stop=initial_stop, rationale=rationale, notes=notes,
+                    error_message=(
+                        f"Chart-pattern fields failed validation: {exc}. Please "
+                        "contact a developer if the form was not manually altered."
+                    ),
+                    origin=origin_coerced,
+                    submitted_schwab_source_value_json=schwab_source_value_json,
+                    submitted_auto_fill_audit_at=auto_fill_audit_at,
+                    submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                )
+            except sqlite3.IntegrityError as exc:
+                # Codex R1 Major 1 — tampered hidden-form-field POST that slips
+                # past the cross-column ValueError invariant can still trip the
+                # schema-level guards at INSERT time:
+                #   (a) CHECK constraint on chart_pattern_algo (algo not in the
+                #       ('none','flag') enum). The error message includes the
+                #       column name verbatim, e.g.:
+                #         "CHECK constraint failed: chart_pattern_algo IS NULL
+                #          OR chart_pattern_algo IN ('none','flag')"
+                #   (b) FOREIGN KEY constraint on
+                #       chart_pattern_classification_pipeline_run_id (anchor id
+                #       does not point to an existing pipeline_runs row). The
+                #       FK error message is GENERIC ("FOREIGN KEY constraint
+                #       failed") with no column hint — but the trades table has
+                #       exactly one FK column (this one), so an FK failure on
+                #       this code path is unambiguous when ``cp_anchor_value``
+                #       was non-None.
+                # Both cases must surface as the standard 400 + re-rendered
+                # form pattern, not a generic 500. Re-raise IntegrityErrors
+                # not attributable to chart_pattern (e.g., the partial unique
+                # index ux_trades_one_open_per_ticker, already mapped to
+                # DuplicateOpenPositionError upstream — but defense in
+                # depth).
+                msg = str(exc)
+                # V1: schema-message-coupled — substring-matches CHECK constraint
+                # text; forward hardening = pre-insert FK existence check.
+                chart_pattern_check = any(col in msg for col in (
+                    "chart_pattern_algo",
+                    "chart_pattern_algo_confidence",
+                    "chart_pattern_classification_pipeline_run_id",
+                ))
+                chart_pattern_fk = (
+                    "FOREIGN KEY constraint failed" in msg
+                    and cp_anchor_value is not None
+                )
+                if not (chart_pattern_check or chart_pattern_fk):
+                    raise
+                return _rerender_entry_form_with_error(
+                    request=request, templates=templates, cfg=cfg, cache=cache,
+                    executor=executor, ticker=ticker, entry_date=entry_date,
+                    entry_price=entry_price, shares=shares,
+                    initial_stop=initial_stop, rationale=rationale, notes=notes,
+                    error_message=(
+                        f"Chart-pattern fields failed validation: {exc}. Please "
+                        "contact a developer if the form was not manually altered."
+                    ),
+                    origin=origin_coerced,
+                    submitted_schwab_source_value_json=schwab_source_value_json,
+                    submitted_auto_fill_audit_at=auto_fill_audit_at,
+                    submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                )
+        finally:
+            # **THE DURABILITY BOUNDARY IS THE BINDING OF `result`.**
+            # `close()` can raise, and the pre-arc code ran it AFTER a durable
+            # result existed and BEFORE anything could catch it -- so a
+            # failing close became the refusal-shaped 500 over a durable row.
             #
-            # `PatternEvaluationAnchorError` subclasses `ValueError`, so
-            # WITHOUT this clause the handler below re-raises it (its message
-            # carries no "chart_pattern") and the operator gets a 500 on a
-            # refusal the system means to make. The clause must stay ABOVE the
-            # `except ValueError` for the same reason.
-            return _reject_pe_anchor(str(exc))
-        except ValueError as exc:
-            # Code-review I1 (plan §Task 5.4 lines 3801-3802) —
-            # _validate_chart_pattern_invariant in
-            # swing/data/repos/trades.py raises ValueError when a tampered
-            # POST passes the cached-only gate but violates the
-            # cross-column rule (e.g. algo='flag' + confidence=None +
-            # valid run_id). Convert to the standard 400 + re-rendered
-            # form pattern so a hand-crafted POST cannot produce a generic
-            # 500. Only catch chart_pattern-flagged messages — re-raise
-            # any other ValueError from deeper service/persistence layers
-            # so we don't silently swallow unrelated failures as if they
-            # were operator input errors.
-            if "chart_pattern" not in str(exc):
-                raise
-            return _rerender_entry_form_with_error(
-                request=request, templates=templates, cfg=cfg, cache=cache,
-                executor=executor, ticker=ticker, entry_date=entry_date,
-                entry_price=entry_price, shares=shares,
-                initial_stop=initial_stop, rationale=rationale, notes=notes,
-                error_message=(
-                    f"Chart-pattern fields failed validation: {exc}. Please "
-                    "contact a developer if the form was not manually altered."
-                ),
-                origin=origin_coerced,
-                submitted_schwab_source_value_json=schwab_source_value_json,
-                submitted_auto_fill_audit_at=auto_fill_audit_at,
-                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
-            )
-        except sqlite3.IntegrityError as exc:
-            # Codex R1 Major 1 — tampered hidden-form-field POST that slips
-            # past the cross-column ValueError invariant can still trip the
-            # schema-level guards at INSERT time:
-            #   (a) CHECK constraint on chart_pattern_algo (algo not in the
-            #       ('none','flag') enum). The error message includes the
-            #       column name verbatim, e.g.:
-            #         "CHECK constraint failed: chart_pattern_algo IS NULL
-            #          OR chart_pattern_algo IN ('none','flag')"
-            #   (b) FOREIGN KEY constraint on
-            #       chart_pattern_classification_pipeline_run_id (anchor id
-            #       does not point to an existing pipeline_runs row). The
-            #       FK error message is GENERIC ("FOREIGN KEY constraint
-            #       failed") with no column hint — but the trades table has
-            #       exactly one FK column (this one), so an FK failure on
-            #       this code path is unambiguous when ``cp_anchor_value``
-            #       was non-None.
-            # Both cases must surface as the standard 400 + re-rendered
-            # form pattern, not a generic 500. Re-raise IntegrityErrors
-            # not attributable to chart_pattern (e.g., the partial unique
-            # index ux_trades_one_open_per_ticker, already mapped to
-            # DuplicateOpenPositionError upstream — but defense in
-            # depth).
-            msg = str(exc)
-            # V1: schema-message-coupled — substring-matches CHECK constraint
-            # text; forward hardening = pre-insert FK existence check.
-            chart_pattern_check = any(col in msg for col in (
-                "chart_pattern_algo",
-                "chart_pattern_algo_confidence",
-                "chart_pattern_classification_pipeline_run_id",
-            ))
-            chart_pattern_fk = (
-                "FOREIGN KEY constraint failed" in msg
-                and cp_anchor_value is not None
-            )
-            if not (chart_pattern_check or chart_pattern_fk):
-                raise
-            return _rerender_entry_form_with_error(
-                request=request, templates=templates, cfg=cfg, cache=cache,
-                executor=executor, ticker=ticker, entry_date=entry_date,
-                entry_price=entry_price, shares=shares,
-                initial_stop=initial_stop, rationale=rationale, notes=notes,
-                error_message=(
-                    f"Chart-pattern fields failed validation: {exc}. Please "
-                    "contact a developer if the form was not manually altered."
-                ),
-                origin=origin_coerced,
-                submitted_schwab_source_value_json=schwab_source_value_json,
-                submitted_auto_fill_audit_at=auto_fill_audit_at,
-                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
-            )
-    finally:
-        conn.close()
+            # THE ASYMMETRY IS THE POINT: before the durable fact exists an
+            # error is the honest answer, so `result is None` RE-RAISES and
+            # every pre-existing refusal path is byte-unchanged. After it
+            # exists, an error is a wrong answer in the expensive direction.
+            try:
+                conn.close()
+            except BaseException as exc:  # noqa: BLE001 -- the CLASS
+                if result is None:
+                    raise
+                close_error = exc
 
-    # Bug-fix-AB (2026-04-29): pure-OOB response architecture.
-    #
-    # Background. The prior architecture emitted the new open-position
-    # `<tr>` as PRIMARY content (no `hx-swap-oob`) plus OOB chunks for
-    # `#status-strip`, `#watchlist-top5`, and (on hyp-recs origin)
-    # `#hypothesis-recommendations`. Two production-confirmed bugs:
-    #
-    #   Bug A: the form's `hx-target="closest tr" hx-swap="outerHTML"`
-    #     directs HTMX to replace the form's `<tr>` (in the SOURCE tbody —
-    #     watchlist or hyp-recs). The new open-position row briefly lands
-    #     in that source tbody, then OOB rebuilds nuke it. Nothing in the
-    #     response targets `#open-positions`, so the open-positions table
-    #     never updates without a hard refresh.
-    #
-    #   Bug B: a leading `<tr>` in the response triggers HTMX's
-    #     `makeFragment` to wrap the whole response in a synthetic
-    #     `<table><tbody>` for parsing. HTML5 nested-table parse rules
-    #     then DROP the `<table>`s inside the OOB `<section>` chunks
-    #     during the browser-side fragment parse. Operator's DevTools
-    #     capture (2026-04-29) confirmed `htmx:oobAfterSwap` fires for
-    #     `#watchlist-top5` but the post-swap DOM contains only the `<h2>`
-    #     heading — the `<table>` and rows vanished at parse time.
-    #
-    # Fix. Make the response purely OOB: NO `<tr>` at fragment root.
-    # The new row reaches `#open-positions` via an OOB swap that mirrors
-    # `partials/prices_refresh_container.html.j2`'s pattern. Primary swap
-    # content is empty; HTMX's `makeFragment` does not wrap-in-`<table>`;
-    # foster-parenting/nested-table-stripping does not fire; OOB chunks
-    # parse and apply cleanly. The form's `<tr>` (in the source tbody)
-    # disappears as a side-effect of the watchlist-top5 / hyp-recs OOB
-    # rebuild that replaces its containing section.
-    dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor,
-                                   ohlcv_cache=request.app.state.ohlcv_cache)
+        # ============ POST-DURABILITY, INSIDE THE SAME OUTER TRY ============
+        #
+        # `record_entry` HAS RETURNED, so the entry is DURABLE by contract.
+        # Everything below is a PAGE REFRESH. Before 22-A3 a failure here
+        # reached the app-wide handler at `swing/web/app.py` which -- because
+        # `entry-form-` is a row-swap target and `base.html.j2` makes 5xx
+        # SWAP -- put a `banner-degraded` alert in the form's OWN ROW at 500:
+        # the same surface, class and position the duplicate-position and
+        # hard-cap REFUSALS use. The operator could not tell a refused entry
+        # from a durable one, and the refusal reading is retry-inviting.
+        post_commit_warnings = _post_commit_warnings(result, close_error)
 
-    status_strip_html = templates.get_template("partials/status_strip.html.j2").render(
-        request=request, vm=dashboard_vm,
-    )
-    open_positions_html = templates.get_template(
-        "partials/open_positions.html.j2"
-    ).render(request=request, vm=dashboard_vm)
-    watchlist_section_html = templates.get_template(
-        "partials/watchlist_top5_section.html.j2"
-    ).render(request=request, vm=dashboard_vm)
+        # Bug-fix-AB (2026-04-29): pure-OOB response architecture.
+        #
+        # Background. The prior architecture emitted the new open-position
+        # `<tr>` as PRIMARY content (no `hx-swap-oob`) plus OOB chunks for
+        # `#status-strip`, `#watchlist-top5`, and (on hyp-recs origin)
+        # `#hypothesis-recommendations`. Two production-confirmed bugs:
+        #
+        #   Bug A: the form's `hx-target="closest tr" hx-swap="outerHTML"`
+        #     directs HTMX to replace the form's `<tr>` (in the SOURCE tbody —
+        #     watchlist or hyp-recs). The new open-position row briefly lands
+        #     in that source tbody, then OOB rebuilds nuke it. Nothing in the
+        #     response targets `#open-positions`, so the open-positions table
+        #     never updates without a hard refresh.
+        #
+        #   Bug B: a leading `<tr>` in the response triggers HTMX's
+        #     `makeFragment` to wrap the whole response in a synthetic
+        #     `<table><tbody>` for parsing. HTML5 nested-table parse rules
+        #     then DROP the `<table>`s inside the OOB `<section>` chunks
+        #     during the browser-side fragment parse. Operator's DevTools
+        #     capture (2026-04-29) confirmed `htmx:oobAfterSwap` fires for
+        #     `#watchlist-top5` but the post-swap DOM contains only the `<h2>`
+        #     heading — the `<table>` and rows vanished at parse time.
+        #
+        # Fix. Make the response purely OOB: NO `<tr>` at fragment root.
+        # The new row reaches `#open-positions` via an OOB swap that mirrors
+        # `partials/prices_refresh_container.html.j2`'s pattern. Primary swap
+        # content is empty; HTMX's `makeFragment` does not wrap-in-`<table>`;
+        # foster-parenting/nested-table-stripping does not fire; OOB chunks
+        # parse and apply cleanly. The form's `<tr>` (in the source tbody)
+        # disappears as a side-effect of the watchlist-top5 / hyp-recs OOB
+        # rebuild that replaces its containing section.
+        dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor,
+                                       ohlcv_cache=request.app.state.ohlcv_cache)
 
-    # Emit the `#hypothesis-recommendations` OOB rebuild on EVERY origin
-    # (R1 Codex review of the pure-OOB architecture, 2026-04-29). The
-    # prior gating on `origin_coerced == "hyp-recs"` was unsound: the
-    # SAME ticker can plausibly appear on the watchlist AND in hyp-recs
-    # simultaneously (both surfaces source from candidates + watchlist
-    # under the latest eval). A watchlist-origin entry that traded such
-    # a ticker would update open-positions + watchlist correctly but
-    # leave the hyp-recs panel STALE — the just-traded ticker would
-    # remain visible in the recommendations table on the dashboard until
-    # the next interaction. Always-rebuild ensures cross-section
-    # consistency on every successful entry.
-    #
-    # Render the OOB chunk from `dashboard_vm` directly (R2 Codex review
-    # 2026-04-29 Major 1). `build_dashboard` already ran (line above) AND
-    # already applies the Bug-fix-C exclude-open-positions filter to its
-    # inline hyp-recs construction, so `dashboard_vm.active_recommendations`
-    # is the correct post-write hyp-recs state. Reusing it (instead of a
-    # second `build_hyp_recs_section(...)` call) avoids a redundant DB
-    # snapshot + matcher run + price fetch AFTER `record_entry` has
-    # already committed — narrowing the post-write failure surface so a
-    # transient downstream error cannot flip a successful entry into a
-    # 500 response. Single source of truth for the hyp-recs panel state
-    # within this request.
-    #
-    # The partial is the SOLE source of the section markup (CLAUDE.md
-    # "HTMX OOB-swap partial drift" gotcha) — render it via
-    # `.render(..., oob=True)`. The `oob=True` branch ALWAYS emits the
-    # `#hypothesis-recommendations` element (with `hx-swap-oob="true"`),
-    # even when the rebuild surfaces zero recommendations, so HTMX always
-    # has a valid swap target on the dashboard. On pages that don't
-    # carry the target id (e.g., standalone /watchlist), HTMX silently
-    # skips the OOB swap — emitting the chunk is harmless there.
-    #
-    # `vm=dashboard_vm` works because the partial reads only
-    # `vm.active_recommendations` — the same field name on both
-    # `DashboardVM` and `HypRecsSectionVM`. Duck-typed VM contract
-    # (CLAUDE.md base-layout VM rule applies only when base.html.j2
-    # dereferences the field; here it's the per-section partial that
-    # consumes the field, with the same shape on both VM types).
-    hyp_recs_section_html = templates.get_template(
-        "partials/hypothesis_recommendations.html.j2"
-    ).render(request=request, vm=dashboard_vm, oob=True)
+        status_strip_html = templates.get_template("partials/status_strip.html.j2").render(
+            request=request, vm=dashboard_vm,
+        )
+        open_positions_html = templates.get_template(
+            "partials/open_positions.html.j2"
+        ).render(request=request, vm=dashboard_vm)
+        watchlist_section_html = templates.get_template(
+            "partials/watchlist_top5_section.html.j2"
+        ).render(request=request, vm=dashboard_vm)
 
-    return HTMLResponse(Markup(
-        f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
-        f'<div id="open-positions" hx-swap-oob="true">'
-        f'{open_positions_html}'
-        f'</div>'
-        f'<section id="watchlist-top5" hx-swap-oob="true">'
-        f'{watchlist_section_html}'
-        f'</section>'
-        f'{hyp_recs_section_html}'
-    ))
+        # Emit the `#hypothesis-recommendations` OOB rebuild on EVERY origin
+        # (R1 Codex review of the pure-OOB architecture, 2026-04-29). The
+        # prior gating on `origin_coerced == "hyp-recs"` was unsound: the
+        # SAME ticker can plausibly appear on the watchlist AND in hyp-recs
+        # simultaneously (both surfaces source from candidates + watchlist
+        # under the latest eval). A watchlist-origin entry that traded such
+        # a ticker would update open-positions + watchlist correctly but
+        # leave the hyp-recs panel STALE — the just-traded ticker would
+        # remain visible in the recommendations table on the dashboard until
+        # the next interaction. Always-rebuild ensures cross-section
+        # consistency on every successful entry.
+        #
+        # Render the OOB chunk from `dashboard_vm` directly (R2 Codex review
+        # 2026-04-29 Major 1). `build_dashboard` already ran (line above) AND
+        # already applies the Bug-fix-C exclude-open-positions filter to its
+        # inline hyp-recs construction, so `dashboard_vm.active_recommendations`
+        # is the correct post-write hyp-recs state. Reusing it (instead of a
+        # second `build_hyp_recs_section(...)` call) avoids a redundant DB
+        # snapshot + matcher run + price fetch AFTER `record_entry` has
+        # already committed — narrowing the post-write failure surface so a
+        # transient downstream error cannot flip a successful entry into a
+        # 500 response. Single source of truth for the hyp-recs panel state
+        # within this request.
+        #
+        # The partial is the SOLE source of the section markup (CLAUDE.md
+        # "HTMX OOB-swap partial drift" gotcha) — render it via
+        # `.render(..., oob=True)`. The `oob=True` branch ALWAYS emits the
+        # `#hypothesis-recommendations` element (with `hx-swap-oob="true"`),
+        # even when the rebuild surfaces zero recommendations, so HTMX always
+        # has a valid swap target on the dashboard. On pages that don't
+        # carry the target id (e.g., standalone /watchlist), HTMX silently
+        # skips the OOB swap — emitting the chunk is harmless there.
+        #
+        # `vm=dashboard_vm` works because the partial reads only
+        # `vm.active_recommendations` — the same field name on both
+        # `DashboardVM` and `HypRecsSectionVM`. Duck-typed VM contract
+        # (CLAUDE.md base-layout VM rule applies only when base.html.j2
+        # dereferences the field; here it's the per-section partial that
+        # consumes the field, with the same shape on both VM types).
+        hyp_recs_section_html = templates.get_template(
+            "partials/hypothesis_recommendations.html.j2"
+        ).render(request=request, vm=dashboard_vm, oob=True)
+
+        # **ALWAYS EMITTED.** `#entry-notice` is STATEFUL: a prior warning
+        # response replaced the empty container with a visible banner and
+        # kept the id. Emitting nothing here would leave trade N's "WAS
+        # RECORDED" banner on screen beside trade N+1. An ordinary entry
+        # therefore emits the chunk EMPTY, which clears it.
+        notice_html = _entry_notice_html(
+            templates, request, trade_id=result.trade_id,
+            warnings=post_commit_warnings, render_failure=None)
+        return HTMLResponse(Markup(
+            f'{notice_html}'
+            f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
+            f'<div id="open-positions" hx-swap-oob="true">'
+            f'{open_positions_html}'
+            f'</div>'
+            f'<section id="watchlist-top5" hx-swap-oob="true">'
+            f'{watchlist_section_html}'
+            f'</section>'
+            f'{hyp_recs_section_html}'
+        ))
+    # THE SINGLE OUTER HANDLER. It covers the connection block and its
+    # `finally`'s tail, the warning assembly, the refresh, the four renders
+    # and the response construction, with NO GAP anywhere between them.
+    except BaseException as post_bind_error:  # noqa: BLE001 -- the CLASS
+        if result is None:
+            raise
+        log_error = log_contained(
+            log,
+            "22-A3: trade %s IS DURABLE and a step AFTER the entry failed "
+            "(%s). A DEGRADED-SUCCESS response is returned naming the trade; "
+            "reporting a durable write as a failure is what causes a double "
+            "entry.",
+            result.trade_id, post_bind_error)
+        notice_warnings = _post_commit_warnings(result, close_error)
+        if log_error is not None:
+            notice_warnings = notice_warnings + (
+                f"the ERROR log for this degraded response could not be "
+                f"emitted ({safe_text(log_error)}); the ledger is "
+                f"unaffected.",)
+        return HTMLResponse(Markup(_entry_notice_html(
+            templates, request, trade_id=result.trade_id,
+            warnings=notice_warnings,
+            render_failure=safe_text(post_bind_error))))
 
 
 @router.get("/trades/{trade_id}/exit/form", response_class=HTMLResponse)
