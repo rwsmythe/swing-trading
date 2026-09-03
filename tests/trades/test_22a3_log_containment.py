@@ -18,6 +18,7 @@ and destroy the site.
 from __future__ import annotations
 
 import logging
+import sqlite3
 
 import pytest
 
@@ -204,3 +205,69 @@ def test_a_sink_error_with_a_RAISING_repr_still_produces_a_note():
         logging.getLogger().removeHandler(sink)
     assert any("could not be emitted" in n
                for n in getattr(escaping, "__notes__", ()))
+
+
+# ===========================================================================
+# (d1) -- `entry.py`'s OWN cleanup handler, BOTH branches.
+#
+# Fixing one branch and leaving the other is this arc's named repeat failure,
+# so the test is parametrized over both.
+# ===========================================================================
+
+
+class _RollbackRaises:
+    """Proxies ONLY the four members `_entry_transaction` touches, so a
+    stand-in cannot silently diverge from the real connection surface
+    (the `_CommitRaises` pattern, tests/trades/test_22a_task9_entry_wiring.py).
+
+    `in_transaction` is SCRIPTED: the first read is the handler's entry gate
+    (always True here); the second selects the message branch -- True is the
+    "STILL OPEN" branch, False the "rollback took effect then raised" branch.
+    """
+
+    def __init__(self, *, in_transaction_after_rollback):
+        self._reads = 0
+        self._after = in_transaction_after_rollback
+        self.rolled_back = False
+        self.rollback_error = sqlite3.OperationalError(
+            "22-A3 PROBE: rollback failed")
+
+    def execute(self, sql, *a, **k):
+        return None
+
+    def commit(self):
+        raise AssertionError("the body raises before any commit")
+
+    def rollback(self):
+        self.rolled_back = True
+        raise self.rollback_error
+
+    @property
+    def in_transaction(self):
+        self._reads += 1
+        return True if self._reads == 1 else self._after
+
+
+@pytest.mark.parametrize("still_open", [True, False],
+                         ids=["still-open-branch", "took-effect-branch"])
+def test_d1_a_broken_sink_cannot_change_what_escapes_the_entry_cleanup(
+        broken_sink, still_open):
+    from swing.trades.entry import _CommitOutcome, _entry_transaction
+
+    proxy = _RollbackRaises(in_transaction_after_rollback=still_open)
+    body_error = ValueError("22-A3 PROBE: the write failed")
+
+    with pytest.raises(sqlite3.OperationalError) as excinfo:
+        with _entry_transaction(proxy, immediate=True,
+                                outcome=_CommitOutcome()):
+            raise body_error
+
+    assert excinfo.value is proxy.rollback_error, (
+        "the LOG SINK's exception escaped instead of the cleanup error -- "
+        "the identity of what propagates was changed by a logging handler")
+    assert not isinstance(excinfo.value, RuntimeError)
+    assert excinfo.value.__cause__ is body_error
+    assert any("could not be emitted" in n
+               for n in getattr(excinfo.value, "__notes__", ())), (
+        "the log failure was swallowed silently")
+    assert proxy.rolled_back
