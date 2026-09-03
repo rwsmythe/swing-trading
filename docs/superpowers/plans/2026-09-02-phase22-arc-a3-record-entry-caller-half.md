@@ -33,17 +33,20 @@ of them PRE-commit and of a different semantic class -- S1.4's closing note.)*
 [`docs/22-a-merge-request.md`](../../22-a-merge-request.md) S4.4 -- the CHARC+RD split ruling of
 2026-09-02. **Plan base:** `0698f3bb` (branch `22-a3-plan`).
 
-> ## REVIEW STATUS: **NOT DECLARED CONVERGED. THE A-LOOP STOPPED AT THE MANDATED ROUND-5 GATE.**
+> ## REVIEW STATUS: **SIX ADVERSARIAL ROUNDS; THE ROUND-5 GATE WAS HONOURED AND THE LOOP RESUMED ON RULING.**
 >
-> Five adversarial rounds ran at the binding `strong` tier (`gpt-5.6-sol` / effort `high`), all five
-> mechanical assertions passing every round. **60 findings, 11 CRITICAL, 38 MAJOR, 11 MINOR; ZERO
-> reopened and ZERO reverted across all five rounds; CRITICALs went 3 -> 4 -> 3 -> 1 -> 0.** Round
-> 5's findings are adjudicated and FIXED, and a dedicated self-sweep (six uncounted `SS-N` items)
-> has been run over the settled artifact.
+> Rounds 1-5 ran at the binding `strong` tier (`gpt-5.6-sol` / effort `high`), all five mechanical
+> assertions passing every round: **60 findings, 11 CRITICAL, 38 MAJOR, 11 MINOR; ZERO reopened and
+> ZERO reverted; CRITICALs 3 -> 4 -> 3 -> 1 -> 0.** The loop **STOPPED at the mandated round-5
+> gate** rather than relabelling itself converged; round 5's findings were adjudicated and fixed and
+> a six-item uncounted self-sweep was run.
 >
-> **What remains is ONE confirming round**, which the recipe's round-5 gate reserves for the
-> orchestrator's approval. Full ledger with per-round assertions and per-finding dispositions:
-> `.copowers-findings.md` at the worktree root; raw transcripts `.codex-review-r1..r5.txt`.
+> **Three envelope questions were then RULED (2026-09-02)** -- `entry.py:517` AUTHORISED, the
+> outermost access log FOLDED IN and BOUNDED, the sixth containment site RATIFIED -- the plan was
+> AMENDED for all three, and **one confirming round (round 6) ran on the frozen amended artifact.**
+>
+> Full ledger with per-round assertions and per-finding dispositions: `.copowers-findings.md` at the
+> worktree root; raw transcripts `.codex-review-r1..r6.txt`.
 
 **Baseline measured at plan time on `0698f3bb`, before any change:**
 `python -m pytest -m "not slow" -q` -> **12077 passed, 13 skipped** in 849s. The executing arc's
@@ -53,10 +56,29 @@ Task-8 run is compared against THAT number, not against a remembered one.
 
 ## Global Constraints
 
-- **ENVELOPE, verbatim from the brief:** `swing/web/routes/trades.py` * `swing/cli.py` *
-  `swing/trades/entry.py` (**log containment ONLY**) *
-  `swing/trades/cohort_provenance_correction.py` (**log containment ONLY**) * templates for the
-  warning partial if needed. **NO schema. NO change to `record_entry`'s transaction semantics** --
+- **ENVELOPE, as ruled 2026-09-02 after the plan held at the line and routed three questions up.**
+  The brief's original text was `swing/web/routes/trades.py` * `swing/cli.py` *
+  `swing/trades/entry.py` (log containment ONLY) * `swing/trades/cohort_provenance_correction.py`
+  (log containment ONLY) * templates for the warning partial if needed. **Both directors ruled all
+  three questions, and the ruling is RECORDED HERE RATHER THAN ABSORBED AS DRIFT:**
+
+  1. **`swing/trades/entry.py`'s clause is RESTATED, verbatim:** *"The envelope covers
+     outcome-corrupting exception-formatting on the post-commit path of `record_entry`, wherever it
+     occurs in the function."* Ground: the envelope's purpose is that **a raising anything must
+     never change what a function returns**, and `:517` is that defect inside the arc's own clause-1
+     implementation, one line above the guard. Reading "log containment" to exclude it would ship
+     the instrument-caught-by-its-own-class pattern a fourth time. -> Task 4, S8 item 7.
+  2. **`swing/web/middleware/request_id.py` is FOLDED IN, BOUNDED.** Ground, and it is the only
+     ground: **22-A3's acceptance criterion is that the operator SEES the degraded success**, and
+     that response transits the OUTERMOST middleware, which access-logs after `call_next`. A raising
+     handler there destroys the exact response this arc builds -- the arc's claim would be false one
+     frame outside its own fix. **THE BOUND IS EXACT: S8 item 6's correction and test shape ONLY. NO
+     MIDDLEWARE SWEEP.** Further sites of the class are banked follow-ons under
+     introduced-versus-banked. -> Task 8, test (o), S8 item 6.
+  3. **The sixth containment site `cohort_provenance_correction.py:2445` is RATIFIED.** CHARC's
+     roster of five was a FLOOR and the brief now says so. -> Task 4, S1.4.
+
+  **Still out, and unchanged: NO schema. NO change to `record_entry`'s transaction semantics** --
   the commit-raises path keeps re-raising; that is 22-A4's.
 - **Branch:** all work on the arc branch; conventional commits (`feat(web):`, `fix(trades):`,
   `test(...)`). **ZERO `Co-Authored-By`. No `--no-verify`. No amend.**
@@ -92,21 +114,33 @@ version is what makes this arc worth its cost.** Three facts, each read out of t
 3. `base.html.j2:60-64` overrides `htmx.config.responseHandling` with
    `{code: "[45]..", swap: true, error: true}`, so **a 5xx DOES swap into the target.**
 
-Composed: a `build_dashboard` failure after a durable commit puts a red
-`banner banner-degraded` alert **into the form's own row position** -- the *identical* surface, the
-identical CSS class, and the identical location that `DuplicateOpenPositionError`, `HardCapError`
-and the missing-pre-trade-fields refusal use at 400. **The operator cannot tell a post-entry render
-failure from an entry REFUSAL.** The refusal reading is the retry-inviting one, and a retry is
-belted only while the same ticker is still open (S1.5).
+Composed, and **this is the arc's motivation in the form CHARC amended it to after owning the
+original as his error (2026-09-02, amended by replacement -- carried here VERBATIM because it
+upgrades the justification rather than merely correcting it):**
+
+> **This is not "a 500 over a durable row." It is A DURABLE ROW INDISTINGUISHABLE FROM A REFUSAL** --
+> `entry-form-` in `_ROW_TARGET_PREFIXES`, the app-wide handler rendering `trade_form_error` at 500,
+> and the HTMX config swapping 5xx, so the error paints into the entry form's own row at the
+> identical surface, class and position a duplicate/hard-cap refusal uses.
+
+The refusal reading is the retry-inviting one, and a retry is belted only while the same ticker is
+still open (S1.5). **The distinction is not rhetorical: a bare 500 is a system fault the operator
+investigates, while a refusal in the form's row is an answer he ACTS on -- by entering again.**
 
 That is the whole arc: `record_entry` already tells the truth; nobody is listening.
 
 ---
 
-## S0.1 THE ENVELOPE, AND THE ONE READING THIS PLAN MAKES OF IT
+## S0.1 THE ENVELOPE: THREE QUESTIONS RULED, ONE READING STATED AND NOT VETOED
 
-Every file this plan touches is named in the envelope, with ONE reading that deserves to be stated
-rather than assumed:
+**Three envelope questions were routed up rather than decided here, and all three were RULED
+2026-09-02** -- the ruling text is in Global Constraints, and each lands in the task that
+implements it (`:517` -> Task 4; the outermost access log -> Task 8 + test (o); the sixth
+containment site -> Task 4). **The hold cost one message and no review round**, which is the whole
+argument for holding at an envelope edge instead of reasoning past it.
+
+**One reading remains the plan's own.** It was surfaced for veto in the same report and was not
+vetoed, so it stands as written:
 
 **The brief's envelope clause "templates for the warning partial if needed" is read to include a
 static, empty container `<div id="entry-notice"></div>` in `swing/web/templates/base.html.j2`.**
@@ -219,8 +253,8 @@ converts a preview that otherwise returned into a raise of the wrong class.
 by grep. This arc has been caught three times fixing one twin and leaving the other."* A
 hand-enumerated roster is the same instrument as the count it replaced. **Site 6 is inside the
 declared envelope** (`cohort_provenance_correction.py`, log containment only) -- including it does
-not widen the envelope, it completes the class inside it. It is flagged in the return report so the
-orchestrator can rule otherwise.
+not widen the envelope, it completes the class inside it. It was flagged in the return report and
+**RATIFIED 2026-09-02: CHARC's roster of five was a FLOOR, and the brief now says so.**
 
 **SIX IS THE CLOSURE OF THE *CLEANUP* HANDLERS, NOT OF EVERY LOGGING CALL THAT CAN CHANGE
 BEHAVIOUR -- and the difference is stated because the broader claim would be FALSE.** `entry.py`
@@ -321,13 +355,20 @@ closed (`A3-R4-09`) -- **so the inventory is now written as "the ones we have id
 "the ones that exist".** An exhaustive claim about failure boundaries is the same instrument as a
 hand-enumerated roster, and it fails the same way.
 
-**Boundary one -- OUTSIDE the callers.** `RequestIdMiddleware`
-(`swing/web/middleware/request_id.py:22-34`) is registered LAST and is therefore OUTERMOST
-(`swing/web/app.py:657-660`, and the comment there says so). Its `dispatch` receives the route's
-finished response, stamps `X-Request-ID`, **calls `_access_log.info(...)`, and only then returns
-it.** A raising access-log handler at that point destroys a correctly constructed degraded-success
-200, and `ServerErrorMiddleware` hands it to the app-wide handler, which renders the refusal-shaped
-500 of S0. **Route-local containment cannot reach it** -- the route has already returned.
+**Boundary one -- OUTSIDE the callers. CLOSED BY RULING 2026-09-02; this arc now fixes it.**
+`RequestIdMiddleware` (`swing/web/middleware/request_id.py:22-34`) is registered LAST and is
+therefore OUTERMOST (`swing/web/app.py:657-660`, and the comment there says so). Its `dispatch`
+receives the route's finished response, stamps `X-Request-ID`, **calls `_access_log.info(...)`, and
+only then returns it.** A raising access-log handler at that point destroys a correctly constructed
+degraded-success 200, and `ServerErrorMiddleware` hands it to the app-wide handler, which renders
+the refusal-shaped 500 of S0. **Route-local containment cannot reach it** -- the route has already
+returned, which is exactly why the plan flagged it rather than reaching for it.
+
+**The ruling folded it in on ONE ground, and the ground bounds the work:** 22-A3's acceptance
+criterion is that the operator SEES the degraded success, and this is the LAST IDENTIFIED
+IN-PROCESS PRE-SEND SITE that can be
+taken from him. **Task 8 contains that ONE call. There is NO middleware sweep** -- other sites of
+the same class in other middleware are banked follow-ons, not this arc's.
 
 **Boundary two -- BEFORE the caller can bind the result.** Python's CALL-to-STORE window is real:
 `record_entry()` can return after committing and an asynchronous exception (a signal-derived
@@ -336,17 +377,21 @@ ledger is durable, `result is None`, and this plan's own logic deliberately re-r
 caller-only restructuring closes that window** -- it is one bytecode wide and it is on the far side
 of the assignment every guard here keys on.
 
-**Boundary three -- INSIDE `record_entry`, one line before the guard that protects it.**
-`entry.py:516-519` builds its degraded warning with `f"...({post_commit_error!r})..."`. A legal
-custom exception whose `__repr__` RAISES makes that formatting raise, over a committed row, before
-any `EntryResult` exists to return -- so the caller never gets a result to bind and every guard in
-this plan is downstream of the failure. **The one-token correction is
-`{safe_text(post_commit_error)}`** and this plan does NOT make it: the envelope opens `entry.py` for
-**log containment**, and that line is clause-1 WARNING-TEXT construction rather than a logging call.
-Flagged at S8 item 7 with the exact diff, for the orchestrator to authorise or decline in one line.
-*(Its sibling at `:545`, `{log_error!r}` INSIDE the log-failure handler, IS log containment and IS
-fixed here -- Task 4. The line is drawn at "does a logging handler's failure reach it", and it is
-drawn explicitly so a reviewer can move it rather than guess at it.)*
+**Boundary three -- INSIDE `record_entry`, one line before the guard that protects it. CLOSED BY
+RULING 2026-09-02; this arc now fixes it.** `entry.py:516-519` builds its degraded warning with
+`f"...({post_commit_error!r})..."`. A legal custom exception whose `__repr__` RAISES makes that
+formatting raise, over a committed row, before any `EntryResult` exists to return -- so the caller
+never gets a result to bind and every guard in this plan is downstream of the failure.
+
+**The plan held at the envelope line here and routed the question up rather than taking the
+one-token fix.** The ruling, verbatim: *"The envelope covers outcome-corrupting exception-formatting
+on the post-commit path of `record_entry`, wherever it occurs in the function."* The correction is
+`{safe_text(post_commit_error)}` and it lands in **Task 4**, in the same commit as its sibling at
+`:545`. **The line the plan had drawn -- "does a logging handler's failure reach it" -- was the
+WRONG line, and the ruling says why: the envelope's purpose is that a raising ANYTHING must never
+change what a function returns.** The distinction is recorded rather than deleted because the
+routing was the right move even though the line was wrong -- it cost one message instead of a review
+round.
 
 **So the claim this plan makes and tests is exactly:**
 
@@ -364,8 +409,9 @@ fixable inside this envelope, and the plan does not attempt it.** It is why the 
 worded as a CONSTRUCTION guarantee: what the route BUILDS and RETURNS, not what the operator's
 browser ends up rendering.
 
-All four are declared (S7.3, S7.4, S7.13, S7.15); the two code-local ones outside the envelope are
-flagged with their corrections (S8 items 6 and 7). The CALL-to-STORE residual's DIRECTION is the belt-covered one: the caller is told the
+**TWO OF THE FOUR ARE NOW CLOSED BY THIS ARC** (boundaries one and three, per the 2026-09-02
+ruling); **TWO REMAIN AND ARE DECLARED** -- CALL-to-STORE at S7.4 and response DELIVERY at S7.15.
+S7.3 and S7.13 now record what was closed and how, rather than what was tolerated. The CALL-to-STORE residual's DIRECTION is the belt-covered one: the caller is told the
 entry failed, retries, and `ux_trades_one_open_per_ticker` refuses -- a confusing error, not a
 double position -- which is the same direction, and the same belt, as the declared clause-2 residual
 this arc deliberately leaves to 22-A4.
@@ -429,9 +475,18 @@ one for the connection, a second for the refresh/output -- leave an uncovered in
 BETWEEN their exception-table ranges**, which is precisely where a pending asynchronous exception
 can land, and precisely on the CLI main thread where the plan says it matters most.
 
-So the shape is **ONE outer `try:` opened before the connection is created and closed only after the
-response is returned / the last line is printed**, with the connection's `try/finally` and the
-refresh block NESTED INSIDE it. Mechanically, in BOTH callers:
+So the shape is **ONE outer `try:` opened before the connection is created, enclosing every
+statement through the `return` / the last `click.echo`**, with the connection's `try/finally` and the
+refresh block NESTED INSIDE it.
+
+**AND THE GUARANTEE IS SCOPED TO WHAT IS EVALUATED INSIDE THAT SUITE, NOT TO THE FRAME'S EXIT**
+(`A3-R6-06`). In CPython the normal-return instruction FOLLOWING a protected suite is outside that
+suite's exception-table range: the route protects the evaluation of `HTMLResponse(...)`, and the CLI
+protects the last `click.echo`, but neither protects the frame's terminal return handoff -- on the
+CLI, Click's outer machinery can still turn an asynchronous exception delivered there into a
+non-zero exit after the command callback completed. **It is the TERMINAL analogue of the
+CALL-to-STORE window, it is not closable by any caller-only restructuring either, and it is DECLARED
+at S7.18 rather than papered over by the word "continuous".** Mechanically, in BOTH callers:
 
 - `result` and `close_error` are initialised to `None` before the outer `try`;
 - the connection `finally` closes inside its own `try`, re-raising when `result is None` and
@@ -642,7 +697,20 @@ encoded, is a containment guard that can raise.**
         except BaseException:  # noqa: BLE001 -- the CLASS, not a roster
             pass
         try:
-            existing = getattr(escaping, "__notes__", None)
+            # **THE READ BYPASSES `__getattribute__` TOO** (Codex 22A3-R6-05,
+            # verified by execution).  A subclass overriding
+            # `__getattribute__` to raise for `__notes__` defeats BOTH
+            # `BaseException.add_note` (which reads the attribute through the
+            # override) AND a plain `getattr(..., None)` -- whose default
+            # swallows only `AttributeError`, and the override raises
+            # `TypeError`.  MEASURED: `BaseException.__getattribute__` raises
+            # a plain `AttributeError` on such an object, i.e. "absent", and
+            # `BaseException.__setattr__` then installs the list successfully.
+            # Read and write both go through the base slots, symmetrically.
+            try:
+                existing = BaseException.__getattribute__(escaping, "__notes__")
+            except AttributeError:
+                existing = None
             if isinstance(existing, list):
                 repaired = list(existing)
             elif existing is None:
@@ -707,7 +775,10 @@ Two properties the review forced:
 - **It does not add an attempt identity, a schema column, or a migration.**
 - **It does not widen the belt, its message, or its predicate.**
 - **It does not change the four existing OOB chunks, the pure-OOB architecture, or any 4xx path.**
-- **It does not touch `swing/web/middleware/request_id.py`** (S2.0, S8 item 6).
+- **It touches `swing/web/middleware/request_id.py` at EXACTLY ONE CALL** -- the `_access_log.info`
+  after `call_next` (Task 8). **It does not sweep the middleware layer**: other instances of the
+  same class in other middleware are banked follow-ons, and the ruling that folded this one in
+  bounded it to this one (Global Constraints, ruling 2).
 - **It does not contain the four PRE-COMMIT logging calls in `_record_entry_inner`** (S1.4's closing
   note, S7.11).
 
@@ -736,6 +807,10 @@ Two properties the review forced:
 | c3 | a failing `click.echo` AFTER a durable entry | **non-zero** exit over 1 durable row | **exit 0** over 1 durable row |
 | c4 | a NON-ASCII `--ticker` reaches the success line | stdout is **not** ASCII | stdout **is** ASCII; the ticker appears escaped |
 | m | the ROUTE's own degraded-path `log_contained` is used | **500** | **200**, notice names the log that could not be emitted |
+| o | the OUTERMOST middleware's access log cannot destroy the response | **500** over 1 durable row, `X-Request-ID` ABSENT | **200**, `X-Request-ID` present, `X-Access-Log-Failed` stamped |
+| p | `entry.py:545` -- a hostile-`__repr__` SINK error cannot break the degraded result | raises over a durable row | degraded `EntryResult` with two warnings |
+| q | `entry.py:517` -- a hostile-`__repr__` POST-COMMIT error cannot break it either | raises before any `EntryResult` exists | degraded `EntryResult`, one durable row |
+| r | notice render + route logger fail TOGETHER | ordinary 200 (unreachable pre-fix) | **200** naming both failures |
 | d1..d6 | a raising log sink does not change the escaping exception | escapes `RuntimeError('sink')` | escapes the ORIGINAL object, chaining per the matrix |
 | e | the belt still refuses a same-ticker retry | refuses | refuses -- a CONTROL, passes under both by design |
 | f | an ordinary success carries an EMPTY notice chunk that clears prior state | **four** OOB chunks, no notice | **five** OOB chunks; notice present and EMPTY of banner content |
@@ -744,7 +819,7 @@ Two properties the review forced:
 | g3 | ONLY the notice partial fails and there are NO warnings | **200**, ordinary body | **200** with a banner NAMING the trade and the notice failure, and an ERROR log |
 | n | a lone surrogate IN A WARNING cannot break the SUCCESS response | **500** | **200**, the surrogate appears escaped |
 | h | the notice container exists wherever the form is reachable | absent | present on `/` and `/watchlist`; static walk green |
-| i | `ascii_safe` / `safe_text` / `log_contained` / `log_contained_note` unit properties | n/a | nine properties, below |
+| i | `ascii_safe` / `safe_text` / `log_contained` / `log_contained_note` unit properties | n/a | ten properties, below |
 | k | a lone-surrogate `__repr__` cannot break the degraded response | **500** | **200**, a REAL `HTMLResponse` is constructed |
 | j | the notice partial renders and escapes | n/a | renders, escapes metacharacters, right id + OOB attr |
 
@@ -905,6 +980,34 @@ logger, AND make `build_dashboard` raise.
 - `"could not be emitted" in resp.text` -- **POST TRUE**: the log failure is surfaced as a second
   warning, not swallowed.
 - `SELECT COUNT(*) FROM trades` is `1` under both.
+
+### (o) The OUTERMOST middleware cannot destroy the response this arc builds
+
+**Why it exists:** folded in by the 2026-09-02 ruling on the ground that 22-A3's acceptance criterion
+is that the operator SEES the degraded success. `RequestIdMiddleware.dispatch`
+(`swing/web/middleware/request_id.py:22-34`) access-logs AFTER `call_next`, holding the finished
+response, and it is OUTERMOST (`swing/web/app.py:657-660`). **Every other test in this plan can pass
+while this one fails**, because no route-local guard can reach one frame outside the route.
+
+**Injection:** attach a `logging.Handler` whose `emit()` raises to the **`swing.web.access`** logger
+(the module's own `_access_log`), then POST an ordinary, otherwise-successful entry. Client:
+`TestClient(app, raise_server_exceptions=False)`.
+
+- `resp.status_code` -- **PRE `500`**; **POST `200`**.
+- `SELECT COUNT(*) FROM trades` is `1` **under both** -- the premise: the entry was durable in the
+  pre-fix run too, which is exactly why the 500 was a wrong report.
+- `resp.headers.get("X-Request-ID")` -- **PRE ABSENT, POST present** (`A3-R6-02`). An earlier draft
+  said "present under both" on the reasoning that the stamp precedes the log call. It does -- **but
+  it is stamped on the INNER response, which is DISCARDED when `_access_log.info` raises**;
+  `ServerErrorMiddleware` then builds a DIFFERENT 500 response OUTSIDE `RequestIdMiddleware`, and
+  that response never had the header. The plan's own explanation of the mechanism contradicted its
+  own arithmetic one line later.
+- `resp.headers.get("X-Access-Log-Failed") == "1"` -- **POST only.** The containment is
+  **swallowed-and-NOTED**, not swallowed: without this assertion a `try/except: pass` would pass the
+  test, which is the same shape the (d) tests refuse.
+- **A CONTROL in the same file:** with NO broken handler, `X-Access-Log-Failed` is ABSENT and the
+  status is 200. Otherwise the header assertion could pass against an implementation that stamps it
+  unconditionally.
 
 ### (d) R11-03 -- one test per site, asserting THE IDENTITY OF WHAT ESCAPES
 
@@ -1104,7 +1207,7 @@ The first refresh render fails, the guard runs, and `_entry_notice_html` hits th
 A static walk is preferred to a runtime trace: a trace only sees the branches a fixture happened to
 take, which is how a roster hole survives.
 
-### (i) `ascii_safe` / `safe_text` / `log_contained` / `log_contained_note` unit properties
+### (i) `ascii_safe` / `safe_text` / `log_contained` / `log_contained_note` unit properties -- TEN
 
 1. `log_contained` happy path: returns `None`, record emitted (assert via `caplog`).
 2. `log_contained` broken sink: returns the sink's `RuntimeError`, raises nothing.
@@ -1130,8 +1233,15 @@ take, which is how a roster hole survives.
 8. **`safe_text` of an exception whose `__repr__` RETURNS a lone surrogate is ASCII** -- the
    property that keeps `HTMLResponse` from raising (`A3-R2-03`). **Discriminating partner:** with
    `ascii_safe` removed from `safe_text`, `.isascii()` is False.
-9. `log_contained_note` formats the sink error through `safe_text`, so a sink exception with a
-   raising `__repr__` still produces a note. **Discriminating partner:** with `safe_text` replaced
+9. **An overriding `__getattribute__` cannot swallow the sink failure either** (`A3-R6-05`). With a
+   class overriding `add_note`, `__setattr__` AND `__getattribute__` (raising `TypeError` for
+   `__notes__`), assert `log_contained_note` returns normally and
+   `BaseException.__getattribute__(e, "__notes__")` carries the sink note. **MEASURED:** the plain
+   `getattr(..., None)` fallback does NOT help -- its default swallows only `AttributeError` -- while
+   `BaseException.__getattribute__` raises a clean `AttributeError` (reads as absent) and
+   `BaseException.__setattr__` then installs the list.
+10. `log_contained_note` formats the sink error through `safe_text`, so a sink exception with a
+    raising `__repr__` still produces a note. **Discriminating partner:** with `safe_text` replaced
    by `repr`, this test raises.
 
 ### (n) A lone surrogate IN A WARNING cannot break the SUCCESS response
@@ -1146,12 +1256,21 @@ raises again, and the durable-row-plus-500 outcome is back.
 **Injection:** the (a)-style `record_entry` wrapper, with a warning containing `\ud800`. The refresh
 SUCCEEDS -- this is the ordinary warning path, not the degraded one.
 
-- `resp.status_code` -- **PRE `500`** (the response cannot be encoded); **POST `200`**.
-- `"ud800" in resp.text` -- POST TRUE (the escape text `ascii_safe` produces).
+- `resp.status_code == 200` -- **CONTROL, true under BOTH** (`A3-R6-01`). **PRE-fix is NOT a 500**,
+  and an earlier draft said it was: pre-fix the route DISCARDS the result at `:1490`, so the
+  injected warning is never read, never rendered and never encoded -- the response stays the
+  ordinary four-chunk 200 that test (a) already establishes. **The 500 belongs to the MUTATION
+  below, not to the pre-fix path**, and getting that backwards would have had the executor hunting a
+  red that cannot occur.
+- `'id="entry-notice"' in resp.text` -- **PRE FALSE**; **POST TRUE**.
+- `"ud800" in resp.text` -- **PRE FALSE**; **POST TRUE** (the escape text `ascii_safe` produces).
+- `resp.text.count('hx-swap-oob="true"')` -- **PRE `4`**; **POST `5`**.
 - `SELECT COUNT(*) FROM trades` is `1` under both.
-- **Its own mutation, recorded separately from (k)'s:** remove `ascii_safe` from
-  `_post_commit_warnings` -- (n) goes red, (k) stays green. That separation is the point: two
-  different call sites, two different mutations, neither one standing in for the other.
+- **THE MUTATION IS WHERE THE 500 LIVES, and it is ordered at Task 6 Step 4c:** remove `ascii_safe`
+  from `_post_commit_warnings` on the POST-fix code -- **(n) then returns 500** (the warning reaches
+  `HTMLResponse` uncoerced and the body cannot be encoded), while **(k) stays GREEN** because it
+  drives a different call site. That separation is the whole point: two call sites, two mutations,
+  neither standing in for the other.
 
 ### (k) A lone-surrogate `__repr__` cannot break the degraded response -- the end-to-end proof
 
@@ -1189,15 +1308,17 @@ attribute -- defeating the "each task ends with an independently testable delive
 
 | file | create/modify | responsibility after this arc |
 |---|---|---|
-| `swing/trades/entry.py` | modify (`+~115` lines) | **containment ONLY**: `ascii_safe`, `safe_text`, `log_contained`, `log_contained_note` (the idiom, stated once), applied at the two branches of its own cleanup handler (`:744`, `:752`). Nothing else changes -- not the transaction semantics, not the declared residual, not `EntryResult`, and **not the four PRE-COMMIT logging calls at `:824`/`:892`/`:903`/`:918`** (S1.4, S7.11). |
+| `swing/trades/entry.py` | modify (`+~118` lines) | **containment ONLY**: `ascii_safe`, `safe_text`, `log_contained`, `log_contained_note` (the idiom, stated once), applied at the two branches of its own cleanup handler (`:744`, `:752`), **plus the two `!r` formatting sites on the post-commit path (`:517`, `:545`) -- per the 2026-09-02 ruling that the envelope covers outcome-corrupting exception-formatting there WHEREVER it occurs in the function**. Nothing else changes -- not the transaction semantics, not the declared residual, not `EntryResult`, and **not the four PRE-COMMIT logging calls at `:824`/`:892`/`:903`/`:918`** (S1.4, S7.11). |
+| `swing/web/middleware/request_id.py` | modify (`+~16` lines) | **ONE contained call**: the `_access_log.info` that runs after `call_next` holds the route's FINISHED response. Bounded by ruling to this call and its test; no middleware sweep. |
 | `swing/trades/cohort_provenance_correction.py` | modify (`+~12` lines) | **log containment ONLY**: import `log_contained_note`; apply it at all SIX cleanup-log sites. |
 | `swing/web/routes/trades.py` | modify (`+~90` lines) | assign the `EntryResult`; CONTAIN the post-durability `conn.close()`; `_post_commit_warnings` (total warning assembly); `_entry_notice_html` (total, never raises, carries the warnings ASCII-coerced, distinguishes notice-failure from refresh-failure); the best-effort guard around the post-entry refresh; the degraded-success response. |
 | `swing/web/templates/partials/entry_notice.html.j2` | **create** | the sole source of the notice markup, OOB wrapper included. |
 | `swing/web/templates/base.html.j2` | modify (`+1` line + comment) | the static, empty `<div id="entry-notice"></div>` container. |
 | `swing/cli.py` | modify (`+~30` lines) | CONTAIN the post-durability `conn.close()`; ASCII-coerce and print `post_commit_warnings` to stderr; CONTAIN the output block itself; exit status untouched. |
-| `tests/trades/test_22a3_log_containment.py` | **create** | (i) the idiom's nine properties; (d1)-(d6) the identity-of-escape tests. |
-| `tests/web/test_routes/test_22a3_entry_degraded_success.py` | **create** | (a), (b), (b2), (e), (f), (g), (g2), (g3), (h), (j), (k), (l), (m), (n). |
+| `tests/trades/test_22a3_log_containment.py` | **create** | (i) the idiom's nine properties plus the `__getattribute__` case; (d1)-(d6) the identity-of-escape tests; (p) and (q) the two ruled `entry.py` formatting sites. |
+| `tests/web/test_routes/test_22a3_entry_degraded_success.py` | **create** | (a), (b), (b2), (e), (f), (g), (g2), (g3), (h), (j), (k), (l), (m), (n), (r). |
 | `tests/cli/test_cli_trade_entry_post_commit_warnings.py` | **create** | (c), (c2), (c3), (c4). |
+| `tests/web/test_routes/test_22a3_access_log_containment.py` | **create** | (o) -- the outermost-middleware containment. |
 
 **No file outside the declared envelope is created or modified.**
 
@@ -1207,8 +1328,8 @@ attribute -- defeating the "each task ends with an independently testable delive
 
 > Every task: write the failing test -> **run it and SEE it fail, for the stated reason** -> minimal
 > implementation -> run it and see it pass -> `ruff check swing/` -> commit. The full fast suite runs
-> at Task 10 (before the Codex loop) AND at Task 11 (on the final reviewed head); the binding browser
-> gate is Task 9, ahead of both.
+> at Task 11 (before the Codex loop) AND at Task 12 (on the final reviewed head); the binding browser
+> gate is Task 10, ahead of both.
 >
 > Use `-n 0` on per-task runs (the `addopts` default is `-n auto`, whose output makes a single
 > failure's text hard to read). **Reading the failure is a step, not a formality.**
@@ -1518,20 +1639,31 @@ site 3's escaping object is `anomaly`, NOT `savepoint_error`; **the escaping exc
 
 - [ ] **Step 5: Commit** -- `fix(trades): 22-A3 Task 3 -- R11-03 containment at the preview savepoint handler (sites 2 + 3)`.
 
-### Task 4: cohort sites 4, 5 and **6 -- the site the brief's roster does not name**
+### Task 4: cohort sites 4, 5 and **6**, and the TWO RULED `entry.py` formatting fixes
 
 **Files:** Modify `swing/trades/cohort_provenance_correction.py` at `:2445`, `:2693`, `:2700`,
-`:3341`. Test: append d4, d5, d6 (d6 parametrized over both postures).
+`:3341` **AND `swing/trades/entry.py` at `:517` and `:545`** (the two sites the 2026-09-02 ruling
+authorised -- they are in THIS task's Files line, not in prose after it, because the plan's own
+one-red-green-cycle-per-task contract applies to them exactly as it does to everything else, and
+`A3-R6-03` caught them sitting outside the ordered steps). Test: append d4, d5, d6 (d6 parametrized
+over both postures) **and the two hostile-formatting tests**.
 
-- [ ] **Step 1: Write the failing tests d4, d5, d6** per the S3 tables and the chaining matrix --
-note d5 and d6 assert `__cause__ is None`, and d6's failure posture additionally asserts
-`__context__ is` the authorization error.
+- [ ] **Step 1: Write the failing tests d4, d5, d6 AND BOTH hostile-formatting tests** per the S3
+tables and the chaining matrix -- note d5 and d6 assert `__cause__ is None`, and d6's failure posture
+additionally asserts `__context__ is` the authorization error. The two hostile-formatting tests are
+specified below under "the two ruled `entry.py` sites"; **they are written HERE, before the fix, not
+after it.**
 
-- [ ] **Step 2: Run and see all fail** with the sink's `RuntimeError` escaping. **d5's failure is
-the one to read carefully: it fails on the function's SUCCESS path**, which is the clearest
-statement of what the class costs.
+- [ ] **Step 2: Run and see all FIVE fail, and note that they fail DIFFERENTLY.** d4/d5/d6 fail with
+the sink's `RuntimeError` escaping -- **d5's is the one to read carefully, because it fails on the
+function's SUCCESS path**, the clearest statement of what the class costs. **The `:545` test fails
+when the second warning's `{log_error!r}` raises inside the `except` clause; the `:517` test fails
+when the degraded warning's `{post_commit_error!r}` raises BEFORE any `EntryResult` exists.** Two
+different pre-fix exceptions at two different points -- an executor who writes one test for both
+sites will watch one of them pass for the wrong reason.
 
-- [ ] **Step 3: Minimal implementation.**
+- [ ] **Step 3: Minimal implementation -- the four cohort sites AND both `entry.py` `!r` sites**
+(the `safe_text` diffs are below under "the two ruled `entry.py` sites").
 
 ```python
 # :2693 / :2700  -- both branches
@@ -1557,8 +1689,12 @@ it:
 ```
 
 - [ ] **Step 4: Run and see all pass.** Then RE-READ all six sites and run the closure check:
-`grep -n "log\.error(" swing/trades/cohort_provenance_correction.py` must return **zero hits**, and
-the same grep on `entry.py` must return **exactly one** -- `:534`.
+`grep -c "log\.error(" swing/trades/cohort_provenance_correction.py` must return **zero**, and the
+same grep on `entry.py` must return **exactly ONE** -- the post-commit guard's own ERROR log,
+identified by its message text (`"IS DURABLE and a POST-COMMIT step failed"`), **NOT by a line
+number** (`A3-R6-08`). **EVERY numeric anchor in this plan is a PRE-EDIT anchor**: Task 1 inserts
+~118 lines near `entry.py:25`, so the surviving call is nowhere near its baseline `:534` by the time
+this check runs, and a gate demanding that number is one a faithful executor cannot satisfy.
 
 **`entry.py:534` is DELIBERATELY NOT converted to the idiom, and the reason belongs in the commit
 message so a later reader does not "finish the job":** it is the post-commit guard's own ERROR log,
@@ -1568,15 +1704,42 @@ log failure to the CALLER, which is possible there because a result object exist
 sites have no result to attach to, which is why they get the note-on-the-exception form. Converting
 `:534` would be a downgrade wearing a consistency costume.
 
-**BUT ITS CONTAINMENT IS NOT TOTAL, AND THAT IS A ONE-TOKEN FIX THIS TASK ALSO MAKES**
-(`A3-R3-02`, verified at source). `:545` builds the second warning with
-`f"...could not be emitted ({log_error!r})..."` -- and if the logging handler's own exception has a
-hostile `__repr__`, **that formatting raises INSIDE the `except` clause, over a durable row.** A
-raising logging handler therefore still changes the function's result at the one site the plan had
-declared safe. Replace `{log_error!r}` with `{safe_text(log_error)}`. **This IS log containment**
-(the value being formatted is the logging handler's own failure, inside the log-failure handler), so
-it is inside the envelope. Its sibling one line earlier -- `{post_commit_error!r}` at `:517` -- is
-NOT, and is flagged rather than fixed (S8 item 7).
+**AND THE POST-COMMIT PATH CARRIES TWO `!r` FORMATTING SITES THAT CAN RAISE OVER A DURABLE ROW.
+BOTH ARE FIXED HERE, AND THE SECOND ONE ONLY BECAUSE THE PLAN ASKED** (`A3-R3-02` found the first,
+`A3-R3-03` the second; both verified at source; the envelope question was routed up and RULED
+2026-09-02).
+
+- **`:545`** builds the second warning with `f"...could not be emitted ({log_error!r})..."` -- if
+  the logging handler's own exception has a hostile `__repr__`, **that formatting raises INSIDE the
+  `except` clause, over a durable row.** A raising logging handler therefore still changed the
+  function's result at the one site the plan had declared safe.
+- **`:517`** builds the DEGRADED WARNING itself with `f"...({post_commit_error!r})..."` -- a
+  post-commit failure with a hostile `__repr__` makes that raise **BEFORE the degraded
+  `EntryResult` is built at all**, so `record_entry` reports a failure over a durable entry. That is
+  clause 1's own subject, one line above the guard that implements it.
+
+**Both become `safe_text(...)`:**
+
+```diff
+-            f"AFTER the commit failed ({post_commit_error!r}). The entry "
++            f"AFTER the commit failed ({safe_text(post_commit_error)}). The "
++            f"entry "
+...
+-                    f"emitted ({log_error!r}); the ledger is unaffected.",),
++                    f"emitted ({safe_text(log_error)}); the ledger is "
++                    f"unaffected.",),
+```
+
+**THE RULING THAT AUTHORISED `:517`, RECORDED VERBATIM RATHER THAN ABSORBED AS DRIFT:**
+
+> **The envelope covers outcome-corrupting exception-formatting on the post-commit path of
+> `record_entry`, wherever it occurs in the function.**
+
+The plan had drawn its own line at *"does a logging handler's failure reach it"*, which put `:545`
+in and `:517` out, and **held there and routed the question up rather than taking the one-token fix
+unilaterally.** The line was wrong -- the envelope's purpose is that **a raising ANYTHING must never
+change what a function returns** -- but the hold was right, and it cost one message instead of a
+review round. Both facts are kept here because the next implementer at an envelope edge needs both.
 
 **Add the discriminating test alongside d1-d6** (same file). **It needs TWO injections, and an
 earlier draft specified only one** (`A3-R4-10`): `entry.py:534` runs ONLY after a post-commit error
@@ -1595,9 +1758,30 @@ TWO warnings (the durable one and the log-failure one); exactly one durable row 
 **PRE-fix the `{log_error!r}` formatting raises and the durable entry is reported as a failure;
 POST-fix `safe_text` yields the fixed literal and the result returns.**
 
+#### the two ruled `entry.py` sites -- tests (p) and (q)
+
+**(p) -- the `:545` site.** (The two injections are specified immediately above.)
+
+**(q) -- the `:517` site. AND A SECOND, SEPARATE TEST, because the two sites fail on DIFFERENT
+injections and
+neither test reaches the other's line.** Inject the PRIMARY post-commit failure as an exception with
+a hostile `__repr__` AND `__str__` (via `_inject_after_the_commit`), and install NO broken sink.
+Assert: `record_entry` RETURNS its degraded `EntryResult`; the durable warning is present and
+carries `safe_text`'s fixed literal rather than raising; exactly ONE durable row exists.
+**PRE-fix the warning-text construction raises before any `EntryResult` exists** -- so the pre-fix
+failure is NOT the same as the `:545` test's, and an executor who writes one test for both sites
+will see one of them pass for the wrong reason.
+
+**(r) -- the notice render AND the route logger fail together** (`A3-R6-09`). In the web test file:
+make `get_template` raise for `partials/entry_notice.html.j2` only, AND attach a raising handler to
+the `swing.web.routes.trades` logger. Assert `200`, the trade named, the notice-render failure named,
+**and a second warning line naming the ERROR log that could not be emitted.** *(Post-fix only; PRE
+this path returns the ordinary 200 that (g)'s control establishes. Without (r), a version that drops
+`log_contained`'s return value passes every other test.)*
+
 **State the count WITH the method** (the grep above), not as a bare number.
 
-- [ ] **Step 5: Commit** -- `fix(trades): 22-A3 Task 4 -- R11-03 containment at the remaining cohort sites, including a SIXTH the brief's roster missed`.
+- [ ] **Step 5: Commit** -- `fix(trades): 22-A3 Task 4 -- containment at the remaining cohort sites including a SIXTH the roster missed, and the two ruled entry.py formatting sites`.
 
 ### Task 5: the notice partial and its container
 
@@ -1692,7 +1876,7 @@ and (j) raises `TemplateNotFound`.
 **Interfaces produced:** `_post_commit_warnings(result, close_error) -> tuple[str, ...]` (TOTAL) and
 `_entry_notice_html(templates, request, *, trade_id, warnings, render_failure) -> str` (TOTAL).
 
-- [ ] **Step 1: Write the failing tests (a), (b), (b2), (f), (g), (g2), (g3), (k), (l), (m), (n)** per S3, including
+- [ ] **Step 1: Write the failing tests (a), (b), (b2), (f), (g), (g2), (g3), (k), (l), (m), (n), (r)** per S3, including
 (b2)'s duplicate-ticker REFUSAL CONTROL (an unconditional close containment must fail it, and it
 discriminates because the duplicate path returns 400 rather than 500).
 
@@ -1787,7 +1971,7 @@ def _entry_notice_html(templates, request, *, trade_id: int,
         # banner and no log. The commissioning clause says an OOB-partial
         # failure becomes a degraded success NAMING the trade and the failure,
         # and "no warnings" does not exempt it.
-        log_contained(
+        notice_log_error = log_contained(
             log,
             "22-A3: trade %s IS DURABLE and its operator notice could not be "
             "rendered (%s); the literal fallback was used.",
@@ -1812,6 +1996,16 @@ def _entry_notice_html(templates, request, *, trade_id: int,
             parts.append(
                 ' The entry EXISTS and the page was refreshed. Do NOT enter '
                 'it again.')
+        # THE SECONDARY DIAGNOSTIC IS SURFACED, NOT DISCARDED (Codex
+        # 22A3-R6-09).  `log_contained` RETURNS the sink's failure precisely so
+        # a caller does not trade one invisible failure for another, and this
+        # caller was dropping it -- so a notice-render failure that coincided
+        # with a broken route logger left the operator seeing the first and
+        # nothing at all about the second.
+        if notice_log_error is not None:
+            warnings = tuple(warnings) + (
+                f"the ERROR log for this notice failure could not be emitted "
+                f"({safe_text(notice_log_error)}); the ledger is unaffected.",)
         if warnings:
             parts.append('<ul>')
             for warning in warnings:
@@ -1898,12 +2092,12 @@ snippets is how the two-adjacent-guards defect got written in the first place (`
         # hard-cap REFUSALS use. The operator could not tell a refused entry
         # from a durable one, and the refusal reading is retry-inviting.
         #
-        # TWO EXPOSURES REMAIN AND BOTH ARE OUTSIDE THIS ROUTE:
-        # `RequestIdMiddleware` (`swing/web/middleware/request_id.py:22-34`)
-        # is OUTERMOST and access-logs AFTER this response is built; and
-        # response DELIVERY (ASGI send / transport / client disconnect)
-        # happens after the route returns at all. Flagged, not fixed --
-        # neither is in 22-A3's envelope (S2.0 boundaries one and four).
+        # THE OUTERMOST ACCESS LOG IS CONTAINED BY TASK 8 (ruling
+        # 2026-09-02). **RESPONSE DELIVERY IS NOT AND CANNOT BE**: ASGI send,
+        # streaming and client disconnect happen after the route returns at
+        # all (S2.0 boundary four, S7.15). Do not write a comment here
+        # claiming the access log is still exposed -- it is not, after Task 8,
+        # and a comment that reads true while being false is gotcha #31.
         post_commit_warnings = _post_commit_warnings(result, close_error)
         dashboard_vm = build_dashboard(...)          # unchanged
         status_strip_html = ...                      # unchanged
@@ -1972,7 +2166,7 @@ outer `try:`, the close containment, the `_post_commit_warnings` call, the `noti
 outer `except` block, and the comments this task adds). If `-w` shows a content change inside a
 moved statement, something was retyped rather than moved.
 
-- [ ] **Step 4: Run and see (a), (b), (b2), (f), (g), (g2), (g3), (k), (l), (m), (n) pass.** Then run the whole
+- [ ] **Step 4: Run and see (a), (b), (b2), (f), (g), (g2), (g3), (k), (l), (m), (n), (r) pass.** Then run the whole
 web package -- `python -m pytest tests/web -q` -- because (f)'s blast-radius half is only worth what
 the pre-existing route tests confirm.
 
@@ -1981,6 +2175,15 @@ and no step ordered it). Delete the `ascii_safe(...)` call from `safe_text`'s fi
 `python -m pytest tests/web/test_routes/test_22a3_entry_degraded_success.py -q -n 0 -k lone_surrogate`;
 **see it FAIL with a 500**; restore the call; re-run and see it pass. Record both results. Without
 this the coercion is decorative as far as the evidence goes.
+
+- [ ] **Step 4c: RUN THE SECOND, DIFFERENT MUTATION AND RECORD IT** (`A3-R6-04` -- S3(n) promised
+this evidence and only Step 4b's mutation was ordered, so the call-site SEPARATION the two tests
+exist to prove was never going to be generated). Delete the `ascii_safe(...)` call from
+`_post_commit_warnings`; run the two tests **by exact node id, not by `-k`**:
+`python -m pytest "tests/web/test_routes/test_22a3_entry_degraded_success.py::<the (n) test>" "tests/web/test_routes/test_22a3_entry_degraded_success.py::<the (k) test>" -q -n 0`.
+**Expect (n) RED with a 500 and (k) GREEN.** Restore the call; re-run both; expect both green.
+Record all four results. **If (k) also goes red, the two tests are not exercising separate call
+sites and the coercion's coverage claim is weaker than S2.3 says.**
 
 - [ ] **Step 5: Commit** -- `feat(web): 22-A3 Task 6 -- the entry route consumes the EntryResult; a post-entry render or close failure becomes a degraded SUCCESS naming the trade`.
 
@@ -2085,16 +2288,84 @@ guard, and the two initialisations.
 
 - [ ] **Step 5: Commit** -- `feat(cli): 22-A3 Task 7 -- print post_commit_warnings ASCII-coerced, contain the post-durability close AND the output itself; the exit code stays a statement about the ledger`.
 
-### Task 8: the belt control
+### Task 8: the OUTERMOST middleware cannot destroy the response this arc builds
+
+> **FOLDED IN BY RULING 2026-09-02, ON ONE GROUND AND BOUNDED BY IT.** 22-A3's acceptance criterion
+> is that **the operator SEES the degraded success** -- and that response transits
+> `RequestIdMiddleware`, which is OUTERMOST (`swing/web/app.py:657-660`) and access-logs AFTER
+> `call_next` returns. A raising `swing.web.access` handler there converts a correct 200, INCLUDING
+> the degraded-success 200 Tasks 6 and 7 exist to produce, into the refusal-shaped 500 of S0. The
+> arc's claim would be false one frame outside its own fix.
+>
+> **THIS IS THE LAST IDENTIFIED IN-PROCESS PRE-SEND SITE THIS ARC COVERS -- NOT "the last place"**
+> (`A3-R6-07`). Response DELIVERY remains outside the guarantee and outside any in-process guard
+> (S2.0 boundary four, S7.15); an unqualified "last place" would contradict a limitation the plan
+> deliberately retains three sections later.
+>
+> **THE BOUND IS EXACT: this ONE call and its test. NO MIDDLEWARE SWEEP.** Other instances of the
+> class in other middleware are banked follow-ons under introduced-versus-banked, not this arc's.
+
+**Files:** Modify `swing/web/middleware/request_id.py:22-34`. Test: create
+`tests/web/test_routes/test_22a3_access_log_containment.py` with test (o).
+
+- [ ] **Step 1: Write the failing test (o)** per S3.
+
+- [ ] **Step 2: Run and see it fail** with `500` -- and READ the failure: the body should be the
+`trade_form_error` / `error_fragment` shape, i.e. the same refusal-shaped surface S0 describes, now
+produced one frame OUTSIDE the route that just built a correct 200. That is the finding, seen.
+
+- [ ] **Step 3: Minimal implementation.**
+
+```python
+        response.headers["X-Request-ID"] = rid
+        # **A FAILING ACCESS-LOG SINK MUST NOT DESTROY A COMPLETED RESPONSE**
+        # (22-A3, folded in by ruling 2026-09-02). This middleware is
+        # OUTERMOST (`swing/web/app.py:657-660`), so when it logs it is
+        # holding the route's FINISHED response -- and a raising handler here
+        # turns a correct 200 into a 500 via `ServerErrorMiddleware`, one
+        # frame outside every guard a route can install. 22-A3's acceptance
+        # criterion is that the operator SEES the degraded-success response;
+        # this is the LAST IDENTIFIED IN-PROCESS PRE-SEND site it can be
+        # taken from him -- response DELIVERY is still beyond reach (S7.15).
+        #
+        # THE GUARD IS INLINE RATHER THAN `swing.trades.entry.log_contained`
+        # ON PURPOSE: a web middleware must not import the trades service --
+        # that would pull the data layer into middleware import time. The
+        # four-line duplication is deliberate and declared (S7.17).
+        #
+        # AND IT IS NOT SILENT: the failure is stamped on the response as a
+        # header, because a swallowed logging failure is the invisible-failure
+        # trade the containment idiom exists to refuse (the R10-04 standard).
+        try:
+            _access_log.info(
+                "%s %s %d %dms %s",
+                request.method, request.url.path, response.status_code,
+                duration_ms, rid,
+            )
+        except BaseException:  # noqa: BLE001 -- the CLASS, not a roster
+            response.headers["X-Access-Log-Failed"] = "1"
+        return response
+```
+
+**`pass` is deliberately NOT the handler body** -- `ruff`'s `B110` (`try-except-pass`) is in the
+selected `B` ruleset, and a header stamp is both lint-clean and strictly better: it makes the
+swallowed failure observable to the very test that pins it.
+
+- [ ] **Step 4: Run and see (o) pass.** Then `python -m pytest tests/web -q` -- this touches the
+OUTERMOST middleware, so every web test in the suite is a regression check on it. `ruff check swing/`.
+
+- [ ] **Step 5: Commit** -- `fix(web): 22-A3 Task 8 -- the outermost access log cannot destroy a completed response`.
+
+### Task 9: the belt control
 
 **Files:** Test only -- append (e) to `tests/web/test_routes/test_22a3_entry_degraded_success.py`.
 
 - [ ] **Step 1: Write test (e)** -- the CONTROL of S3(e), with `CONTROL` in its docstring and the
 statement that it passes under both paths by design.
 - [ ] **Step 2: Run it -- it passes immediately.** That is expected and it is why it is labelled.
-- [ ] **Step 3: Commit** -- `test(web): 22-A3 Task 8 -- the ux_trades_one_open_per_ticker control`.
+- [ ] **Step 3: Commit** -- `test(web): 22-A3 Task 9 -- the ux_trades_one_open_per_ticker control`.
 
-### Task 9: THE OPERATOR-WITNESSED BROWSER GATE (S6) -- **a TASK, ordered, not an appendix**
+### Task 10: THE OPERATOR-WITNESSED BROWSER GATE (S6) -- **a TASK, ordered, not an appendix**
 
 > **This task exists because round 3 found the ladder had none** (`A3-R3-06`): S6 was binding and
 > S6's own teardown implied it ran before the review, but no task ordered it or recorded its result,
@@ -2114,7 +2385,7 @@ statement that it passes under both paths by design.
 - [ ] **Step 4: Confirm the teardown** -- probes reverted, `git status --short` empty, port free,
       scratch root deleted, a fresh shell for anything after.
 
-### Task 10: the PRE-REVIEW full-suite gate
+### Task 11: the PRE-REVIEW full-suite gate
 
 - [ ] **Step 1:** `python -m pytest -m "not slow" -q` from the worktree. Compare against the
 **12077 passed / 13 skipped** baseline measured on `0698f3bb` (plan header). Fix any failure to
@@ -2124,10 +2395,10 @@ walks) are not exercised per-task, and the review must converge on a green diff.
 - [ ] **Step 3:** `git status --short` empty; `git log <base>..HEAD --format='%H%n%(trailers)'`
 shows empty trailers on every commit.
 - [ ] **Step 4:** Run the Codex adversarial loop to convergence per the dispatch recipe S3. **The
-gate's observations (Task 9) are part of the tree under review** -- if any of them changed the
+gate's observations (Task 10) are part of the tree under review** -- if any of them changed the
 design, the loop reviews the CHANGED design, not the one the gate was run against.
 
-### Task 11: the POST-CONVERGENCE final-head gate
+### Task 12: the POST-CONVERGENCE final-head gate
 
 > **This task exists because the recipe requires the full suite at BOTH points** (before the review,
 > and again on the final head): review fixes can invalidate the pre-review evidence, and a
@@ -2135,12 +2406,12 @@ design, the loop reviews the CHANGED design, not the one the gate was run agains
 > project has a standing rule against (Codex round 1, `A3-R10`).
 
 - [ ] **Step 1:** After the last review-fix commit, `python -m pytest -m "not slow" -q` on the FINAL
-head. **READ the tail and record the actual numbers** -- never carry Task 10's forward.
+head. **READ the tail and record the actual numbers** -- never carry Task 11's forward.
 - [ ] **Step 2:** `ruff check swing/` on the final head.
 - [ ] **Step 3:** Re-run the trailer audit on the full range.
 - [ ] **Step 4:** Record in the return report: the final commit SHA, the pass/skip counts read off
 THAT head, and the delta against the 12077/13 baseline with the new tests accounted for.
-- [ ] **Step 5:** Confirm the browser gate (Task 9) was run against THIS design -- if any review fix
+- [ ] **Step 5:** Confirm the browser gate (Task 10) was run against THIS design -- if any review fix
 changed the response shape, the notice partial, or the notice-emit rule, **the gate is re-run.**
 
 ---
@@ -2510,11 +2781,15 @@ Expect the `WARN (post-commit):` line on stderr, the `Trade id N:` line on stdou
 2. **`record_entry`'s clause-2 residual is UNTOUCHED.** A commit whose own return is lost still
    re-raises over a row that may be durable. *Reason:* envelope-forbidden, and it needs the
    primitive. 22-A3 is the PRECONDITION for 22-A4 rather than a partial version of it.
-3. **THE CLAIM IS ROUTE-AND-CLI-LOCAL: `RequestIdMiddleware` runs OUTERMOST and access-logs AFTER
-   the response is built**, so a raising access-log sink still converts a degraded-success 200 into
-   a 500. *Reason:* `swing/web/middleware/request_id.py` is outside the envelope; the brief says an
-   out-of-scope defect is flagged, never fixed inline. Flagged at S8 item 6 with its correction.
-   **Everything this plan CLAIMS, it tests; what it cannot reach, it names.**
+3. **NO LONGER A LIMITATION -- CLOSED BY RULING 2026-09-02, and the entry is KEPT so the closure is
+   readable.** The plan declared that `RequestIdMiddleware` runs OUTERMOST and access-logs AFTER the
+   response is built, so a raising sink converted a degraded-success 200 into a 500 that no
+   route-local guard could reach; it flagged the defect and did not fix it, because
+   `swing/web/middleware/request_id.py` was outside the envelope. **The ruling folded it in on ONE
+   ground -- that 22-A3's acceptance criterion is that the operator SEES the degraded success -- and
+   BOUNDED it to that single call and its test (Task 8, test (o)).** *What remains declared is the
+   BOUND, not the defect:* other instances of the same class in other middleware are **banked
+   follow-ons**, deliberately not swept here.
 4. **THE CLAIM STARTS AT THE BINDING OF `result`, NOT AT THE `record_entry` RETURN.** Python's
    CALL-to-STORE window is real: the function can return after committing and an asynchronous
    exception can be delivered before the `STORE_FAST` that binds `result`, leaving the ledger
@@ -2548,10 +2823,17 @@ Expect the `WARN (post-commit):` line on stderr, the `Trade id N:` line on stdou
    `add_note` and `__setattr__` to raise, `BaseException.add_note` fails (it sets the attribute
    through the type) but **`BaseException.__setattr__(escaping, "__notes__", repaired)` SUCCEEDS** --
    the same base-slot bypass the helper already uses one line up. The repair branch now uses it.
-   **THREE reachable cases are handled and measured** (an overriding `add_note`, a `__notes__` that
-   is not a list, an overriding `__setattr__`); what remains is an object outside the type entirely,
-   which cannot reach these call sites at all, and the outer guard exists because containment with
-   one uncontained step is not containment.
+   **AND IT LOST A SECOND TIME, ONE ROUND LATER** (`A3-R6-05`): the replacement claimed loss was
+   possible only for a non-`BaseException`, and a subclass overriding **`__getattribute__`** to
+   raise for `__notes__` defeated both the base `add_note` and the fallback `getattr` -- **whose
+   `default` swallows only `AttributeError`, while the override raises `TypeError`.** MEASURED:
+   `BaseException.__getattribute__` raises a plain `AttributeError` there (i.e. reads as absent) and
+   `BaseException.__setattr__` then installs the repaired list. The read now bypasses the override
+   symmetrically with the write. **FOUR reachable cases are handled and measured** (an overriding
+   `add_note`, a non-list `__notes__`, an overriding `__setattr__`, an overriding
+   `__getattribute__`); what remains is an object outside the type entirely, which cannot reach
+   these call sites. **This entry has now been narrowed by measurement TWICE, and both disproofs are
+   kept: a limitation that has lost twice is the most load-bearing line in S7.**
 8. **Nothing PERSISTS the fact that a degraded response was shown.** The ERROR log is the only
    durable trace. *Reason:* **NO schema** is in the envelope; a persisted degraded-response record
    is a table. If the orchestrator or CHARC wants it, it is a separate arc with a migration.
@@ -2583,15 +2865,16 @@ Expect the `WARN (post-commit):` line on stderr, the `Trade id N:` line on stdou
     a threadpool worker where neither is signal-delivered, and where they ARE reachable the
     contract's direction governs. The CLI is DIFFERENT: there `KeyboardInterrupt` IS deliverable,
     which is why S2.2 contains the CLI close AND its output rather than treating them as symmetry.
-13. **A THIRD unclosed boundary lives INSIDE `record_entry`, at `entry.py:516-519`**, where the
-    degraded warning text is built with `{post_commit_error!r}`: a post-commit failure whose
-    `__repr__` raises makes that formatting raise over a committed row, before any `EntryResult`
-    exists to return (`A3-R3-03`, verified at source). *Reason for declaring rather than fixing:*
-    the envelope opens `entry.py` for **log containment**, and that line is clause-1 warning-text
-    construction, not a logging call -- its sibling at `:545` IS inside the log-failure handler and
-    IS fixed (Task 4). **The one-token correction is `{safe_text(post_commit_error)}`** and it is
-    flagged with that exact diff at S8 item 7. This plan does not make scope calls for the
-    orchestrator; it makes them visible.
+13. **NO LONGER A LIMITATION -- CLOSED BY RULING 2026-09-02, and the entry is KEPT for the same
+    reason as S7.3.** `entry.py:516-519` built the degraded warning with `{post_commit_error!r}`, so
+    a post-commit failure with a hostile `__repr__` raised over a committed row before any
+    `EntryResult` existed (`A3-R3-03`, verified at source). The plan declined to fix it because it
+    read "log containment" as excluding clause-1 warning-text construction, **held at that line, and
+    routed the question up.** The ruling: *"The envelope covers outcome-corrupting
+    exception-formatting on the post-commit path of `record_entry`, wherever it occurs in the
+    function."* Fixed in Task 4 alongside `:545`. **The residual line the plan drew was wrong and
+    the hold was right, and both are recorded** -- an implementer at an envelope edge needs to know
+    that routing cost one message, not a round.
 14. **THE OUTER POST-BIND GUARD'S EXCLUSIVE WINDOW IS NOT DETERMINISTICALLY TESTABLE.** Tests (b2)
     and (c2) cover the reachable, injectable part (a raising `close()`); what the outer `except`
     adds beyond that is coverage of an interval containing NO STATEMENTS -- an asynchronous
@@ -2606,7 +2889,24 @@ Expect the `WARN (post-commit):` line on stderr, the `Trade id N:` line on stdou
     the envelope, and not solvable by a route. **It is also why S2.0's inventory says "three
     IDENTIFIED CODE-LOCAL boundaries" rather than "three boundaries"** -- an exhaustive claim about
     failure boundaries is a hand-enumerated roster and fails the same way.
-16. **The static template walk (test h.2) is a declared heuristic.** It follows `{% include %}`
+16. **The access-log containment DUPLICATES the four-line guard rather than importing
+    `log_contained`.** *Reason:* `swing/web/middleware/request_id.py` is web middleware and must not
+    import `swing.trades.entry` -- that would pull the data layer into middleware import time for
+    every request. Moving the idiom to a neutral module would be a new file, i.e. outside the bound
+    the ruling set. The duplication is four lines, is commented at both ends, and its failure mode
+    is drift in a guard whose entire body is `try / except BaseException / stamp a header`.
+17. **THE FRAME'S TERMINAL RETURN IS OUTSIDE THE GUARD, AND SO IS CLICK'S HANDOFF** (`A3-R6-06`).
+    The single continuous guard covers every statement it ENCLOSES -- including the evaluation of
+    `HTMLResponse(...)` and the last `click.echo` -- but in CPython the normal-return instruction
+    following a protected suite lies outside that suite's exception-table range. An asynchronous
+    exception delivered at or after that handoff is not caught by this frame, and on the CLI Click's
+    outer machinery can turn it into a non-zero exit after the durable callback completed.
+    *Reason:* it is the TERMINAL analogue of the CALL-to-STORE window at S7.4 and it has the same
+    answer -- no caller-only restructuring reaches it. **The word "continuous" in S2.2 means
+    "no gap BETWEEN the guarded regions", which is what `A3-R4-01` was about; it does not mean the
+    frame's exit is guarded, and the plan says so in both places rather than letting the adjective
+    carry a claim it cannot support.**
+18. **The static template walk (test h.2) is a declared heuristic.** It follows `{% include %}`
     edges and the literal string `/trades/entry/form`; an entry affordance added through a
     route-composed fragment, a computed URL, or a macro is invisible to it. *Reason:* the standing
     declare-versus-widen ruling. The LIVE half of (h) covers today's two surfaces by execution, and
@@ -2638,17 +2938,22 @@ inline and never silently absorbed.
    included by `dashboard.html.j2:40` and by `partials/prices_refresh_container.html.j2` -- and that
    container is the OOB payload of `POST /prices/refresh` (`swing/web/routes/pipeline.py:372`),
    whose three swap targets exist only on the dashboard. **Flagged as a LATENT instance.**
-6. **`RequestIdMiddleware` can destroy a completed response** (S2.0, S7.3). `dispatch` at
+6. **RULED 2026-09-02: FOLDED IN, BOUNDED -- no longer flagged. `RequestIdMiddleware` can destroy a
+   completed response** (S2.0, S7.3, now Task 8 + test (o)). `dispatch` at
    `swing/web/middleware/request_id.py:22-34` calls `_access_log.info(...)` after `call_next`
    returns and before it returns the response, and `app.py:657-660` makes it OUTERMOST. A raising
    `swing.web.access` handler therefore converts a correct 200 -- including this arc's
    degraded-success 200 -- into the refusal-shaped 500. **This is the SAME R11-03 class this arc
    fixes six times, at a SEVENTH site OUTSIDE the envelope.** Correction, for whoever owns it: wrap
    that `info(...)` in the same containment (the idiom will be available), and pin it with a test
-   that enters a trade with a raising `swing.web.access` handler installed. **Route: the return
-   report, for the orchestrator to commission or bank.**
-7. **`entry.py:516-519` formats its degraded warning with `{post_commit_error!r}`, which can
-   RAISE over a committed row** (S2.0 boundary three, S7.13; verified at source). A post-commit step
+   that enters a trade with a raising `swing.web.access` handler installed. **That correction and
+   that test shape are now Task 8 and test (o), verbatim** -- the ruling folded in exactly what this
+   item specified and nothing more. **What stays BANKED: every other instance of the class in every
+   other middleware.** The bound was set at the ruling, not discovered during execution, and an
+   executor who finds a second site adds it to the banked list rather than to this task.
+7. **RULED 2026-09-02: AUTHORISED -- no longer flagged. `entry.py:516-519` formats its degraded
+   warning with `{post_commit_error!r}`, which can RAISE over a committed row** (S2.0 boundary
+   three, S7.13, now Task 4). A post-commit step
    failing with an exception whose `__repr__` raises makes the warning-text construction raise
    BEFORE the degraded `EntryResult` is built -- so `record_entry` reports a failure over a durable
    entry, which is precisely clause 1's subject, one line above the guard that implements it.
@@ -2660,9 +2965,11 @@ inline and never silently absorbed.
    ```
 
    `safe_text` exists after Task 1, in the same module, so the change costs nothing beyond the
-   authorisation. **NOT MADE HERE** because the envelope opens `entry.py` for LOG containment and
-   this is clause-1 warning-text construction. **Route: the return report -- the orchestrator can
-   authorise it into Task 4 in one line, or decline it and leave S7.13 standing.**
+   authorisation -- **which is exactly what happened.** The plan declined to make it unilaterally
+   because the envelope opened `entry.py` for LOG containment and this is clause-1 warning-text
+   construction; it held there and routed. **THE RULING, VERBATIM:** *"The envelope covers
+   outcome-corrupting exception-formatting on the post-commit path of `record_entry`, wherever it
+   occurs in the function."* Now in **Task 4**, with its own discriminating test, alongside `:545`.
 
 8. **TWO COHORT CLEANUP MESSAGES STATE A TRANSACTION CONDITION THEY DID NOT OBSERVE**
    (`A3-R5-13`, tagged out-of-envelope by the reviewer and verified here).
@@ -2704,7 +3011,8 @@ inline and never silently absorbed.
 | 3 R11-03 twin containment at the named sites, applied by READING | Tasks 1-4; tests (d1)-(d6); S1.4 |
 | tests (a)-(e), each computed under both paths | S3, plus (b2), (c2), (c3), (c4), (f)-(n) |
 | NO schema, NO change to `record_entry`'s transaction semantics | S2.8; no task touches a migration, `_entry_transaction`, or the declared residual |
-| declared limitations WITH reasons | S7 (sixteen), every one carrying its reason; three of them had a reason DISPROVED by review and were narrowed rather than defended (S7.5, S7.7, S7.10) |
+| declared limitations WITH reasons | S7 (seventeen), every one carrying its reason. **Three had a reason DISPROVED by review and shrank rather than being defended (S7.5, S7.7, S7.10) -- the disproofs are KEPT, because a limitation that lost by measurement is a stronger contract line than one never tested.** Two more (S7.3, S7.13) are now CLOSED by the 2026-09-02 ruling and are kept as records of what closed and how. |
+| the 2026-09-02 envelope ruling, all three questions | Global Constraints (verbatim); S0 (the amended motivation, verbatim); Task 4 (`:517`); Task 8 + test (o) (the middleware, bounded); S1.4 (the sixth site, ratified) |
 
 **Placeholder scan:** no `TBD`, no "add appropriate error handling", no "similar to Task N", no
 "write tests for the above". Every code step carries its code; every test step carries its
