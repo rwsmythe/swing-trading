@@ -1261,3 +1261,59 @@ def test_A3R4_03_an_EQ_spoofing_note_cannot_fake_a_landed_note():
     stored = object.__getattribute__(escaping, "_stored")
     assert any(type(n) is str and "could not be emitted" in n for n in stored), (
         f"an equality-spoofing placeholder faked the attach: {stored!r}")
+
+
+def test_A3R5_03_the_post_commit_error_is_RENDERED_ONCE_not_handed_to_logging(
+        tmp_path, monkeypatch):
+    """Codex A3R5-03 (MINOR), post-convergence.
+
+    `record_entry`'s degraded handler rendered the post-commit error with
+    `safe_text` for the WARNING but still passed the RAW OBJECT to
+    `log.error`, so a FORMATTING handler invoked its `__str__` a second time
+    -- which a hostile exception can use to mutate itself or raise, obscuring
+    what actually failed. The arc's other diagnostic paths were corrected a
+    round earlier; this one was missed.
+
+    PRE-fix `__str__` is called once by the formatting handler; POST-fix the
+    handler formats a plain `str` and the exception is never asked again.
+    """
+    from tests.trades.test_22a_task9_entry_wiring import (
+        ACCEPT_SESSION,
+        _inject_after_the_commit,
+        _trade_rows,
+        accept_and_link,
+        build_world,
+        enter,
+        req,
+    )
+
+    calls = {"repr": 0, "str": 0}
+
+    class _Counting(RuntimeError):
+        def __repr__(self):
+            calls["repr"] += 1
+            return "<counting error>"
+
+        def __str__(self):
+            calls["str"] += 1
+            return "<counting error str>"
+
+    conn, cfg, candidate_id = build_world(tmp_path, "a3r503")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+
+    fired = _inject_after_the_commit(monkeypatch, _Counting("probe"))
+
+    sink = _FormattingSink(level=logging.ERROR)
+    logging.getLogger().addHandler(sink)
+    try:
+        result = enter(conn, cfg, req())
+    finally:
+        logging.getLogger().removeHandler(sink)
+
+    assert fired, "the planted exception never landed"
+    assert result.trade_id is not None
+    assert _trade_rows(conn) == 1
+    assert calls["str"] == 0, (
+        f"the RAW exception was handed to a formatting logging handler: "
+        f"{calls}")

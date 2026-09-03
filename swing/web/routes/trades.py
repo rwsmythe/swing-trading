@@ -244,6 +244,13 @@ def _as_exact_text_tuple(value) -> tuple[str, ...]:
     schema-level one, and it does not bind a caller constructing an
     `EntryResult` directly, which the dataclass permits.
     """
+    # **A `str` IS ONE WARNING, NOT ONE PER CHARACTER** (Codex A3R5-04). A
+    # string is iterable, so the generic `list(value)` below shredded an
+    # accidentally-assigned `post_commit_warnings="do not retry"` into
+    # thirteen warnings -- under this very helper's own premise that the
+    # public field is runtime-unconstrained.
+    if isinstance(value, str):
+        return (ascii_safe(value),)
     try:
         items = (list(tuple.__iter__(value)) if type(value) is tuple
                  else list(value))

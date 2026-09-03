@@ -883,6 +883,14 @@ def record_entry(
         # the honest answer is the original exception.
         if result is None or not outcome.committed:
             raise
+        # Rendered ONCE and used in BOTH places (Codex A3R5-03): the
+        # warning used `safe_text` while the `log.error` below still
+        # received the RAW object, so a FORMATTING handler invoked its
+        # `__str__` a second time -- which a hostile exception can use to
+        # mutate itself or raise, obscuring what actually failed. The
+        # arc's other diagnostic paths were corrected in the previous
+        # round; this one was missed.
+        post_commit_error_text = safe_text(post_commit_error)
         # **`safe_text`, NOT `{post_commit_error!r}`** (22-A3 Task 4, ruled
         # 2026-09-02: *"the envelope covers outcome-corrupting
         # exception-formatting on the post-commit path of `record_entry`,
@@ -893,7 +901,7 @@ def record_entry(
         # above the guard that implements it.
         warning_text = (
             f"the entry is DURABLE (trade {result.trade_id}) and a step "
-            f"AFTER the commit failed ({safe_text(post_commit_error)}). The "
+            f"AFTER the commit failed ({post_commit_error_text}). The "
             f"entry exists -- do NOT retry.")
         degraded = dataclasses.replace(
             result,
@@ -914,7 +922,7 @@ def record_entry(
                 "(%s). The entry exists; the failure is reported as a warning "
                 "and NOT as a failed entry -- reporting a durable write as a "
                 "failure is what causes a double entry.",
-                result.trade_id, post_commit_error)
+                result.trade_id, post_commit_error_text)
         except BaseException as log_error:  # noqa: BLE001 -- the CLASS
             degraded = dataclasses.replace(
                 degraded,

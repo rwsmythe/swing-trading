@@ -292,9 +292,14 @@ def test_c3_a_failing_echo_after_a_durable_entry_keeps_exit_0(
     leaves the OUTPUT BLOCK unguarded passes (c) and (c2).
 
     PRE-fix the `BrokenPipeError` escapes and the exit code is non-zero over
-    one durable row; POST-fix the exit code is 0 -- because there is nowhere
-    left to write, so the exit code becomes the ONLY remaining signal, which
-    is exactly why it must be the TRUE one.
+    one durable row; POST-fix the exit code is 0.
+
+    **WHAT THIS DOES NOT TEST, corrected after review** (Codex A3R5-07): the
+    docstring used to say this represents "there is nowhere left to write". It
+    does not -- the probe fails ONE call and leaves two usable sinks, and the
+    code now passes it because the per-line fallback RETRIES successfully.
+    That is worth having, and it is a different property. The
+    all-sinks-unavailable limitation is tested separately below.
     """
     runner, cfg = _setup(tmp_path)
     fired = _break_first_echo(monkeypatch)
@@ -543,3 +548,41 @@ def test_A3R3_06_a_hostile_str_subclass_warning_cannot_abort_the_output(
     assert result.exit_code == 0, result.output
     assert "22-A3 PROBE: the SECOND warning must still print" in result.stderr
     assert f"Trade id {trade_id}" in result.output
+
+
+def test_A3R5_07_when_EVERY_sink_refuses_the_exit_code_is_still_TRUE(
+        tmp_path, monkeypatch):
+    """The declared limitation, finally exercised (Codex A3R5-07).
+
+    BOTH sinks refuse, persistently. There is genuinely nowhere left to write,
+    so the operator gets no confirmation -- and the exit code becomes the ONLY
+    remaining signal, which is exactly why it must be the TRUE one. The ledger
+    has the row, so the true answer is 0. Exiting non-zero because a pipe
+    closed would report a durable write as a failure.
+    """
+    import click
+
+    runner, cfg = _setup(tmp_path)
+    _inject_post_commit_warning(monkeypatch, "22-A3 PROBE: durable")
+
+    attempts: list[bool] = []
+
+    def _always_fails(message="", *a, err=False, **kw):
+        attempts.append(err)
+        raise OSError("22-A3 PROBE: every sink refuses")
+
+    monkeypatch.setattr(click, "echo", _always_fails)
+    result = runner.invoke(main, _entry_argv(cfg))
+
+    assert len(_trade_rows(cfg)) == 1, "the premise: the entry is durable"
+    assert result.exit_code == 0, result.output
+    # **THE ASSERTION IS THAT A SINGLE LINE TRIED BOTH SINKS.** A first draft
+    # asserted only that True and False both appeared, which they do WITHOUT
+    # any fallback at all -- warnings prefer stderr and the confirmation
+    # prefers stdout, so one attempt each already satisfies it. It passed
+    # under its own mutation; caught by running the mutation. Counting is what
+    # distinguishes: with the fallback, every line is tried on BOTH sinks.
+    assert attempts.count(True) >= 2, (
+        f"no line was retried on the other sink: {attempts}")
+    assert attempts.count(False) >= 2, (
+        f"no line was retried on the other sink: {attempts}")

@@ -978,3 +978,42 @@ def test_A3R4_04_a_hostile_warnings_container_cannot_break_the_response(
     assert f"Trade #{trade_id}" in resp.text
     assert "could not be read" in resp.text, (
         "the unreadable warnings must be REPORTED, not silently dropped")
+
+
+def test_A3R5_04_a_bare_str_is_ONE_warning_not_one_per_character(
+        seeded_db, monkeypatch):
+    """Codex A3R5-04 (MINOR), post-convergence.
+
+    A string is iterable, so the boundary normaliser's generic `list(value)`
+    shredded an accidentally-assigned `post_commit_warnings="..."` into one
+    warning per character -- under this very helper's own premise that the
+    public dataclass field is runtime-unconstrained.
+
+    PRE-fix the contiguous sentence never appears in the response (it is
+    thirteen separate list items); POST-fix it appears intact.
+    """
+    import dataclasses
+
+    import swing.web.routes.trades as routes
+
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+
+    sentinel = "22-A3 PROBE: one warning, not many"
+    real = routes.record_entry
+
+    def _wrapped(*a, **kw):
+        res = real(*a, **kw)
+        return dataclasses.replace(res, post_commit_warnings=sentinel)
+
+    monkeypatch.setattr(routes, "record_entry", _wrapped)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_entry(client)
+
+    assert resp.status_code == 200, resp.text[:400]
+    assert _trade_count(cfg) == 1
+    assert sentinel in resp.text, (
+        "the warning was shredded into one list item per character")

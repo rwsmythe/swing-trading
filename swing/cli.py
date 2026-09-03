@@ -899,14 +899,18 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         # The same boundary normalisation the route helper does (Codex
         # A3R4-04): `post_commit_warnings` is an unconstrained public
         # dataclass field, and a tuple SUBCLASS can raise from `__iter__`.
-        try:
-            _raw = result.post_commit_warnings
-            post_commit_warnings = tuple(
-                list(tuple.__iter__(_raw)) if type(_raw) is tuple
-                else list(_raw))
-        except BaseException:  # noqa: BLE001 -- the CLASS
-            post_commit_warnings = (
-                "<the post-commit warnings could not be read>",)
+        _raw = result.post_commit_warnings
+        if isinstance(_raw, str):
+            # A `str` is ONE warning, not one per character (Codex A3R5-04).
+            post_commit_warnings = (_raw,)
+        else:
+            try:
+                post_commit_warnings = tuple(
+                    list(tuple.__iter__(_raw)) if type(_raw) is tuple
+                    else list(_raw))
+            except BaseException:  # noqa: BLE001 -- the CLASS
+                post_commit_warnings = (
+                    "<the post-commit warnings could not be read>",)
         if close_error_text is not None:
             post_commit_warnings = post_commit_warnings + (
                 f"the entry is DURABLE (trade {result.trade_id}) and CLOSING "
@@ -956,6 +960,14 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         # write" case; it is the arc's own failure mode (a durable entry the
         # operator is never told about, which is the retry direction) reached
         # through the arc's own guard.
+        # **AT LEAST ONCE, NOT EXACTLY ONCE, AND THE CONTRACT SAYS SO**
+        # (Codex A3R5-06). `confirmed` is bound AFTER the helper returns, so
+        # an asynchronous exception delivered in that return-to-store window
+        # leaves it False over a line that was actually written, and the
+        # operator sees the confirmation twice. There is no caller-only exact
+        # fix -- it is the CALL-to-STORE window again -- and a duplicated
+        # "your trade exists" is harmless in the direction that matters,
+        # whereas its absence is the retry direction.
         if not confirmed:
             _line = ascii_safe(
                 "Trade id " + safe_text(result.trade_id) + ": "
