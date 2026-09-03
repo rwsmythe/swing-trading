@@ -21,14 +21,21 @@ succeeded.* Both arcs make that true one layer further out.
   at `:522` / `:543`. **Grep across `swing/`: four hits, all inside `entry.py`. ZERO readers.**
 - **`swing/web/routes/trades.py:1490` calls `record_entry(...)` with NO assignment** — the result is
   discarded (a Bug-fix-AB comment explains why `trade_id` was no longer needed; the warnings field
-  did not exist then). The route then runs `build_dashboard` + template renders inside the same
-  `try`, so **any failure there presents as an entry failure OVER A DURABLE TRADE** — a 500 the
-  operator reads as "the entry did not happen." Retry-inviting; belt-mitigated only by
-  `ux_trades_one_open_per_ticker`.
+  did not exist then). **CORRECTED 2026-09-02 (orchestrator, verified at the source; the brief's
+  original "inside the same `try`" was CHARC's wrong premise):** the `try` spans `:1483`–`:1959`
+  and **`build_dashboard` sits at `:1992`, OUTSIDE every `try`** — so the fix must ADD a guard, not
+  narrow an `except`. **And the consequence is worse than a bare 500:** `entry-form-` is in
+  `_ROW_TARGET_PREFIXES`, the app-wide handler renders `trade_form_error` at status 500, and the
+  HTMX config swaps 4xx/5xx — **a post-commit render failure paints the trade-form error INTO the
+  entry form's OWN ROW, at the identical surface, class and position a duplicate/hard-cap REFUSAL
+  uses. The operator cannot tell a refused entry from a durable one.** Retry-inviting; belt-mitigated
+  only by `ux_trades_one_open_per_ticker`.
 - `swing/cli.py:790` assigns `result` and never reads `post_commit_warnings`.
 - **R11-03's twin:** the R9-05 cleanup-warning logs — `entry.py:748` region and the
-  `cohort_provenance_correction.py` sites at `:2288`, `:2358`, `:2697`, `:3344` ("this connection
-  MUST BE DISCARDED") — need the same best-effort containment R10-04 established: **a failing
+  `cohort_provenance_correction.py` sites at `:2284`, `:2353`, **`:2445`** (the SIXTH — ERROR log +
+  `raise cleanup_error` on the PREVIEW leg, success-path-reachable; found by the plan reading every
+  `log.error(` in the module; **a roster in a brief is a FLOOR, ratified 2026-09-02**), `:2693`,
+  `:2700`, `:3341` — need the same best-effort containment R10-04 established: **a failing
   logging handler must never change a function's result or which exception propagates.**
 
 ### What 22-A3 ships
@@ -63,7 +70,15 @@ succeeded.* Both arcs make that true one layer further out.
 
 ### Envelope and declared limitations
 
-`swing/web/routes/trades.py` · `swing/cli.py` · `swing/trades/entry.py` (log containment ONLY) ·
+`swing/web/routes/trades.py` · `swing/cli.py` · `swing/trades/entry.py` (log containment, **plus — ruled
+2026-09-02, Q1 — outcome-corrupting exception-formatting on the post-commit path of `record_entry`
+wherever it occurs**: `entry.py:517`'s `{post_commit_error!r}` sits one line above the guard that
+implements clause 1, and a raising `__repr__` there converts a durable success into a failure; the fix
+is one token, `safe_text(post_commit_error)`) · **`swing/web/middleware/request_id.py` (ruled 2026-09-02,
+Q2 — FOLD IN, BOUNDED to the plan's S8 item 6 correction + test shape ONLY, no middleware sweep):**
+`RequestIdMiddleware` is OUTERMOST and access-logs AFTER `call_next`, so a raising log handler there
+destroys the very degraded-success response this arc builds — the arc's claim would be false one frame
+outside its own fix; further sites of the class are banked follow-ons ·
 `swing/trades/cohort_provenance_correction.py` (log containment ONLY) · templates for the warning
 partial if needed. **NO schema. NO change to `record_entry`'s transaction semantics** — the
 commit-raises path keeps re-raising (that is 22-A4's). Declared, with reason: the belt covers only an
