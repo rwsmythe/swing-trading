@@ -250,11 +250,16 @@ def _post_commit_warnings(result, close_error,
     `swing/trades/cohort_provenance_correction.py`.  A cleanup warning that is
     WRONG about the state teaches an operator to distrust the right ones.
 
-    THE COERCION IS NOT COSMETIC: `record_entry` builds its warning strings
-    with a raw `{exc!r}`, so a custom `__repr__` returning a lone surrogate
-    reaches the TEMPLATE path as readily as the literal one, and
-    `html.escape` preserves it until `HTMLResponse` raises
-    `UnicodeEncodeError` encoding the body -- outside every guard.
+    THE COERCION IS NOT COSMETIC, AND THE REASON IS NOT THE ONE THIS
+    DOCSTRING USED TO GIVE (Codex A3R3-07).  It said `record_entry` builds
+    its warning strings with a raw `{exc!r}`; this arc replaced BOTH of those
+    sites with `safe_text`, so that sentence became false the moment it
+    shipped -- a comment that reads true while being false, which is a
+    named gotcha in this codebase.  The live reason is that
+    `post_commit_warnings` is a plain dataclass field on a PUBLIC result
+    object: nothing constrains what a caller puts in it, `html.escape`
+    PRESERVES a lone surrogate (measured), and `HTMLResponse` then raises
+    `UnicodeEncodeError` encoding the body -- outside every guard here.
     """
     warnings = tuple(ascii_safe(w) for w in result.post_commit_warnings)
     if close_error is not None:

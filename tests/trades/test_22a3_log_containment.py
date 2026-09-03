@@ -998,3 +998,141 @@ def test_A3R2_05_the_entry_cleanup_preserves_ALL_FOUR_evidence_fields(
     assert escaped.args == ("22-A3 PROBE: rollback failed",), escaped.args
     assert escaped.__cause__ is body_error
     assert escaped.__context__ is body_error
+
+
+# ===========================================================================
+# CODEX ROUND 3 -- three of these are residuals of ROUND 2's own fixes.
+# ===========================================================================
+
+
+def test_A3R3_02_a_hostile_NOTES_descriptor_cannot_corrupt_evidence_LATER():
+    """Codex A3R3-02 (MAJOR).
+
+    Round 2 restored the evidence immediately after the log call, which left
+    everything AFTER it outside the boundary: `safe_text(log_error)`,
+    `add_note`, the read-back, and the repair's own read and write. A hostile
+    `__notes__` descriptor mutates from its GETTER, which runs during
+    `add_note` -- i.e. strictly after the sole restoration.
+
+    PRE-fix the corruption survives; POST-fix the restore is a `finally` over
+    the whole sequence.
+    """
+    from swing.trades.entry import log_contained_note
+
+    class _MutatingNotes(RuntimeError):
+        @property
+        def __notes__(self):
+            BaseException.__setattr__(self, "args", ("CORRUPTED",))
+            BaseException.__setattr__(self, "__cause__", None)
+            BaseException.__setattr__(self, "__context__", None)
+            return []
+
+        @__notes__.setter
+        def __notes__(self, value):
+            pass
+
+    cause = ValueError("the real cause")
+    context = KeyError("the real context")
+    escaping = _MutatingNotes("the real args")
+    escaping.__cause__ = cause
+    escaping.__context__ = context
+
+    sink = _BrokenSink(level=logging.ERROR)
+    logging.getLogger().addHandler(sink)
+    try:
+        log_contained_note(
+            logging.getLogger("t22a3.mutnotes"), escaping, "boom")
+    finally:
+        logging.getLogger().removeHandler(sink)
+
+    assert escaping.args == ("the real args",), escaping.args
+    assert escaping.__cause__ is cause
+    assert escaping.__context__ is context
+
+
+def test_A3R3_03_one_unreadable_field_does_not_disable_the_others():
+    """Codex A3R3-03 (MAJOR).
+
+    All three fields were read inside ONE `try`, so a single hostile `args`
+    data descriptor returned `None` for the whole snapshot and preserved
+    NOTHING -- widening the residue from "the note cannot attach" to "the
+    chaining can be destroyed".
+
+    Here `args` is unreadable AND a formatting handler drives a self-mutating
+    `__str__` that clears the two perfectly writable chaining fields.
+    PRE-fix both are lost; POST-fix both are restored, per field.
+    """
+    from swing.trades.entry import log_contained_note
+
+    class _UnreadableArgs(RuntimeError):
+        @property
+        def args(self):
+            raise TypeError("args getter raises")
+
+        @args.setter
+        def args(self, value):
+            pass
+
+        def __str__(self):
+            BaseException.__setattr__(self, "__cause__", None)
+            BaseException.__setattr__(self, "__context__", None)
+            raise RuntimeError("format failed")
+
+    cause = ValueError("the real cause")
+    context = KeyError("the real context")
+    escaping = _UnreadableArgs()
+    escaping.__cause__ = cause
+    escaping.__context__ = context
+
+    sink = _FormattingSink(level=logging.ERROR)
+    logging.getLogger().addHandler(sink)
+    try:
+        log_contained_note(
+            logging.getLogger("t22a3.unreadable"), escaping, "boom %s",
+            escaping)
+    finally:
+        logging.getLogger().removeHandler(sink)
+
+    assert escaping.__cause__ is cause, (
+        "one unreadable field disabled preservation of the others")
+    assert escaping.__context__ is context
+
+
+def test_A3R3_04_a_STATEFUL_descriptor_that_discards_once_still_gets_the_note():
+    """Codex A3R3-04 (MINOR).
+
+    Read-back gated only the FIRST attach, so a descriptor that discards its
+    first setter call and stores the second silently lost the note while the
+    comments claimed the attachment was verified. ONE bounded retry closes it.
+    """
+    from swing.trades.entry import log_contained_note
+
+    class _DiscardsFirstWrite(RuntimeError):
+        def __init__(self, *a):
+            super().__init__(*a)
+            object.__setattr__(self, "_stored", [])
+            object.__setattr__(self, "_writes", 0)
+
+        @property
+        def __notes__(self):
+            return list(object.__getattribute__(self, "_stored"))
+
+        @__notes__.setter
+        def __notes__(self, value):
+            n = object.__getattribute__(self, "_writes") + 1
+            object.__setattr__(self, "_writes", n)
+            if n >= 2:                      # the FIRST write is discarded
+                object.__setattr__(self, "_stored", list(value))
+
+    sink = _BrokenSink(level=logging.ERROR)
+    logging.getLogger().addHandler(sink)
+    try:
+        escaping = _DiscardsFirstWrite("x")
+        log_contained_note(
+            logging.getLogger("t22a3.stateful"), escaping, "boom")
+    finally:
+        logging.getLogger().removeHandler(sink)
+
+    notes = BaseException.__getattribute__(escaping, "__notes__")
+    assert any("could not be emitted" in n for n in notes), (
+        f"the repair write was not verified and the note was lost: {notes}")

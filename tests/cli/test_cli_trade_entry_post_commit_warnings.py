@@ -433,3 +433,109 @@ def test_A3R2_01_an_interrupt_before_the_confirmation_still_confirms(
     assert f"Trade id {trade_id}" in result.output, (
         "a durable entry exited 0 with the operator told nothing at all, on "
         "two perfectly usable sinks")
+
+
+def _fail_one_sink(monkeypatch, *, fail_err: bool):
+    """Make `click.echo` fail for ONE stream and work for the other."""
+    import click
+    real = click.echo
+    attempts: list[tuple[str, bool]] = []
+
+    def _wrapped(message="", *a, err=False, **kw):
+        attempts.append((str(message), err))
+        if err is fail_err:
+            raise OSError("22-A3 PROBE: this sink is closed")
+        return real(message, *a, err=err, **kw)
+
+    monkeypatch.setattr(click, "echo", _wrapped)
+    return attempts
+
+
+def test_A3R3_01_a_broken_STDOUT_still_confirms_on_stderr(
+        tmp_path, monkeypatch):
+    """Codex A3R3-01 (MAJOR).
+
+    `_echo_contained` turns a failed write into `False` and raises nothing, so
+    the outer handler's stdout-then-stderr fallback was NEVER entered on the
+    ordinary path. A broken stdout therefore swallowed the durability
+    confirmation while stderr was perfectly usable -- not the declared "every
+    sink is gone" case, and the retry/double-entry direction.
+
+    The pre-existing `test_c3` blesses this: it fails the confirmation write
+    and asserts only the exit status.
+
+    PRE-fix: exit 0, one durable row, the trade id nowhere. POST-fix: it
+    reaches stderr.
+    """
+    runner, cfg = _setup(tmp_path)
+    _fail_one_sink(monkeypatch, fail_err=False)      # stdout is broken
+
+    result = runner.invoke(main, _entry_argv(cfg))
+
+    rows = _trade_rows(cfg)
+    assert len(rows) == 1, rows
+    trade_id = rows[0][0]
+    assert result.exit_code == 0, result.output
+    assert f"Trade id {trade_id}" in result.stderr, (
+        "stdout refused the confirmation and stderr was never tried")
+
+
+def test_A3R3_05_a_broken_STDERR_still_delivers_the_warnings(
+        tmp_path, monkeypatch):
+    """Codex A3R3-05 (MINOR), the mirror image.
+
+    Warnings were attempted on stderr only, so a broken stderr silently
+    swallowed the very field this arc exists to surface -- while the
+    confirmation went out on a working stdout.
+    """
+    runner, cfg = _setup(tmp_path)
+    _inject_post_commit_warning(monkeypatch, "22-A3 PROBE: durable, do NOT retry")
+    _fail_one_sink(monkeypatch, fail_err=True)       # stderr is broken
+
+    result = runner.invoke(main, _entry_argv(cfg))
+
+    assert len(_trade_rows(cfg)) == 1
+    assert result.exit_code == 0, result.output
+    assert "22-A3 PROBE: durable, do NOT retry" in result.output, (
+        "the post-commit warning was attempted on the broken sink only")
+
+
+def test_A3R3_06_a_hostile_str_subclass_warning_cannot_abort_the_output(
+        tmp_path, monkeypatch):
+    """Codex A3R3-06 (MINOR).
+
+    An f-string calls `__format__` on its operands, which a `str` SUBCLASS may
+    override to RAISE -- so wrapping the CONSTRUCTED line in `ascii_safe`
+    could not contain the CONSTRUCTION. The exception escaped into the outer
+    handler and the offending warning, every later warning, and (before
+    A3R2-01) the confirmation itself were lost.
+
+    PRE-fix the second warning and the confirmation never print; POST-fix each
+    operand is coerced before interpolation.
+    """
+    class _HostileFormat(str):
+        def __format__(self, spec):
+            raise RuntimeError("22-A3 PROBE: __format__ raised")
+
+    runner, cfg = _setup(tmp_path)
+
+    import dataclasses
+
+    import swing.trades.entry as entry_mod
+    real = entry_mod.record_entry
+
+    def _wrapped(*a, **kw):
+        res = real(*a, **kw)
+        return dataclasses.replace(res, post_commit_warnings=(
+            _HostileFormat("22-A3 PROBE: hostile"),
+            "22-A3 PROBE: the SECOND warning must still print"))
+
+    monkeypatch.setattr(entry_mod, "record_entry", _wrapped)
+    result = runner.invoke(main, _entry_argv(cfg))
+
+    rows = _trade_rows(cfg)
+    assert len(rows) == 1, rows
+    trade_id = rows[0][0]
+    assert result.exit_code == 0, result.output
+    assert "22-A3 PROBE: the SECOND warning must still print" in result.stderr
+    assert f"Trade id {trade_id}" in result.output

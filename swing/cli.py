@@ -904,18 +904,29 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         # EVERY LINE IS ATTEMPTED (Codex A3-AR-02): a failed stderr warning
         # must not suppress the stdout confirmation that a durable
         # money-bearing row exists.
+        # **COERCE BEFORE INTERPOLATION** (Codex A3R3-06). An f-string calls
+        # `__format__` on its operands, which a `str` SUBCLASS may override to
+        # RAISE -- so wrapping the constructed line in `ascii_safe` cannot
+        # contain the construction, and the exception escaped into the outer
+        # handler where the offending warning AND every later one were lost.
+        # `ascii_safe` is total and goes through the base slots, so coercing
+        # each operand FIRST and concatenating exact `str`s is.
+        _ticker_txt = ascii_safe(ticker)
         for post_commit_warning in post_commit_warnings:
-            _echo_contained(
-                ascii_safe(f"WARN (post-commit): {post_commit_warning}"),
-                err=True)
+            _echo_either_sink(
+                "WARN (post-commit): " + ascii_safe(post_commit_warning),
+                prefer_err=True)
         if result.warning:
-            _echo_contained(ascii_safe(f"WARN: {result.warning}"), err=True)
+            _echo_either_sink(
+                "WARN: " + ascii_safe(result.warning), prefer_err=True)
         if result.watchlist_archived:
-            _echo_contained(ascii_safe(
-                f"Watchlist row for {ticker} archived (reason: entered)"))
-        confirmed = _echo_contained(ascii_safe(
-            f"Trade id {result.trade_id}: {ticker} {shares} sh @ "
-            f"${entry_price:.2f}, stop ${initial_stop:.2f}"))
+            _echo_either_sink(
+                "Watchlist row for " + _ticker_txt
+                + " archived (reason: entered)")
+        confirmed = _echo_either_sink(ascii_safe(
+            "Trade id " + safe_text(result.trade_id) + ": " + _ticker_txt
+            + " " + safe_text(shares) + " sh @ "
+            + f"${entry_price:.2f}, stop ${initial_stop:.2f}"))
     except BaseException:  # noqa: BLE001 -- the CLASS
         if result is None:
             raise
@@ -929,12 +940,10 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         # through the arc's own guard.
         if not confirmed:
             _line = ascii_safe(
-                f"Trade id {result.trade_id}: {ticker} {shares} sh @ "
-                f"${entry_price:.2f}, stop ${initial_stop:.2f}")
-            # stdout first, then stderr: the point is that the operator LEARNS
-            # the row exists, not which stream carries it.
-            if not _echo_contained(_line):
-                _echo_contained(_line, err=True)
+                "Trade id " + safe_text(result.trade_id) + ": "
+                + ascii_safe(ticker) + " " + safe_text(shares) + " sh @ "
+                + f"${entry_price:.2f}, stop ${initial_stop:.2f}")
+            _echo_either_sink(_line)
         # DURABLE. `click.echo` can raise `BrokenPipeError`
         # (`swing trade entry | head`) or any other output error, and an
         # uncontained failure here would leave a durable entry exiting
@@ -943,6 +952,26 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         # write, so the exit code becomes the only remaining signal, which is
         # exactly why it must be the TRUE one.
         return
+
+
+def _echo_either_sink(text: str, *, prefer_err: bool = False) -> bool:
+    """Attempt one line on the preferred sink, then on the OTHER one.
+
+    **STDOUT AND STDERR ARE INDEPENDENT, AND THAT CUTS BOTH WAYS** (Codex
+    A3R3-01 and A3R3-05).  Per-line containment stopped one failed write from
+    suppressing the rest -- but each line was still attempted on exactly ONE
+    sink, so a broken stdout silently swallowed the durability confirmation
+    while stderr was perfectly usable, and a broken stderr silently swallowed
+    every post-commit warning.  Neither is the declared "every sink is gone"
+    case, and the first is the retry/double-entry direction this arc exists
+    to close.
+
+    The point is that the operator LEARNS the fact, not which stream carries
+    it.
+    """
+    if _echo_contained(text, err=prefer_err):
+        return True
+    return _echo_contained(text, err=not prefer_err)
 
 
 def _echo_contained(text: str, *, err: bool = False) -> bool:

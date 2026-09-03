@@ -53,8 +53,16 @@ def ascii_safe(text: str) -> str:
 
     Two independent reasons, both MEASURED rather than reasoned about:
 
-    * Windows `cp1252` stdout raises on non-ASCII, and these strings reach
-      `click.echo` (CLAUDE.md; `pytest`'s `capsys` hides it).
+    * A Windows console encoder raises on any character OUTSIDE ITS
+      REPERTOIRE, and these strings reach `click.echo` (`pytest`'s `capsys`
+      bypasses the OS encoder and hides it).  **The claim is deliberately
+      NOT "cp1252 raises on non-ASCII"** (Codex A3R3-07): cp1252 encodes a
+      great deal of non-ASCII, including the accented characters and the
+      em-dash this arc's own tests inject.  What it cannot encode is
+      everything outside its 256 slots -- and NO codec can encode a LONE
+      SURROGATE, which is the case that actually reaches `HTMLResponse`.
+      ASCII coercion is chosen because it is safe under EVERY output
+      encoding, not because non-ASCII is inherently fatal.
     * A custom `__repr__` may return a string containing a LONE SURROGATE.
       `html.escape` preserves it and `HTMLResponse` then raises
       `UnicodeEncodeError` encoding the body -- one frame OUTSIDE every
@@ -112,26 +120,41 @@ def safe_text(value: object) -> str:
     return "<an object whose repr() and str() both raised>"
 
 
-def _evidence_snapshot(escaping: BaseException):
-    """`(args, __cause__, __context__)` read through the BASE slots, or None.
+#: The evidence a cleanup site's caller is judged on.
+_EVIDENCE_FIELDS = ("args", "__cause__", "__context__")
+#: "this field could not be read", distinct from a legitimate `None`.
+_UNREADABLE = object()
 
-    Used to make `log_contained_note`'s preservation guarantee ENFORCED
-    rather than assumed -- see its docstring and Codex A3R2-02.
+
+def _evidence_snapshot(escaping: BaseException) -> tuple:
+    """`(args, __cause__, __context__)` read through the BASE slots.
+
+    **PER FIELD, NOT ALL-OR-NOTHING** (Codex A3R3-03).  The predecessor read
+    all three inside ONE `try` and returned `None` if any of them raised -- so
+    a single hostile `args` data descriptor disabled preservation of
+    `__cause__` and `__context__` too, widening the residue from "the
+    diagnostic note cannot attach" to "the cleanup exception's chaining can be
+    destroyed".  Each field now carries its own sentinel, so one unreadable
+    field costs exactly itself.
     """
-    try:
-        return (BaseException.__getattribute__(escaping, "args"),
-                BaseException.__getattribute__(escaping, "__cause__"),
-                BaseException.__getattribute__(escaping, "__context__"))
-    except BaseException:  # noqa: BLE001 -- the CLASS
-        return None
+    out = []
+    for name in _EVIDENCE_FIELDS:
+        try:
+            out.append(BaseException.__getattribute__(escaping, name))
+        except BaseException:  # noqa: BLE001 -- the CLASS
+            out.append(_UNREADABLE)
+    return tuple(out)
 
 
-def _restore_evidence(escaping: BaseException, snapshot) -> None:
-    """Put back anything a logging handler changed. Never raises."""
-    if snapshot is None:
-        return
-    names = ("args", "__cause__", "__context__")
-    for name, value in zip(names, snapshot, strict=True):
+def _restore_evidence(escaping: BaseException, snapshot: tuple) -> None:
+    """Put back anything a logging handler or a descriptor changed.
+
+    Never raises.  A field that could not be READ is skipped rather than
+    written with a sentinel.
+    """
+    for name, value in zip(_EVIDENCE_FIELDS, snapshot, strict=True):
+        if value is _UNREADABLE:
+            continue
         try:
             if BaseException.__getattribute__(escaping, name) is not value:
                 BaseException.__setattr__(escaping, name, value)
@@ -232,9 +255,26 @@ def log_contained_note(logger: logging.Logger, escaping: BaseException,
     # same as preserving the evidence, and the evidence IS this helper's
     # contract** -- at the rollback and savepoint sites the original error and
     # its chaining are what say whether a transaction may still be open.
+    #
+    # **AND THE PRESERVATION SPANS THE WHOLE SEQUENCE, NOT JUST THE LOG CALL**
+    # (Codex A3R3-02).  Restoring immediately after logging left every later
+    # step outside the boundary -- `safe_text(log_error)` (and `log_error` CAN
+    # BE `escaping` itself, when a handler re-raises it), `add_note`, the
+    # read-back, and the repair's own read and write.  A hostile `__notes__`
+    # descriptor can mutate `args` / `__cause__` / `__context__` from its
+    # getter or setter, and those mutations landed AFTER the sole restoration
+    # and survived.  The restore is now a `finally` over the entire body.
     snapshot = _evidence_snapshot(escaping)
+    try:
+        _attach_sink_failure_note(logger, escaping, msg, *args)
+    finally:
+        _restore_evidence(escaping, snapshot)
+
+
+def _attach_sink_failure_note(logger: logging.Logger, escaping: BaseException,
+                              msg: str, *args: object) -> None:
+    """`log_contained_note`'s body, wrapped by its evidence guard."""
     log_error = log_contained(logger, msg, *args)
-    _restore_evidence(escaping, snapshot)
     if log_error is None:
         return
     # **OBSERVATION-ONLY WORDING** (Codex A3-AR-06, VERIFIED BY EXECUTION):
@@ -303,6 +343,15 @@ def log_contained_note(logger: logging.Logger, escaping: BaseException,
         BaseException.__setattr__(escaping, "__notes__", repaired)
     except BaseException:  # noqa: BLE001
         return
+    # **THE REPAIR IS VERIFIED TOO** (Codex A3R3-04).  Read-back gated only
+    # the FIRST attach, so a STATEFUL descriptor that discards its first
+    # setter call and stores the second silently lost the note while the
+    # comments claimed the attachment was verified.  ONE bounded retry, then
+    # give up -- the residue is declared rather than looped over.
+    if _note_landed(escaping, note):
+        return
+    with contextlib.suppress(BaseException):
+        BaseException.__setattr__(escaping, "__notes__", repaired)
 
 
 # Re-export for callers: ``from swing.trades.entry import
