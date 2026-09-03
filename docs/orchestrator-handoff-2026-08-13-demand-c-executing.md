@@ -47,6 +47,8 @@ brief's §4.8: the ladder-lock flake (load-sensitive by construction) and
 `test_run_stub_skip_exits_zero`, **which fails on `main` itself** — I verified by running it there, so
 do not read it as a regression and do not fix it.
 
+   > **CORRECTED 2026-09-03 (orchestrator, measured):** the *"fails on `main` itself"* claim above is **STALE**. Run in isolation on `main` today it **PASSES**. The real mechanism is a LOAD flake: the test spawns a real PowerShell subprocess writing a temp log, and it fails only under 16-way xdist. Third occurrence 2026-09-03; now a CLAUDE.md gotcha. **A red here is reproduced ISOLATED first, and this recorded line is never cited to dismiss it** -- a stale flake annotation is exactly what a future generation reaches for to wave away a real failure (RD, evidence hygiene).
+
 **Ledger: ONE open discrepancy, 86** (`equity_delta`, `material_to_review=0`, the known monthly-deposit
 drift class). Discrepancies 96/97/98/99 were closed today at the surfaces, operator-run, each with a
 per-row reason.

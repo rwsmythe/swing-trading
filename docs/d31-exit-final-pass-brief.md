@@ -123,6 +123,8 @@ code, including this brief's, and report every count with the method that produc
    — verified by the orchestrator by running it on `main`, where none of this arc's code exists. It is
    NOT yours, it is not a regression, and it is not to be fixed here.
 
+   > **CORRECTED 2026-09-03 (orchestrator, measured):** the *"fails on `main` itself"* claim above is **STALE**. Run in isolation on `main` today it **PASSES**. The real mechanism is a LOAD flake: the test spawns a real PowerShell subprocess writing a temp log, and it fails only under 16-way xdist. Third occurrence 2026-09-03; now a CLAUDE.md gotcha. **A red here is reproduced ISOLATED first, and this recorded line is never cited to dismiss it** -- a stale flake annotation is exactly what a future generation reaches for to wave away a real failure (RD, evidence hygiene).
+
 ## §5 Return report
 
 Final chat message. **Do NOT run `scripts/role_mail.py`; do not post to any inbox; never

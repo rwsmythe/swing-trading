@@ -76,3 +76,5 @@ candidate — a test behaviour change, not a comment fix.
 Suite after: **10814 passed / 7 skipped / 1 failed** — identical to before, confirming comment-only.
 The one failure is `test_run_stub_skip_exits_zero`, **which fails on `main` itself** (verified by
 running it there); it is not this arc's and not a regression.
+
+   > **CORRECTED 2026-09-03 (orchestrator, measured):** the *"fails on `main` itself"* claim above is **STALE**. Run in isolation on `main` today it **PASSES**. The real mechanism is a LOAD flake: the test spawns a real PowerShell subprocess writing a temp log, and it fails only under 16-way xdist. Third occurrence 2026-09-03; now a CLAUDE.md gotcha. **A red here is reproduced ISOLATED first, and this recorded line is never cited to dismiss it** -- a stale flake annotation is exactly what a future generation reaches for to wave away a real failure (RD, evidence hygiene).
