@@ -50,7 +50,7 @@ succeeded.* Both arcs make that true one layer further out.
    check is binding** for this surface.
 2. **The CLI consumes the field:** warnings printed (ASCII), exit status stays SUCCESS — the entry
    is durable and the exit code is a statement about the ledger.
-3. **R11-03 twin containment** at the five sites above: the cleanup log is wrapped so a raising
+3. **R11-03 twin containment** at the six sites above: the cleanup log is wrapped so a raising
    handler is swallowed-and-noted and the ORIGINAL error (or result) is what propagates. Same shape
    as the R10-04 fix, applied by READING each site, not by grep.
 
