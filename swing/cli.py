@@ -654,7 +654,9 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         HardCapError,
         MissingPreTradeFieldsException,
         SoftWarnError,
+        ascii_safe,
         record_entry,
+        safe_text,
     )
     from swing.trades.origin import EntryPath
 
@@ -663,184 +665,246 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         raise click.ClickException("--notes required when --rationale=other")
 
     cfg = ctx.obj["config"]
-    conn = connect(cfg.paths.db_path)
+    # 22-A3: bound before the outer try, exactly as in the web route, and for
+    # the same reason. THE CLI IS THE CASE WHERE `KeyboardInterrupt` IS FULLY
+    # DELIVERABLE -- this is the main thread, so the web route's threadpool
+    # argument does not apply here and the guard is not symmetry, it is
+    # necessity.
+    result = None
+    close_error = None
+    # ONE CONTINUOUS OUTER GUARD, opened before the connection and closed only
+    # after the LAST line is printed. Two adjacent guards would leave an
+    # uncovered instruction boundary between them.
     try:
-        # Phase 5 spec §3.6 ToCToU fix — resolve the chart-pattern
-        # cache row ONCE at command start (entry-surface). Snapshot
-        # then flows through EntryRequest and record_entry persists
-        # AS-IS. Phase 4 (Task 4): consume `latest_completed_pipeline_run`
-        # — pipeline-bound contract; chart-pattern resolve only fires
-        # when a completed pipeline exists.
-        cp_algo: str | None = None
-        cp_conf: float | None = None
-        cp_anchor: int | None = None
-        cp_evaluated = False
-        from swing.web.chart_scope import latest_completed_pipeline_run
-        binding = latest_completed_pipeline_run(conn)
-        if binding is not None and binding.run_id is not None:
-            from swing.data.repos.pattern_classifications import (
-                get_classification,
-            )
-            cls = get_classification(
-                conn, pipeline_run_id=binding.run_id,
-                ticker=ticker.upper(),
-            )
-            if cls is not None and cls.pattern in ("flag", "none"):
-                cp_algo = cls.pattern
-                cp_conf = cls.confidence
-                cp_anchor = cls.pipeline_run_id
-                cp_evaluated = True
-
-        # Spec §3.7 R1 C1 — CLI parity gate. Symmetric with the form's
-        # "Not classified" stub gate (Task 5.3) and the POST handler's
-        # 400 refusal (Task 5.4): if the operator passed
-        # ``--chart-pattern-operator`` for a ticker without a cached
-        # classification (or only a classifier-error row), refuse.
-        if chart_pattern_operator is not None and not cp_evaluated:
-            raise click.ClickException(
-                f"--chart-pattern-operator requires a cached classification "
-                f"for {ticker.upper()}; ticker is out-of-scope for the "
-                f"latest pipeline run. (V1 cached-only; manual fallback "
-                f"deferred to V2.)"
-            )
-
-        # Pre-fill --hypothesis from the latest pipeline run's active
-        # recommendation when the operator did NOT pass --hypothesis
-        # explicitly (frontend brief §4.3). Empty-string is treated as an
-        # explicit override (operator-typed "no label"), preserved
-        # downstream by `canonicalize_hypothesis_label` → NULL. None means
-        # the flag was omitted, which is the only branch that triggers
-        # pre-fill.
-        if hypothesis is None:
-            prefilled = lookup_active_recommendation_label(
-                conn, ticker=ticker.upper(),
-                starting_equity=cfg.account.starting_equity,
-            )
-            if prefilled is not None:
-                hypothesis = prefilled
-                click.echo(f"Pre-filled --hypothesis: {prefilled}")
-
-        # NEW (Task 7): sector/industry candidate-row lookup via the canonical
-        # helper, mirroring the entry-form VM (Task 6) for cross-surface
-        # consistency. Falls back to '' when no eval or ticker absent.
-        from swing.web.view_models.dashboard import latest_evaluation_run_id
-        cli_sector = ""
-        cli_industry = ""
-        sector_eval_id = latest_evaluation_run_id(conn)
-        if sector_eval_id is not None:
-            cand_row = conn.execute(
-                """SELECT sector, industry FROM candidates
-                   WHERE evaluation_run_id = ? AND ticker = ?""",
-                (sector_eval_id, ticker.upper()),
-            ).fetchone()
-            if cand_row is not None:
-                cli_sector = cand_row[0] or ""
-                cli_industry = cand_row[1] or ""
-
-        # Phase 7 Sub-B B.8 — convert click-string inputs to EntryRequest
-        # value types: yes/no -> int (0|1), tuple -> JSON-list TEXT, path
-        # string -> EntryPath enum. Defaults: event/gap risk default to 0
-        # (operator must consciously opt in to either risk).
-        emotional_state_json = (
-            _json.dumps(list(emotional_state)) if emotional_state else None
-        )
-        req = EntryRequest(
-            ticker=ticker.upper(), entry_date=entry_date, entry_price=entry_price,
-            shares=shares, initial_stop=initial_stop,
-            watchlist_entry_target=watchlist_target,
-            watchlist_initial_stop=watchlist_stop,
-            notes=notes, rationale=rationale,
-            event_ts=_dt.now().isoformat(timespec="seconds"),
-            # Canonicalization happens in `record_entry` so non-CLI callers
-            # (web routes, scripts) get the same normalization. CLI passes
-            # raw user input through unchanged.
-            hypothesis_label=hypothesis,
-            # Tuition-vs-error (Task 3): persisted AS-IS. None when the flag
-            # is omitted (advisory suggestion NOT auto-applied on the CLI);
-            # click.Choice already rejects an invalid value (exit 2).
-            entry_intent=entry_intent,
-            chart_pattern_operator=chart_pattern_operator,
-            chart_pattern_algo=cp_algo,
-            chart_pattern_algo_confidence=cp_conf,
-            chart_pattern_classification_pipeline_run_id=cp_anchor,
-            sector=cli_sector,
-            industry=cli_industry,
-            entry_path=EntryPath(entry_path),
-            thesis=thesis,
-            why_now=why_now,
-            invalidation_condition=invalidation,
-            expected_scenario=expected_scenario,
-            premortem_technical=premortem_technical,
-            premortem_market_sector=premortem_market_sector,
-            premortem_execution=premortem_execution,
-            premortem_additional=premortem_additional,
-            event_risk_present=1 if event_risk == "yes" else 0,
-            event_handling=event_handling,
-            event_type=event_type,
-            event_date=event_date,
-            gap_risk_present=1 if gap_risk == "yes" else 0,
-            gap_risk_handling=gap_risk_handling,
-            emotional_state_pre_trade=emotional_state_json,
-            market_regime=market_regime,
-            catalyst=catalyst,
-            catalyst_other_description=catalyst_other_description,
-            manual_entry_confidence=manual_entry_confidence,
-        )
+        conn = connect(cfg.paths.db_path)
         try:
-            result = record_entry(
-                conn, req,
-                soft_warn=cfg.position_limits.soft_warn_open,
-                hard_cap=cfg.position_limits.hard_cap_open,
-                force=force,
-                # 22-A: the ONE signature change in the arc. Without `cfg` the
-                # resolver declines `no_config` and the latch mechanism is
-                # unreachable from this surface -- silently, because every
-                # persisted value stays valid.
-                cfg=cfg,
-            )
-        except MissingPreTradeFieldsException as exc:
-            # B.8: structured-exception → click.UsageError mapping.
-            # Source-of-truth for required fields lives in
-            # swing.trades.state.OPERATION_REQUIRED_FIELDS; this layer
-            # only translates field names back to operator-facing flags.
-            flag_map = {
-                "thesis": "--thesis",
-                "why_now": "--why-now",
-                "invalidation_condition": "--invalidation",
-                "expected_scenario": "--expected-scenario",
-                "premortem_technical": "--premortem-technical",
-                "premortem_market_sector": "--premortem-market-sector",
-                "premortem_execution": "--premortem-execution",
-                "emotional_state_pre_trade": "--emotional-state (one or more)",
-                "market_regime": "--market-regime",
-                "catalyst": "--catalyst",
-                "manual_entry_confidence": "--manual-entry-confidence",
-                "event_handling": "--event-handling",
-                "event_type": "--event-type",
-                "event_date": "--event-date",
-                "gap_risk_handling": "--gap-risk-handling",
-                "catalyst_other_description": "--catalyst-other-description",
-            }
-            flags = [
-                flag_map.get(f, f"--{f.replace('_', '-')}")
-                for f in exc.missing_fields
-            ]
-            raise click.UsageError(
-                f"Missing required pre-trade fields: {', '.join(flags)}"
-            ) from exc
-        except (SoftWarnError, HardCapError, DuplicateOpenPositionError) as exc:
-            raise click.ClickException(str(exc)) from exc
-    finally:
-        conn.close()
+            # Phase 5 spec §3.6 ToCToU fix — resolve the chart-pattern
+            # cache row ONCE at command start (entry-surface). Snapshot
+            # then flows through EntryRequest and record_entry persists
+            # AS-IS. Phase 4 (Task 4): consume `latest_completed_pipeline_run`
+            # — pipeline-bound contract; chart-pattern resolve only fires
+            # when a completed pipeline exists.
+            cp_algo: str | None = None
+            cp_conf: float | None = None
+            cp_anchor: int | None = None
+            cp_evaluated = False
+            from swing.web.chart_scope import latest_completed_pipeline_run
+            binding = latest_completed_pipeline_run(conn)
+            if binding is not None and binding.run_id is not None:
+                from swing.data.repos.pattern_classifications import (
+                    get_classification,
+                )
+                cls = get_classification(
+                    conn, pipeline_run_id=binding.run_id,
+                    ticker=ticker.upper(),
+                )
+                if cls is not None and cls.pattern in ("flag", "none"):
+                    cp_algo = cls.pattern
+                    cp_conf = cls.confidence
+                    cp_anchor = cls.pipeline_run_id
+                    cp_evaluated = True
 
-    if result.warning:
-        click.echo(f"WARN: {result.warning}", err=True)
-    if result.watchlist_archived:
-        click.echo(f"Watchlist row for {ticker} archived (reason: entered)")
-    click.echo(
-        f"Trade id {result.trade_id}: {ticker} {shares} sh @ "
-        f"${entry_price:.2f}, stop ${initial_stop:.2f}"
-    )
+            # Spec §3.7 R1 C1 — CLI parity gate. Symmetric with the form's
+            # "Not classified" stub gate (Task 5.3) and the POST handler's
+            # 400 refusal (Task 5.4): if the operator passed
+            # ``--chart-pattern-operator`` for a ticker without a cached
+            # classification (or only a classifier-error row), refuse.
+            if chart_pattern_operator is not None and not cp_evaluated:
+                raise click.ClickException(
+                    f"--chart-pattern-operator requires a cached classification "
+                    f"for {ticker.upper()}; ticker is out-of-scope for the "
+                    f"latest pipeline run. (V1 cached-only; manual fallback "
+                    f"deferred to V2.)"
+                )
+
+            # Pre-fill --hypothesis from the latest pipeline run's active
+            # recommendation when the operator did NOT pass --hypothesis
+            # explicitly (frontend brief §4.3). Empty-string is treated as an
+            # explicit override (operator-typed "no label"), preserved
+            # downstream by `canonicalize_hypothesis_label` → NULL. None means
+            # the flag was omitted, which is the only branch that triggers
+            # pre-fill.
+            if hypothesis is None:
+                prefilled = lookup_active_recommendation_label(
+                    conn, ticker=ticker.upper(),
+                    starting_equity=cfg.account.starting_equity,
+                )
+                if prefilled is not None:
+                    hypothesis = prefilled
+                    click.echo(f"Pre-filled --hypothesis: {prefilled}")
+
+            # NEW (Task 7): sector/industry candidate-row lookup via the canonical
+            # helper, mirroring the entry-form VM (Task 6) for cross-surface
+            # consistency. Falls back to '' when no eval or ticker absent.
+            from swing.web.view_models.dashboard import latest_evaluation_run_id
+            cli_sector = ""
+            cli_industry = ""
+            sector_eval_id = latest_evaluation_run_id(conn)
+            if sector_eval_id is not None:
+                cand_row = conn.execute(
+                    """SELECT sector, industry FROM candidates
+                       WHERE evaluation_run_id = ? AND ticker = ?""",
+                    (sector_eval_id, ticker.upper()),
+                ).fetchone()
+                if cand_row is not None:
+                    cli_sector = cand_row[0] or ""
+                    cli_industry = cand_row[1] or ""
+
+            # Phase 7 Sub-B B.8 — convert click-string inputs to EntryRequest
+            # value types: yes/no -> int (0|1), tuple -> JSON-list TEXT, path
+            # string -> EntryPath enum. Defaults: event/gap risk default to 0
+            # (operator must consciously opt in to either risk).
+            emotional_state_json = (
+                _json.dumps(list(emotional_state)) if emotional_state else None
+            )
+            req = EntryRequest(
+                ticker=ticker.upper(), entry_date=entry_date, entry_price=entry_price,
+                shares=shares, initial_stop=initial_stop,
+                watchlist_entry_target=watchlist_target,
+                watchlist_initial_stop=watchlist_stop,
+                notes=notes, rationale=rationale,
+                event_ts=_dt.now().isoformat(timespec="seconds"),
+                # Canonicalization happens in `record_entry` so non-CLI callers
+                # (web routes, scripts) get the same normalization. CLI passes
+                # raw user input through unchanged.
+                hypothesis_label=hypothesis,
+                # Tuition-vs-error (Task 3): persisted AS-IS. None when the flag
+                # is omitted (advisory suggestion NOT auto-applied on the CLI);
+                # click.Choice already rejects an invalid value (exit 2).
+                entry_intent=entry_intent,
+                chart_pattern_operator=chart_pattern_operator,
+                chart_pattern_algo=cp_algo,
+                chart_pattern_algo_confidence=cp_conf,
+                chart_pattern_classification_pipeline_run_id=cp_anchor,
+                sector=cli_sector,
+                industry=cli_industry,
+                entry_path=EntryPath(entry_path),
+                thesis=thesis,
+                why_now=why_now,
+                invalidation_condition=invalidation,
+                expected_scenario=expected_scenario,
+                premortem_technical=premortem_technical,
+                premortem_market_sector=premortem_market_sector,
+                premortem_execution=premortem_execution,
+                premortem_additional=premortem_additional,
+                event_risk_present=1 if event_risk == "yes" else 0,
+                event_handling=event_handling,
+                event_type=event_type,
+                event_date=event_date,
+                gap_risk_present=1 if gap_risk == "yes" else 0,
+                gap_risk_handling=gap_risk_handling,
+                emotional_state_pre_trade=emotional_state_json,
+                market_regime=market_regime,
+                catalyst=catalyst,
+                catalyst_other_description=catalyst_other_description,
+                manual_entry_confidence=manual_entry_confidence,
+            )
+            try:
+                result = record_entry(
+                    conn, req,
+                    soft_warn=cfg.position_limits.soft_warn_open,
+                    hard_cap=cfg.position_limits.hard_cap_open,
+                    force=force,
+                    # 22-A: the ONE signature change in the arc. Without `cfg` the
+                    # resolver declines `no_config` and the latch mechanism is
+                    # unreachable from this surface -- silently, because every
+                    # persisted value stays valid.
+                    cfg=cfg,
+                )
+            except MissingPreTradeFieldsException as exc:
+                # B.8: structured-exception → click.UsageError mapping.
+                # Source-of-truth for required fields lives in
+                # swing.trades.state.OPERATION_REQUIRED_FIELDS; this layer
+                # only translates field names back to operator-facing flags.
+                flag_map = {
+                    "thesis": "--thesis",
+                    "why_now": "--why-now",
+                    "invalidation_condition": "--invalidation",
+                    "expected_scenario": "--expected-scenario",
+                    "premortem_technical": "--premortem-technical",
+                    "premortem_market_sector": "--premortem-market-sector",
+                    "premortem_execution": "--premortem-execution",
+                    "emotional_state_pre_trade": "--emotional-state (one or more)",
+                    "market_regime": "--market-regime",
+                    "catalyst": "--catalyst",
+                    "manual_entry_confidence": "--manual-entry-confidence",
+                    "event_handling": "--event-handling",
+                    "event_type": "--event-type",
+                    "event_date": "--event-date",
+                    "gap_risk_handling": "--gap-risk-handling",
+                    "catalyst_other_description": "--catalyst-other-description",
+                }
+                flags = [
+                    flag_map.get(f, f"--{f.replace('_', '-')}")
+                    for f in exc.missing_fields
+                ]
+                raise click.UsageError(
+                    f"Missing required pre-trade fields: {', '.join(flags)}"
+                ) from exc
+            except (SoftWarnError, HardCapError, DuplicateOpenPositionError) as exc:
+                raise click.ClickException(str(exc)) from exc
+        finally:
+            # THE DURABILITY BOUNDARY IS THE BINDING OF `result`. Before the
+            # durable fact exists an error is the honest answer, so
+            # `result is None` RE-RAISES and every pre-existing refusal path
+            # is byte-unchanged. After it exists, an error is a wrong answer
+            # in the expensive direction.
+            try:
+                conn.close()
+            except BaseException as exc:  # noqa: BLE001 -- the CLASS
+                if result is None:
+                    raise
+                close_error = exc
+
+        # ---- POST-DURABILITY OUTPUT, INSIDE THE SAME OUTER TRY ----
+        #
+        # **THE FIELD FINALLY HAS A READER.** `post_commit_warnings` carries
+        # what went wrong AFTER the entry became durable, so it is a caveat ON
+        # a success: stderr, and the EXIT CODE IS NOT TOUCHED. The exit status
+        # is a statement about the ledger and the ledger has the row; a
+        # non-zero exit here would be the failure-conversion this arc closes,
+        # reintroduced at the shell.
+        #
+        # **`ascii_safe` WRAPS THE WHOLE CONSTRUCTED LINE, NOT SELECTED
+        # FIELDS.** `--ticker` is unrestricted text and `.upper()` does not
+        # make it ASCII, so a non-ASCII TICKER reaches these lines just as a
+        # non-ASCII warning does -- and Windows cp1252 stdout raises on either
+        # (CLAUDE.md; pytest's `capsys` hides it). Coercing the warning but
+        # not the line around it is a half-fix.
+        #
+        # THE CLOSE WARNING IS OBSERVATION-ONLY: it says the close RAISED,
+        # never that the connection "could not be closed" -- `close()` can
+        # TAKE EFFECT and then raise, and a cleanup warning that is WRONG
+        # about the state teaches an operator to distrust the right ones.
+        post_commit_warnings = result.post_commit_warnings
+        if close_error is not None:
+            post_commit_warnings = post_commit_warnings + (
+                f"the entry is DURABLE (trade {result.trade_id}) and CLOSING "
+                f"the database connection afterwards RAISED "
+                f"({safe_text(close_error)}); the ledger is unaffected.",)
+        for post_commit_warning in post_commit_warnings:
+            click.echo(
+                ascii_safe(f"WARN (post-commit): {post_commit_warning}"),
+                err=True)
+        if result.warning:
+            click.echo(ascii_safe(f"WARN: {result.warning}"), err=True)
+        if result.watchlist_archived:
+            click.echo(ascii_safe(
+                f"Watchlist row for {ticker} archived (reason: entered)"))
+        click.echo(ascii_safe(
+            f"Trade id {result.trade_id}: {ticker} {shares} sh @ "
+            f"${entry_price:.2f}, stop ${initial_stop:.2f}"))
+    except BaseException:  # noqa: BLE001 -- the CLASS
+        if result is None:
+            raise
+        # DURABLE. `click.echo` can raise `BrokenPipeError`
+        # (`swing trade entry | head`) or any other output error, and an
+        # uncontained failure here would leave a durable entry exiting
+        # NON-ZERO with no confirmation -- this arc's own failure mode, at the
+        # last statement. What the containment costs: there is nowhere left to
+        # write, so the exit code becomes the only remaining signal, which is
+        # exactly why it must be the TRUE one.
+        return
 
 
 @trade_group.command("exit")
