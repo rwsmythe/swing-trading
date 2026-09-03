@@ -1,0 +1,45 @@
+{#- 22-A3 -- the durable-entry notice, delivered as an OOB swap into the
+    `#entry-notice` container in base.html.j2.
+
+    Expects:
+      - trade_id (int)               REQUIRED
+      - warnings (list[str])         post_commit_warnings; may be empty
+      - render_failure (str | None)  safe_text() of the refresh failure, else
+                                     None. When None, the refresh SUCCEEDED and
+                                     this notice carries warnings only -- it
+                                     must not claim otherwise. When BOTH are
+                                     empty the partial renders the wrapper and
+                                     NOTHING ELSE, which is how an ordinary
+                                     entry CLEARS a previous banner.
+
+    The partial owns its OWN OOB wrapper (the `hypothesis_recommendations`
+    pattern) so the route never hand-builds this markup, and the swapped-in
+    element keeps the id so a second entry in the same page session still
+    finds its target.
+
+    ASCII only. `<div>` at root, NEVER `<tr>`: on the success path this chunk
+    travels beside OOB `<table>` chunks, and a `<tr>` at fragment root makes
+    HTMX's makeFragment synthesise a table wrap that DROPS them (Bug B,
+    swing/web/routes/trades.py, the Bug-fix-AB comment block). -#}
+<div id="entry-notice" hx-swap-oob="true">
+  {#- EMPTY WHEN THERE IS NOTHING TO SAY, AND THAT IS THE POINT. The container
+      is STATEFUL: a prior warning response left a visible banner in it and
+      kept this id, so an ordinary entry must emit the WRAPPER (to clear the
+      old banner) and NO CONTENT (because nothing is wrong). Omitting the
+      wrapper entirely would leave trade N's banner beside trade N+1. -#}
+  {% if warnings or render_failure %}
+  <div class="banner banner-degraded" role="alert">
+    <strong>Trade #{{ trade_id }} WAS RECORDED.</strong>
+    {% if render_failure %}
+    The entry is durable. The page could not be refreshed afterwards
+    ({{ render_failure }}). The entry EXISTS -- do NOT enter it again.
+    Reload the page to see it.
+    {% endif %}
+    {% if warnings %}
+    <ul>
+      {% for w in warnings %}<li>{{ w }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>

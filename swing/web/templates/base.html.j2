@@ -134,6 +134,14 @@
     {{ vm.recent_multi_leg_auto_correction_count }} multi-leg auto-correction{{ 's' if vm.recent_multi_leg_auto_correction_count != 1 else '' }} in most recent reconciliation run. Review via <code>swing journal discrepancy list --resolved-by auto_tier1_multi_leg</code>.
   </div>
   {% endif %}
+  {#- 22-A3 -- the durable-entry notice target. STATIC AND EMPTY: it carries no
+      `vm.` dereference, so the every-base-layout-VM-or-500 gotcha does not
+      apply. It lives in BASE rather than in `dashboard.html.j2` because the
+      entry form is reachable from `/watchlist` too, and `watchlist.html.j2`
+      carries none of the four ids the entry response swaps into -- a notice
+      delivered there would be silently dropped, which is the failure this arc
+      exists to close. -#}
+  <div id="entry-notice"></div>
   <main>
     {% block content %}{% endblock %}
   </main>
