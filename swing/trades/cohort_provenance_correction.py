@@ -75,6 +75,7 @@ from swing.evaluation.dates import PIPELINE_LOCAL_TIMEZONE, is_trading_session
 # the resolver to pin the arguments this surface passes it (case 17's exclusion
 # set) and the transaction it holds while calling it (AL-2). A function-local
 # import would make both unpinnable.
+from swing.trades.entry import log_contained_note
 from swing.trades.latched_origin import resolve_latched_provenance
 
 log = logging.getLogger(__name__)
@@ -2281,7 +2282,10 @@ def preview_cohort_provenance_correction(
                 conn.rollback()
             # SELF-SWEEP SS-22A-FIX-2: `BaseException`, not the roster.
             except BaseException as cleanup_error:  # noqa: BLE001
-                log.error(
+                # R11-03 CONTAINMENT (22-A3 Task 3). See the idiom at
+                # `swing/trades/entry.py`.
+                log_contained_note(
+                    log, cleanup_error,
                     "22-A: the cohort-provenance PREVIEW could not create its "
                     "savepoint (%s) AND could not roll back the transaction it "
                     "had just opened (%s). The transaction is STILL OPEN and "
@@ -2350,7 +2354,11 @@ def preview_cohort_provenance_correction(
                 (e for e in (rollback_error, release_error)
                  if e is not None and not _is_no_such_savepoint(e)), None)
             if anomaly is not None:
-                log.error(
+                # R11-03 CONTAINMENT (22-A3 Task 3). The escaping object is
+                # `anomaly` -- the one the `raise` statement names -- NOT
+                # `savepoint_error`.
+                log_contained_note(
+                    log, anomaly,
                     "22-A: the cohort-provenance PREVIEW could not create "
                     "its savepoint (%s) and could not VERIFY that the one it "
                     "had opened is gone (%s) inside a CALLER-HELD "

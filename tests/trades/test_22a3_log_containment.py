@@ -271,3 +271,119 @@ def test_d1_a_broken_sink_cannot_change_what_escapes_the_entry_cleanup(
                for n in getattr(excinfo.value, "__notes__", ())), (
         "the log failure was swallowed silently")
     assert proxy.rolled_back
+
+
+# ===========================================================================
+# (d2)-(d6) -- the SIX cleanup sites in `cohort_provenance_correction.py`.
+#
+# None of them needs a seeded database world: each is driven through a narrow
+# connection proxy plus one targeted monkeypatch, in the `_CommitRaises` style
+# already used by tests/trades/test_22a_task9_entry_wiring.py -- proxying ONLY
+# the members the code under test touches, so a stand-in cannot silently
+# diverge from the real connection surface.
+# ===========================================================================
+
+
+class _Proxy:
+    """`execute()` raises for SQL whose prefix appears in `fail_on`, returns
+    None otherwise; `rollback()` raises `rollback_error` when given;
+    `in_transaction` is a SCRIPTED SEQUENCE consumed one value per read, with
+    the last value repeating.
+
+    The sequence is required by the sites that read `in_transaction` MORE THAN
+    ONCE, where the reads mean DIFFERENT things (does this call own the
+    transaction / did the failed cleanup leave it open); a single boolean
+    cannot express those postures.  d3 and d6 consume only the FIRST value --
+    they enter caller-held, so `owns_read_tx` is False and the later ownership
+    checks short-circuit.
+    """
+
+    def __init__(self, *, fail_on=None, rollback_error=None,
+                 in_transaction=(False, True)):
+        self._fail_on = dict(fail_on or {})
+        self.rollback_error = rollback_error
+        self._script = tuple(in_transaction)
+        self._reads = 0
+        self.executed: list[str] = []
+        self.rolled_back = False
+
+    def execute(self, sql, *a, **k):
+        self.executed.append(sql)
+        for prefix, exc in self._fail_on.items():
+            if sql.startswith(prefix):
+                raise exc
+        return None
+
+    def rollback(self):
+        self.rolled_back = True
+        if self.rollback_error is not None:
+            raise self.rollback_error
+
+    def commit(self):
+        return None
+
+    @property
+    def in_transaction(self):
+        idx = min(self._reads, len(self._script) - 1)
+        self._reads += 1
+        return self._script[idx]
+
+
+def test_d2_a_broken_sink_cannot_change_what_escapes_the_owned_preview(
+        broken_sink):
+    """cohort site 2 -- the preview savepoint handler, OWNED-tx branch.
+
+    Chaining matrix: `raise cleanup_error from savepoint_error`.
+    """
+    import swing.trades.cohort_provenance_correction as mod
+
+    savepoint_error = sqlite3.OperationalError("22-A3 PROBE: savepoint failed")
+    rollback_error = sqlite3.OperationalError("22-A3 PROBE: rollback failed")
+    proxy = _Proxy(fail_on={"SAVEPOINT": savepoint_error},
+                   rollback_error=rollback_error,
+                   in_transaction=(False, True))
+
+    with pytest.raises(sqlite3.OperationalError) as excinfo:
+        mod.preview_cohort_provenance_correction(
+            proxy, trade_id=1, cited_candidate_id=2,
+            cited_recommendation_id=3)
+
+    assert excinfo.value is rollback_error, (
+        "the LOG SINK's exception escaped instead of the cleanup error")
+    assert not isinstance(excinfo.value, RuntimeError)
+    assert excinfo.value.__cause__ is savepoint_error
+    assert any("could not be emitted" in n
+               for n in getattr(excinfo.value, "__notes__", ())), (
+        "the log failure was swallowed silently")
+
+
+def test_d3_a_broken_sink_cannot_change_what_escapes_the_caller_held_preview(
+        broken_sink):
+    """cohort site 3 -- the preview savepoint handler, CALLER-HELD branch.
+
+    The escaping object is `anomaly`, NOT `savepoint_error`: the escaping
+    exception is the one the `raise` statement names.  Chaining matrix:
+    `raise anomaly from savepoint_error`.
+    """
+    import swing.trades.cohort_provenance_correction as mod
+
+    savepoint_error = sqlite3.OperationalError("22-A3 PROBE: savepoint failed")
+    # NOT a "no such savepoint" message -- that one alone is treated as
+    # silence, and this test needs the LOUD path.
+    anomaly = sqlite3.OperationalError("22-A3 PROBE: database is locked")
+    proxy = _Proxy(fail_on={"SAVEPOINT": savepoint_error,
+                            "ROLLBACK TO": anomaly},
+                   in_transaction=(True,))
+
+    with pytest.raises(sqlite3.OperationalError) as excinfo:
+        mod.preview_cohort_provenance_correction(
+            proxy, trade_id=1, cited_candidate_id=2,
+            cited_recommendation_id=3)
+
+    assert excinfo.value is anomaly, (
+        "the LOG SINK's exception escaped instead of the cleanup anomaly")
+    assert not isinstance(excinfo.value, RuntimeError)
+    assert excinfo.value.__cause__ is savepoint_error
+    assert any("could not be emitted" in n
+               for n in getattr(excinfo.value, "__notes__", ())), (
+        "the log failure was swallowed silently")
