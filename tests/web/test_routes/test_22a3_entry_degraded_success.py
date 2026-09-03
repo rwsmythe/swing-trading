@@ -756,3 +756,41 @@ def test_n_a_lone_surrogate_IN_A_WARNING_cannot_break_the_SUCCESS_response(
     assert "ud800" in resp.text
     assert resp.text.count('hx-swap-oob="true"') == 5
     assert _trade_count(cfg) == 1
+
+
+# ===========================================================================
+# (e) -- the belt is still the belt. **A CONTROL, NOT A FIX.**
+# ===========================================================================
+
+
+def test_e_CONTROL_the_belt_still_refuses_a_same_ticker_retry(
+        seeded_db, monkeypatch):
+    """**THIS TEST PASSES UNDER BOTH PATHS ON PURPOSE AND IS NOT COUNTED AS A
+    DISCRIMINATING TEST.**
+
+    Its job is to prove the arc did not perturb the one structural mitigation
+    the declared residual leans on: `ux_trades_one_open_per_ticker`
+    (`swing/data/migrations/0014_phase7_state_machine_and_fills.sql`, which
+    DROPS migration 0004's `WHERE status = 'open'` form and recreates it over
+    `state IN ('entered','managing','partial_exited')`), with the service-level
+    pre-check in `swing/trades/entry.py` and the race re-map behind it.
+
+    NOTE THE MESSAGE NAMES THE TICKER, NOT A TRADE ID. The commissioning
+    brief's test (e) asked for "a message naming the existing trade"; the code
+    says `Already an open position in {ticker}`. This test asserts what the
+    code does -- widening the belt's copy is 22-A4's neighbourhood and this
+    arc's envelope opens `entry.py` for containment only.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        first = _post_entry(client, ticker="ZZZ")
+        assert first.status_code == 200, first.text[:400]
+        second = _post_entry(client, ticker="ZZZ")
+
+    assert second.status_code == 400, second.text[:400]
+    assert "Already an open position in ZZZ" in second.text
+    assert _trade_count(cfg) == 1
