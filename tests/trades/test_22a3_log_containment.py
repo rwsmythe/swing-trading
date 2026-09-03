@@ -274,7 +274,13 @@ def test_d1_a_broken_sink_cannot_change_what_escapes_the_entry_cleanup(
 
 
 # ===========================================================================
-# (d2)-(d6) -- the SIX cleanup sites in `cohort_provenance_correction.py`.
+# (d2)-(d6) -- the FIVE cleanup HANDLERS in
+# `cohort_provenance_correction.py`, reached through SIX branch-specific
+# call expressions (site 4 branches on `conn.in_transaction`). With the ONE
+# handler in `entry.py` that d1 drives, the roster is SIX handlers / EIGHT
+# call expressions -- stated precisely because a completeness claim that
+# cannot keep its own arithmetic straight is the exact condition under
+# which a seventh site is omitted unnoticed (Codex A3R2-06).
 #
 # None of them needs a seeded database world: each is driven through a narrow
 # connection proxy plus one targeted monkeypatch, in the `_CommitRaises` style
@@ -810,3 +816,185 @@ def test_A3_AR_06b_an_EARLIER_handler_can_emit_before_a_LATER_one_raises():
     assert emitted == ["the record"], (
         "the GOOD handler emitted before the bad one raised, so "
         "'could not be emitted' would be a false statement")
+
+
+# ===========================================================================
+# CODEX ROUND 2.
+# ===========================================================================
+
+
+class _FormattingSink(logging.Handler):
+    """A handler that FORMATS the record before failing.
+
+    The round-1 `_BrokenSink` raises before formatting, so it never exercised
+    `__str__` on the exception objects passed as `%s` args -- which is exactly
+    how the preservation claim went unmeasured for two rounds.
+    """
+
+    def emit(self, record):
+        record.getMessage()
+        raise RuntimeError("22-A3 PROBE: sink failed AFTER formatting")
+
+
+def test_A3R2_02_a_FORMATTING_sink_cannot_corrupt_the_escaping_evidence():
+    """Codex A3R2-02 (MAJOR), REPRODUCED BY EXECUTION before the fix.
+
+    `logger.error(msg, *args)` hands the escaping exception to
+    caller-installed handlers, and a handler that FORMATS the record calls
+    `__str__` on it -- which an exception may legally override to MUTATE
+    ITSELF and then raise.
+
+    PRE-fix measured: `args` went from `('the real args',)` to
+    `('CORRUPTED',)` and `__cause__` from a `ValueError` to `None`, while the
+    sink's own exception was contained exactly as advertised. **Containing
+    the sink's exception is not the same as preserving the evidence** -- and
+    at the rollback and savepoint sites the original error and its chaining
+    are what say whether a transaction may still be open.
+    """
+    from swing.trades.entry import log_contained_note
+
+    class _SelfMutating(RuntimeError):
+        def __str__(self):
+            self.args = ("CORRUPTED",)
+            self.__cause__ = None
+            self.__context__ = None
+            raise RuntimeError("format failed")
+
+    cause = ValueError("the real cause")
+    context = KeyError("the real context")
+    escaping = _SelfMutating("the real args")
+    escaping.__cause__ = cause
+    escaping.__context__ = context
+
+    sink = _FormattingSink(level=logging.ERROR)
+    logging.getLogger().addHandler(sink)
+    try:
+        log_contained_note(
+            logging.getLogger("t22a3.mutating"), escaping, "boom %s", escaping)
+    finally:
+        logging.getLogger().removeHandler(sink)
+
+    assert escaping.args == ("the real args",), escaping.args
+    assert escaping.__cause__ is cause
+    assert escaping.__context__ is context
+
+
+def test_A3R2_03_a_SYNTHESIZING_notes_descriptor_does_not_bless_a_lost_note():
+    """Codex A3R2-03 (MINOR), REPRODUCED BY EXECUTION before the fix.
+
+    `BaseException.add_note` can RETURN SUCCESSFULLY and still lose the note:
+    a `__notes__` DATA DESCRIPTOR whose getter SYNTHESIZES a fresh list has
+    the note appended to a temporary that is then discarded. PRE-fix the
+    helper took that success on trust and returned; POST-fix it VERIFIES by
+    reading the note back, so the repair branch runs and the note lands
+    whenever the setter is willing to store it.
+    """
+    from swing.trades.entry import log_contained_note
+
+    class _CopyingNotes(RuntimeError):
+        """Getter returns a COPY (so `add_note` appends to a temporary);
+        setter stores for real (so the verified repair CAN land it)."""
+
+        _stored: list
+
+        def __init__(self, *a):
+            super().__init__(*a)
+            object.__setattr__(self, "_stored", [])
+
+        @property
+        def __notes__(self):
+            return list(object.__getattribute__(self, "_stored"))
+
+        @__notes__.setter
+        def __notes__(self, value):
+            object.__setattr__(self, "_stored", list(value))
+
+    sink = _BrokenSink(level=logging.ERROR)
+    logging.getLogger().addHandler(sink)
+    try:
+        escaping = _CopyingNotes("x")
+        log_contained_note(
+            logging.getLogger("t22a3.copying"), escaping, "boom")
+    finally:
+        logging.getLogger().removeHandler(sink)
+
+    notes = BaseException.__getattribute__(escaping, "__notes__")
+    assert any("could not be emitted" in n for n in notes), (
+        f"the attach was taken on trust and the note was lost: {notes}")
+
+
+def test_A3R2_03b_a_DISCARDING_descriptor_is_the_declared_residue():
+    """The narrowed residue, pinned. A setter that SILENTLY DISCARDS leaves
+    nowhere to write, so the note is genuinely unattachable -- but the
+    load-bearing property still holds and the helper still returns."""
+    from swing.trades.entry import log_contained_note
+
+    class _Discarding(RuntimeError):
+        @property
+        def __notes__(self):
+            return []
+
+        @__notes__.setter
+        def __notes__(self, value):
+            pass
+
+    sink = _BrokenSink(level=logging.ERROR)
+    logging.getLogger().addHandler(sink)
+    try:
+        escaping = _Discarding("x")
+        log_contained_note(
+            logging.getLogger("t22a3.discard"), escaping, "boom")
+    finally:
+        logging.getLogger().removeHandler(sink)
+
+    assert type(escaping) is _Discarding
+    assert escaping.args == ("x",)
+
+
+@pytest.mark.parametrize("still_open", [True, False],
+                         ids=["still-open-branch", "took-effect-branch"])
+def test_A3R2_05_the_entry_cleanup_preserves_ALL_FOUR_evidence_fields(
+        still_open):
+    """Codex A3R2-05 (MINOR).
+
+    The (d) tests assert identity and SOME chaining; none asserted `args`,
+    and several omitted `__context__` -- so the A3R2-02 corruption passed the
+    whole suite. This drives the REAL `_entry_transaction` cleanup through a
+    FORMATTING sink with a SELF-MUTATING cleanup error, so the corruption is
+    actually reachable here and every field the module docstring claims is
+    asserted against it.
+
+    A first draft of this test asserted the four fields over an ORDINARY
+    exception and therefore passed under its own mutation -- coverage wearing
+    a discriminator's costume. Caught by running the mutation.
+    """
+    from swing.trades.entry import _CommitOutcome, _entry_transaction
+
+    class _MutatingOperationalError(sqlite3.OperationalError):
+        def __str__(self):
+            self.args = ("CORRUPTED",)
+            self.__cause__ = None
+            self.__context__ = None
+            raise RuntimeError("format failed")
+
+    proxy = _RollbackRaises(in_transaction_after_rollback=still_open)
+    proxy.rollback_error = _MutatingOperationalError(
+        "22-A3 PROBE: rollback failed")
+    body_error = ValueError("22-A3 PROBE: the write failed")
+
+    sink = _FormattingSink(level=logging.ERROR)
+    logging.getLogger().addHandler(sink)
+    try:
+        with pytest.raises(sqlite3.OperationalError) as excinfo:
+            with _entry_transaction(proxy, immediate=True,
+                                    outcome=_CommitOutcome()):
+                raise body_error
+    finally:
+        logging.getLogger().removeHandler(sink)
+
+    escaped = excinfo.value
+    assert escaped is proxy.rollback_error
+    assert type(escaped) is _MutatingOperationalError
+    assert escaped.args == ("22-A3 PROBE: rollback failed",), escaped.args
+    assert escaped.__cause__ is body_error
+    assert escaped.__context__ is body_error

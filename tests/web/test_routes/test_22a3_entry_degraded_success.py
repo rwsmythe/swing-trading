@@ -896,3 +896,30 @@ def test_A3_AR_06_the_route_log_failure_wording_is_OBSERVATION_ONLY(
     assert resp.status_code == 200, resp.text[:400]
     assert "a logging handler RAISED" in resp.text
     assert "Some sinks may have received" in resp.text
+
+
+def test_A3R2_04_the_literal_fallback_makes_no_REFRESH_claim(
+        seeded_db, monkeypatch):
+    """Codex A3R2-04 (MINOR).
+
+    The four OOB chunks rendering is not the same as THIS page having
+    refreshed: `/watchlist` carries none of their target ids, and the entry
+    form is reachable from there -- so "the page was refreshed" was a false
+    statement on exactly the surface the notice container was put in
+    `base.html.j2` to serve.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _patch_price_cache(monkeypatch)
+
+    app = create_app(cfg, cfg_path)
+    _break_notice_template_only(
+        app, RuntimeError("22-A3 PROBE: notice render failed"))
+    with TestClient(app) as client:
+        resp = _post_entry(client)
+
+    trade_id = _only_trade_id(cfg)
+    assert resp.status_code == 200, resp.text[:400]
+    assert f"Trade #{trade_id}" in resp.text
+    assert "the page was refreshed" not in resp.text
+    assert "do NOT enter it again" in resp.text

@@ -29,10 +29,16 @@ log = logging.getLogger(__name__)
 # 22-A3 -- THE LOG-CONTAINMENT IDIOM, STATED ONCE.
 #
 # **A FAILING LOGGING HANDLER MUST NEVER CHANGE A FUNCTION'S RESULT OR WHICH
-# EXCEPTION PROPAGATES** (Codex 22A-R11-03).  Six CLEANUP-log sites share the
-# class -- two here and four in `cohort_provenance_correction.py` -- so the
-# fix is a shared idiom rather than six local edits, and "did site N get it"
-# becomes a mechanical question.  `ascii_safe` / `safe_text` are PART of the
+# EXCEPTION PROPAGATES** (Codex 22A-R11-03).  SIX CLEANUP HANDLERS share the
+# class -- **ONE in this module and FIVE in
+# `cohort_provenance_correction.py`** -- reached through EIGHT branch-specific
+# call expressions, because two of the handlers pick their message from
+# `conn.in_transaction` and so call the idiom twice each (Codex A3R2-06: the
+# predecessor comment said "two here and four", mixing this module's CALL
+# EXPRESSIONS with the cohort module's HANDLERS and getting the second number
+# wrong -- an inconsistency in exactly the completeness claim that is supposed
+# to make "did site N get it" mechanical).  The fix is a shared idiom rather
+# than eight local edits.  `ascii_safe` / `safe_text` are PART of the
 # idiom rather than adjacent to it: a containment guard that formats a value
 # which can raise, or which produces a string that cannot be encoded, is a
 # containment guard that can raise.
@@ -106,6 +112,54 @@ def safe_text(value: object) -> str:
     return "<an object whose repr() and str() both raised>"
 
 
+def _evidence_snapshot(escaping: BaseException):
+    """`(args, __cause__, __context__)` read through the BASE slots, or None.
+
+    Used to make `log_contained_note`'s preservation guarantee ENFORCED
+    rather than assumed -- see its docstring and Codex A3R2-02.
+    """
+    try:
+        return (BaseException.__getattribute__(escaping, "args"),
+                BaseException.__getattribute__(escaping, "__cause__"),
+                BaseException.__getattribute__(escaping, "__context__"))
+    except BaseException:  # noqa: BLE001 -- the CLASS
+        return None
+
+
+def _restore_evidence(escaping: BaseException, snapshot) -> None:
+    """Put back anything a logging handler changed. Never raises."""
+    if snapshot is None:
+        return
+    names = ("args", "__cause__", "__context__")
+    for name, value in zip(names, snapshot, strict=True):
+        try:
+            if BaseException.__getattribute__(escaping, name) is not value:
+                BaseException.__setattr__(escaping, name, value)
+        except BaseException:  # noqa: BLE001 -- the CLASS
+            continue
+
+
+def _note_landed(escaping: BaseException, note: str) -> bool:
+    """Is `note` READABLE back off the exception?
+
+    **VERIFIED, NOT ASSUMED** (Codex A3R2-03, verified by execution).
+    `BaseException.add_note` can RETURN SUCCESSFULLY and still lose the note:
+    a `__notes__` DATA DESCRIPTOR whose getter SYNTHESIZES a fresh list has
+    the note appended to a temporary that is then discarded.  Measured: the
+    read-back came out empty while `add_note` reported success.  A helper
+    whose entire purpose is refusing invisible failures may not take an
+    attach on trust.
+    """
+    try:
+        notes = BaseException.__getattribute__(escaping, "__notes__")
+    except BaseException:  # noqa: BLE001 -- the CLASS
+        return False
+    try:
+        return any(n is note or n == note for n in list(notes))
+    except BaseException:  # noqa: BLE001 -- a hostile iterator reads as absent
+        return False
+
+
 def log_contained(logger: logging.Logger, msg: str,
                   *args: object) -> BaseException | None:
     """Emit an ERROR record, containing a failure OF THE SINK.
@@ -152,17 +206,35 @@ def log_contained_note(logger: logging.Logger, escaping: BaseException,
     in place -- every existing note preserved -- and the attach retried
     once.
 
-    **THE RESIDUE, MEASURED AND DECLARED** (Codex A3-AR-03).  An exception
-    that defines `__notes__` as a DATA DESCRIPTOR whose getter AND setter both
-    raise cannot receive a note at all: a data descriptor is consulted by the
-    base slots themselves, so there is no representation left to write into.
-    Verified by execution.  The load-bearing property is UNAFFECTED -- the
-    original exception still escapes with its type, args and chaining intact;
-    what is lost in that case is the diagnostic note, and this docstring says
-    so rather than claiming the earlier, DISPROVED "only a non-BaseException
-    defeats it".
+    **THE RESIDUE, MEASURED AND DECLARED, AND NARROWED THREE TIMES.**  An
+    exception that defines `__notes__` as a DATA DESCRIPTOR which REFUSES the
+    write -- whether by raising (Codex A3-AR-03) or by SILENTLY DISCARDING it
+    while a synthesizing getter returns a fresh list each read (Codex
+    A3R2-03) -- cannot receive a note at all: a data descriptor is consulted
+    by the base slots themselves, so there is no representation left to write
+    into.  Both verified by execution.  The attach is now VERIFIED BY
+    READ-BACK rather than trusted, so the helper no longer reports success in
+    that case; it simply returns, having done everything available to it.
+
+    The load-bearing property is UNAFFECTED either way -- the original
+    exception still escapes with its type, args and chaining intact; what is
+    lost is the diagnostic note, and this docstring says so rather than
+    claiming the earlier, DISPROVED "only a non-BaseException defeats it".
     """
+    # **THE PRESERVATION IS ENFORCED, NOT ASSUMED** (Codex A3R2-02, VERIFIED
+    # BY EXECUTION).  `logger.error(msg, *args)` hands the escaping exception
+    # to caller-installed handlers, and a handler that FORMATS the record
+    # calls `__str__` on it -- which an exception may legally override to
+    # MUTATE ITSELF and then raise.  Measured: `args` went from
+    # `('the real args',)` to `('CORRUPTED',)` and `__cause__` from a
+    # `ValueError` to `None`, while the sink's own exception was contained
+    # exactly as advertised.  **Containing the sink's exception is not the
+    # same as preserving the evidence, and the evidence IS this helper's
+    # contract** -- at the rollback and savepoint sites the original error and
+    # its chaining are what say whether a transaction may still be open.
+    snapshot = _evidence_snapshot(escaping)
     log_error = log_contained(logger, msg, *args)
+    _restore_evidence(escaping, snapshot)
     if log_error is None:
         return
     # **OBSERVATION-ONLY WORDING** (Codex A3-AR-06, VERIFIED BY EXECUTION):
@@ -176,11 +248,14 @@ def log_contained_note(logger: logging.Logger, escaping: BaseException,
             f"cleanly -- a logging handler RAISED ({safe_text(log_error)}). "
             f"Some sinks may have received the record and some may not; the "
             f"condition it described is unchanged.")
-    try:
+    with contextlib.suppress(BaseException):
         BaseException.add_note(escaping, note)
+    # **THE ATTACH IS VERIFIED** (Codex A3R2-03): `add_note` can return
+    # successfully and still lose the note against a synthesizing descriptor,
+    # so the early return is gated on READING IT BACK rather than on the call
+    # not raising.
+    if _note_landed(escaping, note):
         return
-    except BaseException:  # noqa: BLE001 -- the CLASS, not a roster
-        pass
     try:
         # **THE READ BYPASSES `__getattribute__` TOO** (Codex 22A3-R6-05,
         # verified by execution).  A subclass overriding

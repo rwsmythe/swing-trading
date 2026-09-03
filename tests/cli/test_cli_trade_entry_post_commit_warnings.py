@@ -391,3 +391,45 @@ def test_A3_AR_05_a_cli_close_failure_leaves_a_DURABLE_TRACE_in_the_log(
     assert len(_trade_rows(cfg)) == 1
     assert "CLOSING the database" in caplog.text, caplog.text
     assert "close failed" in caplog.text, caplog.text
+
+
+def test_A3R2_01_an_interrupt_before_the_confirmation_still_confirms(
+        tmp_path, monkeypatch):
+    """Codex A3R2-01 (MAJOR).
+
+    The outer post-bind handler returned on any bound `result`, so an
+    exception arriving anywhere in the output block -- an interrupt BETWEEN
+    two statements, with BOTH SINKS PERFECTLY USABLE -- exited 0 having
+    printed nothing at all. That is not the declared "nowhere left to write"
+    case; it is this arc's own failure mode reached through this arc's own
+    guard: a durable entry the operator is never told about, which is the
+    retry direction.
+
+    PRE-fix: exit 0, one durable row, and NO confirmation anywhere.
+    POST-fix: the outer handler makes one last contained attempt and the
+    confirmation lands.
+    """
+    import swing.cli as cli_mod
+
+    runner, cfg = _setup(tmp_path)
+
+    real = cli_mod._echo_contained
+    calls: list[bool] = []
+
+    def _wrapped(text, *, err=False):
+        if not calls:
+            calls.append(True)
+            raise KeyboardInterrupt("22-A3 PROBE: between two statements")
+        return real(text, err=err)
+
+    monkeypatch.setattr(cli_mod, "_echo_contained", _wrapped)
+    result = runner.invoke(main, _entry_argv(cfg))
+
+    rows = _trade_rows(cfg)
+    assert len(rows) == 1, rows          # under BOTH paths; the premise
+    trade_id = rows[0][0]
+    assert calls, "the interrupt probe never fired"
+    assert result.exit_code == 0, result.output
+    assert f"Trade id {trade_id}" in result.output, (
+        "a durable entry exited 0 with the operator told nothing at all, on "
+        "two perfectly usable sinks")

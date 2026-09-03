@@ -331,9 +331,15 @@ def _entry_notice_html(templates, request, *, trade_id: int,
                 f'({html.escape(render_failure)}). The entry EXISTS -- do NOT '
                 f'enter it again. Reload the page.')
         else:
+            # **NO REFRESH CLAIM** (Codex A3R2-04). The four OOB chunks
+            # rendering is not the same as THIS page having refreshed:
+            # `/watchlist` carries none of their target ids, and the entry
+            # form is reachable from there, so "the page was refreshed" was a
+            # false statement on exactly the surface the notice container was
+            # put in `base.html.j2` to serve.
             parts.append(
-                ' The entry EXISTS and the page was refreshed. Do NOT enter '
-                'it again.')
+                ' The entry EXISTS -- do NOT enter it again. Reload the page '
+                'if the updated position is not visible.')
         # THE SECONDARY DIAGNOSTIC IS SURFACED, NOT DISCARDED.
         # `log_contained` RETURNS the sink's failure precisely so a caller
         # does not trade one invisible failure for another, and dropping it

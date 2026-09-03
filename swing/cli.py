@@ -674,6 +674,7 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
     result = None
     close_error = None
     close_log_error = None
+    confirmed = False
     # ONE CONTINUOUS OUTER GUARD, opened before the connection and closed only
     # after the LAST line is printed. Two adjacent guards would leave an
     # uncovered instruction boundary between them.
@@ -912,12 +913,28 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         if result.watchlist_archived:
             _echo_contained(ascii_safe(
                 f"Watchlist row for {ticker} archived (reason: entered)"))
-        _echo_contained(ascii_safe(
+        confirmed = _echo_contained(ascii_safe(
             f"Trade id {result.trade_id}: {ticker} {shares} sh @ "
             f"${entry_price:.2f}, stop ${initial_stop:.2f}"))
     except BaseException:  # noqa: BLE001 -- the CLASS
         if result is None:
             raise
+        # **ONE LAST CONTAINED ATTEMPT AT THE CONFIRMATION** (Codex A3R2-01).
+        # Returning here on a bound `result` used to mean that an exception
+        # arriving anywhere in the output block -- an interrupt between two
+        # statements, with BOTH SINKS PERFECTLY USABLE -- exited 0 having
+        # printed nothing at all. That is not the declared "nowhere left to
+        # write" case; it is the arc's own failure mode (a durable entry the
+        # operator is never told about, which is the retry direction) reached
+        # through the arc's own guard.
+        if not confirmed:
+            _line = ascii_safe(
+                f"Trade id {result.trade_id}: {ticker} {shares} sh @ "
+                f"${entry_price:.2f}, stop ${initial_stop:.2f}")
+            # stdout first, then stderr: the point is that the operator LEARNS
+            # the row exists, not which stream carries it.
+            if not _echo_contained(_line):
+                _echo_contained(_line, err=True)
         # DURABLE. `click.echo` can raise `BrokenPipeError`
         # (`swing trade entry | head`) or any other output error, and an
         # uncontained failure here would leave a durable entry exiting
