@@ -2825,8 +2825,17 @@ Expect the `WARN (post-commit):` line on stderr, the `Trade id N:` line on stdou
    says reload. An automatic client-side reload was rejected -- it would re-enter the broken render
    and could loop, and a loop over a money-bearing surface is worse than a stale page with an
    accurate banner.
-7. **`log_contained_note` loses the sink failure only against an object that is not a
-   `BaseException` at all.** *Reason -- and THIS ENTRY'S PREVIOUS REASON WAS DISPROVED BY REVIEW
+7. **`log_contained_note` can lose the sink failure against a `BaseException` subclass whose
+   `__notes__` is governed by a REFUSING OR DISCARDING DATA DESCRIPTOR** — the original exception
+   still escapes unchanged, but the diagnostic note is not attached. **CORRECTED 2026-09-03 by
+   REVIEWER B, and this is the entry's THIRD disproof: the text below said loss was possible only
+   against an object that is not a `BaseException` at all, and that was FALSE ON THIS TREE.** The
+   production code at `entry.py:273` already admits the descriptor case explicitly, and two tests
+   (`test_22a3_log_containment.py:744` and `:926`) instantiate exactly those subclasses — **so the
+   declaration was contradicted by the arc's own code and its own tests while still reading as an
+   invariant.** Reachability is hostile/synthetic only: no ordinary production exception class
+   overrides `__notes__`. *The three-times-disproved reason follows, kept because each disproof is
+   worth more than the claim it replaced:* — and THIS ENTRY'S PREVIOUS REASON WAS DISPROVED BY REVIEW
    (`A3-R5-04`), which is why the declaration shrank rather than being defended:* the earlier
    version accepted information loss against a subclass overriding `__setattr__` to raise, claiming
    attachment was impossible. It is not. **MEASURED on this runtime:** for a class overriding BOTH
