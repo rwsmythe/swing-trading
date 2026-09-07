@@ -152,10 +152,14 @@ and re-raising the ORIGINAL when it is not.
 > `__context__` None, so the ambient-`except` false positive lives entirely in the excluded region.
 > **MEASURED 2026-09-07: it does not** -- `__context__` is set from the THREAD's handled exception,
 > so a caller inside an `except` still produces a non-None context on the commit-failed/rollback-OK
-> row, and the removed type filter would have caught it. **The DECISION stands on its other leg**
+> row, and the removed type filter would have caught it. **The DECISION stood on its other leg**
 > (a false positive costs a settle that does not happen; a false NEGATIVE admits a read rule (i)
-> refuses), the false positive has ZERO production instances by a read of both call sites, and
-> **(RD-a4) now drives it as a test instead of arguing it.** S2.2 carries the measurement.
+> refuses), and the false positive had ZERO production instances by a read of both call sites.
+> **SUPERSEDED 2026-09-07 BY RD's `A4-R11-2` RULING: the cost is no longer PAID, it is not
+> INCURRED** -- the ambient object is captured before the transaction and excluded by identity, and
+> **(RD-a4)'s four-row matrix drives all four cells under both predicates.** *Kept because the
+> correction was owed against a ruling and the record of owing it is worth more than a tidy
+> paragraph.* S2.2 carries both measurements.
 >
 > Full ledger: `.copowers-findings.md`; raw transcripts `.codex-review-r1..r11.txt`.
 
@@ -1568,6 +1572,10 @@ except BaseException as post_commit_error:
         # `not _reserve` -- DEFERRED PATH ONLY.  The immediate path took both
         # observations in `_entry_transaction`, from its OWN rollback call,
         # and must not have an inference layered over a direct observation.
+        # `ambient` is `sys.exc_info()[1]`, captured on the line immediately
+        # BEFORE the `try` that opens this region (S2.2).  It is the object
+        # `__context__` carries when `__exit__`'s rollback SUCCEEDED, and it
+        # is never the object it carries when the rollback FAILED.
         if not _reserve:
             if _exit_rollback_failed(post_commit_error, ambient):
                 outcome.cleanup_raised = True
