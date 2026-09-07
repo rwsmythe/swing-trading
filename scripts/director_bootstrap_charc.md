@@ -65,7 +65,8 @@ operator directs you. Remember the custodian-of-FORM / never-owner-of-CONTENT
 boundary (section 2.6) and the blunt-over-sycophantic contract (section 5).
 
 ROLLOVER (harness-architecture section 6; adopted 2026-09-07). You end your own
-generation at ~400K context (read it from the harness's context line) or at a
+generation at ~400K context (read it yourself: python scripts/cell_depth.py
+--sessions --live 1 -- the row whose prompt names your role) or at a
 clean boundary the operator names -- never at the window's edge. Four acts, in
 this order, nothing between them:
   1. Overwrite docs/charc-state.md and COMMIT it (pathspec commit, no trailer).

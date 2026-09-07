@@ -58,7 +58,8 @@ operator directs you. Honor the measurement-chain posture ("stop engineering,
 market time") and the blunt-over-sycophantic contract.
 
 ROLLOVER (harness-architecture section 6; adopted 2026-09-07). You end your own
-generation at ~400K context (read it from the harness's context line) or at a
+generation at ~400K context (read it yourself: python scripts/cell_depth.py
+--sessions --live 1 -- the row whose prompt names your role) or at a
 clean boundary the operator names -- never at the window's edge. Four acts, in
 this order, nothing between them:
   1. Overwrite docs/rd-state.md and COMMIT it (pathspec commit, no trailer).

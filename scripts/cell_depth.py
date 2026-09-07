@@ -20,11 +20,21 @@ first text of its first record (the dispatch prompt), since older transcript
 filenames carry only a hash.
 
 Usage (the orchestrator's PRECONDITION before assigning work to a live cell,
-and at every review-round gate):
+and at every review-round gate; a director's or orchestrator's SELF-READ for
+the rollover trigger):
 
     python scripts/cell_depth.py --live 12            # cells written in the last 12h
     python scripts/cell_depth.py --cap 400000 --live 6 # exit 1 if any listed cell exceeds the cap
     python scripts/cell_depth.py --all                 # every cell on disk, deepest first
+    python scripts/cell_depth.py --sessions --live 24  # MAIN sessions (directors / orchestrators)
+
+A MAIN session's transcript is ``<project-slug>/<session-id>.jsonl`` -- one
+directory above the cells -- with the same record shape, so the same sum is a
+session's own depth. The harness's context line is something the OPERATOR
+reads; ``--sessions`` is what lets the seat that must roll read the number
+itself (the orchestrator measured 396,223 this way before its first live
+rollover, 2026-09-07). The first record's text is the launch prompt, which
+names the role.
 
 Exit status: 0 = every listed cell is at or under --cap (default 400000);
 1 = at least one listed cell exceeds it; 2 = no transcripts found for the repo.
@@ -131,15 +141,23 @@ def read_cell(path: Path, *, now: float | None = None) -> CellDepth:
                      age_hours=age_hours, label=label)
 
 
-def scan(projects_dir: Path, repo_root: Path, *, now: float | None = None) -> list[CellDepth]:
-    """Every cell transcript for the repo, deepest peak first.
+def scan(projects_dir: Path, repo_root: Path, *, now: float | None = None,
+         sessions: bool = False) -> list[CellDepth]:
+    """Every cell transcript for the repo (or, with ``sessions=True``, every
+    MAIN-session transcript instead), deepest peak first.
 
-    The glob MUST descend into ``subagents/`` -- a project-level glob misses the
-    cells entirely (coa-chess undercounted one arc by 43% that way).
+    The cell glob MUST descend into ``subagents/`` -- a project-level glob
+    misses the cells entirely (coa-chess undercounted one arc by 43% that way).
+    The two populations are never mixed: a main session is not a cell and a
+    cap that applies to one is read against the other only by choice.
     """
     cells: list[CellDepth] = []
     for pdir in find_project_dirs(projects_dir, repo_root):
-        for f in glob.glob(os.path.join(str(pdir), "*", "subagents", "agent-a*.jsonl")):
+        if sessions:
+            pattern = os.path.join(str(pdir), "*.jsonl")
+        else:
+            pattern = os.path.join(str(pdir), "*", "subagents", "agent-a*.jsonl")
+        for f in glob.glob(pattern):
             cells.append(read_cell(Path(f), now=now))
     cells.sort(key=lambda c: c.peak, reverse=True)
     return cells
@@ -162,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
     sel.add_argument("--live", type=float, metavar="HOURS",
                      help="only cells whose transcript was written in the last HOURS")
     sel.add_argument("--all", action="store_true", help="every cell on disk (the default)")
+    parser.add_argument("--sessions", action="store_true",
+                        help="read MAIN sessions (directors / orchestrators) instead of cells")
     parser.add_argument("--projects-dir", default=None,
                         help="override ~/.claude/projects (tests)")
     parser.add_argument("--repo-root", default=None, help="override the repo root (tests)")
@@ -170,21 +190,22 @@ def main(argv: list[str] | None = None) -> int:
     projects_dir = (Path(args.projects_dir) if args.projects_dir
                     else Path.home() / ".claude" / "projects")
     repo_root = Path(args.repo_root).resolve() if args.repo_root else _REPO_ROOT
-    cells = scan(projects_dir, repo_root)
+    kind = "session" if args.sessions else "cell"
+    cells = scan(projects_dir, repo_root, sessions=args.sessions)
     if not cells:
-        print(f"no cell transcripts found under {projects_dir} for slug "
+        print(f"no {kind} transcripts found under {projects_dir} for slug "
               f"{project_slug(repo_root)!r}")
         return 2
     if args.live is not None:
         cells = [c for c in cells if c.age_hours <= args.live]
         if not cells:
-            print(f"no cells written in the last {args.live:g}h (cap {args.cap:,}); "
+            print(f"no {kind}s written in the last {args.live:g}h (cap {args.cap:,}); "
                   "nothing to check")
             return 0
     for row in format_rows(cells, args.cap):
         print(row)
     over = [c for c in cells if c.peak > args.cap]
-    print(f"{len(cells)} cell(s); {len(over)} over the {args.cap:,} cap")
+    print(f"{len(cells)} {kind}(s); {len(over)} over the {args.cap:,} cap")
     return 1 if over else 0
 
 

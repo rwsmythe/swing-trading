@@ -151,3 +151,23 @@ def test_exit_2_when_no_transcripts_for_repo(projects, capsys):
     projects_dir, repo, _sub = projects
     rc, out = _run(projects_dir, repo, capsys=capsys)
     assert rc == 2 and "no cell transcripts found" in out
+
+
+# --- --sessions: a MAIN session reads its own depth ---------------------------
+
+def test_sessions_mode_reads_main_transcripts_and_excludes_cells(projects, capsys):
+    projects_dir, repo, sub = projects
+    _write_cell(sub, "cell", [_record(0, 700_000, 0)])            # a deep cell
+    # the main session lives BESIDE its own <session-id>/subagents/ dir
+    main = sub.parent.parent / "sess-1.jsonl"
+    main.write_text(_record(1000, 390_000, 5_000,
+                            text="Read and follow scripts/director_bootstrap_charc.md")
+                    + "\n", encoding="utf-8")
+    rc, out = _run(projects_dir, repo, "--sessions", capsys=capsys)
+    assert rc == 0                                   # 396,000 is under the cap
+    assert "sess-1.jsonl" in out and "agent-acell" not in out
+    assert "director_bootstrap_charc" in out         # the launch prompt labels the seat
+    assert "1 session(s); 0 over" in out
+    # and the default (cell) mode still excludes the main session
+    rc, out = _run(projects_dir, repo, capsys=capsys)
+    assert rc == 1 and "agent-acell" in out and "sess-1.jsonl" not in out
