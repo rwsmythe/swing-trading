@@ -86,7 +86,9 @@ still being written to is in flight; a subagent DIES with the session that
 spawned it, and an early executing cell has committed nothing). With a cell
 running: HOLD -- dispatch nothing new, await the return, QA, commit, then roll;
 if context cannot survive the wait, stop the cell and WIP-commit its worktree
-FIRST. Then four acts, in this order, nothing between them:
+FIRST. The MIRROR binds too: at or past the trigger, dispatch NOTHING new -- a
+dispatch you cannot QA within your remaining budget is your successor's to
+make. Then four acts, in this order, nothing between them:
   1. Write docs/orchestrator-handoff-<date>.md (your existing handoff form) and
      COMMIT it (pathspec commit, no trailer). The successor reads HEAD. It
      RECORDS every authority you granted by cell message -- declared
