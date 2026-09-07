@@ -34,16 +34,25 @@ and re-raising the ORIGINAL when it is not.
 2026-09-02 that REVERTED clause 2 and commissioned this primitive.
 **Plan base:** `edfea928` (branch `22-a4-plan`, worktree `.worktrees/22-a4-plan`).
 
-> ## REVIEW STATUS: **FIVE ADVERSARIAL ROUNDS. THE LOOP STOPPED AT THE MANDATED ROUND-5 GATE AND IS *NOT* CONVERGED.**
+> ## REVIEW STATUS: **SIX ADVERSARIAL ROUNDS. BOTH RULINGS LANDED; ROUND 6 RAN ON THE FINAL SHAPE.**
 >
-> **45 findings: 3 CRITICAL, 32 MAJOR, 10 MINOR. ZERO reopened, ZERO reverted.** All five mechanical
-> assertions passed every counted round. Round 5's CRITICAL is fixed; **its seven MAJORs and four
-> MINORs are adjudicated in `.copowers-findings.md` and are OPEN.** This artifact is therefore a
-> ROUND-5 CHECK-IN STATE, not an approved plan -- see S11 and the ledger.
+> Rounds 1-5 at the binding `strong` tier, all five mechanical assertions passing every counted
+> round; the loop honoured the mandated round-5 gate rather than relabelling itself converged.
+> **Then TASK 0 WAS RULED (2026-09-06): RD ruled `uuid4` SATISFIES constraint 2** -- *"never
+> reusable" means the mechanism contains no path that REISSUES a token; the ENGINE reissues a
+> rolled-back rowid, an RNG does not* -- **and CHARC RATIFIED five schema items with ONE CONDITION
+> that widened the envelope by one module** (the corrector's typed refusal, Task 1b). The plan was
+> amended for both, and **round 6 ran on the frozen final shape.**
 >
-> **AND IT IS BLOCKED ON A RULING INDEPENDENTLY OF THE REVIEW LOOP** (Task 0): the primitive's shape
-> satisfies RD's constraint 2 either probabilistically (S-b, recommended) or structurally (S-d,
-> specified in full at S2.0.1), and a plan may not narrow a binding constraint on its own authority.
+> **THIS PLAN IS NOT AUTHORIZED TO EXECUTE. TWO RD RIDER CLAUSES ARE ROUTED BACK AND OPEN**
+> (S9 RD item 2), and `A4-R6-1` is the finding that forced this sentence: the plan cannot call
+> itself final while holding an item its own governing director told it to stop-and-route on.
+> **Both clauses were attached as load-bearing and both failed verification at the code:** the S7.7
+> detection reason (*"no false-confirm mechanism"* -- REPRODUCED FALSE) and the S2.0.1 re-open
+> trigger (*"fork"* -- `uuid4` holds no forkable state, MEASURED from source). **RD's RULING itself is
+> unaffected by either** -- it rests on the no-reissue-path reading, which verifies -- so what is
+> open is wording he owns, not the decision. **Task 0's checklist carries the open box; the ladder
+> below is otherwise ready.** Full ledger: `.copowers-findings.md`.
 
 **Baseline measured on `edfea928` before any change** (S11 records the number and the command).
 
@@ -51,10 +60,17 @@ and re-raising the ORIGINAL when it is not.
 
 ## Global Constraints
 
-- **ENVELOPE, verbatim from the brief:** `swing/trades/entry.py`, `swing/data/` (migration 0038,
-  models, repo), tests. **Nothing in `swing/web/` or `swing/cli.py`** -- 22-A3 already shipped the
-  caller side, which is why it went first, and which is why the warning this arc emits reaches the
-  operator with no further caller work (verified at both sites: S1.5).
+- **ENVELOPE, as widened by CHARC's ruling of 2026-09-06.** The brief's text was
+  `swing/trades/entry.py`, `swing/data/` (migration 0038, models, repo), tests -- **nothing in
+  `swing/web/` or `swing/cli.py`**, which remains true and is why the warning this arc emits reaches
+  the operator with no further caller work (verified at both sites: S1.5).
+  **IT NOW ADDS EXACTLY ONE MODULE: `swing/trades/reconciliation_auto_correct.py`.**
+  **CHARC's ground, and it is a ruling ABOUT this plan's own scoping:** *"I cannot rule the class
+  binding one week and bank its next instance because the plan's envelope was drawn one module
+  short."* The tier-2 corrector ADMITS `field_name="attempt_id"` today and the new trigger then
+  ABORTs it, so the operator receives a raw `sqlite3.IntegrityError` -- **authorize-then-abort, the
+  class he ruled on 2026-09-01 after five instances in 22-A.** The widening is bounded to the typed
+  refusal and its test (Task 1b); **no other change to that module, and no sweep.**
 - **RD'S THREE CONSTRAINTS ARE BINDING AND ARE NOT NEGOTIABLE BY THIS PLAN** (S1). If a design
   cannot satisfy all three, the plan STOPS and routes rather than designing around one.
 - **THE LIVE DATABASE IS NOT TOUCHED.** It is at v37 with real money-bearing trades and four live
@@ -122,7 +138,17 @@ transaction-control mode rather than assume it.**
   returns **exactly one** call site, `swing/trades/entry.py:1421`. The f-string-INSERT family was
   enumerated separately (`fill_envelope_identity.py:91`, `latch_order_intents.py:143`,
   `provenance_corrections.py:90`, `risk_policy.py:212`) and none targets `trades`.
-- **BUT A COLUMN'S IDENTITY DEPENDS ON ITS UPDATERS TOO, AND THERE IS A GENERIC ONE.**
+- **THE UPDATE CENSUS, WITH THE GREP THAT PRODUCED IT AND ITS COUNT** (CHARC, 2026-09-06 -- the
+  first version of this bullet named one site and left the other for the next reviewer to re-find,
+  which reads as an incomplete census even when the omitted site is harmless).
+  **`grep -rn 'UPDATE trades SET {' swing/` returns EXACTLY TWO sites, and both were READ:**
+  - `swing/data/repos/trades.py:735` -- `update_trade_review_fields`. **BENIGN, and classified rather
+    than merely counted:** its `set_clauses` list is built from FIXED literal column names in code
+    (the eleven review columns, plus a PRAGMA-gated `failure_mode`); **no caller-supplied column name
+    reaches the interpolation.** It cannot write `attempt_id`.
+  - `swing/trades/reconciliation_auto_correct.py:2085` -- the generic one, below. **This is the one
+    that matters.**
+- **AND THE GENERIC UPDATER IS WHY THE TRIGGER EXISTS.**
   `swing/trades/reconciliation_auto_correct.py:_update_journal_field` composes
   `UPDATE trades SET {field_name} = ?` with the COLUMN NAME INTERPOLATED, and its safety rests on an
   allowlist-by-EXCLUSION: `_RESERVED_JOURNAL_FIELDS` (`:178-183`) names five coupled columns, and
@@ -351,17 +377,26 @@ preference.**
 | **(S-c)** column written by a same-transaction `UPDATE trades SET attempt_id = ? WHERE id = ?` in `_record_entry_inner`, exactly as `risk_policy_id_at_lock` already is | by transaction atomicity (one inference step) | index | probe | no repo INSERT change at all |
 | **(S-d)** **(S-b) PLUS a durable ALLOCATOR**: a side table burns an identifier in its OWN committed transaction BEFORE the entry attempt; that identifier is then written into `trades.attempt_id` in the entry INSERT | **unchanged from (S-b)** -- the token is still in the same INSERT, and the allocator row is never used as evidence that the trade landed | **STRUCTURAL**, not probabilistic | probe (unchanged -- it still reads `trades`) | a second table, a second migration object, and **a second COMMIT on the money path before the entry** |
 
-> ## **THE SHAPE IS NOT DECIDED BY THIS PLAN. IT IS BLOCKED ON RD, AND THE ARC DOES NOT EXECUTE UNTIL HE RULES (Task 0).**
+> ## **DECISION: (S-b) -- RULED BY RD 2026-09-06, not chosen by this plan.**
 >
 > Rounds 1-3 walked this from *"the index makes a collision impossible"* (false) to *"the allocator
 > is a stamp"* (false) to the actual position: **(S-b) satisfies RD constraint 2 PROBABILISTICALLY
-> and (S-d) satisfies it STRUCTURALLY.** The dispatch's own instruction governs what to do next --
-> *"if you cannot satisfy all three, STOP and route -- do not design around a constraint"* -- and a
-> plan does not get to narrow a binding constraint by judging the residual small enough.
+> and (S-d) satisfies it STRUCTURALLY.** The plan then STOPPED and routed rather than narrowing a
+> binding constraint by judging the residual small enough. **RD RULED on 2026-09-06; the question is
+> CLOSED and this block records the answer, not the ask.**
 >
-> **RECOMMENDED: (S-b),** on the proportion argument below. **BOTH BRANCHES ARE SPECIFIED** (S2.0.1)
-> so either ruling is executable without another planning pass, and **every downstream section names
-> which branch it assumes.** `A4-R3-1` is the finding that forced this from a decision into a gate.
+> **RD's ruling, and its REASON, because the reason is the part that binds future appeals:**
+> *"never reusable" = the mechanism must contain **no path that REISSUES** a token.* **The rowid
+> failed because the ENGINE hands a rolled-back id to the next insert** -- reuse is an active,
+> designed-in mechanism. `uuid4` has no such path; a repetition is an RNG failure, not a behaviour of
+> the mechanism. **Collision-resistance is already this system's admissibility standard** (the H1
+> amendment pinned by sha256; broker snapshots by digest), so the ruling demands no certainty beyond
+> what the existing evidence chain rests on.
+>
+> **(S-d) is NOT deleted. It is BANKED IN FULL at S2.0.1 with a named re-open trigger** -- refusing
+> it today is a **D46 application** (more machinery, a second commit surface and a separate
+> connection ON THE MONEY PATH, against a failure with no mechanism and no observed instance), and
+> that calculus changes if the platform ever acquires a correlated-RNG hazard.
 
 *Why (S-d) is on the table at all, and why the first draft was WRONG to wave it off* (`A4-R2-1`).
 That draft rejected a durable reservation on the ground that it "makes it a STAMP (gotcha #30)".
@@ -399,14 +434,27 @@ absent from `models.Trade` and from all four projections** (S1.6). The token is 
 identity, never domain data, and keeping it off the domain model also keeps it from being adopted as
 a business key later.
 
-**The divergence is not a silent one:** it is routed to CHARC at S9 as a named question, and it is
-made mechanical rather than merely explained. Task 2 adds a **DRIFT COMPARATOR** -- the `trades`
+**The divergence was not a silent one, and it is now RULED:** it was routed to CHARC as a named
+question and he **ACCEPTED it on 2026-09-06**, having verified 57 / 56 / `{risk_policy_id_at_lock}`
+against the live database himself. It is made mechanical rather than merely explained --
+**Task 1** (not Task 2; the mirrors were merged into one commit at `A4-R2-3`) adds a
+**DRIFT COMPARATOR** -- the `trades`
 column set minus `Trade`'s field set must equal exactly `{"risk_policy_id_at_lock", "attempt_id"}`
 -- so the omission is an enumerated, reasoned exclusion list that fails loudly the day a third
 column joins it. Per the amended gotcha #11, **the comparator is the mandatory member of the mirror
 set**, and it is the one mirror that does not depend on choosing the right grep.
 
-**The ADDITION to CHARC's shape: `CHECK (attempt_id IS NULL OR length(attempt_id) = 36)`.**
+**THE ADDITION TO CHARC'S SHAPE:**
+`CHECK (attempt_id IS NULL OR (typeof(attempt_id) = 'text' AND length(attempt_id) = 36))`.
+**THE `typeof` GUARD IS NOT DECORATION, AND ITS ABSENCE WAS ROUND 6'S SHARPEST NEW FINDING**
+(`A4-R6-4`). With `length(...) = 36` alone, **MEASURED: a 36-BYTE BLOB passes the CHECK and sits in
+the UNIQUE index ALONGSIDE its byte-identical TEXT twin** -- `[(1, 'text', 36), (2, 'blob', 36)]` --
+which **falsifies this section's own "at most ONE LIVE row per token" claim at the schema boundary**.
+Adding `typeof(attempt_id) = 'text'` rejects the BLOB (measured). The asymmetry is worth naming: the
+BANKED integer branch at S2.0.1 already carried a `typeof` guard, added in round 4 for exactly this
+class, and **the SHIPPING text branch did not** -- the fix was applied to the design that is not
+being built. The Python mirror is `isinstance(attempt_id, str)`, not a length check alone, and
+(m1)/(m6)/(r3) each gain a 36-byte-BLOB rejection case.
 Without it, `attempt_id = ''` is a legal, non-NULL, INDEXED value -- and CLAUDE.md carries a
 standing gotcha about exactly this (`... or ""` colliding with SQL nullability), so the empty string
 is a value this codebase has produced before. Two empty-string tokens would collide on the UNIQUE
@@ -468,11 +516,30 @@ atomic together (S1.1). So the presence of the token on the trade row is not evi
 trade row alone; it is evidence that the transaction COMMITTED, which is exactly the fact clause 2
 needs.
 
-### S2.0.1 THE (S-d) BRANCH, SPECIFIED -- so the ruling does not cost another planning pass
+### S2.0.1 THE (S-d) BRANCH -- **NOT TAKEN, BANKED IN FULL, WITH A NAMED RE-OPEN TRIGGER**
 
-**If RD rules that constraint 2 requires STRUCTURAL uniqueness**, the design changes by exactly this
-delta and nothing else. It is written out here rather than promised, because *"we would add an
-allocator"* is not a specification.
+> **RD's disposition, 2026-09-06: banked rather than deleted.** *"If a platform change ever
+> introduces a correlated-RNG hazard -- fork, VM snapshot-resume -- the fork re-opens with the design
+> already executable."* **THE RE-OPEN TRIGGER IS THE SPECIFICATION'S REASON FOR EXISTING**, so it is
+> stated as a condition an operator or director can recognise: *any change that lets two processes or
+> two resumed images draw from the SAME entropy stream.*
+>
+> **BUT "FORK" IS STRUCK FROM THE TRIGGER LIST AND ROUTED BACK -- IT DOES NOT VERIFY AT THE CODE**
+> (`A4-R6-11`). **MEASURED, by reading CPython 3.14's `uuid.uuid4` source:** it is
+> `int.from_bytes(os.urandom(16))` **per call**. There is no process-local PRNG whose state a `fork`
+> would clone, so **acquiring `fork` by porting to a POSIX platform does not, by itself, create the
+> correlated state the trigger is meant to detect** -- it would fire on an ordinary platform port
+> with no hazard present, and activate a materially more expensive design on the money path.
+> **What SURVIVES as a trigger:** a change of GENERATOR away from `os.urandom`, or a measured
+> condition capable of DUPLICATING THE OS ENTROPY STREAM (VM snapshot-resume / image cloning, where
+> that premise is actually established). This is the SECOND clause of RD's riders that failed
+> verification, and it is routed with the first at S9 RD item 2.
+>
+> Refusing it today is a **D46 application**: it is more machinery -- a second commit surface and a
+> separate connection **on the money path** -- defending against a failure with **no mechanism and no
+> observed instance**.
+
+The delta below is what a re-opened fork executes; it changes nothing else.
 
 - **Migration 0038 gains one table**, still additive, still no rebuild:
   `CREATE TABLE attempt_id_allocations (attempt_id INTEGER PRIMARY KEY AUTOINCREMENT, allocated_at
@@ -936,8 +1003,8 @@ because between the two commits the tree would carry a live false-message path o
 `PRAGMA table_info(trades)` contains `attempt_id`; `INSERT ... attempt_id = NULL` succeeds;
 `attempt_id = <36 chars>` succeeds; `attempt_id = ''` and `attempt_id = <35 chars>` each raise
 `sqlite3.IntegrityError` naming the CHECK. **Pre-fix:** the constant is 37 and the column does not
-exist, so the first two assertions raise `OperationalError: no such column`. **Pre-fix, per assertion** (`A4-R3-10`; the first draft said "raises `no such column`" for all of
-them, which is only true of the last): `EXPECTED_SCHEMA_VERSION == 38` fails with `AssertionError`
+exist, so the first two assertions raise `OperationalError: no such column`. **Pre-fix, per assertion** (`A4-R3-10`, and the sentence this replaces still said "the first
+assertions fail with `no such column`" two lines before contradicting itself -- `A4-R6-13`): `EXPECTED_SCHEMA_VERSION == 38` fails with `AssertionError`
 (it is 37); the `PRAGMA table_info` membership check fails with `AssertionError`; only the SQL that
 NAMES `attempt_id` raises `OperationalError: no such column`. **Task 1's declared first red is the
 `AssertionError` on the constant**, which is the first assertion in file order. **MEASURED already**
@@ -986,15 +1053,30 @@ comparator reads the real constraint and not a copy of it.
 
 ### (m7) THE TOKEN IS WRITE-ONCE -- asserted at the schema AND through the real corrector path
 
-**Post-fix:** a direct `UPDATE trades SET attempt_id = 'x' WHERE id = ?` on a v38 database raises
-`sqlite3.IntegrityError` naming the trigger; **and**, driven through
+**Post-fix, half 1 -- the SCHEMA guard:** a direct `UPDATE trades SET attempt_id = <a VALID 36-char
+token> WHERE id = ?` on a v38 database raises `sqlite3.IntegrityError` naming the trigger.
+**THE VALUE IS CHECK-VALID SO THE TRIGGER IS ISOLATED FROM EVERY OTHER CONSTRAINT** -- and the
+REASON first given for that was FALSE, which is worth recording because it was believed for two
+rounds. `A4-R5-6` said `'x'` "trips the CHECK before reaching the trigger"; **MEASURED, it does not:
+a BEFORE UPDATE trigger fires FIRST, so both an invalid and a valid value abort with the trigger's
+own `immutable` message.** A valid token is still the right choice -- it removes any doubt about
+WHICH constraint refused -- but the discriminator is not the CHECK ordering; it is the
+**MUTATION PROOF** (remove the `CREATE TRIGGER`, show this RED), which is why the proof gates Task 1
+rather than decorating it.
+
+**Post-fix, half 2 -- the CORRECTOR path, and it asserts the TYPED error:** driven through
 `swing/trades/reconciliation_auto_correct.py`'s tier-2 operator-truth path with
-`field_name="attempt_id"`, the correction is REFUSED and the row's token is unchanged.
-**Pre-fix (the column with no trigger -- what the first three drafts of this plan specified):** both
-succeed, and the second is the reachable one: an operator correction re-assigns a rolled-back
-token to a different trade in the same ticker, and the settle then confirms a row this attempt did
-not write. **The second half of this row is the load-bearing one** -- the direct UPDATE proves the
-trigger exists, and only the corrector path proves it covers the writer that actually reaches it.
+`field_name="attempt_id"`, the correction is refused with the **typed refusal from Task 1b -- NOT a
+raw `sqlite3.IntegrityError`** -- and the row's token is unchanged. Asserting the TYPE is the whole
+point of CHARC's condition: an `IntegrityError` surfacing from a trigger IS the authorize-then-abort
+shape, so a test satisfied by it would ratify the defect.
+
+**Pre-fix (the column with no trigger and no refusal -- what the first three drafts specified):**
+both halves succeed, and the second is the reachable one: an operator correction re-assigns a
+rolled-back token to a different trade in the same ticker, and the settle then confirms a row this
+attempt did not write. **Half 2 is the load-bearing one** -- the direct UPDATE proves the trigger
+exists; only the corrector path proves it covers the writer that actually reaches it, and only the
+TYPE assertion proves the operator is told why.
 
 ### (r1) The repo writes the token
 
@@ -1021,6 +1103,10 @@ the call raises `TypeError`.
 
 `{c for c in PRAGMA table_info(trades)} - {f.name for f in dataclasses.fields(Trade)} ==
 {"risk_policy_id_at_lock", "attempt_id"}`, with the reason for each member in the test's docstring.
+**EQUALITY, NEVER A SUPERSET CHECK -- CHARC made this the MANDATORY member of the mirror set**
+(2026-09-06): *"the one mirror that defends the set."* A `>=` or subset form would silently absorb the
+next column added without a decision, which is precisely the failure the comparator exists to catch,
+and it is the same softening the LOCK-A docstring refuses one section over.
 **Post-fix:** passes. **Pre-fix:** the set is `{"risk_policy_id_at_lock"}` (MEASURED today), so the
 test fails on the current tree and passes only once the column exists -- and it fails again the day
 a third column is added without a decision. This is the mandatory comparator of the mirror set: the
@@ -1227,6 +1313,23 @@ equals it too. **Pre-fix / against the two defective implementations named above
 assertion fails the double-mint, and the INSERT-argument assertion fails the disconnected one --
 neither of which any constant-token row can see.
 
+### (w2) THE MINT'S OWN CONTRACT -- that it draws from `uuid.uuid4` at all
+
+**Why this row exists (`A4-R6-5`): every identity row including (w) monkeypatches
+`_mint_attempt_token` ITSELF, so a production mint returning a CONSTANT valid 36-character string
+passes all of them** -- and LOCK-A only checks that the token is valid and non-NULL. A constant mint
+is precisely the systematic-reuse defect S7.8 says is deterministic rather than astronomical, and the
+plan claimed (w) excluded it "by construction". **It did not.**
+
+**Post-fix:** patch **`uuid.uuid4`** (one level BELOW the mint) with distinct sentinel UUIDs; assert
+`_mint_attempt_token` calls the provider **exactly once per mint** and returns **exactly
+`str(sentinel)`**; then drive **TWO attempts, the first rolled back**, and assert the second mint
+produced a **DIFFERENT** token. **Pre-fix / against a caching or constant mint:** the second attempt
+returns the first token and the row fails -- which no `_mint_attempt_token`-level patch can detect.
+**S7.8's claim is narrowed to match:** (w) proves the token is threaded consistently; **(w2)** is
+what excludes a reissuing generator, and neither makes reuse impossible *by construction* -- that
+word belonged to the banked allocator and has been removed.
+
 ### (e) CO-DURABILITY, OBSERVED AT THE TRANSACTION BOUNDARY
 
 > **Rewritten after `A4-R2-5`.** The first version asserted "committed row carries the token /
@@ -1252,16 +1355,23 @@ pending, with no token -- and the test fails there, which is precisely where it 
 
 ### (e2) THE IDENTITY APPARATUS CANNOT FAIL AN ENTRY
 
-**SIX variants, because the first draft had two and an implementation that forgot RESULT validation
-passed both** (`A4-R4-4`): `_mint_attempt_token` **raises**; and it RETURNS `""`, `"short"`, a
-37-character string, `b"..."` (bytes), and `None`. Plus `_resolve_main_db_path` raises. **The
+**SEVEN CONTAINED-FAILURE VARIANTS PLUS ONE INTERRUPT-PROPAGATION CONTROL -- eight scenarios**
+(`A4-R6-9`: the first version said "six" and then enumerated seven, with the interrupt case tacked on
+outside the count; a manifest an executor can under-read by one is the defect, not the arithmetic).
+**The seven contained failures:** (1) `_mint_attempt_token` RAISES; it RETURNS (2) `""`, (3)
+`"short"`, (4) a 37-character string, (5) `b"..."` (bytes), (6) `None`; and (7)
+`_resolve_main_db_path` RAISES. **Plus (8), a CONTROL of the opposite polarity:** a
+`KeyboardInterrupt` from the mint PROPAGATES and is not swallowed.
+**And a NINTH, added by `A4-R6-4`:** a 36-BYTE BLOB return, which passes a bare length check and must
+be contained as identity-unavailable rather than reaching the repo. **The
 malformed-RETURN variants are the ones that matter**: without result validation in
 `_begin_attempt_identity` (S2.1) the value reaches the repo, trips the pre-write `ValueError` that
 (r3) requires, and FAILS AN ENTRY THAT WOULD HAVE SUCCEEDED -- the exact outcome the containment
 exists to prevent, arriving through the containment's own blind spot.
-**Post-fix, all six:** `record_entry` SUCCEEDS; the row is present with `attempt_id IS NULL` (the
-raise and the five malformed returns) or with a valid token but no probe available (the path
-variant); and a WARNING is logged in each case.
+**Post-fix, all EIGHT contained variants (1-7 plus the BLOB):** `record_entry` SUCCEEDS; the row is
+present with `attempt_id IS NULL` (the raise and the six malformed returns) or with a valid token but
+no probe available (the path variant); and a WARNING is logged in each case.
+**Post-fix, the control:** the `KeyboardInterrupt` escapes and no row is written.
 **Pre-fix (an uncontained implementation):** the exception escapes and a money-bearing entry fails
 because an identity nicety was unavailable.
 *Both variants also assert the exit condition of the containment: a `KeyboardInterrupt` from the
@@ -1391,8 +1501,8 @@ for every assignment including ones added later.*
 | path | what |
 |---|---|
 | `swing/data/migrations/0038_trade_attempt_identity.sql` | `ALTER TABLE trades ADD COLUMN attempt_id TEXT CHECK (...)`, the UNIQUE partial index, **the `trg_trades_attempt_id_immutable` BEFORE-UPDATE trigger (S2.0 -- MANDATORY; it is what closes the `A4-R4-1` false-success path)**, `UPDATE schema_version SET version = 38`, inside an explicit `BEGIN; ... COMMIT;` (gotcha #9), with a reversibility header naming BOTH the `DROP INDEX` and the `DROP TRIGGER` |
-| `tests/data/test_migration_0038_attempt_identity.py` | (m1)-(m6), (r4), (r5) -- all in Task 1's single commit |
-| `tests/trades/test_22a4_attempt_identity.py` | (e), (e2), **(w)**, (f), (g), (h), (r1)-(r3), (r6) |
+| `tests/data/test_migration_0038_attempt_identity.py` | (m1)-(m6), **(m7) half 1 (the schema trigger)**, (r4), (r5) -- all in Task 1's single commit; **(m7) half 2 (the corrector's typed refusal) lives with Task 1b** |
+| `tests/trades/test_22a4_attempt_identity.py` | (e), (e2), **(w)**, **(w2) the mint contract**, (f), (g), (h), (r1)-(r3), (r6) |
 | `tests/trades/test_22a4_clause2_settlement.py` | (RD-a1), (RD-a2), (RD-a3), (RD-b), **(RD-b2)**, (c2), (k), (k2), **(k3)** |
 
 **Edited:**
@@ -1412,19 +1522,27 @@ for every assignment including ones added later.*
 
 ## S5. TASK LADDER (TDD; one red -> green -> commit per task)
 
-### Task 0: **THE RD RULING -- A GATE, NOT A STEP. NOTHING BELOW EXECUTES UNTIL IT RETURNS.**
+### Task 0: **RULED 2026-09-06 -- CLOSED. Recorded here because the ladder below was blocked on it.**
 
-- [ ] **RD rules on constraint 2** (S9 RD item 6): does *"never reusable across attempts ... without
-      collision"* admit the PROBABILISTIC guarantee of (S-b), or does it require the STRUCTURAL
-      guarantee of (S-d)? Both branches are specified (S2.0, S2.0.1) and the ruling changes the
-      migration, one test's polarity and one scope line -- nothing else.
-- [ ] **CHARC rules on the two schema-adjacent items** (S9 CHARC): the migration's shape and
-      **the LOCK-A amendment below**, which is an amendment to a MERGED arc's lock and is not this
-      plan's to make.
-- [ ] **If either ruling goes the other way, the ladder is re-derived from S2.0.1 rather than
-      improvised at the keyboard.** This gate exists because the dispatch's instruction is explicit:
-      *if you cannot satisfy all three constraints, STOP and route -- do not design around a
-      constraint.*
+- [x] **RD RULED: `uuid4` SATISFIES constraint 2. The shape is (S-b).** **The canonical reading,
+      binding on every future appeal:** *"never reusable" means the mechanism must contain **NO PATH
+      THAT REISSUES** a token.* The rowid failed **because the ENGINE ITSELF hands a rolled-back id
+      to the next insert -- reuse is an active, designed-in mechanism.** `uuid4` has no reissue path;
+      a repetition is an RNG FAILURE, not a behaviour of the mechanism. **And it demands no certainty
+      beyond what this project's evidence chain already rests on:** the H1 amendment text is pinned
+      by sha256 and broker snapshots by digest -- **collision-resistance IS the admissibility
+      standard elsewhere in this system.**
+- [x] **CHARC RATIFIED five items** (S9): migration 0038 as shaped, the LOCK-A amendment in the
+      stated shape, the `<= 37` -> `<= 38` ceiling **opened for 0038 only**, the backup gate and its
+      expected-tables set, and **the S2.0 divergence** (no `Trade` field, no `_row_to_trade` change --
+      he verified 57 / 56 / `{risk_policy_id_at_lock}` on the live database himself).
+- [x] **ONE CONDITION ATTACHED, and it WIDENS THE ENVELOPE: S8.6 is NOT banked -- the corrector's
+      typed refusal SHIPS IN THIS ARC.** See Global Constraints and Task 1b.
+- [ ] **ONE CLAUSE ROUTED BACK, and it is the only open item in this section: RD's S7.7 detection
+      rider does not fully verify at the code.** RD attached it as load-bearing and instructed
+      stop-and-route if it failed. **Half of it failed** -- see S7.7 and S9 RD item 2. **The RULING
+      is unaffected** (it rests on the no-reissue-path reading, which verifies); what failed is the
+      rider's stated REASON for why the undetectable case is harmless.
 
 ### Task 0b: **THE 22-A LOCK-A AMENDMENT** -- lands in Task 1's commit, ruled at Task 0
 
@@ -1478,8 +1596,22 @@ covering the new column, so the failure is left loud."*
       FINAL statement, `COMMIT;`. The header carries: the reversibility clause -- **BOTH
       `DROP INDEX ux_trades_attempt_id;` AND `DROP TRIGGER trg_trades_attempt_id_immutable;`**, the
       column staying because it is nullable and inert -- why nullable, why partial, why the CHECK is
-      length-only, why the trigger is unconditional and carries no `WHEN`, and the
-      one-migration-one-version-bump rule.
+      length-only, why the trigger is unconditional and carries no `WHEN`, the
+      one-migration-one-version-bump rule, **and the TWO JURISDICTION NOTES CHARC requires in the
+      header itself (2026-09-06)**:
+      **(A) A `BEFORE UPDATE` TRIGGER CANNOT SEE `INSERT OR REPLACE`.** The header states that the
+      guard covers **UPDATE**, and that the REPLACE family was **GREPPED EMPTY against `trades`** --
+      so a future REPLACE writer is **a DECLARED BREACH rather than an unknown**. *Method and count,
+      recorded because a bare "we checked" is what this class survives on:* CHARC grepped the family
+      across `swing/`; re-run here, `insert or replace into trades` / `replace into trades` returns
+      **ZERO**, and the broader `insert or replace|replace into` returns 45 hits across 22 files of
+      which **ZERO are executable statements** -- every one is prose in a migration header, a trigger
+      message, or a docstring warning about this very class.
+      **(B) 22-B DEMAND A REBUILDS `trades` (DROP + CREATE).** A rebuild that does not RE-CREATE both
+      `ux_trades_attempt_id` and `trg_trades_attempt_id_immutable` **silently drops the guard** --
+      the 0035 header's own lesson about what a rebuild costs, applied forward. CHARC has banked it
+      as a **22-B precondition**; this header records it so the next rebuild's author meets it in the
+      file rather than in a review.
       **THE TRIGGER IS NOT OPTIONAL, AND ITS ABSENCE FROM THIS CHECKLIST WAS THE ROUND-5 CRITICAL**
       (`A4-R5-1`): round 4 added it to S2.0's prose and to the test roster and to NOTHING an executor
       reads as a work item, so a plan whose prose called it mandatory shipped a ladder that omitted
@@ -1503,6 +1635,13 @@ covering the new column, so the failure is left loud."*
 - [ ] `swing/trades/entry.py`: narrow the IntegrityError match to
       `"UNIQUE constraint failed: trades.ticker"` (S2.5), with the measured message quoted at the
       site and the reason -- the new index makes the loose match a FALSE "already an open position".
+- [ ] **THE MINT AND THE THREADING LAND HERE, AS ACTUAL CHECKBOXES** (`A4-R6-2`: Task 0b and Task 2
+      both said the mint had moved into Task 1 and Task 1 contained no such work, while Task 2 still
+      scheduled it -- the amendment was announced in two places and performed in neither):
+      `_mint_attempt_token()`, `_AttemptIdentity`, `_begin_attempt_identity(conn)` per S2.1, and the
+      `record_entry` -> `_record_entry_inner` -> `insert_trade_with_event(attempt_id=...)` threading.
+      **Task 1's amended LOCK-A asserts a non-NULL token on BOTH rows, so without these the task
+      cannot reach its own green.**
 - [ ] **Sweep the version mirror family -- ALL SIX SPELLINGS of S1.6, in THIS commit, CLASSIFYING
       EACH BY READING IT** (`A4-R2-2`). The rules:
       - **The five ASSERTION families become 38 where the assertion is about HEAD.** Two
@@ -1530,10 +1669,13 @@ covering the new column, so the failure is left loud."*
         pre-barrier world, `target_version=16` in `test_exit.py`) are NOT touched.**
       - **The counts in S1.6 are FLOORS WITH OVERLAP and are not an edit manifest.** The manifest is
         produced by running the six greps and READING every hit.
-- [ ] **Tests:** (m1)-(m6), **(m7) the immutability trigger -- direct UPDATE *and* the real
-      corrector path -- with its MUTATION PROOF (remove the `CREATE TRIGGER`, show (m7) RED, restore)
-      required before this task can go green**, (r1)-(r4), (r6), and (r5) the static INSERT closure
-      walk over **FOUR**
+- [ ] **Tests:** (m1)-(m6), **(m7) HALF 1 ONLY -- the schema trigger, direct UPDATE, with its
+      MUTATION PROOF (remove the `CREATE TRIGGER`, show it RED, restore) required before this task
+      can go green.** **(m7) HALF 2 -- the corrector's TYPED refusal -- belongs to Task 1b and MUST
+      NOT be required here** (`A4-R6-3`: requiring the whole of (m7) before the task that implements
+      the refusal made Task 1 unreachable in its own prescribed order, the amendment-induced
+      dependency error the one-cycle-per-task rule exists to prevent). Also (r1)-(r4), (r6), and
+      (r5) the static INSERT closure walk over **FOUR**
       statements -- ONE carrying and **THREE** reasoned era exclusions -- **with its mutation proof
       run and shown RED IN BOTH DIRECTIONS** (column removed from the v38 branch; an unreasoned fifth
       statement added). **RED first**: (m1)'s FIRST assertion, `EXPECTED_SCHEMA_VERSION == 38`, fails with
@@ -1542,21 +1684,69 @@ covering the new column, so the failure is left loud."*
       task must declare the one it will actually see).
 - [ ] Commit: `feat(data): Task 1 -- migration 0038 trades.attempt_id, the UNIQUE partial index, the repo write/read mirrors and the version-mirror family, in one commit`
 
+### Task 1b: **THE CORRECTOR'S TYPED REFUSAL** -- CHARC's attached condition, shipping in this arc
+
+> **Ruled 2026-09-06.** This was S8.6, proposed as a banked follow-on; CHARC refused the banking and
+> widened the envelope by exactly `swing/trades/reconciliation_auto_correct.py` (Global Constraints).
+> **The trigger stays the GUARD OF RECORD** -- it covers writers not yet written -- **and the typed
+> refusal is its LEGIBLE FACE.**
+
+- [ ] Add the refusal so `field_name="attempt_id"` on `trades` is refused BEFORE the UPDATE is
+      composed, with a typed error, not an abort from the database.
+- [ ] **THE SHAPE IS THIS PLAN'S, THE BEHAVIOUR IS RULED.** A **SIBLING set** (e.g.
+      `_IMMUTABLE_JOURNAL_FIELDS`) is the likely shape rather than a new entry in
+      `_RESERVED_JOURNAL_FIELDS`, because **the existing dict means something different**: its five
+      members are COUPLED columns that can only be written coherently alongside other rows, and its
+      message directs the operator to the surface that writes them together. `attempt_id` has no
+      such surface.
+- [ ] **THE MESSAGE MUST NOT NAME A "COUPLED SURFACE" -- THERE IS NONE.** It names the column as
+      **WRITE-ONCE IDENTITY THAT NO SURFACE WRITES**: set by the entry INSERT, never corrected,
+      never re-assigned, and refusing it is not a routing hint but a statement that the operation
+      does not exist. A message copied from the coupled-surface family would send an operator
+      looking for a screen that cannot be built.
+- [ ] **THE TYPE MUST BE CALLER-COMPATIBLE, OR THE CONDITION IS NOT MET** (`A4-R6-6`, verified at
+      the source). The sibling type is **`ImmutableJournalFieldError(ValueError)`** -- NOT a bare
+      `Exception` subclass. The existing `ReservedJournalFieldError` inherits **directly from
+      `Exception`** (`reconciliation_auto_correct.py:109`), and both callers reach a `ValueError`
+      handler with no handler for that type (`swing/cli.py:3929` region;
+      `swing/web/routes/reconcile.py:1640`) -- so a bare-`Exception` refusal would surface as an
+      uncaught CLI traceback and a web 500. **That is the same operator experience CHARC's condition
+      exists to replace**, arriving one layer out. Deriving from `ValueError` reaches both existing
+      handlers with **no production caller edit**.
+- [ ] **THE CHECK GOES IN BOTH PLACES, SHARING ONE PREDICATE AND ONE MESSAGE** (`A4-R6-7`, verified
+      at the source): `_preflight_reserved_transitions` **and** `_update_journal_field`. The module
+      applies multi-field corrections SEQUENTIALLY and preflights the whole payload for exactly that
+      reason -- its own comment says a per-field-only check made refusal depend on **JSON KEY
+      ORDER**. A backstop-only implementation would execute an earlier field's UPDATE before
+      discovering `attempt_id` second.
+- [ ] **Tests:** (m7) half 2 asserts the TYPED error and an unchanged token -- **a test satisfied by
+      `sqlite3.IntegrityError` would ratify the authorize-then-abort defect**, so the assertion is on
+      the TYPE. **Plus a MULTI-FIELD row with `attempt_id` LAST, asserting ZERO journal UPDATE
+      statements were issued** (the order-independence half). **Plus delivery rows through the
+      UNCHANGED CLI and web surfaces**, because a service-only assertion cannot show the operator
+      sees a refusal rather than a traceback.
+- [ ] **Bounded:** one sibling refusal set, one message constant, the shared predicate at two call
+      sites, and the assertions above. **No other change to that module and no sweep** -- the
+      widening is exactly this.
+- [ ] Commit: `feat(trades): Task 1b -- the corrector refuses attempt_id with a typed error instead of authorizing it into a trigger abort`
+
 ### Task 2: the identity apparatus's SAFETY properties (no persisted-row change)
 
 > **The MINT and the THREADING moved UP into Task 1** (`A4-R4-2`): the amended LOCK-A asserts a
 > non-NULL token on both rows, so Task 1 cannot be green without them. What remains here is
 > everything that does not change the persisted row.
 
-- [ ] `_mint_attempt_token()`, `_AttemptIdentity`, `_begin_attempt_identity(conn)` per S2.1 --
-      contained at `Exception`, NOT `BaseException`, **with RESULT validation as well as call
-      containment** (`A4-R4-6`'s sibling `A4-R4-4`), and the reason for each at the site.
+- [ ] **THE MINT ITSELF IS TASK 1's** (`A4-R6-2`). What lands here is only its SAFETY behaviour:
+      the `Exception`-not-`BaseException` containment with the reason at the site, and **RESULT
+      validation -- `isinstance(str)` AND the exact length, so a 36-byte BLOB return is contained as
+      identity-unavailable rather than reaching the repo** (`A4-R4-4`, widened by `A4-R6-4`).
 - [ ] Keep the repo import style `entry.py` already uses (`from swing.data.repos.trades import ...`)
       so test (RD-a2)'s patch target -- `swing.trades.entry.find_trade_id_by_attempt_id` -- is the
       name the service actually consults (`A4-R4-7`).
-- [ ] **Tests:** (e) co-durability OBSERVED AT THE BOUNDARY, (e2) in **all six** variants
-      (including the `KeyboardInterrupt`-is-not-swallowed half). **(w) belongs to Task 4**, because
-      it needs the probe to capture the third point.
+- [ ] **Tests:** (e) co-durability OBSERVED AT THE BOUNDARY, (e2) in **all EIGHT contained variants
+      PLUS the `KeyboardInterrupt` propagation control** -- enumerate the same list S3 (e2) does, so
+      the two manifests cannot drift (`A4-R6-9`). **(w) belongs to Task 4**, because it needs the
+      probe to capture the third point.
 - [ ] Commit: `feat(trades): Task 2 -- one uuid4 per attempt, written in the entry INSERT itself`
 
 ### Task 3: `_entry_transaction` records FOUR observations (THREE new fields), on both paths
@@ -1683,10 +1873,17 @@ discovered; it is the gate.
 > of its eighteen limitation REASONS disproved by measurement, and each disproof was worth more than
 > the claim it replaced; that is the standard these are written to.
 
-1. **THE ARC DOES NOT CLOSE THE WHOLE RESIDUAL. THE RAISING-ROLLBACK BRANCH SURVIVES, AND IT IS THE
-   ONE THIS SECTION LEADS WITH.** When the commit raises AND the rollback CALL also raises
-   (`cleanup_raised`, whether the re-read state is `still_open` or `rolled_back`), no read is
-   attempted (RD's rule (i)), the alarm is raised, and a later commit on that connection could make the row durable AFTER the caller was
+1. **THE ARC DOES NOT CLOSE THE WHOLE RESIDUAL -- AND THE TWO REFUSAL BRANCHES ARE NOT THE SAME
+   SIZE, WHICH THIS ENTRY PREVIOUSLY BLURRED** (`A4-R6-8`).
+   **(a) `resolution == "still_open"` -- GENUINELY INDETERMINATE.** The transaction may still be
+   open with the entry row PENDING, and a later commit on that connection could make it durable
+   AFTER the caller was told the entry failed. This is the residual proper.
+   **(b) `rolled_back` with `cleanup_raised` -- NOT indeterminate at all.** The rollback took
+   effect, `in_transaction` re-reads false, and **the row is provably GONE; nothing can commit it
+   later.** The read is refused here only because RD's rule (i) is taken LITERALLY, and the refusal
+   costs nothing because the answer would have been ABSENT anyway (S2.4). Saying otherwise
+   overstates the arc's own surviving exposure, and S2.4 and S9 item 3 already had it right.
+   In both, no read is attempted, the alarm is raised, and a later commit on that connection could make the row durable AFTER the caller was
    told the entry failed. *Reason:* that state is genuinely indeterminate -- there is no fact to
    read, because the fact has not been decided yet -- and RD's canon governs: the function may RAISE
    the indeterminate and may never ASSERT durability. **What changed is the SIZE of the residual, not
@@ -1741,30 +1938,67 @@ discovered; it is the gate.
    different database, so there is no durable state to read; answering from the writer's own handle
    is the exact defect this arc closes. MEASURED: no production or test path calls `record_entry`
    with an in-memory database (S1.6).
-7. **UNIQUENESS ACROSS ATTEMPTS IS PROBABILISTIC, NOT STRUCTURAL -- AND THE UNIQUE INDEX DOES NOT
-   CLOSE IT, BECAUSE A ROLLED-BACK TOKEN LEAVES NO TRACE IN THE INDEX.** This entry exists because
-   round 1's CRITICAL (`A4-R1-1`) disproved the first draft's claim that the index makes a duplicate
-   "impossible to commit". The reachable-in-principle sequence: attempt A mints `X`, its commit
-   fails without landing, A rolls back so `X` exists nowhere, a later attempt independently mints
-   `X` and commits for the same ticker, and A's probe confirms that row.
-   *Reason the design stands anyway, stated with its arithmetic rather than as a shrug:* RD's
-   constraint 2 forbids a token the system RE-ISSUES -- its own gloss is *"rowid fails by
-   construction"* -- and nothing re-issues a `uuid4`. The exposure is an RNG COLLISION, whose
-   probability over `n` lifetime entries is about `n^2 / 2^123`: **at `n = 10^5` that is ~1e-27**,
-   and a real occurrence would ALSO have to carry the same ticker to pass corroboration.
-   **THE ARITHMETIC PRICES ONE THING ONLY, and says so** (`A4-R4-9`): INDEPENDENT RNG collision. It
-   does NOT price a systematic mint-reuse defect, which the index catches only when the first use
-   COMMITTED (S7.8) and which test (w) is what actually excludes.
-   *The alternative is NOT declined, and three earlier versions of this entry declined it for a
-   reason that was FALSE* (`A4-R2-1`, `A4-R3-1`, `A4-R4-9`, and then this plan's own uncounted
-   self-sweep found a FOURTH copy of the same superseded sentence still sitting here -- the
-   fix-the-instance-leave-the-class failure, four times, in an artifact that quotes the rule).
-   The durable allocator **(S-d), specified in full at S2.0.1**, is not a stamp: its row is never
-   evidence that a trade landed, the token still lands in the entry INSERT, and an allocation
-   failure precedes the entry transaction so nothing is left ambiguous. **It satisfies constraint 2
-   STRUCTURALLY.** This entry therefore declares a residual that exists ONLY under the (S-b) branch,
-   and **the branch is RD's to choose (Task 0). PINNED BY EXECUTION at test (RD-b2) under (S-b);
-   (RD-b2) INVERTS under (S-d).**
+7. **UNIQUENESS ACROSS ATTEMPTS IS PROBABILISTIC, NOT STRUCTURAL -- RULED ACCEPTABLE BY RD
+   2026-09-06, AND WIDENED HERE ON HIS THREE RIDERS.** The reachable-in-principle sequence: attempt A
+   mints `X`, its commit fails without landing, A rolls back so `X` exists nowhere, a later attempt
+   independently mints `X` and commits for the same ticker, and A's probe confirms that row.
+
+   *Why the design stands -- RD's reason, not the plan's:* **"never reusable" means the mechanism
+   contains NO PATH THAT REISSUES a token.** The rowid failed because **the ENGINE hands a
+   rolled-back id to the next insert** -- an active, designed-in reuse mechanism. `uuid4` has no such
+   path, so a repetition is an RNG FAILURE rather than a behaviour of the mechanism, and
+   **collision-resistance is already this system's admissibility standard** (the H1 amendment pinned
+   by sha256, broker snapshots by digest).
+
+   *The arithmetic, and what it does NOT price* (`A4-R4-9`): independent RNG collision over `n`
+   lifetime entries is about `n^2 / 2^123` -- **~1e-27 at `n = 10^5`** -- and a real occurrence would
+   ALSO have to carry the same ticker to pass corroboration. **IT PRICES INDEPENDENT DRAWS ONLY.**
+   **THE CORRELATED FAILURE MODE IT DOES NOT PRICE, NAMED (RD rider 1):** a DEGRADED OR REPEATING
+   RNG -- two draws sharing generator state. Under it the "collision" is not astronomical at all; it
+   is systematic, and the arithmetic above is silent about it. **Platform-scoped fact, MEASURED by
+   reading the source rather than recalled:** CPython 3.14's `uuid4` is
+   `int.from_bytes(os.urandom(16))` **per call** -- there is no process-local PRNG state at all, so
+   the classic correlated cause, fork without reseed, cannot correlate these draws.
+   **AND THAT CUTS BOTH WAYS, which was round 6's finding** (`A4-R6-11`): RD's rider named **fork**
+   as a re-open trigger for the banked allocator, and since `uuid4` holds no forkable state, **a
+   POSIX port that merely acquires `fork` would fire the trigger with no hazard present** -- and
+   activate a materially more expensive design on the money path. **The surviving triggers are a
+   GENERATOR change away from `os.urandom`, or a measured condition that DUPLICATES THE OS ENTROPY
+   STREAM** (VM snapshot-resume / image cloning, where that premise is established). The wording is
+   RD's, so the correction is ROUTED rather than taken silently -- **the second of his two rider
+   clauses that failed verification** (S9 RD item 2).
+
+   **THE DETECTION STORY, VERIFIED BY EXECUTION RATHER THAN ASSERTED -- AND ONE HALF OF RD's RIDER
+   DID NOT VERIFY.** He attached it as load-bearing and instructed stop-and-route on failure, so both
+   halves were run against a model carrying the real CHECK, both real indexes and the real mapper:
+
+   - **A duplicate of a COMMITTED token is REFUSED LOUDLY, never silently confirmed. VERIFIED** --
+     the second INSERT raises `UNIQUE constraint failed: trades.attempt_id`, so the entry is refused
+     before any confirming read exists. **BUT THE "LOUDLY" IS LOAD-BEARING ON S2.5, AND THAT
+     DEPENDENCY IS NAMED HERE BECAUSE IT ENTERED THE PLAN FOR AN UNRELATED REASON:** the SHIPPED
+     mapper (`"UNIQUE" in msg and "trades" in msg`) matches that message and would report *"Already
+     an open position in BBB (race-detected)"* -- loud, and WRONG about a position that does not
+     exist. It is only TRUTHFULLY loud because S2.5 narrows the match to `trades.ticker`. **Measured
+     both ways.**
+   - **The duplicate of a ROLLED-BACK token DOES have a false-confirm mechanism. NOT VERIFIED --
+     ROUTED BACK TO RD (S9 RD item 2).** His stated reason was *"a rolled-back token leaves no row to
+     confirm."* That is true at the instant of rollback and **does not survive to probe time**.
+     **REPRODUCED:** A rolls back (zero rows carry `X`), a second connection mints the same `X` for
+     the SAME ticker and COMMITS, A's probe then finds that row, **ticker corroboration PASSES**, and
+     A would return SUCCESS naming a trade it did not write. **The RULING is unaffected** -- it rests
+     on the no-reissue-path reading, which verifies -- but this rider's reason cannot be written into
+     the plan as true, and the honest statement replaces it: *in the undetectable case the false
+     confirm is exactly the residual this entry declares, and it is pinned by execution at (RD-b2)
+     rather than argued away.*
+
+   *(S-d), which satisfies constraint 2 STRUCTURALLY, is NOT declined on merit and NOT deleted:* it
+   is BANKED IN FULL at S2.0.1 with the re-open trigger above. Refusing it today is a D46 call --
+   more machinery, a second commit surface and a separate connection on the money path, against a
+   failure with no mechanism and no observed instance. **PINNED BY EXECUTION at test (RD-b2).**
+   *(Three earlier versions of this entry declined the allocator as "a stamp"; all three were
+   disproved -- `A4-R2-1`, `A4-R3-1`, `A4-R4-9` -- and a fourth live copy survived into this plan's
+   own uncounted self-sweep. Recorded because a reason that lost four times is the most instructive
+   line in S7.)*
    *The separate third-party question is folded in here:* the token is minted inside `record_entry`,
    is not on `EntryRequest`, and is never transmitted, so a deliberate reuse needs write access to
    the database plus knowledge of an in-flight token -- outside any threat model this
@@ -1779,9 +2013,13 @@ discovered; it is the gate.
    exposure than the RNG arithmetic in S7.7 prices. The refusal it does produce is unreachable in
    practice (`uuid4`, minted per call, not caller-supplied, validated at S2.1) and, after Task 1's
    narrowing, surfaces as the `IntegrityError` it is rather than as a false "already an open
-   position". **The systematic-reuse case is what test (w) exists to make impossible by
-   construction** -- it asserts ONE mint per attempt with a generator that returns a different value
-   each call -- and it is named here so the index is not credited with covering it.
+   position". **The systematic-reuse case is covered by TESTS, not by construction, and the
+   distinction is the point** (`A4-R6-5`): **(w)** asserts one mint per attempt and consistent
+   threading, but it patches `_mint_attempt_token` itself, so **a constant mint passes it**;
+   **(w2)** is the row that actually bites, patching `uuid.uuid4` one level below and requiring two
+   attempts to yield two distinct tokens. *"Impossible by construction"* was this entry's own
+   overclaim for two rounds -- that phrase belongs to the banked allocator (S2.0.1) and to nothing
+   in the shipped shape.
 9. **NOTHING PERSISTS THE FACT THAT A SETTLE HAPPENED.** The operator sees the warning and the ERROR
    log records it; no table records "this entry was confirmed by identity rather than by its own
    commit". *Reason:* that is a second schema object with a different purpose, and this arc's schema
@@ -1803,7 +2041,11 @@ discovered; it is the gate.
     S7.17).** An asynchronous exception delivered at the frame's exit handoff, or between
     `record_entry`'s return and the caller's `STORE_FAST`, is outside any guard this arc adds.
     *Reason:* unchanged -- no caller-only restructuring reaches an interval containing no statements,
-    and the direction is the belt-covered one. **What this arc DOES close, and it is worth naming
+    and the direction is the belt-covered one -- **CONDITIONALLY belt-covered, on exactly S7.2's
+    terms and for the same reason** (`A4-R6-10`): the belt refuses a retry only while the first trade
+    remains OPEN, so if the position is closed between attempts the double-position direction
+    survives here too. The plan states that qualification in all three places rather than letting one
+    of them read stronger than the others. **What this arc DOES close, and it is worth naming
     because it is the same class:** the window between `conn.commit()` returning and
     `outcome.committed = True`. An exception delivered there used to look exactly like a failed
     commit; now it is settled by the probe and returns SUCCESS.
@@ -1845,14 +2087,17 @@ inline and never silently absorbed. Each carries a proposed disposition; the orc
 5. **NO OPERATOR SURFACE SHOWS WHETHER AN ENTRY WAS CONFIRMED BY IDENTITY.** The warning is
    transient; the log is durable but is not a UI. Proposed: **BANKED** together with S8.3, since a
    surface without a typed discriminator would have to parse prose.
-6. **`("trades", "attempt_id")` IS NOT IN `_RESERVED_JOURNAL_FIELDS`, and the schema trigger is
-   doing that module's job.** `swing/trades/reconciliation_auto_correct.py` allowlists journal
-   columns BY EXCLUSION, so the trigger (S2.0) is what actually stops a tier-2 operator-truth
-   correction writing the token -- correctly, and with a worse message: an `IntegrityError` from a
-   trigger rather than the flow's own typed `ReservedJournalFieldError` naming the coupled surface.
-   The module is outside this arc's envelope. Proposed: **BANKED**, owner CHARC, trigger = the next
-   reconciliation-scoped arc; the fix is one dict entry and one message constant, and test (m7)
-   already pins the BEHAVIOUR either way.
+6. **NO LONGER BANKED -- CHARC RULED IT SHIPS IN THIS ARC, and the entry is KEPT so the reversal is
+   readable.** This plan proposed BANKING the corrector's typed refusal because
+   `swing/trades/reconciliation_auto_correct.py` sat outside the envelope. **CHARC refused the
+   banking and widened the envelope instead:** *"I cannot rule the class binding one week and bank
+   its next instance because the plan's envelope was drawn one module short."* The tier-2 path
+   ADMITS `field_name="attempt_id"` and the trigger then ABORTs -- **authorize-then-abort**, the
+   class he ruled on 2026-09-01 after five instances in 22-A. **It is now Task 1b**, bounded to a
+   refusal entry, a message constant and the corrector-path assertion. *What this entry records for
+   the future is the SHAPE OF THE MISTAKE:* a plan can convert a ruled-binding class into a banked
+   follow-on purely by where it drew its own envelope, and neither the plan nor its five review
+   rounds flagged that as a scoping decision -- only the director whose class it was.
 7. **VERSION-GATE BACKUPS LAND IN THE DATABASE'S OWN DIRECTORY AND ARE NEVER NAMED TO THE OPERATOR**
    (`A4-R1-7`). `swing db-migrate` prints only its own general snapshot in `backups_dir`, while every
    arc gate's verified pre-image defaults to `src_path.parent` because `ensure_schema` is called
@@ -1867,10 +2112,11 @@ inline and never silently absorbed. Each carries a proposed disposition; the orc
 
 ## S9. ROUTING -- **two director tripwires, and what each is asked**
 
-### To CHARC -- the §3 schema tripwire
+### To CHARC -- the §3 schema tripwire -- **RULED 2026-09-06: FIVE ITEMS RATIFIED, ONE CONDITION**
 
-**Why it fires:** a new migration, a new column on the money-bearing `trades` table, a new UNIQUE
-index and a schema-version bump.
+**Why it fired:** a new migration, a new column on the money-bearing `trades` table, a new UNIQUE
+index, an immutability trigger and a schema-version bump. **All five items below are RATIFIED as
+shaped.** The one CONDITION he attached is item 7, and it WIDENS THIS ARC'S ENVELOPE.
 
 1. **The migration's shape.** `0038` is ADDITIVE: one `ALTER TABLE ... ADD COLUMN` with a
    column-scoped CHECK, one partial UNIQUE index, **one `BEFORE UPDATE OF attempt_id` immutability
@@ -1879,7 +2125,9 @@ index and a schema-version bump.
    `trades` columns BY EXCLUSION, so a new column is operator-writable through the tier-2 path from
    the moment it exists, and a re-writable token is not identity (S2.0, `A4-R4-1`). It is
    unconditional, carries no `WHEN` (so the NULL-`WHEN` fail-open gotcha cannot apply), and is
-   retired by one statement. **No rebuild**, so none of the 0035-class rebuild hazards (id renumbering, index
+   retired by one statement, **and the reversibility header names BOTH the `DROP INDEX` and the
+   `DROP TRIGGER`** (`A4-R6-13`: item 1 previously said only the index, while Task 1 correctly
+   required both). **No rebuild**, so none of the 0035-class rebuild hazards (id renumbering, index
    loss, FK cascade) are in play, and the reversibility header names the single `DROP INDEX` that
    retires it.
 2. **THE DIVERGENCE FROM YOUR STATED SHAPE, put first because it is the thing to rule on.** Your
@@ -1903,31 +2151,85 @@ index and a schema-version bump.
 4. **The backup gate and its expected-tables set**, derived from 0037's three new tables read out of
    the migration file. **And one thing the gate does NOT do, flagged rather than fixed:** its
    verified pre-image lands in the DATABASE's directory, not `backups_dir`, and is never named to
-   the operator -- true of every gate since 0027, banked at S8.6, out of this envelope.
-5. **THE 22-A LOCK-A AMENDMENT (Task 0b) -- an amendment to a MERGED arc's lock.**
+   the operator -- true of every gate since 0027, banked at **S8.7** (renumbered when the typed
+   refusal stopped being banked and became Task 1b -- `A4-R6-13`), out of this envelope.
+**RATIFIED, all five. What follows is the record of what was ruled, kept because an executor needs
+to know which parts are settled and by whom.**
+
+5. **THE 22-A LOCK-A AMENDMENT (Task 0b) -- RATIFIED in the stated shape**, with `b`'s non-NULL
+   token pinning mint-regardless-of-`cfg`. An amendment to a MERGED arc's lock.
    `test_the_lock_a...` asserts the complete `trades` column set and full row equality against a
    golden captured at the pre-arc commit; `attempt_id` breaks both, and the test's own docstring says
    the failure was left loud on purpose so that a later column could not be silently tolerated. The
    plan's amendment keeps byte identity for every pre-existing column, NAMES the addition in the
    column-set assertion, and adds a third assertion on the new column -- strengthening rather than
    softening. **Confirm the shape, or rule a different one.**
-6. **The version bump touches an AUTHORIZATION GATE, not just assertions.**
+6. **The version bump touches an AUTHORIZATION GATE, not just assertions -- and the gate is
+   OPENED.** CHARC opened `versions[-1] <= 37` -> `<= 38` **for 0038 ONLY, in the migration's own
+   commit and nowhere else.** The backup gate and its expected-tables set are RATIFIED.
    `tests/data/test_no_schema_change_v3.py:41` asserts `versions[-1] <= 37` and its own comment says
    raising it is the section-3 pass being exercised. Task 1 raises it to 38 in the migration's own
    commit and nowhere else. **This is the mechanical form of your gate, and this plan is asking you
    to open it.**
 
-### To RD -- the admissibility gate
+7. **THE CONDITION HE ATTACHED, and it is the one item that WIDENED THIS ARC: the corrector's typed
+   refusal SHIPS (Task 1b).** The plan proposed banking it because
+   `swing/trades/reconciliation_auto_correct.py` sat outside the envelope. **He refused the
+   banking:** *"I cannot rule the class binding one week and bank its next instance because the
+   plan's envelope was drawn one module short."* The tier-2 path ADMITS `field_name="attempt_id"`
+   and the trigger then ABORTs -- **authorize-then-abort**, his own class, ruled 2026-09-01 after
+   five instances in 22-A. Bounded to one refusal entry, one message constant and one assertion on
+   the TYPED error; **the trigger remains the guard of record and the refusal is its legible face.**
+8. **The two JURISDICTION NOTES are written into the migration header**, not left to a reviewer:
+   (A) a `BEFORE UPDATE` trigger cannot see `INSERT OR REPLACE`, and the REPLACE family was grepped
+   EMPTY against `trades` -- re-run here, **zero executable REPLACE statements anywhere in `swing/`**
+   (45 textual hits across 22 files, every one prose in a migration header, a trigger message or a
+   docstring) -- so a future REPLACE writer is a **declared breach rather than an unknown**;
+   (B) **22-B Demand A rebuilds `trades`**, and a rebuild that does not re-create the index AND the
+   trigger silently drops the guard -- banked by CHARC as a 22-B precondition and recorded in the
+   header so the next rebuild's author meets it in the file.
 
-**Why it fires:** the token is admissibility machinery. It is the thing that makes a durability read
-EVIDENCE, and your three constraints are its specification.
+### To RD -- the admissibility gate -- **RULED 2026-09-06, WITH ONE CLAUSE ROUTED BACK**
+
+**Why it fired:** the token is admissibility machinery -- the thing that makes a durability read
+EVIDENCE -- and RD's three constraints are its specification. **Constraint 2 is RULED: `uuid4`
+satisfies it, because "never reusable" means the mechanism contains no path that REISSUES a token,
+and `uuid4` has none.** Items 1 and 3-6 below are closed by that ruling and its riders. **Item 2 is
+OPEN and is the only thing in this plan still waiting on him.**
 
 1. **S1 is the answer to your ruling's own precondition question**, and it says: the CO-DURABLE
    MECHANISM exists and its token does not; UNIQUE PER ATTEMPT does not exist at all; the
    DURABLE-VISIBILITY capability exists and is wired to nothing. Each is re-derived against the code
    with the method that produced it, and two of your constraints' supporting facts were REPRODUCED
    on this tree rather than cited (rowid reuse; a fresh connection's blindness to uncommitted rows).
-2. **Rule (i) -- "a failed rollback VOIDS the read" -- is implemented LITERALLY as "no read is
+2. **ROUTED BACK -- YOUR S7.7 DETECTION RIDER DOES NOT FULLY VERIFY AT THE CODE, AND YOU INSTRUCTED
+   STOP-AND-ROUTE IF IT DID NOT.** Both halves were run against a model carrying the real CHECK, both
+   real indexes and the real mapper:
+   - **"A committed-duplicate token is REFUSED LOUDLY by the UNIQUE index" -- VERIFIED**, with a
+     dependency you should see: the refusal message is
+     `UNIQUE constraint failed: trades.attempt_id`, which **the SHIPPED mapper turns into "Already an
+     open position in BBB (race-detected)"** -- loud, and false about a position that does not exist.
+     It is TRUTHFULLY loud only because S2.5 narrows that match to `trades.ticker`, a fix that
+     entered this plan in round 1 for an unrelated reason. **Your rider's first half is load-bearing
+     on it.**
+   - **"The undetectable case has no false-confirm mechanism, because a rolled-back token leaves no
+     row to confirm" -- NOT VERIFIED. REPRODUCED THE OPPOSITE.** The premise is true at the instant
+     of rollback and does not survive to probe time: A rolls back (zero rows carry `X`), a second
+     connection mints the same `X` for the SAME ticker and COMMITS, A's probe finds that row,
+     **ticker corroboration PASSES**, and A returns SUCCESS naming a trade it did not write.
+   **AND A SECOND RIDER CLAUSE FAILED THE SAME WAY (`A4-R6-11`): "fork" as a re-open trigger for the
+   banked allocator.** MEASURED by reading CPython 3.14's source: `uuid4` is
+   `int.from_bytes(os.urandom(16))` **per call**, with no process-local PRNG state -- so a POSIX port
+   that acquires `fork` creates none of the correlated state the trigger is meant to detect, and the
+   trigger would fire on an ordinary platform change while activating a materially more expensive
+   design on the money path. **The plan struck bare `fork` and kept the triggers that do verify:** a
+   generator change away from `os.urandom`, or a measured condition duplicating the OS entropy
+   stream.
+   **YOUR RULING IS UNAFFECTED BY EITHER** -- it rests on the no-reissue-path reading, which
+   verifies. What failed is two of the riders' stated REASONS, and the plan will not write an
+   unverified reason into a declared limitation or a re-open trigger. **S7.7 and S2.0.1 now state the
+   verified versions.** Confirm both replacements, or rule them differently.
+3. **Rule (i) -- "a failed rollback VOIDS the read" -- is implemented LITERALLY as "no read is
    attempted whenever the rollback CALL raised," and S2.4 argues its cost is ZERO** by enumerating
    the two refusal branches (`still_open`; `rolled_back` with `cleanup_raised`) and showing the row
    is provably ABSENT in each. **The first version of that argument was WRONG** (`A4-R2-7`): it
@@ -1936,33 +2238,26 @@ EVIDENCE, and your three constraints are its specification.
    The state model now separates the TRANSACTION's state from the CALL's failure. **The rebuilt
    argument is offered for challenge**: if it is wrong, the rule is still honoured, but the plan's
    claim about what it costs would be overstated.
-3. **The ticker corroboration is ALARM-NEVER-ASSERT applied inside the probe**: a mismatch raises the
+4. **The ticker corroboration is ALARM-NEVER-ASSERT applied inside the probe**: a mismatch raises the
    alarm, a match asserts nothing the token had not already established. Confirm that reading, or
    rule it superfluous and it comes out.
-4. **The surviving indeterminate branch (S7.1)** is declared with its direction and its belt, exactly
+5. **The surviving indeterminate branch (S7.1)** is declared with its direction and its belt, exactly
    as the old residual was. This arc SHRINKS the residual rather than eliminating it, and says so in
    the section that leads the limitations rather than the one that closes it.
-5. **THE ONE THING THIS PLAN CANNOT DECIDE FOR YOU, and it is your constraint 2** (S7.7, from round
-   1's CRITICAL `A4-R1-1`). Your constraint says the token must be *"never reusable across attempts;
-   ... survives rollback-and-retry without collision"*, glossed *"rowid fails by construction."*
-   The design gives you **structural** protection against RE-ISSUE (nothing re-issues a `uuid4`, and
-   the index makes two LIVE rows with one token impossible) and **probabilistic** protection against
-   COLLISION (about `n^2 / 2^123`; ~1e-27 at `n = 10^5`, and a real one would also have to carry the
-   same ticker to pass corroboration). **The UNIQUE index does NOT cover a token that was rolled
-   back** -- it keeps no memory of it.
-   **AND THERE IS A REAL ALTERNATIVE THAT SATISFIES YOU STRUCTURALLY.** Two earlier drafts rejected a
-   durable allocator as "a stamp by gotcha #30"; **that reasoning was wrong and the review disproved
-   it twice** (`A4-R2-1`, `A4-R3-1`). The allocator's row is never evidence that a trade landed, the
-   token still lands in the entry INSERT, and an allocation failure precedes the entry transaction.
-   **(S-d) is specified in full at S2.0.1** -- one additive table, one `AUTOINCREMENT` sequence that
-   never reissues, one committed write on a separate connection before the attempt, and the exact
-   test deltas it implies.
-   **THE PLAN RECOMMENDS (S-b) AND DOES NOT SELECT IT.** The recommendation rests on proportion
-   (~1e-27, against a table, a second money-path commit, and an attempt-log-by-side-effect the arc
-   otherwise declined at S2.6), and proportion is not a ground on which a plan may narrow a binding
-   constraint. **THIS IS TASK 0 AND THE ARC DOES NOT EXECUTE WITHOUT IT.** Both branches are
-   specified, so your answer costs no further planning pass.
-6. **Your both-modes attachment, honoured in the form this arc admits.** There is no arm flag here,
+6. **CONSTRAINT 2 -- CLOSED BY YOUR RULING OF 2026-09-06, and the entry is KEPT so the closure is
+   readable.** The plan RECOMMENDED (S-b) and refused to SELECT it, on the ground that proportion is
+   not a basis for a plan to narrow a binding constraint; it specified (S-d) in full so the ruling
+   would cost no further planning pass. **You ruled `uuid4` satisfies constraint 2, and the reason
+   is what binds future appeals:** *"never reusable" = the mechanism contains **no path that
+   REISSUES** a token; the rowid failed because the ENGINE hands a rolled-back id to the next insert.
+   A `uuid4` repetition is an RNG failure, not a behaviour of the mechanism* -- and
+   collision-resistance is already this system's admissibility standard (sha256-pinned amendment
+   text, digest-pinned broker snapshots). **Your three riders are landed:** S7.7 widened with the
+   correlated-RNG mode it does NOT price and the platform-scoped `os.urandom` / no-fork-on-Windows
+   note (rider 1, with its detection half ROUTED BACK at item 2); RD-a / RD-b unchanged as the
+   deciding tests plus (RD-b2) in its (S-b) polarity (rider 2); **(S-d) BANKED IN FULL at S2.0.1
+   with a named re-open trigger, not deleted** (rider 3).
+7. **Your both-modes attachment, honoured in the form this arc admits.** There is no arm flag here,
    so the analogue is stated instead: **every negative row in S3 asserts counterfactual fields** --
    row counts, the identity of the escaping exception, a sentinel's call count -- never the bare
    "it raised" that would pass an implementation swallowing everything.
@@ -2007,16 +2302,25 @@ Task 6 and Task 7 runs are compared against THAT number, not against a remembere
 | 4 | `strong` / `gpt-5.6-sol` / `high` | 1 / 10 / 1 | 12 | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
 | SS | *(uncounted self-sweep, no Codex)* | 0 / 0 / 9 | 9 | - | - | *no verdict; no effect on convergence* |
 | 5 | `strong` / `gpt-5.6-sol` / `high` | 1 / 7 / 4 | 12 | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **6** | `strong` / `gpt-5.6-sol` / `high` | 0 / 11 / 2 | 13 (**6 new ground, 7 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
 
-**GATE STATE: STOPPED AT ROUND 5 FOR APPROVAL TO CONTINUE, per the recipe and the dispatch.** The
-continuation criterion (*"continue ONLY if NEW, IN-SCOPE, NON-REOPENED critical/major findings are
-still arriving"*) reads CONTINUE on composition -- zero reopened, zero reverted, every round in
-scope -- but the finding rate is NOT decaying (10 / 9 / 12 / 12 / 12) and a growing share are
-RESIDUALS OF THE LOOP'S OWN FIXES rather than defects in the original design. That is the
-Expansion-#13 cascade signature, which the recipe says the gate-holder may answer with a dedicated
-SELF-SWEEP plus ONE confirming round rather than another review round. **Round 5's own reviewer also
-reported it could not re-run the Python 3.14 measurements from WSL**, which matters because three of
-this loop's strongest findings came from re-measurement. The decision is the orchestrator's.
+**TOKEN SPEND, six counted rounds:** 437,776 + 230,647 + 246,268 + 320,775 + 317,038 + 307,420 =
+**1,859,924**. (The disqualified round-1 attempt produced no transcript and therefore no footer.)
+
+**GATE STATE: the round-5 gate was honoured and the orchestrator ruled CONTINUE with a bounded stop
+rule -- *"run round 6 on the final shape; if it returns residuals of these amendments rather than new
+ground, STOP and disposition -- do not open round 7."*** Round 6 returned **a MIX: 6 NEW GROUND and 7
+RESIDUAL**, which is not the stop rule's stated case, and **round 7 was NOT opened** -- opening one
+was not authorized and the honest report of a mixed result belongs to the gate-holder, not to the
+author's judgment. **All 13 are dispositioned; 11 are FIXED and 2 are ROUTED** (both RD rider
+clauses). The loop is therefore **NOT CONVERGED and is stopped by instruction**, with the finding
+composition -- 0 CRITICAL for the first time, and the residual share rising to 7 of 13 -- as the
+evidence for whatever the gate-holder decides next.
+
+**Round 6's new ground was concentrated in the AMENDMENTS, which is what the round was for:** the
+`typeof` gap that let a 36-byte BLOB share the index with its text twin, the typed refusal that
+would have reached the operator as a traceback, the corrector's key-order preflight, and the mint
+contract that no test actually pinned.
 
 All five mechanical assertions passed every counted round (model, effort `high`, anchored
 `^ERROR` = 0, anchored `^tokens used` footer present, exactly one DISTINCT anchored verdict token
