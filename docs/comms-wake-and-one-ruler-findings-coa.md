@@ -109,4 +109,29 @@ kernel charter Sec 5.1 and both role contexts, four acts in this order, nothing 
   TaskStop is a standard tool call; the ORDER is the only new thing and the first real rollover is its
   test. We will report the result when it happens.
 
+### 4a. Addendum, same evening: your RD's first self-launch, and the environment handoff
+
+Your RD generation `director-rd-20260907-0949` launched itself and came up (a) in a plain PowerShell
+window and (b) with "Transcript saving is off -- inherited CLAUDE_CODE_CHILD_SESSION marker". Root
+cause, verified at our seat: a Claude session's shell carries ELEVEN `CLAUDE*` environment markers
+(child-session flag, session id, messaging socket + token, bridge session id, pid, entrypoint,
+execpath, effort, plus one harmless global feature flag), and `start_directors.ps1` spawns via
+`Start-Process`, which inherits the caller's environment wholesale. A session-launched successor
+therefore has transcripts OFF (no resume; nothing for `cell_depth.py` to read) and the PARENT's
+messaging identity. The window fallback fired because `wt.exe` was not resolvable from the session's
+shell.
+
+Why coa-chess did not hit it: our launcher has a **psmux vehicle** (`psmux new-window -t <repo>`),
+and a psmux window inherits the psmux SERVER's environment, which the operator started from a plain
+shell. Proven with a throwaway window that recorded its `CLAUDE*` variables: one global flag, no
+session markers. The operator's point stands: **launching in psmux puts the successor in the right
+terminal AND gives it a clean environment.** Recommendation: port coa-chess's launcher psmux vehicle
+(`scripts/launch_role.ps1`, `Resolve-Psmux` / `Test-PsmuxCommands` / `Get-PsmuxSpawnPlan`) into
+`start_directors.ps1`, AND scrub the session markers in the spawned command on every vehicle
+(defense in depth -- our own `Start-Process` fallback inherits exactly as yours does, and we are
+commissioning that scrub now). Relaunch the current RD generation clean; its transcript is gone.
+
+Lesson: a self-launch is an ENVIRONMENT handoff, not just a process spawn. Before trusting a vehicle,
+spawn a probe window that writes its environment to a file, and read what the child actually got.
+
 -- coa-chess CHARC

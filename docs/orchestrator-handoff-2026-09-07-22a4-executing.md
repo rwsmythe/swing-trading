@@ -79,3 +79,59 @@ trigger instead of waiting to be told. **Do this periodically; do not wait for t
 
 D46 (the reduction), D45, D44/D47, the D39 sweep, D42's export failure. The admitting gate stays open:
 131 post-barrier candidates, **zero A+**.
+
+---
+
+# ADDENDUM — 22-A4 executing round 0 returned, both forks RULED, Task 1 ready to dispatch
+
+**Written after the original handoff. This supersedes §1: the executing cell RETURNED rather than
+staying in flight, so nothing is running and your first action is a DISPATCH, not a QA.**
+
+## Round 0's result — it stopped and routed, and it was right to
+
+**No code, no commits, `git status` clean at `9249d8da`.** Baseline re-measured on that worktree and
+READ: **12180 passed / 13 skipped**, matching. Measurement scripts durable at
+`~/swing-data/review-transcripts/22-a4-exec/`.
+
+**RULED (CHARC, PRIMARY, 2026-09-07): `(m3c)` takes BRANCH A.** The plan demanded the expected-tables
+constant EQUAL a fresh v37 schema while prescribing a derivation that yields 37 against 42 real
+tables. **The mechanic: `swing/data/db.py:575` is `missing = expected_tables - actual_tables` — a
+SUBSET test, and the chain is 21 constants deep, every one a partial roster.** The gate's contract has
+always been a FLOOR; the plan wrote a test against the instrument it imagined rather than the one on
+disk. **CHARC's reason, sharper than mine:** a pre-image with MORE tables is still a valid backup, so
+equality points the wrong way — B would not widen the roster, it would reverse the gate's direction.
+
+**ENCODING for Task 1:**
+- `PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES = PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES | {0037's three}` — **37**, the derivation as specified.
+- `(m3c)` asserts the constant is a **SUBSET** of the fresh-v37 set (naming the offending member on failure) **AND** the three 0037 tables are **MEMBERS**.
+- **Strike** the "EQUALS, never a superset check" sentence and its reason; the ledger records the supersession citing this ruling.
+- Gate strictness **identical to 22-A's**. S6 step 1 unchanged in form.
+- **BANKED to CHARC's register, NOT this arc:** a schema-manifest drift comparator (fresh v(HEAD) table set compared by EQUALITY against a committed manifest, updated in the same commit as any migration). That is the equality the plan wanted; it lives beside the backup gate, not inside it.
+
+**RULED (mine, my lane): rename ALL SIX mis-named version tests, not just the one the plan names.**
+Five were **already** documenting the opposite of what they check before this arc existed
+(`test_migration_0036_provenance_corrections.py:56/:60` named 36 asserting 37; `test_migration_0033.py:141`;
+`test_migration_0031_untracked_broker_position.py:55`; `test_migration_0030_yfinance_calls.py:33`).
+This arc edits all six bodies to 38, which makes the drift worse at every one. The plan's own rule —
+*the NAME must match, or the file documents the opposite of what it checks* — reads identically on all
+six. One line each, zero behaviour change.
+
+**Three intake catches, corrected against the code, no ruling needed:** `import sys` is **not in
+`entry.py` at all** (zero hits in 1516 lines) → Task 3 adds it; the lone-surrogate token raises
+**`UnicodeEncodeError`, not a `sqlite3.*` error** (the plan's claim held, the type was wrong); two
+`_current_version == 37` sites live in a file the plan never names, though its count was right.
+
+## YOUR FIRST ACTION
+
+**Dispatch Task 1 into `.worktrees/22-a4-exec`** (branch `22-a4-exec`, base `9249d8da`, clean). The
+round-0 report is in this session's transcript and every measurement is durable at the path above.
+Re-verify the base-SHA rule against the rules the brief cites — `9249d8da` predates `c48567cc`
+(the launcher fix) and `dc1b0ed3`-family additions since; **if the brief will cite a rule landed
+after `9249d8da`, rebase the worktree or cut a new one.** That is the rule biting its own author.
+
+## A COROLLARY I OWE THE ROLLOVER RULE
+
+§6's trigger gained an in-flight precondition today because I nearly rolled over a running cell.
+**The same guard has a second half I only saw afterwards: do NOT DISPATCH when you are already past
+the trigger.** I dispatched executing at ~396K and was 4K from a rollover that would have killed it.
+Holding to await a cell you should not have started is the same trap seen from the other side.

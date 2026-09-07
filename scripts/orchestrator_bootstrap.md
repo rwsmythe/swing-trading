@@ -88,7 +88,10 @@ running: HOLD -- dispatch nothing new, await the return, QA, commit, then roll;
 if context cannot survive the wait, stop the cell and WIP-commit its worktree
 FIRST. Then four acts, in this order, nothing between them:
   1. Write docs/orchestrator-handoff-<date>.md (your existing handoff form) and
-     COMMIT it (pathspec commit, no trailer). The successor reads HEAD.
+     COMMIT it (pathspec commit, no trailer). The successor reads HEAD. It
+     RECORDS every authority you granted by cell message -- declared
+     envelopes, scope grants, mid-round fix authorizations, any fourth-round
+     authorization: a grant is STATE; a cell message is not a record.
   2. Post the rollover announcement (status, --to charc,rd) and STOP DRAINING --
      peek only from here. The Stop hook's "drain now" is VOID for you from this
      act on: obeying it swallows your successor's first mail.
