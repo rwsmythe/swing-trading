@@ -29,10 +29,101 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import logging
 import sqlite3
+import uuid
 from dataclasses import dataclass
 
 from swing.data.models import Trade, TradeEvent
+
+log = logging.getLogger(__name__)
+
+
+def _log_contained(msg: str, *args: object) -> BaseException | None:
+    """Emit a WARNING, containing a failure OF THE SINK.
+
+    The same contain-and-continue shape as ``swing/trades/entry.py``'s
+    ``log_contained``, re-stated locally because this repo may not import the
+    entry service.  A logging sink is caller-installed infrastructure this
+    package does not control, and the one call site below sits INSIDE a
+    money-bearing INSERT: a plain ``log.warning`` there aborts the transaction
+    the moment a handler raises, failing an entry for an identity nicety.
+
+    The sink's exception is RETURNED rather than swallowed (the R10-04
+    standard: a silent ``pass`` trades one invisible failure for another).
+    """
+    try:
+        log.warning(msg, *args)
+    except BaseException as log_error:  # noqa: BLE001 -- the CLASS
+        return log_error
+    return None
+
+
+# 22-A4: the Python side of migration 0038's CHECK length half.
+ATTEMPT_ID_LENGTH = 36
+
+
+def validate_attempt_id(value: object) -> None:
+    """Raise ``ValueError`` unless ``value`` is a CANONICAL lowercase uuid4
+    string.
+
+    **THE SINGLE ADMISSION AUTHORITY.**  Both this repo's pre-write guard and
+    ``swing/trades/entry.py``'s ``_begin_attempt_identity`` call THIS function.
+    Two hand-written predicates over one column are a mirror pair, and the
+    drift that matters is the one where the SERVICE side ADMITS what the WRITE
+    side refuses -- which converts a contained degradation into a failed
+    money-bearing entry.
+
+    **STRICTER THAN THE SQL CHECK ON PURPOSE.**  The CHECK is the STORAGE
+    contract; this is the ADMISSION contract, and it must not admit anything
+    the CHECK -- or the parameter BINDING one layer below it, or the UNIQUE
+    index one layer above it -- would refuse.  Each clause is load-bearing:
+
+    * ``isinstance(str)`` mirrors the CHECK's ``typeof(...) = 'text'`` half.
+      A 36-byte ``bytes`` value satisfies a bare ``len(...) == 36`` in Python
+      exactly as a BLOB satisfies ``length()`` in SQLite.
+    * the length mirrors the CHECK's ``length(...) = 36`` half.
+    * the ``uuid.UUID`` parse catches the two values that clear a length test
+      and fail BELOW or INSIDE the money-bearing INSERT: a 35-character string
+      plus an embedded NUL (Python ``len`` 36, SQLite ``length()`` 35, so the
+      CHECK refuses it as an ``IntegrityError``), and a lone surrogate (which
+      never reaches the CHECK at all -- ``sqlite3`` raises at PARAMETER
+      BINDING).
+    * ``version == 4`` is a deliberate coupling to the mint's generator, named
+      here as a MIRROR: if the generator ever changes, this predicate is one of
+      the sites that must change with it.
+    * the canonical round-trip pins the exact stored representation.
+      ``uuid.UUID`` accepts braces, a ``urn:uuid:`` prefix and uppercase hex;
+      an uppercase canonical uuid4 satisfies the CHECK and BINDS cleanly, and
+      defeats ``ux_trades_attempt_id`` silently, because ``'A...'`` and
+      ``'a...'`` are DIFFERENT text keys.
+    """
+    if not isinstance(value, str):
+        raise ValueError(
+            f"attempt_id must be a str; got {type(value).__name__}"
+        )
+    if len(value) != ATTEMPT_ID_LENGTH:
+        raise ValueError(
+            f"attempt_id must be exactly {ATTEMPT_ID_LENGTH} characters; "
+            f"got {len(value)}"
+        )
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(
+            "attempt_id must be a canonical uuid4 string"
+        ) from exc
+    if parsed.version != 4:
+        raise ValueError(
+            f"attempt_id must be a version-4 uuid; got version {parsed.version}"
+        )
+    if str(parsed) != value:
+        raise ValueError(
+            "attempt_id must be the CANONICAL lowercase uuid4 rendering; "
+            "a non-canonical spelling is a DIFFERENT text key and would "
+            "defeat ux_trades_attempt_id"
+        )
+
 
 # Active-trade state set — tickers with this state are NOT closed.
 # Used by list_open_trades, find_any_open_trade, find_open_trade_by_match,
@@ -214,9 +305,20 @@ def _validate_chart_pattern_invariant(trade: Trade) -> None:
 def insert_trade_with_event(
     conn: sqlite3.Connection, trade: Trade, *,
     event_ts: str, rationale: str | None = None,
+    attempt_id: str | None = None,
 ) -> int:
     """Insert a trade and an 'entry' trade_event in the same transaction.
     Caller wraps in `with conn:`. Returns the new trade id.
+
+    22-A4: ``attempt_id`` is the CO-DURABLE per-attempt identity token. It is
+    written by THIS INSERT, in the caller's transaction -- anything stamped
+    afterwards is a run-level stamp (gotcha #30) and would survive neither the
+    rollback nor the immutability trigger. It is validated BEFORE any write
+    (``validate_attempt_id``, the single admission authority) and DROPPED with
+    a contained WARNING on a pre-v38 schema, where naming the column would
+    raise ``OperationalError: no such column``. Dropping is the honest
+    degradation: the probe is schema-aware and answers ABSENT, so the caller
+    re-raises exactly as it does today.
 
     WARNING (Phase 7 R2 Minor 1): Callers MUST follow this with
     ``swing.data.repos.fills.insert_fill_with_event`` (action='entry') in
@@ -226,6 +328,11 @@ def insert_trade_with_event(
     ``swing.trades.entry.record_entry`` (Sub-B Task B.3); other call sites
     must replicate the pattern.
     """
+    # THE SHAPE GUARD RUNS BEFORE ANY WRITE. A malformed token must never
+    # reach the statement -- the row-count-zero half of (r3) is what
+    # distinguishes a pre-write guard from a post-write one.
+    if attempt_id is not None:
+        validate_attempt_id(attempt_id)
     _validate_chart_pattern_invariant(trade)
     # Phase 13 T2.SB6c (migration 0021) SVAI: pre-v21 fixtures (tests using
     # ``run_migrations(target_version<21)``) lack the 2 new trades columns
@@ -239,8 +346,84 @@ def insert_trade_with_event(
     cols = {
         r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()
     }
-    if "entry_intent" in cols:
-        # v27+ : v21 backlinks + entry_intent set-at-entry.
+    # 22-A4 SVAI: a pre-v38 schema has no attempt_id column, and naming it in
+    # the INSERT raises OperationalError even though the column is NULLable
+    # where it exists. DROP the token with a CONTAINED warning rather than
+    # raising: an identity nicety may never fail a money-bearing entry.
+    if attempt_id is not None and "attempt_id" not in cols:
+        _log_contained(
+            "22-A4: this database predates migration 0038, so the "
+            "per-attempt attempt_id token was DROPPED from the trade INSERT. "
+            "The entry itself is unaffected; only the settle-by-identity "
+            "probe is unavailable for this attempt.")
+        attempt_id = None
+    if "attempt_id" in cols:
+        # v38+ : the v27 shape plus the per-attempt identity token.
+        cur = conn.execute(
+            """
+            INSERT INTO trades
+                (ticker, entry_date, entry_price, initial_shares, initial_stop,
+                 current_stop, state, watchlist_entry_target,
+                 watchlist_initial_stop, notes, hypothesis_label,
+                 chart_pattern_algo, chart_pattern_algo_confidence,
+                 chart_pattern_operator,
+                 chart_pattern_classification_pipeline_run_id,
+                 sector, industry,
+                 trade_origin, pre_trade_locked_at, current_size,
+                 current_avg_cost, last_fill_at,
+                 thesis, why_now, invalidation_condition, expected_scenario,
+                 premortem_technical, premortem_market_sector,
+                 premortem_execution, premortem_additional,
+                 event_risk_present, event_handling, event_type, event_date,
+                 gap_risk_present, gap_risk_handling,
+                 emotional_state_pre_trade, market_regime, catalyst,
+                 catalyst_other_description,
+                 planned_target_R,
+                 candidate_id, pattern_evaluation_id, entry_intent,
+                 attempt_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?,
+                    ?, ?, ?, ?,
+                    ?,
+                    ?, ?, ?,
+                    ?)
+            """,
+            (
+                trade.ticker, trade.entry_date, trade.entry_price,
+                trade.initial_shares, trade.initial_stop, trade.current_stop,
+                trade.state,
+                trade.watchlist_entry_target, trade.watchlist_initial_stop,
+                trade.notes, trade.hypothesis_label,
+                trade.chart_pattern_algo, trade.chart_pattern_algo_confidence,
+                trade.chart_pattern_operator,
+                trade.chart_pattern_classification_pipeline_run_id,
+                trade.sector, trade.industry,
+                trade.trade_origin, trade.pre_trade_locked_at,
+                trade.current_size,
+                trade.current_avg_cost, trade.last_fill_at,
+                trade.thesis, trade.why_now, trade.invalidation_condition,
+                trade.expected_scenario,
+                trade.premortem_technical, trade.premortem_market_sector,
+                trade.premortem_execution, trade.premortem_additional,
+                trade.event_risk_present, trade.event_handling,
+                trade.event_type, trade.event_date,
+                trade.gap_risk_present, trade.gap_risk_handling,
+                trade.emotional_state_pre_trade, trade.market_regime,
+                trade.catalyst, trade.catalyst_other_description,
+                trade.planned_target_R,
+                trade.candidate_id, trade.pattern_evaluation_id,
+                trade.entry_intent,
+                # 22-A4. LAST in BOTH lists, so the bound parameter's POSITION
+                # matches its name and not merely its presence.
+                attempt_id,
+            ),
+        )
+    elif "entry_intent" in cols:
+        # v27-v37 : v21 backlinks + entry_intent set-at-entry.
         cur = conn.execute(
             """
             INSERT INTO trades
@@ -434,6 +617,33 @@ def insert_trade_with_event(
         (trade_id, event_ts, json.dumps(payload, sort_keys=True), rationale),
     )
     return trade_id
+
+
+def find_trade_id_by_attempt_id(
+    conn: sqlite3.Connection, attempt_id: str,
+) -> int | None:
+    """22-A4: resolve a trade id from its per-attempt identity token.
+
+    **SCHEMA-AWARE, and the branch is the point.** On a pre-v38 database the
+    column does not exist and an unconditional ``WHERE attempt_id = ?`` would
+    raise ``OperationalError``. Returning ``None`` WITHOUT raising is what lets
+    a caller tell ABSENCE from INTERNAL PROBE FAILURE -- the two produce the
+    same caller-facing outcome and only one of them is the designed behaviour.
+
+    The caller is responsible for supplying a connection whose visibility is
+    admissible (a FRESH one, or one past a PROVEN resolution): a read on the
+    writer's own connection inside an unresolved transaction is the writer
+    quoting itself.
+    """
+    cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()
+    }
+    if "attempt_id" not in cols:
+        return None
+    row = conn.execute(
+        "SELECT id FROM trades WHERE attempt_id = ?", (attempt_id,)
+    ).fetchone()
+    return None if row is None else int(row[0])
 
 
 def update_stop_with_event(

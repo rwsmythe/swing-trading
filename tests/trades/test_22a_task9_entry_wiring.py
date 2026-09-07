@@ -28,8 +28,14 @@ from pathlib import Path
 
 import pytest
 
-from swing.data.db import ensure_schema, open_connection, run_migrations
+from swing.data.db import (
+    EXPECTED_SCHEMA_VERSION,
+    ensure_schema,
+    open_connection,
+    run_migrations,
+)
 from swing.data.models import FREEZE_TIER_LIVE_AT_ACCEPTANCE
+from swing.data.repos.trades import validate_attempt_id
 from swing.trades.entry import (
     DuplicateOpenPositionError,
     EntryRequest,
@@ -87,6 +93,8 @@ def build_world(tmp_path: Path, name: str, *, closes=None, pre_barrier=False,
         candidate_id = seed_fire(conn, **_fire_over)
         conn.commit()
         run_migrations(conn, target_version=37, backup_dir=root / "bak")
+        run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION,
+                       backup_dir=root / "bak")
     else:
         conn = ensure_schema(root / "swing.db")
         candidate_id = seed_fire(conn, **_fire_over)
@@ -1021,6 +1029,19 @@ def test_the_lock_a_an_unlatched_fill_is_byte_identical_with_cfg_passed(
     a dict comparison would fail on the diff -- but a comparison written to
     tolerate that (subset, or key intersection) would silently stop covering
     the new column, so the failure is left loud and this line says why.
+
+    **AMENDED BY 22-A4 TASK 0b, AND THE AMENDMENT IS CONSTRAINED BY THE
+    PARAGRAPH ABOVE: the comparison is NOT SOFTENED.** Migration 0038 adds
+    `trades.attempt_id`, which fails both shipped assertions. The addition is
+    NAMED rather than tolerated -- `set(a) == set(LOCK_A_PRE_ARC_ROW) |
+    {"attempt_id"}` -- byte identity is then asserted over every PRE-EXISTING
+    column, and a THIRD assertion pins the new one as a valid non-NULL token.
+    The lock gets STRONGER: it now covers the new column explicitly instead of
+    merely failing on it.
+
+    **BOTH ROWS, NOT ONE.** `b` is the `cfg=None` arm, and its token must be
+    non-NULL too -- which is the assertion that pins the decision to mint
+    REGARDLESS of `cfg`.
     """
     conn_a, cfg_a, _ = build_world(tmp_path, "lockA")
     conn_a.commit()
@@ -1034,11 +1055,27 @@ def test_the_lock_a_an_unlatched_fill_is_byte_identical_with_cfg_passed(
                     fill_origin="operator_typed"),
         soft_warn=SOFT, hard_cap=HARD, force=False).trade_id)
 
-    assert set(a) == set(LOCK_A_PRE_ARC_ROW), (
-        "the `trades` column set moved relative to the pre-arc capture: "
-        f"{sorted(set(a) ^ set(LOCK_A_PRE_ARC_ROW))}")
-    assert a == LOCK_A_PRE_ARC_ROW, "cfg PASSED diverged from the pre-arc row"
-    assert b == LOCK_A_PRE_ARC_ROW, "cfg=None diverged from the pre-arc row"
+    expected_cols = set(LOCK_A_PRE_ARC_ROW) | {"attempt_id"}
+    assert set(a) == expected_cols, (
+        "the `trades` column set moved relative to the pre-arc capture plus "
+        "22-A4's NAMED addition: "
+        f"{sorted(set(a) ^ expected_cols)}")
+    assert set(b) == expected_cols
+
+    a_pre_arc = {k: v for k, v in a.items() if k != "attempt_id"}
+    b_pre_arc = {k: v for k, v in b.items() if k != "attempt_id"}
+    assert a_pre_arc == LOCK_A_PRE_ARC_ROW, (
+        "cfg PASSED diverged from the pre-arc row")
+    assert b_pre_arc == LOCK_A_PRE_ARC_ROW, (
+        "cfg=None diverged from the pre-arc row")
+
+    # The token is a per-attempt identity, so it cannot be compared against a
+    # golden; it is asserted to be a VALID, NON-NULL, DISTINCT token on BOTH
+    # arms -- the `cfg=None` arm being the one that pins minting regardless of
+    # `cfg`.
+    validate_attempt_id(a["attempt_id"])
+    validate_attempt_id(b["attempt_id"])
+    assert a["attempt_id"] != b["attempt_id"]
 
 
 def test_the_lock_c_every_pre_existing_failure_branch_is_unchanged(

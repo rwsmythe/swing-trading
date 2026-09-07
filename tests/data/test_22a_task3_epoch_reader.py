@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from swing.data.db import ensure_schema, open_connection, run_migrations
+from swing.data.db import (
+    EXPECTED_SCHEMA_VERSION,
+    ensure_schema,
+    open_connection,
+    run_migrations,
+)
 from swing.data.models import (
     FREEZE_TIER_LIVE_AT_ACCEPTANCE,
     FREEZE_TIER_PRE_BARRIER,
@@ -304,6 +309,8 @@ def test_a_pre_migration_fire_accepted_after_0037_mints_pre_barrier_case_25(
         cid = seed_fire(c)
         c.commit()
         run_migrations(c, target_version=37, backup_dir=tmp_path / "bak")
+        run_migrations(c, target_version=EXPECTED_SCHEMA_VERSION,
+                       backup_dir=tmp_path / "bak")
         assert list_links_for_ticker(c, "FTRE") == []  # nothing to backfill
         accept_order(c, cid)
         [link] = list_links_for_ticker(c, "FTRE")

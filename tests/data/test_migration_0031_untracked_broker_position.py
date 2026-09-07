@@ -52,8 +52,8 @@ def _insert_discrepancy(
     )
 
 
-def test_expected_schema_version_is_31():
-    assert EXPECTED_SCHEMA_VERSION == 37
+def test_expected_schema_version_is_head():
+    assert EXPECTED_SCHEMA_VERSION == 38
 
 
 def test_v30_rejects_untracked_then_v31_accepts(tmp_path):

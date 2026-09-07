@@ -6,12 +6,19 @@ import dataclasses
 import logging
 import sqlite3
 import unicodedata
+import uuid
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
+from swing.data.db import _resolve_main_db_path
 from swing.data.models import Fill, Trade, WatchlistArchiveEntry
 from swing.data.repos.fills import insert_fill_with_event
-from swing.data.repos.trades import insert_trade_with_event, list_open_trades
+from swing.data.repos.trades import (
+    insert_trade_with_event,
+    list_open_trades,
+    validate_attempt_id,
+)
 from swing.data.repos.watchlist import (
     archive_watchlist_entry,
     get_watchlist_entry,
@@ -625,6 +632,109 @@ def canonicalize_hypothesis_label(raw: str | None) -> str | None:
     return canonical or None
 
 
+# ===========================================================================
+# 22-A4 -- THE PER-ATTEMPT IDENTITY.
+#
+# The primitive 22-A's declared residual is blocked on: a token CO-DURABLE
+# with the row it identifies (written by the SAME INSERT in the SAME
+# transaction -- anything else is a stamp, gotcha #30) and UNIQUE PER ATTEMPT
+# (it survives rollback-and-retry, which a rowid does not: the engine hands a
+# rolled-back id straight to the next insert).
+#
+# RD's canonical reading of "never reusable", ruled 2026-09-06 and binding on
+# every future appeal: the mechanism must contain NO PATH THAT REISSUES a
+# token.  The rowid fails because the ENGINE ITSELF reissues; `uuid4` has no
+# reissue path at all, so a repetition would be an RNG failure rather than a
+# behaviour of the mechanism.
+# ===========================================================================
+
+
+def _mint_attempt_token() -> str:
+    """One canonical lowercase uuid4 string per attempt.
+
+    A NAMED module-level function rather than an inline ``uuid.uuid4()`` call,
+    so a test can plant a deterministic token and can make the mint raise.
+    That is a testability decision, stated so it is not mistaken for
+    indirection.  ``uuid.uuid4`` is reached through the MODULE so a test can
+    patch one level below this function -- which is the only way to exclude a
+    constant mint, since every ``_mint_attempt_token``-level patch blesses one.
+    """
+    return str(uuid.uuid4())
+
+
+@dataclass(frozen=True)
+class _AttemptIdentity:
+    """What the attempt knows about itself before the transaction opens.
+
+    ``db_path`` comes from THE CONNECTION (``PRAGMA database_list``) and never
+    from ``cfg``: a caller may legally pass a connection to a different
+    database than ``cfg`` names (every test does) and ``cfg`` may be ``None``.
+    Sourcing it from configuration would be gotcha #30's shape one level up --
+    a system-level value standing in for a per-object fact -- and would produce
+    the worst possible error, a probe that reads the WRONG database.
+    """
+
+    token: str | None = None
+    db_path: Path | None = None
+
+
+def _begin_attempt_identity(conn: sqlite3.Connection) -> _AttemptIdentity:
+    """Mint the token and capture the database path, CONTAINED.
+
+    **NO ORDINARY FAILURE OR MALFORMED RETURN OF THE IDENTITY APPARATUS MAY
+    CONVERT AN ENTRY THAT WOULD HAVE SUCCEEDED INTO A FAILURE.**  When it
+    fails, ``token`` and/or ``db_path`` are ``None``, the settle is
+    unavailable, and the behaviour is exactly today's.
+
+    **THE RESULT IS VALIDATED, NOT ONLY THE CALL.**  A mint that RETURNS
+    ``""`` / ``"short"`` / ``bytes`` raises nothing, so containment around the
+    CALL does not cover it -- and the repo's pre-write validator would then
+    reject it and fail an entry that would have succeeded, which is the one
+    thing this helper exists to prevent, arriving through the containment's own
+    blind spot.  Validation goes through ``validate_attempt_id``, **the SAME
+    function the repo's pre-write guard calls**, because two hand-written
+    predicates over one column are a mirror pair whose dangerous drift is the
+    one where THIS side admits what the WRITE side refuses.
+
+    ``Exception``, not ``BaseException``, and the asymmetry is the point: this
+    runs PRE-COMMIT, where nothing is durable and failing is the HONEST answer,
+    so a ``KeyboardInterrupt`` or ``SystemExit`` must propagate.  (That is the
+    mirror image of 22-A3's route guard, which catches ``BaseException``
+    precisely because it runs POST-commit.)
+
+    TWO contained arms, and BOTH route through the module's ``log_contained``
+    idiom: a raising log handler at either of them would otherwise convert a
+    contained failure into a failed entry.
+
+    The token is written even when ``db_path`` is ``None`` (an in-memory
+    database, where no fresh connection to the same data is possible).  It
+    costs nothing and leaves the row identifiable for forensics; only the probe
+    is unavailable.
+    """
+    try:
+        token = _mint_attempt_token()
+        validate_attempt_id(token)
+    except Exception as mint_error:  # noqa: BLE001 -- the CLASS
+        log_contained(
+            log,
+            "22-A4: the attempt-identity mint failed or returned a value the "
+            "single admission authority refuses (%s). The entry proceeds with "
+            "NO token; only the settle-by-identity probe is unavailable.",
+            safe_text(mint_error))
+        return _AttemptIdentity()
+    try:
+        db_path = _resolve_main_db_path(conn)
+    except Exception as path_error:  # noqa: BLE001 -- the CLASS
+        log_contained(
+            log,
+            "22-A4: the attempt's database path could not be resolved from "
+            "the connection (%s). The token is still written; only the "
+            "settle-by-identity probe is unavailable.",
+            safe_text(path_error))
+        db_path = None
+    return _AttemptIdentity(token=token, db_path=db_path)
+
+
 def record_entry(
     conn: sqlite3.Connection, req: EntryRequest, *,
     soft_warn: int, hard_cap: int, force: bool,
@@ -635,8 +745,15 @@ def record_entry(
     (``swing/cli.py``, ``swing/web/routes/trades.py``).
 
     ``cfg=None`` DECLINES the latch path with reason ``no_config`` and leaves
-    every persisted value byte-identical to the pre-arc behaviour, so every
-    pre-existing caller and test is unaffected.
+    every PRE-ARC COLUMN of the persisted row byte-identical to the pre-arc
+    behaviour, so every pre-existing caller and test is unaffected.
+
+    **22-A4 AMENDS THAT SENTENCE RATHER THAN LEAVING IT TO READ TRUE WHILE THE
+    CODE MOVED UNDERNEATH IT** (gotcha #31).  The row now also carries a
+    per-attempt ``attempt_id`` token, minted REGARDLESS of ``cfg``, which is
+    not part of the pre-arc row and carries NO domain meaning: no consumer
+    reads it, and its only purpose is to let a lost commit be resolved by
+    identity rather than by a reusable rowid.
     """
     # Phase 7 Sub-B B.1 — non-bypassable pre-trade required-field gate. Per
     # spec §9.3, MissingPreTradeFieldsException is NOT force-bypassable; it
@@ -829,6 +946,16 @@ def record_entry(
     # it.
     result: EntryResult | None = None
     outcome = _CommitOutcome()
+    # 22-A4: the attempt begins HERE -- after the entire pre-existing gauntlet
+    # (validation, the stop check, the duplicate check, the hard cap, the soft
+    # warn, the recognition read and the caller-held-transaction refusal) and
+    # BEFORE the guarded region.  Each of those refusals issues ZERO new
+    # statements and raises exactly as before; the mint changes no branch and
+    # no ordering, so LOCK clause (c) holds.  Not every pre-existing refusal is
+    # upstream of it -- the PE-anchor guard and the latch resolver's own
+    # refusals run INSIDE the transaction -- and under this shape the
+    # difference costs one wasted uuid4.
+    identity = _begin_attempt_identity(conn)
     # ===================== THE GUARDED REGION STARTS HERE ==================
     #
     # **CLAUSE 1: AFTER A SUCCESSFUL COMMIT, NOTHING MAY CONVERT THE RESULT TO
@@ -866,6 +993,7 @@ def record_entry(
                 entry_iso=entry_iso,
                 warning=warning,
                 reserve=_reserve,
+                attempt_id=identity.token,
             )
         # ---- everything from here to the return is POST-COMMIT ----
         return result
@@ -1170,6 +1298,7 @@ def _record_entry_inner(
     entry_iso: str,
     warning: str | None,
     reserve: bool,
+    attempt_id: str | None = None,
 ) -> EntryResult:
     """Never opens or closes a transaction; the caller owns it.
 
@@ -1420,6 +1549,9 @@ def _record_entry_inner(
     try:
         trade_id = insert_trade_with_event(
             conn, trade, event_ts=req.event_ts, rationale=req.rationale,
+            # 22-A4: CO-DURABLE by construction -- the token is a column of
+            # THIS INSERT, in this transaction, not a post-commit stamp.
+            attempt_id=attempt_id,
         )
         # Phase 9 T-A.7 — stamp risk_policy_id_at_lock from the active
         # policy in the SAME transaction. Spec §3.1.1: preserves
@@ -1487,7 +1619,18 @@ def _record_entry_inner(
         # two concurrent record_entry calls raced past the app-layer list_open_trades
         # check; the partial unique index rejected the second INSERT. Map to the same
         # DuplicateOpenPositionError callers already handle.
-        if "UNIQUE" in str(exc) and "trades" in str(exc):
+        #
+        # **THE MATCH IS NARROWED TO THE TICKER INDEX, IN THE SAME TASK THAT
+        # ADDS A SECOND UNIQUE INDEX TO THIS TABLE** (22-A4 S2.5).  The
+        # predecessor tested `"UNIQUE" in str(exc) and "trades" in str(exc)`,
+        # which migration 0038's `ux_trades_attempt_id` also satisfies -- so a
+        # duplicate attempt-identity token would have been re-labelled
+        # "Already an open position in <ticker> (race-detected)" over a ticker
+        # with NO open position: loud, and mislabelled as exactly the position
+        # race the residual's honesty argument depends on it not being.
+        # MEASURED, both messages: `UNIQUE constraint failed: trades.ticker`
+        # and `UNIQUE constraint failed: trades.attempt_id`.
+        if "UNIQUE constraint failed: trades.ticker" in str(exc):
             raise DuplicateOpenPositionError(
                 f"Already an open position in {req.ticker} (race-detected)"
             ) from exc

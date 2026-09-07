@@ -1893,3 +1893,102 @@ named; a sixth would mean the retired digest had been re-adopted somewhere.
 · `assertion_schedule_audit.py` 53 rows, 0 naked symbols · `citecheck.py` 71 citations, 0
 unresolved.** **NOTHING FROM ROUND 11 IS OPEN.**
 
+
+---
+
+## Executing dispatch — Task 0b + Task 1 intake (2026-09-07)
+
+**No Codex round. This section records SUPERSESSIONS and INTAKE CORRECTIONS made by the executing
+cell before writing code, per the recipe's rule that a ruling's REASONING is binding while its
+incidental FACTS — line numbers, names, counts — are inputs the cell verifies against the code.**
+
+### Supersession 1 — `(m3c)` takes BRANCH A (CHARC, PRIMARY, 2026-09-07)
+
+`docs/superpowers/plans/2026-09-06-phase22-arc-a4-EXECUTING.md` `(m3c)` demanded the expected-tables
+constant **EQUAL** a fresh v37 schema. **STRUCK BY REPLACEMENT, citing the ruling**, and the
+replacement paragraph carries the ruling and its reason inline.
+
+- **Mechanic re-verified on disk before encoding:** `swing/data/db.py:575` is
+  `missing = expected_tables - actual_tables` inside `_verify_backup_integrity` — a **SUBSET** test.
+  The gate's contract has always been a **FLOOR**.
+- **Encoded:** `PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES =
+  PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES | {the three 0037 tables}` (the derivation exactly as
+  specified; `PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES` verified at `swing/data/db.py:382`,
+  consumed at `:2022`). `(m3c)` asserts **SUBSET, naming the offending member on failure**, **AND**
+  membership of 0037's three tables. Gate strictness identical to 22-A's; S6 step 1 unchanged.
+- **NOT built, banked to CHARC's register:** the schema-manifest drift comparator.
+
+### Supersession 1a — the second strike anchor was MIS-PLACED, and the sentence at `:925` STANDS
+
+**INTAKE CORRECTION (executing cell).** The dispatch brief instructed striking
+`2026-09-06-phase22-arc-a4-EXECUTING.md:925`, quoted as *"EQUALITY, NEVER A SUPERSET CHECK -- CHARC
+made this the MANDATORY member of the mirror set"*. **That line is inside `(r4)`, the
+schema-versus-MODEL drift comparator — not inside `(m3c)`.** The two are different instruments:
+
+- `(m3c)`'s subject is `_verify_backup_integrity`, whose implementation is a subset test with a
+  floor contract. Equality there reverses the gate. **Struck.**
+- `(r4)`'s subject is `{trades columns} - {Trade dataclass fields} == {two names}`. There is no
+  subset instrument behind it; it is a DECISION LEDGER, and gotcha #11's 2026-08-24 amendment makes
+  the drift comparator the **MANDATORY** member of the mirror set precisely because a `>=`/subset
+  form silently absorbs the next column added without a decision. **NOT struck.**
+
+The originating handoff (`docs/orchestrator-handoff-2026-09-07-22a4-executing.md:107`) names the
+sentence by phrase and carries **no line number**; the brief resolved the phrase by literal match,
+which landed in the wrong section. `(m3c)` at `:724` said "EQUALS", not "EQUALITY, NEVER A SUPERSET
+CHECK", so no phrase match into `(m3c)` was available. **Encoded: `:724` struck, `:925` kept, and
+`(r4)` now carries an explicit paragraph distinguishing the two so the next reader cannot conflate
+them by phrase.** Reported to the orchestrator in the return report.
+
+### Supersession 2 — the mis-named version tests (orchestrator, his lane, 2026-09-07)
+
+**RULED: rename all six.** All five brief-supplied rows verified on disk at the exact lines given
+(`test_migration_0036_provenance_corrections.py:56/:60`, `test_migration_0033.py:141`,
+`test_migration_0031_untracked_broker_position.py:55`,
+`test_migration_0030_yfinance_calls.py:33`), plus the plan's own
+`test_22a_task2_migration_0037.py:98`. **Renamed to the `..._is_head` form** rather than `..._is_38`
+— the form the codebase already converged on at its three most recent instances
+(`test_migration_0032.py::test_expected_schema_version_is_current`,
+`test_migration_0034_h1_criteria_amendment.py` and
+`test_migration_0035_fills_trades_price_divergence.py`, both `..._is_head`). `..._is_38` satisfies
+the rule for exactly one migration and then re-creates the defect; `head` satisfies it permanently.
+This is a deviation from the plan's literal *"the assertion becomes 38 and the NAME must too"* and
+is reported as such.
+
+**INTAKE CORRECTION: the population is TWENTY-SIX, not six — and it is NOT homogeneous.** Measured
+by an AST walk mapping every one of this commit's 44 version-mirror edit sites to its enclosing
+function and reading each name (a value grep cannot do this; the seventh spelling is exactly the one
+no value grep reaches). Twenty further test functions carry a stale version number in the NAME while
+this commit edits their BODY to 38. **They were NOT renamed, because a recorded counter-convention
+exists and it is not the executing cell's to supersede:**
+`tests/data/test_phase13_t3_sb1_prerequisite.py:45-52` states *"Test name preserved to keep
+grep-history continuity per cumulative discipline (the corresponding tests in test_migration_0017.py
+etc. follow the same stale-name-but-current-assertion pattern)"*, and
+`tests/data/test_v21_migration_trade_backlinks.py` repeats it verbatim for its own row. **The
+ruling's rule and that convention conflict**, so the twenty are ROUTED to the orchestrator rather
+than settled inside the work. The full roster is in the return report.
+
+### Intake correction 3 — the plan's own `_current_version` classification was half right
+
+**FOUND BY THE FULL SUITE, not by reading.** The plan's Task-1 sweep rule said *"Two
+`_current_version(...) == 37` sites in `tests/data/test_22a_task2_migration_0037.py` are assertions
+about migration 0037's own result and STAY at 37."* **Only ONE is.**
+
+- `:107` `test_migration_applies_to_a_v36_fixture_and_stamps_37` builds a v36 database via the local
+  `_v36` helper and runs to `target_version=37`. About 0037's own result. **Stays at 37.**
+- `:130` `test_running_the_migration_twice_is_a_no_op` takes the module's `conn` FIXTURE, which is
+  `ensure_schema` and therefore walks to **HEAD**. Its `target_version=37` call returns immediately
+  (`current >= target_version`), so the assertion is about HEAD. **Becomes 38** — and it was the
+  ONE red on the first full-suite run (`assert 38 == 37`).
+
+*The classification was made by reading the call's ARGUMENTS and not its FIXTURE, which is a
+classification of half the statement.* The plan text is superseded by replacement at both the S4
+count row and the Task-1 rule.
+
+### Intake correction 4 — a fixture that asserted nothing
+
+`(r3)`'s and `(e2)`'s UPPERCASE-canonical rows were first written as `TOK_A.upper()` where
+`TOK_A = "00000000-0000-4000-8000-000000000001"` — **all digits and hyphens, so `.upper()` is the
+identity function** and the "uppercase defeats the UNIQUE index's text key" case was asserting the
+lowercase case a second time. Caught by execution (the row went green against the canonical token
+and red against the validator). Replaced with `TOK_MIXED = "0a0b0c0d-0e0f-4a1b-8c2d-0e3f4a5b6c7d"`,
+which carries hex letters, and the reason is recorded beside the constant.
