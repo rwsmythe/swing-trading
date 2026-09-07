@@ -154,7 +154,15 @@ and re-raising the ORIGINAL when it is not.
   counter-line-numbers that were themselves unsourced. Cite the FUNCTION NAME and a VERBATIM
   fragment a reader can grep; give the digest; keep line numbers as a convenience against the pinned
   file. **The rule binds the code this plan ships too** -- `_exit_rollback_failed`'s docstring
-  carries the content anchor, not the line range (Task 4).
+  carries the content anchor, not the line range (Task 3).
+  **AND IT HAS AN IN-REPO COROLLARY, ADDED THE SAME DAY BY THE SWEEP THAT FOUND FOUR IN-REPO
+  ANCHORS WRONG AT ONCE (`SS-12`): every `file.py:N` citation NAMES THE SYMBOL it points at.** An
+  in-repo line number is checkable, so it is weaker than the out-of-repo case -- but it DRIFTS,
+  nobody re-checks it, and this plan carried a set of four that pointed into the wrong function
+  entirely while their COUNT was correct. The symbol is what survives an edit; the number is a
+  convenience. **The sweep's method was an AST walk, not a grep** -- a grep for `log\.` finds
+  logging calls but cannot tell you which FUNCTION contains them, which is the fact the entry was
+  making.
 - **ASCII in user-facing strings.** The new warning text reaches the CLI's stderr through 22-A3's
   reader, and Windows cp1252 crashes on non-ASCII (`pytest` `capsys` hides it). The warning is
   ASCII by construction and is additionally passed through 22-A3's `ascii_safe` on the CLI side.
@@ -186,7 +194,7 @@ a stamp (gotcha #30).**
 transaction-control mode rather than assume it.**
 
 - Both transaction paths put the whole of `_record_entry_inner` inside one transaction.
-  `swing/trades/entry.py:1035-1160`: `immediate=False` yields inside `with conn:`; `immediate=True`
+  `swing/trades/entry.py:1035-1163` (`_entry_transaction`): `immediate=False` yields inside `with conn:`; `immediate=True`
   yields between an explicit `BEGIN IMMEDIATE` and `conn.commit()`.
 - **The deferred path's atomicity rests on a runtime property worth measuring rather than assuming:
   `with conn:` does NOT begin a transaction** -- sqlite3's legacy mode begins one implicitly at the
@@ -419,14 +427,17 @@ connection to confirm a write; this arc is the first.**
   (`test_CONTRACT_a_commit_whose_own_return_was_LOST_re_raises`, parametrised over both paths).
   **That test is this arc's pre-fix half and is REWRITTEN, not deleted** (S3 (c), **Task 4**).
 - **"`_CommitOutcome.committed` is an observation of the commit's own return"** -- **HOLDS**: set on
-  the statement after `commit()` returns on the immediate path (`entry.py:1128`) and after the
+  the statement after `commit()` returns on the immediate path (`entry.py:1107`, **corrected from
+  `:1128` by the 2026-09-07 sweep -- `:1128` is `conn.rollback()`, `SS-11`**) and after the
   `with conn:` block on the deferred path (`entry.py:1067`).
 - **"Both `_entry_transaction` paths are bound"** -- **HOLDS, and it costs LESS than the first draft
   of this plan claimed.** That draft said a commit raising inside `__exit__` leaves the transaction
   OPEN with no rollback attempted, and proposed adding one; **MEASURED (3b) disproves it** --
   `__exit__` rolls back, `in_transaction` reads False, and the pre-arc path already resolves itself.
-  So this arc adds **no rollback and no exception-identity change** to the deferred path; it adds
-  only the three NEW observation fields (S2.2). The one thing it must still handle is the residual
+  So this arc adds **no rollback, no exception-identity change and -- after `SS-9` -- NO STATEMENT
+  AT ALL** to `_entry_transaction`'s deferred branch; the two NEW observation fields
+  (`resolution`, `cleanup_raised`) are written for that path from `record_entry`'s own post-commit
+  handler (S2.2). The one thing it must still handle is the residual
   where
   `__exit__`'s own rollback failed, and it handles that with TWO observations rather than an
   assumption: it READS `conn.in_transaction` for the TRANSACTION's state, and it READS the
@@ -442,7 +453,7 @@ connection to confirm a write; this arc is the first.**
   **not** a `Trade` dataclass field and is **not** read by `_row_to_trade`.
 - **A DEFECT THE NEW INDEX INTRODUCES, found by verifying the premise rather than by review**
   (fixed in S2.5): `_record_entry_inner`'s IntegrityError mapper reads
-  `if "UNIQUE" in str(exc) and "trades" in str(exc)` (`entry.py:1489`) and re-raises as
+  `if "UNIQUE" in str(exc) and "trades" in str(exc)` (`entry.py:1490`) and re-raises as
   `DuplicateOpenPositionError`. **MEASURED:** a `ux_trades_attempt_id` violation produces
   `UNIQUE constraint failed: trades.attempt_id`, which satisfies both substrings -- so without a fix
   the new index would report *"Already an open position in AAA (race-detected)"* over a ticker that
@@ -917,7 +928,9 @@ testability decision, stated so it is not mistaken for indirection.
 > byte-identical. **`record_entry` ALREADY OBSERVES THE SAME FACT AND HAS SINCE 22-A3:**
 > `entry.py:830` pre-initialises `result: EntryResult | None = None` BEFORE the `try`, `entry.py:862`
 > assigns it INSIDE the block from `_record_entry_inner`'s return, and the shipped guard at
-> `entry.py:880` already reads `if result is None or not outcome.committed: raise`. **`result is not
+> `entry.py:884` already reads `if result is None or not outcome.committed: raise` (**`:884`, not
+> the `:880` this ruling was relayed with -- `:880` is inside the comment block above it; corrected
+> by the 2026-09-07 sweep, `SS-11`**). **`result is not
 > None` is non-None if and only if the body ran to completion**, it is `record_entry`'s observation
 > of its own assignment, and it is PRE-ARC code this plan does not touch. A second field mirroring it
 > would be the mirror-drift class (#11) bought for nothing. **So: no new flag, no statement inside
@@ -1041,7 +1054,7 @@ completed. That coincidence is the whole design: **the fact and its scope are ob
 place, and in no other.**
 
 **THE SCOPE IS ALSO WHAT LETS THE TYPE FILTER GO.** Both conditions are pre-existing or this arc's
-own: `result is not None` is the shipped guard at `entry.py:880`, `not outcome.committed` is
+own: `result is not None` is the shipped guard at `entry.py:884`, `not outcome.committed` is
 clause 3's observation. Neither is new machinery, and the body-raised rows of the table below are
 excluded by them before the predicate is called.
 
@@ -1298,7 +1311,7 @@ except BaseException as post_commit_error:
 are observed:
 
 1. **`result is not None`** -- the entry body ran to completion, so the failure is at or after the
-   commit and not before it. **This is `record_entry`'s OWN pre-arc guard (`entry.py:880`), not a
+   commit and not before it. **This is `record_entry`'s OWN pre-arc guard (`entry.py:884`), not a
    field of ours** (RD's PIN 1 on `A4-R10-1`, 2026-09-07): it raises before this helper is ever
    called, so the condition is enforced by the CALLER and the helper does not re-check what it
    cannot observe. *The earlier design carried an `outcome.body_completed` field for exactly this,
@@ -3204,11 +3217,23 @@ inline and never silently absorbed. Each carries a proposed disposition; the orc
 3. **`EntryResult` HAS NO TYPED DISCRIMINATOR FOR THE TWO WARNING KINDS** (S7.10). Proposed:
    **BANKED** with a named shape (an enum-tagged warning tuple) and an explicit precondition: it
    needs a caller that wants to branch, and today neither does.
-4. **THE FOUR PRE-COMMIT LOGGING CALLS IN `_record_entry_inner` REMAIN UNCONTAINED**
-   (`entry.py:824`, `:892`, `:903`, `:918`) -- 22-A3's S7.11, unchanged and unchallenged: they run
+4. **THE FOUR PRE-COMMIT LOGGING CALLS IN `_record_entry_inner` REMAIN UNCONTAINED** -- 22-A3's
+   S7.11, unchanged and unchallenged: they run
    inside the transaction, so a raising sink aborts the write and reporting a failure is honest.
    Proposed: **DECLINED** as a change, cited to 22-A3's declaration; recorded here only so the reader
    knows it was re-examined rather than forgotten.
+   **THE FOUR LINE ANCHORS THIS ENTRY CARRIED WERE ALL WRONG, AND THE SWEEP OF 2026-09-07 MEASURED
+   THE RIGHT ONES (`SS-12`).** It cited `entry.py:824`, `:892`, `:903`, `:918`. **`_record_entry_inner`
+   begins at `:1166`**, so all four pointed into `record_entry` -- a DIFFERENT function -- and **not
+   one of them is a logging call** (`:824` is a comment; the only `log.` call in `record_entry` is
+   the POST-commit `log.error` at `:920`, which is contained and is not this item's subject).
+   **MEASURED by an AST walk of `swing/trades/entry.py`, not by grep:** the four are
+   `log.warning` at **`:1227`**, `log.info` at **`:1295`**, `log.warning` at **`:1306`** and
+   `log.warning` at **`:1321`**. The COUNT was right and every ANCHOR was wrong, which is the worst
+   arrangement of the two: a reader checking the number is reassured and a reader checking the code
+   is misdirected. **This is the in-repo twin of `A4-R10-5`** -- an unverifiable citation invites a
+   confident wrong reading -- and the same remedy applies, stated in Global Constraints: cite the
+   SYMBOL, keep the line number as a convenience.
 5. **NO OPERATOR SURFACE SHOWS WHETHER AN ENTRY WAS CONFIRMED BY IDENTITY.** The warning is
    transient; the log is durable but is not a UI. Proposed: **BANKED** together with S8.3, since a
    surface without a typed discriminator would have to parse prose.
@@ -3438,7 +3463,7 @@ statement is RD's own and ships verbatim in S7.7.**). **A third item was ruled 2
 
 1. This plan's **S1** -- it is the only place the three constraints are tied to code, and every
    design decision downstream cites it.
-2. `swing/trades/entry.py:628-1165` -- `record_entry`, `_CommitOutcome`, the DECLARED-RESIDUAL block,
+2. `swing/trades/entry.py:628-1163` -- `record_entry` (`:628-942`), `_CommitOutcome`, the DECLARED-RESIDUAL block,
    and both `_entry_transaction` paths. The block at `:973-1030` explains why the shipped code has
    the shape it has; **Task 5** rewrites it and cannot do so honestly without having read it.
 3. `docs/22-a-merge-request.md` **S4.4** -- the ruling, and the two reproductions this arc's tests
