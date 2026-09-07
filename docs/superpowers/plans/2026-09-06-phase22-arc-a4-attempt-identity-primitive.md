@@ -42,9 +42,30 @@ and re-raising the ORIGINAL when it is not.
 2026-09-02 that REVERTED clause 2 and commissioned this primitive.
 **Plan base:** `edfea928` (branch `22-a4-plan`, worktree `.worktrees/22-a4-plan`).
 
-> ## REVIEW STATUS: **TEN ADVERSARIAL ROUNDS, THEN A DEDICATED SETTLING SWEEP. ROUND 11 IS THE ONE CONFIRMING ROUND AND THE LOOP IS CAPPED THERE.**
+> ## REVIEW STATUS: **ELEVEN ADVERSARIAL ROUNDS. THE SETTLING SWEEP RAN, THE ONE CONFIRMING ROUND RAN, AND IT DID NOT CONVERGE. THIS PLAN IS NOT AUTHORIZED TO EXECUTE.**
 >
-> **THE LOOP HAD NO SETTLING STEP, AND THAT IS WHAT ROUNDS 8, 9 AND 10 WERE SPENDING THEMSELVES ON.**
+> **ROUND 11 RETURNED `NEW_CRITICAL_MAJOR_FOUND`: 14 findings (1 CRITICAL, 11 MAJOR, 2 MINOR;
+> 8 NEW GROUND, 6 RESIDUAL), NONE FIXED**, because the sweep cell was instructed to run ONE
+> confirming round and stop whatever it returned. **All five mechanical assertions passed and there
+> was no dead attempt.** Round 12 is the gate-holder's call.
+> **TWO of the fourteen ROUTE and are OPEN DIRECTOR ITEMS:** `A4-R11-2` (a cheaper discriminator for
+> the ambient-`except` false positive -- capture `sys.exception()` before the transaction and exclude
+> that identity -- which modifies a predicate RD has now ruled the shape of twice, and reverses
+> (RD-a4)'s expected outcome) and `A4-R11-9` (**the CPython source PROVENANCE, which this cell could
+> not settle**: the preserved file is sha256-pinned and says what SOURCE (S1) quotes, verified twice,
+> but nothing establishes it IS the official v3.14.2 file, and the round -- like round 10 -- gave
+> counter-numbers it could not have sourced either, having no network. The disputed thing is
+> PROVENANCE, not the branch's behaviour, which both sides agree on).
+> **THE CRITICAL, `A4-R11-1`, IS REPRODUCED AND IS NOT ROUTED -- it is a defect with a cheap fix:**
+> `escaping.__context__` is an ordinary attribute lookup, and a `sqlite3.Error` subclass defining
+> `__context__` as a property reads `None` while the base slot holds the commit exception (MEASURED
+> on this machine), which is a FALSE NEGATIVE that re-admits the probe and rebuilds the `A4-R9-3`
+> window. Read the base slot; contain a raising getter in the alarm direction.
+> The full per-finding adjudication, each with what was verified by execution, is in
+> `.copowers-findings.md` under **Round 11**.
+>
+> **WHY THE SWEEP HAPPENED, AND WHAT IT BOUGHT.** **THE LOOP HAD NO SETTLING STEP, AND THAT IS WHAT
+> ROUNDS 8, 9 AND 10 WERE SPENDING THEMSELVES ON.**
 > Round 10 returned 6 of its 7 findings RESIDUAL -- four of them residuals of the amendment pass
 > written the same day. The shape was ruling -> amend -> review-of-the-wake, with nothing in
 > between. **The gate-holder ruled a DEDICATED SELF-SWEEP followed by ONE confirming round on the
@@ -99,7 +120,10 @@ and re-raising the ORIGINAL when it is not.
 >
 > **AUTHORIZATION STATE, STATED ONCE AND WITHOUT CONTRADICTION:** CHARC's five ratifications and his
 > attached condition (Task 1b) are landed. RD's rulings of 2026-09-06, of 2026-09-07 on round 9, and
-> of 2026-09-07 on round 10's `A4-R10-1` and `A4-R10-2` are ALL landed. **NO DIRECTOR ITEM IS OPEN.**
+> of 2026-09-07 on round 10's `A4-R10-1` and `A4-R10-2` are ALL landed. **No director item was open
+> when round 11 ran; round 11 then opened TWO** -- `A4-R11-2` and `A4-R11-9`, above. **They are
+> ROUTED, NOT amended into the plan**, on the standing rule: a plan may not rewrite a ruling's
+> premise on its own authority. **THIS PLAN IS NOT AUTHORIZED TO EXECUTE.**
 >
 > **ONE CORRECTION THIS PASS OWES AGAINST THE RULING IT APPLIED, stated here rather than buried:**
 > the `A4-R10-1` ruling was relayed with the rationale that a cleanly-completed block leaves
@@ -3569,15 +3593,17 @@ Task 6 and Task 7 runs are compared against THAT number, not against a remembere
 | 10-DEAD | *(NOT A ROUND -- MSYS path-mangling; harness exit 0, 0-byte transcript)* | -- | -- | -- | -- | **NO BANNER, NO FOOTER, NO VERDICT. 0 tokens.** |
 | **10** | `strong` / `gpt-5.6-sol` / `high` | 1 / 5 / 1 | 7 (**1 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
 | **SETTLE** | *(2026-09-07 DEDICATED SETTLING SWEEP -- gate-holder ruled; RD's two round-10 rulings applied, then `SS-9`..`SS-16`; NO Codex, NO round number)* | -- | **8 uncounted (`SS-9`..`SS-16`)** | -- | -- | *no verdict; NO effect on convergence* |
+| **11** | `strong` / `gpt-5.6-sol` / `high` | 1 / 11 / 2 | 14 (**8 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
 
-**TOKEN SPEND, TEN COUNTED ROUNDS:** 437,776 + 230,647 + 246,268 + 320,775 + 317,038 + 307,420 +
-413,949 + 349,176 + 463,310 + 392,163 = **3,478,522**.
+**TOKEN SPEND, ELEVEN COUNTED ROUNDS:** 437,776 + 230,647 + 246,268 + 320,775 + 317,038 + 307,420 +
+413,949 + 349,176 + 463,310 + 392,163 + 509,364 = **3,987,886**.
 **THREE ATTEMPTS WERE DISQUALIFIED OR DEAD AND ARE EXCLUDED FROM THAT SUM, and their cost is stated
 rather than hidden:** round 1's first attempt (MSYS path-mangling; no transcript, no footer, 0
 tokens), round 9's first attempt (**provider capacity: exit 1, two anchored `^ERROR` lines, NO
 verdict token, and a `tokens used` footer anyway -- 316,797 tokens**), and round 10's first attempt
 (**MSYS path-mangling again, harness exit 0 with a 0-byte transcript -- the two-signal rule caught
-it; 0 tokens**). **Total actually spent: 3,795,319.** *The round-9
+it; 0 tokens**). **Total actually spent: 4,304,683.** **ROUND 11 HAD NO DEAD ATTEMPT** -- the
+working invocation was applied FIRST, which this loop had failed to do twice. *The round-9
 disqualification is the cleanest demonstration in this loop of why the footer alone is not a
 completion signal: it was present on a round that produced no verdict at all. The round-10 dead
 attempt is the second instance of a hazard already written down in this loop's own ledger and not
