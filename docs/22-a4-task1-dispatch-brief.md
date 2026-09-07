@@ -1,7 +1,10 @@
 # 22-A4 EXECUTING — Task 0b + Task 1 dispatch brief
 
 **Audience:** a fresh implementer cell with no prior conversation context.
-**Worktree:** `.worktrees/22-a4-exec` — branch `22-a4-exec`, **base `0c34145b`**, clean, zero commits.
+**Worktree:** `.worktrees/22-a4-exec` — branch `22-a4-exec`, clean, **zero commits**. Your base is the
+commit that adds this brief; **capture it yourself before your first commit** (`git rev-parse HEAD`) and
+quote it in the return report. No SHA is hardcoded here, because the commit carrying this line would
+have changed it.
 **Plan of record:** `docs/superpowers/plans/2026-09-06-phase22-arc-a4-EXECUTING.md` (1,889 lines — the
 EXTRACT, CHARC's ruling). **NOT** the 4,370-line design record. Do not redirect yourself to it.
 
@@ -131,8 +134,8 @@ opposite of what it checks.** One line each, zero behaviour change.
    commands**: a chained `pytest ; ruff` reports ruff's exit code, and **exit 0 is not evidence pytest
    ran** (this cost a near-false-green on this arc a day ago).
 2. `ruff check swing/ --statistics`.
-3. Trailer audit: `git log --format="%(trailers:key=Co-Authored-By)" 0c34145b..HEAD` must be empty.
-   Filter on the trailer KEY, not a text match on the block.
+3. Trailer audit: `git log --format="%(trailers:key=Co-Authored-By)" <your captured base>..HEAD` must be
+   empty. Filter on the trailer KEY, not a text match on the block.
 4. **Report an absence with the search that produced it.** "There is no X" requires saying what you
    searched and whether it could have found X.
 
