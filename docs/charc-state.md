@@ -41,6 +41,8 @@
 
 ## #4 — PHASE-22 QUEUE (after 22-A merges)
 
+**Token-efficiency TODO (operator-commissioned 2026-09-07, post-22-A4): [`token-efficiency-todo.md`](token-efficiency-todo.md) — item 0 (measurement) LANDED at `e0541109`; items 1–7 by leverage; coa-chess mirror at `coa-chess/docs/token-efficiency-findings-swing.md` (their repo, uncommitted by design).**
+
 **22-A2** (proof machinery: continuity interval · tier-2 conjunction with the single-rounding-authority amendment · attestation/replay · eras + the era triggers + `gap_era_reconstructed` · **trade 25's correction**) — deferred rulings travel AS RULED · **22-B** Demand A `unintended_execution` (57-column `trades` REBUILD; §VII.F text ratification is a distinct gate) · **22-C** abandonment intent · **22-D** trail-surface one-voice · **22-E** Demand B · **22-F** handler-escape sweep · **22-G** unactionable-surface sweep · **22-H** D37+D38 timestamp sweep · **22-I** REPLACE-exposure sweep (five confirmed instances; the TRIPLE convention with both priced costs — the `ON CONFLICT` writer cost and the `-1` idiom) · wave leftovers D32 + D9 · the #11-SQL-twin gotcha amendment. Full text: [`phase22-scope-charc.md`](phase22-scope-charc.md).
 
 ## #5 — STANDING FACTS THAT ARE MISREAD IF ABBREVIATED
