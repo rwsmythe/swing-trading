@@ -1,0 +1,1895 @@
+# 22-A4 — REVIEW LEDGER
+
+**Committed per CHARC's ruling of 2026-09-07 (recipe rule 2 + `harness-architecture.md` §5.1, `7a870eab`):
+the ledger is the RECORD and it lives in the repo; the transcripts stay at the durable path outside it,
+NAMED here by path and byte size.** Previously this content existed only in a gitignored file — which,
+in an arc whose subject is provenance, and after a night in which the canonical copy of this evidence
+sat single-copy in a session-scoped temp directory, was the wrong place for it.
+
+**Design record:** `docs/superpowers/plans/2026-09-06-phase22-arc-a4-attempt-identity-primitive.md`
+**Executing extract:** `docs/superpowers/plans/2026-09-06-phase22-arc-a4-EXECUTING.md`
+
+## Round ledger
+
+| round | tier / model / effort | C / MAJ / MIN | new | reopened | reverted | verdict |
+|---|---|---|---|---|---|---|
+| 1 | `strong` / `gpt-5.6-sol` / `high` | 1 / 6 / 3 | 10 | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| 2 | `strong` / `gpt-5.6-sol` / `high` | 0 / 7 / 2 | 9 | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| 3 | `strong` / `gpt-5.6-sol` / `high` | 1 / 8 / 3 | 12 | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| 4 | `strong` / `gpt-5.6-sol` / `high` | 1 / 10 / 1 | 12 | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| SS | *(uncounted self-sweep, no Codex)* | 0 / 0 / 9 | 9 | - | - | *no verdict; no effect on convergence* |
+| 5 | `strong` / `gpt-5.6-sol` / `high` | 1 / 7 / 4 | 12 | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **6** | `strong` / `gpt-5.6-sol` / `high` | 0 / 11 / 2 | 13 (**6 new ground, 7 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| AUDIT | *(deterministic self-audit, 68 probes, no Codex)* | -- | 2 real gaps | -- | -- | *no verdict* |
+| **7** | `strong` / `gpt-5.6-sol` / `high` | 0 / 9 / 3 | 12 (**6 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| SWEEP | *(deterministic consistency sweep, no Codex)* | -- | 3 bookkeeping | -- | -- | *no verdict* |
+| **8** | `strong` / `gpt-5.6-sol` / `high` | 0 / 5 / 1 | 6 (**2 new ground, 4 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| 9-DQ | *(DISQUALIFIED -- provider capacity)* | -- | -- | -- | -- | **NO VERDICT; 2 anchored `^ERROR`, exit 1. 316,797 tokens spent, NOT counted.** |
+| **9** | `strong` / `gpt-5.6-sol` / `high` | 0 / 9 / 0 | 9 (**6 new ground, 3 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| AMEND | *(2026-09-07 amendment pass on RD's three rulings; sweep 41/41/41, per-location audit 38 probes)* | -- | -- | -- | -- | *no verdict; no effect on convergence* |
+| 10-DEAD | *(NOT A ROUND -- MSYS path-mangling; harness exit 0, 0-byte transcript)* | -- | -- | -- | -- | **NO BANNER, NO FOOTER, NO VERDICT. 0 tokens.** |
+| **10** | `strong` / `gpt-5.6-sol` / `high` | 1 / 5 / 1 | 7 (**1 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **SETTLE** | *(2026-09-07 DEDICATED SETTLING SWEEP -- gate-holder ruled; RD's two round-10 rulings applied, then `SS-9`..`SS-16`; NO Codex, NO round number)* | -- | **8 uncounted (`SS-9`..`SS-16`)** | -- | -- | *no verdict; NO effect on convergence* |
+| **11** | `strong` / `gpt-5.6-sol` / `high` | 1 / 11 / 2 | 14 (**8 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **FIX** | *(2026-09-07 FIX LEG -- operator-authorized, **NO CODEX ROUND**; four instruments re-run, two strengthened)* | -- | **13 of round 11 FIXED, 1 ROUTED** | 0 | 0 | *no verdict; **NO effect on convergence** -- a fix leg is not a round* |
+| **SETTLE-9** | *(2026-09-07 orchestrator NETWORK FETCH; **NO CODEX**)* | -- | **`A4-R11-9` CLOSED; SOURCE (S1) confirmed upstream; the citation rule amended -- pin the UPSTREAM digest, never a local copy's** | -- | -- | *no verdict; NO effect on convergence* |
+
+## Round-11 dispositions
+
+| finding | severity | disposition |
+|---|---|---|
+| `A4-R11-1` | CRITICAL | **FIXED** -- `_CONTEXT_SLOT`, the base-slot read, ALARM-direction containment; the "structurally impossible" sentence STRUCK; (k7a)-(k7b) added in Task 3 |
+| `A4-R11-2` | MAJOR | **FIXED** -- RD's ruling adopted with all three conditions; (RD-a4) rebuilt as a four-row matrix; `sys.exc_info()[1]` (a measured premise correction to the relayed `sys.exception()`) |
+| `A4-R11-3` | MAJOR | **FIXED** -- dissolved by the `_read_resolution` split; the deferred retry is GONE, which restores the pre-arc behaviour |
+| `A4-R11-4` | MAJOR | **FIXED** -- the shared thing is the NON-MUTATING read; the immediate ladder keeps `raise cleanup_error from write_error`, pinned by (k6b) |
+| `A4-R11-5` | MAJOR | **FIXED** -- Task 3 SPLITS the pre-arc gate (behaviour unchanged); (k3a) asserts the split itself |
+| `A4-R11-6` | MAJOR | **FIXED** -- (k6a)-(k6b), the immediate path's Task-3 discriminators, no probe and no `record_entry` |
+| `A4-R11-7` | MAJOR | **FIXED** -- (pr1)-(pr4), one row per unpinned Task-4 requirement |
+| `A4-R11-8` | MAJOR | **FIXED** -- (m3) split into (m3a)/(m3b)/(m3c); the gate proven INVOKED and LOAD-BEARING; S6's witness compares against a live before-image, not the constant |
+| `A4-R11-9` | MAJOR | **SETTLED** (S8 item 8) -- ROUTED by this leg with the settling method written down; the orchestrator then ran exactly that method. **UPSTREAM sha256 `8cc0d9df...`, 80,695 bytes, content-identical after newline normalisation. SOURCE (S1) holds.** It also FORCED A CORRECTION AGAINST OUR OWN CITATION RULE: the previously pinned `7487db46...` was the hash of OUR copy (LF->CRLF on a text-mode write) -- **a local copy's digest is provenance of the READING, never of the SOURCE.** RD-ratified remedy now standing: pin the UPSTREAM digest with the fetch URL |
+| `A4-R11-10` | MAJOR | **FIXED** -- (pr5) + the `file:...?mode=rw` URI open, VERIFIED BY EXECUTION on this box |
+| `A4-R11-11` | MAJOR | **FIXED** -- the below-HEAD census re-measured per file as CALL counts; the drop-path reason holds for ONE site |
+| `A4-R11-12` | MAJOR | **FIXED** -- the live journal mode relabelled INFERRED at both sites; S6 step 0 asks for `PRAGMA journal_mode` |
+| `A4-R11-13` | MINOR | **FIXED** -- SEVEN at `:178-196`, corrected at BOTH sites; the sweep gained CONTRADICTION probes |
+| `A4-R11-14` | MINOR | **FIXED** -- (RD-a2) in Task 4, not Task 5 |
+| `SS-17` | (uncounted) | **FIXED** -- the `insert_trade_with_event` grep's REAL output is nine hits, of which one is a call |
+
+## Sweep findings (uncounted)
+
+| id | what | class |
+|---|---|---|
+| **`SS-9`** | applying RD's PIN 1 naively left the (then-mutating) shared observer UNCONDITIONAL in `_entry_transaction`'s deferred handler, which reaches the **pre-arc BODY-RAISE branch** and would issue a rollback that path never issued -- 22-A LOCK clause (c)'s subject, widened by a fix for something else. Both observations moved to `record_entry`; the deferred branch is now LITERALLY UNEDITED and (k3a) asserts it. | a fix that widened the blast radius of the thing it fixed |
+| **`SS-10`** | S1.4 still said the arc adds "the three NEW observation fields" to the deferred path. | residual of the same pass, in a section it did not visit |
+| **`SS-11`** | THREE stale in-repo line anchors, found by a script that resolves all 54 and prints what each lands on: `entry.py:1128` is `conn.rollback()` not the immediate `committed` assignment (`:1107`); `entry.py:880` is inside a comment block, not the shipped guard (`:884`) -- **and `:880` is the number this dispatch's own PIN 1 was relayed with, so it had propagated to three sites before the sweep caught it**; `entry.py:1489` is one line above the UNIQUE mapper. | citation drift |
+| **`SS-12`** | S8 item 4 cited FOUR anchors for "the four pre-commit logging calls in `_record_entry_inner`". **`_record_entry_inner` begins at `:1166`; all four pointed into `record_entry`, and not one is a logging call.** MEASURED by AST walk: `:1227`, `:1295`, `:1306`, `:1321`. **The COUNT was right and every ANCHOR was wrong** -- the arrangement that reassures a reader checking the number and misdirects one checking the code. | the in-repo twin of `A4-R10-5` |
+| **`SS-13`** | `A4-R10-3`'s generalisation turned into an INSTRUMENT (`assertion_schedule_audit.py`) instead of a paragraph: it walks all 44 rows, collects the symbols each names, and reports every row scheduled before something it names. | a rule with no check is a wish |
+| **`SS-14`** | what `SS-13` found on its first run, in a row **this same pass had added four hours earlier**: (k3a)'s new ordering assertion named `_settle_by_attempt_identity` and was scheduled in Task 3. **Its failure mode is worse than the four counted instances:** an AST walk asserting an ORDERING finds no such node, therefore finds no ordering to violate, and reports SUCCESS. **Scheduling-by-artifact does not always produce a red test; it can produce a vacuous green one.** | the class, met inside its own fix |
+| **`SS-15`** | S3's roster still described (k3a)/(k3b) as asserting the `committed` assignment is "inside the protected suite on BOTH paths" -- false one commit after `SS-9`. | residual, at the smallest scale it comes in |
+| **`SS-16`** | Task 1b said "THREE call sites" for four rounds while the heading above its tests claimed **EVERY OPERATOR SURFACE**; nothing connected them. Closure established by AST walk + a raw-SQL grep: `_update_journal_field` has exactly four callers and is the ONLY site writing an operator-supplied journal field, so the backstop IS the closure and the two early checks are ordering refinements. **And the finding behind the finding:** the plan's whole argument for the tier-3 early check is that its INSERT comes first, and nobody had checked whether the other surfaces share that shape. They do not, for a DIFFERENT reason each. | a roster is the same instrument as the count it replaced |
+
+## Transcript manifest
+
+Durable path: `C:/Users/rwsmy/swing-data/review-transcripts/22-a4-plan/` (dotfiles — use `ls -a`).
+
+| transcript | bytes |
+|---|---|
+| `.codex-review-r1.txt` | 971,232 |
+| `.codex-review-r10.txt` | 1,145,895 |
+| `.codex-review-r11.txt` | 1,606,610 |
+| `.codex-review-r2.txt` | 640,482 |
+| `.codex-review-r3.txt` | 972,415 |
+| `.codex-review-r4.txt` | 1,037,971 |
+| `.codex-review-r5.txt` | 1,069,399 |
+| `.codex-review-r6.txt` | 1,102,235 |
+| `.codex-review-r7.txt` | 1,320,409 |
+| `.codex-review-r8.txt` | 1,382,826 |
+| `.codex-review-r9-DISQUALIFIED-capacity.txt` | 1,000,211 |
+| `.codex-review-r9.txt` | 1,080,516 |
+
+Also preserved there: every `.codex-prompt-r<N>.md`, the four instruments
+(`plan_consistency_sweep.py`, `per_location_audit.py`, `assertion_schedule_audit.py`, `citecheck.py`),
+the RD-a4 matrix measurement script, the item-2 experiment record, and the pinned CPython source
+(`connection.c`, upstream sha256 `8cc0d9df05860c0b3fe6929ff392f8f85c9e1a5ef89c0cba31ab09ba03b3369e`,
+2,717 lines, 80,695 bytes — pin the DIGEST and the fetch URL; a line count is a convenience, never a pin).
+
+## Extract losslessness — the id-set diff (mechanical, no Codex)
+
+Run at extract creation, 2026-09-07: **task ids design=10 / extract=10, MISSING=0.**
+**Test ids: 5 apparent misses, ALL RESOLVED BY READING, none a real gap.** Four were artifacts of an
+over-broad regex — `(exc)` is a C fragment in the pinned source quote, `(iii)` a prose enumeration,
+`(path)` a function signature, `(x3)` a count. The fifth, **`(e3)`, is real but belongs to the BANKED
+`(S-d)` allocator branch** RD did not select: it occurs exactly once in 4,415 lines, inside S2's
+"test consequences if (S-d) were chosen", and correctly appears in no roster and no ladder.
+**Recorded so the next run of this diff does not re-derive it** — and noted as the mirror image of
+`A4-R6-4`, where a fix landed in the banked branch instead of the shipping one.
+
+---
+
+# 22-A4 writing-plans -- Codex A-loop findings ledger
+
+Artifact: `docs/superpowers/plans/2026-09-06-phase22-arc-a4-attempt-identity-primitive.md`
+Base `edfea928`, worktree `.worktrees/22-a4-plan`.
+Transport: WSL codex-cli 0.152.1, `codex exec -p strong -s read-only --skip-git-repo-check -`,
+stdin bundle (prompt + full plan) with the worktree as cwd so the reviewer can verify the plan's
+code claims against the repository.
+
+**Criterion (recipe, plan/doc reviews):** blocking = RESULT-BEARING; convergence = TWO consecutive
+rounds with zero result-bearing findings; a contested classification counts result-bearing.
+
+---
+
+## LEDGER CONVENTIONS -- **added 2026-09-07, because this ledger's own totals were used as
+## convergence evidence and were not establishable from it**
+
+`A4-R9-9` found the totals wrong twice over. The arithmetic was then corrected -- **and the
+document still could not be PARSED to check it**, which is the deeper defect: three different
+counts had been reported as fact, including to a director, and every one of them was produced by a
+human reading a document whose headers had five different shapes. **A total used as evidence is
+evidence, and evidence has to be re-derivable by someone who does not trust the author.**
+
+**EVERY finding now carries ONE header shape, and nothing else in this file does:**
+
+```
+**A4-R<round>-<n> -- <SEVERITY> -- <CLASS> -- <text>
+```
+
+- **SEVERITY** is exactly one of `CRITICAL` / `MAJOR` / `MINOR`. Complete for all 95 findings.
+- **CLASS** is exactly one of:
+  - **`NEW GROUND`** -- a subject no earlier finding in this loop had raised.
+  - **`RESIDUAL`** -- a defect in, or an incompleteness of, a fix this loop made for an
+    earlier finding. (The Expansion-#13 cascade signature; the gate-holder weighs it.)
+  - **`CLASS-UNRECORDED`** -- **the loop did not record this finding's class at the time, and it
+    is NOT being backfilled by inference now.** Rounds 6-9 recorded a round-level split and rounds
+    7-9 labelled most findings individually; rounds 2-6 did not, so a per-finding class for them
+    would be my reading today rather than the round's record. **Reconstructing a record is exactly
+    the failure this arc exists to refuse**, so the field says so instead. Where a round-1-to-5
+    entry states its own provenance in its own text (*"a residual of R4-2's fix"*), that statement
+    is the record and the class is set from it.
+  - Round 1's ten are `NEW GROUND` **by construction**: no fix existed yet to be residual to.
+- **THE `new` / `reopened` / `reverted` COLUMNS IN THE ROUND TABLES ARE A DIFFERENT AXIS** and are
+  unchanged: they record NEW-versus-REOPENED (was this finding raised and dispositioned before?),
+  **not** NEW-GROUND-versus-RESIDUAL. Conflating the two is how "NEW = 12" came to sit beside a
+  round whose own prose said a growing share were residuals of its own fixes.
+- **Round 5's eleven gate-deferred findings were written as `- **R5-N (SEVERITY) -- ...`** -- a
+  sixth header shape, in a bullet list, without the `A4-` prefix, which is why a regex over the
+  file found 84 ids where there were 95 findings. **They now carry the same header as everything
+  else.** No id changed meaning; `R5-2` and `A4-R5-2` are the same finding.
+
+**THE TOTALS, AND THE COMMAND THAT PRODUCES THEM** (run against this file; if it disagrees with
+the prose, the command is right and the prose is the bug):
+
+```
+python -c "import re,collections,pathlib; \
+h=re.findall(r'\*\*A4-R(\d+)-(\d+) -- (CRITICAL|MAJOR|MINOR) -- (NEW GROUND|RESIDUAL|CLASS-UNRECORDED) --', \
+pathlib.Path('.copowers-findings.md').read_text(encoding='utf-8')); \
+print(len(h), collections.Counter(x[2] for x in h), collections.Counter(x[3] for x in h), \
+collections.Counter(int(x[0]) for x in h))"
+```
+
+**MEASURED OUTPUT, 2026-09-07, after round 10 was recorded:**
+- **102 findings** across TEN counted rounds.
+- **SEVERITY: 5 CRITICAL / 77 MAJOR / 20 MINOR.**
+- **CLASS: 23 NEW GROUND / 30 RESIDUAL / 49 CLASS-UNRECORDED.**
+- **PER ROUND: R1 10, R2 9, R3 12, R4 12, R5 12, R6 13, R7 12, R8 6, R9 9, R10 7.**
+- Zero REOPENED and zero REVERTED across all ten rounds.
+- *(Through round 9 only, the number carried in the round-9 verdict block: 95 findings,
+  4 CRITICAL / 72 MAJOR / 19 MINOR.)*
+
+**UNCOUNTED WORK IS NOT IN THAT TOTAL AND NEVER ENTERS IT:** the post-round-4 self-sweep
+(`SS-1`..`SS-9`), the post-round-6 deterministic self-audit (68 probes, 2 real gaps), the
+pre-round-8 consistency sweep (3 bookkeeping items), and the 2026-09-07 amendment pass's own
+per-location audit. **They carry no round number, no Codex verdict, and no effect on convergence** --
+which is the whole point of keeping them uncounted.
+
+**Transport note, round 1 attempt 1 -- A DEAD ROUND THAT REPORTED SUCCESS.**
+`wsl.exe bash /mnt/c/.../.codex-run-r1.sh` produced
+`bash: C:/Program Files/Git/mnt/c/Users/rwsmy/.../.codex-run-r1.sh: No such file or directory`
+and the harness reported **exit 0**. This is the MSYS path-mangling mechanism the recipe records,
+and the recipe's stated remedy -- "make the argument NON-PATH-INITIAL, e.g. `bash /home/.../run.sh`"
+-- was already satisfied and was NOT sufficient: the mangling hit the SECOND argument, the one that
+begins with `/`. The transcript was 0 bytes and the exit file empty, so the round was disqualified
+by the two-signal rule (exit code MEASURED and transcript NON-EMPTY; here the exit signal lied and
+the transcript told the truth). Working form:
+`cd <worktree> && MSYS_NO_PATHCONV=1 wsl.exe bash -lc 'bash /mnt/c/.../run.sh'` -- the `-c` STRING
+begins with `bash`, so no argument MSYS parses begins with `/`.
+
+---
+
+## Round 1
+
+### Mechanical assertions -- ALL FIVE PASS
+
+| # | assertion | value |
+|---|---|---|
+| 1 | banner model is the binding tier | `model: gpt-5.6-sol` |
+| 2 | reasoning effort | `reasoning effort: high` |
+| 3 | `grep -c '^ERROR'` | **0** |
+| 4 | `grep -c '^tokens used'` anchored footer | **1** |
+| 5 | anchored verdict tokens | `^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0** |
+
+codex-cli 0.152.1 emits the final message twice, so the invariant asserted is ONE DISTINCT token
+present and the other absent. Exit file `0`, measured. Transcript 971,232 bytes / 8,829 lines,
+non-empty. The process demonstrably exited before the transcript was read or judged. No
+content-filter event: no refusal or rewrite reported or visible.
+
+**Scratch-in-input check:** the reviewer ran `ls -la` and a repo-wide `rg`, which matched inside its
+OWN in-progress transcript while searching for the baseline suite number. It read no PRIOR round's
+findings, because none existed. **Mitigation for rounds 2+: every `.codex-*` artifact is moved to
+the session scratchpad immediately after each round, so no earlier transcript or findings file
+exists in the worktree while a later round runs.**
+
+### Counts
+
+**10 findings: 1 CRITICAL, 6 MAJOR, 3 MINOR. NEW = 10. REOPENED = 0. REVERTED = 0.**
+One MAJOR carries the reviewer's own `[OUT-OF-ENVELOPE]` tag (R1-7).
+
+### Per-finding adjudication
+
+**A4-R1-1 -- CRITICAL -- NEW GROUND -- the UNIQUE index does not enforce uniqueness across ROLLED-BACK attempts.**
+**ACCEPTED; the plan's claim was simply false.** S2.0 said the index makes a duplicated token
+"IMPOSSIBLE TO COMMIT". A rolled-back token leaves no trace in the index, so a later attempt that
+independently minted the same token would be admitted. Adjudication of the two halves:
+
+- The CLAIM is wrong and is rewritten. What the index actually buys: at most one LIVE row per token
+  (so the probe can never find two), and a systematic token-reuse BUG becomes a loud pre-commit
+  failure. It cannot defend against a collision with a token that no longer exists.
+- The DESIGN still satisfies RD constraint 2 as ruled -- "never reusable across attempts", glossed
+  by "rowid fails by construction" -- because uuid4 is not RE-ISSUED by anything; the exposure is an
+  RNG COLLISION, not reuse. But that makes uniqueness PROBABILISTIC rather than STRUCTURAL, and the
+  plan must say so. Arithmetic, stated because the plan's own discipline requires it: with n
+  lifetime entries the collision probability is about n^2 / 2^123; at n = 10^5 that is about 1e-27,
+  and the sequence additionally requires the colliding attempt to carry the SAME TICKER to pass
+  corroboration.
+- The reviewer's proposed remedy (a durable token reservation surviving row rollback) is DECLINED
+  with its reason: a reservation that survives a rollback must be committed independently of the
+  entry transaction, which makes it a STAMP (not co-durable, gotcha #30) and adds a second commit to
+  the money path whose own failure re-creates the original problem.
+- ACTIONS: S2.0's index paragraph rewritten; new S7.7 declaring probabilistic uniqueness with the
+  arithmetic; new test (RD-b2) pinning the declared residual BY EXECUTION; S9's RD block now asks
+  him to rule on the probabilistic reading of constraint 2 explicitly.
+
+**A4-R1-2 -- MAJOR -- NEW GROUND -- the deferred-path premise generalised a direct-commit measurement to the
+context manager.** **ACCEPTED. RE-MEASURED, and the reviewer is right.** Same world, two forms:
+`conn.execute(INSERT); conn.commit()` with the commit failing leaves `in_transaction` TRUE;
+`with conn:` around the same INSERT with the automatic commit failing leaves `in_transaction` FALSE
+-- the context manager rolls back. The plan's S1.4 claim (leaves the transaction OPEN and no
+rollback is attempted at all) was FALSE, and three tests were written against a value the real path
+does not produce. This SIMPLIFIES the design: the deferred path needs no rollback added, so S7.3's
+declared behaviour change is DELETED along with CHARC routing item 3, and the pre-arc path keeps its
+exception identity byte-for-byte. The wrapper now OBSERVES `conn.in_transaction` rather than
+resolving, and attempts a rollback only in the residual case where the context manager's own
+rollback failed and left the transaction open.
+
+**A4-R1-3 -- MAJOR -- NEW GROUND -- the deferred pseudocode left the committed-flag assignment OUTSIDE the guarded
+region.** **ACCEPTED; a real hole, and it contradicted S7.12 in the plan's own text.** An
+asynchronous exception after the with-block returned (commit durable) but before the assignment left
+body_completed=True, committed=False, resolution=unattempted, which the settle gate rejects, so a
+failure would be reported over a durable entry. Fixed by moving the assignment INSIDE the try,
+matching the immediate path. The reviewer's requested boundary test is not constructible (the
+interval contains no statement), so the property is pinned the way it actually can be: new test
+(k3), a STATIC AST assertion that on BOTH paths the committed assignment is lexically inside the
+protected suite.
+
+**A4-R1-4 -- MAJOR -- NEW GROUND -- the closure test's branch and exclusion counts are wrong, and S3 contradicted
+itself.** **ACCEPTED; verified by reading `swing/data/repos/trades.py`.** Three existing INSERT
+branches (v27+, v21-v26, pre-v21) plus the new v38 branch = FOUR statements, ONE carrying the column
+and THREE reasoned era exclusions. S3 (r5) and Task 2 corrected; the mutation proof now covers both
+directions the reviewer names -- omission from the v38 branch, and an unreasoned fifth statement.
+
+**A4-R1-5 -- MAJOR -- NEW GROUND -- the schema-version mirror census is incomplete.** **ACCEPTED, verified, and
+the census is worse than the reviewer says.** Re-counted by grepping each SPELLING separately rather
+than the concept: `EXPECTED_SCHEMA_VERSION == 37` = 26; bare-literal assertions on
+version / ver[0] / version_row[0] / row[0] / post / cur.fetchone()[0] = 11;
+`_current_version(...) == 37` = 4; the INEQUALITY ceiling `versions[-1] <= 37` = 1; a chained
+`version == EXPECTED_SCHEMA_VERSION == 37` = 1; and a sixth family the reviewer did not name --
+15 `run_migrations(..., target_version=37, ...)` call sites whose INTENT is migrate-to-HEAD, which
+after the bump would silently leave those fixtures one version BELOW head and run `record_entry`
+against a schema with no attempt_id column. That family also FALSIFIES the plan's own S1.6 claim
+that no `record_entry` call site runs below HEAD -- true today, false the moment HEAD moves. This is
+the recipe's "a token grep bounds the family from BELOW" lesson landing on the plan that quotes it.
+ACTIONS: S1.6's census rewritten with all six spellings and the method for each; the inequality
+guard named explicitly in Task 1 as an AUTHORIZATION gate whose bump belongs in the migration's own
+commit; the HEAD-intent target_version=37 sites re-spelled as EXPECTED_SCHEMA_VERSION so they cannot
+rot again, with the deliberately-old sites (36, 16) excluded by name; S1.6's below-HEAD claim
+corrected.
+
+**A4-R1-6 -- MAJOR -- NEW GROUND -- the live-migration witness has no before-image.** **ACCEPTED.** S6 steps 3-4
+assert unchanged against nothing. New step 0 records version, total trades, the non-existence of
+attempt_id, the latch-link count and the full open-trade (id, ticker, state) set BEFORE migrating.
+
+**A4-R1-7 -- MAJOR -- NEW GROUND -- OUT-OF-ENVELOPE -- the printed backup is not the arc-gate backup.**
+**ACCEPTED; verified at `swing/cli.py:258-270` and `:310`.** `swing db-migrate` prints its own
+general snapshot in backups_dir and then calls `ensure_schema(...)` with no backup_dir, so the arc
+gate's `swing-pre-22a4-migration-<ISO>.db` defaults to `src_path.parent` (the DB's own directory)
+and its name is never printed. S6 now names BOTH artifacts and where each lives. The suggested CLI
+change is DECLINED as out-of-envelope, and the underlying gap -- arc backups landing in the DB root,
+invisible to backup-directory sweeps -- is BANKED in S8 with an owner and a trigger.
+
+**A4-R1-8 -- MINOR -- NEW GROUND -- (d), (i) and (j) pass under both paths, contradicting S3's universal claim.**
+**ACCEPTED with one correction to the finding.** (i) and (j) are pure regression CONTROLS and are
+re-labelled as such. (d) is NOT: it discriminates against an implementation whose settle invents a
+success from a probe error or a missing token, which is a live design risk in this arc; its
+pre-fix-identical line refers to the CURRENT tree, not to the naive implementation it excludes, and
+it is rewritten to say so. S3's header claim is narrowed to the discriminating roster.
+
+**A4-R1-9 -- MINOR -- NEW GROUND -- (m4) and (m5) pre-fix values are computable, not n/a.** **ACCEPTED.** On the
+current tree `run_migrations(target_version=38)` is capped at EXPECTED_SCHEMA_VERSION 37, so (m4)'s
+version assertion reads 37, and (m5)'s attempt_id query raises "no such column". Both recorded.
+
+**A4-R1-10 -- MINOR -- NEW GROUND -- S7.4 contradicts S2.1's attempt-start location.** **ACCEPTED.** The gauntlet
+refusals occur BEFORE the mint, so they mint nothing at all; only failures between the mint and the
+INSERT mint an unstored token. S7.4 narrowed.
+
+### Verdict
+
+`NEW_CRITICAL_MAJOR_FOUND` -- anchored, 2 occurrences of the one token, the other token absent.
+
+---
+
+## Round 2
+
+Artifact frozen before the round; sha256 `dd5682c2d34fdefa74c9fce11526d023c0c408abea2d5c1b6b0b3b17ae0a77d1`
+(111,786 bytes). Round 1's transcript and this ledger were moved OUT of the worktree first, so no
+prior-round findings existed on disk while round 2 ran.
+
+### Mechanical assertions -- ALL FIVE PASS
+
+model `gpt-5.6-sol`; reasoning effort `high`; `grep -c '^ERROR'` = **0**;
+`grep -c '^tokens used'` = **1**; `^NEW_CRITICAL_MAJOR_FOUND` = **2** and `^NO_NEW_CRITICAL_MAJOR` =
+**0**. Exit file `0`, measured; transcript 640,482 bytes, non-empty; process exited before the file
+was read. No content-filter event reported or visible.
+
+### Counts
+
+**9 findings: 0 CRITICAL, 7 MAJOR, 2 MINOR. NEW = 9. REOPENED = 0. REVERTED = 0.**
+
+### Per-finding adjudication
+
+**A4-R2-1 -- MAJOR -- CLASS-UNRECORDED -- the durable ALLOCATOR was rejected for a false reason.** **ACCEPTED, and the
+reviewer is right on the mechanism.** The plan dismissed a token reservation as "a STAMP (gotcha
+#30)". It is not: an allocator that burns an identifier in its OWN committed transaction BEFORE the
+attempt, and then writes that identifier into `trades.attempt_id` in the entry INSERT, keeps
+co-durability intact -- the allocator row is never used as evidence that the trade landed, and the
+probe still reads `trades`. An allocator-commit failure also cannot recreate the ambiguity, because
+it precedes the entry transaction. ACTION: a FOURTH design alternative **(S-d)** is added to S2.0's
+table with its real costs (a table, a second migration object, an attempt-log by side effect the arc
+declined at S2.6, and a second COMMIT on the money path), the plan states its recommendation as a
+judgment about proportion, and S9 routes the CHOICE to RD rather than presenting a dismissal.
+
+**A4-R2-2 -- MAJOR -- CLASS-UNRECORDED -- the `target_version=37` sites are not one class, and re-spelling them would
+bypass the new gate.** **ACCEPTED; verified by READING all 15.** Eight are in
+`tests/data/test_22a_task2_migration_0037.py` and are 0037's own subject or literal arguments to the
+22-A backup gate under test (`:106`, `:129`, `:143`, `:148`, `:163`, `:393`, `:567`, `:748`); two of
+the four `_current_version(...) == 37` sites are 0037-result assertions in the same file. Those STAY
+at 37. The remaining seven build a v36 world and then want production HEAD. **And the reviewer's
+sharpest point is structural:** `run_migrations` evaluates every gate ONCE against the INITIAL
+`current`, so a single 36 -> 38 jump can never satisfy `current_version == 37` and would exercise
+0038 WITHOUT its strict-equality backup gate. ACTION: Task 1 now classifies by reading, keeps the
+eight pinned, and for the seven ADDS a second `run_migrations(..., EXPECTED_SCHEMA_VERSION)` call
+after the existing 37 call so BOTH gates fire. The "43 sites" headline is WITHDRAWN -- the counts
+are floors with overlap and are explicitly not an edit manifest.
+
+**A4-R2-3 -- MAJOR -- CLASS-UNRECORDED -- the schema and its Python mirrors were split across two commits.**
+**ACCEPTED without reservation; it contradicted three things at once** -- gotcha #11's
+one-task rule, the commissioning brief's "Mirrors in ONE commit (#11)", and the plan's own S2.5
+sentence. ACTION: Tasks 1 and 2 are MERGED into a single red/green task and commit carrying the
+migration, the version/gate work, `ATTEMPT_ID_LENGTH`, the repo write/read, the validator, the
+IntegrityError narrowing and both drift comparators. Subsequent tasks renumbered.
+
+**A4-R2-4 -- MAJOR -- CLASS-UNRECORDED -- nothing proved ONE token flows mint -> INSERT -> probe.** **ACCEPTED.** Every
+identity row planted a CONSTANT token, which masks two defects: an implementation that mints
+separately for the INSERT and for the settlement (green suite, re-raises over every durable lost
+commit in production), and one whose `record_entry` calls the repo with `attempt_id=None` and stamps
+later. ACTION: new test **(w)** -- the mint returns a DIFFERENT valid value on each call; assert it
+is called EXACTLY ONCE; capture the `attempt_id` argument at `insert_trade_with_event` and the token
+handed to the probe; all three plus the persisted value must be equal.
+
+**A4-R2-5 -- MAJOR -- CLASS-UNRECORDED -- test (e) could not tell co-durability from a LATE STAMP.** **ACCEPTED; the
+counterexample is exact.** "Committed row carries the token / rolled-back leaves none" is satisfied
+by committing without the token and updating it in a second transaction. ACTION: (e) is rewritten to
+observe the TRANSACTION BOUNDARY -- a proxy whose `commit()` first reads the pending row on the
+WRITER's connection (must already show the token) and counts it on a FRESH connection (must be zero)
+-- so the late-stamp implementation fails at read (a), which is where it must.
+
+**A4-R2-6 -- MAJOR -- CLASS-UNRECORDED -- (k3) was too weak AND its founding claim was false.** **ACCEPTED on both
+halves.** The AST predicate "inside SOME `try` whose handlers cover `BaseException`" is satisfied by
+a nested decoy that records no resolution -- so the test could have blessed the very window it was
+written to close. And "the window cannot be simulated" is wrong: a `sys.settrace` line hook can
+raise immediately before the assignment. ACTION: (k3a) tightens the predicate to "directly in the
+`Try.body` whose handler writes `resolution` and re-raises", and (k3b) adds the trace-hook runtime
+test that demonstrates the durable-row/false-failure outcome against the first draft's shape. Both
+are kept: the hook proves one line, the walk proves the property for assignments added later.
+
+**A4-R2-7 -- MAJOR -- CLASS-UNRECORDED -- `resolution` conflated the TRANSACTION's state with the CALL's failure.**
+**ACCEPTED, and the counterexample is a fixture ALREADY IN THIS TREE.** `_RollbackAfterEffect`
+(`tests/trades/test_22a_task9_entry_wiring.py:3039`) performs the REAL rollback and then raises, so
+the transaction is RESOLVED and the row is GONE -- and the draft labelled it `"unresolved"`, making
+S2.4's "unresolved implies `in_transaction` True" false against pinned production behaviour. The
+production handler four lines away already re-derives its message from `conn.in_transaction` for
+exactly this reason. ACTION: the state model splits into `resolution` (PHYSICAL, re-read from
+`conn.in_transaction` after the attempt: `not_needed` / `rolled_back` / `still_open`) and
+`cleanup_raised` (the CALL raised). The admissibility gate reads BOTH and refuses on either --
+rule (i) taken LITERALLY. S2.4's cost-is-zero argument is REBUILT by enumerating the two refusal
+branches and showing the row is provably absent in each. RD-a1 gains the after-effect fixture as its
+second shape.
+
+**A4-R2-8 -- MINOR -- CLASS-UNRECORDED -- test (h) would query a connection the probe has already closed.**
+**ACCEPTED.** The PRAGMA now executes INSIDE the monkeypatched repo reader, while it owns the live
+connection, and only the scalar is stored.
+
+**A4-R2-9 -- MINOR -- CLASS-UNRECORDED -- S7.4 said a pre-INSERT failure rolls the token back "with its row".**
+**ACCEPTED.** Between the mint and the INSERT the token exists only in Python memory; only a failure
+AFTER the INSERT leaves a written token to roll back. S7.4 now distinguishes the three cases.
+
+### Verdict
+
+`NEW_CRITICAL_MAJOR_FOUND` -- anchored, 2 occurrences of the one token, the other token absent.
+**Loop CONTINUES: nine NEW, in-scope, non-reopened findings, seven of them MAJOR, zero reopened,
+zero reverted -- the round-5 gate's own criterion for continuing.**
+
+---
+
+## Round 3
+
+Artifact frozen before the round; sha256 `84a6d327b6cc4dfa597ea8c4dc1fe93e55f5db47526c3dfa6ac32d88b09bbbae`
+(124,568 bytes). Rounds 1-2 artifacts moved out of the worktree first.
+
+### Mechanical assertions -- ALL FIVE PASS
+
+model `gpt-5.6-sol`; effort `high`; `^ERROR` = **0**; `^tokens used` = **1**;
+`^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0**. Exit `0` measured; transcript
+972,415 bytes; process exited before the file was read. No content-filter event.
+
+### Counts
+
+**12 findings: 1 CRITICAL, 8 MAJOR, 3 MINOR. NEW = 12. REOPENED = 0 as findings** (R3-1 revisits the
+uniqueness question, but on a NEW ground -- the superseded reasoning left live in two other sections
+-- so it is counted NEW). **REVERTED = 0.**
+
+### Per-finding adjudication
+
+**A4-R3-1 -- CRITICAL -- RESIDUAL -- the plan SELECTED a shape that satisfies the binding constraint only
+probabilistically, and left the disproved "stamp" reasoning live in two sections.**
+**ACCEPTED IN FULL, and it is the round's most consequential finding.** Two halves:
+(a) S2.0 was corrected after `A4-R2-1` but **S7.7 and S9 still called the allocator a stamp whose
+failed commit recreates the ambiguity** -- the fix-the-instance-leave-the-class failure the recipe
+names explicitly. Both are rewritten. (b) More importantly, the plan had no business SELECTING
+(S-b). The dispatch is explicit: *"If you cannot satisfy all three, STOP and route -- do not design
+around a constraint."* ACTIONS: the shape becomes a **BLOCKING RULING (Task 0)**; **(S-d) is
+SPECIFIED IN FULL at a new S2.0.1** (the allocation table, the `AUTOINCREMENT` sequence, the separate
+connection, the CHECK/mirror deltas, and the test consequences including (RD-b2)'s INVERSION) so the
+ruling costs no further planning pass; the plan RECOMMENDS (S-b) on proportion and says in terms
+that proportion is not a ground on which a plan may narrow a binding constraint.
+
+**A4-R3-2 -- MAJOR -- CLASS-UNRECORDED -- the schema change breaks 22-A's LOCK-A byte-identity test, undispositioned.**
+**ACCEPTED; verified at `tests/trades/test_22a_task9_entry_wiring.py:918/949/1037`.** The test
+asserts BOTH the complete `trades` column set and full dict equality against a golden captured at
+pre-arc commit `a18a3771`, and `attempt_id` breaks both. **The test's own docstring anticipated this
+arc** and says the failure is left LOUD precisely so a later column cannot be silently tolerated --
+which CONSTRAINS the amendment's shape. ACTIONS: new **Task 0b** -- name the addition in the
+column-set assertion (`| {"attempt_id"}`), keep byte identity for every pre-existing column, and ADD
+a third assertion on the new column, so the lock gets stronger rather than softer; rewrite
+`record_entry`'s docstring at `entry.py:633`, which promises `cfg=None` leaves "every persisted value
+byte-identical" and becomes false (#31 class); **ROUTE the amendment to CHARC** as S9 CHARC item 5,
+because LOCK clause (a) belongs to a merged arc.
+
+**A4-R3-3 -- MAJOR -- CLASS-UNRECORDED -- RD-a1's second fixture cannot produce the path it claims.** **ACCEPTED;
+verified at the source.** `_RollbackAfterEffect.commit()` commits normally and returns, so
+`record_entry` succeeds and its raising `rollback()` is never reached; and failing the BODY instead
+is not equivalent, because `result` stays `None` and the settle gate refuses before `cleanup_raised`
+can discriminate. ACTION: specify a NEW combined proxy (commit raises without landing + rollback
+takes effect then raises), stating why the existing one cannot be reused.
+
+**A4-R3-4 -- MAJOR -- CLASS-UNRECORDED -- the settlement return type is internally inconsistent.** **ACCEPTED.** The
+probe returns `tuple[int, str] | None` and the handler read `settled.trade_id`; no such dataclass
+exists. ACTION: the helper returns the probe's tuple UNCHANGED and the handler UNPACKS it. A literal
+implementation of the first draft would have crashed on the headline success path.
+
+**A4-R3-5 -- MAJOR -- CLASS-UNRECORDED -- the settle helper cannot honour its exception-preservation contract with the
+signature given.** **ACCEPTED.** S2.4 requires probe failures to be attached to the ESCAPING
+exception and test (g) asserts that object's identity survives, but the helper was never handed it.
+ACTION: `_settle_by_attempt_identity(attempt, outcome, req, post_commit_error)`.
+
+**A4-R3-6 -- MAJOR -- CLASS-UNRECORDED -- a malformed mint RETURN is not contained, and the "never fails an entry" claim
+is too wide.** **ACCEPTED on both halves.** Containment wrapped the CALL, so a mint returning `""` /
+`"short"` / bytes is accepted and then rejected by the repo's pre-write validator -- failing an
+entry solely because the identity apparatus exists, which is the one thing S2.1 promises cannot
+happen. The empty string is not hypothetical: it is why the CHECK exists. ACTIONS: validate the
+RESULT inside `_begin_attempt_identity` (`isinstance(str)` + exact length) and contain it as
+identity-unavailable; add the malformed-return variant to (e2); and NARROW the claim to ordinary
+`Exception`-class failures, naming the two deliberate exceptions (the propagated interrupt, and the
+UNIQUE-index refusal of S7.8).
+
+**A4-R3-7 -- MAJOR -- CLASS-UNRECORDED -- test (d) does not discriminate against the ACTUAL pre-fix tree.** **ACCEPTED.**
+Naming a hypothetical naive implementation as "pre-fix" does not make the row evidence for this arc.
+ACTION: (d) additionally asserts the probe was called EXACTLY ONCE, with the MINTED token, on a
+connection that is not the writer's, and returned `None`. That fails on the current tree (call count
+0) and also excludes an implementation that skips settlement and re-raises by accident.
+
+**A4-R3-8 -- MAJOR -- CLASS-UNRECORDED -- the live backup witness can pass on a STALE file.** **ACCEPTED.** `ls
+~/swing-data/swing-pre-22a4-migration-*.db` treats any match as proof the gate fired. ACTION: new
+step 0b records the matching set BEFORE; step 1 identifies the EXACTLY ONE new path and OPENS it
+(a copy, never through `ensure_schema`) to confirm version 37 and the expected table set. A backup
+nobody opened is a filename, not a pre-image.
+
+**A4-R3-9 -- MAJOR -- CLASS-UNRECORDED -- the `_CommitOutcome` field count contradicts itself at implementation-bearing
+sites.** **ACCEPTED.** S4's manifest said "+2 fields" while S2.2's table listed three; an executor
+following the manifest would have dropped `cleanup_raised`, which is a mandatory gate input and
+RD-a1's after-effect discriminator. ACTION: stated consistently everywhere as FOUR observations,
+THREE new fields.
+
+**A4-R3-10 -- MINOR -- CLASS-UNRECORDED -- (m1)'s stated red is wrong for two of its three assertions.** **ACCEPTED**:
+`AssertionError` on the constant and on the PRAGMA membership check; `OperationalError` only where
+SQL names the column. Task 1's declared first red now matches the first assertion in file order.
+
+**A4-R3-11 -- MINOR -- RESIDUAL -- commit subjects carry the pre-renumber task ids.** **ACCEPTED** -- collateral
+from merging Tasks 1 and 2 in round 2. All commit subjects and the S11 references realigned.
+
+**A4-R3-12 -- MINOR -- RESIDUAL -- stale counts and labels.** **ACCEPTED**: "Three shapes" with four presented;
+two S9 items numbered 5; the retired `"unresolved"` enum label surviving in S7.1 and S9 after S2.2
+renamed it `"still_open"`. All corrected.
+
+### Verdict
+
+`NEW_CRITICAL_MAJOR_FOUND` -- anchored, 2 occurrences of the one token, the other absent.
+**Loop CONTINUES: twelve NEW findings, one CRITICAL and eight MAJOR, zero reopened, zero reverted.**
+
+---
+
+## Round 4
+
+Artifact frozen; sha256 `9c0fd713663a0135f7e8f9b130ea9d8f1c51156054a2abeae266b8bbb185a0bd`
+(136,337 bytes). Rounds 1-3 artifacts moved out of the worktree first.
+
+### Mechanical assertions -- ALL FIVE PASS
+
+model `gpt-5.6-sol`; effort `high`; `^ERROR` = **0**; `^tokens used` = **1**;
+`^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0**. Exit `0` measured; transcript
+1,037,971 bytes; process exited before the file was read. No content-filter event.
+
+### Counts
+
+**12 findings: 1 CRITICAL, 10 MAJOR, 1 MINOR. NEW = 12. REOPENED = 0. REVERTED = 0.**
+Three (R4-9, R4-10, R4-12) are RESIDUALS OF THIS LOOP'S OWN FIXES -- superseded text left live in
+sections an earlier fix did not sweep. Counted NEW, flagged as residuals.
+
+### Per-finding adjudication
+
+**A4-R4-1 -- CRITICAL -- CLASS-UNRECORDED -- `attempt_id` becomes writable through an existing GENERIC dynamic UPDATE.**
+**ACCEPTED, verified at the source, and it is the best finding of the loop.**
+`swing/trades/reconciliation_auto_correct.py:_update_journal_field` composes
+`UPDATE trades SET {field_name} = ?` with the COLUMN NAME INTERPOLATED, allowlisted BY EXCLUSION
+(`_RESERVED_JOURNAL_FIELDS`, `:178-183`, five entries), and `validate_trade_correction` checks only
+`current_stop` and `state`. **A new `trades` column is writable through the tier-2 operator-truth
+path from the moment it exists**, and a re-assignable token is not identity: A rolls back, a
+correction attaches A's token to a different trade in the same ticker, A's probe confirms it -- a
+FALSE SUCCESS in the expensive direction. **This is the D36 lesson landing on the plan that cites
+D36:** S1.1 swept the dynamic-SQL family for INSERTs and asserted "the only writer" from it.
+ACTIONS: S1.1's census corrected with both halves and the method; an immutability TRIGGER added to
+0038 (`BEFORE UPDATE OF attempt_id ... RAISE(ABORT)`) -- chosen over the allowlist entry because it
+is IN ENVELOPE and covers every writer including future ones, where the dict entry covers one module
+outside the envelope; new test **(m7)** asserting BOTH a direct UPDATE and the real corrector path;
+the allowlist entry BANKED at S8.6 as a message-quality belt and routed.
+
+**A4-R4-2 -- MAJOR -- CLASS-UNRECORDED -- the prescribed TDD sequence cannot go green.** **ACCEPTED, both halves.**
+Task 0b's amended LOCK-A asserts a non-NULL token, but Task 1 shipped only the migration and the
+repo, so `record_entry` would still pass the new default and Task 1 would fail its own lock. And the
+shipped test compares BOTH `a` (cfg passed) and `b` (cfg=None); the amendment covered only `a`.
+ACTIONS: the mint and threading move UP into Task 1; Task 2 keeps only what does not change the
+persisted row; both rows get the three-assertion treatment, and `b`'s non-NULL token is the
+assertion that pins S2.1's mint-regardless-of-cfg decision.
+
+**A4-R4-3 -- MAJOR -- CLASS-UNRECORDED -- the (S-d) branch is not implementation-ready, and its CHECK is unsafe.**
+**ACCEPTED; the typing half REPRODUCED here.** "TEXT or INTEGER" is not a branch -- it changes the
+column type, the Python type, the validator, the CHECK, the probe parameter and both drift tests.
+And **MEASURED on this runtime: `CHECK(a IS NULL OR a > 0)` ACCEPTS `'abc'` on a TEXT column AND on
+an INTEGER column** (affinity ranks text above integers); adding `typeof(a) = 'integer'` rejects both
+`'abc'` and `''`. ACTIONS: S2.0.1 chooses INTEGER, carries the typed CHECK with the measurement, and
+specifies the allocator's full lifecycle -- open / INSERT / commit / close each contained, the close
+contained separately, and the bounded probe timeout rather than the 30-second default (a contained
+30-second failure still delays an ordinary entry by 30 seconds). Four allocator-failure variants and
+a new (e3) for the durable-allocation-before-a-downstream-refusal side effect.
+
+**A4-R4-4 -- MAJOR -- RESIDUAL -- (e2) omits the malformed-RETURN defect round 3 introduced the fix for.**
+**ACCEPTED**, and it is the sharper form of `A4-R3-6`: S2.1 now validates the RESULT, but the test
+that proves the apparatus cannot fail an entry still exercised only the raising mint, so an
+implementation that skipped result validation passed. ACTION: (e2) parameterised over six variants
+(raises, empty, short, 37 chars, bytes, None), each asserting a SUCCESSFUL entry with a NULL token.
+
+**A4-R4-5 -- MAJOR -- CLASS-UNRECORDED -- the claimed NOTE behaviour is not what `log_contained_note` does.**
+**ACCEPTED; verified at `entry.py:251-315`.** The helper EMITS the message and attaches a note only
+when the logging SINK itself raises; with a working logger there is no note, so test (g) as written
+could not pass. **The helper choice stands -- the description was wrong.** ACTION: (g) asserts the
+ERROR record plus unchanged exception evidence with a working sink, and the note only in the
+raising-sink variant; S2.4's prose corrected.
+
+**A4-R4-6 -- MAJOR -- RESIDUAL -- two incompatible settle signatures.** **ACCEPTED**: S2.4 requires the
+four-argument form (round 3's fix) and Task 4 still directed three -- a residual of that same fix.
+Corrected.
+
+**A4-R4-7 -- MAJOR -- CLASS-UNRECORDED -- (RD-a2) patches the definition site, not the bound name.** **ACCEPTED.**
+`entry.py` imports repo functions directly (`entry.py:14`), so patching the definition site would
+rebind a name the service no longer consults and the capture would record nothing. ACTION: patch
+`swing.trades.entry.find_trade_id_by_attempt_id`, and Task 2 pins the import style so the target and
+the code cannot drift apart.
+
+**A4-R4-8 -- MAJOR -- CLASS-UNRECORDED -- "after the ENTIRE pre-existing gauntlet" is false.** **ACCEPTED.** The
+PE-anchor guard (`entry.py:1243-1287`) and the resolver's refusals live INSIDE
+`_record_entry_inner`, downstream of the mint -- and S7.4 already said so, so the plan contradicted
+itself. ACTION: S2.1 narrows the claim, enumerates what is upstream and what is not, and notes the
+difference costs one wasted uuid4 under (S-b) but is MATERIAL under (S-d), which S2.0.1 now accepts
+and tests as (e3).
+
+**A4-R4-9 -- MAJOR -- RESIDUAL -- the RD routing packet still carried the disproved reasoning.** **ACCEPTED,
+and this is the THIRD sweep of the same class** (R2-1 fixed S2.0; R3-1 fixed S7.7 and S9; this found
+S7.8 still calling the index "constraint 2's enforcement"). It also adds a point neither earlier
+round made: **the arithmetic prices INDEPENDENT RNG collision only** -- a systematic mint-reuse
+defect whose first use ROLLED BACK is deterministic, not astronomical, and the index is silent about
+it. ACTIONS: S7.8 rewritten (the index constrains simultaneously LIVE rows and nothing else); S7.7
+states the arithmetic's scope; test (w) named as the instrument that actually excludes systematic
+reuse.
+
+**A4-R4-10 -- MAJOR -- RESIDUAL -- the census in S1.6/S4 contradicts Task 1's own classification.** **ACCEPTED.**
+Round 3 corrected Task 1 and left S1.6 row 6 and the S4 summary claiming all 15 sites are HEAD
+aliases. Measured split: 12 `run_migrations` calls + 3 direct gate calls; 8 stay pinned, 7 gain a
+SECOND call. ACTIONS: row 6 and the S4 summary rewritten to the classified manifest, and **no total
+is quoted at all** -- the families overlap, so a single number is a manifest that cannot be
+reconciled.
+
+**A4-R4-11 -- MAJOR -- CLASS-UNRECORDED -- S7.2 understates its own exposure.** **ACCEPTED.** S7.2 called every
+probe-failure-over-a-durable-row "belt-covered" while S7.1 concedes the belt does not cover a ticker
+CLOSED between attempts; the same exception applies to every alarm branch. ACTION: S7.2 qualifies
+the protection as conditional on the original trade remaining open.
+
+**A4-R4-12 -- MINOR -- RESIDUAL -- Task 1's declared first red still says `no such column`.** **ACCEPTED**;
+another residual of R3-10's fix, which corrected S3 and not the task. Corrected.
+
+### Verdict
+
+`NEW_CRITICAL_MAJOR_FOUND` -- anchored, 2 occurrences of the one token, the other absent.
+
+### UNCOUNTED SELF-SWEEP after round 4 (SS-1..SS-9)
+
+Per the recipe: **state the class once, then RE-GREP THE WHOLE ARTIFACT for the superseded pattern.**
+Three of round 4's twelve findings were residuals of this loop's own fixes, so before round 5 the
+artifact was swept for every superseded pattern by token. **No Codex, no round number, NO effect on
+convergence.** Nine hits:
+
+- **SS-1 -- a FOURTH live copy of the disproved "the allocator is a STAMP" sentence, in S7.7.**
+  The class had been "fixed" three times (S2.0 at R2-1, S7.7+S9 at R3-1, S7.8 at R4-9) and this copy
+  survived all three, **because two of the three edit scripts aborted on a later assertion and never
+  wrote** -- the fix was believed applied and was not. Corrected, and the fourth-time-of-asking is
+  recorded in the entry itself.
+- **SS-2** -- S7.1 still named the surviving residual by the retired `unresolved` enum.
+- **SS-3** -- S9 RD item 2 still carried the SUPERSEDED cost argument that `A4-R2-7` disproved
+  (another victim of the same aborted script).
+- **SS-4/5/6** -- the shared helper is named `_observe_resolution` in S2.2 and `_try_rollback` in
+  three other places (S3 (k2), S4's manifest, Task 3). Unified.
+- **SS-7** -- S1.4 said "the three OBSERVATIONS" where the count is four observations / three new
+  fields.
+- **SS-8/9** -- two surviving `Pre-fix: n/a` entries in (r3) and (h), which `A4-R1-9` had ruled must
+  state the concrete red (`TypeError` and an import failure respectively).
+
+**PROCESS NOTE FOR THE ORCHESTRATOR, because it explains the residual rate:** three edit scripts in
+this loop asserted a list of substitutions and aborted mid-list, writing NOTHING while printing
+enough output to look partially successful. Two rounds' worth of "already fixed" items were
+therefore still live. The sweep is what caught it; the per-round transcript would not have.
+
+---
+
+## Round 5 -- THE MANDATED CHECK-IN ROUND. THE LOOP IS STOPPED HERE.
+
+Artifact frozen; sha256 `56d1441ef5008e5c1abdc8783b3da1e75328d725f15d2eb82541bbc5abd22d6e`
+(151,062 bytes). Rounds 1-4 artifacts moved out of the worktree first.
+
+### Mechanical assertions -- ALL FIVE PASS
+
+model `gpt-5.6-sol`; effort `high`; `^ERROR` = **0**; `^tokens used` = **1**;
+`^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0**. Exit `0` measured; transcript
+1,069,399 bytes; process exited before the file was read. **The reviewer self-reported: "No
+safety-layer refusal or rewriting occurred. I reviewed base commit `edfea928...` and did not read any
+`.codex*` or `.copowers*` file."** It also self-reported that it could NOT re-run the Python 3.14
+measurements from WSL (the Windows interpreter was unreachable through the interop socket), so its
+findings derive from source, the migration runner, the tests and the plan's own state machine -- a
+LIMITATION OF THE ROUND worth carrying into the gate decision, since three of this loop's strongest
+findings came from re-measurement.
+
+### Counts
+
+**12 findings: 1 CRITICAL, 7 MAJOR, 4 MINOR. NEW = 12. REOPENED = 0. REVERTED = 0.**
+
+### The one finding FIXED before stopping
+
+**A4-R5-1 -- CRITICAL -- RESIDUAL -- the mandatory immutability trigger is absent from every
+implementation-bearing manifest.** **ACCEPTED AND FIXED.** Round 4 added
+`trg_trades_attempt_id_immutable` to S2.0's prose and to the (m7) roster row -- and to NOTHING an
+executor reads as a work item: not S4's migration description, not Task 1's DDL checklist, not Task
+1's test list, not the reversibility header, not S7.9's "one column and one index", not S9's ask to
+CHARC. **An executor following the ladder would have shipped exactly the `A4-R4-1` false-success
+path the prose calls critical.** It is the round-4 residual class again, one layer up: the DECISION
+propagated into the argument and not into the work. Fixed in all six places, with (m7) and its
+remove-the-trigger mutation proof made a gate on Task 1 going green.
+
+### The eleven findings ADJUDICATED AND LEFT OPEN at the gate
+
+Each is real; none is fixed, because the gate is here. Summarised so the orchestrator can weigh
+continuation rather than take my word for the shape of the remainder:
+
+- **A4-R5-2 -- MAJOR -- CLASS-UNRECORDED -- the deferred path cannot OBSERVE whether `__exit__`'s rollback raised.** Sharp
+  and, I think, correct: `cleanup_raised` is knowable only for rollbacks the wrapper itself issues,
+  and on the deferred path the rollback happens inside `__exit__`. So RD's rule (i) is enforced on
+  one path and approximated on the other. **This is a DESIGN fork** (own the deferred
+  commit/rollback explicitly, or declare the asymmetry) and is exactly the kind of item the gate
+  exists to route rather than let an author settle at the keyboard.
+- **A4-R5-3 -- MAJOR -- RESIDUAL -- "no rollback on the deferred path" contradicts `_observe_resolution`.** Correct.
+  The residual arm DOES issue a rollback when `__exit__` left the transaction open; preserving the
+  exception identity is not the same as leaving behaviour unchanged. Round 2 over-corrected round
+  1's over-claim.
+- **A4-R5-4 -- MAJOR -- RESIDUAL -- (w) cannot make systematic reuse "impossible by construction".** Correct: (w)
+  stubs the mint, so it cannot detect a real mint that caches. Needs two attempts with `uuid.uuid4`
+  controlled one level below, or the claim narrowed. **This partly undoes R4-9's fix**, which named
+  (w) as the instrument that excludes systematic reuse.
+- **A4-R5-5 -- MAJOR -- RESIDUAL -- Tasks 1 and 2 each say the other owns the mint/threading.** A residual of R4-2's
+  fix.
+- **A4-R5-6 -- MAJOR -- CLASS-UNRECORDED -- (m7) is defeated by the CHECK before it reaches the trigger.** Correct and
+  embarrassing: the test's `UPDATE ... SET attempt_id = 'x'` trips the length CHECK, so it would go
+  green against a tree with NO trigger. The mutation proof would have caught it; the test as
+  specified would not.
+- **A4-R5-7 -- MAJOR -- CLASS-UNRECORDED -- the identity-failure WARNING can itself fail an ordinary entry.** The
+  containment covers the mint and the path read; the logging that reports their failure is outside
+  it. The arc's own R11-03 class, inside the arc's own fix.
+- **A4-R5-8 -- MAJOR -- CLASS-UNRECORDED -- (e2)'s variant count is internally inconsistent** (six named, more listed).
+- **A4-R5-9 -- MINOR -- CLASS-UNRECORDED -- MEASURED (2) generalises "a fresh reader is not blocked" beyond the lock state
+  actually measured**, and MEASURED (3) is the counterexample in the same plan.
+- **A4-R5-10 -- MINOR -- CLASS-UNRECORDED -- (m2)'s stated current-tree pre-fix outcome is wrong.**
+- **A4-R5-11 -- MINOR -- CLASS-UNRECORDED -- the version-mirror sweep does not cover narrative/prose mirrors.**
+- **A4-R5-12 -- MINOR -- CLASS-UNRECORDED -- stale cross-references (S8.7, Task 5).**
+
+### Verdict and GATE STATE
+
+`NEW_CRITICAL_MAJOR_FOUND` -- anchored, 2 occurrences of the one token, the other absent.
+
+**THE LOOP IS STOPPED AT THE MANDATED ROUND-5 GATE AND IS NOT CONVERGED.** The recipe's own
+continuation criterion -- *"Continue ONLY if NEW, IN-SCOPE, NON-REOPENED critical/major findings are
+still arriving"* -- reads CONTINUE on the composition (45 findings over five rounds: 3 CRITICAL, 32
+MAJOR, 10 MINOR; ZERO reopened, ZERO reverted, every round in scope). **That is a report, not a
+decision.** Two facts belong in the orchestrator's hands alongside it: the rate is not decaying
+(10 / 9 / 12 / 12 / 12), and a growing share are RESIDUALS OF THIS LOOP'S OWN FIXES rather than
+defects in the original design -- the Expansion-#13 cascade signature, which the recipe says the
+gate-holder may answer with a dedicated self-sweep plus ONE confirming round instead of another
+review round.
+
+---
+
+## AMENDMENT PASS (2026-09-06) -- both director rulings landed
+
+**RD RULED: `uuid4` SATISFIES constraint 2.** Canonical reading, binding on future appeals: *"never
+reusable" = the mechanism must contain NO PATH THAT REISSUES a token.* The rowid failed because the
+ENGINE hands a rolled-back id to the next insert -- reuse is an active, designed-in mechanism -- while
+a `uuid4` repetition is an RNG failure, not a behaviour of the mechanism; and collision-resistance is
+already this system's admissibility standard (sha256-pinned amendment text, digest-pinned broker
+snapshots). Three riders landed: S7.7 widened, RD-a/RD-b unchanged plus (RD-b2) in its (S-b)
+polarity, and **(S-d) BANKED IN FULL** rather than deleted (a D46 call: more machinery, a second
+commit surface and a separate connection on the money path, against a failure with no mechanism and
+no observed instance).
+
+**CHARC RATIFIED five items with ONE CONDITION.** Migration 0038 as shaped; the LOCK-A amendment;
+the `<= 37` -> `<= 38` ceiling opened for 0038 only; the backup gate and expected-tables set; and the
+S2.0 divergence (he verified 57/56/`{risk_policy_id_at_lock}` on the live DB himself, and made the
+drift comparator's EQUALITY -- never superset -- the mandatory member of the mirror set).
+**THE CONDITION: S8.6 is NOT banked; the corrector's typed refusal SHIPS**, widening the envelope by
+exactly `swing/trades/reconciliation_auto_correct.py`. His ground: *"I cannot rule the class binding
+one week and bank its next instance because the plan's envelope was drawn one module short."* Plus
+two jurisdiction notes for the migration header (the REPLACE family grepped empty against `trades`
+-> a future REPLACE writer is a DECLARED BREACH; 22-B Demand A rebuilds `trades` and must re-create
+index AND trigger).
+
+### THE LOAD-BEARING VERIFICATION RD DEMANDED -- ONE HALF FAILED, ROUTED BACK
+
+He attached the S7.7 detection story as load-bearing with an explicit stop-and-route instruction.
+Both halves were run against a model carrying the real CHECK, both real indexes and the real mapper:
+
+- **"A committed-duplicate token is REFUSED LOUDLY by the UNIQUE index" -- VERIFIED**, with a
+  dependency worth his attention: the message is `UNIQUE constraint failed: trades.attempt_id`, which
+  **the SHIPPED mapper converts into "Already an open position in BBB (race-detected)"** -- loud, and
+  false about a position that does not exist. It is TRUTHFULLY loud only because S2.5 narrows the
+  match to `trades.ticker`, a fix that entered this plan in round 1 for an unrelated reason.
+- **"The undetectable case has no false-confirm mechanism, because a rolled-back token leaves no row
+  to confirm" -- NOT VERIFIED. THE OPPOSITE WAS REPRODUCED.** The premise is true at the instant of
+  rollback and does not survive to probe time: A rolls back (zero rows carry X), a second connection
+  mints the same X for the SAME ticker and COMMITS, A's probe finds that row, **ticker corroboration
+  PASSES**, and A returns SUCCESS naming a trade it did not write.
+
+**His RULING is unaffected** -- it rests on the no-reissue-path reading, which verifies. What failed
+is the rider's stated REASON, and the plan states the verified version instead. ROUTED at S9 RD
+item 2.
+
+---
+
+## Round 6 -- run on the frozen final shape
+
+Artifact frozen; sha256 `7e7f9a7e4cd7b583dfb0303f38e832f0872873dec0f04e72886c497ed6538b33`
+(169,779 bytes). Rounds 1-5 artifacts moved out of the worktree first. The prompt carried an
+amendment-context block directing the reviewer at the newest text and **requiring each finding to be
+labelled NEW GROUND or RESIDUAL**, because that classification decides whether the loop terminates.
+
+### Mechanical assertions -- ALL FIVE PASS
+
+model `gpt-5.6-sol`; effort `high`; `^ERROR` = **0**; `^tokens used` = **1** (307,420);
+`^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0**. Exit `0` measured; transcript
+1,102,235 bytes; process exited before the file was read. No content-filter event.
+
+### Counts
+
+**13 findings: 0 CRITICAL, 11 MAJOR, 2 MINOR. NEW = 13. REOPENED = 0. REVERTED = 0.**
+**Reviewer-labelled: 6 NEW GROUND, 7 RESIDUAL OF THE AMENDMENTS.**
+**First round of the loop with ZERO criticals.**
+
+### Per-finding disposition -- 11 FIXED, 2 ROUTED
+
+**NEW GROUND (6)**
+
+**A4-R6-4 -- MAJOR -- CLASS-UNRECORDED -- a 36-BYTE BLOB passes `length()=36` and shares the index with its text twin.**
+**ACCEPTED; REPRODUCED.** `[(1, 'text', 36), (2, 'blob', 36)]` -- two live rows, one token,
+**falsifying S2.0's own "at most ONE LIVE row per token" at the schema boundary.** The
+`typeof(attempt_id)='text'` guard rejects it (measured). **The asymmetry is the lesson:** round 4
+added a `typeof` guard to the BANKED integer branch and left the SHIPPING text branch without one --
+the fix was applied to the design that is not being built. **FIXED:** CHECK widened, Python mirror is
+`isinstance(str)`, and (m1)/(m6)/(r3)/(e2) each gain a BLOB case.
+
+**A4-R6-5 -- MAJOR -- CLASS-UNRECORDED -- no test proves the mint draws from `uuid.uuid4` at all.** **ACCEPTED.** Every
+identity row patches `_mint_attempt_token` ITSELF, so **a production mint returning a constant valid
+36-character string passes all of them**, and LOCK-A only checks validity and non-NULLity. That is
+exactly the systematic-reuse defect S7.8 calls deterministic. **FIXED:** new test **(w2)** patches
+`uuid.uuid4` one level below, asserts one provider call per mint and exact stringification, and
+drives TWO attempts (first rolled back) requiring DISTINCT tokens. **S7.8's "impossible by
+construction" claim is struck** -- that phrase belongs to the banked allocator and to nothing shipped.
+
+**A4-R6-6 -- MAJOR -- CLASS-UNRECORDED -- "typed refusal" does not reach the operator.** **ACCEPTED; verified at the
+source.** `ReservedJournalFieldError` inherits **directly from `Exception`**
+(`reconciliation_auto_correct.py:109`), and both callers reach a `ValueError` handler with no handler
+for it (`swing/cli.py:3929` region, `swing/web/routes/reconcile.py:1640`) -- so a service-only typed
+refusal surfaces as an uncaught CLI traceback and a web 500. **That is the same operator experience
+CHARC's condition exists to replace, one layer out.** **FIXED:** the sibling type is
+`ImmutableJournalFieldError(ValueError)`, reaching both handlers with **no production caller edit**,
+plus delivery tests through the unchanged CLI and web surfaces.
+
+**A4-R6-7 -- MAJOR -- CLASS-UNRECORDED -- a one-field corrector test permits a key-order-sensitive refusal.**
+**ACCEPTED; verified at the source.** The module preflights whole payloads precisely because it
+applies fields SEQUENTIALLY -- its own comment says a per-field-only check made refusal depend on
+**JSON KEY ORDER**. A backstop-only implementation executes an earlier UPDATE before discovering
+`attempt_id` second. **FIXED:** the check goes in BOTH `_preflight_reserved_transitions` and
+`_update_journal_field` sharing one predicate and message, plus a multi-field test with `attempt_id`
+LAST asserting ZERO journal UPDATEs issued.
+
+**A4-R6-10 -- MAJOR -- CLASS-UNRECORDED -- S7.12 calls the terminal-return windows "belt-covered" unconditionally.**
+**ACCEPTED** -- S7.2 already concedes belt coverage lapses when the position is closed between
+attempts, and the same exception applies here. **FIXED:** qualified identically in all three places.
+
+**A4-R6-11 -- MAJOR -- CLASS-UNRECORDED -- "fork" is not a correlated-state mechanism for this implementation.**
+**ACCEPTED; MEASURED from CPython 3.14 source: `uuid4` is `int.from_bytes(os.urandom(16))` PER
+CALL**, with no process-local PRNG state to clone. So a POSIX port that merely acquires `fork` would
+fire the re-open trigger with **no hazard present** and activate a materially more expensive design
+on the money path. **FIXED in the plan AND ROUTED:** bare `fork` struck; the surviving triggers are a
+GENERATOR change away from `os.urandom` or a measured condition duplicating the OS entropy stream.
+**This is the SECOND RD rider clause that failed verification** and it is routed with the first.
+
+**RESIDUAL OF THE AMENDMENTS (7)**
+
+**A4-R6-1 -- MAJOR -- CLASS-UNRECORDED -- the plan calls itself final while holding an item RD told it to stop-and-route
+on.** **ACCEPTED; the contradiction was mine.** **FIXED:** the status block now says plainly that the
+plan is **NOT AUTHORIZED TO EXECUTE**, names both open rider clauses, and states that RD's ruling
+itself is unaffected -- what is open is wording he owns.
+
+**A4-R6-2 -- MAJOR -- CLASS-UNRECORDED -- the mint "moved into Task 1" in two prose statements and in no checklist.**
+**ACCEPTED.** Task 0b and Task 2's preamble both announced the move; Task 1 had no such checkbox and
+Task 2 still scheduled the work. **FIXED:** the mint, `_begin_attempt_identity` and the threading are
+now actual Task 1 checkboxes; Task 2 keeps only the safety behaviour.
+
+**A4-R6-3 -- MAJOR -- CLASS-UNRECORDED -- Task 1 required all of (m7) including the half Task 1b implements.**
+**ACCEPTED** -- Task 1 could not reach green in its own prescribed order. **FIXED:** half 1 (schema
+trigger + mutation proof) gates Task 1; half 2 (typed refusal) belongs to Task 1b and is explicitly
+NOT required earlier.
+
+**A4-R6-8 -- MAJOR -- CLASS-UNRECORDED -- S7.1 treats both refusal branches as indeterminate.** **ACCEPTED.** For
+`rolled_back + cleanup_raised` the rollback TOOK EFFECT, the row is provably gone, and nothing can
+commit it later -- S2.4 and S9 already had this right, so the entry overstated the arc's own residual.
+**FIXED:** the two branches are separated, with only `still_open` carrying the possibly-durable-later
+exposure.
+
+**A4-R6-9 -- MAJOR -- CLASS-UNRECORDED -- "(e2)'s SIX variants" enumerates seven plus an interrupt control.**
+**ACCEPTED** -- a manifest an executor can under-read by one. **FIXED:** stated as **eight contained
+variants (seven plus the new BLOB case) plus one interrupt-propagation control**, enumerated
+identically in S3 and Task 2 so the two cannot drift.
+
+**A4-R6-12 -- MINOR -- CLASS-UNRECORDED -- the (m7) rationale's execution-order claim is false.** **ACCEPTED;
+REPRODUCED.** A BEFORE UPDATE trigger fires FIRST: both an invalid and a valid value abort with the
+trigger's `immutable` message, so `'x'` never "trips the CHECK before reaching the trigger". The
+test's discriminator was sound anyway. **FIXED:** the false ordering claim is replaced -- a valid
+token ISOLATES the trigger, and the MUTATION PROOF is the discriminator. *(Note: this partly
+disproves `A4-R5-6`'s stated reason from the previous round, while its prescribed fix stands.)*
+
+**A4-R6-13 -- MINOR -- CLASS-UNRECORDED -- six stale cross-references.** **ACCEPTED, all six FIXED:** S2.0's two
+"routed"-not-"ruled" statements, the drift comparator attributed to Task 2 after the merge into
+Task 1, (m1)'s self-contradicting pre-fix sentence, S4's test manifest omitting (m7) and (w2), S9
+item 1 naming only `DROP INDEX`, and S9 item 4's `S8.6` -> `S8.7` renumbering.
+
+### Verdict and STOP
+
+`NEW_CRITICAL_MAJOR_FOUND` -- anchored, 2 occurrences of the one token, the other absent.
+
+**ROUND 7 WAS NOT OPENED.** The gate-holder's stop rule was *"if it returns residuals of these
+amendments rather than new ground, STOP and disposition -- do not open round 7."* Round 6 returned a
+**MIX** (6 new ground, 7 residual), which is not the rule's stated case; **opening round 7 was not
+authorized, so the mixed result is reported to the gate-holder rather than resolved by the author.**
+All 13 are dispositioned: **11 FIXED, 2 ROUTED to RD** (both failed rider clauses).
+
+**Trend for the gate-holder:** 10 / 9 / 12 / 12 / 12 / 13 findings; CRITICALs 1 / 0 / 1 / 1 / 1 /
+**0**; residual share rising to 7 of 13. The new ground round 6 did find was concentrated in the
+AMENDMENTS -- the newest and least-reviewed text -- which is what that round was commissioned for,
+and three of its four sharpest findings came from RE-MEASUREMENT rather than reading.
+
+---
+
+## POST-ROUND-6 SELF-AUDIT (orchestrator-directed, deterministic, uncounted)
+
+**68 probes** over every ACCEPTED disposition in rounds 1-6, aimed at a known editing defect (three
+earlier edit scripts asserted a substitution list, aborted mid-list, and wrote NOTHING while printing
+partial success).
+
+**Result: 3 probe misses, all three resolved as STALE PROBE WORDING** -- the fixes were present under
+headings later legitimately reworded. **Plus TWO REAL GAPS, found by extending the probe list beyond
+the dispositions:**
+
+- **Task 2's commit subject still described work `A4-R6-2` had moved to Task 1** -- the `A4-R3-11`
+  class re-created by round 6's own fix.
+- **Test (w2) was specified in S3, listed in S4's manifest and cited in S7.8, and scheduled in NO
+  TASK CHECKLIST AT ALL** -- `A4-R5-1`'s class on a different object.
+
+Both fixed. A third, partial gap (S4's summary lacked the 12+3 instrument split) was tightened.
+
+**THE AUDIT'S OWN LIMITATION, AND ROUND 7 PROVED IT COSTLY.** The probe list carried **ONE probe per
+finding**, so it could only detect a fix written NOWHERE -- never one written in one of several named
+locations. `A4-R7-1` is exactly that: the `typeof` fix was present in S2.0's prose (which the probe
+found) and **absent from Task 1's DDL, the repo validator, (m1), (m6) and (r3)**. **A single-probe
+audit cannot see a partially-propagated fix**, which is the dominant failure mode of this loop. The
+round-7 audit was rebuilt PER-LOCATION (36 probes over 12 findings) and is the form to use hereafter.
+
+---
+
+## Round 7
+
+Artifact frozen; sha256 `5e5e02fe54227a96de5e0858f6b020bf5dbd5e7c3dbb354f6a241ab135fc748f`
+(182,830 bytes). The prompt carried the audit's result and an explicit request to report any
+claimed-fix-not-present.
+
+### Mechanical assertions -- ALL FIVE PASS
+
+model `gpt-5.6-sol`; effort `high`; `^ERROR` = **0**; `^tokens used` = **1** (413,949);
+`^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0**. Exit `0` MEASURED; transcript
+1,320,409 bytes; process exit confirmed before the file was read or judged. No content-filter event.
+
+### Counts
+
+**12 findings: 0 CRITICAL, 9 MAJOR, 3 MINOR. NEW = 12. REOPENED = 0. REVERTED = 0.**
+**Reviewer-labelled: 6 NEW GROUND, 6 RESIDUAL. ALL 12 FIXED.**
+
+### Dispositions
+
+**A4-R7-1 -- MAJOR -- RESIDUAL -- THE CLAIMED `typeof` FIX WAS ABSENT FROM THE EXECUTABLE PLAN.** The finding
+the round was asked for, and the self-audit MISSED it. S2.0 claimed the validator and tests were
+amended; Task 1's DDL still ordered the length-only CHECK, the repo validator still specified length
+without `isinstance`, (m1) had no BLOB case, **(m6) asserted only the length fragment so it would
+have PASSED the defective DDL**, and (r3) tested only strings. **FIXED at all five locations.**
+
+**A4-R7-2 -- MAJOR -- RESIDUAL -- Task 1 and Task 2 could not both have honest red/green contracts.** Either
+Task 1 implemented S2.1 fully (making Task 2's (e2) already green) or it committed a helper that
+could fail an otherwise successful entry. Task 2 also ordered an import whose first consumer arrives
+at Task 4 -- an unused import breaking the Ruff-clean gate. **FIXED:** Task 1 owns the complete
+helper and (e)/(e2)/(w2); **Task 2 WITHDRAWN as a stub with numbering kept stable** (renumbering
+produced `A4-R3-11` then `A4-R7-11`; a stub costs a paragraph, a renumber costs a sweep that has
+failed twice); the import moves to Task 4.
+
+**A4-R7-3 -- MAJOR -- RESIDUAL -- Task 1b's three test classes had no ids, result shapes or files.**
+**FIXED:** new S3 rows **(m8a)** typed service refusal, **(m8b)** multi-field preflight asserting
+ZERO journal UPDATEs, **(m8c)** delivery through UNCHANGED callers with mappings read at source
+(CLI `ValueError` -> `UsageError` -> **exit 2**; web -> **status 400**). Task 1b's first red is
+(m8a)'s `sqlite3.IntegrityError`; (m7) half 2 is superseded, its red base gone once Task 1 lands.
+
+**A4-R7-4 -- MAJOR -- RESIDUAL -- the checklist named ONE open rider while the front matter and S9 said TWO.**
+The claimed-fix-not-present class applied to governance. **FIXED:** two unchecked Task 0 boxes; S9's
+heading and body corrected.
+
+**A4-R7-5 -- MAJOR -- RESIDUAL -- S7.1 re-created `A4-R6-8` one round after closing it** ("in both" a later
+commit could make the row durable). **FIXED:** scoped to `still_open` alone.
+
+**A4-R7-6 -- MAJOR -- NEW GROUND -- the quoted census command does not produce the claimed count.**
+**REPRODUCED: five hits, not three** -- the three era-branches plus `INSERT INTO trades_new` (the
+Phase-7 rebuild, a DIFFERENT table the substring matches) plus a `__pycache__` binary match. The
+"state what your grep PROVES" rule failing on the bullet that invokes it. **FIXED:** real output
+reported; (r5) now specifies a word-boundary table-token parser excluding caches, without which the
+walk would count `trades_new` as an unreasoned writer.
+
+**A4-R7-7 -- MAJOR -- NEW GROUND -- S7.11's "independent backstops" share the walk's blind spot.** A
+fragmented writer inserting into the existing schema without `attempt_id` changes no column ((r4)
+green), does not touch `record_entry` ((e) green), and evades the walk by definition. **FIXED:** the
+entry states what each instrument actually covers and declares **one heuristic guard, no independent
+backstop** -- a smaller claim, and the one the evidence supports.
+
+**A4-R7-8 -- MAJOR -- NEW GROUND -- `resolution` was INFERRED on the returning rollback arm.** The contract
+says re-read after ANY rollback attempt; the pseudocode re-read only on the raising arm and assigned
+`"rolled_back"` whenever the call returned -- so a rollback returning WITHOUT effect is misclassified
+and **ADMITS the probe**. No fixture covered it. **FIXED:** re-read on both arms plus a third RD-a1
+fixture asserting `still_open` and zero probe calls.
+
+**A4-R7-9 -- MAJOR -- NEW GROUND -- (r2)'s "contained WARNING" was asserted and never tested.**
+`swing/data/repos/trades.py` has no logger and no containment helper, so a plain `log.warning`
+passes the specified test and aborts the transaction when the sink raises -- failing a money-bearing
+entry, which S7.5's reason forbids. **FIXED:** containment specified in Task 1; raising-handler
+variant added to (r2).
+
+**A4-R7-10 -- MINOR -- CLASS-UNRECORDED -- `_RESERVED_JOURNAL_FIELDS` has SEVEN members, not five** (verified; they span
+`fills` as well as `trades`). **FIXED.**
+
+**A4-R7-11 -- MINOR -- CLASS-UNRECORDED -- stale task/routing references survived the self-audit** (Task 6 -> Tasks 4
+and 5; S9 item 6 -> 5; "single DROP INDEX" vs both drops). **All FIXED**, and they are why Task 2 was
+withdrawn as a stub rather than renumbered.
+
+**A4-R7-12 -- MINOR -- CLASS-UNRECORDED -- a SEVENTH mirror spelling: semantic names and comments.**
+`def test_expected_schema_version_is_37()` whose body is a HEAD assertion, and the comment *"the
+ceiling is now 37"* (both verified). **FIXED** as a named spelling in the sweep.
+
+### A REGRESSION THE POST-ROUND-7 AUDIT CAUGHT IN ITS OWN FIX
+
+Withdrawing Task 2 **dropped `A4-R6-9`'s requirement** that (e2) enumerate all eight variants from
+S3's list -- that instruction lived only in Task 2's checklist. Found by re-running the audit looking
+for exactly that class, and restored into Task 1. *A withdrawal is an edit, and an edit can lose a
+fix as easily as a rewrite can.*
+
+### Verdict
+
+`NEW_CRITICAL_MAJOR_FOUND` -- anchored, 2 occurrences of the one token, the other absent.
+**STOPPED BY INSTRUCTION. Round 8 not opened -- that call is the gate-holder's.**
+
+**Running totals across seven counted rounds: 70 findings (3 CRITICAL, 41 MAJOR, 16 MINOR), ZERO
+reopened, ZERO reverted. Token spend 2,273,873.**
+
+---
+
+## PRE-ROUND-8 DETERMINISTIC CONSISTENCY SWEEP (orchestrator-directed, uncounted)
+
+Built as a PARSER, not greps: task headings and spans, commit subjects vs enclosing task, task
+cross-references, test-ID definitions vs roster vs task schedules vs S4 file manifest (with numeric
+AND letter range expansion), section references, and fragile counts. Script preserved at
+`plan_consistency_sweep.py`.
+
+**Structural checks that PASSED:** every commit subject matches its enclosing task; every `Task N`
+reference resolves; every section reference resolves.
+
+**THREE BOOKKEEPING DEFECTS FOUND AND FIXED:**
+- **`(m8)` heading vs `(m8a-c)` roster id** -- the S3 heading defined an id nothing else used.
+- **`(w2)` had an S3 heading and was ABSENT from the S3 roster table** -- the roster is meant to be
+  the complete list.
+- **`(d)`, `(i)`, `(j)` were scheduled in tasks with NO FILE in the S4 manifest** -- they live in
+  `test_22a_task9_entry_wiring.py` and the manifest named only `(c)`.
+
+**The sweep then earned its keep twice more DURING round 8's fixes:** it caught the new test `(r7)`
+defined-but-unscheduled and unrostered **on the very edit that introduced it**, and the per-location
+audit's stale probe exposed **two further live instances of the rule-(i) overclaim** -- one of them
+in the S9 packet going to RD, which would have told him rule (i) IS literal while the newly routed
+item 8 told him it is not.
+
+---
+
+## Round 8
+
+Artifact frozen; sha256 `1f1f564abf1ce3c764a8ae550f950056096fc8977e4e5eb2252c281b1889f441`
+(192,767 bytes). Commissioned to review ROUND 7's OWN TWELVE FIXES -- including a schema DDL change
+-- because shipping a plan whose last round's fixes are unreviewed is the trap the Demand C handoff
+flagged against itself.
+
+### Mechanical assertions -- ALL FIVE PASS
+
+model `gpt-5.6-sol`; effort `high`; `^ERROR` = **0**; `^tokens used` = **1** (349,176);
+`^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0**. Exit `0` MEASURED; transcript
+1,382,826 bytes; process exit confirmed before the file was read. No content-filter event.
+
+### Counts
+
+**6 findings: 0 CRITICAL, 5 MAJOR, 1 MINOR. NEW = 6. REOPENED = 0. REVERTED = 0.**
+**Reviewer-labelled: 2 NEW GROUND, 4 RESIDUAL.** Down from 13 and 12.
+
+**What SURVIVED verification, stated because it is the round's actual product:** the additive DDL,
+the `typeof(...)='text'` guard, the Python `isinstance` mirror, the corrector-refusal shape, the
+caller delivery mappings and the backup-table-set derivation. **The reviewer found NO new
+deterministic false-success path over a non-durable row.**
+
+### Dispositions -- 5 FIXED, 1 FIXED-AND-ROUTED
+
+**A4-R8-1 -- MAJOR -- RESIDUAL -- RULE (i) IS NOT ACTUALLY ENFORCED ON THE DEFERRED PATH, AND THE
+PLAN CLAIMED "LITERALLY" FOR TWO ROUNDS.** `sqlite3.Connection.__exit__` owns the deferred commit AND
+its rollback, so `cleanup_raised` cannot be an observation there. Two sequences defeat it: the
+internal rollback takes effect then raises (`in_transaction` False -> `not_needed`), or it raises
+before taking effect and the wrapper's OWN retry succeeds (`rolled_back`). **In both, a rollback
+raised and the probe is ADMITTED.**
+**PARTIALLY FIXED, DELIBERATELY:** the false claim is corrected everywhere it appeared (S2.4's gate,
+S7.1's branch note, and **the S9 packet going to RD, which would otherwise have told him rule (i) IS
+literal while the newly routed item told him it is not**); the asymmetry is DECLARED at **S7.15**
+with both sequences and the measured cost (**in both, the row is provably GONE, so the probe returns
+ABSENT and the outcome is identical -- what is unenforced is the RULE, not the result**).
+**The DESIGN CHANGE IS ROUTED (S9 item 8), not taken:** the only fix is to own the deferred commit
+and rollback explicitly, replacing `with conn:` and reproducing its exception semantics by hand, **on
+the path 22-A locked byte-for-byte and that round 6 concluded should be observed rather than
+re-plumbed.** A plan that re-plumbs a locked path on its own authority is the failure this arc has
+already routed twice.
+
+**A4-R8-2 -- MAJOR -- RESIDUAL -- round 7's third RD-a1 fixture was added to S3 and to nothing
+else.** The section still opened "TWO fixtures" and Task 4 still scheduled "BOTH shapes" -- so the
+executable manifest permitted omitting **the only fixture that discriminates round 7's own re-read
+correction.** The propagation failure, one round after the propagation failure. **FIXED** in both
+places.
+
+**A4-R8-3 -- MAJOR -- NEW GROUND -- (r2)'s post-fix assertion was IMPOSSIBLE.** It asserted
+`attempt_id IS NULL` **on a v37 database**, where SQL naming that column raises
+`no such column` -- the migration is what creates it. Task 1 could not have reached its declared
+green. **FIXED:** the v37 assertions are now what a v37 database can answer (row count, returned id,
+`PRAGMA table_info` lacking the column), with the NULL reading written as an explicit second step
+after migrating.
+
+**A4-R8-4 -- MAJOR -- RESIDUAL -- round 7's hostile-sink coverage reached the REPO warning and not
+the THREE SERVICE-side ones.** A plain `log.warning(...)` in `_begin_attempt_identity` passes every
+(e2) variant and then fails an entry when a handler raises -- the exact claim S2.1 makes. **FIXED:**
+all three arms route through ONE containment helper and each is asserted with a raising handler.
+
+**A4-R8-5 -- MAJOR -- NEW GROUND -- nothing tested the probe's schema-aware branch.** An
+implementation that unconditionally executes `WHERE attempt_id = ?` passes the whole suite, because
+`_settle_by_attempt_identity` contains the `OperationalError` and re-raises the original anyway --
+**so the suite cannot tell ABSENCE from INTERNAL PROBE FAILURE**, and S7.5's stated consequence is
+untested. **FIXED:** new test **(r7)** asserting `find_trade_id_by_attempt_id` returns `None` WITHOUT
+raising on v37.
+
+**A4-R8-6 -- MINOR -- RESIDUAL -- stale statements survived the consistency sweep:** an (RD-a2)
+reference to withdrawn Task 2, a DUPLICATED `### (r1)` heading (damage from my own (m8) insertion),
+and S11 still saying six rounds ran and round 7 was not opened. **All FIXED**, and S11 now carries
+rounds 7 and 8, both uncounted sweeps, and the eight-round token sum.
+
+### Verdict
+
+`NEW_CRITICAL_MAJOR_FOUND` -- anchored, 2 occurrences of the one token, the other absent.
+**STOPPED BY INSTRUCTION. Round 9 not opened.**
+
+**THE REVIEWER'S OWN JUDGEMENT, asked for directly and recorded verbatim because it DISSENTS from the
+falling finding-count:** *"this plan is still yielding substantive design and evidence defects, not
+mainly bookkeeping and prose; the deferred rollback-observation hole alone requires a
+transaction-path design change."*
+
+**RUNNING TOTALS, eight counted rounds: 76 findings -- 3 CRITICAL, 46 MAJOR, 17 MINOR. ZERO
+reopened, ZERO reverted. Token spend 2,623,049.**
+
+---
+
+## AMENDMENT PASS 2 (2026-09-06) -- RD ruled all three open items
+
+**1. S7.7 half A CONFIRMED, with a PRECONDITION attached.** The committed-duplicate refusal is loud
+AND legible **only in combination with S2.5's mapper narrowing**; without it the refusal is loud but
+mislabelled as a position race that does not exist. **S2.5 is therefore LOAD-BEARING for his ruling**
+and gained a discriminating pin: **(r6) now asserts the TYPED SURFACE** of an attempt_id UNIQUE
+failure, never the absence of the wrong message -- a test written as "no DuplicateOpenPositionError
+was raised" would pass an implementation that raised nothing at all.
+
+**2. S7.7 half B CONFIRMED**, with his absolute replaced by his own bound: the false-confirm path
+EXISTS but lives entirely inside the collision event. *(Round 9 then found the replacement wording
+itself is wrong -- see A4-R9-4.)*
+
+**3. fork STRUCK on this plan's measurement.** Exactly two surviving triggers; **VM snapshot-resume
+recorded as an INSTANCE of the entropy-duplication trigger, never as an independent one.**
+
+**4. Item 3 = (a) ACCEPT, on HIS ground, which REPLACES the plan's.** The plan argued "the outcome
+happens to be the same"; he declined that as self-standing and grounded it in **constraint 3**: rule
+(i) exists to prevent R10-02's self-quote, and on the deferred path that read cannot happen at all
+because the probe runs on a FRESH connection. S7.15 reframed from ACCEPTED risk to **COVERED risk --
+an asymmetry of OBSERVABILITY, not of outcomes** -- and two tests **(k4a)/(k4b)** added to pin the
+OUTCOME of each unobservable sequence. Option (b) REJECTED as the D46 direction.
+
+Consistency sweep re-run: **clean, 39 tests defined / scheduled / manifested.** Per-location audit
+over the amendments: **25 probes, zero missing.**
+
+---
+
+## Round 9 -- THE CONVERGENCE ROUND. IT DID NOT CONVERGE.
+
+### FIRST ATTEMPT DISQUALIFIED -- provider capacity, and the footer lied again
+
+exit **1**; **two anchored ^ERROR "Selected model is at capacity" lines**; **NO verdict token at
+all** (NO_NEW=0, FOUND=0); transcript truncated mid-way through dumping a source file -- **and a
+`tokens used` footer present anyway (316,797 tokens).** Disqualified by assertions 3 and 5.
+**This is the cleanest demonstration in the whole loop of why the footer alone is not a completion
+signal.** Artifact hash re-verified UNCHANGED before the re-run, so the re-run is the same round on
+the same frozen shape. Transcript preserved as `.codex-review-r9-DISQUALIFIED-capacity.txt`.
+
+### Re-run -- ALL FIVE ASSERTIONS PASS
+
+model gpt-5.6-sol; effort high; ^ERROR = **0**; ^tokens used = **1** (463,310);
+^NEW_CRITICAL_MAJOR_FOUND = **2**, ^NO_NEW_CRITICAL_MAJOR = **0**. Exit **0** MEASURED; transcript
+1,080,516 bytes; process exit confirmed. Frozen at
+`9d57c1b50b57cadae756818541ab7b107611f8967598d0c233fd1d6cc3cb80ba`.
+
+### Counts
+
+**9 findings: 0 CRITICAL, 9 MAJOR, 0 MINOR. 6 NEW GROUND, 3 RESIDUAL. Zero reopened, zero reverted.**
+
+### The three bearing on rulings just made -- ROUTED, NOT AMENDED
+
+**A4-R9-2 -- MAJOR -- NEW GROUND -- the premise under RD's item-3 acceptance may be FALSE.** His ruling rests on *the
+wrapper cannot see whether __exit__'s internal rollback failed*. The reviewer cites CPython 3.14.2
+connection.c as saving the commit exception, calling rollback, and **chaining the two if rollback
+fails** -- an observable signal, and a cheaper third option nobody considered. **MEASURED HERE, and
+the measurement is PARTIAL:** in the commit-fails / rollback-SUCCEEDS case there is **no chain**
+(__context__ and __cause__ both None; Python 3.14.2, SQLite 3.50.4) -- consistent with chaining
+marking the rollback-FAILS branch, which **I could not force natively.** Not refuted, not confirmed.
+
+**A4-R9-3 -- MAJOR -- NEW GROUND -- S7.15's "zero outcome delta" is false when COMBINED with S7.7.** Rollback takes effect
+then raises -> `not_needed` -> **before the probe, B commits the same token for the same ticker (the
+collision event S7.7 accepts)** -> the fresh probe finds B and returns false SUCCESS, where literal
+enforcement would have alarmed. **Freshness prevents self-quotation; it does not prevent false
+attribution after another transaction commits the colliding identity.** Two separately-ruled
+acceptances compose into an outcome neither covers.
+
+**A4-R9-4 -- MAJOR -- NEW GROUND -- "EQUALS the collision probability" is mathematically wrong.** False confirmation is a
+strict SUBSET: it also needs an unsettled rolled-back attempt, the collision landing before its
+probe, a committed row, and a ticker match. **P(false confirm) <= P(collision), not =.**
+
+### The other six
+
+**A4-R9-1 -- MAJOR -- NEW GROUND -- `isinstance(str) and len == 36` is NOT equivalent to the SQLite CHECK.** A 35-char
+string plus a NUL has Python length 36 and SQL length() 35; a lone surrogate fails at binding. Both
+pass the validator and then **fail during the money-bearing INSERT** -- the ordinary-path failure
+S2.1 exists to exclude. Fix: parse with uuid.UUID, require version 4 and canonical round-trip.
+
+**A4-R9-5 -- MAJOR -- NEW GROUND -- the tier-3 override path has no preflight.** `_preflight_reserved_transitions` is called
+only from `_handle_multi_field_correction`; `_apply_tier3_override_inner` inserts a correction row,
+advances the supersession pointer, then processes fields sequentially -- so with attempt_id LAST,
+mutations occur before the backstop refuses. Order-independence is **not established across a
+supported operator surface.**
+
+**A4-R9-6 -- MAJOR -- NEW GROUND -- (k4b) generalises a rollback-journal measurement to the WAL path.** The plan says the
+live database is WAL and WAL readers are unblocked, then asserts the fresh probe "BLOCKS OR FAILS".
+Fix: parameterise by journal mode, both arms re-raising the original.
+
+**A4-R9-7 -- MAJOR -- RESIDUAL -- Task 3 cannot reach green.** It schedules (k3b), (k4a), (k4b), all needing
+the probe and settlement Task 4 introduces. The task-boundary class, third instance.
+
+**A4-R9-8 -- MAJOR -- RESIDUAL -- contradictory authorization state. FIXED.** The status block now states it
+once and correctly: three items closed, three newly opened.
+
+**A4-R9-9 -- MAJOR -- RESIDUAL -- MY LEDGER ARITHMETIC WAS WRONG, TWICE OVER. FIXED.** Per-round rows sum to
+**86** through round 8 (**4 CRITICAL / 63 MAJOR / 19 MINOR**); I reported **76**, whose own
+severities summed to **66**. **Carried into two return reports as convergence evidence.** A total
+used as evidence is itself evidence and gets checked like evidence; this one was not, in a document
+whose entire subject is claims that outrun what supports them.
+
+### Verdict
+
+`NEW_CRITICAL_MAJOR_FOUND`. **STOPPED BY INSTRUCTION -- round 10 is the gate-holder's call.**
+**Reviewer's judgement, asked for directly:** *"still yielding substantive design and evidence
+defects, especially around rollback observability, the 'covered risk' rationale, validation
+containment, and an uncovered corrector path. It has not converged to prose and bookkeeping only."*
+
+**TOTALS THROUGH ROUND 9: 95 findings -- 4 CRITICAL, 72 MAJOR, 19 MINOR. Zero reopened, zero
+reverted.** Re-derivable by the command in LEDGER CONVENTIONS at the head of this file; the
+class split is 22 NEW GROUND / 24 RESIDUAL / 49 CLASS-UNRECORDED.
+**Token spend: 3,086,359 across nine counted rounds; 3,403,156 including both disqualified attempts.**
+
+---
+
+## AMENDMENT PASS 3 (2026-09-07) -- RD ruled all three routed items; the other four round-9 findings fixed
+
+**Cell note:** this pass was executed by a FRESH implementer cell. The planning cell that ran rounds
+1-9 retired at 779,749 tokens of context. Everything below was re-derived from the artifacts on disk
+(the plan, this ledger, the nine transcripts, and the orchestrator's item-2 experiment script and
+preserved CPython source), not from a handoff summary.
+
+### The three routed items -- RULED
+
+**1. `A4-R9-2` -- BRANCH A SELECTED. RULE (i) GOES LITERAL ON BOTH PATHS.** The plan's two-round
+claim that *"the wrapper cannot see whether `__exit__`'s internal rollback raised"* is FALSE and is
+struck at every location. Mechanism as ruled: **`with conn:` stays byte-identical** (so option (b),
+hand-rolled transaction plumbing on the byte-locked money path, stays rejected) and the wrapper
+**inspects what propagates AND its `__context__` chain at the except site**; a detected rollback
+failure VOIDS the probe exactly as on the immediate path.
+
+**The measurements that selected it** (orchestrator-run, Python 3.14.2 / sqlite3 3.50.4; script and
+CPython source preserved at `~/swing-data/review-transcripts/22-a4-plan/`), now MEASURED (5)-(7) and
+SOURCE (S1) in the plan's S1.3:
+- a Python-level `rollback()` override installed via `sqlite3.connect(factory=...)` is **NOT
+  invoked** by the C-level `__exit__` -- banked as a fact about the test LEVER, since `factory=` is
+  the obvious reach for the next person who wants to intercept transaction control;
+- forcing a rollback failure on the block-error arm propagated **`OperationalError: interrupted`
+  with `__context__` set to the original `ValueError`** -- the failure reaches the caller, REPLACING
+  the propagating exception and preserving the original as context;
+- **a FAILED commit leaves `in_transaction` TRUE** -- the exit's rollback is real work, not a no-op.
+  RD: *this is the fact that makes the whole clause non-vacuous*, and it has its own line in the plan.
+
+**The one open residual was closed IN PARALLEL by the orchestrator, by source read, and the plan's
+S7.15 states the resulting evidence grade in one sentence as instructed: MEASURED-AT-SOURCE.**
+CPython v3.14.2 `Modules/_sqlite/connection.c`: `:2377` `pysqlite_connection_exit_impl`; `:2394-95`
+the comment *"Commit failed; try to rollback in order to unlock the database. If rollback also
+fails, chain the exceptions."*; `:2396` captures the COMMIT error; `:2397` calls **the identical
+rollback implementation as the block-error arm's `:2389`**; `:2399` `_PyErr_ChainExceptions1` on
+rollback failure; `:2403` re-raise of the commit error on rollback success. **The commit-fail arm is
+therefore cited, not inferred**, and the branch selection did not have to re-open.
+
+**2. `A4-R9-3` CLOSES STRUCTURALLY, AND RD'S 2026-09-06 ITEM-3 ACCEPTANCE IS SUPERSEDED.** Branch A
+removes the ADMITTING step the composition needed. **The supersession is stated explicitly in S7.15,
+S2.4, S9 CHARC item 8 and S9 RD item 3 -- one ruling governs this path, not two side by side.**
+
+**3. `A4-R9-4` -- "EQUALS the collision probability" corrected to a strict bound.** False
+confirmation is a strict SUBSET of the collision event (it additionally needs a rolled-back unsettled
+attempt, the colliding commit landing before that attempt's probe, and a ticker match), so S7.7 now
+declares **`P(false confirm) < P(collision)`**.
+
+### The four unfixed round-9 findings -- ALL FIXED
+
+- **`A4-R9-1`** -- the Python validator was not equivalent to the SQL CHECK. **FIXED by
+  single-sourcing:** one `validate_attempt_id` in `swing/data/repos/trades.py`, called by BOTH the
+  repo's pre-write guard AND `entry.py`'s `_begin_attempt_identity`, requiring `isinstance(str)` +
+  exact length + `uuid.UUID` parse + `version == 4` + canonical round-trip. (r3) grows from four
+  malformed values to SEVEN and (e2) from eight scenarios to twelve; **the three new cases each
+  defeat a DIFFERENT layer** -- the CHECK (NUL: Python length 36, SQL `length()` 35), the parameter
+  BINDING one layer below it (lone surrogate), and the UNIQUE index's exact text key (uppercase).
+- **`A4-R9-5`** -- the tier-3 override path reaches no preflight. **FIXED, and the scoping is the
+  argument:** the shared predicate gains a THIRD call site at the head of
+  `_apply_tier3_override_inner`, refusing ONLY the new immutable set. Calling
+  `_preflight_reserved_transitions` there instead is DECLINED, because it would newly refuse the
+  seven pre-existing reserved fields earlier on that path -- a behaviour change to shipped
+  functionality, i.e. the sweep CHARC's condition excluded. New test **(m8d)**, whose discriminator
+  is STATEMENT COUNTS rather than persisted state: the public entry point's own ROLLBACK erases the
+  state difference, so a state-only assertion would certify the backstop-only implementation.
+- **`A4-R9-6`** -- a rollback-journal measurement generalised to WAL. **FIXED in THREE places, not
+  one:** MEASURED (3) now names its journal mode; S2.2's *"blunter reason"* is withdrawn with its
+  reason (it holds for every `tmp_path` test database and NOT for the live WAL one, so the design
+  rests on the durable-ABSENT argument alone); and (k4b)'s *"BLOCKS OR FAILS"* claim disappears
+  entirely, because under Branch A the probe does not run at all.
+- **`A4-R9-7`** -- Task 3 could not reach green. **FIXED, and the class was re-swept rather than the
+  instance patched** (`A4-R7-2` and `A4-R8-3` are the same class): (k3b), (k4a) and (k4b) move to
+  Task 4 with the probe they need, **and the sweep found a FOURTH item the finding did not name** --
+  (k2)'s *"the probe is NOT called"* assertion, which also cannot exist in Task 3. Task 3 now states
+  what it is NOT doing.
+
+### What the per-location audit found that no round did
+
+**`swing/trades/reconciliation_auto_correct.py` -- the ONE module CHARC's condition widened the
+envelope by -- was ABSENT from S4's "Edited" manifest**, while Task 1b edits it and the Global
+Constraints name it. The roster-is-the-same-instrument-as-the-count class, on the roster this arc
+added expressly to make the widening visible. Added.
+
+### Instruments re-run
+
+- **Consistency sweep** (`plan_consistency_sweep.py`, updated for the new ids and the new fragile
+  counts): **clean -- 41 defined / 41 scheduled / 41 in the S4 manifest** (39 before; `(k3)` split
+  into `(k3a)`/`(k3b)` and `(m8d)` added).
+- **Per-location audit** (`per_location_audit.py`, written for this pass): **38 probes, 0 failing.**
+  Both instruments are preserved at `~/swing-data/review-transcripts/22-a4-plan/`.
+- **Ledger normalization:** see the LEDGER CONVENTIONS block at the head of this file. 95 findings
+  now carry ONE header shape and the totals are re-derivable by a one-line command.
+
+---
+
+## Round 10 -- RAN ON THE AMENDED SHAPE. IT DID NOT CONVERGE.
+
+### Transport note -- ONE DEAD ATTEMPT, ZERO TOKENS, NOT A ROUND
+
+First invocation `wsl.exe bash /mnt/c/.../.codex-run-r10.sh` produced
+`bash: C:/Program Files/Git/mnt/c/.../.codex-run-r10.sh: No such file or directory` with harness
+**exit 0** -- the MSYS path-mangling mechanism, hitting the argument that begins with `/`, exactly as
+this ledger's round-1 note records. **The two-signal rule caught it** (exit reported success; the
+transcript was 0 bytes). Working form re-applied from that note:
+`MSYS_NO_PATHCONV=1 wsl.exe bash -lc 'bash /mnt/c/.../run.sh'` -- the `-c` STRING begins with `bash`,
+so no argument MSYS parses begins with `/`. **No transcript, no footer, 0 tokens; not counted.**
+*Worth recording twice in one loop: the remedy was already written down and was not applied on the
+first try, which is what a hazard note is for.*
+
+### Mechanical assertions -- ALL FIVE PASS
+
+model `gpt-5.6-sol`; effort `high`; `^ERROR` = **0**; `^tokens used` = **1** (**392,163**);
+`^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0**. Exit **0** MEASURED (the
+runner writes the exit file only after codex returns); transcript **1,145,895 bytes**, non-empty;
+process exit confirmed. Reviewer self-report: "No safety-layer refusal or rewrite occurred."
+**Scratch isolation verified:** `.copowers-findings.md` and every prior `.codex-review-r*.txt` were
+moved OUT of the worktree for the duration; the nine transcript hits on `codex-review-r|copowers`
+are all prompt echo or plan/CLAUDE.md text, none a file read.
+Artifact frozen at sha256 `b61364441a8deb56427c0df22f1f3edbb8d2815d93ab2fcf2b3a06bc26265c5b`
+(251,214 bytes), commit `c3295386`.
+
+### Counts
+
+**7 findings: 1 CRITICAL, 5 MAJOR, 1 MINOR. 1 NEW GROUND, 6 RESIDUAL. Zero reopened, zero reverted.**
+
+**NOTHING BELOW IS FIXED.** The dispatch instruction was to run this round and STOP whatever it
+returned; the gate-holder owns round 11. Four of the seven are residuals of THIS amendment pass's
+own edits, two bear on director ruling text, and one is refuted below.
+
+**A4-R10-1 -- CRITICAL -- RESIDUAL -- the amended predicate is not fail-closed, and the plan says so
+in one place while claiming structural closure in another.** `_exit_rollback_failed` keys on
+`isinstance(context, sqlite3.Error)`, so a non-`sqlite3.Error` commit failure followed by a rollback
+failure returns False -- the residue S2.2 and S7.15 DECLARE -- and the reviewer composes that residue
+with S7.7's accepted collision event to rebuild `A4-R9-3`'s false SUCCESS. **ASSESSED CORRECT as a
+contradiction:** the plan cannot both declare that residue and say the composition window has "no
+admitting step left". **NOT FIXED, AND IT ROUTES:** the remedy the reviewer names -- a bare
+`__context__ is not None` test -- is the shape S2.2 rejects by argument (it fires on every caller
+running inside an `except` block, silently disabling clause 2 in production), so choosing between a
+narrower residue and a broader false-positive set is a RULING ON RD's OWN MECHANISM, not an author's
+call. The alternative he offers second is option (b), which RD rejected twice.
+
+**A4-R10-2 -- MAJOR -- RESIDUAL -- `P(false confirm) < P(collision)` is not established.** Event
+containment gives the non-strict form; strictness needs a probability model assigning positive mass
+to the difference, and the three extra conditions may not be multiplied without an independence
+claim (a single-ticker workload makes the ticker conjunct 1). **ASSESSED CORRECT.** **NOT FIXED:**
+this is the THIRD statement of a sentence RD owns, and the correction he issued on 2026-09-07 was
+itself the second. The non-strict form is the safe one; the discrepancy is his to settle.
+
+**A4-R10-3 -- MAJOR -- RESIDUAL -- Task 3 now ships `_exit_rollback_failed` with NO test that
+exercises it.** `(k)` is the ordinary resolved path; `(k2)` gets `cleanup_raised` from
+`_observe_resolution`'s own raising retry, so it passes with the predicate deleted; `(k3a)` is an AST
+walk. **Task 3 goes green against a predicate that always returns False.** **ASSESSED CORRECT, AND IT
+IS THE FOURTH INSTANCE OF THE CLASS THIS LOOP HAS PAID FOR** (`A4-R7-2`, `A4-R8-3`, `A4-R9-7`, now
+this) -- and the first three were all fixed by MOVING tests later, which is precisely what created
+this one. **The class is not "a task schedules a test it cannot run"; it is "the plan schedules tests
+by artifact rather than by the assertion each one makes."** A predicate-signal test needs no probe
+and belongs in Task 3; only the zero-call and settlement assertions need Task 4. **NOT FIXED.**
+
+**A4-R10-4 -- MAJOR -- RESIDUAL -- and the half about `tmp_path` is MY OWN AMENDMENT'S FACTUAL
+ERROR, VERIFIED AT THE CODE.** S2.2's new correction says the rollback-journal blocking reason holds
+for "every `tmp_path` test database". **FALSE:** `ensure_schema` (`swing/data/db.py:2211`) opens
+via `open_connection(db_path, reaffirm_wal=True)` and `open_connection:131` executes
+`PRAGMA journal_mode=WAL`, so a test database built the normal way is **WAL**. Only `(c2)`'s
+explicitly configured fixture is rollback-journal. **I fixed an over-generalisation by writing a
+different over-generalisation in the same paragraph.** The reviewer's other half -- that MEASURED
+(2)'s "readers never block" is itself broader than the experiment, since WAL can still return
+`SQLITE_BUSY` on exclusive locking, recovery and last-connection cleanup -- is also correct and is
+older text this pass did not touch. **NOT FIXED.**
+
+**A4-R10-5 -- MAJOR -- NEW GROUND -- REFUTED ON THE EVIDENCE, and the underlying fragility is real.**
+The claim is that `pysqlite_connection_exit_impl` sits at 2211-2243 in official CPython v3.14.2, so
+the plan's 2377-2403 citation is unreproducible. **MEASURED AGAINST THE FILE THE CITATION WAS
+TAKEN FROM** (`~/swing-data/review-transcripts/22-a4-plan/cpython-3.14.2-Modules-_sqlite-connection.c`,
+2,717 lines, sha256 `7487db46afbdbb93681a508ec33c65f87d6460079f1564d1b6310b6d8d23d09c`):
+line 2377 IS `pysqlite_connection_exit_impl`; 2394-95 IS the "Commit failed; try to rollback"
+comment; 2396, 2399 and 2403 are `PyErr_GetRaisedException`, `_PyErr_ChainExceptions1` and
+`PyErr_SetRaisedException` exactly as cited. Line 2211 in that file is inside `create_collation`.
+**The round ran `sandbox: read-only` with `approval: never` and made no network call in its
+transcript, so its counter-line-numbers are not themselves sourced.** **BUT THE FINDING IS WORTH
+ACTING ON ANYWAY:** a line-numbered citation to a file that is NOT IN THE REPOSITORY is
+unverifiable by any reviewer, which is how it drew a confident refutation. **Proposed fix, NOT
+APPLIED:** anchor the citation on CONTENT (the function name plus the verbatim comment) and pin the
+file by the sha256 above, keeping line numbers only as a convenience.
+
+**A4-R10-6 -- MAJOR -- RESIDUAL -- MY AMENDMENT BROKE A COUNT IT DID NOT TOUCH.** (e2) requires
+hostile-sink coverage at "each of the THREE contained-WARNING sites" in
+`_begin_attempt_identity`. My `A4-R9-1` edit collapsed the separate malformed-return warning into
+the `validate_attempt_id` call inside the existing `try`, leaving **TWO** sites. The executor is now
+told to cover three branches, one of which no longer exists. **ASSESSED CORRECT.** **NOT FIXED.**
+
+**A4-R10-7 -- MINOR -- RESIDUAL -- the version-mirror family is "SIX spellings" in S1.6/S4 and "a
+SEVENTH SPELLING" in Task 1** (`A4-R7-12`'s fix, propagated to one location). Pre-existing, not
+touched by this pass. **NOT FIXED.**
+
+### Reviewer's judgement, asked for directly
+
+"The plan is still yielding substantive DESIGN and EVIDENCE defects, not merely prose and
+bookkeeping. In particular, the amended predicate retains a director-forbidden read and a
+false-confirm composition, while the probability, journal-mode, and source claims remain unsound."
+
+### Verdict
+
+`NEW_CRITICAL_MAJOR_FOUND`. **STOPPED BY INSTRUCTION. Round 11 is the gate-holder's call.**
+
+**TOTALS THROUGH ROUND 10: 102 findings -- 5 CRITICAL, 77 MAJOR, 20 MINOR.** Re-derivable by the
+command in LEDGER CONVENTIONS; class split 23 NEW GROUND / 30 RESIDUAL / 49 CLASS-UNRECORDED.
+Zero reopened, zero reverted across all ten counted rounds.
+**Token spend: 3,478,522 across ten counted rounds** (3,086,359 + 392,163);
+**3,795,319 including the three disqualified/dead attempts** (round 1 attempt 1: MSYS mangling,
+0 tokens; round 9 attempt 1: provider capacity, 316,797 tokens; round 10 attempt 1: MSYS mangling,
+0 tokens).
+
+---
+
+## THE 2026-09-07 SETTLING SWEEP -- **UNCOUNTED. No Codex, no round number, NO effect on convergence.**
+
+Ruled by the gate-holder after round 10 returned **6 of 7 findings RESIDUAL**, four of them
+residuals of the amendment pass written the same day. The recipe's Expansion-#13 provision
+(`harness-architecture.md` §5.1). RD's two round-10 rulings were applied first, then the artifact
+was swept, then ONE confirming round ran on the settled shape (round 11, below).
+
+**Commits:** `1d2be8af` (RD's two rulings + the citation rule), `18cdf08e` (`SS-9` + the bookkeeping
+the previous commit owed), `9e59416c` (`SS-10`/`SS-11`/`SS-12`), `778ebe20` (`SS-13`/`SS-14`),
+`44149979` (`SS-15`/`SS-16`), `e76e4e1d` (the S11 record).
+
+**SS-9 -- WOULD HAVE BEEN CRITICAL/MAJOR -- applying RD's PIN 1 naively widened the arc onto a
+pre-arc failure branch.** Removing `body_completed` removed the scope condition
+`_entry_transaction`'s deferred handler used; the first edit answered that by calling
+`_observe_resolution` UNCONDITIONALLY there, which reaches the deferred BODY-RAISE branch and, where
+`__exit__`'s own rollback also failed, would issue a rollback that path never issued. 22-A LOCK
+clause (c)'s subject. **Fix:** both deferred observations moved to `record_entry`'s handler, which
+raises at `result is None` first; `_entry_transaction`'s `if not immediate:` branch is now LITERALLY
+UNEDITED and (k3a) asserts it by AST.
+
+**SS-10 -- residual.** S1.4 still said the arc adds "the three NEW observation fields" to the
+deferred path.
+
+**SS-11 -- THREE stale in-repo line anchors,** found by `citecheck.py` (resolves all 54 in-repo
+`file.py:N` citations and prints what each lands on). `entry.py:1128` is `conn.rollback()`, not the
+immediate path's `outcome.committed = True` (`:1107`); `entry.py:880` is inside a comment block, not
+the shipped guard (`:884`) -- **and `:880` is the number this dispatch's own PIN 1 was relayed with,
+so it had propagated to three sites before the sweep caught it**; `entry.py:1489` is one line above
+the UNIQUE mapper.
+
+**SS-12 -- the in-repo twin of `A4-R10-5`.** S8 item 4 cited FOUR anchors for "the four pre-commit
+logging calls in `_record_entry_inner`". That function begins at `:1166`; all four pointed into
+`record_entry`, and **not one of them is a logging call**. MEASURED by AST walk: `:1227`, `:1295`,
+`:1306`, `:1321`. **The COUNT was right and every ANCHOR was wrong.** Global Constraints gained the
+in-repo corollary of the citation rule: every `file.py:N` citation NAMES THE SYMBOL.
+
+**SS-13 -- `A4-R10-3`'s generalisation turned into an INSTRUMENT** (`assertion_schedule_audit.py`)
+rather than a paragraph. **SS-14 -- what it caught on its first run, in a row this sweep had added
+four hours earlier:** (k3a)'s ordering assertion named a Task-4 function while scheduled in Task 3,
+and **its failure mode is a VACUOUS PASS** -- an AST walk asserting an ORDERING finds no node,
+therefore finds no ordering to violate, and reports success.
+
+**SS-15 -- residual.** S3's roster still described (k3a)/(k3b) as asserting the assignment is
+"inside the protected suite on BOTH paths", false one commit after `SS-9`.
+
+**SS-16 -- "THREE call sites" turned into a CLOSURE with its method.** AST walk + raw-SQL grep:
+`_update_journal_field` has exactly four callers and is the ONLY site writing an operator-supplied
+journal field, so the backstop IS the closure. **The finding behind the finding:** the plan's whole
+argument for the tier-3 early check is that its INSERT comes first, and nobody had checked whether
+the other surfaces share that shape. They do not, for a different reason each.
+
+**AND ONE CORRECTION AGAINST THE RULING THIS PASS WAS APPLYING, MEASURED RATHER THAN INHERITED.**
+`A4-R10-1` was relayed with the rationale that a cleanly-completed block leaves `__context__` None,
+so the ambient-`except` false positive lives entirely in the excluded region. **MEASURED, CPython
+3.14.2 / sqlite3 3.50.4:** it does not -- `__context__` is set from the THREAD's handled exception,
+so a caller inside an `except` still produces a non-None context on the commit-failed/rollback-OK
+row, and the removed type filter would have caught it. The DECISION stands on its other leg; the
+REASON is now the measured one, and (RD-a4) drives the cost as a test.
+
+---
+
+## Round 11 -- THE ONE CONFIRMING ROUND ON THE SETTLED ARTIFACT. IT DID NOT CONVERGE.
+
+### Transport
+
+Working form applied on the FIRST attempt this time (`MSYS_NO_PATHCONV=1 wsl.exe bash -lc 'bash
+/mnt/c/.../.codex-run-r11.sh'`, LF-verified runner, output and exit files pre-created
+Windows-side). **No dead attempts.** codex-cli **0.152.1**.
+
+### Mechanical assertions -- ALL FIVE PASS
+
+model `gpt-5.6-sol`; effort `high`; `^ERROR` = **0**; `^tokens used` = **1** (**509,364**);
+bare-line `^NEW_CRITICAL_MAJOR_FOUND` = **2** (0.152.1 emits the final message twice),
+bare-line `^NO_NEW_CRITICAL_MAJOR` = **0**. Exit **0** MEASURED (the runner writes the exit file only
+after codex returns); transcript **1,606,610 bytes**, non-empty. Reviewer self-report: *"No
+safety-layer refusal or rewriting occurred."*
+**Scratch isolation VERIFIED AND STRONGER THAN A PROHIBITION THIS ROUND:** `.copowers-findings.md`
+and every prior `.codex-*` file were MOVED OUT of the worktree for the duration, so they were not
+merely forbidden but absent. The transcript's 30 hits on `codex-review-r|copowers` are prompt echo
+plus **two `rg` invocations that EXCLUDE them** (`--glob '!.codex*'`, `rg -v`). No read.
+Artifact frozen at sha256 `c92a39535d6609ce7a9436303d83666c7a0a66361fc1a2b80b9420cfa50c7e76`
+(297,089 bytes), commit `e76e4e1d`.
+
+### Counts
+
+**14 findings: 1 CRITICAL, 11 MAJOR, 2 MINOR. 8 NEW GROUND, 6 RESIDUAL. Zero reopened, zero
+reverted.** *(The class split is DERIVED by the LEDGER CONVENTIONS command, not stated from memory:
+a first draft of this block said "7 NEW GROUND, 7 RESIDUAL" and the command said 8/6 -- and three of
+the fourteen headers did not match the regex at all, so the same draft's totals read 113 where they
+should read 116. **`A4-R9-9`'s defect, live again in the block written to prevent it, caught by the
+command that block installed.** Both are corrected here rather than quietly, because a total used as
+evidence is evidence.)*
+
+**NOTHING BELOW IS FIXED.** The dispatch instruction was to run ONE confirming round and STOP
+whatever it returned; round 12 is the gate-holder's call. Each finding is adjudicated below, and the
+cheap factual ones were VERIFIED BY EXECUTION rather than accepted or dismissed.
+
+**A4-R11-1 -- CRITICAL -- NEW GROUND -- the bare `__context__` read is defeated by a subclass data
+descriptor, and I REPRODUCED IT.** `escaping.__context__` is an ordinary attribute lookup; a
+`sqlite3.OperationalError` subclass may define `__context__` as a property. **MEASURED, this
+machine, CPython 3.14.2:** with the commit error chained beneath, `escaping.__context__ is not None`
+reads **False** while `BaseException.__dict__["__context__"].__get__(e, type(e))` reads the
+`OperationalError` -- a **FALSE NEGATIVE**, which sets `resolution = not_needed` with
+`cleanup_raised` False, ADMITS the probe, and rebuilds exactly the `A4-R9-3` window RD's ruling
+declared structurally closed. A second subclass whose getter RAISES replaced the escaping exception
+(`RuntimeError: getter exploded`). **ASSESSED CORRECT.** Two things make it sharper than its
+reachability: **(a)** the plan's post-ruling text upgraded the claim to *"false negatives
+structurally impossible within its scope"*, and that sentence is now false -- the removal of the
+type filter was sold partly on it; **(b)** this repository ALREADY documents the class one function
+away (`swing/trades/entry.py:112-125`, `safe_text`, whose docstring says *"an exception class
+overriding `__repr__` (and `__str__`) to raise is constructible"*) -- **so the plan reasoned about a
+hostile exception's FORMATTING and not about its ATTRIBUTES, in the same file.** The reviewer's
+correction (read the base slot, contain a raising read in the alarm direction, add Task-3 subclass
+rows) is cheap and does not touch the ruling's shape. **NOT FIXED.**
+
+**A4-R11-2 -- MAJOR -- NEW GROUND -- a cheaper discriminator for the ambient-`except` false positive
+exists and was not weighed.** Capture `sys.exception()` in `record_entry` BEFORE `_entry_transaction`;
+on rollback-success the re-raised commit error's context IS that captured ambient object, on rollback
+failure the escaping rollback error's context is the COMMIT error. Excluding exactly that identity
+removes the measured false positive with no type filter and no touch to `with conn:`. **ASSESSED
+CORRECT AS A DESIGN OPTION, AND IT ROUTES:** it modifies a predicate RD ruled the shape of two days
+running, and it reverses (RD-a4)'s expected outcome. The reviewer also argues the direction argument
+is understated -- a false positive reports failure over a DURABLE entry, the retry-inducing
+direction -- which is a fair challenge to a reason this pass wrote. **NOT FIXED; it is RD's.**
+
+**A4-R11-3 -- MAJOR -- RESIDUAL -- (of this sweep's own `SS-9` fix) the two observations are in the
+WRONG ORDER.** The handler calls `_observe_resolution` and THEN `_exit_rollback_failed`. Where
+`__exit__`'s rollback raised BEFORE taking effect, `_observe_resolution` finds `in_transaction` True
+and **calls `rollback()` again on the wounded connection** -- and (k4b) explicitly expects that
+retry. Rule (i) as RD stated it is *"the connection is DISCARDED and NO read is attempted on it"*;
+operating on it before detecting the failure is not that. **ASSESSED CORRECT.** *The relocation was
+right and its ORDERING was inherited from the frame it moved out of, unexamined.* **NOT FIXED.**
+
+**A4-R11-4 -- MAJOR -- RESIDUAL -- the shared `_observe_resolution` cannot preserve the immediate
+ladder, and the plan's own pseudocode never calls it.** Task 3 says the helper owns a rollback,
+contains its failure and does not change what escapes; the shipped immediate ladder must LOG that
+exact cleanup exception and `raise cleanup_error from write_error` (`entry.py:1126-1163`). The two
+cannot both hold. **ASSESSED CORRECT -- and it is worse than a contradiction the reviewer found,
+because THIS PASS SAW THE TENSION AND WROTE A SENTENCE INSTEAD OF RESOLVING IT** (S2.2 now says the
+helper is "shown INLINE below rather than as a call, because what it does is the point"). That is
+the shape of an explanation standing in for a design. The reviewer's correction -- separate a
+non-mutating `_read_resolution` from the deferred cleanup retry -- also dissolves `A4-R11-3`.
+**NOT FIXED.**
+
+**A4-R11-5 -- MAJOR -- RESIDUAL -- (of `SS-9`) Task 3 cannot reach its own specified green state.**
+Task 3 says the existing combined guard `if result is None or not outcome.committed: raise`
+(`entry.py:884`) stays UNSPLIT, while (k3a)'s Task-3 half requires the observation to sit AFTER the
+`result is None` raise. With the guard intact, an observation after it is unreachable whenever
+`committed` is False, and one before it violates the asserted ordering. **ASSESSED CORRECT.**
+**This is the schedule/reachability class AGAIN, at instance five, produced by the fix for instance
+four** -- and my own `assertion_schedule_audit.py` is blind to it, because it detects a test
+scheduled before a SYMBOL exists and this is a test scheduled against a CODE SHAPE the task
+declines to create. **NOT FIXED.**
+
+**A4-R11-6 -- MAJOR -- RESIDUAL -- Task 3 ships the IMMEDIATE path's observation semantics with no
+in-task discriminator.** Task 3's rows are all deferred-path ((k), (k2), (k5)) plus the structural
+(k3a); the only row distinguishing the returning-arm re-read, `rolled_back` vs `still_open`, and
+`cleanup_raised` after an immediate rollback failure is **(RD-a1), scheduled wholly in Task 4** --
+and its OBSERVATION halves need no probe. A naive Task-3 implementation assigning `rolled_back`
+whenever `rollback()` returns reaches Task-3 green. **ASSESSED CORRECT, and it is the exact rule
+this sweep wrote, failed on the OTHER path.** The sweep split (k4a)/(k4b) for the deferred path and
+never asked the same question of the immediate one. **My instrument cannot see this direction
+either** -- it detects scheduled-too-early, not code-shipped-without-a-discriminator, which is the
+direction that matters. **NOT FIXED.**
+
+**A4-R11-7 -- MAJOR -- NEW GROUND -- four Task-4 design requirements have NO discriminating
+assertion:** nothing captures `open_connection(..., busy_timeout_ms=2000)` (omitting it silently
+restores the project's 30-second default on a money-path failure); nothing forces `close()` to raise
+AFTER a successful read (a naive `finally: probe.close()` discards a valid result and forces the
+alarm); nothing returns a row with the right token and the WRONG ticker (so omitting the ticker
+corroboration passes every listed row -- **and S7.7's whole same-ticker bound rests on that
+corroboration**); nothing drives a landed lost commit with `attempt.token is None`. **ASSESSED
+CORRECT.** **NOT FIXED.**
+
+**A4-R11-8 -- MAJOR -- NEW GROUND -- (m3) does not prove `run_migrations` INVOKES the backup gate,
+nor pin the expected-table set.** A disconnected helper, or a set omitting one of 0037's three
+tables, passes -- and S6's live witness compares the backup against "the expected set", making that
+check self-confirming rather than independent. **ASSESSED CORRECT, and it is the most consequential
+of the MAJORs for the LIVE database**, which crosses this migration once, holding real
+money-bearing trades. **NOT FIXED.**
+
+**A4-R11-9 -- MAJOR -- NEW GROUND -- I CANNOT SETTLE IT FROM HERE; REPORTED UNRESOLVED.** The
+reviewer states official CPython v3.14.2's `connection.c` has **2,532 lines** with
+`pysqlite_connection_exit_impl` at **2211-2243** -- the same numbers round 10 gave, and the reason
+`A4-R10-5` was refuted. **What I can establish:** the preserved file at
+`~/swing-data/review-transcripts/22-a4-plan/cpython-3.14.2-Modules-_sqlite-connection.c` is 2,717
+lines, sha256 `7487db46...`, and at `:2377`/`:2394-95`/`:2396`/`:2399`/`:2403` says exactly what the
+plan quotes -- **verified twice, by two different people, against THAT FILE.** **What I cannot
+establish is that THAT FILE IS THE OFFICIAL v3.14.2 SOURCE.** The round ran `sandbox: read-only`
+with `approval: never` and made no network call, so its counter-numbers are unsourced too; and the
+preserved copy sits outside the worktree, so the reviewer could not open it. **Two rounds agreeing
+is not two sources agreeing.** The digest pins WHICH FILE was read; it does not pin WHOSE. That is
+precisely the gap `A4-R10-5`'s adopted rule was supposed to close and does not. **The semantic
+branch is not in dispute** -- both sides agree the commit-failed branch chains on rollback failure
+and re-raises on rollback success, which is all SOURCE (S1) is used for -- **so the exposure is
+provenance, not behaviour.** Settling it needs a network fetch of the tagged file, which this cell
+cannot make. **NOT FIXED; ROUTED with the method that would settle it.**
+
+**A4-R11-10 -- MAJOR -- NEW GROUND -- the probe can CREATE a database. VERIFIED AT THE CODE.**
+`open_connection` calls bare `sqlite3.connect(db_path_or_uri, uri=uri, ...)` (`swing/data/db.py:126`),
+which creates the file when absent. If the database path is moved or renamed between capture and
+probe, the confirming READ writes an empty database and then answers ABSENT -- a filesystem artifact
+created on an already-failing money path, by the mechanism whose entire purpose is to observe
+without acting. **`open_connection`'s OWN DOCSTRING names the remedy** (*"callers can pass a
+`file:...?mode=rw` URI and KEEP fail-closed semantics"*), and the plan's probe does not use it.
+**ASSESSED CORRECT.** **NOT FIXED.**
+
+**A4-R11-11 -- MAJOR -- NEW GROUND -- the S1.6 below-HEAD census misclassifies six of seven call
+sites. VERIFIED BY GREP.** `tests/trades/test_22a_task4_authorization_ladder.py` contains
+`record_entry` **only in explanatory prose at `:277`** and never calls it;
+`test_22a_task6a_competitor_liveness.py` and `test_22a_task3_epoch_reader.py` contain **zero**
+`record_entry` hits. **Only `test_22a_task9_entry_wiring.py:89` among the seven actually drives the
+service**, so the stated reason for advancing six fixtures to production HEAD does not hold for
+them. **ASSESSED CORRECT.** *The census's own text says the manifest is the greps plus a READ of
+every hit; the reason attached to the hits was not re-derived per file.* **NOT FIXED.**
+
+**A4-R11-12 -- MAJOR -- NEW GROUND -- "the live database is WAL" is INFERRED, not MEASURED, and the
+plan says both.** Global Constraints states the live database was NOT opened by this plan; the
+journal-mode reading is of a `tmp_path` database built through `ensure_schema`. That establishes
+CONSTRUCTION behaviour, not the live file's current mode. **ASSESSED CORRECT -- and it lands
+squarely on ground this sweep just worked** (`A4-R10-4`), where I measured which FIXTURE shapes are
+WAL and did not notice that the LIVE claim beside them has the same defect one level up. The
+remedy is cheap and belongs in S6's pre-migration witness: add `PRAGMA journal_mode` to the
+operator's steps and relabel until it is recorded. **NOT FIXED.**
+
+**A4-R11-13 -- MINOR -- RESIDUAL -- `_RESERVED_JOURNAL_FIELDS` is "five" in S1.1 and "SEVEN" in
+Task 1b. MEASURED: SEVEN**, spanning `:178-196` (both the S1.1 range `:178-183` and Task 1b's
+`:178-190` are short). **ASSESSED CORRECT.** **And my own `plan_consistency_sweep.py` HAS a probe
+for this exact number and passed** -- it asserts the string `**SEVEN** members` is PRESENT, which
+Task 1b satisfies, and it cannot see a contradicting site elsewhere. **A presence probe is not a
+consistency probe**, and that distinction is the same one `A4-R10-4` was about. **NOT FIXED.**
+
+**A4-R11-14 -- MINOR -- RESIDUAL -- S2.3 says "Task 5 pins" the fresh connection; the test is
+(RD-a2) in Task 4, and Task 5 is documentation-only.** **ASSESSED CORRECT.** **NOT FIXED.**
+
+### Verdict
+
+`NEW_CRITICAL_MAJOR_FOUND`. **STOPPED BY INSTRUCTION AFTER ONE ROUND. Round 12 is the
+gate-holder's.**
+
+### What this round says about the settling step, stated against my own interest
+
+**The sweep did not make the artifact clean and the round proves it.** But the composition changed in
+a way a count hides: round 10 was **6 of 7 RESIDUAL**; round 11 is **8 NEW GROUND, 6 RESIDUAL** --
+and **four of the six residuals are residuals of THIS SWEEP'S OWN EDITS** (`A4-R11-3`, `-4`, `-5`,
+`-6`; `-13` and `-14` are older). So the wake did not disappear; it moved. **What the sweep
+bought is the eight NEW-GROUND findings** -- a base-slot descriptor hole, a probe that can create a
+database, a backup gate nothing proves is wired, a census whose reason does not hold for six of
+seven sites, an inferred journal mode called measured, four unpinned Task-4 requirements, and a
+provenance gap -- **none of which any of ten prior rounds reached**, and several of which sat behind
+the residue those rounds were spending themselves on.
+
+**Two of my three instruments were blind to the two findings closest to their own subject.**
+`assertion_schedule_audit.py` detects a row scheduled before a SYMBOL exists and cannot see
+`A4-R11-5` (a row scheduled against a code SHAPE its task declines to create) or `A4-R11-6` (code
+shipped with no in-task discriminator at all -- the direction that actually matters).
+`plan_consistency_sweep.py` holds a probe for the very number `A4-R11-13` reports and passes,
+because it checks PRESENCE of the right value and not ABSENCE of a wrong one. **Both are recorded
+here rather than quietly improved, because an instrument's blind spot is worth more written down
+than patched by the person who built it.**
+
+**TOTALS THROUGH ROUND 11: 116 findings -- 6 CRITICAL, 88 MAJOR, 22 MINOR.** Re-derivable by the
+command in LEDGER CONVENTIONS. Zero reopened, zero reverted across all eleven counted rounds.
+**Token spend: 3,987,886 across eleven counted rounds** (3,478,522 + 509,364);
+**4,304,683 including the three disqualified/dead attempts.** Round 11 had **no dead attempt** --
+the working invocation was applied first, which this loop had failed to do twice.
+
+---
+
+## THE 2026-09-07 FIX LEG -- **NOT A ROUND. NO CODEX RAN.**
+
+**Authorization, stated first:** the operator authorized **the fix leg, then a gate with a
+disposition.** A twelfth counted round requires his WRITTEN authorization and does not exist. **No
+Codex invocation was made in this leg and no prompt was prepared for one.** Convergence state is
+UNCHANGED: eleven counted rounds, last verdict `NEW_CRITICAL_MAJOR_FOUND`.
+
+**Why a fresh cell:** the settling-sweep cell that ran round 11 measured **446,282** against the
+400K cap. Re-dispatch off the committed plan plus the preserved per-round evidence is the recipe's
+normal outcome past the cap.
+
+### Disposition of every open round-11 finding -- 13 FIXED, 1 ROUTED, 0 banked
+
+| finding | sev | disposition | where it landed |
+|---|---|---|---|
+| `A4-R11-1` | CRITICAL | **FIXED** | `_CONTEXT_SLOT` + base-slot read + ALARM-direction containment (S2.2); the "structurally impossible" sentence STRUCK; **(k7a)-(k7b)** added in Task 3 |
+| `A4-R11-2` | MAJOR | **FIXED (RD's ruling adopted, 3/3 conditions)** | capture point + `is`-identity (S2.2); **(RD-a4) rebuilt as a FOUR-ROW MATRIX** computed under both paths; containment covers the context read |
+| `A4-R11-3` | MAJOR | **FIXED (dissolved)** | the deferred retry is GONE -> pre-arc behaviour restored; order is DETECT then READ |
+| `A4-R11-4` | MAJOR | **FIXED** | `_read_resolution(conn, *, attempted)` NON-MUTATING; the immediate ladder keeps `raise cleanup_error from write_error`, pinned by **(k6b)** |
+| `A4-R11-5` | MAJOR | **FIXED** | Task 3 SPLITS the pre-arc gate (behaviour unchanged); (k3a) asserts the split itself |
+| `A4-R11-6` | MAJOR | **FIXED** | **(k6a)-(k6b)** -- the immediate path's Task-3 discriminators, no probe, no `record_entry` |
+| `A4-R11-7` | MAJOR | **FIXED** | **(pr1)-(pr4)** |
+| `A4-R11-8` | MAJOR | **FIXED** | **(m3a)/(m3b)/(m3c)**; the gate proven INVOKED **and LOAD-BEARING**; S6 compares the backup against a LIVE before-image, not the constant |
+| `A4-R11-9` | MAJOR | **ROUTED** | S8 item 8 -- provenance, unsettleable without network; exposure narrowed by measurement; settling method written down |
+| `A4-R11-10` | MAJOR | **FIXED** | **(pr5)** + the `file:...?mode=rw` URI open (S2.3), VERIFIED BY EXECUTION |
+| `A4-R11-11` | MAJOR | **FIXED** | the below-HEAD census re-measured per file as a CALL-count table (S1.6) |
+| `A4-R11-12` | MAJOR | **FIXED** | INFERRED-WAL at both sites; S6 step 0 asks `PRAGMA journal_mode` |
+| `A4-R11-13` | MINOR | **FIXED** | SEVEN at `:178-196`, both sites; sweep gained CONTRADICTION probes |
+| `A4-R11-14` | MINOR | **FIXED** | S2.3 points at **(RD-a2) in Task 4** |
+| `SS-17` | uncounted | **FIXED** | the `insert_trade_with_event` grep's REAL output: NINE hits, one of them a call |
+
+### The (RD-a4) matrix, MEASURED BY EXECUTION (CPython 3.14.2 / sqlite3 3.50.4)
+
+Script preserved at `~/swing-data/review-transcripts/22-a4-plan/rd-a4-matrix-measurement.py`.
+
+```
+inside_except  chained |            __context__ | ctx is ambient |  BARE |  POST
+        False    False |                   None |          False | False | False
+        False     True | OperationalError(commit failed) |      False |  True |  True
+         True    False | ValueError(the ambient handled exception) |  True |  True | False
+         True     True | OperationalError(commit failed) |      False |  True |  True
+
+    LyingContext | base-slot ctx = OperationalError | BARE = False | POST = True
+  RaisingContext | base-slot ctx = OperationalError | BARE = RAISED RuntimeError: getter exploded | POST = True
+```
+
+**Row 3 is the entire delta.** Rows 1, 2 and 4 are identical under both predicates, which is the
+matrix stating in its own shape that the amendment is narrow -- and row 4 is what shows the nested
+case composes without a branch.
+
+### A PREMISE CORRECTION AGAINST THE RULING THIS LEG APPLIED
+
+The ruling was relayed naming **`sys.exception()`**. That is **Python 3.12+**, and
+`pyproject.toml:9` declares `requires-python = ">=3.11"` (MEASURED by reading the file). The plan
+specifies **`sys.exc_info()[1]`**, the same object inside the declared floor. A plan that had
+adopted the NAME rather than the BEHAVIOUR would have shipped a 3.11 `AttributeError` on the money
+path.
+
+### Instruments -- all four re-run clean; two strengthened where round 11 found them blind
+
+`plan_consistency_sweep.py` **53/53/53 clean** (+ a CONTRADICTION table: absence of the WRONG value,
+which is the `A4-R11-13` blindness) - `per_location_audit.py` **120 probes, 0 failing** (38 -> 70 ->
+120) - `assertion_schedule_audit.py` **53 rows, 0 naked symbols, 6 read-and-reasoned prose hits**
+(+ the INVERSE check, + a BLIND-SPOT declaration printed every run) - `citecheck.py` **71 citations,
+0 unresolved** (widened `.py` -> `.py|.sql|.toml`).
+
+**THE INVERSE CHECK'S FIRST RUN INDICTED THIS LEG:** `_CONTEXT_SLOT` shipped in Task 3 with its only
+discriminator in Task 4 -- `A4-R11-6`'s class inside the fix for `A4-R11-1`. That is what produced
+(k7a)-(k7b). **And `citecheck.py`, once widened, caught two of this leg's own anchors** off by one
+and four lines.
+
+**WHAT THE INSTRUMENTS STILL CANNOT SEE, printed on every run rather than patched over:** a row
+scheduled against a code SHAPE its task declines to create (`A4-R11-5` -- a shape is not a symbol);
+a PATH-level discriminator gap (`A4-R11-6` itself -- the inverse check is satisfied by a row on the
+OTHER path); and whether an assertion DISCRIMINATES at all, since the instrument reads prose.
+
+### Gates
+
+Four commits, `3548577c..24928c2f`, **all trailers empty**. **One file changed** (873 insertions,
+216 deletions) -- the plan; no production code. `ruff check swing/` **All checks passed**.
+
+---
+
+## `A4-R11-9` — **SETTLED 2026-09-07 BY NETWORK FETCH. NOT A ROUND. NO CODEX.**
+
+The fix leg ROUTED this item **with its method**, having no network. The orchestrator ran exactly
+that method at 11:36Z the same day.
+
+- **FETCH URL:** `https://raw.githubusercontent.com/python/cpython/v3.14.2/Modules/_sqlite/connection.c`
+- **UPSTREAM: 80,695 bytes, sha256 `8cc0d9df05860c0b3fe6929ff392f8f85c9e1a5ef89c0cba31ab09ba03b3369e`**
+- **CONTENT-IDENTICAL to the preserved copy after newline normalisation. SOURCE (S1) HOLDS at the
+  tagged source**, so the chains-on-failure branch is confirmed upstream and not merely in a copy.
+- Round 11's counter-claim (2,532 lines, the function at `:2211-2243`) matches neither the upstream
+  file nor any counting convention of it, and — like round 10's — was produced with
+  `sandbox: read-only`, `approval: never`, and no network.
+
+**THE CORRECTION IT FORCED, AGAINST OUR OWN RULE.** The digest this plan pinned for two weeks
+(`7487db46…`) was **the hash of OUR copy**, whose LF had been converted to CRLF by a text-mode write
+while preserving it. **A local copy's digest pins WHICH BYTES WERE READ, never WHOSE THEY ARE** —
+the exact gap the `A4-R10-5` citation rule was adopted to close, live inside that rule's own worked
+example. Two readers verified against that copy and were each correct about the copy. The failure is
+invisible because the hash is real and it verifies.
+
+**RD-ratified remedy, now standing in Global Constraints and SOURCE (S1): PIN THE UPSTREAM DIGEST
+TOGETHER WITH THE FETCH URL.** The preserved file has been renormalised; verified on disk here:
+`sha256sum` → `8cc0d9df…`, 80,695 bytes, LF-only, final newline present.
+
+**ONE COUNT CORRECTED IN THE OTHER DIRECTION, MEASURED HERE.** The settlement message reported the
+upstream file as **2,718 lines**; measured on the pinned bytes, `wc -l` = **2,717** and Python
+`splitlines()` = **2,717**. The file ends with a newline, so an editor showing a phantom trailing
+line reports 2,718. **The bytes and the digest are identical either way and they are the pin** —
+which is the corollary this episode adds to the rule: *a line count is a convenience, never a pin.*
+Three numbers have now been asserted for this one file (2,532 / 2,717 / 2,718) and the byte size
+never moved once.
+
+**Instruments after the repoint — five stale probes found, all pinning the SUPERSEDED state:**
+`per_location_audit.py`'s `R10-5 sha256 pin` and `R11-9 routed with its method`, plus three
+authorization-state probes; `plan_consistency_sweep.py`'s `SOURCE (S1) sha256 pin`. **The sweep's
+entry was enforcing the very defect the citation rule exists to prevent** — it required the presence
+of our own copy's hash. Both are repointed to the UPSTREAM digest + fetch URL, and both now also
+assert the **ABSENCE** of the retired digest as a live pin.
+**And the instrument corrected one of my counts:** I allowed 3 quoted records of `7487db46…` and it
+measured **5** (front matter, the Global Constraints rule, SOURCE (S1), S8 item 8, the S11
+disposition row — every one of them the correction's own text). Allowance set to 5 with the sites
+named; a sixth would mean the retired digest had been re-adopted somewhere.
+
+**Result: `plan_consistency_sweep.py` 53/53/53 clean · `per_location_audit.py` 126 probes, 0 failing
+· `assertion_schedule_audit.py` 53 rows, 0 naked symbols · `citecheck.py` 71 citations, 0
+unresolved.** **NOTHING FROM ROUND 11 IS OPEN.**
+

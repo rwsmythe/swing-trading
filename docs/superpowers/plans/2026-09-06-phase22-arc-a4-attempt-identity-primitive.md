@@ -4228,28 +4228,7 @@ Task 6 and Task 7 runs are compared against THAT number, not against a remembere
 **Adversarial review:** see the round ledger below; full transcripts and per-finding adjudications in
 `.copowers-findings.md` at the worktree root, raw transcripts `.codex-review-r<N>.txt`.
 
-| round | tier / model / effort | C / MAJ / MIN | new | reopened | reverted | verdict |
-|---|---|---|---|---|---|---|
-| 1 | `strong` / `gpt-5.6-sol` / `high` | 1 / 6 / 3 | 10 | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
-| 2 | `strong` / `gpt-5.6-sol` / `high` | 0 / 7 / 2 | 9 | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
-| 3 | `strong` / `gpt-5.6-sol` / `high` | 1 / 8 / 3 | 12 | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
-| 4 | `strong` / `gpt-5.6-sol` / `high` | 1 / 10 / 1 | 12 | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
-| SS | *(uncounted self-sweep, no Codex)* | 0 / 0 / 9 | 9 | - | - | *no verdict; no effect on convergence* |
-| 5 | `strong` / `gpt-5.6-sol` / `high` | 1 / 7 / 4 | 12 | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
-| **6** | `strong` / `gpt-5.6-sol` / `high` | 0 / 11 / 2 | 13 (**6 new ground, 7 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
-| AUDIT | *(deterministic self-audit, 68 probes, no Codex)* | -- | 2 real gaps | -- | -- | *no verdict* |
-| **7** | `strong` / `gpt-5.6-sol` / `high` | 0 / 9 / 3 | 12 (**6 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
-| SWEEP | *(deterministic consistency sweep, no Codex)* | -- | 3 bookkeeping | -- | -- | *no verdict* |
-| **8** | `strong` / `gpt-5.6-sol` / `high` | 0 / 5 / 1 | 6 (**2 new ground, 4 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
-| 9-DQ | *(DISQUALIFIED -- provider capacity)* | -- | -- | -- | -- | **NO VERDICT; 2 anchored `^ERROR`, exit 1. 316,797 tokens spent, NOT counted.** |
-| **9** | `strong` / `gpt-5.6-sol` / `high` | 0 / 9 / 0 | 9 (**6 new ground, 3 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
-| AMEND | *(2026-09-07 amendment pass on RD's three rulings; sweep 41/41/41, per-location audit 38 probes)* | -- | -- | -- | -- | *no verdict; no effect on convergence* |
-| 10-DEAD | *(NOT A ROUND -- MSYS path-mangling; harness exit 0, 0-byte transcript)* | -- | -- | -- | -- | **NO BANNER, NO FOOTER, NO VERDICT. 0 tokens.** |
-| **10** | `strong` / `gpt-5.6-sol` / `high` | 1 / 5 / 1 | 7 (**1 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
-| **SETTLE** | *(2026-09-07 DEDICATED SETTLING SWEEP -- gate-holder ruled; RD's two round-10 rulings applied, then `SS-9`..`SS-16`; NO Codex, NO round number)* | -- | **8 uncounted (`SS-9`..`SS-16`)** | -- | -- | *no verdict; NO effect on convergence* |
-| **11** | `strong` / `gpt-5.6-sol` / `high` | 1 / 11 / 2 | 14 (**8 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
-| **FIX** | *(2026-09-07 FIX LEG -- operator-authorized, **NO CODEX ROUND**; four instruments re-run, two strengthened)* | -- | **13 of round 11 FIXED, 1 ROUTED** | 0 | 0 | *no verdict; **NO effect on convergence** -- a fix leg is not a round* |
-| **SETTLE-9** | *(2026-09-07 orchestrator NETWORK FETCH; **NO CODEX**)* | -- | **`A4-R11-9` CLOSED; SOURCE (S1) confirmed upstream; the citation rule amended -- pin the UPSTREAM digest, never a local copy's** | -- | -- | *no verdict; NO effect on convergence* |
+*(Moved to the committed ledger, per CHARC's ruling of 2026-09-07: `docs/superpowers/plans/2026-09-06-phase22-arc-a4-attempt-identity-primitive.ledger.md`.)*
 
 **TOKEN SPEND, ELEVEN COUNTED ROUNDS:** 437,776 + 230,647 + 246,268 + 320,775 + 317,038 + 307,420 +
 413,949 + 349,176 + 463,310 + 392,163 + 509,364 = **3,987,886**.
@@ -4322,23 +4301,7 @@ the preserved per-round evidence -- the recipe's normal outcome past the cap, no
 **EVERY ROUND-11 FINDING HAS A WRITTEN DISPOSITION. Thirteen FIXED, one ROUTED AND THEN SETTLED
 the same day by the orchestrator's network fetch, none banked. NOTHING IS OPEN.**
 
-| finding | severity | disposition |
-|---|---|---|
-| `A4-R11-1` | CRITICAL | **FIXED** -- `_CONTEXT_SLOT`, the base-slot read, ALARM-direction containment; the "structurally impossible" sentence STRUCK; (k7a)-(k7b) added in Task 3 |
-| `A4-R11-2` | MAJOR | **FIXED** -- RD's ruling adopted with all three conditions; (RD-a4) rebuilt as a four-row matrix; `sys.exc_info()[1]` (a measured premise correction to the relayed `sys.exception()`) |
-| `A4-R11-3` | MAJOR | **FIXED** -- dissolved by the `_read_resolution` split; the deferred retry is GONE, which restores the pre-arc behaviour |
-| `A4-R11-4` | MAJOR | **FIXED** -- the shared thing is the NON-MUTATING read; the immediate ladder keeps `raise cleanup_error from write_error`, pinned by (k6b) |
-| `A4-R11-5` | MAJOR | **FIXED** -- Task 3 SPLITS the pre-arc gate (behaviour unchanged); (k3a) asserts the split itself |
-| `A4-R11-6` | MAJOR | **FIXED** -- (k6a)-(k6b), the immediate path's Task-3 discriminators, no probe and no `record_entry` |
-| `A4-R11-7` | MAJOR | **FIXED** -- (pr1)-(pr4), one row per unpinned Task-4 requirement |
-| `A4-R11-8` | MAJOR | **FIXED** -- (m3) split into (m3a)/(m3b)/(m3c); the gate proven INVOKED and LOAD-BEARING; S6's witness compares against a live before-image, not the constant |
-| `A4-R11-9` | MAJOR | **SETTLED** (S8 item 8) -- ROUTED by this leg with the settling method written down; the orchestrator then ran exactly that method. **UPSTREAM sha256 `8cc0d9df...`, 80,695 bytes, content-identical after newline normalisation. SOURCE (S1) holds.** It also FORCED A CORRECTION AGAINST OUR OWN CITATION RULE: the previously pinned `7487db46...` was the hash of OUR copy (LF->CRLF on a text-mode write) -- **a local copy's digest is provenance of the READING, never of the SOURCE.** RD-ratified remedy now standing: pin the UPSTREAM digest with the fetch URL |
-| `A4-R11-10` | MAJOR | **FIXED** -- (pr5) + the `file:...?mode=rw` URI open, VERIFIED BY EXECUTION on this box |
-| `A4-R11-11` | MAJOR | **FIXED** -- the below-HEAD census re-measured per file as CALL counts; the drop-path reason holds for ONE site |
-| `A4-R11-12` | MAJOR | **FIXED** -- the live journal mode relabelled INFERRED at both sites; S6 step 0 asks for `PRAGMA journal_mode` |
-| `A4-R11-13` | MINOR | **FIXED** -- SEVEN at `:178-196`, corrected at BOTH sites; the sweep gained CONTRADICTION probes |
-| `A4-R11-14` | MINOR | **FIXED** -- (RD-a2) in Task 4, not Task 5 |
-| `SS-17` | (uncounted) | **FIXED** -- the `insert_trade_with_event` grep's REAL output is nine hits, of which one is a call |
+*(Moved to the committed ledger, per CHARC's ruling of 2026-09-07: `docs/superpowers/plans/2026-09-06-phase22-arc-a4-attempt-identity-primitive.ledger.md`.)*
 
 **THE INSTRUMENTS, AND WHAT THEY DID AND DID NOT SEE.** All four re-run clean:
 `plan_consistency_sweep.py` **53/53/53, clean**; `per_location_audit.py` **117 probes, 0 failing**;
@@ -4389,16 +4352,7 @@ would have been CRITICAL or MAJOR had a review round produced them** (`SS-9`, `S
 corrects a ruling's stated rationale by measurement** (`SS-9`'s sibling, recorded in S2.2 and in the
 front matter rather than numbered, because it belongs to a director's text and not to this plan's).
 
-| id | what | class |
-|---|---|---|
-| **`SS-9`** | applying RD's PIN 1 naively left the (then-mutating) shared observer UNCONDITIONAL in `_entry_transaction`'s deferred handler, which reaches the **pre-arc BODY-RAISE branch** and would issue a rollback that path never issued -- 22-A LOCK clause (c)'s subject, widened by a fix for something else. Both observations moved to `record_entry`; the deferred branch is now LITERALLY UNEDITED and (k3a) asserts it. | a fix that widened the blast radius of the thing it fixed |
-| **`SS-10`** | S1.4 still said the arc adds "the three NEW observation fields" to the deferred path. | residual of the same pass, in a section it did not visit |
-| **`SS-11`** | THREE stale in-repo line anchors, found by a script that resolves all 54 and prints what each lands on: `entry.py:1128` is `conn.rollback()` not the immediate `committed` assignment (`:1107`); `entry.py:880` is inside a comment block, not the shipped guard (`:884`) -- **and `:880` is the number this dispatch's own PIN 1 was relayed with, so it had propagated to three sites before the sweep caught it**; `entry.py:1489` is one line above the UNIQUE mapper. | citation drift |
-| **`SS-12`** | S8 item 4 cited FOUR anchors for "the four pre-commit logging calls in `_record_entry_inner`". **`_record_entry_inner` begins at `:1166`; all four pointed into `record_entry`, and not one is a logging call.** MEASURED by AST walk: `:1227`, `:1295`, `:1306`, `:1321`. **The COUNT was right and every ANCHOR was wrong** -- the arrangement that reassures a reader checking the number and misdirects one checking the code. | the in-repo twin of `A4-R10-5` |
-| **`SS-13`** | `A4-R10-3`'s generalisation turned into an INSTRUMENT (`assertion_schedule_audit.py`) instead of a paragraph: it walks all 44 rows, collects the symbols each names, and reports every row scheduled before something it names. | a rule with no check is a wish |
-| **`SS-14`** | what `SS-13` found on its first run, in a row **this same pass had added four hours earlier**: (k3a)'s new ordering assertion named `_settle_by_attempt_identity` and was scheduled in Task 3. **Its failure mode is worse than the four counted instances:** an AST walk asserting an ORDERING finds no such node, therefore finds no ordering to violate, and reports SUCCESS. **Scheduling-by-artifact does not always produce a red test; it can produce a vacuous green one.** | the class, met inside its own fix |
-| **`SS-15`** | S3's roster still described (k3a)/(k3b) as asserting the `committed` assignment is "inside the protected suite on BOTH paths" -- false one commit after `SS-9`. | residual, at the smallest scale it comes in |
-| **`SS-16`** | Task 1b said "THREE call sites" for four rounds while the heading above its tests claimed **EVERY OPERATOR SURFACE**; nothing connected them. Closure established by AST walk + a raw-SQL grep: `_update_journal_field` has exactly four callers and is the ONLY site writing an operator-supplied journal field, so the backstop IS the closure and the two early checks are ordering refinements. **And the finding behind the finding:** the plan's whole argument for the tier-3 early check is that its INSERT comes first, and nobody had checked whether the other surfaces share that shape. They do not, for a DIFFERENT reason each. | a roster is the same instrument as the count it replaced |
+*(Moved to the committed ledger, per CHARC's ruling of 2026-09-07: `docs/superpowers/plans/2026-09-06-phase22-arc-a4-attempt-identity-primitive.ledger.md`.)*
 
 **Instruments, all preserved at `~/swing-data/review-transcripts/22-a4-plan/`:**
 `plan_consistency_sweep.py` (roster/schedule/manifest closure + fragile counts **+ the 2026-09-07
