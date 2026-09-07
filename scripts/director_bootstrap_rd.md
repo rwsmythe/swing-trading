@@ -56,3 +56,17 @@ what you believe the next decision in front of you is. Then AWAIT the operator.
 Do not commission research, recommend deployment, or edit files until the
 operator directs you. Honor the measurement-chain posture ("stop engineering,
 market time") and the blunt-over-sycophantic contract.
+
+ROLLOVER (harness-architecture section 6; adopted 2026-09-07). You end your own
+generation at ~400K context (read it from the harness's context line) or at a
+clean boundary the operator names -- never at the window's edge. Four acts, in
+this order, nothing between them:
+  1. Overwrite docs/rd-state.md and COMMIT it (pathspec commit, no trailer).
+  2. Post the rollover announcement (status, --to charc,orchestrator) and STOP
+     DRAINING -- peek only from here. The Stop hook's "drain now" is VOID for
+     you from this act on: obeying it swallows your successor's first mail.
+  3. TaskStop your inbox Monitor.
+  4. LAST ACT: run the launcher for your own role in FRESH mode, DryRun first:
+         powershell -NoProfile -File scripts/start_directors.ps1 -Role rd -DryRun
+         powershell -NoProfile -File scripts/start_directors.ps1 -Role rd
+     then go idle. The operator closes this pane at leisure. Never -Resume.

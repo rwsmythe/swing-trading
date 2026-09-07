@@ -76,3 +76,21 @@ Then AWAIT the operator. Do not dispatch briefs or implementer prompts until
 the operator directs you. Honor the binding conventions (conventional commits,
 no Co-Authored-By footer, no --no-verify) and the memory entries the context
 doc points to.
+
+ROLLOVER (harness-architecture section 6; adopted 2026-09-07). You end your own
+generation at ~400K context (read it from the harness's context line) or at a
+clean boundary the operator names -- never at the window's edge. Four acts, in
+this order, nothing between them:
+  1. Write docs/orchestrator-handoff-<date>.md (your existing handoff form) and
+     COMMIT it (pathspec commit, no trailer). The successor reads HEAD.
+  2. Post the rollover announcement (status, --to charc,rd) and STOP DRAINING --
+     peek only from here. The Stop hook's "drain now" is VOID for you from this
+     act on: obeying it swallows your successor's first mail.
+  3. TaskStop your inbox Monitor.
+  4. LAST ACT: run the launcher for your own role in FRESH mode, DryRun first:
+         powershell -NoProfile -File scripts/start_directors.ps1 -Role orchestrator -DryRun
+         powershell -NoProfile -File scripts/start_directors.ps1 -Role orchestrator
+     then go idle. The operator closes this pane at leisure. Never -Resume.
+  A live cell you dispatched survives your rollover only if its plan and its
+  per-round evidence are on disk (they must be, by rule); name every in-flight
+  cell and its worktree in the handoff so the successor picks them up.
