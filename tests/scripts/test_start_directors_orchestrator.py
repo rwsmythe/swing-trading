@@ -212,3 +212,38 @@ def test_dryrun_rejects_model_outside_validateset():
     assert r.returncode != 0
     assert "ValidateSet" in out and "turbo" in out
     assert "cmd:" not in out  # nothing computed, nothing launched
+
+
+# --- the spawned shell scrubs the PARENT session's markers (2026-09-07) -----
+# A successor launched from INSIDE a Claude session inherits the parent's
+# environment; a child claude that sees these starts with transcript saving
+# OFF and the parent's messaging identity (the RD self-launch finding).
+
+_SESSION_MARKERS = (
+    "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_PID",
+    "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_EFFORT",
+)
+
+
+def test_launcher_declares_every_session_marker():
+    text = _script_text()
+    block = text[text.index("$SessionMarkers = @("):]
+    block = block[:block.index(")")]
+    for name in _SESSION_MARKERS:
+        assert f"'{name}'" in block, name
+    assert "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" not in block   # global flag, kept
+
+
+def test_dryrun_launch_line_scrubs_markers_before_claude():
+    r, out = _dryrun("-Role", "charc")
+    assert r.returncode == 0
+    launch = next(ln for ln in out.splitlines() if "  launch: " in ln)
+    claude_at = launch.index("; claude ")
+    for name in _SESSION_MARKERS:
+        stanza = f"Remove-Item Env:{name} -ErrorAction SilentlyContinue"
+        assert stanza in launch, name
+        assert launch.index(stanza) < claude_at, f"{name} scrubbed AFTER claude"
+    # the role assignment still follows the scrub and precedes claude
+    assert launch.index("$env:SWING_ROLE='charc'") < claude_at

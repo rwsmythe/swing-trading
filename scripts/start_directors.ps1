@@ -127,6 +127,17 @@ $RoleLaunch = @{
     'orchestrator' = @{ Model = 'opus';  Effort = 'high' }
 }
 
+# The per-session environment markers a running Claude session leaves in its
+# shell. A successor launched FROM a session must not inherit them (see
+# Build-LaunchCommand). Enumerated 2026-09-07 from a live director shell;
+# tests/scripts/test_start_directors_orchestrator.py pins the scrub.
+$SessionMarkers = @(
+    'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDECODE', 'CLAUDE_PID',
+    'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN',
+    'CLAUDE_CODE_BRIDGE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_EXECPATH',
+    'CLAUDE_EFFORT'
+)
+
 # Short, quoting-safe directive prompts (no newlines, quotes, or semicolons --
 # the full multi-line prompt content lives in the bootstrap files to keep the
 # command line robust through wt.exe / Start-Process).
@@ -250,7 +261,19 @@ function Build-LaunchCommand($role, $argList) {
     # shell that sets the role first. The backtick escapes the '$' so the OUTER
     # (launcher) shell passes '$env:SWING_ROLE' through literally while it DOES
     # expand $role and $RepoRoot.
-    return "`$env:SWING_ROLE='$role'; Set-Location '$RepoRoot'; claude " + ($argList -join ' ')
+    #
+    # SCRUB THE PARENT SESSION'S MARKERS FIRST (2026-09-07, the RD self-launch
+    # finding; coa-chess verified the mechanism). When this launcher runs from
+    # INSIDE a Claude session (the rollover sequence, harness-architecture
+    # section 6), Start-Process inherits that session's environment, and a child
+    # claude that sees CLAUDE_CODE_CHILD_SESSION / CLAUDE_CODE_SESSION_ID / the
+    # messaging socket+token starts with TRANSCRIPT SAVING OFF (no resume, no
+    # transcript for cell_depth.py to read) and the PARENT'S identity. The scrub
+    # runs inside the spawned shell so it covers BOTH vehicles (wt tab, plain
+    # window) identically. The global CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS flag
+    # is deliberately NOT removed (harmless, not a session marker).
+    $scrub = ($SessionMarkers | ForEach-Object { "Remove-Item Env:$_ -ErrorAction SilentlyContinue" }) -join '; '
+    return "$scrub; `$env:SWING_ROLE='$role'; Set-Location '$RepoRoot'; claude " + ($argList -join ' ')
 }
 
 function Get-EncodedCommand($inner) {
