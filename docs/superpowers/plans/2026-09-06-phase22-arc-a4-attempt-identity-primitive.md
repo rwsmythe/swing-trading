@@ -1451,6 +1451,20 @@ because between the two commits the tree would carry a live false-message path o
 > **CHARC's standing trap is honoured throughout:** a test asserting only *"it raised"* or *"it did
 > not crash"* passes an implementation that swallows everything. Every row below asserts the RESULT
 > SHAPE, the ROW COUNT, or the IDENTITY of what escaped.
+>
+> **AND THE ROSTER IS NOW CHECKED BY AN INSTRUMENT, NOT BY READING** (`SS-13`, 2026-09-07 --
+> `A4-R10-3`'s generalisation turned into a check). `assertion_schedule_audit.py`, preserved beside
+> this arc's review evidence, walks every row, collects the CODE SYMBOLS its text names, finds the
+> TASK that schedules the row and the TASK that ships each symbol, and reports every row scheduled
+> BEFORE something it names. **It is deliberately over-inclusive -- prose counts -- so every hit is
+> READ**, and the three that survive as prose are named here so nobody re-adjudicates them:
+> **(k2)**, **(k3a)** and **(k5)** each EXPLAIN why an assertion of theirs is deferred to Task 4,
+> and **(r7)** names
+> `_settle_by_attempt_identity` in its *why this row exists* rationale while asserting only on the
+> repo function Task 1 ships. **Three rows are therefore SPLIT across two tasks and each says so in
+> its own text** -- which is what the rule asks for, and is why the instrument cannot be made to
+> read clean without either lying in the row or removing the explanation. **It found one real defect on its first run, in a row this same pass
+> had just added** -- see (k3a).
 
 ### The full roster
 
@@ -2308,12 +2322,24 @@ window in DIFFERENT places** (`SS-9`). Parse `swing/trades/entry.py` with `ast`.
   withdrawn** -- a `body_completed` assignment inside the `with`, an enclosing `try/except`, an
   `except ... as` binding -- the assertion FAILS. *This is the one claim three separate sections
   made in prose for three rounds while the pseudocode contradicted it; it is now a test.*
-- **RECORD_ENTRY's side of the deferred window, in the same walk:** inside the post-commit handler,
-  the `_observe_resolution` call is LEXICALLY BEFORE the `_settle_by_attempt_identity` call, and
-  both sit under the `not outcome.committed` branch. **Against an implementation that consults the
-  gate before observing:** `resolution` reads `"unattempted"`, the gate refuses, and a durable entry
-  is reported as a failure -- the `A4-R1-3` defect relocated rather than fixed, which is exactly
-  what a caller-side obligation test exists to catch (gotcha #31).
+- **RECORD_ENTRY's side of the deferred window, in the same walk -- AND IT IS SPLIT ACROSS THE TWO
+  TASKS, BECAUSE HALF OF IT NAMES A FUNCTION TASK 3 DOES NOT SHIP** (`SS-14`; the schedule-by-
+  assertion audit caught this row, added in the same pass that wrote the rule, breaking the rule).
+  - **TASK 3's half:** inside `record_entry`'s post-commit handler, the `_observe_resolution` call
+    sits under a branch guarded by `not outcome.committed` and `not _reserve`, **after** the
+    `result is None` raise. **Against an implementation that observes unconditionally:** the call is
+    not under that branch -> fails, and that is the `SS-9` shape this row exists to lock out.
+  - **TASK 4 ADDS:** the same walk asserts `_observe_resolution` is LEXICALLY BEFORE the
+    `_settle_by_attempt_identity` call. **`_settle_by_attempt_identity` does not exist in Task 3**,
+    so the assertion cannot be written there -- it would either fail or, worse, pass VACUOUSLY on an
+    empty match set. **Against an implementation that consults the gate before observing:**
+    `resolution` reads `"unattempted"`, the gate refuses, and a durable entry
+    is reported as a failure -- the `A4-R1-3` defect relocated rather than fixed, which is exactly
+    what a caller-side obligation test exists to catch (gotcha #31).
+  - *A vacuous PASS is why this split matters more than the earlier four instances of the class.
+    (k4a)/(k4b) scheduled in Task 3 would have FAILED loudly on a missing patch target; an AST walk
+    that finds no `_settle_by_attempt_identity` node finds no ordering to violate and reports
+    success. **The failure mode of scheduling-by-artifact is not always a red test.**
 
 **(k3b) RUNTIME, because it turns out to be reachable:** install a `sys.settrace` local trace hook
 that raises a sentinel exception at the line of the deferred path's `outcome.committed = True`,
@@ -2781,7 +2807,10 @@ covering the new column, so the failure is left loud."*
       surfacing (their DETECTION half is already pinned by (k5) in Task 3, and each row re-asserts
       it so the row stands alone); **(RD-a4)** the bare predicate's named false positive; **(RD-a5)**
       the caller-side obligation the `body_completed` removal rests on;
-      and **the probe-call-count-of-ZERO assertion ADDED to (k2)**, which Task 3 shipped without it.
+      and **the two assertions ADDED to rows Task 3 already shipped: (k2)'s probe-call-count-of-ZERO,
+      and (k3a)'s ordering half** -- that `_observe_resolution` is LEXICALLY BEFORE
+      `_settle_by_attempt_identity` in `record_entry`'s handler, which **cannot be written in Task 3
+      and would PASS VACUOUSLY there** on an AST walk that finds no such call (`SS-14`).
       **All of them patch `swing.trades.entry._durability_probe`, which exists only from this
       commit.**
 - [ ] Commit: `feat(trades): Task 4 -- clause 2 returns, settled by a fresh-connection read on attempt identity`
