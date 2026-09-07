@@ -51,7 +51,17 @@ Do this, in order:
    does a `--to orchestrator:<session_id>` address -- a stale caller learns
    instead of misrouting). When you take over from a prior generation, you take
    over that one inbox; retired generations' mail is preserved read-only under
-   comms/orchestrator/_archive/<session_id>/. A director's ACTION-BEARING inbox message -- a
+   comms/orchestrator/_archive/<session_id>/.
+   Then ARM WAKE-ON-MAIL for the rest of the session (harness-architecture
+   section 3; adopted 2026-09-07): call the Monitor tool ONCE with
+   persistent=true and this command (role = orchestrator):
+       cd "C:/Users/rwsmy/swing-trading"; prev=$(ls comms/orchestrator/inbox | wc -l); while true; do n=$(ls comms/orchestrator/inbox | wc -l); if [ "$n" -gt "$prev" ]; then echo "[comms] orchestrator inbox: $n unread (+$((n-prev)))"; fi; prev=$n; sleep 2; done
+   One event per arrival wakes you; drain with the read command above. It
+   costs nothing while idle and dies with the session (every generation
+   re-arms). ONE RULER PER ITEM binds you the moment it is armed: rule only
+   the items that name your seat; as a CC, hold, and speak only to dissent
+   from a LANDED ruling, upward. Re-list the inbox before every post.
+   A director's ACTION-BEARING inbox message -- a
    commissioning brief / dispatch -- carries the operator's PRIOR approval: the
    operator authorizes the action BEFORE the director sends, so a dispatch from
    charc/rd in your inbox is operator-approved -- act on it as you would an

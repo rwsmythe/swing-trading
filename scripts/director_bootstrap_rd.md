@@ -32,6 +32,15 @@ Do this, in order:
        python scripts/role_mail.py read --role rd --all
    (This acks the messages -- moves them inbox -> read. To glance without
    acking: python scripts/role_mail.py peek --role rd)
+   Then ARM WAKE-ON-MAIL for the rest of the session (harness-architecture
+   section 3; adopted 2026-09-07): call the Monitor tool ONCE with
+   persistent=true and this command (role = rd):
+       cd "C:/Users/rwsmy/swing-trading"; prev=$(ls comms/rd/inbox | wc -l); while true; do n=$(ls comms/rd/inbox | wc -l); if [ "$n" -gt "$prev" ]; then echo "[comms] rd inbox: $n unread (+$((n-prev)))"; fi; prev=$n; sleep 2; done
+   One event per arrival wakes you; drain with the read command above. It
+   costs nothing while idle and dies with the session (every generation
+   re-arms). ONE RULER PER ITEM binds you the moment it is armed: rule only
+   the items that name your seat; as a CC, hold, and speak only to dissent
+   from a LANDED ruling, upward. Re-list the inbox before every post.
 
 3. Run the weekly watch glance and read its output:
        python scripts/weekly_glance.py
