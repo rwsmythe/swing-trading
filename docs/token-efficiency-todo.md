@@ -5,7 +5,7 @@
 plan loop ran 11 rounds; per-round transcripts run 1–4 MB; the 22-A plan reached 3,947 lines and
 110 findings before the operator stopped it. The dispatch-table change (`e0541109`: plans Opus/high,
 coding Sonnet/high, measured via summed `tokens used`) is item 0. Items 1–7 are sequenced by
-leverage. **Nothing here dispatches before 22-A4 merges** (one seam, one arc).
+leverage. **AMENDED 2026-09-07 (operator-concurred): items 1–4 were BROUGHT FORWARD and LANDED as the recipe's PLAN-STAGE PROTOCOL + harness-architecture §5.1's design-before-loop rule — they change how the NEXT plan is dispatched, not the arc in flight, so the one-seam rule did not apply to them. They bind from 22-A4's executing dispatch onward. Items 5–7 keep the post-22-A4 seam.**
 
 | # | item | mechanism (what lands) | done-criterion | owner |
 |---|---|---|---|---|
