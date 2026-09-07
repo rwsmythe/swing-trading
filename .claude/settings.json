@@ -43,5 +43,12 @@
     "commit": "",
     "pr": "",
     "sessionUrl": false
+  },
+  "permissions": {
+  "allow": [
+    "Bash(powershell -NoProfile -File scripts/start_directors.ps1 -Role *)",
+    "PowerShell(powershell -NoProfile -File scripts/start_directors.ps1 -Role *)",
+    "PowerShell(.\\scripts\\start_directors.ps1 -Role *)"
+    ]
   }
 }
