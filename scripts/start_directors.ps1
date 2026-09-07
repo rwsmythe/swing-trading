@@ -48,15 +48,15 @@
         project dir); --session-id is unreliable interactively.
       * "--model <model>", "--effort <level>" (low, medium, high, xhigh, max)
         and "--permission-mode <mode>" (incl. "auto") EXIST. Launches use
-        '--model opus --permission-mode auto' on BOTH fresh and resume
-        (operator directives 2026-06-11 .. 2026-06-13). Effort is ROLE-AWARE
-        ($RoleEffort): directors launch '--effort max' (the highest-leverage /
-        lowest-volume tier runs the top config) and the orchestrator launches
-        '--effort xhigh'; cost-curation happens at the implementer tier, not
-        here. Model
-        is opus because FABLE (the 5.x-class model) is currently UNAVAILABLE
-        (ITAR restrictions, 2026-06-13) -- revisit directors -> fable/5.x if
-        and when it (or another 5.x) becomes available. Every flag is
+        '--permission-mode auto' on BOTH fresh and resume. Model AND effort are
+        ROLE-AWARE ($RoleLaunch) and mirror each role's declared START
+        configuration in its bootstrap file (operator-ruled 2026-09-01,
+        e0582397): directors 'fable' / 'high', orchestrator 'opus' / 'high'.
+        'xhigh' is an in-session escalation, never a start setting; the old
+        opus/max + opus/xhigh table (2026-06-13, when fable was
+        ITAR-unavailable) is RETIRED. An explicit --model on the command line
+        overrides the user settings.json model, so this table -- not
+        settings.json -- decides what a launched role runs on. Every flag is
         preflight-verified before launch. The model alias is NOT value-checked
         against --help (aliases rotate as new models ship; an invalid alias
         fails fast at launch, not silently).
@@ -96,15 +96,23 @@ $BootstrapFiles = @{
 }
 $RoleTitles = @{ 'charc' = 'CHARC'; 'rd' = 'RD'; 'orchestrator' = 'ORCHESTRATOR' }
 
-# Sessions run on Opus in auto permission mode (operator directives
-# 2026-06-11 .. 2026-06-13). Effort is ROLE-AWARE: orchestrators launch at
-# 'xhigh' (the orchestrator default), directors at 'max' (the top config for
-# the highest-leverage / lowest-volume tier). opus (not fable) because
-# fable/5.x is ITAR-unavailable as of 2026-06-13 (revisit when a 5.x model
-# returns). Applied to BOTH fresh and resume launches; preflight verifies each
-# flag and the effort/permission VALUES against the installed CLI (the --model
-# alias is not value-checked). See Get-LaunchArgs for the per-role assembly.
-$RoleEffort = @{ 'charc' = 'max'; 'rd' = 'max'; 'orchestrator' = 'xhigh' }
+# Per-role START configuration -- the single source the launcher reads. It
+# MUST match the "LAUNCH CONFIGURATION" block each role's bootstrap declares
+# (scripts/director_bootstrap_charc.md, director_bootstrap_rd.md,
+# orchestrator_bootstrap.md; operator-ruled 2026-09-01, e0582397): directors
+# Fable 5.1 / high, orchestrator Opus 5 / high. 'xhigh' is an in-session
+# escalation at the role's discretion, NOT a start setting. Applied to BOTH
+# fresh and resume launches; preflight verifies each flag and the
+# effort/permission VALUES against the installed CLI (the --model alias is
+# not value-checked). tests/scripts/test_start_directors_orchestrator.py pins
+# this table against the bootstrap text so the two cannot drift again (they
+# did: 2026-09-01 .. 2026-09-06 every launcher-started role ran opus/max or
+# opus/xhigh while the bootstraps declared fable/high and opus/high).
+$RoleLaunch = @{
+    'charc'        = @{ Model = 'fable'; Effort = 'high' }
+    'rd'           = @{ Model = 'fable'; Effort = 'high' }
+    'orchestrator' = @{ Model = 'opus';  Effort = 'high' }
+}
 
 # Short, quoting-safe directive prompts (no newlines, quotes, or semicolons --
 # the full multi-line prompt content lives in the bootstrap files to keep the
@@ -118,10 +126,10 @@ function Write-Info($msg) { Write-Host "[start-directors] $msg" }
 function Write-Err($msg) { Write-Host "[start-directors] ERROR: $msg" }
 
 function Get-LaunchArgs($role) {
-    # Per-role claude launch flags. Effort is role-aware via $RoleEffort
-    # (orchestrators 'xhigh', directors 'max'); everything else is shared.
-    $effort = $RoleEffort[$role]
-    return @('--model', 'opus', '--effort', $effort, '--permission-mode', 'auto')
+    # Per-role claude launch flags: model + effort from $RoleLaunch (the
+    # bootstrap-declared START config); the permission mode is shared.
+    $cfg = $RoleLaunch[$role]
+    return @('--model', $cfg.Model, '--effort', $cfg.Effort, '--permission-mode', 'auto')
 }
 
 function Invoke-Preflight {
@@ -150,17 +158,18 @@ function Invoke-Preflight {
         throw "this claude CLI ($version) does not advertise --resume in --help; refusing to launch with a guessed flag."
     }
     if (-not ($help -match '--model')) {
-        throw "this claude CLI ($version) does not advertise --model in --help (directors launch with '--model opus'); refusing to launch with a guessed flag."
+        throw "this claude CLI ($version) does not advertise --model in --help (every role launches with an explicit --model from `$RoleLaunch); refusing to launch with a guessed flag."
     }
     if (-not ($help -match '--effort')) {
-        throw "this claude CLI ($version) does not advertise --effort in --help (launches use '--effort'; orchestrator xhigh, directors max); refusing to launch with a guessed flag."
+        throw "this claude CLI ($version) does not advertise --effort in --help (every role launches with an explicit --effort from `$RoleLaunch); refusing to launch with a guessed flag."
     }
     # Verify EVERY effort level the launcher actually uses (role-aware via
-    # $RoleEffort: orchestrator 'xhigh', directors 'max') resolves in --help, so
-    # a CLI that drops a level we use fails preflight instead of at launch.
-    foreach ($lvl in ($RoleEffort.Values | Sort-Object -Unique)) {
+    # $RoleLaunch) resolves in --help, so a CLI that drops a level we use
+    # fails preflight instead of at launch.
+    $levels = @($RoleLaunch.Values | ForEach-Object { $_.Effort } | Sort-Object -Unique)
+    foreach ($lvl in $levels) {
         if (-not ($help -match $lvl)) {
-            throw "this claude CLI ($version) does not list '$lvl' as an effort level in --help; update the launcher's `$RoleEffort to levels the installed CLI accepts."
+            throw "this claude CLI ($version) does not list '$lvl' as an effort level in --help; update the launcher's `$RoleLaunch to levels the installed CLI accepts."
         }
     }
     if (-not ($help -match '--permission-mode')) {

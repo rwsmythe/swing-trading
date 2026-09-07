@@ -14,11 +14,28 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "start_directors.ps1"
+_SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+_SCRIPT = _SCRIPTS / "start_directors.ps1"
+
+# The declared START configuration per role, as each bootstrap states it in its
+# "LAUNCH CONFIGURATION" block (operator-ruled 2026-09-01, e0582397). The
+# launcher's $RoleLaunch table MUST agree; from 2026-09-01 to 2026-09-06 it did
+# not (opus/max, opus/xhigh) and every launcher-started role ran off-config.
+_BOOTSTRAP_LAUNCH = {
+    "charc": ("director_bootstrap_charc.md", "Fable 5.1", "high", "fable"),
+    "rd": ("director_bootstrap_rd.md", "Fable 5.1", "high", "fable"),
+    "orchestrator": ("orchestrator_bootstrap.md", "Opus 5", "high", "opus"),
+}
 
 
 def _script_text() -> str:
     return _SCRIPT.read_text(encoding="utf-8")
+
+
+def _launch_config_block(bootstrap: str) -> str:
+    text = (_SCRIPTS / bootstrap).read_text(encoding="utf-8")
+    start = text.index("LAUNCH CONFIGURATION")
+    return text[start:start + 700]
 
 
 # --- Task 1a: static-content distinguisher (always runs) -------------------
@@ -78,24 +95,44 @@ def test_dryrun_orchestrator_sets_role_and_prints_command():
     assert r.returncode == 0
     out = r.stdout + r.stderr
     assert "$env:SWING_ROLE='orchestrator'" in out        # role set inside the shell
-    # Task 4 / Issue 1: the orchestrator launches at xhigh, NOT max (directors
-    # stay max). This assertion CODIFIED the bug before Task 4 -- it asserted max.
-    assert "claude --model opus --effort xhigh --permission-mode auto" in out
+    # The orchestrator launches at its bootstrap-declared START config
+    # (Opus 5 / high; the Opus-4.x-era xhigh default is retired there).
+    assert "claude --model opus --effort high --permission-mode auto" in out
     assert "orchestrator_bootstrap.md" in out             # the bootstrap in the prompt
     assert "DRY RUN" in out                                # no window launched
 
 
 # --- Task 4: role-aware launch effort + role-aware session name ------------
 
-# Issue 1 static-content distinguisher (always runs): the launcher wires the
-# per-role effort map -- orchestrator xhigh, directors max.
+# Static-content distinguisher (always runs): the launcher's per-role
+# $RoleLaunch table agrees with EACH role's bootstrap-declared START config.
+# Pinned in BOTH directions (bootstrap text -> expected values, launcher table
+# -> the same values) so a change to either surface without the other fails.
 
-def test_roleeffort_map_is_role_aware():
+@pytest.mark.parametrize("role", sorted(_BOOTSTRAP_LAUNCH))
+def test_rolelaunch_table_matches_bootstrap_declaration(role):
+    bootstrap, model_name, effort, alias = _BOOTSTRAP_LAUNCH[role]
+    block = _launch_config_block(bootstrap)
+    # the bootstrap still declares what this test expects (guards the fixture)
+    assert f"model  = {model_name}" in block, bootstrap
+    assert f"effort = {effort}" in block, bootstrap
+    # the launcher's table carries the matching alias + effort for the role
     text = _script_text()
-    assert "$RoleEffort" in text
-    assert "'orchestrator' = 'xhigh'" in text
-    assert "'charc' = 'max'" in text
-    assert "'rd' = 'max'" in text
+    assert "$RoleLaunch" in text
+    assert "$RoleEffort" not in text  # the retired opus/max table is gone
+    assert f"'{role}'" in text
+    line = next(ln for ln in text.splitlines()
+                if ln.strip().startswith(f"'{role}'") and "Model" in ln)
+    assert f"Model = '{alias}'" in line, line
+    assert f"Effort = '{effort}'" in line, line
+
+
+def test_rolelaunch_never_starts_at_escalation_effort():
+    # xhigh / max are in-session escalations, never START settings (bootstraps).
+    text = _script_text()
+    table = text[text.index("$RoleLaunch = @{"):]
+    table = table[:table.index("\n}")]
+    assert "xhigh" not in table and "'max'" not in table, table
 
 
 # Issue 2 static-content distinguisher (always runs): New-SessionName gives the
@@ -107,10 +144,10 @@ def test_orchestrator_session_name_not_director_prefixed():
     assert 'return "director-$role-$stamp"' in text     # directors UNCHANGED
 
 
-# Issue 1 behavioral -DryRun (skip-guarded): directors stay max + keep the
+# Behavioral -DryRun (skip-guarded): directors launch fable/high + keep the
 # 'director-<role>-<stamp>' name.
 
-def test_dryrun_charc_keeps_max_effort_and_director_name():
+def test_dryrun_charc_launches_fable_high_and_director_name():
     if shutil.which("powershell") is None or shutil.which("claude") is None:
         pytest.skip("powershell + claude CLI required for the behavioral DryRun")
     r = subprocess.run(
@@ -119,7 +156,7 @@ def test_dryrun_charc_keeps_max_effort_and_director_name():
         capture_output=True, text=True, timeout=60)
     assert r.returncode == 0
     out = r.stdout + r.stderr
-    assert "claude --model opus --effort max --permission-mode auto" in out  # directors stay max
+    assert "claude --model fable --effort high --permission-mode auto" in out  # bootstrap START config
     assert "session name 'director-charc-" in out                            # director naming unchanged
 
 
