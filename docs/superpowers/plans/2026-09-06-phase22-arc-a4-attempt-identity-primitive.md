@@ -966,7 +966,7 @@ testability decision, stated so it is not mistaken for indirection.
 |---|---|---|
 | `committed: bool` | **the commit's own return was observed** (unchanged) | IMMEDIATE: after `commit()` returns, **inside the protected suite**. DEFERRED: after the `with conn:` block, **exactly where it already is** -- the `A4-R1-3` window is closed on that path by `record_entry`'s own observation instead of by a `try` here (see below) |
 | `resolution: str` | the PHYSICAL state, RE-READ from `conn.in_transaction` after any rollback attempt: `"unattempted"` / `"not_needed"` / `"rolled_back"` / `"still_open"` | **IMMEDIATE path:** `_entry_transaction`'s own failure handler. **DEFERRED path:** `record_entry`'s post-commit handler, through the SAME `_observe_resolution` helper |
-| `cleanup_raised: bool` | **a rollback call raised** -- a fact about the CALL, not about the transaction | **IMMEDIATE path:** `_entry_transaction`'s handler, from its OWN `rollback()` raising (a direct observation). **DEFERRED path:** `record_entry`'s post-commit handler, from `_exit_rollback_failed(post_commit_error)` -- and from `_observe_resolution`'s own retry arm if that also raises |
+| `cleanup_raised: bool` | **a rollback call raised** -- a fact about the CALL, not about the transaction | **IMMEDIATE path:** `_entry_transaction`'s handler, from its OWN `rollback()` raising (a direct observation). **DEFERRED path:** `record_entry`'s post-commit handler, from `_exit_rollback_failed(post_commit_error, ambient)` -- **and from nowhere else on this path**, because the deferred observation performs NO rollback (`A4-R11-3`/`A4-R11-4`) |
 
 > **BOTH DEFERRED-PATH OBSERVATIONS LIVE ONE FRAME OUT, AND `_entry_transaction`'s DEFERRED BRANCH
 > IS LEFT LITERALLY UNEDITED. THE 2026-09-07 SWEEP FOUND THIS IN THIS PASS'S OWN FIRST EDIT
@@ -1094,15 +1094,54 @@ whole of Branch A. **It lives in `entry.py` and is called from `record_entry`'s 
 NOT from `_entry_transaction`** -- see the call site above.
 
 > **RULED BY RD, 2026-09-07 (`A4-R10-1`): THE `isinstance` FILTER IS REMOVED. SCOPE THE INSPECTION,
-> THEN USE THE BARE CONTEXT CHECK.** The predicate was doing two jobs -- deciding WHEN to look and
+> THEN USE A CONTEXT CHECK.** The predicate was doing two jobs -- deciding WHEN to look and
 > WHAT to look at -- and the type filter was carrying both. Split: the SCOPE (`result is not None`
-> and `not outcome.committed`, both already observed) decides when; a bare `__context__ is not None`
+> and `not outcome.committed`, both already observed) decides when; a context check
 > decides what. **The consequence that mattered to the ruling: the non-`sqlite3.Error` residue that
 > `A4-R9-3` and `A4-R10-1` were rebuilt on CEASES TO EXIST, because nothing inspects types any
 > more.**
+>
+> **AMENDED 2026-09-07 BY RD (`A4-R11-2`), AND THE AMENDMENT REMOVES THE COST THE RULING ACCEPTED
+> RATHER THAN RE-ARGUING IT.** The bare check's one measured false positive was the caller running
+> inside an ambient `except`. **Capture `sys.exc_info()[1]` IMMEDIATELY BEFORE the transaction
+> context manager and exclude exactly that object by `is`-identity.** The capture POINT is part of
+> the ruling: **not at function entry** -- any `except` frame between the capture and the `with`'s
+> exit must belong to `record_entry` itself, where the envelope can see it, and only a capture
+> adjacent to the `with` guarantees that. On rollback-success the re-raised COMMIT error's
+> `__context__` IS the captured ambient object; on rollback-failure the escaping ROLLBACK error's
+> `__context__` is the COMMIT error, which the ambient never is. **Both measured rows are satisfied:
+> the false-positive row now ADMITS the probe, the chained row still VOIDS it.** The nested case
+> composes without a special branch -- the rollback failure's `__context__` is the COMMIT error at
+> the FIRST link, and the first link is the only one the predicate reads. **(RD-a4) is rebuilt as a
+> FOUR-ROW MATRIX over {inside_except x chained}, each row computed under BOTH predicates.**
+>
+> **AND THE READ GOES THROUGH THE BASE SLOT (`A4-R11-1`, CRITICAL, REPRODUCED).**
+> `escaping.__context__` is an ORDINARY attribute lookup: a `sqlite3.OperationalError` subclass
+> defining `__context__` as a data descriptor reads whatever it likes. **MEASURED on this machine,
+> CPython 3.14.2** (the rows are executed in (RD-a4), not quoted here): a subclass whose getter
+> returns `None` made the bare read answer **False** while the real `OperationalError` sat in the
+> slot -- a **FALSE NEGATIVE** that sets `resolution = not_needed`, ADMITS the probe and rebuilds
+> the `A4-R9-3` window this ruling declared closed; a subclass whose getter RAISES replaced the
+> escaping exception outright. **THE SENTENCE THIS PLAN CARRIED -- that false negatives are
+> "structurally impossible within its scope" -- WAS FALSE AND IS STRUCK.** The shape is the point:
+> **this module documents the class one function away** (`safe_text`,
+> `swing/trades/entry.py:109`, whose docstring says an exception class overriding `__repr__` to
+> raise is constructible) **and it already owns the remedy** -- `_EVIDENCE_SLOTS`
+> (`swing/trades/entry.py:145`) is built from `BaseException.__dict__[...]` for exactly
+> `("args", "__cause__", "__context__")`, above a comment reading *"`BaseException.__getattribute__`
+> DOES NOT BYPASS A SUBCLASS DATA DESCRIPTOR"*. **The plan reasoned about a hostile exception's
+> FORMATTING and not about its ATTRIBUTES, in the same file, twenty lines below a constant that
+> exists because that read is unsafe.**
 
 ```
-def _exit_rollback_failed(escaping: BaseException) -> bool:
+#: The `__context__` base getset descriptor, from the SAME source as
+#: `_EVIDENCE_SLOTS` -- see the idiom at the head of this module.  A base
+#: descriptor runs NO user code, which is the whole reason it is the read.
+_CONTEXT_SLOT = BaseException.__dict__["__context__"]
+
+
+def _exit_rollback_failed(escaping: BaseException,
+                          ambient: BaseException | None) -> bool:
     """Did `sqlite3.Connection.__exit__`'s OWN rollback raise?
 
     CALLED ONLY when the entry body completed and the commit's return was
@@ -1112,14 +1151,60 @@ def _exit_rollback_failed(escaping: BaseException) -> bool:
     rollback also fails, chain the exceptions." (SOURCE (S1); the file is
     pinned by sha256 there) -- leaves exactly two shapes:
       * rollback SUCCEEDS -> `PyErr_SetRaisedException` re-raises the
-        COMMIT's exception, whose `__context__` is whatever the CALLER was
-        already handling (None for every caller this repo has: see below);
+        COMMIT's exception, whose `__context__` is whatever the THREAD was
+        already handling: `ambient`, captured immediately before the
+        `with`, or None;
       * rollback FAILS    -> `_PyErr_ChainExceptions1` raises the ROLLBACK's
-        exception with the COMMIT's chained beneath it as `__context__`.
-    So within the scope a non-None `__context__` is a link __exit__ added.
+        exception with the COMMIT's chained beneath it as `__context__`,
+        and the COMMIT's exception is never the ambient object.
+    So within the scope, a `__context__` that is non-None AND IS NOT THE
+    AMBIENT OBJECT is a link `__exit__` added.
+
+    The slot read is contained in the ALARM direction: an unreadable
+    context is treated as a rollback failure, because refusing a probe
+    costs a settle that does not happen (today's behaviour) while
+    admitting one on an unknown state is the direction rule (i) forbids.
     """
-    return escaping.__context__ is not None
+    try:
+        context = _CONTEXT_SLOT.__get__(escaping, type(escaping))
+    except BaseException:  # noqa: BLE001 -- the CLASS, and it ALARMS
+        return True
+    return context is not None and context is not ambient
 ```
+
+**THE CAPTURE, AND WHY IT SITS WHERE IT SITS.** In `record_entry`, on the line **immediately before
+the `try` that opens the guarded region** -- which is itself immediately before the
+`with _entry_transaction(...)`:
+
+```
+ambient = sys.exc_info()[1]      # the THREAD's currently-handled exception
+try:
+    with _entry_transaction(conn, immediate=_reserve, outcome=outcome):
+        ...
+```
+
+- **`sys.exc_info()[1]`, NOT `sys.exception()`.** `sys.exception()` is **Python 3.12+** and
+  `pyproject.toml:9` declares `requires-python = ">=3.11"` (MEASURED by reading the file). The two
+  return the same object; only one of them is inside this project's declared floor. *Recorded
+  because the ruling was relayed naming `sys.exception()`, and a plan that adopted the NAME rather
+  than the BEHAVIOUR would have shipped a 3.11 `AttributeError` on the money path.* `import sys` is
+  already at `swing/trades/entry.py:8`.
+- **BEFORE the `try`, not inside it.** The name is then unconditionally BOUND when the handler runs.
+  Nothing between the capture and the `with` can change the thread's handled exception -- `try:` is
+  not a handler -- so "immediately before the context manager" is satisfied and the handler cannot
+  reach an unbound name.
+- **The reference is HELD for the transaction's duration**, which is what makes `is` meaningful: the
+  predicate compares OBJECT IDENTITY, never equality. Equality would consult a hostile `__eq__`, the
+  same class of defect as the attribute read above.
+
+**THE POST-FIX PREDICATE'S OWN NAMED RESIDUAL, DECLARED RATHER THAN LEFT TO BE DISCOVERED.** A false
+NEGATIVE is now constructible in principle: if the object `__exit__` chains beneath the rollback
+failure IS the captured ambient object, the predicate answers False and admits the probe. **It is
+not constructible on the production path** -- the chained object is the COMMIT's exception, raised
+fresh by SQLite inside `__exit__`, and a freshly-raised exception is not an object the caller was
+already handling. Producing it needs a connection PROXY that re-raises the captured ambient object
+as its own commit error. If it ever happened the rest of the gate still binds: a resolved
+transaction, a token, and a ticker match are all still required.
 
 **The four cases, each with the value it returns** -- and the scope excludes the first two before
 the predicate is ever reached:
@@ -1128,13 +1213,14 @@ the predicate is ever reached:
 |---|---|---|---|
 | body raised `E`, rollback OK | `E` | unchanged (the caller's own, or `None`) | **NEVER CALLED** -- `result is None`, and `record_entry`'s FIRST branch re-raises |
 | body raised `E`, rollback FAILED with `R` | `R` | `E` | **NEVER CALLED** -- same branch, one step earlier |
-| body OK, commit failed `C`, rollback OK | `C` | the caller's own, or `None` | **False** for every caller this repo has -- the probe is admitted, which is the design |
-| body OK, commit failed `C`, rollback FAILED with `R` | `R` | `C` | **True** -- `cleanup_raised`, the probe is VOIDED |
+| body OK, commit failed `C`, rollback OK | `C` | `ambient`, or `None` | **False** -- ambient or not, the probe is admitted, which is the design |
+| body OK, commit failed `C`, rollback FAILED with `R` | `R` | `C` (never `ambient`) | **True** -- `cleanup_raised`, the probe is VOIDED |
 
 **IT IS DELIBERATELY FAIL-OPEN TOWARD THE ALARM, AND THE ASYMMETRY IS THE ARGUMENT.** A FALSE
 POSITIVE costs the settle -- exactly today's behaviour, the direction this whole arc treats as safe.
-A FALSE NEGATIVE admits a read rule (i) would have refused. So the predicate is written to make
-false negatives structurally impossible within its scope and to tolerate false positives:
+A FALSE NEGATIVE admits a read rule (i) would have refused. So the predicate is written to tolerate
+false positives and to make false negatives reachable only through a construction that is named and
+declared rather than through the ordinary shapes:
 
 - **It cannot miss the case it is for.** Row 4 chains unconditionally at
   `_PyErr_ChainExceptions1`, whatever the two exceptions' types are. With the type test gone there
@@ -1142,37 +1228,47 @@ false negatives structurally impossible within its scope and to tolerate false p
   what the ruling bought: the previous version's stated residue was a type residue, and there is no
   longer a type in the predicate for a residue to hide behind.**
 
-- **THE ONE FALSE POSITIVE IT CAN PRODUCE IS NAMED, AND IT IS *MEASURED*, NOT ARGUED** -- and the
-  measurement CORRECTS the reason this ruling was relayed with. **The relayed rationale said a
-  cleanly-completed block means no exception was active when `__exit__` began, so row 3 re-raises
-  with `__context__ = None`. THAT IS TRUE ONLY WHEN NO EXCEPTION IS BEING HANDLED ANYWHERE UP THE
-  STACK, and a clean BLOCK does not establish that** -- `__context__` is set from the THREAD's
-  currently-handled exception at raise time, not from the block's own outcome. **MEASURED, CPython
-  3.14.2 / sqlite3 3.50.4, rollback-journal database, commit forced to fail by a second connection
-  holding the write lock, `__exit__`'s rollback SUCCEEDING in both runs:**
+- **AND THE SENTENCE THAT USED TO STAND HERE -- *"false negatives are structurally impossible within
+  its scope"* -- IS STRUCK, BECAUSE IT WAS FALSE (`A4-R11-1`, CRITICAL).** Two false negatives were
+  REPRODUCED against the bare attribute read, and the removal of the type filter had been sold
+  partly on that sentence. **What replaces it is not another adjective but a different READ** -- the
+  base getset descriptor, which runs no user code -- plus a CONTAINMENT in the alarm direction, plus
+  the two subclass rows in (RD-a4) that execute both. **The two remaining false-negative routes are
+  now DECLARED, not asserted away:** the ambient-identity construction named above, and any
+  behaviour of `BaseException`'s own descriptor, which is C.
 
-  | `record_entry` called... | propagated | `__context__` | bare check | old `isinstance` check |
-  |---|---|---|---|---|
-  | NOT inside an `except` | `OperationalError: database is locked` | `None` | **False** | False |
-  | inside `except ValueError:` | `OperationalError: database is locked` | the `ValueError` | **True** | False |
+- **THE FALSE POSITIVE THE BARE CHECK PRODUCED IS NAMED, WAS *MEASURED* RATHER THAN ARGUED, AND IS
+  NOW REMOVED BY `A4-R11-2` RATHER THAN ACCEPTED.** The rationale the `A4-R10-1` ruling was relayed
+  with said a cleanly-completed block means no exception was active when `__exit__` began, so row 3
+  re-raises with `__context__ = None`. **THAT IS TRUE ONLY WHEN NO EXCEPTION IS BEING HANDLED
+  ANYWHERE UP THE STACK, and a clean BLOCK does not establish that** -- `__context__` is set from
+  the THREAD's currently-handled exception at raise time, not from the block's own outcome.
+  **MEASURED, CPython 3.14.2 / sqlite3 3.50.4, rollback-journal database, commit forced to fail by a
+  second connection holding the write lock, `__exit__`'s rollback SUCCEEDING in both runs:**
 
-  **So the S2.2 objection does NOT live entirely in the excluded region, and this plan says so
-  rather than repeating the reason it was given.** Row 3 with an ambient handled exception is a
-  REAL false positive of the bare check, and it is one the removed type filter would have caught.
-  **The ruling still stands on its other leg, which is the one that was always load-bearing:** the
-  cost is a settle that does not happen -- today's behaviour, on a path that is already failing --
-  whereas the type filter's cost was a MISSED rollback failure, which admits a read. **The bad
-  direction is the one the filter had.**
+  | `record_entry` called... | propagated | `__context__` | bare check | old `isinstance` check | **the shipped check** |
+  |---|---|---|---|---|---|
+  | NOT inside an `except` | `OperationalError: database is locked` | `None` | **False** | False | **False** |
+  | inside `except ValueError:` | `OperationalError: database is locked` | the `ValueError` | **True** | False | **False** |
 
-  **AND THE FALSE POSITIVE HAS ZERO PRODUCTION INSTANCES TODAY. THE METHOD:**
+  **So the S2.2 objection did NOT live entirely in the excluded region, and this plan says so rather
+  than repeating the reason it was given.** Row 3 with an ambient handled exception was a REAL false
+  positive of the bare check. **RD's `A4-R11-2` amendment removes it without restoring the type
+  filter**: the ambient object is excluded by IDENTITY, so the direction argument no longer has to
+  buy a cost that a cheaper discriminator can simply not incur. *The direction argument still stands
+  and is still the reason the predicate fails toward the alarm; it is no longer being spent on this
+  row.*
+
+  **AND THE FALSE POSITIVE HAD ZERO PRODUCTION INSTANCES EVEN BEFORE THE AMENDMENT. THE METHOD:**
   `grep -rn 'record_entry(' --include=*.py swing/` returns **exactly two** call sites --
   `swing/cli.py:806` and `swing/web/routes/trades.py:1723` -- and **both were READ**: each sits in
-  the `try:` SUITE of a `try/except`, which is NOT an exception HANDLER, so `sys.exception()` is
+  the `try:` SUITE of a `try/except`, which is NOT an exception HANDLER, so the captured ambient is
   `None` there. (The distinction is the whole point, and it is what the measurement above isolates:
   being lexically inside a `try` sets no ambient context; being inside an `except`/`finally` during
-  unwinding does.) If a future caller ever retries `record_entry` from inside an `except`, the cost
-  is a settle that does not happen -- and **(RD-a4) pins that cost as a test** rather than leaving it
-  as a paragraph.
+  unwinding does.) **The amendment is therefore not motivated by a live caller** -- it is motivated
+  by the fact that a FUTURE caller retrying from inside an `except` would silently pay a cost this
+  design does not need to charge, and **(RD-a4) drives all four cells so neither the cost nor its
+  removal can change silently.**
 
 **THE `A4-R1-3` WINDOW, AND WHY THE DEFERRED PATH NO LONGER NEEDS A `try` TO CLOSE IT.** The
 window is real: an asynchronous exception delivered after `with conn:` returned -- so after the
@@ -1511,7 +1607,7 @@ because between the two commits the tree would carry a live false-message path o
 | **(RD-a1)** | the probe is NOT CALLED when the rollback RAISED -- in BOTH its shapes | **R10-02 by assertion, not comment** |
 | **(RD-a2)** | the probe NEVER receives the writer's connection | **R10-02's structural half** |
 | **(RD-a3)** | rollback raises before taking effect, row PENDING -> NOT SUCCESS | **R10-02's reproduction** |
-| **(RD-a4)** | the bare context check's NAMED false positive, DRIVEN: an ambient `except` costs the settle and nothing else | **`A4-R10-1`'s ruled widening, measured inside the suite instead of argued in a paragraph** |
+| **(RD-a4)** | the predicate's FOUR-ROW MATRIX -- {`inside_except` x `chained`}, every cell computed under BOTH predicates -- plus the TWO subclass-descriptor rows | **`A4-R11-2` + `A4-R11-1`: a one-row pin passed a false premise upward; the matrix is the repair** |
 | **(RD-b)** | a concurrent insert takes our freed rowid -> NOT confirmed as ours | **R10-03** |
 | **(RD-b2)** | a rolled-back token REUSED by a later committed row IS confirmed -- the declared residual, VERIFIED not asserted | a declaration nobody executed (`A4-R1-1`) |
 | (c) | commit raises, row LANDED -> SUCCESS with warning, both paths | the arc's headline |
@@ -1893,31 +1989,76 @@ reading the WRITER's own connection and not from any property of the ledger.
 observes the writer's own uncommitted row and returns SUCCESS carrying a "DURABLE" warning over a
 merely-pending row.
 
-### (RD-a4) THE BARE CONTEXT CHECK'S NAMED FALSE POSITIVE, DRIVEN RATHER THAN DESCRIBED
+### (RD-a4) THE PREDICATE'S FOUR-ROW MATRIX, EACH CELL COMPUTED UNDER BOTH PATHS
 
-**Why this row exists (`A4-R10-1`, RD 2026-09-07).** The predicate's `isinstance(sqlite3.Error)`
-filter was REMOVED, which WIDENS its false-positive set to any caller running inside an `except`
-handler. **That widening was RULED acceptable on a direction argument, and a direction argument that
-nothing executes is exactly what this arc refuses elsewhere.** S2.2 states the measurement; this row
-is the measurement inside the suite, so the cost cannot change silently.
+**REBUILT 2026-09-07 FROM A ONE-ROW PIN INTO A FOUR-ROW MATRIX (RD, on `A4-R11-2`), AND THE REASON
+IS AN INCIDENT RATHER THAN A PREFERENCE.** The previous version of this row pinned ONE case -- the
+ambient-`except` false positive -- and asserted it as a declared COST. When the orchestrator ran
+RD's validity pin for that ruling it executed the `inside_except=False` leg only and reported the
+result as confirming a scope argument that was entirely about the `inside_except=True` leg. **RD's
+words, kept because they name the obligation: *"That rule's violation is exactly how the one-row pin
+passed a false premise to me; the repaired test is the apology that compiles."*** So the row is now
+a MATRIX over the two independent axes -- `inside_except` and `chained` -- **and every cell asserts
+the predicate's output under BOTH the pre-fix and the post-fix predicate**, which is the recipe's
+compute-it-under-both-paths rule applied to a truth table rather than to a single number.
 
-**Fixture:** the (c) shape -- deferred path, body completes, commit's own return LOST, the row
-LANDED -- driven **twice**: once normally and once from inside `except ValueError:` with a live
-handled exception (`sys.exception() is not None` asserted on the fixture itself, so a fixture that
-stops establishing the ambient context fails loudly instead of turning the row green).
+**THE AXES.** `inside_except`: whether `record_entry` is called with a live handled exception on the
+thread (`sys.exc_info()[1] is not None`, ASSERTED ON THE FIXTURE ITSELF so a fixture that stops
+establishing the ambient context fails loudly instead of turning cells green). `chained`: whether
+`__exit__`'s own rollback ALSO failed -- the proxy shape (k4a)/(k4b) specify, raising the rollback
+error from inside the `except` handling the commit error, so `__context__` is set by the interpreter
+exactly as `_PyErr_ChainExceptions1` sets it.
 
-**Post-fix, NOT inside an `except`:** `post_commit_error.__context__` is `None`,
-`outcome.cleanup_raised` is False, the probe is called ONCE, and `record_entry` returns SUCCESS with
-the lost-commit warning.
-**Post-fix, INSIDE an `except`:** `post_commit_error.__context__` is the ambient `ValueError`,
-`outcome.cleanup_raised` is **True**, the probe call count is **0**, and `record_entry` RE-RAISES --
-**today's behaviour, over a durable row.** The row asserts that outcome as the DECLARED COST, and
-additionally that **the durable row is intact and un-duplicated** (`COUNT(*) = 1` on a fresh
-connection), because the cost being paid is a missing settle and never a lost or doubled entry.
-**Against the removed `isinstance` filter:** the second case would settle and return SUCCESS, so the
-row DISCRIMINATES the ruled shape from the one it replaced -- in the direction the ruling chose.
-**Pre-fix (no predicate at all):** `cleanup_raised` is False in both cases and the second returns
-SUCCESS.
+**THE MATRIX. MEASURED BY EXECUTION 2026-09-07, CPython 3.14.2 / sqlite3 3.50.4** -- these are the
+values the test asserts, not values derived from the source:
+
+| # | `inside_except` | `chained` | `escaping.__context__` | is it `ambient`? | **PRE-FIX** (bare `__context__ is not None`) | **POST-FIX** (base slot, non-None, `is not ambient`) |
+|---|---|---|---|---|---|---|
+| 1 | False | False | `None` | -- | **False** | **False** |
+| 2 | False | True | the COMMIT `OperationalError` | no | **True** | **True** |
+| 3 | **True** | False | the ambient `ValueError` | **yes** | **True** -- THE FALSE POSITIVE | **False** -- the amendment's whole subject |
+| 4 | **True** | True | the COMMIT `OperationalError` | no | **True** | **True** |
+
+**READ THE MATRIX AS A DISCRIMINATOR, WHICH IS THE ONLY REASON TO HAVE ONE:** rows 1, 2 and 4 are
+IDENTICAL under both predicates, so **row 3 is the entire delta** -- and a matrix in which only one
+cell moves is the honest statement that the amendment is narrow. **Row 4 is the row that proves the
+nested case composes without a branch:** the ambient is live AND the rollback failed, and the
+predicate still answers True, because `__exit__` chains the COMMIT error at the FIRST link and the
+first link is the only one the predicate reads.
+
+**WHAT EACH ROW ASSERTS THROUGH `record_entry`, not merely on the predicate:**
+- **rows 1 and 3** (rollback OK): `outcome.cleanup_raised` is **False**, `_durability_probe` is
+  called **ONCE**, and `record_entry` returns SUCCESS with the lost-commit warning over the durable
+  row. **Row 3 is the one that would RE-RAISE under the pre-fix predicate**, and it additionally
+  asserts `COUNT(*) = 1` on a fresh connection, because the cost of getting this wrong in either
+  direction is measured against the ledger and never against the warning text.
+- **rows 2 and 4** (rollback failed): `outcome.cleanup_raised` is **True**, the probe call count is
+  **0**, `record_entry` RE-RAISES, and a fresh connection sees **0** rows.
+- **every row** asserts `sys.exc_info()[1] is not None` (rows 3-4) or `is None` (rows 1-2) INSIDE
+  the fixture before `record_entry` is entered.
+
+**THE FIXTURE.** Rows 1 and 3 use the (c) shape -- deferred path, body completes, commit's own
+return LOST, the row LANDED. Rows 2 and 4 use the (k4a) proxy. The `inside_except` axis is the same
+call wrapped in `try: raise ValueError(...) except ValueError:`.
+
+**TWO SUBCLASS ROWS, IN THE SAME TEST, BECAUSE THEY ARE THE SAME PREDICATE'S OTHER AXIS
+(`A4-R11-1`).** MEASURED by execution 2026-09-07 on the same interpreter:
+
+| subclass of `sqlite3.OperationalError` | base-slot `__context__` | **PRE-FIX** bare read | **POST-FIX** |
+|---|---|---|---|
+| `__context__` is a `@property` returning `None` | the real `OperationalError` | **False** -- a FALSE NEGATIVE that ADMITS the probe | **True** |
+| `__context__` is a `@property` that RAISES | the real `OperationalError` | **raises `RuntimeError`, replacing the escaping exception** | **True** |
+
+**Against the pre-fix predicate the first row ADMITS a probe on a wounded connection** -- the
+`A4-R9-3` window, rebuilt -- **and the second replaces the operator's evidence with the attacker's
+exception.** Both are driven through `record_entry`, and both assert `cleanup_raised is True`, a
+probe call count of **0**, and that what escapes is the SUBCLASS instance with its own type and args
+(not a `RuntimeError` from the getter). **The second row is also the one that shows the CONTAINMENT
+is a belt rather than the fix:** the base descriptor runs no user code, so the getter never fires
+and the `except` arm is not reached. *Stated rather than quietly claimed as coverage -- no
+construction found in this pass makes `BaseException.__dict__["__context__"].__get__` raise, so the
+containment is kept for the alarm direction it costs nothing to have, and it is NOT counted as
+tested.*
 
 ### (RD-a5) THE CALLER-SIDE OBLIGATION THE `body_completed` REMOVAL RESTS ON
 
@@ -2802,10 +2943,17 @@ covering the new column, so the failure is left loud."*
 - [ ] Immediate path: set `resolution` + `cleanup_raised` in all
       arms of the existing cleanup ladder **without changing either existing message**, through
       `_observe_resolution` so the two paths cannot drift.
-- [ ] **`_exit_rollback_failed(escaping)`** (S2.2): the BARE `__context__ is not None` test -- RD,
-      2026-09-07, the `isinstance` filter is REMOVED. Its docstring anchors its CPython citation on
+- [ ] **`_CONTEXT_SLOT` and `_exit_rollback_failed(escaping, ambient)`** (S2.2): the
+      `isinstance` filter is REMOVED (RD, `A4-R10-1`); the read goes through the BASE GETSET
+      DESCRIPTOR and is contained in the ALARM direction (`A4-R11-1`, CRITICAL); the captured
+      ambient exception is excluded by **`is`-identity, never equality** (RD, `A4-R11-2`).
+      `_CONTEXT_SLOT` is built from `BaseException.__dict__["__context__"]`, the same source as this
+      module's existing `_EVIDENCE_SLOTS`. Its docstring anchors its CPython citation on
       CONTENT (the function name and the verbatim "Commit failed; try to rollback" comment) with the
       sha256 pin in SOURCE (S1), **never on bare line numbers** (Global Constraints).
+- [ ] **The ambient capture in `record_entry`:** `ambient = sys.exc_info()[1]` on the line
+      IMMEDIATELY BEFORE the `try` that opens the guarded region. **`sys.exc_info()[1]`, not
+      `sys.exception()`** -- the latter is Python 3.12+ and `pyproject.toml:9` declares `>=3.11`.
 - [ ] **The DEFERRED path's observation block, in `record_entry`'s post-commit handler** (S2.2,
       S2.4) -- inside `result is not None and not outcome.committed and not _reserve`, calling
       `_observe_resolution` and then `_exit_rollback_failed`. **The existing gate
@@ -3273,13 +3421,24 @@ discovered; it is the gate.
     `A4-R9-3` and `A4-R10-1` as the step that rebuilt the false-confirm composition, so a reader
     tracing either finding needs to land here and see that the step is gone.*
 
-    **WHAT REPLACES IT IS NOT AN ACCEPTANCE BUT A DECLARED COST, and it points the other way:** the
-    bare check FALSE-POSITIVES for a caller that invokes `record_entry` from inside an `except`
-    handler (**MEASURED, S2.2**: the ambient handled exception becomes `__context__`, so the settle
-    is refused and the ORIGINAL is re-raised). **That is today's behaviour on a path that is already
-    failing, it has ZERO instances across both production call sites, and (RD-a4) drives it.** The
-    fail-open direction is the whole argument: the removed filter's cost was a MISSED rollback
-    failure, which ADMITS a read rule (i) refuses.
+    **AND THE DECLARED COST THAT REPLACED IT IS ALSO GONE -- RD, 2026-09-07, `A4-R11-2`.** The
+    bare check FALSE-POSITIVED for a caller invoking `record_entry` from inside an `except` handler
+    (**MEASURED, S2.2**: the ambient handled exception becomes `__context__`, so the settle was
+    refused and the ORIGINAL re-raised). That cost was accepted on the direction argument. **It is
+    now simply not incurred:** the ambient exception is captured immediately before the transaction
+    and excluded by `is`-identity, and (RD-a4)'s four-row matrix shows the amendment moves exactly
+    ONE of the four cells. *Recorded as a retirement rather than deleted, for the same reason as the
+    entry above: the acceptance was live and was reasoned from, so a reader tracing it must land
+    here and see it discharged.* **The fail-open direction remains the standing argument** -- a
+    false positive costs a settle that does not happen, a false NEGATIVE admits a read rule (i)
+    refuses -- and it is what the base-slot read and the alarm-direction containment (`A4-R11-1`)
+    now serve.
+
+    **WHAT IS STILL DECLARED, narrower than what it replaces:** a false NEGATIVE remains
+    constructible if the object `__exit__` chains beneath the rollback failure IS the captured
+    ambient object. **Not constructible on the production path** -- the chained object is the
+    COMMIT's own freshly-raised exception -- and it would take a connection proxy re-raising the
+    caller's ambient exception as its commit error. S2.2 states it at the predicate.
 
 ---
 
