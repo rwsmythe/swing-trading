@@ -38,7 +38,15 @@ and re-raising the ORIGINAL when it is not.
 2026-09-02 that REVERTED clause 2 and commissioned this primitive.
 **Plan base:** `edfea928` (branch `22-a4-plan`, worktree `.worktrees/22-a4-plan`).
 
-> ## REVIEW STATUS: **NINE ADVERSARIAL ROUNDS, THEN AN AMENDMENT PASS ON THREE DIRECTOR RULINGS. ROUND 10 RAN ON THE AMENDED SHAPE.**
+> ## REVIEW STATUS: **TEN ADVERSARIAL ROUNDS. ROUND 10 RAN ON THE AMENDED SHAPE AND DID NOT CONVERGE. THIS PLAN IS NOT AUTHORIZED TO EXECUTE.**
+>
+> **Round 10 returned `NEW_CRITICAL_MAJOR_FOUND`: 7 findings (1 CRITICAL, 5 MAJOR, 1 MINOR; 1 new
+> ground, 6 residual), NONE of them fixed, because the amending cell was instructed to run one round
+> on the amended shape and stop. FOUR are residuals of the 2026-09-07 amendment pass's own edits,
+> TWO bear on director ruling text and route, and ONE (`A4-R10-5`, the CPython citation's line
+> numbers) is REFUTED against the source file on disk. Round 11 is the gate-holder's call.** Full
+> per-finding adjudication in `.copowers-findings.md`; the ledger's totals are now re-derivable by a
+> one-line command rather than by reading.
 >
 > Rounds 1-9 at the binding `strong` tier, all five mechanical assertions passing every counted
 > round, zero reopened and zero reverted throughout. **Round 9 did NOT converge** -- it opened nine
@@ -71,10 +79,15 @@ and re-raising the ORIGINAL when it is not.
 > to WAL), `A4-R9-7` (Task 3 could not reach green). `A4-R9-8` and `A4-R9-9` were fixed in the
 > previous pass.
 >
-> **AUTHORIZATION STATE, STATED ONCE:** CHARC's five ratifications and his attached condition
-> (Task 1b) are landed; RD's rulings of 2026-09-06 and 2026-09-07 are landed. **No director item is
-> open.** Whether the plan is authorized to EXECUTE is the orchestrator's call on the round-10
-> verdict recorded in `.copowers-findings.md` and S11 -- this document does not award itself that.
+> **AUTHORIZATION STATE, STATED ONCE AND WITHOUT CONTRADICTION:** CHARC's five ratifications and his
+> attached condition (Task 1b) are landed; RD's rulings of 2026-09-06 and 2026-09-07 are landed;
+> **no director item was open when round 10 ran.** **Round 10 then opened TWO that are** --
+> `A4-R10-1` (the Branch-A predicate's residue composes with S7.7 to rebuild the false-confirm the
+> ruling declared structurally closed; both remedies the reviewer offers are shapes RD has already
+> weighed) and `A4-R10-2` (the strictness of `P(false confirm) < P(collision)`, the third statement
+> of a sentence he owns). **They are routed, NOT amended into the plan**, on the same rule as round
+> 9's: a plan may not rewrite a ruling's premise on its own authority. **THIS PLAN IS NOT AUTHORIZED
+> TO EXECUTE.**
 >
 > Full ledger: `.copowers-findings.md`; raw transcripts `.codex-review-r1..r10.txt`.
 
@@ -3103,18 +3116,27 @@ Task 6 and Task 7 runs are compared against THAT number, not against a remembere
 | **8** | `strong` / `gpt-5.6-sol` / `high` | 0 / 5 / 1 | 6 (**2 new ground, 4 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
 | 9-DQ | *(DISQUALIFIED -- provider capacity)* | -- | -- | -- | -- | **NO VERDICT; 2 anchored `^ERROR`, exit 1. 316,797 tokens spent, NOT counted.** |
 | **9** | `strong` / `gpt-5.6-sol` / `high` | 0 / 9 / 0 | 9 (**6 new ground, 3 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| AMEND | *(2026-09-07 amendment pass on RD's three rulings; sweep 41/41/41, per-location audit 38 probes)* | -- | -- | -- | -- | *no verdict; no effect on convergence* |
+| 10-DEAD | *(NOT A ROUND -- MSYS path-mangling; harness exit 0, 0-byte transcript)* | -- | -- | -- | -- | **NO BANNER, NO FOOTER, NO VERDICT. 0 tokens.** |
+| **10** | `strong` / `gpt-5.6-sol` / `high` | 1 / 5 / 1 | 7 (**1 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
 
-**TOKEN SPEND, NINE COUNTED ROUNDS:** 437,776 + 230,647 + 246,268 + 320,775 + 317,038 + 307,420 +
-413,949 + 349,176 + 463,310 = **3,086,359**.
-**TWO ROUNDS WERE DISQUALIFIED AND ARE EXCLUDED FROM THAT SUM, and their cost is stated rather than
-hidden:** round 1's first attempt (MSYS path-mangling; no transcript, no footer, 0 tokens) and round
-9's first attempt (**provider capacity: exit 1, two anchored `^ERROR` lines, NO verdict token, and a
-`tokens used` footer anyway -- 316,797 tokens**). **Total actually spent: 3,403,156.** *The round-9
+**TOKEN SPEND, TEN COUNTED ROUNDS:** 437,776 + 230,647 + 246,268 + 320,775 + 317,038 + 307,420 +
+413,949 + 349,176 + 463,310 + 392,163 = **3,478,522**.
+**THREE ATTEMPTS WERE DISQUALIFIED OR DEAD AND ARE EXCLUDED FROM THAT SUM, and their cost is stated
+rather than hidden:** round 1's first attempt (MSYS path-mangling; no transcript, no footer, 0
+tokens), round 9's first attempt (**provider capacity: exit 1, two anchored `^ERROR` lines, NO
+verdict token, and a `tokens used` footer anyway -- 316,797 tokens**), and round 10's first attempt
+(**MSYS path-mangling again, harness exit 0 with a 0-byte transcript -- the two-signal rule caught
+it; 0 tokens**). **Total actually spent: 3,795,319.** *The round-9
 disqualification is the cleanest demonstration in this loop of why the footer alone is not a
-completion signal: it was present on a round that produced no verdict at all.*
-**RUNNING TOTALS, RECOMPUTED FROM THE PER-ROUND ROWS AFTER `A4-R9-9` CAUGHT THEM WRONG:**
+completion signal: it was present on a round that produced no verdict at all. The round-10 dead
+attempt is the second instance of a hazard already written down in this loop's own ledger and not
+applied on the first try.*
+**RUNNING TOTALS, RECOMPUTED FROM THE PER-ROUND ROWS AFTER `A4-R9-9` CAUGHT THEM WRONG, AND NOW
+RE-DERIVABLE BY COMMAND** (the LEDGER CONVENTIONS block in `.copowers-findings.md`):
 **through round 8 -- 86 findings: 4 CRITICAL, 63 MAJOR, 19 MINOR.**
-**including round 9 -- 95 findings: 4 CRITICAL, 72 MAJOR, 19 MINOR. ZERO reopened, ZERO reverted.**
+**through round 9 -- 95 findings: 4 CRITICAL, 72 MAJOR, 19 MINOR.**
+**through round 10 -- 102 findings: 5 CRITICAL, 77 MAJOR, 20 MINOR. ZERO reopened, ZERO reverted.**
 *The previously stated "76 / 3 / 46 / 17" was wrong in two independent ways -- it disagreed with the
 per-round rows above it AND its own severities summed to 66, not 76. It was carried into two return
 reports as convergence evidence before a reviewer recomputed it. **A total used as evidence is
