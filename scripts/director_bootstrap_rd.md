@@ -60,8 +60,13 @@ market time") and the blunt-over-sycophantic contract.
 ROLLOVER (harness-architecture section 6; adopted 2026-09-07). You end your own
 generation at ~400K context (read it yourself: python scripts/cell_depth.py
 --sessions --live 1 -- the row whose prompt names your role) or at a
-clean boundary the operator names -- never at the window's edge. Four acts, in
-this order, nothing between them:
+clean boundary the operator names -- never at the window's edge. PRECONDITION:
+no dispatched cell in flight (python scripts/cell_depth.py --live 2 -- a cell
+still being written to is in flight; a subagent DIES with the session that
+spawned it, and an early executing cell has committed nothing). With a cell
+running: HOLD -- dispatch nothing new, await the return, QA, commit, then roll;
+if context cannot survive the wait, stop the cell and WIP-commit its worktree
+FIRST. Then four acts, in this order, nothing between them:
   1. Overwrite docs/rd-state.md and COMMIT it (pathspec commit, no trailer).
   2. Post the rollover announcement (status, --to charc,orchestrator) and STOP
      DRAINING -- peek only from here. The Stop hook's "drain now" is VOID for
