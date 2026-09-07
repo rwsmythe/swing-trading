@@ -34,6 +34,51 @@ and re-raising the ORIGINAL when it is not.
 2026-09-02 that REVERTED clause 2 and commissioned this primitive.
 **Plan base:** `edfea928` (branch `22-a4-plan`, worktree `.worktrees/22-a4-plan`).
 
+> ## REVIEW STATUS: **NINE ADVERSARIAL ROUNDS. ALL DIRECTOR ITEMS RULED AND CLOSED; ROUND 9 RAN ON THE FINAL SHAPE AS THE CONVERGENCE ROUND.**
+>
+> Rounds 1-8 at the binding `strong` tier, all five mechanical assertions passing every counted
+> round, zero reopened and zero reverted throughout. **RD RULED ALL THREE OPEN ITEMS on 2026-09-06:**
+> both S7.7 replacement wordings CONFIRMED (half A with an attached precondition -- S2.5's mapper
+> narrowing is LOAD-BEARING for his ruling and now carries a discriminating pin at (r6); half B
+> replacing his own absolute with *the false-confirm path EXISTS and lives entirely inside the
+> collision event, so its probability EQUALS the collision probability*), **`fork` STRUCK** from the
+> banked allocator's re-open triggers on this plan's measurement (VM snapshot-resume recorded as an
+> INSTANCE of the entropy-duplication trigger, never as an independent one), and **the deferred-path
+> rule-(i) asymmetry ACCEPTED as option (a)** -- on HIS ground, which replaces the plan's:
+> **rule (i) exists to prevent `R10-02`'s self-quote, and on that path the self-quote cannot happen
+> at all because the probe runs on a FRESH connection**, so constraint 3 enforces the RESULT by a
+> stronger mechanism than the unobservable signal. Option (b) -- hand-rolling `with conn:` semantics
+> on the byte-locked money path -- was REJECTED as the D46 direction.
+>
+> **AUTHORIZATION STATE, STATED ONCE AND WITHOUT CONTRADICTION** (`A4-R9-8` found the artifact
+> asserting "no open director items", "NOT AUTHORIZED TO EXECUTE", a "CLOSED" Task 0 with unchecked
+> boxes, and a "RULED" S9 still naming routed items -- an executor could not tell whether work may
+> begin):
+>
+> **THE THREE ITEMS RD RULED ON 2026-09-06 ARE CLOSED.** CHARC's five ratifications and his attached
+> condition (the corrector's typed refusal, Task 1b) are landed.
+>
+> **AND ROUND 9 OPENED THREE NEW ONES, so this plan is NOT AUTHORIZED TO EXECUTE.** Two of them bear
+> directly on rulings just made -- `A4-R9-2` (CPython may expose the internal rollback failure as an
+> exception chain, which would falsify the premise under RD's item-3 acceptance) and `A4-R9-3`
+> (rollback-raised COMBINED with the S7.7 collision event produces a false SUCCESS where literal
+> enforcement would alarm, which contradicts S7.15's "zero outcome delta") -- and one is a
+> director-owned wording defect, `A4-R9-4` ("EQUALS the collision probability" is an upper bound, not
+> an equality). **They are routed, NOT amended into the plan**, because a plan may not rewrite a
+> ruling's premise on its own authority. See S9 and the ledger.
+>
+> Full ledger: `.copowers-findings.md`; raw transcripts `.codex-review-r1..r9.txt`.
+
+**Tech Stack:** Python 3.14.2 (`pyproject` targets >=3.11), sqlite3 with LEGACY transaction control
+(`isolation_level=''`, measured), the live database in WAL (measured), `pytest` with `-n auto` in
+`addopts`, `ruff check swing/` (`E,F,W,I,N,UP,B,SIM`).
+
+**Spec:** [`docs/phase22-arc-a3-a4-commissioning-brief.md`](../../phase22-arc-a3-a4-commissioning-brief.md)
+(the **22-A4** half only), which derives from
+[`docs/22-a-merge-request.md`](../../22-a-merge-request.md) S4.4 -- the CHARC + RD split ruling of
+2026-09-02 that REVERTED clause 2 and commissioned this primitive.
+**Plan base:** `edfea928` (branch `22-a4-plan`, worktree `.worktrees/22-a4-plan`).
+
 > ## REVIEW STATUS: **SIX ADVERSARIAL ROUNDS. BOTH RULINGS LANDED; ROUND 6 RAN ON THE FINAL SHAPE.**
 >
 > Rounds 1-5 at the binding `strong` tier, all five mechanical assertions passing every counted
@@ -531,16 +576,22 @@ needs.
 > stated as a condition an operator or director can recognise: *any change that lets two processes or
 > two resumed images draw from the SAME entropy stream.*
 >
-> **BUT "FORK" IS STRUCK FROM THE TRIGGER LIST AND ROUTED BACK -- IT DOES NOT VERIFY AT THE CODE**
-> (`A4-R6-11`). **MEASURED, by reading CPython 3.14's `uuid.uuid4` source:** it is
+> **"FORK" IS STRUCK FROM THE TRIGGER LIST -- ROUTED, AND CONFIRMED STRUCK BY RD 2026-09-06 ON THIS
+> MEASUREMENT** (`A4-R6-11`). **MEASURED, by reading CPython 3.14's `uuid.uuid4` source:** it is
 > `int.from_bytes(os.urandom(16))` **per call**. There is no process-local PRNG whose state a `fork`
 > would clone, so **acquiring `fork` by porting to a POSIX platform does not, by itself, create the
 > correlated state the trigger is meant to detect** -- it would fire on an ordinary platform port
 > with no hazard present, and activate a materially more expensive design on the money path.
-> **What SURVIVES as a trigger:** a change of GENERATOR away from `os.urandom`, or a measured
-> condition capable of DUPLICATING THE OS ENTROPY STREAM (VM snapshot-resume / image cloning, where
-> that premise is actually established). This is the SECOND clause of RD's riders that failed
-> verification, and it is routed with the first at S9 RD item 2.
+>
+> **THE SURVIVING TRIGGERS, EXACTLY TWO, AS RULED:**
+> **(a)** a change of GENERATOR away from `os.urandom`;
+> **(b)** a MEASURED condition that DUPLICATES THE OS ENTROPY STREAM.
+>
+> **VM SNAPSHOT-RESUME IS AN INSTANCE OF (b), NEVER AN INDEPENDENT TRIGGER.** Resumed guests
+> replaying the entropy pool is the documented mechanism `vmgenid` exists to signal, so it qualifies
+> **only where that duplication is actually established** -- never on the bare fact that a VM was
+> snapshotted. Recording it as an instance rather than a third bullet is what stops the trigger list
+> re-acquiring the looseness `fork` was struck for.
 >
 > Refusing it today is a **D46 application**: it is more machinery -- a second commit surface and a
 > separate connection **on the money path** -- defending against a failure with **no mechanism and no
@@ -1013,6 +1064,7 @@ because between the two commits the tree would carry a live false-message path o
 | (k) | the deferred path OBSERVES its own already-resolved lost commit | a wrapper that assumes instead of reading |
 | (k2) | the deferred path's exception identity is UNCHANGED | an arc that quietly re-plumbs the pre-arc path |
 | **(k3)** | STATIC: the `committed` assignment is inside the protected suite on BOTH paths | **`A4-R1-3`'s window, which no injected exception can reach** |
+| **(k4a)-(k4b)** | the deferred path's two UNOBSERVABLE rollback sequences -- OUTCOME pinned where the signal cannot be | **`A4-R8-1` / RD's acceptance condition: the fresh connection is what makes a wrong `cleanup_raised` harmless** |
 
 **REGRESSION CONTROLS -- a separate roster, identical under both paths by design:**
 
@@ -1244,14 +1296,24 @@ closure check that walks what the code actually contains and asserts every item 
 on the reasoned exclusion list, and it is a STATIC walk rather than a runtime trace because a trace
 only sees the branches a fixture happened to take.
 
-### (r6) The IntegrityError mapping no longer mis-labels
+### (r6) The IntegrityError mapping no longer mis-labels -- **RD's attached pin for S7.7 half A**
+
+**THIS ROW IS LOAD-BEARING FOR A DIRECTOR'S RULING, which is why it asserts a POSITIVE TYPED SURFACE
+rather than the absence of noise** (RD, 2026-09-06). S7.7 half A's "loud AND legible" holds only in
+combination with S2.5's narrowing, so the narrowing gets a discriminating pin.
 
 Two rows with the same non-NULL token through `record_entry`'s own inner path ->
-**`sqlite3.IntegrityError` propagates**, NOT `DuplicateOpenPositionError`; and a genuine same-ticker
-open duplicate still raises `DuplicateOpenPositionError` naming the ticker. **Pre-fix (the loose
-match plus the new index):** the first case raises `DuplicateOpenPositionError("Already an open
-position in AAA (race-detected)")` over a ticker with no open position. **MEASURED:** both SQLite
-messages, so the assertion is written against the real strings.
+**`sqlite3.IntegrityError` propagates, and the assertion is on its TYPE and its MESSAGE**
+(`UNIQUE constraint failed: trades.attempt_id`) -- **NOT on the absence of
+`DuplicateOpenPositionError`.** A row written as *"no `DuplicateOpenPositionError` was raised"* would
+**pass an implementation that raised nothing at all**, which is the vacuous-negative shape this
+project has been caught by before; asserting the typed surface cannot pass that way.
+And a genuine same-ticker open duplicate still raises `DuplicateOpenPositionError` naming the ticker.
+
+**Pre-fix (the loose match plus the new index):** the first case raises
+`DuplicateOpenPositionError("Already an open position in AAA (race-detected)")` **over a ticker with
+no open position** -- loud, and mislabelled as the position race S7.7 half A depends on it not being.
+**MEASURED:** both SQLite messages, so the assertion is written against the real strings.
 
 ---
 
@@ -1590,6 +1652,36 @@ assertion is a LOCK: it fails an implementation that copies the immediate path's
 `raise cleanup_error from write_error` onto the pre-arc path, which is what the first draft would
 have shipped.
 
+### (k4a)-(k4b) THE DEFERRED PATH'S TWO UNOBSERVABLE ROLLBACK SEQUENCES -- **OUTCOME pinned where the SIGNAL cannot be**
+
+**RD's second acceptance condition, 2026-09-06** (S7.15). `sqlite3.Connection.__exit__` owns the
+deferred rollback, so `cleanup_raised` cannot observe its failure. **Rule (i)'s literal signal is
+therefore unobservable on this path -- so each defeating sequence pins the OUTCOME instead**, which
+is what the rule protects and what the operator actually receives.
+
+**(k4a) THE INTERNAL ROLLBACK TAKES EFFECT AND THEN RAISES.** A deferred-path fixture whose
+`__exit__`-driven rollback succeeds and then raises. **Post-fix:** `conn.in_transaction` reads False,
+the wrapper records `not_needed` with `cleanup_raised=False` (**the signal is wrong, and the plan
+says so**), the probe runs on a FRESH connection and **reads ABSENT because the row is gone**, and
+`record_entry` **RE-RAISES the ORIGINAL**. Row count for the ticker: **0**.
+**Against an implementation that confirmed from the writer's own connection** -- `R10-02`'s shape,
+the thing rule (i) exists to stop -- the pending/rolled-back state would be read from the writer and
+the row could be reported durable. **The fresh connection is what makes the wrong signal harmless,
+and this row is where that is demonstrated rather than argued.**
+
+**(k4b) THE INTERNAL ROLLBACK RAISES BEFORE TAKING EFFECT -- the WOUNDED CONNECTION.** The writer's
+transaction stays OPEN, holding its PENDING lock, and the wrapper's own retry also fails.
+**Post-fix:** the fresh probe **BLOCKS OR FAILS** against that held lock (MEASURED (3): a third
+connection got `database is locked` while the writer held a pending lock after a failed commit), the
+probe is **FAIL-CLOSED to False**, and **the ORIGINAL error surfaces** -- never a success, never the
+probe's own exception. Row count visible to a fresh connection: **0**.
+**Against a probe that treated its own failure as ABSENT-and-therefore-settled**, or that fell back
+to the writer's connection when the fresh one was blocked: the first invents nothing but the second
+reproduces `R10-02` exactly. **Fail-closed is the assertion, not "it did not crash".**
+
+**Both rows are DEFERRED-PATH ONLY** -- on the immediate path the wrapper issues the rollback itself
+and `cleanup_raised` is a true observation, which (RD-a1)'s three fixtures already cover.
+
 ### (k3) THE `committed` OBSERVATION IS INSIDE THE RESOLVING SUITE -- static AND runtime
 
 > **Rewritten after `A4-R2-6`, which disproved this row's founding claim and then weakened its
@@ -1630,7 +1722,7 @@ for every assignment including ones added later.*
 | `tests/trades/test_22a4_corrector_refusal.py` | **(m8a) typed refusal, (m8b) order-independence** -- Task 1b |
 | `tests/cli/test_22a4_corrector_refusal_cli.py` + `tests/web/test_routes/test_22a4_corrector_refusal_delivery.py` | **(m8c) delivery through the UNCHANGED callers** -- Task 1b |
 | `tests/trades/test_22a4_attempt_identity.py` | (e), (e2), **(w)**, **(w2) the mint contract**, (f), (g), (h), (r1)-(r3), (r6), **(r7) the schema-aware probe** |
-| `tests/trades/test_22a4_clause2_settlement.py` | (RD-a1), (RD-a2), (RD-a3), (RD-b), **(RD-b2)**, (c2), (k), (k2), **(k3)** |
+| `tests/trades/test_22a4_clause2_settlement.py` | (RD-a1), (RD-a2), (RD-a3), (RD-b), **(RD-b2)**, (c2), (k), (k2), **(k3)**, **(k4a)-(k4b)** |
 
 **Edited:**
 
@@ -1934,8 +2026,10 @@ covering the new column, so the failure is left loud."*
       fires only when the
       transaction is still open; **its failure is contained and the ORIGINAL exception still
       escapes**, so the pre-arc path's exception identity is unchanged.
-- [ ] **Tests:** (k), (k2), (k3). **RED first**: (k) asserts a `resolution` field that does not yet
-      exist, and (k3)'s AST walk fails against any shape that leaves the assignment unguarded.
+- [ ] **Tests:** (k), (k2), (k3), **and (k4a)/(k4b) -- the two deferred-path sequences whose rule-(i)
+      signal is unobservable, pinned on OUTCOME** (RD's acceptance condition, S7.15). **RED first**:
+      (k) asserts a `resolution` field that does not yet exist, and (k3)'s AST walk fails against any
+      shape that leaves the assignment unguarded.
 - [ ] Commit: `feat(trades): Task 3 -- the transaction wrapper observes body-completion, resolution and cleanup failure on both paths`
 
 ### Task 4: clause 2 returns
@@ -2146,31 +2240,43 @@ discovered; it is the gate.
    **AND THAT CUTS BOTH WAYS, which was round 6's finding** (`A4-R6-11`): RD's rider named **fork**
    as a re-open trigger for the banked allocator, and since `uuid4` holds no forkable state, **a
    POSIX port that merely acquires `fork` would fire the trigger with no hazard present** -- and
-   activate a materially more expensive design on the money path. **The surviving triggers are a
-   GENERATOR change away from `os.urandom`, or a measured condition that DUPLICATES THE OS ENTROPY
-   STREAM** (VM snapshot-resume / image cloning, where that premise is established). The wording is
-   RD's, so the correction is ROUTED rather than taken silently -- **the second of his two rider
-   clauses that failed verification** (S9 RD item 2).
+   activate a materially more expensive design on the money path. **The surviving triggers, exactly two, as RULED (RD 2026-09-06,
+   confirming the strike on this measurement): (a)** a GENERATOR change away from `os.urandom`;
+   **(b)** a MEASURED condition that DUPLICATES THE OS ENTROPY STREAM -- with **VM snapshot-resume
+   recorded as an INSTANCE of (b) and NEVER as an independent trigger**, since resumed guests
+   replaying the entropy pool is the mechanism `vmgenid` exists to signal and qualifies only where
+   that duplication is actually established (S2.0.1).
 
    **THE DETECTION STORY, VERIFIED BY EXECUTION RATHER THAN ASSERTED -- AND ONE HALF OF RD's RIDER
    DID NOT VERIFY.** He attached it as load-bearing and instructed stop-and-route on failure, so both
    halves were run against a model carrying the real CHECK, both real indexes and the real mapper:
 
-   - **A duplicate of a COMMITTED token is REFUSED LOUDLY, never silently confirmed. VERIFIED** --
-     the second INSERT raises `UNIQUE constraint failed: trades.attempt_id`, so the entry is refused
-     before any confirming read exists. **BUT THE "LOUDLY" IS LOAD-BEARING ON S2.5, AND THAT
-     DEPENDENCY IS NAMED HERE BECAUSE IT ENTERED THE PLAN FOR AN UNRELATED REASON:** the SHIPPED
-     mapper (`"UNIQUE" in msg and "trades" in msg`) matches that message and would report *"Already
-     an open position in BBB (race-detected)"* -- loud, and WRONG about a position that does not
-     exist. It is only TRUTHFULLY loud because S2.5 narrows the match to `trades.ticker`. **Measured
-     both ways.**
-   - **The duplicate of a ROLLED-BACK token DOES have a false-confirm mechanism -- so the rider's
-     REASON does not hold, though its PRACTICAL WEIGHT is unchanged. ROUTED BACK TO RD (S9 RD item
-     2).** His stated reason was *"a rolled-back token leaves no row to confirm."* That is true at
-     the instant of rollback and **does not survive to probe time**. **REPRODUCED:** A rolls back
-     (zero rows carry `X`), a second connection mints the same `X` for the SAME ticker and COMMITS,
-     A's probe then finds that row, **ticker corroboration PASSES**, and A would return SUCCESS
-     naming a trade it did not write.
+   - **A duplicate of a COMMITTED token is REFUSED LOUDLY AND LEGIBLY -- ONLY IN COMBINATION WITH
+     S2.5'S MAPPER NARROWING. CONFIRMED BY RD 2026-09-06 WITH THAT PRECONDITION ATTACHED.**
+     The second INSERT raises `UNIQUE constraint failed: trades.attempt_id`, so the entry is refused
+     before any confirming read exists. **But the SHIPPED mapper
+     (`"UNIQUE" in msg and "trades" in msg`) matches that message and reports *"Already an open
+     position in BBB (race-detected)"*** -- loud, and MISLABELLED as a position race that does not
+     exist. It is truthfully loud ONLY because S2.5 narrows the match to `trades.ticker`, a fix that
+     entered this plan in round 1 for an unrelated reason. **Measured both ways.**
+     **S2.5 IS THEREFORE LOAD-BEARING FOR RD'S RULING** -- his own stated principle applied to his
+     own rider: *a mechanism carries its preconditions and names which of them exist today.* The
+     precondition EXISTS (S2.5, shipped in Task 1) and is PINNED rather than assumed: **(r6) asserts
+     the TYPED SURFACE of an `attempt_id` UNIQUE failure, never merely the ABSENCE of the wrong
+     message** -- a test written as *"no `DuplicateOpenPositionError` was raised"* would pass an
+     implementation that raised nothing at all.
+   - **The duplicate of a ROLLED-BACK token: THE FALSE-CONFIRM PATH EXISTS, AND IT LIVES ENTIRELY
+     INSIDE THE COLLISION EVENT. CONFIRMED BY RD 2026-09-06, who ruled the absolute his own overclaim
+     and banked it against himself.** His original wording was *"no false-confirm mechanism, because
+     a rolled-back token leaves no row to confirm"*; that is true at the instant of rollback and
+     **does not survive to probe time**. **REPRODUCED:** A rolls back (zero rows carry `X`), a second
+     connection mints the same `X` for the SAME ticker and COMMITS, A's probe finds that row,
+     **ticker corroboration PASSES**, and A would return SUCCESS naming a trade it did not write.
+     **THE RULED REPLACEMENT, and it is the sharper statement rather than the softer one:** the path
+     EXISTS, it is reachable ONLY within the collision event, and therefore **the false-confirm
+     probability EQUALS the collision probability computed above -- no mechanism raises it above
+     that.** Nothing about the probe, the ticker corroboration or the index amplifies a collision into
+     a larger exposure; the arithmetic bounds both.
      **AND THE SCOPE OF THAT COUNTEREXAMPLE IS STATED HERE RATHER THAN LEFT TO READ STRONGER THAN IT
      IS** (the orchestrator's qualification when he routed it, carried into the plan because a plan
      should not bank an overstatement in its own favour): **the scenario lives ENTIRELY INSIDE THE
@@ -2257,26 +2363,42 @@ discovered; it is the gate.
     *Reason:* the envelope is the entry path, and the money-bearing double-write hazard the whole
     contract was written for is the DOUBLE ENTRY. Flagged at S8 with its own reasoning so it is
     owned rather than merely disclosed.
-15. **RULE (i) IS ENFORCED ON THE IMMEDIATE PATH AND ONLY APPROXIMATED ON THE DEFERRED ONE -- AND
-    THE PLAN CLAIMED "LITERALLY" FOR TWO ROUNDS** (`A4-R8-1`).
+15. **AN ASYMMETRY OF OBSERVABILITY, NOT OF OUTCOMES: RULE (i)'S SIGNAL IS UNOBSERVABLE ON THE
+    DEFERRED PATH, AND THE RESULT IT PROTECTS IS ENFORCED THERE BY A STRONGER MECHANISM.**
+    **RULED (a) ACCEPT by RD, 2026-09-06 -- on HIS ground, which REPLACES the one this plan first
+    offered.** The plan argued "the outcome happens to be the same"; he declined that as
+    self-standing and grounded the acceptance in **CONSTRAINT 3**, having verified both citations in
+    this document before ruling.
+
+    *The observability gap, stated first because it is real* (`A4-R8-1`):
     `sqlite3.Connection.__exit__` owns the deferred commit AND its rollback, so `cleanup_raised`
-    cannot be an OBSERVATION there. An internal rollback that raised is invisible to the wrapper --
-    either because it took effect first (`in_transaction` reads False -> `not_needed`,
-    `cleanup_raised=False`), or because it raised before taking effect and the wrapper's OWN retry
-    then succeeded (`rolled_back`, `cleanup_raised=False`). **In both, a rollback raised and the
-    probe is ADMITTED**, which is not what RD ruled.
-    *What it costs, measured against the two sequences rather than waved at:* **in both, the row is
-    provably GONE** -- the internal rollback took effect, or the wrapper's retry did -- so the probe
-    returns ABSENT and the caller re-raises. **The OUTCOME is identical to enforcing the rule; what
-    is unenforced is the RULE.** That distinction is precisely the kind this arc exists to make,
-    which is why it is DECLARED rather than filed under "no practical difference" -- the same
-    reasoning that made the plan stop and route on constraint 2 instead of judging the residual small
-    enough.
-    *Why it is not fixed here:* the only fix is to OWN the deferred commit and rollback explicitly --
-    replacing `with conn:` and reproducing its exception and chaining semantics by hand -- **on the
-    path 22-A locked byte-for-byte, and which round 6 concluded should be OBSERVED and not
-    re-plumbed** (`A4-R1-2`). Changing it is a design decision about a locked path, so it is
-    **ROUTED at S9** rather than taken by the plan.
+    cannot be an OBSERVATION there. Two sequences defeat it -- the internal rollback takes effect and
+    then raises (`in_transaction` reads False -> `not_needed`, `cleanup_raised=False`), or it raises
+    before taking effect and the wrapper's OWN retry succeeds (`rolled_back`, `cleanup_raised=False`).
+    **In both, a rollback raised and the probe is ADMITTED.** The plan claimed "LITERALLY" for two
+    rounds; that word is struck from S2.4's gate.
+
+    ***WHY THIS IS COVERED RISK AND NOT ACCEPTED RISK -- RD's ground, and the sentence this entry
+    exists to carry:*** **rule (i) exists to prevent `R10-02`'s SELF-QUOTE -- a read taken on the
+    writer's OWN unresolved connection.** On this path that read **CANNOT HAPPEN, whatever the
+    rollback's fate, because the probe runs on a FRESH CONNECTION** (S2.3's fresh-connection
+    construction with its MEASURED behaviour, plus the construction-time `read_uncommitted` pin at
+    (h)). **The RESULT rule (i) protects is therefore enforced by a mechanism STRONGER than the
+    unobservable signal** -- constraint 3 satisfied structurally rather than by a flag. **Without
+    this paragraph the entry reads as ACCEPTED risk; with it, it is COVERED risk, and that is the
+    whole difference.**
+
+    *And the outcomes are PINNED, not argued* -- each defeating sequence gets a discriminating test
+    asserting what the operator actually gets: **(k4a)** rollback-effective-then-raises -> the fresh
+    probe reads ABSENT -> re-raise; **(k4b)** rollback-raises-before-effect, leaving a wounded
+    connection holding its transaction -> the fresh probe blocks or fails -> **fail-closed False** ->
+    the ORIGINAL error surfaces. **The literal signal is unobservable in both; the OUTCOME is pinned
+    in both.**
+
+    *Option (b) -- owning the deferred commit and rollback explicitly -- is **REJECTED**, in RD's
+    terms:* hand-rolling `with conn:` semantics on the byte-locked money path **buys ZERO outcome
+    delta for a NEW FAILURE SURFACE on the one path these arcs exist to protect.** He named it the
+    **D46 direction** again.
 
 ---
 
@@ -2549,11 +2671,25 @@ Task 6 and Task 7 runs are compared against THAT number, not against a remembere
 | **7** | `strong` / `gpt-5.6-sol` / `high` | 0 / 9 / 3 | 12 (**6 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
 | SWEEP | *(deterministic consistency sweep, no Codex)* | -- | 3 bookkeeping | -- | -- | *no verdict* |
 | **8** | `strong` / `gpt-5.6-sol` / `high` | 0 / 5 / 1 | 6 (**2 new ground, 4 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| 9-DQ | *(DISQUALIFIED -- provider capacity)* | -- | -- | -- | -- | **NO VERDICT; 2 anchored `^ERROR`, exit 1. 316,797 tokens spent, NOT counted.** |
+| **9** | `strong` / `gpt-5.6-sol` / `high` | 0 / 9 / 0 | 9 (**6 new ground, 3 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
 
-**TOKEN SPEND, eight counted rounds:** 437,776 + 230,647 + 246,268 + 320,775 + 317,038 + 307,420 +
-413,949 + 349,176 = **2,623,049**. (The disqualified round-1 attempt produced no transcript and
-therefore no footer.)
-**RUNNING TOTALS: 76 findings -- 3 CRITICAL, 46 MAJOR, 17 MINOR. ZERO reopened, ZERO reverted.**
+**TOKEN SPEND, NINE COUNTED ROUNDS:** 437,776 + 230,647 + 246,268 + 320,775 + 317,038 + 307,420 +
+413,949 + 349,176 + 463,310 = **3,086,359**.
+**TWO ROUNDS WERE DISQUALIFIED AND ARE EXCLUDED FROM THAT SUM, and their cost is stated rather than
+hidden:** round 1's first attempt (MSYS path-mangling; no transcript, no footer, 0 tokens) and round
+9's first attempt (**provider capacity: exit 1, two anchored `^ERROR` lines, NO verdict token, and a
+`tokens used` footer anyway -- 316,797 tokens**). **Total actually spent: 3,403,156.** *The round-9
+disqualification is the cleanest demonstration in this loop of why the footer alone is not a
+completion signal: it was present on a round that produced no verdict at all.*
+**RUNNING TOTALS, RECOMPUTED FROM THE PER-ROUND ROWS AFTER `A4-R9-9` CAUGHT THEM WRONG:**
+**through round 8 -- 86 findings: 4 CRITICAL, 63 MAJOR, 19 MINOR.**
+**including round 9 -- 95 findings: 4 CRITICAL, 72 MAJOR, 19 MINOR. ZERO reopened, ZERO reverted.**
+*The previously stated "76 / 3 / 46 / 17" was wrong in two independent ways -- it disagreed with the
+per-round rows above it AND its own severities summed to 66, not 76. It was carried into two return
+reports as convergence evidence before a reviewer recomputed it. **A total used as evidence is
+itself evidence and gets checked like evidence**; this one was not, in a document whose whole
+subject is claims that outrun what supports them.*
 
 **GATE STATE: the round-5 gate was honoured and the orchestrator ruled CONTINUE with a bounded stop
 rule -- *"run round 6 on the final shape; if it returns residuals of these amendments rather than new
