@@ -239,8 +239,15 @@ transaction-control mode rather than assume it.**
   conclusion and the command as if they agreed, which is the "state what your grep PROVES" rule
   failing on the bullet that invokes it. **(r5)'s walk must therefore parse the TABLE TOKEN with a
   word boundary and exclude caches, or it will count `trades_new` as an unreasoned writer and its
-  declared counts will be wrong.** `grep -rn "insert_trade_with_event" swing/`
-  returns **exactly one** call site, `swing/trades/entry.py:1421`. The f-string-INSERT family was
+  declared counts will be wrong.** **AND THE SAME RULE APPLIES TO THE GREP TWO LINES DOWN, WHICH IT WAS NOT GETTING** (`SS-17`).
+  `grep -rn "insert_trade_with_event" swing/` returns **NINE hits, not one**: the DEFINITION
+  (`swing/data/repos/trades.py:214`), the IMPORT (`swing/trades/entry.py:14`), **exactly one CALL
+  (`swing/trades/entry.py:1421`)**, three PROSE mentions (`swing/data/repos/fills.py:31`,
+  `swing/trades/entry.py:1443`, `:1471`) and **three `__pycache__` binary matches**. The CLAIM --
+  one call site -- is TRUE and was established by READING all nine; the sentence reported the
+  conclusion in the grammar of the command's output, which is the exact defect `A4-R7-6` names one
+  bullet above. *Recorded rather than silently corrected: a bullet that invokes a rule and then
+  breaks it two lines later is worth more as a correction than as a tidy sentence.* The f-string-INSERT family was
   enumerated separately (`fill_envelope_identity.py:91`, `latch_order_intents.py:143`,
   `provenance_corrections.py:90`, `risk_policy.py:212`) and none targets `trades`.
 - **THE UPDATE CENSUS, WITH THE GREP THAT PRODUCED IT AND ITS COUNT** (CHARC, 2026-09-06 -- the
@@ -256,7 +263,9 @@ transaction-control mode rather than assume it.**
 - **AND THE GENERIC UPDATER IS WHY THE TRIGGER EXISTS.**
   `swing/trades/reconciliation_auto_correct.py:_update_journal_field` composes
   `UPDATE trades SET {field_name} = ?` with the COLUMN NAME INTERPOLATED, and its safety rests on an
-  allowlist-by-EXCLUSION: `_RESERVED_JOURNAL_FIELDS` (`:178-183`) names five coupled columns, and
+  allowlist-by-EXCLUSION: `_RESERVED_JOURNAL_FIELDS` (`:178-196`) names **SEVEN** coupled `(table, column)` pairs
+  (MEASURED by reading the dict literal end to end, 2026-09-07 -- **this bullet said "five" at
+  `:178-183` while Task 1b said SEVEN, and BOTH ranges were short**; `A4-R11-13`), and
   `validate_trade_correction` (`swing/trades/reconciliation_validators.py:171`) validates only
   `current_stop` and `state`. **A new `trades` column is therefore WRITABLE BY DEFAULT through the
   tier-2 operator-truth path the moment it exists** -- and a written-after-the-fact `attempt_id`
@@ -496,15 +505,33 @@ machinery that already exists and has already been operator-witnessed in a brows
 ### S1.6 Everything else this plan leans on
 
 - **No `record_entry` call site runs against a below-HEAD schema TODAY -- and that stops being true
-  the moment this arc bumps HEAD, which is the point.** Method: take the six test files mentioning
-  both `record_entry` and `target_version` and READ each. Two are prose only
-  (`case_registry_22a.py:386`, `test_exit.py:36`); `test_22a_task4_authorization_ladder.py` and
-  `test_22a_task9_entry_wiring.py` migrate to 36 and then to **the literal 37**;
-  `test_entry.py` and `test_phase7_entry_risk_policy_stamp.py` migrate to `EXPECTED_SCHEMA_VERSION`.
-  **The literal-37 sites mean "migrate to HEAD" and say "migrate to 37"**, so after the bump they
-  would leave a v37 database and drive `record_entry` against a schema with no `attempt_id` column
-  -- silently exercising the pre-v38 drop path (S7.5) instead of the production one. They are part
-  of the mirror family below and are re-spelled, not left to rot.
+  the moment this arc bumps HEAD, which is the point. THE CENSUS BELOW WAS RE-MEASURED 2026-09-07
+  (`A4-R11-11`) AND ITS PREVIOUS VERSION ATTACHED THE DROP-PATH REASON TO A FILE THAT NEVER CALLS
+  `record_entry`.** Method, and it is now per-file rather than per-file-list: for each of the six
+  test files mentioning both `record_entry` and `target_version`, count the `record_entry(` CALL
+  sites, not the mentions.
+
+  | file | `record_entry` mentions | actual CALLS | what it migrates to |
+  |---|---|---|---|
+  | `tests/trades/case_registry_22a.py` | 1 | **0** -- prose | -- |
+  | `tests/trades/test_exit.py` | 1 | **0** -- prose | 16, deliberately older |
+  | `tests/trades/test_22a_task4_authorization_ladder.py` | 1 | **0** -- prose at `:277` | the literal 37 (x3) |
+  | `tests/trades/test_22a_task9_entry_wiring.py` | 30 | **5** | the literal 37 (`:89`) |
+  | `tests/trades/test_entry.py` | 76 | **39** | `EXPECTED_SCHEMA_VERSION` |
+  | `tests/trades/test_phase7_entry_risk_policy_stamp.py` | 12 | **4** | `EXPECTED_SCHEMA_VERSION` |
+
+  **So the drop-path reason -- "after the bump this leaves a v37 database and drives `record_entry`
+  against a schema with no `attempt_id`, silently exercising the pre-v38 path (S7.5) instead of the
+  production one" -- holds for EXACTLY ONE site: `test_22a_task9_entry_wiring.py:89`.**
+  `test_22a_task4_authorization_ladder.py` was named beside it and never calls the service at all.
+  **The other six migrate-to-HEAD sites in row 6 below are still re-spelled, for a DIFFERENT and
+  weaker reason, stated as the judgement it is:** they build a v36 world and then want production
+  HEAD for the 22-A machinery under test, and a fixture pinned one version behind HEAD is a
+  false-green risk for any HEAD-dependent assertion added later. **The closure check for both is the
+  full fast suite**, which is red if a site needed the change and silent if it did not.
+  *The census's own text already said the manifest is the greps PLUS a read of every hit; the greps
+  were done and the REASON attached to the hits was not re-derived per file, which is how a true
+  count carried a false explanation.*
 - **No production or test path calls `record_entry` with an in-memory database.** Of the 28 test
   files containing `:memory:`, exactly one also mentions `record_entry`, and its `:memory:`
   connection is a scratch database comparing a JSON reader against a SQLite one
@@ -1389,9 +1416,22 @@ reported failure. Once the transaction is resolved, "absent" is a statement abou
 reason, on the mode the operator runs** (`A4-R9-6`). The plan used to add *"MEASURED (3) gives a
 blunter reason: while the writer holds a PENDING lock the fresh reader is BLOCKED outright, so
 without resolution there is frequently no read to have."* **MEASURED (3) is a ROLLBACK-JOURNAL
-measurement and the live database is WAL**, where MEASURED (2) admitted a fresh reader against
-exactly this condition. So the blocking reason holds for rollback-journal databases and **does NOT
-hold in production**.
+measurement and the live database is INFERRED-WAL** (see the label below), where MEASURED (2)
+admitted a fresh reader against exactly this condition. So the blocking reason holds for
+rollback-journal databases and **does NOT hold in production**.
+
+> **"THE LIVE DATABASE IS WAL" IS INFERRED, NOT MEASURED, AND THIS PLAN NOW SAYS SO** (`A4-R11-12`).
+> Global Constraints states the live database was NOT opened by this plan. The journal-mode readings
+> in this section are all of `tmp_path` databases; the live file's mode is inferred from
+> `open_connection(..., reaffirm_wal=True)` on the `ensure_schema` path plus `open_connection`'s own
+> docstring (*"the live DB is already WAL (persistent in the file header)"*). **That is a strong
+> inference and it is still an inference**, and it lands on ground this pass had just worked --
+> `A4-R10-4` measured which FIXTURE shapes are WAL without noticing the LIVE claim beside them has
+> the same defect one level up. **The remedy is one line in S6 step 0 and it is there**: the
+> operator reports `PRAGMA journal_mode` from the live database before migrating, and the label
+> stops reading INFERRED at that moment. **Nothing in the design depends on the answer** -- the
+> durable-ABSENT argument holds in both modes, and every fixture that depends on blocking names and
+> asserts its own mode -- so this is a labelling correction, not an open design question.
 
 **AND WHICH TEST DATABASES ARE ROLLBACK-JOURNAL IS NOW MEASURED, BECAUSE THE PREVIOUS SENTENCE
 GUESSED IT AND GUESSED WRONG** (`A4-R10-4`; the correction it replaces said *"every `tmp_path` test
@@ -1428,7 +1468,13 @@ def find_trade_id_by_attempt_id(conn, attempt_id) -> tuple[int, str] | None:
 _PROBE_BUSY_TIMEOUT_MS = 2000
 
 def _durability_probe(db_path, attempt_id) -> tuple[int, str] | None:
-    probe = open_connection(db_path, busy_timeout_ms=_PROBE_BUSY_TIMEOUT_MS)
+    # **FAIL-CLOSED ON ABSENCE** (`A4-R11-10`): a `file:...?mode=rw` URI, so a
+    # database that is not there raises instead of being CREATED.
+    probe = open_connection(
+        Path(db_path).resolve().as_uri() + "?mode=rw",
+        uri=True,
+        busy_timeout_ms=_PROBE_BUSY_TIMEOUT_MS,
+    )
     try:
         return find_trade_id_by_attempt_id(probe, attempt_id)
     finally:
@@ -1437,8 +1483,26 @@ def _durability_probe(db_path, attempt_id) -> tuple[int, str] | None:
 
 - **The connection is FRESH by construction** -- `open_connection` on the path, never the writer's
   handle. This is the half of R10-02 that is closed by construction rather than by discipline, and
-  Task 5 pins it with a test that captures the connection object the repo read receives and asserts
-  it **is not** the writer's connection.
+  **(RD-a2), in Task 4**, pins it with a test that captures the connection object the repo read
+  receives and asserts it **is not** the writer's connection. *(`A4-R11-14`: this sentence said
+  "Task 5 pins it", and Task 5 is documentation-only. A design decision pointed at a task that
+  ships no test is a decision with no discriminator, which is the same defect `A4-R11-7` names four
+  times one section down.)*
+- **AND IT OPENS THROUGH A `file:...?mode=rw` URI, NOT A BARE PATH** (`A4-R11-10`, VERIFIED AT THE
+  CODE). `open_connection` calls bare `sqlite3.connect(db_path_or_uri, uri=uri, ...)`
+  (`swing/data/db.py:126`), **which CREATES the file when it is absent.** If the database is moved
+  or renamed between the mint's path capture and the probe, the confirming READ would write an empty
+  database and then answer ABSENT -- *a filesystem artifact created on an already-failing money
+  path, by the mechanism whose entire purpose is to observe without acting.*
+  **`open_connection`'s OWN DOCSTRING names the remedy** -- *"callers can pass a `file:...?mode=rw`
+  URI and KEEP fail-closed semantics"* -- and the plan was not using it.
+  **`mode=rw` and NOT `mode=ro`, deliberately:** `ro` would be tighter, but on a WAL database a
+  read-only connection can need to CREATE the `-shm` file and fails when it cannot, which is a new
+  failure mode on the exact path that must be reliable when things are already going wrong. `rw`
+  buys the whole of the defect (no creation) at no new risk. *Tightening to `ro` is a candidate for
+  a later arc and is named here rather than left as an unexamined alternative.*
+  **`Path(...).resolve().as_uri()` percent-encodes**, so a path containing `?` or `#` cannot inject
+  a URI parameter; the busy timeout is still passed and is pinned by (pr1).
 - **`open_connection`, not `connect`:** `connect` adds a schema-version check, i.e. another
   statement and another failure mode, on a path whose entire job is to be reliable when things are
   already going wrong. The schema version cannot have changed underneath us.
@@ -1701,6 +1765,7 @@ because between the two commits the tree would carry a live false-message path o
 
 | id | subject | what it protects |
 |---|---|---|
+| **(pr1)-(pr5)** | the probe's five design requirements, each with the assertion that would go red if it were dropped: the 2000 ms bound, a contained close AFTER a good read, the ticker corroboration S7.7 rests on, no-token-no-probe, and **the probe cannot CREATE a database** | **`A4-R11-7` + `A4-R11-10`: four decisions with no discriminator, and one that let an observe-only mechanism write to disk** |
 | (i) | the belt still refuses a same-ticker retry | the belt is not mistaken for the fix, and is not weakened by it |
 | **(RD-a5)** | a body that raises never reaches the probe, on BOTH paths | **the CALLER-SIDE obligation the `body_completed` removal rests on (gotcha #31)** |
 | (j) | the post-commit-STEP path is byte-unchanged | 22-A3's shipped clause-1 behaviour, through a handler this arc edits |
@@ -1731,14 +1796,44 @@ trades.attempt_id`; **N rows with NULL tokens all commit** (MEASURED). **Pre-fix
 insert cleanly -- so a test that only asserted "NULLs are allowed" would pass on both trees and is
 not sufficient on its own; the duplicate-rejection half is what distinguishes.
 
-### (m3) The backup gate
+### (m3) The backup gate -- **THREE assertions, because the first one alone proved the least**
 
-**Post-fix:** `_phase22_arc_a4_backup_gate` writes a `swing-pre-22a4-migration-<ISO>.db` and
-verifies it when `current_version == 37 and target_version >= 38`; it does **nothing** at
-`current_version == 36` (STRICT equality, the `pre_version == (target - 1)` gotcha) and raises
-`MigrationBackupRequiredException` for an in-memory source. **Pre-fix:** the function does not
-exist. The 36-and-target-38 case is the one that distinguishes a `<=` gate from an `==` gate and is
-asserted explicitly.
+> **STRENGTHENED 2026-09-07 (`A4-R11-8`, the round-11 MAJOR most consequential for the LIVE
+> database**, which crosses this migration exactly once holding real money-bearing trades). The
+> previous version of this row called the gate FUNCTION directly. **A gate that is written and never
+> WIRED passes it**, and so does an expected-table set that omits one of 0037's three tables --
+> and S6's live witness then compared the backup against "the expected set", which makes the check
+> confirm the constant against itself rather than against the database.
+
+**(m3a) THE GATE'S OWN BEHAVIOUR, called directly.** `_phase22_arc_a4_backup_gate` writes a
+`swing-pre-22a4-migration-<ISO>.db` and verifies it when `current_version == 37 and target_version
+>= 38`; it does **nothing** at `current_version == 36` (STRICT equality, the
+`pre_version == (target - 1)` gotcha) and raises `MigrationBackupRequiredException` for an in-memory
+source. **Pre-fix:** the function does not exist. The 36-and-target-38 case is the one that
+distinguishes a `<=` gate from an `==` gate and is asserted explicitly.
+
+**(m3b) `run_migrations` INVOKES IT -- asserted through the RUNNER, and asserted to be
+LOAD-BEARING.** Build a v37 file-backed database, then call
+`run_migrations(conn, target_version=38, backup_dir=tmp)` and assert exactly one
+`swing-pre-22a4-migration-*.db` appears in `tmp`. **And the discriminating half, which mere
+appearance does not give:** monkeypatch the gate to raise `MigrationBackupRequiredException`, call
+the runner again on a fresh v37 database, and assert the exception propagates **and
+`SELECT version FROM schema_version` still reads 37** -- i.e. **0038 did not run.**
+**Against a gate that is defined but never called from `run_migrations`:** the first assertion fails
+on the missing file, and the second fails because the migration applies anyway.
+*The second is the one that matters: a gate whose failure does not STOP the migration is decoration,
+and nothing in the previous row could tell the two apart.*
+
+**(m3c) THE EXPECTED-TABLE SET IS PINNED AGAINST A REAL v37 DATABASE, NOT AGAINST ITSELF.** Assert
+`PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES` **EQUALS** the table set measured off a freshly
+migrated v37 database (`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE
+'sqlite_%'`). **Against a set that omits any of 0037's three tables --
+`candidates_immutability_epoch`, `latch_order_mandate_links`, `fill_envelope_identity`
+(`swing/data/migrations/0037_latch_order_mandate_links.sql:121`, `:289`, `:518`)** -- the equality
+fails naming the missing member. *Derive the new constant as
+`PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES | {the three}`, the deterministic-derivation shape the
+Phase-8 set already uses (`swing/data/db.py:382`), so provenance is readable; then let this row
+prove the derivation rather than trusting it.*
 
 ### (m4) Re-running the migration is a no-op
 
@@ -2384,6 +2479,64 @@ closed in its `finally`).
 so the monkeypatch target cannot be imported -- this pins the construction-time precondition that makes "a fresh connection sees only committed state" TRUE rather than assumed,
 without adding a runtime branch that would be defensive dead code.
 
+### (pr1)-(pr5) THE PROBE'S FIVE DESIGN REQUIREMENTS, EACH WITH AN ASSERTION THAT DISTINGUISHES IT
+
+**Why this block exists (`A4-R11-7`, plus `A4-R11-10`).** S2.3 states five properties of
+`_durability_probe` as design decisions -- a bounded busy timeout, a contained close, ticker
+corroboration, a token precondition, and (as of 2026-09-07) a fail-closed open -- **and four of them
+had no row in this roster that would go red if they were dropped.** A design decision with no
+discriminating assertion is a paragraph, and this plan's own standard for a paragraph is that it
+does not ship.
+
+**(pr1) THE BUSY TIMEOUT IS BOUNDED, AND THE BOUND IS CAPTURED.** Monkeypatch
+`swing.trades.entry.open_connection` (the name as bound in the CONSUMING module -- (RD-a2)'s rule)
+and record its kwargs. **Post-fix:** it receives `busy_timeout_ms=_PROBE_BUSY_TIMEOUT_MS`, and the
+constant is **2000**. **Against an implementation that simply omits the kwarg:** the call carries
+`DEFAULT_BUSY_TIMEOUT_MS`, **30000** (`swing/data/db.py:92`) -- *a lost-commit probe that hangs a
+money-bearing web submit for thirty seconds, on a path whose fallback is the alarm anyway.* The row
+asserts the NUMBER and not merely that some timeout was passed, because a silent restoration of the
+project default is exactly the shape a value-free assertion cannot see.
+
+**(pr2) A `close()` THAT RAISES AFTER A SUCCESSFUL READ DOES NOT DISCARD THE READ.** The
+monkeypatched repo reader returns the row normally; the probe connection's `close()` then raises.
+**Post-fix:** `_durability_probe` returns the row, `record_entry` settles, and SUCCESS is returned
+with the lost-commit warning; the close failure is reported through `log_contained_note` on the
+escaping exception rather than replacing anything. **Against a naive `finally: probe.close()` with
+no containment:** the close's exception propagates out of the `finally`, the valid result is thrown
+away, and `record_entry` re-raises **over a durable entry** -- which is clause 1's own subject
+arriving inside the machinery built to serve it. *(g) is the neighbouring row and is NOT the same
+one: (g) drives a probe that fails to READ; this one drives a probe that read SUCCESSFULLY and then
+failed to tidy up, and only this ordering distinguishes "contained close" from "contained probe".*
+
+**(pr3) THE RIGHT TOKEN ON THE WRONG TICKER IS THE ALARM -- AND S7.7's SAME-TICKER BOUND RESTS ON
+THIS ROW.** Plant, by raw INSERT on a second connection, a committed row carrying OUR token with a
+DIFFERENT ticker. **Premise asserted first:** the probe's returned tuple's ticker is not
+`req.ticker`. **Post-fix:** `_settle_by_attempt_identity` returns `None`, `record_entry` RE-RAISES
+the original, and an ERROR record names the mismatch. **Against an implementation that omits the
+corroboration** (S2.4 condition 4's second half): the settle SUCCEEDS and returns a trade id for a
+ticker the operator did not enter. **Every other row in this roster would pass that
+implementation**, which is the finding's sharp edge: the accepted limitation at S7.7 bounds the
+false-confirm probability by requiring an RNG collision **AND** the same ticker, and without this
+row nothing in the suite holds up the second conjunct.
+
+**(pr4) NO TOKEN -> NO PROBE.** Drive the (c) shape with the mint contained-failed, so
+`attempt.token is None` while the database path resolved (the `e2` apparatus-cannot-fail-an-entry
+path produces exactly this). **Post-fix:** `_durability_probe`'s sentinel call count is **0**,
+`record_entry` re-raises. **Against an implementation whose condition 3 checks only the database
+path:** the probe runs with `attempt_id = None`, and `WHERE attempt_id = ?` bound to `NULL` matches
+nothing in SQL -- **so the defect is INVISIBLE in its outcome and visible only in the call count**,
+which is why this row asserts the count rather than the result.
+
+**(pr5) THE PROBE CANNOT CREATE A DATABASE** (`A4-R11-10`, VERIFIED AT THE CODE). Point the resolved
+database path at a name that does not exist. **Post-fix:** the URI open raises
+`sqlite3.OperationalError: unable to open database file`, the failure is CONTAINED,
+`record_entry` re-raises the ORIGINAL, **and no file exists at that path afterwards**.
+**Pre-fix (a bare path handed to `open_connection`):** `sqlite3.connect` CREATES the file
+(`swing/data/db.py:126`), the probe answers ABSENT, and the arc has written a zero-table database
+onto an already-failing money path **by the mechanism whose entire purpose is to observe without
+acting.** The no-file assertion is the discriminating one; the exception type alone is not, because
+a created-then-empty database also produces no row.
+
 ### (i) THE BELT IS STILL THE BELT -- a CONTROL, not a fix
 
 After a settled SUCCESS from (c), a second `record_entry` for the same ticker raises
@@ -2592,7 +2745,8 @@ block to the busy timeout and then raise `database is locked`, and the row would
 that has nothing to do with its subject.
 **AND THE JOURNAL-MODE CLAIM IS GONE** (`A4-R9-6`). The pre-ruling version asserted that the fresh
 probe *"BLOCKS OR FAILS"* against the held lock, citing MEASURED (3) -- **a ROLLBACK-JOURNAL
-measurement, while the live database is WAL, where MEASURED (2) admitted a fresh reader against an
+measurement, while the live database is INFERRED-WAL (S2.2's label, `A4-R11-12`), where
+MEASURED (2) admitted a fresh reader against an
 open write transaction.** Under Branch A the probe does not run, so the row makes no claim about blocking in either
 mode and the generalisation disappears rather than being parameterised. **The fail-closed probe
 behaviour it used to carry is not lost:** it is (g)'s subject (a raising probe leaves the original
@@ -2680,7 +2834,7 @@ for every assignment including ones added later.*
 | `tests/trades/test_22a4_corrector_refusal.py` | **(m8a) typed refusal, (m8b) order-independence, (m8d) the tier-3 override path** -- Task 1b |
 | `tests/cli/test_22a4_corrector_refusal_cli.py` + `tests/web/test_routes/test_22a4_corrector_refusal_delivery.py` | **(m8c) delivery through the UNCHANGED callers** -- Task 1b |
 | `tests/trades/test_22a4_attempt_identity.py` | (e), (e2), **(w)**, **(w2) the mint contract**, (f), (g), (h), (r1)-(r3), (r6), **(r7) the schema-aware probe** |
-| `tests/trades/test_22a4_clause2_settlement.py` | (RD-a1), (RD-a2), (RD-a3), **(RD-a4)**, **(RD-a5)**, (RD-b), **(RD-b2)**, (c2), (k), (k2), **(k3a)-(k3b)**, **(k4a)-(k4b)**, **(k5)**, **(k6a)-(k6b)**. **Task 3 lands (k), (k2), (k3a), (k5) and (k6a)-(k6b); Task 4 lands (k3b), (k4a), (k4b), (RD-a4), (RD-a5) and (k2)'s probe-call-count assertion** (`A4-R9-7`, `A4-R10-3`, `A4-R11-6`) |
+| `tests/trades/test_22a4_clause2_settlement.py` | (RD-a1), (RD-a2), (RD-a3), **(RD-a4)**, **(RD-a5)**, (RD-b), **(RD-b2)**, (c2), (k), (k2), **(k3a)-(k3b)**, **(k4a)-(k4b)**, **(k5)**, **(k6a)-(k6b)**, **(pr1)-(pr5)**. **Task 3 lands (k), (k2), (k3a), (k5) and (k6a)-(k6b); Task 4 lands (k3b), (k4a), (k4b), (RD-a4), (RD-a5) and (k2)'s probe-call-count assertion** (`A4-R9-7`, `A4-R10-3`, `A4-R11-6`) |
 
 **Edited:**
 
@@ -2954,7 +3108,7 @@ covering the new column, so the failure is left loud."*
 - [ ] **THE SHAPE IS THIS PLAN'S, THE BEHAVIOUR IS RULED.** A **SIBLING set** (e.g.
       `_IMMUTABLE_JOURNAL_FIELDS`) is the likely shape rather than a new entry in
       `_RESERVED_JOURNAL_FIELDS`, because **the existing dict means something different**: its
-      **SEVEN** members (`A4-R7-10`; counted at `reconciliation_auto_correct.py:178-190`, and they
+      **SEVEN** members (`A4-R7-10`; counted at `reconciliation_auto_correct.py:178-196` -- the range read `:178-190` and was short, MEASURED 2026-09-07 per `A4-R11-13`; and they
       span `fills` as well as `trades` -- `fills.action` and `fills.trade_id` are ROLE columns added
       later) encode COUPLED invariants that can only be written coherently alongside other rows, and
       its message directs the operator to the surface that writes them together. `attempt_id` has no
@@ -3159,6 +3313,9 @@ covering the new column, so the failure is left loud."*
       already split** (`A4-R11-5`), beneath the observation block Task 3 already put there. **This
       task splits nothing.** The lost-commit warning text (ASCII, naming the trade id and saying
       DO NOT RETRY).
+- [ ] **Tests: (pr1)-(pr5) ARE SCHEDULED HERE** (`A4-R11-7`, `A4-R11-10`) -- the five probe
+      design requirements, each with the assertion that goes red if the requirement is dropped.
+      **RED first**: every one of them names `_durability_probe`, which this commit introduces.
 - [ ] **Tests:** **(w)** the end-to-end token-flow row, **(RD-a1) in ALL THREE rollback shapes --
       raises-without-effect, raises-after-effect, and RETURNS-without-effect; the third is the only
       one that discriminates the returning-arm re-read** (`A4-R8-2`), (RD-a2),
@@ -3233,9 +3390,16 @@ discovered; it is the gate.
   0. **BEFORE MIGRATING -- record the BEFORE-IMAGE** (`A4-R1-6`; without it steps 3 and 4 compare
      against nothing): `SELECT version FROM schema_version`; `SELECT COUNT(*) FROM trades`;
      `PRAGMA table_info(trades)` (assert `attempt_id` is ABSENT, so step 3 is a real transition and
-     not a re-read); `SELECT COUNT(*) FROM latch_order_mandate_links`; and the FULL
+     not a re-read); `SELECT COUNT(*) FROM latch_order_mandate_links`; the FULL
      `SELECT id, ticker, state FROM trades WHERE state IN ('entered','managing','partial_exited')
-     ORDER BY id`. Report all five.
+     ORDER BY id`; **`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE
+     'sqlite_%' ORDER BY name`** (the INDEPENDENT before-image the backup is checked against at
+     step 1 -- `A4-R11-8`: comparing the backup to "the expected set" checks the constant against
+     itself, and a constant is exactly the thing that can be wrong); **and `PRAGMA journal_mode`,
+     which SETTLES a claim this plan has been INFERRING** (`A4-R11-12`: Global Constraints says the
+     live database was not opened by this plan, so "the live database is WAL" was read off a
+     `tmp_path` database built through `ensure_schema` -- that establishes CONSTRUCTION behaviour,
+     not this file's current mode). Report all seven.
   0b. **`ls ~/swing-data/swing-pre-22a4-migration-*.db` BEFORE migrating and record the result**
      (normally empty). Without this, step 1's `ls` is satisfied by a leftover file from a failed or
      earlier attempt and would CERTIFY A BACKUP THE GATE DID NOT TAKE (`A4-R3-8`).
@@ -3243,8 +3407,9 @@ discovered; it is the gate.
      `ls ~/swing-data/swing-pre-22a4-migration-*.db` again and **identify the EXACTLY ONE path that
      is new relative to step 0b**. Open THAT file read-only (a COPY -- never through `ensure_schema`,
      which would migrate the recovery artifact away) and confirm `SELECT version FROM schema_version`
-     is **37** and its table set matches the expected set. A backup nobody opened is a filename, not
-     a pre-image.
+     is **37** and **its table set is byte-identical to step 0's `sqlite_master` list** -- the
+     LIVE before-image, not the constant, so the check cannot pass by agreeing with the thing under
+     test (`A4-R11-8`). A backup nobody opened is a filename, not a pre-image.
   2. `SELECT version FROM schema_version` -> 38.
   3. `PRAGMA table_info(trades)` -> `attempt_id` present; `SELECT COUNT(*) FROM trades` **equal to
      step 0's count**; `SELECT COUNT(*) FROM trades WHERE attempt_id IS NOT NULL` -> 0.
@@ -3664,6 +3829,32 @@ inline and never silently absorbed. Each carries a proposed disposition; the orc
    backup-retention question; the fix is one `backup_dir=` argument and one `echo`, and it affects
    every migration gate since 0027, not just this one.
 
+8. **THE CPython SOURCE'S PROVENANCE IS UNSETTLED, AND THIS CELL COULD NOT SETTLE IT**
+   (`A4-R11-9`, ROUTED). **What IS established:** the preserved file at
+   `~/swing-data/review-transcripts/22-a4-plan/cpython-3.14.2-Modules-_sqlite-connection.c` is
+   2,717 lines, sha256 `7487db46...`, and at `:2377`/`:2394-95`/`:2396`/`:2399`/`:2403` says exactly
+   what SOURCE (S1) quotes -- **verified twice, by two different readers, against THAT FILE.**
+   **What is NOT established is that THAT FILE IS THE OFFICIAL v3.14.2 SOURCE.** Rounds 10 and 11
+   both asserted a 2,532-line file with the function at `:2211-2243`; both ran `sandbox: read-only`
+   with `approval: never` and made no network call, so **their counter-numbers are unsourced too,
+   and two rounds agreeing is not two sources agreeing.** The digest pins WHICH file was read; it
+   does not pin WHOSE.
+   **THE EXPOSURE IS NARROWER THAN IT LOOKS, AND THE NARROWING IS MEASURED.** SOURCE (S1) is used
+   for two claims. **The rollback-SUCCEEDS half is independently MEASURED on this machine** (S2.2's
+   two-run table, and (RD-a4)'s four-row matrix re-drives it): the commit's exception is what
+   propagates, with the thread's ambient exception or `None` beneath it. **Only the
+   rollback-FAILS-and-chains half rests on the C source alone**, and it rests there because it
+   cannot be driven natively -- MEASURED (5) and (6a) show a Python `rollback()` is never invoked by
+   the C `__exit__` and the post-commit-failure rollback makes zero progress-handler callbacks,
+   which is exactly why (k4a)/(k4b) use a proxy. **Both sides of round 11 agree on the BEHAVIOUR of
+   that branch**; the dispute is provenance only.
+   **THE METHOD THAT WOULD SETTLE IT, stated so whoever has network does not have to re-derive it:**
+   fetch `Modules/_sqlite/connection.c` at tag `v3.14.2` from the CPython repository, take its
+   sha256, and compare against the pin. Proposed: **ROUTED to the orchestrator** (owner: whoever
+   holds network at the gate; trigger: before the executing dispatch, since an executor will read
+   SOURCE (S1) as established fact). **This cell has no network and did not attempt a substitute
+   that would have looked like a settlement.**
+
 ---
 
 ## S9. ROUTING -- **two director tripwires, and what each is asked**
@@ -3775,7 +3966,16 @@ and `uuid4` has none.** Items 1 and 3-6 below are closed by that ruling.
 (`A4-R9-4`: *"EQUALS the collision probability"* -> a strict bound; then `A4-R10-2`: the strict bound
 -> **AT MOST, by containment**, because strictness was never established either. **The fourth
 statement is RD's own and ships verbatim in S7.7.**). **A third item was ruled 2026-09-07**
-(`A4-R9-2`, Branch A -- item 3 and CHARC item 8). **Every box in Task 0 is checked.**
+(`A4-R9-2`, Branch A -- item 3 and CHARC item 8). **AND A FOURTH WAS RULED 2026-09-07 AFTER
+ROUND 11** (`A4-R11-2`): **the ambient-`except` false positive is REMOVED rather than accepted** --
+`sys.exc_info()[1]` is captured immediately before the transaction context manager and excluded by
+`is`-identity, with the capture POINT part of the ruling (not function entry: any except-frame
+between the capture and the `with`'s exit must belong to `record_entry`, where the envelope sees
+it). **Its three attached conditions are all discharged in S2.2 and (RD-a4)**: identity semantics
+and capture point; **(RD-a4) rebuilt as a four-row matrix computed under BOTH predicates** -- his
+words, *"That rule's violation is exactly how the one-row pin passed a false premise to me; the
+repaired test is the apology that compiles"*; and the `A4-R11-1` containment covering the context
+read, through the base getset descriptor. **Every box in Task 0 is checked.**
 
 1. **S1 is the answer to your ruling's own precondition question**, and it says: the CO-DURABLE
    MECHANISM exists and its token does not; UNIQUE PER ATTEMPT does not exist at all; the
