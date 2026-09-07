@@ -645,10 +645,16 @@ def _mock_run(monkeypatch, returncode=0, stdout="launched", stderr=""):
     return calls
 
 
-def _launcher_argv(role, resume):
+def _launcher_argv(role, resume, model=None, effort=None):
     # L5: the EXACT argv -- literal relative script path (the locked contract).
+    # -Model / -Effort appear ONLY when the operator overrode the role default
+    # (the "default" sentinel passes no flag, so the launcher table decides).
     argv = ["powershell", "-NoProfile", "-File",
             "scripts/start_directors.ps1", "-Role", role]
+    if model:
+        argv += ["-Model", model]
+    if effort:
+        argv += ["-Effort", effort]
     if resume:
         argv.append("-Resume")
     return argv
@@ -696,6 +702,88 @@ def test_launch_orchestrator_resume_appends_resume_flag(client, monkeypatch):
                 data={"role": "orchestrator", "mode": "resume"},
                 headers=_SAME_ORIGIN)
     assert calls[0][0] == _launcher_argv("orchestrator", resume=True)
+
+
+# --- model / effort overrides (two dropdowns; "default" = pass no flag) -----
+
+def test_launch_form_offers_model_and_effort_dropdowns_with_role_default_first(client):
+    page = client.get("/").text
+    for name, values in (("model", comms_ui.LAUNCH_MODELS),
+                         ("effort", comms_ui.LAUNCH_EFFORTS)):
+        assert f'<select name="{name}">' in page
+        # the sentinel is the FIRST option and is labelled, not shown raw
+        assert values[0] == comms_ui.LAUNCH_DEFAULT
+        assert '<option value="default">(role default)</option>' in page
+        for v in values[1:]:
+            assert f'<option value="{v}">{v}</option>' in page
+
+
+def test_launch_default_model_and_effort_pass_no_flag(client, monkeypatch):
+    # explicit "default" selections == omitted fields == the pre-dropdown argv
+    calls = _mock_run(monkeypatch)
+    client.post("/directors/launch",
+                data={"role": "both", "mode": "fresh",
+                      "model": "default", "effort": "default"},
+                headers=_SAME_ORIGIN)
+    assert calls[0][0] == _launcher_argv("both", resume=False)
+
+
+def test_launch_model_and_effort_overrides_reach_argv_before_resume(client, monkeypatch):
+    calls = _mock_run(monkeypatch)
+    r = client.post("/directors/launch",
+                    data={"role": "orchestrator", "mode": "resume",
+                          "model": "sonnet", "effort": "xhigh"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 200
+    assert calls[0][0] == _launcher_argv("orchestrator", resume=True,
+                                         model="sonnet", effort="xhigh")
+    assert "orchestrator/resume/sonnet/xhigh" in r.text  # the flash names the choice
+
+
+def test_launch_effort_only_override(client, monkeypatch):
+    calls = _mock_run(monkeypatch)
+    client.post("/directors/launch",
+                data={"role": "charc", "mode": "fresh", "effort": "max"},
+                headers=_SAME_ORIGIN)
+    assert calls[0][0] == _launcher_argv("charc", resume=False, effort="max")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("model", "turbo"), ("model", "fable; rm -rf /"), ("effort", "ultra"),
+    ("effort", "HIGH"),  # case-exact: the launcher's ValidateSet is what it is
+])
+def test_launch_rejects_invalid_model_or_effort_before_argv(client, monkeypatch, field, value):
+    # L5: enum-validated BEFORE argv; nothing user-typed reaches the command line
+    calls = _mock_run(monkeypatch)
+    r = client.post("/directors/launch",
+                    data={"role": "both", "mode": "fresh", field: value},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 400
+    assert calls == []
+
+
+def test_launch_empty_override_field_means_role_default(client, monkeypatch):
+    # a browser that posts an EMPTY value (no selection) gets the role default,
+    # never a 400 and never an empty -Model/-Effort on the command line
+    calls = _mock_run(monkeypatch)
+    r = client.post("/directors/launch",
+                    data={"role": "rd", "mode": "fresh", "model": "", "effort": ""},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 200
+    assert calls[0][0] == _launcher_argv("rd", resume=False)
+
+
+def test_launch_enums_mirror_launcher_validatesets():
+    # the GUI's non-sentinel values are EXACTLY the launcher's ValidateSet
+    # members, so a value the GUI offers can never be refused by the launcher.
+    import re
+    ps1 = (comms_ui._SCRIPTS_DIR / comms_ui.LAUNCHER).read_text(encoding="utf-8")
+    pattern = r"\[ValidateSet\(([^)]*)\)\]\s*\[string\]\$(Model|Effort)"
+    sets = re.findall(pattern, ps1)
+    by_param = {name: tuple(v.strip().strip("'") for v in vals.split(","))
+                for vals, name in sets}
+    assert by_param["Model"] == comms_ui.LAUNCH_MODELS[1:]
+    assert by_param["Effort"] == comms_ui.LAUNCH_EFFORTS[1:]
 
 
 def test_launch_rejects_arbitrary_user_typed_role(client, monkeypatch):

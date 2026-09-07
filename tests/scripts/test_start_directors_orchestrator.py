@@ -156,8 +156,9 @@ def test_dryrun_charc_launches_fable_high_and_director_name():
         capture_output=True, text=True, timeout=60)
     assert r.returncode == 0
     out = r.stdout + r.stderr
-    assert "claude --model fable --effort high --permission-mode auto" in out  # bootstrap START config
-    assert "session name 'director-charc-" in out                            # director naming unchanged
+    # bootstrap START config; director naming unchanged
+    assert "claude --model fable --effort high --permission-mode auto" in out
+    assert "session name 'director-charc-" in out
 
 
 # Issue 2 behavioral -DryRun (skip-guarded): the orchestrator's session name is
@@ -174,3 +175,40 @@ def test_dryrun_orchestrator_session_name_not_director_prefixed():
     out = r.stdout + r.stderr
     assert "session name 'orchestrator-" in out          # non-director display name
     assert "director-orchestrator-" not in out           # the 'director-' wart is gone
+
+
+# --- -Model / -Effort per-launch overrides (skip-guarded DryRun) ------------
+
+def _dryrun(*extra):
+    if shutil.which("powershell") is None or shutil.which("claude") is None:
+        pytest.skip("powershell + claude CLI required for the behavioral DryRun")
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-File", str(_SCRIPT), *extra, "-DryRun"],
+        capture_output=True, text=True, timeout=60)
+    return r, r.stdout + r.stderr
+
+
+def test_dryrun_model_and_effort_override_apply_to_both_directors():
+    r, out = _dryrun("-Role", "both", "-Model", "sonnet", "-Effort", "xhigh")
+    assert r.returncode == 0
+    # both directors take the override; the role table is bypassed for both
+    cmds = [ln for ln in out.splitlines() if "  cmd: " in ln]
+    assert len(cmds) == 2 and all(
+        "claude --model sonnet --effort xhigh --permission-mode auto" in ln for ln in cmds), out
+    assert "--model fable" not in out
+
+
+def test_dryrun_effort_only_override_keeps_role_model():
+    # the two overrides are independent: -Effort alone keeps the role's model
+    # (this discriminates against a case-insensitive $model/$Model shadowing
+    # bug, which silently ignored the override on first implementation)
+    r, out = _dryrun("-Role", "orchestrator", "-Effort", "max")
+    assert r.returncode == 0
+    assert "claude --model opus --effort max --permission-mode auto" in out
+
+
+def test_dryrun_rejects_model_outside_validateset():
+    r, out = _dryrun("-Role", "charc", "-Model", "turbo")
+    assert r.returncode != 0
+    assert "ValidateSet" in out and "turbo" in out
+    assert "cmd:" not in out  # nothing computed, nothing launched

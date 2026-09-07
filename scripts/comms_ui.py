@@ -71,6 +71,13 @@ COMPOSE_TYPES = ("fyi", "status", "query", "return_report")
 # director-launch enums (L5): nothing user-typed reaches the command line
 LAUNCH_ROLES = ("both", "charc", "rd", "orchestrator")
 LAUNCH_MODES = ("fresh", "resume")
+# model / effort overrides. "default" is a SENTINEL meaning "pass no flag" so
+# the launcher's per-role $RoleLaunch table (the bootstrap-declared START
+# config) stays the single source of the defaults -- the GUI never carries a
+# copy of them. The other values mirror the launcher's ValidateSets exactly.
+LAUNCH_DEFAULT = "default"
+LAUNCH_MODELS = (LAUNCH_DEFAULT, "fable", "opus", "sonnet")
+LAUNCH_EFFORTS = (LAUNCH_DEFAULT, "low", "medium", "high", "xhigh", "max")
 LAUNCHER = "start_directors.ps1"  # in _SCRIPTS_DIR
 BOOTSTRAP_FILE = "orchestrator_bootstrap.md"  # in _SCRIPTS_DIR, served verbatim
 
@@ -632,6 +639,20 @@ _DIRECTORS_STRIP = """<section class="strip" id="directors">
       {% endfor %}
     </select>
   </label>
+  <label>model
+    <select name="model">
+      {% for m in launch_models %}<option value="{{ m }}">{{-
+        "(role default)" if m == launch_default else m -}}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>effort
+    <select name="effort">
+      {% for e in launch_efforts %}<option value="{{ e }}">{{-
+        "(role default)" if e == launch_default else e -}}</option>
+      {% endfor %}
+    </select>
+  </label>
   <button type="submit" name="mode" value="fresh">Start fresh</button>
   <button type="submit" name="mode" value="resume">Resume</button>
 </form>
@@ -687,6 +708,9 @@ def create_app(comms_root: Path, allow_launch: bool = True) -> FastAPI:
             "director_sessions": _recorded_sessions(comms_root),
             "director_roles": list(BUS_ROLES),
             "launch_roles": list(LAUNCH_ROLES),
+            "launch_models": list(LAUNCH_MODELS),
+            "launch_efforts": list(LAUNCH_EFFORTS),
+            "launch_default": LAUNCH_DEFAULT,
             "allow_launch": allow_launch,
         }
 
@@ -781,6 +805,8 @@ def create_app(comms_root: Path, allow_launch: bool = True) -> FastAPI:
     def directors_launch(
         role: str = Form(...),
         mode: str = Form(...),
+        model: str = Form(LAUNCH_DEFAULT),
+        effort: str = Form(LAUNCH_DEFAULT),
     ) -> HTMLResponse:
         if not allow_launch:
             return _flash("err", "launch is disabled for this server", 400)
@@ -790,11 +816,19 @@ def create_app(comms_root: Path, allow_launch: bool = True) -> FastAPI:
             return _flash("err", f"invalid role {role!r}", 400)
         if mode not in LAUNCH_MODES:
             return _flash("err", f"invalid mode {mode!r}", 400)
+        if model not in LAUNCH_MODELS:
+            return _flash("err", f"invalid model {model!r}", 400)
+        if effort not in LAUNCH_EFFORTS:
+            return _flash("err", f"invalid effort {effort!r}", 400)
         # L5: the EXACT argv from the brief (literal relative script path); cwd
         # is pinned to the repo root so the relative -File resolves regardless
         # of where the operator launched the UI process.
         argv = ["powershell", "-NoProfile", "-File",
                 f"scripts/{LAUNCHER}", "-Role", role]
+        if model != LAUNCH_DEFAULT:
+            argv += ["-Model", model]
+        if effort != LAUNCH_DEFAULT:
+            argv += ["-Effort", effort]
         if mode == "resume":
             argv.append("-Resume")
         try:
@@ -807,7 +841,8 @@ def create_app(comms_root: Path, allow_launch: bool = True) -> FastAPI:
         if result.returncode != 0:
             return _flash(
                 "err", f"launcher exit {result.returncode}: {out}"[:800], 200)
-        return _flash("ok", f"launched ({role}/{mode}): {out}"[:800] or "launched", 200)
+        chosen = f"{role}/{mode}/{model}/{effort}"
+        return _flash("ok", f"launched ({chosen}): {out}"[:800] or "launched", 200)
 
     @app.get("/orchestrator-bootstrap", response_class=PlainTextResponse)
     def orchestrator_bootstrap() -> Response:

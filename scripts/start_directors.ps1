@@ -17,6 +17,15 @@
 .PARAMETER Role
     charc | rd | both  (default: both)
 
+.PARAMETER Model
+    fable | opus | sonnet. OVERRIDE for this launch only; when omitted each
+    role starts on its bootstrap-declared model from $RoleLaunch. Applies to
+    every role launched by this invocation (with -Role both, to both directors).
+
+.PARAMETER Effort
+    low | medium | high | xhigh | max. OVERRIDE for this launch only; when
+    omitted each role starts at its bootstrap-declared effort from $RoleLaunch.
+
 .PARAMETER Resume
     Switch. Reopen the recorded named session for the role(s) instead of a
     fresh start. If the map has no entry for a role, the script tells you to use
@@ -76,6 +85,10 @@
 param(
     [ValidateSet('charc', 'rd', 'orchestrator', 'both')]
     [string]$Role = 'both',
+    [ValidateSet('fable', 'opus', 'sonnet')]
+    [string]$Model,
+    [ValidateSet('low', 'medium', 'high', 'xhigh', 'max')]
+    [string]$Effort,
     [switch]$Resume,
     [switch]$NoWT,
     [switch]$DryRun
@@ -127,9 +140,17 @@ function Write-Err($msg) { Write-Host "[start-directors] ERROR: $msg" }
 
 function Get-LaunchArgs($role) {
     # Per-role claude launch flags: model + effort from $RoleLaunch (the
-    # bootstrap-declared START config); the permission mode is shared.
+    # bootstrap-declared START config) unless the operator overrode either for
+    # this launch (-Model / -Effort; ValidateSet-bounded, so only the listed
+    # values can reach the command line); the permission mode is shared.
+    # NOTE: PowerShell variable names are case-INSENSITIVE, so the locals must
+    # not be spelled $model/$effort or they shadow the -Model/-Effort params.
     $cfg = $RoleLaunch[$role]
-    return @('--model', $cfg.Model, '--effort', $cfg.Effort, '--permission-mode', 'auto')
+    $useModel = $cfg.Model
+    $useEffort = $cfg.Effort
+    if ($script:Model) { $useModel = $script:Model }
+    if ($script:Effort) { $useEffort = $script:Effort }
+    return @('--model', $useModel, '--effort', $useEffort, '--permission-mode', 'auto')
 }
 
 function Invoke-Preflight {
@@ -166,7 +187,9 @@ function Invoke-Preflight {
     # Verify EVERY effort level the launcher actually uses (role-aware via
     # $RoleLaunch) resolves in --help, so a CLI that drops a level we use
     # fails preflight instead of at launch.
-    $levels = @($RoleLaunch.Values | ForEach-Object { $_.Effort } | Sort-Object -Unique)
+    $levels = @($RoleLaunch.Values | ForEach-Object { $_.Effort })
+    if ($script:Effort) { $levels += $script:Effort }
+    $levels = @($levels | Sort-Object -Unique)
     foreach ($lvl in $levels) {
         if (-not ($help -match $lvl)) {
             throw "this claude CLI ($version) does not list '$lvl' as an effort level in --help; update the launcher's `$RoleLaunch to levels the installed CLI accepts."
