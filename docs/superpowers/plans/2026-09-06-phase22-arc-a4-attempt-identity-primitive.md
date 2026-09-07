@@ -10,7 +10,8 @@ that both **sees only committed state** and **identifies our attempt**, rather t
 is honest but wrong about a durable row.
 
 **Architecture:** one additive migration and four edits. (1) `trades.attempt_id TEXT` (nullable,
-`CHECK length = 36`) plus a UNIQUE partial index, migration **0038**, `EXPECTED_SCHEMA_VERSION`
+`CHECK typeof = 'text' AND length = 36`) plus a UNIQUE partial index, migration **0038**,
+`EXPECTED_SCHEMA_VERSION`
 37 -> 38, one backup gate. (2) `insert_trade_with_event` gains an explicit `attempt_id` keyword and a
 FOURTH schema-era INSERT branch that carries the column, so the token is written **in the same
 INSERT as the row it identifies** -- co-durability by construction, not by argument. (3)
@@ -19,7 +20,10 @@ pre-existing gauntlet, so LOCK clause (c)'s ordering is untouched) and captures 
 own database path for the confirming read. (4) `_entry_transaction` records FOUR observations
 instead of one (three NEW fields beside `committed`) -- did the body finish, did the commit return, and is the transaction RESOLVED -- on
 BOTH paths, **observing rather than re-plumbing** (Python's own context manager already rolls back a
-failed commit, MEASURED (3b), so the pre-arc path's behaviour is unchanged); `record_entry`'s
+failed commit, MEASURED (3b), so the pre-arc path's behaviour is unchanged; where that internal
+rollback ITSELF fails, CPython raises the rollback's exception with the commit's chained as
+`__context__` -- SOURCE (S1) -- so the wrapper OBSERVES the failure at its except site instead of
+re-plumbing the path, and RD's rule (i) is literal on both paths); `record_entry`'s
 post-commit handler then settles a lost commit by opening a **FRESH connection** and reading
 `WHERE attempt_id = ?`, returning SUCCESS with a `post_commit_warnings` entry when the row is there
 and re-raising the ORIGINAL when it is not.
@@ -34,70 +38,45 @@ and re-raising the ORIGINAL when it is not.
 2026-09-02 that REVERTED clause 2 and commissioned this primitive.
 **Plan base:** `edfea928` (branch `22-a4-plan`, worktree `.worktrees/22-a4-plan`).
 
-> ## REVIEW STATUS: **NINE ADVERSARIAL ROUNDS. ALL DIRECTOR ITEMS RULED AND CLOSED; ROUND 9 RAN ON THE FINAL SHAPE AS THE CONVERGENCE ROUND.**
+> ## REVIEW STATUS: **NINE ADVERSARIAL ROUNDS, THEN AN AMENDMENT PASS ON THREE DIRECTOR RULINGS. ROUND 10 RAN ON THE AMENDED SHAPE.**
 >
-> Rounds 1-8 at the binding `strong` tier, all five mechanical assertions passing every counted
-> round, zero reopened and zero reverted throughout. **RD RULED ALL THREE OPEN ITEMS on 2026-09-06:**
-> both S7.7 replacement wordings CONFIRMED (half A with an attached precondition -- S2.5's mapper
-> narrowing is LOAD-BEARING for his ruling and now carries a discriminating pin at (r6); half B
-> replacing his own absolute with *the false-confirm path EXISTS and lives entirely inside the
-> collision event, so its probability EQUALS the collision probability*), **`fork` STRUCK** from the
-> banked allocator's re-open triggers on this plan's measurement (VM snapshot-resume recorded as an
-> INSTANCE of the entropy-duplication trigger, never as an independent one), and **the deferred-path
-> rule-(i) asymmetry ACCEPTED as option (a)** -- on HIS ground, which replaces the plan's:
-> **rule (i) exists to prevent `R10-02`'s self-quote, and on that path the self-quote cannot happen
-> at all because the probe runs on a FRESH connection**, so constraint 3 enforces the RESULT by a
-> stronger mechanism than the unobservable signal. Option (b) -- hand-rolling `with conn:` semantics
-> on the byte-locked money path -- was REJECTED as the D46 direction.
+> Rounds 1-9 at the binding `strong` tier, all five mechanical assertions passing every counted
+> round, zero reopened and zero reverted throughout. **Round 9 did NOT converge** -- it opened nine
+> findings, three of which bore on rulings just made and were ROUTED rather than amended, because a
+> plan may not rewrite a ruling's premise on its own authority. **RD ruled all three on 2026-09-07,
+> and this document is the amended shape.**
 >
-> **AUTHORIZATION STATE, STATED ONCE AND WITHOUT CONTRADICTION** (`A4-R9-8` found the artifact
-> asserting "no open director items", "NOT AUTHORIZED TO EXECUTE", a "CLOSED" Task 0 with unchecked
-> boxes, and a "RULED" S9 still naming routed items -- an executor could not tell whether work may
-> begin):
+> **RULING 1 -- `A4-R9-2`: BRANCH A SELECTED. RULE (i) IS LITERAL ON BOTH PATHS.** Round 9's
+> reviewer was right that CPython exposes `__exit__`'s internal rollback failure; the plan's
+> two-round claim that *"the wrapper cannot see whether that internal rollback raised"* is
+> **FALSE and is struck everywhere**. `with conn:` stays **byte-identical** -- no hand-rolled
+> transaction plumbing, so option (b) stays rejected -- and the wrapper instead **inspects what
+> propagates and its `__context__` chain at the except site**; a detected rollback failure VOIDS the
+> probe exactly as the immediate path does (S2.2, S2.4, S7.15).
 >
-> **THE THREE ITEMS RD RULED ON 2026-09-06 ARE CLOSED.** CHARC's five ratifications and his attached
-> condition (the corrector's typed refusal, Task 1b) are landed.
+> **RULING 2 -- `A4-R9-3` CLOSES STRUCTURALLY, AND RD'S ITEM-3 ACCEPTANCE OF 2026-09-06 IS
+> SUPERSEDED.** That acceptance declared the deferred-path gap COVERED-not-accepted on constraint 3.
+> Branch A removes the gap, so the composition window round 9 found -- rollback-raised admitting a
+> probe that then reads a colliding token another transaction committed -- **has no admitting step
+> left**. **ONE ruling governs this path, not two side by side:** the 2026-09-06 acceptance is
+> recorded as superseded, not carried alongside (S7.15).
 >
-> **AND ROUND 9 OPENED THREE NEW ONES, so this plan is NOT AUTHORIZED TO EXECUTE.** Two of them bear
-> directly on rulings just made -- `A4-R9-2` (CPython may expose the internal rollback failure as an
-> exception chain, which would falsify the premise under RD's item-3 acceptance) and `A4-R9-3`
-> (rollback-raised COMBINED with the S7.7 collision event produces a false SUCCESS where literal
-> enforcement would alarm, which contradicts S7.15's "zero outcome delta") -- and one is a
-> director-owned wording defect, `A4-R9-4` ("EQUALS the collision probability" is an upper bound, not
-> an equality). **They are routed, NOT amended into the plan**, because a plan may not rewrite a
-> ruling's premise on its own authority. See S9 and the ledger.
+> **RULING 3 -- `A4-R9-4`: the S7.7 replacement wording is CORRECTED.** *"EQUALS the collision
+> probability"* is wrong; false confirmation is a strict subset of the collision event, so the
+> declared limitation now reads **bounded strictly above by** it.
 >
-> Full ledger: `.copowers-findings.md`; raw transcripts `.codex-review-r1..r9.txt`.
-
-**Tech Stack:** Python 3.14.2 (`pyproject` targets >=3.11), sqlite3 with LEGACY transaction control
-(`isolation_level=''`, measured), the live database in WAL (measured), `pytest` with `-n auto` in
-`addopts`, `ruff check swing/` (`E,F,W,I,N,UP,B,SIM`).
-
-**Spec:** [`docs/phase22-arc-a3-a4-commissioning-brief.md`](../../phase22-arc-a3-a4-commissioning-brief.md)
-(the **22-A4** half only), which derives from
-[`docs/22-a-merge-request.md`](../../22-a-merge-request.md) S4.4 -- the CHARC + RD split ruling of
-2026-09-02 that REVERTED clause 2 and commissioned this primitive.
-**Plan base:** `edfea928` (branch `22-a4-plan`, worktree `.worktrees/22-a4-plan`).
-
-> ## REVIEW STATUS: **SIX ADVERSARIAL ROUNDS. BOTH RULINGS LANDED; ROUND 6 RAN ON THE FINAL SHAPE.**
+> **THE OTHER FOUR ROUND-9 FINDINGS ARE FIXED IN THIS PASS, NOT DEFERRED:** `A4-R9-1` (the Python
+> validator was not equivalent to the SQL CHECK -- embedded NUL, lone surrogate), `A4-R9-5` (the
+> tier-3 override path reaches no preflight), `A4-R9-6` (a rollback-journal measurement generalised
+> to WAL), `A4-R9-7` (Task 3 could not reach green). `A4-R9-8` and `A4-R9-9` were fixed in the
+> previous pass.
 >
-> Rounds 1-5 at the binding `strong` tier, all five mechanical assertions passing every counted
-> round; the loop honoured the mandated round-5 gate rather than relabelling itself converged.
-> **Then TASK 0 WAS RULED (2026-09-06): RD ruled `uuid4` SATISFIES constraint 2** -- *"never
-> reusable" means the mechanism contains no path that REISSUES a token; the ENGINE reissues a
-> rolled-back rowid, an RNG does not* -- **and CHARC RATIFIED five schema items with ONE CONDITION
-> that widened the envelope by one module** (the corrector's typed refusal, Task 1b). The plan was
-> amended for both, and **round 6 ran on the frozen final shape.**
+> **AUTHORIZATION STATE, STATED ONCE:** CHARC's five ratifications and his attached condition
+> (Task 1b) are landed; RD's rulings of 2026-09-06 and 2026-09-07 are landed. **No director item is
+> open.** Whether the plan is authorized to EXECUTE is the orchestrator's call on the round-10
+> verdict recorded in `.copowers-findings.md` and S11 -- this document does not award itself that.
 >
-> **THIS PLAN IS NOT AUTHORIZED TO EXECUTE. TWO RD RIDER CLAUSES ARE ROUTED BACK AND OPEN**
-> (S9 RD item 2), and `A4-R6-1` is the finding that forced this sentence: the plan cannot call
-> itself final while holding an item its own governing director told it to stop-and-route on.
-> **Both clauses were attached as load-bearing and both failed verification at the code:** the S7.7
-> detection reason (*"no false-confirm mechanism"* -- REPRODUCED FALSE) and the S2.0.1 re-open
-> trigger (*"fork"* -- `uuid4` holds no forkable state, MEASURED from source). **RD's RULING itself is
-> unaffected by either** -- it rests on the no-reissue-path reading, which verifies -- so what is
-> open is wording he owns, not the decision. **Task 0's checklist carries the open box; the ladder
-> below is otherwise ready.** Full ledger: `.copowers-findings.md`.
+> Full ledger: `.copowers-findings.md`; raw transcripts `.codex-review-r1..r10.txt`.
 
 **Baseline measured on `edfea928` before any change** (S11 records the number and the command).
 
@@ -275,15 +254,25 @@ design depends on instead of reasoning about SQLite from memory.**
   `ensure_schema`) readers never block; in rollback-journal mode a reader is admitted while the
   writer holds RESERVED. The probe does not deadlock behind the writer merely because a transaction
   is open.
-- **MEASURED (3), and this one CHANGES THE DESIGN -- in the classic commit-time failure the fresh
-  read is BLOCKED until the writer's transaction is resolved.** Reproduced with no proxy at all:
+- **MEASURED (3) -- IN ROLLBACK-JOURNAL MODE, in the classic commit-time failure the fresh read is
+  BLOCKED until the writer's transaction is resolved. THE JOURNAL MODE IS PART OF THE MEASUREMENT
+  AND WAS PREVIOUSLY OMITTED** (`A4-R9-6`; the omission mattered because **the LIVE database is
+  WAL**, so an unlabelled reading of this line generalises a rollback-journal fact onto the live
+  mode, which is exactly the two-path-divergence class this project has a gotcha for). Reproduced
+  with no proxy at all, on a **rollback-journal** temporary database:
   connection B holds an open read transaction, connection A inserts and calls `commit()`, and the
   commit raises `OperationalError: database is locked` with `A.in_transaction` still **True**. A
   third, freshly-opened connection then ALSO got `database is locked`, because the failed commit
   leaves A holding a PENDING lock. **After `A.rollback()` the same fresh read succeeded and returned
-  absent.** So the ruled order -- (i) resolve, (ii) open a FRESH connection, (iii) read -- is not
-  merely conservative: the resolution is what makes the read POSSIBLE in the commonest
-  commit-failure shape.
+  absent.**
+  **WHAT THIS DOES AND DOES NOT LICENSE, now that the mode is named.** In rollback-journal mode the
+  ruled order -- (i) resolve, (ii) open a FRESH connection, (iii) read -- is not merely
+  conservative: the resolution is what makes the read POSSIBLE in the commonest commit-failure
+  shape. **In WAL it is NOT: MEASURED (2) says a fresh reader is never blocked there**, so on the
+  live database the resolution's value rests on the OTHER argument alone -- that a resolved
+  transaction is what makes an ABSENT answer a statement about the LEDGER rather than about a
+  moment (S2.2). The plan carried the blocking reason as the "blunter" one; on the mode the operator
+  actually runs, it does not apply, and S2.2 now says so.
 - **MEASURED (3b) -- AND THE TWO COMMIT FORMS BEHAVE DIFFERENTLY, WHICH THE FIRST DRAFT OF THIS PLAN
   GOT WRONG** (`A4-R1-2`; the finding was correct and this line replaces the claim it disproved).
   In the SAME world, with the SAME lock held by B:
@@ -295,12 +284,54 @@ design depends on instead of reasoning about SQLite from memory.**
   3.14.2, exactly as the sqlite3 documentation says. The first draft measured the direct form and
   generalised it to the context manager; it does not generalise. **The consequence is a
   SIMPLIFICATION:** the deferred path already resolves itself, so this arc adds no rollback there,
-  changes no exception identity there, and only OBSERVES. (The sub-case where `__exit__`'s own
-  rollback ALSO fails is not constructible on this machine, and the design does not need it to be:
-  the wrapper READS `conn.in_transaction` rather than assuming either answer -- see S2.2.)
+  changes no exception identity there, and only OBSERVES. (An earlier draft added here that the
+  sub-case where `__exit__`'s own rollback ALSO fails *"is not constructible on this machine"*.
+  **That sentence is STRUCK:** it IS constructible on the sibling arm -- MEASURED (6) -- and the
+  commit arm is closed by SOURCE (S1). The sub-case is not merely possible, it is OBSERVABLE, and
+  that is what Branch A rests on.)
 - **MEASURED (4) -- `conn.in_transaction` is False after a commit that returned**, so a lost-commit
   handler that finds `in_transaction` True is looking at a commit that did NOT land. That is what
   makes rule (i)'s cost provably zero (S2.4).
+
+> **THE FOUR FACTS BELOW DECIDED THE `A4-R9-2` RULING (RD, 2026-09-07). They were produced by
+> EXECUTION and by a SOURCE READ, in that order, and they are recorded separately from the design
+> because a ruling's evidence should be checkable without reading the design it authorised.**
+> Runtime for all of them: **Python 3.14.2 / sqlite3 3.50.4**, the same interpreter S11's baseline
+> ran on. The script is preserved at `~/swing-data/review-transcripts/22-a4-plan/item2-experiment.py`.
+
+- **MEASURED (5) -- A PYTHON-LEVEL `rollback()` OVERRIDE IS NOT INVOKED BY THE C `__exit__`.**
+  A `sqlite3.connect(factory=<Connection subclass overriding rollback>)` connection ran the whole
+  failed-commit sequence with the override's counter at **zero**: `pysqlite_connection_exit_impl`
+  calls the C rollback implementation directly and never performs the Python attribute lookup.
+  **Banked as a fact about the TEST LEVER, not only about this arc:** `factory=` is the obvious
+  reach for anyone who next wants to intercept transaction control, and it silently does nothing.
+- **MEASURED (6) -- A ROLLBACK FAILURE INSIDE `__exit__` REACHES THE CALLER; IT IS NOT SWALLOWED.**
+  On the BLOCK-ERROR arm (the arm where a failure can be forced natively, via a progress handler
+  that raises): the block raised `ValueError("block-error")`, `__exit__`'s rollback then failed, and
+  what propagated to the caller was **`OperationalError: interrupted` with `__context__` set to the
+  original `ValueError`.** The rollback's exception REPLACES the propagating one and preserves the
+  original as its context. **This is the observable signal Branch A reads.**
+- **MEASURED (7) -- A FAILED COMMIT LEAVES `in_transaction` TRUE, so `__exit__`'s rollback is REAL
+  WORK AND NOT A NO-OP.** Immediately after `commit()` raises and before any rollback,
+  `conn.in_transaction` reads **True**. **This is the fact that makes the whole clause
+  non-vacuous:** if the exit's rollback had nothing to do, "the rollback might also fail" would be a
+  hypothetical about a call that does not happen. It happens, it does work, and it can fail.
+  (It does not contradict MEASURED (3b): (3b) reads the state AFTER `__exit__` has completed its
+  rollback; (7) reads it BETWEEN the failed commit and that rollback.)
+- **SOURCE (S1) -- THE COMMIT-FAIL ARM, CLOSED BY CITATION RATHER THAN LEFT AN INFERENCE.**
+  MEASURED (6) is the block-error arm; the arm this design actually runs on is the commit-fail arm,
+  and **it cannot be forced natively** -- MEASURED (6a): the post-commit-failure rollback makes
+  **zero** progress-handler callbacks, so the one native lever does not reach it. It is closed by
+  reading **CPython v3.14.2, `Modules/_sqlite/connection.c`**:
+  `:2377 pysqlite_connection_exit_impl`; `:2386` no pending exception -> commit; `:2389` pending
+  exception -> `pysqlite_connection_rollback_impl`; `:2394-95` the comment *"Commit failed; try to
+  rollback in order to unlock the database. If rollback also fails, chain the exceptions."*;
+  `:2396 PyObject *exc = PyErr_GetRaisedException()` captures the COMMIT error; `:2397` calls
+  **the identical rollback implementation as `:2389`**; `:2399 _PyErr_ChainExceptions1(exc)` on
+  rollback failure -- the ROLLBACK's exception is raised and the COMMIT's becomes its `__context__`;
+  `:2403 PyErr_SetRaisedException(exc)` on rollback success -- the COMMIT's exception is re-raised
+  unchanged. **So the two arms share one rollback implementation and one propagation rule, and the
+  commit-fail arm is MEASURED-AT-SOURCE rather than inferred.**
 
 **Verdict: constraint 3's ingredients exist and are unused. Nothing in `swing/` opens a second
 connection to confirm a write; this arc is the first.**
@@ -324,12 +355,17 @@ connection to confirm a write; this arc is the first.**
   So this arc adds **no rollback and no exception-identity change** to the deferred path; it adds
   only the three NEW observation fields (S2.2). The one thing it must still handle is the residual
   where
-  `__exit__`'s own rollback failed, and it handles that by READING `conn.in_transaction` instead of
-  assuming either outcome.
+  `__exit__`'s own rollback failed, and it handles that with TWO observations rather than an
+  assumption: it READS `conn.in_transaction` for the TRANSACTION's state, and it READS the
+  propagating exception's `__context__` chain for the CALL's failure (SOURCE (S1), MEASURED (6)).
+  **Neither is an inference, which is the property that made `committed` admissible.**
 - **CHARC's shape -- `attempt_id TEXT` nullable, client-generated `uuid4`, same INSERT, UNIQUE
   partial index, migration 0038 ADDITIVE, one ADD COLUMN plus one index plus the version bump** --
   **SURVIVES VERIFICATION, with ONE addition and ONE documented divergence** (S2.0). The addition is
-  a `CHECK (attempt_id IS NULL OR length(attempt_id) = 36)`; the divergence is that the token is
+  a `CHECK (attempt_id IS NULL OR (typeof(attempt_id) = 'text' AND length(attempt_id) = 36))`
+  -- **the `typeof` half included here too, because `A4-R7-1` was a fix that reached the prose and
+  not the DDL and this is one of the prose sites** (S2.0 carries the authoritative text); the
+  divergence is that the token is
   **not** a `Trade` dataclass field and is **not** read by `_row_to_trade`.
 - **A DEFECT THE NEW INDEX INTRODUCES, found by verifying the premise rather than by review**
   (fixed in S2.5): `_record_entry_inner`'s IntegrityError mapper reads
@@ -694,8 +730,13 @@ def _begin_attempt_identity(conn) -> _AttemptIdentity:
         # would then reject it and FAIL AN ENTRY THAT WOULD HAVE SUCCEEDED,
         # which is the one thing this helper exists to prevent.  The empty
         # string is not hypothetical here: it is why the CHECK exists (S2.0).
-        if not isinstance(token, str) or len(token) != ATTEMPT_ID_LENGTH:
-            <contained WARNING>; return _AttemptIdentity(None, None)
+        #
+        # **THE SAME FUNCTION THE REPO'S PRE-WRITE GUARD CALLS** (A4-R9-1).
+        # Two hand-written validators over one column are a mirror pair that
+        # can drift, and the drift that matters is the one where THIS side
+        # ADMITS what the WRITE side refuses -- which converts a contained
+        # degradation into a failed money-bearing entry.  One authority.
+        validate_attempt_id(token)             # raises ValueError; see below
     except Exception:                          # NOT BaseException -- see below
         <contained WARNING>; return _AttemptIdentity(None, None)
     try:
@@ -704,6 +745,58 @@ def _begin_attempt_identity(conn) -> _AttemptIdentity:
         <contained WARNING>; db_path = None
     return _AttemptIdentity(token, db_path)
 ```
+
+**THE VALIDATOR ITSELF, AND WHY `isinstance(str) AND len == 36` WAS NOT GOOD ENOUGH** (`A4-R9-1`).
+It lives ONCE, in `swing/data/repos/trades.py` beside `ATTEMPT_ID_LENGTH`, and both the service
+helper above and the repo's pre-write guard call it:
+
+```
+# swing/data/repos/trades.py
+ATTEMPT_ID_LENGTH = 36          # the Python side of the CHECK's length half
+
+def validate_attempt_id(value) -> None:
+    """Raise ValueError unless `value` is a CANONICAL lowercase uuid4 string.
+    STRICTER than the SQL CHECK on purpose: the CHECK is the storage
+    contract, this is the ADMISSION contract, and it must not admit anything
+    the CHECK -- or the parameter BINDING one layer below it -- would refuse."""
+    if not isinstance(value, str):            # mirrors the CHECK's typeof half
+        raise ValueError(...)
+    if len(value) != ATTEMPT_ID_LENGTH:       # mirrors the CHECK's length half
+        raise ValueError(...)
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(...) from exc
+    if parsed.version != 4 or str(parsed) != value:
+        raise ValueError(...)
+```
+
+**THE TWO VALUES THAT DEFEATED THE OLD PREDICATE, both reachable from a mint returning a
+plausible-looking string, and both landing INSIDE the money-bearing INSERT rather than before it:**
+
+- **A 35-CHARACTER STRING PLUS AN EMBEDDED NUL.** Python `len(...)` counts **36**; SQLite
+  `length()` on the stored TEXT counts **35**, because `length()` stops at the NUL. The old
+  predicate ADMITS it, the CHECK REFUSES it, and the refusal arrives as an `IntegrityError` from
+  the entry INSERT -- the ordinary-path failure S2.1 exists to exclude, produced by the guard that
+  exists to exclude it. `uuid.UUID` rejects it at parse.
+- **A LONE SURROGATE** (e.g. `"\ud800"` inside an otherwise 36-character string). It has Python
+  length 36 and never reaches the CHECK at all: `sqlite3` raises at **parameter binding**, one
+  layer BELOW the CHECK, so a plan that reasons only about the CHECK cannot see it. `uuid.UUID`
+  rejects it at parse.
+
+**WHY VERSION-4 AND CANONICAL ROUND-TRIP AND NOT JUST "PARSES AS A UUID".** `uuid.UUID` accepts
+braces, a `urn:uuid:` prefix, uppercase hex and embedded hyphens in the wrong places; several of
+those are 36 characters. Requiring `str(parsed) == value` pins the exact stored representation --
+which the UNIQUE index depends on, since `'A...'` and `'a...'` are DIFFERENT text keys and would
+defeat the index that S7.8 says catches a live duplicate. Requiring `version == 4` is a deliberate
+coupling to the mint's generator and is **named as a mirror**: if S7.7's re-open trigger (a) ever
+fires and the generator changes, this predicate is one of the sites that must change with it.
+
+**THE COST, STATED BECAUSE IT REACHES EVERY TEST IN S3:** a planted token must now be a canonical
+lowercase v4 string. The plan's fixtures use `"00000000-0000-4000-8000-000000000001"` and siblings
+(version nibble `4`, variant nibble in `{8,9,a,b}`); a bare `"x" * 36` no longer passes the repo
+guard, which is the point -- **and it is the reason (r3)'s and (e2)'s rosters below grow rather than
+merely change wording.**
 
 `Exception`, not `BaseException`, and the asymmetry is the point: this code runs **PRE-COMMIT**,
 where nothing is durable and failing is the HONEST answer, so a `KeyboardInterrupt` or `SystemExit`
@@ -741,7 +834,7 @@ testability decision, stated so it is not mistaken for indirection.
 | `body_completed: bool` | the entry body finished; whatever failed next was the COMMIT or later | immediately after `yield` returns, inside the transaction, on both paths |
 | `committed: bool` | **the commit's own return was observed** (unchanged) | after `commit()` returns / after the `with conn:` block, **inside the protected suite on both paths** |
 | `resolution: str` | the PHYSICAL state, RE-READ from `conn.in_transaction` after any rollback attempt: `"unattempted"` / `"not_needed"` / `"rolled_back"` / `"still_open"` | in the failure handler of both paths |
-| `cleanup_raised: bool` | the rollback CALL raised -- a fact about the CALL, not about the transaction | same handler |
+| `cleanup_raised: bool` | **a rollback call raised** -- a fact about the CALL, not about the transaction | same handler. **IMMEDIATE path:** the wrapper's OWN `rollback()` raised (a direct observation). **DEFERRED path:** `__exit__`'s internal rollback raised, read from the PROPAGATING exception's `__context__` chain (SOURCE (S1)) -- a direct observation too, of a different object |
 
 Every one of them is an OBSERVATION of this function's own calls or of the connection's own state,
 never an inference -- the property that made `committed` admissible where the reverted clause-2 read
@@ -795,7 +888,7 @@ describes the TRANSACTION, `cleanup_raised` describes the CALL, and the admissib
 BOTH** (S2.4).
 
 **The deferred path** gains the SAME observations and **nothing else** -- no rollback, no message,
-no change to which exception escapes:
+no change to which exception escapes, and **`with conn:` stays byte-identical**:
 
 ```
 try:
@@ -803,11 +896,85 @@ try:
         yield
         outcome.body_completed = True
     outcome.committed = True          # INSIDE the try -- see below
-except BaseException:
+except BaseException as deferred_error:      # noqa: BLE001 -- the CLASS
     if outcome.body_completed and not outcome.committed:
         _observe_resolution(conn, outcome)   # shared with the immediate path
+        # RULE (i) ON THIS PATH, LITERALLY (RD 2026-09-07, ruling on
+        # A4-R9-2).  `__exit__` owns this path's rollback, so the wrapper
+        # cannot observe the CALL -- but CPython does not swallow its
+        # failure, it PROPAGATES it and chains the commit error beneath it
+        # (SOURCE (S1); MEASURED (6) on the sibling arm).  So the failure
+        # is read from what arrived here, not from a call we did not make.
+        if _exit_rollback_failed(deferred_error):
+            outcome.cleanup_raised = True
     raise
 ```
+
+**`_exit_rollback_failed` -- THE PREDICATE, ITS EXACT DISCRIMINATION, AND ITS FAIL-CLOSED
+DIRECTION.** This is the whole of Branch A; nothing else in `_entry_transaction` changes.
+
+```
+def _exit_rollback_failed(escaping: BaseException) -> bool:
+    """Did `sqlite3.Connection.__exit__`'s OWN rollback raise?
+
+    CPython v3.14.2 Modules/_sqlite/connection.c:2394-2403 -- when the
+    deferred commit fails, __exit__ saves the commit's exception, calls
+    rollback, and:
+      * rollback SUCCEEDS -> :2403 re-raises the COMMIT's exception, whose
+        __context__ is whatever the CALLER was already handling (usually
+        None);
+      * rollback FAILS    -> :2399 raises the ROLLBACK's exception with the
+        COMMIT's exception chained as its __context__.
+    So a `__context__` that is itself a `sqlite3.Error` is a link __exit__
+    added, and it is the observable signal."""
+    context = escaping.__context__
+    return context is not None and isinstance(context, sqlite3.Error)
+```
+
+**The four cases it must separate, each with the value it returns** -- and only the fourth is the
+one rule (i) is about:
+
+| what happened inside `__exit__` | what propagates | its `__context__` | predicate |
+|---|---|---|---|
+| body raised `E`, rollback OK | `E` | unchanged (the caller's own, or `None`) | irrelevant -- `body_completed` is False and S2.4 condition 1 already refuses |
+| body raised `E`, rollback FAILED with `R` | `R` | `E` | same -- refused one condition earlier |
+| body OK, commit failed `C`, rollback OK | `C` | the caller's own, or `None` | **False** -- the probe is admitted, which is the design |
+| body OK, commit failed `C`, rollback FAILED with `R` | `R` | `C` (a `sqlite3.Error`) | **True** -- `cleanup_raised`, the probe is VOIDED |
+
+**IT IS DELIBERATELY FAIL-CLOSED, AND THE ASYMMETRY IS THE ARGUMENT.** A FALSE POSITIVE costs the
+alarm -- exactly today's behaviour, the direction this whole arc treats as safe. A FALSE NEGATIVE
+admits a read rule (i) would have refused. So the predicate is written to make false negatives
+structurally hard and to tolerate false positives:
+
+- **It cannot miss the case it is for.** Row 4's `__context__` is the COMMIT's own exception, and
+  every commit failure `sqlite3` can raise is a `sqlite3.Error`. The predicate keys on the
+  CONTEXT's type rather than on the propagating exception's, so a rollback that fails with
+  something exotic (a `MemoryError` from the C layer) is still detected by what sits beneath it.
+- **The one false positive it can produce is NAMED:** `record_entry` called from inside an
+  `except sqlite3.Error:` handler, whose commit then fails and whose rollback SUCCEEDS -- row 3
+  with a `sqlite3.Error` ambient context. The probe is refused and the original re-raised. **That
+  is today's behaviour, on a path that is already failing.** **No production caller does this
+  today, and here is the method:** `grep -rn 'record_entry(' --include=*.py swing/` returns
+  **exactly two** call sites -- `swing/cli.py:806` and `swing/web/routes/trades.py:1723` -- and
+  **both were READ**: each sits in the `try:` SUITE of a `try/except`, which is NOT an exception
+  HANDLER, so `sys.exception()` is `None` there and `__context__` on anything raised beneath them
+  is `None`. (The distinction is the whole point: being lexically inside a `try` sets no ambient
+  context; only being inside an `except`/`finally` during unwinding does.) If a future caller ever
+  retries from inside an `except sqlite3.Error:`, the cost is a settle that does not happen.
+- **The residue, stated rather than left to be discovered:** a commit failure that is NOT a
+  `sqlite3.Error` followed by a rollback failure would return False. Nothing in `sqlite3`'s commit
+  implementation raises outside that hierarchy except in memory exhaustion. **On that residue --
+  and only on it -- the covering mechanism is the one RD named on 2026-09-06: the probe runs on a
+  FRESH connection, so `R10-02`'s self-quote cannot occur whatever the rollback's fate** (S2.3).
+  That argument now covers a measured sliver instead of an entire path, which is the difference
+  between a belt and a design.
+
+**WHY THE `sqlite3.Error` TYPE TEST RATHER THAN A BARE `__context__ is not None`.** A bare
+non-None test would fire on EVERY `record_entry` call made from inside any `except` block, because
+Python sets `__context__` from the ambient handled exception at raise time. That is common enough
+in a retry-shaped caller to silently disable clause 2 in production while every test passes -- the
+arm-flag class arriving through a predicate. The type test narrows the false-positive set to
+`sqlite3.Error` ambients without weakening the true-positive one at all.
 
 **`outcome.committed = True` IS INSIDE THE `try`, AND THAT IS NOT A STYLE CHOICE** (`A4-R1-3`). The
 first draft put it after the `except`, which left a reachable window: an asynchronous exception
@@ -831,15 +998,30 @@ identity is preserved byte-for-byte. That asymmetry with the immediate path (whi
 `cleanup_error from write_error`) is DELIBERATE and has a reason: on the deferred path the rollback
 is `__exit__`'s job and its failure is already reflected in what escaped, so a second, louder report
 from us would replace an exception the caller's tests already pin, for no new information.
+**That last clause used to be a plausible-sounding reason and is now a MEASURED one:** *"already
+reflected in what escaped"* is exactly SOURCE (S1) -- the rollback's exception IS what escaped,
+with the commit's beneath it -- which is why the same fact both justifies staying quiet and
+supplies `cleanup_raised`. **Note the two arms are now distinct:** `_observe_resolution`'s own
+rollback arm fires only where `__exit__` left the transaction OPEN (it sets `cleanup_raised` from
+its own call, as on the immediate path), while `_exit_rollback_failed` covers the case where
+`__exit__`'s rollback failed and the helper therefore has nothing to do. **Either arm may set the
+flag; neither can clear it.**
 
 *Why the resolution matters at all, given that the probe uses a FRESH connection:* the fresh
 connection supplies VISIBILITY on its own (MEASURED (1)); the resolution supplies something else,
 and naming it precisely is what stops this being cargo cult. **A resolved transaction is what makes
 an ABSENT answer DURABLE.** With the writer's transaction still open, "absent" is a statement about
 a moment: a caller that reuses the connection and commits later turns the row durable AFTER we
-reported failure. Once the transaction is resolved, "absent" is a statement about the ledger. And
-MEASURED (3) adds a blunter reason: while the writer holds a PENDING lock the fresh reader is
-BLOCKED outright, so without resolution there is frequently no read to have.
+reported failure. Once the transaction is resolved, "absent" is a statement about the ledger. **And that is now the WHOLE
+reason, on the mode the operator runs** (`A4-R9-6`). The plan used to add *"MEASURED (3) gives a
+blunter reason: while the writer holds a PENDING lock the fresh reader is BLOCKED outright, so
+without resolution there is frequently no read to have."* **MEASURED (3) is a ROLLBACK-JOURNAL
+measurement and the live database is WAL**, where MEASURED (2) says a fresh reader is never blocked
+at all. So the blocking reason holds for rollback-journal databases -- every `tmp_path` test
+database, and (c2)'s fixture, which is why the tests still see it -- and **does NOT hold in
+production**. The durable-ABSENT argument above stands unchanged in both modes and is the one this
+design rests on. *Recorded rather than quietly deleted, because a reason that turns out to apply
+only to the test environment is worth more as a correction than as a gap.*
 
 ### S2.3 THE PROBE -- decision: **a repo read for the SQL, a service function for the connection lifecycle, and a bounded busy timeout**
 
@@ -925,16 +1107,18 @@ are observed:
    attempted on it"*, so a raising rollback refuses the read **even when the state re-read shows the
    rollback took effect** (`A4-R2-7`'s after-effect case). Both fields are checked because they are
    two different facts.
-   **AND THE WORD "LITERALLY" IS STRUCK FROM THIS GATE, BECAUSE IT IS TRUE ON ONE PATH AND NOT THE
-   OTHER** (`A4-R8-1`). On the IMMEDIATE path the wrapper issues the rollback itself, so
-   `cleanup_raised` is an OBSERVATION and rule (i) is enforced exactly as ruled. **On the DEFERRED
-   path it is not:** `sqlite3.Connection.__exit__` performs its own commit and, on failure, its own
-   rollback, and **the wrapper cannot see whether that internal rollback raised.** Two sequences
-   defeat the flag -- an internal rollback that takes effect and then raises (`in_transaction` reads
-   False, so the wrapper records `not_needed`, `cleanup_raised=False`), and one that raises before
-   taking effect where the wrapper's OWN retry then succeeds (`rolled_back`, `cleanup_raised=False`).
-   **In both, a rollback raised and the read is admitted.** See S7.15 for the declaration and S9 for
-   the routed design question;
+   **AND THE WORD "LITERALLY" IS RESTORED TO THIS GATE, ON BOTH PATHS** (`A4-R9-2`, ruled by RD
+   2026-09-07; it replaces `A4-R8-1`'s narrower fix, which struck the word instead of earning it).
+   On the IMMEDIATE path the wrapper issues the rollback itself, so `cleanup_raised` is a direct
+   observation of its own call. **On the DEFERRED path `sqlite3.Connection.__exit__` issues it, and
+   the wrapper reads the failure from the exception that arrives** -- `_exit_rollback_failed`
+   (S2.2), grounded in SOURCE (S1) and MEASURED (6). **The two sequences that used to defeat the
+   flag are both DETECTED now**: an internal rollback that takes effect and then raises, and one
+   that raises before taking effect, propagate the SAME way -- the rollback's exception with the
+   commit's chained beneath it -- because `__exit__` chains on the failure of the CALL and not on
+   its effect. **A prior version of this plan declared that gap ACCEPTED and then COVERED; both
+   declarations are superseded and S7.15 records the supersession** rather than leaving two
+   acceptances side by side;
 3. the attempt has BOTH a token and a database path;
 4. the probe returns a row, and its ticker matches the request's.
 
@@ -948,17 +1132,26 @@ that belt into a proof** rather than leaving it as the same kind of argument.
 **Honouring rule (i) forecloses nothing -- and the FIRST DRAFT'S VERSION OF THIS ARGUMENT WAS
 WRONG, so here it is rebuilt on the corrected state model** (`A4-R2-7`). The draft said
 `"unresolved"` is reachable only from `in_transaction == True`; `_RollbackAfterEffect` is a
-counterexample already in the tree. The correct argument enumerates the TWO refusal branches and
+counterexample already in the tree. The correct argument enumerates the THREE refusal branches
+(TWO before Branch A made the third observable -- `A4-R9-2`) and
 shows the row is provably absent in each:
 
 - **`resolution == "still_open"`** (the rollback did not take effect). The handler only attempts a
   rollback when `in_transaction` was True on entry, and MEASURED (4) says `in_transaction` is False
   after a commit that RETURNED -- so on this branch the commit did not land, the row is PENDING, and
   a fresh connection would read ABSENT.
-- **`cleanup_raised` with `resolution == "rolled_back"`** (the after-effect case). The rollback took
-  effect, so the row is GONE, and a fresh connection would read ABSENT.
+- **`cleanup_raised` with `resolution == "rolled_back"`** (the after-effect case, IMMEDIATE path).
+  The rollback took effect, so the row is GONE, and a fresh connection would read ABSENT.
+- **`cleanup_raised` with `resolution == "not_needed"`** -- **the THIRD branch, which exists only
+  because Branch A made it observable** (`A4-R9-2`). On the DEFERRED path `__exit__`'s rollback took
+  effect (so `in_transaction` reads False and the shared helper writes `not_needed`) and then
+  raised, and `_exit_rollback_failed` reads that failure off the propagating exception. The rollback
+  took effect, so the row is GONE and a fresh connection would read ABSENT. **Before Branch A this
+  branch was not a refusal at all -- it was the admitting path `A4-R9-3` composed with the S7.7
+  collision event to manufacture a false SUCCESS.** Making it a refusal is what closes that window
+  structurally.
 
-**In both branches the refused read would have answered ABSENT, and ABSENT is what the refusal
+**In all three branches the refused read would have answered ABSENT, and ABSENT is what the refusal
 produces.** Rule (i) therefore costs nothing, and it is independently right for RD's reason: a
 connection whose rollback raised is of unknown health, and an answer that can change under you is
 not evidence.
@@ -1043,7 +1236,7 @@ because between the two commits the tree would carry a live false-message path o
 |---|---|---|
 | (m1)-(m6) | migration 0038: column, CHECK, index, gate, no-op re-run, data preserved, CHECK/Python drift | a schema that does not enforce what the design assumes |
 | **(m7)** | the IMMUTABILITY trigger: a direct `UPDATE trades SET attempt_id` ABORTs (schema half) | **`A4-R4-1` -- a token re-assignable after insertion is not identity** |
-| **(m8a)-(m8c)** | the corrector's TYPED refusal, its ORDER-INDEPENDENCE, and its DELIVERY through unchanged CLI/web callers | **`A4-R6-6`/`A4-R6-7`/`A4-R7-3` -- authorize-then-abort, key-order dependence, and a refusal the operator never sees** |
+| **(m8a)-(m8d)** | the corrector's TYPED refusal, its ORDER-INDEPENDENCE, its DELIVERY through unchanged CLI/web callers, and **the TIER-3 OVERRIDE path** | **`A4-R6-6`/`A4-R6-7`/`A4-R7-3`/`A4-R9-5` -- authorize-then-abort, key-order dependence, a refusal the operator never sees, and a supported operator surface the preflight never reached** |
 | (r1)-(r6) | repo: write, pre-v38 drop, malformed reject, model/schema drift comparator, static INSERT closure walk, IntegrityError mapping | the mirror family (#11) and the defect the index introduces |
 | **(r7)** | the PROBE is schema-aware: on v37 it returns `None` WITHOUT raising | **`A4-R8-5` -- an unconditional `WHERE attempt_id = ?` passes the whole suite while the advertised branch does not exist** |
 | **(RD-a1)** | the probe is NOT CALLED when the rollback RAISED -- in BOTH its shapes | **R10-02 by assertion, not comment** |
@@ -1063,8 +1256,8 @@ because between the two commits the tree would carry a live false-message path o
 | (h) | the probe connection reads `read_uncommitted = 0` | visibility assumed rather than pinned |
 | (k) | the deferred path OBSERVES its own already-resolved lost commit | a wrapper that assumes instead of reading |
 | (k2) | the deferred path's exception identity is UNCHANGED | an arc that quietly re-plumbs the pre-arc path |
-| **(k3)** | STATIC: the `committed` assignment is inside the protected suite on BOTH paths | **`A4-R1-3`'s window, which no injected exception can reach** |
-| **(k4a)-(k4b)** | the deferred path's two UNOBSERVABLE rollback sequences -- OUTCOME pinned where the signal cannot be | **`A4-R8-1` / RD's acceptance condition: the fresh connection is what makes a wrong `cleanup_raised` harmless** |
+| **(k3a)-(k3b)** | STATIC (AST) and RUNTIME (`sys.settrace`): the `committed` assignment is inside the protected suite on BOTH paths | **`A4-R1-3`'s window -- (k3a) proves the property for every assignment, (k3b) proves the behaviour at the one line** |
+| **(k4a)-(k4b)** | the deferred path's two rollback-FAILURE sequences -- **DETECTION and OUTCOME both pinned** | **`A4-R9-2` (RD, 2026-09-07): rule (i) is literal on this path too; each row fails an implementation with no detection, which the OUTCOME-only version certified** |
 
 **REGRESSION CONTROLS -- a separate roster, identical under both paths by design:**
 
@@ -1162,10 +1355,10 @@ attempt did not write. **Half 2 is the load-bearing one** -- the direct UPDATE p
 exists; only the corrector path proves it covers the writer that actually reaches it, and only the
 TYPE assertion proves the operator is told why.
 
-### (m8a)-(m8c) THE CORRECTOR REFUSES `attempt_id` -- typed, order-independent, and DELIVERED
+### (m8a)-(m8d) THE CORRECTOR REFUSES `attempt_id` -- typed, order-independent, DELIVERED, and on EVERY OPERATOR SURFACE
 
-**Three named rows, because Task 1b adds three load-bearing test classes and the first version of it
-gave them no ids, no pre-/post-fix values, no exact result shapes and no files** (`A4-R7-3`). They
+**FOUR named rows** (three from `A4-R7-3`, which caught Task 1b's test classes having no ids, no
+pre-/post-fix values, no exact result shapes and no files; **the fourth added by `A4-R9-5`**). They
 are separated from (m7) because **their red base is different**: at Task 1b, Task 1's trigger already
 exists, so the pre-fix behaviour is a raw `sqlite3.IntegrityError` -- **not** (m7)'s older
 "both writes succeed" world.
@@ -1194,7 +1387,30 @@ caught) reaches NEITHER handler -- an uncaught CLI traceback and a web 500. **Th
 exact exit code and the exact status**, not merely "not success": a weak delivery row would pass on
 any non-success result and would certify nothing about legibility.
 
-**Files:** `tests/trades/test_22a4_corrector_refusal.py` (m8a, m8b) and
+**(m8d) THE TIER-3 OVERRIDE PATH -- the surface the preflight never reached** (`A4-R9-5`). Drive
+`apply_tier3_override` with an `operator_truth_value` of TWO keys, an ordinary journal field FIRST
+and `attempt_id` LAST, against a correction row whose `affected_table` is `trades`.
+**Post-fix:** exactly `ImmutableJournalFieldError`; on a connection instrumented with
+`set_trace_callback`, **ZERO `INSERT INTO reconciliation_corrections`, ZERO `UPDATE
+reconciliation_corrections`, and ZERO `UPDATE trades` statements were issued** -- the refusal
+precedes step 4.
+**Against a backstop-only implementation (the check in `_update_journal_field` alone -- i.e. exactly
+what Task 1b shipped before this row existed):** the SAME typed error is raised and the SAME
+persisted state is observed, **because the public entry point's own ROLLBACK erases the
+difference** -- so a state-only assertion certifies a backstop-only implementation and this row
+would be vacuous. **The statement counts are the discriminator, and they read `>= 3` there** (the
+correction INSERT, the supersession UPDATE, the first field's UPDATE). *This is the counterfactual
+requirement applied to a rollback: when the outcome is identical by construction, assert the work
+that was done, not the state that survived.*
+**A second arm, on the module's own documented composition surface:** call
+`_apply_tier3_override_inner` directly inside a caller-held transaction (its docstring's invitation),
+then roll back nothing and read the table. **Post-fix:** zero `reconciliation_corrections` rows.
+**Against backstop-only:** a correction row EXISTS and the prior head's
+`superseded_by_correction_id` has MOVED -- persisted, because on this surface nobody rolled back.
+**Pre-fix (Task 1 landed, Task 1b not yet):** `sqlite3.IntegrityError` from the trigger, after the
+same writes.
+
+**Files:** `tests/trades/test_22a4_corrector_refusal.py` (m8a, m8b, **m8d**) and
 `tests/web/test_routes/test_22a4_corrector_refusal_delivery.py` + the CLI half in
 `tests/cli/test_22a4_corrector_refusal_cli.py` (m8c). **Task 1b's declared first red is (m8a)'s
 `sqlite3.IntegrityError`.**
@@ -1229,14 +1445,32 @@ answers ABSENT, so the caller re-raises as it does today).
 
 ### (r3) A malformed token is refused BEFORE any write
 
-`attempt_id=""`, `attempt_id="short"`, a 37-character string, **and a 36-BYTE `bytes` value**
+**SEVEN malformed values, and the last three are the ones `A4-R9-1` added:** `attempt_id=""`,
+`attempt_id="short"`, a 37-character string, **a 36-BYTE `bytes` value**, **a 35-character string
+followed by an embedded NUL (`"0" * 35 + "\x00"`)**, **a 36-character string containing a LONE
+SURROGATE (`"\ud800" + "0" * 35`)**, and **an UPPERCASE canonical uuid4 string**
 -> `ValueError` from the repo, and `SELECT COUNT(*) FROM trades` is **0** (the row-count half is what
-distinguishes a pre-write guard from a post-write one). **The `bytes` case pins the `isinstance`
+distinguishes a pre-write guard from a post-write one).
+**The `bytes` case pins the `isinstance`
 half of the validator** (`A4-R7-1`): a 36-byte `bytes` passes a bare `len(...) == 36` in Python
 exactly as a BLOB passes `length()` in SQLite, so a length-only validator would let it through to
 the CHECK -- or, on a tree whose CHECK is also length-only, all the way into the index.
+**THE THREE NEW CASES EACH DEFEAT A DIFFERENT LAYER, WHICH IS WHY THREE AND NOT ONE** (`A4-R9-1`):
+- **NUL:** Python `len` = 36, SQLite `length()` = **35**, so the value clears the old predicate and
+  is refused by the **CHECK**, as an `IntegrityError` raised from inside the money-bearing INSERT.
+- **LONE SURROGATE:** Python `len` = 36 and it never reaches the CHECK at all -- `sqlite3` raises at
+  **PARAMETER BINDING**, a layer BELOW the CHECK that a plan reasoning only about the CHECK cannot
+  see.
+- **UPPERCASE:** it satisfies the CHECK and BINDS cleanly, and is refused only by the
+  canonical-round-trip clause. It is here because `'A...'` and `'a...'` are DIFFERENT text keys, so
+  a mint that ever returned upper-case hex would defeat `ux_trades_attempt_id` -- the index S7.8
+  says catches a live duplicate -- **silently, with every other assertion in this suite green.**
+**Against the OLD `isinstance(str) and len == 36` predicate:** the first four still fail correctly
+and **all three new cases PASS the validator**, then produce, respectively, an `IntegrityError` from
+the CHECK, a binding error, and a silently index-defeating row. **That is the discrimination: the
+row is not "more cases", it is three layers the old predicate could not reach.**
 **Pre-fix, concretely rather than "n/a":** `insert_trade_with_event` has no `attempt_id` keyword, so
-the call raises `TypeError`.
+the call raises `TypeError` for all seven.
 
 ### (r7) THE PROBE IS SCHEMA-AWARE -- asserted directly, on a v37 database
 
@@ -1533,21 +1767,31 @@ pending, with no token -- and the test fails there, which is precisely where it 
 
 ### (e2) THE IDENTITY APPARATUS CANNOT FAIL AN ENTRY
 
-**SEVEN CONTAINED-FAILURE VARIANTS PLUS ONE INTERRUPT-PROPAGATION CONTROL -- eight scenarios**
-(`A4-R6-9`: the first version said "six" and then enumerated seven, with the interrupt case tacked on
-outside the count; a manifest an executor can under-read by one is the defect, not the arithmetic).
-**The seven contained failures:** (1) `_mint_attempt_token` RAISES; it RETURNS (2) `""`, (3)
-`"short"`, (4) a 37-character string, (5) `b"..."` (bytes), (6) `None`; and (7)
-`_resolve_main_db_path` RAISES. **Plus (8), a CONTROL of the opposite polarity:** a
-`KeyboardInterrupt` from the mint PROPAGATES and is not swallowed.
-**And a NINTH, added by `A4-R6-4`:** a 36-BYTE BLOB return, which passes a bare length check and must
-be contained as identity-unavailable rather than reaching the repo. **The
-malformed-RETURN variants are the ones that matter**: without result validation in
+**ELEVEN CONTAINED-FAILURE VARIANTS PLUS ONE INTERRUPT-PROPAGATION CONTROL -- TWELVE SCENARIOS, AND
+THE COUNT IS STATED ONCE AND ONLY ONCE.** (`A4-R6-9` caught the first version saying "six" and
+enumerating seven; `A4-R6-4` then appended a "NINTH" beneath a heading still reading "eight
+scenarios", so the same defect was live again one round later, in the fix for it. **The lesson
+applied here rather than restated: the roster below is the manifest, and the number in the heading is
+derived from it -- if they ever disagree, the roster wins and the heading is the bug.**)
+
+**The eleven contained failures.** (1) `_mint_attempt_token` RAISES. It RETURNS: (2) `""`;
+(3) `"short"`; (4) a 37-character string; (5) `b"..."` (bytes of some other length); (6) `None`;
+(7) a 36-BYTE BLOB (`A4-R6-4` -- passes a bare length check); (8) a 35-character string plus an
+embedded NUL; (9) a 36-character string containing a lone surrogate; (10) an UPPERCASE canonical
+uuid4 string (**(8)-(10) added by `A4-R9-1`; each defeats a different layer -- the CHECK, the
+parameter BINDING, and the UNIQUE index's text key -- and (r3) states which**). And (11)
+`_resolve_main_db_path` RAISES.
+**Plus (12), a CONTROL of the opposite polarity:** a `KeyboardInterrupt` from the mint PROPAGATES
+and is not swallowed.
+
+**The malformed-RETURN variants are the ones that matter**: without result validation in
 `_begin_attempt_identity` (S2.1) the value reaches the repo, trips the pre-write `ValueError` that
 (r3) requires, and FAILS AN ENTRY THAT WOULD HAVE SUCCEEDED -- the exact outcome the containment
-exists to prevent, arriving through the containment's own blind spot.
-**Post-fix, all EIGHT contained variants (1-7 plus the BLOB):** `record_entry` SUCCEEDS; the row is
-present with `attempt_id IS NULL` (the raise and the six malformed returns) or with a valid token but
+exists to prevent, arriving through the containment's own blind spot. **And (8)-(10) are why S2.1's
+validator is now `uuid.UUID`-parsing rather than length-checking**: under the old predicate those
+three are not contained at all, they are ADMITTED, and the entry then fails inside the INSERT.
+**Post-fix, all ELEVEN contained variants:** `record_entry` SUCCEEDS; the row is
+present with `attempt_id IS NULL` (the raise and the nine malformed returns) or with a valid token but
 no probe available (the path variant); and a WARNING is logged in each case.
 
 **AND EACH OF THE THREE `<contained WARNING>` SITES IN `_begin_attempt_identity` IS ALSO RUN WITH A
@@ -1645,44 +1889,92 @@ Drive the pre-arc path so the commit raises, and additionally make the wrapper's
 
 **Post-fix:** the ORIGINAL write exception escapes -- **not** a cleanup exception, **not** a chained
 `raise ... from ...` -- with its type, args and `__cause__` unchanged; `outcome.cleanup_raised` is
-True; the rollback failure is present in the logs; and the probe is NOT called.
-**Pre-fix:** the original escapes too (there is no arm) -- so **the discriminating assertions are
-`cleanup_raised is True` and the probe's call count of ZERO**, and the exception-identity
+True; and the rollback failure is present in the logs.
+**Pre-fix:** the original escapes too (there is no arm) -- so **the discriminating assertion is
+`cleanup_raised is True`**, and the exception-identity
 assertion is a LOCK: it fails an implementation that copies the immediate path's
 `raise cleanup_error from write_error` onto the pre-arc path, which is what the first draft would
 have shipped.
 
-### (k4a)-(k4b) THE DEFERRED PATH'S TWO UNOBSERVABLE ROLLBACK SEQUENCES -- **OUTCOME pinned where the SIGNAL cannot be**
+**THE ROW IS SPLIT ACROSS TWO TASKS, AND SAYING SO IS THE POINT** (`A4-R9-7`, generalised -- the
+finding named Task 3's (k3b)/(k4a)/(k4b), and this row has the same defect one assertion deep).
+The pre-ruling version also asserted *"and the probe is NOT called"*, naming a ZERO call count among
+its discriminating assertions. **`_durability_probe` does not exist until Task 4**, so that
+assertion cannot be written in Task 3 and the row as specified could not have gone green there.
+**Task 3 ships (k2) with the observation assertions above. Task 4 ADDS the probe-call-count-of-ZERO
+assertion to the same test**, where the sentinel it patches exists. Both task lists say so.
 
-**RD's second acceptance condition, 2026-09-06** (S7.15). `sqlite3.Connection.__exit__` owns the
-deferred rollback, so `cleanup_raised` cannot observe its failure. **Rule (i)'s literal signal is
-therefore unobservable on this path -- so each defeating sequence pins the OUTCOME instead**, which
-is what the rule protects and what the operator actually receives.
+### (k4a)-(k4b) THE DEFERRED PATH'S TWO ROLLBACK-FAILURE SEQUENCES -- **the SIGNAL and the OUTCOME, both pinned**
 
-**(k4a) THE INTERNAL ROLLBACK TAKES EFFECT AND THEN RAISES.** A deferred-path fixture whose
-`__exit__`-driven rollback succeeds and then raises. **Post-fix:** `conn.in_transaction` reads False,
-the wrapper records `not_needed` with `cleanup_raised=False` (**the signal is wrong, and the plan
-says so**), the probe runs on a FRESH connection and **reads ABSENT because the row is gone**, and
-`record_entry` **RE-RAISES the ORIGINAL**. Row count for the ticker: **0**.
-**Against an implementation that confirmed from the writer's own connection** -- `R10-02`'s shape,
-the thing rule (i) exists to stop -- the pending/rolled-back state would be read from the writer and
-the row could be reported durable. **The fresh connection is what makes the wrong signal harmless,
-and this row is where that is demonstrated rather than argued.**
+**REWRITTEN 2026-09-07 for RD's `A4-R9-2` ruling (Branch A).** These two rows were written when the
+plan believed `__exit__`'s rollback failure was UNOBSERVABLE, so they pinned only the OUTCOME. It is
+observable (SOURCE (S1), MEASURED (6)), rule (i) is literal on this path, and **each row now asserts
+BOTH: that the failure was DETECTED and that the probe was consequently NOT RUN.** *Keeping only the
+outcome assertions would leave two rows that pass against an implementation with no detection at
+all -- which is precisely the shape they were written under and must no longer certify.*
 
-**(k4b) THE INTERNAL ROLLBACK RAISES BEFORE TAKING EFFECT -- the WOUNDED CONNECTION.** The writer's
-transaction stays OPEN, holding its PENDING lock, and the wrapper's own retry also fails.
-**Post-fix:** the fresh probe **BLOCKS OR FAILS** against that held lock (MEASURED (3): a third
-connection got `database is locked` while the writer held a pending lock after a failed commit), the
-probe is **FAIL-CLOSED to False**, and **the ORIGINAL error surfaces** -- never a success, never the
-probe's own exception. Row count visible to a fresh connection: **0**.
-**Against a probe that treated its own failure as ABSENT-and-therefore-settled**, or that fell back
-to the writer's connection when the fresh one was blocked: the first invents nothing but the second
-reproduces `R10-02` exactly. **Fail-closed is the assertion, not "it did not crash".**
+**THE FIXTURE FIDELITY REQUIREMENT, STATED BEFORE THE ROWS BECAUSE IT IS THE PRECONDITION FOR BOTH.**
+The commit-fail arm cannot be driven natively (MEASURED (6a): the post-commit-failure rollback makes
+ZERO progress-handler callbacks, and MEASURED (5): a `factory=`-installed Python `rollback()` is
+never invoked by the C `__exit__`). **So both rows use a connection PROXY whose `__exit__` stands in
+for CPython's, and a proxy that does not reproduce the chaining tests the proxy rather than the
+code.** The proxy's `__exit__` MUST therefore raise the rollback error **from inside an `except`
+block handling the commit error**, so that `__context__` is set by the interpreter exactly as
+`_PyErr_ChainExceptions1` sets it at `connection.c:2399`:
+
+```
+def __exit__(self, exc_type, exc, tb):
+    try:
+        raise sqlite3.OperationalError("commit failed")     # the COMMIT error
+    except sqlite3.OperationalError:
+        <perform, or do not perform, the real rollback>
+        raise sqlite3.OperationalError("rollback failed")   # __context__ is set here
+```
+
+**A test asserting this shape is part of the row, not a note about it:** each row asserts
+`type(escaping.__context__) is sqlite3.OperationalError` **on the fixture itself** before asserting
+anything about `record_entry`, so a proxy that silently stops chaining fails loudly instead of
+quietly turning both rows green against a broken predicate. *This is the synthetic-fixture-vs-real-
+emitter discipline applied to an interpreter behaviour rather than to a data shape: the emitter here
+is CPython, and SOURCE (S1) is what the fixture is derived FROM.*
+
+**(k4a) THE INTERNAL ROLLBACK TAKES EFFECT AND THEN RAISES.** The proxy performs the REAL rollback
+and then raises. **Post-fix:** `conn.in_transaction` reads False so `_observe_resolution` records
+`resolution == "not_needed"`; **`_exit_rollback_failed` returns True and `outcome.cleanup_raised` is
+True**; S2.4 condition 2 refuses; **`_durability_probe`'s sentinel call count is 0**; `record_entry`
+RE-RAISES, and what escapes is the ROLLBACK's exception with the COMMIT's as its `__context__`
+(Python's own behaviour, unchanged by this arc). A fresh connection sees **0** rows for the ticker.
+**Against the pre-ruling shape in this same plan** (`resolution="not_needed"`, `cleanup_raised=False`):
+the flag is False, the probe call count is **1**, and the probe reads ABSENT -- so the OUTCOME is the
+same and **only the two new assertions discriminate.** That is the whole reason they are here: the
+outcome-only version of this row certified the admitting implementation.
+**And it is the row that closes `A4-R9-3`:** with the probe not run, there is no window in which a
+concurrently-committed colliding token can be read and confirmed.
+
+**(k4b) THE INTERNAL ROLLBACK RAISES BEFORE TAKING EFFECT -- the WOUNDED CONNECTION.** The proxy
+does NOT roll back and raises; the writer's transaction stays OPEN holding its lock.
+**Post-fix:** `_observe_resolution`'s residual arm sees `in_transaction` True and attempts its own
+rollback (the shared helper's behaviour, unchanged); **`cleanup_raised` is True by EITHER route**
+-- `_exit_rollback_failed` on the chained exception, and the helper's own arm if its retry also
+raises -- **and the row asserts the flag, not which arm set it**; the probe's call count is **0**;
+the ORIGINAL error surfaces; a fresh connection sees **0** rows.
+**AND THE JOURNAL-MODE CLAIM IS GONE** (`A4-R9-6`). The pre-ruling version asserted that the fresh
+probe *"BLOCKS OR FAILS"* against the held lock, citing MEASURED (3) -- **a ROLLBACK-JOURNAL
+measurement, while the live database is WAL, where MEASURED (2) says a fresh reader is not blocked
+at all.** Under Branch A the probe does not run, so the row makes no claim about blocking in either
+mode and the generalisation disappears rather than being parameterised. **The fail-closed probe
+behaviour it used to carry is not lost:** it is (g)'s subject (a raising probe leaves the original
+exception untouched) and (c2)'s (a real `database is locked`, on an explicitly rollback-journal
+database), and both name their mode.
+**Against the pre-ruling shape:** the probe runs, and on a WAL test database it neither blocks nor
+fails -- it succeeds and reads ABSENT -- so the assertion as written would have been **wrong on the
+live mode and right only on the fixture's**.
 
 **Both rows are DEFERRED-PATH ONLY** -- on the immediate path the wrapper issues the rollback itself
-and `cleanup_raised` is a true observation, which (RD-a1)'s three fixtures already cover.
+and `cleanup_raised` is a direct observation of its own call, which (RD-a1)'s three fixtures already
+cover.
 
-### (k3) THE `committed` OBSERVATION IS INSIDE THE RESOLVING SUITE -- static AND runtime
+### (k3a)-(k3b) THE `committed` OBSERVATION IS INSIDE THE RESOLVING SUITE -- static AND runtime
 
 > **Rewritten after `A4-R2-6`, which disproved this row's founding claim and then weakened its
 > assertion.** The first version said the window "cannot be simulated"; it can, with a
@@ -1719,18 +2011,19 @@ for every assignment including ones added later.*
 |---|---|
 | `swing/data/migrations/0038_trade_attempt_identity.sql` | `ALTER TABLE trades ADD COLUMN attempt_id TEXT CHECK (...)`, the UNIQUE partial index, **the `trg_trades_attempt_id_immutable` BEFORE-UPDATE trigger (S2.0 -- MANDATORY; it is what closes the `A4-R4-1` false-success path)**, `UPDATE schema_version SET version = 38`, inside an explicit `BEGIN; ... COMMIT;` (gotcha #9), with a reversibility header naming BOTH the `DROP INDEX` and the `DROP TRIGGER` |
 | `tests/data/test_migration_0038_attempt_identity.py` | (m1)-(m6), **(m7) the schema trigger**, (r4), (r5) -- all in Task 1's single commit |
-| `tests/trades/test_22a4_corrector_refusal.py` | **(m8a) typed refusal, (m8b) order-independence** -- Task 1b |
+| `tests/trades/test_22a4_corrector_refusal.py` | **(m8a) typed refusal, (m8b) order-independence, (m8d) the tier-3 override path** -- Task 1b |
 | `tests/cli/test_22a4_corrector_refusal_cli.py` + `tests/web/test_routes/test_22a4_corrector_refusal_delivery.py` | **(m8c) delivery through the UNCHANGED callers** -- Task 1b |
 | `tests/trades/test_22a4_attempt_identity.py` | (e), (e2), **(w)**, **(w2) the mint contract**, (f), (g), (h), (r1)-(r3), (r6), **(r7) the schema-aware probe** |
-| `tests/trades/test_22a4_clause2_settlement.py` | (RD-a1), (RD-a2), (RD-a3), (RD-b), **(RD-b2)**, (c2), (k), (k2), **(k3)**, **(k4a)-(k4b)** |
+| `tests/trades/test_22a4_clause2_settlement.py` | (RD-a1), (RD-a2), (RD-a3), (RD-b), **(RD-b2)**, (c2), (k), (k2), **(k3a)-(k3b)**, **(k4a)-(k4b)**. **Task 3 lands (k), (k2) and (k3a); Task 4 lands (k3b), (k4a), (k4b) and (k2)'s probe-call-count assertion** (`A4-R9-7`) |
 
 **Edited:**
 
 | path | what |
 |---|---|
 | `swing/data/db.py` | `EXPECTED_SCHEMA_VERSION` 37 -> 38; `PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES`; `_create_pre_phase22_arc_a4_migration_backup`; `_phase22_arc_a4_backup_gate` + its call in `run_migrations` |
-| `swing/data/repos/trades.py` | `insert_trade_with_event(..., attempt_id=None)` + the v38 INSERT branch + the shape guard + the pre-v38 contained drop; new `find_trade_id_by_attempt_id`; `ATTEMPT_ID_LENGTH` |
-| `swing/trades/entry.py` | `_mint_attempt_token`, `_AttemptIdentity`, `_begin_attempt_identity`, `_durability_probe`, `_settle_by_attempt_identity`, `_observe_resolution`; `_CommitOutcome` +3 fields (`body_completed`, `resolution`, `cleanup_raised`) for FOUR observations total; both `_entry_transaction` paths (observations only on the deferred one); the post-commit handler's new branch; the narrowed IntegrityError match; the declaration block rewritten |
+| `swing/data/repos/trades.py` | `insert_trade_with_event(..., attempt_id=None)` + the v38 INSERT branch + the shape guard + the pre-v38 contained drop; new `find_trade_id_by_attempt_id`; `ATTEMPT_ID_LENGTH`; **new `validate_attempt_id` -- the SINGLE validation authority, also called from `entry.py` (`A4-R9-1`)** |
+| `swing/trades/entry.py` | `_mint_attempt_token`, `_AttemptIdentity`, `_begin_attempt_identity`, `_durability_probe`, `_settle_by_attempt_identity`, `_observe_resolution`, **`_exit_rollback_failed` (`A4-R9-2`)**; `_CommitOutcome` +3 fields (`body_completed`, `resolution`, `cleanup_raised`) for FOUR observations total; both `_entry_transaction` paths (observations only on the deferred one, plus its `except ... as` binding -- **`with conn:` itself is NOT edited**); the post-commit handler's new branch; the narrowed IntegrityError match; the declaration block rewritten |
+| `swing/trades/reconciliation_auto_correct.py` | **THE ONE MODULE CHARC'S CONDITION WIDENED THE ENVELOPE BY, and it was MISSING FROM THIS TABLE until the 2026-09-07 per-location audit -- the manifest-with-a-hole class this plan already paid for twice.** Task 1b ONLY: the `_IMMUTABLE_JOURNAL_FIELDS` sibling set, `ImmutableJournalFieldError(ValueError)`, one message constant, and the shared predicate at THREE call sites -- `_preflight_reserved_transitions`, `_update_journal_field`, and the head of `_apply_tier3_override_inner` (`A4-R9-5`). **No other change and no sweep.** |
 | `tests/trades/test_22a_task9_entry_wiring.py` | `test_CONTRACT_a_commit_whose_own_return_was_LOST_re_raises` rewritten in place as the settled-by-identity row (test **(c)**); its declaration prose kept as the record of what changed. **AND THE THREE ROWS THAT LIVE IN THIS FILE AND MUST STAY GREEN, named because the sweep found them scheduled with no file:** **(d)** the row-ABSENT re-raise (existing, gains the probe-called-once assertions), **(i)** the belt control, **(j)** the post-commit-STEP control |
 | the version mirror family, **SIX spellings across ~30 files, NO total quoted** | 26 `EXPECTED_SCHEMA_VERSION == 37`; 11 bare-literal assertions; 4 `_current_version(...) == 37` (**2 of which stay at 37**); 1 chained (overlaps row 1); **1 INEQUALITY ceiling `versions[-1] <= 37` -- the L3 authorization gate**; and **15 `target_version=37` call sites -- 12 `run_migrations(...)` calls plus 3 direct `_phase22_arc_a_backup_gate(...)` calls -- of which 8 STAY PINNED and 7 gain a SECOND call to `EXPECTED_SCHEMA_VERSION`**. Counts are FLOORS and OVERLAP (`A4-R4-10`); the manifest is the greps plus a READ of every hit. The closure check is the full suite for the assertion families and a READ for the call sites, which fail nothing. |
 
@@ -1757,22 +2050,38 @@ for every assignment including ones added later.*
       he verified 57 / 56 / `{risk_policy_id_at_lock}` on the live database himself).
 - [x] **ONE CONDITION ATTACHED, and it WIDENS THE ENVELOPE: S8.6 is NOT banked -- the corrector's
       typed refusal SHIPS IN THIS ARC.** See Global Constraints and Task 1b.
-- [ ] **RIDER CLAUSE 1 ROUTED BACK -- RD's S7.7 DETECTION REASON.** He attached it as load-bearing
+- [x] **RIDER CLAUSE 1 -- RD's S7.7 DETECTION REASON. ROUTED BACK, RULED 2026-09-06, REPLACEMENT
+      CORRECTED 2026-09-07.** He attached it as load-bearing
       and instructed stop-and-route if it failed. **It failed:** *"a rolled-back token leaves no row
       to confirm"* is true at the instant of rollback and does not survive to probe time
-      (REPRODUCED). See S7.7 and S9 RD item 2. **Scope, so it does not read stronger than it is:**
+      (REPRODUCED). **He confirmed both replacement wordings** -- half A with S2.5's mapper
+      narrowing attached as a precondition, half B with his absolute replaced by a probability
+      statement -- **and round 9 then found half B's replacement wrong in his favour** (`A4-R9-4`:
+      an equality where only a strict bound holds). **S7.7 now reads
+      `P(false confirm) < P(collision)`.** **Scope, so it does not read stronger than it is:**
       the counterexample lives ENTIRELY INSIDE the collision branch, so it refutes the REASON without
       changing the practical weight.
-- [ ] **RIDER CLAUSE 2 ROUTED BACK -- the `fork` RE-OPEN TRIGGER for the banked allocator.**
+- [x] **RIDER CLAUSE 2 -- the `fork` RE-OPEN TRIGGER for the banked allocator. STRUCK, RULED
+      2026-09-06.**
       MEASURED from CPython 3.14 source: `uuid4` is `int.from_bytes(os.urandom(16))` per call, with
       no process-local PRNG state, so a POSIX port that acquires `fork` would fire the trigger with
-      no hazard present. Bare `fork` is struck; generator-change and entropy-duplication survive.
+      no hazard present. Bare `fork` is struck; generator-change and entropy-duplication survive,
+      **with VM snapshot-resume recorded as an INSTANCE of entropy-duplication and never as an
+      independent trigger.**
       **THIS SECOND BOX EXISTS BECAUSE THE CHECKLIST PREVIOUSLY SAID "ONE CLAUSE" WHILE THE FRONT
       MATTER AND S9 SAID TWO** (`A4-R7-4`) -- an authorization checklist that can be marked closed
       without disposing of a director-owned clause is the claimed-fix-not-present class applied to
       governance.
-- [ ] **NEITHER CLAUSE AFFECTS THE RULING**, which rests on the no-reissue-path reading and
-      verifies. What is open is wording RD owns.
+- [x] **NEITHER CLAUSE AFFECTED THE RULING**, which rests on the no-reissue-path reading and
+      verifies. What was open was wording RD owns, and he ruled it.
+- [x] **A FOURTH ITEM WAS ROUTED AFTER ROUND 9 AND RULED 2026-09-07: `A4-R9-2`, BRANCH A.** Round 9
+      falsified the plan's premise that `__exit__`'s internal rollback failure is invisible to the
+      wrapper. **RD SELECTED Branch A: `with conn:` stays byte-identical and the wrapper inspects
+      what propagates and its `__context__` chain at the except site; a detected rollback failure
+      VOIDS the probe exactly as on the immediate path.** Rule (i) is now literal on both paths
+      (S2.2, S2.4, S7.15), CHARC's routed item 8 is closed without either of its two options being
+      taken, and **the composition window `A4-R9-3` closes STRUCTURALLY** -- with RD's own
+      2026-09-06 item-3 acceptance recorded as SUPERSEDED rather than left standing beside it.
 
 ### Task 0b: **THE 22-A LOCK-A AMENDMENT** -- lands in Task 1's commit, ruled at Task 0
 
@@ -1859,12 +2168,22 @@ covering the new column, so the failure is left loud."*
       `current_version == 37 and target_version >= 38`; its call added to `run_migrations` after the
       22-A gate.
 - [ ] `swing/data/repos/trades.py`, **in this same commit**: `ATTEMPT_ID_LENGTH = 36` (the Python
-      side of the CHECK); `insert_trade_with_event(conn, trade, *, event_ts, rationale=None,
+      side of the CHECK's length half) and **`validate_attempt_id(value)` -- THE SINGLE VALIDATION
+      AUTHORITY, called by BOTH this repo's pre-write guard and `entry.py`'s
+      `_begin_attempt_identity`** (S2.1 carries the body and the reasoning);
+      `insert_trade_with_event(conn, trade, *, event_ts, rationale=None,
       attempt_id=None)` with the shape validation BEFORE any write -- **`None`, OR
-      `isinstance(attempt_id, str)` AND exactly `ATTEMPT_ID_LENGTH` characters -> `ValueError`. The
-      `isinstance` half mirrors the CHECK's `typeof` half and is not optional** (`A4-R7-1`): a
-      36-byte `bytes` value satisfies a bare length test in Python exactly as a BLOB satisfies
-      `length()` in SQLite; the FOURTH era branch selected by
+      `validate_attempt_id(attempt_id)` -> `ValueError`.**
+      **THE PREDICATE IS `isinstance(str)` + exact length + `uuid.UUID` PARSE + `version == 4` +
+      CANONICAL ROUND-TRIP, and each clause is load-bearing** (`A4-R7-1` gave the first two;
+      **`A4-R9-1` gave the rest**): a 36-byte `bytes` value satisfies a bare length test in Python
+      exactly as a BLOB satisfies `length()` in SQLite; **a 35-character string plus a NUL has
+      Python length 36 and SQL `length()` 35, so it clears a length test and is refused by the
+      CHECK -- inside the money-bearing INSERT; a lone surrogate clears it and fails at PARAMETER
+      BINDING, a layer below the CHECK; and an uppercase canonical uuid4 clears the CHECK entirely
+      and defeats the UNIQUE index, which keys on the exact text.** A length-only validator is
+      therefore not a weaker mirror of the CHECK, it is a mirror of only ONE of the three layers a
+      bad token can fail at. The FOURTH era branch selected by
       `"attempt_id" in cols`, identical to the v27+ branch plus the one column and one placeholder,
       **with the new column's bound parameter verified against its position, not just its name**;
       the pre-v38 contained-WARNING drop; and `find_trade_id_by_attempt_id(conn, attempt_id)`,
@@ -1876,16 +2195,22 @@ covering the new column, so the failure is left loud."*
       both said the mint had moved into Task 1 and Task 1 contained no such work, while Task 2 still
       scheduled it -- the amendment was announced in two places and performed in neither):
       `_mint_attempt_token()`, `_AttemptIdentity`, **the COMPLETE `_begin_attempt_identity(conn)` per
-      S2.1 -- `Exception`-not-`BaseException` containment AND result validation
-      (`isinstance(str)` + exact length), not a stub to be hardened later** (`A4-R7-2`: splitting the
+      S2.1 -- `Exception`-not-`BaseException` containment AND result validation **through the SAME
+      `validate_attempt_id` the repo guard calls** (`A4-R9-1`: two hand-written predicates over one
+      column are a mirror pair, and the drift that matters is the one where the SERVICE side admits
+      what the WRITE side refuses -- which turns a contained degradation into a failed
+      money-bearing entry), not a stub to be hardened later** (`A4-R7-2`: splitting the
       helper across two commits meant Task 1 either shipped a helper that could fail an otherwise
       successful entry, or Task 2 had no genuine red) -- and the
       `record_entry` -> `_record_entry_inner` -> `insert_trade_with_event(attempt_id=...)` threading.
       **Task 1's amended LOCK-A asserts a non-NULL token on BOTH rows, so without these the task
       cannot reach its own green.**
 - [ ] **(e) and (e2) ARE SCHEDULED HERE TOO**, with the complete helper they test (`A4-R7-2`).
-      **(e2) is written with ALL EIGHT contained variants PLUS the `KeyboardInterrupt` propagation
-      control, ENUMERATED FROM S3's list so the two manifests cannot drift** (`A4-R6-9`).
+      **(e2) is written with ALL ELEVEN contained variants PLUS the `KeyboardInterrupt`
+      propagation control -- TWELVE scenarios -- ENUMERATED FROM S3's roster so the two manifests
+      cannot drift, and the COUNT is read off that roster rather than copied** (`A4-R6-9`,
+      `A4-R6-4`, `A4-R9-1`; the count in this line has now been wrong twice, which is why S3 says
+      the roster wins).
       *This requirement lived only in Task 2's checklist and was DROPPED when Task 2 was withdrawn
       above -- found by this plan's own post-round-7 self-audit looking for exactly that class, and
       restored here. A withdrawal is an edit, and an edit can lose a fix as easily as a rewrite can.*
@@ -1977,20 +2302,45 @@ covering the new column, so the failure is left loud."*
       uncaught CLI traceback and a web 500. **That is the same operator experience CHARC's condition
       exists to replace**, arriving one layer out. Deriving from `ValueError` reaches both existing
       handlers with **no production caller edit**.
-- [ ] **THE CHECK GOES IN BOTH PLACES, SHARING ONE PREDICATE AND ONE MESSAGE** (`A4-R6-7`, verified
-      at the source): `_preflight_reserved_transitions` **and** `_update_journal_field`. The module
+- [ ] **THE CHECK GOES IN THREE PLACES, SHARING ONE PREDICATE AND ONE MESSAGE** (`A4-R6-7` gave two,
+      verified at the source; `A4-R9-5` found the third and it is the one an operator can actually
+      reach): `_preflight_reserved_transitions`, `_update_journal_field`, **and the head of
+      `_apply_tier3_override_inner`.** The module
       applies multi-field corrections SEQUENTIALLY and preflights the whole payload for exactly that
       reason -- its own comment says a per-field-only check made refusal depend on **JSON KEY
       ORDER**. A backstop-only implementation would execute an earlier field's UPDATE before
       discovering `attempt_id` second.
-- [ ] **Tests: (m8a), (m8b) and (m8c)** -- the named S3 rows for this task (`A4-R7-3`): the typed
-      service refusal, the multi-field preflight asserting ZERO journal UPDATEs, and DELIVERY through
-      the unchanged CLI (exit 2, no traceback) and web (status 400) callers. **(m7) half 2 is
+- [ ] **THE THIRD SITE, AND WHY IT IS NOT A SWEEP** (`A4-R9-5`, verified by reading the module).
+      `_preflight_reserved_transitions` is called from **exactly one place** --
+      `_handle_multi_field_correction:2655` -- and **NOT** from `_apply_tier3_override_inner:1608`,
+      which is a SUPPORTED OPERATOR SURFACE (`swing journal ... --override`). That path INSERTs the
+      new correction row (step 4), advances the prior row's `superseded_by_correction_id` (step 5),
+      and only then walks `operator_truth_value` field by field (step 6) -- so with `attempt_id`
+      LAST, two writes and every earlier field's UPDATE have already executed when
+      `_update_journal_field`'s backstop refuses. **What that costs, stated exactly rather than
+      dramatised:** the PUBLIC entry point `apply_tier3_override:910` owns `BEGIN IMMEDIATE` /
+      COMMIT / ROLLBACK and rolls the whole thing back, so *"Nothing was written"* stays TRUE there;
+      the exposure is (a) the module's own documented composition surface -- its docstring invites
+      callers to *"compose via `_apply_tier3_override_inner` inside an existing tx"*, and such a
+      caller owns the rollback -- and (b) the ORDER-INDEPENDENCE property (m8b) exists to establish,
+      which is simply **not established on this surface** by a backstop.
+      **The fix is scoped to the NEW immutable set ONLY: a call to the same shared predicate over
+      `operator_truth_value` at the head of `_apply_tier3_override_inner`, before step 4.**
+      **Calling `_preflight_reserved_transitions` there instead is DECLINED and the reason is
+      CHARC's own bound:** that would newly refuse the SEVEN pre-existing `_RESERVED_JOURNAL_FIELDS`
+      members earlier on this path too -- a behaviour change to shipped functionality, i.e. the sweep
+      his condition explicitly excluded. **Refusing `attempt_id` early changes the behaviour of
+      nothing that exists today**, because the column does not exist today.
+- [ ] **Tests: (m8a), (m8b), (m8c) and (m8d)** -- the named S3 rows for this task (`A4-R7-3`): the
+      typed service refusal, the multi-field preflight asserting ZERO journal UPDATEs, DELIVERY
+      through the unchanged CLI (exit 2, no traceback) and web (status 400) callers, and
+      **(m8d) the TIER-3 OVERRIDE path** (`A4-R9-5`). **(m7) half 2 is
       SUPERSEDED by (m8a)** -- it belonged to a red base that no longer exists once Task 1 lands the
       trigger. **Declared first red: (m8a)'s `sqlite3.IntegrityError`.**
-- [ ] **Bounded:** one sibling refusal set, one message constant, the shared predicate at two call
+- [ ] **Bounded:** one sibling refusal set, one message constant, the shared predicate at three call
       sites, and the assertions above. **No other change to that module and no sweep** -- the
-      widening is exactly this.
+      widening is exactly this, and the third call site is inside it because it refuses only the
+      column this arc introduces.
 - [ ] Commit: `feat(trades): Task 1b -- the corrector refuses attempt_id with a typed error instead of authorizing it into a trigger abort`
 
 ### Task 2: **WITHDRAWN -- folded into Task 1. The number is kept so every downstream reference stays valid.**
@@ -2026,10 +2376,22 @@ covering the new column, so the failure is left loud."*
       fires only when the
       transaction is still open; **its failure is contained and the ORIGINAL exception still
       escapes**, so the pre-arc path's exception identity is unchanged.
-- [ ] **Tests:** (k), (k2), (k3), **and (k4a)/(k4b) -- the two deferred-path sequences whose rule-(i)
-      signal is unobservable, pinned on OUTCOME** (RD's acceptance condition, S7.15). **RED first**:
-      (k) asserts a `resolution` field that does not yet exist, and (k3)'s AST walk fails against any
+- [ ] **`_exit_rollback_failed(escaping)` and its use in the deferred handler** (S2.2) -- the
+      `except BaseException as deferred_error:` binding, the `sqlite3.Error`-typed `__context__`
+      test, and the `cleanup_raised` set. **`with conn:` is not touched.** The docstring carries the
+      `connection.c:2394-2403` citation, because a predicate reading an interpreter's chaining
+      behaviour is unreadable without the branch it mirrors.
+- [ ] **Tests: (k), (k2) and (k3a) ONLY.** **RED first**:
+      (k) asserts a `resolution` field that does not yet exist, and (k3a)'s AST walk fails against any
       shape that leaves the assignment unguarded.
+- [ ] **THREE ROWS AND ONE ASSERTION ARE EXPLICITLY *NOT* HERE, AND THIS IS THE THIRD INSTANCE OF
+      THE SAME CLASS IN THIS PLAN** (`A4-R9-7`; siblings `A4-R7-2` and `A4-R8-3`). **(k3b)**,
+      **(k4a)** and **(k4b)** all assert what `record_entry` DOES with these observations -- it
+      settles by probe, or refuses to -- and **`_durability_probe` and `_settle_by_attempt_identity`
+      do not exist until Task 4**, so scheduling them here specifies a task that cannot reach green.
+      **The same is true of (k2)'s probe-call-count-of-ZERO assertion.** All four move to Task 4.
+      *Recorded as a checklist line rather than fixed silently, because the class has now cost this
+      plan three rounds and the cheap defence is a task list that says what it is NOT doing.*
 - [ ] Commit: `feat(trades): Task 3 -- the transaction wrapper observes body-completion, resolution and cleanup failure on both paths`
 
 ### Task 4: clause 2 returns
@@ -2054,6 +2416,13 @@ covering the new column, so the failure is left loud."*
       (RD-a3), (RD-b), **(RD-b2)**, (c) -- **rewriting
       `test_CONTRACT_a_commit_whose_own_return_was_LOST_re_raises` in place** -- (c2), (d), (f),
       (g), (h), plus the two regression controls (i) and (j).
+- [ ] **AND THE FOUR ITEMS MOVED OUT OF TASK 3, BECAUSE THEY NEED THE PROBE THIS TASK BUILDS --
+      Tests: (k3b), (k4a), (k4b) AND (k2)'s probe assertion ARE SCHEDULED HERE**
+      (`A4-R9-7`): **(k3b)** the `sys.settrace` row that asserts a settled SUCCESS; **(k4a)** and
+      **(k4b)** the two deferred rollback-failure sequences, each asserting DETECTION
+      (`cleanup_raised is True`) **and** a probe call count of **0** and the ORIGINAL surfacing;
+      and **the probe-call-count-of-ZERO assertion ADDED to (k2)**, which Task 3 shipped without it.
+      **All four patch `swing.trades.entry._durability_probe`, which exists only from this commit.**
 - [ ] Commit: `feat(trades): Task 4 -- clause 2 returns, settled by a fresh-connection read on attempt identity`
 
 ### Task 5: the declaration in code says what is now true
@@ -2152,8 +2521,8 @@ discovered; it is the gate.
    AFTER the caller was told the entry failed. This is the residual proper.
    **(b) `rolled_back` with `cleanup_raised` -- NOT indeterminate at all.** The rollback took
    effect, `in_transaction` re-reads false, and **the row is provably GONE; nothing can commit it
-   later.** The read is refused here only because RD's rule (i) is applied as ruled on this path
-   (S7.15 declares where it is not), and the refusal
+   later.** The read is refused here only because RD's rule (i) is applied as ruled -- **now on
+   BOTH paths, S7.15** -- and the refusal
    costs nothing because the answer would have been ABSENT anyway (S2.4). Saying otherwise
    overstates the arc's own surviving exposure, and S2.4 and S9 item 3 already had it right.
    **The "possibly durable later" exposure belongs to (a) ALONE** (`A4-R7-5`: the sentence that
@@ -2272,11 +2641,22 @@ discovered; it is the gate.
      **does not survive to probe time**. **REPRODUCED:** A rolls back (zero rows carry `X`), a second
      connection mints the same `X` for the SAME ticker and COMMITS, A's probe finds that row,
      **ticker corroboration PASSES**, and A would return SUCCESS naming a trade it did not write.
-     **THE RULED REPLACEMENT, and it is the sharper statement rather than the softer one:** the path
-     EXISTS, it is reachable ONLY within the collision event, and therefore **the false-confirm
-     probability EQUALS the collision probability computed above -- no mechanism raises it above
-     that.** Nothing about the probe, the ticker corroboration or the index amplifies a collision into
-     a larger exposure; the arithmetic bounds both.
+     **THE RULED REPLACEMENT, CORRECTED 2026-09-07 (`A4-R9-4`), and it is the sharper statement
+     rather than the softer one:** the path EXISTS, it is reachable ONLY within the collision event,
+     and therefore **the false-confirm probability is BOUNDED STRICTLY ABOVE BY the collision
+     probability computed above -- `P(false confirm) < P(collision)` -- and no mechanism raises it
+     above that bound.**
+     **THE FIRST REPLACEMENT SAID "EQUALS" AND THAT WAS WRONG, IN THE DIRECTION THAT OVERSTATES THE
+     ARC'S OWN EXPOSURE.** False confirmation is a STRICT SUBSET of the collision event: it also
+     requires (1) an attempt whose commit was LOST and whose token was rolled back and which has not
+     yet been settled, (2) the colliding row to be COMMITTED before that attempt's probe runs -- a
+     timing window, not a certainty -- and (3) the colliding row to carry the SAME TICKER, or the
+     corroboration in S2.3 turns the match into the alarm. Each conjunct is `< 1`, so the product is
+     strictly less than `P(collision)`. **The equality was an overclaim against ourselves and is
+     corrected rather than quietly softened**, because the number is used as a limitation's
+     justification and a justification's arithmetic is evidence. Nothing about the probe, the ticker
+     corroboration or the index amplifies a collision into a larger exposure; the arithmetic bounds
+     both, and it bounds this one more tightly than the entry used to claim.
      **AND THE SCOPE OF THAT COUNTEREXAMPLE IS STATED HERE RATHER THAN LEFT TO READ STRONGER THAN IT
      IS** (the orchestrator's qualification when he routed it, carried into the plan because a plan
      should not bank an overstatement in its own favour): **the scenario lives ENTIRELY INSIDE THE
@@ -2363,42 +2743,76 @@ discovered; it is the gate.
     *Reason:* the envelope is the entry path, and the money-bearing double-write hazard the whole
     contract was written for is the DOUBLE ENTRY. Flagged at S8 with its own reasoning so it is
     owned rather than merely disclosed.
-15. **AN ASYMMETRY OF OBSERVABILITY, NOT OF OUTCOMES: RULE (i)'S SIGNAL IS UNOBSERVABLE ON THE
-    DEFERRED PATH, AND THE RESULT IT PROTECTS IS ENFORCED THERE BY A STRONGER MECHANISM.**
-    **RULED (a) ACCEPT by RD, 2026-09-06 -- on HIS ground, which REPLACES the one this plan first
-    offered.** The plan argued "the outcome happens to be the same"; he declined that as
-    self-standing and grounded the acceptance in **CONSTRAINT 3**, having verified both citations in
-    this document before ruling.
+15. **RULE (i) IS LITERAL ON BOTH PATHS. THE OBSERVABILITY GAP THIS ENTRY USED TO DECLARE IS
+    CLOSED, AND THE TWO PRIOR DECLARATIONS OF IT ARE SUPERSEDED -- NOT LEFT SIDE BY SIDE.**
+    **RULED BY RD, 2026-09-07 (`A4-R9-2`): BRANCH A.**
 
-    *The observability gap, stated first because it is real* (`A4-R8-1`):
-    `sqlite3.Connection.__exit__` owns the deferred commit AND its rollback, so `cleanup_raised`
-    cannot be an OBSERVATION there. Two sequences defeat it -- the internal rollback takes effect and
-    then raises (`in_transaction` reads False -> `not_needed`, `cleanup_raised=False`), or it raises
-    before taking effect and the wrapper's OWN retry succeeds (`rolled_back`, `cleanup_raised=False`).
-    **In both, a rollback raised and the probe is ADMITTED.** The plan claimed "LITERALLY" for two
-    rounds; that word is struck from S2.4's gate.
+    ***THE SUPERSESSION, STATED FIRST AND EXPLICITLY, BECAUSE THE ALTERNATIVE IS TWO LIVE RULINGS
+    ON ONE PATH.*** This entry has held two earlier positions and **both are RETIRED**:
+    - the 2026-09-06 **ACCEPT (a)** ruling -- *the signal is unobservable; the RESULT it protects is
+      enforced by the stronger mechanism of a FRESH connection (constraint 3); therefore COVERED
+      risk, not accepted risk* -- **is SUPERSEDED.** It was sound on its premise. Its premise was
+      *"the wrapper cannot see whether that internal rollback raised,"* and round 9 showed that
+      premise is FALSE.
+    - the earlier **DECLARED ASYMMETRY** (`A4-R8-1`, which struck the word "LITERALLY" from S2.4's
+      gate) is superseded by the same fact.
+    **ONE RULING GOVERNS THIS PATH: rule (i) is enforced literally on both.** The fresh-connection
+    argument survives, but **demoted to what it now is** -- a belt over the measured residue named
+    in S2.2, not the load-bearing reason for an entire path.
 
-    ***WHY THIS IS COVERED RISK AND NOT ACCEPTED RISK -- RD's ground, and the sentence this entry
-    exists to carry:*** **rule (i) exists to prevent `R10-02`'s SELF-QUOTE -- a read taken on the
-    writer's OWN unresolved connection.** On this path that read **CANNOT HAPPEN, whatever the
-    rollback's fate, because the probe runs on a FRESH CONNECTION** (S2.3's fresh-connection
-    construction with its MEASURED behaviour, plus the construction-time `read_uncommitted` pin at
-    (h)). **The RESULT rule (i) protects is therefore enforced by a mechanism STRONGER than the
-    unobservable signal** -- constraint 3 satisfied structurally rather than by a flag. **Without
-    this paragraph the entry reads as ACCEPTED risk; with it, it is COVERED risk, and that is the
-    whole difference.**
+    *What was believed, and what is true:* `sqlite3.Connection.__exit__` owns the deferred commit
+    AND its rollback, so the wrapper cannot observe the CALL. **That is where the reasoning stopped
+    for two rounds, and it is one step short.** CPython does not swallow that rollback's failure: it
+    **RAISES it, with the commit's exception chained beneath as `__context__`** (SOURCE (S1),
+    `Modules/_sqlite/connection.c:2394-2403`; MEASURED (6) on the sibling arm, where the failure can
+    be forced natively). **A failure that propagates is observable at the except site**, so
+    `cleanup_raised` is set from the exception rather than from a call the wrapper did not make
+    (S2.2's `_exit_rollback_failed`). **`with conn:` is untouched** -- byte-identical, no
+    hand-rolled transaction plumbing -- so this is not option (b) in disguise.
 
-    *And the outcomes are PINNED, not argued* -- each defeating sequence gets a discriminating test
-    asserting what the operator actually gets: **(k4a)** rollback-effective-then-raises -> the fresh
-    probe reads ABSENT -> re-raise; **(k4b)** rollback-raises-before-effect, leaving a wounded
-    connection holding its transaction -> the fresh probe blocks or fails -> **fail-closed False** ->
-    the ORIGINAL error surfaces. **The literal signal is unobservable in both; the OUTCOME is pinned
-    in both.**
+    *The three facts that made the ruling, each with the method that produced it:* **(1)** a
+    Python-level `rollback()` override via `sqlite3.connect(factory=...)` is **never invoked** by the
+    C `__exit__` (MEASURED (5)) -- so the obvious test lever is dead and the design could not have
+    been settled by that route; **(2)** a forced rollback failure on the block-error arm propagates
+    `OperationalError: interrupted` with the original error as `__context__` (MEASURED (6)); **(3)**
+    a FAILED commit leaves `in_transaction` **TRUE** (MEASURED (7)) -- **the fact that makes this
+    whole clause non-vacuous**, because it establishes that `__exit__`'s rollback is real work with
+    a real failure mode rather than a no-op nobody needs to reason about.
 
-    *Option (b) -- owning the deferred commit and rollback explicitly -- is **REJECTED**, in RD's
-    terms:* hand-rolling `with conn:` semantics on the byte-locked money path **buys ZERO outcome
-    delta for a NEW FAILURE SURFACE on the one path these arcs exist to protect.** He named it the
-    **D46 direction** again.
+    *The commit-fail arm -- the one this design actually runs on -- cannot be forced natively*
+    (MEASURED (6a): zero progress-handler callbacks during that rollback), **so its evidence grade
+    is stated exactly rather than blurred with the arm that was measured: MEASURED-AT-SOURCE, by
+    citation, at `Modules/_sqlite/connection.c:2377-2403` of CPython v3.14.2** -- the same rollback
+    implementation as the block-error arm (`:2397` calls what `:2389` calls), and an EXPLICIT
+    chaining branch (`:2399`) versus an explicit re-raise branch (`:2403`). It is not an inference
+    from behaviour on a neighbouring path; it is the branch, read.
+
+    *What `A4-R9-3` was, and why it needs no acceptance:* rollback-takes-effect-then-raises used to
+    record `not_needed / cleanup_raised=False`, which ADMITTED the probe; combined with S7.7's
+    accepted collision event, another transaction could commit the colliding token before that probe
+    ran, and the settle would return a false SUCCESS naming a row it did not write. **Two separately
+    ruled acceptances composed into an outcome neither covered.** Branch A removes the ADMITTING
+    STEP: that sequence now sets `cleanup_raised`, the gate refuses, and the original is re-raised.
+    **The window is closed STRUCTURALLY, not accepted** -- which is why nothing below declares it.
+
+    *And the outcomes are PINNED, not argued.* **(k4a)** rollback-effective-then-raises -> detected,
+    the probe is NOT called, the ORIGINAL surfaces, and a fresh reader sees **0** rows; **(k4b)**
+    rollback-raises-before-effect -> detected, the probe is NOT called, the ORIGINAL surfaces, and
+    a fresh reader sees **0** rows. **Each row asserts the DETECTION and the OUTCOME**, because
+    either alone would pass an implementation that got the other wrong.
+
+    *Option (b) -- owning the deferred commit and rollback explicitly -- remains **REJECTED**, and
+    Branch A is why it never needed doing:* hand-rolling `with conn:` semantics on the byte-locked
+    money path **buys ZERO outcome delta for a NEW FAILURE SURFACE on the one path these arcs exist
+    to protect.** RD named it the **D46 direction** twice; the third option was to READ what already
+    arrives.
+
+    **WHAT SURVIVES AS AN ACCEPTED LIMITATION HERE, because something does:** a commit failure that
+    is NOT a `sqlite3.Error` followed by a rollback failure is not detected by
+    `_exit_rollback_failed` (S2.2 names the residue and its measurement). *Reason:* the predicate
+    keys on the CONTEXT's type to avoid firing on every caller that runs inside an `except`
+    handler, and no `sqlite3` commit path raises outside that hierarchy short of memory exhaustion.
+    **On that sliver, and only on it, the fresh-connection construction is the covering mechanism.**
 
 ---
 
@@ -2524,19 +2938,21 @@ to know which parts are settled and by whom.**
    and the trigger then ABORTs -- **authorize-then-abort**, his own class, ruled 2026-09-01 after
    five instances in 22-A. Bounded to one refusal entry, one message constant and one assertion on
    the TYPED error; **the trigger remains the guard of record and the refusal is its legible face.**
-8. **A THIRD ITEM IS NOW ROUTED, AND IT IS A DESIGN DECISION ABOUT A LOCKED PATH (`A4-R8-1`).**
-   RD's rule (i) -- *a failed rollback VOIDS the read* -- **is enforced on the immediate path and
-   only APPROXIMATED on the deferred one**, because `sqlite3.Connection.__exit__` owns that path's
-   commit and rollback and the wrapper cannot see whether the internal rollback raised (S7.15 has
-   both sequences). **The outcome is identical in both -- the row is provably gone and the probe
-   returns ABSENT -- but the rule is not enforced as ruled.**
-   **The choice is yours because both options touch something you own:** (a) OWN the deferred commit
-   and rollback explicitly in `_entry_transaction`, reproducing `__exit__`'s exception and chaining
-   semantics by hand -- which re-plumbs the path 22-A locked byte-for-byte and that round 6 concluded
-   should be observed, not re-plumbed; or (b) ACCEPT S7.15's declaration, on the ground that the two
-   unobservable sequences provably produce the alarm anyway. **The plan recommends (b) and has taken
-   neither**, because a plan that re-plumbs a locked path on its own authority is the failure this
-   arc has already routed twice.
+8. **THE THIRD ITEM IS CLOSED, AND NEITHER OF THE TWO OPTIONS IT OFFERED WAS TAKEN (`A4-R8-1`,
+   then `A4-R9-2`; RULED BY RD 2026-09-07).** This item asked you to choose between (a) OWNING the
+   deferred commit and rollback explicitly -- re-plumbing a byte-locked path -- and (b) ACCEPTING
+   that rule (i) is only APPROXIMATED there, because *"the wrapper cannot see whether the internal
+   rollback raised."*
+   **THE PREMISE UNDER BOTH OPTIONS WAS FALSE.** CPython does not swallow that failure: it raises
+   the rollback's exception with the commit's chained beneath it
+   (`Modules/_sqlite/connection.c:2394-2403`, SOURCE (S1); MEASURED (6) on the sibling arm). **The
+   wrapper reads the failure off the exception it already receives, `with conn:` is untouched, and
+   rule (i) is enforced LITERALLY on both paths** (S2.2, S7.15).
+   **Nothing on this item needs your ruling now** -- no locked path is re-plumbed, so the concern
+   that produced the routing does not arise. It is recorded rather than deleted because *"the
+   choice is yours"* was written into a document you read, and a question that quietly disappears
+   is indistinguishable from one that was answered. **What changed is that a third option existed
+   and neither the plan nor two rounds of review looked for it.**
 9. **The two JURISDICTION NOTES are written into the migration header**, not left to a reviewer:
    (A) a `BEFORE UPDATE` trigger cannot see `INSERT OR REPLACE`, and the REPLACE family was grepped
    EMPTY against `trades` -- re-run here, **zero executable REPLACE statements anywhere in `swing/`**
@@ -2546,23 +2962,27 @@ to know which parts are settled and by whom.**
    trigger silently drops the guard -- banked by CHARC as a 22-B precondition and recorded in the
    header so the next rebuild's author meets it in the file.
 
-### To RD -- the admissibility gate -- **RULED 2026-09-06, WITH TWO RIDER CLAUSES ROUTED BACK**
+### To RD -- the admissibility gate -- **RULED 2026-09-06 AND AGAIN 2026-09-07. NOTHING IS OPEN.**
 
 **Why it fired:** the token is admissibility machinery -- the thing that makes a durability read
 EVIDENCE -- and RD's three constraints are its specification. **Constraint 2 is RULED: `uuid4`
 satisfies it, because "never reusable" means the mechanism contains no path that REISSUES a token,
-and `uuid4` has none.** Items 1 and 3-6 below are closed by that ruling. **Item 2 is OPEN and carries
-BOTH rider clauses that failed verification** -- the S7.7 detection reason and the `fork` re-open
-trigger. They are the only things in this plan still waiting on him, and Task 0 carries one unchecked
-box for each.
+and `uuid4` has none.** Items 1 and 3-6 below are closed by that ruling.
+**Item 2's two routed rider clauses were RULED 2026-09-06** (both replacement wordings confirmed;
+`fork` struck), **and one of those replacements was itself CORRECTED 2026-09-07** (`A4-R9-4`:
+*"EQUALS the collision probability"* -> **bounded strictly above by it**, since false confirmation
+also needs the timing window and the ticker match). **A third item was ruled 2026-09-07**
+(`A4-R9-2`, Branch A -- item 3 and CHARC item 8). **Every box in Task 0 is checked.**
 
 1. **S1 is the answer to your ruling's own precondition question**, and it says: the CO-DURABLE
    MECHANISM exists and its token does not; UNIQUE PER ATTEMPT does not exist at all; the
    DURABLE-VISIBILITY capability exists and is wired to nothing. Each is re-derived against the code
    with the method that produced it, and two of your constraints' supporting facts were REPRODUCED
    on this tree rather than cited (rowid reuse; a fresh connection's blindness to uncommitted rows).
-2. **ROUTED BACK -- YOUR S7.7 DETECTION RIDER DOES NOT FULLY VERIFY AT THE CODE, AND YOU INSTRUCTED
-   STOP-AND-ROUTE IF IT DID NOT.** Both halves were run against a model carrying the real CHECK, both
+2. **RULED 2026-09-06, AND ONE OF THE REPLACEMENTS CORRECTED 2026-09-07. Kept in full because the
+   record of a rider that failed verification is worth more than the rider.** Your S7.7 detection
+   rider did not fully verify at the code and you had instructed stop-and-route if it did not; both
+   halves were run against a model carrying the real CHECK, both
    real indexes and the real mapper:
    - **"A committed-duplicate token is REFUSED LOUDLY by the UNIQUE index" -- VERIFIED**, with a
      dependency you should see: the refusal message is
@@ -2591,11 +3011,21 @@ box for each.
    **YOUR RULING IS UNAFFECTED BY EITHER** -- it rests on the no-reissue-path reading, which
    verifies. What failed is two of the riders' stated REASONS, and the plan will not write an
    unverified reason into a declared limitation or a re-open trigger. **S7.7 and S2.0.1 now state the
-   verified versions.** Confirm both replacements, or rule them differently.
+   verified versions.**
+   **BOTH REPLACEMENTS WERE CONFIRMED 2026-09-06 -- and the S7.7 one was WRONG TOO, corrected
+   2026-09-07 (`A4-R9-4`).** Your absolute (*"no false-confirm mechanism"*) was replaced by
+   *"its probability EQUALS the collision probability"*, and that is an equality where only a bound
+   holds: false confirmation is a STRICT SUBSET of the collision event, needing additionally a
+   rolled-back unsettled attempt, the colliding commit landing before that attempt's probe, and a
+   ticker match. **S7.7 now reads `P(false confirm) < P(collision)`.** *Recorded at length because
+   this is the THIRD statement about the same sentence and each was more accurate than the last --
+   the entry's value is now the correction history as much as the claim.*
 3. **Rule (i) -- "a failed rollback VOIDS the read" -- is implemented as "no read is attempted
-   whenever the rollback CALL raised", ON THE IMMEDIATE PATH ONLY; item 8 below is the deferred
-   path's asymmetry and it is ROUTED. S2.4 argues the cost is ZERO** by enumerating
-   the two refusal branches (`still_open`; `rolled_back` with `cleanup_raised`) and showing the row
+   whenever a rollback CALL raised", ON BOTH PATHS (RULED 2026-09-07, `A4-R9-2`; the earlier
+   immediate-path-only implementation and the CHARC item-8 asymmetry are both SUPERSEDED).
+   S2.4 argues the cost is ZERO** by enumerating
+   the THREE refusal branches (`still_open`; `rolled_back` with `cleanup_raised`; and, since the
+   2026-09-07 ruling, `not_needed` with `cleanup_raised` on the deferred path) and showing the row
    is provably ABSENT in each. **The first version of that argument was WRONG** (`A4-R2-7`): it
    claimed the refusal branch implies `in_transaction == True`, and this tree's own
    `_RollbackAfterEffect` fixture is the counterexample -- the rollback takes effect and then raises.
