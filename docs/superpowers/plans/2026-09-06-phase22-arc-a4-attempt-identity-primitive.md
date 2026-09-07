@@ -42,27 +42,44 @@ and re-raising the ORIGINAL when it is not.
 2026-09-02 that REVERTED clause 2 and commissioned this primitive.
 **Plan base:** `edfea928` (branch `22-a4-plan`, worktree `.worktrees/22-a4-plan`).
 
-> ## REVIEW STATUS: **ELEVEN ADVERSARIAL ROUNDS. THE SETTLING SWEEP RAN, THE ONE CONFIRMING ROUND RAN, AND IT DID NOT CONVERGE. THIS PLAN IS NOT AUTHORIZED TO EXECUTE.**
+> ## REVIEW STATUS: **ELEVEN ADVERSARIAL ROUNDS, THEN A SETTLING SWEEP, THEN THE FIX LEG. THIRTEEN OF ROUND 11's FOURTEEN ARE FIXED; ONE IS ROUTED. THE PLAN AWAITS A GATE WITH A DISPOSITION -- IT IS NOT SELF-AUTHORIZED.**
 >
 > **ROUND 11 RETURNED `NEW_CRITICAL_MAJOR_FOUND`: 14 findings (1 CRITICAL, 11 MAJOR, 2 MINOR;
-> 8 NEW GROUND, 6 RESIDUAL), NONE FIXED**, because the sweep cell was instructed to run ONE
+> 8 NEW GROUND, 6 RESIDUAL), returned UNFIXED by instruction** -- the sweep cell was told to run ONE
 > confirming round and stop whatever it returned. **All five mechanical assertions passed and there
-> was no dead attempt.** Round 12 is the gate-holder's call.
-> **TWO of the fourteen ROUTE and are OPEN DIRECTOR ITEMS:** `A4-R11-2` (a cheaper discriminator for
-> the ambient-`except` false positive -- capture `sys.exception()` before the transaction and exclude
-> that identity -- which modifies a predicate RD has now ruled the shape of twice, and reverses
-> (RD-a4)'s expected outcome) and `A4-R11-9` (**the CPython source PROVENANCE, which this cell could
-> not settle**: the preserved file is sha256-pinned and says what SOURCE (S1) quotes, verified twice,
-> but nothing establishes it IS the official v3.14.2 file, and the round -- like round 10 -- gave
-> counter-numbers it could not have sourced either, having no network. The disputed thing is
-> PROVENANCE, not the branch's behaviour, which both sides agree on).
-> **THE CRITICAL, `A4-R11-1`, IS REPRODUCED AND IS NOT ROUTED -- it is a defect with a cheap fix:**
-> `escaping.__context__` is an ordinary attribute lookup, and a `sqlite3.Error` subclass defining
-> `__context__` as a property reads `None` while the base slot holds the commit exception (MEASURED
-> on this machine), which is a FALSE NEGATIVE that re-admits the probe and rebuilds the `A4-R9-3`
-> window. Read the base slot; contain a raising getter in the alarm direction.
+> was no dead attempt.**
+>
+> **THE 2026-09-07 FIX LEG THEN DISPOSITIONED EVERY ONE OF THEM IN WRITING: 13 FIXED, 1 ROUTED, NONE
+> BANKED, NO CODEX ROUND RUN.** The operator authorized the fix leg and then a gate with a
+> disposition; **a twelfth counted round requires his written authorization and does not exist.**
+> The leg ran in a fresh cell because the sweep cell measured 446,282 against the 400K cap. The
+> disposition table, the instrument results and what the instruments still cannot see are in **S11**.
+>
+> **THE CRITICAL, `A4-R11-1`, IS FIXED.** `escaping.__context__` was an ordinary attribute lookup,
+> and a `sqlite3.Error` subclass defining `__context__` as a property read `None` while the base slot
+> held the commit exception -- a FALSE NEGATIVE that re-admitted the probe and rebuilt the `A4-R9-3`
+> window. The read now goes through `_CONTEXT_SLOT`
+> (`BaseException.__dict__["__context__"]`, the same source as this module's own `_EVIDENCE_SLOTS`),
+> contained in the alarm direction, discriminated by (k7a)-(k7b) in Task 3. **The plan's claim that
+> false negatives were "structurally impossible within its scope" was FALSE and is STRUCK.**
+>
+> **`A4-R11-2` WAS RULED BY RD AND IS ADOPTED WITH ALL THREE CONDITIONS:** capture
+> `sys.exc_info()[1]` immediately before the transaction context manager and exclude that object by
+> `is`-identity; **(RD-a4) rebuilt as a FOUR-ROW MATRIX** over {`inside_except` x `chained`}, every
+> cell computed under BOTH predicates; and the `A4-R11-1` containment covering the context read.
+> *(A measured premise correction rides with it: the ruling was relayed naming `sys.exception()`,
+> which is Python 3.12+, and `pyproject.toml:9` declares `>=3.11`.)*
+>
+> **ONE ITEM REMAINS OPEN AND IT IS ROUTED, NOT BANKED: `A4-R11-9`, the CPython source's
+> PROVENANCE** (S8 item 8). The preserved file is sha256-pinned and says what SOURCE (S1) quotes,
+> verified twice by two readers; nothing establishes it IS the official v3.14.2 file, and rounds 10
+> and 11 gave counter-numbers they could not have sourced either, having no network. **The exposure
+> is narrowed by measurement** -- the rollback-SUCCEEDS half is independently measured on this
+> machine, and only the chains-on-failure half rests on the C source -- **and both sides agree on
+> the BEHAVIOUR; the dispute is provenance.** The settling method is written down; it needs a
+> network fetch this cell could not make.
 > The full per-finding adjudication, each with what was verified by execution, is in
-> `.copowers-findings.md` under **Round 11**.
+> `.copowers-findings.md` under **Round 11**; the dispositions are in **S11**.
 >
 > **WHY THE SWEEP HAPPENED, AND WHAT IT BOUGHT.** **THE LOOP HAD NO SETTLING STEP, AND THAT IS WHAT
 > ROUNDS 8, 9 AND 10 WERE SPENDING THEMSELVES ON.**
@@ -121,9 +138,14 @@ and re-raising the ORIGINAL when it is not.
 > **AUTHORIZATION STATE, STATED ONCE AND WITHOUT CONTRADICTION:** CHARC's five ratifications and his
 > attached condition (Task 1b) are landed. RD's rulings of 2026-09-06, of 2026-09-07 on round 9, and
 > of 2026-09-07 on round 10's `A4-R10-1` and `A4-R10-2` are ALL landed. **No director item was open
-> when round 11 ran; round 11 then opened TWO** -- `A4-R11-2` and `A4-R11-9`, above. **They are
-> ROUTED, NOT amended into the plan**, on the standing rule: a plan may not rewrite a ruling's
-> premise on its own authority. **THIS PLAN IS NOT AUTHORIZED TO EXECUTE.**
+> when round 11 ran; round 11 then opened TWO** -- `A4-R11-2` and `A4-R11-9`. **`A4-R11-2` WAS
+> RULED BY RD on 2026-09-07 and is landed with all three of its conditions** (S2.2, (RD-a4), Task 3)
+> -- it was NOT amended on the plan's own authority, which is the standing rule and was honoured.
+> **`A4-R11-9` REMAINS ROUTED** (S8 item 8): it needs a network fetch, not a ruling, and the fix leg
+> did not substitute anything that would have looked like a settlement.
+> **THIS PLAN IS NOT AUTHORIZED TO EXECUTE. Its state is: every round-11 finding dispositioned in
+> writing, one routed, awaiting a gate with a disposition.** *No twelfth counted round has been
+> authorized, and none was run.*
 >
 > **ONE CORRECTION THIS PASS OWES AGAINST THE RULING IT APPLIED, stated here rather than buried:**
 > the `A4-R10-1` ruling was relayed with the rationale that a cleanly-completed block leaves
@@ -1030,7 +1052,7 @@ write_error`. **What the two paths share is the NON-MUTATING `_read_resolution`,
 > **THE SHARED HELPER USED TO OWN A ROLLBACK, AND IT COULD NOT.** Task 3 said the helper "owns a
 > rollback, contains its failure, and does not change what escapes"; the shipped immediate ladder
 > must LOG that exact cleanup exception and then `raise cleanup_error from write_error`
-> (`swing/trades/entry.py:1122-1163`). **Both cannot hold.** *And this is worse than a
+> (`swing/trades/entry.py:1126-1163`; the chained re-raise is `:1162`). **Both cannot hold.** *And this is worse than a
 > contradiction a reviewer found, because THE SETTLING SWEEP SAW THE TENSION AND WROTE A SENTENCE
 > INSTEAD OF RESOLVING IT* -- the retired text said the helper is "shown INLINE below rather than as
 > a call, because what it does is the point," which is an explanation standing in for a design.
@@ -1224,7 +1246,7 @@ NOT from `_entry_transaction`** -- see the call site above.
 > **this module documents the class one function away** (`safe_text`,
 > `swing/trades/entry.py:109`, whose docstring says an exception class overriding `__repr__` to
 > raise is constructible) **and it already owns the remedy** -- `_EVIDENCE_SLOTS`
-> (`swing/trades/entry.py:145`) is built from `BaseException.__dict__[...]` for exactly
+> (`swing/trades/entry.py:147`, the tuple; `_EVIDENCE_FIELDS` at `:146`) is built from `BaseException.__dict__[...]` for exactly
 > `("args", "__cause__", "__context__")`, above a comment reading *"`BaseException.__getattribute__`
 > DOES NOT BYPASS A SUBCLASS DATA DESCRIPTOR"*. **The plan reasoned about a hostile exception's
 > FORMATTING and not about its ATTRIBUTES, in the same file, twenty lines below a constant that
@@ -1757,6 +1779,7 @@ because between the two commits the tree would carry a live false-message path o
 | (k) | the deferred path OBSERVES its own already-resolved lost commit | a wrapper that assumes instead of reading |
 | (k2) | the deferred path's exception identity is UNCHANGED | an arc that quietly re-plumbs the pre-arc path |
 | **(k3a)-(k3b)** | STATIC (AST) and RUNTIME (`sys.settrace`): the `A4-R1-3` window is closed on BOTH paths -- by a guarded `try` on the immediate one, and by `record_entry`'s own observation on the deferred one, whose branch (k3a) asserts contains **no `try` at all** | **`A4-R1-3`'s window -- (k3a) proves the property statically on each branch and pins the byte-lock; (k3b) proves the behaviour at the one line** |
+| **(k7a)-(k7b)** | the `__context__` data descriptor that LIES and the one that RAISES -- the base-slot read's discriminator, IN TASK 3 where the read ships | **`A4-R11-1` reproduced; scheduled by `A4-R11-6`'s rule after the inverse check indicted the pass that wrote it** |
 | **(k6a)-(k6b)** | the IMMEDIATE path's returning-arm re-read and its took-effect-then-raised ladder, discriminated IN TASK 3 with no probe and no `record_entry` | **`A4-R11-6`: Task 3 shipped the immediate path's semantics with every discriminator in Task 4** |
 | **(k5)** | the chained `__context__` signal is DETECTED, with NO probe -- the Task-3 discriminator | **`A4-R10-3` -- a task that ships a predicate and schedules every test of it in the NEXT task goes green against `return False`** |
 | **(k4a)-(k4b)** | the deferred path's two rollback-FAILURE sequences -- **DETECTION and OUTCOME both pinned** | **`A4-R9-2` (RD, 2026-09-07): rule (i) is literal on this path too; each row fails an implementation with no detection, which the OUTCOME-only version certified** |
@@ -2207,8 +2230,12 @@ first link is the only one the predicate reads.
 return LOST, the row LANDED. Rows 2 and 4 use the (k4a) proxy. The `inside_except` axis is the same
 call wrapped in `try: raise ValueError(...) except ValueError:`.
 
-**TWO SUBCLASS ROWS, IN THE SAME TEST, BECAUSE THEY ARE THE SAME PREDICATE'S OTHER AXIS
-(`A4-R11-1`).** MEASURED by execution 2026-09-07 on the same interpreter:
+**THE PREDICATE'S OTHER AXIS -- THE SUBCLASS DATA DESCRIPTOR (`A4-R11-1`) -- IS (k7a)-(k7b), IN
+TASK 3, AND NOT THIS ROW.** The base-slot read SHIPS in Task 3, so its discriminator belongs there;
+scheduling it here would have left Task 3 green against `escaping.__context__` (`A4-R11-6`'s class,
+caught by the inverse schedule check). The measurements are recorded here because this is where the
+predicate's truth table lives, and (k7a)-(k7b) execute them. **MEASURED by execution 2026-09-07 on
+the same interpreter:**
 
 | subclass of `sqlite3.OperationalError` | base-slot `__context__` | **PRE-FIX** bare read | **POST-FIX** |
 |---|---|---|---|
@@ -2217,14 +2244,8 @@ call wrapped in `try: raise ValueError(...) except ValueError:`.
 
 **Against the pre-fix predicate the first row ADMITS a probe on a wounded connection** -- the
 `A4-R9-3` window, rebuilt -- **and the second replaces the operator's evidence with the attacker's
-exception.** Both are driven through `record_entry`, and both assert `cleanup_raised is True`, a
-probe call count of **0**, and that what escapes is the SUBCLASS instance with its own type and args
-(not a `RuntimeError` from the getter). **The second row is also the one that shows the CONTAINMENT
-is a belt rather than the fix:** the base descriptor runs no user code, so the getter never fires
-and the `except` arm is not reached. *Stated rather than quietly claimed as coverage -- no
-construction found in this pass makes `BaseException.__dict__["__context__"].__get__` raise, so the
-containment is kept for the alarm direction it costs nothing to have, and it is NOT counted as
-tested.*
+exception.** (k7a)-(k7b) drive both through `record_entry`, land their no-probe halves in Task 3,
+and gain their probe-call-count-of-ZERO assertions in Task 4.
 
 ### (RD-a5) THE CALLER-SIDE OBLIGATION THE `body_completed` REMOVAL RESTS ON
 
@@ -2674,6 +2695,46 @@ read, never the rollback" a test rather than a paragraph.**
 **Pre-fix:** no `cleanup_raised` field -> `AttributeError`; the chained-escape half passes pre-fix
 and is therefore a **LOCK**, listed as such and not counted as evidence that the observations work.
 
+### (k7a)-(k7b) THE SUBCLASS-DESCRIPTOR ROWS -- **the base-slot read's Task-3 discriminator**
+
+**Why these are their OWN rows and not two lines of (RD-a4)** (`A4-R11-6`'s class, found by the
+strengthened `assertion_schedule_audit.py` **on this fix leg's own edit**, 2026-09-07). `_CONTEXT_SLOT`
+and the base-slot read ship in **Task 3**, and the two subclass rows that discriminate them were
+written into (RD-a4), which is scheduled in **Task 4** because its four matrix cells assert probe
+call counts. **So Task 3 would have gone green against `escaping.__context__`** -- the exact
+`A4-R11-1` defect, in the task that ships its fix. *The instrument that caught it is the inverse
+check added in the same pass: "does the task that SHIPS a symbol contain any row that NAMES it?" It
+had never been asked, and its first run indicted the pass that added it.*
+
+**The split is (k5)'s and (k2)'s, applied again:** the halves that need no probe land in Task 3; the
+probe-call-count halves are ADDED to the same tests in Task 4.
+
+**(k7a) A `__context__` DATA DESCRIPTOR THAT LIES.** A `sqlite3.OperationalError` subclass whose
+`__context__` is a `@property` returning `None`, raised as the rollback failure from inside the
+`except` handling the commit error, so the real `OperationalError` IS in the base slot.
+**Premise asserted first:** `BaseException.__dict__["__context__"].__get__(e, type(e))` is the
+commit error while `e.__context__` is `None` -- *the fixture asserts the divergence it exists to
+exercise, so a future CPython that closed the hole turns this row red instead of vacuously green.*
+**Post-fix (Task 3):** `outcome.cleanup_raised is True` and `outcome.resolution == "not_needed"`.
+**Against the bare attribute read:** `cleanup_raised` is False -- **a FALSE NEGATIVE, and in Task 4
+that state ADMITS the probe and rebuilds the `A4-R9-3` window.**
+**Task 4 ADDS:** `_durability_probe`'s sentinel call count is **0**.
+
+**(k7b) A `__context__` DATA DESCRIPTOR THAT RAISES.** The same shape with a getter that raises
+`RuntimeError`.
+**Post-fix (Task 3):** `outcome.cleanup_raised is True`, and **what escapes `record_entry` is the
+SUBCLASS instance with its own type and args** -- not the getter's `RuntimeError`.
+**Against the bare attribute read:** the getter fires, its `RuntimeError` propagates, and the
+operator's evidence about what actually failed has been replaced by the hostile exception. **That
+second assertion is the discriminating one**; `cleanup_raised` alone cannot distinguish the two
+implementations here, because the bare read never returns at all.
+**Task 4 ADDS:** the probe call count of **0**.
+*Note what these rows do NOT prove: the base descriptor runs no user code, so the getter never fires
+under the shipped read and the ALARM-direction `except` arm in `_exit_rollback_failed` is NOT
+exercised by either row. No construction found in this pass makes
+`BaseException.__dict__["__context__"].__get__` raise. The containment is kept for the direction it
+costs nothing to have and is declared UNTESTED rather than counted as covered.*
+
 ### (k4a)-(k4b) THE DEFERRED PATH'S TWO ROLLBACK-FAILURE SEQUENCES -- **the SIGNAL and the OUTCOME, both pinned**
 
 **REWRITTEN 2026-09-07 for RD's `A4-R9-2` ruling (Branch A).** These two rows were written when the
@@ -2834,7 +2895,7 @@ for every assignment including ones added later.*
 | `tests/trades/test_22a4_corrector_refusal.py` | **(m8a) typed refusal, (m8b) order-independence, (m8d) the tier-3 override path** -- Task 1b |
 | `tests/cli/test_22a4_corrector_refusal_cli.py` + `tests/web/test_routes/test_22a4_corrector_refusal_delivery.py` | **(m8c) delivery through the UNCHANGED callers** -- Task 1b |
 | `tests/trades/test_22a4_attempt_identity.py` | (e), (e2), **(w)**, **(w2) the mint contract**, (f), (g), (h), (r1)-(r3), (r6), **(r7) the schema-aware probe** |
-| `tests/trades/test_22a4_clause2_settlement.py` | (RD-a1), (RD-a2), (RD-a3), **(RD-a4)**, **(RD-a5)**, (RD-b), **(RD-b2)**, (c2), (k), (k2), **(k3a)-(k3b)**, **(k4a)-(k4b)**, **(k5)**, **(k6a)-(k6b)**, **(pr1)-(pr5)**. **Task 3 lands (k), (k2), (k3a), (k5) and (k6a)-(k6b); Task 4 lands (k3b), (k4a), (k4b), (RD-a4), (RD-a5) and (k2)'s probe-call-count assertion** (`A4-R9-7`, `A4-R10-3`, `A4-R11-6`) |
+| `tests/trades/test_22a4_clause2_settlement.py` | (RD-a1), (RD-a2), (RD-a3), **(RD-a4)**, **(RD-a5)**, (RD-b), **(RD-b2)**, (c2), (k), (k2), **(k3a)-(k3b)**, **(k4a)-(k4b)**, **(k5)**, **(k6a)-(k6b)**, **(k7a)-(k7b)**, **(pr1)-(pr5)**. **Task 3 lands (k), (k2), (k3a), (k5) and (k6a)-(k6b) and (k7a)-(k7b); Task 4 lands (k3b), (k4a), (k4b), (RD-a4), (RD-a5) and the probe-call-count assertions ADDED to (k2), (k7a) and (k7b)** (`A4-R9-7`, `A4-R10-3`, `A4-R11-6`) |
 
 **Edited:**
 
@@ -3276,7 +3337,12 @@ covering the new column, so the failure is left loud."*
       task put an unconditional state-observer in a new handler there, which reached the
       pre-arc BODY-RAISE branch and would have issued a rollback that path never issued -- 22-A LOCK
       clause (c)'s subject. The observation belongs in the frame that already has the scope.*
-- [ ] **Tests: (k), (k2), (k3a), (k5) and (k6a)-(k6b) ARE SCHEDULED HERE.** **RED first**:
+- [ ] **Tests: (k), (k2), (k3a), (k5), (k6a)-(k6b) and (k7a)-(k7b) ARE SCHEDULED HERE.**
+      **(k7a)-(k7b) are here because `_CONTEXT_SLOT` and the base-slot read SHIP here**
+      (`A4-R11-6`'s rule; the inverse schedule check found this on the fix leg's own edit, where
+      the two subclass rows had been written into the four-row-matrix row, scheduled in Task 4, so
+      Task 3 would have gone green against `escaping.__context__` -- the exact `A4-R11-1` defect, in
+      the task that ships its fix). **RED first**:
       (k) asserts a `resolution` field that does not yet exist; (k3a)'s AST walk fails against any
       shape that leaves the immediate assignment unguarded, puts a `try` on the deferred branch, OR
       leaves the pre-arc gate unsplit (`A4-R11-5`);
@@ -3330,6 +3396,8 @@ covering the new column, so the failure is left loud."*
       surfacing (their DETECTION half is already pinned by (k5) in Task 3, and each row re-asserts
       it so the row stands alone); **(RD-a4)** the bare predicate's named false positive; **(RD-a5)**
       the caller-side obligation the `body_completed` removal rests on;
+      **(k7a)-(k7b) each GAIN their probe-call-count-of-ZERO assertion here** (`A4-R11-6`: their
+      no-probe halves shipped in Task 3 with the base-slot read they discriminate);
       and **the two assertions ADDED to rows Task 3 already shipped: (k2)'s probe-call-count-of-ZERO,
       and (k3a)'s ordering half** -- that `_read_resolution` is LEXICALLY BEFORE
       `_settle_by_attempt_identity` in `record_entry`'s handler, which **cannot be written in Task 3
@@ -4115,6 +4183,7 @@ Task 6 and Task 7 runs are compared against THAT number, not against a remembere
 | **10** | `strong` / `gpt-5.6-sol` / `high` | 1 / 5 / 1 | 7 (**1 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
 | **SETTLE** | *(2026-09-07 DEDICATED SETTLING SWEEP -- gate-holder ruled; RD's two round-10 rulings applied, then `SS-9`..`SS-16`; NO Codex, NO round number)* | -- | **8 uncounted (`SS-9`..`SS-16`)** | -- | -- | *no verdict; NO effect on convergence* |
 | **11** | `strong` / `gpt-5.6-sol` / `high` | 1 / 11 / 2 | 14 (**8 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **FIX** | *(2026-09-07 FIX LEG -- operator-authorized, **NO CODEX ROUND**; four instruments re-run, two strengthened)* | -- | **13 of round 11 FIXED, 1 ROUTED** | 0 | 0 | *no verdict; **NO effect on convergence** -- a fix leg is not a round* |
 
 **TOKEN SPEND, ELEVEN COUNTED ROUNDS:** 437,776 + 230,647 + 246,268 + 320,775 + 317,038 + 307,420 +
 413,949 + 349,176 + 463,310 + 392,163 + 509,364 = **3,987,886**.
@@ -4175,6 +4244,67 @@ rule caught it. Per-round assertions and per-finding adjudications: `.copowers-f
 
 ---
 
+### THE 2026-09-07 FIX LEG -- **the round-11 dispositions, and the CAP that governed it**
+
+**AUTHORIZATION AND ITS BOUNDARY, STATED FIRST BECAUSE IT IS THE THING A LATER READER WILL WANT.**
+The operator authorized **the fix leg, then a gate with a disposition. NO twelfth counted round.**
+No Codex ran in this leg; no prompt was prepared for one. **A twelfth counted round requires the
+operator's written authorization and does not exist.** The settling-sweep cell that ran round 11
+measured 446,282 against the 400K cap, so this leg ran in a FRESH cell off the committed plan plus
+the preserved per-round evidence -- the recipe's normal outcome past the cap, not a failure.
+
+**EVERY ROUND-11 FINDING HAS A WRITTEN DISPOSITION. Thirteen FIXED, one ROUTED, none banked.**
+
+| finding | severity | disposition |
+|---|---|---|
+| `A4-R11-1` | CRITICAL | **FIXED** -- `_CONTEXT_SLOT`, the base-slot read, ALARM-direction containment; the "structurally impossible" sentence STRUCK; (k7a)-(k7b) added in Task 3 |
+| `A4-R11-2` | MAJOR | **FIXED** -- RD's ruling adopted with all three conditions; (RD-a4) rebuilt as a four-row matrix; `sys.exc_info()[1]` (a measured premise correction to the relayed `sys.exception()`) |
+| `A4-R11-3` | MAJOR | **FIXED** -- dissolved by the `_read_resolution` split; the deferred retry is GONE, which restores the pre-arc behaviour |
+| `A4-R11-4` | MAJOR | **FIXED** -- the shared thing is the NON-MUTATING read; the immediate ladder keeps `raise cleanup_error from write_error`, pinned by (k6b) |
+| `A4-R11-5` | MAJOR | **FIXED** -- Task 3 SPLITS the pre-arc gate (behaviour unchanged); (k3a) asserts the split itself |
+| `A4-R11-6` | MAJOR | **FIXED** -- (k6a)-(k6b), the immediate path's Task-3 discriminators, no probe and no `record_entry` |
+| `A4-R11-7` | MAJOR | **FIXED** -- (pr1)-(pr4), one row per unpinned Task-4 requirement |
+| `A4-R11-8` | MAJOR | **FIXED** -- (m3) split into (m3a)/(m3b)/(m3c); the gate proven INVOKED and LOAD-BEARING; S6's witness compares against a live before-image, not the constant |
+| `A4-R11-9` | MAJOR | **ROUTED** (S8 item 8) -- the CPython source's PROVENANCE, unsettleable without network. The exposure is narrowed by measurement and the settling method is written down |
+| `A4-R11-10` | MAJOR | **FIXED** -- (pr5) + the `file:...?mode=rw` URI open, VERIFIED BY EXECUTION on this box |
+| `A4-R11-11` | MAJOR | **FIXED** -- the below-HEAD census re-measured per file as CALL counts; the drop-path reason holds for ONE site |
+| `A4-R11-12` | MAJOR | **FIXED** -- the live journal mode relabelled INFERRED at both sites; S6 step 0 asks for `PRAGMA journal_mode` |
+| `A4-R11-13` | MINOR | **FIXED** -- SEVEN at `:178-196`, corrected at BOTH sites; the sweep gained CONTRADICTION probes |
+| `A4-R11-14` | MINOR | **FIXED** -- (RD-a2) in Task 4, not Task 5 |
+| `SS-17` | (uncounted) | **FIXED** -- the `insert_trade_with_event` grep's REAL output is nine hits, of which one is a call |
+
+**THE INSTRUMENTS, AND WHAT THEY DID AND DID NOT SEE.** All four re-run clean:
+`plan_consistency_sweep.py` **53/53/53, clean**; `per_location_audit.py` **117 probes, 0 failing**;
+`assertion_schedule_audit.py` **53 rows, 0 naked symbols, 6 read-and-reasoned prose hits**;
+`citecheck.py` **71 citations, 0 unresolved**.
+
+**TWO WERE STRENGTHENED WHERE ROUND 11 FOUND THEM BLIND, and one of the strengthenings immediately
+indicted this leg's own work.**
+- `plan_consistency_sweep.py` checked **PRESENCE of a right value** and could not see a
+  CONTRADICTING site (`A4-R11-13`: it held a probe for the very number the finding reported, and
+  passed). It gained a **CONTRADICTION table** -- absence of the WRONG spellings, with any non-zero
+  allowance labelled as a quoted record of superseded wording. The retired
+  `escaping.__context__ is not None` probe was REMOVED rather than left to fail on a corrected plan.
+- `assertion_schedule_audit.py` detects a row scheduled before a SYMBOL exists. It gained the
+  **INVERSE check** -- *does the task that SHIPS a symbol contain any row that NAMES it?* -- which
+  had never been asked. **Its first run found `_CONTEXT_SLOT` shipping in Task 3 with its only
+  discriminator in Task 4**, i.e. `A4-R11-6`'s class inside the fix for `A4-R11-1`, in this leg's
+  own edit. That is what produced (k7a)-(k7b). Two other naked symbols were READ and excluded WITH
+  THE REASON, not by shortening the roster.
+- **AND IT PRINTS ITS OWN BLIND SPOTS EVERY RUN**, because neither strengthening closes them:
+  (1) a row scheduled against a code SHAPE its task declines to create (`A4-R11-5`) -- a shape is
+  not a symbol; (2) a PATH-level discriminator gap (`A4-R11-6` itself) -- the inverse check is
+  satisfied by a row on the OTHER path and the instrument has no notion of a path; (3) whether an
+  assertion DISCRIMINATES at all, since it reads prose. **Declared rather than patched over: a
+  green instrument standing silently over a known gap is worse than a noisy one.**
+- `citecheck.py` was widened from a `.py`-only regex to `.py|.sql|.toml`, because this leg added
+  citations it would have silently DECLINED to check. It then caught two of this leg's own anchors
+  pointing one line and four lines off (`_EVIDENCE_SLOTS`, the immediate ladder), both corrected.
+
+**WHAT THIS LEG DID NOT DO:** it ran no Codex round, prepared no prompt for one, and did not attempt
+a network substitute for `A4-R11-9`. **Nothing was worked around; the one thing that could not be
+fixed is reported unfixed.**
+
 ### THE 2026-09-07 SETTLING SWEEP -- **UNCOUNTED, and the uncounted status is what keeps it honest**
 
 **Why it exists.** Rounds 8, 9 and 10 each spent most of their yield on the previous ruling's
@@ -4202,9 +4332,15 @@ front matter rather than numbered, because it belongs to a director's text and n
 | **`SS-16`** | Task 1b said "THREE call sites" for four rounds while the heading above its tests claimed **EVERY OPERATOR SURFACE**; nothing connected them. Closure established by AST walk + a raw-SQL grep: `_update_journal_field` has exactly four callers and is the ONLY site writing an operator-supplied journal field, so the backstop IS the closure and the two early checks are ordering refinements. **And the finding behind the finding:** the plan's whole argument for the tier-3 early check is that its INSERT comes first, and nobody had checked whether the other surfaces share that shape. They do not, for a DIFFERENT reason each. | a roster is the same instrument as the count it replaced |
 
 **Instruments, all preserved at `~/swing-data/review-transcripts/22-a4-plan/`:**
-`plan_consistency_sweep.py` (roster/schedule/manifest closure + fragile counts),
-`per_location_audit.py` (**38 -> 70 probes** this pass), `assertion_schedule_audit.py` (NEW, `SS-13`),
-`citecheck.py` (NEW, `SS-11`/`SS-12`). **The last two are deliberately OVER-INCLUSIVE and their
-surviving hits are named in the sections that own them**, rather than tuned until they read clean --
-an instrument tuned to be quiet is a decoration.
+`plan_consistency_sweep.py` (roster/schedule/manifest closure + fragile counts **+ the 2026-09-07
+CONTRADICTION table -- absence of the WRONG value, which is the blindness `A4-R11-13` found**),
+`per_location_audit.py` (**38 -> 70 -> 120 probes**), `assertion_schedule_audit.py` (`SS-13`;
+**+ the 2026-09-07 INVERSE check -- does the task that SHIPS a symbol contain a row that NAMES it?
+-- and a BLIND-SPOT declaration it prints every run**), `citecheck.py` (`SS-11`/`SS-12`;
+**widened 2026-09-07 from `.py`-only to `.py|.sql|.toml`, because a citation checker that silently
+declines a citation class is a green instrument over a known gap**). **Two of them are deliberately
+OVER-INCLUSIVE and their surviving hits are named in the sections that own them**, rather than tuned
+until they read clean -- an instrument tuned to be quiet is a decoration. **And the inverse check's
+first run indicted the pass that added it** (`_CONTEXT_SLOT`, Task 3, discriminator in Task 4), which
+is the strongest evidence available that it was worth adding.
 
