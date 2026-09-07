@@ -1343,8 +1343,10 @@ are observed:
 3. the attempt has BOTH a token and a database path;
 4. the probe returns a row, and its ticker matches the request's.
 
-**`"unattempted"` is a BELT, not an expected value.** After the `A4-R1-3` fix (S2.2), the failure
-handler runs `_observe_resolution` on both paths every time it is entered, so `"unattempted"` should
+**`"unattempted"` is a BELT, not an expected value.** After the `A4-R1-3` fix (S2.2),
+`_observe_resolution` runs on every path that can reach this gate -- `_entry_transaction`'s own
+handler writes it on the immediate path (both arms of the `in_transaction` split), and
+`record_entry`'s observation block writes it on the deferred one -- so `"unattempted"` should
 be unreachable whenever `result is not None and not outcome.committed`. Condition 2 rejects it anyway, because the alternative
 is a gate whose safety depends on an exhaustiveness argument about assignment placement -- and this
 arc's subject is not trusting arguments where an observation is available. **Tests (k3a)/(k3b) are
@@ -1493,7 +1495,7 @@ because between the two commits the tree would carry a live false-message path o
 | (h) | the probe connection reads `read_uncommitted = 0` | visibility assumed rather than pinned |
 | (k) | the deferred path OBSERVES its own already-resolved lost commit | a wrapper that assumes instead of reading |
 | (k2) | the deferred path's exception identity is UNCHANGED | an arc that quietly re-plumbs the pre-arc path |
-| **(k3a)-(k3b)** | STATIC (AST) and RUNTIME (`sys.settrace`): the `committed` assignment is inside the protected suite on BOTH paths | **`A4-R1-3`'s window -- (k3a) proves the property for every assignment, (k3b) proves the behaviour at the one line** |
+| **(k3a)-(k3b)** | STATIC (AST) and RUNTIME (`sys.settrace`): the `A4-R1-3` window is closed on BOTH paths -- by a guarded `try` on the immediate one, and by `record_entry`'s own observation on the deferred one, whose branch (k3a) asserts contains **no `try` at all** | **`A4-R1-3`'s window -- (k3a) proves the property statically on each branch and pins the byte-lock; (k3b) proves the behaviour at the one line** |
 | **(k5)** | the chained `__context__` signal is DETECTED, with NO probe -- the Task-3 discriminator | **`A4-R10-3` -- a task that ships a predicate and schedules every test of it in the NEXT task goes green against `return False`** |
 | **(k4a)-(k4b)** | the deferred path's two rollback-FAILURE sequences -- **DETECTION and OUTCOME both pinned** | **`A4-R9-2` (RD, 2026-09-07): rule (i) is literal on this path too; each row fails an implementation with no detection, which the OUTCOME-only version certified** |
 
@@ -2681,6 +2683,29 @@ covering the new column, so the failure is left loud."*
       which is simply **not established on this surface** by a backstop.
       **The fix is scoped to the NEW immutable set ONLY: a call to the same shared predicate over
       `operator_truth_value` at the head of `_apply_tier3_override_inner`, before step 4.**
+      **AND THE THREE SITES ARE A CLOSURE, NOT A ROSTER -- STATED WITH ITS METHOD** (`SS-16`,
+      2026-09-07; the Demand-C lesson applied before a reviewer has to apply it). A list of call
+      sites is the same instrument as the count it replaced unless something establishes it is
+      COMPLETE. **`_update_journal_field` IS the closure**, and here is how that was established, by
+      an AST walk of the module plus a grep for raw SQL rather than by reading the call sites the
+      plan already knew about:
+      **(1)** the module has FIVE public functions (`apply_tier1_correction`,
+      `apply_tier2_resolution`, `apply_source_direction_resolution`, `apply_tier3_override`,
+      `stamp_pending_ambiguity`);
+      **(2)** `_update_journal_field` has exactly FOUR callers --
+      `_apply_tier1_correction_inner:1348`, `_apply_tier3_override_inner:1749`,
+      `_handle_single_field_correction:2542`, `_handle_multi_field_correction:2680`;
+      **(3)** it is the ONLY site in the module that writes an OPERATOR-SUPPLIED journal field --
+      the module's other `UPDATE trades` / `UPDATE fills` statements (`:1419`, `:2594`, `:2734`)
+      each write the fixed `reconciliation_status` column and cannot carry `attempt_id`.
+      **So the backstop reaches every operator surface, which is what the (m8a)-(m8d) heading
+      claims, and the two EARLY checks are ORDERING refinements on the two surfaces where ordering
+      is observable.** The other two need none, and the reason is per-surface rather than general:
+      `_handle_single_field_correction` writes ONE field, so ordering is vacuous; tier-1 calls
+      `_update_journal_field` at its step 5 and INSERTs its correction row at step 7, so the refusal
+      precedes every write it makes. *Stated because "three call sites" read as an enumeration for
+      four rounds, and an enumeration is exactly what this project has a standing rule against
+      trusting.*
       **Calling `_preflight_reserved_transitions` there instead is DECLINED and the reason is
       CHARC's own bound:** that would newly refuse the SEVEN pre-existing `_RESERVED_JOURNAL_FIELDS`
       members earlier on this path too -- a behaviour change to shipped functionality, i.e. the sweep
