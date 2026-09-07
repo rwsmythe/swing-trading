@@ -42,15 +42,15 @@ and re-raising the ORIGINAL when it is not.
 2026-09-02 that REVERTED clause 2 and commissioned this primitive.
 **Plan base:** `edfea928` (branch `22-a4-plan`, worktree `.worktrees/22-a4-plan`).
 
-> ## REVIEW STATUS: **ELEVEN ADVERSARIAL ROUNDS, THEN A SETTLING SWEEP, THEN THE FIX LEG. THIRTEEN OF ROUND 11's FOURTEEN ARE FIXED; ONE IS ROUTED. THE PLAN AWAITS A GATE WITH A DISPOSITION -- IT IS NOT SELF-AUTHORIZED.**
+> ## REVIEW STATUS: **ELEVEN ADVERSARIAL ROUNDS, THEN A SETTLING SWEEP, THEN THE FIX LEG. ALL FOURTEEN OF ROUND 11's FINDINGS ARE NOW CLOSED -- THIRTEEN FIXED IN THE ARTIFACT, THE FOURTEENTH SETTLED BY A NETWORK FETCH. NOTHING FROM ROUND 11 IS OPEN. THE PLAN AWAITS A GATE WITH A DISPOSITION -- IT IS NOT SELF-AUTHORIZED.**
 >
 > **ROUND 11 RETURNED `NEW_CRITICAL_MAJOR_FOUND`: 14 findings (1 CRITICAL, 11 MAJOR, 2 MINOR;
 > 8 NEW GROUND, 6 RESIDUAL), returned UNFIXED by instruction** -- the sweep cell was told to run ONE
 > confirming round and stop whatever it returned. **All five mechanical assertions passed and there
 > was no dead attempt.**
 >
-> **THE 2026-09-07 FIX LEG THEN DISPOSITIONED EVERY ONE OF THEM IN WRITING: 13 FIXED, 1 ROUTED, NONE
-> BANKED, NO CODEX ROUND RUN.** The operator authorized the fix leg and then a gate with a
+> **THE 2026-09-07 FIX LEG THEN DISPOSITIONED EVERY ONE OF THEM IN WRITING: 13 FIXED, 1 ROUTED AND
+> THEN SETTLED THE SAME DAY, NONE BANKED, NO CODEX ROUND RUN.** The operator authorized the fix leg and then a gate with a
 > disposition; **a twelfth counted round requires his written authorization and does not exist.**
 > The leg ran in a fresh cell because the sweep cell measured 446,282 against the 400K cap. The
 > disposition table, the instrument results and what the instruments still cannot see are in **S11**.
@@ -70,14 +70,20 @@ and re-raising the ORIGINAL when it is not.
 > *(A measured premise correction rides with it: the ruling was relayed naming `sys.exception()`,
 > which is Python 3.12+, and `pyproject.toml:9` declares `>=3.11`.)*
 >
-> **ONE ITEM REMAINS OPEN AND IT IS ROUTED, NOT BANKED: `A4-R11-9`, the CPython source's
-> PROVENANCE** (S8 item 8). The preserved file is sha256-pinned and says what SOURCE (S1) quotes,
-> verified twice by two readers; nothing establishes it IS the official v3.14.2 file, and rounds 10
-> and 11 gave counter-numbers they could not have sourced either, having no network. **The exposure
-> is narrowed by measurement** -- the rollback-SUCCEEDS half is independently measured on this
-> machine, and only the chains-on-failure half rests on the C source -- **and both sides agree on
-> the BEHAVIOUR; the dispute is provenance.** The settling method is written down; it needs a
-> network fetch this cell could not make.
+> **AND THE LAST OPEN ITEM IS CLOSED: `A4-R11-9` IS SETTLED, NOT ROUTED** (S8 item 8). The
+> orchestrator made the network fetch this cell could not, using the method this plan wrote down:
+> `https://raw.githubusercontent.com/python/cpython/v3.14.2/Modules/_sqlite/connection.c` ->
+> **80,695 bytes, sha256 `8cc0d9df05860c0b3fe6929ff392f8f85c9e1a5ef89c0cba31ab09ba03b3369e`**,
+> CONTENT-IDENTICAL to the preserved copy after newline normalisation. **SOURCE (S1) HOLDS at the
+> TAGGED SOURCE.** Round 11's counter-claim (2,532 lines, `:2211-2243`) matches neither.
+> **The correction it forced lands against this plan's own rule:** the digest previously pinned
+> (`7487db46...`) was the hash of OUR copy, LF converted to CRLF by a text-mode write --
+> **a local copy's digest is provenance of the READING, never of the SOURCE**, which is the exact
+> gap the citation rule exists to close, live inside that rule's own worked example.
+> RD-ratified remedy, now standing: **pin the UPSTREAM digest together with the fetch URL.**
+> **The narrowing-by-measurement stands and is now belt-and-braces** -- the rollback-SUCCEEDS half
+> was independently measured on this machine, only the chains-on-failure half ever rested on the C
+> source, and that half is now confirmed upstream.
 > The full per-finding adjudication, each with what was verified by execution, is in
 > `.copowers-findings.md` under **Round 11**; the dispositions are in **S11**.
 >
@@ -98,7 +104,10 @@ and re-raising the ORIGINAL when it is not.
 > `A4-R10-6` (a warning-site count the `A4-R9-1` fix invalidated) and `A4-R10-7` (SIX spellings
 > versus a SEVENTH) are fixed in the sweep. `A4-R10-5` stays REFUTED on the evidence **and its
 > remedy is adopted anyway as a standing rule**: an out-of-repo citation anchors on CONTENT and pins
-> the file by sha256 (Global Constraints; SOURCE (S1)).
+> the file by **the UPSTREAM digest together with the fetch URL** -- **a local copy's digest is
+> provenance of the READING, never of the SOURCE** (RD-ratified 2026-09-07 when the network fetch
+> that closed `A4-R11-9` showed this entry's own pin was a hash of our copy; Global Constraints;
+> SOURCE (S1)).
 > Full per-finding adjudication in `.copowers-findings.md`; the ledger's totals are re-derivable by a
 > one-line command rather than by reading.
 >
@@ -141,11 +150,13 @@ and re-raising the ORIGINAL when it is not.
 > when round 11 ran; round 11 then opened TWO** -- `A4-R11-2` and `A4-R11-9`. **`A4-R11-2` WAS
 > RULED BY RD on 2026-09-07 and is landed with all three of its conditions** (S2.2, (RD-a4), Task 3)
 > -- it was NOT amended on the plan's own authority, which is the standing rule and was honoured.
-> **`A4-R11-9` REMAINS ROUTED** (S8 item 8): it needs a network fetch, not a ruling, and the fix leg
-> did not substitute anything that would have looked like a settlement.
-> **THIS PLAN IS NOT AUTHORIZED TO EXECUTE. Its state is: every round-11 finding dispositioned in
-> writing, one routed, awaiting a gate with a disposition.** *No twelfth counted round has been
-> authorized, and none was run.*
+> **`A4-R11-9` IS SETTLED** (S8 item 8). It was ROUTED by the fix leg -- it needed a network fetch,
+> not a ruling, and the leg did not substitute anything that would have looked like a settlement --
+> and the orchestrator then made that fetch, by the method the routing wrote down. **No director
+> item and no round-11 finding is open.**
+> **THIS PLAN IS NOT AUTHORIZED TO EXECUTE. Its state is: every round-11 finding CLOSED in writing,
+> awaiting a gate with a disposition.** *No twelfth counted round has been authorized, and none was
+> run.*
 >
 > **ONE CORRECTION THIS PASS OWES AGAINST THE RULING IT APPLIED, stated here rather than buried:**
 > the `A4-R10-1` ruling was relayed with the rationale that a cleanly-completed block leaves
@@ -199,11 +210,24 @@ and re-raising the ORIGINAL when it is not.
 - **`ruff check swing/` clean.** Test-file lint is out of scope; match each test file's existing
   style.
 - **EVERY CITATION TO A FILE OUTSIDE THIS REPOSITORY IS ANCHORED ON CONTENT AND PINS THE FILE BY
-  SHA256** (adopted 2026-09-07 from `A4-R10-5`). A bare line number into a file no reader here can
+  ITS UPSTREAM DIGEST TOGETHER WITH THE FETCH URL** (adopted 2026-09-07 from `A4-R10-5`;
+  **AMENDED THE SAME DAY, RD-ratified, when the network fetch that closed `A4-R11-9` showed this
+  rule's own worked example was breaking it**). A bare line number into a file no reader here can
   open is unverifiable, and this plan has already had one such citation confidently refuted with
   counter-line-numbers that were themselves unsourced. Cite the FUNCTION NAME and a VERBATIM
-  fragment a reader can grep; give the digest; keep line numbers as a convenience against the pinned
-  file. **The rule binds the code this plan ships too** -- `_exit_rollback_failed`'s docstring
+  fragment a reader can grep; give **the UPSTREAM digest and the URL it was fetched from**; keep
+  line numbers as a convenience against the pinned bytes.
+  **A LOCAL COPY'S DIGEST IS PROVENANCE OF THE READING, NEVER OF THE SOURCE -- and the failure is
+  invisible, because the hash is real and it verifies.** SOURCE (S1) pinned `7487db46...` for two
+  weeks; that digest was the hash of OUR copy, whose LF had been converted to CRLF by a text-mode
+  write. It pinned WHICH BYTES WERE READ and said nothing about WHOSE they were, which is the exact
+  gap this rule exists to close -- **so the rule as first written closed only half of it.** Two
+  readers verified against that copy and were both right about the copy.
+  **THE COROLLARY ON COUNTS: a line count is a CONVENIENCE, never a pin.** Three numbers have been
+  asserted for that one file (2,532 / 2,717 / 2,718); the byte size and the digest never moved.
+  Report a count with the METHOD that produced it (`wc -l` and `splitlines()` agree at 2,717 on a
+  file ending in a newline; an editor showing a phantom trailing line reports 2,718).
+  **The rule binds the code this plan ships too** -- `_exit_rollback_failed`'s docstring
   carries the content anchor, not the line range (Task 3).
   **AND IT HAS AN IN-REPO COROLLARY, ADDED THE SAME DAY BY THE SWEEP THAT FOUND FOUR IN-REPO
   ANCHORS WRONG AT ONCE (`SS-12`): every `file.py:N` citation NAMES THE SYMBOL it points at.** An
@@ -451,13 +475,32 @@ design depends on instead of reasoning about SQLite from memory.**
   invites exactly that exchange.** The remedy is an anchor a reader can grep and a digest a reader
   can check:
 
-  - **THE FILE.** `Modules/_sqlite/connection.c` from CPython v3.14.2, **2,717 lines**,
-    **sha256 `7487db46afbdbb93681a508ec33c65f87d6460079f1564d1b6310b6d8d23d09c`**. A copy is preserved
-    beside this arc's review evidence at
-    `~/swing-data/review-transcripts/22-a4-plan/cpython-3.14.2-Modules-_sqlite-connection.c`.
-    **Any reader disagreeing with a line number below should first check that digest**: two files
-    both truthfully called "CPython 3.14.2 connection.c" can differ if one came from a
-    distribution patch, and the digest is what makes the disagreement decidable.
+  - **THE FILE, PINNED AT THE UPSTREAM SOURCE AND NOT AT A LOCAL COPY (SETTLED 2026-09-07 by a
+    network fetch; `A4-R11-9` CLOSED).**
+    **FETCH URL:** `https://raw.githubusercontent.com/python/cpython/v3.14.2/Modules/_sqlite/connection.c`
+    **UPSTREAM sha256 `8cc0d9df05860c0b3fe6929ff392f8f85c9e1a5ef89c0cba31ab09ba03b3369e`, 80,695 bytes.**
+    A copy is preserved beside this arc's review evidence at
+    `~/swing-data/review-transcripts/22-a4-plan/cpython-3.14.2-Modules-_sqlite-connection.c`, and
+    **its digest is now the upstream one** -- verified on disk 2026-09-07:
+    `sha256sum` returns `8cc0d9df...`, 80,695 bytes, LF-only, final newline present.
+    **THE RULE THIS ENTRY NOW OBEYS, RATIFIED BY RD AND WRITTEN AGAINST ITS OWN PRIOR TEXT: PIN THE
+    UPSTREAM DIGEST TOGETHER WITH THE FETCH URL. A LOCAL COPY'S DIGEST IS PROVENANCE OF THE READING,
+    NEVER OF THE SOURCE.** The digest this entry previously carried
+    (`7487db46...`, "2,717 lines") was an artifact of a text-mode write converting LF to CRLF in the
+    preserving process -- **a hash of our copy, pinning which bytes we read and not whose they
+    were**, which is the exact gap the citation rule exists to close. *Recorded rather than
+    silently swapped: the rule was adopted on 2026-09-07 and the entry that adopted it was breaking
+    it on the same page.*
+    **AND THE LINE COUNT IS REPORTED WITH THE METHOD, because three different numbers have now been
+    asserted for this file (2,532 / 2,717 / 2,718).** MEASURED on the pinned bytes: `wc -l` = **2,717**
+    and Python `splitlines()` = **2,717**; the file ends with a newline, so an editor that shows a
+    phantom final line reports 2,718. **The bytes and the digest are identical either way, and they
+    are the pin** -- the line count is exactly the fragile artifact this rule demotes to a
+    convenience. Round 11's counter-claim (2,532 lines, the function at `:2211-2243`) matches
+    neither convention and was produced with no network.
+    **Any reader disagreeing with a line number below should first check the UPSTREAM digest against
+    the URL**: two files both truthfully called "CPython 3.14.2 connection.c" can differ if one came
+    from a distribution patch, and the digest is what makes the disagreement decidable.
   - **THE ANCHOR is the function `pysqlite_connection_exit_impl`** and, inside it, the verbatim
     comment **"Commit failed; try to rollback in order to unlock the database.  If rollback also
     fails, chain the exceptions."** `grep -n` on either locates the branch in any copy.
@@ -1271,8 +1314,8 @@ def _exit_rollback_failed(escaping: BaseException,
     NOT observed (S2.4).  Within that scope, CPython v3.14.2's
     `pysqlite_connection_exit_impl` -- the branch whose comment reads
     "Commit failed; try to rollback in order to unlock the database.  If
-    rollback also fails, chain the exceptions." (SOURCE (S1); the file is
-    pinned by sha256 there) -- leaves exactly two shapes:
+    rollback also fails, chain the exceptions." (SOURCE (S1), which pins the
+    UPSTREAM digest and the fetch URL) -- leaves exactly two shapes:
       * rollback SUCCEEDS -> `PyErr_SetRaisedException` re-raises the
         COMMIT's exception, whose `__context__` is whatever the THREAD was
         already handling: `ambient`, captured immediately before the
@@ -2759,8 +2802,8 @@ never invoked by the C `__exit__`). **So both rows use a connection PROXY whose 
 for CPython's, and a proxy that does not reproduce the chaining tests the proxy rather than the
 code.** The proxy's `__exit__` MUST therefore raise the rollback error **from inside an `except`
 block handling the commit error**, so that `__context__` is set by the interpreter exactly as
-`_PyErr_ChainExceptions1` sets it in the branch SOURCE (S1) anchors (`connection.c:2399` against the
-sha256-pinned file):
+`_PyErr_ChainExceptions1` sets it in the branch SOURCE (S1) anchors (`connection.c:2399`, a
+convenience against the UPSTREAM-pinned bytes SOURCE (S1) names by digest and URL):
 
 ```
 def __exit__(self, exc_type, exc, tb):
@@ -3320,7 +3363,8 @@ covering the new column, so the failure is left loud."*
       `_CONTEXT_SLOT` is built from `BaseException.__dict__["__context__"]`, the same source as this
       module's existing `_EVIDENCE_SLOTS`. Its docstring anchors its CPython citation on
       CONTENT (the function name and the verbatim "Commit failed; try to rollback" comment) with the
-      sha256 pin in SOURCE (S1), **never on bare line numbers** (Global Constraints).
+      **UPSTREAM digest + fetch URL** in SOURCE (S1), **never on bare line numbers and never on a
+      local copy's hash** (Global Constraints, as amended 2026-09-07).
 - [ ] **The ambient capture in `record_entry`:** `ambient = sys.exc_info()[1]` on the line
       IMMEDIATELY BEFORE the `try` that opens the guarded region. **`sys.exc_info()[1]`, not
       `sys.exception()`** -- the latter is Python 3.12+ and `pyproject.toml:9` declares `>=3.11`.
@@ -3765,7 +3809,8 @@ discovered; it is the gate.
     for two rounds, and it is one step short.** CPython does not swallow that rollback's failure: it
     **RAISES it, with the commit's exception chained beneath as `__context__`** (SOURCE (S1),
     `Modules/_sqlite/connection.c`, the `pysqlite_connection_exit_impl` commit-failed branch
-    (`:2394-2403` against the sha256-pinned file named in SOURCE (S1)); MEASURED (6) on the sibling arm, where the failure can
+    (`:2394-2403`, a convenience against the UPSTREAM-pinned bytes SOURCE (S1) names by digest and
+    URL); MEASURED (6) on the sibling arm, where the failure can
     be forced natively). **A failure that propagates is observable in every frame it passes
     through**, so `cleanup_raised` is set from the exception rather than from a call nobody here
     made (S2.2's `_exit_rollback_failed`). **THE FRAME IS `record_entry`'s POST-COMMIT HANDLER, NOT
@@ -3788,7 +3833,8 @@ discovered; it is the gate.
     (MEASURED (6a): zero progress-handler callbacks during that rollback), **so its evidence grade
     is stated exactly rather than blurred with the arm that was measured: MEASURED-AT-SOURCE, by
     citation, at `pysqlite_connection_exit_impl` in `Modules/_sqlite/connection.c` of CPython
-    v3.14.2 (`:2377-2403` against the sha256-pinned file; SOURCE (S1) carries the digest)** -- the same rollback
+    v3.14.2 (`:2377-2403`, a convenience against the UPSTREAM-pinned bytes; SOURCE (S1) carries the
+    upstream digest and the fetch URL)** -- the same rollback
     implementation as the block-error arm (`:2397` calls what `:2389` calls), and an EXPLICIT
     chaining branch (`:2399`) versus an explicit re-raise branch (`:2403`). It is not an inference
     from behaviour on a neighbouring path; it is the branch, read.
@@ -3905,31 +3951,41 @@ inline and never silently absorbed. Each carries a proposed disposition; the orc
    backup-retention question; the fix is one `backup_dir=` argument and one `echo`, and it affects
    every migration gate since 0027, not just this one.
 
-8. **THE CPython SOURCE'S PROVENANCE IS UNSETTLED, AND THIS CELL COULD NOT SETTLE IT**
-   (`A4-R11-9`, ROUTED). **What IS established:** the preserved file at
-   `~/swing-data/review-transcripts/22-a4-plan/cpython-3.14.2-Modules-_sqlite-connection.c` is
-   2,717 lines, sha256 `7487db46...`, and at `:2377`/`:2394-95`/`:2396`/`:2399`/`:2403` says exactly
-   what SOURCE (S1) quotes -- **verified twice, by two different readers, against THAT FILE.**
-   **What is NOT established is that THAT FILE IS THE OFFICIAL v3.14.2 SOURCE.** Rounds 10 and 11
-   both asserted a 2,532-line file with the function at `:2211-2243`; both ran `sandbox: read-only`
-   with `approval: never` and made no network call, so **their counter-numbers are unsourced too,
-   and two rounds agreeing is not two sources agreeing.** The digest pins WHICH file was read; it
-   does not pin WHOSE.
-   **THE EXPOSURE IS NARROWER THAN IT LOOKS, AND THE NARROWING IS MEASURED.** SOURCE (S1) is used
-   for two claims. **The rollback-SUCCEEDS half is independently MEASURED on this machine** (S2.2's
-   two-run table, and (RD-a4)'s four-row matrix re-drives it): the commit's exception is what
-   propagates, with the thread's ambient exception or `None` beneath it. **Only the
-   rollback-FAILS-and-chains half rests on the C source alone**, and it rests there because it
+8. **THE CPython SOURCE'S PROVENANCE -- `A4-R11-9`, SETTLED 2026-09-07 BY THE FETCH. NOT ROUTED,
+   NOT BANKED. The entry is KEPT so the settlement is readable, and because the correction it
+   forced is worth more than the finding.**
+   **WHAT SETTLED IT, and it is the method this entry itself wrote down** (the entry was authored
+   ROUTED, saying only a network fetch could close it; the orchestrator made that fetch at 11:36Z
+   the same day, using exactly that method):
+   **`https://raw.githubusercontent.com/python/cpython/v3.14.2/Modules/_sqlite/connection.c`**
+   -> **80,695 bytes, sha256
+   `8cc0d9df05860c0b3fe6929ff392f8f85c9e1a5ef89c0cba31ab09ba03b3369e`**, and **CONTENT-IDENTICAL to
+   the preserved copy after newline normalisation.** **SOURCE (S1) HOLDS.** The
+   chains-on-failure branch is confirmed at the TAGGED SOURCE, not merely at a copy. Round 11's
+   counter-claim (2,532 lines, the function at `:2211-2243`) matches neither the upstream file nor
+   any counting convention of it, and -- like round 10's -- was produced with `sandbox: read-only`,
+   `approval: never`, and no network.
+   **AND THE CORRECTION THE SETTLEMENT FORCED, WHICH LANDS AGAINST OUR OWN RULE.** The digest this
+   plan had pinned (`7487db46...`) was **the hash of OUR copy**, whose LF had been converted to CRLF
+   by a text-mode write while preserving it. **A hash of a local copy pins WHICH BYTES WERE READ, not
+   WHOSE THEY ARE** -- the exact gap the `A4-R10-5` citation rule was adopted to close, live inside
+   the rule's own worked example, verified by two readers who were each correct about the copy.
+   **RD-ratified remedy, now the standing form in Global Constraints and SOURCE (S1): pin the
+   UPSTREAM digest TOGETHER WITH the fetch URL.** The preserved file has been renormalised and its
+   digest is now the upstream one (verified on disk here: `sha256sum` -> `8cc0d9df...`, 80,695 bytes,
+   LF-only). **A line count is a convenience, never a pin:** `wc -l` and `splitlines()` both read
+   **2,717** on the pinned bytes, and an editor showing a phantom line after the final newline
+   reports 2,718 -- the bytes and the digest do not move either way.
+   **THE NARROWING-BY-MEASUREMENT STANDS, and it is now belt-and-braces rather than the whole case.**
+   SOURCE (S1) carries two claims. **The rollback-SUCCEEDS half is independently MEASURED on this
+   machine** (S2.2's two-run table; (RD-a4)'s four-row matrix re-drives it): the commit's exception
+   is what propagates, with the thread's ambient exception or `None` beneath it. **Only the
+   rollback-FAILS-and-chains half ever rested on the C source**, and it rested there because it
    cannot be driven natively -- MEASURED (5) and (6a) show a Python `rollback()` is never invoked by
    the C `__exit__` and the post-commit-failure rollback makes zero progress-handler callbacks,
-   which is exactly why (k4a)/(k4b) use a proxy. **Both sides of round 11 agree on the BEHAVIOUR of
-   that branch**; the dispute is provenance only.
-   **THE METHOD THAT WOULD SETTLE IT, stated so whoever has network does not have to re-derive it:**
-   fetch `Modules/_sqlite/connection.c` at tag `v3.14.2` from the CPython repository, take its
-   sha256, and compare against the pin. Proposed: **ROUTED to the orchestrator** (owner: whoever
-   holds network at the gate; trigger: before the executing dispatch, since an executor will read
-   SOURCE (S1) as established fact). **This cell has no network and did not attempt a substitute
-   that would have looked like a settlement.**
+   which is why (k4a)/(k4b) use a proxy. **That half is now confirmed upstream**, and both sides of
+   round 11 had always agreed on the BEHAVIOUR; the dispute was provenance, and provenance is what
+   the fetch bought.
 
 ---
 
@@ -4013,7 +4069,8 @@ to know which parts are settled and by whom.**
    **THE PREMISE UNDER BOTH OPTIONS WAS FALSE.** CPython does not swallow that failure: it raises
    the rollback's exception with the commit's chained beneath it
    (the `pysqlite_connection_exit_impl` commit-failed branch of `Modules/_sqlite/connection.c`,
-   `:2394-2403` against the sha256-pinned file, SOURCE (S1); MEASURED (6) on the sibling arm). **`record_entry`
+   `:2394-2403`, a convenience against the UPSTREAM-pinned bytes SOURCE (S1) names by digest and
+   URL; MEASURED (6) on the sibling arm). **`record_entry`
    reads the failure off the exception it already receives, `_entry_transaction`'s deferred branch
    is not edited at all, and
    rule (i) is enforced LITERALLY on both paths** (S2.2, S7.15).
@@ -4192,6 +4249,7 @@ Task 6 and Task 7 runs are compared against THAT number, not against a remembere
 | **SETTLE** | *(2026-09-07 DEDICATED SETTLING SWEEP -- gate-holder ruled; RD's two round-10 rulings applied, then `SS-9`..`SS-16`; NO Codex, NO round number)* | -- | **8 uncounted (`SS-9`..`SS-16`)** | -- | -- | *no verdict; NO effect on convergence* |
 | **11** | `strong` / `gpt-5.6-sol` / `high` | 1 / 11 / 2 | 14 (**8 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
 | **FIX** | *(2026-09-07 FIX LEG -- operator-authorized, **NO CODEX ROUND**; four instruments re-run, two strengthened)* | -- | **13 of round 11 FIXED, 1 ROUTED** | 0 | 0 | *no verdict; **NO effect on convergence** -- a fix leg is not a round* |
+| **SETTLE-9** | *(2026-09-07 orchestrator NETWORK FETCH; **NO CODEX**)* | -- | **`A4-R11-9` CLOSED; SOURCE (S1) confirmed upstream; the citation rule amended -- pin the UPSTREAM digest, never a local copy's** | -- | -- | *no verdict; NO effect on convergence* |
 
 **TOKEN SPEND, ELEVEN COUNTED ROUNDS:** 437,776 + 230,647 + 246,268 + 320,775 + 317,038 + 307,420 +
 413,949 + 349,176 + 463,310 + 392,163 + 509,364 = **3,987,886**.
@@ -4261,7 +4319,8 @@ operator's written authorization and does not exist.** The settling-sweep cell t
 measured 446,282 against the 400K cap, so this leg ran in a FRESH cell off the committed plan plus
 the preserved per-round evidence -- the recipe's normal outcome past the cap, not a failure.
 
-**EVERY ROUND-11 FINDING HAS A WRITTEN DISPOSITION. Thirteen FIXED, one ROUTED, none banked.**
+**EVERY ROUND-11 FINDING HAS A WRITTEN DISPOSITION. Thirteen FIXED, one ROUTED AND THEN SETTLED
+the same day by the orchestrator's network fetch, none banked. NOTHING IS OPEN.**
 
 | finding | severity | disposition |
 |---|---|---|
@@ -4273,7 +4332,7 @@ the preserved per-round evidence -- the recipe's normal outcome past the cap, no
 | `A4-R11-6` | MAJOR | **FIXED** -- (k6a)-(k6b), the immediate path's Task-3 discriminators, no probe and no `record_entry` |
 | `A4-R11-7` | MAJOR | **FIXED** -- (pr1)-(pr4), one row per unpinned Task-4 requirement |
 | `A4-R11-8` | MAJOR | **FIXED** -- (m3) split into (m3a)/(m3b)/(m3c); the gate proven INVOKED and LOAD-BEARING; S6's witness compares against a live before-image, not the constant |
-| `A4-R11-9` | MAJOR | **ROUTED** (S8 item 8) -- the CPython source's PROVENANCE, unsettleable without network. The exposure is narrowed by measurement and the settling method is written down |
+| `A4-R11-9` | MAJOR | **SETTLED** (S8 item 8) -- ROUTED by this leg with the settling method written down; the orchestrator then ran exactly that method. **UPSTREAM sha256 `8cc0d9df...`, 80,695 bytes, content-identical after newline normalisation. SOURCE (S1) holds.** It also FORCED A CORRECTION AGAINST OUR OWN CITATION RULE: the previously pinned `7487db46...` was the hash of OUR copy (LF->CRLF on a text-mode write) -- **a local copy's digest is provenance of the READING, never of the SOURCE.** RD-ratified remedy now standing: pin the UPSTREAM digest with the fetch URL |
 | `A4-R11-10` | MAJOR | **FIXED** -- (pr5) + the `file:...?mode=rw` URI open, VERIFIED BY EXECUTION on this box |
 | `A4-R11-11` | MAJOR | **FIXED** -- the below-HEAD census re-measured per file as CALL counts; the drop-path reason holds for ONE site |
 | `A4-R11-12` | MAJOR | **FIXED** -- the live journal mode relabelled INFERRED at both sites; S6 step 0 asks for `PRAGMA journal_mode` |
@@ -4309,9 +4368,11 @@ indicted this leg's own work.**
   citations it would have silently DECLINED to check. It then caught two of this leg's own anchors
   pointing one line and four lines off (`_EVIDENCE_SLOTS`, the immediate ladder), both corrected.
 
-**WHAT THIS LEG DID NOT DO:** it ran no Codex round, prepared no prompt for one, and did not attempt
-a network substitute for `A4-R11-9`. **Nothing was worked around; the one thing that could not be
-fixed is reported unfixed.**
+**WHAT THIS LEG DID NOT DO:** it ran no Codex round and prepared no prompt for one. **It did not
+attempt a network substitute for `A4-R11-9`, and that restraint is what made the routing usable** --
+the entry carried the exact method, and the orchestrator executed it the same day (the SETTLE-9 row
+above). *The general form, worth keeping: an item routed WITH ITS METHOD is closed by whoever has
+the capability; an item routed as a worry is closed by nobody.*
 
 ### THE 2026-09-07 SETTLING SWEEP -- **UNCOUNTED, and the uncounted status is what keeps it honest**
 
