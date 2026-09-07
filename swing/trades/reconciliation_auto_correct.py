@@ -38,7 +38,7 @@ import json
 import logging
 import math
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -111,6 +111,28 @@ class ReservedJournalFieldError(Exception):
 
     Item-5 (Codex R9 Major 1). Some columns cannot be written coherently on
     their own; the dedicated surface named in the message owns them.
+    """
+
+
+class ImmutableJournalFieldError(ValueError):
+    """A correction path tried to write a WRITE-ONCE IDENTITY column.
+
+    22-A4 Task 1b -- CHARC's attached condition on the arc's authorization.
+    This is the SIBLING of `ReservedJournalFieldError`, not a member of it:
+    that one refuses a COUPLED column and routes the operator to the surface
+    that writes the coupling coherently. `trades.attempt_id` has no such
+    surface -- see `_IMMUTABLE_JOURNAL_FIELDS`.
+
+    DERIVED FROM `ValueError`, and that is load-bearing rather than
+    stylistic. `ReservedJournalFieldError` inherits directly from `Exception`,
+    and both delivery callers -- the CLI's `discrepancy resolve-ambiguity`
+    (`ValueError` -> `click.UsageError` -> exit 2) and the web's
+    `POST /reconcile/discrepancy/{id}/resolve` (`ValueError` -> 400) -- name
+    `ValueError` and have no handler for a bare `Exception` subclass. A
+    bare-`Exception` refusal would surface as an uncaught CLI traceback and a
+    web 500: the same operator experience the condition exists to replace,
+    arriving one layer out. Deriving from `ValueError` reaches both existing
+    handlers with NO production caller edit.
     """
 
 
@@ -194,6 +216,70 @@ _RESERVED_JOURNAL_FIELDS: dict[tuple[str, str], str] = {
     ("fills", "action"): _ENTRY_DATE_COUPLED_SURFACE,
     ("fills", "trade_id"): _ENTRY_DATE_COUPLED_SURFACE,
 }
+
+# ---------------------------------------------------------------------------
+# 22-A4 Task 1b -- THE IMMUTABLE SET. A SIBLING of the reserved dict above,
+# deliberately NOT a new entry in it.
+#
+# `_RESERVED_JOURNAL_FIELDS` means something different: its members encode
+# COUPLED invariants -- columns that can only be written coherently ALONGSIDE
+# other rows -- and its message DIRECTS the operator to the surface that writes
+# them together. That message shape is a routing hint, and it is only truthful
+# when such a surface exists.
+#
+# `trades.attempt_id` is WRITE-ONCE IDENTITY THAT NO SURFACE WRITES: migration
+# 0038 mints it per attempt and the entry INSERT that creates the row writes it
+# in that same transaction; it is never corrected and never re-assigned. So
+# refusing it is not a routing hint at all -- it is a statement that the
+# operation does not exist. A message copied from the coupled-surface family
+# would send an operator looking for a screen that cannot be built.
+#
+# THE TRIGGER `trg_trades_attempt_id_immutable` REMAINS THE GUARD OF RECORD --
+# it covers writers not yet written. This refusal is its LEGIBLE FACE: without
+# it the corrector AUTHORIZES the write and the database ABORTs it, and the
+# operator receives a raw `sqlite3.IntegrityError` (authorize-then-abort).
+# ---------------------------------------------------------------------------
+_IMMUTABLE_JOURNAL_FIELDS: frozenset[tuple[str, str]] = frozenset({
+    ("trades", "attempt_id"),
+})
+
+_IMMUTABLE_JOURNAL_FIELD_MESSAGE = (
+    "{table}.{field} is WRITE-ONCE IDENTITY that no surface writes: it is "
+    "minted per attempt and set by the entry INSERT that creates the row, in "
+    "that same transaction, and it is never corrected and never re-assigned. "
+    "There is no coupled surface to route you to and no screen to build -- "
+    "correcting this column is not an operation that exists. Nothing was "
+    "written."
+)
+
+
+def _refuse_immutable_journal_fields(
+    affected_table: str, field_names: Iterable[str],
+) -> None:
+    """Refuse ANY write to a write-once identity column, before it is composed.
+
+    ONE predicate and ONE message, called from THREE sites (see each call
+    site's comment for why it is there):
+
+      * `_update_journal_field` -- the BACKSTOP. It is the only site in this
+        module that writes an operator-supplied journal field, so a check here
+        reaches every operator surface.
+      * `_preflight_reserved_transitions` -- ORDERING, on the multi-field
+        handler: it applies fields SEQUENTIALLY, so a backstop-only check makes
+        refusal depend on JSON KEY ORDER.
+      * the head of `_apply_tier3_override_inner` -- ORDERING, on the tier-3
+        override surface, which the preflight above never reached.
+
+    Takes the WHOLE field set rather than one field so the answer cannot depend
+    on iteration order.
+    """
+    for field_name in field_names:
+        if (affected_table, field_name) in _IMMUTABLE_JOURNAL_FIELDS:
+            raise ImmutableJournalFieldError(
+                _IMMUTABLE_JOURNAL_FIELD_MESSAGE.format(
+                    table=affected_table, field=field_name,
+                )
+            )
 
 
 def _refuse_entry_fill_split_that_moves_the_date(
@@ -334,6 +420,12 @@ def _preflight_reserved_transitions(
     resulting row would be an entry fill carrying a date the coupled trade and
     archive rows never saw.
     """
+    # 22-A4 Task 1b -- ORDERING, over the WHOLE payload, before the per-field
+    # walk below. `_handle_multi_field_correction` applies fields SEQUENTIALLY,
+    # so a backstop-only check in `_update_journal_field` would let an earlier
+    # field's UPDATE execute before `attempt_id` was discovered second -- the
+    # JSON-key-order dependence this preflight exists to eliminate.
+    _refuse_immutable_journal_fields(affected_table, proposed.keys())
     for field_name, new_value in proposed.items():
         _assert_real_column_name(
             conn, affected_table,
@@ -1631,6 +1723,30 @@ def _apply_tier3_override_inner(
     """
     target = _select_correction_row(conn, correction_id)
 
+    # 22-A4 Task 1b -- ORDERING, on the surface `_preflight_reserved_transitions`
+    # never reached. That preflight is called from exactly ONE place
+    # (`_handle_multi_field_correction`) and NOT from here, yet this is a
+    # supported operator surface (`swing journal discrepancy
+    # override-correction`). Steps 4 and 5 below INSERT the new correction row
+    # and advance the prior row's chain pointer BEFORE step 6 walks the payload
+    # field by field -- so with `attempt_id` LAST, a backstop-only refusal fires
+    # after two writes and every earlier field's UPDATE.
+    #
+    # The PUBLIC entry point owns BEGIN IMMEDIATE / ROLLBACK, so "nothing was
+    # written" stays true THERE; what a backstop cannot establish is (a) this
+    # module's own documented composition surface, where the caller owns the
+    # rollback, and (b) order-independence on this path at all.
+    #
+    # SCOPED TO THE NEW IMMUTABLE SET ONLY. Calling
+    # `_preflight_reserved_transitions` here instead is DECLINED: that would
+    # newly refuse the seven pre-existing `_RESERVED_JOURNAL_FIELDS` members
+    # earlier on this path too -- a behaviour change to shipped functionality.
+    # Refusing `attempt_id` early changes the behaviour of nothing that exists,
+    # because the column did not exist before this arc.
+    _refuse_immutable_journal_fields(
+        target.affected_table, operator_truth_value.keys(),
+    )
+
     if target.superseded_by_correction_id is not None:
         raise AlreadySupersededError(
             f"correction_id={correction_id} is already superseded by "
@@ -2061,7 +2177,18 @@ def _update_journal_field(
     `validate_trade_correction` checks only `current_stop` and `state`.
     Refusing the COLUMN closes it for every generic path at once, and holds
     even when no multi-row correction exists to compare against.
+
+    IMMUTABLE COLUMNS (22-A4 Task 1b). This is the BACKSTOP for the write-once
+    identity set: this is the only site in the module that writes an
+    OPERATOR-SUPPLIED journal field, so refusing here reaches every operator
+    surface. It fires FIRST, ahead of the column-name allowlist, because the
+    refusal is a statement about the OPERATION and does not depend on which
+    schema version the caller happens to be on. A casing or quoting variant
+    (`ATTEMPT_ID`, `[attempt_id]`) does not slip past: it misses the byte-exact
+    immutable set and is then refused by `_assert_real_column_name`, which
+    derives its allowlist from `PRAGMA table_info` and compares exactly.
     """
+    _refuse_immutable_journal_fields(affected_table, (field_name,))
     _assert_real_column_name(
         conn, affected_table, _cash_column_for_field(field_name)
         if affected_table == _AFFECTED_TABLE_CASH else field_name,
