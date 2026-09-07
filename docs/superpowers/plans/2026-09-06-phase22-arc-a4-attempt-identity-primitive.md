@@ -960,16 +960,23 @@ testability decision, stated so it is not mistaken for indirection.
 > `result`, has `_reserve`, and raises at `result is None` BEFORE any of this runs -- so the
 > body-raise branch is excluded by code that already ships. **`_entry_transaction`'s
 > `if not immediate:` branch therefore needs NO `try`, NO `except`, NO added statement and NO `as`
-> binding: it is the pre-arc four lines, unchanged.** *(k3a) asserts that as an AST property*
+> binding: it is the pre-arc statements, unchanged.** *(k3a) asserts that as an AST property*
 > rather than leaving it as the prose claim it has been in three sections for three rounds.
 
-Every one of them is an OBSERVATION of this function's own calls or of the connection's own state,
-never an inference -- the property that made `committed` admissible where the reverted clause-2 read
-was not. `resolution` is what lets `record_entry` honour RD's rule (i) mechanically instead of by
-comment.
+Every one of them is an OBSERVATION -- of a call the WRITING frame itself made, of the connection's
+own state, or of an exception that frame itself caught --
+never an inference, the property that made `committed` admissible where the reverted clause-2 read
+was not. **"The writing frame" is `_entry_transaction` on the immediate path and `record_entry` on
+the deferred one, and the distinction is load-bearing rather than incidental:** each field is written
+where the fact is DIRECTLY available, which is why no arm of this design has to reason about what
+another frame must have done. `resolution` is what lets `record_entry` honour RD's rule (i)
+mechanically instead of by comment.
 
-**The immediate path** keeps its shape exactly; three assignments are added and the two existing
-cleanup messages are untouched (they are pinned by shipped tests):
+**The immediate path** keeps its shape exactly. **Its two NEW fields are written by
+`_observe_resolution`, which is shown INLINE below rather than as a call, because what it does is
+the point and the two existing cleanup messages sit between its arms** -- those messages are
+untouched and are pinned by shipped tests. (Task 3's checklist is the binding statement that the
+logic lives in the shared helper, so the two paths cannot drift; this block is its body.)
 
 ```
 try:
@@ -3561,6 +3568,7 @@ Task 6 and Task 7 runs are compared against THAT number, not against a remembere
 | AMEND | *(2026-09-07 amendment pass on RD's three rulings; sweep 41/41/41, per-location audit 38 probes)* | -- | -- | -- | -- | *no verdict; no effect on convergence* |
 | 10-DEAD | *(NOT A ROUND -- MSYS path-mangling; harness exit 0, 0-byte transcript)* | -- | -- | -- | -- | **NO BANNER, NO FOOTER, NO VERDICT. 0 tokens.** |
 | **10** | `strong` / `gpt-5.6-sol` / `high` | 1 / 5 / 1 | 7 (**1 new ground, 6 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **SETTLE** | *(2026-09-07 DEDICATED SETTLING SWEEP -- gate-holder ruled; RD's two round-10 rulings applied, then `SS-9`..`SS-16`; NO Codex, NO round number)* | -- | **8 uncounted (`SS-9`..`SS-16`)** | -- | -- | *no verdict; NO effect on convergence* |
 
 **TOKEN SPEND, TEN COUNTED ROUNDS:** 437,776 + 230,647 + 246,268 + 320,775 + 317,038 + 307,420 +
 413,949 + 349,176 + 463,310 + 392,163 = **3,478,522**.
@@ -3617,3 +3625,39 @@ All five mechanical assertions passed every counted round (model, effort `high`,
 with the other at zero). One attempt-1 invocation of round 1 was DISQUALIFIED before it counted --
 MSYS path-mangling produced an empty transcript while the harness reported exit 0; the two-signal
 rule caught it. Per-round assertions and per-finding adjudications: `.copowers-findings.md`.
+
+---
+
+### THE 2026-09-07 SETTLING SWEEP -- **UNCOUNTED, and the uncounted status is what keeps it honest**
+
+**Why it exists.** Rounds 8, 9 and 10 each spent most of their yield on the previous ruling's
+residue: round 10 returned **6 of 7 findings RESIDUAL**, four of them residuals of the amendment pass
+written the same day. The loop's shape was ruling -> amend -> review-of-the-wake, with nothing in
+between. The gate-holder ruled a **DEDICATED SELF-SWEEP followed by ONE confirming round on the
+settled artifact** -- the recipe's Expansion-#13 provision (`harness-architecture.md` §5.1), whose
+first use on 22-A found a CRITICAL no counted round had produced.
+
+**Findings carry `SS-N` ids: no Codex, no round number, NO effect on convergence.** `SS-1`..`SS-8`
+were the post-round-4 sweep; this pass added **`SS-9`..`SS-16`**, EIGHT findings, of which **two
+would have been CRITICAL or MAJOR had a review round produced them** (`SS-9`, `SS-14`) and **one
+corrects a ruling's stated rationale by measurement** (`SS-9`'s sibling, recorded in S2.2 and in the
+front matter rather than numbered, because it belongs to a director's text and not to this plan's).
+
+| id | what | class |
+|---|---|---|
+| **`SS-9`** | applying RD's PIN 1 naively left `_observe_resolution` UNCONDITIONAL in `_entry_transaction`'s deferred handler, which reaches the **pre-arc BODY-RAISE branch** and would issue a rollback that path never issued -- 22-A LOCK clause (c)'s subject, widened by a fix for something else. Both observations moved to `record_entry`; the deferred branch is now LITERALLY UNEDITED and (k3a) asserts it. | a fix that widened the blast radius of the thing it fixed |
+| **`SS-10`** | S1.4 still said the arc adds "the three NEW observation fields" to the deferred path. | residual of the same pass, in a section it did not visit |
+| **`SS-11`** | THREE stale in-repo line anchors, found by a script that resolves all 54 and prints what each lands on: `entry.py:1128` is `conn.rollback()` not the immediate `committed` assignment (`:1107`); `entry.py:880` is inside a comment block, not the shipped guard (`:884`) -- **and `:880` is the number this dispatch's own PIN 1 was relayed with, so it had propagated to three sites before the sweep caught it**; `entry.py:1489` is one line above the UNIQUE mapper. | citation drift |
+| **`SS-12`** | S8 item 4 cited FOUR anchors for "the four pre-commit logging calls in `_record_entry_inner`". **`_record_entry_inner` begins at `:1166`; all four pointed into `record_entry`, and not one is a logging call.** MEASURED by AST walk: `:1227`, `:1295`, `:1306`, `:1321`. **The COUNT was right and every ANCHOR was wrong** -- the arrangement that reassures a reader checking the number and misdirects one checking the code. | the in-repo twin of `A4-R10-5` |
+| **`SS-13`** | `A4-R10-3`'s generalisation turned into an INSTRUMENT (`assertion_schedule_audit.py`) instead of a paragraph: it walks all 44 rows, collects the symbols each names, and reports every row scheduled before something it names. | a rule with no check is a wish |
+| **`SS-14`** | what `SS-13` found on its first run, in a row **this same pass had added four hours earlier**: (k3a)'s new ordering assertion named `_settle_by_attempt_identity` and was scheduled in Task 3. **Its failure mode is worse than the four counted instances:** an AST walk asserting an ORDERING finds no such node, therefore finds no ordering to violate, and reports SUCCESS. **Scheduling-by-artifact does not always produce a red test; it can produce a vacuous green one.** | the class, met inside its own fix |
+| **`SS-15`** | S3's roster still described (k3a)/(k3b) as asserting the `committed` assignment is "inside the protected suite on BOTH paths" -- false one commit after `SS-9`. | residual, at the smallest scale it comes in |
+| **`SS-16`** | Task 1b said "THREE call sites" for four rounds while the heading above its tests claimed **EVERY OPERATOR SURFACE**; nothing connected them. Closure established by AST walk + a raw-SQL grep: `_update_journal_field` has exactly four callers and is the ONLY site writing an operator-supplied journal field, so the backstop IS the closure and the two early checks are ordering refinements. **And the finding behind the finding:** the plan's whole argument for the tier-3 early check is that its INSERT comes first, and nobody had checked whether the other surfaces share that shape. They do not, for a DIFFERENT reason each. | a roster is the same instrument as the count it replaced |
+
+**Instruments, all preserved at `~/swing-data/review-transcripts/22-a4-plan/`:**
+`plan_consistency_sweep.py` (roster/schedule/manifest closure + fragile counts),
+`per_location_audit.py` (**38 -> 70 probes** this pass), `assertion_schedule_audit.py` (NEW, `SS-13`),
+`citecheck.py` (NEW, `SS-11`/`SS-12`). **The last two are deliberately OVER-INCLUSIVE and their
+surviving hits are named in the sections that own them**, rather than tuned until they read clean --
+an instrument tuned to be quiet is a decoration.
+
