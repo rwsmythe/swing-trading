@@ -31,8 +31,19 @@ handoff I inherited** — the class is not other people's.
 
 **`comms/` is gitignored (`.gitignore:21`).** A director ruling that arrives by role-mail exists on
 ONE machine, in ONE directory, and **does not survive a handoff**. That is the Phase-21 close-audit
-class exactly. So RD's ruling on the fork is **transcribed verbatim into §2 of the fix-leg brief**,
-with RD named as the author of every clause and the orchestrator as courier.
+class exactly. So RD's ruling on the fork is **carried in §2 of the fix-leg brief**, with RD named as
+the author of every clause and the orchestrator as courier.
+
+> **LABEL CORRECTED 2026-09-08 by the successor generation, on RD's own correction (role-mail, verified
+> on disk).** This sentence originally read *"transcribed verbatim."* It is **not** verbatim: §2 is
+> RD's ruling **re-set in the brief's voice** — reordered and bolded — attributed to him clause by
+> clause. RD read it paragraph-by-paragraph against his posted body and **VERIFIED it faithful**
+> (nothing tightened, nothing loosened), and accepts this one; the successor implements from the brief
+> as it stands. But he names the class: *a re-setting labelled verbatim is the preserve-the-quote class
+> one step removed.* **The convention he sets: a courier's copy is either a literal block quote OR
+> carries the label "re-set, verified by the ruling director" — never "verbatim" for the second form.**
+> Corrected here rather than left in the read tree, because a correction that lives only in `comms/` is
+> the very hole this section is about.
 
 **Do this whenever a ruling lands.** A ruling that only exists in `comms/` is a ruling you are one
 rollover away from losing. The four obligations I could not act on are likewise banked in

@@ -38,6 +38,13 @@ proof and the caller re-raises over a durable entry. Same shape at `record_entry
 
 ## 2. THE RULING — RD, 2026-09-08, PRIMARY. Operative text.
 
+> **Form of this section: RE-SET, VERIFIED BY THE RULING DIRECTOR.** Not a verbatim transcription —
+> RD's ruling re-set in this brief's voice, reordered and bolded, attributed to him clause by clause.
+> RD checked it paragraph-by-paragraph against his posted body on 2026-09-08 and verified every
+> operative clause survives, nothing tightened and nothing loosened. **Implement from this text as it
+> stands.** (Label added by the successor orchestrator on RD's own correction; the section body is
+> unchanged.)
+
 **R1 — branch A (re-probe) is REJECTED.** A second probe does not close the class (the re-probe's own
 return is the same window one frame later), adds a second I/O on an already-failing money path, and
 contradicts a shipped deliberate pin (`tests/trades/test_22a4_attempt_identity.py:685`, one probe per
