@@ -2292,3 +2292,119 @@ Copied THE MOMENT the five assertions passed, per `harness-architecture.md` sect
 | `.codex-prompt-r2.md` | 13,678 |
 
 **SPEND, both counted rounds: 441,127 + 590,318 = 1,031,445 tokens.**
+
+## Round 3 -- THE CONFIRMING ROUND ON THE FIX LEG. IT DID NOT CONVERGE.
+
+Artifact: `git diff -U8 2d9e4a34..HEAD -- swing/ tests/` at head `f7d78737` (the fix leg's three
+commits `4589c2f9`, `dd714d4c`, `f7d78737` on top of the pre-loop head). **The FULL arc diff was
+sent, not the fix leg alone** -- the fix leg's correctness depends on the code it changes, and a
+defect in the COMPOSITION of the two is exactly what a fix-only diff cannot show.
+
+| assertion | measured |
+|---|---|
+| 1. banner model | `model: gpt-5.6-sol` |
+| 2. `model_reasoning_effort` | `reasoning effort: high` |
+| 3. `grep -c '^ERROR'` | **0** |
+| 4. `grep -c '^tokens used'` | **1**; footer value **513,003** |
+| 5. anchored verdict token | `^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0** |
+
+Exit code MEASURED **0**; transcript NON-EMPTY (**1,683,792 bytes**); `pgrep -c codex` = 0 before
+the file was read. **Content-filter events: NONE** (Codex self-attested). Codex could not run the
+pytest suite (no pytest on its interpreter) and said so; it ran AST, disassembly, SQLite and
+`sys.settrace` probes instead. Prior-round-findings prohibition HONORED -- 17 grep hits, all four
+classes benign, and Codex EXCLUDED the ledger and `.codex-*` at the tool level in its own ripgreps.
+
+## Round-3 dispositions
+
+**Every premise below was REPRODUCED BY EXECUTION before anything was changed** -- the two findings
+against the fix leg were driven with `sys.settrace` through the production path, and the SQLite
+claim was re-measured on this box's engine.
+
+**A4X-R3-01 -- MAJOR -- NEW GROUND -- the capture MOVED the settle's window; the declaration said it
+was GONE, and the alarm still said the read FAILED**
+**FIXED (`fa6f0674`).** REPRODUCED: a `sys.settrace` fault at `proven = found`, with the probe
+having returned a corroborated row, re-raised `OperationalError('commit lost (planted)')` with
+**one durable row on disk**, and emitted *"the settle-by-attempt-identity read FAILED"*. **Both
+halves of the finding land on the fix leg's own two commits**: the declaration's sentence that the
+settle's whole proof-to-return tail was out of the alarm family was FALSE, and the no-proof arm's
+wording reproduced the exact false sentence RD's ruling required be removed -- one statement
+further along. The class is irreducible, so the capture boundary is now DECLARED as a member of the
+family, and the arm says only what it can observe: *no corroborated proof was captured, either
+because the read/gate yielded none or because a fault arrived before the capture landed.* Row
+`(A4X-R2-02d)` drives it and fails against the wording as it shipped one commit earlier.
+
+**A4X-R3-02 -- MAJOR -- NEW GROUND -- window 2 is not two statements**
+**FIXED (`fa6f0674`).** REPRODUCED at TWO interior points: a fault at
+`post_commit_error_text = safe_text(...)` and a fault at `return degraded` BOTH escaped over a
+durable row, each carrying the original commit error as `__context__`. An exception raised inside an
+`except` suite is not caught by the `try` whose handler is running, and the tail's only nested
+handler protects the `log.error` call, so the exposure runs from the settle's return THROUGH
+`return degraded`. **"Two statements" was an incidental FACT in the ruling packet**, carried into
+the declaration unverified -- the intake check this cell owed and did not perform. The ruled
+DIRECTION is untouched: both boundaries stay DECLARED, the family's composition and belt are
+unchanged. The bound is now stated by NAMING ITS ENDPOINTS rather than by counting statements, and
+row `(A4X-R2-02e)` measures the far end.
+
+**A4X-R3-03 -- MAJOR -- NEW GROUND -- the resolved-name normalizer misses three more spellings**
+**PREMISE VERIFIED. NOT FIXED -- OUT OF THIS LEG'S DISPATCH SCOPE; FLAGGED TO THE ORCHESTRATOR.**
+Measured on this box (SQLite **3.50.4**, vs Codex's 3.45.1 -- same result):
+`UPDATE t SET 'attempt_id' = ?`, `UPDATE t SET (attempt_id) = ?` and
+`UPDATE t SET /*x*/attempt_id = ?` all changed the column, while
+`_normalize_journal_field_name` returned `"'attempt_id'"`, `"(attempt_id)"` and `"/*x*/attempt_id"`
+UNCHANGED -- so all three miss `_IMMUTABLE_JOURNAL_FIELDS_BY_RESOLVED_NAME`. This is Task 1b's and
+round-1-fix `74cb2815`'s code, not the fork-fix leg's; recipe section 5 says a defect outside scope
+is FLAGGED, never fixed inline. The tier-3 write-ordering half of the finding is Codex's claim,
+reported as such -- this cell verified the normalizer bypass and the SQLite grammar, not the
+step-4-to-6 write sequence.
+
+**A4X-R3-04 -- MINOR -- NEW GROUND -- the backup gate's docstring formula**
+**PREMISE VERIFIED. NOT FIXED -- OUT OF SCOPE; FLAGGED.** `swing/data/db.py`'s gate docstring cites
+the `pre_version == (target - 1)` gotcha while the implemented condition is
+`current_version == 37 AND target_version >= 38`, which fires at `target_version=39`. Note the
+implementation is the PROJECT-CANONICAL shape (CLAUDE.md: *"Copy the Phase 9
+`pre_version == 16 AND target >= 17` clause shape verbatim"*) and the docstring's own first sentence
+states it correctly; only the parenthetical formula is loose. Task 1's code.
+
+## THE LOOP IS STOPPED SHORT AT ROUND 3. THIS IS NOT CONVERGENCE.
+
+Three counted rounds ran; **all three returned `NEW_CRITICAL_MAJOR_FOUND`**. The dispatch brief set
+three counted rounds as the default and required **the orchestrator's written authorization, naming
+the task-bearing finding, before a fourth**. That authorization was not held, so no round 4 opened.
+
+**What that leaves outstanding, stated plainly rather than softened:**
+
+* `A4X-R3-01` and `A4X-R3-02` were FIXED after the last counted round, so **the final head
+  `fa6f0674` has not been reviewed by any Codex round.** A confirming round on it is unrun.
+* `A4X-R3-03` (MAJOR) and `A4X-R3-04` (MINOR) are VERIFIED and UNFIXED, outside this leg's scope.
+
+## Round ledger -- EXECUTING loop (cumulative)
+
+| round | tier / model / effort | C / MAJ / MIN | new | reopened | reverted | verdict |
+|---|---|---|---|---|---|---|
+| **1** | `strong` / `gpt-5.6-sol` / `high` | 1 / 4 / 5 | 10 (**10 new ground, 0 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **2** | `strong` / `gpt-5.6-sol` / `high` | 1 / 1 / 4 | 6 (**3 new ground, 3 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **STOP** | *(loop STOPPED at a DESIGN FORK, `A4X-R2-01`; RD ruled it 2026-09-08)* | -- | -- | -- | -- | **routed, not convergence** |
+| **3** | `strong` / `gpt-5.6-sol` / `high` | 0 / 3 / 1 | 4 (**4 new ground, 0 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **STOP** | *(three counted rounds is the default; a fourth needs written authorization naming the task-bearing finding, and it is not held)* | -- | -- | -- | -- | **A STOPPED-SHORT LOOP, reported as one. NOT convergence.** |
+
+**Context-depth column: DELIBERATELY EMPTY.** A cell cannot see its own depth (no hook fires for a
+subagent), so a self-estimate there is not a record; the orchestrator fills it from
+`python scripts/cell_depth.py --live <h>`.
+
+## Transcript manifest -- EXECUTING loop (through round 3)
+
+Durable path: `C:/Users/rwsmy/swing-data/review-transcripts/22-a4-exec/` (dotfiles -- use `ls -a`).
+Copied THE MOMENT the five assertions passed, per `harness-architecture.md` section 5.1.
+
+| transcript | bytes |
+|---|---|
+| `.codex-review-r1.txt` | 1,550,758 |
+| `.codex-review-r2.txt` | 1,869,407 |
+| `.codex-review-r3.txt` | 1,683,792 |
+| `.codex-prompt-r1.md` | 10,760 |
+| `.codex-prompt-r2.md` | 13,678 |
+| `.codex-prompt-r3.md` | 18,580 |
+| `.codex-exit-r3.txt` | 2 |
+| `run_r3.sh` (the round-3 runner, with its four hazards commented) | 1,266 |
+
+**SPEND, all three counted rounds: 441,127 + 590,318 + 513,003 = 1,544,448 tokens.**
