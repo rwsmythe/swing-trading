@@ -1505,6 +1505,15 @@ class _CommitOutcome:
     mirroring it would be the mirror-drift class (gotcha #11) bought for
     nothing -- and on the deferred path the only place to set it would be
     INSIDE ``with conn:``, the one suite this arc promises is byte-identical.
+
+    **ALL THREE OBSERVATIONS ARE NOW CONSUMED, NOT MERELY RECORDED.**
+    ``committed`` gates CLAUSE 1, above ``_entry_transaction``: a commit that
+    RETURNED may never be reported as a failure.  ``resolution`` and
+    ``cleanup_raised`` gate CLAUSE 2's settle, ``_settle_by_attempt_identity``,
+    below ``_entry_transaction`` -- a commit whose own return was LOST is
+    resolved by a durable-visibility read only when these two say the
+    connection's rollback (if any) took effect cleanly.  See the declaration
+    above ``_entry_transaction`` for how.
     """
 
     committed: bool = False
@@ -1529,14 +1538,17 @@ class _CommitOutcome:
 
 
 # ===========================================================================
-# **THE DECLARED RESIDUAL: A COMMIT WHOSE OWN RETURN IS LOST RE-RAISES OVER A
-# ROW THAT MAY BE DURABLE.**  (CHARC + RD, ruled 2026-09-02 --
-# `docs/22-a-merge-request.md` S4.4.)
+# **THE DECLARED RESIDUAL, AS RULED 2026-09-02 AND AS SUPPLIED HERE IN
+# 22-A4: A COMMIT WHOSE OWN RETURN IS LOST RE-RAISES OVER A ROW THAT MAY BE
+# DURABLE -- UNLESS THE ATTEMPT CAN NOW PROVE ITS OWN DURABILITY.**  (CHARC +
+# RD, ruled 2026-09-02 -- `docs/22-a-merge-request.md` S4.4.)
 #
-# CLAUSE 2 -- *"if `commit()` itself raises, RESOLVE BY READ"* -- was
-# implemented here as `_entry_is_durable` + `_settle_lost_commit`, and is
-# REVERTED.  It was never implementable as ruled, and BOTH reasons were
-# reproduced by execution against the shipped helpers:
+# WHAT THE RESIDUAL WAS.  CLAUSE 2 -- *"if `commit()` itself raises, RESOLVE
+# BY READ"* -- was first implemented as `_entry_is_durable` +
+# `_settle_lost_commit`, and was REVERTED to unconditional re-raise: the read
+# those helpers performed was never implementable as ruled, and BOTH reasons
+# were reproduced by execution against the shipped helpers, in the SAME leg
+# that shipped them:
 #
 #   * **VISIBILITY** -- the confirming read must observe DURABLE state.  A
 #     read taken on the writer's OWN connection inside an unresolved
@@ -1555,31 +1567,76 @@ class _CommitOutcome:
 #     the insert, so even `AUTOINCREMENT` does not pin it).  Reproduced
 #     (Codex 22A-FIX-R10-03): trade 1 was rolled back, a second connection
 #     inserted ticker `OTHER` and was issued id 1, and `_settle_lost_commit`
-#     confirmed that row as ours.  **THIS PRECONDITION DOES NOT EXIST IN THE
-#     SCHEMA TODAY.**
+#     confirmed that row as ours.  **THIS PRECONDITION DID NOT EXIST IN THE
+#     SCHEMA AT RULING TIME.**
 #
-# SO THE HONEST ANSWER IS THE ALARM.  Canon (RD): **ALARM-NEVER-ASSERT AT THE
-# TRANSACTION BOUNDARY** -- the function may RAISE the indeterminate, and may
-# never ASSERT durability from evidence that cannot identify the attempt.
-# Re-raise is the pre-arc behaviour, and it is honest in the way the read was
-# not: it never claims a row exists.
+# SO THE HONEST ANSWER WAS THE ALARM, ALWAYS.  Canon (RD): **ALARM-NEVER-
+# ASSERT AT THE TRANSACTION BOUNDARY** -- the function may RAISE the
+# indeterminate, and may never ASSERT durability from evidence that cannot
+# identify the attempt.  That canon is UNCHANGED by what follows; only the
+# EVIDENCE available to it has changed.
 #
-# WHAT THE RESIDUAL COSTS, stated rather than implied: the row can be durable
-# while the caller is told the entry failed, so the caller may RETRY -- and
-# the retry hits `ux_trades_one_open_per_ticker` (UNIQUE on ticker WHERE
-# state IN entered/managing/partial_exited) and REFUSES, naming the existing
-# position.  A confusing error, not a double position.  **THE BELT DOES NOT
-# COVER A TICKER CLOSED BETWEEN THE TWO ATTEMPTS**, and that is the uncovered
-# direction of this declaration.
+# HOW EACH PRECONDITION IS NOW SUPPLIED (22-A4, Tasks 3-4).  The follow-on
+# ruled and deliberately NOT built at the time of the ruling above -- a
+# CO-DURABLE, UNIQUE-PER-ATTEMPT identity resolved on a DURABLE-VISIBILITY
+# read -- is built here:
 #
-# THE FOLLOW-ON, ruled and deliberately NOT built here: a CO-DURABLE
-# (written in the same transaction as the row it identifies -- anything else
-# is a stamp, gotcha #30), UNIQUE-PER-ATTEMPT (survives rollback-and-retry
-# without collision; rowid fails by construction) attempt identity, resolved
-# on a DURABLE-VISIBILITY read (a fresh connection, or after a PROVEN
-# resolution).  Clause 2 returns on top of that primitive, gated by RD's two
-# discriminators -- rollback-raises-then-read must NOT return SUCCESS, and a
-# concurrent insert taking the same id must NOT be confirmed as ours.
+#   * **CO-DURABLE.**  `_begin_attempt_identity` mints a fresh `uuid4` token
+#     BEFORE the guarded region opens, and `_record_entry_inner` writes it as
+#     a COLUMN OF THE SAME `INSERT` that writes the row
+#     (`insert_trade_with_event(..., attempt_id=attempt_id)`) -- never a
+#     post-commit stamp.  Anything else is gotcha #30's shape one level down:
+#     a value standing in for the fact it is supposed to co-durably attest.
+#   * **UNIQUE-PER-ATTEMPT.**  Migration `0038`'s `ux_trades_attempt_id` is a
+#     partial UNIQUE index over non-NULL `attempt_id`, and every attempt
+#     mints its OWN token -- so a rolled-back-and-retried attempt collides
+#     with nothing: the rowid-reuse defect (R10-03) does not apply to a
+#     value the engine never hands back.
+#   * **DURABLE-VISIBILITY READ.**  `_durability_probe` opens a FRESH
+#     connection via `open_connection` on a `file:...?mode=rw` URI -- never
+#     the writer's own handle -- which is the half of R10-02 closed by
+#     CONSTRUCTION rather than by discipline: there is no code path by which
+#     this read can observe the writer's own uncommitted view, because it is
+#     not the writer's connection.
+#
+# THE GATE ITSELF, `_settle_by_attempt_identity`, IS CLAUSE 2, RETURNING.  It
+# returns the probe's `(id, ticker)` -- an ADMISSIBLE, weaker-but-durable
+# fact, distinct from `outcome.committed` -- only when ALL of: (1) the body
+# ran to completion (the CALLER's own pre-arc guard, not re-checked here);
+# (2) `resolution in {"not_needed", "rolled_back"}` AND `cleanup_raised` is
+# False, RD's rule (i) taken LITERALLY -- a rollback that raised VOIDS the
+# read even where the state re-read shows it took effect; (3) the attempt
+# minted BOTH a token and a database path; (4) the probe finds a row AND its
+# ticker matches the request's.  Any one unmet is the ALARM: `None`, and the
+# caller re-raises -- honest, in the way the reverted read was not, because
+# it never asserts a row exists on evidence that cannot identify the
+# attempt.
+#
+# CONDITION 3's TOKEN HALF IS A PRECONDITION, NOT A REACHABLE BRANCH --
+# VERIFIED AT THE CODE.  `_begin_attempt_identity`'s mint `except` arm
+# returns a bare `_AttemptIdentity()` -- token `None` **and** `db_path`
+# `None` -- BEFORE `_resolve_main_db_path` is ever reached; only a
+# SUCCESSFUL mint proceeds to resolve the path (which can itself fail,
+# leaving `db_path` alone `None`).  So the state "token is `None` WITH a
+# resolved `db_path`" is not producible by this code.  Condition 3 checks it
+# anyway, for the SAME reason condition 2 rejects `"unattempted"` (S2.4): a
+# gate whose safety rests on an exhaustiveness argument about a DIFFERENT
+# function's internal statement ordering is not a gate.
+#
+# WHAT THE RESIDUAL COSTS NOW, stated rather than implied.  The ALARM still
+# fires -- narrower than before, but not empty -- whenever the preconditions
+# above are NOT observed: a rollback that raised on the deferred path
+# (`cleanup_raised`), an in-memory database (`db_path` unavailable), a mint
+# failure (`token` unavailable), a probe that itself fails, or a token found
+# under the WRONG ticker (an anomaly no design anticipated, and the honest
+# response is still the alarm rather than an assertion).  On the ALARM the
+# row can still be durable while the caller is told the entry failed, so the
+# caller may RETRY -- and the retry hits `ux_trades_one_open_per_ticker`
+# (UNIQUE on ticker WHERE state IN entered/managing/partial_exited) and
+# REFUSES, naming the existing position.  A confusing error, not a double
+# position.  **THE BELT DOES NOT COVER A TICKER CLOSED BETWEEN THE TWO
+# ATTEMPTS**, and that remains the uncovered direction of this declaration,
+# unchanged by this arc.
 #
 # WHAT IS *NOT* REVERTED: clauses 1 and 3.  The post-commit region in
 # `record_entry` still guarantees that a commit which RETURNED cannot be
@@ -1609,6 +1666,18 @@ def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool,
     ``record_entry``'s post-commit guard needs, and it costs neither of the
     two preconditions the reverted clause-2 read could not meet -- it is an
     observation of THIS function's own call, not a reading of the ledger.
+
+    **ON THE IMMEDIATE PATH, THIS FUNCTION'S OWN FAILURE HANDLER ALSO WRITES
+    ``outcome.resolution`` AND ``outcome.cleanup_raised`` (22-A4).**  Both are
+    set from THIS frame's own ``rollback()`` call -- an observation, not an
+    inference about another frame -- through the shared, non-mutating
+    ``_read_resolution``.  They are what makes clause 2's settle,
+    ``_settle_by_attempt_identity``, admissible on this path exactly as
+    ``committed`` makes clause 1 admissible: each is this function reporting
+    what it itself did, never a reading of the ledger to guess it.  The
+    deferred path (``immediate=False``) writes the SAME two fields, but from
+    ``record_entry`` itself, one frame OUT -- see the declaration above
+    ``_entry_transaction`` for why the frame differs and the fact does not.
     """
     if not immediate:
         # **CLAUSE 3: THE CONTRACT BINDS BOTH PATHS** (CHARC).  `with conn:`
