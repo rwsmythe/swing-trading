@@ -5,6 +5,7 @@ import contextlib
 import dataclasses
 import logging
 import sqlite3
+import sys
 import unicodedata
 import uuid
 from dataclasses import dataclass
@@ -735,6 +736,112 @@ def _begin_attempt_identity(conn: sqlite3.Connection) -> _AttemptIdentity:
     return _AttemptIdentity(token=token, db_path=db_path)
 
 
+def _read_resolution(conn: sqlite3.Connection, *, attempted: bool) -> str:
+    """NAME the physical transaction state.  **NON-MUTATING**: it issues no
+    SQL, performs no rollback, and cannot change what escapes.
+
+    ``conn.in_transaction`` is an attribute read on the handle, not a
+    statement, so this is safe to call on a connection whose rollback raised
+    -- the one RD's rule (i) says must not be READ FROM.  ``attempted`` says
+    whether THIS FRAME issued the rollback, which is the only thing
+    distinguishing ``rolled_back`` from ``not_needed`` once the state is
+    resolved.
+
+    **THE SHARED THING IS THE READ, NEVER THE ROLLBACK.**  An earlier shape of
+    this helper owned a rollback and contained its failure; it could not both
+    do that and preserve the immediate ladder's ``raise cleanup_error from
+    write_error``, and on the deferred path it retried on a wounded connection
+    BEFORE the failure had been detected.  So the immediate path keeps its own
+    rollback inline in its own pre-arc ladder, the deferred path performs none
+    at all, and what the two share is this read.
+
+    Contained in the ALARM direction for the same reason as
+    ``_exit_rollback_failed``: an unreadable state is ``still_open``, which
+    the settle gate REFUSES.  Refusing a settle costs today's behaviour;
+    admitting one on an unknown state is the direction rule (i) forbids.
+    """
+    try:
+        open_ = bool(conn.in_transaction)
+    except BaseException:  # noqa: BLE001 -- the CLASS, and it ALARMS
+        return "still_open"
+    if open_:
+        return "still_open"
+    return "rolled_back" if attempted else "not_needed"
+
+
+#: The ``__context__`` base getset descriptor, from the SAME source as
+#: ``_EVIDENCE_SLOTS`` -- see the idiom at the head of this module.  A base
+#: descriptor runs NO user code, which is the whole reason it is the read:
+#: ``escaping.__context__`` is an ORDINARY attribute lookup, so a
+#: ``sqlite3.OperationalError`` subclass defining ``__context__`` as a data
+#: descriptor reads whatever it likes.  MEASURED on CPython 3.14.2: a getter
+#: returning ``None`` made the bare read answer False while the real
+#: ``OperationalError`` sat in the slot -- a FALSE NEGATIVE that admits a read
+#: rule (i) would have refused; a getter that RAISES replaced the escaping
+#: exception outright.
+_CONTEXT_SLOT = BaseException.__dict__["__context__"]
+
+
+def _exit_rollback_failed(escaping: BaseException,
+                          ambient: BaseException | None) -> bool:
+    """Did ``sqlite3.Connection.__exit__``'s OWN rollback raise?
+
+    CALLED ONLY when the entry body completed and the commit's return was NOT
+    observed.  Within that scope CPython's ``pysqlite_connection_exit_impl``
+    -- the branch whose comment reads "Commit failed; try to rollback in order
+    to unlock the database.  If rollback also fails, chain the exceptions." --
+    leaves exactly two shapes:
+
+      * rollback SUCCEEDS -> ``PyErr_SetRaisedException`` re-raises the
+        COMMIT's exception, whose ``__context__`` is whatever the THREAD was
+        already handling: ``ambient``, captured immediately before the
+        ``with``, or ``None``;
+      * rollback FAILS    -> ``_PyErr_ChainExceptions1`` raises the ROLLBACK's
+        exception with the COMMIT's chained beneath it as ``__context__``,
+        and the COMMIT's exception is never the ambient object.
+
+    So within the scope, a ``__context__`` that is non-None AND IS NOT THE
+    AMBIENT OBJECT is a link ``__exit__`` added.
+
+    **SOURCE, ANCHORED ON CONTENT AND PINNED BY THE UPSTREAM DIGEST -- never
+    on bare line numbers, and never on a local copy's hash.**  A line number
+    into a file no reader here can open is unverifiable, and a local copy's
+    digest pins WHICH BYTES WERE READ while saying nothing about WHOSE they
+    were.  Grep the function name above, or the verbatim comment above, in:
+
+      CPython v3.14.2, ``Modules/_sqlite/connection.c``
+      fetched from
+      ``https://raw.githubusercontent.com/python/cpython/v3.14.2/Modules/_sqlite/connection.c``
+      UPSTREAM sha256
+      ``8cc0d9df05860c0b3fe6929ff392f8f85c9e1a5ef89c0cba31ab09ba03b3369e``,
+      80,695 bytes.
+
+    **THE EXCLUSION IS BY ``is``-IDENTITY, NEVER EQUALITY.**  Equality would
+    consult a hostile ``__eq__``, which is the same class of defect as the
+    attribute read this function refuses to make.
+
+    **IT IS DELIBERATELY FAIL-OPEN TOWARD THE ALARM, and the asymmetry is the
+    argument.**  A FALSE POSITIVE costs the settle -- exactly today's
+    behaviour.  A FALSE NEGATIVE admits a read rule (i) would have refused.
+    So the slot read is contained in the ALARM direction: an unreadable
+    context is treated as a rollback failure.
+
+    **THE DECLARED RESIDUAL, rather than a claim of impossibility:** if the
+    object ``__exit__`` chains beneath the rollback failure IS the captured
+    ambient object, this answers False.  It is not constructible on the
+    production path -- the chained object is the COMMIT's exception, raised
+    fresh by SQLite inside ``__exit__``, and a freshly-raised exception is not
+    one the caller was already handling -- and the rest of the gate still
+    binds: a resolved transaction, a token and a ticker match are all still
+    required.
+    """
+    try:
+        context = _CONTEXT_SLOT.__get__(escaping, type(escaping))
+    except BaseException:  # noqa: BLE001 -- the CLASS, and it ALARMS
+        return True
+    return context is not None and context is not ambient
+
+
 def record_entry(
     conn: sqlite3.Connection, req: EntryRequest, *,
     soft_warn: int, hard_cap: int, force: bool,
@@ -984,6 +1091,27 @@ def record_entry(
     # region is where the next one goes, and the contract is a property of
     # this function rather than of the steps that happen to exist.  A step
     # added outside it re-opens the exposure silently.
+    #
+    # 22-A4 -- THE AMBIENT CAPTURE, AND THE CAPTURE POINT IS PART OF THE
+    # DESIGN.  On the DEFERRED path the rollback belongs to
+    # `sqlite3.Connection.__exit__`, so its failure is readable only off the
+    # exception that arrives, whose `__context__` `__exit__` sets (see
+    # `_exit_rollback_failed`).  On the rollback-SUCCEEDED arm that
+    # `__context__` is the THREAD's currently-handled exception, so a caller
+    # running inside an `except` would otherwise be a false positive; the
+    # ambient object is excluded by `is`-IDENTITY at the read.
+    #
+    # **IMMEDIATELY BEFORE THE `try`, NOT AT FUNCTION ENTRY.**  Any `except`
+    # frame between the capture and the `with`'s exit must belong to
+    # `record_entry` itself, and only a capture adjacent to the `with`
+    # guarantees that.  `try:` is not a handler, so nothing between this line
+    # and the context manager can change what the thread is handling, and the
+    # name is unconditionally BOUND when the handler runs.
+    #
+    # **`sys.exc_info()[1]`, NOT `sys.exception()`** -- the latter is Python
+    # 3.12+ and `pyproject.toml` declares `requires-python = ">=3.11"`.  The
+    # two return the same object; only one of them is inside the floor.
+    ambient = sys.exc_info()[1]
     try:
         with _entry_transaction(conn, immediate=_reserve, outcome=outcome):
             result = _record_entry_inner(
@@ -1009,7 +1137,49 @@ def record_entry(
         # the body never finished, `not outcome.committed` says the commit
         # never returned.  Either one means there is no entry to report, and
         # the honest answer is the original exception.
-        if result is None or not outcome.committed:
+        #
+        # **22-A4 SPLITS THE GATE INTO TWO BRANCHES THAT BOTH RE-RAISE.**  The
+        # BEHAVIOUR IS UNCHANGED -- what was one `or` is now two `if`s with
+        # the same bare `raise` -- and without the split there is no
+        # `not outcome.committed` branch for the deferred path's observations
+        # to sit under: an observation placed after the combined guard is
+        # UNREACHABLE whenever `committed` is False, and one placed before it
+        # would run on the body-raise branch this arc must not touch.
+        if result is None:
+            raise
+        if not outcome.committed:
+            # ---- THE DEFERRED PATH'S TWO OBSERVATIONS, both of them ----
+            #
+            # THEY LIVE HERE AND NOT IN `_entry_transaction` BECAUSE THIS IS
+            # THE ONLY FRAME WHERE THE SCOPE IS OBSERVABLE WITHOUT WRITING A
+            # STATEMENT INTO THE BYTE-LOCKED DEFERRED BRANCH: `result is not
+            # None` (one line up) says the body completed, and
+            # `not outcome.committed` says the commit's return was not
+            # observed.  The pre-arc BODY-RAISE branch is excluded by code
+            # that already ships, which is why the branch above needs no
+            # `try`, no `except` and no added statement.
+            #
+            # `not _reserve` -- DEFERRED PATH ONLY.  The IMMEDIATE path took
+            # both observations in `_entry_transaction`, from its OWN
+            # rollback call, and layering an inference over a direct
+            # observation is the one thing this arc exists not to do.
+            #
+            # **DETECTION FIRST, THEN THE READ.**  Nothing in this block
+            # mutates the connection -- there is no retry rollback here, by
+            # design -- but the ORDER states rule (i) rather than merely
+            # satisfying it: the failure is DETECTED before anything else
+            # touches the handle, and what remains is `in_transaction`, an
+            # attribute read that issues no SQL.
+            #
+            # **NO ROLLBACK, NO LOG, NO STATEMENT.**  `__exit__` owns this
+            # path's rollback and its failure is ALREADY what escaped, so a
+            # second louder report from us would replace an exception the
+            # caller's tests pin, for no new information.
+            if not _reserve:
+                if _exit_rollback_failed(post_commit_error, ambient):
+                    outcome.cleanup_raised = True
+                # `attempted=False`: THIS FRAME issued no rollback.
+                outcome.resolution = _read_resolution(conn, attempted=False)
             raise
         # Rendered ONCE and used in BOTH places (Codex A3R5-03): the
         # warning used `safe_text` while the `log.error` below still
@@ -1093,9 +1263,55 @@ class _CommitOutcome:
     resolve-by-read was not: it is the writer reporting what its OWN CALL
     did, not the writer reading the ledger to decide what its own call must
     have done.
+
+    **22-A4 ADDS TWO MORE FIELDS, FOR THREE OBSERVATIONS IN TOTAL -- AND
+    EVERY ONE OF THEM IS AN OBSERVATION IN THE SAME SENSE ``committed`` IS**:
+    of a call the WRITING frame itself made, of the connection's own state, or
+    of an exception that frame itself caught.  Never an inference.  "The
+    writing frame" is ``_entry_transaction`` on the IMMEDIATE path and
+    ``record_entry`` on the DEFERRED one, and the distinction is load-bearing
+    rather than incidental: each field is written where the fact is DIRECTLY
+    available, so no arm of this design has to reason about what another frame
+    must have done.
+
+    ``resolution`` and ``cleanup_raised`` ARE TWO DIFFERENT FACTS and a
+    reader must not collapse them.  ``resolution`` describes the
+    TRANSACTION; ``cleanup_raised`` describes the CALL.  The tree already
+    contains the counterexample to conflating them --
+    ``tests/trades/test_22a_task9_entry_wiring.py``'s
+    ``_RollbackAfterEffect`` performs the REAL rollback and THEN raises, so
+    the transaction is RESOLVED, the row is GONE, and an implementation that
+    inferred "unresolved" from the raise would be false about it.
+
+    **THERE IS DELIBERATELY NO ``body_completed`` FIELD.**  ``record_entry``
+    already observes that fact and has since 22-A3: ``result`` is
+    pre-initialised to ``None`` before the guarded region and assigned inside
+    it from ``_record_entry_inner``'s return, so ``result is not None`` is
+    non-None if and only if the body ran to completion.  A second field
+    mirroring it would be the mirror-drift class (gotcha #11) bought for
+    nothing -- and on the deferred path the only place to set it would be
+    INSIDE ``with conn:``, the one suite this arc promises is byte-identical.
     """
 
     committed: bool = False
+    #: The PHYSICAL transaction state, RE-READ from ``conn.in_transaction``
+    #: after any rollback attempt and NEVER inferred from the fact that a call
+    #: raised: ``"unattempted"`` / ``"not_needed"`` / ``"rolled_back"`` /
+    #: ``"still_open"``.  Written by ``_entry_transaction``'s own failure
+    #: handler on the immediate path and by ``record_entry``'s post-commit
+    #: handler on the deferred one, through the SAME non-mutating
+    #: ``_read_resolution`` so the two paths cannot drift on the one thing
+    #: they share.
+    resolution: str = "unattempted"
+    #: A rollback call RAISED -- a fact about the CALL, not about the
+    #: transaction.  On the IMMEDIATE path it is a direct observation of the
+    #: wrapper's OWN ``rollback()``.  On the DEFERRED path
+    #: ``sqlite3.Connection.__exit__`` owns the rollback, so no frame can
+    #: observe the call; the failure is read off the exception that arrives,
+    #: by ``_exit_rollback_failed``, AND FROM NOWHERE ELSE on that path --
+    #: which is what makes the flag's provenance a property of the code
+    #: rather than of a fixture.
+    cleanup_raised: bool = False
 
 
 # ===========================================================================
@@ -1255,6 +1471,18 @@ def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool,
             try:
                 conn.rollback()
             except BaseException as cleanup_error:  # noqa: BLE001 -- the CLASS
+                # 22-A4 -- THE TWO OBSERVATIONS, AND THEY ARE TWO FACTS.
+                # `cleanup_raised` is about THE CALL: this frame issued the
+                # rollback and watched it raise, which is a direct
+                # observation and not an inference about another frame.
+                outcome.cleanup_raised = True
+                # AND THE STATE IS RE-READ, NEVER INFERRED FROM THE RAISE --
+                # the same re-derivation the two existing messages below
+                # already do, for the same reason.  `_RollbackAfterEffect`
+                # (already in this tree) performs the REAL rollback and THEN
+                # raises: the transaction is RESOLVED and the row is GONE, so
+                # a field that read "unresolved" here would be false.
+                outcome.resolution = _read_resolution(conn, attempted=True)
                 # THE MESSAGE IS RE-DERIVED FROM THE CONNECTION, NOT ASSUMED
                 # FROM THE FACT THAT ROLLBACK RAISED (Codex 22A-FIX-R9-05).
                 # An AFTER-EFFECT exception -- SQLite performing the rollback
@@ -1287,7 +1515,24 @@ def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool,
                         "is reported because a connection whose rollback "
                         "raises is of unknown health and should not be "
                         "reused silently.", write_error, cleanup_error)
+                # **AND THE CHAINED RE-RAISE IS THE IMMEDIATE PATH'S OWN AND
+                # STAYS HERE.**  A shared helper that CONTAINED this cleanup
+                # failure could not preserve it, which is exactly why the
+                # shared thing is the non-mutating READ and not the rollback.
                 raise cleanup_error from write_error
+            # **RE-READ AFTER THE RETURNING ARM TOO** -- a rollback that
+            # RETURNS is not the same fact as a rollback that TOOK EFFECT.
+            # Assigning "rolled_back" unconditionally here would honour the
+            # field's own contract (*re-read after ANY rollback attempt*) on
+            # the raising arm and INFER it on the returning one, and a
+            # rollback that returned without taking effect would then be
+            # labelled `rolled_back` and ADMIT the settle.
+            outcome.resolution = _read_resolution(conn, attempted=True)
+        else:
+            # NO ROLLBACK WAS NEEDED: the transaction was already resolved (or
+            # never opened) when the failure arrived.  `attempted=False` is
+            # what distinguishes that from a rollback this frame issued.
+            outcome.resolution = _read_resolution(conn, attempted=False)
         raise
 
 
