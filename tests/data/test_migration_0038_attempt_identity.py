@@ -147,8 +147,16 @@ def test_m2_the_unique_partial_index(conn) -> None:
 # ---------------------------------------------------------------------------
 def test_m3a_the_gate_fires_only_on_the_exact_37_to_38_crossing(
         tmp_path: Path) -> None:
-    """STRICT EQUALITY on pre_version per the ``pre_version == target - 1``
-    gotcha -- NOT ``<=``.  The 36-and-target-38 case is what distinguishes."""
+    """STRICT EQUALITY on the PRE version: the condition is exactly
+    ``current_version == 37 AND target_version >= 38``, NOT ``current_version
+    <= 37``. That is the project-canonical clause shape (CLAUDE.md: copy the
+    Phase 9 ``pre_version == 16 AND target >= 17`` clause verbatim); the
+    gotcha's ``pre_version == (target - 1)`` phrasing describes the
+    SINGLE-STEP case only and reads false at ``target_version = 39`` --
+    exactly the case this test's last block asserts the gate STILL fires on
+    (`A4X-R4-04`, the test twin of `d34e1493`'s production-side fix). The
+    36-and-target-38 case is what distinguishes ``current_version == 37``
+    from ``<=``."""
     c = _v37(tmp_path)
     try:
         backup_dir = tmp_path / "bak"
