@@ -17,6 +17,7 @@ import pytest
 
 from swing.data.db import (
     EXPECTED_SCHEMA_VERSION,
+    PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES,
     PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES,
     MigrationBackupRequiredException,
     _current_version,
@@ -125,6 +126,20 @@ def test_m2_the_unique_partial_index(conn) -> None:
         _seed_trade(conn, f"N{n}", attempt_id=None)
     assert conn.execute(
         "SELECT COUNT(*) FROM trades WHERE attempt_id IS NULL").fetchone()[0] == 4
+    # AND THE INDEX IS ACTUALLY PARTIAL (Codex R1 Minor 7). MEASURED: SQLite
+    # treats NULLs as distinct in a FULL unique index too, so the duplicate
+    # assertion and the four-NULL assertion above pass IDENTICALLY against
+    # `CREATE UNIQUE INDEX ux_trades_attempt_id ON trades(attempt_id)` with no
+    # WHERE clause. `PRAGMA index_list` is the only column that differs.
+    partial = {
+        row[1]: row[4] for row in conn.execute("PRAGMA index_list('trades')")
+    }
+    assert partial["ux_trades_attempt_id"] == 1, (
+        "ux_trades_attempt_id is a FULL unique index; the schema is supposed "
+        "to say that uniqueness is a claim about MINTED tokens only")
+    assert "WHERE attempt_id IS NOT NULL" in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'ux_trades_attempt_id'"
+    ).fetchone()[0]
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +164,20 @@ def test_m3a_the_gate_fires_only_on_the_exact_37_to_38_crossing(
         _phase22_arc_a4_backup_gate(
             c, current_version=37, target_version=37, backup_dir=backup_dir)
         assert sorted(backup_dir.glob("swing-pre-22a4-migration-*.db")) == made
+        # BUT A TARGET *ABOVE* 38 STILL FIRES IT (Codex R1 Major 4). The three
+        # cases above are satisfied identically by `target_version == 38`, and
+        # that mutant SKIPS the pre-0038 backup for a v37 installation jumping
+        # straight to a later head -- the one crossing where the pre-image is
+        # the only ordinary way back. `>=` is the assertion; `39` is what
+        # distinguishes it.
+        # A SEPARATE DIRECTORY, because the backup filename is stamped to the
+        # SECOND and two calls inside one second would otherwise collide and
+        # the count would read 1 -- an artifact of the clock, not of the gate.
+        above = tmp_path / "bak_above_38"
+        _phase22_arc_a4_backup_gate(
+            c, current_version=37, target_version=39, backup_dir=above)
+        assert len(sorted(
+            above.glob("swing-pre-22a4-migration-*.db"))) == 1
     finally:
         c.close()
 
@@ -229,6 +258,18 @@ def test_m3c_the_expected_table_set_is_pinned_against_a_real_v37_database(
     for name in ARC_A_TABLES:
         assert name in PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES, (
             f"0037 created {name!r} and the 22-A4 gate does not require it")
+    # AND THE DECLARED INHERITANCE ITSELF (Codex R1 Major 5). The two
+    # assertions above are satisfied by a mutant constant containing ONLY the
+    # three 0037 tables -- they are real members of a real v37 schema, so the
+    # subset holds -- which would silently drop every inherited backup
+    # requirement. This is EQUALITY against the SPECIFIED PARENT-DERIVED SET,
+    # which is a different claim from the equality-against-the-real-v37-schema
+    # the CHARC ruling above rejects: that one would reverse the gate's
+    # floor direction, this one pins the constant to its own definition.
+    assert PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES == (
+        PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES | set(ARC_A_TABLES)), (
+        "the 22-A4 expected-table set is no longer its declared parent set "
+        "plus 0037's three tables")
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +356,30 @@ def test_m7_half1_a_direct_update_of_attempt_id_aborts(conn) -> None:
     with pytest.raises(sqlite3.IntegrityError,
                        match="trg_trades_attempt_id_immutable"):
         conn.execute("UPDATE trades SET attempt_id = NULL WHERE id = ?", (tid,))
+
+
+def test_m7_half1_the_trigger_is_UNCONDITIONAL_not_merely_change_detecting(
+        conn) -> None:
+    """Codex R1 Minor 8. The three transitions above are ALL value-CHANGING,
+    so they pass identically against a trigger carrying
+    ``WHEN OLD.attempt_id IS NOT NEW.attempt_id`` -- which would still permit
+    ``SET attempt_id = attempt_id`` and would falsify the migration header's
+    stated contract that EVERY update of the column is refused.
+
+    Two independent halves, because each is weak alone: the same-value
+    assignment ABORTS (behaviour), and the stored trigger SQL carries no
+    ``WHEN`` at all (structure -- a ``WHEN`` clause that can evaluate to NULL
+    fails OPEN and silently, which is why the contract is no-WHEN rather than
+    a-correct-WHEN)."""
+    tid = _seed_trade(conn, "AAA", attempt_id=TOK_A)
+    with pytest.raises(sqlite3.IntegrityError,
+                       match="trg_trades_attempt_id_immutable"):
+        conn.execute(
+            "UPDATE trades SET attempt_id = attempt_id WHERE id = ?", (tid,))
+    trigger_sql = conn.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE name = 'trg_trades_attempt_id_immutable'").fetchone()[0]
+    assert "WHEN" not in trigger_sql.upper(), trigger_sql
 
 
 def test_m7_half1_the_reversibility_header_names_both_droppables() -> None:
@@ -435,3 +500,66 @@ def test_r5_every_entry_insert_carries_the_column_or_is_excluded() -> None:
         "every non-carrying entry-INSERT must map to a DISTINCT reasoned era "
         f"exclusion; got {sorted(eras)}")
     assert {p for p, _ in stmts} == {"swing/data/repos/trades.py"}
+
+
+# ---------------------------------------------------------------------------
+# (m9) THE FILE'S OWN TRANSACTION FRAMING -- Codex R1 Major 6
+# ---------------------------------------------------------------------------
+# Gotcha #9: `sqlite3.executescript()` issues an implicit COMMIT and runs its
+# statements in AUTOCOMMIT, so a migration file without its own BEGIN/COMMIT
+# could leave the column present with neither its index nor its immutability
+# trigger, and the version stamp ahead of the schema. The success and rerun
+# rows above pass identically against a file with the framing REMOVED, because
+# nothing on the happy path ever fails partway.
+def _executable_statements(sql_text: str) -> list[str]:
+    """The migration's statements with comments and blank lines removed."""
+    body = re.sub(r"--[^\n]*", "", sql_text)
+    return [s.strip() for s in body.split(";") if s.strip()]
+
+
+def test_m9_the_migration_is_framed_BEGIN_first_and_COMMIT_last() -> None:
+    statements = _executable_statements(MIGRATION.read_text(encoding="utf-8"))
+    assert statements[0].upper() == "BEGIN", statements[0]
+    assert statements[-1].upper() == "COMMIT", statements[-1]
+    # THE VERSION BUMP IS THE FINAL STATEMENT BEFORE COMMIT. A bump placed
+    # ahead of later DDL would stamp a version the schema has not reached yet
+    # if the transaction were ever truncated -- the Phase 9 section A.0
+    # precedent this file's own header cites.
+    assert statements[-2].upper().startswith("UPDATE SCHEMA_VERSION"), (
+        statements[-2])
+
+
+def test_m9_a_failure_inside_the_script_persists_NOTHING(
+        tmp_path: Path) -> None:
+    """The counterexample, and it is what makes the framing test more than a
+    text assertion: plant a failing statement immediately before the version
+    bump and assert a real v37 database is UNTOUCHED afterwards.
+
+    Against a file with `BEGIN;`/`COMMIT;` REMOVED every earlier statement
+    autocommits, so the column, the index and the trigger all persist and each
+    assertion below fails. Against the shipped file the whole script is one
+    transaction and the rollback undoes all of it."""
+    text = MIGRATION.read_text(encoding="utf-8")
+    marker = "UPDATE schema_version SET version = 38;"
+    assert marker in text
+    planted = text.replace(
+        marker,
+        "INSERT INTO a_table_that_does_not_exist_planted VALUES (1);\n"
+        + marker,
+    )
+    c = _v37(tmp_path, "framing.db")
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            c.executescript(planted)
+        c.rollback()
+        cols = {r[1] for r in c.execute("PRAGMA table_info(trades)")}
+        assert "attempt_id" not in cols, cols
+        names = {
+            r[0] for r in c.execute(
+                "SELECT name FROM sqlite_master WHERE name IN "
+                "('ux_trades_attempt_id', 'trg_trades_attempt_id_immutable')")
+        }
+        assert names == set(), names
+        assert _current_version(c) == 37
+    finally:
+        c.close()
