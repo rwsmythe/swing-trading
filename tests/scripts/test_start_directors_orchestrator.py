@@ -247,3 +247,28 @@ def test_dryrun_launch_line_scrubs_markers_before_claude():
         assert launch.index(stanza) < claude_at, f"{name} scrubbed AFTER claude"
     # the role assignment still follows the scrub and precedes claude
     assert launch.index("$env:SWING_ROLE='charc'") < claude_at
+
+
+# --- Named window: one project = one window = three role tabs -------------
+#
+# Operator-ruled 2026-09-08 after two self-launched rollovers landed the
+# successor in the wrong window. '-w 0' resolves to the CALLER's window (or
+# the most recently used one), so a rolling-over session placed its successor
+# wherever IT happened to sit, and a mis-placed generation propagated. A NAMED
+# window ('-w swing') is deterministic from any caller and is created if
+# absent. Static pin (always runs) + a DryRun pin on the printed window line.
+
+def test_launcher_opens_tabs_in_the_named_window_never_window_zero():
+    text = _script_text()
+    assert "'-w', '0'" not in text                       # the wrong-window form is gone
+    assert "'-w', $Window, 'new-tab'" in text             # the named form is what launches
+    assert "[string]$Window = 'swing'" in text            # one window per project, by default
+
+
+def test_dryrun_prints_the_named_window_and_honours_override():
+    r, out = _dryrun("-Role", "orchestrator")
+    assert r.returncode == 0
+    assert "window: wt -w swing new-tab --title ORCHESTRATOR" in out
+    r, out = _dryrun("-Role", "rd", "-Window", "probe-win")
+    assert r.returncode == 0
+    assert "window: wt -w probe-win new-tab --title RD" in out

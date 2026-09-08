@@ -31,6 +31,18 @@
     fresh start. If the map has no entry for a role, the script tells you to use
     fresh mode for it.
 
+.PARAMETER Window
+    The NAMED Windows Terminal window every role tab is opened in (default
+    'swing'). One project = one window = three role tabs (operator-ruled
+    2026-09-08). wt.exe opens the tab in the window carrying this name and
+    CREATES the window if none does, so placement is deterministic from any
+    caller -- the GUI, a plain shell, or a rolling-over session's own tab.
+    The former '-w 0' meant "the caller's window, else the most recently used
+    one", so a self-launched successor landed in whatever window its parent
+    happened to occupy, and a mis-placed generation propagated its placement
+    to every successor. To name an EXISTING window: command palette
+    (Ctrl+Shift+P) -> "Rename window..." -> the same name.
+
 .PARAMETER NoWT
     Switch. Skip Windows Terminal; launch each role in a plain PowerShell
     window (-NoExit). This is also the automatic fallback when wt.exe is absent.
@@ -90,6 +102,8 @@ param(
     [ValidateSet('low', 'medium', 'high', 'xhigh', 'max')]
     [string]$Effort,
     [switch]$Resume,
+    [ValidatePattern('^[A-Za-z0-9_-]+$')]
+    [string]$Window = 'swing',
     [switch]$NoWT,
     [switch]$DryRun
 )
@@ -295,7 +309,10 @@ function Start-RoleWindow($role, $title, $argList) {
     $encoded = Get-EncodedCommand $inner
     $useWT = (-not $NoWT) -and ($null -ne (Get-Command wt.exe -ErrorAction SilentlyContinue))
     if ($useWT) {
-        $wtArgs = @('-w', '0', 'new-tab', '--title', $title, '-d', $RepoRoot, 'powershell', '-NoExit', '-EncodedCommand', $encoded)
+        # '-w <name>' (NEVER '-w 0'): the tab goes to the window NAMED $Window,
+        # created if absent. See .PARAMETER Window for the wrong-window failure
+        # '-w 0' produced on every self-launched rollover.
+        $wtArgs = @('-w', $Window, 'new-tab', '--title', $title, '-d', $RepoRoot, 'powershell', '-NoExit', '-EncodedCommand', $encoded)
         Start-Process -FilePath 'wt.exe' -ArgumentList $wtArgs
     }
     else {
@@ -323,6 +340,7 @@ function Start-Fresh($role, $map) {
     Write-Info "  cmd: $(Format-Cmd $argList)"
     Write-Info "  launch: $(Build-LaunchCommand $role $argList)"
     Write-Info "  spawn : powershell -NoExit -EncodedCommand $(Get-EncodedCommand (Build-LaunchCommand $role $argList))"
+    Write-Info "  window: wt -w $Window new-tab --title $($RoleTitles[$role]) (named window; -NoWT bypasses)"
     if ($DryRun) { return $map }
 
     $map[$role] = @{ session_name = $name; session_id = $null; created = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
@@ -347,6 +365,7 @@ function Start-Resume($role, $map) {
     Write-Info "  cmd: $(Format-Cmd $argList)"
     Write-Info "  launch: $(Build-LaunchCommand $role $argList)"
     Write-Info "  spawn : powershell -NoExit -EncodedCommand $(Get-EncodedCommand (Build-LaunchCommand $role $argList))"
+    Write-Info "  window: wt -w $Window new-tab --title $($RoleTitles[$role]) (named window; -NoWT bypasses)"
     Write-Info "  (--resume opens the /resume picker filtered to this name; select it to re-enter.)"
     if ($DryRun) { return $map }
     Start-RoleWindow $role $RoleTitles[$role] $argList
