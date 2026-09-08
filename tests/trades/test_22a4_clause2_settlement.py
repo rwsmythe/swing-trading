@@ -2145,14 +2145,14 @@ def test_A4X_R2_02a_a_fault_AT_the_proof_return_reports_the_durable_entry(
         tmp_path: Path, monkeypatch, caplog) -> None:
     """WINDOW 1, RULED: capture-then-return, with the ``except`` UNCHANGED.
 
-    **THE NAIVE SUBSTITUTE IS TODAY'S SHIPPED CODE**, and what it does is the
-    whole finding: the probe has ALREADY returned a row and the ticker has
-    ALREADY matched -- durability is PROVEN -- but the ``return`` sits inside
-    the helper's own ``except BaseException``, so an interrupt delivered at
-    that statement is converted to ``None``, and ``record_entry`` re-raises
-    **the original commit error over a durable entry.**  MEASURED against
-    ``b3b518f9``'s shape: ``sqlite3.OperationalError('commit lost (planted)')``
-    escaped this row.
+    **THE NAIVE SUBSTITUTE IS THE PRE-FIX ``b3b518f9`` SHAPE**, and what it
+    did is the whole finding: the probe has ALREADY returned a row and the
+    ticker has ALREADY matched -- durability is PROVEN -- but the ``return``
+    sat inside the helper's own ``except BaseException``, so an interrupt
+    delivered at that statement was converted to ``None``, and
+    ``record_entry`` re-raised **the original commit error over a durable
+    entry.**  MEASURED against ``b3b518f9``'s shape:
+    ``sqlite3.OperationalError('commit lost (planted)')`` escaped this row.
 
     RD's ruling (2026-09-08): a post-proof fault is clause 1's own event one
     rung down -- a fault after ``commit()`` returned is already reported as a
