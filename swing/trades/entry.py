@@ -1709,16 +1709,50 @@ class _CommitOutcome:
 # fires -- narrower than before, but not empty -- whenever the preconditions
 # above are NOT observed: a rollback that raised on the deferred path
 # (`cleanup_raised`), an in-memory database (`db_path` unavailable), a mint
-# failure (`token` unavailable), a probe that itself fails, or a token found
+# failure (`token` unavailable), a probe that itself fails, a token found
 # under the WRONG ticker (an anomaly no design anticipated, and the honest
-# response is still the alarm rather than an assertion).  On the ALARM the
-# row can still be durable while the caller is told the entry failed, so the
-# caller may RETRY -- and the retry hits `ux_trades_one_open_per_ticker`
+# response is still the alarm rather than an assertion), and -- NAMED HERE AS
+# A MEMBER OF THE SAME FAMILY (ruled 2026-09-08) -- an asynchronous
+# `BaseException` delivered inside the TWO-STATEMENT WINDOW between the
+# settle's return and the degraded result's construction: the unpack and the
+# `dataclasses.replace` in `record_entry`'s `not outcome.committed` branch,
+# above.  Those two statements sit in the post-commit handler with no
+# enclosing handler and CANNOT BE MADE ZERO-WIDTH.  The fault escapes,
+# carrying the original commit
+# error as its `__context__` -- an honest chain -- and the operator is told
+# the entry failed over a row that is durable, which is this family's cost
+# and not a new one.
+#
+# THE SETTLE'S OWN PROOF-TO-RETURN TAIL IS *NOT* IN THAT LIST, and the
+# asymmetry is deliberate: `_settle_by_attempt_identity` CAPTURES the
+# corroborated proof before returning it and hands it back from its own
+# containment arm, so a fault delivered there reports the DURABLE ENTRY
+# rather than the alarm -- clause 1's direction, one rung down.  There the
+# weakest sufficient change existed; here nothing cheaper than the
+# declaration does.
+#
+# EVERY MEMBER ABOVE CARRIES THE SAME COST AND THE SAME BELT.  On the ALARM
+# the row can still be durable while the caller is told the entry failed, so
+# the caller may RETRY -- and the retry hits `ux_trades_one_open_per_ticker`
 # (UNIQUE on ticker WHERE state IN entered/managing/partial_exited) and
 # REFUSES, naming the existing position.  A confusing error, not a double
 # position.  **THE BELT DOES NOT COVER A TICKER CLOSED BETWEEN THE TWO
 # ATTEMPTS**, and that remains the uncovered direction of this declaration,
 # unchanged by this arc.
+#
+# THE COMPOSITION, STATED ONCE FOR THE WHOLE FAMILY rather than once per
+# member -- because a per-member statement is what lets a new member look
+# like a new direction:  the ONLY path from ANY alarm-family member to a
+# SECOND POSITION is  alarm  x  operator retry  x  the position closed
+# between the two attempts.  And the third factor is not free-standing: an
+# EXIT recorded against a row the operator was told does not exist requires
+# him to have SEEN that row.
+#
+# THE TWO-STATEMENT WINDOW'S BOUND, in its weakest sufficient form: it is
+# bounded ABOVE by the rate of asynchronous faults landing in a two-statement
+# window on an already-failing path.  **NO INDEPENDENCE IS ASSUMED AND NO
+# STRICTNESS IS CLAIMED** -- an upper bound, never an estimate, and the
+# factors above are not asserted to be independent of each other.
 #
 # WHAT IS *NOT* REVERTED: clauses 1 and 3.  The post-commit region in
 # `record_entry` still guarantees that a commit which RETURNED cannot be
