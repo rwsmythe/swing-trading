@@ -51,6 +51,16 @@ def _log_contained(msg: str, *args: object) -> BaseException | None:
 
     The sink's exception is RETURNED rather than swallowed (the R10-04
     standard: a silent ``pass`` trades one invisible failure for another).
+
+    **AND THE ONE CALL SITE BELOW DISCARDS THAT RETURN, DELIBERATELY** (Codex
+    R1 Minor 11).  The return exists so a caller WITH a reporting channel can
+    use one; this call site has none by construction.  It fires on a path where
+    the entry SUCCEEDS -- a pre-v38 database, where the token is dropped and
+    the row is written -- so there is no escaping exception to attach a note
+    to (the ``log_contained_note`` channel the entry service uses needs one)
+    and no failure to report through.  If the sink raises here, the entry is
+    still correct and the token-drop warning is lost; the honest statement is
+    that this path cannot surface a sink failure, not that it declines to.
     """
     try:
         log.warning(msg, *args)

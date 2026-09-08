@@ -1228,9 +1228,15 @@ def record_entry(
     # THE RESULT IS A STATEMENT ABOUT THE DURABLE STATE OF THE LEDGER
     # (CHARC's contract, ruled 2026-09-01, from Codex 22A-FIX-R9-03), AS
     # SPLIT BY CHARC + RD 2026-09-02 -- `docs/22-a-merge-request.md` S4.4.
-    # **CLAUSES 1 AND 3 STAND** and are what this region implements.  CLAUSE 2
-    # (settle a lost commit BY READ) IS REVERTED to re-raise; the declaration,
-    # with both reproductions, sits above `_entry_transaction`.
+    # **ALL THREE CLAUSES STAND, AND CLAUSE 2 IS CONDITIONAL** (22-A4).  This
+    # sentence read *"CLAUSE 2 IS REVERTED to re-raise"* until this arc, and it
+    # is amended rather than left to read true while the code moved underneath
+    # it (gotcha #31): a commit whose own return was LOST now SETTLES BY
+    # ATTEMPT IDENTITY on a fresh connection when every precondition of
+    # `_settle_by_attempt_identity` is observed, and re-raises -- the ALARM,
+    # which is the pre-arc behaviour -- when any one of them is not.  The
+    # declaration above `_entry_transaction` carries both reproductions, how
+    # each precondition is now supplied, and what the ALARM still costs.
     #
     # `outcome` is how the transaction wrapper tells this function the ONE
     # fact it cannot otherwise observe -- whether the COMMIT ITSELF RETURNED.
@@ -1481,12 +1487,25 @@ class _CommitOutcome:
     **22-A4 ADDS TWO MORE FIELDS, FOR THREE OBSERVATIONS IN TOTAL -- AND
     EVERY ONE OF THEM IS AN OBSERVATION IN THE SAME SENSE ``committed`` IS**:
     of a call the WRITING frame itself made, of the connection's own state, or
-    of an exception that frame itself caught.  Never an inference.  "The
-    writing frame" is ``_entry_transaction`` on the IMMEDIATE path and
-    ``record_entry`` on the DEFERRED one, and the distinction is load-bearing
-    rather than incidental: each field is written where the fact is DIRECTLY
-    available, so no arm of this design has to reason about what another frame
-    must have done.
+    of an exception that frame itself caught.  "The writing frame" is
+    ``_entry_transaction`` on the IMMEDIATE path and ``record_entry`` on the
+    DEFERRED one, and the distinction is load-bearing rather than incidental:
+    each field is written where the fact is DIRECTLY available, so no arm of
+    this design has to reason about what another frame must have done.
+
+    **ONE OF THE FOUR IS A DERIVATION AND THIS SAYS SO** (Codex R1 Minor 9).
+    An earlier wording said *"never an inference"* of all of them, which is
+    false of ``cleanup_raised`` ON THE DEFERRED PATH: ``__exit__`` owns that
+    rollback, NO Python frame observes the call, and the fact is DERIVED from
+    the escaping exception's ``__context__`` by ``_exit_rollback_failed``.  The
+    derivation is sound on the whole supported range -- CPython restores the
+    commit's exception when its internal rollback succeeds and chains it
+    beneath the rollback's when it fails, on the declared 3.11 floor and on
+    3.14.2 alike (SOURCE, pinned by upstream digest at that helper) -- and it
+    is contained toward the ALARM, so an unreadable context refuses the settle
+    rather than admitting one.  Calling it an observation flattered it; the
+    other three ARE direct observations, and the difference is exactly the
+    kind a reader is entitled to see stated.
 
     ``resolution`` and ``cleanup_raised`` ARE TWO DIFFERENT FACTS and a
     reader must not collapse them.  ``resolution`` describes the
