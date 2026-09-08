@@ -2104,10 +2104,12 @@ def _proof_return_lineno() -> int:
 def _post_settle_unpack_lineno() -> int:
     """The line of ``record_entry``'s ``settled_trade_id, _ = settled``.
 
-    The FIRST of the two statements between the settle's return and the
-    degraded result's construction -- window 2.  Located by shape for the
-    same reason as above: it is the one tuple-unpacking assignment in
-    ``record_entry`` whose value is the name ``settled``.
+    The FIRST statement of the post-settle tail -- window 2's NEAR end.
+    Located by shape for the same reason as above: it is the one
+    tuple-unpacking assignment in ``record_entry`` whose value is the name
+    ``settled``.  **The tail does not end two statements later** -- see
+    ``_degraded_return_lineno`` for its FAR end, and Codex ``22A4-R3-02`` for
+    the measurement that corrected the width this row's first draft claimed.
     """
     fn = _function(_entry_tree(), "record_entry")
     found = [n for n in ast.walk(fn)
@@ -2256,12 +2258,16 @@ def test_A4X_R2_02b_a_fault_in_the_post_settle_window_escapes_as_itself(
     """WINDOW 2, **DECLARED, NOT FIXED** -- and this row pins the DECLARED
     DIRECTION rather than a fix.  It is written that way deliberately.
 
-    ``record_entry``'s two statements between the settle's return and the
-    degraded result's construction -- the unpack and the
-    ``dataclasses.replace`` -- sit in the ``except BaseException as
-    post_commit_error:`` suite with no enclosing handler.  A fault delivered
-    there escapes over a row that is DURABLE.  RD ruled (2026-09-08) that the
-    two statements cannot be made zero-width and that this window is **one
+    ``record_entry``'s POST-SETTLE TAIL -- the unpack, the
+    ``dataclasses.replace``, ``post_commit_error_text``, the ``warning_text``
+    branch, the degraded result's construction and ``return degraded`` -- sits
+    in the ``except BaseException as post_commit_error:`` suite with no
+    enclosing handler, because an exception raised inside an ``except`` suite
+    is not caught by the ``try`` whose handler is running.  A fault delivered
+    anywhere in it escapes over a row that is DURABLE.  **This row drives the
+    NEAR end; its sibling below drives the FAR end**, and the pair is what the
+    declaration's boundary-named bound rests on.  RD ruled (2026-09-08) that
+    the tail cannot be made zero-width and that this window is **one
     more member of the alarm family the declaration already prices** -- durable
     row, reported failure, retry refused by ``ux_trades_one_open_per_ticker``
     except for a ticker closed between the attempts -- with the same cost and
@@ -2294,7 +2300,7 @@ def test_A4X_R2_02b_a_fault_in_the_post_settle_window_escapes_as_itself(
         lost = sqlite3.OperationalError("commit lost (planted)")
         proxy = _ExitCommitsThenRaises(conn, lost)
         fault = KeyboardInterrupt(
-            "22-A4 PROBE: in the post-settle two-statement window")
+            "22-A4 PROBE: at the post-settle tail's NEAR end")
 
         # The broad collector, for (k3b)'s reason: an uncaught
         # `KeyboardInterrupt` ABORTS THE PYTEST SESSION, which is strictly
@@ -2337,6 +2343,197 @@ def test_A4X_R2_02b_a_fault_in_the_post_settle_window_escapes_as_itself(
         assert _fresh_rows(db_path) == 1, (
             "this row's entire premise is a DURABLE entry reported as a "
             "failure; without it the assertion above prices nothing")
+    finally:
+        sys.settrace(None)
+        conn.close()
+
+
+# ===========================================================================
+# THE TWO ROWS CODEX ROUND 3 SHOWED WERE MISSING (`22A4-R3-01`, `22A4-R3-02`).
+# Both findings were REPRODUCED before either was acted on, and both landed on
+# the fix leg's OWN artifacts: a declaration that claimed a window was gone
+# when the fix had only MOVED it, and a bound stated as "two statements" when
+# the exposure ran to the function's return.  The rows below measure the two
+# boundaries the declaration now names, so that the corrected text is pinned
+# by execution rather than by a second confident sentence.
+# ===========================================================================
+def _proof_capture_lineno() -> int:
+    """The line of ``proven = found`` -- the settle's CAPTURE boundary.
+
+    The one statement the capture-then-return fix could not cover: a fault
+    landing HERE arrives with the probe's corroborated row already in hand and
+    ``proven`` still ``None``.  Located by shape (the single assignment of a
+    bare Name to ``proven``) for the same reason as the other locators.
+    """
+    fn = _function(_entry_tree(), "_settle_by_attempt_identity")
+    hits = [n for n in ast.walk(fn)
+            if isinstance(n, ast.Assign) and len(n.targets) == 1
+            and isinstance(n.targets[0], ast.Name)
+            and n.targets[0].id == "proven"
+            and isinstance(n.value, ast.Name)]
+    assert len(hits) == 1, (
+        f"expected exactly one `proven = <name>` capture, found {len(hits)}")
+    return hits[0].lineno
+
+
+def _degraded_return_lineno() -> int:
+    """The line of ``return degraded`` -- the post-settle tail's FAR end."""
+    fn = _function(_entry_tree(), "record_entry")
+    hits = [n for n in ast.walk(fn)
+            if isinstance(n, ast.Return) and isinstance(n.value, ast.Name)
+            and n.value.id == "degraded"]
+    assert len(hits) == 1, (
+        f"expected exactly one `return degraded`, found {len(hits)}")
+    return hits[0].lineno
+
+
+def test_A4X_R2_02d_a_fault_AT_the_capture_alarms_and_says_only_what_it_saw(
+        tmp_path: Path, monkeypatch, caplog) -> None:
+    """`22A4-R3-01`: THE CAPTURE BOUNDARY -- declared, and its wording made true.
+
+    The capture-then-return fix MOVED the settle's proof-to-return window; it
+    did not remove it, because the class is irreducible and a capture is
+    itself a statement.  A fault delivered AT ``proven = found`` lands after
+    the probe returned a corroborated row and before the proof is bound, so
+    the helper ALARMS over a durable entry.
+
+    **THE NAIVE SUBSTITUTE IS THE FIX LEG'S OWN FIRST SHAPE**, whose no-proof
+    arm said *"the settle-by-attempt-identity read FAILED"*.  MEASURED against
+    it: this exact injection emitted that sentence with one durable row on
+    disk -- **the same false sentence the ruling required be removed, one
+    statement further along.**  So this row asserts the direction AND the
+    wording: the alarm fires, and it claims only what the branch can observe.
+
+    It also pins the declaration.  Naming this boundary as a member of the
+    alarm family is only worth the words if something measures it; without
+    this row the declaration would be a second confident sentence about a
+    window nobody had driven.
+    """
+    db_path = tmp_path / "r3_capture.db"
+    conn = ensure_schema(db_path)
+    entry_file = entry_mod.__file__
+    target = _proof_capture_lineno()
+    fired: list = []
+    try:
+        outcomes = _capture_outcomes(monkeypatch)
+        probe_calls: list = []
+        probe_returns: list = []
+        real_probe = entry_mod._durability_probe
+
+        def _spy(*args):
+            probe_calls.append(args)
+            probe_returns.append(real_probe(*args))
+            return probe_returns[-1]
+
+        monkeypatch.setattr(entry_mod, "_durability_probe", _spy)
+        lost = sqlite3.OperationalError("commit lost (planted)")
+        proxy = _ExitCommitsThenRaises(conn, lost)
+        fault = KeyboardInterrupt("22-A4 PROBE: AT the settle's capture")
+
+        escaped: list = []
+        with caplog.at_level(logging.ERROR, logger="swing.trades.entry"):
+            sys.settrace(_fault_at(entry_file, "_settle_by_attempt_identity",
+                                   target, fault, fired))
+            try:
+                record_entry(proxy, _req(), soft_warn=SOFT, hard_cap=HARD,
+                             force=False, cfg=None)
+            except BaseException as exc:  # noqa: BLE001 -- session-abort guard
+                escaped.append(exc)
+            finally:
+                sys.settrace(None)
+
+        assert fired, (
+            "the trace hook never reached the capture, so this row measures "
+            "nothing about the boundary it exists to declare")
+        # THE DECLARED DIRECTION: the alarm, carrying the ORIGINAL failure.
+        assert len(escaped) == 1, "nothing escaped the capture boundary"
+        assert escaped[0] is lost, (
+            f"the containment arm changed which exception escapes: "
+            f"{type(escaped[0]).__name__}: {escaped[0]}")
+        # THE PREMISE, MEASURED: the probe HAD corroborated a durable row.
+        assert len(probe_calls) == 1
+        assert probe_returns[0] is not None, (
+            "without a corroborated probe this row is not about the capture "
+            "boundary at all")
+        assert _fresh_rows(db_path) == 1, (
+            "the declaration's cost is a DURABLE row reported as a failure; "
+            "without the row there is nothing declared")
+        assert outcomes[0].committed is False
+        # THE WORDING: only what the branch can observe.
+        arm = [r.getMessage() for r in caplog.records
+               if "NO CORROBORATED PROOF" in r.getMessage()]
+        assert len(arm) == 1, (
+            f"the no-proof arm did not report: "
+            f"{[r.getMessage() for r in caplog.records]}")
+        assert "22-A4 PROBE: AT the settle's capture" in arm[0]
+        assert not any("read FAILED" in r.getMessage()
+                       for r in caplog.records), (
+            "the alarm says the READ failed while the read SUCCEEDED and was "
+            "corroborated -- the false sentence the ruling required removed, "
+            "surviving one statement further along")
+    finally:
+        sys.settrace(None)
+        conn.close()
+
+
+def test_A4X_R2_02e_a_fault_at_the_tail_s_FAR_end_escapes_the_same_way(
+        tmp_path: Path, monkeypatch) -> None:
+    """`22A4-R3-02`: THE POST-SETTLE TAIL'S FAR END -- the bound's other endpoint.
+
+    The declaration's first draft bounded window 2 at TWO STATEMENTS.  It is
+    not two: an exception raised inside an ``except`` suite is not caught by
+    the ``try`` whose handler is running, and the only nested handler in that
+    tail protects the ``log.error`` call alone -- so the exposure runs from the
+    settle's return THROUGH ``return degraded``.  MEASURED at two interior
+    points before the text was corrected; this row drives the FAR END, which
+    is the endpoint that falsifies the two-statement claim outright.
+
+    **THE NAIVE SUBSTITUTE IS THE SUPERSEDED DECLARATION ITSELF**: under a
+    two-statement bound this injection point is outside the declared window,
+    so an escape here would be an UNDECLARED loss of a durable entry.  The row
+    exists so the corrected bound is measured at both ends rather than
+    asserted at one.  A `try`/`except` swallow over the tail would also fail
+    it, at ``len(escaped) == 1``.
+    """
+    db_path = tmp_path / "r3_tailfar.db"
+    conn = ensure_schema(db_path)
+    entry_file = entry_mod.__file__
+    target = _degraded_return_lineno()
+    fired: list = []
+    try:
+        outcomes = _capture_outcomes(monkeypatch)
+        probed = _probe_spy(monkeypatch)
+        lost = sqlite3.OperationalError("commit lost (planted)")
+        proxy = _ExitCommitsThenRaises(conn, lost)
+        fault = KeyboardInterrupt("22-A4 PROBE: at `return degraded`")
+
+        escaped: list = []
+        sys.settrace(_fault_at(entry_file, "record_entry", target, fault,
+                               fired))
+        try:
+            record_entry(proxy, _req(), soft_warn=SOFT, hard_cap=HARD,
+                         force=False, cfg=None)
+        except BaseException as exc:  # noqa: BLE001 -- session-abort guard
+            escaped.append(exc)
+        finally:
+            sys.settrace(None)
+
+        assert fired, (
+            "the trace hook never reached `return degraded`, so this row "
+            "measures nothing about the tail's far end")
+        assert len(escaped) == 1, (
+            "nothing escaped the tail's far end -- the declared direction was "
+            "replaced by a swallow")
+        assert type(escaped[0]) is KeyboardInterrupt
+        assert escaped[0] is fault
+        assert escaped[0].__context__ is lost, (
+            "the chain is not honest: the ORIGINAL commit error must be the "
+            "context of what escapes")
+        assert len(probed) == 1
+        assert outcomes[0].committed is False
+        assert _fresh_rows(db_path) == 1, (
+            "the row must be DURABLE here, or this measures nothing the "
+            "declaration prices")
     finally:
         sys.settrace(None)
         conn.close()

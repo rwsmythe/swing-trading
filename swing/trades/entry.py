@@ -1006,6 +1006,17 @@ def _settle_by_attempt_identity(
     own return is the same window one frame later, it opens a second
     connection on an already-failing money path, and it contradicts the
     shipped one-probe-per-attempt assertion.
+
+    **WHAT THE CAPTURE NARROWS AND WHAT IT DOES NOT** (Codex `22A4-R3-01`,
+    reproduced by execution).  The class is IRREDUCIBLE and this is where the
+    residue now sits: a fault delivered AT the capture statement itself lands
+    with the probe's corroborated row already in hand and `proven` still
+    `None`, so the arm ALARMS over a durable entry.  What the capture buys is
+    that every boundary AFTER it reports the entry; what it cannot buy is a
+    boundary that does not exist.  **The residue is DECLARED as a member of
+    the alarm family** -- see the declaration above `_entry_transaction` --
+    rather than argued away, and the arm's no-proof wording says only what it
+    can observe.
     """
     #: The corroborated proof, or ``None``.  Declared BEFORE the ``try`` so
     #: the containment arm can read it on every path into that arm.
@@ -1057,16 +1068,23 @@ def _settle_by_attempt_identity(
                 "return is.",
                 settled_id, safe_text(settle_error))
             return proven
-        # THE READ DID NOT SUCCEED.  This wording is reachable only when no
-        # proof exists, which is what makes it true: an alarm that says the
-        # read FAILED while the read succeeded is a false sentence in an
-        # alarm, and a row that reads as a false positive teaches the next
-        # reader to distrust the check.
+        # **NO PROOF WAS CAPTURED -- WHICH IS NOT THE SAME AS "THE READ
+        # FAILED", AND THE WORDING SAYS ONLY WHAT IT CAN OBSERVE** (Codex
+        # `22A4-R3-01`, REPRODUCED: a fault delivered AT the capture statement
+        # itself leaves `proven` unbound-to-a-value while the probe HAD
+        # returned a corroborated row, and the predecessor's "the read FAILED"
+        # was then emitted over a durable entry -- the same false sentence the
+        # ruling required be removed, one line further along).  Two different
+        # events reach this arm: the read or the gate genuinely produced
+        # nothing, OR a fault arrived before the capture landed.  This branch
+        # cannot tell them apart, so it must not claim to.
         log_contained_note(
             log, post_commit_error,
-            "22-A4: the settle-by-attempt-identity read FAILED (%s). The "
-            "original failure is re-raised UNCHANGED -- the caller is told "
-            "about the entry, never about the probe.",
+            "22-A4: the settle-by-attempt-identity produced NO CORROBORATED "
+            "PROOF (%s) -- either the read/gate yielded none, or a fault "
+            "arrived before the proof was captured. The original failure is "
+            "re-raised UNCHANGED -- the caller is told about the entry, never "
+            "about the probe.",
             safe_text(settle_error))
         return None
 
@@ -1712,24 +1730,37 @@ class _CommitOutcome:
 # failure (`token` unavailable), a probe that itself fails, a token found
 # under the WRONG ticker (an anomaly no design anticipated, and the honest
 # response is still the alarm rather than an assertion), and -- NAMED HERE AS
-# A MEMBER OF THE SAME FAMILY (ruled 2026-09-08) -- an asynchronous
-# `BaseException` delivered inside the TWO-STATEMENT WINDOW between the
-# settle's return and the degraded result's construction: the unpack and the
-# `dataclasses.replace` in `record_entry`'s `not outcome.committed` branch,
-# above.  Those two statements sit in the post-commit handler with no
-# enclosing handler and CANNOT BE MADE ZERO-WIDTH.  The fault escapes,
-# carrying the original commit
-# error as its `__context__` -- an honest chain -- and the operator is told
-# the entry failed over a row that is durable, which is this family's cost
-# and not a new one.
+# TWO MORE MEMBERS OF THE SAME FAMILY (ruled 2026-09-08; their WIDTH corrected
+# 2026-09-08 after Codex `22A4-R3-01`/`-02` MEASURED both, and the measurement
+# is the reason these two paragraphs are stated in boundaries rather than in
+# statement counts) -- an asynchronous `BaseException` delivered at either of
+# these two places:
 #
-# THE SETTLE'S OWN PROOF-TO-RETURN TAIL IS *NOT* IN THAT LIST, and the
-# asymmetry is deliberate: `_settle_by_attempt_identity` CAPTURES the
-# corroborated proof before returning it and hands it back from its own
-# containment arm, so a fault delivered there reports the DURABLE ENTRY
-# rather than the alarm -- clause 1's direction, one rung down.  There the
-# weakest sufficient change existed; here nothing cheaper than the
-# declaration does.
+#   (A) **THE SETTLE'S CAPTURE BOUNDARY.**  `_settle_by_attempt_identity`
+#       captures the corroborated proof and then returns it, so every boundary
+#       AFTER the capture reports the DURABLE ENTRY -- clause 1's direction,
+#       one rung down.  What the capture cannot buy is a boundary that does
+#       not exist: a fault landing AT the capture statement arrives with the
+#       probe's row already in hand and no proof yet bound, and the helper
+#       ALARMS.  REPRODUCED: a `sys.settrace` fault at that statement re-raised
+#       the original commit error with one durable row on disk.
+#
+#   (B) **`record_entry`'s WHOLE POST-SETTLE TAIL, from the settle's return
+#       THROUGH `return degraded`** -- the unpack, the `dataclasses.replace`,
+#       `post_commit_error_text = safe_text(...)`, the `warning_text` branch,
+#       the degraded result's construction, and the return itself.  **It is
+#       NOT two statements**: an exception raised inside an `except` suite is
+#       not caught by the `try` whose handler is running, and the only nested
+#       handler in that tail protects the `log.error` call alone.  REPRODUCED
+#       at `post_commit_error_text = ...` and again at `return degraded`:
+#       both escaped over a durable row, carrying the original commit error as
+#       `__context__` -- an honest chain, and this family's cost rather than a
+#       new one.
+#
+# NEITHER CAN BE MADE ZERO-WIDTH, which is why both are declared rather than
+# fixed.  For (A) a weakest-sufficient change existed and was made -- it moved
+# the boundary, it did not remove it.  For (B) nothing cheaper than the
+# declaration exists.
 #
 # EVERY MEMBER ABOVE CARRIES THE SAME COST AND THE SAME BELT.  On the ALARM
 # the row can still be durable while the caller is told the entry failed, so
@@ -1748,11 +1779,17 @@ class _CommitOutcome:
 # EXIT recorded against a row the operator was told does not exist requires
 # him to have SEEN that row.
 #
-# THE TWO-STATEMENT WINDOW'S BOUND, in its weakest sufficient form: it is
-# bounded ABOVE by the rate of asynchronous faults landing in a two-statement
-# window on an already-failing path.  **NO INDEPENDENCE IS ASSUMED AND NO
+# THE TWO NEW MEMBERS' BOUND, in its weakest sufficient form: each is bounded
+# ABOVE by the rate of asynchronous faults landing in ITS OWN window on an
+# already-failing path -- ONE STATEMENT for (A), and for (B) the post-settle
+# tail through `return degraded`.  **NO INDEPENDENCE IS ASSUMED AND NO
 # STRICTNESS IS CLAIMED** -- an upper bound, never an estimate, and the
-# factors above are not asserted to be independent of each other.
+# factors above are not asserted to be independent of each other.  The bound
+# is stated by NAMING ITS ENDPOINTS rather than by counting statements,
+# because the statement count was the half of this declaration that was WRONG:
+# it read "two" while the exposure ran to the function's return, and a number
+# in a bound is exactly the kind of claim that reads as measured when it was
+# assumed.
 #
 # WHAT IS *NOT* REVERTED: clauses 1 and 3.  The post-commit region in
 # `record_entry` still guarantees that a commit which RETURNED cannot be
