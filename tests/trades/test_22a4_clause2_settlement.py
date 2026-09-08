@@ -2243,11 +2243,19 @@ def test_A4X_R2_02a_a_fault_AT_the_proof_return_reports_the_durable_entry(
             f"the post-proof fault was not reported: "
             f"{[r.getMessage() for r in caplog.records]}")
         assert "22-A4 PROBE: AT the settle's own return" in post_proof[0]
-        assert not any("read FAILED" in r.getMessage()
+        # THE COUNTERFACTUAL, which is what carries the meaning here: the
+        # NO-PROOF arm must NOT fire when a proof exists.  Asserting the
+        # absence of the SUPERSEDED wording ("the read FAILED") stopped
+        # discriminating the moment that sentence left the module -- a belt
+        # that goes vacuously green is the shape this arc keeps catching -- so
+        # this names the arm that is actually reachable.  The superseded
+        # wording is still asserted against, discriminatingly, by (A4X-R2-02d),
+        # which is the row that measured it red.
+        assert not any("NO CORROBORATED PROOF" in r.getMessage()
                        for r in caplog.records), (
-            "the alarm still says the read FAILED when the read SUCCEEDED -- "
-            "a false sentence in an alarm teaches the next reader to distrust "
-            "the check")
+            "the no-proof alarm fired while the probe HAD corroborated a "
+            "durable row -- a false sentence in an alarm teaches the next "
+            "reader to distrust the check")
     finally:
         sys.settrace(None)
         conn.close()
