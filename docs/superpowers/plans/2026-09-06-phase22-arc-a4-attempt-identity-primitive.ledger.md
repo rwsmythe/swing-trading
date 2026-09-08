@@ -2903,3 +2903,83 @@ the spend is the operator's to approve. Nothing is dispatched on this transcript
   reconsider a counted A round -- not before.
 - **`B-2` banked** to CHARC's register, content as stated. **`B-4`** unchanged (the queued rename
   rider, trigger after merge).
+
+---
+
+## RD'S RULING ON `B-3` -- **AUTHOR: RD. TRANSCRIBED BY THE ORCHESTRATOR AS COURIER ONLY.**
+
+**LITERAL BLOCK QUOTE**, built mechanically from the message file on disk
+(`comms/orchestrator/read/20260908T172247Z-rd-rd-rules-b-3-cache-private-before-merge.md`, posted
+2026-09-08T17:22:47Z, type `fyi`), front matter stripped and each line prefixed. Not re-set, not
+paraphrased. Same treatment and same reason as CHARC's `B-1` ruling above.
+
+**Both director items on Reviewer B are now RULED.** `B-1` -- CHARC, above. `B-3` -- RD, here. RD
+concurs with `B-1` and says nothing on it; CHARC said nothing on `B-3`. One ruler per item, honoured
+on both sides.
+
+> RD RULING on B-3 (the item that names my seat; constraint 3 is mine). CHARC's B-1 ruling landed 17:21Z; I concur and say nothing on it. Fresh RD generation, 2026-09-08.
+>
+> == VERIFIED BEFORE RULING, METHOD STATED ==
+> Read on the reviewed tree via `git show 84e90bab:` (never cd): `_durability_probe` opens `Path(...).as_uri() + "?mode=rw"` -- no cache parameter; its docstring says the construction-time precondition "is pinned by test (h)"; test (h) is headed "THE PROBE CONNECTION IS NOT SHARED-CACHE" and its only assertion is `PRAGMA read_uncommitted == 0` (tests/trades/test_22a4_attempt_identity.py:812-840). B's reading of all three is correct.
+> Enabler absence: `git grep -iE "cache=shared|enable_shared_cache|SHAREDCACHE|cache=private"` over swing/ tests/ scripts/ = ZERO hits on 84e90bab AND on main. That is a token grep and bounds from below; it is corroborated by execution below, which is why the ruling does not rest on it.
+> Executed on this box (Python 3.14.2 / SQLite 3.50.4, script in my scratchpad, deleted after): (1) `sqlite3.enable_shared_cache` DOES NOT EXIST on this runtime (removed in 3.12) -- from Python, shared cache is reachable only per-connection via `cache=shared`, so a C extension calling `sqlite3_enable_shared_cache` is the only path that could flip the probe's default; (2) `?mode=rw&cache=private` opens, reads, `read_uncommitted` = 0; (3) a `cache=shared` writer holding an uncommitted BEGIN IMMEDIATE insert is INVISIBLE to a `cache=private` reader on the same file (count 0). So the parameter delivers the property by mechanism, and it composes with the existing `mode=rw`.
+>
+> == RULING: FIX BEFORE MERGE, IN THE B-1 FIX LEG, MINOR SCOPE ==
+> Reason 1 (the one that decides it): constraint 3 is the DURABLE-VISIBILITY READ of the evidence rule -- a fresh connection that sees only committed state. On the tree today that property holds by WRITER-ABSENCE ("nothing in this repo enables shared cache"), which is a claim with a shelf life, exactly the class I banked against myself on notes-writability: true today, rotting silently the moment a dependency or C extension flips the process default. `cache=private` converts it into a construction-time guarantee at the cost of nine characters. Admissibility machinery does not get to rest on writer-absence when a mechanism is one parameter away.
+> Reason 2: the docstring and the test HEADER both assert a pin that the assertion does not measure. That is a stated reason in normative voice claiming coverage it lacks -- the version-mirror/`_is_head` class one rung down: the NAME of the test is a claim, and the claim is false. Banking it would merge a false pin carrying a reviewed-at certification (the partial-cleanup-launders class). The correction is cheaper than the register row.
+> Severity: MINOR STANDS as B graded it -- reachability measured (item 1 above), and the direction is not a false success: the ruling does not depend on how the CURRENT code behaves under shared cache, because the fix removes the case; I make no claim about SQLITE_LOCKED-vs-read there and want none written.
+>
+> == PRESCRIBED SHAPE (bounded) ==
+> (a) `_durability_probe`: URI becomes `... + "?mode=rw&cache=private"`. Nothing else in the function. LOCK-A: this touches `_durability_probe`, one of the three AST-locked functions -- so the lock's baseline moves by exactly this one string literal and the gate re-measures against the NEW segment hash, stated in the ledger with the old and new sha256 side by side. That is a deliberate, named lock move, not an untouched claim; CHARC re-measures at his gate, as he said he would, and so do I.
+> (b) Test (h) is REWRITTEN, not appended: assert the URI passed to `open_connection` carries `cache=private` (spy the call, capture the URI string -- construction-time, the property the header names) and KEEP the `read_uncommitted == 0` scalar as a second, honestly-labelled assertion (what the pragma reads under a private cache). The test's header and name say what it now pins; the failure message stops claiming what it cannot measure.
+> (c) The entry.py docstring paragraph "PRAGMA read_uncommitted IS NOT CHECKED AT RUNTIME..." is corrected by REPLACEMENT: the precondition is a construction-time URI parameter pinned by (h)'s URI assertion; the runtime-branch-is-dead-code argument stays because it is still true.
+> (d) No counted A round on B-3's account (scope-of-change rule: one literal, one test, one docstring). It rides the B-1 fix leg and CHARC's sequence unchanged: fix leg -> full fast suite -> B re-run on the post-fix head -> trailer reword -> operator's -n auto -> merge request -> both gates. My merge gate's check (b) will read the locked functions against the new hash.
+>
+> Flagged, unverified, disposition pre-ruled: whether `open_connection` re-encodes or validates URIs in a way that rejects a second query parameter. The cell verifies at the code; if it does, that is a finding about `open_connection`, not a licence to drop the parameter -- route back.
+>
+> -- RD
+
+### THE LOCK-A BASELINE MOVES -- recorded here because it is a NAMED lock move, not an untouched claim
+
+RD's part (a) changes one string literal inside `_durability_probe`, which is one of the three
+AST-locked functions. **The lock is not broken; its baseline moves by exactly this change, and the
+gate re-measures against the NEW segment hash.** The OLD hash is recorded now, before the fix, so
+the move is auditable in both directions:
+
+| locked function | sha256 of AST source segment at `a32ea9d5` == `84e90bab` | after the `B-3` fix |
+|---|---|---|
+| `_entry_transaction` | `c53b2786e3a7518d5c1341af399eeac9d4d8e16cc615c28d093e631c56240d69` (10,990 chars) | MUST BE UNCHANGED |
+| `_durability_probe` | `c16ea4656c1c2e415beb04f3a04f141719cfc60a793465eb5d9b4e70616c4914` (4,113 chars) | **MOVES -- new hash recorded at the fix, diff must be the URI literal and the docstring paragraph ONLY** |
+| `record_entry` | `5b6aa7466175ff4c91448bf8dbb6f18f19b6a2974e12dfab20d2e1aa41710fb7` (25,939 chars) | MUST BE UNCHANGED |
+
+Measured by the orchestrator at Reviewer B's QA, `a32ea9d5` -> `84e90bab`, all three IDENTICAL --
+against a `git diff --stat` on `entry.py` reading 123 insertions, which is the trap that has already
+caught one reader. **`a32ea9d5` is a MID-ARC commit** (the rounds 1-2 ledger), so "identical to
+`a32ea9d5`" means unchanged since the lock was SET, not untouched by the arc.
+
+### RD's flagged item, answered by the orchestrator BEFORE dispatch rather than at the cell
+
+RD flagged, unverified: whether `open_connection` re-encodes or validates URIs in a way that would
+reject a second query parameter, and pre-ruled the disposition -- if it does, that is a finding about
+`open_connection`, not a licence to drop the parameter, and it routes back. **Verifying a brief's
+premise before commissioning is this seat's own standing obligation** (the #38 pre-commission premise
+check; the round-0 premise census), so it was checked here rather than carried into the dispatch as
+an assumption.
+
+**ANSWER: `open_connection` does NOT re-encode or validate the URI. The premise holds and the fix leg
+is a one-leg dispatch.** Verified two ways. By READ: `swing/data/db.py::open_connection` passes
+`db_path_or_uri` straight into `sqlite3.connect(db_path_or_uri, uri=uri, ...)` and then issues only
+PRAGMAs -- there is no parsing, re-quoting or allowlist anywhere in the function. By EXECUTION,
+through the real function on a real migrated database:
+`open_connection(<file uri> + "?mode=rw&cache=private", uri=True)` opened, `PRAGMA read_uncommitted`
+read 0, and `schema_version` and `trades` were both readable.
+
+**AND THE CAVEAT, STATED RATHER THAN DROPPED, BECAUSE IT IS THE HALF THAT COULD MISLEAD:** the
+negative control I ran alongside it -- a deliberately bogus `?mode=rw&nonsense=1` -- was **ACCEPTED**,
+not rejected. So SQLite ignores unrecognised query parameters here, and **the successful open
+therefore proves only that nothing REJECTS or MANGLES the parameter; it does NOT by itself prove the
+parameter TOOK EFFECT.** What proves the mechanism is RD's own execution in his ruling above (a
+`cache=shared` writer's uncommitted insert measured INVISIBLE to a `cache=private` reader on the same
+file, count 0) -- his measurement, not this seat's, and cited as his. A non-discriminating control is
+reported as non-discriminating; the alternative is a bounded check presented as a total, which is
+this arc's most-repeated failure class.
