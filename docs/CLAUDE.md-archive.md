@@ -230,3 +230,49 @@ Personal swing-trading tool (Disciplined Swing Trader + Minervini SEPA). Active 
 **Bound on the framing (RD, explicitly limiting his own generalization).** Both instances are TIMESTAMP-shaped. The broader claim — "any batch-level attribute standing in for a per-element fact" — is plausible but NOT asserted. Anchor on the concrete case; widen only on a third instance. Recorded because the discipline of not over-claiming a pattern from n=2 is the same discipline that produced the D5 retraction the same day (a probe-class threshold declared crossed on n=1).
 
 **Why cataloged BEFORE the 21-B survey.** RD's reasoning: the survey and the gotcha answer different questions — the survey scopes REMEDIATION of existing instances, the gotcha is PREVENTION of the next one, and two independent instances already establish a recognizable shape. Project precedent supports banking on first/second occurrence with forensic detail rather than after a census (the trailing-NaN gotcha banked from a single run; write-barrier-breaks-seeding-tests from a single cross-arc interaction). The survey UPDATES the entry's scope; it does not gate it. Open at 21-B: grep all `data_asof_date` consumers — RD is explicit that he is "not asserting it is a class, but refusing to assume it is not."
+
+
+---
+
+## Appended 2026-09-08 — the migration backup-gate rule text, corrected from the TEXT end
+
+**The compressed gotcha in `CLAUDE.md` §Gotchas / SQLite is the live rule. This is its provenance.**
+
+**What the line said, and why it was wrong.** Until 2026-09-08 the gotcha read: *"Migration
+backup-gate uses STRICT equality `pre_version == (target - 1)`, NOT `<=` (multi-version jumps must be
+separate two-step migrations). Copy the Phase 9 `pre_version == 16 AND target >= 17` clause shape
+verbatim."* **That is two different rules in one sentence.** `pre_version == (target - 1)` and
+`pre_version == 16 AND target >= 17` agree at `target == 17` and disagree at every higher target: the
+implemented clause FIRES at `target == 18`, the shorthand would not. The line told the reader to copy
+a clause shape and, in the same breath, named a condition that shape does not implement.
+
+**How it surfaced.** 22-A4 round 4 (2026-09-08, `gpt-5.6-sol` / `high`, verdict
+`NEW_CRITICAL_MAJOR_FOUND`) raised `A4X-R4-04`: `tests/data/test_migration_0038_attempt_identity.py`
+cited the shorthand in the docstring at `:150-151` **inside a test that asserts at `:177-180` that the
+gate fires at 37→39** — precisely the divergent case. The arc had already fixed the production-side
+docstring one commit earlier (`d34e1493`) and missed the test twin: *state-the-class-then-sweep,
+missed on the very commit that stated the class*, self-reported by the implementing cell.
+
+**The measurement that framed the disposition.** 19 lines in `swing/data/db.py` carry the shorthand,
+all docstrings citing the gotcha by name (`_phase13_backup_gate:1373`, `:1419`, `:1464`, `:1508`,
+`:1551`, `:1594`, and others). The orchestrator measured the count before proposing anything, and
+reframed the item away from a 19-docstring repaint.
+
+**CHARC's ruling (2026-09-08), which is the durable part.** The gotcha TEXT is the wrong end to leave
+standing: strict equality and the canonical implementation *agree on every contract-legal input*,
+because the same gotcha forbids multi-version jumps — they diverge only on the forbidden jump, where
+the implementation fires and the shorthand does not, **and our own test pins the implementation
+there.** So the text should describe the clause it tells people to copy verbatim. He banked the FORM
+finding to the D34-era register — *two statements of one rule that disagree on a forbidden input* —
+and handed the wording to the orchestrator as `CLAUDE.md` content. **The 19 docstrings then cite a
+corrected rule and need no repaint**, which is the whole economy of fixing this end rather than the
+other.
+
+**Why the shorthand is KEPT in the corrected line as a named non-condition.** A reader who has met it
+in one of the 19 docstrings needs to know why it is wrong. Deleting it silently would leave that
+reader with a citation to a rule that no longer appears anywhere — the same false-premise-by-absence
+shape as the retired "grep-history continuity" citation (see §"Appended 2026-09-07").
+
+**Landed:** the self-contradictory line replaced at `25870c42`; compressed to trigger + fix with this
+forensic split out, per the §size-check trigger, immediately after (the first version was 857 chars
+against a ~700 soft cap, caught by the author's own check rather than by a reviewer).
