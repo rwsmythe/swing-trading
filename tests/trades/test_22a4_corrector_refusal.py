@@ -423,3 +423,102 @@ def test_m8d_a_non_immutable_tier3_override_still_applies(
         "SELECT superseded_by_correction_id FROM reconciliation_corrections "
         "WHERE correction_id = ?", (head_id,),
     ).fetchone()[0] == result.correction_id
+
+
+# ---------------------------------------------------------------------------
+# (m8e) CASING AND QUOTING VARIANTS -- Codex R1 Major 3
+# ---------------------------------------------------------------------------
+# SQLite RESOLVES IDENTIFIERS CASE-INSENSITIVELY, so `ATTEMPT_ID` and
+# `[attempt_id]` name the SAME column that `attempt_id` does. The byte-exact
+# immutable set does not see them, and every one of these rows FAILS against a
+# byte-exact `_refuse_immutable_journal_fields`.
+#
+# WHAT WAS ACTUALLY BROKEN, and it is the ORDERING half rather than the
+# refusal half: a variant spelling was still refused -- `_assert_real_column_name`
+# compares exactly and rejects it -- but on the TIER-3 surface that refusal
+# arrives at step 6, AFTER steps 4 and 5 have inserted the new correction row
+# and advanced the prior row's chain pointer. The early check exists precisely
+# so that "nothing was written" holds on the composition surface, and for a
+# variant spelling it did not. The late refusal is also a
+# `ReservedJournalFieldError`, which derives from bare `Exception` and reaches
+# NEITHER delivery handler (the CLI catches `ValueError` -> exit 2, the web
+# catches `ValueError` -> 400), so the operator got a traceback or a 500.
+#
+# THE WIDENING REFUSES NOTHING THAT EXISTED BEFORE THIS ARC: the only member of
+# the immutable set is `trades.attempt_id`, a column migration 0038 creates.
+_VARIANT_SPELLINGS = ("ATTEMPT_ID", "Attempt_Id", "[attempt_id]", '"attempt_id"')
+
+
+@pytest.mark.parametrize("spelling", _VARIANT_SPELLINGS)
+def test_m8e_tier3_refuses_a_variant_spelling_BEFORE_step_4(
+    conn: sqlite3.Connection, spelling: str,
+) -> None:
+    """The composition surface, where the caller owns the rollback, so a late
+    refusal leaves the correction-ledger writes PERSISTED and visible."""
+    world = _seed_trade_anchored_world(conn, tier2=False)
+    head_id = _seed_correction_head(conn, world)
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(ImmutableJournalFieldError):
+            _apply_tier3_override_inner(
+                conn,
+                correction_id=head_id,
+                operator_truth_value={
+                    "current_stop": 4.5,
+                    spelling: OTHER_TOKEN,
+                },
+                operator_reason="a variant spelling of a write-once column",
+            )
+        rows = conn.execute(
+            "SELECT correction_id, superseded_by_correction_id "
+            "FROM reconciliation_corrections ORDER BY correction_id",
+        ).fetchall()
+        assert rows == [(head_id, None)], rows
+        assert conn.execute(
+            "SELECT current_stop, attempt_id FROM trades WHERE id = ?",
+            (world["trade_id"],),
+        ).fetchone() == (4.0, MINTED_TOKEN)
+    finally:
+        conn.rollback()
+
+
+@pytest.mark.parametrize("spelling", _VARIANT_SPELLINGS)
+def test_m8e_a_variant_spelling_is_a_ValueError_so_both_handlers_reach_it(
+    conn: sqlite3.Connection, spelling: str,
+) -> None:
+    """The counterfactual field, not merely "it raised": the CLI maps
+    `ValueError` to `click.UsageError` (exit 2) and the web route maps it to
+    400. `ReservedJournalFieldError` derives from bare `Exception` and reaches
+    neither, so a test asserting only that SOMETHING was raised passes against
+    the exact defect this row excludes."""
+    world = _seed_trade_anchored_world(conn)
+    with pytest.raises(ImmutableJournalFieldError) as exc:
+        apply_tier2_resolution(
+            conn,
+            discrepancy_id=world["discrepancy_id"],
+            choice_code="operator_truth",
+            operator_custom_payload={spelling: OTHER_TOKEN},
+            operator_reason="a variant spelling of a write-once column",
+        )
+    assert isinstance(exc.value, ValueError)
+    # The message names the CANONICAL byte-exact column, never the operator's
+    # spelling -- the refusal is a statement about the COLUMN.
+    assert "trades.attempt_id" in str(exc.value)
+
+
+def test_m8e_a_column_that_merely_CONTAINS_the_name_is_not_refused(
+    conn: sqlite3.Connection,
+) -> None:
+    """The negative control on the widening: normalisation must not turn the
+    exact-membership test into a substring test. `current_stop` is a real,
+    correctable column and must still apply."""
+    world = _seed_trade_anchored_world(conn, tier2=False)
+    head_id = _seed_correction_head(conn, world)
+    result = apply_tier3_override(
+        conn,
+        correction_id=head_id,
+        operator_truth_value={"current_stop": 4.25},
+        operator_reason="the widening must not over-refuse",
+    )
+    assert result.correction_id != head_id

@@ -253,6 +253,36 @@ _IMMUTABLE_JOURNAL_FIELD_MESSAGE = (
 )
 
 
+def _normalize_journal_field_name(field_name: str) -> str:
+    """Reduce an operator-supplied field name to the form SQLite would RESOLVE.
+
+    22-A4 (Codex R1 Major 3).  SQLite resolves identifiers CASE-INSENSITIVELY
+    and accepts three quoting forms, so ``ATTEMPT_ID``, ``[attempt_id]`` and
+    ``"attempt_id"`` all name the column ``attempt_id``.  A byte-exact
+    membership test does not see them.
+
+    Strips ONE matched quoting pair and casefolds; it does no substring
+    matching, so a DIFFERENT column whose name merely contains an immutable
+    one is untouched (pinned by the negative control in the (m8e) rows).
+    """
+    name = field_name.strip()
+    for opener, closer in (("[", "]"), ('"', '"'), ("`", "`")):
+        if len(name) >= 2 and name.startswith(opener) and name.endswith(closer):
+            name = name[1:-1]
+            break
+    return name.casefold()
+
+
+#: The immutable set keyed by RESOLVED name, mapping back to the CANONICAL
+#: byte-exact column so the refusal message always names the column rather than
+#: the operator's spelling.  Derived FROM ``_IMMUTABLE_JOURNAL_FIELDS`` so the
+#: two cannot drift: adding a member there adds it here.
+_IMMUTABLE_JOURNAL_FIELDS_BY_RESOLVED_NAME: dict[tuple[str, str], str] = {
+    (table, _normalize_journal_field_name(field)): field
+    for table, field in _IMMUTABLE_JOURNAL_FIELDS
+}
+
+
 def _refuse_immutable_journal_fields(
     affected_table: str, field_names: Iterable[str],
 ) -> None:
@@ -272,12 +302,27 @@ def _refuse_immutable_journal_fields(
 
     Takes the WHOLE field set rather than one field so the answer cannot depend
     on iteration order.
+
+    THE COMPARISON IS ON THE RESOLVED NAME, NOT THE BYTES (Codex R1 Major 3).
+    A byte-exact test missed ``ATTEMPT_ID`` and ``[attempt_id]``, which name
+    the same column.  They were still REFUSED -- ``_assert_real_column_name``
+    compares exactly -- but on the tier-3 surface that refusal arrives at step
+    6, AFTER steps 4 and 5 have written, so the ORDERING property this early
+    check exists for did not hold for them; and it arrives as a
+    ``ReservedJournalFieldError``, a bare-``Exception`` subclass neither
+    delivery handler catches, so the operator saw a traceback or a 500 instead
+    of the refusal.  **The widening refuses nothing that existed before this
+    arc**: the set's only member is ``trades.attempt_id``, a column migration
+    0038 creates.
     """
     for field_name in field_names:
-        if (affected_table, field_name) in _IMMUTABLE_JOURNAL_FIELDS:
+        canonical = _IMMUTABLE_JOURNAL_FIELDS_BY_RESOLVED_NAME.get(
+            (affected_table, _normalize_journal_field_name(field_name)),
+        )
+        if canonical is not None:
             raise ImmutableJournalFieldError(
                 _IMMUTABLE_JOURNAL_FIELD_MESSAGE.format(
-                    table=affected_table, field=field_name,
+                    table=affected_table, field=canonical,
                 )
             )
 
