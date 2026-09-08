@@ -1992,3 +1992,303 @@ identity function** and the "uppercase defeats the UNIQUE index's text key" case
 lowercase case a second time. Caught by execution (the row went green against the canonical token
 and red against the validator). Replaced with `TOK_MIXED = "0a0b0c0d-0e0f-4a1b-8c2d-0e3f4a5b6c7d"`,
 which carries hex letters, and the reason is recorded beside the constant.
+
+---
+
+# 22-A4 EXECUTING -- Codex A-loop findings ledger
+
+Artifact: the arc diff `2d9e4a34..HEAD` (`swing/`, `tests/`), worktree `.worktrees/22-a4-exec`.
+Base `2d9e4a34`; pre-loop head `c9bc4838` (Tasks 0b/1, 1b, 3, 4, 5 -- **FIVE commits**, not the six
+the dispatch brief said; measured by `git log --oneline 2d9e4a34..HEAD`, and Task 0b landed INSIDE
+Task 1's commit `48029a06` exactly as the plan's Task 0b row specifies).
+Transport: WSL codex-cli **0.152.1**, `codex exec -p strong -s read-only --skip-git-repo-check -`,
+stdin bundle (prompt + full arc diff) with the WORKTREE as cwd so the reviewer can verify the code's
+claims against the repository (recipe §3 REPO ACCESS, mandatory for production-code review).
+
+**Criterion (recipe, executing/production-code reviews):** blocking = CRITICAL or MAJOR; convergence
+= the FIRST round returning zero new critical/major. The plan-stage `fast` tier and the
+result-bearing criterion do NOT apply here: this is production code and the tier is `strong`.
+
+**Ledger conventions:** this section conforms to the `## LEDGER CONVENTIONS` block above. Every
+finding carries ONE header shape -- `**A4X-R<round>-<n> -- <SEVERITY> -- <CLASS> -- <text>` -- with
+SEVERITY in `CRITICAL`/`MAJOR`/`MINOR` and CLASS in `NEW GROUND`/`RESIDUAL`. The `A4X-` prefix
+distinguishes the EXECUTING loop's ids from the writing-plans loop's `A4-` ids above; no id in this
+section is the same finding as any id in that one.
+
+## Round ledger
+
+| round | tier / model / effort | C / MAJ / MIN | new | reopened | reverted | verdict |
+|---|---|---|---|---|---|---|
+| **1** | `strong` / `gpt-5.6-sol` / `high` | 1 / 4 / 5 | 10 (**10 new ground, 0 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **2** | `strong` / `gpt-5.6-sol` / `high` | 1 / 1 / 4 | 6 (**3 new ground, 3 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **STOP** | *(loop STOPPED at a DESIGN FORK, `A4X-R2-01`; NO round 3 opened -- no review round opens while a ruling is outstanding)* | -- | -- | -- | -- | **NOT convergence. A stopped-short loop, reported as one.** |
+
+## Per-round mechanical assertions
+
+### Round 1 -- ALL FIVE PASS, stated as measurements
+
+| assertion | measured |
+|---|---|
+| 1. banner model | `model: gpt-5.6-sol` (transcript line 4) |
+| 2. `model_reasoning_effort` | `reasoning effort: high` (transcript line 8) |
+| 3. `grep -c '^ERROR'` | **0** |
+| 4. `grep -c '^tokens used'` | **1**; footer value **441,127** |
+| 5. anchored verdict token | `^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0** -- one distinct token present, the other absent, which is the invariant on 0.152.1 (that version emits the final message TWICE) |
+
+Plus the TWO-SIGNAL rule, both measured and both required: **exit code 0** (read from
+`.codex-exit-r1.txt`, written by the runner, not inferred from the harness) **AND** a NON-EMPTY
+transcript (**1,550,758 bytes**). Process exit was confirmed by `pgrep -c codex` = 0 before the file
+was read -- a transcript is not a stable artifact while its process lives.
+
+**Content-filter events: NONE.** Codex self-attested in the response body: *"No safety-layer refusal
+or rewriting occurred."*
+
+**Prior-round-findings prohibition: HONORED, and here is the grep that shows it.**
+`grep -n -i "copowers-findings\|codex-review-r\|codex-prompt-r\|\.ledger\.md"` over the round-1
+transcript returns hits in exactly three classes, none of them a read: (a) the prompt's own
+prohibition text echoed back, (b) the arc diff's own hunk header for the committed ledger file
+(that file is part of the arc and is therefore legitimately in the review INPUT), and (c) prose in
+`CLAUDE.md` / `docs/orchestrator-context.md` that merely mentions `.copowers-findings.md`.
+**Codex went further than asked and excluded them at the tool level** -- transcript line 16499
+shows its own ripgrep carrying `--glob '!*.ledger.md' --glob '!.codex-*' --glob
+'!*.copowers-findings.md'`. It also self-attested: *"I did not run git or open any prohibited
+review/ledger file."* The scratch relocation was the structural half: every `.codex-*` file and the
+findings file lived in the session scratchpad for the whole loop, not at the worktree root.
+
+## Round-1 dispositions
+
+**Every premise below was checked against the code BEFORE anything was changed.** One CRITICAL and
+one MAJOR were rejected on a verified premise correction; the other eight were fixed.
+
+**`A4X-R1-01` -- CRITICAL -- NEW GROUND -- the mint's `PRAGMA database_list` on the body-raise path**
+**PREMISE TRUE, CLASSIFICATION FALSE. NO CODE CHANGE.** The factual half is correct and I confirmed
+it by reading: `_begin_attempt_identity` calls `_resolve_main_db_path`, which executes `PRAGMA
+database_list` (`swing/data/db.py:605`), so on a body-raise the pre-arc tree had run one fewer
+statement. **The classification is measured against a lock that does not exist.** 22-A LOCK clause
+(c) reads, verbatim (`...-primitive.md:909-910`): *"every pre-existing failure branch raises the
+same exception, with the same message, at the same point."* It locks the EXCEPTION, the MESSAGE and
+the POINT. The pragma changes none of them, and the design plan states this outcome explicitly at
+`:909-912` -- *"still holds for ALL of them, because the mint changes no branch and no ordering."*
+The "NO statement" wording the finding leans on belongs to a DIFFERENT and narrower clause: the
+deferred path's observation block in `record_entry`'s handler (`-EXECUTING.md:509-511`), which
+gained no statement. **The over-broad paraphrase was MINE, in the round-1 prompt**, and the round-2
+prompt quotes clause (c) verbatim instead. MEASURED on this box: `PRAGMA database_list` leaves
+`in_transaction` False and a following `BEGIN IMMEDIATE` succeeds, so it perturbs nothing.
+**The proposed remedy is independently rejected on the merits, and this is the load-bearing half:**
+deferring `_resolve_main_db_path(conn)` into the lost-commit branch would issue a statement on the
+writer's OWN connection AFTER a failed or indeterminate commit -- exactly what RD's rule (i) and
+`_read_resolution`'s non-mutating design exist to forbid. It would move a statement from a safe
+place to the most dangerous one on the path. Declared into the round-2 prompt WITH this reason and
+with challenge invited.
+
+**`A4X-R1-02` -- MAJOR -- NEW GROUND -- the body-raise lock test does not observe pre-body SQL**
+**FALLS WITH `R1-01`. NO CODE CHANGE.** Its subject is "a non-discriminating test on an explicitly
+locked path," and the locked path it names is the one clause (c) does not create. The lock that DOES
+exist over that region is asserted, and by a stronger instrument than the one proposed: (k3a)'s AST
+walk pins that `_entry_transaction`'s `if not immediate:` arm contains no `Try` node and that the
+`with` body is exactly one bare `yield` -- a structural assertion a statement-trace could not make.
+
+**`A4X-R1-03` -- MAJOR -- NEW GROUND -- the immutable-field refusal was byte-exact**
+**FIXED** (`74cb2815`). Verified before fixing: `_assert_real_column_name` raises
+`ReservedJournalFieldError`, which derives from bare `Exception` (`:109`), and BOTH delivery
+handlers catch `ValueError` only (`swing/cli.py:3941` -> `click.UsageError`, exit 2; the web route's
+`except ValueError` -> 400, with the bare-`Exception` fallthrough reaching the 500 handler at
+`reconcile.py:1753`). So a casing or quoting variant of `attempt_id` WAS refused -- nothing durable
+was ever at risk, and the trigger remains the guard of record -- but on the tier-3 surface the
+refusal arrived at step 6, after steps 4 and 5 had inserted the new correction row and advanced the
+prior head's chain pointer, which defeats the ORDERING property the early check exists for; and it
+arrived as an exception neither delivery surface catches. `_normalize_journal_field_name` strips one
+matched quoting pair and casefolds; the lookup table is DERIVED from `_IMMUTABLE_JOURNAL_FIELDS` so
+the two cannot drift. **The widening refuses nothing that existed before this arc** -- the set's only
+member is `trades.attempt_id`, a column migration 0038 creates. Nine (m8e) rows; **eight fail against
+the byte-exact predicate** and the ninth is the negative control proving normalisation did not become
+a substring test.
+
+**`A4X-R1-04` -- MAJOR -- NEW GROUND -- the backup gate never tested `target_version > 38`**
+**FIXED** (`1f8fb55c`). Matrix was (37,38), (36,38), (37,37) -- all satisfied by a `target_version ==
+38` mutant, which would SKIP the pre-0038 backup for a v37 installation jumping straight to a later
+head. **MUTANT BUILT AND RUN: `target_version == 38` fails the amended row.** The added case uses its
+own directory, because the backup filename is stamped to the second and a same-second collision
+would read as a count of 1 -- an artifact of the clock, not of the gate.
+
+**`A4X-R1-05` -- MAJOR -- NEW GROUND -- the expected-table set did not prove its declared inheritance**
+**FIXED** (`1f8fb55c`). Subset-of-real-v37 plus the three 0037 names is satisfied by a constant
+holding ONLY those three. **MUTANT BUILT AND RUN: a parentless constant fails the amended row.** The
+added assertion is equality against the SPECIFIED PARENT-DERIVED SET, which is a different claim
+from the equality-against-the-real-v37-schema that CHARC's 2026-09-07 ruling rejected -- that one
+would reverse the gate's floor direction; this one pins the constant to its own definition. The
+ruling is not disturbed.
+
+**`A4X-R1-06` -- MAJOR -- NEW GROUND -- migration 0038's transaction framing was untested**
+**FIXED** (`1f8fb55c`). Nothing asserted BEGIN-first, COMMIT-last, the version bump immediately
+before COMMIT, or that a mid-script failure persists nothing -- and gotcha #9 is precisely why that
+matters. Added a normalized statement-ordering row and a planted-failure counterexample on a real
+v37 database. **MUTANT BUILT AND RUN -- and the first attempt at it PASSED, which is itself the
+finding-behind-the-finding:** the file HEADER contains the literal text `BEGIN;` and `COMMIT;` in
+prose, so a bare string replace edited the comment and the mutant was never built. Anchoring on the
+surrounding newlines built it, and **both new rows then failed.** The tests were never fooled -- the
+helper strips comments -- only my mutant was, which is the same class this arc keeps meeting.
+
+**`A4X-R1-07` -- MINOR -- NEW GROUND -- (m2) did not distinguish a partial index from a full one**
+**FIXED** (`1f8fb55c`). Independently MEASURED: SQLite treats NULLs as distinct in a FULL unique
+index too, so both the duplicate-token and four-NULL assertions pass either way; `PRAGMA index_list`
+`partial` is the column that differs. **MUTANT BUILT AND RUN: a full unique index fails the amended
+row.**
+
+**`A4X-R1-08` -- MINOR -- NEW GROUND -- the trigger test did not prove the trigger is unconditional**
+**FIXED** (`1f8fb55c`). All three tested transitions are value-CHANGING, so a `WHEN OLD.attempt_id
+IS NOT NEW.attempt_id` trigger passes them while permitting `SET attempt_id = attempt_id` --
+falsifying the migration header's stated contract. Two halves added, because each is weak alone: the
+same-value assignment ABORTS (behaviour), and the stored trigger SQL carries no `WHEN` at all
+(structure -- a `WHEN` that can evaluate to NULL fails OPEN, which is why the contract is no-WHEN
+rather than a-correct-WHEN). **MUTANT BUILT AND RUN: the change-detecting trigger fails the new row.**
+I had already measured the SHIPPED trigger aborting a same-value update during round 0, so the
+finding is about the TEST, not the schema.
+
+**`A4X-R1-09` -- MINOR -- NEW GROUND -- "never an inference" over-claimed one of the four fields**
+**FIXED** (`06040d6e`). True of three; false of `cleanup_raised` on the DEFERRED path, where
+`__exit__` owns the rollback, no Python frame observes the call, and the fact is DERIVED from the
+escaping exception's `__context__`. The derivation is sound and contained toward the ALARM; the
+wording now says derivation, because calling it an observation flattered it.
+
+**`A4X-R1-10` -- MINOR -- NEW GROUND -- a stale "CLAUSE 2 IS REVERTED" above the guarded region**
+**FIXED** (`06040d6e`). Gotcha #31's exact shape, one commit after this arc restored clause 2 as a
+gated settle: the comment still read as an invariant while the code had moved. Amended to the
+conditional contract.
+
+**`A4X-R1-11` -- MINOR -- NEW GROUND -- `_log_contained`'s returned error is discarded**
+**FIXED** (`06040d6e`). Documented rather than re-plumbed: the return exists for a caller WITH a
+reporting channel, and this call site fires on a path where the entry SUCCEEDS, so there is no
+escaping exception to attach a note to. The honest statement is that the path cannot surface a sink
+failure, not that it declines to.
+
+### What round 1 explicitly cleared
+
+Codex reported no correctness defect in the core settle predicate, fresh-connection visibility,
+probe-returned-id selection, ticker corroboration, v38 INSERT ordering, or the 45-column/45-parameter
+binding (it counted both by AST and printed `placeholders 45 tuple 45`), and it verified the CPython
+rollback-chain premise on BOTH the declared 3.11 floor and 3.14.2. It could not run pytest -- no
+pytest in its sandbox -- and used static inspection plus targeted SQLite/Python probes instead.
+
+### Verdict
+
+`NEW_CRITICAL_MAJOR_FOUND` -- anchored, twice (0.152.1 duplicates the final message), with
+`^NO_NEW_CRITICAL_MAJOR` at zero and `^ERROR` at zero.
+
+
+## Round 2 -- ALL FIVE ASSERTIONS PASS
+
+| assertion | measured |
+|---|---|
+| 1. banner model | `model: gpt-5.6-sol` |
+| 2. `model_reasoning_effort` | `reasoning effort: high` |
+| 3. `grep -c '^ERROR'` | **0** |
+| 4. `grep -c '^tokens used'` | **1**; footer value **590,318** |
+| 5. anchored verdict token | `^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0** |
+
+Exit code MEASURED **0**; transcript NON-EMPTY (**1,869,407 bytes**); `pgrep -c codex` = 0 before the
+file was read. **Content-filter events: NONE.** The prior-round-findings prohibition was HONORED --
+the same grep as round 1 returns only the prompt's own echo, the arc diff's own ledger hunk header
+(that file is part of the arc and is legitimately in the review INPUT), and `CLAUDE.md` /
+`docs/orchestrator-context.md` prose that merely mentions `.copowers-findings.md`.
+
+**The round-2 prompt QUOTED 22-A LOCK clause (c) VERBATIM** instead of paraphrasing it, and carried
+the round-1 CRITICAL's adjudication as a declared item with its reason and challenge invited. Round
+2 did not re-raise it.
+
+**Round 2 independently re-derived the CPython premise BY NETWORK FETCH** of both `v3.11.0` and
+`v3.14.2` `Modules/_sqlite/connection.c`, and confirmed SOURCE (S1) on both. It also cleared the
+migration transaction framing, the v38 INSERT parameter alignment, the UNIQUE/CHECK relationship,
+trigger firing semantics, backup-gate wiring, and all three corrector refusal sites.
+
+## Round-2 dispositions
+
+**A4X-R2-01 -- CRITICAL -- NEW GROUND -- the PROOF-TO-RETURN TAIL can discard a proven-durable entry**
+**PREMISE VERIFIED AT THE CODE. NOT FIXED. ROUTED AS A DESIGN FORK -- THIS IS WHY THE LOOP STOPPED.**
+Two windows, both confirmed by reading the shipped code:
+
+1. `swing/trades/entry.py:1021` -- `return found` sits INSIDE
+   `_settle_by_attempt_identity`'s own `try: ... except BaseException as settle_error: ... return
+   None`. At that statement the fresh read has ALREADY returned a row and the ticker has ALREADY
+   matched. A `BaseException` delivered there is converted to `None`, and the caller re-raises over
+   a durable entry.
+2. `swing/trades/entry.py:1387-1392` -- `settled_trade_id, _settled_ticker = settled` and the
+   `dataclasses.replace` run INSIDE the `except BaseException as post_commit_error:` suite, with NO
+   enclosing handler, so a fault there escapes despite the durable proof.
+
+**The argument is the arc's OWN principle turned back on it.** `_durability_probe` contains its
+`close()` failure precisely because a tidy-up failure after a successful read must not discard the
+read -- its docstring says discarding a valid answer that way "would report a durable entry as a
+failure." One frame up, the same asymmetry is unguarded. And the arc has ALREADY RATIFIED that this
+injection class is reachable: (k3b) drives a `sys.settrace` fault at `outcome.committed = True` and
+requires the settle to happen anyway.
+
+**WHY IT IS A FORK AND NOT A FIX I MAY TAKE.** The reviewer's remedy is to "repeat the fresh
+attempt-ID read" on a secondary fault. That is a SECOND PROBE -- a second fresh connection opened on
+an already-failing money path, in a window where an asynchronous exception is in flight -- and it
+**contradicts a shipped, deliberate assertion**: `tests/trades/test_22a4_attempt_identity.py`
+asserts `probe_args == [token]` and that the mint ran exactly once, i.e. ONE probe per attempt, by
+design. A cheaper shape exists, but choosing between the shapes is a design decision on this arc's
+most safety-critical function, against a contract two directors ratified.
+
+**A4X-R2-02 -- MAJOR -- NEW GROUND -- no test covers the proof-to-return boundary**
+**NOT FIXED -- CONTINGENT ON THE SAME RULING.** Verified: the only `sys.settrace` injection in the
+settlement suite targets `_entry_transaction`'s `outcome.committed = True`; nothing injects at the
+matching `return found` or at the first post-settle line. The test to write is determined by which
+branch of `A4X-R2-01` is ruled, so writing one now would pin whichever shape I picked.
+
+**A4X-R2-03 -- MINOR -- RESIDUAL -- three comments still called clause 2 reverted**
+**FIXED.** Two sites said "the reverted clause 2" and one said the split gate's "TWO BRANCHES THAT
+BOTH RE-RAISE... THE BEHAVIOUR IS UNCHANGED" -- true when Task 3 split it, false one commit later
+when Task 4 made the second branch settle. Gotcha #31, inside this arc's own Task-3-to-Task-4 seam.
+
+**A4X-R2-04 -- MINOR -- RESIDUAL of my own A4X-R1-09 fix -- the count went incoherent**
+**FIXED.** The R1-09 edit left "THREE OBSERVATIONS" in one paragraph and "ONE OF THE FOUR" in the
+next. It is THREE FIELDS across FOUR path-specific provenance cases, one of which is the derivation,
+and it now says exactly that.
+
+**A4X-R2-05 -- MINOR -- RESIDUAL of my own A4X-R1-03 fix -- the backstop comment went stale in the fixing commit**
+**FIXED.** The comment still described a casing variant as missing the immutable set and being
+caught late by `_assert_real_column_name` -- which the normalization fix falsified in the very
+commit that wrote the fix.
+
+**A4X-R2-06 -- MINOR -- NEW GROUND -- the schema-head catalog stopped at 0037**
+**FIXED.** The catalog immediately above `EXPECTED_SCHEMA_VERSION = 38` described the constant's
+PREDECESSOR. Migration 0038 now has its entry.
+
+## THE FORK, STATED FOR THE RULING
+
+**Question:** how should a fault delivered AFTER the durability proof, but BEFORE the degraded
+`EntryResult` reaches the caller, be handled?
+
+- **Branch A -- RE-PROBE (the reviewer's proposal).** A nested boundary around the handoff that, on
+  a secondary fault, repeats the fresh attempt-id read and returns degraded success on a match.
+  *Cost:* a second connection open on a failing money path; **breaks the shipped
+  one-probe-per-attempt assertion**, which would have to be re-specified rather than merely edited.
+- **Branch B -- MAKE THE PROOF UNDISCARDABLE WITHOUT RE-READING.** Narrow
+  `_settle_by_attempt_identity`'s `except BaseException` so it cannot convert a proof that already
+  exists (the handler covers the READ and the corroboration, not the RETURN), and give
+  `record_entry` a boundary over the two statements between the settle and the existing
+  degraded-result construction. *Cost:* no new I/O and no new failure mode, but still a change to
+  the containment shape of the arc's most safety-critical function.
+- **Branch C -- DECLARE IT.** Accept the window as a named residual, on the ground that it needs an
+  asynchronous `BaseException` inside a two-statement window on an already-failing path, and that
+  `ux_trades_one_open_per_ticker` blocks the retry for any ticker still open. *Cost:* the declared
+  uncovered direction (a ticker CLOSED between attempts) stays uncovered, and the arc would ship a
+  known instance of the exact defect clause 1 exists to prevent.
+
+**I did not choose.** `A4X-R2-02`'s test follows whichever branch is ruled.
+
+## Transcript manifest -- EXECUTING loop (final)
+
+Durable path: `C:/Users/rwsmy/swing-data/review-transcripts/22-a4-exec/` (dotfiles -- use `ls -a`).
+Copied THE MOMENT the five assertions passed, per `harness-architecture.md` section 5.1.
+
+| transcript | bytes |
+|---|---|
+| `.codex-review-r1.txt` | 1,550,758 |
+| `.codex-review-r2.txt` | 1,869,407 |
+| `.codex-prompt-r1.md` | 10,760 |
+| `.codex-prompt-r2.md` | 13,678 |
+
+**SPEND, both counted rounds: 441,127 + 590,318 = 1,031,445 tokens.**
