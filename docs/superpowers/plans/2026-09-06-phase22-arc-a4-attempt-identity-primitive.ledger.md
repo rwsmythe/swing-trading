@@ -2839,3 +2839,67 @@ different hands.
 Copied the moment assertion 5 passed, per the copy-per-round rule -- not at report time, not at
 teardown.
 
+
+---
+
+## CHARC'S RULING ON `B-1` -- **AUTHOR: CHARC. TRANSCRIBED BY THE ORCHESTRATOR AS COURIER ONLY.**
+
+**This is a LITERAL BLOCK QUOTE**, built mechanically from the message file on disk
+(`comms/orchestrator/read/20260908T172104Z-charc-charc-rules-b-1-fix-in-envelope-no-fifth.md`,
+posted 2026-09-08T17:21:04Z, thread `22-a4-reviewer-b`, type `fyi`). It is not re-set and not
+paraphrased. `comms/` is gitignored, so a ruling that lives only there decays in FINDABILITY with
+every ack -- the ledger is the record, the mailbox was only the transport
+(`orchestrator-context.md` posting rule 4, 2026-09-08).
+
+**RD is CC on `B-1` and holds. `B-3` is RD's item and CHARC says nothing on it; that disposition is
+still OUTSTANDING at the time of this transcription.**
+
+**The ruling does NOT dispatch the fix leg.** CHARC names it "operator-directed dispatch" and states
+the spend is the operator's to approve. Nothing is dispatched on this transcription.
+
+> CHARC RULING on B-1 (the item that names my seat). RD is CC and holds on this item; B-3 is RD's and I say nothing on it. Fresh CHARC generation (first mail after bootstrap), 2026-09-08.
+>
+> == VERIFIED BEFORE RULING, METHOD STATED ==
+> I did not rule off the report. On the worktree at c5991941 I read `_handle_single_field_correction` (reconciliation_auto_correct.py:2716) and ran an AST walk over every call to `_refuse_immutable_journal_fields`, naming the enclosing function of each site:
+> - :501 inside `_preflight_reserved_transitions`, whose ONLY caller is `_handle_multi_field_correction` (:2884);
+> - :1829 inside `_apply_tier3_override_inner` (tier 3);
+> - :2285 inside `_update_journal_field`, over `(field_name,)` -- ONE key.
+> The single-field handler selects `field_name = next(iter(correction_target.keys()))` at :2741, runs `_assert_real_column_names` over the WHOLE payload at :2754 (the R3-03 hoist), and never runs the immutable refusal over anything but the selected key. Finding confirmed by read; the orchestrator's key-order reproduction is consistent with it and I did not re-run it.
+>
+> == RULING 1: INTRODUCED, IN ENVELOPE, and the fix STAYS INSIDE the widening I authorized ==
+> The condition that widened the envelope by exactly this module was: the corrector's typed refusal SHIPS on every operator surface (S8.6 not banked). B-1 is that condition unmet on one of the three operator-reachable paths. Completing the condition is not a new widening; it is the widening's own content. And the fix's shape already exists in the SAME FUNCTION for the OTHER gate: the R3-03 leg hoisted the byte-exact gate to whole-payload on this path and left the immutable gate at first-key. Two gates in one function deciding over two different populations is the defect; the fix makes them agree.
+>
+> PRESCRIBED SHAPE (bounded, so it cannot become B-2's fix):
+> (a) In `_handle_single_field_correction`, call `_refuse_immutable_journal_fields(affected_table, correction_target.keys())` over the COMPLETE payload, immediately AFTER `_assert_real_column_names` (byte-exact first, per R3-03) and BEFORE the `next(iter(...))` selection. Same ordering as the two existing whole-payload sites.
+> (b) Discriminating rows on the routed choice ("validator_rejected", "operator_alternative") through `apply_tier2_resolution`, in BOTH key orders: {current_stop, attempt_id} and {attempt_id, current_stop}. Each asserts the typed `ImmutableJournalFieldError` AND zero writes -- no correction row, `current_stop` unchanged, the token unchanged, the discrepancy NOT terminalized. The closure-test shape R3-03 used; a refusal test that checks only the exception would have passed over the persisted writes last time.
+> (c) The trailing-key row must be shown RED against the pre-fix tree (it reproduces today, so this is a one-line witness, not an argument).
+> (d) NOTHING ELSE on this function. In particular the fix must NOT reject >1 key or otherwise change what happens to a non-immutable extra key -- that is B-2, pre-existing, banked, out of envelope. A fix that closes B-1 by closing B-2 has widened the arc; refuse it at QA.
+> (e) LOCK-A untouched by construction: the fix is in reconciliation_auto_correct.py, not entry.py. Re-measure anyway at the gate; I will.
+>
+> == RULING 2: NO FIFTH COUNTED A ROUND. B RE-RUNS ON THE POST-FIX TREE. (The spend is the operator's to approve; this is my recommendation.) ==
+> Why no A round: round 4 stopped short and CLEARED PRODUCTION; it never converged, so there is no convergence to re-attach. The fix is one call in one function, mirroring a gate two lines above it, with its own both-orders closure test and the full fast suite. Buying a ~500K-token prose round to re-read a hoist the ladder has already reviewed twice is the treadmill section 5.1 names.
+> Why B must re-run regardless: a clearance attaches to the tree the gate-holder verified, and anything touching code or tests re-opens the gate. The post-fix tree is not the tree B audited. B ran on 84e90bab; the merge tree will differ in code; B must have RUN on the tree being merged. Same form, same five assertions, same durable path, cold-audit from the worktree. It need not return clean; every finding dispositioned introduced-vs-banked. If the B re-run returns a NEW in-envelope introduced major, that is the moment to reconsider a counted A round -- not before.
+>
+> == B-2 (no ruling sought; register is mine) ==
+> Banked. I will write the D-row when the operator directs file edits this generation; content as B stated it: silent discard of every payload field after the first on BOTH operator surfaces, pre-existing, the enabling condition of B-1 and wider than it. Its fix is corrector-semantics (one-key restriction or true multi-field), its own item, not this arc's.
+>
+> == SEQUENCE AS I NOW HOLD IT ==
+> B-1 fix leg (cell, TDD per (a)-(e), operator-directed dispatch) -> full fast suite on the head -> B RE-RUN on that head -> the b3b518f9 trailer reword -> the operator's -n auto merged-head run -> merge request -> both director gates -> S9 step 0 -> the witnessed 0038 migration. RD's B-3 disposition (before merge or banked) slots into the fix leg if RD rules it in; that is RD's call and I do not pre-empt it.
+>
+> Register material accepted from the outgoing orchestrator's handoff: "a name survives a handoff more easily than the definition that governs it." Queued with the owed rows.
+>
+> -- CHARC
+
+### The orchestrator's reading of what this binds
+
+- The `B-1` fix is **IN ENVELOPE** -- completing the condition is the widening's own content, not a
+  new widening. Shape prescribed in five parts (a)-(e), and **(d) is a REFUSAL I must enforce at QA**:
+  a fix that closes `B-1` by closing `B-2` has widened the arc.
+- **NO fifth counted A round.** Round 4 stopped short and cleared production, so there is no
+  convergence to re-attach.
+- **B RE-RUNS on the post-fix tree.** A clearance attaches to the tree its holder verified; the merge
+  tree will differ in code from `84e90bab`, which is the tree B audited. Same form, same five
+  assertions, same durable path. A NEW in-envelope introduced major from the re-run is the moment to
+  reconsider a counted A round -- not before.
+- **`B-2` banked** to CHARC's register, content as stated. **`B-4`** unchanged (the queued rename
+  rider, trigger after merge).
