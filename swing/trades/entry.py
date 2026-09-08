@@ -986,8 +986,30 @@ def _settle_by_attempt_identity(
     an interrupt delivered during the probe is swallowed in favour of the
     commit's own exception; both are failures, so no false success can be
     manufactured, and the identity of what escapes is the property this
-    codebase pins.
+    codebase pins.  **An interrupt delivered AFTER the proof is swallowed in
+    favour of the PROVEN ENTRY, exactly as clause 1 swallows one delivered
+    after the commit returned: in both, a TRUE fact is reported** (RD, ruled
+    2026-09-08 on `A4X-R2-01`).
+
+    **THE PROOF IS CAPTURED BEFORE IT IS RETURNED, AND THE ``except`` SCOPE IS
+    UNCHANGED.**  ``proven`` is bound the statement after the ticker
+    corroboration succeeds, so the containment arm can hand back a proof that
+    already existed instead of converting it to the alarm -- which is what a
+    fault delivered AT the ``return`` used to do, discarding a durability the
+    fresh read had already established and making ``record_entry`` re-raise
+    over a durable entry.  **NARROWING the ``except`` around the ``return``
+    was REJECTED** (the reviewer's shape, and the cell's): it changes WHICH
+    exception escapes on a post-proof fault -- the fault instead of the
+    original -- and that identity is the R11-03 property this module pins.
+    Capture-then-return keeps the proof AND the identity property, and is the
+    weakest sufficient change.  A SECOND PROBE was rejected too: a re-read's
+    own return is the same window one frame later, it opens a second
+    connection on an already-failing money path, and it contradicts the
+    shipped one-probe-per-attempt assertion.
     """
+    #: The corroborated proof, or ``None``.  Declared BEFORE the ``try`` so
+    #: the containment arm can read it on every path into that arm.
+    proven: tuple[int, str] | None = None
     try:
         if outcome.resolution not in ("not_needed", "rolled_back"):
             return None
@@ -1006,7 +1028,7 @@ def _settle_by_attempt_identity(
             attempt.db_path, attempt.token, post_commit_error)
         if found is None:
             return None
-        _settled_id, settled_ticker = found
+        settled_id, settled_ticker = found
         if settled_ticker != req.ticker:
             # A MISMATCH MAY RAISE THE ALARM; ONLY A MATCH MAY BE ASSERTED
             # FROM.  A row carrying our token under a different ticker is
@@ -1018,8 +1040,28 @@ def _settle_by_attempt_identity(
                 "asserted from it; the original failure is re-raised.",
                 safe_text(settled_ticker), safe_text(req.ticker))
             return None
-        return found
+        proven = found
+        return proven
     except BaseException as settle_error:  # noqa: BLE001 -- the CLASS
+        if proven is not None:
+            # THE PROOF EXISTS AND IS RETURNED.  `settled_id` is bound
+            # whenever `proven` is -- the unpack is two statements above the
+            # binding -- and nothing in this branch can raise: `log_contained_
+            # note` contains its own sink, and `safe_text` never raises.
+            log_contained_note(
+                log, post_commit_error,
+                "22-A4: the settle-by-attempt-identity read SUCCEEDED (durable "
+                "row %s) and a fault arrived AFTER the proof (%s). The durable "
+                "row STANDS and is reported; the fault is swallowed in favour "
+                "of a TRUE success, exactly as a fault after the commit's own "
+                "return is.",
+                settled_id, safe_text(settle_error))
+            return proven
+        # THE READ DID NOT SUCCEED.  This wording is reachable only when no
+        # proof exists, which is what makes it true: an alarm that says the
+        # read FAILED while the read succeeded is a false sentence in an
+        # alarm, and a row that reads as a false positive teaches the next
+        # reader to distrust the check.
         log_contained_note(
             log, post_commit_error,
             "22-A4: the settle-by-attempt-identity read FAILED (%s). The "

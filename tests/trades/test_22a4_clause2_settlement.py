@@ -2063,3 +2063,189 @@ def test_pr5_the_probe_cannot_CREATE_a_database(
         assert caplog.records, "the contained failure was not reported"
     finally:
         conn.close()
+
+
+# ===========================================================================
+# (A4X-R2-02a)-(A4X-R2-02c) THE PROOF-TO-RETURN TAIL -- the two windows
+# `A4X-R2-01` named, RULED BY RD 2026-09-08.  Window 1 is FIXED and (a) pins
+# the fix; window 2 is DECLARED and (b) pins THE DECLARED DIRECTION rather
+# than a fix -- a row written deliberately to fail against the swallow.
+# (c) is the probe-count pin carried by BOTH rows: it is the discriminator
+# against the re-probe branch RD rejected, and it is what keeps
+# `tests/trades/test_22a4_attempt_identity.py`'s one-probe-per-attempt
+# assertion true rather than merely unedited.
+# ===========================================================================
+def _proof_return_lineno() -> int:
+    """The line of the corroborated proof's ``return`` inside
+    ``_settle_by_attempt_identity``'s own ``try``.
+
+    **Located by SHAPE, not by name and not by number.**  The plan's line
+    anchors into ``entry.py`` have drifted through six commits of this
+    ladder, and the LOCAL'S NAME is exactly what RD's capture-then-return
+    changes (``found`` before, ``proven`` after) -- so a locator keyed on
+    either would measure the rename instead of the window.  The shape is
+    stable across both: the ``try`` body's every other ``return`` is the
+    literal ``None`` alarm, so **the one ``return <name>`` in that body is
+    the statement this row injects at**, before the fix and after it.
+    """
+    fn = _function(_entry_tree(), "_settle_by_attempt_identity")
+    tries = [n for n in fn.body if isinstance(n, ast.Try)]
+    assert len(tries) == 1, (
+        "`_settle_by_attempt_identity` no longer has exactly one top-level "
+        "`try`, so this row cannot say where the proof is returned")
+    returns = [n for stmt in tries[0].body for n in ast.walk(stmt)
+               if isinstance(n, ast.Return) and isinstance(n.value, ast.Name)]
+    assert len(returns) == 1, (
+        f"expected exactly one `return <name>` in the try body, found "
+        f"{len(returns)} -- the injection target is no longer identifiable")
+    return returns[0].lineno
+
+
+def _post_settle_unpack_lineno() -> int:
+    """The line of ``record_entry``'s ``settled_trade_id, _ = settled``.
+
+    The FIRST of the two statements between the settle's return and the
+    degraded result's construction -- window 2.  Located by shape for the
+    same reason as above: it is the one tuple-unpacking assignment in
+    ``record_entry`` whose value is the name ``settled``.
+    """
+    fn = _function(_entry_tree(), "record_entry")
+    found = [n for n in ast.walk(fn)
+             if isinstance(n, ast.Assign) and len(n.targets) == 1
+             and isinstance(n.targets[0], ast.Tuple)
+             and isinstance(n.value, ast.Name) and n.value.id == "settled"]
+    assert len(found) == 1, (
+        f"expected exactly one `<a>, <b> = settled` in `record_entry`, found "
+        f"{len(found)} -- window 2's injection target moved")
+    return found[0].lineno
+
+
+def _fault_at(entry_file: str, func_name: str, target: int,
+              exc: BaseException, fired: list):
+    """A ``sys.settrace`` global hook that raises ``exc`` ONCE, at ``target``,
+    and only inside ``func_name``'s frames in ``entry.py``."""
+    def _local(frame, event, arg):
+        if event == "line" and frame.f_lineno == target and not fired:
+            fired.append(True)
+            raise exc
+        return _local
+
+    def _global(frame, event, arg):
+        if (frame.f_code.co_filename == entry_file
+                and frame.f_code.co_name == func_name):
+            return _local
+        return None
+
+    return _global
+
+
+def test_A4X_R2_02a_a_fault_AT_the_proof_return_reports_the_durable_entry(
+        tmp_path: Path, monkeypatch, caplog) -> None:
+    """WINDOW 1, RULED: capture-then-return, with the ``except`` UNCHANGED.
+
+    **THE NAIVE SUBSTITUTE IS TODAY'S SHIPPED CODE**, and what it does is the
+    whole finding: the probe has ALREADY returned a row and the ticker has
+    ALREADY matched -- durability is PROVEN -- but the ``return`` sits inside
+    the helper's own ``except BaseException``, so an interrupt delivered at
+    that statement is converted to ``None``, and ``record_entry`` re-raises
+    **the original commit error over a durable entry.**  MEASURED against
+    ``b3b518f9``'s shape: ``sqlite3.OperationalError('commit lost (planted)')``
+    escaped this row.
+
+    RD's ruling (2026-09-08): a post-proof fault is clause 1's own event one
+    rung down -- a fault after ``commit()`` returned is already reported as a
+    degraded SUCCESS -- so the proof is CAPTURED before the ``return`` and
+    handed back from the containment arm.  **The ``except`` scope is NOT
+    narrowed**: narrowing changes WHICH exception escapes on a post-proof
+    fault (the fault instead of the original), and that identity is the
+    R11-03 property this module pins.
+
+    **THE FAULT'S TEXT REACHES THE OPERATOR THROUGH THE LOG, NOT THROUGH THE
+    WARNING** -- asserted here on the channel that exists.  ``warning_text``
+    interpolates ``safe_text(post_commit_error)``, which is ``repr``; MEASURED
+    on this box, ``repr`` renders no ``__notes__``, and ``log_contained_note``
+    attaches a note ONLY when the SINK fails.  So no contained note can reach
+    the degraded warning today.  That gap is reported as a finding rather than
+    closed here: RD pre-ruled that discovering it is NOT a licence to add a
+    channel.
+    """
+    db_path = tmp_path / "r2_02a.db"
+    conn = ensure_schema(db_path)
+    entry_file = entry_mod.__file__
+    target = _proof_return_lineno()
+    fired: list = []
+    try:
+        outcomes = _capture_outcomes(monkeypatch)
+        probe_calls: list = []
+        probe_returns: list = []
+        real_probe = entry_mod._durability_probe
+
+        def _spy(*args):
+            probe_calls.append(args)
+            probe_returns.append(real_probe(*args))
+            return probe_returns[-1]
+
+        monkeypatch.setattr(entry_mod, "_durability_probe", _spy)
+        lost = sqlite3.OperationalError("commit lost (planted)")
+        proxy = _ExitCommitsThenRaises(conn, lost)
+        fault = KeyboardInterrupt(
+            "22-A4 PROBE: AT the settle's own return of the proof")
+
+        # **THE ESCAPE IS COLLECTED, NOT LEFT TO PROPAGATE** -- same reason as
+        # (k3b): an uncaught `KeyboardInterrupt` ABORTS THE PYTEST SESSION
+        # rather than producing a readable red, which is strictly worse than a
+        # failure because it masks every other result.  Against the naive
+        # substitute this row catches `sqlite3.OperationalError` here.
+        escaped: list = []
+        result = None
+        with caplog.at_level(logging.ERROR, logger="swing.trades.entry"):
+            sys.settrace(_fault_at(entry_file, "_settle_by_attempt_identity",
+                                   target, fault, fired))
+            try:
+                result = record_entry(proxy, _req(), soft_warn=SOFT,
+                                      hard_cap=HARD, force=False, cfg=None)
+            except BaseException as exc:  # noqa: BLE001 -- see above
+                escaped.append(exc)
+            finally:
+                sys.settrace(None)
+
+        assert fired, (
+            "the trace hook never reached the proof's return, so this row "
+            "measures nothing about the window")
+        assert not escaped, (
+            f"a PROVEN-durable entry was reported as a failure: "
+            f"{type(escaped[0]).__name__}: {escaped[0]}")
+        assert result is not None
+        # (A4X-R2-02c) THE PROBE-COUNT PIN -- one probe per attempt, which is
+        # the discriminator against the re-probe branch.
+        assert len(probe_calls) == 1, (
+            f"the probe ran {len(probe_calls)} times -- a second read is the "
+            f"branch RD rejected")
+        assert probe_returns[0] is not None, (
+            "the fixture's own premise: the probe corroborated a durable row")
+        assert result.trade_id == probe_returns[0][0], (
+            f"the reported id is not the PROBE's: {result.trade_id} vs "
+            f"{probe_returns[0]}")
+        assert _fresh_rows(db_path) == 1
+        assert outcomes[0].committed is False, (
+            "a successful settle must not claim the commit's own return")
+        lost_commit = [w for w in result.post_commit_warnings
+                       if "own RETURN was LOST" in w]
+        assert len(lost_commit) == 1, result.post_commit_warnings
+        assert f"trade {result.trade_id}" in lost_commit[0]
+        assert "do NOT retry" in lost_commit[0]
+        # The post-proof fault's text, on the channel that carries it.
+        post_proof = [r.getMessage() for r in caplog.records
+                      if "AFTER the proof" in r.getMessage()]
+        assert len(post_proof) == 1, (
+            f"the post-proof fault was not reported: "
+            f"{[r.getMessage() for r in caplog.records]}")
+        assert "22-A4 PROBE: AT the settle's own return" in post_proof[0]
+        assert not any("read FAILED" in r.getMessage()
+                       for r in caplog.records), (
+            "the alarm still says the read FAILED when the read SUCCEEDED -- "
+            "a false sentence in an alarm teaches the next reader to distrust "
+            "the check")
+    finally:
+        sys.settrace(None)
+        conn.close()
