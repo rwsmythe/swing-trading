@@ -1323,7 +1323,10 @@ def record_entry(
         # `outcome.committed` is set on the statement after `commit()` returns
         # normally; it is this function's own call reporting what it did, not
         # the writer reading the table to decide what its call must have done
-        # (which is the reverted clause 2 -- see the declaration below).
+        # (which is the read the ORIGINAL clause 2 was reverted for -- see
+        # the declaration below.  Clause 2 now RETURNS, on a FRESH connection
+        # and a per-attempt token; what stays reverted is resolving a lost
+        # commit from the WRITER'S OWN handle, which is a different read).
         #
         # Both conditions are stated because the gate must assert what is
         # TRUE rather than what their coupling implies: `result is None` says
@@ -1331,13 +1334,26 @@ def record_entry(
         # never returned.  Either one means there is no entry to report, and
         # the honest answer is the original exception.
         #
-        # **22-A4 SPLITS THE GATE INTO TWO BRANCHES THAT BOTH RE-RAISE.**  The
-        # BEHAVIOUR IS UNCHANGED -- what was one `or` is now two `if`s with
-        # the same bare `raise` -- and without the split there is no
-        # `not outcome.committed` branch for the deferred path's observations
-        # to sit under: an observation placed after the combined guard is
-        # UNREACHABLE whenever `committed` is False, and one placed before it
-        # would run on the body-raise branch this arc must not touch.
+        # **22-A4 SPLITS THE GATE INTO TWO BRANCHES, AND THEY NO LONGER DO
+        # THE SAME THING.**  Task 3 split one `or` into two `if`s with the
+        # same bare `raise`, which was behaviour-preserving; TASK 4 THEN
+        # CHANGED THE SECOND BRANCH, and this comment is corrected rather
+        # than left reading true (gotcha #31):
+        #
+        #   * `result is None` -- the body never finished.  UNCONDITIONAL
+        #     re-raise, byte-for-byte the pre-arc behaviour, and the branch
+        #     this arc must not touch.
+        #   * `not outcome.committed` -- the body finished and the commit's
+        #     own return was never observed.  This branch takes the deferred
+        #     path's two observations and then CONSULTS CLAUSE 2's settle: it
+        #     re-raises only when the settle refuses, and otherwise returns a
+        #     degraded SUCCESS carrying the probe's trade id.
+        #
+        # The split was the precondition for that: without it there is no
+        # `not outcome.committed` branch for the observations to sit under --
+        # an observation placed after the combined guard is UNREACHABLE
+        # whenever `committed` is False, and one placed before it would run on
+        # the body-raise branch.
         if result is None:
             raise
         if not outcome.committed:
@@ -1484,8 +1500,12 @@ class _CommitOutcome:
     did, not the writer reading the ledger to decide what its own call must
     have done.
 
-    **22-A4 ADDS TWO MORE FIELDS, FOR THREE OBSERVATIONS IN TOTAL -- AND
-    EVERY ONE OF THEM IS AN OBSERVATION IN THE SAME SENSE ``committed`` IS**:
+    **22-A4 ADDS TWO MORE FIELDS, FOR THREE IN TOTAL -- ACROSS FOUR
+    PATH-SPECIFIC PROVENANCE CASES, of which THREE are direct observations in
+    the same sense ``committed`` is and ONE is a derivation** (``committed``;
+    ``resolution`` on either path; ``cleanup_raised`` on the IMMEDIATE path;
+    and ``cleanup_raised`` on the DEFERRED path, which is the derivation --
+    see below).  A direct observation is of:
     of a call the WRITING frame itself made, of the connection's own state, or
     of an exception that frame itself caught.  "The writing frame" is
     ``_entry_transaction`` on the IMMEDIATE path and ``record_entry`` on the
@@ -1493,7 +1513,8 @@ class _CommitOutcome:
     each field is written where the fact is DIRECTLY available, so no arm of
     this design has to reason about what another frame must have done.
 
-    **ONE OF THE FOUR IS A DERIVATION AND THIS SAYS SO** (Codex R1 Minor 9).
+    **THE FOURTH CASE IS THE DERIVATION, AND THIS SAYS SO** (Codex R1 Minor
+    9; the count made consistent at R2 Minor 4 -- THREE FIELDS, FOUR CASES).
     An earlier wording said *"never an inference"* of all of them, which is
     false of ``cleanup_raised`` ON THE DEFERRED PATH: ``__exit__`` owns that
     rollback, NO Python frame observes the call, and the fact is DERIVED from
@@ -1734,10 +1755,14 @@ def _entry_transaction(conn: sqlite3.Connection, *, immediate: bool,
         # reusing.  A failed COMMIT is exactly the moment a rollback matters
         # most, and it was the one path that did not get one.
         #
-        # A COMMIT THAT RAISES RE-RAISES, over a row that may well be durable
-        # -- the DECLARED RESIDUAL above, and the reverted clause 2.  This
-        # site does NOT try to settle it: neither the exception nor a
-        # same-connection read is evidence about what the commit did.
+        # A COMMIT THAT RAISES PROPAGATES FROM HERE, over a row that may well
+        # be durable.  **THIS SITE does NOT try to settle it** -- neither the
+        # exception nor a same-connection read is evidence about what the
+        # commit did -- and that is unchanged by 22-A4.  What IS new is that
+        # `record_entry`, one frame OUT, may now settle it by ATTEMPT IDENTITY
+        # on a FRESH connection: a different read, on a different handle, with
+        # a token this frame wrote inside the same INSERT.  The declaration
+        # above `_entry_transaction` carries the whole argument.
         conn.commit()
         # **AND THE COMMIT'S OWN RETURN IS RECORDED HERE** (Codex
         # 22A-FIX-R10-01).  An earlier version deliberately carried no

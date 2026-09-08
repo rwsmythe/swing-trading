@@ -2229,9 +2229,12 @@ def _update_journal_field(
     surface. It fires FIRST, ahead of the column-name allowlist, because the
     refusal is a statement about the OPERATION and does not depend on which
     schema version the caller happens to be on. A casing or quoting variant
-    (`ATTEMPT_ID`, `[attempt_id]`) does not slip past: it misses the byte-exact
-    immutable set and is then refused by `_assert_real_column_name`, which
-    derives its allowlist from `PRAGMA table_info` and compares exactly.
+    (`ATTEMPT_ID`, `[attempt_id]`) is refused HERE, by this same call: the
+    predicate compares the RESOLVED name, so the variant raises
+    `ImmutableJournalFieldError` like any other spelling. (Before the R1
+    Major 3 fix it missed the byte-exact set and fell through to
+    `_assert_real_column_name` -- still refused, but LATE, and as a
+    bare-`Exception` subclass neither delivery handler catches.)
     """
     _refuse_immutable_journal_fields(affected_table, (field_name,))
     _assert_real_column_name(

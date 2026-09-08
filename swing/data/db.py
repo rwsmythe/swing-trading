@@ -86,6 +86,17 @@ from pathlib import Path
 #   two triggers (CHARC CONDITION-4 exception 2, declared in the migration
 #   header). ADDITIVE: nothing rebuilt, no existing row mutated. Atomic
 #   BEGIN/COMMIT.
+# 22-A4 trades.attempt_id (migration 0038): the PER-ATTEMPT IDENTITY TOKEN --
+#   one nullable TEXT column with a `typeof(...) = 'text' AND length(...) = 36`
+#   CHECK, a partial UNIQUE index over non-NULL tokens, and an UNCONDITIONAL
+#   `BEFORE UPDATE OF attempt_id` write-once trigger. Written by the SAME
+#   INSERT that writes the trade row, so it is CO-DURABLE rather than a
+#   run-level stamp (gotcha #30), and unique per attempt by mechanism, which
+#   the rowid is not (a rolled-back rowid is reissued by the engine). It is
+#   what lets a commit whose own RETURN was lost be resolved by identity on a
+#   FRESH connection. NO BACKFILL -- every pre-existing row reads NULL, which
+#   is what the partial index is for. ADDITIVE: nothing rebuilt, no existing
+#   row mutated. Atomic BEGIN/COMMIT.
 EXPECTED_SCHEMA_VERSION = 38
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
