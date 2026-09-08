@@ -448,7 +448,7 @@ def test_m8d_a_non_immutable_tier3_override_still_applies(
 # invariant that replaced it, no non-canonical spelling reaches the immutable
 # check at all, so `ImmutableJournalFieldError` is the WRONG assertion for a
 # variant: a test still demanding it would require the very resolver whose
-# deletion is the fix. (m8f) covers all SIX known spellings, on BOTH surfaces,
+# deletion is the fix. (m8f) covers all SEVEN known spellings, on BOTH surfaces,
 # under the strictly stronger zero-rows-written assertion, and pins separately
 # that the CANONICAL spelling keeps the typed `ValueError` refusal both
 # delivery handlers reach.
@@ -515,6 +515,8 @@ def test_m8e_a_column_that_merely_CONTAINS_the_name_is_not_refused(
 # `ImmutableJournalFieldError` that reaches both handlers; the last row pins it.
 _NON_CANONICAL_SPELLINGS = (
     "ATTEMPT_ID",          # R1 Major 3 -- casing
+    "Attempt_Id",          # A4X-R4-02 -- mixed casing; (m8e) named it, (m8f)
+                           # dropped it on the SUPERSEDED-BY-REPLACEMENT pass
     "[attempt_id]",        # R1 Major 3 -- bracket quoting
     '"attempt_id"',        # R1 Major 3 -- double quoting
     "'attempt_id'",        # R3-03 -- single quoting
