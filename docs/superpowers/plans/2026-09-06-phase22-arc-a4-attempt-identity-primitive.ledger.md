@@ -2572,3 +2572,87 @@ Copied THE MOMENT the five assertions passed, per `harness-architecture.md` sect
 | `fullsuite-prereview-r4.txt` (the pre-round-4 full-suite tail) | -- |
 
 **SPEND, all four counted rounds: 441,127 + 590,318 + 513,003 + 604,767 = 2,149,215 tokens.**
+
+---
+
+## THE 2026-09-08 R4 RESIDUALS LEG -- **NOT A ROUND. NO CODEX RAN.**
+
+Dispatched off `docs/22-a4-r4-residuals-leg-dispatch-brief.md` at base `8990f81f`. Round 4 cleared
+production (zero critical, zero major against `swing/`); every finding it returned was against a
+TEST, a comment, or a docstring. This leg closes those four findings and runs the uncounted
+self-sweep §2 names, under the same discipline as the 2026-09-07 settling sweep: no round number, no
+effect on convergence, which remains four counted rounds, none converged, loop stopped short.
+
+### Disposition of the four round-4 findings -- 4 FIXED, 0 routed, 1 (`A4X-R4-03`, MINOR, out of
+### this leg's authorized scope per the brief) left for the orchestrator
+
+| finding | sev | disposition | commit |
+|---|---|---|---|
+| `A4X-R4-01` | MAJOR | **FIXED** | `0df336c2` -- a parametrized `operator_alternative` row (7 spellings) spies on `_validate_correction_target` / `_read_journal_value` and asserts neither is called; RED verified against `:2745` deleted (all 6 pre-existing spellings failed on `validate_spy.call_count == 1`), GREEN restored |
+| `A4X-R4-02` | MAJOR | **FIXED** | `2782c5c0` -- `"Attempt_Id"` added to `_NON_CANONICAL_SPELLINGS` (now 7 members, read-counted); the SIX->SEVEN count corrected to match |
+| `A4X-R4-04` | MAJOR | **FIXED** | `5fdd2e10` -- the test docstring now cites `current_version == 37 AND target_version >= 38`, matching `d34e1493`'s production-side wording exactly; test body unchanged |
+| `A4X-R4-05` | MAJOR | **FIXED** | `25af3b53` -- the docstring now names the pre-fix `b3b518f9` shape instead of claiming "today's shipped code"; comment-only, `(k7a)`/`(k7b)` and every assertion unchanged |
+| `A4X-R4-03` | MINOR | **NOT IN THIS LEG'S BRIEF** | the brief's four premises (`A4X-R4-01`, `-02`, `-04`, `-05`) did not include `A4X-R4-03` (the `affected_table` provenance comment omitting the tier-3 route); it remains open at round 4's own disposition and is the orchestrator's to route |
+
+### THE UNCOUNTED SELF-SWEEP -- `SS-N` ids, no round number, no effect on convergence
+
+Searched the arc's own artifacts (`swing/trades/reconciliation_auto_correct.py`,
+`swing/trades/entry.py`, `swing/data/db.py`, `tests/trades/test_22a4_*.py`,
+`tests/data/test_migration_0038_*.py`, this ledger) per class. Every hit found was one of the four
+findings already fixed above; no additional instance surfaced in any class.
+
+- **`SS-1` -- falsified naive-substitute / "today's shipped code" claims.** Grepped for
+  `today'?s (shipped|code|implementation)`, `currently (does|is|ships)`, `the shipped
+  (code|shape|implementation)`, `NAIVE SUBSTITUTE`, and bare `today` across all five artifacts.
+  ONE hit: `A4X-R4-05` (fixed above). Every other bare-`today` occurrence (`entry.py:689,761,825,
+  938,1463,2093`; `test_22a4_attempt_identity.py:720`; `test_22a4_clause2_settlement.py:1992`;
+  `test_22a4_corrector_refusal.py:6`) was read in context and is either (a) a self-referential design
+  tautology ("refusing costs today's behaviour" -- describing the COST of a design choice, not a
+  claim a later commit could falsify) or (b) explicitly historical, scoped to the pre-fix world
+  (`test_22a4_corrector_refusal.py`'s module docstring: "Pre-fix for every row here is the RED the
+  plan declares"). `git blame` confirmed none of the `entry.py` sites sit inside code the window-1/
+  window-2/`A4X-R3-03` fixes (`4589c2f9`, `f7d78737`, `fa6f0674`, `2eebfbee`) touched after the
+  comment was written; the other four `entry.py` "naive substitute" paragraphs (`:2286`, `:2408`,
+  `:2499`) name a counterfactual or an explicitly-superseded shape, never "today's", so they carry no
+  exposure to this class. NIL beyond the one already-fixed instance.
+- **`SS-2` -- coverage claims that outlived their coverage** (`not relaxed`, `still covered`,
+  `superseded by replacement`, `each of N`, `covers all/every`). Two hits, both in
+  `test_22a4_corrector_refusal.py` (`:441` "not relaxed", `:451` "covers all SIX") and both were
+  `A4X-R4-02`'s own text -- fixed by the same commit that added `"Attempt_Id"` to the roster: "not
+  relaxed" is now literally true (the (m8f) roster is a strict superset of (m8e)'s four), and the
+  SIX->SEVEN correction was verified by a Python read of the tuple (7 members), not a grep. NIL
+  further hits, including in `swing/trades/reconciliation_auto_correct.py`'s own "third of the four
+  corrector paths" comment (`:2742`, production, unchanged) and this leg's own new (m8g) comment
+  block, both re-read against the code and confirmed accurate.
+- **`SS-3` -- totality claims with no discriminating row** (`every path`, `all call sites`, `no
+  spelling survives`). Three candidate hits in `entry.py` (`:243` "every call site is a CLEANUP
+  handler", `:962` "every path that can reach this gate", `:1022` "every path into that arm") --
+  all three are pre-22-A4 (22-A3-era containment idiom, `086c1b6e`/`39104723`) design-rationale prose
+  that is EXPLICITLY hedged against relying on the totality (`:962`'s own text: "it is rejected
+  anyway, because the alternative is a gate whose safety depends on an exhaustiveness argument"), not
+  a bare closure claim this leg's own residuals could have introduced -- routed nowhere, since none
+  is false. This leg's OWN new totality claim ("deleting it still leaves every (m8f) row passing",
+  `test_22a4_corrector_refusal.py:649`) was VERIFIED BY EXECUTION rather than left as prose: with
+  `:2745` deleted, the full file reads 24 passed / 7 failed, and the 7 failures are exactly the seven
+  parametrized (m8g) rows -- every (m8a)-(m8f) row still passes, confirming the claim precisely.
+- **`SS-4` -- rule citations that disagree with the code beside them.** ONE hit:
+  `A4X-R4-04` (fixed above). The other 19 `pre_version == (target - 1)` occurrences in
+  `swing/data/db.py` (READ-counted via `grep -c`, matching the brief's own "the other 19" exactly)
+  are explicitly out of scope per CHARC's ruling in the brief's §1 -- not touched. Every other
+  `gotcha` citation in the four artifacts (`entry.py` gotcha #30/#31/#11 references,
+  `test_migration_0038_attempt_identity.py:406`'s gotcha #11 equality claim) was spot-read against
+  the code beside it and found consistent (the `#11` equality claim: `assert cols - fields ==
+  {...}`, confirmed exact equality, not a superset form).
+
+**Fixed inside the arc's own artifacts: all four §1 findings. Routed outside: `A4X-R4-03` (not in
+this leg's brief; MINOR; round 4's own disposition stands). Nothing from the self-sweep required a
+fix beyond the four already made.** No Codex round ran. Convergence state UNCHANGED: four counted
+rounds, all `NEW_CRITICAL_MAJOR_FOUND`, loop stopped short.
+
+### Gates
+
+Four commits, `0df336c2..25af3b53`. All trailers empty (`git log 8990f81f..HEAD --format='%H%n
+%(trailers)'`). Two files touched under `swing/trades/reconciliation_auto_correct.py` /
+`swing/trades/entry.py` / `swing/data/db.py`: **ZERO** -- every change lands in
+`tests/trades/test_22a4_corrector_refusal.py`, `tests/data/test_migration_0038_attempt_identity.py`
+and `tests/trades/test_22a4_clause2_settlement.py`. No production behaviour change in this leg.
