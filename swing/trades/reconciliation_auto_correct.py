@@ -253,36 +253,6 @@ _IMMUTABLE_JOURNAL_FIELD_MESSAGE = (
 )
 
 
-def _normalize_journal_field_name(field_name: str) -> str:
-    """Reduce an operator-supplied field name to the form SQLite would RESOLVE.
-
-    22-A4 (Codex R1 Major 3).  SQLite resolves identifiers CASE-INSENSITIVELY
-    and accepts three quoting forms, so ``ATTEMPT_ID``, ``[attempt_id]`` and
-    ``"attempt_id"`` all name the column ``attempt_id``.  A byte-exact
-    membership test does not see them.
-
-    Strips ONE matched quoting pair and casefolds; it does no substring
-    matching, so a DIFFERENT column whose name merely contains an immutable
-    one is untouched (pinned by the negative control in the (m8e) rows).
-    """
-    name = field_name.strip()
-    for opener, closer in (("[", "]"), ('"', '"'), ("`", "`")):
-        if len(name) >= 2 and name.startswith(opener) and name.endswith(closer):
-            name = name[1:-1]
-            break
-    return name.casefold()
-
-
-#: The immutable set keyed by RESOLVED name, mapping back to the CANONICAL
-#: byte-exact column so the refusal message always names the column rather than
-#: the operator's spelling.  Derived FROM ``_IMMUTABLE_JOURNAL_FIELDS`` so the
-#: two cannot drift: adding a member there adds it here.
-_IMMUTABLE_JOURNAL_FIELDS_BY_RESOLVED_NAME: dict[tuple[str, str], str] = {
-    (table, _normalize_journal_field_name(field)): field
-    for table, field in _IMMUTABLE_JOURNAL_FIELDS
-}
-
-
 def _refuse_immutable_journal_fields(
     affected_table: str, field_names: Iterable[str],
 ) -> None:
@@ -303,26 +273,31 @@ def _refuse_immutable_journal_fields(
     Takes the WHOLE field set rather than one field so the answer cannot depend
     on iteration order.
 
-    THE COMPARISON IS ON THE RESOLVED NAME, NOT THE BYTES (Codex R1 Major 3).
-    A byte-exact test missed ``ATTEMPT_ID`` and ``[attempt_id]``, which name
-    the same column.  They were still REFUSED -- ``_assert_real_column_name``
-    compares exactly -- but on the tier-3 surface that refusal arrives at step
-    6, AFTER steps 4 and 5 have written, so the ORDERING property this early
-    check exists for did not hold for them; and it arrives as a
-    ``ReservedJournalFieldError``, a bare-``Exception`` subclass neither
-    delivery handler catches, so the operator saw a traceback or a 500 instead
-    of the refusal.  **The widening refuses nothing that existed before this
-    arc**: the set's only member is ``trades.attempt_id``, a column migration
-    0038 creates.
+    THE COMPARISON IS BYTE-EXACT, AND IT IS STRUCTURALLY SAFE TO BE
+    (`A4X-R3-03`, CHARC 2026-09-08). It was briefly a comparison on a RESOLVED
+    name, because ``ATTEMPT_ID`` and ``[attempt_id]`` name the same column a
+    byte-exact set does not see -- and that resolver then missed
+    ``'attempt_id'``, ``(attempt_id)`` and ``/*x*/attempt_id``, each of which
+    reaches the column through ``UPDATE ... SET`` on this engine. THE
+    ENUMERATION WAS THE DEFECT: SQLite's identifier grammar is not this
+    module's to re-implement, and a resolver existing so that an EARLIER check
+    could catch what a LATER byte-exact check refuses anyway is machinery
+    defending an interface that should not have admitted the input.
+
+    What replaced it is structural rather than another spelling:
+    ``_assert_real_column_names`` validates the WHOLE payload BYTE-EXACT
+    against ``PRAGMA table_info`` as the FIRST gate on every corrector path,
+    before any check that interprets the name and before any write. So by the
+    time this predicate runs, every name it is handed is already a canonical
+    column of ``affected_table``, and no spelling variant can exist here to be
+    missed. **The set refuses nothing that existed before this arc**: its only
+    member is ``trades.attempt_id``, a column migration 0038 creates.
     """
     for field_name in field_names:
-        canonical = _IMMUTABLE_JOURNAL_FIELDS_BY_RESOLVED_NAME.get(
-            (affected_table, _normalize_journal_field_name(field_name)),
-        )
-        if canonical is not None:
+        if (affected_table, field_name) in _IMMUTABLE_JOURNAL_FIELDS:
             raise ImmutableJournalFieldError(
                 _IMMUTABLE_JOURNAL_FIELD_MESSAGE.format(
-                    table=affected_table, field=canonical,
+                    table=affected_table, field=field_name,
                 )
             )
 
@@ -450,6 +425,41 @@ def _assert_real_column_name(
         )
 
 
+def _assert_real_column_names(
+    conn: sqlite3.Connection, affected_table: str, field_names: Iterable[str],
+) -> None:
+    """THE FIRST GATE ON EVERY CORRECTOR PATH -- byte-exact, WHOLE payload.
+
+    CHARC's ruled invariant (2026-09-08, `A4X-R3-03`): the operator-supplied
+    field name is validated BYTE-EXACT against ``PRAGMA table_info`` BEFORE any
+    check that INTERPRETS the name and BEFORE any write. Every later check --
+    the immutable membership, the reserved-column reservation, the validator
+    chain, ``_read_journal_value``'s SELECT -- therefore compares a CANONICAL
+    column name only, which is why none of them has to model SQLite's
+    identifier grammar and why none of them can be defeated by a spelling
+    nobody enumerated.
+
+    IT TAKES THE WHOLE PAYLOAD, AND THAT PROPERTY IS NOT SPENDABLE.
+    ``_handle_multi_field_correction`` and ``_apply_tier3_override_inner``
+    apply fields SEQUENTIALLY, so a gate evaluated inside the per-field walk
+    would let an earlier field's UPDATE -- and, on tier 3, steps 4 and 5's
+    correction INSERT and chain-pointer UPDATE -- execute before a later
+    field's spelling was reached. Measured pre-fix on the module's composition
+    surface, where the CALLER owns the rollback and nothing hides it:
+    ``{"current_stop": 4.5, "(attempt_id)": ...}`` left one NEW correction row,
+    the seeded head's ``superseded_by_correction_id`` ADVANCED, and
+    ``trades.current_stop`` at its new value. Deciding over the whole payload
+    first is what makes "nothing was written" true regardless of JSON key
+    order.
+    """
+    for field_name in field_names:
+        _assert_real_column_name(
+            conn, affected_table,
+            _cash_column_for_field(field_name)
+            if affected_table == _AFFECTED_TABLE_CASH else field_name,
+        )
+
+
 def _preflight_reserved_transitions(
     conn: sqlite3.Connection,
     affected_table: str,
@@ -465,6 +475,13 @@ def _preflight_reserved_transitions(
     resulting row would be an entry fill carrying a date the coupled trade and
     archive rows never saw.
     """
+    # THE BYTE-EXACT GATE RUNS FIRST, over the WHOLE payload (`A4X-R3-03`,
+    # CHARC 2026-09-08). It used to sit BELOW the immutable check AND inside
+    # the per-field walk; that inversion is what let a spelling variant reach a
+    # check that interprets the name. Hoisting it does not spend the
+    # whole-payload property Task 1b bought -- BOTH gates now decide over the
+    # ENTIRE payload before the walk begins.
+    _assert_real_column_names(conn, affected_table, proposed.keys())
     # 22-A4 Task 1b -- ORDERING, over the WHOLE payload, before the per-field
     # walk below. `_handle_multi_field_correction` applies fields SEQUENTIALLY,
     # so a backstop-only check in `_update_journal_field` would let an earlier
@@ -472,11 +489,6 @@ def _preflight_reserved_transitions(
     # JSON-key-order dependence this preflight exists to eliminate.
     _refuse_immutable_journal_fields(affected_table, proposed.keys())
     for field_name, new_value in proposed.items():
-        _assert_real_column_name(
-            conn, affected_table,
-            _cash_column_for_field(field_name)
-            if affected_table == _AFFECTED_TABLE_CASH else field_name,
-        )
         if _reservation_applies(
             conn, affected_table, affected_row_id, field_name, new_value,
         ):
@@ -1788,6 +1800,21 @@ def _apply_tier3_override_inner(
     # earlier on this path too -- a behaviour change to shipped functionality.
     # Refusing `attempt_id` early changes the behaviour of nothing that exists,
     # because the column did not exist before this arc.
+    #
+    # THE BYTE-EXACT GATE RUNS FIRST, over the WHOLE payload (`A4X-R3-03`,
+    # CHARC 2026-09-08). Until it did, the ONLY byte-exact check on this path
+    # was `_update_journal_field`'s, at step 6 -- BELOW steps 4 and 5. Measured
+    # pre-fix on the composition surface with `(attempt_id)` LAST: the new
+    # correction row was INSERTed, the prior head's chain pointer was ADVANCED,
+    # and `current_stop`'s UPDATE executed, all three persisted because on that
+    # surface the caller owns the rollback. Refusing here refuses before any of
+    # it, and over the whole payload, so the answer does not depend on which
+    # key came first. It also newly refuses nothing: every key reached
+    # `_assert_real_column_name` at step 6 already, so a name that is not a
+    # column was always rejected -- only LATER, and after those writes.
+    _assert_real_column_names(
+        conn, target.affected_table, operator_truth_value.keys(),
+    )
     _refuse_immutable_journal_fields(
         target.affected_table, operator_truth_value.keys(),
     )
@@ -2226,21 +2253,25 @@ def _update_journal_field(
     IMMUTABLE COLUMNS (22-A4 Task 1b). This is the BACKSTOP for the write-once
     identity set: this is the only site in the module that writes an
     OPERATOR-SUPPLIED journal field, so refusing here reaches every operator
-    surface. It fires FIRST, ahead of the column-name allowlist, because the
-    refusal is a statement about the OPERATION and does not depend on which
-    schema version the caller happens to be on. A casing or quoting variant
-    (`ATTEMPT_ID`, `[attempt_id]`) is refused HERE, by this same call: the
-    predicate compares the RESOLVED name, so the variant raises
-    `ImmutableJournalFieldError` like any other spelling. (Before the R1
-    Major 3 fix it missed the byte-exact set and fell through to
-    `_assert_real_column_name` -- still refused, but LATE, and as a
-    bare-`Exception` subclass neither delivery handler catches.)
+    surface. It now fires AFTER the byte-exact column-name gate, not before
+    (`A4X-R3-03`, CHARC 2026-09-08). The earlier ordering existed so the
+    immutable refusal would not depend on the caller's schema version, and it
+    cost the invariant that matters more: a name-INTERPRETING check ran on a
+    name SQLite had not yet been asked to resolve, so the module had to model
+    SQLite's identifier grammar itself -- and every spelling that model did not
+    carry (`'attempt_id'`, `(attempt_id)`, `/*x*/attempt_id`) walked straight
+    past it. Byte-exact first means this predicate only ever sees canonical
+    column names, so its comparison is exact AND complete. A non-canonical
+    spelling is refused one line above, by `_assert_real_column_name`, naming
+    the column that does not exist; that refusal's legibility -- it is a
+    bare-`Exception` `ReservedJournalFieldError`, which neither delivery
+    handler catches -- is the register's, not this module's to fix here.
     """
-    _refuse_immutable_journal_fields(affected_table, (field_name,))
     _assert_real_column_name(
         conn, affected_table, _cash_column_for_field(field_name)
         if affected_table == _AFFECTED_TABLE_CASH else field_name,
     )
+    _refuse_immutable_journal_fields(affected_table, (field_name,))
     reserved = (
         _RESERVED_JOURNAL_FIELDS.get((affected_table, field_name))
         if _reservation_applies(
@@ -2700,6 +2731,18 @@ def _handle_single_field_correction(
     """
     affected_table, affected_row_id = _resolve_affected_target(disc)
     field_name = next(iter(correction_target.keys()))
+
+    # THE BYTE-EXACT GATE RUNS FIRST on this path too (`A4X-R3-03`, CHARC
+    # 2026-09-08). `operator_alternative` reaches here carrying an
+    # OPERATOR-SUPPLIED payload, and BOTH `_validate_correction_target` (which
+    # interprets the name semantically) and `_read_journal_value` (which
+    # interpolates it into a SELECT SQLite resolves case-insensitively) run
+    # before `_update_journal_field`'s gate. Byte-exact first means neither is
+    # ever handed a name SQLite would resolve to a column the guards did not
+    # see. This is the third of the four corrector paths; the fourth, tier-1,
+    # sources its field name from the classifier rather than the operator and
+    # keeps `_update_journal_field` as its backstop.
+    _assert_real_column_names(conn, affected_table, correction_target.keys())
 
     if revalidate:
         _validate_correction_target(

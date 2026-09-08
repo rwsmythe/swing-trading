@@ -27,6 +27,7 @@ from swing.data.models import ReconciliationCorrection
 from swing.data.repos.reconciliation_corrections import insert_correction
 from swing.trades.reconciliation_auto_correct import (
     ImmutableJournalFieldError,
+    ReservedJournalFieldError,
     _apply_tier3_override_inner,
     apply_tier2_resolution,
     apply_tier3_override,
@@ -426,85 +427,31 @@ def test_m8d_a_non_immutable_tier3_override_still_applies(
 
 
 # ---------------------------------------------------------------------------
-# (m8e) CASING AND QUOTING VARIANTS -- Codex R1 Major 3
+# (m8e) THE NEGATIVE CONTROL ON THE WIDENING
 # ---------------------------------------------------------------------------
-# SQLite RESOLVES IDENTIFIERS CASE-INSENSITIVELY, so `ATTEMPT_ID` and
-# `[attempt_id]` name the SAME column that `attempt_id` does. The byte-exact
-# immutable set does not see them, and every one of these rows FAILS against a
-# byte-exact `_refuse_immutable_journal_fields`.
+# (m8e) ONCE HELD TWO PARAMETRIZED ROWS asserting that `ATTEMPT_ID`,
+# `Attempt_Id`, `[attempt_id]` and `"attempt_id"` each raised the typed,
+# `ValueError`-derived `ImmutableJournalFieldError`. They are SUPERSEDED BY
+# REPLACEMENT by the (m8f) closure block below -- not relaxed, and not merely
+# renumbered.
 #
-# WHAT WAS ACTUALLY BROKEN, and it is the ORDERING half rather than the
-# refusal half: a variant spelling was still refused -- `_assert_real_column_name`
-# compares exactly and rejects it -- but on the TIER-3 surface that refusal
-# arrives at step 6, AFTER steps 4 and 5 have inserted the new correction row
-# and advanced the prior row's chain pointer. The early check exists precisely
-# so that "nothing was written" holds on the composition surface, and for a
-# variant spelling it did not. The late refusal is also a
-# `ReservedJournalFieldError`, which derives from bare `Exception` and reaches
-# NEITHER delivery handler (the CLI catches `ValueError` -> exit 2, the web
-# catches `ValueError` -> 400), so the operator got a traceback or a 500.
+# WHY THEY COULD NOT SURVIVE THE FIX: `A4X-R3-03` found that the resolved-name
+# normalizer those rows pinned missed three FURTHER spellings, and CHARC ruled
+# (2026-09-08) that THE ENUMERATION IS THE DEFECT -- SQLite's identifier
+# grammar is not the corrector's to re-implement. Under the byte-exact-first
+# invariant that replaced it, no non-canonical spelling reaches the immutable
+# check at all, so `ImmutableJournalFieldError` is the WRONG assertion for a
+# variant: a test still demanding it would require the very resolver whose
+# deletion is the fix. (m8f) covers all SIX known spellings, on BOTH surfaces,
+# under the strictly stronger zero-rows-written assertion, and pins separately
+# that the CANONICAL spelling keeps the typed `ValueError` refusal both
+# delivery handlers reach.
 #
-# THE WIDENING REFUSES NOTHING THAT EXISTED BEFORE THIS ARC: the only member of
-# the immutable set is `trades.attempt_id`, a column migration 0038 creates.
-_VARIANT_SPELLINGS = ("ATTEMPT_ID", "Attempt_Id", "[attempt_id]", '"attempt_id"')
-
-
-@pytest.mark.parametrize("spelling", _VARIANT_SPELLINGS)
-def test_m8e_tier3_refuses_a_variant_spelling_BEFORE_step_4(
-    conn: sqlite3.Connection, spelling: str,
-) -> None:
-    """The composition surface, where the caller owns the rollback, so a late
-    refusal leaves the correction-ledger writes PERSISTED and visible."""
-    world = _seed_trade_anchored_world(conn, tier2=False)
-    head_id = _seed_correction_head(conn, world)
-
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        with pytest.raises(ImmutableJournalFieldError):
-            _apply_tier3_override_inner(
-                conn,
-                correction_id=head_id,
-                operator_truth_value={
-                    "current_stop": 4.5,
-                    spelling: OTHER_TOKEN,
-                },
-                operator_reason="a variant spelling of a write-once column",
-            )
-        rows = conn.execute(
-            "SELECT correction_id, superseded_by_correction_id "
-            "FROM reconciliation_corrections ORDER BY correction_id",
-        ).fetchall()
-        assert rows == [(head_id, None)], rows
-        assert conn.execute(
-            "SELECT current_stop, attempt_id FROM trades WHERE id = ?",
-            (world["trade_id"],),
-        ).fetchone() == (4.0, MINTED_TOKEN)
-    finally:
-        conn.rollback()
-
-
-@pytest.mark.parametrize("spelling", _VARIANT_SPELLINGS)
-def test_m8e_a_variant_spelling_is_a_ValueError_so_both_handlers_reach_it(
-    conn: sqlite3.Connection, spelling: str,
-) -> None:
-    """The counterfactual field, not merely "it raised": the CLI maps
-    `ValueError` to `click.UsageError` (exit 2) and the web route maps it to
-    400. `ReservedJournalFieldError` derives from bare `Exception` and reaches
-    neither, so a test asserting only that SOMETHING was raised passes against
-    the exact defect this row excludes."""
-    world = _seed_trade_anchored_world(conn)
-    with pytest.raises(ImmutableJournalFieldError) as exc:
-        apply_tier2_resolution(
-            conn,
-            discrepancy_id=world["discrepancy_id"],
-            choice_code="operator_truth",
-            operator_custom_payload={spelling: OTHER_TOKEN},
-            operator_reason="a variant spelling of a write-once column",
-        )
-    assert isinstance(exc.value, ValueError)
-    # The message names the CANONICAL byte-exact column, never the operator's
-    # spelling -- the refusal is a statement about the COLUMN.
-    assert "trades.attempt_id" in str(exc.value)
+# THE ONE CLAIM (m8e) STILL OWNS is the negative control below. It is not a
+# weaker (m8f) row: it excludes the defect ONE DOOR DOWN -- a check that
+# refuses a legitimate column because its name merely CONTAINS an immutable
+# one. Byte-exactness and substring matching agree on every (m8f) row and
+# disagree only here.
 
 
 def test_m8e_a_column_that_merely_CONTAINS_the_name_is_not_refused(
@@ -522,3 +469,160 @@ def test_m8e_a_column_that_merely_CONTAINS_the_name_is_not_refused(
         operator_reason="the widening must not over-refuse",
     )
     assert result.correction_id != head_id
+
+
+# ---------------------------------------------------------------------------
+# (m8f) THE CLOSURE TEST -- BYTE-EXACT FIRST, SO NO NON-CANONICAL SPELLING
+#       SURVIVES TO ANY NAME-INTERPRETING CHECK (CHARC, 2026-09-08, R2)
+# ---------------------------------------------------------------------------
+# `A4X-R3-03` found a THIRD and FOURTH quoting form after the first three were
+# enumerated -- `'attempt_id'`, `(attempt_id)` and `/*x*/attempt_id` all reach
+# the column through `UPDATE ... SET`, and the resolved-name normalizer (which
+# stripped ONE matched pair from `[]`, `""` and backticks, then casefolded)
+# returned every one of them UNCHANGED. THE ENUMERATION IS THE DEFECT: SQLite's
+# identifier grammar is not this module's to re-implement.
+#
+# The ruled invariant, and what these rows measure: the operator-supplied field
+# name is validated BYTE-EXACT against `PRAGMA table_info` as the FIRST gate on
+# every corrector path -- before any check that INTERPRETS the name and before
+# any write -- so every later check, the immutable membership included, compares
+# the CANONICAL name only.
+#
+# THE NAIVE SUBSTITUTES EACH ROW FAILS AGAINST, and they are two different
+# implementations rather than one:
+#   * a BYTE-EXACT-ONLY immutable set with no first gate (the pre-`74cb2815`
+#     shape): `ATTEMPT_ID`, `[attempt_id]` and a double-quoted spelling miss the
+#     early check entirely, tier-3 steps 4 and 5 WRITE, and the refusal arrives
+#     at step 6.
+#   * the SHIPPED NORMALIZER (`74cb2815`): the same holds for `'attempt_id'`,
+#     `(attempt_id)` and `/*x*/attempt_id`, which its three-pair strip does not
+#     touch -- and for the first three it raises `ImmutableJournalFieldError`,
+#     which is NOT what a byte-exact-first implementation raises, so every row
+#     here is red against it too.
+#
+# WHAT THE SURVIVING REFUSAL IS, stated rather than implied: a non-canonical
+# spelling is refused by the byte-exact gate as `ReservedJournalFieldError`,
+# which derives from bare `Exception` and reaches NEITHER delivery handler.
+# That legibility gap is D34's -- the register's third instance, CHARC
+# 2026-09-08 -- and is deliberately NOT closed here. The reason text is already
+# right. The CANONICAL spelling still gets the typed, `ValueError`-derived
+# `ImmutableJournalFieldError` that reaches both handlers; the last row pins it.
+_NON_CANONICAL_SPELLINGS = (
+    "ATTEMPT_ID",          # R1 Major 3 -- casing
+    "[attempt_id]",        # R1 Major 3 -- bracket quoting
+    '"attempt_id"',        # R1 Major 3 -- double quoting
+    "'attempt_id'",        # R3-03 -- single quoting
+    "(attempt_id)",        # R3-03 -- parenthesised
+    "/*x*/attempt_id",     # R3-03 -- leading comment
+)
+
+
+@pytest.mark.parametrize("spelling", _NON_CANONICAL_SPELLINGS)
+def test_m8f_tier3_composition_surface_writes_zero_rows_for_any_spelling(
+    conn: sqlite3.Connection, spelling: str,
+) -> None:
+    """ZERO rows written, INCLUDING tier-3 steps 4 and 5's rows.
+
+    The composition surface is the instrument: the caller holds the
+    transaction and rolls back NOTHING, so a refusal that arrives at step 6
+    leaves the new correction row and the advanced chain pointer PERSISTED and
+    readable. The statement trace is asserted alongside the persisted state
+    because on the PUBLIC entry point the rollback would hide both.
+    """
+    world = _seed_trade_anchored_world(conn, tier2=False)
+    head_id = _seed_correction_head(conn, world)
+
+    trace = _StatementTrace()
+    conn.execute("BEGIN IMMEDIATE")
+    conn.set_trace_callback(trace)
+    try:
+        with pytest.raises(ReservedJournalFieldError) as exc:
+            _apply_tier3_override_inner(
+                conn,
+                correction_id=head_id,
+                operator_truth_value={
+                    "current_stop": 4.5,
+                    spelling: OTHER_TOKEN,
+                },
+                operator_reason="a non-canonical spelling of a write-once column",
+            )
+        assert "must match a real column EXACTLY" in str(exc.value)
+        # NOT the immutable check's error: byte-exact ran FIRST, so the
+        # spelling never reached a check that interprets the name.
+        assert not isinstance(exc.value, ImmutableJournalFieldError)
+        assert trace.count_startswith(
+            "INSERT INTO reconciliation_corrections",
+        ) == 0, trace.statements
+        assert trace.count_startswith(
+            "UPDATE reconciliation_corrections",
+        ) == 0, trace.statements
+        assert _journal_update_count(trace) == 0, trace.statements
+        assert conn.execute(
+            "SELECT correction_id, superseded_by_correction_id "
+            "FROM reconciliation_corrections ORDER BY correction_id",
+        ).fetchall() == [(head_id, None)]
+        assert conn.execute(
+            "SELECT current_stop, attempt_id FROM trades WHERE id = ?",
+            (world["trade_id"],),
+        ).fetchone() == (4.0, MINTED_TOKEN)
+    finally:
+        conn.set_trace_callback(None)
+        conn.rollback()
+
+
+@pytest.mark.parametrize("spelling", _NON_CANONICAL_SPELLINGS)
+def test_m8f_tier2_multi_field_refuses_any_spelling_before_the_first_update(
+    conn: sqlite3.Connection, spelling: str,
+) -> None:
+    """The ordinary field FIRST and the spelling LAST -- the whole-payload
+    property `_preflight_reserved_transitions` was built for, now carried by
+    the byte-exact gate as well. A backstop-only byte-exact check would let
+    `current_stop`'s UPDATE execute before the spelling was reached."""
+    world = _seed_trade_anchored_world(conn)
+    trace = _StatementTrace()
+    conn.set_trace_callback(trace)
+    try:
+        with pytest.raises(ReservedJournalFieldError):
+            apply_tier2_resolution(
+                conn,
+                discrepancy_id=world["discrepancy_id"],
+                choice_code="operator_truth",
+                operator_custom_payload={
+                    "current_stop": 4.5,
+                    spelling: OTHER_TOKEN,
+                },
+                operator_reason="ordinary field first, a spelling last",
+            )
+    finally:
+        conn.set_trace_callback(None)
+
+    assert _journal_update_count(trace) == 0, trace.statements
+    assert trace.count_startswith("INSERT INTO reconciliation_corrections") == 0
+    assert conn.execute(
+        "SELECT current_stop, attempt_id FROM trades WHERE id = ?",
+        (world["trade_id"],),
+    ).fetchone() == (4.0, MINTED_TOKEN)
+
+
+def test_m8f_the_canonical_spelling_keeps_the_typed_ValueError_refusal(
+    conn: sqlite3.Connection,
+) -> None:
+    """Byte-exactness must not be bought with the typed refusal.
+
+    `attempt_id` IS a byte-exact column, so it passes the first gate and
+    reaches the immutable membership check, which raises the
+    `ValueError`-derived `ImmutableJournalFieldError` both delivery handlers
+    name. An implementation that put the immutable set behind the byte-exact
+    gate but DROPPED it would fail here.
+    """
+    world = _seed_trade_anchored_world(conn)
+    with pytest.raises(ImmutableJournalFieldError) as exc:
+        apply_tier2_resolution(
+            conn,
+            discrepancy_id=world["discrepancy_id"],
+            choice_code="operator_truth",
+            operator_custom_payload={"attempt_id": OTHER_TOKEN},
+            operator_reason="the canonical spelling",
+        )
+    assert isinstance(exc.value, ValueError)
+    assert "trades.attempt_id" in str(exc.value)
