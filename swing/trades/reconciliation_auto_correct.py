@@ -413,8 +413,19 @@ def _assert_real_column_name(
             f"PRAGMA table_info({affected_table})",  # noqa: S608 -- see below
         ).fetchall()
     }
-    # `affected_table` is NOT operator-supplied: it comes from
-    # `_resolve_affected_target`, whose output is one of four module constants.
+    # `affected_table` is NOT operator-supplied, by EITHER of its two routes --
+    # and both are named here because `A4X-R3-03` made this gate reachable from
+    # the tier-3 head, where the second route is the live one:
+    #   (a) `_resolve_affected_target`, whose output is one of four module
+    #       constants; and
+    #   (b) a persisted `reconciliation_corrections.affected_table`, read via
+    #       `_select_correction_row` -> `get_correction` on the tier-3 path.
+    # Route (b) is bounded by SCHEMA, not by this module: migration
+    # `0019_reconciliation_corrections.sql:48` CHECK-constrains the column to
+    # the same four literals. Citing only (a) was true of the callers this
+    # comment was written for and FALSE of the caller `2eebfbee` added --
+    # `A4X-R4-03`, a bounded search reported as a total, which is this arc's
+    # most-repeated class.
     if field_name not in columns:
         raise ReservedJournalFieldError(
             f"{field_name!r} is not a column of {affected_table!r}. Correction "
