@@ -76,6 +76,29 @@ relabelled as convergence** — the outgoing cell did exactly this and it was th
 >
 > ## R4. Sequencing [...] R3-03 is a TASK-BEARING finding and is the named ground for a fourth counted round under the orchestrator's written authorization. [...] The round opens AFTER R2 and R3 land on the branch -- one round, reviewing the final shape once, never its own wake -- and the B pass then runs over the tree that carries both fixes plus RD's declaration wording (semantic bound, measured span as illustration).
 
+> ---
+>
+> ### CORRECTION APPENDED BENEATH THE QUOTE, 2026-09-08, AT CHARC'S OWN DIRECTION — the quote above is NOT edited
+>
+> **CHARC, on the record, correcting his own assessment above:** *"My item-2 ruling said the reachable
+> defect was the wrong refusal, not a write. Your closure test's execution shows the three spellings
+> each persisted a correction row, advanced the seeded head's supersession pointer and updated an
+> unrelated trades column on the caller-held-transaction surface before any refusal fired. I read the
+> two barriers that protect `attempt_id` ITSELF and reasoned from them to the whole path — the same
+> bounded-search-reported-as-a-total that Codex's ordering claim was flagged as, and I had that flag
+> in front of me. The ruled fix stands and closes it; the severity statement was wrong."*
+>
+> **The measurement that falsified it** (pre-fix, tier-3 composition surface, caller-held
+> `BEGIN IMMEDIATE`, no rollback — run by the R3-03 leg as the closure test CHARC's own R2 ordered):
+> each of `'attempt_id'`, `(attempt_id)`, `/*x*/attempt_id` produced `step4_INSERT=1`,
+> `step5_UPDATE=1`, `step6_UPDATEtrades=1`, all PERSISTED. `attempt_id` itself was never written, so
+> 0038's trigger never had to fire — what was written was the ledger and an unrelated column.
+> Post-fix all six spellings show `0/0/0`.
+>
+> **Nothing in the ruling above changes.** The byte-exact-first invariant closes the write path and
+> the wrong-refusal path alike. Only the severity sentence was wrong, and it is corrected here rather
+> than silently tidied out of the quote — which is the whole reason the quote form was chosen.
+
 **CHARC also recorded what he verified before ruling, and you should not re-derive it blind:** the
 normalizer strips ONE matched pair from `[]`, `""`, backticks, then casefolds — single quotes,
 parentheses and a leading comment are not in its set. What stands between the miss and a write:
