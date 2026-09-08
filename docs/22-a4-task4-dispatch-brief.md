@@ -19,7 +19,10 @@ dispatch time and today they are **byte-identical** across `main` and `22-a4-exe
 is a pointer against future drift, not a report of drift. I am not asserting a staleness I have not
 measured; that claim was made in the Task 3 brief and the cell falsified it by reading the blob ids.
 
-**Rules read from `main` @ the SHA in §8.**
+**Rules read from `main` @ `c46c134f`** — that is the SHA at which I read the recipe and
+`harness-architecture.md` and measured the blob ids above. It is not a base for your branch and you
+must not rebase onto it. (§8 asks you to report the SHA of the copy YOU read, which is the
+independent half of this check.)
 
 ---
 
