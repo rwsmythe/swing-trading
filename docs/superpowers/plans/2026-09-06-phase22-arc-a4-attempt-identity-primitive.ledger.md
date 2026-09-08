@@ -2408,3 +2408,167 @@ Copied THE MOMENT the five assertions passed, per `harness-architecture.md` sect
 | `run_r3.sh` (the round-3 runner, with its four hazards commented) | 1,266 |
 
 **SPEND, all three counted rounds: 441,127 + 590,318 + 513,003 = 1,544,448 tokens.**
+
+## Round 4 -- THE FOURTH COUNTED ROUND, ON THE FINAL SHAPE. IT DID NOT CONVERGE.
+
+**Written authorization held** (orchestrator, 2026-09-08, dispatch brief
+`docs/22-a4-r3-03-structural-leg-dispatch-brief.md` section 1), naming `A4X-R3-03` as the
+task-bearing ground. The round opened only AFTER `2eebfbee` (R2, the structural invariant) and
+`d34e1493` (R3, the docstring) landed -- one round, on the final shape, never its own wake.
+
+Artifact: `git diff -U8 2d9e4a34..HEAD -- swing/ tests/` at head `d34e1493` (403,409 bytes).
+**The FULL arc diff was sent again, not this leg alone** -- and this round is the first to see FOUR
+commits: `fa6f0674` and `df231195` (the round-3 fixes, which landed after the last counted round)
+plus this leg's `2eebfbee` and `d34e1493`.
+
+| assertion | measured |
+|---|---|
+| 1. banner model | `model: gpt-5.6-sol` |
+| 2. `model_reasoning_effort` | `reasoning effort: high` |
+| 3. `grep -c '^ERROR'` | **0** |
+| 4. `grep -c '^tokens used'` | **1**; footer value **604,767** |
+| 5. anchored verdict token | `^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0** |
+
+Exit code MEASURED **0** (`.codex-exit-r4.txt`); transcript NON-EMPTY (**1,635,869 bytes**,
+27,836 lines); `pgrep -c codex` = **0** before the file was read. **Content-filter events: NONE**
+(Codex self-attested: *"No safety-layer refusal or rewriting occurred."*). Codex could not run the
+pytest suite (no pytest on its interpreter, no writable temp) and said so; it ran ripgrep, AST and
+in-memory SQLite probes instead -- it applied migration 0038 in-memory and exercised the CHECK, the
+partial UNIQUE index, the trigger, the repo INSERT binding order, and all seven non-canonical
+spellings against the new gate. Prior-round-findings prohibition **HONORED** -- 8 grep hits for the
+prohibited names, of which 2 are the prompt's own prohibition text, 3 are Codex EXCLUDING those
+files at the tool level in its own ripgreps (`--glob '!**/*.ledger.md'` etc.), and 3 are incidental
+prose inside repo docs it legitimately read (`CLAUDE.md`, `orchestrator-context.md`, an archived
+brief). No read of any prior-round findings file.
+
+**A launch note worth keeping, because it is the SIXTH correction to this seam and it is NEW:**
+the round-3 invocation form `wsl.exe bash /mnt/c/.../run_r4.sh` -- "non-path-initial", the recipe's
+stated remedy for MSYS mangling -- **FAILED at exit 127**: MSYS rewrote the SECOND argument to
+`C:/Program Files/Git/mnt/c/...`. Making the argument non-path-initial is not sufficient when the
+path is a separate argv element; MSYS converts any argument that LOOKS like a POSIX path, wherever
+it sits. The form that ran is
+`MSYS_NO_PATHCONV=1 wsl.exe bash -lc 'bash /mnt/c/.../run_r4.sh'` -- the env var disables the
+conversion outright and the `-lc` string is itself non-path-initial. The failure was LOUD (exit 127
+with a diagnostic), not one of the exit-0 family, and the pre-created empty redirect target
+confirmed no round had happened.
+
+## Round-4 dispositions -- EVERY PREMISE VERIFIED AGAINST THE CODE, NONE FIXED
+
+**This leg holds no authorization for a fifth counted round**, and the brief's section 1 is
+explicit: *"If round 4 finds task-bearing work, STOP and report the full cumulative ledger."* All
+five findings below are therefore **VERIFIED AND UNFIXED**, routed to the orchestrator with the
+smallest correct fix named. Fixing them here would leave the branch in a shape no round has seen,
+which is the state the single-round authorization exists to prevent.
+
+**What round 4 found NO defect in, stated because it is the round's main result:** the production
+invariant this leg was dispatched to build. Codex independently enumerated the operator paths,
+constructed key orderings against the whole-payload property, checked the cash
+`net_amount -> amount` mapping at the gate / SELECT / UPDATE for consistency, and confirmed no
+remaining reference to the deleted resolver. Its words: *"I found no new critical production-code
+defect: the settlement gate, migration, repo mirrors, and production corrector ordering hold on the
+reviewed head."* **All four majors and the one minor are against TESTS, COMMENTS and DOCSTRINGS.**
+
+**A4X-R4-01 -- MAJOR -- NEW GROUND -- the single-field operator path has no discriminating row**
+**PREMISE VERIFIED. NOT FIXED -- no round-5 authorization.** `grep -c operator_alternative
+tests/trades/test_22a4_corrector_refusal.py` returns **0**. This leg added the byte-exact gate at
+`swing/trades/reconciliation_auto_correct.py:2745` (`_handle_single_field_correction`, the path
+`operator_alternative` reaches with an operator-supplied payload) and shipped NO row that fails
+when that call is deleted: with it gone, `_validate_correction_target` and `_read_journal_value`
+interpret a non-canonical key before `_update_journal_field`'s backstop refuses it, and every
+`(m8f)` row still passes. **The gate I added to make "every corrector path" literally true is the
+one path the closure test does not close.** Smallest fix: a parametrized `operator_alternative`
+row spying on `_validate_correction_target` and `_read_journal_value` and asserting neither is
+reached -- zero-write assertions alone do not discriminate this mutant, because no write precedes
+the backstop on that path.
+
+**A4X-R4-02 -- MAJOR -- NEW GROUND -- `Attempt_Id` was dropped in the (m8e) supersession**
+**PREMISE VERIFIED. NOT FIXED -- no round-5 authorization.** The deleted `(m8e)` rows covered
+`ATTEMPT_ID`, `Attempt_Id`, `[attempt_id]` and `"attempt_id"`; `_NON_CANONICAL_SPELLINGS` carries
+six members and `Attempt_Id` is not among them. **The supersession note I wrote NAMES `Attempt_Id`
+among what the deleted rows covered and then says they are "not relaxed" -- a false claim in
+normative position, in the very comment written to record that nothing was lost.** Production is
+correct (Codex executed the gate against `Attempt_Id` and it refuses), so this is a coverage
+regression, not a bypass. Smallest fix: add `"Attempt_Id"` to the tuple; both parametrized surfaces
+then cover it. This is the hand-enumerated-roster class arriving inside the commit that DELETED a
+hand-enumeration for being one.
+
+**A4X-R4-03 -- MINOR -- NEW GROUND -- the `affected_table` provenance comment omits one route**
+**PREMISE VERIFIED. NOT FIXED.** `swing/trades/reconciliation_auto_correct.py:416-417` states
+`affected_table` "comes from `_resolve_affected_target`, whose output is one of four module
+constants" -- the injection-safety proof for the interpolated `PRAGMA table_info({affected_table})`.
+On tier 3 it comes from `_select_correction_row` -> `get_correction` instead. The code is still
+safe: `swing/data/migrations/0019_*.sql:48-50` CHECK-constrains
+`reconciliation_corrections.affected_table` to the same four literals (VERIFIED by reading the
+migration, per the cited-constraint rule). But **this leg made that comment more load-bearing** --
+`2eebfbee` newly calls the gate from the tier-3 head, which is exactly the route the proof omits.
+Smallest fix: name both sources.
+
+**A4X-R4-04 -- MAJOR -- NEW GROUND -- the TEST twin of the defect `d34e1493` just fixed**
+**PREMISE VERIFIED. NOT FIXED.** `tests/data/test_migration_0038_attempt_identity.py:150-151`
+docstrings `test_m3a_the_gate_fires_only_on_the_exact_37_to_38_crossing` with *"STRICT EQUALITY on
+pre_version per the ``pre_version == target - 1`` gotcha"* -- and the same test then asserts, at
+lines 177-180 and with a comment explaining why, that the gate FIRES at
+`current_version=37, target_version=39`, where that equation is false. **`d34e1493` fixed one
+instance of this class and I did not re-grep the artifact for the rest** -- the
+state-the-class-then-sweep discipline, missed on the commit that stated the class. Smallest fix:
+the same rewrite, in the test docstring.
+
+**A4X-R4-05 -- MAJOR -- NEW GROUND -- a window-1 test docstring calls the superseded shape "today's"**
+**PREMISE VERIFIED. NOT FIXED -- and NOT this leg's code.**
+`tests/trades/test_22a4_clause2_settlement.py:2148` reads *"THE NAIVE SUBSTITUTE IS TODAY'S SHIPPED
+CODE"*, which was true when `dd714d4c` wrote it and was falsified by `4589c2f9` in the same leg:
+`swing/trades/entry.py:1054-1055` now assigns `proven = found` then `return proven`, and `:1070`
+returns it from the containment arm. The same paragraph already names `b3b518f9` as the measured
+pre-fix shape, so the docstring contradicts itself. Smallest fix: *"the pre-fix `b3b518f9` shape."*
+
+## THE LOOP IS STOPPED AT ROUND 4. THIS IS NOT CONVERGENCE.
+
+Four counted rounds have run; **all four returned `NEW_CRITICAL_MAJOR_FOUND`.** The authorization
+covered exactly one further round and said a fifth needs a fresh one naming its own task-bearing
+finding. `A4X-R4-01`, `-02`, `-04` and `-05` are task-bearing (each changes a TEST or a docstring
+that is load-bearing authority); `-03` is an instrument finding. None was fixed.
+
+**What that leaves outstanding, stated plainly rather than softened:**
+
+* Five findings VERIFIED and UNFIXED. Three of them (`-01`, `-02`, `-03`) are against this leg's
+  own two commits; two (`-04`, `-05`) are older and were reached only because this round saw four
+  previously-unreviewed commits.
+* **The production change this leg was dispatched to make survived the round.** Zero critical and
+  zero major findings against `swing/`.
+
+## Round ledger -- EXECUTING loop (cumulative)
+
+| round | tier / model / effort | C / MAJ / MIN | new | reopened | reverted | verdict |
+|---|---|---|---|---|---|---|
+| **1** | `strong` / `gpt-5.6-sol` / `high` | 1 / 4 / 5 | 10 (**10 new ground, 0 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **2** | `strong` / `gpt-5.6-sol` / `high` | 1 / 1 / 4 | 6 (**3 new ground, 3 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **STOP** | *(loop STOPPED at a DESIGN FORK, `A4X-R2-01`; RD ruled it 2026-09-08)* | -- | -- | -- | -- | **routed, not convergence** |
+| **3** | `strong` / `gpt-5.6-sol` / `high` | 0 / 3 / 1 | 4 (**4 new ground, 0 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **STOP** | *(three counted rounds is the default; a fourth needs written authorization naming the task-bearing finding, and it was not held)* | -- | -- | -- | -- | **A STOPPED-SHORT LOOP, reported as one. NOT convergence.** |
+| **4** | `strong` / `gpt-5.6-sol` / `high` | 0 / 4 / 1 | 5 (**5 new ground, 0 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **STOP** | *(the authorization covered ONE round; a fifth needs a fresh one naming its own task-bearing finding, and this cell does not hold one)* | -- | -- | -- | -- | **STOPPED SHORT AGAIN. NOT convergence.** |
+
+**Context-depth column: DELIBERATELY EMPTY.** A cell cannot see its own depth (no hook fires for a
+subagent), so a self-estimate there is not a record; the orchestrator fills it from
+`python scripts/cell_depth.py --live <h>`.
+
+## Transcript manifest -- EXECUTING loop (through round 4)
+
+Durable path: `C:/Users/rwsmy/swing-data/review-transcripts/22-a4-exec/` (dotfiles -- use `ls -a`).
+Copied THE MOMENT the five assertions passed, per `harness-architecture.md` section 5.1.
+
+| transcript | bytes |
+|---|---|
+| `.codex-review-r1.txt` | 1,550,758 |
+| `.codex-review-r2.txt` | 1,869,407 |
+| `.codex-review-r3.txt` | 1,683,792 |
+| `.codex-review-r4.txt` | 1,635,869 |
+| `.codex-prompt-r1.md` | 10,760 |
+| `.codex-prompt-r2.md` | 13,678 |
+| `.codex-prompt-r3.md` | 18,580 |
+| `.codex-prompt-r4.md` | 22,606 |
+| `.codex-exit-r3.txt` / `.codex-exit-r4.txt` | 2 / 2 |
+| `run_r3.sh` / `run_r4.sh` (the runners, with their hazards commented) | 1,266 / 1,269 |
+| `fullsuite-prereview-r4.txt` (the pre-round-4 full-suite tail) | -- |
+
+**SPEND, all four counted rounds: 441,127 + 590,318 + 513,003 + 604,767 = 2,149,215 tokens.**
