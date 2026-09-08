@@ -3226,40 +3226,54 @@ def _trade_rows(conn, ticker: str = TICKER) -> int:
 @pytest.mark.parametrize("immediate", [True, False],
                          ids=["latched-path", "pre-arc-path"])
 def test_CONTRACT_a_commit_whose_own_return_was_LOST_re_raises(
-        tmp_path, immediate) -> None:
-    """**CLAUSE 2 IS REVERTED TO RE-RAISE** (CHARC + RD, ruled 2026-09-02 --
-    `docs/22-a-merge-request.md` S4.4).  The commit LANDED and its own return
-    was lost; ``record_entry`` RAISES rather than claiming the row exists.
+        tmp_path, monkeypatch, immediate) -> None:
+    """**CLAUSE 2 RETURNS, SETTLED BY ATTEMPT IDENTITY** (22-A4).  The commit
+    LANDED and its own return was lost; ``record_entry`` now RETURNS an
+    ``EntryResult`` naming the trade the probe read on a FRESH connection.
 
-    WHY, because a bare "it raises" reads like the defect it replaced.
-    "Resolve by read" needs two admissibility preconditions:
+    **THE FUNCTION NAME STILL SAYS ``re_raises`` AND THAT IS NOW FALSE.**  It
+    is left unchanged because renaming tests is explicitly out of this
+    commit's scope (it rides with the queued version-mirror rename rider);
+    the row is reported as owing a rename.  Recorded here rather than left to
+    be discovered, because a test NAME is a claim about what it asserts.
+
+    **THE DECLARATION PROSE BELOW IS KEPT AS THE RECORD OF WHAT CHANGED.**
+    Clause 2 was reverted on 2026-09-02 (CHARC + RD --
+    `docs/22-a-merge-request.md` S4.4) because "resolve by read" needed two
+    admissibility preconditions the tree could not supply.  22-A4 supplies
+    both, and each half of the old declaration is answered beside it:
 
       * **VISIBILITY** -- the confirming read must observe DURABLE state.  A
         read on the writer's OWN connection inside an unresolved transaction
         observes the writer's own uncommitted view: *the writer quoting
         itself*.  A failed rollback VOIDS that read; it does not license
-        reading anyway.
+        reading anyway.  **SUPPLIED:** the probe opens its OWN connection on
+        the database path, and it is only consulted once the transaction has
+        a PROVEN resolution and the rollback did not raise ((RD-a1)-(RD-a3)).
       * **IDENTITY** -- the read must identify OUR attempt.  ``SELECT 1 FROM
         trades WHERE id = ?`` establishes only that *a* row with that id
         exists, and a **rolled-back rowid is REUSABLE** (``sqlite_sequence``
         rolls back with the insert, so ``AUTOINCREMENT`` does not pin it).
+        **SUPPLIED:** migration 0038's ``trades.attempt_id``, minted per
+        attempt, written CO-DURABLY in the entry's own transaction, and read
+        ``WHERE attempt_id = ?`` with the ticker corroborated ((RD-b)).
 
-    Identity does not exist in the schema today, so the honest answer is the
-    alarm: **ALARM-NEVER-ASSERT at the transaction boundary** -- the function
-    may RAISE the indeterminate, never ASSERT durability from evidence that
-    cannot identify the attempt.
-
-    THE DECLARED RESIDUAL, PINNED rather than merely described: the row IS
-    durable while the caller is told the entry failed, so the caller may
-    RETRY -- and the retry hits ``ux_trades_one_open_per_ticker`` and REFUSES,
-    naming the existing position.  That is the one direction the belt covers,
-    and this row is the evidence under the declaration.
+    **ALARM-NEVER-ASSERT IS UNCHANGED, AND THAT IS THE POINT** -- it is now
+    satisfiable rather than merely obeyed: the function still may not ASSERT
+    durability from evidence that cannot identify the attempt, and the
+    evidence now can.  Anything unproven is still the alarm.
 
     Both paths, because clause 3 binds both: on the latched path the raise
     comes from ``commit()``, on the pre-arc path from ``with conn:``'s exit,
     and NEITHER can tell "the commit failed" from "the commit landed and then
-    the exception arrived" -- which is exactly why neither may claim success.
+    the exception arrived" -- which is why neither may claim success from the
+    exception.  The LEDGER can, and that is what is read.
+
+    **Pre-fix (this row's own previous half):** ``sqlite3.OperationalError``
+    propagates and the durable entry is reported as a failure.
     """
+    from swing.trades import entry as entry_mod
+
     conn, cfg, candidate_id = build_world(
         tmp_path, "contract1" + str(int(immediate)))
     if immediate:
@@ -3267,27 +3281,103 @@ def test_CONTRACT_a_commit_whose_own_return_was_LOST_re_raises(
     conn.commit()
     assert _trade_rows(conn) == 0, "the premise: no entry yet"
 
+    probed: list = []
+    real_probe = entry_mod._durability_probe
+
+    def _spy(*args):
+        probed.append(args)
+        return real_probe(*args)
+
+    monkeypatch.setattr(entry_mod, "_durability_probe", _spy)
+
     proxy = _RaiseAfterCommit(conn, sqlite3.OperationalError("commit lost"))
     request = req() if immediate else req(
         schwab_source_value_json=None, fill_origin="operator_typed")
 
-    with pytest.raises(sqlite3.OperationalError, match="commit lost"):
-        enter(proxy, cfg, request)
+    result = enter(proxy, cfg, request)
 
     assert proxy.committed, (
         "the planted commit never ran, so this row measures nothing about "
         "the lost-return window")
-    assert _trade_rows(conn) == 1, (
-        "THE RESIDUAL ITSELF: the row is durable.  If this is ever 0 the "
-        "declaration is describing a different defect")
+    assert len(probed) == 1, f"the probe ran {len(probed)} times"
+    durable_id = conn.execute(
+        "SELECT id FROM trades WHERE ticker = ?", (TICKER,)).fetchone()[0]
+    assert result.trade_id == durable_id, (
+        "the returned id is not the one the DURABLE table carries -- the "
+        "probe's id is the admissible one, not `lastrowid`")
+    assert _trade_rows(conn) == 1, "exactly one row, and it is durable"
     assert not conn.in_transaction
 
-    # THE DIRECTION THE BELT COVERS.  The caller was told the entry failed and
-    # retries; the unique index refuses and names the existing position, so
-    # the residual costs a confusing error rather than a double position.
+    warnings = result.post_commit_warnings
+    assert any(str(durable_id) in w for w in warnings), warnings
+    assert any("RETURN was LOST" in w for w in warnings), warnings
+    assert any("ATTEMPT IDENTITY" in w for w in warnings), warnings
+    assert any("do NOT retry" in w for w in warnings), warnings
+
+
+@pytest.mark.parametrize("immediate", [True, False],
+                         ids=["latched-path", "pre-arc-path"])
+def test_i_the_belt_still_refuses_a_same_ticker_retry(
+        tmp_path, monkeypatch, immediate) -> None:
+    """(i) THE BELT IS STILL THE BELT -- **a CONTROL, not a fix.**
+
+    **Post-fix and pre-fix: identical**, which is exactly why it is listed in
+    the regression-control roster and is NOT evidence that clause 2 works.  It
+    is here so the belt is not mistaken for the fix and so the arc cannot
+    silently weaken it.  What CHANGED is that the operator is now TOLD the
+    entry exists, so the retry the belt refuses should no longer happen.
+    """
+    conn, cfg, candidate_id = build_world(
+        tmp_path, "belt" + str(int(immediate)))
+    if immediate:
+        accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+
+    proxy = _RaiseAfterCommit(conn, sqlite3.OperationalError("commit lost"))
+    request = req() if immediate else req(
+        schwab_source_value_json=None, fill_origin="operator_typed")
+
+    settled = enter(proxy, cfg, request)
+    assert settled.trade_id > 0, "the premise: the entry settled as SUCCESS"
+
     with pytest.raises(DuplicateOpenPositionError, match=TICKER):
         enter(conn, cfg, request)
     assert _trade_rows(conn) == 1, "the retry created a SECOND position"
+
+
+def test_j_the_post_commit_STEP_path_is_byte_unchanged(
+        tmp_path, monkeypatch) -> None:
+    """(j) A REGRESSION CONTROL on 22-A3's shipped clause-1 behaviour,
+    because S2.4 edits the handler BOTH branches run through.
+
+    ``outcome.committed`` True with a later failure -> the existing degraded
+    warning text, **byte for byte**, and **no lost-commit warning**.
+    **Post-fix and pre-fix: identical.**
+    """
+    from swing.trades.entry import safe_text
+
+    conn, cfg, candidate_id = build_world(tmp_path, "jcontrol")
+    accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
+    conn.commit()
+
+    planted = KeyboardInterrupt("on the transaction's own return")
+    fired = _inject_after_the_commit(monkeypatch, planted)
+
+    result = enter(conn, cfg, req())
+
+    assert fired, "the planted exception never landed"
+    expected = (
+        f"the entry is DURABLE (trade {result.trade_id}) and a step "
+        f"AFTER the commit failed ({safe_text(planted)}). The "
+        f"entry exists -- do NOT retry.")
+    assert expected in result.post_commit_warnings, (
+        f"the POST-COMMIT-STEP warning text changed:\n"
+        f"  expected: {expected!r}\n"
+        f"  got:      {result.post_commit_warnings!r}")
+    assert not any("ATTEMPT IDENTITY" in w
+                   for w in result.post_commit_warnings), (
+        "a lost-commit warning was emitted on a path whose commit RETURNED")
+    assert _trade_rows(conn) == 1
 
 
 class _CommitNeverLands:
@@ -3312,7 +3402,8 @@ class _CommitNeverLands:
         return self._conn.in_transaction
 
 
-def test_CONTRACT_a_lost_commit_with_the_row_ABSENT_re_raises(tmp_path) -> None:
+def test_CONTRACT_a_lost_commit_with_the_row_ABSENT_re_raises(
+        tmp_path, monkeypatch) -> None:
     """A commit that raises WITHOUT landing: re-raise, and leave NOTHING
     pending.
 
@@ -3325,10 +3416,47 @@ def test_CONTRACT_a_lost_commit_with_the_row_ABSENT_re_raises(tmp_path) -> None:
     implementation that raised while leaving the write pending -- and a
     pending row is what a same-connection read would have reported as
     DURABLE, which is the visibility half of why clause 2 was reverted.
+
+    **AND THAT IS NOT ENOUGH, BECAUSE ALL THREE OF THOSE ARE ALSO TRUE ON THE
+    PRE-ARC TREE** (`A4-R3-7`).  22-A4 adds the discriminating assertions: the
+    probe was called **exactly once**, **with the minted token**, **on a
+    connection that is not the writer's**, and it returned ``None``.
+    **Pre-fix:** there is no probe, so the call count is 0 and the row fails.
+    That also excludes an implementation which skips settlement entirely and
+    re-raises by accident -- which would otherwise look identical from the
+    outside.
     """
+    from swing.data.db import _resolve_main_db_path
+    from swing.trades import entry as entry_mod
+
     conn, cfg, candidate_id = build_world(tmp_path, "contract3")
     accept_and_link(conn, candidate_id, session=ACCEPT_SESSION)
     conn.commit()
+    db_path = _resolve_main_db_path(conn)
+
+    token = "00000000-0000-4000-8000-00000000000d"
+    monkeypatch.setattr(entry_mod, "_mint_attempt_token", lambda: token)
+
+    probed: list = []
+    real_probe = entry_mod._durability_probe
+
+    def _spy(*args):
+        probed.append(args)
+        answer = real_probe(*args)
+        probed[-1] = (*args, answer)
+        return answer
+
+    monkeypatch.setattr(entry_mod, "_durability_probe", _spy)
+
+    read_on: list = []
+    real_find = entry_mod.find_trade_id_by_attempt_id
+
+    def _capture(probe_conn, attempt_id):
+        read_on.append(probe_conn)
+        return real_find(probe_conn, attempt_id)
+
+    monkeypatch.setattr(entry_mod, "find_trade_id_by_attempt_id", _capture)
+
     proxy = _CommitNeverLands(conn)
 
     with pytest.raises(sqlite3.OperationalError, match="database is locked"):
@@ -3340,6 +3468,14 @@ def test_CONTRACT_a_lost_commit_with_the_row_ABSENT_re_raises(tmp_path) -> None:
     assert _trade_rows(conn) == 0, (
         "a write that never committed is visible; the resolution read saw the "
         "pending row and would report a FALSE SUCCESS")
+
+    assert len(probed) == 1, f"the probe ran {len(probed)} times"
+    assert probed[0][1] == token, "the probe was keyed on the wrong value"
+    assert probed[0][-1] is None, "the probe claimed a row that never landed"
+    assert len(read_on) == 1
+    assert read_on[0] is not conn and read_on[0] is not proxy, (
+        "the probe read on the WRITER's own connection")
+    assert db_path is not None
 
 
 # ===========================================================================

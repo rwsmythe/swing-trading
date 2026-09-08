@@ -621,8 +621,18 @@ def insert_trade_with_event(
 
 def find_trade_id_by_attempt_id(
     conn: sqlite3.Connection, attempt_id: str,
-) -> int | None:
-    """22-A4: resolve a trade id from its per-attempt identity token.
+) -> tuple[int, str] | None:
+    """22-A4: resolve ``(id, ticker)`` from a per-attempt identity token.
+
+    **THE TICKER IS RETURNED WITH THE ID, AND IT IS NOT DECORATION.** The
+    token alone is sufficient for identity, so the ticker is a SECOND,
+    INDEPENDENT signal: if a row carries our token under a different ticker,
+    something is wrong in a way no design anticipated, and the honest response
+    is the ALARM. The rule is the one the arc already owns -- a mismatch may
+    RAISE the alarm; only a match may be asserted from. Price is deliberately
+    NOT returned: a float comparison across the Python/SQLite boundary is the
+    rounding-authority gotcha's own territory and buys nothing the token has
+    not already established.
 
     **SCHEMA-AWARE, and the branch is the point.** On a pre-v38 database the
     column does not exist and an unconditional ``WHERE attempt_id = ?`` would
@@ -641,9 +651,9 @@ def find_trade_id_by_attempt_id(
     if "attempt_id" not in cols:
         return None
     row = conn.execute(
-        "SELECT id FROM trades WHERE attempt_id = ?", (attempt_id,)
+        "SELECT id, ticker FROM trades WHERE attempt_id = ?", (attempt_id,)
     ).fetchone()
-    return None if row is None else int(row[0])
+    return None if row is None else (int(row[0]), str(row[1]))
 
 
 def update_stop_with_event(

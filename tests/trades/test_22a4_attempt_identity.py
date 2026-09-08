@@ -1,7 +1,8 @@
 """22-A4 Task 1 -- the per-attempt identity token at the REPO and SERVICE grain.
 
-(r1)-(r3), (r6), (r7), (e), (e2) and (w2).  (w) and the settlement rows belong
-to the tasks that ship the probe and clause 2's return.
+(r1)-(r3), (r6), (r7), (e), (e2) and (w2) shipped in Task 1; **(w), (f), (g)
+and (h) ship in Task 4**, because each names ``_durability_probe``.  The
+settlement rows live in ``test_22a4_clause2_settlement.py``.
 
 THE PLANTED TOKENS ARE CANONICAL LOWERCASE v4 STRINGS.  ``validate_attempt_id``
 is the single admission authority and it parses; a bare ``"x" * 36`` no longer
@@ -16,7 +17,12 @@ from pathlib import Path
 
 import pytest
 
-from swing.data.db import ensure_schema, open_connection, run_migrations
+from swing.data.db import (
+    EXPECTED_SCHEMA_VERSION,
+    ensure_schema,
+    open_connection,
+    run_migrations,
+)
 from swing.data.models import Trade
 from swing.data.repos.trades import (
     ATTEMPT_ID_LENGTH,
@@ -233,7 +239,10 @@ def test_r7_the_probe_finds_the_row_on_v38(tmp_path: Path) -> None:
         with conn:
             tid = insert_trade_with_event(
                 conn, _trade(), event_ts=EVENT_TS, attempt_id=TOK_A)
-        assert find_trade_id_by_attempt_id(conn, TOK_A) == tid
+        assert find_trade_id_by_attempt_id(conn, TOK_A) == (tid, "AAA"), (
+            "S2.3's contract is `(id, ticker)`: the TICKER half is the "
+            "second, independent signal S2.4 condition 4 corroborates, and "
+            "S7.7's same-ticker bound rests on its being read here")
         assert find_trade_id_by_attempt_id(conn, TOK_B) is None
     finally:
         conn.close()
@@ -573,5 +582,267 @@ def test_e2_BOTH_containment_arms_survive_a_raising_log_sink(
         assert conn.execute(
             "SELECT attempt_id FROM trades WHERE id = ?",
             (result.trade_id,)).fetchone()[0] == expected
+    finally:
+        conn.close()
+
+
+# ===========================================================================
+# ============ TASK 4 -- THE ROWS THAT NEED THE PROBE =======================
+#
+# (w), (f), (g) and (h) all name `_durability_probe`, which is the single
+# reason none of them could be written before this commit.
+# ===========================================================================
+class _CommitsThenRaises:
+    """THE (c) SHAPE: ``__exit__`` performs the REAL commit and only then
+    raises, so the commit's own RETURN is lost while the row is DURABLE."""
+
+    def __init__(self, conn: sqlite3.Connection, exc: BaseException) -> None:
+        self._conn = conn
+        self._exc = exc
+        self.committed = False
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._conn.__exit__(exc_type, exc, tb)
+        if exc_type is None:
+            self.committed = True
+            raise self._exc
+        return False
+
+
+# ===========================================================================
+# (w) ONE TOKEN, END TO END -- mint to INSERT argument to probe argument
+# ===========================================================================
+def test_w_one_token_flows_mint_to_INSERT_to_probe(
+        tmp_path: Path, monkeypatch) -> None:
+    """**Every other identity row plants a CONSTANT token, and a constant
+    masks the two defects that matter.**
+
+    An implementation that minted SEPARATELY for the INSERT and for the
+    settlement would pass every constant-token test and then, in production,
+    probe for a token it never wrote -- re-raising over every durable lost
+    commit, silently, with the suite green.  And no row asserted that
+    ``record_entry`` passes its OWN token to the repo at all: a correct repo
+    (r1) plus a ``record_entry`` that calls it with ``attempt_id=None`` and
+    stamps later also passes.
+
+    So the mint here returns a DIFFERENT valid value on each call:
+    **the mint-count assertion fails the double-mint, and the
+    INSERT-argument assertion fails the disconnected one** -- neither of which
+    any constant-token row can see.
+    """
+    from swing.trades import entry as entry_mod
+
+    db_path = tmp_path / "w.db"
+    conn = ensure_schema(db_path)
+    try:
+        minted: list = []
+
+        def _mint() -> str:
+            minted.append(
+                f"00000000-0000-4000-8000-{len(minted) + 1:012d}")
+            return minted[-1]
+
+        monkeypatch.setattr(entry_mod, "_mint_attempt_token", _mint)
+
+        insert_args: list = []
+        real_insert = entry_mod.insert_trade_with_event
+
+        def _spy_insert(*a, **kw):
+            insert_args.append(kw.get("attempt_id"))
+            return real_insert(*a, **kw)
+
+        monkeypatch.setattr(
+            entry_mod, "insert_trade_with_event", _spy_insert)
+
+        probe_args: list = []
+        real_find = entry_mod.find_trade_id_by_attempt_id
+
+        def _spy_find(probe_conn, attempt_id):
+            probe_args.append(attempt_id)
+            return real_find(probe_conn, attempt_id)
+
+        monkeypatch.setattr(
+            entry_mod, "find_trade_id_by_attempt_id", _spy_find)
+
+        proxy = _CommitsThenRaises(
+            conn, sqlite3.OperationalError("commit lost (planted)"))
+        result = record_entry(proxy, _req(), soft_warn=SOFT, hard_cap=HARD,
+                              force=False, cfg=None)
+
+        assert len(minted) == 1, (
+            f"the mint ran {len(minted)} times -- a second mint would probe "
+            f"for a token that was never written")
+        token = minted[0]
+        assert insert_args == [token], (
+            f"the INSERT was handed {insert_args}, not the minted token")
+        assert probe_args == [token], (
+            f"the probe was handed {probe_args}, not the minted token")
+        assert conn.execute(
+            "SELECT attempt_id FROM trades WHERE id = ?",
+            (result.trade_id,)).fetchone()[0] == token
+    finally:
+        conn.close()
+
+
+# ===========================================================================
+# (f) NO DATABASE PATH -> TODAY'S BEHAVIOUR
+# ===========================================================================
+def test_f_an_in_memory_connection_leaves_todays_behaviour(
+        tmp_path: Path, caplog) -> None:
+    """**Pre-fix (an implementation that assumes a path):**
+    ``TypeError``/``OperationalError`` from ``open_connection(None)`` -- a NEW
+    failure mode introduced on the lost-commit path, which is the one place a
+    new failure mode is least welcome.
+    """
+    conn = open_connection(":memory:")
+    try:
+        run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION)
+        conn.commit()
+        lost = sqlite3.OperationalError("commit lost (planted)")
+        proxy = _CommitsThenRaises(conn, lost)
+
+        with caplog.at_level(logging.WARNING, logger="swing.trades.entry"):
+            with pytest.raises(sqlite3.OperationalError) as caught:
+                record_entry(proxy, _req(), soft_warn=SOFT, hard_cap=HARD,
+                             force=False, cfg=None)
+
+        assert caught.value is lost, "the ORIGINAL exception did not propagate"
+        assert type(caught.value) is sqlite3.OperationalError
+        # The row IS durable -- an in-memory database simply admits no second
+        # connection to the same data, so the settle is UNAVAILABLE rather
+        # than negative, and today's behaviour is the honest answer.
+        assert conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE ticker = 'AAA'"
+        ).fetchone()[0] == 1
+        assert any("probe" in r.getMessage().lower()
+                   for r in caplog.records), (
+            "the unavailability of the probe was not recorded at all")
+    finally:
+        conn.close()
+
+
+# ===========================================================================
+# (g) A RAISING PROBE LEAVES THE ORIGINAL EXCEPTION UNTOUCHED
+# ===========================================================================
+def test_g_a_raising_probe_leaves_the_original_exception_untouched(
+        tmp_path: Path, monkeypatch, caplog) -> None:
+    """**Pre-fix (an uncontained probe):** the probe's exception REPLACES the
+    commit's and the caller is told about a probe rather than about the entry.
+
+    ``log_contained_note`` EMITS the message through the logger and attaches a
+    note to the escaping exception **only when the logging SINK itself
+    raises** -- with a working sink there is no note, and the assertion has to
+    match what the helper actually does.
+    """
+    from swing.trades import entry as entry_mod
+
+    db_path = tmp_path / "g.db"
+    conn = ensure_schema(db_path)
+    try:
+        def _boom(*_a):
+            raise RuntimeError("22-A4 PROBE: the durability probe failed")
+
+        monkeypatch.setattr(entry_mod, "_durability_probe", _boom)
+        lost = sqlite3.OperationalError("commit lost (planted)")
+        proxy = _CommitsThenRaises(conn, lost)
+
+        with caplog.at_level(logging.WARNING, logger="swing.trades.entry"):
+            with pytest.raises(sqlite3.OperationalError) as caught:
+                record_entry(proxy, _req(), soft_warn=SOFT, hard_cap=HARD,
+                             force=False, cfg=None)
+
+        escaping = caught.value
+        assert escaping is lost
+        assert type(escaping) is sqlite3.OperationalError
+        assert escaping.args == ("commit lost (planted)",)
+        assert escaping.__cause__ is None
+        assert escaping.__context__ is None
+        assert getattr(escaping, "__notes__", []) == [], (
+            "a working sink leaves no note")
+        assert any("22-A4 PROBE: the durability probe failed"
+                   in r.getMessage() for r in caplog.records), (
+            "the probe failure was not reported at all")
+    finally:
+        conn.close()
+
+
+def test_g_a_raising_probe_AND_a_raising_sink_still_preserve_the_evidence(
+        tmp_path: Path, monkeypatch, broken_sink) -> None:
+    """Same exception, same evidence, **plus** a note recording the sink
+    failure -- the R11-03 property applied to the code this arc adds,
+    asserted on the IDENTITY of what escapes and never on "no crash"."""
+    from swing.trades import entry as entry_mod
+
+    db_path = tmp_path / "g2.db"
+    conn = ensure_schema(db_path)
+    try:
+        def _boom(*_a):
+            raise RuntimeError("22-A4 PROBE: the durability probe failed")
+
+        monkeypatch.setattr(entry_mod, "_durability_probe", _boom)
+        lost = sqlite3.OperationalError("commit lost (planted)")
+        proxy = _CommitsThenRaises(conn, lost)
+
+        with pytest.raises(sqlite3.OperationalError) as caught:
+            record_entry(proxy, _req(), soft_warn=SOFT, hard_cap=HARD,
+                         force=False, cfg=None)
+
+        escaping = caught.value
+        assert escaping is lost
+        assert type(escaping) is sqlite3.OperationalError
+        assert escaping.args == ("commit lost (planted)",)
+        assert escaping.__cause__ is None
+        assert escaping.__context__ is None
+        assert getattr(escaping, "__notes__", []), (
+            "a RAISING sink left no note, so its own failure is invisible")
+    finally:
+        conn.close()
+
+
+# ===========================================================================
+# (h) THE PROBE CONNECTION IS NOT SHARED-CACHE
+# ===========================================================================
+def test_h_the_probe_connection_reads_read_uncommitted_as_zero(
+        tmp_path: Path, monkeypatch) -> None:
+    """The PRAGMA is executed INSIDE the monkeypatched repo reader, **while it
+    still owns the LIVE probe connection**, and only the SCALAR is stored --
+    capturing the connection and querying it afterwards would run against a
+    handle ``_durability_probe`` has already closed in its ``finally``.
+
+    This pins the construction-time precondition that makes *a fresh
+    connection sees only committed state* TRUE rather than assumed, without
+    adding a runtime branch that would be defensive dead code.
+    """
+    from swing.trades import entry as entry_mod
+
+    db_path = tmp_path / "h.db"
+    conn = ensure_schema(db_path)
+    try:
+        real_find = entry_mod.find_trade_id_by_attempt_id
+        scalars: list = []
+
+        def _spy(probe_conn, attempt_id):
+            scalars.append(
+                probe_conn.execute("PRAGMA read_uncommitted").fetchone()[0])
+            return real_find(probe_conn, attempt_id)
+
+        monkeypatch.setattr(
+            entry_mod, "find_trade_id_by_attempt_id", _spy)
+        proxy = _CommitsThenRaises(
+            conn, sqlite3.OperationalError("commit lost (planted)"))
+
+        result = record_entry(proxy, _req(), soft_warn=SOFT, hard_cap=HARD,
+                              force=False, cfg=None)
+
+        assert result.trade_id > 0
+        assert scalars == [0], (
+            f"the probe connection is shared-cache readable: {scalars}")
     finally:
         conn.close()

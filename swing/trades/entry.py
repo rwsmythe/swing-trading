@@ -12,10 +12,11 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from swing.data.db import _resolve_main_db_path
+from swing.data.db import _resolve_main_db_path, open_connection
 from swing.data.models import Fill, Trade, WatchlistArchiveEntry
 from swing.data.repos.fills import insert_fill_with_event
 from swing.data.repos.trades import (
+    find_trade_id_by_attempt_id,
     insert_trade_with_event,
     list_open_trades,
     validate_attempt_id,
@@ -842,6 +843,192 @@ def _exit_rollback_failed(escaping: BaseException,
     return context is not None and context is not ambient
 
 
+#: The probe's busy timeout, BOUNDED and NAMED.  The project default is 30 s
+#: (`DEFAULT_BUSY_TIMEOUT_MS`); a lost-commit probe that hangs a money-bearing
+#: web submit for thirty seconds is a poor trade when the fallback -- re-raise,
+#: the alarm -- is the safe direction anyway.  2 s is long enough to outlast a
+#: passing lock and short enough that the operator sees an answer.  Pinned by
+#: test (pr1), which asserts the NUMBER: a silent restoration of the project
+#: default is exactly the shape a value-free assertion cannot see.
+_PROBE_BUSY_TIMEOUT_MS = 2000
+
+
+def _durability_probe(db_path: Path, attempt_id: str,
+                      escaping: BaseException) -> tuple[int, str] | None:
+    """Read the DURABLE ledger for this attempt's token, on a FRESH
+    connection.  Returns the repo's ``(id, ticker)`` tuple, or ``None``.
+
+    **THE CONNECTION IS FRESH BY CONSTRUCTION** -- ``open_connection`` on the
+    path, never the writer's handle.  That is the half of R10-02 closed by
+    construction rather than by discipline, and (RD-a2) pins it.
+
+    **IT OPENS THROUGH A ``file:...?mode=rw`` URI, NOT A BARE PATH.**
+    ``open_connection`` calls bare ``sqlite3.connect(...)``, **which CREATES
+    the file when it is absent** -- so if the database is moved or renamed
+    between the mint's path capture and this read, a bare path would write an
+    empty database and then answer ABSENT: a filesystem artifact created on an
+    already-failing money path, by the mechanism whose entire purpose is to
+    observe without acting.  ``mode=rw`` and NOT ``mode=ro`` deliberately: on
+    a WAL database a read-only connection can need to CREATE the ``-shm`` file
+    and fails when it cannot, which is a new failure mode on the exact path
+    that must be reliable when things are already going wrong.  ``rw`` buys
+    the whole of the defect at no new risk.  (Tightening to ``ro`` is a
+    candidate for a later arc, named here rather than left unexamined.)
+    ``Path(...).resolve().as_uri()`` percent-encodes, so a path containing
+    ``?`` or ``#`` cannot inject a URI parameter.
+
+    **``open_connection``, not ``connect``:** ``connect`` adds a
+    schema-version check -- another statement and another failure mode -- on a
+    path whose entire job is to be reliable when things are already going
+    wrong.  The schema version cannot have changed underneath us.
+
+    **``PRAGMA read_uncommitted`` IS NOT CHECKED AT RUNTIME, AND THAT IS A
+    DECISION.**  Shared-cache mode is the only way a second connection could
+    observe uncommitted data, this connection is its own, and the pragma
+    defaults to 0.  A runtime branch would be defensive dead code whose own
+    test could only assert the default; the precondition is pinned by test
+    (h), which is the right instrument for a construction-time property.
+
+    **THE CLOSE IS CONTAINED, and the ORDERING is the requirement:** a
+    ``close()`` that raises AFTER a successful read must not discard the read.
+    A naive ``finally: probe.close()`` throws the valid result away and makes
+    ``record_entry`` re-raise **over a durable entry** -- clause 1's own
+    subject, arriving inside the machinery built to serve it.  ``escaping`` is
+    taken as a parameter for exactly this: the failure is reported through
+    ``log_contained_note`` on the exception that would otherwise escape, which
+    is the only object at this site whose evidence the caller will ever read.
+    (S2.3's pseudocode showed two parameters; the third is what makes (pr2)'s
+    named reporting channel reachable at all -- the same correction
+    ``A4-R4-6`` made to ``_settle_by_attempt_identity``'s signature, for the
+    same reason.)
+    """
+    probe = open_connection(
+        Path(db_path).resolve().as_uri() + "?mode=rw",
+        uri=True,
+        busy_timeout_ms=_PROBE_BUSY_TIMEOUT_MS,
+    )
+    try:
+        found = find_trade_id_by_attempt_id(probe, attempt_id)
+    except BaseException:
+        # The READ failed.  Close best-effort and let the caller's own
+        # containment decide what the failure means; nothing here may become
+        # the exception the operator sees.
+        with contextlib.suppress(BaseException):
+            probe.close()
+        raise
+    try:
+        probe.close()
+    except BaseException as close_error:  # noqa: BLE001 -- the CLASS
+        log_contained_note(
+            log, escaping,
+            "22-A4: the durability probe READ SUCCEEDED and its connection "
+            "could not be closed (%s). The read is KEPT -- discarding a valid "
+            "answer because the tidy-up failed would report a durable entry "
+            "as a failure.", safe_text(close_error))
+    return found
+
+
+def _settle_by_attempt_identity(
+        attempt: _AttemptIdentity, outcome: _CommitOutcome,
+        req: EntryRequest,
+        post_commit_error: BaseException) -> tuple[int, str] | None:
+    """CLAUSE 2: the commit's own return was lost -- is the attempt DURABLE?
+
+    Returns the probe's ``(id, ticker)`` tuple UNCHANGED, or ``None``, which
+    is **THE ALARM**: the caller re-raises, which is today's behaviour.  There
+    is no settlement dataclass and none is needed.
+
+    **THE ESCAPING EXCEPTION IS A PARAMETER** (`A4-R3-5`): this helper must
+    attach its own failures to THAT object through ``log_contained_note``, and
+    it cannot reach it otherwise.
+
+    ``None`` unless **ALL** of the following are observed:
+
+    1. **the entry body ran to completion.**  This is ``record_entry``'s OWN
+       pre-arc guard (``if result is None: raise``), which raises before this
+       helper is ever called -- so the condition is enforced by the CALLER and
+       this helper does not re-check what it cannot observe.  (RD-a5) asserts
+       the caller-side obligation rather than pinning the callee's absence,
+       which is gotcha #31's shape and the reason the removal of the old
+       ``body_completed`` field is not merely a deletion.
+    2. ``resolution in {"not_needed", "rolled_back"}`` **AND**
+       ``cleanup_raised`` is False.  RD's rule (i), taken LITERALLY: *if the
+       rollback itself raises, the connection is DISCARDED and NO read is
+       attempted on it* -- so a raising rollback refuses the read **even when
+       the state re-read shows the rollback took effect.**  Both fields are
+       checked because they are two different facts: ``resolution`` describes
+       the TRANSACTION, ``cleanup_raised`` describes the CALL.  ``"unattempted"``
+       is a BELT rather than an expected value: ``_read_resolution`` runs on
+       every path that can reach this gate, so it should be unreachable here
+       -- and it is rejected anyway, because the alternative is a gate whose
+       safety depends on an exhaustiveness argument about assignment
+       placement.  **Rule (i) forecloses nothing:** in each refusal branch the
+       refused read would have answered ABSENT, which is what the refusal
+       produces.
+    3. the attempt has BOTH a token and a database path.
+    4. the probe returns a row, **and its ticker matches the request's.**
+
+    **THE RETURNED ``trade_id`` COMES FROM THE PROBE, NOT FROM
+    ``lastrowid``.**  ``result.trade_id`` is what the INSERT's cursor reported
+    inside a transaction whose commit could not be observed; the probe's id is
+    what the DURABLE table says.  They cannot legitimately differ, and using
+    the probe's is the admissible choice rather than the equivalent one.
+
+    **``outcome.committed`` IS NOT SET BY A SUCCESSFUL SETTLE.**  It means
+    *the commit's own return was observed*, and it did not happen.  The settle
+    produces a different, weaker-but-admissible fact -- *the ledger contains
+    this attempt's row* -- and conflating the two would destroy the
+    distinction this arc exists to draw.
+
+    **CONTAINMENT IS ``BaseException``.**  Unlike S2.1's PRE-commit mint, the
+    module's R11-03 property governs here: nothing that happens while
+    DIAGNOSING a failure may change which exception escapes.  The cost is that
+    an interrupt delivered during the probe is swallowed in favour of the
+    commit's own exception; both are failures, so no false success can be
+    manufactured, and the identity of what escapes is the property this
+    codebase pins.
+    """
+    try:
+        if outcome.resolution not in ("not_needed", "rolled_back"):
+            return None
+        if outcome.cleanup_raised:
+            return None
+        if attempt.token is None or attempt.db_path is None:
+            log_contained_note(
+                log, post_commit_error,
+                "22-A4: the commit's own return was lost and the "
+                "settle-by-identity probe is UNAVAILABLE (token=%s, "
+                "database path=%s). The original failure is re-raised, which "
+                "is the pre-arc behaviour.",
+                attempt.token is not None, attempt.db_path is not None)
+            return None
+        found = _durability_probe(
+            attempt.db_path, attempt.token, post_commit_error)
+        if found is None:
+            return None
+        _settled_id, settled_ticker = found
+        if settled_ticker != req.ticker:
+            # A MISMATCH MAY RAISE THE ALARM; ONLY A MATCH MAY BE ASSERTED
+            # FROM.  A row carrying our token under a different ticker is
+            # wrong in a way no design anticipated.
+            log_contained_note(
+                log, post_commit_error,
+                "22-A4: a durable row carries this attempt's identity token "
+                "under ticker %s while the request named %s. NOTHING is "
+                "asserted from it; the original failure is re-raised.",
+                safe_text(settled_ticker), safe_text(req.ticker))
+            return None
+        return found
+    except BaseException as settle_error:  # noqa: BLE001 -- the CLASS
+        log_contained_note(
+            log, post_commit_error,
+            "22-A4: the settle-by-attempt-identity read FAILED (%s). The "
+            "original failure is re-raised UNCHANGED -- the caller is told "
+            "about the entry, never about the probe.",
+            safe_text(settle_error))
+        return None
+
+
 def record_entry(
     conn: sqlite3.Connection, req: EntryRequest, *,
     soft_warn: int, hard_cap: int, force: bool,
@@ -1180,7 +1367,23 @@ def record_entry(
                     outcome.cleanup_raised = True
                 # `attempted=False`: THIS FRAME issued no rollback.
                 outcome.resolution = _read_resolution(conn, attempted=False)
-            raise
+            # ---- CLAUSE 2: SETTLE BY ATTEMPT IDENTITY, OR ALARM ----
+            #
+            # THE OBSERVATIONS ARE TAKEN FIRST AND THE GATE IS CONSULTED
+            # SECOND, and the order is a requirement rather than a
+            # convenience: a gate consulted before the read would see
+            # `resolution == "unattempted"`, refuse, and report a DURABLE
+            # entry as a failure -- the `A4-R1-3` defect relocated rather
+            # than fixed.  (k3a)'s Task-4 half asserts the lexical order.
+            settled = _settle_by_attempt_identity(
+                identity, outcome, req, post_commit_error)
+            if settled is None:
+                raise    # THE ALARM -- unchanged, today's behaviour
+            settled_trade_id, _settled_ticker = settled
+            # THE PROBE'S ID, NOT `lastrowid`: what the DURABLE table says,
+            # not what a cursor reported inside a transaction whose commit we
+            # could not observe.
+            result = dataclasses.replace(result, trade_id=settled_trade_id)
         # Rendered ONCE and used in BOTH places (Codex A3R5-03): the
         # warning used `safe_text` while the `log.error` below still
         # received the RAW object, so a FORMATTING handler invoked its
@@ -1197,10 +1400,21 @@ def record_entry(
         # `EntryResult` existed at all -- so `record_entry` reported a failure
         # over a durable entry, which is clause 1's own subject, one line
         # above the guard that implements it.
-        warning_text = (
-            f"the entry is DURABLE (trade {result.trade_id}) and a step "
-            f"AFTER the commit failed ({post_commit_error_text}). The "
-            f"entry exists -- do NOT retry.")
+        if not outcome.committed:
+            # THE LOST-COMMIT TEXT.  It says a DIFFERENT thing from the
+            # post-commit-STEP warning below and must not be confused with
+            # it: the commit's own return was never observed, and durability
+            # is a statement about the LEDGER read by attempt identity.
+            warning_text = (
+                f"the commit's own RETURN was LOST and the entry is DURABLE "
+                f"(trade {result.trade_id}), confirmed by ATTEMPT IDENTITY "
+                f"on a fresh connection ({post_commit_error_text}). The "
+                f"entry exists -- do NOT retry.")
+        else:
+            warning_text = (
+                f"the entry is DURABLE (trade {result.trade_id}) and a step "
+                f"AFTER the commit failed ({post_commit_error_text}). The "
+                f"entry exists -- do NOT retry.")
         degraded = dataclasses.replace(
             result,
             post_commit_warnings=result.post_commit_warnings + (
