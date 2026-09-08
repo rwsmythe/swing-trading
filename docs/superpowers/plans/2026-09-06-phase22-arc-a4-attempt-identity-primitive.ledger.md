@@ -2656,3 +2656,186 @@ Four commits, `0df336c2..25af3b53`. All trailers empty (`git log 8990f81f..HEAD 
 `swing/trades/entry.py` / `swing/data/db.py`: **ZERO** -- every change lands in
 `tests/trades/test_22a4_corrector_refusal.py`, `tests/data/test_migration_0038_attempt_identity.py`
 and `tests/trades/test_22a4_clause2_settlement.py`. No production behaviour change in this leg.
+
+---
+
+## REVIEWER B -- `codex-auto-review`, THE STANDING SECOND EYE. IT RAN, AND IT DID NOT RETURN CLEAN.
+
+**Run by the ORCHESTRATOR, not by the author** (`harness-architecture.md` §5.1, operator-ruled
+2026-08-11): B's entire value is a DIFFERENT perspective, which erodes when the author chooses its
+prompt, its input set and the adjudication of its findings. Required on any production-code arc by
+charter §2.9. **The precondition CHARC set on 2026-09-08 is met in all five of its parts** and each
+part is measured below.
+
+**Tree reviewed:** `84e90bab` (branch `22-a4-exec`), tree clean at review time.
+**Date:** 2026-09-08.
+
+### The invocation, and the hazard it caught live
+
+The COLD-AUDIT form per recipe §3 -- `codex exec -p strong -s read-only --skip-git-repo-check -`,
+cwd the worktree so Codex reads the repo itself. `codex exec review` is not usable from a worktree
+on this box and there is no flag around it.
+
+**The transport was PROBED at dispatch rather than inherited, and the probe caught a live failure:**
+the harness expanded `$PATH` inside `wsl.exe bash -lc '...'` before WSL ever saw it, producing the
+Windows PATH and a syntax error on an unquoted paren. This is the documented `$VAR`-expansion hazard
+-- the one that once rewrote `echo $?` to `echo 0` and produced a green detector over a missing
+transcript. Everything therefore ran from an LF-verified script file with LITERAL paths only,
+non-PATH-initial invocation, relative redirect targets, and both output files pre-created
+Windows-side. Runner preserved at `run_b_22a4.sh` beside the transcript.
+
+Liveness proved by `codex-cli 0.152.1` resolving to `/home/rwsmythe/.local/node22/bin/codex` -- the
+native binary, not the dead Windows npm shim.
+
+### The five mechanical assertions -- ALL PASS, stated as measurements
+
+| # | assertion | measured |
+|---|---|---|
+| 1 | banner model is the binding tier | `model: gpt-5.6-sol` -- the same model the A rounds carry |
+| 2 | reasoning effort | `reasoning effort: high` |
+| 3 | `grep -c '^ERROR'` | **0** (unanchored `grep -c 'ERROR'` reads **18** -- exactly the repo-prose false positive the anchor exists to defeat, on a cold audit that reads this repo) |
+| 4 | `grep -c '^tokens used'` | **1** -- the file is complete, not mid-write |
+| 5 | exactly one distinct anchored verdict token | `^NEW_CRITICAL_MAJOR_FOUND` = **2** (codex-cli 0.152.1 emits the final message twice), `^NO_NEW_CRITICAL_MAJOR` = **0** |
+
+Belt-and-braces beyond the five: the process was confirmed EXITED before the transcript was read
+(exit file polled, never the transcript -- a file that currently ends well can be mid-write), and the
+redirect target was verified non-empty (1,832,058 bytes / 23,377 lines). Exit code was 0, which is
+**not** evidence and is recorded only because both signals must agree.
+
+**VERDICT: `NEW_CRITICAL_MAJOR_FOUND`.** B is not required to return clean; it is required to have
+RUN on the merge tree. It ran, and it found something four counted A rounds did not.
+
+### The contamination control, stated plainly
+
+The recipe mandates repo read-access AND keeps `.copowers-findings.md` plus the `.codex-*`
+transcripts at the worktree root -- which puts the review's own scratch inside the review's input.
+All 13 A-loop files were RELOCATED out of the tree for the duration of B's pass and RESTORED
+afterwards; nothing was deleted and the durable copies were never at risk. **Verified after the
+fact:** B's transcript contains no read of any relocated file (the `.copowers-findings.md` string
+appears only inside `CLAUDE.md` / `orchestrator-context.md` prose Codex read, FIVE times, never as a
+path it opened).
+
+The COMMITTED ledger (this file) stayed in the tree, because it merges. The prompt named it and
+required B to say so explicitly if it restated a ledger finding. **B honoured that** -- it
+distinguished its finding 1 from `A4X-R4-01` on the merits and its finding 4 from `A4-R7-12`,
+naming both and saying why each is a different fact.
+
+### CLAIMS FIRST -- B's first task, before any code-level lens
+
+Nine of the arc's own top-level claims, measured end-to-end. **Six HOLD, three FAIL.**
+
+| claim | B's result |
+|---|---|
+| 1 co-durability by construction | HOLDS -- one INSERT, no follow-up identity UPDATE |
+| 2 unique per attempt by mechanism | HOLDS under the ruled definition -- one mint, no reissue path |
+| 3 the probe sees only committed state | **FAILS in one required part** -- see finding 3 |
+| 4 the settle identifies OUR attempt | FAILS only as an ABSOLUTE claim; this is declared limitation S7.7, and B challenged its reason and found it SOUND. Not a new finding. |
+| 5 the apparatus cannot fail an entry | HOLDS |
+| 6 the alarm still fires when it should | HOLDS -- bare `raise`, original object preserved |
+| 7 the corrector refuses `attempt_id` on every operator surface | **FAILS** -- see finding 1 |
+| 8 the envelope holds | HOLDS on non-git evidence |
+| 9 the version-mirror family is complete | FAILS broadly; the 37->38 transition itself is CORRECT, and B confirms no deliberately-pinned 37 was moved. See finding 4. |
+
+### The four findings, and the orchestrator's adjudication
+
+**`B-1` -- MAJOR, `[INTRODUCED]`, IN ENVELOPE. `operator_alternative` does not refuse a trailing
+`attempt_id`. CONFIRMED BY EXECUTION AT QA, BY MY OWN HANDS.**
+
+`_handle_operator_alternative` passes the WHOLE operator payload to
+`_handle_single_field_correction`, which selects `field_name = next(iter(correction_target.keys()))`
+and passes **only that one key** to the guard inside `_update_journal_field`. The whole-payload
+refusal `_preflight_reserved_transitions` is called from **exactly one** production site --
+`_handle_multi_field_correction` -- measured by an AST walk over the call graph, not a grep:
+
+```
+_refuse_immutable_journal_fields called at :501  inside _preflight_reserved_transitions()
+                                       :1829 inside _apply_tier3_override_inner()
+                                       :2285 inside _update_journal_field()
+_preflight_reserved_transitions  called at :2884 inside _handle_multi_field_correction()
+```
+
+So `("validator_rejected", "operator_alternative")` -- a real, routed production choice -- reaches
+the guard with one field, and a second key is discarded before the guard ever sees it.
+
+**I did not accept the read. I reproduced it**, on a `tmp_path` database built by the real migration
+runner through 0038, through `apply_tier2_resolution`:
+
+- payload `{"current_stop": 4.5, "attempt_id": <other token>}` -> **NO `ImmutableJournalFieldError`
+  at all.** Returned `CorrectionResult(correction_id=1, field_name='current_stop',
+  applied_value_json='{"current_stop": 4.5}')`, wrote `current_stop=4.5`, left the token untouched,
+  and **terminalized the discrepancy as `operator_resolved_ambiguity`.**
+- the SAME payload with the keys in the other order -> the guard fires correctly.
+
+**The defect is key-order dependent, which is precisely the property (m8b) is named for.** (m8b)
+exercises `choice_code="operator_truth"` -- the multi-field route, which does carry the whole-payload
+preflight. No row in the roster puts a two-key payload through `operator_alternative`. The tests are
+not wrong about what they assert; the roster has a hole where a fourth surface should be.
+
+**This falsifies claim 7, and claim 7 is CHARC's attached condition -- the sole ground on which the
+envelope was widened to include this module.** `authorize-then-abort` is not fully closed: on this
+surface the operator's `attempt_id` is not refused, not applied, and not reported -- it is silently
+dropped, which is a third outcome neither the condition nor the trigger anticipated.
+
+*Remedy (NOT applied -- this is the gate's to rule):* apply `_refuse_immutable_journal_fields` to the
+COMPLETE payload in `_handle_single_field_correction` before the `next(iter(...))` selection, with
+discriminating rows in BOTH key orders on the `operator_alternative` route.
+
+**`B-2` -- MAJOR, `[PRE-EXISTING]`, `[OUT-OF-ENVELOPE]`. `_handle_single_field_correction` silently
+discards every payload field after the first.** The enabling condition for `B-1`, and wider than it:
+`{"current_stop": 4.5, "state": "closed"}` applies the stop, ignores the state, audits only the
+stop, and terminalizes the discrepancy. Both operator surfaces (CLI and web) accept arbitrary
+mappings with no one-key restriction. B verified this by execution; my own `B-1` reproduction
+exhibits the same mechanism. **This predates the arc and the arc does not worsen it** -- the
+`next(iter(...))` selection is untouched by 22-A4. **Disposition: BANKED to the debt register, not
+fixed here.** Fixing it is a corrector-semantics change (reject >1 key, or implement true
+multi-field application) well outside a bounded typed-refusal condition.
+
+**`B-3` -- MINOR, `[INTRODUCED]`, IN ENVELOPE. The probe's URI omits `cache=private`, and test (h)
+cannot see the property it is named for.** `_durability_probe` opens
+`Path(db_path).resolve().as_uri() + "?mode=rw"` (`entry.py:906`). The docstring argues the
+construction-time precondition is "pinned by test (h)"; (h) asserts only
+`PRAGMA read_uncommitted == 0` -- and its own failure message reads *"the probe connection is
+shared-cache readable"*, a property that assertion does not measure. `read_uncommitted` only has
+effect under shared cache, so a 0 reading is consistent with sharing one. B demonstrated the gap
+against the SQLite C API directly. **This is an S7-invited hit on a STATED REASON, not a re-raise of
+a declared limitation.**
+
+**Measured reachability, so the severity is not a guess:** shared-cache mode is enabled NOWHERE in
+this repository (`grep -rn "cache=shared|enable_shared_cache"` over `swing/`, `tests/`, `scripts/`:
+zero enablers; the single textual hit is an unrelated OHLCV test's NAME). It requires a third party
+to turn it on process-wide. MINOR stands. The remedy is one URI parameter -- `?mode=rw&cache=private`
+-- turning an argument into a construction-time guarantee, plus tightening (h) or its message.
+
+**`B-4` -- MINOR, `[PRE-EXISTING]`. Stale HEAD-version comments, failure messages and semantic names**
+(`_is_21` asserting 38 while its message says 23; seven further files labelled 19-28). **The
+executable 37->38 mirrors are CORRECT and B confirms no deliberately-pinned 37 was moved** -- this is
+the naming layer only. **Disposition: ALREADY BANKED and OWNED** -- it is the version-mirror rename
+rider in `docs/phase3e-todo.md`, whose trigger is explicitly AFTER this merge, under the CHARC ruling
+of 2026-09-07 that naming and versioning are two changes and must not land in one commit. B
+independently rediscovered a queued item; no action, and the rider's trigger is unchanged.
+
+### What B changes about the arc's state
+
+**Nothing merges on this section's authority.** `B-1` is a task-bearing MAJOR against production
+code, in envelope, falsifying a claim a director attached as a condition. **It needs a fix leg and a
+director disposition, and a fifth counted round -- if one is wanted -- needs the orchestrator's
+fresh written authorization naming `B-1`; none is granted here.**
+
+The instruments held, and they held in the direction the split was designed for: four counted A
+rounds and a director ruling passed over this module, and the SECOND EYE found the third path's hole
+because it did the one thing the roster never does -- hand `operator_alternative` a payload with two
+keys. That is the 18-H.4 disjoint-finding-set pattern at N+1, and it is the reason B is run by
+different hands.
+
+### Transcript manifest -- Reviewer B
+
+| artifact | bytes | durable path |
+|---|---|---|
+| `.reviewer-b-out.txt` | 1,832,058 | `~/swing-data/review-transcripts/22-a4-exec/` |
+| `.reviewer-b-exit.txt` | 2 | same |
+| `REVIEWER-B-prompt-22a4.md` | 11,331 | same |
+| `run_b_22a4.sh` | 1,520 | same |
+
+Copied the moment assertion 5 passed, per the copy-per-round rule -- not at report time, not at
+teardown.
+
