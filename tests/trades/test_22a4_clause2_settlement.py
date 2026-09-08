@@ -2249,3 +2249,94 @@ def test_A4X_R2_02a_a_fault_AT_the_proof_return_reports_the_durable_entry(
     finally:
         sys.settrace(None)
         conn.close()
+
+
+def test_A4X_R2_02b_a_fault_in_the_post_settle_window_escapes_as_itself(
+        tmp_path: Path, monkeypatch) -> None:
+    """WINDOW 2, **DECLARED, NOT FIXED** -- and this row pins the DECLARED
+    DIRECTION rather than a fix.  It is written that way deliberately.
+
+    ``record_entry``'s two statements between the settle's return and the
+    degraded result's construction -- the unpack and the
+    ``dataclasses.replace`` -- sit in the ``except BaseException as
+    post_commit_error:`` suite with no enclosing handler.  A fault delivered
+    there escapes over a row that is DURABLE.  RD ruled (2026-09-08) that the
+    two statements cannot be made zero-width and that this window is **one
+    more member of the alarm family the declaration already prices** -- durable
+    row, reported failure, retry refused by ``ux_trades_one_open_per_ticker``
+    except for a ticker closed between the attempts -- with the same cost and
+    the same belt, not a new uncovered direction.  Branch C's residual is
+    accepted here because nothing cheaper exists; it was refused for window 1
+    because capture-then-return is cheaper and strictly truer.
+
+    **THE NAIVE SUBSTITUTE IS A ``try``/``except`` THAT SWALLOWS IT** -- the
+    obvious symmetry with window 1's fix, applied where it does not belong.
+    Against that shape this row goes RED at ``len(escaped) == 1``: nothing
+    escapes, and the operator is handed a success whose warning was built by
+    a frame that never finished.  MEASURED, not argued: the substitute was
+    applied to ``record_entry`` and this row failed against it before it was
+    reverted.
+
+    So what is asserted is the HONEST CHAIN: the escaping exception **is** the
+    injected fault, with the ORIGINAL commit error as its ``__context__``.
+    The row is a control on the declaration -- if a later arc closes this
+    window, this row is the one that must be re-ruled and rewritten, which is
+    the point of pinning a declared direction rather than leaving it unpinned.
+    """
+    db_path = tmp_path / "r2_02b.db"
+    conn = ensure_schema(db_path)
+    entry_file = entry_mod.__file__
+    target = _post_settle_unpack_lineno()
+    fired: list = []
+    try:
+        outcomes = _capture_outcomes(monkeypatch)
+        probed = _probe_spy(monkeypatch)
+        lost = sqlite3.OperationalError("commit lost (planted)")
+        proxy = _ExitCommitsThenRaises(conn, lost)
+        fault = KeyboardInterrupt(
+            "22-A4 PROBE: in the post-settle two-statement window")
+
+        # The broad collector, for (k3b)'s reason: an uncaught
+        # `KeyboardInterrupt` ABORTS THE PYTEST SESSION, which is strictly
+        # worse than a red because it masks every other result.  Here the
+        # escape is EXPECTED, so the collector is also the assertion's subject.
+        escaped: list = []
+        result = None
+        sys.settrace(_fault_at(entry_file, "record_entry", target, fault,
+                               fired))
+        try:
+            result = record_entry(proxy, _req(), soft_warn=SOFT,
+                                  hard_cap=HARD, force=False, cfg=None)
+        except BaseException as exc:  # noqa: BLE001 -- see above
+            escaped.append(exc)
+        finally:
+            sys.settrace(None)
+
+        assert fired, (
+            "the trace hook never reached the post-settle window, so this row "
+            "measures nothing about it")
+        assert len(escaped) == 1, (
+            f"nothing escaped the post-settle window -- the declared "
+            f"direction was replaced by a swallow, and the caller was handed "
+            f"{result}")
+        assert type(escaped[0]) is KeyboardInterrupt, (
+            f"the escaping exception is not the injected fault: "
+            f"{type(escaped[0]).__name__}")
+        assert escaped[0] is fault
+        assert escaped[0].__context__ is lost, (
+            "the chain is not honest: the ORIGINAL commit error must be the "
+            "context of what escapes")
+        # (A4X-R2-02c) THE PROBE-COUNT PIN, on this row too.
+        assert len(probed) == 1, (
+            f"the probe ran {len(probed)} times -- a second read is the "
+            f"branch RD rejected")
+        assert outcomes[0].committed is False
+        # THE DECLARATION'S OWN SUBJECT, MEASURED: the row IS durable while
+        # the caller is told the entry failed.  That is the cost the
+        # declaration prices, and pricing it requires asserting it.
+        assert _fresh_rows(db_path) == 1, (
+            "this row's entire premise is a DURABLE entry reported as a "
+            "failure; without it the assertion above prices nothing")
+    finally:
+        sys.settrace(None)
+        conn.close()
