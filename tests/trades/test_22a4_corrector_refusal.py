@@ -19,9 +19,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
+import swing.trades.reconciliation_auto_correct as reconciliation_auto_correct_mod
 from swing.data.db import ensure_schema
 from swing.data.models import ReconciliationCorrection
 from swing.data.repos.reconciliation_corrections import insert_correction
@@ -49,13 +51,17 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 def _seed_trade_anchored_world(
     conn: sqlite3.Connection, *, tier2: bool = True,
+    ambiguity_kind: str = "unsupported",
 ) -> dict[str, Any]:
     """A trade carrying a minted token + a TRADES-anchored discrepancy.
 
     `fill_id` is deliberately NULL so `_resolve_affected_target` resolves to
     `trades` (its precedence puts `fills` first whenever a fill_id is present).
 
-    `tier2=True` plants the pending-ambiguity shape the tier-2 surface needs.
+    `tier2=True` plants the pending-ambiguity shape the tier-2 surface needs,
+    under `ambiguity_kind` (default `"unsupported"`, which is what every
+    pre-existing caller here needs; pass e.g. `"validator_rejected"` for a
+    caller that dispatches to a different tier-2 handler).
     `tier2=False` plants an `unresolved` / NULL-`ambiguity_kind` row, which is
     what the TIER-3 surface needs: the schema's cross-column CHECK pairs
     `ambiguity_kind IS NOT NULL` with the two ambiguity resolutions ONLY, so a
@@ -93,7 +99,7 @@ def _seed_trade_anchored_world(
             run_id, "stop_mismatch", trade_id, None, "CVGI", "current_stop",
             '{"current_stop": 4.0}', '{"current_stop": 4.5}', 1,
             "pending_ambiguity_resolution" if tier2 else "unresolved",
-            "unsupported" if tier2 else None,
+            ambiguity_kind if tier2 else None,
             "classifier did not recognize the shape" if tier2 else None,
             "2026-09-07T12:00:00",
         ),
@@ -626,3 +632,70 @@ def test_m8f_the_canonical_spelling_keeps_the_typed_ValueError_refusal(
         )
     assert isinstance(exc.value, ValueError)
     assert "trades.attempt_id" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# (m8g) THE `operator_alternative` PATH -- the corrector path (m8f)'s closure
+#       test never reaches (`A4X-R4-01`, CHARC 2026-09-08).
+# ---------------------------------------------------------------------------
+# `_handle_operator_alternative` -> `_handle_single_field_correction` is the
+# third of the four corrector paths named at
+# `reconciliation_auto_correct.py:2745`'s comment, and it is the one path
+# every (m8f) row above does NOT close: those rows drive `operator_truth`
+# (via `apply_tier2_resolution`) and `_apply_tier3_override_inner` directly,
+# never `choice_code="operator_alternative"`. The byte-exact gate at that line
+# was added so "every corrector path" would be literally true; deleting it
+# still leaves every (m8f) row passing.
+#
+# ZERO-WRITE ASSERTIONS CANNOT DISCRIMINATE THIS MUTANT: `_update_journal_
+# field`'s OWN singular `_assert_real_column_name` backstop still runs before
+# any UPDATE on this path too, so a journal-write-count assertion reads 0
+# whether the gate at `:2745` is present or not. What the gate's absence
+# actually exposes is that `_validate_correction_target` (which INTERPRETS
+# the name semantically) and `_read_journal_value` (whose SELECT interpolates
+# the name directly) would each be REACHED on the raw, un-gated spelling --
+# so the discriminator spies on those two functions and asserts NEITHER is
+# called, not on what got written.
+
+
+@pytest.mark.parametrize("spelling", _NON_CANONICAL_SPELLINGS)
+def test_m8g_operator_alternative_reaches_neither_semantic_check_for_any_spelling(
+    conn: sqlite3.Connection, spelling: str,
+) -> None:
+    world = _seed_trade_anchored_world(
+        conn, ambiguity_kind="validator_rejected",
+    )
+
+    real_validate = reconciliation_auto_correct_mod._validate_correction_target
+    real_read = reconciliation_auto_correct_mod._read_journal_value
+    with (
+        patch.object(
+            reconciliation_auto_correct_mod, "_validate_correction_target",
+            wraps=real_validate,
+        ) as validate_spy,
+        patch.object(
+            reconciliation_auto_correct_mod, "_read_journal_value",
+            wraps=real_read,
+        ) as read_spy,
+    ):
+        with pytest.raises(ReservedJournalFieldError) as exc:
+            apply_tier2_resolution(
+                conn,
+                discrepancy_id=world["discrepancy_id"],
+                choice_code="operator_alternative",
+                operator_custom_payload={spelling: OTHER_TOKEN},
+                operator_reason=(
+                    "a non-canonical spelling via the operator_alternative "
+                    "surface"
+                ),
+            )
+        assert "must match a real column EXACTLY" in str(exc.value)
+        assert validate_spy.call_count == 0
+        assert read_spy.call_count == 0
+
+    assert conn.execute(
+        "SELECT attempt_id FROM trades WHERE id = ?", (world["trade_id"],),
+    ).fetchone()[0] == MINTED_TOKEN
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
