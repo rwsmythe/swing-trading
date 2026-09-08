@@ -2098,12 +2098,18 @@ def _phase22_arc_a4_backup_gate(
     """22-A4 per-attempt identity (0038) backup-before-migrate gate.
 
     Fires ONLY when ``current_version == 37 AND target_version >= 38`` -- a
-    real production v37 DB about to cross v38. STRICT EQUALITY on pre_version
-    per the ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version
-    jumps from pre-v37 baselines bypass this gate by design, which is why a
-    fixture that wants BOTH a v37 world and production HEAD makes TWO calls
-    rather than retargeting one (``run_migrations`` evaluates every gate ONCE
-    against the INITIAL ``current``).
+    real production v37 DB about to cross v38. STRICT EQUALITY on the PRE
+    version: the condition is exactly ``current_version == 37 AND
+    target_version >= 38``, NOT ``current_version <= 37``. That is the
+    project-canonical clause shape (CLAUDE.md: copy the Phase 9
+    ``pre_version == 16 AND target >= 17`` clause verbatim); the gotcha's
+    ``pre_version == (target - 1)`` phrasing describes the SINGLE-STEP case
+    only and would read false at ``target_version = 39``, where this gate
+    still fires and must. Multi-version jumps from pre-v37 baselines bypass
+    this gate by design, which is why a fixture that wants BOTH a v37 world
+    and production HEAD makes TWO calls rather than retargeting one
+    (``run_migrations`` evaluates every gate ONCE against the INITIAL
+    ``current``).
     """
     if target_version < 38 or current_version != 37:
         return
