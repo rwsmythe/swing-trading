@@ -807,34 +807,53 @@ def test_g_a_raising_probe_AND_a_raising_sink_still_preserve_the_evidence(
 
 
 # ===========================================================================
-# (h) THE PROBE CONNECTION IS NOT SHARED-CACHE
+# (h) THE PROBE OPENS WITH `cache=private` -- A CONSTRUCTION-TIME GUARANTEE
 # ===========================================================================
-def test_h_the_probe_connection_reads_read_uncommitted_as_zero(
+def test_h_the_probe_opens_with_cache_private_and_reads_read_uncommitted_as_zero(
         tmp_path: Path, monkeypatch) -> None:
-    """The PRAGMA is executed INSIDE the monkeypatched repo reader, **while it
-    still owns the LIVE probe connection**, and only the SCALAR is stored --
-    capturing the connection and querying it afterwards would run against a
-    handle ``_durability_probe`` has already closed in its ``finally``.
+    """`cache=private` is the construction-time property this test pins (RD's
+    B-3 ruling, 2026-09-08): it is what makes *a fresh connection sees only
+    committed state* a GUARANTEE of the URI rather than a claim that merely
+    holds today because nothing in this repo enables shared cache. That prior
+    fact is a claim with a shelf life; `cache=private` closes it for the cost
+    of a query parameter.
 
-    This pins the construction-time precondition that makes *a fresh
-    connection sees only committed state* TRUE rather than assumed, without
-    adding a runtime branch that would be defensive dead code.
+    The URI is captured by spying `open_connection` at its call site inside
+    `_durability_probe`, wrapping through to the real function so the probe
+    still opens and reads for real.
+
+    `read_uncommitted` is KEPT as a SECOND, honestly-labelled assertion: it is
+    what the pragma reads under a private cache, and on its own it is NOT
+    evidence of cache separation -- the pragma only has effect under shared
+    cache, so a 0 reading is consistent with a shared-cache connection too.
+    That is exactly the property the PRIOR version of this test claimed to pin
+    (its failure message read "the probe connection is shared-cache
+    readable") without measuring it; the claim now rests on the URI, not on
+    this scalar.
     """
     from swing.trades import entry as entry_mod
 
     db_path = tmp_path / "h.db"
     conn = ensure_schema(db_path)
     try:
+        real_open_connection = entry_mod.open_connection
         real_find = entry_mod.find_trade_id_by_attempt_id
+        captured_uris: list[str] = []
         scalars: list = []
 
-        def _spy(probe_conn, attempt_id):
+        def _spy_open_connection(db_path_or_uri, **kwargs):
+            captured_uris.append(db_path_or_uri)
+            return real_open_connection(db_path_or_uri, **kwargs)
+
+        def _spy_find(probe_conn, attempt_id):
             scalars.append(
                 probe_conn.execute("PRAGMA read_uncommitted").fetchone()[0])
             return real_find(probe_conn, attempt_id)
 
         monkeypatch.setattr(
-            entry_mod, "find_trade_id_by_attempt_id", _spy)
+            entry_mod, "open_connection", _spy_open_connection)
+        monkeypatch.setattr(
+            entry_mod, "find_trade_id_by_attempt_id", _spy_find)
         proxy = _CommitsThenRaises(
             conn, sqlite3.OperationalError("commit lost (planted)"))
 
@@ -842,7 +861,12 @@ def test_h_the_probe_connection_reads_read_uncommitted_as_zero(
                               force=False, cfg=None)
 
         assert result.trade_id > 0
+        assert len(captured_uris) == 1, captured_uris
+        assert "cache=private" in captured_uris[0], (
+            "the probe's URI does not carry cache=private: "
+            f"{captured_uris[0]}")
         assert scalars == [0], (
-            f"the probe connection is shared-cache readable: {scalars}")
+            f"read_uncommitted did not read 0 under a private cache: "
+            f"{scalars}")
     finally:
         conn.close()

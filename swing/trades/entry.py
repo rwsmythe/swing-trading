@@ -882,12 +882,19 @@ def _durability_probe(db_path: Path, attempt_id: str,
     path whose entire job is to be reliable when things are already going
     wrong.  The schema version cannot have changed underneath us.
 
-    **``PRAGMA read_uncommitted`` IS NOT CHECKED AT RUNTIME, AND THAT IS A
-    DECISION.**  Shared-cache mode is the only way a second connection could
-    observe uncommitted data, this connection is its own, and the pragma
-    defaults to 0.  A runtime branch would be defensive dead code whose own
-    test could only assert the default; the precondition is pinned by test
-    (h), which is the right instrument for a construction-time property.
+    **THE URI CARRIES ``cache=private``, AND THAT IS A CONSTRUCTION-TIME
+    GUARANTEE, NOT A RUNTIME CHECK** (RD's `B-3` ruling, 2026-09-08).  Shared-
+    cache mode is the only way a second connection could observe uncommitted
+    data.  It is enabled nowhere in this repository today -- but that is a
+    claim about the ABSENCE of a writer, which has a shelf life the moment a
+    dependency or C extension flips the process-wide default; ``cache=private``
+    closes the case at the URI instead of resting on that absence.  A runtime
+    branch checking ``PRAGMA read_uncommitted`` would still be defensive dead
+    code whose own test could only assert the pragma's default (that pragma
+    only has effect UNDER shared cache, so a 0 reading is consistent with a
+    shared-cache connection too) -- the precondition is pinned by test (h)'s
+    assertion on the URI itself, which is the right instrument for a
+    construction-time property.
 
     **THE CLOSE IS CONTAINED, and the ORDERING is the requirement:** a
     ``close()`` that raises AFTER a successful read must not discard the read.
@@ -903,7 +910,7 @@ def _durability_probe(db_path: Path, attempt_id: str,
     same reason.)
     """
     probe = open_connection(
-        Path(db_path).resolve().as_uri() + "?mode=rw",
+        Path(db_path).resolve().as_uri() + "?mode=rw&cache=private",
         uri=True,
         busy_timeout_ms=_PROBE_BUSY_TIMEOUT_MS,
     )
