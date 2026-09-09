@@ -85,9 +85,12 @@ shape as the other three instances on this arc.
 - `.worktrees/22-a4-plan` @ `f5e03921` still on disk, unused for four generations.
 - **LIVE DB: `schema_version` 37, `trades.attempt_id` ABSENT, 0038 UNAPPLIED** — measured read-only by
   me, and independently by both directors within the hour. **Re-verify anyway before the migration.**
-- **Untracked and NOT MINE:** `docs/cli-autoupdate-run-poisoning-finding-coa.md` appeared in the main
-  worktree during the merge window; the tree was clean immediately before. RD says it is not his.
-  Ask CHARC or the operator before touching it — I did not add, move or remove it.
+- **Untracked, EXPLAINED, and NOT YOURS TO TOUCH:** `docs/cli-autoupdate-run-poisoning-finding-coa.md`
+  is a **coa-chess CHARC delivery** (cross-project convention: untracked here, never committed), and
+  it is CHARC's to act on. Its finding: the `claude` CLI self-updates from any shell without
+  `DISABLE_AUTOUPDATER=1` and moved the shared binary twice on 09-08. The port of that flag into
+  `scripts/start_directors.ps1` goes to the OPERATOR for his word, **after** the `-n auto` run on
+  `82d20042`, so the tested head stays the cleared head. **Do not add, move or remove the file.**
 
 ## 5. BOTH DIRECTOR GATES ARE IN
 
