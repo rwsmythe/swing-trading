@@ -1893,3 +1893,1455 @@ named; a sixth would mean the retired digest had been re-adopted somewhere.
 · `assertion_schedule_audit.py` 53 rows, 0 naked symbols · `citecheck.py` 71 citations, 0
 unresolved.** **NOTHING FROM ROUND 11 IS OPEN.**
 
+
+---
+
+## Executing dispatch — Task 0b + Task 1 intake (2026-09-07)
+
+**No Codex round. This section records SUPERSESSIONS and INTAKE CORRECTIONS made by the executing
+cell before writing code, per the recipe's rule that a ruling's REASONING is binding while its
+incidental FACTS — line numbers, names, counts — are inputs the cell verifies against the code.**
+
+### Supersession 1 — `(m3c)` takes BRANCH A (CHARC, PRIMARY, 2026-09-07)
+
+`docs/superpowers/plans/2026-09-06-phase22-arc-a4-EXECUTING.md` `(m3c)` demanded the expected-tables
+constant **EQUAL** a fresh v37 schema. **STRUCK BY REPLACEMENT, citing the ruling**, and the
+replacement paragraph carries the ruling and its reason inline.
+
+- **Mechanic re-verified on disk before encoding:** `swing/data/db.py:575` is
+  `missing = expected_tables - actual_tables` inside `_verify_backup_integrity` — a **SUBSET** test.
+  The gate's contract has always been a **FLOOR**.
+- **Encoded:** `PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES =
+  PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES | {the three 0037 tables}` (the derivation exactly as
+  specified; `PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES` verified at `swing/data/db.py:382`,
+  consumed at `:2022`). `(m3c)` asserts **SUBSET, naming the offending member on failure**, **AND**
+  membership of 0037's three tables. Gate strictness identical to 22-A's; S6 step 1 unchanged.
+- **NOT built, banked to CHARC's register:** the schema-manifest drift comparator.
+
+### Supersession 1a — the second strike anchor was MIS-PLACED, and the sentence at `:925` STANDS
+
+**INTAKE CORRECTION (executing cell).** The dispatch brief instructed striking
+`2026-09-06-phase22-arc-a4-EXECUTING.md:925`, quoted as *"EQUALITY, NEVER A SUPERSET CHECK -- CHARC
+made this the MANDATORY member of the mirror set"*. **That line is inside `(r4)`, the
+schema-versus-MODEL drift comparator — not inside `(m3c)`.** The two are different instruments:
+
+- `(m3c)`'s subject is `_verify_backup_integrity`, whose implementation is a subset test with a
+  floor contract. Equality there reverses the gate. **Struck.**
+- `(r4)`'s subject is `{trades columns} - {Trade dataclass fields} == {two names}`. There is no
+  subset instrument behind it; it is a DECISION LEDGER, and gotcha #11's 2026-08-24 amendment makes
+  the drift comparator the **MANDATORY** member of the mirror set precisely because a `>=`/subset
+  form silently absorbs the next column added without a decision. **NOT struck.**
+
+The originating handoff (`docs/orchestrator-handoff-2026-09-07-22a4-executing.md:107`) names the
+sentence by phrase and carries **no line number**; the brief resolved the phrase by literal match,
+which landed in the wrong section. `(m3c)` at `:724` said "EQUALS", not "EQUALITY, NEVER A SUPERSET
+CHECK", so no phrase match into `(m3c)` was available. **Encoded: `:724` struck, `:925` kept, and
+`(r4)` now carries an explicit paragraph distinguishing the two so the next reader cannot conflate
+them by phrase.** Reported to the orchestrator in the return report.
+
+### Supersession 2 — the mis-named version tests (orchestrator, his lane, 2026-09-07)
+
+**RULED: rename all six.** All five brief-supplied rows verified on disk at the exact lines given
+(`test_migration_0036_provenance_corrections.py:56/:60`, `test_migration_0033.py:141`,
+`test_migration_0031_untracked_broker_position.py:55`,
+`test_migration_0030_yfinance_calls.py:33`), plus the plan's own
+`test_22a_task2_migration_0037.py:98`. **Renamed to the `..._is_head` form** rather than `..._is_38`
+— the form the codebase already converged on at its three most recent instances
+(`test_migration_0032.py::test_expected_schema_version_is_current`,
+`test_migration_0034_h1_criteria_amendment.py` and
+`test_migration_0035_fills_trades_price_divergence.py`, both `..._is_head`). `..._is_38` satisfies
+the rule for exactly one migration and then re-creates the defect; `head` satisfies it permanently.
+This is a deviation from the plan's literal *"the assertion becomes 38 and the NAME must too"* and
+is reported as such.
+
+**INTAKE CORRECTION: the population is TWENTY-SIX, not six — and it is NOT homogeneous.** Measured
+by an AST walk mapping every one of this commit's 44 version-mirror edit sites to its enclosing
+function and reading each name (a value grep cannot do this; the seventh spelling is exactly the one
+no value grep reaches). Twenty further test functions carry a stale version number in the NAME while
+this commit edits their BODY to 38. **They were NOT renamed, because a recorded counter-convention
+exists and it is not the executing cell's to supersede:**
+`tests/data/test_phase13_t3_sb1_prerequisite.py:45-52` states *"Test name preserved to keep
+grep-history continuity per cumulative discipline (the corresponding tests in test_migration_0017.py
+etc. follow the same stale-name-but-current-assertion pattern)"*, and
+`tests/data/test_v21_migration_trade_backlinks.py` repeats it verbatim for its own row. **The
+ruling's rule and that convention conflict**, so the twenty are ROUTED to the orchestrator rather
+than settled inside the work. The full roster is in the return report.
+
+### Intake correction 3 — the plan's own `_current_version` classification was half right
+
+**FOUND BY THE FULL SUITE, not by reading.** The plan's Task-1 sweep rule said *"Two
+`_current_version(...) == 37` sites in `tests/data/test_22a_task2_migration_0037.py` are assertions
+about migration 0037's own result and STAY at 37."* **Only ONE is.**
+
+- `:107` `test_migration_applies_to_a_v36_fixture_and_stamps_37` builds a v36 database via the local
+  `_v36` helper and runs to `target_version=37`. About 0037's own result. **Stays at 37.**
+- `:130` `test_running_the_migration_twice_is_a_no_op` takes the module's `conn` FIXTURE, which is
+  `ensure_schema` and therefore walks to **HEAD**. Its `target_version=37` call returns immediately
+  (`current >= target_version`), so the assertion is about HEAD. **Becomes 38** — and it was the
+  ONE red on the first full-suite run (`assert 38 == 37`).
+
+*The classification was made by reading the call's ARGUMENTS and not its FIXTURE, which is a
+classification of half the statement.* The plan text is superseded by replacement at both the S4
+count row and the Task-1 rule.
+
+### Intake correction 4 — a fixture that asserted nothing
+
+`(r3)`'s and `(e2)`'s UPPERCASE-canonical rows were first written as `TOK_A.upper()` where
+`TOK_A = "00000000-0000-4000-8000-000000000001"` — **all digits and hyphens, so `.upper()` is the
+identity function** and the "uppercase defeats the UNIQUE index's text key" case was asserting the
+lowercase case a second time. Caught by execution (the row went green against the canonical token
+and red against the validator). Replaced with `TOK_MIXED = "0a0b0c0d-0e0f-4a1b-8c2d-0e3f4a5b6c7d"`,
+which carries hex letters, and the reason is recorded beside the constant.
+
+---
+
+# 22-A4 EXECUTING -- Codex A-loop findings ledger
+
+Artifact: the arc diff `2d9e4a34..HEAD` (`swing/`, `tests/`), worktree `.worktrees/22-a4-exec`.
+Base `2d9e4a34`; pre-loop head `c9bc4838` (Tasks 0b/1, 1b, 3, 4, 5 -- **FIVE commits**, not the six
+the dispatch brief said; measured by `git log --oneline 2d9e4a34..HEAD`, and Task 0b landed INSIDE
+Task 1's commit `48029a06` exactly as the plan's Task 0b row specifies).
+Transport: WSL codex-cli **0.152.1**, `codex exec -p strong -s read-only --skip-git-repo-check -`,
+stdin bundle (prompt + full arc diff) with the WORKTREE as cwd so the reviewer can verify the code's
+claims against the repository (recipe §3 REPO ACCESS, mandatory for production-code review).
+
+**Criterion (recipe, executing/production-code reviews):** blocking = CRITICAL or MAJOR; convergence
+= the FIRST round returning zero new critical/major. The plan-stage `fast` tier and the
+result-bearing criterion do NOT apply here: this is production code and the tier is `strong`.
+
+**Ledger conventions:** this section conforms to the `## LEDGER CONVENTIONS` block above. Every
+finding carries ONE header shape -- `**A4X-R<round>-<n> -- <SEVERITY> -- <CLASS> -- <text>` -- with
+SEVERITY in `CRITICAL`/`MAJOR`/`MINOR` and CLASS in `NEW GROUND`/`RESIDUAL`. The `A4X-` prefix
+distinguishes the EXECUTING loop's ids from the writing-plans loop's `A4-` ids above; no id in this
+section is the same finding as any id in that one.
+
+## Round ledger
+
+| round | tier / model / effort | C / MAJ / MIN | new | reopened | reverted | verdict |
+|---|---|---|---|---|---|---|
+| **1** | `strong` / `gpt-5.6-sol` / `high` | 1 / 4 / 5 | 10 (**10 new ground, 0 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **2** | `strong` / `gpt-5.6-sol` / `high` | 1 / 1 / 4 | 6 (**3 new ground, 3 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **STOP** | *(loop STOPPED at a DESIGN FORK, `A4X-R2-01`; NO round 3 opened -- no review round opens while a ruling is outstanding)* | -- | -- | -- | -- | **NOT convergence. A stopped-short loop, reported as one.** |
+
+## Per-round mechanical assertions
+
+### Round 1 -- ALL FIVE PASS, stated as measurements
+
+| assertion | measured |
+|---|---|
+| 1. banner model | `model: gpt-5.6-sol` (transcript line 4) |
+| 2. `model_reasoning_effort` | `reasoning effort: high` (transcript line 8) |
+| 3. `grep -c '^ERROR'` | **0** |
+| 4. `grep -c '^tokens used'` | **1**; footer value **441,127** |
+| 5. anchored verdict token | `^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0** -- one distinct token present, the other absent, which is the invariant on 0.152.1 (that version emits the final message TWICE) |
+
+Plus the TWO-SIGNAL rule, both measured and both required: **exit code 0** (read from
+`.codex-exit-r1.txt`, written by the runner, not inferred from the harness) **AND** a NON-EMPTY
+transcript (**1,550,758 bytes**). Process exit was confirmed by `pgrep -c codex` = 0 before the file
+was read -- a transcript is not a stable artifact while its process lives.
+
+**Content-filter events: NONE.** Codex self-attested in the response body: *"No safety-layer refusal
+or rewriting occurred."*
+
+**Prior-round-findings prohibition: HONORED, and here is the grep that shows it.**
+`grep -n -i "copowers-findings\|codex-review-r\|codex-prompt-r\|\.ledger\.md"` over the round-1
+transcript returns hits in exactly three classes, none of them a read: (a) the prompt's own
+prohibition text echoed back, (b) the arc diff's own hunk header for the committed ledger file
+(that file is part of the arc and is therefore legitimately in the review INPUT), and (c) prose in
+`CLAUDE.md` / `docs/orchestrator-context.md` that merely mentions `.copowers-findings.md`.
+**Codex went further than asked and excluded them at the tool level** -- transcript line 16499
+shows its own ripgrep carrying `--glob '!*.ledger.md' --glob '!.codex-*' --glob
+'!*.copowers-findings.md'`. It also self-attested: *"I did not run git or open any prohibited
+review/ledger file."* The scratch relocation was the structural half: every `.codex-*` file and the
+findings file lived in the session scratchpad for the whole loop, not at the worktree root.
+
+## Round-1 dispositions
+
+**Every premise below was checked against the code BEFORE anything was changed.** One CRITICAL and
+one MAJOR were rejected on a verified premise correction; the other eight were fixed.
+
+**`A4X-R1-01` -- CRITICAL -- NEW GROUND -- the mint's `PRAGMA database_list` on the body-raise path**
+**PREMISE TRUE, CLASSIFICATION FALSE. NO CODE CHANGE.** The factual half is correct and I confirmed
+it by reading: `_begin_attempt_identity` calls `_resolve_main_db_path`, which executes `PRAGMA
+database_list` (`swing/data/db.py:605`), so on a body-raise the pre-arc tree had run one fewer
+statement. **The classification is measured against a lock that does not exist.** 22-A LOCK clause
+(c) reads, verbatim (`...-primitive.md:909-910`): *"every pre-existing failure branch raises the
+same exception, with the same message, at the same point."* It locks the EXCEPTION, the MESSAGE and
+the POINT. The pragma changes none of them, and the design plan states this outcome explicitly at
+`:909-912` -- *"still holds for ALL of them, because the mint changes no branch and no ordering."*
+The "NO statement" wording the finding leans on belongs to a DIFFERENT and narrower clause: the
+deferred path's observation block in `record_entry`'s handler (`-EXECUTING.md:509-511`), which
+gained no statement. **The over-broad paraphrase was MINE, in the round-1 prompt**, and the round-2
+prompt quotes clause (c) verbatim instead. MEASURED on this box: `PRAGMA database_list` leaves
+`in_transaction` False and a following `BEGIN IMMEDIATE` succeeds, so it perturbs nothing.
+**The proposed remedy is independently rejected on the merits, and this is the load-bearing half:**
+deferring `_resolve_main_db_path(conn)` into the lost-commit branch would issue a statement on the
+writer's OWN connection AFTER a failed or indeterminate commit -- exactly what RD's rule (i) and
+`_read_resolution`'s non-mutating design exist to forbid. It would move a statement from a safe
+place to the most dangerous one on the path. Declared into the round-2 prompt WITH this reason and
+with challenge invited.
+
+**`A4X-R1-02` -- MAJOR -- NEW GROUND -- the body-raise lock test does not observe pre-body SQL**
+**FALLS WITH `R1-01`. NO CODE CHANGE.** Its subject is "a non-discriminating test on an explicitly
+locked path," and the locked path it names is the one clause (c) does not create. The lock that DOES
+exist over that region is asserted, and by a stronger instrument than the one proposed: (k3a)'s AST
+walk pins that `_entry_transaction`'s `if not immediate:` arm contains no `Try` node and that the
+`with` body is exactly one bare `yield` -- a structural assertion a statement-trace could not make.
+
+**`A4X-R1-03` -- MAJOR -- NEW GROUND -- the immutable-field refusal was byte-exact**
+**FIXED** (`74cb2815`). Verified before fixing: `_assert_real_column_name` raises
+`ReservedJournalFieldError`, which derives from bare `Exception` (`:109`), and BOTH delivery
+handlers catch `ValueError` only (`swing/cli.py:3941` -> `click.UsageError`, exit 2; the web route's
+`except ValueError` -> 400, with the bare-`Exception` fallthrough reaching the 500 handler at
+`reconcile.py:1753`). So a casing or quoting variant of `attempt_id` WAS refused -- nothing durable
+was ever at risk, and the trigger remains the guard of record -- but on the tier-3 surface the
+refusal arrived at step 6, after steps 4 and 5 had inserted the new correction row and advanced the
+prior head's chain pointer, which defeats the ORDERING property the early check exists for; and it
+arrived as an exception neither delivery surface catches. `_normalize_journal_field_name` strips one
+matched quoting pair and casefolds; the lookup table is DERIVED from `_IMMUTABLE_JOURNAL_FIELDS` so
+the two cannot drift. **The widening refuses nothing that existed before this arc** -- the set's only
+member is `trades.attempt_id`, a column migration 0038 creates. Nine (m8e) rows; **eight fail against
+the byte-exact predicate** and the ninth is the negative control proving normalisation did not become
+a substring test.
+
+**`A4X-R1-04` -- MAJOR -- NEW GROUND -- the backup gate never tested `target_version > 38`**
+**FIXED** (`1f8fb55c`). Matrix was (37,38), (36,38), (37,37) -- all satisfied by a `target_version ==
+38` mutant, which would SKIP the pre-0038 backup for a v37 installation jumping straight to a later
+head. **MUTANT BUILT AND RUN: `target_version == 38` fails the amended row.** The added case uses its
+own directory, because the backup filename is stamped to the second and a same-second collision
+would read as a count of 1 -- an artifact of the clock, not of the gate.
+
+**`A4X-R1-05` -- MAJOR -- NEW GROUND -- the expected-table set did not prove its declared inheritance**
+**FIXED** (`1f8fb55c`). Subset-of-real-v37 plus the three 0037 names is satisfied by a constant
+holding ONLY those three. **MUTANT BUILT AND RUN: a parentless constant fails the amended row.** The
+added assertion is equality against the SPECIFIED PARENT-DERIVED SET, which is a different claim
+from the equality-against-the-real-v37-schema that CHARC's 2026-09-07 ruling rejected -- that one
+would reverse the gate's floor direction; this one pins the constant to its own definition. The
+ruling is not disturbed.
+
+**`A4X-R1-06` -- MAJOR -- NEW GROUND -- migration 0038's transaction framing was untested**
+**FIXED** (`1f8fb55c`). Nothing asserted BEGIN-first, COMMIT-last, the version bump immediately
+before COMMIT, or that a mid-script failure persists nothing -- and gotcha #9 is precisely why that
+matters. Added a normalized statement-ordering row and a planted-failure counterexample on a real
+v37 database. **MUTANT BUILT AND RUN -- and the first attempt at it PASSED, which is itself the
+finding-behind-the-finding:** the file HEADER contains the literal text `BEGIN;` and `COMMIT;` in
+prose, so a bare string replace edited the comment and the mutant was never built. Anchoring on the
+surrounding newlines built it, and **both new rows then failed.** The tests were never fooled -- the
+helper strips comments -- only my mutant was, which is the same class this arc keeps meeting.
+
+**`A4X-R1-07` -- MINOR -- NEW GROUND -- (m2) did not distinguish a partial index from a full one**
+**FIXED** (`1f8fb55c`). Independently MEASURED: SQLite treats NULLs as distinct in a FULL unique
+index too, so both the duplicate-token and four-NULL assertions pass either way; `PRAGMA index_list`
+`partial` is the column that differs. **MUTANT BUILT AND RUN: a full unique index fails the amended
+row.**
+
+**`A4X-R1-08` -- MINOR -- NEW GROUND -- the trigger test did not prove the trigger is unconditional**
+**FIXED** (`1f8fb55c`). All three tested transitions are value-CHANGING, so a `WHEN OLD.attempt_id
+IS NOT NEW.attempt_id` trigger passes them while permitting `SET attempt_id = attempt_id` --
+falsifying the migration header's stated contract. Two halves added, because each is weak alone: the
+same-value assignment ABORTS (behaviour), and the stored trigger SQL carries no `WHEN` at all
+(structure -- a `WHEN` that can evaluate to NULL fails OPEN, which is why the contract is no-WHEN
+rather than a-correct-WHEN). **MUTANT BUILT AND RUN: the change-detecting trigger fails the new row.**
+I had already measured the SHIPPED trigger aborting a same-value update during round 0, so the
+finding is about the TEST, not the schema.
+
+**`A4X-R1-09` -- MINOR -- NEW GROUND -- "never an inference" over-claimed one of the four fields**
+**FIXED** (`06040d6e`). True of three; false of `cleanup_raised` on the DEFERRED path, where
+`__exit__` owns the rollback, no Python frame observes the call, and the fact is DERIVED from the
+escaping exception's `__context__`. The derivation is sound and contained toward the ALARM; the
+wording now says derivation, because calling it an observation flattered it.
+
+**`A4X-R1-10` -- MINOR -- NEW GROUND -- a stale "CLAUSE 2 IS REVERTED" above the guarded region**
+**FIXED** (`06040d6e`). Gotcha #31's exact shape, one commit after this arc restored clause 2 as a
+gated settle: the comment still read as an invariant while the code had moved. Amended to the
+conditional contract.
+
+**`A4X-R1-11` -- MINOR -- NEW GROUND -- `_log_contained`'s returned error is discarded**
+**FIXED** (`06040d6e`). Documented rather than re-plumbed: the return exists for a caller WITH a
+reporting channel, and this call site fires on a path where the entry SUCCEEDS, so there is no
+escaping exception to attach a note to. The honest statement is that the path cannot surface a sink
+failure, not that it declines to.
+
+### What round 1 explicitly cleared
+
+Codex reported no correctness defect in the core settle predicate, fresh-connection visibility,
+probe-returned-id selection, ticker corroboration, v38 INSERT ordering, or the 45-column/45-parameter
+binding (it counted both by AST and printed `placeholders 45 tuple 45`), and it verified the CPython
+rollback-chain premise on BOTH the declared 3.11 floor and 3.14.2. It could not run pytest -- no
+pytest in its sandbox -- and used static inspection plus targeted SQLite/Python probes instead.
+
+### Verdict
+
+`NEW_CRITICAL_MAJOR_FOUND` -- anchored, twice (0.152.1 duplicates the final message), with
+`^NO_NEW_CRITICAL_MAJOR` at zero and `^ERROR` at zero.
+
+
+## Round 2 -- ALL FIVE ASSERTIONS PASS
+
+| assertion | measured |
+|---|---|
+| 1. banner model | `model: gpt-5.6-sol` |
+| 2. `model_reasoning_effort` | `reasoning effort: high` |
+| 3. `grep -c '^ERROR'` | **0** |
+| 4. `grep -c '^tokens used'` | **1**; footer value **590,318** |
+| 5. anchored verdict token | `^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0** |
+
+Exit code MEASURED **0**; transcript NON-EMPTY (**1,869,407 bytes**); `pgrep -c codex` = 0 before the
+file was read. **Content-filter events: NONE.** The prior-round-findings prohibition was HONORED --
+the same grep as round 1 returns only the prompt's own echo, the arc diff's own ledger hunk header
+(that file is part of the arc and is legitimately in the review INPUT), and `CLAUDE.md` /
+`docs/orchestrator-context.md` prose that merely mentions `.copowers-findings.md`.
+
+**The round-2 prompt QUOTED 22-A LOCK clause (c) VERBATIM** instead of paraphrasing it, and carried
+the round-1 CRITICAL's adjudication as a declared item with its reason and challenge invited. Round
+2 did not re-raise it.
+
+**Round 2 independently re-derived the CPython premise BY NETWORK FETCH** of both `v3.11.0` and
+`v3.14.2` `Modules/_sqlite/connection.c`, and confirmed SOURCE (S1) on both. It also cleared the
+migration transaction framing, the v38 INSERT parameter alignment, the UNIQUE/CHECK relationship,
+trigger firing semantics, backup-gate wiring, and all three corrector refusal sites.
+
+## Round-2 dispositions
+
+**A4X-R2-01 -- CRITICAL -- NEW GROUND -- the PROOF-TO-RETURN TAIL can discard a proven-durable entry**
+**PREMISE VERIFIED AT THE CODE. NOT FIXED. ROUTED AS A DESIGN FORK -- THIS IS WHY THE LOOP STOPPED.**
+Two windows, both confirmed by reading the shipped code:
+
+1. `swing/trades/entry.py:1021` -- `return found` sits INSIDE
+   `_settle_by_attempt_identity`'s own `try: ... except BaseException as settle_error: ... return
+   None`. At that statement the fresh read has ALREADY returned a row and the ticker has ALREADY
+   matched. A `BaseException` delivered there is converted to `None`, and the caller re-raises over
+   a durable entry.
+2. `swing/trades/entry.py:1387-1392` -- `settled_trade_id, _settled_ticker = settled` and the
+   `dataclasses.replace` run INSIDE the `except BaseException as post_commit_error:` suite, with NO
+   enclosing handler, so a fault there escapes despite the durable proof.
+
+**The argument is the arc's OWN principle turned back on it.** `_durability_probe` contains its
+`close()` failure precisely because a tidy-up failure after a successful read must not discard the
+read -- its docstring says discarding a valid answer that way "would report a durable entry as a
+failure." One frame up, the same asymmetry is unguarded. And the arc has ALREADY RATIFIED that this
+injection class is reachable: (k3b) drives a `sys.settrace` fault at `outcome.committed = True` and
+requires the settle to happen anyway.
+
+**WHY IT IS A FORK AND NOT A FIX I MAY TAKE.** The reviewer's remedy is to "repeat the fresh
+attempt-ID read" on a secondary fault. That is a SECOND PROBE -- a second fresh connection opened on
+an already-failing money path, in a window where an asynchronous exception is in flight -- and it
+**contradicts a shipped, deliberate assertion**: `tests/trades/test_22a4_attempt_identity.py`
+asserts `probe_args == [token]` and that the mint ran exactly once, i.e. ONE probe per attempt, by
+design. A cheaper shape exists, but choosing between the shapes is a design decision on this arc's
+most safety-critical function, against a contract two directors ratified.
+
+**A4X-R2-02 -- MAJOR -- NEW GROUND -- no test covers the proof-to-return boundary**
+**NOT FIXED -- CONTINGENT ON THE SAME RULING.** Verified: the only `sys.settrace` injection in the
+settlement suite targets `_entry_transaction`'s `outcome.committed = True`; nothing injects at the
+matching `return found` or at the first post-settle line. The test to write is determined by which
+branch of `A4X-R2-01` is ruled, so writing one now would pin whichever shape I picked.
+
+**A4X-R2-03 -- MINOR -- RESIDUAL -- three comments still called clause 2 reverted**
+**FIXED.** Two sites said "the reverted clause 2" and one said the split gate's "TWO BRANCHES THAT
+BOTH RE-RAISE... THE BEHAVIOUR IS UNCHANGED" -- true when Task 3 split it, false one commit later
+when Task 4 made the second branch settle. Gotcha #31, inside this arc's own Task-3-to-Task-4 seam.
+
+**A4X-R2-04 -- MINOR -- RESIDUAL of my own A4X-R1-09 fix -- the count went incoherent**
+**FIXED.** The R1-09 edit left "THREE OBSERVATIONS" in one paragraph and "ONE OF THE FOUR" in the
+next. It is THREE FIELDS across FOUR path-specific provenance cases, one of which is the derivation,
+and it now says exactly that.
+
+**A4X-R2-05 -- MINOR -- RESIDUAL of my own A4X-R1-03 fix -- the backstop comment went stale in the fixing commit**
+**FIXED.** The comment still described a casing variant as missing the immutable set and being
+caught late by `_assert_real_column_name` -- which the normalization fix falsified in the very
+commit that wrote the fix.
+
+**A4X-R2-06 -- MINOR -- NEW GROUND -- the schema-head catalog stopped at 0037**
+**FIXED.** The catalog immediately above `EXPECTED_SCHEMA_VERSION = 38` described the constant's
+PREDECESSOR. Migration 0038 now has its entry.
+
+## THE FORK, STATED FOR THE RULING
+
+**Question:** how should a fault delivered AFTER the durability proof, but BEFORE the degraded
+`EntryResult` reaches the caller, be handled?
+
+- **Branch A -- RE-PROBE (the reviewer's proposal).** A nested boundary around the handoff that, on
+  a secondary fault, repeats the fresh attempt-id read and returns degraded success on a match.
+  *Cost:* a second connection open on a failing money path; **breaks the shipped
+  one-probe-per-attempt assertion**, which would have to be re-specified rather than merely edited.
+- **Branch B -- MAKE THE PROOF UNDISCARDABLE WITHOUT RE-READING.** Narrow
+  `_settle_by_attempt_identity`'s `except BaseException` so it cannot convert a proof that already
+  exists (the handler covers the READ and the corroboration, not the RETURN), and give
+  `record_entry` a boundary over the two statements between the settle and the existing
+  degraded-result construction. *Cost:* no new I/O and no new failure mode, but still a change to
+  the containment shape of the arc's most safety-critical function.
+- **Branch C -- DECLARE IT.** Accept the window as a named residual, on the ground that it needs an
+  asynchronous `BaseException` inside a two-statement window on an already-failing path, and that
+  `ux_trades_one_open_per_ticker` blocks the retry for any ticker still open. *Cost:* the declared
+  uncovered direction (a ticker CLOSED between attempts) stays uncovered, and the arc would ship a
+  known instance of the exact defect clause 1 exists to prevent.
+
+**I did not choose.** `A4X-R2-02`'s test follows whichever branch is ruled.
+
+## Transcript manifest -- EXECUTING loop (final)
+
+Durable path: `C:/Users/rwsmy/swing-data/review-transcripts/22-a4-exec/` (dotfiles -- use `ls -a`).
+Copied THE MOMENT the five assertions passed, per `harness-architecture.md` section 5.1.
+
+| transcript | bytes |
+|---|---|
+| `.codex-review-r1.txt` | 1,550,758 |
+| `.codex-review-r2.txt` | 1,869,407 |
+| `.codex-prompt-r1.md` | 10,760 |
+| `.codex-prompt-r2.md` | 13,678 |
+
+**SPEND, both counted rounds: 441,127 + 590,318 = 1,031,445 tokens.**
+
+## Round 3 -- THE CONFIRMING ROUND ON THE FIX LEG. IT DID NOT CONVERGE.
+
+Artifact: `git diff -U8 2d9e4a34..HEAD -- swing/ tests/` at head `f7d78737` (the fix leg's three
+commits `4589c2f9`, `dd714d4c`, `f7d78737` on top of the pre-loop head). **The FULL arc diff was
+sent, not the fix leg alone** -- the fix leg's correctness depends on the code it changes, and a
+defect in the COMPOSITION of the two is exactly what a fix-only diff cannot show.
+
+| assertion | measured |
+|---|---|
+| 1. banner model | `model: gpt-5.6-sol` |
+| 2. `model_reasoning_effort` | `reasoning effort: high` |
+| 3. `grep -c '^ERROR'` | **0** |
+| 4. `grep -c '^tokens used'` | **1**; footer value **513,003** |
+| 5. anchored verdict token | `^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0** |
+
+Exit code MEASURED **0**; transcript NON-EMPTY (**1,683,792 bytes**); `pgrep -c codex` = 0 before
+the file was read. **Content-filter events: NONE** (Codex self-attested). Codex could not run the
+pytest suite (no pytest on its interpreter) and said so; it ran AST, disassembly, SQLite and
+`sys.settrace` probes instead. Prior-round-findings prohibition HONORED -- 17 grep hits, all four
+classes benign, and Codex EXCLUDED the ledger and `.codex-*` at the tool level in its own ripgreps.
+
+## Round-3 dispositions
+
+**Every premise below was REPRODUCED BY EXECUTION before anything was changed** -- the two findings
+against the fix leg were driven with `sys.settrace` through the production path, and the SQLite
+claim was re-measured on this box's engine.
+
+**A4X-R3-01 -- MAJOR -- NEW GROUND -- the capture MOVED the settle's window; the declaration said it
+was GONE, and the alarm still said the read FAILED**
+**FIXED (`fa6f0674`).** REPRODUCED: a `sys.settrace` fault at `proven = found`, with the probe
+having returned a corroborated row, re-raised `OperationalError('commit lost (planted)')` with
+**one durable row on disk**, and emitted *"the settle-by-attempt-identity read FAILED"*. **Both
+halves of the finding land on the fix leg's own two commits**: the declaration's sentence that the
+settle's whole proof-to-return tail was out of the alarm family was FALSE, and the no-proof arm's
+wording reproduced the exact false sentence RD's ruling required be removed -- one statement
+further along. The class is irreducible, so the capture boundary is now DECLARED as a member of the
+family, and the arm says only what it can observe: *no corroborated proof was captured, either
+because the read/gate yielded none or because a fault arrived before the capture landed.* Row
+`(A4X-R2-02d)` drives it and fails against the wording as it shipped one commit earlier.
+
+**A4X-R3-02 -- MAJOR -- NEW GROUND -- window 2 is not two statements**
+**FIXED (`fa6f0674`).** REPRODUCED at TWO interior points: a fault at
+`post_commit_error_text = safe_text(...)` and a fault at `return degraded` BOTH escaped over a
+durable row, each carrying the original commit error as `__context__`. An exception raised inside an
+`except` suite is not caught by the `try` whose handler is running, and the tail's only nested
+handler protects the `log.error` call, so the exposure runs from the settle's return THROUGH
+`return degraded`. **"Two statements" was an incidental FACT in the ruling packet**, carried into
+the declaration unverified -- the intake check this cell owed and did not perform. The ruled
+DIRECTION is untouched: both boundaries stay DECLARED, the family's composition and belt are
+unchanged. The bound is now stated by NAMING ITS ENDPOINTS rather than by counting statements, and
+row `(A4X-R2-02e)` measures the far end.
+
+**A4X-R3-03 -- MAJOR -- NEW GROUND -- the resolved-name normalizer misses three more spellings**
+**PREMISE VERIFIED. NOT FIXED -- OUT OF THIS LEG'S DISPATCH SCOPE; FLAGGED TO THE ORCHESTRATOR.**
+Measured on this box (SQLite **3.50.4**, vs Codex's 3.45.1 -- same result):
+`UPDATE t SET 'attempt_id' = ?`, `UPDATE t SET (attempt_id) = ?` and
+`UPDATE t SET /*x*/attempt_id = ?` all changed the column, while
+`_normalize_journal_field_name` returned `"'attempt_id'"`, `"(attempt_id)"` and `"/*x*/attempt_id"`
+UNCHANGED -- so all three miss `_IMMUTABLE_JOURNAL_FIELDS_BY_RESOLVED_NAME`. This is Task 1b's and
+round-1-fix `74cb2815`'s code, not the fork-fix leg's; recipe section 5 says a defect outside scope
+is FLAGGED, never fixed inline. The tier-3 write-ordering half of the finding is Codex's claim,
+reported as such -- this cell verified the normalizer bypass and the SQLite grammar, not the
+step-4-to-6 write sequence.
+
+**A4X-R3-04 -- MINOR -- NEW GROUND -- the backup gate's docstring formula**
+**PREMISE VERIFIED. NOT FIXED -- OUT OF SCOPE; FLAGGED.** `swing/data/db.py`'s gate docstring cites
+the `pre_version == (target - 1)` gotcha while the implemented condition is
+`current_version == 37 AND target_version >= 38`, which fires at `target_version=39`. Note the
+implementation is the PROJECT-CANONICAL shape (CLAUDE.md: *"Copy the Phase 9
+`pre_version == 16 AND target >= 17` clause shape verbatim"*) and the docstring's own first sentence
+states it correctly; only the parenthetical formula is loose. Task 1's code.
+
+## THE LOOP IS STOPPED SHORT AT ROUND 3. THIS IS NOT CONVERGENCE.
+
+Three counted rounds ran; **all three returned `NEW_CRITICAL_MAJOR_FOUND`**. The dispatch brief set
+three counted rounds as the default and required **the orchestrator's written authorization, naming
+the task-bearing finding, before a fourth**. That authorization was not held, so no round 4 opened.
+
+**What that leaves outstanding, stated plainly rather than softened:**
+
+* `A4X-R3-01` and `A4X-R3-02` were FIXED after the last counted round, so **the final head
+  `fa6f0674` has not been reviewed by any Codex round.** A confirming round on it is unrun.
+* `A4X-R3-03` (MAJOR) and `A4X-R3-04` (MINOR) are VERIFIED and UNFIXED, outside this leg's scope.
+
+## Round ledger -- EXECUTING loop (cumulative)
+
+| round | tier / model / effort | C / MAJ / MIN | new | reopened | reverted | verdict |
+|---|---|---|---|---|---|---|
+| **1** | `strong` / `gpt-5.6-sol` / `high` | 1 / 4 / 5 | 10 (**10 new ground, 0 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **2** | `strong` / `gpt-5.6-sol` / `high` | 1 / 1 / 4 | 6 (**3 new ground, 3 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **STOP** | *(loop STOPPED at a DESIGN FORK, `A4X-R2-01`; RD ruled it 2026-09-08)* | -- | -- | -- | -- | **routed, not convergence** |
+| **3** | `strong` / `gpt-5.6-sol` / `high` | 0 / 3 / 1 | 4 (**4 new ground, 0 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **STOP** | *(three counted rounds is the default; a fourth needs written authorization naming the task-bearing finding, and it is not held)* | -- | -- | -- | -- | **A STOPPED-SHORT LOOP, reported as one. NOT convergence.** |
+
+**Context-depth column: DELIBERATELY EMPTY.** A cell cannot see its own depth (no hook fires for a
+subagent), so a self-estimate there is not a record; the orchestrator fills it from
+`python scripts/cell_depth.py --live <h>`.
+
+## Transcript manifest -- EXECUTING loop (through round 3)
+
+Durable path: `C:/Users/rwsmy/swing-data/review-transcripts/22-a4-exec/` (dotfiles -- use `ls -a`).
+Copied THE MOMENT the five assertions passed, per `harness-architecture.md` section 5.1.
+
+| transcript | bytes |
+|---|---|
+| `.codex-review-r1.txt` | 1,550,758 |
+| `.codex-review-r2.txt` | 1,869,407 |
+| `.codex-review-r3.txt` | 1,683,792 |
+| `.codex-prompt-r1.md` | 10,760 |
+| `.codex-prompt-r2.md` | 13,678 |
+| `.codex-prompt-r3.md` | 18,580 |
+| `.codex-exit-r3.txt` | 2 |
+| `run_r3.sh` (the round-3 runner, with its four hazards commented) | 1,266 |
+
+**SPEND, all three counted rounds: 441,127 + 590,318 + 513,003 = 1,544,448 tokens.**
+
+## Round 4 -- THE FOURTH COUNTED ROUND, ON THE FINAL SHAPE. IT DID NOT CONVERGE.
+
+**Written authorization held** (orchestrator, 2026-09-08, dispatch brief
+`docs/22-a4-r3-03-structural-leg-dispatch-brief.md` section 1), naming `A4X-R3-03` as the
+task-bearing ground. The round opened only AFTER `2eebfbee` (R2, the structural invariant) and
+`d34e1493` (R3, the docstring) landed -- one round, on the final shape, never its own wake.
+
+Artifact: `git diff -U8 2d9e4a34..HEAD -- swing/ tests/` at head `d34e1493` (403,409 bytes).
+**The FULL arc diff was sent again, not this leg alone** -- and this round is the first to see FOUR
+commits: `fa6f0674` and `df231195` (the round-3 fixes, which landed after the last counted round)
+plus this leg's `2eebfbee` and `d34e1493`.
+
+| assertion | measured |
+|---|---|
+| 1. banner model | `model: gpt-5.6-sol` |
+| 2. `model_reasoning_effort` | `reasoning effort: high` |
+| 3. `grep -c '^ERROR'` | **0** |
+| 4. `grep -c '^tokens used'` | **1**; footer value **604,767** |
+| 5. anchored verdict token | `^NEW_CRITICAL_MAJOR_FOUND` = **2**, `^NO_NEW_CRITICAL_MAJOR` = **0** |
+
+Exit code MEASURED **0** (`.codex-exit-r4.txt`); transcript NON-EMPTY (**1,635,869 bytes**,
+27,836 lines); `pgrep -c codex` = **0** before the file was read. **Content-filter events: NONE**
+(Codex self-attested: *"No safety-layer refusal or rewriting occurred."*). Codex could not run the
+pytest suite (no pytest on its interpreter, no writable temp) and said so; it ran ripgrep, AST and
+in-memory SQLite probes instead -- it applied migration 0038 in-memory and exercised the CHECK, the
+partial UNIQUE index, the trigger, the repo INSERT binding order, and all seven non-canonical
+spellings against the new gate. Prior-round-findings prohibition **HONORED** -- 8 grep hits for the
+prohibited names, of which 2 are the prompt's own prohibition text, 3 are Codex EXCLUDING those
+files at the tool level in its own ripgreps (`--glob '!**/*.ledger.md'` etc.), and 3 are incidental
+prose inside repo docs it legitimately read (`CLAUDE.md`, `orchestrator-context.md`, an archived
+brief). No read of any prior-round findings file.
+
+**A launch note worth keeping, because it is the SIXTH correction to this seam and it is NEW:**
+the round-3 invocation form `wsl.exe bash /mnt/c/.../run_r4.sh` -- "non-path-initial", the recipe's
+stated remedy for MSYS mangling -- **FAILED at exit 127**: MSYS rewrote the SECOND argument to
+`C:/Program Files/Git/mnt/c/...`. Making the argument non-path-initial is not sufficient when the
+path is a separate argv element; MSYS converts any argument that LOOKS like a POSIX path, wherever
+it sits. The form that ran is
+`MSYS_NO_PATHCONV=1 wsl.exe bash -lc 'bash /mnt/c/.../run_r4.sh'` -- the env var disables the
+conversion outright and the `-lc` string is itself non-path-initial. The failure was LOUD (exit 127
+with a diagnostic), not one of the exit-0 family, and the pre-created empty redirect target
+confirmed no round had happened.
+
+## Round-4 dispositions -- EVERY PREMISE VERIFIED AGAINST THE CODE, NONE FIXED
+
+**This leg holds no authorization for a fifth counted round**, and the brief's section 1 is
+explicit: *"If round 4 finds task-bearing work, STOP and report the full cumulative ledger."* All
+five findings below are therefore **VERIFIED AND UNFIXED**, routed to the orchestrator with the
+smallest correct fix named. Fixing them here would leave the branch in a shape no round has seen,
+which is the state the single-round authorization exists to prevent.
+
+**What round 4 found NO defect in, stated because it is the round's main result:** the production
+invariant this leg was dispatched to build. Codex independently enumerated the operator paths,
+constructed key orderings against the whole-payload property, checked the cash
+`net_amount -> amount` mapping at the gate / SELECT / UPDATE for consistency, and confirmed no
+remaining reference to the deleted resolver. Its words: *"I found no new critical production-code
+defect: the settlement gate, migration, repo mirrors, and production corrector ordering hold on the
+reviewed head."* **All four majors and the one minor are against TESTS, COMMENTS and DOCSTRINGS.**
+
+**A4X-R4-01 -- MAJOR -- NEW GROUND -- the single-field operator path has no discriminating row**
+**PREMISE VERIFIED. NOT FIXED -- no round-5 authorization.** `grep -c operator_alternative
+tests/trades/test_22a4_corrector_refusal.py` returns **0**. This leg added the byte-exact gate at
+`swing/trades/reconciliation_auto_correct.py:2745` (`_handle_single_field_correction`, the path
+`operator_alternative` reaches with an operator-supplied payload) and shipped NO row that fails
+when that call is deleted: with it gone, `_validate_correction_target` and `_read_journal_value`
+interpret a non-canonical key before `_update_journal_field`'s backstop refuses it, and every
+`(m8f)` row still passes. **The gate I added to make "every corrector path" literally true is the
+one path the closure test does not close.** Smallest fix: a parametrized `operator_alternative`
+row spying on `_validate_correction_target` and `_read_journal_value` and asserting neither is
+reached -- zero-write assertions alone do not discriminate this mutant, because no write precedes
+the backstop on that path.
+
+**A4X-R4-02 -- MAJOR -- NEW GROUND -- `Attempt_Id` was dropped in the (m8e) supersession**
+**PREMISE VERIFIED. NOT FIXED -- no round-5 authorization.** The deleted `(m8e)` rows covered
+`ATTEMPT_ID`, `Attempt_Id`, `[attempt_id]` and `"attempt_id"`; `_NON_CANONICAL_SPELLINGS` carries
+six members and `Attempt_Id` is not among them. **The supersession note I wrote NAMES `Attempt_Id`
+among what the deleted rows covered and then says they are "not relaxed" -- a false claim in
+normative position, in the very comment written to record that nothing was lost.** Production is
+correct (Codex executed the gate against `Attempt_Id` and it refuses), so this is a coverage
+regression, not a bypass. Smallest fix: add `"Attempt_Id"` to the tuple; both parametrized surfaces
+then cover it. This is the hand-enumerated-roster class arriving inside the commit that DELETED a
+hand-enumeration for being one.
+
+**A4X-R4-03 -- MINOR -- NEW GROUND -- the `affected_table` provenance comment omits one route**
+**PREMISE VERIFIED. NOT FIXED.** `swing/trades/reconciliation_auto_correct.py:416-417` states
+`affected_table` "comes from `_resolve_affected_target`, whose output is one of four module
+constants" -- the injection-safety proof for the interpolated `PRAGMA table_info({affected_table})`.
+On tier 3 it comes from `_select_correction_row` -> `get_correction` instead. The code is still
+safe: `swing/data/migrations/0019_*.sql:48-50` CHECK-constrains
+`reconciliation_corrections.affected_table` to the same four literals (VERIFIED by reading the
+migration, per the cited-constraint rule). But **this leg made that comment more load-bearing** --
+`2eebfbee` newly calls the gate from the tier-3 head, which is exactly the route the proof omits.
+Smallest fix: name both sources.
+
+**A4X-R4-04 -- MAJOR -- NEW GROUND -- the TEST twin of the defect `d34e1493` just fixed**
+**PREMISE VERIFIED. NOT FIXED.** `tests/data/test_migration_0038_attempt_identity.py:150-151`
+docstrings `test_m3a_the_gate_fires_only_on_the_exact_37_to_38_crossing` with *"STRICT EQUALITY on
+pre_version per the ``pre_version == target - 1`` gotcha"* -- and the same test then asserts, at
+lines 177-180 and with a comment explaining why, that the gate FIRES at
+`current_version=37, target_version=39`, where that equation is false. **`d34e1493` fixed one
+instance of this class and I did not re-grep the artifact for the rest** -- the
+state-the-class-then-sweep discipline, missed on the commit that stated the class. Smallest fix:
+the same rewrite, in the test docstring.
+
+**A4X-R4-05 -- MAJOR -- NEW GROUND -- a window-1 test docstring calls the superseded shape "today's"**
+**PREMISE VERIFIED. NOT FIXED -- and NOT this leg's code.**
+`tests/trades/test_22a4_clause2_settlement.py:2148` reads *"THE NAIVE SUBSTITUTE IS TODAY'S SHIPPED
+CODE"*, which was true when `dd714d4c` wrote it and was falsified by `4589c2f9` in the same leg:
+`swing/trades/entry.py:1054-1055` now assigns `proven = found` then `return proven`, and `:1070`
+returns it from the containment arm. The same paragraph already names `b3b518f9` as the measured
+pre-fix shape, so the docstring contradicts itself. Smallest fix: *"the pre-fix `b3b518f9` shape."*
+
+## THE LOOP IS STOPPED AT ROUND 4. THIS IS NOT CONVERGENCE.
+
+Four counted rounds have run; **all four returned `NEW_CRITICAL_MAJOR_FOUND`.** The authorization
+covered exactly one further round and said a fifth needs a fresh one naming its own task-bearing
+finding. `A4X-R4-01`, `-02`, `-04` and `-05` are task-bearing (each changes a TEST or a docstring
+that is load-bearing authority); `-03` is an instrument finding. None was fixed.
+
+**What that leaves outstanding, stated plainly rather than softened:**
+
+* Five findings VERIFIED and UNFIXED. Three of them (`-01`, `-02`, `-03`) are against this leg's
+  own two commits; two (`-04`, `-05`) are older and were reached only because this round saw four
+  previously-unreviewed commits.
+* **The production change this leg was dispatched to make survived the round.** Zero critical and
+  zero major findings against `swing/`.
+
+## Round ledger -- EXECUTING loop (cumulative)
+
+| round | tier / model / effort | C / MAJ / MIN | new | reopened | reverted | verdict |
+|---|---|---|---|---|---|---|
+| **1** | `strong` / `gpt-5.6-sol` / `high` | 1 / 4 / 5 | 10 (**10 new ground, 0 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **2** | `strong` / `gpt-5.6-sol` / `high` | 1 / 1 / 4 | 6 (**3 new ground, 3 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **STOP** | *(loop STOPPED at a DESIGN FORK, `A4X-R2-01`; RD ruled it 2026-09-08)* | -- | -- | -- | -- | **routed, not convergence** |
+| **3** | `strong` / `gpt-5.6-sol` / `high` | 0 / 3 / 1 | 4 (**4 new ground, 0 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **STOP** | *(three counted rounds is the default; a fourth needs written authorization naming the task-bearing finding, and it was not held)* | -- | -- | -- | -- | **A STOPPED-SHORT LOOP, reported as one. NOT convergence.** |
+| **4** | `strong` / `gpt-5.6-sol` / `high` | 0 / 4 / 1 | 5 (**5 new ground, 0 residual**) | 0 | 0 | `NEW_CRITICAL_MAJOR_FOUND` |
+| **STOP** | *(the authorization covered ONE round; a fifth needs a fresh one naming its own task-bearing finding, and this cell does not hold one)* | -- | -- | -- | -- | **STOPPED SHORT AGAIN. NOT convergence.** |
+
+**Context-depth column: DELIBERATELY EMPTY.** A cell cannot see its own depth (no hook fires for a
+subagent), so a self-estimate there is not a record; the orchestrator fills it from
+`python scripts/cell_depth.py --live <h>`.
+
+## Transcript manifest -- EXECUTING loop (through round 4)
+
+Durable path: `C:/Users/rwsmy/swing-data/review-transcripts/22-a4-exec/` (dotfiles -- use `ls -a`).
+Copied THE MOMENT the five assertions passed, per `harness-architecture.md` section 5.1.
+
+| transcript | bytes |
+|---|---|
+| `.codex-review-r1.txt` | 1,550,758 |
+| `.codex-review-r2.txt` | 1,869,407 |
+| `.codex-review-r3.txt` | 1,683,792 |
+| `.codex-review-r4.txt` | 1,635,869 |
+| `.codex-prompt-r1.md` | 10,760 |
+| `.codex-prompt-r2.md` | 13,678 |
+| `.codex-prompt-r3.md` | 18,580 |
+| `.codex-prompt-r4.md` | 22,606 |
+| `.codex-exit-r3.txt` / `.codex-exit-r4.txt` | 2 / 2 |
+| `run_r3.sh` / `run_r4.sh` (the runners, with their hazards commented) | 1,266 / 1,269 |
+| `fullsuite-prereview-r4.txt` (the pre-round-4 full-suite tail) | -- |
+
+**SPEND, all four counted rounds: 441,127 + 590,318 + 513,003 + 604,767 = 2,149,215 tokens.**
+
+---
+
+## THE 2026-09-08 R4 RESIDUALS LEG -- **NOT A ROUND. NO CODEX RAN.**
+
+Dispatched off `docs/22-a4-r4-residuals-leg-dispatch-brief.md` at base `8990f81f`. Round 4 cleared
+production (zero critical, zero major against `swing/`); every finding it returned was against a
+TEST, a comment, or a docstring. This leg closes those four findings and runs the uncounted
+self-sweep §2 names, under the same discipline as the 2026-09-07 settling sweep: no round number, no
+effect on convergence, which remains four counted rounds, none converged, loop stopped short.
+
+### Disposition of the four round-4 findings -- 4 FIXED, 0 routed, 1 (`A4X-R4-03`, MINOR, out of
+### this leg's authorized scope per the brief) left for the orchestrator
+
+| finding | sev | disposition | commit |
+|---|---|---|---|
+| `A4X-R4-01` | MAJOR | **FIXED** | `0df336c2` -- a parametrized `operator_alternative` row (7 spellings) spies on `_validate_correction_target` / `_read_journal_value` and asserts neither is called; RED verified against `:2745` deleted (all 6 pre-existing spellings failed on `validate_spy.call_count == 1`), GREEN restored |
+| `A4X-R4-02` | MAJOR | **FIXED** | `2782c5c0` -- `"Attempt_Id"` added to `_NON_CANONICAL_SPELLINGS` (now 7 members, read-counted); the SIX->SEVEN count corrected to match |
+| `A4X-R4-04` | MAJOR | **FIXED** | `5fdd2e10` -- the test docstring now cites `current_version == 37 AND target_version >= 38`, matching `d34e1493`'s production-side wording exactly; test body unchanged |
+| `A4X-R4-05` | MAJOR | **FIXED** | `25af3b53` -- the docstring now names the pre-fix `b3b518f9` shape instead of claiming "today's shipped code"; comment-only, `(k7a)`/`(k7b)` and every assertion unchanged |
+| `A4X-R4-03` | MINOR | **NOT IN THIS LEG'S BRIEF** | the brief's four premises (`A4X-R4-01`, `-02`, `-04`, `-05`) did not include `A4X-R4-03` (the `affected_table` provenance comment omitting the tier-3 route); it remains open at round 4's own disposition and is the orchestrator's to route |
+
+### THE UNCOUNTED SELF-SWEEP -- `SS-N` ids, no round number, no effect on convergence
+
+Searched the arc's own artifacts (`swing/trades/reconciliation_auto_correct.py`,
+`swing/trades/entry.py`, `swing/data/db.py`, `tests/trades/test_22a4_*.py`,
+`tests/data/test_migration_0038_*.py`, this ledger) per class. Every hit found was one of the four
+findings already fixed above; no additional instance surfaced in any class.
+
+- **`SS-1` -- falsified naive-substitute / "today's shipped code" claims.** Grepped for
+  `today'?s (shipped|code|implementation)`, `currently (does|is|ships)`, `the shipped
+  (code|shape|implementation)`, `NAIVE SUBSTITUTE`, and bare `today` across all five artifacts.
+  ONE hit: `A4X-R4-05` (fixed above). Every other bare-`today` occurrence (`entry.py:689,761,825,
+  938,1463,2093`; `test_22a4_attempt_identity.py:720`; `test_22a4_clause2_settlement.py:1992`;
+  `test_22a4_corrector_refusal.py:6`) was read in context and is either (a) a self-referential design
+  tautology ("refusing costs today's behaviour" -- describing the COST of a design choice, not a
+  claim a later commit could falsify) or (b) explicitly historical, scoped to the pre-fix world
+  (`test_22a4_corrector_refusal.py`'s module docstring: "Pre-fix for every row here is the RED the
+  plan declares"). `git blame` confirmed none of the `entry.py` sites sit inside code the window-1/
+  window-2/`A4X-R3-03` fixes (`4589c2f9`, `f7d78737`, `fa6f0674`, `2eebfbee`) touched after the
+  comment was written; the other four `entry.py` "naive substitute" paragraphs (`:2286`, `:2408`,
+  `:2499`) name a counterfactual or an explicitly-superseded shape, never "today's", so they carry no
+  exposure to this class. NIL beyond the one already-fixed instance.
+- **`SS-2` -- coverage claims that outlived their coverage** (`not relaxed`, `still covered`,
+  `superseded by replacement`, `each of N`, `covers all/every`). Two hits, both in
+  `test_22a4_corrector_refusal.py` (`:441` "not relaxed", `:451` "covers all SIX") and both were
+  `A4X-R4-02`'s own text -- fixed by the same commit that added `"Attempt_Id"` to the roster: "not
+  relaxed" is now literally true (the (m8f) roster is a strict superset of (m8e)'s four), and the
+  SIX->SEVEN correction was verified by a Python read of the tuple (7 members), not a grep. NIL
+  further hits, including in `swing/trades/reconciliation_auto_correct.py`'s own "third of the four
+  corrector paths" comment (`:2742`, production, unchanged) and this leg's own new (m8g) comment
+  block, both re-read against the code and confirmed accurate.
+- **`SS-3` -- totality claims with no discriminating row** (`every path`, `all call sites`, `no
+  spelling survives`). Three candidate hits in `entry.py` (`:243` "every call site is a CLEANUP
+  handler", `:962` "every path that can reach this gate", `:1022` "every path into that arm") --
+  all three are pre-22-A4 (22-A3-era containment idiom, `086c1b6e`/`39104723`) design-rationale prose
+  that is EXPLICITLY hedged against relying on the totality (`:962`'s own text: "it is rejected
+  anyway, because the alternative is a gate whose safety depends on an exhaustiveness argument"), not
+  a bare closure claim this leg's own residuals could have introduced -- routed nowhere, since none
+  is false. This leg's OWN new totality claim ("deleting it still leaves every (m8f) row passing",
+  `test_22a4_corrector_refusal.py:649`) was VERIFIED BY EXECUTION rather than left as prose: with
+  `:2745` deleted, the full file reads 24 passed / 7 failed, and the 7 failures are exactly the seven
+  parametrized (m8g) rows -- every (m8a)-(m8f) row still passes, confirming the claim precisely.
+- **`SS-4` -- rule citations that disagree with the code beside them.** ONE hit:
+  `A4X-R4-04` (fixed above). The other 19 `pre_version == (target - 1)` occurrences in
+  `swing/data/db.py` (READ-counted via `grep -c`, matching the brief's own "the other 19" exactly)
+  are explicitly out of scope per CHARC's ruling in the brief's §1 -- not touched. Every other
+  `gotcha` citation in the four artifacts (`entry.py` gotcha #30/#31/#11 references,
+  `test_migration_0038_attempt_identity.py:406`'s gotcha #11 equality claim) was spot-read against
+  the code beside it and found consistent (the `#11` equality claim: `assert cols - fields ==
+  {...}`, confirmed exact equality, not a superset form).
+
+**Fixed inside the arc's own artifacts: all four §1 findings. Routed outside: `A4X-R4-03` (not in
+this leg's brief; MINOR; round 4's own disposition stands). Nothing from the self-sweep required a
+fix beyond the four already made.** No Codex round ran. Convergence state UNCHANGED: four counted
+rounds, all `NEW_CRITICAL_MAJOR_FOUND`, loop stopped short.
+
+### Gates
+
+Four commits, `0df336c2..25af3b53`. All trailers empty (`git log 8990f81f..HEAD --format='%H%n
+%(trailers)'`). Two files touched under `swing/trades/reconciliation_auto_correct.py` /
+`swing/trades/entry.py` / `swing/data/db.py`: **ZERO** -- every change lands in
+`tests/trades/test_22a4_corrector_refusal.py`, `tests/data/test_migration_0038_attempt_identity.py`
+and `tests/trades/test_22a4_clause2_settlement.py`. No production behaviour change in this leg.
+
+---
+
+## REVIEWER B -- `codex-auto-review`, THE STANDING SECOND EYE. IT RAN, AND IT DID NOT RETURN CLEAN.
+
+**Run by the ORCHESTRATOR, not by the author** (`harness-architecture.md` §5.1, operator-ruled
+2026-08-11): B's entire value is a DIFFERENT perspective, which erodes when the author chooses its
+prompt, its input set and the adjudication of its findings. Required on any production-code arc by
+charter §2.9. **The precondition CHARC set on 2026-09-08 is met in all five of its parts** and each
+part is measured below.
+
+**Tree reviewed:** `84e90bab` (branch `22-a4-exec`), tree clean at review time.
+**Date:** 2026-09-08.
+
+### The invocation, and the hazard it caught live
+
+The COLD-AUDIT form per recipe §3 -- `codex exec -p strong -s read-only --skip-git-repo-check -`,
+cwd the worktree so Codex reads the repo itself. `codex exec review` is not usable from a worktree
+on this box and there is no flag around it.
+
+**The transport was PROBED at dispatch rather than inherited, and the probe caught a live failure:**
+the harness expanded `$PATH` inside `wsl.exe bash -lc '...'` before WSL ever saw it, producing the
+Windows PATH and a syntax error on an unquoted paren. This is the documented `$VAR`-expansion hazard
+-- the one that once rewrote `echo $?` to `echo 0` and produced a green detector over a missing
+transcript. Everything therefore ran from an LF-verified script file with LITERAL paths only,
+non-PATH-initial invocation, relative redirect targets, and both output files pre-created
+Windows-side. Runner preserved at `run_b_22a4.sh` beside the transcript.
+
+Liveness proved by `codex-cli 0.152.1` resolving to `/home/rwsmythe/.local/node22/bin/codex` -- the
+native binary, not the dead Windows npm shim.
+
+### The five mechanical assertions -- ALL PASS, stated as measurements
+
+| # | assertion | measured |
+|---|---|---|
+| 1 | banner model is the binding tier | `model: gpt-5.6-sol` -- the same model the A rounds carry |
+| 2 | reasoning effort | `reasoning effort: high` |
+| 3 | `grep -c '^ERROR'` | **0** (unanchored `grep -c 'ERROR'` reads **18** -- exactly the repo-prose false positive the anchor exists to defeat, on a cold audit that reads this repo) |
+| 4 | `grep -c '^tokens used'` | **1** -- the file is complete, not mid-write |
+| 5 | exactly one distinct anchored verdict token | `^NEW_CRITICAL_MAJOR_FOUND` = **2** (codex-cli 0.152.1 emits the final message twice), `^NO_NEW_CRITICAL_MAJOR` = **0** |
+
+Belt-and-braces beyond the five: the process was confirmed EXITED before the transcript was read
+(exit file polled, never the transcript -- a file that currently ends well can be mid-write), and the
+redirect target was verified non-empty (1,832,058 bytes / 23,377 lines). Exit code was 0, which is
+**not** evidence and is recorded only because both signals must agree.
+
+**VERDICT: `NEW_CRITICAL_MAJOR_FOUND`.** B is not required to return clean; it is required to have
+RUN on the merge tree. It ran, and it found something four counted A rounds did not.
+
+### The contamination control, stated plainly
+
+The recipe mandates repo read-access AND keeps `.copowers-findings.md` plus the `.codex-*`
+transcripts at the worktree root -- which puts the review's own scratch inside the review's input.
+All 13 A-loop files were RELOCATED out of the tree for the duration of B's pass and RESTORED
+afterwards; nothing was deleted and the durable copies were never at risk. **Verified after the
+fact:** B's transcript contains no read of any relocated file (the `.copowers-findings.md` string
+appears only inside `CLAUDE.md` / `orchestrator-context.md` prose Codex read, FIVE times, never as a
+path it opened).
+
+The COMMITTED ledger (this file) stayed in the tree, because it merges. The prompt named it and
+required B to say so explicitly if it restated a ledger finding. **B honoured that** -- it
+distinguished its finding 1 from `A4X-R4-01` on the merits and its finding 4 from `A4-R7-12`,
+naming both and saying why each is a different fact.
+
+### CLAIMS FIRST -- B's first task, before any code-level lens
+
+Nine of the arc's own top-level claims, measured end-to-end. **Six HOLD, three FAIL.**
+
+| claim | B's result |
+|---|---|
+| 1 co-durability by construction | HOLDS -- one INSERT, no follow-up identity UPDATE |
+| 2 unique per attempt by mechanism | HOLDS under the ruled definition -- one mint, no reissue path |
+| 3 the probe sees only committed state | **FAILS in one required part** -- see finding 3 |
+| 4 the settle identifies OUR attempt | FAILS only as an ABSOLUTE claim; this is declared limitation S7.7, and B challenged its reason and found it SOUND. Not a new finding. |
+| 5 the apparatus cannot fail an entry | HOLDS |
+| 6 the alarm still fires when it should | HOLDS -- bare `raise`, original object preserved |
+| 7 the corrector refuses `attempt_id` on every operator surface | **FAILS** -- see finding 1 |
+| 8 the envelope holds | HOLDS on non-git evidence |
+| 9 the version-mirror family is complete | FAILS broadly; the 37->38 transition itself is CORRECT, and B confirms no deliberately-pinned 37 was moved. See finding 4. |
+
+### The four findings, and the orchestrator's adjudication
+
+**`B-1` -- MAJOR, `[INTRODUCED]`, IN ENVELOPE. `operator_alternative` does not refuse a trailing
+`attempt_id`. CONFIRMED BY EXECUTION AT QA, BY MY OWN HANDS.**
+
+`_handle_operator_alternative` passes the WHOLE operator payload to
+`_handle_single_field_correction`, which selects `field_name = next(iter(correction_target.keys()))`
+and passes **only that one key** to the guard inside `_update_journal_field`. The whole-payload
+refusal `_preflight_reserved_transitions` is called from **exactly one** production site --
+`_handle_multi_field_correction` -- measured by an AST walk over the call graph, not a grep:
+
+```
+_refuse_immutable_journal_fields called at :501  inside _preflight_reserved_transitions()
+                                       :1829 inside _apply_tier3_override_inner()
+                                       :2285 inside _update_journal_field()
+_preflight_reserved_transitions  called at :2884 inside _handle_multi_field_correction()
+```
+
+So `("validator_rejected", "operator_alternative")` -- a real, routed production choice -- reaches
+the guard with one field, and a second key is discarded before the guard ever sees it.
+
+**I did not accept the read. I reproduced it**, on a `tmp_path` database built by the real migration
+runner through 0038, through `apply_tier2_resolution`:
+
+- payload `{"current_stop": 4.5, "attempt_id": <other token>}` -> **NO `ImmutableJournalFieldError`
+  at all.** Returned `CorrectionResult(correction_id=1, field_name='current_stop',
+  applied_value_json='{"current_stop": 4.5}')`, wrote `current_stop=4.5`, left the token untouched,
+  and **terminalized the discrepancy as `operator_resolved_ambiguity`.**
+- the SAME payload with the keys in the other order -> the guard fires correctly.
+
+**The defect is key-order dependent, which is precisely the property (m8b) is named for.** (m8b)
+exercises `choice_code="operator_truth"` -- the multi-field route, which does carry the whole-payload
+preflight. No row in the roster puts a two-key payload through `operator_alternative`. The tests are
+not wrong about what they assert; the roster has a hole where a fourth surface should be.
+
+**This falsifies claim 7, and claim 7 is CHARC's attached condition -- the sole ground on which the
+envelope was widened to include this module.** `authorize-then-abort` is not fully closed: on this
+surface the operator's `attempt_id` is not refused, not applied, and not reported -- it is silently
+dropped, which is a third outcome neither the condition nor the trigger anticipated.
+
+*Remedy (NOT applied -- this is the gate's to rule):* apply `_refuse_immutable_journal_fields` to the
+COMPLETE payload in `_handle_single_field_correction` before the `next(iter(...))` selection, with
+discriminating rows in BOTH key orders on the `operator_alternative` route.
+
+**`B-2` -- MAJOR, `[PRE-EXISTING]`, `[OUT-OF-ENVELOPE]`. `_handle_single_field_correction` silently
+discards every payload field after the first.** The enabling condition for `B-1`, and wider than it:
+`{"current_stop": 4.5, "state": "closed"}` applies the stop, ignores the state, audits only the
+stop, and terminalizes the discrepancy. Both operator surfaces (CLI and web) accept arbitrary
+mappings with no one-key restriction. B verified this by execution; my own `B-1` reproduction
+exhibits the same mechanism. **This predates the arc and the arc does not worsen it** -- the
+`next(iter(...))` selection is untouched by 22-A4. **Disposition: BANKED to the debt register, not
+fixed here.** Fixing it is a corrector-semantics change (reject >1 key, or implement true
+multi-field application) well outside a bounded typed-refusal condition.
+
+**`B-3` -- MINOR, `[INTRODUCED]`, IN ENVELOPE. The probe's URI omits `cache=private`, and test (h)
+cannot see the property it is named for.** `_durability_probe` opens
+`Path(db_path).resolve().as_uri() + "?mode=rw"` (`entry.py:906`). The docstring argues the
+construction-time precondition is "pinned by test (h)"; (h) asserts only
+`PRAGMA read_uncommitted == 0` -- and its own failure message reads *"the probe connection is
+shared-cache readable"*, a property that assertion does not measure. `read_uncommitted` only has
+effect under shared cache, so a 0 reading is consistent with sharing one. B demonstrated the gap
+against the SQLite C API directly. **This is an S7-invited hit on a STATED REASON, not a re-raise of
+a declared limitation.**
+
+**Measured reachability, so the severity is not a guess:** shared-cache mode is enabled NOWHERE in
+this repository (`grep -rn "cache=shared|enable_shared_cache"` over `swing/`, `tests/`, `scripts/`:
+zero enablers; the single textual hit is an unrelated OHLCV test's NAME). It requires a third party
+to turn it on process-wide. MINOR stands. The remedy is one URI parameter -- `?mode=rw&cache=private`
+-- turning an argument into a construction-time guarantee, plus tightening (h) or its message.
+
+**`B-4` -- MINOR, `[PRE-EXISTING]`. Stale HEAD-version comments, failure messages and semantic names**
+(`_is_21` asserting 38 while its message says 23; seven further files labelled 19-28). **The
+executable 37->38 mirrors are CORRECT and B confirms no deliberately-pinned 37 was moved** -- this is
+the naming layer only. **Disposition: ALREADY BANKED and OWNED** -- it is the version-mirror rename
+rider in `docs/phase3e-todo.md`, whose trigger is explicitly AFTER this merge, under the CHARC ruling
+of 2026-09-07 that naming and versioning are two changes and must not land in one commit. B
+independently rediscovered a queued item; no action, and the rider's trigger is unchanged.
+
+### What B changes about the arc's state
+
+**Nothing merges on this section's authority.** `B-1` is a task-bearing MAJOR against production
+code, in envelope, falsifying a claim a director attached as a condition. **It needs a fix leg and a
+director disposition, and a fifth counted round -- if one is wanted -- needs the orchestrator's
+fresh written authorization naming `B-1`; none is granted here.**
+
+The instruments held, and they held in the direction the split was designed for: four counted A
+rounds and a director ruling passed over this module, and the SECOND EYE found the third path's hole
+because it did the one thing the roster never does -- hand `operator_alternative` a payload with two
+keys. That is the 18-H.4 disjoint-finding-set pattern at N+1, and it is the reason B is run by
+different hands.
+
+### Transcript manifest -- Reviewer B
+
+| artifact | bytes | durable path |
+|---|---|---|
+| `.reviewer-b-out.txt` | 1,832,058 | `~/swing-data/review-transcripts/22-a4-exec/` |
+| `.reviewer-b-exit.txt` | 2 | same |
+| `REVIEWER-B-prompt-22a4.md` | 11,331 | same |
+| `run_b_22a4.sh` | 1,520 | same |
+
+Copied the moment assertion 5 passed, per the copy-per-round rule -- not at report time, not at
+teardown.
+
+
+---
+
+## CHARC'S RULING ON `B-1` -- **AUTHOR: CHARC. TRANSCRIBED BY THE ORCHESTRATOR AS COURIER ONLY.**
+
+**This is a LITERAL BLOCK QUOTE**, built mechanically from the message file on disk
+(`comms/orchestrator/read/20260908T172104Z-charc-charc-rules-b-1-fix-in-envelope-no-fifth.md`,
+posted 2026-09-08T17:21:04Z, thread `22-a4-reviewer-b`, type `fyi`). It is not re-set and not
+paraphrased. `comms/` is gitignored, so a ruling that lives only there decays in FINDABILITY with
+every ack -- the ledger is the record, the mailbox was only the transport
+(`orchestrator-context.md` posting rule 4, 2026-09-08).
+
+**RD is CC on `B-1` and holds. `B-3` is RD's item and CHARC says nothing on it; that disposition is
+still OUTSTANDING at the time of this transcription.**
+
+**The ruling does NOT dispatch the fix leg.** CHARC names it "operator-directed dispatch" and states
+the spend is the operator's to approve. Nothing is dispatched on this transcription.
+
+> CHARC RULING on B-1 (the item that names my seat). RD is CC and holds on this item; B-3 is RD's and I say nothing on it. Fresh CHARC generation (first mail after bootstrap), 2026-09-08.
+>
+> == VERIFIED BEFORE RULING, METHOD STATED ==
+> I did not rule off the report. On the worktree at c5991941 I read `_handle_single_field_correction` (reconciliation_auto_correct.py:2716) and ran an AST walk over every call to `_refuse_immutable_journal_fields`, naming the enclosing function of each site:
+> - :501 inside `_preflight_reserved_transitions`, whose ONLY caller is `_handle_multi_field_correction` (:2884);
+> - :1829 inside `_apply_tier3_override_inner` (tier 3);
+> - :2285 inside `_update_journal_field`, over `(field_name,)` -- ONE key.
+> The single-field handler selects `field_name = next(iter(correction_target.keys()))` at :2741, runs `_assert_real_column_names` over the WHOLE payload at :2754 (the R3-03 hoist), and never runs the immutable refusal over anything but the selected key. Finding confirmed by read; the orchestrator's key-order reproduction is consistent with it and I did not re-run it.
+>
+> == RULING 1: INTRODUCED, IN ENVELOPE, and the fix STAYS INSIDE the widening I authorized ==
+> The condition that widened the envelope by exactly this module was: the corrector's typed refusal SHIPS on every operator surface (S8.6 not banked). B-1 is that condition unmet on one of the three operator-reachable paths. Completing the condition is not a new widening; it is the widening's own content. And the fix's shape already exists in the SAME FUNCTION for the OTHER gate: the R3-03 leg hoisted the byte-exact gate to whole-payload on this path and left the immutable gate at first-key. Two gates in one function deciding over two different populations is the defect; the fix makes them agree.
+>
+> PRESCRIBED SHAPE (bounded, so it cannot become B-2's fix):
+> (a) In `_handle_single_field_correction`, call `_refuse_immutable_journal_fields(affected_table, correction_target.keys())` over the COMPLETE payload, immediately AFTER `_assert_real_column_names` (byte-exact first, per R3-03) and BEFORE the `next(iter(...))` selection. Same ordering as the two existing whole-payload sites.
+> (b) Discriminating rows on the routed choice ("validator_rejected", "operator_alternative") through `apply_tier2_resolution`, in BOTH key orders: {current_stop, attempt_id} and {attempt_id, current_stop}. Each asserts the typed `ImmutableJournalFieldError` AND zero writes -- no correction row, `current_stop` unchanged, the token unchanged, the discrepancy NOT terminalized. The closure-test shape R3-03 used; a refusal test that checks only the exception would have passed over the persisted writes last time.
+> (c) The trailing-key row must be shown RED against the pre-fix tree (it reproduces today, so this is a one-line witness, not an argument).
+> (d) NOTHING ELSE on this function. In particular the fix must NOT reject >1 key or otherwise change what happens to a non-immutable extra key -- that is B-2, pre-existing, banked, out of envelope. A fix that closes B-1 by closing B-2 has widened the arc; refuse it at QA.
+> (e) LOCK-A untouched by construction: the fix is in reconciliation_auto_correct.py, not entry.py. Re-measure anyway at the gate; I will.
+>
+> == RULING 2: NO FIFTH COUNTED A ROUND. B RE-RUNS ON THE POST-FIX TREE. (The spend is the operator's to approve; this is my recommendation.) ==
+> Why no A round: round 4 stopped short and CLEARED PRODUCTION; it never converged, so there is no convergence to re-attach. The fix is one call in one function, mirroring a gate two lines above it, with its own both-orders closure test and the full fast suite. Buying a ~500K-token prose round to re-read a hoist the ladder has already reviewed twice is the treadmill section 5.1 names.
+> Why B must re-run regardless: a clearance attaches to the tree the gate-holder verified, and anything touching code or tests re-opens the gate. The post-fix tree is not the tree B audited. B ran on 84e90bab; the merge tree will differ in code; B must have RUN on the tree being merged. Same form, same five assertions, same durable path, cold-audit from the worktree. It need not return clean; every finding dispositioned introduced-vs-banked. If the B re-run returns a NEW in-envelope introduced major, that is the moment to reconsider a counted A round -- not before.
+>
+> == B-2 (no ruling sought; register is mine) ==
+> Banked. I will write the D-row when the operator directs file edits this generation; content as B stated it: silent discard of every payload field after the first on BOTH operator surfaces, pre-existing, the enabling condition of B-1 and wider than it. Its fix is corrector-semantics (one-key restriction or true multi-field), its own item, not this arc's.
+>
+> == SEQUENCE AS I NOW HOLD IT ==
+> B-1 fix leg (cell, TDD per (a)-(e), operator-directed dispatch) -> full fast suite on the head -> B RE-RUN on that head -> the b3b518f9 trailer reword -> the operator's -n auto merged-head run -> merge request -> both director gates -> S9 step 0 -> the witnessed 0038 migration. RD's B-3 disposition (before merge or banked) slots into the fix leg if RD rules it in; that is RD's call and I do not pre-empt it.
+>
+> Register material accepted from the outgoing orchestrator's handoff: "a name survives a handoff more easily than the definition that governs it." Queued with the owed rows.
+>
+> -- CHARC
+
+### The orchestrator's reading of what this binds
+
+- The `B-1` fix is **IN ENVELOPE** -- completing the condition is the widening's own content, not a
+  new widening. Shape prescribed in five parts (a)-(e), and **(d) is a REFUSAL I must enforce at QA**:
+  a fix that closes `B-1` by closing `B-2` has widened the arc.
+- **NO fifth counted A round.** Round 4 stopped short and cleared production, so there is no
+  convergence to re-attach.
+- **B RE-RUNS on the post-fix tree.** A clearance attaches to the tree its holder verified; the merge
+  tree will differ in code from `84e90bab`, which is the tree B audited. Same form, same five
+  assertions, same durable path. A NEW in-envelope introduced major from the re-run is the moment to
+  reconsider a counted A round -- not before.
+- **`B-2` banked** to CHARC's register, content as stated. **`B-4`** unchanged (the queued rename
+  rider, trigger after merge).
+
+---
+
+## RD'S RULING ON `B-3` -- **AUTHOR: RD. TRANSCRIBED BY THE ORCHESTRATOR AS COURIER ONLY.**
+
+**LITERAL BLOCK QUOTE**, built mechanically from the message file on disk
+(`comms/orchestrator/read/20260908T172247Z-rd-rd-rules-b-3-cache-private-before-merge.md`, posted
+2026-09-08T17:22:47Z, type `fyi`), front matter stripped and each line prefixed. Not re-set, not
+paraphrased. Same treatment and same reason as CHARC's `B-1` ruling above.
+
+**Both director items on Reviewer B are now RULED.** `B-1` -- CHARC, above. `B-3` -- RD, here. RD
+concurs with `B-1` and says nothing on it; CHARC said nothing on `B-3`. One ruler per item, honoured
+on both sides.
+
+> RD RULING on B-3 (the item that names my seat; constraint 3 is mine). CHARC's B-1 ruling landed 17:21Z; I concur and say nothing on it. Fresh RD generation, 2026-09-08.
+>
+> == VERIFIED BEFORE RULING, METHOD STATED ==
+> Read on the reviewed tree via `git show 84e90bab:` (never cd): `_durability_probe` opens `Path(...).as_uri() + "?mode=rw"` -- no cache parameter; its docstring says the construction-time precondition "is pinned by test (h)"; test (h) is headed "THE PROBE CONNECTION IS NOT SHARED-CACHE" and its only assertion is `PRAGMA read_uncommitted == 0` (tests/trades/test_22a4_attempt_identity.py:812-840). B's reading of all three is correct.
+> Enabler absence: `git grep -iE "cache=shared|enable_shared_cache|SHAREDCACHE|cache=private"` over swing/ tests/ scripts/ = ZERO hits on 84e90bab AND on main. That is a token grep and bounds from below; it is corroborated by execution below, which is why the ruling does not rest on it.
+> Executed on this box (Python 3.14.2 / SQLite 3.50.4, script in my scratchpad, deleted after): (1) `sqlite3.enable_shared_cache` DOES NOT EXIST on this runtime (removed in 3.12) -- from Python, shared cache is reachable only per-connection via `cache=shared`, so a C extension calling `sqlite3_enable_shared_cache` is the only path that could flip the probe's default; (2) `?mode=rw&cache=private` opens, reads, `read_uncommitted` = 0; (3) a `cache=shared` writer holding an uncommitted BEGIN IMMEDIATE insert is INVISIBLE to a `cache=private` reader on the same file (count 0). So the parameter delivers the property by mechanism, and it composes with the existing `mode=rw`.
+>
+> == RULING: FIX BEFORE MERGE, IN THE B-1 FIX LEG, MINOR SCOPE ==
+> Reason 1 (the one that decides it): constraint 3 is the DURABLE-VISIBILITY READ of the evidence rule -- a fresh connection that sees only committed state. On the tree today that property holds by WRITER-ABSENCE ("nothing in this repo enables shared cache"), which is a claim with a shelf life, exactly the class I banked against myself on notes-writability: true today, rotting silently the moment a dependency or C extension flips the process default. `cache=private` converts it into a construction-time guarantee at the cost of nine characters. Admissibility machinery does not get to rest on writer-absence when a mechanism is one parameter away.
+> Reason 2: the docstring and the test HEADER both assert a pin that the assertion does not measure. That is a stated reason in normative voice claiming coverage it lacks -- the version-mirror/`_is_head` class one rung down: the NAME of the test is a claim, and the claim is false. Banking it would merge a false pin carrying a reviewed-at certification (the partial-cleanup-launders class). The correction is cheaper than the register row.
+> Severity: MINOR STANDS as B graded it -- reachability measured (item 1 above), and the direction is not a false success: the ruling does not depend on how the CURRENT code behaves under shared cache, because the fix removes the case; I make no claim about SQLITE_LOCKED-vs-read there and want none written.
+>
+> == PRESCRIBED SHAPE (bounded) ==
+> (a) `_durability_probe`: URI becomes `... + "?mode=rw&cache=private"`. Nothing else in the function. LOCK-A: this touches `_durability_probe`, one of the three AST-locked functions -- so the lock's baseline moves by exactly this one string literal and the gate re-measures against the NEW segment hash, stated in the ledger with the old and new sha256 side by side. That is a deliberate, named lock move, not an untouched claim; CHARC re-measures at his gate, as he said he would, and so do I.
+> (b) Test (h) is REWRITTEN, not appended: assert the URI passed to `open_connection` carries `cache=private` (spy the call, capture the URI string -- construction-time, the property the header names) and KEEP the `read_uncommitted == 0` scalar as a second, honestly-labelled assertion (what the pragma reads under a private cache). The test's header and name say what it now pins; the failure message stops claiming what it cannot measure.
+> (c) The entry.py docstring paragraph "PRAGMA read_uncommitted IS NOT CHECKED AT RUNTIME..." is corrected by REPLACEMENT: the precondition is a construction-time URI parameter pinned by (h)'s URI assertion; the runtime-branch-is-dead-code argument stays because it is still true.
+> (d) No counted A round on B-3's account (scope-of-change rule: one literal, one test, one docstring). It rides the B-1 fix leg and CHARC's sequence unchanged: fix leg -> full fast suite -> B re-run on the post-fix head -> trailer reword -> operator's -n auto -> merge request -> both gates. My merge gate's check (b) will read the locked functions against the new hash.
+>
+> Flagged, unverified, disposition pre-ruled: whether `open_connection` re-encodes or validates URIs in a way that rejects a second query parameter. The cell verifies at the code; if it does, that is a finding about `open_connection`, not a licence to drop the parameter -- route back.
+>
+> -- RD
+
+### THE LOCK-A BASELINE MOVES -- recorded here because it is a NAMED lock move, not an untouched claim
+
+RD's part (a) changes one string literal inside `_durability_probe`, which is one of the three
+AST-locked functions. **The lock is not broken; its baseline moves by exactly this change, and the
+gate re-measures against the NEW segment hash.** The OLD hash is recorded now, before the fix, so
+the move is auditable in both directions:
+
+| locked function | sha256 of AST source segment at `a32ea9d5` == `84e90bab` | after the `B-3` fix |
+|---|---|---|
+| `_entry_transaction` | `c53b2786e3a7518d5c1341af399eeac9d4d8e16cc615c28d093e631c56240d69` (10,990 chars) | MUST BE UNCHANGED |
+| `_durability_probe` | `c16ea4656c1c2e415beb04f3a04f141719cfc60a793465eb5d9b4e70616c4914` (4,113 chars) | **MOVES -- new hash recorded at the fix, diff must be the URI literal and the docstring paragraph ONLY** |
+| `record_entry` | `5b6aa7466175ff4c91448bf8dbb6f18f19b6a2974e12dfab20d2e1aa41710fb7` (25,939 chars) | MUST BE UNCHANGED |
+
+Measured by the orchestrator at Reviewer B's QA, `a32ea9d5` -> `84e90bab`, all three IDENTICAL --
+against a `git diff --stat` on `entry.py` reading 123 insertions, which is the trap that has already
+caught one reader. **`a32ea9d5` is a MID-ARC commit** (the rounds 1-2 ledger), so "identical to
+`a32ea9d5`" means unchanged since the lock was SET, not untouched by the arc.
+
+### RD's flagged item, answered by the orchestrator BEFORE dispatch rather than at the cell
+
+RD flagged, unverified: whether `open_connection` re-encodes or validates URIs in a way that would
+reject a second query parameter, and pre-ruled the disposition -- if it does, that is a finding about
+`open_connection`, not a licence to drop the parameter, and it routes back. **Verifying a brief's
+premise before commissioning is this seat's own standing obligation** (the #38 pre-commission premise
+check; the round-0 premise census), so it was checked here rather than carried into the dispatch as
+an assumption.
+
+**ANSWER: `open_connection` does NOT re-encode or validate the URI. The premise holds and the fix leg
+is a one-leg dispatch.** Verified two ways. By READ: `swing/data/db.py::open_connection` passes
+`db_path_or_uri` straight into `sqlite3.connect(db_path_or_uri, uri=uri, ...)` and then issues only
+PRAGMAs -- there is no parsing, re-quoting or allowlist anywhere in the function. By EXECUTION,
+through the real function on a real migrated database:
+`open_connection(<file uri> + "?mode=rw&cache=private", uri=True)` opened, `PRAGMA read_uncommitted`
+read 0, and `schema_version` and `trades` were both readable.
+
+**AND THE CAVEAT, STATED RATHER THAN DROPPED, BECAUSE IT IS THE HALF THAT COULD MISLEAD:** the
+negative control I ran alongside it -- a deliberately bogus `?mode=rw&nonsense=1` -- was **ACCEPTED**,
+not rejected. So SQLite ignores unrecognised query parameters here, and **the successful open
+therefore proves only that nothing REJECTS or MANGLES the parameter; it does NOT by itself prove the
+parameter TOOK EFFECT.** What proves the mechanism is RD's own execution in his ruling above (a
+`cache=shared` writer's uncommitted insert measured INVISIBLE to a `cache=private` reader on the same
+file, count 0) -- his measurement, not this seat's, and cited as his. A non-discriminating control is
+reported as non-discriminating; the alternative is a bounded check presented as a total, which is
+this arc's most-repeated failure class.
+
+---
+
+## THE REVIEWER-B FIX LEG -- SHIPPED AND QA'd AGAINST DISK (orchestrator-authored)
+
+**Branch `22-a4-exec`; the leg's two commits are `21d78e07` (`B-1`) and `03e6ecc3` (`B-3`).** Cell
+`implementer-sonnet-high`, dispatched 2026-09-09 off the brief at `b10be35d`. Tree clean, `ruff check
+swing/` clean, both commits' trailers `[]`, four files touched (two production, two test) and no
+others.
+
+**THE RED WAS VERIFIED BY THE ORCHESTRATOR, NOT ACCEPTED FROM THE CELL.** Method: a throwaway
+detached worktree at the pre-fix commit `b10be35d`, the three new tests copied in, run against the
+OLD production code, then torn down (`git worktree remove --force` de-registered it; the directory
+needed a forced delete afterwards -- the usual Windows lock).
+
+| test | pre-fix, measured here | post-fix |
+|---|---|---|
+| `..._refuses_trailing_attempt_id_with_zero_writes` | **FAILED** -- `DID NOT RAISE ImmutableJournalFieldError` | passes |
+| `..._refuses_leading_attempt_id_with_zero_writes` | **PASSED** -- not a discriminator | passes |
+| `test_h_the_probe_opens_with_cache_private_...` | **FAILED** on the `cache=private` assertion | passes |
+
+The leading-key row passing pre-fix is not a defect: `_update_journal_field`'s single-key backstop
+already caught `attempt_id` when it happened to be the selected key, which is the same fact that
+makes `B-1` key-order dependent. It is an order-independence pin, not a second discriminator, and
+**the cell disclosed this itself** rather than presenting two reds.
+
+**BOTH REFUSALS HELD.** `B-2` is untouched -- `field_name = next(iter(correction_target.keys()))` is
+preserved verbatim and merely relocated BELOW the new whole-payload guard, so a multi-key payload
+still discards after the first key exactly as before. Of the three AST-locked functions only
+`_durability_probe` moved.
+
+**Full fast suite, run independently by the orchestrator on `03e6ecc3` (`-n 4`, from the worktree):
+12,310 passed, 13 skipped, 0 failed, exit 0, 848.95s.** Identical to the cell's reported numbers.
+
+### THE ACCUSATION I MADE AGAINST THE CELL, AND ITS WITHDRAWAL
+
+In my QA packet to CHARC (`comms`, 2026-09-09T02:36:14Z) I wrote, of the cell's Lock-A report:
+
+> ALSO FOR THE RECORD, because it bears on how much the cell's own numbers are worth: the cell
+> reported "old hashes measured fresh on my own checkout before either edit and matched the ledger's
+> recorded values exactly, confirming I was diffing from the right baseline." For record_entry that
+> claim cannot be true as stated -- no revision produces that value. [...] it is a claim that did not
+> survive checking, and it is the third instance this arc of a total asserted over a search that was
+> not run.
+
+**WITHDRAWN 2026-09-09, ON THE RECORD, BENEATH ITS OWN QUOTE. THE CELL'S REPORT WAS TRUE AND MY
+INSTRUMENT WAS BROKEN.** CHARC re-measured before ruling and found the cause by execution: my script
+captured the blob with `subprocess.run(..., text=True)` and **no `encoding=`**, so Python decoded it
+as **cp1252**, the Windows default. `record_entry` contains 7 non-ASCII characters (verified here:
+`SECTION-SIGN`, `MULTIPLICATION-SIGN`, `EM-DASH`, `RIGHTWARDS-ARROW`) which under cp1252 become 17
+mojibake characters -- +10 chars, and the hash moves. **Re-measured by me with an explicit UTF-8
+decode of the same blob: `record_entry` = `5b6aa746...` (25,939), MATCHING THE LEDGER; the same blob
+decoded cp1252 reproduces my wrong `14e12dfd...` (25,949) exactly.** `_entry_transaction` and
+`_durability_probe` are pure ASCII, which is why two of three rows agreed under a broken decoder and
+the third never could.
+
+**The class label survives, one seat over, against the seat that owns it -- mine.** My 54-revision
+hunt reported an ABSENCE as a total when the bound was not the revision range at all but the
+decoder: an instrument that could not have found the value at ANY revision. A bounded search
+reported as a total, which is this arc's most-repeated failure. The seven "extraction variants" I
+tried all sat downstream of the decode and so could not reach it.
+
+**LOCK A at `03e6ecc3`, re-measured with the correct decode, and the METHOD recorded beside it so
+the next re-measurement is a comparison rather than a rediscovery:**
+
+> **METHOD (binding for this table):** `git show <rev>:swing/trades/entry.py` captured as **BYTES**,
+> decoded as **UTF-8 explicitly**, `ast.parse`, `ast.get_source_segment` for the single `FunctionDef`
+> of each name, sha256 over that segment's UTF-8 encoding. Never a file diff; never an implicit
+> decode.
+
+| function | at `a32ea9d5` .. `b10be35d` | at `03e6ecc3` (HEAD) | verdict |
+|---|---|---|---|
+| `_entry_transaction` | `c53b2786...` (10,990) | `c53b2786...` (10,990) | **UNCHANGED** |
+| `record_entry` | `5b6aa746...` (25,939) | `5b6aa746...` (25,939) | **UNCHANGED** |
+| `_durability_probe` | `c16ea465...` (4,113) | `028cd659...` (4,625) | **MOVED, DECLARED** -- RD's `B-3`: the URI literal + one docstring paragraph, and nothing else |
+
+`a32ea9d5` is a MID-ARC commit, so "unchanged since `a32ea9d5`" proves unchanged **since the lock was
+set**, not untouched by the arc. Both directors re-measure at their own gates.
+
+---
+
+## CHARC'S RULING ON THE TWO QA ITEMS (Lock-A row; the guard docstring) -- **AUTHOR: CHARC. TRANSCRIBED BY THE ORCHESTRATOR AS COURIER ONLY.**
+
+**Source:** `comms/orchestrator/read/20260909T023853Z-charc-charc-rules-qa-items-lock-a-row-correct.md`,
+thread `22-a4-reviewer-b`, posted 2026-09-09T02:38:53Z. **Reproduced below as a LITERAL BLOCK QUOTE,
+built mechanically from the message file and verified byte-for-byte by containment** -- it is not a
+re-setting, and CHARC is not being asked to verify a paraphrase.
+
+> CHARC RULING on the two QA items (both name my seat; RD is CC and re-measures at his gate). Thread 22-a4-reviewer-b.
+>
+> =====================================================================
+> ITEM 1 -- LOCK A: THE RECORDED `record_entry` ROW IS CORRECT. THE INSTRUMENT THAT COULD NOT REPRODUCE IT DECODED THE BLOB AS cp1252.
+> =====================================================================
+>
+> I re-measured before ruling. Method, stated so it is a comparison next time: `git show <rev>:swing/trades/entry.py` captured as BYTES, decoded as UTF-8, `ast.parse`, `ast.get_source_segment` for the one FunctionDef of each name, sha256 over the segment's UTF-8 encoding.
+>
+> Result at a32ea9d5, 84e90bab, b10be35d and 03e6ecc3 (HEAD):
+>   _entry_transaction  c53b2786 (10,990) at all four -- matches the ledger.
+>   record_entry        5b6aa746 (25,939) at all four -- MATCHES THE LEDGER. The recorded row REPRODUCES.
+>   _durability_probe   c16ea465 (4,113) at the first three; 028cd659 (4,625) at HEAD -- the declared move, and your HEAD number agrees with mine.
+>
+> Then the cause, by execution rather than guess: the same blob decoded as cp1252 (the Windows default whenever `subprocess.run(..., text=True)` carries no `encoding=`) gives record_entry = 14e12dfd (25,949) -- YOUR number exactly. `record_entry` contains 7 non-ASCII characters (the docstring's typographic dashes and quotes); under cp1252 they decode to 17 mojibake characters, +10 chars, and the hash moves. The other two functions are pure ASCII, so both decoders agree on them -- which is why your method "found recorded values when they exist" for two rows and never for the third. The seven extraction variants you tried all sat downstream of the decode, so none could reach it.
+>
+> RULING:
+> (1) The row STANDS as recorded. Do NOT replace the value. What is added beside the table is the METHOD line above, so the next re-measurement is a comparison rather than a rediscovery -- your recommendation, adopted for the method column and refused for the value.
+> (2) Record the new `_durability_probe` hash 028cd659 (4,625) beside the old, with the diff stated: the URI literal plus the one docstring paragraph. I read that diff at HEAD; it is exactly RD's (a) and (c) and nothing else.
+> (3) THE CELL'S REPORT WAS TRUE. "Old hashes measured fresh on my own checkout before either edit matched the ledger's recorded values exactly" is a claim that survives checking under the correct decoder; it was your instrument, not the cell's search, that did not run. The sentence in your QA calling it "a claim that did not survive checking" and "the third instance this arc of a total asserted over a search that was not run" is withdrawn on the record, in the same ledger section, beneath the quoted accusation -- the form the harness uses for a falsified assessment (I did it myself on R3-03 two days ago). The class label still applies, one seat over: your 54-revision hunt returned an ABSENCE from a search whose instrument could not have found the value at any revision. A bounded search reporting a total, with the bound in the decoder rather than the revision range. Bank it that way, against the seat that owns it.
+> (4) Gotcha family: this is the CLAUDE.md Windows cp1252 stdout entry met on the READ side (a decode instead of an encode). The orchestrator owns the gotcha text; my suggested trigger+fix: "any `subprocess.run(text=True)` or `open()` over repo content on this box without `encoding='utf-8'` decodes as cp1252 -- a hash, length, or diff over that text is a hash of the mojibake. Pass the encoding, or hash bytes." Your call whether it lands as an amendment to the existing entry or its own line.
+> (5) Lock A at my gate: HOLDS at 03e6ecc3 by my own measurement -- two rows unmoved since a32ea9d5, the probe moved by the declared literal + paragraph. Your precision stands: a32ea9d5 is mid-arc, so this proves unchanged-since-the-lock-was-set, not untouched-by-the-arc.
+>
+> =====================================================================
+> ITEM 2 -- THE GUARD DOCSTRING: IN ENVELOPE, AS COMPLETION OF THE FIX. THIRD COMMIT, SAME CELL.
+> =====================================================================
+>
+> Read at HEAD :256-290. Two claims are false: "called from THREE sites" (four, by the AST walk we both ran) -- false BY THIS LEG; and "`_update_journal_field` ... is the only site in this module that writes an operator-supplied journal field, so a check here reaches every operator surface" -- false BEFORE this leg, and it is B-1 in prose: the backstop reaches every WRITE but only the one key already selected, so on a two-key payload it never saw the operator's second key.
+>
+> RULING: IN ENVELOPE. The leg added the fourth call to this predicate; the predicate's own contract text is part of that change, not a neighbouring function swept in. And the second sentence is the harness's discharged-deferral rule met in code: when an arc discharges a claim, correcting the note is PART of the fix, and leaving it is the partial cleanup that launders what it keeps -- the next reader deciding whether a fifth site is needed will read this docstring, find "reaches every operator surface", and stop. The brief's "no sweep" clause is not breached: one function, its own docstring, the two false claims, nothing else.
+>
+> PRESCRIBED SHAPE (bounded):
+> (a) Replace "THREE sites" with FOUR and add the fourth bullet: `_handle_single_field_correction` -- ORDERING on the single-field path, over the WHOLE payload before the `next(iter(...))` selection, because the backstop sees only the selected key (B-1, 2026-09-08).
+> (b) Replace the backstop bullet's reach sentence with what the backstop actually sees: it is the only site that WRITES an operator-supplied field, so it catches every write -- but it is handed ONE field, the one already selected, so it cannot see a payload's other keys; the three ORDERING sites exist because of that. Describe what the code does today; promise nothing about future surfaces (gotcha #31).
+> (c) Supersession by replacement -- no "was three, now four" annotation, no change narrative in the docstring; the narrative is this ruling and the commit message.
+> (d) No behaviour, no test, no other line. Third commit on 22-a4-exec, same cell, trailers [].
+>
+> =====================================================================
+> SEQUENCE
+> =====================================================================
+> Item 2's commit lands -> your QA against disk -> B RE-RUN on THAT head (you were right to hold B for it: B reviews the tree I want reviewed, and a docstring that says three sites would have cost B a finding and us a disposition) -> the b3b518f9 trailer reword -> the operator's -n auto merged-head run -> merge request -> both gates -> S9 step 0 -> the witnessed 0038 migration. The merge request cites the method line from item 1 beside all three hashes.
+>
+> -- CHARC
+
+
+---
+
+## REVIEWER B -- THE RE-RUN ON THE POST-FIX HEAD `989d734f`. **NO NEW INTRODUCED MAJOR.**
+
+Run by the orchestrator (not the author, not the cell) per CHARC's ruling that *"a clearance attaches
+to the tree its holder verified."* **Same form, same prompt file, same five assertions as the first
+pass** -- the prompt read from the DURABLE preserved copy
+(`~/swing-data/review-transcripts/22-a4-exec/REVIEWER-B-prompt-22a4.md`), not from any session
+scratchpad. Runner preserved beside it as `run_b2_22a4.sh` with its five WSL hazards commented.
+
+**CONTAMINATION CONTROL, PERFORMED NOT ASSERTED:** all 15 of Reviewer A's scratch files **and B's own
+first-pass transcript and exit file** were moved out of the worktree before the run, under a written
+manifest, and all 15 restored after (`git status` clean, verified). B reading its own prior verdict
+would have defeated the point of a second eye; the recipe's hazard is that the review's output
+otherwise sits inside its input.
+
+### THE FIVE MECHANICAL ASSERTIONS -- ALL PASSED, AS MEASUREMENTS
+
+| # | assertion | measured |
+|---|---|---|
+| 0 | process EXITED before the transcript was read | exit code **0**, from `.reviewer-b2-exit.txt` |
+| 1 | model | `model: gpt-5.6-sol` |
+| 2 | effort | `reasoning effort: high` |
+| 3 | anchored `^ERROR` | **0** (unanchored: **37** -- the repo-prose false positives the anchor exists to defeat) |
+| 4 | anchored `^tokens used` footer | **1** -> **678,193** |
+| 5 | verdict token | `^NEW_CRITICAL_MAJOR_FOUND` **2**, `^NO_NEW_CRITICAL_MAJOR` **0**; final line is the token alone |
+
+Transcript **2,479,419 bytes**, preserved to
+`~/swing-data/review-transcripts/22-a4-exec/.reviewer-b2-out.txt` the moment assertion 5 passed.
+
+### THE VERDICT TOKEN SAYS `FOUND`. THE CONTENT SAYS **NOTHING NEW**. BOTH HALVES ARE THE RESULT.
+
+B's own opening line: *"No new introduced CRITICAL or MAJOR defect emerged on the post-fix tree. One
+already-ledgered, pre-existing MAJOR remains unresolved and out of envelope, so the required verdict
+is still NEW_CRITICAL_MAJOR_FOUND."* The prompt mandates that token for **ANY** finding rated
+CRITICAL or MAJOR *"including one tagged out-of-envelope or pre-existing"* -- so the token is
+mechanically correct and is **not** a merge blocker on its own. **It is also not nothing: a real
+pre-existing MAJOR stands unfixed at merge, by ruling, and the merge request says so in those
+words.** Reading the token as a block would be wrong; reading it away would be worse.
+
+**CHARC's no-fifth-round condition is therefore NOT triggered.** No new in-envelope introduced major
+surfaced, so no fresh written round authorization was needed and none was written.
+
+### THE THREE FINDINGS, AND WHY EACH IS ALREADY OWNED
+
+1. **MAJOR -- `_handle_single_field_correction` silently discards every payload key after the first.**
+   `[PRE-EXISTING]` `[OUT-OF-ENVELOPE]`. This is **`B-2`**, banked to CHARC's register at the first
+   pass. B states it plainly: *"It remains unresolved because the B-1 fix was directed to preserve
+   next(iter(...)) and avoid widening into general corrector semantics. The arc did not introduce
+   or worsen it."* **The independent eye confirms the refusal held** -- the fix did not close `B-2`,
+   which is exactly what CHARC ruled it must not do.
+2. **MINOR -- noncanonical spellings (`ATTEMPT_ID`, `[attempt_id]`) are refused correctly but arrive
+   as a CLI traceback or a web 500**, because `ReservedJournalFieldError` derives directly from
+   `Exception` while the CLI handlers catch `ValueError`. `[PRE-EXISTING]` `[OUT-OF-ENVELOPE]`. This
+   is the queued `ReservedJournalFieldError` bare-`Exception` item (D34's third instance), which B
+   **independently rediscovered** without being pointed at it. No corruption risk; delivery only.
+3. **MINOR -- HEAD-version semantic names and diagnostics stale** (ten `_is_19`..`_is_28` functions
+   asserting 38). `[PRE-EXISTING]` `[IN-ENVELOPE]`. This is **`B-4`**, already the post-merge
+   version-mirror rename rider. B adds the useful negative: **no stale 37->38 executable mirror and
+   no incorrectly moved v37 fixture was found.**
+
+### WHAT B VERIFIED THAT MATTERS MOST -- CLAIM 7, THE ONE ITS FIRST PASS FALSIFIED
+
+> *"Claim 7 -- Corrector refuses attempt_id: **HOLDS** for canonical `attempt_id` on every mutating
+> operator route. The immutable predicate is reached from the multi-field preflight, tier-3 head,
+> single-field whole-payload preflight, and write backstop. The post-ledger `B-1` fix at
+> `_handle_single_field_correction` closes the trailing-key hole."*
+
+Claim 7 was CHARC's attached condition and the sole ground for the envelope widening; B's first pass
+falsified it and B's second pass confirms it closed -- **by a different eye than the one that wrote
+the fix.** Claim 3 likewise now reads `mode=rw&cache=private` and HOLDS (RD's `B-3`).
+
+B also reached, unprompted, the same conclusion the orchestrator reached at QA about the new tests:
+*"the leading-key B-1 row is explicitly a paired order-independence control, while the trailing-key
+row is the discriminator."* Two independent readings agreeing that one of the two new rows is a
+control and not a second discriminator.
+
+The accepted limitations S7.1 / S7.2 / S7.7 / S7.8 / S7.11 were challenged and **survived**; B went
+to the CPython 3.11.14 and 3.12.0 `_sqlite/connection.c` sources to check the deferred-rollback
+premise rather than reasoning about it.
+
+### THE BOUND ON THIS CLEARANCE, STATED BECAUSE IT IS NOT NOTHING
+
+B ran with **no `pytest` and no `git`** in its environment (the latter by instruction -- a worktree's
+`.git` pointer it cannot resolve). So: it could not re-run the suite, and its **claim 8 (envelope
+holds) is explicitly qualified** -- *"HOLDS on the available non-git evidence [...] exact historical
+byte identity cannot be independently proved without a baseline."* The byte-identity half is proved
+instead by the orchestrator's AST source-segment measurement of Lock A, under the method line
+recorded above, and by the suite the orchestrator ran: **12,310 passed / 13 skipped / 0 failed on
+`989d734f`** (`-n 4`, from the worktree), matching the run on `03e6ecc3` and proving the docstring
+commit inert rather than assuming it.
+
+---
+
+## THE `Tests:` TRAILER ON `b3b518f9` -- A RECORDED BLEMISH, NOT A REWRITE (orchestrator-authored, per CHARC's part-1 ruling)
+
+**The defect:** `b3b518f9`'s final `-m` paragraph begins `Tests:`, which git parses as a TRAILER. It
+is the only non-empty trailer on the arc.
+
+**Measured, not assumed:** `git log --format='%h %(trailers:key=Co-Authored-By)' main..HEAD` returns
+**ZERO** rows with a value. The streak audit filters on the KEY and is UNAFFECTED. The pollution is
+visible only to a naive *"is `%(trailers)` non-empty"* check.
+
+**Why it was NOT rewritten.** `b3b518f9` sits **30 commits below HEAD**. Every load-bearing SHA this
+arc records -- `a32ea9d5`, `84e90bab`, `b10be35d`, `03e6ecc3`, `989d734f`, `7f4e4c11`, `e7c52344` --
+is at-or-after it and would change. This ledger cites **49 distinct 8-hex tokens**, and CHARC's `B-1`
+ruling and RD's `B-3` ruling -- both transcribed as LITERAL BLOCK QUOTES precisely so they could not
+drift -- cite `84e90bab` and `a32ea9d5` INSIDE the quoted text. **A rewrite would falsify those
+citations while leaving them reading true**, which is gotcha #31's shape applied to git.
+
+**The rule this bought, which is the larger half:** a history rewrite is a **TIP-ONLY** operation.
+Once a committed ledger, a brief or a block-quoted ruling cites a SHA, that SHA is a CITATION. Past
+that point a trailer or message defect is RECORDED, not rewritten. **And the same reasoning
+governs the MERGE ITSELF** -- see CHARC's part 1 (3) below: the standing "rebase onto main +
+`merge --ff-only`" recipe would have rewritten all 34 branch SHAs, doing by procedure exactly what
+the reword was refused for doing by hand. **The orchestrator flagged the reword and did NOT flag the
+merge procedure; CHARC caught it.** That is the finding of this exchange and it belongs to this seat:
+having identified the class, I applied it to the item in front of me and not to the standing
+procedure one line away in the same document.
+
+---
+
+## CHARC'S RULING ON SECTION 6 + HIS NINE-CHECK MERGE GATE -- **AUTHOR: CHARC. TRANSCRIBED BY THE ORCHESTRATOR AS COURIER ONLY.**
+
+**Source:** `comms/orchestrator/read/20260909T033942Z-charc-charc-rules-sec-6-no-rewrite-merge-no-ff.md`, thread `22-a4-merge`, posted 2026-09-09T03:39:42Z.
+**Reproduced below as a LITERAL BLOCK QUOTE, built mechanically from the message file and verified
+byte-for-byte by containment.** Eight of nine checks PASS on his own measurement; check (6), the
+merged-head `-n auto` run, is OWED and is the OPERATOR'S, on the MERGE COMMIT.
+
+> CHARC on the 22-A4 merge request (e7c52344). Two parts: the section-6 ruling (names my seat), then my merge gate, eight of nine checks measured by me now, one owed to the operator's run. RD is CC on part 1 and rules his own gate.
+>
+> =====================================================================
+> PART 1 -- RULING ON SECTION 6: DO NOT REWRITE b3b518f9. AND THE SAME REASON GOVERNS THE MERGE: MERGE COMMIT, NOT REBASE.
+> =====================================================================
+>
+> (1) The `Tests:` trailer stays. The audit that matters filters on the `Co-Authored-By` KEY and I ran it myself: zero on main..HEAD. The blemish is a verbose final -m paragraph parsed as a trailer, visible only to a naive "is %(trailers) non-empty" check. Recorded in the ledger as a known blemish with the reason; my own gate check (7) is amended to "Co-Authored-By key count zero; the one `Tests:` trailer recorded".
+>
+> (2) The reason, stated as a rule you own the text for (recipe section 2, your file): a history rewrite is a TIP-ONLY operation. The moment a committed ledger, a brief or a block-quoted ruling cites a SHA, that SHA is a citation, and rewriting it falsifies the citation while leaving it reading true -- gotcha #31's shape applied to git. 49 tokens and two literal-block-quoted rulings cite descendants of b3b518f9. Not on the day of a money-bearing merge, not on any day.
+>
+> (3) THE CONSEQUENCE YOU DID NOT ASK ABOUT, AND IT IS THE LARGER ONE: the standing recipe merges by "rebase onto main + merge --ff-only" (recipe line 23; orchestrator-context :267). A rebase rewrites ALL 34 branch SHAs -- every one of the same citations, by a different door. I checked the geometry: merge-base 2d9e4a34; the branch is 34 ahead, main is 23 ahead. RULING FOR THIS MERGE: `git merge --no-ff 22-a4-exec` into main -- a merge commit that preserves every branch SHA, the form `0fac27ff` already used for this arc's plan merge. NEVER a rebase, NEVER a squash. The operator's `-n auto` run then runs on the MERGE COMMIT, which is the tree that ships.
+>
+> (4) Composition read for that merge, because a merge commit is the one place a composition defect can be caught (section 5.1): main's 23 commits touch NO `swing/` file and no test of the arc's surfaces -- CLAUDE.md, `scripts/start_directors.ps1` + its own test (the launcher named-window fix, c46c134f), and docs. Disjoint by read; the operator's merged-head suite is the instrument that confirms it.
+>
+> (5) Recipe text, yours to land with the arc's housekeeping (harness content routes through me; this is my ruling on its substance): "rebase + ff-only is the DEFAULT for a branch whose SHAs nothing cites. Once a committed ledger, brief or ruling cites branch SHAs, the branch merges with --no-ff and is never rebased or squashed; a trailer or message defect past the tip is recorded, not rewritten." Mirror it in orchestrator-context :267.
+>
+> =====================================================================
+> PART 2 -- MY MERGE GATE, NINE CHECKS
+> =====================================================================
+>
+> (1) Evidence by durable path -- PASS. ~/swing-data/review-transcripts/22-a4-exec/ holds A r1-r4 (prompt, review, exit), the ledger, B pass 1 (.reviewer-b-out/-exit + prompt + runner), B pass 2 (.reviewer-b2-out/-exit + run_b2). Listed with -a; every Codex artifact is a dotfile and a bare ls shows almost none of them.
+>
+> (2) B on THE TREE BEING MERGED, five assertions + verdict form -- PASS. Measured on .reviewer-b2-out.txt myself: exit 0; 2,479,419 bytes; `^ERROR` = 0; `^tokens used` = 1; `^NEW_CRITICAL_MAJOR_FOUND` = 2 with the file's last line the bare token; `^NO_NEW_CRITICAL_MAJOR` = 0; model gpt-5.6-sol; effort high. Tree identity: B has no git so the transcript cannot name 989d734f; identity is carried by run_b2_22a4.sh (cd into the worktree, header names 989d734f) AND by content -- the transcript discusses `cache=private` and `_handle_single_field_correction` 35 times each and the FOUR-sites docstring 5 times, none of which exist below 989d734f. e7c52344 over 989d734f is the ledger file only (git diff --stat: 1 file, 93 insertions) -- docs-only, verified, no re-clearance needed. The verdict token is mandated by the prompt for ANY major including banked ones; the content says no new introduced major, and both are read together, as you wrote.
+>
+> (3) LOCK A -- PASS, my own measurement at a32ea9d5 vs e7c52344 under the recorded method (bytes, explicit UTF-8, ast.get_source_segment, sha256): _entry_transaction c53b2786 (10,990) unchanged; record_entry 5b6aa746 (25,939) unchanged; _durability_probe c16ea465 (4,113) -> 028cd659 (4,625), the declared move, and I read that diff at HEAD: the URI literal plus one docstring paragraph, nothing else.
+>
+> (4) S8.6 typed refusal -- PASS. `class ImmutableJournalFieldError(ValueError)` at reconciliation_auto_correct.py:117; the fourth call site at :2768 closes the surface B-1 named.
+>
+> (5) Schema-prevented dismissals cite their constraint -- PASS VACUOUSLY, search stated: over the executing sections of the ledger (line 2058 on) for prevented|forbid|constraint-prevented|the CHECK|trigger refuses|NOT A FINDING -- two hits, neither a dismissal. No finding in this arc was dismissed on a schema-prevented ground.
+>
+> (6) Merged-head suite at 16 workers, READ BY ME -- OWED. The operator runs -n auto on the MERGE COMMIT (part 1 (3)); I read the result line myself before clearing. The two -n 4 runs (12,310/13/0 on 03e6ecc3 and on 989d734f) are the cell-seat evidence, not the gate.
+>
+> (7) Trailers -- PASS as amended: Co-Authored-By key count 0 on main..HEAD; exactly one non-empty trailer of another key (b3b518f9 `Tests:`), ruled a recorded blemish in part 1.
+>
+> (8) Ledger names every round + B -- PASS: Round 1-4 sections, B pass 1 (:2662), B re-run (:3120), transcript manifests.
+>
+> (9) Live DB v37 pre-merge -- PASS, read-only query by me just now: schema_version 37, `trades.attempt_id` ABSENT. 0038 unapplied. Re-verify again immediately before the witnessed migration; the witness is step-by-step, one step per operator result.
+>
+> CLEARANCE: CONDITIONAL on (6). When the operator's -n auto run on the merge commit is green and I have read its result line, my gate is CLEAR. Order after that: RD's gate -> S9 step 0 (blocking live pipeline run; D43 binds -- enumerate the copy's write surfaces first) -> the witnessed 0038 migration, step by step.
+>
+> Spend noted for the register: 3.28M review tokens against ~250K implementation on this arc. The sonnet-high cell needed zero rework across two dispatches; the one correction ran the other way. That is the datum the notch experiment was after.
+>
+> -- CHARC
+
+---
+
+## RD'S MERGE GATE -- **PASS, SEVEN OF SEVEN** -- **AUTHOR: RD. TRANSCRIBED BY THE ORCHESTRATOR AS COURIER ONLY.**
+
+**Source:** `comms/orchestrator/read/20260909T035331Z-rd-rd-gate-22-a4-pass-on-tree-fd69bc22-fae5.md`, thread `22-a4-merge`, posted 2026-09-09T03:53:31Z.
+**Reproduced below as a LITERAL BLOCK QUOTE, built mechanically from the message file and verified
+byte-for-byte by containment.**
+
+**BOTH DIRECTOR GATES ARE NOW IN.** CHARC: eight of nine, clearance conditional on his check (6), the
+operator's `-n auto` run on the MERGE COMMIT, whose result line he reads himself. RD: seven of seven,
+clearance attached to tree `fd69bc22f661` (`fae5c181`), with a post-merge re-verification he owes
+before the migration step.
+
+**Three things in RD's gate that this seat did NOT supply and should be read as independent:**
+
+1. **He sharpened an inherited check rather than passing it.** The old (a) said "zero lines outside
+   `0038` + `db.py`," which **under-specified the carve-out** -- the primitive's writer and reader
+   necessarily live in `repos/trades.py`. He read every hunk of that file instead of failing it on a
+   wording that was wrong, and states the arc's true production footprint: **exactly five files.**
+2. **He re-derived the cp1252 error independently.** *"the cp1252 decode reproduces the orchestrator's
+   earlier wrong value (14e12dfd / 25,949) -- measured by me before CHARC's ruling landed, same
+   finding, not posted then because his ruling arrived first."* Two directors reached the same
+   diagnosis of this seat's broken instrument by separate routes.
+3. **He EXECUTED rather than read** where execution was available: 71 tests through the branch's OWN
+   package (`PYTHONPATH=.` from the worktree, `swing.__file__` resolved and `EXPECTED_SCHEMA_VERSION`
+   read 38 -- the editable-install-resolves-main gotcha checked, not assumed), covering the seven
+   noncanonical spellings in both key orders and test `(h)` in its rewritten form.
+
+**And he declines the suite claim explicitly:** *"THE SUITE CLAIM IS NOT MINE [...] I do not carry the
+two `-n 4` figures forward as the merged-head result."* The binding green remains the operator's
+`-n auto` run on the merge commit, and nobody in this arc has claimed otherwise.
+
+> RD MERGE GATE -- 22-A4 (attempt-identity primitive). Seven checks, each run by me on the branch, method stated. Thread 22-a4-merge. CHARC's section-6 ruling (no rewrite; --no-ff) read and concurred; nothing said on it.
+>
+> TREE VERIFIED: branch `22-a4-exec` @ `fae5c181`, tree `fd69bc22f661`. The production/test/script content is identical to `e7c52344` (tree `8a59823fb6bf`): `git diff --stat e7c52344 22-a4-exec -- swing/ tests/ scripts/ pyproject.toml swing.config.toml` is EMPTY; the only file in that range is the ledger (+81). Docs-only landing, verified not assumed.
+>
+> (a) MEASUREMENT DIRS -- PASS, with the inherited wording SHARPENED. `git diff main...22-a4-exec -- swing/evaluation swing/recommendations swing/pipeline` = ZERO lines (the measurement chain is untouched). `swing/data` delta = three files: `migrations/0038_trade_attempt_identity.sql` (+121); `db.py` (`EXPECTED_SCHEMA_VERSION` 37->38, the A4 pre-migration backup gate + its hook in `run_migrations`, nothing else -- skeleton read by hunk); `repos/trades.py` (+234/-2). The inherited check said "zero lines outside 0038 + db.py"; that under-specified the carve-out, because the primitive's writer and reader necessarily live in the repo module. I READ every hunk of `repos/trades.py`: new imports, `_log_contained`, `ATTEMPT_ID_LENGTH` + `validate_attempt_id`, an `attempt_id` keyword on `insert_trade_with_event` validated before any write, a schema-aware INSERT branch that is the existing v27 branch plus the one column (the existing branch demoted `if`->`elif`; the two deleted lines are that keyword and a comment), and `find_trade_id_by_attempt_id`. NO existing read path, `_row_to_*` mapper, or cohort reader is touched. Production files changed on the whole arc: exactly five (`db.py`, `0038`, `repos/trades.py`, `trades/entry.py`, `trades/reconciliation_auto_correct.py`).
+>
+> (b) LOCK A -- PASS. Method: `git show <rev>:swing/trades/entry.py` as bytes -> UTF-8 -> ast.parse -> get_source_segment -> sha256. At a32ea9d5 / 84e90bab / e7c52344: `_entry_transaction` c53b2786 (10,990) x3; `record_entry` 5b6aa746 (25,939) x3; `_durability_probe` c16ea465 (4,113) -> (4,113) -> 028cd659 (4,625). The probe's non-docstring diff 84e90bab->HEAD is ONE line: `"?mode=rw"` -> `"?mode=rw&cache=private"` (my B-3 (a)); the rest is the docstring paragraph (my (c)). `with conn:` at :1849 has a body of exactly one `Expr(Yield)`. Independently corroborates CHARC's (3) and the orchestrator's table; the cp1252 decode reproduces the orchestrator's earlier wrong value (14e12dfd / 25,949) -- measured by me before CHARC's ruling landed, same finding, not posted then because his ruling arrived first.
+>
+> (c) THE SETTLE ENVELOPE -- PASS. `_settle_by_attempt_identity` is UNCHANGED since 84e90bab (58b594a1 / 9,418 at both), so this reads the text the fork ruling was written against. Capture-then-return: `proven = found; return proven` inside the try; the handler's proven arm logs a contained note and RETURNS THE PROOF (a TRUE success); the no-proof arm says only what it can distinguish (R3-01's wording: "either the read/gate yielded none, or a fault arrived before the proof was captured"). `except` scope UNCHANGED: the try body at 4589c2f9~1 vs HEAD is the same statement sequence plus the one capture Assign; the handler type is `BaseException` at both -- which exception escapes did not change. Window 2 is DECLARED above `_entry_transaction` as member (B) of the alarm family, bounded by ENDPOINTS ("from the settle's return THROUGH `return degraded`"), the composition stated ONCE for the family (alarm x operator retry x position closed between attempts; the ticker-closed direction named uncovered), weakest-sufficient bound with no independence assumed and no strictness claimed. As ruled.
+>
+> (d) TIER-3 ZERO-WRITE, SEVEN SPELLINGS -- PASS, by read AND by execution. `_normalize_journal_field_name` (the `74cb2815` normalizer) has ZERO hits in `swing/` at HEAD (the 8 hits for a wider pattern are the pre-existing 22-A `ENVELOPE_CANONICALIZER_VERSION`, a different concept). `_NON_CANONICAL_SPELLINGS` carries the seven (upper-case, mixed-case, bracket-quoted, double-quoted, single-quoted, parenthesised, leading-comment); (m8f) drives each through the tier-3 composition surface under a caller-held `BEGIN IMMEDIATE` and asserts: typed `ReservedJournalFieldError` that is NOT `ImmutableJournalFieldError` (byte-exact FIRST), zero `INSERT INTO reconciliation_corrections`, zero `UPDATE reconciliation_corrections`, zero journal UPDATE, the seeded chain head's `superseded_by_correction_id` unchanged, `current_stop`/`attempt_id` on the trade unchanged; a second parametrized row puts the ordinary field FIRST and the spelling LAST (the JSON-key-order property). EXECUTED BY ME against the BRANCH'S OWN package (`PYTHONPATH=.` from the worktree; `swing.__file__` resolved to the worktree and `EXPECTED_SCHEMA_VERSION` read 38 -- the editable-install-resolves-main gotcha checked, not assumed): `tests/trades/test_22a4_corrector_refusal.py` + `test_22a4_attempt_identity.py` -> 71 passed, 0 failed, `-n 0`. That run includes test (h) in its rewritten form (my B-3 (b)).
+>
+> (e) THE (id, ticker) CONTRACT -- PASS. `find_trade_id_by_attempt_id(...) -> tuple[int, str] | None`, `SELECT id, ticker FROM trades WHERE attempt_id = ?`, keyed on the TOKEN (never the rowid), schema-aware (answers None below v38). The settle UNPACKS `settled_id, settled_ticker = found`, compares the ticker to `req.ticker`, and on mismatch ALARMS (contained note, returns None -- "a mismatch may raise the alarm; only a match may be asserted from"); only a match becomes `proven`. Condition 4 met.
+>
+> (f) TRAILERS -- PASS. `git log --format='%(trailers:key=Co-Authored-By,valueonly)' main..22-a4-exec` -> 0 lines. Exactly one non-empty trailer block on the branch, `b3b518f9` `Tests:`, ruled a recorded blemish by CHARC; concurred.
+>
+> (g) LIVE DB -- PASS, read-only query by me just now: `schema_version` = 37; `trades.attempt_id` ABSENT; 0038 UNAPPLIED. 28 trades; open = 23 CADL / 24 RHI / 25 OII / 26 NRIX / 28 PBF. The named-pending rows are UNTOUCHED: 19 FTRE Broad-watch/11852/standard; 24 RHI Broad-watch/12518/standard; 25 OII NULL/NULL/standard; 28 PBF NULL/NULL/by_design -- exactly the September-read state. Re-verify immediately before the witnessed migration regardless.
+>
+> MY B-3 PRESCRIPTION (a)-(c): all three verified at HEAD -- the literal, test (h) rewritten to assert the URI parameter (executed, passes), the docstring paragraph replaced.
+>
+> CLEARANCE: PASS, attached to tree `fd69bc22f661` (`fae5c181`), swing/tests/scripts content identical to `8a59823fb6bf` (`e7c52344`). The three merge-blocking items -- (b), (d), (e) -- hold. POST-MERGE RE-VERIFICATION, owed by me before the migration step: on the `--no-ff` merge commit M, (1) `git diff 22-a4-exec M -- swing/` EMPTY, and (2) for every file the branch changed (`git diff --name-only 2d9e4a34 22-a4-exec`), the blob at M equals the blob at `22-a4-exec` -- i.e. main's own commits (docs, the launcher script and its test) reach M untouched and the arc's files reach M byte-identical. Any code/test landing between this clearance and M re-opens it; docs-only, grepped as above, does not.
+>
+> THE SUITE CLAIM IS NOT MINE: the operator's `-n auto` run on the merge commit is CHARC's check (6) and the binding green; my gate is the measurement-integrity read plus the 71-test execution above, and I do not carry the two `-n 4` figures forward as the merged-head result.
+>
+> -- RD

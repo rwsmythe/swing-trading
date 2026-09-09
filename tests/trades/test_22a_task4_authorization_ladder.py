@@ -22,7 +22,12 @@ from pathlib import Path
 
 import pytest
 
-from swing.data.db import ensure_schema, open_connection, run_migrations
+from swing.data.db import (
+    EXPECTED_SCHEMA_VERSION,
+    ensure_schema,
+    open_connection,
+    run_migrations,
+)
 from swing.data.models import (
     FREEZE_TIER_LIVE_AT_ACCEPTANCE,
     FREEZE_TIER_PRE_BARRIER,
@@ -88,6 +93,8 @@ def build_world(tmp_path: Path, name: str, *, closes=None, pre_barrier=False,
         candidate_id = seed_fire(conn)
         conn.commit()
         run_migrations(conn, target_version=37, backup_dir=root / "bak")
+        run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION,
+                       backup_dir=root / "bak")
     else:
         conn = ensure_schema(root / "swing.db")
         candidate_id = seed_fire(conn)
@@ -942,6 +949,8 @@ def _twin_world_10_pre(tmp_path, monkeypatch):
     days, _ = _seed_lapse_geometry(conn)
     conn.commit()
     run_migrations(conn, target_version=37, backup_dir=root / "bak")
+    run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION,
+                   backup_dir=root / "bak")
 
     frame = _bars_frame(days, [16.50, 16.20, 15.90, 15.60, 15.30, 15.00])
     monkeypatch.setattr(
@@ -1028,6 +1037,8 @@ def _twin_world_27_pre(tmp_path, monkeypatch):
         (TICKER, PIVOT, STOP)).lastrowid)
     conn.commit()
     run_migrations(conn, target_version=37, backup_dir=root / "bak")
+    run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION,
+                   backup_dir=root / "bak")
     write_closes(cfg, BASE_CLOSES)
     assert second != first
     return conn, cfg, _accept(conn, second), {}

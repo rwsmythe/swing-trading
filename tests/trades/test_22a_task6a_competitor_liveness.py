@@ -42,7 +42,12 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 
-from swing.data.db import ensure_schema, open_connection, run_migrations
+from swing.data.db import (
+    EXPECTED_SCHEMA_VERSION,
+    ensure_schema,
+    open_connection,
+    run_migrations,
+)
 from swing.data.models import FREEZE_TIER_PRE_BARRIER
 from swing.trades.latched_origin import (
     AcceptedLatchOrder,
@@ -95,6 +100,8 @@ def build_world(tmp_path: Path, name: str, *, closes=None, pre_barrier=False):
         subject = seed_fire(conn)
         conn.commit()
         run_migrations(conn, target_version=37, backup_dir=root / "bak")
+        run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION,
+                       backup_dir=root / "bak")
     else:
         conn = ensure_schema(root / "swing.db")
         subject = seed_fire(conn)
@@ -586,6 +593,8 @@ def _mixed_barrier_world(tmp_path, name):
     rival = dead_rival_fire(conn, run_id=140)
     conn.commit()
     run_migrations(conn, target_version=37, backup_dir=root / "bak")
+    run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION,
+                   backup_dir=root / "bak")
     subject = seed_fire(conn)
     conn.commit()
     write_closes(cfg, BASE_CLOSES)

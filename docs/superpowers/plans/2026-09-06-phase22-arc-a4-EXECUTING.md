@@ -64,7 +64,7 @@ appears here. Verified by id-set diff at creation — see the ledger.
 | `swing/trades/entry.py` | `_mint_attempt_token`, `_AttemptIdentity`, `_begin_attempt_identity`, `_durability_probe`, `_settle_by_attempt_identity`, **`_read_resolution` (NON-MUTATING -- `A4-R11-4`)**, `_CONTEXT_SLOT`, **`_exit_rollback_failed` (`A4-R9-2`; its CALL relocated to the `record_entry` frame by `A4-R10-1` + `SS-9`)**; `_CommitOutcome` +2 fields (`resolution`, `cleanup_raised`) for THREE observations total; `_entry_transaction`'s IMMEDIATE path only -- **its `if not immediate:` branch is NOT EDITED AT ALL: no `try`, no `except`, no `as` binding, and `with conn:`'s suite stays exactly `yield`, asserted by (k3a)**; the post-commit handler, which gains BOTH deferred-path observations (Task 3) and then the settle branch (Task 4); the narrowed IntegrityError match; the declaration block rewritten |
 | `swing/trades/reconciliation_auto_correct.py` | **THE ONE MODULE CHARC'S CONDITION WIDENED THE ENVELOPE BY, and it was MISSING FROM THIS TABLE until the 2026-09-07 per-location audit -- the manifest-with-a-hole class this plan already paid for twice.** Task 1b ONLY: the `_IMMUTABLE_JOURNAL_FIELDS` sibling set, `ImmutableJournalFieldError(ValueError)`, one message constant, and the shared predicate at THREE call sites -- `_preflight_reserved_transitions`, `_update_journal_field`, and the head of `_apply_tier3_override_inner` (`A4-R9-5`). **No other change and no sweep.** |
 | `tests/trades/test_22a_task9_entry_wiring.py` | `test_CONTRACT_a_commit_whose_own_return_was_LOST_re_raises` rewritten in place as the settled-by-identity row (test **(c)**); its declaration prose kept as the record of what changed. **AND THE THREE ROWS THAT LIVE IN THIS FILE AND MUST STAY GREEN, named because the sweep found them scheduled with no file:** **(d)** the row-ABSENT re-raise (existing, gains the probe-called-once assertions), **(i)** the belt control, **(j)** the post-commit-STEP control |
-| the version mirror family, **SEVEN spellings across ~30 files -- SIX a value-grep can see, plus SEMANTIC NAMES AND COMMENTS (`A4-R7-12`) which it cannot; NO total quoted** | 26 `EXPECTED_SCHEMA_VERSION == 37`; 11 bare-literal assertions; 4 `_current_version(...) == 37` (**2 of which stay at 37**); 1 chained (overlaps row 1); **1 INEQUALITY ceiling `versions[-1] <= 37` -- the L3 authorization gate**; and **15 `target_version=37` call sites -- 12 `run_migrations(...)` calls plus 3 direct `_phase22_arc_a_backup_gate(...)` calls -- of which 8 STAY PINNED and 7 gain a SECOND call to `EXPECTED_SCHEMA_VERSION`**. Counts are FLOORS and OVERLAP (`A4-R4-10`); the manifest is the greps plus a READ of every hit. The closure check is the full suite for the assertion families and a READ for the call sites, which fail nothing. |
+| the version mirror family, **SEVEN spellings across ~30 files -- SIX a value-grep can see, plus SEMANTIC NAMES AND COMMENTS (`A4-R7-12`) which it cannot; NO total quoted** | 26 `EXPECTED_SCHEMA_VERSION == 37`; 11 bare-literal assertions; 4 `_current_version(...) == 37` (**1 of which stays at 37 -- the count read 2 until execution; see the Task-1 rule**); 1 chained (overlaps row 1); **1 INEQUALITY ceiling `versions[-1] <= 37` -- the L3 authorization gate**; and **15 `target_version=37` call sites -- 12 `run_migrations(...)` calls plus 3 direct `_phase22_arc_a_backup_gate(...)` calls -- of which 8 STAY PINNED and 7 gain a SECOND call to `EXPECTED_SCHEMA_VERSION`**. Counts are FLOORS and OVERLAP (`A4-R4-10`); the manifest is the greps plus a READ of every hit. The closure check is the full suite for the assertion families and a READ for the call sites, which fail nothing. |
 
 **Untouched, and named so the envelope is checkable:** `swing/web/**`, `swing/cli.py`,
 `swing/data/models.py`, `swing/trades/latched_origin.py`, `swing/trades/cohort_provenance_correction.py`.
@@ -266,9 +266,20 @@ covering the new column, so the failure is left loud."*
       requiring DISTINCT tokens.
 - [ ] **Sweep the version mirror family -- ALL SIX SPELLINGS of S1.6, in THIS commit, CLASSIFYING
       EACH BY READING IT** (`A4-R2-2`). The rules:
-      - **The five ASSERTION families become 38 where the assertion is about HEAD.** Two
-        `_current_version(...) == 37` sites in `tests/data/test_22a_task2_migration_0037.py` are
-        assertions about **migration 0037's own result** and STAY at 37.
+      - **The five ASSERTION families become 38 where the assertion is about HEAD.**
+        **CORRECTED AT EXECUTION, 2026-09-07, BY THE FULL SUITE (supersession by replacement):
+        the roster said TWO `_current_version(...) == 37` sites in
+        `tests/data/test_22a_task2_migration_0037.py` are about migration 0037's own result and
+        STAY at 37. Only ONE is.** `:107`
+        (`test_migration_applies_to_a_v36_fixture_and_stamps_37`) builds a v36 database and runs to
+        `target_version=37` -- 0037's own result, and it stays pinned. `:130`
+        (`test_running_the_migration_twice_is_a_no_op`) takes the module's `conn` FIXTURE, which is
+        `ensure_schema` and therefore walks to **HEAD**, so its `target_version=37` call returns
+        immediately and the assertion is about HEAD. **It becomes 38.** The remaining two
+        (`tests/data/test_migration_0036_provenance_corrections.py:61` and `:166`) are also HEAD
+        assertions off `ensure_schema` and become 38 -- they live in a file this roster never named,
+        which is the same READ-not-grep gap in its other half. *A classification made by reading a
+        call's ARGUMENTS and not its FIXTURE is a classification of half the statement.*
       - **The INEQUALITY ceiling `versions[-1] <= 37`** (`tests/data/test_no_schema_change_v3.py:41`)
         becomes 38 HERE and nowhere else -- its own comment says raising it is *"the guard WORKING AS
         DESIGNED for an AUTHORIZED migration ... which is why the bump belongs in the same commit as
@@ -720,13 +731,33 @@ on the missing file, and the second fails because the migration applies anyway.
 *The second is the one that matters: a gate whose failure does not STOP the migration is decoration,
 and nothing in the previous row could tell the two apart.*
 
-**(m3c) THE EXPECTED-TABLE SET IS PINNED AGAINST A REAL v37 DATABASE, NOT AGAINST ITSELF.** Assert
-`PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES` **EQUALS** the table set measured off a freshly
-migrated v37 database (`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE
-'sqlite_%'`). **Against a set that omits any of 0037's three tables --
+**(m3c) THE EXPECTED-TABLE SET IS PINNED AGAINST A REAL v37 DATABASE, NOT AGAINST ITSELF.**
+
+> **SUPERSEDED BY REPLACEMENT, 2026-09-07 -- RULED (CHARC, PRIMARY): `(m3c)` TAKES BRANCH A.** The
+> text this paragraph replaces demanded the constant **EQUAL** the table set measured off a freshly
+> migrated v37 database, while prescribing a derivation that yields **37 names against 42 real
+> tables**. **The mechanic:** `_verify_backup_integrity` reads
+> `missing = expected_tables - actual_tables` (`swing/data/db.py:575`) -- a **SUBSET** test, so the
+> gate's contract has ALWAYS been a **FLOOR**, and the plan wrote a test against the instrument it
+> imagined rather than the one on disk. **CHARC's reason:** a pre-image carrying MORE tables is
+> still a valid backup, so equality points the wrong way -- it would not widen the roster, it would
+> **REVERSE the gate's direction**. The struck sentence's stated reason (*"against a set that omits
+> any of 0037's three tables ... the equality fails naming the missing member"*) is struck with it
+> and re-expressed below as a MEMBERSHIP assertion, which is what actually defends that property.
+> **BANKED TO CHARC'S REGISTER, NOT THIS ARC:** a schema-manifest drift comparator (a fresh v(HEAD)
+> table set compared by EQUALITY against a committed manifest, updated in the same commit as any
+> migration). That is the equality the plan wanted; it lives BESIDE the backup gate, not inside it,
+> and is deliberately not built here.
+
+Assert **TWO** things against a freshly migrated v37 database
+(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`):
+**(1)** `PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES` is a **SUBSET** of that set, **naming the
+offending member on failure** -- a constant demanding a table no real v37 database has would make
+the gate refuse every genuine backup; and **(2)** 0037's three tables --
 `candidates_immutability_epoch`, `latch_order_mandate_links`, `fill_envelope_identity`
-(`swing/data/migrations/0037_latch_order_mandate_links.sql:121`, `:289`, `:518`)** -- the equality
-fails naming the missing member. *Derive the new constant as
+(`swing/data/migrations/0037_latch_order_mandate_links.sql:121`, `:289`, `:518`) -- are **MEMBERS**
+of the constant, which is the property the struck equality was reaching for. Gate strictness is
+**identical to 22-A's**; S6 step 1 is unchanged in form. *Derive the new constant as
 `PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES | {the three}`, the deterministic-derivation shape the
 Phase-8 set already uses (`swing/data/db.py:382`), so provenance is readable; then let this row
 prove the derivation rather than trusting it.*
@@ -923,7 +954,15 @@ outcome and only one of them is the designed behaviour.
 `{c for c in PRAGMA table_info(trades)} - {f.name for f in dataclasses.fields(Trade)} ==
 {"risk_policy_id_at_lock", "attempt_id"}`, with the reason for each member in the test's docstring.
 **EQUALITY, NEVER A SUPERSET CHECK -- CHARC made this the MANDATORY member of the mirror set**
-(2026-09-06): *"the one mirror that defends the set."* A `>=` or subset form would silently absorb the
+(2026-09-06): *"the one mirror that defends the set."*
+**AND THIS EQUALITY IS NOT THE ONE THE 2026-09-07 `(m3c)` RULING STRUCK, which is why the two are
+distinguished here rather than left to a phrase match** (executing intake, 2026-09-07). `(m3c)`'s
+subject is `_verify_backup_integrity`, whose instrument is literally
+`missing = expected_tables - actual_tables` -- a SUBSET test whose contract is a FLOOR, so equality
+there would reverse the gate. **THIS row's subject is the schema-versus-model comparator**, which
+has no such instrument behind it: it is a DECISION LEDGER over `trades` columns absent from `Trade`,
+and its whole value is that the next column added without a decision FAILS it. A
+`>=` or subset form would silently absorb the
 next column added without a decision, which is precisely the failure the comparator exists to catch,
 and it is the same softening the LOCK-A docstring refuses one section over.
 **Post-fix:** passes. **Pre-fix:** the set is `{"risk_policy_id_at_lock"}` (MEASURED today), so the

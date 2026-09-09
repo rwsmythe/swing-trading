@@ -30,8 +30,8 @@ def _insert_run(conn: sqlite3.Connection) -> int:
     return int(cur.lastrowid)
 
 
-def test_expected_schema_version_is_30():
-    assert EXPECTED_SCHEMA_VERSION == 37
+def test_expected_schema_version_is_head():
+    assert EXPECTED_SCHEMA_VERSION == 38
 
 
 def test_migrate_to_30_creates_yfinance_calls_table_and_indexes(tmp_path):

@@ -86,7 +86,18 @@ from pathlib import Path
 #   two triggers (CHARC CONDITION-4 exception 2, declared in the migration
 #   header). ADDITIVE: nothing rebuilt, no existing row mutated. Atomic
 #   BEGIN/COMMIT.
-EXPECTED_SCHEMA_VERSION = 37
+# 22-A4 trades.attempt_id (migration 0038): the PER-ATTEMPT IDENTITY TOKEN --
+#   one nullable TEXT column with a `typeof(...) = 'text' AND length(...) = 36`
+#   CHECK, a partial UNIQUE index over non-NULL tokens, and an UNCONDITIONAL
+#   `BEFORE UPDATE OF attempt_id` write-once trigger. Written by the SAME
+#   INSERT that writes the trade row, so it is CO-DURABLE rather than a
+#   run-level stamp (gotcha #30), and unique per attempt by mechanism, which
+#   the rowid is not (a rolled-back rowid is reissued by the engine). It is
+#   what lets a commit whose own RETURN was lost be resolved by identity on a
+#   FRESH connection. NO BACKFILL -- every pre-existing row reads NULL, which
+#   is what the partial index is for. ADDITIVE: nothing rebuilt, no existing
+#   row mutated. Atomic BEGIN/COMMIT.
+EXPECTED_SCHEMA_VERSION = 38
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -381,6 +392,25 @@ DEMAND_C_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 # (verified by reading the resolved set, not by assuming the chain covers them).
 PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     DEMAND_C_PRE_MIGRATION_EXPECTED_TABLES | {"provenance_corrections"}
+)
+
+# 22-A4 (migration 0038) pre-migration expected-table set. INHERITED from the
+# 22-A chain PLUS the THREE tables 0037 itself created -- read out of
+# `0038`'s predecessor migration file (`0037_latch_order_mandate_links.sql`
+# sections at :121, :289 and :518) rather than recalled.
+#
+# THE SET IS A FLOOR, NOT A MANIFEST, and the instrument says so:
+# `_verify_backup_integrity` computes `missing = expected_tables -
+# actual_tables` and raises only on a MISSING member, so a pre-image carrying
+# MORE tables than this set is still a valid backup. Ruled 2026-09-07 (CHARC)
+# against a plan that had asked for equality here; the equality belongs to a
+# separate schema-manifest comparator, beside this gate rather than inside it.
+PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES | {
+        "candidates_immutability_epoch",
+        "latch_order_mandate_links",
+        "fill_envelope_identity",
+    }
 )
 
 
@@ -1096,6 +1126,35 @@ def _create_pre_phase22_arc_a_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-22a-migration-{timestamp}.db"
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
+def _create_pre_phase22_arc_a4_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """22-A4 per-attempt identity (0038) mirror of the 22-A backup creator.
+    SQLite-native Connection.backup() before the 0038 migration. Backup file
+    ``swing-pre-22a4-migration-<ISO>.db``.
+
+    0038 is ADDITIVE -- one ADD COLUMN, one partial UNIQUE index, one BEFORE
+    UPDATE trigger, no backfill -- so it is not the rebuild class the 0035
+    gate guards. The snapshot is taken anyway, and here it earns its keep: the
+    live database crosses this migration exactly once, holding real
+    money-bearing trades, and the token's immutability trigger makes any
+    post-migration repair of ``trades.attempt_id`` a migration-level
+    operation. The pre-image is the only ordinary way back."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-22a4-migration-{timestamp}.db"
     src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
@@ -2029,6 +2088,54 @@ def _phase22_arc_a_backup_gate(
         ) from exc
 
 
+def _phase22_arc_a4_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """22-A4 per-attempt identity (0038) backup-before-migrate gate.
+
+    Fires ONLY when ``current_version == 37 AND target_version >= 38`` -- a
+    real production v37 DB about to cross v38. STRICT EQUALITY on the PRE
+    version: the condition is exactly ``current_version == 37 AND
+    target_version >= 38``, NOT ``current_version <= 37``. That is the
+    project-canonical clause shape (CLAUDE.md: copy the Phase 9
+    ``pre_version == 16 AND target >= 17`` clause verbatim); the gotcha's
+    ``pre_version == (target - 1)`` phrasing describes the SINGLE-STEP case
+    only and would read false at ``target_version = 39``, where this gate
+    still fires and must. Multi-version jumps from pre-v37 baselines bypass
+    this gate by design, which is why a fixture that wants BOTH a v37 world
+    and production HEAD makes TWO calls rather than retargeting one
+    (``run_migrations`` evaluates every gate ONCE against the INITIAL
+    ``current``).
+    """
+    if target_version < 38 or current_version != 37:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-22-A4 backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_phase22_arc_a4_migration_backup(
+            src_path, dest_dir=backup_dir)
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-22-A4 backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -2180,6 +2287,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _phase22_arc_a_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _phase22_arc_a4_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,

@@ -138,8 +138,8 @@ def _reject(conn, row: dict) -> None:
 # --------------------------------------------------------------------------
 # Version, provenance, backup gate
 # --------------------------------------------------------------------------
-def test_expected_schema_version_is_33():
-    assert EXPECTED_SCHEMA_VERSION == 37
+def test_expected_schema_version_is_head():
+    assert EXPECTED_SCHEMA_VERSION == 38
 
 
 def test_pre_migration_expected_tables_is_the_v32_set_derived():
