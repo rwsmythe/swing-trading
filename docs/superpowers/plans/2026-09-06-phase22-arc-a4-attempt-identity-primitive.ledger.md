@@ -3113,3 +3113,96 @@ re-setting, and CHARC is not being asked to verify a paraphrase.
 > Item 2's commit lands -> your QA against disk -> B RE-RUN on THAT head (you were right to hold B for it: B reviews the tree I want reviewed, and a docstring that says three sites would have cost B a finding and us a disposition) -> the b3b518f9 trailer reword -> the operator's -n auto merged-head run -> merge request -> both gates -> S9 step 0 -> the witnessed 0038 migration. The merge request cites the method line from item 1 beside all three hashes.
 >
 > -- CHARC
+
+
+---
+
+## REVIEWER B -- THE RE-RUN ON THE POST-FIX HEAD `989d734f`. **NO NEW INTRODUCED MAJOR.**
+
+Run by the orchestrator (not the author, not the cell) per CHARC's ruling that *"a clearance attaches
+to the tree its holder verified."* **Same form, same prompt file, same five assertions as the first
+pass** -- the prompt read from the DURABLE preserved copy
+(`~/swing-data/review-transcripts/22-a4-exec/REVIEWER-B-prompt-22a4.md`), not from any session
+scratchpad. Runner preserved beside it as `run_b2_22a4.sh` with its five WSL hazards commented.
+
+**CONTAMINATION CONTROL, PERFORMED NOT ASSERTED:** all 15 of Reviewer A's scratch files **and B's own
+first-pass transcript and exit file** were moved out of the worktree before the run, under a written
+manifest, and all 15 restored after (`git status` clean, verified). B reading its own prior verdict
+would have defeated the point of a second eye; the recipe's hazard is that the review's output
+otherwise sits inside its input.
+
+### THE FIVE MECHANICAL ASSERTIONS -- ALL PASSED, AS MEASUREMENTS
+
+| # | assertion | measured |
+|---|---|---|
+| 0 | process EXITED before the transcript was read | exit code **0**, from `.reviewer-b2-exit.txt` |
+| 1 | model | `model: gpt-5.6-sol` |
+| 2 | effort | `reasoning effort: high` |
+| 3 | anchored `^ERROR` | **0** (unanchored: **37** -- the repo-prose false positives the anchor exists to defeat) |
+| 4 | anchored `^tokens used` footer | **1** -> **678,193** |
+| 5 | verdict token | `^NEW_CRITICAL_MAJOR_FOUND` **2**, `^NO_NEW_CRITICAL_MAJOR` **0**; final line is the token alone |
+
+Transcript **2,479,419 bytes**, preserved to
+`~/swing-data/review-transcripts/22-a4-exec/.reviewer-b2-out.txt` the moment assertion 5 passed.
+
+### THE VERDICT TOKEN SAYS `FOUND`. THE CONTENT SAYS **NOTHING NEW**. BOTH HALVES ARE THE RESULT.
+
+B's own opening line: *"No new introduced CRITICAL or MAJOR defect emerged on the post-fix tree. One
+already-ledgered, pre-existing MAJOR remains unresolved and out of envelope, so the required verdict
+is still NEW_CRITICAL_MAJOR_FOUND."* The prompt mandates that token for **ANY** finding rated
+CRITICAL or MAJOR *"including one tagged out-of-envelope or pre-existing"* -- so the token is
+mechanically correct and is **not** a merge blocker on its own. **It is also not nothing: a real
+pre-existing MAJOR stands unfixed at merge, by ruling, and the merge request says so in those
+words.** Reading the token as a block would be wrong; reading it away would be worse.
+
+**CHARC's no-fifth-round condition is therefore NOT triggered.** No new in-envelope introduced major
+surfaced, so no fresh written round authorization was needed and none was written.
+
+### THE THREE FINDINGS, AND WHY EACH IS ALREADY OWNED
+
+1. **MAJOR -- `_handle_single_field_correction` silently discards every payload key after the first.**
+   `[PRE-EXISTING]` `[OUT-OF-ENVELOPE]`. This is **`B-2`**, banked to CHARC's register at the first
+   pass. B states it plainly: *"It remains unresolved because the B-1 fix was directed to preserve
+   next(iter(...)) and avoid widening into general corrector semantics. The arc did not introduce
+   or worsen it."* **The independent eye confirms the refusal held** -- the fix did not close `B-2`,
+   which is exactly what CHARC ruled it must not do.
+2. **MINOR -- noncanonical spellings (`ATTEMPT_ID`, `[attempt_id]`) are refused correctly but arrive
+   as a CLI traceback or a web 500**, because `ReservedJournalFieldError` derives directly from
+   `Exception` while the CLI handlers catch `ValueError`. `[PRE-EXISTING]` `[OUT-OF-ENVELOPE]`. This
+   is the queued `ReservedJournalFieldError` bare-`Exception` item (D34's third instance), which B
+   **independently rediscovered** without being pointed at it. No corruption risk; delivery only.
+3. **MINOR -- HEAD-version semantic names and diagnostics stale** (ten `_is_19`..`_is_28` functions
+   asserting 38). `[PRE-EXISTING]` `[IN-ENVELOPE]`. This is **`B-4`**, already the post-merge
+   version-mirror rename rider. B adds the useful negative: **no stale 37->38 executable mirror and
+   no incorrectly moved v37 fixture was found.**
+
+### WHAT B VERIFIED THAT MATTERS MOST -- CLAIM 7, THE ONE ITS FIRST PASS FALSIFIED
+
+> *"Claim 7 -- Corrector refuses attempt_id: **HOLDS** for canonical `attempt_id` on every mutating
+> operator route. The immutable predicate is reached from the multi-field preflight, tier-3 head,
+> single-field whole-payload preflight, and write backstop. The post-ledger `B-1` fix at
+> `_handle_single_field_correction` closes the trailing-key hole."*
+
+Claim 7 was CHARC's attached condition and the sole ground for the envelope widening; B's first pass
+falsified it and B's second pass confirms it closed -- **by a different eye than the one that wrote
+the fix.** Claim 3 likewise now reads `mode=rw&cache=private` and HOLDS (RD's `B-3`).
+
+B also reached, unprompted, the same conclusion the orchestrator reached at QA about the new tests:
+*"the leading-key B-1 row is explicitly a paired order-independence control, while the trailing-key
+row is the discriminator."* Two independent readings agreeing that one of the two new rows is a
+control and not a second discriminator.
+
+The accepted limitations S7.1 / S7.2 / S7.7 / S7.8 / S7.11 were challenged and **survived**; B went
+to the CPython 3.11.14 and 3.12.0 `_sqlite/connection.c` sources to check the deferred-rollback
+premise rather than reasoning about it.
+
+### THE BOUND ON THIS CLEARANCE, STATED BECAUSE IT IS NOT NOTHING
+
+B ran with **no `pytest` and no `git`** in its environment (the latter by instruction -- a worktree's
+`.git` pointer it cannot resolve). So: it could not re-run the suite, and its **claim 8 (envelope
+holds) is explicitly qualified** -- *"HOLDS on the available non-git evidence [...] exact historical
+byte identity cannot be independently proved without a baseline."* The byte-identity half is proved
+instead by the orchestrator's AST source-segment measurement of Lock A, under the method line
+recorded above, and by the suite the orchestrator ran: **12,310 passed / 13 skipped / 0 failed on
+`989d734f`** (`-n 4`, from the worktree), matching the run on `03e6ecc3` and proving the docstring
+commit inert rather than assuming it.
