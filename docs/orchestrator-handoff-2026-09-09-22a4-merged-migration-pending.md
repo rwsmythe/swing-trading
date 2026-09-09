@@ -75,8 +75,9 @@ shape as the other three instances on this arc.
 
 ## 4. STATE, re-derived at write time
 
-- **`main` @ `e50c8ec1`**, tree clean except ONE foreign untracked file (below). **34 commits ahead
-  of origin, UNPUSHED.**
+- **`main` @ `e50c8ec1`**, tree clean except ONE foreign untracked file (below). **71 commits ahead of origin, UNPUSHED** — counted after the merge, which brought the
+  branch's 36 commits into main's history; a PRE-merge count (33/34) is the wrong number for a
+  post-merge document and I wrote one here before catching it.
 - **Merge commit `82d20042`**, parents `0af3cf07` (main) + `3b7140a7` (branch), **trailers `[]`**,
   made with `git merge --no-ff` per CHARC's ruling — **never rebase, never squash this arc.**
 - **Branch `22-a4-exec` @ `3b7140a7`** and worktree `.worktrees/22-a4-exec` — **PRESERVED, do not
