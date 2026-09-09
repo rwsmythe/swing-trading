@@ -181,6 +181,16 @@ function Get-LaunchArgs($role) {
 function Invoke-Preflight {
     # Verify the claude CLI exists and carries the flags we depend on. Returns
     # the version string; throws on any failure (ASCII messages).
+    #
+    # THE PROBE MUST NOT MOVE ITS SUBJECT (coa-chess finding, 2026-09-09): a
+    # bare `claude --version` from a shell without DISABLE_AUTOUPDATER=1 is an
+    # update opportunity -- the CLI self-updated twice in eight hours under a
+    # live run on this shared box, both times from terminals outside a
+    # launcher. Set it in THIS process before the first claude invocation. The
+    # spawned role shells get their own copy in Build-LaunchCommand (a child
+    # inherits its parent's environment block, and the launcher may itself
+    # have been started from a shell that predates the operator's setx).
+    $env:DISABLE_AUTOUPDATER = '1'
     $cmd = Get-Command claude -ErrorAction SilentlyContinue
     if ($null -eq $cmd) {
         throw "claude CLI not found on PATH. Install Claude Code or open a shell where 'claude' resolves."
@@ -286,8 +296,16 @@ function Build-LaunchCommand($role, $argList) {
     # runs inside the spawned shell so it covers BOTH vehicles (wt tab, plain
     # window) identically. The global CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS flag
     # is deliberately NOT removed (harmless, not a session marker).
+    #
+    # THEN DISABLE THE CLI AUTO-UPDATER IN THE SPAWNED SHELL (coa-chess
+    # finding, 2026-09-09; ported on the operator's word). Any claude
+    # invocation from a shell without DISABLE_AUTOUPDATER=1 can replace the
+    # shared binary under a live run of EITHER project on this box. Set inside
+    # the spawned blob, between the scrub and the role marker, so both
+    # vehicles carry it regardless of what the launcher's caller had. CLI
+    # updates are then a deliberate act between runs (`claude update`).
     $scrub = ($SessionMarkers | ForEach-Object { "Remove-Item Env:$_ -ErrorAction SilentlyContinue" }) -join '; '
-    return "$scrub; `$env:SWING_ROLE='$role'; Set-Location '$RepoRoot'; claude " + ($argList -join ' ')
+    return "$scrub; `$env:DISABLE_AUTOUPDATER='1'; `$env:SWING_ROLE='$role'; Set-Location '$RepoRoot'; claude " + ($argList -join ' ')
 }
 
 function Get-EncodedCommand($inner) {

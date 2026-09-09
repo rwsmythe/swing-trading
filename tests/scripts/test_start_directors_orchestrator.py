@@ -249,6 +249,48 @@ def test_dryrun_launch_line_scrubs_markers_before_claude():
     assert launch.index("$env:SWING_ROLE='charc'") < claude_at
 
 
+# --- CLI auto-update under a live run (coa-chess finding, 2026-09-09) ------
+#
+# The claude CLI self-updates on ANY invocation from a shell without
+# DISABLE_AUTOUPDATER=1. On the shared box it did so twice in eight hours
+# (2026-09-08T20:41Z, 2026-09-09T04:41Z; the .old copies beside claude.exe are
+# the evidence) under a live coa-chess run, and one game spanned a bump
+# mid-game. Two sites in this launcher can move the binary: the SPAWNED role
+# shell (every claude invocation it ever makes) and the launcher's OWN
+# preflight (`claude --version` / `--help` -- a probe that can mutate its
+# subject is not a probe). Both are pinned; a process inherits its parent's
+# environment block, not the registry, so the operator's user-level setx does
+# not cover a launcher started from an older shell.
+
+_AUTOUPDATE_OFF = "$env:DISABLE_AUTOUPDATER = '1'"
+
+
+def test_launcher_disables_autoupdate_before_its_own_preflight_probe():
+    text = _script_text()
+    assert _AUTOUPDATE_OFF in text
+    # anchor on the INVOCATION, not the token: prose mentions of the probe
+    # sit above the assignment and would false-fail a bare text search
+    probe = "(claude --version | Out-String)"
+    assert probe in text
+    assert text.index(_AUTOUPDATE_OFF) < text.index(probe), (
+        "the launcher probes the CLI before it disables the auto-updater")
+
+
+def test_dryrun_launch_line_disables_autoupdate_after_scrub_before_claude():
+    r, out = _dryrun("-Role", "charc")
+    assert r.returncode == 0
+    launch = next(ln for ln in out.splitlines() if "  launch: " in ln)
+    stanza = "$env:DISABLE_AUTOUPDATER='1'"
+    assert stanza in launch
+    at = launch.index(stanza)
+    last_scrub = max(
+        launch.index(f"Remove-Item Env:{name} -ErrorAction SilentlyContinue")
+        for name in _SESSION_MARKERS)
+    assert last_scrub < at, "auto-update disabled BEFORE the marker scrub"
+    assert at < launch.index("$env:SWING_ROLE='charc'")
+    assert at < launch.index("; claude ")
+
+
 # --- Named window: one project = one window = three role tabs -------------
 #
 # Operator-ruled 2026-09-08 after two self-launched rollovers landed the
