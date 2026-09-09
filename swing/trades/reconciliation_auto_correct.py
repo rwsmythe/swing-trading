@@ -258,17 +258,24 @@ def _refuse_immutable_journal_fields(
 ) -> None:
     """Refuse ANY write to a write-once identity column, before it is composed.
 
-    ONE predicate and ONE message, called from THREE sites (see each call
+    ONE predicate and ONE message, called from FOUR sites (see each call
     site's comment for why it is there):
 
       * `_update_journal_field` -- the BACKSTOP. It is the only site in this
-        module that writes an operator-supplied journal field, so a check here
-        reaches every operator surface.
+        module that WRITES an operator-supplied journal field, so a check here
+        catches every write. But it is handed ONE field -- the one a caller
+        has already selected -- so it cannot see a payload's OTHER keys. The
+        three ORDERING sites below exist because of that.
       * `_preflight_reserved_transitions` -- ORDERING, on the multi-field
         handler: it applies fields SEQUENTIALLY, so a backstop-only check makes
         refusal depend on JSON KEY ORDER.
       * the head of `_apply_tier3_override_inner` -- ORDERING, on the tier-3
         override surface, which the preflight above never reached.
+      * `_handle_single_field_correction` -- ORDERING, on the single-field
+        path: this call runs over the WHOLE payload BEFORE the
+        `next(iter(...))` selection there, because a backstop-only check would
+        see only the field that selection already picked, never the payload's
+        other keys.
 
     Takes the WHOLE field set rather than one field so the answer cannot depend
     on iteration order.
