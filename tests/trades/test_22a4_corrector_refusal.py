@@ -315,6 +315,108 @@ def test_m8b_a_non_immutable_multi_field_correction_still_applies(
 
 
 # ---------------------------------------------------------------------------
+# (B-1) THE THIRD CORRECTOR PATH -- `operator_alternative`, which
+# `_preflight_reserved_transitions` never reaches. Reviewer B found this on
+# `84e90bab`; CHARC ruled it INTRODUCED, IN ENVELOPE, 2026-09-08 (the fix
+# leg's own ledger). `("validator_rejected", "operator_alternative")` routes
+# through `_handle_single_field_correction`, which selected
+# `field_name = next(iter(correction_target.keys()))` and handed the
+# immutable guard ONLY that one key -- so a two-key payload's `attempt_id`
+# was silently dropped whenever `current_stop` happened to be first.
+# ---------------------------------------------------------------------------
+
+
+def test_b1_operator_alternative_refuses_trailing_attempt_id_with_zero_writes(
+    conn: sqlite3.Connection,
+) -> None:
+    """The trailing-key row: `current_stop` first, `attempt_id` last.
+
+    Pre-fix (reproduced live at QA on `84e90bab`): NO exception at all --
+    `_handle_single_field_correction` selected `current_stop` as the sole
+    field, wrote it, left `attempt_id` untouched, and terminalized the
+    discrepancy as `operator_resolved_ambiguity`. Post-fix: the whole-payload
+    immutable guard fires before the field-name selection, so the answer does
+    not depend on which key came first.
+    """
+    world = _seed_trade_anchored_world(conn, ambiguity_kind="validator_rejected")
+    trace = _StatementTrace()
+    conn.set_trace_callback(trace)
+    try:
+        with pytest.raises(ImmutableJournalFieldError):
+            apply_tier2_resolution(
+                conn,
+                discrepancy_id=world["discrepancy_id"],
+                choice_code="operator_alternative",
+                operator_custom_payload={
+                    "current_stop": 4.5,
+                    "attempt_id": OTHER_TOKEN,
+                },
+                operator_reason="ordinary field first, attempt_id last",
+            )
+    finally:
+        conn.set_trace_callback(None)
+
+    assert _journal_update_count(trace) == 0, trace.statements
+    assert trace.count_startswith("INSERT INTO reconciliation_corrections") == 0
+
+    assert conn.execute(
+        "SELECT current_stop FROM trades WHERE id = ?", (world["trade_id"],),
+    ).fetchone()[0] == 4.0
+    assert conn.execute(
+        "SELECT attempt_id FROM trades WHERE id = ?", (world["trade_id"],),
+    ).fetchone()[0] == MINTED_TOKEN
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT resolution FROM reconciliation_discrepancies "
+        "WHERE discrepancy_id = ?", (world["discrepancy_id"],),
+    ).fetchone()[0] == "pending_ambiguity_resolution"
+
+
+def test_b1_operator_alternative_refuses_leading_attempt_id_with_zero_writes(
+    conn: sqlite3.Connection,
+) -> None:
+    """The leading-key row: `attempt_id` first gets the same answer as
+    `attempt_id` last -- the defect was key-order dependent and the fix must
+    not be."""
+    world = _seed_trade_anchored_world(conn, ambiguity_kind="validator_rejected")
+    trace = _StatementTrace()
+    conn.set_trace_callback(trace)
+    try:
+        with pytest.raises(ImmutableJournalFieldError):
+            apply_tier2_resolution(
+                conn,
+                discrepancy_id=world["discrepancy_id"],
+                choice_code="operator_alternative",
+                operator_custom_payload={
+                    "attempt_id": OTHER_TOKEN,
+                    "current_stop": 4.5,
+                },
+                operator_reason="attempt_id first",
+            )
+    finally:
+        conn.set_trace_callback(None)
+
+    assert _journal_update_count(trace) == 0, trace.statements
+    assert trace.count_startswith("INSERT INTO reconciliation_corrections") == 0
+
+    assert conn.execute(
+        "SELECT current_stop FROM trades WHERE id = ?", (world["trade_id"],),
+    ).fetchone()[0] == 4.0
+    assert conn.execute(
+        "SELECT attempt_id FROM trades WHERE id = ?", (world["trade_id"],),
+    ).fetchone()[0] == MINTED_TOKEN
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_corrections",
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT resolution FROM reconciliation_discrepancies "
+        "WHERE discrepancy_id = ?", (world["discrepancy_id"],),
+    ).fetchone()[0] == "pending_ambiguity_resolution"
+
+
+# ---------------------------------------------------------------------------
 # (m8d) THE TIER-3 OVERRIDE PATH -- the surface the preflight never reached
 # ---------------------------------------------------------------------------
 

@@ -2741,7 +2741,6 @@ def _handle_single_field_correction(
     parity (F22).
     """
     affected_table, affected_row_id = _resolve_affected_target(disc)
-    field_name = next(iter(correction_target.keys()))
 
     # THE BYTE-EXACT GATE RUNS FIRST on this path too (`A4X-R3-03`, CHARC
     # 2026-09-08). `operator_alternative` reaches here carrying an
@@ -2754,6 +2753,21 @@ def _handle_single_field_correction(
     # sources its field name from the classifier rather than the operator and
     # keeps `_update_journal_field` as its backstop.
     _assert_real_column_names(conn, affected_table, correction_target.keys())
+
+    # `B-1` (Reviewer B, CHARC ruled 2026-09-08): the immutable guard, over
+    # the COMPLETE payload, BEFORE the `next(iter(...))` selection below --
+    # not after it. This function used to select ONE key first and hand the
+    # guard inside `_update_journal_field` only THAT key, so on a two-key
+    # payload the answer depended on which key `next(iter(...))` picked: with
+    # `attempt_id` selected the single-key backstop caught it, and with an
+    # ordinary field selected first, `attempt_id` was silently dropped and
+    # never reached a guard at all. Same ordering as the two existing
+    # whole-payload sites (`_preflight_reserved_transitions`,
+    # `_apply_tier3_override_inner`): deciding over the whole payload first is
+    # what makes the answer independent of JSON key order.
+    _refuse_immutable_journal_fields(affected_table, correction_target.keys())
+
+    field_name = next(iter(correction_target.keys()))
 
     if revalidate:
         _validate_correction_target(
