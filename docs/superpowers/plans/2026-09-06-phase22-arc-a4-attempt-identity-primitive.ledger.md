@@ -3287,3 +3287,61 @@ merged-head `-n auto` run, is OWED and is the OPERATOR'S, on the MERGE COMMIT.
 > Spend noted for the register: 3.28M review tokens against ~250K implementation on this arc. The sonnet-high cell needed zero rework across two dispatches; the one correction ran the other way. That is the datum the notch experiment was after.
 >
 > -- CHARC
+
+---
+
+## RD'S MERGE GATE -- **PASS, SEVEN OF SEVEN** -- **AUTHOR: RD. TRANSCRIBED BY THE ORCHESTRATOR AS COURIER ONLY.**
+
+**Source:** `comms/orchestrator/read/20260909T035331Z-rd-rd-gate-22-a4-pass-on-tree-fd69bc22-fae5.md`, thread `22-a4-merge`, posted 2026-09-09T03:53:31Z.
+**Reproduced below as a LITERAL BLOCK QUOTE, built mechanically from the message file and verified
+byte-for-byte by containment.**
+
+**BOTH DIRECTOR GATES ARE NOW IN.** CHARC: eight of nine, clearance conditional on his check (6), the
+operator's `-n auto` run on the MERGE COMMIT, whose result line he reads himself. RD: seven of seven,
+clearance attached to tree `fd69bc22f661` (`fae5c181`), with a post-merge re-verification he owes
+before the migration step.
+
+**Three things in RD's gate that this seat did NOT supply and should be read as independent:**
+
+1. **He sharpened an inherited check rather than passing it.** The old (a) said "zero lines outside
+   `0038` + `db.py`," which **under-specified the carve-out** -- the primitive's writer and reader
+   necessarily live in `repos/trades.py`. He read every hunk of that file instead of failing it on a
+   wording that was wrong, and states the arc's true production footprint: **exactly five files.**
+2. **He re-derived the cp1252 error independently.** *"the cp1252 decode reproduces the orchestrator's
+   earlier wrong value (14e12dfd / 25,949) -- measured by me before CHARC's ruling landed, same
+   finding, not posted then because his ruling arrived first."* Two directors reached the same
+   diagnosis of this seat's broken instrument by separate routes.
+3. **He EXECUTED rather than read** where execution was available: 71 tests through the branch's OWN
+   package (`PYTHONPATH=.` from the worktree, `swing.__file__` resolved and `EXPECTED_SCHEMA_VERSION`
+   read 38 -- the editable-install-resolves-main gotcha checked, not assumed), covering the seven
+   noncanonical spellings in both key orders and test `(h)` in its rewritten form.
+
+**And he declines the suite claim explicitly:** *"THE SUITE CLAIM IS NOT MINE [...] I do not carry the
+two `-n 4` figures forward as the merged-head result."* The binding green remains the operator's
+`-n auto` run on the merge commit, and nobody in this arc has claimed otherwise.
+
+> RD MERGE GATE -- 22-A4 (attempt-identity primitive). Seven checks, each run by me on the branch, method stated. Thread 22-a4-merge. CHARC's section-6 ruling (no rewrite; --no-ff) read and concurred; nothing said on it.
+>
+> TREE VERIFIED: branch `22-a4-exec` @ `fae5c181`, tree `fd69bc22f661`. The production/test/script content is identical to `e7c52344` (tree `8a59823fb6bf`): `git diff --stat e7c52344 22-a4-exec -- swing/ tests/ scripts/ pyproject.toml swing.config.toml` is EMPTY; the only file in that range is the ledger (+81). Docs-only landing, verified not assumed.
+>
+> (a) MEASUREMENT DIRS -- PASS, with the inherited wording SHARPENED. `git diff main...22-a4-exec -- swing/evaluation swing/recommendations swing/pipeline` = ZERO lines (the measurement chain is untouched). `swing/data` delta = three files: `migrations/0038_trade_attempt_identity.sql` (+121); `db.py` (`EXPECTED_SCHEMA_VERSION` 37->38, the A4 pre-migration backup gate + its hook in `run_migrations`, nothing else -- skeleton read by hunk); `repos/trades.py` (+234/-2). The inherited check said "zero lines outside 0038 + db.py"; that under-specified the carve-out, because the primitive's writer and reader necessarily live in the repo module. I READ every hunk of `repos/trades.py`: new imports, `_log_contained`, `ATTEMPT_ID_LENGTH` + `validate_attempt_id`, an `attempt_id` keyword on `insert_trade_with_event` validated before any write, a schema-aware INSERT branch that is the existing v27 branch plus the one column (the existing branch demoted `if`->`elif`; the two deleted lines are that keyword and a comment), and `find_trade_id_by_attempt_id`. NO existing read path, `_row_to_*` mapper, or cohort reader is touched. Production files changed on the whole arc: exactly five (`db.py`, `0038`, `repos/trades.py`, `trades/entry.py`, `trades/reconciliation_auto_correct.py`).
+>
+> (b) LOCK A -- PASS. Method: `git show <rev>:swing/trades/entry.py` as bytes -> UTF-8 -> ast.parse -> get_source_segment -> sha256. At a32ea9d5 / 84e90bab / e7c52344: `_entry_transaction` c53b2786 (10,990) x3; `record_entry` 5b6aa746 (25,939) x3; `_durability_probe` c16ea465 (4,113) -> (4,113) -> 028cd659 (4,625). The probe's non-docstring diff 84e90bab->HEAD is ONE line: `"?mode=rw"` -> `"?mode=rw&cache=private"` (my B-3 (a)); the rest is the docstring paragraph (my (c)). `with conn:` at :1849 has a body of exactly one `Expr(Yield)`. Independently corroborates CHARC's (3) and the orchestrator's table; the cp1252 decode reproduces the orchestrator's earlier wrong value (14e12dfd / 25,949) -- measured by me before CHARC's ruling landed, same finding, not posted then because his ruling arrived first.
+>
+> (c) THE SETTLE ENVELOPE -- PASS. `_settle_by_attempt_identity` is UNCHANGED since 84e90bab (58b594a1 / 9,418 at both), so this reads the text the fork ruling was written against. Capture-then-return: `proven = found; return proven` inside the try; the handler's proven arm logs a contained note and RETURNS THE PROOF (a TRUE success); the no-proof arm says only what it can distinguish (R3-01's wording: "either the read/gate yielded none, or a fault arrived before the proof was captured"). `except` scope UNCHANGED: the try body at 4589c2f9~1 vs HEAD is the same statement sequence plus the one capture Assign; the handler type is `BaseException` at both -- which exception escapes did not change. Window 2 is DECLARED above `_entry_transaction` as member (B) of the alarm family, bounded by ENDPOINTS ("from the settle's return THROUGH `return degraded`"), the composition stated ONCE for the family (alarm x operator retry x position closed between attempts; the ticker-closed direction named uncovered), weakest-sufficient bound with no independence assumed and no strictness claimed. As ruled.
+>
+> (d) TIER-3 ZERO-WRITE, SEVEN SPELLINGS -- PASS, by read AND by execution. `_normalize_journal_field_name` (the `74cb2815` normalizer) has ZERO hits in `swing/` at HEAD (the 8 hits for a wider pattern are the pre-existing 22-A `ENVELOPE_CANONICALIZER_VERSION`, a different concept). `_NON_CANONICAL_SPELLINGS` carries the seven (upper-case, mixed-case, bracket-quoted, double-quoted, single-quoted, parenthesised, leading-comment); (m8f) drives each through the tier-3 composition surface under a caller-held `BEGIN IMMEDIATE` and asserts: typed `ReservedJournalFieldError` that is NOT `ImmutableJournalFieldError` (byte-exact FIRST), zero `INSERT INTO reconciliation_corrections`, zero `UPDATE reconciliation_corrections`, zero journal UPDATE, the seeded chain head's `superseded_by_correction_id` unchanged, `current_stop`/`attempt_id` on the trade unchanged; a second parametrized row puts the ordinary field FIRST and the spelling LAST (the JSON-key-order property). EXECUTED BY ME against the BRANCH'S OWN package (`PYTHONPATH=.` from the worktree; `swing.__file__` resolved to the worktree and `EXPECTED_SCHEMA_VERSION` read 38 -- the editable-install-resolves-main gotcha checked, not assumed): `tests/trades/test_22a4_corrector_refusal.py` + `test_22a4_attempt_identity.py` -> 71 passed, 0 failed, `-n 0`. That run includes test (h) in its rewritten form (my B-3 (b)).
+>
+> (e) THE (id, ticker) CONTRACT -- PASS. `find_trade_id_by_attempt_id(...) -> tuple[int, str] | None`, `SELECT id, ticker FROM trades WHERE attempt_id = ?`, keyed on the TOKEN (never the rowid), schema-aware (answers None below v38). The settle UNPACKS `settled_id, settled_ticker = found`, compares the ticker to `req.ticker`, and on mismatch ALARMS (contained note, returns None -- "a mismatch may raise the alarm; only a match may be asserted from"); only a match becomes `proven`. Condition 4 met.
+>
+> (f) TRAILERS -- PASS. `git log --format='%(trailers:key=Co-Authored-By,valueonly)' main..22-a4-exec` -> 0 lines. Exactly one non-empty trailer block on the branch, `b3b518f9` `Tests:`, ruled a recorded blemish by CHARC; concurred.
+>
+> (g) LIVE DB -- PASS, read-only query by me just now: `schema_version` = 37; `trades.attempt_id` ABSENT; 0038 UNAPPLIED. 28 trades; open = 23 CADL / 24 RHI / 25 OII / 26 NRIX / 28 PBF. The named-pending rows are UNTOUCHED: 19 FTRE Broad-watch/11852/standard; 24 RHI Broad-watch/12518/standard; 25 OII NULL/NULL/standard; 28 PBF NULL/NULL/by_design -- exactly the September-read state. Re-verify immediately before the witnessed migration regardless.
+>
+> MY B-3 PRESCRIPTION (a)-(c): all three verified at HEAD -- the literal, test (h) rewritten to assert the URI parameter (executed, passes), the docstring paragraph replaced.
+>
+> CLEARANCE: PASS, attached to tree `fd69bc22f661` (`fae5c181`), swing/tests/scripts content identical to `8a59823fb6bf` (`e7c52344`). The three merge-blocking items -- (b), (d), (e) -- hold. POST-MERGE RE-VERIFICATION, owed by me before the migration step: on the `--no-ff` merge commit M, (1) `git diff 22-a4-exec M -- swing/` EMPTY, and (2) for every file the branch changed (`git diff --name-only 2d9e4a34 22-a4-exec`), the blob at M equals the blob at `22-a4-exec` -- i.e. main's own commits (docs, the launcher script and its test) reach M untouched and the arc's files reach M byte-identical. Any code/test landing between this clearance and M re-opens it; docs-only, grepped as above, does not.
+>
+> THE SUITE CLAIM IS NOT MINE: the operator's `-n auto` run on the merge commit is CHARC's check (6) and the binding green; my gate is the measurement-integrity read plus the 71-test execution above, and I do not carry the two `-n 4` figures forward as the merged-head result.
+>
+> -- RD
