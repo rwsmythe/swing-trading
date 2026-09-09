@@ -276,3 +276,39 @@ shape as the retired "grep-history continuity" citation (see §"Appended 2026-09
 **Landed:** the self-contradictory line replaced at `25870c42`; compressed to trigger + fix with this
 forensic split out, per the §size-check trigger, immediately after (the first version was 857 chars
 against a ~700 soft cap, caught by the author's own check rather than by a reviewer).
+
+
+## Appended 2026-09-09 — the cp1252 DECODE side (22-A4 Reviewer-B fix-leg QA)
+
+**The instance.** At QA of the 22-A4 Reviewer-B fix leg the orchestrator re-measured Lock A — three
+AST-locked functions in `swing/trades/entry.py`, each pinned by a recorded sha256 over
+`ast.get_source_segment`. Two rows reproduced exactly. The third, `record_entry`, gave
+`14e12dfd...` (25,949 chars) against a recorded `5b6aa746...` (25,939). The orchestrator then hunted
+the recorded value across all 54 revisions of `entry.py` reachable from the arc branch, found it at
+**zero** of them while finding the other two recorded hashes at real revisions, tried seven
+extraction variants (padded, raw line slice, rstrip, CRLF, `ast.unparse`), and reported the row as a
+**phantom** — plus an accusation that the implementer cell's "old hashes matched the ledger exactly"
+claim "did not survive checking."
+
+**The cause, found by CHARC in one pass and verified by execution on both sides.** The measuring
+script captured the blob with `subprocess.run(..., text=True)` and **no `encoding=`**. On this box
+that decodes cp1252. `record_entry` contains 7 non-ASCII characters (`§`, `×`, em-dash, rightwards
+arrow) which under cp1252 become 17 mojibake characters: +10 chars, and the hash moves.
+`_entry_transaction` and `_durability_probe` are pure ASCII, so **both decoders agree on them** —
+which is precisely why the instrument passed its own two-of-three sanity check and why only the
+non-ASCII member of the set disagreed. Re-measured with an explicit UTF-8 decode of the same blob,
+the recorded value reproduces exactly; decoded cp1252, the wrong value reproduces exactly.
+
+**Dispositions.** The recorded row STANDS (CHARC: "do NOT replace the value"); the ledger's Lock-A
+table now carries a binding METHOD line (bytes → explicit UTF-8 → `ast.parse` →
+`ast.get_source_segment` → sha256; never a file diff, never an implicit decode) so the next
+re-measurement is a comparison rather than a rediscovery. The cell's report was TRUE and the
+accusation was **withdrawn on the record in the arc ledger beneath its own quote**, the form this
+harness uses for a falsified assessment.
+
+**The process half, banked against the seat that owns it.** The 54-revision hunt returned an ABSENCE
+and reported it as a total, when the bound was not the revision range but the DECODER — an
+instrument that could not have found the value at any revision. Fourth instance of
+bounded-search-reported-as-total on this arc, from a fourth seat. The seven "extraction variants"
+all sat DOWNSTREAM of the decode, so none could reach the defect: **varying the last stage of a
+pipeline is not a control on the first.**
