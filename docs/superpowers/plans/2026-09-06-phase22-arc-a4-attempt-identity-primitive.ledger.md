@@ -2983,3 +2983,133 @@ parameter TOOK EFFECT.** What proves the mechanism is RD's own execution in his 
 file, count 0) -- his measurement, not this seat's, and cited as his. A non-discriminating control is
 reported as non-discriminating; the alternative is a bounded check presented as a total, which is
 this arc's most-repeated failure class.
+
+---
+
+## THE REVIEWER-B FIX LEG -- SHIPPED AND QA'd AGAINST DISK (orchestrator-authored)
+
+**Branch `22-a4-exec`; the leg's two commits are `21d78e07` (`B-1`) and `03e6ecc3` (`B-3`).** Cell
+`implementer-sonnet-high`, dispatched 2026-09-09 off the brief at `b10be35d`. Tree clean, `ruff check
+swing/` clean, both commits' trailers `[]`, four files touched (two production, two test) and no
+others.
+
+**THE RED WAS VERIFIED BY THE ORCHESTRATOR, NOT ACCEPTED FROM THE CELL.** Method: a throwaway
+detached worktree at the pre-fix commit `b10be35d`, the three new tests copied in, run against the
+OLD production code, then torn down (`git worktree remove --force` de-registered it; the directory
+needed a forced delete afterwards -- the usual Windows lock).
+
+| test | pre-fix, measured here | post-fix |
+|---|---|---|
+| `..._refuses_trailing_attempt_id_with_zero_writes` | **FAILED** -- `DID NOT RAISE ImmutableJournalFieldError` | passes |
+| `..._refuses_leading_attempt_id_with_zero_writes` | **PASSED** -- not a discriminator | passes |
+| `test_h_the_probe_opens_with_cache_private_...` | **FAILED** on the `cache=private` assertion | passes |
+
+The leading-key row passing pre-fix is not a defect: `_update_journal_field`'s single-key backstop
+already caught `attempt_id` when it happened to be the selected key, which is the same fact that
+makes `B-1` key-order dependent. It is an order-independence pin, not a second discriminator, and
+**the cell disclosed this itself** rather than presenting two reds.
+
+**BOTH REFUSALS HELD.** `B-2` is untouched -- `field_name = next(iter(correction_target.keys()))` is
+preserved verbatim and merely relocated BELOW the new whole-payload guard, so a multi-key payload
+still discards after the first key exactly as before. Of the three AST-locked functions only
+`_durability_probe` moved.
+
+**Full fast suite, run independently by the orchestrator on `03e6ecc3` (`-n 4`, from the worktree):
+12,310 passed, 13 skipped, 0 failed, exit 0, 848.95s.** Identical to the cell's reported numbers.
+
+### THE ACCUSATION I MADE AGAINST THE CELL, AND ITS WITHDRAWAL
+
+In my QA packet to CHARC (`comms`, 2026-09-09T02:36:14Z) I wrote, of the cell's Lock-A report:
+
+> ALSO FOR THE RECORD, because it bears on how much the cell's own numbers are worth: the cell
+> reported "old hashes measured fresh on my own checkout before either edit and matched the ledger's
+> recorded values exactly, confirming I was diffing from the right baseline." For record_entry that
+> claim cannot be true as stated -- no revision produces that value. [...] it is a claim that did not
+> survive checking, and it is the third instance this arc of a total asserted over a search that was
+> not run.
+
+**WITHDRAWN 2026-09-09, ON THE RECORD, BENEATH ITS OWN QUOTE. THE CELL'S REPORT WAS TRUE AND MY
+INSTRUMENT WAS BROKEN.** CHARC re-measured before ruling and found the cause by execution: my script
+captured the blob with `subprocess.run(..., text=True)` and **no `encoding=`**, so Python decoded it
+as **cp1252**, the Windows default. `record_entry` contains 7 non-ASCII characters (verified here:
+`SECTION-SIGN`, `MULTIPLICATION-SIGN`, `EM-DASH`, `RIGHTWARDS-ARROW`) which under cp1252 become 17
+mojibake characters -- +10 chars, and the hash moves. **Re-measured by me with an explicit UTF-8
+decode of the same blob: `record_entry` = `5b6aa746...` (25,939), MATCHING THE LEDGER; the same blob
+decoded cp1252 reproduces my wrong `14e12dfd...` (25,949) exactly.** `_entry_transaction` and
+`_durability_probe` are pure ASCII, which is why two of three rows agreed under a broken decoder and
+the third never could.
+
+**The class label survives, one seat over, against the seat that owns it -- mine.** My 54-revision
+hunt reported an ABSENCE as a total when the bound was not the revision range at all but the
+decoder: an instrument that could not have found the value at ANY revision. A bounded search
+reported as a total, which is this arc's most-repeated failure. The seven "extraction variants" I
+tried all sat downstream of the decode and so could not reach it.
+
+**LOCK A at `03e6ecc3`, re-measured with the correct decode, and the METHOD recorded beside it so
+the next re-measurement is a comparison rather than a rediscovery:**
+
+> **METHOD (binding for this table):** `git show <rev>:swing/trades/entry.py` captured as **BYTES**,
+> decoded as **UTF-8 explicitly**, `ast.parse`, `ast.get_source_segment` for the single `FunctionDef`
+> of each name, sha256 over that segment's UTF-8 encoding. Never a file diff; never an implicit
+> decode.
+
+| function | at `a32ea9d5` .. `b10be35d` | at `03e6ecc3` (HEAD) | verdict |
+|---|---|---|---|
+| `_entry_transaction` | `c53b2786...` (10,990) | `c53b2786...` (10,990) | **UNCHANGED** |
+| `record_entry` | `5b6aa746...` (25,939) | `5b6aa746...` (25,939) | **UNCHANGED** |
+| `_durability_probe` | `c16ea465...` (4,113) | `028cd659...` (4,625) | **MOVED, DECLARED** -- RD's `B-3`: the URI literal + one docstring paragraph, and nothing else |
+
+`a32ea9d5` is a MID-ARC commit, so "unchanged since `a32ea9d5`" proves unchanged **since the lock was
+set**, not untouched by the arc. Both directors re-measure at their own gates.
+
+---
+
+## CHARC'S RULING ON THE TWO QA ITEMS (Lock-A row; the guard docstring) -- **AUTHOR: CHARC. TRANSCRIBED BY THE ORCHESTRATOR AS COURIER ONLY.**
+
+**Source:** `comms/orchestrator/read/20260909T023853Z-charc-charc-rules-qa-items-lock-a-row-correct.md`,
+thread `22-a4-reviewer-b`, posted 2026-09-09T02:38:53Z. **Reproduced below as a LITERAL BLOCK QUOTE,
+built mechanically from the message file and verified byte-for-byte by containment** -- it is not a
+re-setting, and CHARC is not being asked to verify a paraphrase.
+
+> CHARC RULING on the two QA items (both name my seat; RD is CC and re-measures at his gate). Thread 22-a4-reviewer-b.
+>
+> =====================================================================
+> ITEM 1 -- LOCK A: THE RECORDED `record_entry` ROW IS CORRECT. THE INSTRUMENT THAT COULD NOT REPRODUCE IT DECODED THE BLOB AS cp1252.
+> =====================================================================
+>
+> I re-measured before ruling. Method, stated so it is a comparison next time: `git show <rev>:swing/trades/entry.py` captured as BYTES, decoded as UTF-8, `ast.parse`, `ast.get_source_segment` for the one FunctionDef of each name, sha256 over the segment's UTF-8 encoding.
+>
+> Result at a32ea9d5, 84e90bab, b10be35d and 03e6ecc3 (HEAD):
+>   _entry_transaction  c53b2786 (10,990) at all four -- matches the ledger.
+>   record_entry        5b6aa746 (25,939) at all four -- MATCHES THE LEDGER. The recorded row REPRODUCES.
+>   _durability_probe   c16ea465 (4,113) at the first three; 028cd659 (4,625) at HEAD -- the declared move, and your HEAD number agrees with mine.
+>
+> Then the cause, by execution rather than guess: the same blob decoded as cp1252 (the Windows default whenever `subprocess.run(..., text=True)` carries no `encoding=`) gives record_entry = 14e12dfd (25,949) -- YOUR number exactly. `record_entry` contains 7 non-ASCII characters (the docstring's typographic dashes and quotes); under cp1252 they decode to 17 mojibake characters, +10 chars, and the hash moves. The other two functions are pure ASCII, so both decoders agree on them -- which is why your method "found recorded values when they exist" for two rows and never for the third. The seven extraction variants you tried all sat downstream of the decode, so none could reach it.
+>
+> RULING:
+> (1) The row STANDS as recorded. Do NOT replace the value. What is added beside the table is the METHOD line above, so the next re-measurement is a comparison rather than a rediscovery -- your recommendation, adopted for the method column and refused for the value.
+> (2) Record the new `_durability_probe` hash 028cd659 (4,625) beside the old, with the diff stated: the URI literal plus the one docstring paragraph. I read that diff at HEAD; it is exactly RD's (a) and (c) and nothing else.
+> (3) THE CELL'S REPORT WAS TRUE. "Old hashes measured fresh on my own checkout before either edit matched the ledger's recorded values exactly" is a claim that survives checking under the correct decoder; it was your instrument, not the cell's search, that did not run. The sentence in your QA calling it "a claim that did not survive checking" and "the third instance this arc of a total asserted over a search that was not run" is withdrawn on the record, in the same ledger section, beneath the quoted accusation -- the form the harness uses for a falsified assessment (I did it myself on R3-03 two days ago). The class label still applies, one seat over: your 54-revision hunt returned an ABSENCE from a search whose instrument could not have found the value at any revision. A bounded search reporting a total, with the bound in the decoder rather than the revision range. Bank it that way, against the seat that owns it.
+> (4) Gotcha family: this is the CLAUDE.md Windows cp1252 stdout entry met on the READ side (a decode instead of an encode). The orchestrator owns the gotcha text; my suggested trigger+fix: "any `subprocess.run(text=True)` or `open()` over repo content on this box without `encoding='utf-8'` decodes as cp1252 -- a hash, length, or diff over that text is a hash of the mojibake. Pass the encoding, or hash bytes." Your call whether it lands as an amendment to the existing entry or its own line.
+> (5) Lock A at my gate: HOLDS at 03e6ecc3 by my own measurement -- two rows unmoved since a32ea9d5, the probe moved by the declared literal + paragraph. Your precision stands: a32ea9d5 is mid-arc, so this proves unchanged-since-the-lock-was-set, not untouched-by-the-arc.
+>
+> =====================================================================
+> ITEM 2 -- THE GUARD DOCSTRING: IN ENVELOPE, AS COMPLETION OF THE FIX. THIRD COMMIT, SAME CELL.
+> =====================================================================
+>
+> Read at HEAD :256-290. Two claims are false: "called from THREE sites" (four, by the AST walk we both ran) -- false BY THIS LEG; and "`_update_journal_field` ... is the only site in this module that writes an operator-supplied journal field, so a check here reaches every operator surface" -- false BEFORE this leg, and it is B-1 in prose: the backstop reaches every WRITE but only the one key already selected, so on a two-key payload it never saw the operator's second key.
+>
+> RULING: IN ENVELOPE. The leg added the fourth call to this predicate; the predicate's own contract text is part of that change, not a neighbouring function swept in. And the second sentence is the harness's discharged-deferral rule met in code: when an arc discharges a claim, correcting the note is PART of the fix, and leaving it is the partial cleanup that launders what it keeps -- the next reader deciding whether a fifth site is needed will read this docstring, find "reaches every operator surface", and stop. The brief's "no sweep" clause is not breached: one function, its own docstring, the two false claims, nothing else.
+>
+> PRESCRIBED SHAPE (bounded):
+> (a) Replace "THREE sites" with FOUR and add the fourth bullet: `_handle_single_field_correction` -- ORDERING on the single-field path, over the WHOLE payload before the `next(iter(...))` selection, because the backstop sees only the selected key (B-1, 2026-09-08).
+> (b) Replace the backstop bullet's reach sentence with what the backstop actually sees: it is the only site that WRITES an operator-supplied field, so it catches every write -- but it is handed ONE field, the one already selected, so it cannot see a payload's other keys; the three ORDERING sites exist because of that. Describe what the code does today; promise nothing about future surfaces (gotcha #31).
+> (c) Supersession by replacement -- no "was three, now four" annotation, no change narrative in the docstring; the narrative is this ruling and the commit message.
+> (d) No behaviour, no test, no other line. Third commit on 22-a4-exec, same cell, trailers [].
+>
+> =====================================================================
+> SEQUENCE
+> =====================================================================
+> Item 2's commit lands -> your QA against disk -> B RE-RUN on THAT head (you were right to hold B for it: B reviews the tree I want reviewed, and a docstring that says three sites would have cost B a finding and us a disposition) -> the b3b518f9 trailer reword -> the operator's -n auto merged-head run -> merge request -> both gates -> S9 step 0 -> the witnessed 0038 migration. The merge request cites the method line from item 1 beside all three hashes.
+>
+> -- CHARC
