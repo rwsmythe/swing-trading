@@ -3206,3 +3206,84 @@ instead by the orchestrator's AST source-segment measurement of Lock A, under th
 recorded above, and by the suite the orchestrator ran: **12,310 passed / 13 skipped / 0 failed on
 `989d734f`** (`-n 4`, from the worktree), matching the run on `03e6ecc3` and proving the docstring
 commit inert rather than assuming it.
+
+---
+
+## THE `Tests:` TRAILER ON `b3b518f9` -- A RECORDED BLEMISH, NOT A REWRITE (orchestrator-authored, per CHARC's part-1 ruling)
+
+**The defect:** `b3b518f9`'s final `-m` paragraph begins `Tests:`, which git parses as a TRAILER. It
+is the only non-empty trailer on the arc.
+
+**Measured, not assumed:** `git log --format='%h %(trailers:key=Co-Authored-By)' main..HEAD` returns
+**ZERO** rows with a value. The streak audit filters on the KEY and is UNAFFECTED. The pollution is
+visible only to a naive *"is `%(trailers)` non-empty"* check.
+
+**Why it was NOT rewritten.** `b3b518f9` sits **30 commits below HEAD**. Every load-bearing SHA this
+arc records -- `a32ea9d5`, `84e90bab`, `b10be35d`, `03e6ecc3`, `989d734f`, `7f4e4c11`, `e7c52344` --
+is at-or-after it and would change. This ledger cites **49 distinct 8-hex tokens**, and CHARC's `B-1`
+ruling and RD's `B-3` ruling -- both transcribed as LITERAL BLOCK QUOTES precisely so they could not
+drift -- cite `84e90bab` and `a32ea9d5` INSIDE the quoted text. **A rewrite would falsify those
+citations while leaving them reading true**, which is gotcha #31's shape applied to git.
+
+**The rule this bought, which is the larger half:** a history rewrite is a **TIP-ONLY** operation.
+Once a committed ledger, a brief or a block-quoted ruling cites a SHA, that SHA is a CITATION. Past
+that point a trailer or message defect is RECORDED, not rewritten. **And the same reasoning
+governs the MERGE ITSELF** -- see CHARC's part 1 (3) below: the standing "rebase onto main +
+`merge --ff-only`" recipe would have rewritten all 34 branch SHAs, doing by procedure exactly what
+the reword was refused for doing by hand. **The orchestrator flagged the reword and did NOT flag the
+merge procedure; CHARC caught it.** That is the finding of this exchange and it belongs to this seat:
+having identified the class, I applied it to the item in front of me and not to the standing
+procedure one line away in the same document.
+
+---
+
+## CHARC'S RULING ON SECTION 6 + HIS NINE-CHECK MERGE GATE -- **AUTHOR: CHARC. TRANSCRIBED BY THE ORCHESTRATOR AS COURIER ONLY.**
+
+**Source:** `comms/orchestrator/read/20260909T033942Z-charc-charc-rules-sec-6-no-rewrite-merge-no-ff.md`, thread `22-a4-merge`, posted 2026-09-09T03:39:42Z.
+**Reproduced below as a LITERAL BLOCK QUOTE, built mechanically from the message file and verified
+byte-for-byte by containment.** Eight of nine checks PASS on his own measurement; check (6), the
+merged-head `-n auto` run, is OWED and is the OPERATOR'S, on the MERGE COMMIT.
+
+> CHARC on the 22-A4 merge request (e7c52344). Two parts: the section-6 ruling (names my seat), then my merge gate, eight of nine checks measured by me now, one owed to the operator's run. RD is CC on part 1 and rules his own gate.
+>
+> =====================================================================
+> PART 1 -- RULING ON SECTION 6: DO NOT REWRITE b3b518f9. AND THE SAME REASON GOVERNS THE MERGE: MERGE COMMIT, NOT REBASE.
+> =====================================================================
+>
+> (1) The `Tests:` trailer stays. The audit that matters filters on the `Co-Authored-By` KEY and I ran it myself: zero on main..HEAD. The blemish is a verbose final -m paragraph parsed as a trailer, visible only to a naive "is %(trailers) non-empty" check. Recorded in the ledger as a known blemish with the reason; my own gate check (7) is amended to "Co-Authored-By key count zero; the one `Tests:` trailer recorded".
+>
+> (2) The reason, stated as a rule you own the text for (recipe section 2, your file): a history rewrite is a TIP-ONLY operation. The moment a committed ledger, a brief or a block-quoted ruling cites a SHA, that SHA is a citation, and rewriting it falsifies the citation while leaving it reading true -- gotcha #31's shape applied to git. 49 tokens and two literal-block-quoted rulings cite descendants of b3b518f9. Not on the day of a money-bearing merge, not on any day.
+>
+> (3) THE CONSEQUENCE YOU DID NOT ASK ABOUT, AND IT IS THE LARGER ONE: the standing recipe merges by "rebase onto main + merge --ff-only" (recipe line 23; orchestrator-context :267). A rebase rewrites ALL 34 branch SHAs -- every one of the same citations, by a different door. I checked the geometry: merge-base 2d9e4a34; the branch is 34 ahead, main is 23 ahead. RULING FOR THIS MERGE: `git merge --no-ff 22-a4-exec` into main -- a merge commit that preserves every branch SHA, the form `0fac27ff` already used for this arc's plan merge. NEVER a rebase, NEVER a squash. The operator's `-n auto` run then runs on the MERGE COMMIT, which is the tree that ships.
+>
+> (4) Composition read for that merge, because a merge commit is the one place a composition defect can be caught (section 5.1): main's 23 commits touch NO `swing/` file and no test of the arc's surfaces -- CLAUDE.md, `scripts/start_directors.ps1` + its own test (the launcher named-window fix, c46c134f), and docs. Disjoint by read; the operator's merged-head suite is the instrument that confirms it.
+>
+> (5) Recipe text, yours to land with the arc's housekeeping (harness content routes through me; this is my ruling on its substance): "rebase + ff-only is the DEFAULT for a branch whose SHAs nothing cites. Once a committed ledger, brief or ruling cites branch SHAs, the branch merges with --no-ff and is never rebased or squashed; a trailer or message defect past the tip is recorded, not rewritten." Mirror it in orchestrator-context :267.
+>
+> =====================================================================
+> PART 2 -- MY MERGE GATE, NINE CHECKS
+> =====================================================================
+>
+> (1) Evidence by durable path -- PASS. ~/swing-data/review-transcripts/22-a4-exec/ holds A r1-r4 (prompt, review, exit), the ledger, B pass 1 (.reviewer-b-out/-exit + prompt + runner), B pass 2 (.reviewer-b2-out/-exit + run_b2). Listed with -a; every Codex artifact is a dotfile and a bare ls shows almost none of them.
+>
+> (2) B on THE TREE BEING MERGED, five assertions + verdict form -- PASS. Measured on .reviewer-b2-out.txt myself: exit 0; 2,479,419 bytes; `^ERROR` = 0; `^tokens used` = 1; `^NEW_CRITICAL_MAJOR_FOUND` = 2 with the file's last line the bare token; `^NO_NEW_CRITICAL_MAJOR` = 0; model gpt-5.6-sol; effort high. Tree identity: B has no git so the transcript cannot name 989d734f; identity is carried by run_b2_22a4.sh (cd into the worktree, header names 989d734f) AND by content -- the transcript discusses `cache=private` and `_handle_single_field_correction` 35 times each and the FOUR-sites docstring 5 times, none of which exist below 989d734f. e7c52344 over 989d734f is the ledger file only (git diff --stat: 1 file, 93 insertions) -- docs-only, verified, no re-clearance needed. The verdict token is mandated by the prompt for ANY major including banked ones; the content says no new introduced major, and both are read together, as you wrote.
+>
+> (3) LOCK A -- PASS, my own measurement at a32ea9d5 vs e7c52344 under the recorded method (bytes, explicit UTF-8, ast.get_source_segment, sha256): _entry_transaction c53b2786 (10,990) unchanged; record_entry 5b6aa746 (25,939) unchanged; _durability_probe c16ea465 (4,113) -> 028cd659 (4,625), the declared move, and I read that diff at HEAD: the URI literal plus one docstring paragraph, nothing else.
+>
+> (4) S8.6 typed refusal -- PASS. `class ImmutableJournalFieldError(ValueError)` at reconciliation_auto_correct.py:117; the fourth call site at :2768 closes the surface B-1 named.
+>
+> (5) Schema-prevented dismissals cite their constraint -- PASS VACUOUSLY, search stated: over the executing sections of the ledger (line 2058 on) for prevented|forbid|constraint-prevented|the CHECK|trigger refuses|NOT A FINDING -- two hits, neither a dismissal. No finding in this arc was dismissed on a schema-prevented ground.
+>
+> (6) Merged-head suite at 16 workers, READ BY ME -- OWED. The operator runs -n auto on the MERGE COMMIT (part 1 (3)); I read the result line myself before clearing. The two -n 4 runs (12,310/13/0 on 03e6ecc3 and on 989d734f) are the cell-seat evidence, not the gate.
+>
+> (7) Trailers -- PASS as amended: Co-Authored-By key count 0 on main..HEAD; exactly one non-empty trailer of another key (b3b518f9 `Tests:`), ruled a recorded blemish in part 1.
+>
+> (8) Ledger names every round + B -- PASS: Round 1-4 sections, B pass 1 (:2662), B re-run (:3120), transcript manifests.
+>
+> (9) Live DB v37 pre-merge -- PASS, read-only query by me just now: schema_version 37, `trades.attempt_id` ABSENT. 0038 unapplied. Re-verify again immediately before the witnessed migration; the witness is step-by-step, one step per operator result.
+>
+> CLEARANCE: CONDITIONAL on (6). When the operator's -n auto run on the merge commit is green and I have read its result line, my gate is CLEAR. Order after that: RD's gate -> S9 step 0 (blocking live pipeline run; D43 binds -- enumerate the copy's write surfaces first) -> the witnessed 0038 migration, step by step.
+>
+> Spend noted for the register: 3.28M review tokens against ~250K implementation on this arc. The sonnet-high cell needed zero rework across two dispatches; the one correction ran the other way. That is the datum the notch experiment was after.
+>
+> -- CHARC
