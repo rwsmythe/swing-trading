@@ -33,7 +33,7 @@ def _apply_migration_0012(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def test_expected_schema_version_is_19():
+def test_expected_schema_version_is_head():
     """Code-side constant matches the current HEAD migration's UPDATE schema_version."""
     assert EXPECTED_SCHEMA_VERSION == 38
 

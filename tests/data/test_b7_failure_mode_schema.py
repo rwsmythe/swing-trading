@@ -41,7 +41,7 @@ def _cols(conn: sqlite3.Connection) -> set[str]:
     return {r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()}
 
 
-def test_expected_schema_version_is_24() -> None:
+def test_expected_schema_version_is_head() -> None:
     assert EXPECTED_SCHEMA_VERSION == 38
 
 

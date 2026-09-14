@@ -53,7 +53,7 @@ def test_migration_0015_creates_finviz_api_calls_table(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_expected_schema_version_is_19() -> None:
+def test_expected_schema_version_is_head() -> None:
     """Schema-version pin: this test trips when a new migration lands AND drift
     detection catches accidental skips of the migration version constant."""
     assert EXPECTED_SCHEMA_VERSION == 38

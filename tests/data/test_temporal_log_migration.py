@@ -26,7 +26,7 @@ def test_0022_brings_db_to_v22_with_both_tables(tmp_path):
     assert "pattern_forward_observations" in tables
 
 
-def test_expected_schema_version_is_22():
+def test_expected_schema_version_is_head():
     assert EXPECTED_SCHEMA_VERSION == 38
 
 

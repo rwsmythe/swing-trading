@@ -721,14 +721,15 @@ def test_run_migrations_v19_to_v21_skips_sb6c_backup_uses_phase13_v20_backup_onl
     )
 
 
-def test_expected_schema_version_constant_is_21_post_sb6c() -> None:
-    """EXPECTED_SCHEMA_VERSION constant tracks HEAD (now 22 post-Phase-14-SB2).
+def test_expected_schema_version_is_head() -> None:
+    """``EXPECTED_SCHEMA_VERSION`` tracks the HEAD schema.
 
-    Test name preserved (stale-name-but-current-assertion) per cumulative
-    discipline; Phase 14 Sub-bundle 3 migration 0023 bumps HEAD from 22 to 23.
+    HEAD-tracking, so its name says ``_is_head`` and never a number; the version
+    it asserts is bumped by each schema-bumping arc, in its own commit. See
+    ``tests/data/test_migration_0035_fills_trades_price_divergence.py``.
     """
     assert EXPECTED_SCHEMA_VERSION == 38, (
-        f"EXPECTED_SCHEMA_VERSION must be 23, got {EXPECTED_SCHEMA_VERSION}"
+        f"EXPECTED_SCHEMA_VERSION must be the HEAD schema, got {EXPECTED_SCHEMA_VERSION}"
     )
 
 
@@ -781,13 +782,13 @@ def test_row_to_trade_index_map_matches_select_cols(
 # ============================================================================
 
 
-def test_schema_version_reaches_21_after_v21_migration(
+def test_schema_version_row_is_head(
     tmp_path: Path,
 ) -> None:
-    """SELECT version FROM schema_version returns HEAD (23) post-migration.
+    """``SELECT version FROM schema_version`` returns the HEAD schema post-migration.
 
-    Test name preserved (stale-name-but-current-assertion); _v21_conn uses
-    ensure_schema which walks to HEAD, now v23 post-Phase-14-SB3.
+    HEAD-tracking: ``_v21_conn`` uses ``ensure_schema``, which walks to HEAD, so
+    the name says ``_is_head`` and never a number. See ``tests/data/test_migration_0035_fills_trades_price_divergence.py``.
     """
     conn = _v21_conn(tmp_path)
     try:

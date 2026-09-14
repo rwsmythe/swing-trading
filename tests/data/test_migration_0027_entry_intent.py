@@ -41,7 +41,7 @@ def _make_trade(**over) -> Trade:
     return Trade(**base)
 
 
-def test_expected_schema_version_is_27():
+def test_expected_schema_version_is_head():
     assert EXPECTED_SCHEMA_VERSION == 38
 
 

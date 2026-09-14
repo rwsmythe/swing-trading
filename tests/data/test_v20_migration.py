@@ -815,21 +815,20 @@ def test_v20_schwab_api_calls_widening_preserves_rows_and_indexes(
 # ============================================================================
 
 
-def test_schema_version_v20_invariant(tmp_path: Path) -> None:
-    """Cross-bundle pin (un-skipped at T3.SB1 T-B.1.1 per plan §H.3): the
-    schema_version=20 invariant survives T3.SB1 merge.
+def test_schema_version_row_is_head(tmp_path: Path) -> None:
+    """Cross-bundle pin: ``ensure_schema`` walks a fresh DB to the HEAD schema.
 
-    Re-skipping this test would silently disable the cross-bundle guard.
-    T3.SB1's prerequisite test at
-    ``tests/data/test_phase13_t3_sb1_prerequisite.py`` covers the same
-    invariant from a different angle (branch-base SHA + new column shape).
+    HEAD-tracking, so its name says ``_is_head`` and never a number. It was
+    un-skipped at T3.SB1 as a guard that the schema-version invariant survives a
+    cross-bundle merge; re-skipping it would silently disable that guard.
+    ``tests/data/test_phase13_t3_sb1_prerequisite.py`` covers the same invariant
+    from the constant side. A number belongs in a test NAME only when the
+    assertion concerns that migration's own text or post-migrate state; see
+    ``tests/data/test_migration_0035_fills_trades_price_divergence.py``.
     """
     db_path = tmp_path / "pin_v20.db"
     conn = ensure_schema(db_path)
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    # Phase 14 Sub-bundle 3 migration 0023 bumps HEAD to 23; the cross-bundle
-    # pin's intent (schema_version pinned at HEAD) is preserved by tracking the
-    # current constant, not the literal v20 from T3.SB1's branch-base.
     assert version == 38
     conn.close()
 

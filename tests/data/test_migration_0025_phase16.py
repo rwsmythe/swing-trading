@@ -25,7 +25,7 @@ def _migrate_to(db_path: Path, version: int, backup_dir: Path | None = None):
     return conn
 
 
-def test_expected_schema_version_is_25():
+def test_expected_schema_version_is_head():
     assert EXPECTED_SCHEMA_VERSION == 38
 
 

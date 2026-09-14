@@ -41,18 +41,19 @@ def _extract_check_values_from_sql(sql: str, column: str) -> set[str]:
     return set(re.findall(r"'([^']+)'", match.group(1)))
 
 
-def test_schema_version_is_20(tmp_path: Path) -> None:
-    """T-B.1.1 prerequisite: EXPECTED_SCHEMA_VERSION pinned (now v22 post-Phase-14-SB2).
+def test_expected_schema_version_is_head(tmp_path: Path) -> None:
+    """T-B.1.1 prerequisite: EXPECTED_SCHEMA_VERSION is pinned to the HEAD schema.
 
-    Fails fast if worktree branched off pre-T-A.6c.1 SHA. The pin originally
-    landed at T3.SB1 expecting v20; T2.SB6c (migration 0021) bumped the head
-    to v21; Phase 14 Sub-bundle 2 (migration 0022) bumps it to v22. Test name
-    preserved to keep grep-history continuity per cumulative discipline (the
-    corresponding tests in test_migration_0017.py etc. follow the same
-    stale-name-but-current-assertion pattern).
+    HEAD-tracking, so its name says ``_is_head`` and never a number; it fails
+    fast if a worktree was cut off a SHA older than the schema head. The version
+    this test asserts is bumped by each schema-bumping arc -- in its own commit,
+    never in the commit that renames a test (naming and versioning are two
+    changes). A number belongs in a test NAME only when the assertion concerns
+    that migration's own text or post-migrate state; see the rule text at
+    ``tests/data/test_migration_0035_fills_trades_price_divergence.py``.
     """
     assert EXPECTED_SCHEMA_VERSION == 38, (
-        f"Worktree branched off wrong SHA - expected v23 schema, "
+        f"Worktree branched off a stale SHA - expected the HEAD schema, "
         f"got v{EXPECTED_SCHEMA_VERSION}. Re-create worktree off the "
         f"current head SHA."
     )

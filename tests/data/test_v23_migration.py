@@ -111,7 +111,7 @@ def _chart_renders_ddl(conn) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_expected_schema_version_is_23():
+def test_expected_schema_version_is_head():
     assert EXPECTED_SCHEMA_VERSION == 38
 
 
