@@ -75,15 +75,17 @@ def test_schema_version_row_is_head(conn: sqlite3.Connection) -> None:
 # ============================================================================
 
 
-def test_migration_0019_applies_against_v18_baseline(tmp_path: Path) -> None:
-    """Plan §B.1 Step 1 canonical pin — sub-bundle C deltas land at v19."""
+def test_head_schema_carries_sub_bundle_c_objects(tmp_path: Path) -> None:
+    """ensure_schema on an empty path walks straight to HEAD (no v18 baseline
+    is built here); asserts the Sub-bundle C objects (migration 0019) are
+    present in that HEAD schema."""
     db = tmp_path / "swing.db"
     conn = ensure_schema(db)
     try:
         post = conn.execute(
             "SELECT version FROM schema_version"
         ).fetchone()[0]
-        assert post == 38
+        assert post == EXPECTED_SCHEMA_VERSION
 
         # Tables/columns expected by Sub-bundle C exist:
         schema = {
