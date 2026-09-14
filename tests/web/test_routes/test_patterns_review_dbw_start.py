@@ -273,3 +273,106 @@ def test_dbw_reject_on_zero_row_still_writes(seeded_db):
     assert len(rows) == 1
     assert rows[0].final_decision == "rejected"
     assert rows[0].start_date == TROUGH_2.isoformat()
+
+
+@pytest.mark.parametrize(
+    ("typed_start", "typed_end"),
+    [
+        ("not-a-date", WINDOW_END.isoformat()),   # unparseable start
+        ("2026-05-01", WINDOW_END.isoformat()),   # start after the end
+        ("2026-03-02", "garbage"),                # unparseable end
+    ],
+)
+def test_dbw_typed_window_is_validated_before_any_write(
+    seeded_db, typed_start, typed_end,
+):
+    """Codex R1 major: a typed correction is a date, not arbitrary text. An
+    unparseable start or end, or a start after the end, refuses with a
+    typed 400 before any write (else it would bypass the zero-row refusal
+    and seed a malformed measurement-input row)."""
+    cfg, cfg_path = seeded_db
+    eval_id = _seed_dbw(cfg, _zero_evidence())
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/patterns/{eval_id}/review",
+            data={
+                "decision": "pattern_present_outside_window",
+                "corrected_window_start_date": typed_start,
+                "corrected_window_end_date": typed_end,
+            },
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 400
+    assert [x for x in _exemplars(cfg) if x.ticker == "DBW"] == []
+
+
+def test_dbw_alternate_spelling_of_prefill_is_not_a_correction(seeded_db):
+    """Codex R1 major: equality is compared as DATES. ``20260408`` names the
+    pre-filled generator start (2026-04-08), so on a zero row it is not a
+    correction and the route refuses."""
+    cfg, cfg_path = seeded_db
+    eval_id = _seed_dbw(cfg, _zero_evidence())
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/patterns/{eval_id}/review",
+            data={
+                "decision": "pattern_present_outside_window",
+                "corrected_window_start_date": "20260408",
+                "corrected_window_end_date": WINDOW_END.isoformat(),
+            },
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 400
+    assert "first-trough date" in r.text
+    assert [x for x in _exemplars(cfg) if x.ticker == "DBW"] == []
+
+
+@pytest.mark.parametrize(
+    "decision", ["confirm", "watch", "multiple_overlapping_patterns"],
+)
+def test_dbw_typed_start_ignored_outside_pattern_present_outside_window(
+    seeded_db, decision,
+):
+    """Declared limitation 2 pinned: a differing typed start is honoured ONLY
+    under pattern_present_outside_window; the other covered decisions still
+    take trough 1 on a non-zero row."""
+    cfg, cfg_path = seeded_db
+    eval_id = _seed_dbw(cfg, _nonzero_evidence())
+    app = create_app(cfg, cfg_path)
+    data = {
+        "decision": decision,
+        "corrected_window_start_date": "2026-02-20",
+        "corrected_window_end_date": WINDOW_END.isoformat(),
+    }
+    if decision == "multiple_overlapping_patterns":
+        data["additional_pattern_classes"] = "flat_base"
+    with TestClient(app) as client:
+        r = client.post(
+            f"/patterns/{eval_id}/review", data=data,
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 204
+    rows = [x for x in _exemplars(cfg) if x.ticker == "DBW"]
+    assert rows
+    assert all(x.start_date == TROUGH_1.isoformat() for x in rows)
+
+
+def test_dbw_relabel_on_zero_row_unchanged(seeded_db):
+    """Declared limitation 1 pinned: relabel is outside the guard; on a zero
+    row it still writes with the evaluation's window start."""
+    cfg, cfg_path = seeded_db
+    eval_id = _seed_dbw(cfg, _zero_evidence())
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/patterns/{eval_id}/review",
+            data={"decision": "relabel", "corrected_pattern_class": "vcp"},
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 204
+    rows = [x for x in _exemplars(cfg) if x.ticker == "DBW"]
+    assert len(rows) == 1
+    assert rows[0].final_decision == "relabeled"
+    assert rows[0].start_date == TROUGH_2.isoformat()
