@@ -82,11 +82,14 @@ make. Then four acts, in this order, nothing between them:
   2. Post the rollover announcement (status, --to rd,orchestrator) and STOP
      DRAINING -- peek only from here. The Stop hook's "drain now" is VOID for
      you from this act on: obeying it swallows your successor's first mail.
-  3. TaskStop your inbox Monitor, then VERIFY the loop is gone: from PowerShell,
-     Get-CimInstance Win32_Process -Filter "Name='bash.exe'" filtered on a
-     CommandLine matching charc/inbox must return nothing (measured 2026-09-14:
-     TaskStop killed the loop and its children within 3 s, so a surviving row
-     is a fault to report, never a routine kill).
+  3. TaskStop your inbox Monitor, then VERIFY the loop is gone, SCOPED TO YOUR
+     OWN PROCESS TREE: from PowerShell, for each bash.exe whose CommandLine
+     matches charc/inbox, walk its parent chain; a match that reaches YOUR
+     claude.exe (found by walking up from the checking shell's own $PID) is a
+     stop failure to report; a match that does NOT is another session watching
+     this inbox -- report it as such, NEVER kill it. (2026-09-14: TaskStop kills
+     the loop and its children within 3 s; the first, path-scoped form of this
+     check returned another live seat's loop as a "survivor".)
   4. LAST ACT: run the launcher for your own role in FRESH mode, DryRun first:
          powershell -NoProfile -File scripts/start_directors.ps1 -Role charc -DryRun
          powershell -NoProfile -File scripts/start_directors.ps1 -Role charc
