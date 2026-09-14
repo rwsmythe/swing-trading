@@ -835,12 +835,19 @@ def _zigzag_window_at(bars: pd.DataFrame, anchor: date) -> CandidateWindow:
     )
 
 
-def _detect_as_runner(
+def _detect_with_stage_2_gate(
     bars: pd.DataFrame, window: CandidateWindow
 ) -> DoubleBottomWEvidence:
-    """Call the detector the way ``_step_pattern_detect`` does (Stage-2
-    conn + ticker + asof_date). Without the conn the Stage-2 gate fires
-    before the slice and every window scores 0.0 for the wrong reason."""
+    """Call the detector with a Stage-2 conn + ticker + asof_date so the
+    Stage-2 gate passes and the zigzag slice actually runs (without the
+    conn every window scores 0.0 for the wrong reason).
+
+    ``asof_date`` here is the LAST BAR's date. Production
+    (``_step_pattern_detect``) passes the evaluation run's
+    ``action_session_date`` instead. In the detector ``asof_date`` feeds
+    only the ``current_stage`` gate; the slice reads
+    ``candidate_window.end_date``. The in-memory Stage-2 row
+    (action_session_date 2026-01-05) is on or before either value."""
     return detect_double_bottom_w(
         bars,
         window,
@@ -862,7 +869,7 @@ def test_dbw_production_composition_latest_zigzag_window_detects_w() -> None:
     bars = _bars_uvwx_dbw()
     windows = generate_candidate_windows(bars, "zigzag_pivot", ticker="UVWX")
     window = windows[-1]
-    evidence = _detect_as_runner(bars, window)
+    evidence = _detect_with_stage_2_gate(bars, window)
     assert window.anchor_reason.startswith("zigzag_pivot")
     assert evidence.trough_1_date == date(2026, 1, 24)
     assert evidence.trough_2_date == date(2026, 3, 3)
@@ -876,7 +883,7 @@ def test_dbw_zigzag_anchor_two_days_after_trough_2_rejects() -> None:
     """D53 boundary (refused side): an anchor 2 calendar days after
     trough_2 aligns with neither trough -> zero envelope."""
     bars = _bars_uvwx_dbw()
-    evidence = _detect_as_runner(bars, _zigzag_window_at(bars, date(2026, 3, 5)))
+    evidence = _detect_with_stage_2_gate(bars, _zigzag_window_at(bars, date(2026, 3, 5)))
     assert evidence.criteria_pass["criterion_1"] is True
     assert evidence.criteria_pass["criterion_2"] is False
     assert evidence.geometric_score == 0.0
@@ -886,7 +893,7 @@ def test_dbw_zigzag_anchor_one_day_after_trough_2_detects_w() -> None:
     """D53 boundary (accepted side): an anchor 1 calendar day after
     trough_2 is inside the +/- 1 day tolerance -> the W scores 1.10."""
     bars = _bars_uvwx_dbw()
-    evidence = _detect_as_runner(bars, _zigzag_window_at(bars, date(2026, 3, 4)))
+    evidence = _detect_with_stage_2_gate(bars, _zigzag_window_at(bars, date(2026, 3, 4)))
     assert evidence.trough_1_date == date(2026, 1, 24)
     assert evidence.trough_2_date == date(2026, 3, 3)
     assert evidence.geometric_score == pytest.approx(1.10)
@@ -927,7 +934,7 @@ def test_dbw_shared_trough_anchor_scores_a_w_containing_the_anchor(
     shared trough resolves to the more recent W (unchanged from the
     trough_1-only rule)."""
     bars = _bars_shared_trough_two_ws()
-    evidence = _detect_as_runner(bars, _zigzag_window_at(bars, anchor))
+    evidence = _detect_with_stage_2_gate(bars, _zigzag_window_at(bars, anchor))
     assert (evidence.trough_1_date, evidence.trough_2_date) == (
         expected_t1,
         expected_t2,
@@ -944,7 +951,7 @@ def test_dbw_shared_trough_runner_window_is_the_latest_w() -> None:
     windows = generate_candidate_windows(bars, "zigzag_pivot", ticker="UVWX")
     window = windows[-1]
     assert window.anchor_date == date(2026, 4, 6)
-    evidence = _detect_as_runner(bars, window)
+    evidence = _detect_with_stage_2_gate(bars, window)
     assert evidence.trough_1_date == date(2026, 3, 3)
     assert evidence.trough_2_date == date(2026, 4, 6)
     assert evidence.geometric_score > 0.0
