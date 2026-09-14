@@ -26,7 +26,14 @@ from pathlib import Path
 
 # v1 thresholds -- keep in sync with tool-director-context.md section 4.2.
 CLAUDE_MD_TOTAL_CHARS_MAX = 100_000
-CLAUDE_MD_LINE3_CHARS_MAX = 9_000
+# Reconciled 2026-09-14 to the orchestrator-context trigger table (was 9,000;
+# the probe read OK on 09-08 while the operative trigger was OVER).
+CLAUDE_MD_LINE3_CHARS_MAX = 2_000
+# The Gotchas section (## Gotchas -> next top-level "## " header or EOF) and
+# its per-bullet cap -- added 2026-09-14, the orchestrator-context caps, now
+# MEASURED (previously invisible to the probe entirely).
+CLAUDE_MD_GOTCHAS_CHARS_MAX = 55_000
+CLAUDE_MD_GOTCHA_BULLET_CHARS_MAX = 700
 CONTEXT_DOC_CHARS_MAX = 120_000
 DOCS_MD_COUNT_MAX = 600
 SESSION_ARTIFACT_AGE_DAYS_MAX = 14
@@ -113,6 +120,74 @@ def _scan_comms(comms_dir: Path, now: datetime) -> list[tuple[str, str]]:
     return rows
 
 
+def _claude_md_checks(root: Path) -> list[tuple[str, str]]:
+    """Report rows (level, line) for CLAUDE.md weight + the Gotchas section.
+
+    Pure + testable (root explicit). Missing CLAUDE.md -> a single ATTENTION
+    row, never a crash. Total chars + line-3 chars are always reported; the
+    Gotchas section (from the "## Gotchas" line to the next top-level "## "
+    header, or EOF) additionally reports its own char total and its
+    top-level bullet ("- " line) count, naming the five largest bullets over
+    CLAUDE_MD_GOTCHA_BULLET_CHARS_MAX as INFO lines. A missing "## Gotchas"
+    header reports INFO "section not found" and skips the section-specific
+    rows -- never a crash.
+    """
+    claude_md = root / "CLAUDE.md"
+    if not claude_md.is_file():
+        return [("ATTENTION", "CLAUDE.md missing")]
+
+    text = claude_md.read_text(encoding="utf-8", errors="replace")
+    total = len(text)
+    lines = text.splitlines()
+    line3 = len(lines[2]) if len(lines) >= 3 else 0
+
+    rows: list[tuple[str, str]] = []
+    level = "ATTENTION" if total > CLAUDE_MD_TOTAL_CHARS_MAX else "OK"
+    rows.append((level, f"CLAUDE.md total chars: {total:,} (max {CLAUDE_MD_TOTAL_CHARS_MAX:,})"))
+    level = "ATTENTION" if line3 > CLAUDE_MD_LINE3_CHARS_MAX else "OK"
+    rows.append((level, f"CLAUDE.md line-3 chars: {line3:,} (max {CLAUDE_MD_LINE3_CHARS_MAX:,})"))
+
+    gotchas_start: int | None = None
+    gotchas_end = len(lines)
+    for i, ln in enumerate(lines):
+        if gotchas_start is None:
+            if ln.strip() == "## Gotchas":
+                gotchas_start = i
+            continue
+        if ln.startswith("## "):
+            gotchas_end = i
+            break
+
+    if gotchas_start is None:
+        rows.append(("INFO", "CLAUDE.md Gotchas section not found"))
+        return rows
+
+    section_lines = lines[gotchas_start:gotchas_end]
+    section_chars = len("\n".join(section_lines))
+    level = "ATTENTION" if section_chars > CLAUDE_MD_GOTCHAS_CHARS_MAX else "OK"
+    rows.append((
+        level,
+        f"CLAUDE.md Gotchas section chars: {section_chars:,} "
+        f"(max {CLAUDE_MD_GOTCHAS_CHARS_MAX:,})",
+    ))
+
+    # Top-level bullets only: a line starting with "- " inside the section.
+    # "###" subheaders and blockquote ("> ") lines are not bullets.
+    bullets = [ln for ln in section_lines if ln.startswith("- ")]
+    over = [ln for ln in bullets if len(ln) > CLAUDE_MD_GOTCHA_BULLET_CHARS_MAX]
+    level = "ATTENTION" if over else "OK"
+    rows.append((
+        level,
+        f"CLAUDE.md Gotchas bullets: {len(bullets)}, "
+        f"over {CLAUDE_MD_GOTCHA_BULLET_CHARS_MAX}: {len(over)}",
+    ))
+    if over:
+        for b in sorted(over, key=len, reverse=True)[:5]:
+            rows.append(("INFO", f"{len(b)} {b[:60]}"))
+
+    return rows
+
+
 def _dir_size_bytes(path: Path) -> int:
     """Total byte size of path, recursing via stdlib os.walk (NO du subprocess
     -- Windows-safe). Returns 0 for a missing/non-directory path (never
@@ -174,18 +249,9 @@ def main() -> int:
     print(f"harness probe v1 -- {now:%Y-%m-%d %H:%M} -- root={root.resolve()}")
     print("-" * 72)
 
-    # CLAUDE.md weight
-    claude_md = root / "CLAUDE.md"
-    if claude_md.is_file():
-        total = _chars(claude_md)
-        lines = claude_md.read_text(encoding="utf-8", errors="replace").splitlines()
-        line3 = len(lines[2]) if len(lines) >= 3 else 0
-        level = "ATTENTION" if total > CLAUDE_MD_TOTAL_CHARS_MAX else "OK"
-        report(level, f"CLAUDE.md total chars: {total:,} (max {CLAUDE_MD_TOTAL_CHARS_MAX:,})")
-        level = "ATTENTION" if line3 > CLAUDE_MD_LINE3_CHARS_MAX else "OK"
-        report(level, f"CLAUDE.md line-3 chars: {line3:,} (max {CLAUDE_MD_LINE3_CHARS_MAX:,})")
-    else:
-        report("ATTENTION", "CLAUDE.md missing")
+    # CLAUDE.md weight + Gotchas section -- pure helper, root-explicit.
+    for level, line in _claude_md_checks(root):
+        report(level, line)
 
     # Live charter / context docs
     for rel in CONTEXT_DOCS:
