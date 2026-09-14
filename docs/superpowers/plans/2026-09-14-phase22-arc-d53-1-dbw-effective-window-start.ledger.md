@@ -96,3 +96,56 @@ No code written, no production commit made. Returned to the orchestrator for a r
 ## Rounds
 
 (Reviewer A rounds appended by the cell; Reviewer B by the orchestrator.)
+
+
+## Fork ruling after the cell's pre-F1 stop -- CHARC is the ruling seat; the orchestrator is courier only
+
+Serialized: RD reviews this ruling once landed, for the measurement-input half, and dissents upward only.
+Brief section 2 F1 was superseded by replacement on main at `693eb333`; the ruling is its text.
+Literal block quote of `20260914T221000Z-charc-ruling-d53-1-forks-a2-c2-together-b2-typ.md`, body byte-for-byte:
+
+> RULING (CHARC, the named ruler; serialized: RD reviews this once LANDED for the measurement-input
+> half and dissents upward only). Courier: block-quote into the D53.1 ledger, post the path, then
+> resume the cell. Every claim in your packet that I ruled on I verified on disk first.
+>
+> PREMISE CORRECTION OWNED: my F1 parenthetical was false. _build_zero_evidence stamps
+> trough_1_date = window end on every zero row, so "lacks a parseable trough_1_date" never
+> happens and F1 as I wrote it would have seeded one-day exemplars. Brief section 2 F1 is
+> SUPERSEDED BY REPLACEMENT at 693eb333; the ruling below is its text.
+>
+> FORK A -- A2, with the flag ANSWERED rather than accepted: "no usable trough 1" = geometric_score
+> == 0 (ONE condition, shared with F2's non-zero test). The refusal is NOT "a zero row cannot be
+> confirmed." A zero row is confirmable ONLY with an operator-TYPED start: the detector found no W,
+> so the operator who sees one is the only source of where it starts, and the honest record is
+> their date, not a derived end-date or a trough-2 anchor. The refusal message names exactly that
+> recovery. The false-negative label you flagged stays reachable, by the path that records the
+> truth. A2 and C2 are ruled TOGETHER, as you said they must be.
+>
+> FORK B -- B2. The guard covers every decision whose exemplar row is READ as a pattern instance:
+> confirm, pattern_present_outside_window, multiple_overlapping_patterns (all final 'confirmed',
+> read by pattern_outcomes) and watch (read by the template corpus at runner.py:2480). reject
+> UNCHANGED -- rejecting must always be possible; relabel UNCHANGED -- it declares another class
+> whose start semantic is that class's (report-only if the cell sees a hazard there). B3 refused.
+>
+> FORK C -- C2, route-local: for a DBW evaluation a submitted corrected_window_start_date EQUAL
+> to evaluation.window_start_date is NOT a correction. The form pre-fills it, so an untouched
+> browser submit is indistinguishable from a typed one, and under v1.1.0 the generator start is
+> never a DBW pattern start, so equality is never a deliberate choice. A start that DIFFERS is
+> typed and wins, always. Order in the route: (i) equal-to-generator -> not corrected; (ii) typed
+> -> wins; (iii) non-zero score -> evidence trough_1_date; (iv) zero score -> refuse, name the
+> recovery. C3 DECLINED in this arc (outside the sites; still lets an unedited submit through on a
+> zero row) -- banked as a UX rider. Tests: four cases, the untouched-submit case built with the
+> PRE-FILLED value not a bare POST; reject on a zero row still writes.
+>
+> BROWSER WITNESS BINDING before merge (the HTMX form class; TestClient cannot see the pre-fill):
+> the operator drives, one step at a time: (1) untouched submit on a live zero-score DBW row ->
+> the typed refusal renders; (2) same row, typed start -> an exemplar with that start; (3) a
+> non-zero row's confirm -> trough 1. A live non-zero row exists only after the first v1.1.0
+> hit (run 176 at the earliest); if (3) is seeded on a copy, the unseeded live state is witnessed
+> too (the seeded-gate rule). You sequence the witness against run 176.
+>
+> Everything in "checked and holding" stands as you verified it; the F2 tuple-append carrying one
+> value to both sites is the shape the brief asked for. The widened interim instruction (no
+> confirm / watch / outside-window / overlapping on DBW rows until F1 merges) is correct.
+>
+> -- CHARC
