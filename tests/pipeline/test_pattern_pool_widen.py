@@ -1,13 +1,13 @@
 from __future__ import annotations
 import pytest
 from tests.pipeline.conftest_temporal import (  # noqa
-    tmp_db_v22, _build_bars, _StubOhlcvCache, _drive_detect,
+    tmp_db_at_head, _build_bars, _StubOhlcvCache, _drive_detect,
     _seed_aplus_watch_skip_candidates_and_run)
 
 
-def test_detect_pool_includes_watch_not_skip(tmp_db_v22, tmp_path):
+def test_detect_pool_includes_watch_not_skip(tmp_db_at_head, tmp_path):
     conn, cfg, lease, eval_run_id, tickers = \
-        _seed_aplus_watch_skip_candidates_and_run(tmp_db_v22)
+        _seed_aplus_watch_skip_candidates_and_run(tmp_db_at_head)
     bars = {t: _build_bars() for t in tickers}
     cache = _StubOhlcvCache(bars)
     warnings: list[dict] = []
@@ -23,12 +23,12 @@ def test_detect_pool_includes_watch_not_skip(tmp_db_v22, tmp_path):
     assert len(got) == 3 and len(got) > 1   # > the aplus-only count of 1
 
 
-def test_empty_pool_audit_uses_standardized_vocabulary(tmp_db_v22, tmp_path):
+def test_empty_pool_audit_uses_standardized_vocabulary(tmp_db_at_head, tmp_path):
     # Skip-only pool: zero detect work on BOTH paths; the discriminator is the
     # audit SHAPE, not widen behavior.
     conn, cfg, lease, eval_run_id, tickers = \
         _seed_aplus_watch_skip_candidates_and_run(
-            tmp_db_v22, aplus=(), watch=(), skip=("SKP1", "SKP2"))
+            tmp_db_at_head, aplus=(), watch=(), skip=("SKP1", "SKP2"))
     warnings: list[dict] = []
     _drive_detect(conn, cfg, lease, eval_run_id, _StubOhlcvCache({}), warnings)
     entry = next(w for w in warnings if w["step"] == "pattern_detect")
@@ -40,11 +40,11 @@ def test_empty_pool_audit_uses_standardized_vocabulary(tmp_db_v22, tmp_path):
     assert "actual_aplus_pool" not in entry     # the removed key
 
 
-def test_watch_detection_tags_bucket_watch(tmp_db_v22, tmp_path):
+def test_watch_detection_tags_bucket_watch(tmp_db_at_head, tmp_path):
     import json
     conn, cfg, lease, eval_run_id, tickers = \
         _seed_aplus_watch_skip_candidates_and_run(
-            tmp_db_v22, aplus=(), watch=("WAT1",), skip=())
+            tmp_db_at_head, aplus=(), watch=("WAT1",), skip=())
     cache = _StubOhlcvCache({t: _build_bars() for t in tickers})
     _drive_detect(conn, cfg, lease, eval_run_id, cache, [])
     rows = conn.execute(
@@ -55,13 +55,13 @@ def test_watch_detection_tags_bucket_watch(tmp_db_v22, tmp_path):
     # Pre-isolation discriminator: aplus-only path emits ZERO rows for WAT1.
 
 
-def test_bucket_flip_first_detection_wins(tmp_db_v22, tmp_path):
+def test_bucket_flip_first_detection_wins(tmp_db_at_head, tmp_path):
     import json
     from swing.data.repos.candidates import (
         insert_candidates, insert_evaluation_run)
     from swing.data.models import Candidate, EvaluationRun
     from tests.pipeline.conftest_temporal import _FakeLease, _cfg
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     cache = _StubOhlcvCache({"FLP": _build_bars()})
     asof, session = "2026-05-19", "2026-05-20"   # SHARED by both runs
 

@@ -22,13 +22,10 @@ from swing.data.models import PatternDetectionEvent
 
 
 @pytest.fixture
-def tmp_db_v22(tmp_path):
+def tmp_db_at_head(tmp_path):
     """File-backed DB walked to HEAD; returns (conn, db_path). The observe step
     opens its OWN connect(db_path) for reads (which enforces
     EXPECTED_SCHEMA_VERSION), so the DB MUST be file-backed AND at HEAD.
-
-    Fixture name preserved (stale-name-but-current-target per cumulative
-    discipline): Phase 14 Sub-bundle 3 migration 0023 advanced HEAD 22 -> 23.
     """
     db_path = tmp_path / "t.db"
     conn = sqlite3.connect(db_path)

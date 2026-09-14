@@ -22,7 +22,7 @@ from tests.pipeline.conftest_temporal import (  # noqa: F401
     _plant_detection,
     _seed_aplus_candidate_and_run,
     _stub_window,
-    tmp_db_v22,
+    tmp_db_at_head,
 )
 
 _OBS = "2026-05-29"
@@ -104,11 +104,11 @@ def _drive_observe(cfg, lease, cache, warnings):
 
 
 def test_detect_pass2_exemplar_fetch_runs_outside_fence_no_deadlock(
-        tmp_db_v22, tmp_path):
+        tmp_db_at_head, tmp_path):
     """BINDING (spec 7.1, locus #8). Pre-fix: exemplar get_or_fetch @1994 runs
     inside the held fence -> second-conn BEGIN IMMEDIATE deadlocks. Post-fix: the
     exemplar bars are pre-fetched before the fence -> no deadlock."""
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run((conn, db_path))
     _seed_confirmed_exemplar(conn, ticker="HIST", pattern_class="vcp")
     conn.commit()
@@ -125,11 +125,11 @@ def test_detect_pass2_exemplar_fetch_runs_outside_fence_no_deadlock(
 
 
 def test_detect_pass2_exemplar_bars_fetched_once_candidates_not_refetched(
-        tmp_db_v22, tmp_path):
+        tmp_db_at_head, tmp_path):
     """#5 (spec 7.3): the Pass-2 reorder only ADDS the exemplar pre-fetch.
     Each exemplar ticker is fetched exactly once; candidate tickers fetched in
     Pass-1 are not re-fetched for exemplar purposes."""
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run((conn, db_path))
     _seed_confirmed_exemplar(conn, ticker="HIST", pattern_class="vcp")
     conn.commit()
@@ -144,11 +144,11 @@ def test_detect_pass2_exemplar_bars_fetched_once_candidates_not_refetched(
 
 
 def test_detect_pass2_exemplar_bar_failure_emits_27_audit_and_absent_from_match(
-        tmp_db_v22, tmp_path):
+        tmp_db_at_head, tmp_path):
     """spec 7.4(b): an exemplar whose bars fail to fetch is uniformly absent
     from match+universe, emits a #27 warnings_json entry, and NO in-fence fetch
     is attempted (the failure happens in the pre-fetch, outside the fence)."""
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run((conn, db_path))
     _seed_confirmed_exemplar(conn, ticker="BADX", pattern_class="vcp")
     conn.commit()
@@ -174,10 +174,10 @@ def test_detect_pass2_exemplar_bar_failure_emits_27_audit_and_absent_from_match(
     assert all(r[0] is None for r in rows)
 
 
-def test_detect_pass2_list_exemplars_read_exactly_once(tmp_db_v22, tmp_path):
+def test_detect_pass2_list_exemplars_read_exactly_once(tmp_db_at_head, tmp_path):
     """spec 7.4(c): list_exemplars is read exactly ONCE per run (the snapshot);
     the in-fence path no longer re-reads it for bar sourcing."""
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run((conn, db_path))
     _seed_confirmed_exemplar(conn, ticker="HIST", pattern_class="vcp")
     conn.commit()
@@ -218,11 +218,11 @@ def _insert_extra_eligible_exemplar(db_path):
 
 
 def test_detect_pass2_midrun_corpus_divergence_emits_27_audit(
-        tmp_db_v22, tmp_path):
+        tmp_db_at_head, tmp_path):
     """OQ-E (spec 7.6): a concurrent eligible-exemplar write between the snapshot
     and the in-fence ID re-read emits a #27 divergence audit (added=1, removed=0)
     WITHOUT an in-fence fetch; scoring still uses the snapshot."""
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run((conn, db_path))
     _seed_confirmed_exemplar(conn, ticker="HIST", pattern_class="vcp")
     conn.commit()
@@ -251,9 +251,9 @@ def test_detect_pass2_midrun_corpus_divergence_emits_27_audit(
     assert cache.deadlock_observed is False
 
 
-def test_detect_pass2_no_divergence_no_audit(tmp_db_v22, tmp_path):
+def test_detect_pass2_no_divergence_no_audit(tmp_db_at_head, tmp_path):
     """OQ-E control: a stable corpus emits NO divergence warning."""
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run((conn, db_path))
     _seed_confirmed_exemplar(conn, ticker="HIST", pattern_class="vcp")
     conn.commit()
@@ -267,11 +267,11 @@ def test_detect_pass2_no_divergence_no_audit(tmp_db_v22, tmp_path):
     ]
 
 
-def test_observe_bar_fetch_runs_outside_fence_no_deadlock(tmp_db_v22, tmp_path):
+def test_observe_bar_fetch_runs_outside_fence_no_deadlock(tmp_db_at_head, tmp_path):
     """BINDING (spec 7.1, locus #9). Pre-fix: _bar_for_date -> get_or_fetch @2525
     runs inside the held fence @2628 -> second-conn BEGIN IMMEDIATE deadlocks.
     Post-fix: the compute pass (incl. the fetch) runs before the insert fence."""
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
     cfg = _cfg(tmp_path, db_path)
     cache = _DeadlockProbeCache(db_path, {"AAA": _build_bars()})
@@ -285,12 +285,12 @@ def test_observe_bar_fetch_runs_outside_fence_no_deadlock(tmp_db_v22, tmp_path):
 
 
 def test_observe_split_preserves_idempotency_and_observed_count(
-        tmp_db_v22, tmp_path):
+        tmp_db_at_head, tmp_path):
     """spec 7.5: the split is behavior-preserving. First drive observes the open
     detection (1 row); a same-day re-drive is idempotent (still 1 row)."""
     from swing.data.repos.pattern_forward_observations import (
         get_observations_for_detection)
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
     cfg = _cfg(tmp_path, db_path)
     cache = _DeadlockProbeCache(db_path, {"AAA": _build_bars()})

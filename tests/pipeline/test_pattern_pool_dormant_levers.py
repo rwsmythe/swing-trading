@@ -1,14 +1,14 @@
 from __future__ import annotations
 import pytest
 from tests.pipeline.conftest_temporal import (  # noqa
-    tmp_db_v22, _build_bars, _StubOhlcvCache, _drive_detect,
+    tmp_db_at_head, _build_bars, _StubOhlcvCache, _drive_detect,
     _seed_aplus_watch_skip_candidates_and_run)
 
 
-def test_lever1_dormant_default_no_cap_no_audit(tmp_db_v22):
+def test_lever1_dormant_default_no_cap_no_audit(tmp_db_at_head):
     conn, cfg, lease, eval_run_id, tickers = \
         _seed_aplus_watch_skip_candidates_and_run(
-            tmp_db_v22, aplus=("AAA",), watch=("W1", "W2", "W3"), skip=())
+            tmp_db_at_head, aplus=("AAA",), watch=("W1", "W2", "W3"), skip=())
     assert cfg.pipeline.detect_watch_pool_cap is None     # dormant default
     cache = _StubOhlcvCache({t: _build_bars() for t in tickers})
     warnings: list[dict] = []
@@ -19,10 +19,10 @@ def test_lever1_dormant_default_no_cap_no_audit(tmp_db_v22):
     assert not [w for w in warnings if w.get("dropped_count")]  # no cap audit
 
 
-def test_lever1_active_cap_audit_accuracy(tmp_db_v22):
+def test_lever1_active_cap_audit_accuracy(tmp_db_at_head):
     conn, cfg, lease, eval_run_id, tickers = \
         _seed_aplus_watch_skip_candidates_and_run(
-            tmp_db_v22, aplus=("AAA",), watch=("W1", "W2", "W3"), skip=())
+            tmp_db_at_head, aplus=("AAA",), watch=("W1", "W2", "W3"), skip=())
     cfg.pipeline.detect_watch_pool_cap = 1                 # cap watch to 1
     cache = _StubOhlcvCache({t: _build_bars() for t in tickers})
     warnings: list[dict] = []
@@ -70,10 +70,10 @@ def _drive_observe(cfg, lease, warnings, cache_tickers=("AAA",)):
                                   run_warnings=warnings)
 
 
-def test_lever2_dormant_default_no_shed(tmp_db_v22, tmp_path):
+def test_lever2_dormant_default_no_shed(tmp_db_at_head, tmp_path):
     # Both watch-window knobs None -> a watch-origin detection (sessions=10) is
     # still observed under the inherited aplus window (30); no shed audit.
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-15",
                               bucket="watch")  # 10 sessions to _OBS
     cfg = _cfg(tmp_path, db_path)
@@ -84,10 +84,10 @@ def test_lever2_dormant_default_no_shed(tmp_db_v22, tmp_path):
     assert not [w for w in warnings if w.get("shed_count")]         # no shed
 
 
-def test_lever2_active_shed_pending_state(tmp_db_v22, tmp_path, monkeypatch):
+def test_lever2_active_shed_pending_state(tmp_db_at_head, tmp_path, monkeypatch):
     # pending_watch=5; a PENDING watch detection at sessions=10 (>5) is shed:
     # no fetch, no observation row, a shed audit.
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-15",
                               bucket="watch")  # 10 sessions
     cfg = _cfg(tmp_path, db_path)
@@ -106,11 +106,11 @@ def test_lever2_active_shed_pending_state(tmp_db_v22, tmp_path, monkeypatch):
     assert audit["shed_count"] == 1
 
 
-def test_lever2_triggered_open_uses_pending_plus_post_horizon(tmp_db_v22, tmp_path):
+def test_lever2_triggered_open_uses_pending_plus_post_horizon(tmp_db_at_head, tmp_path):
     # pending_watch=5 + post_watch=5 -> horizon 10 for a triggered_open watch
     # detection. At sessions=8 (<10): NOT shed (observed). At sessions=12 (>10):
     # shed. (status-aware horizon -- Codex R1 MAJOR #4.)
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
 
     def _seed_triggered(ticker, data_asof):
         det_id = _plant_detection(conn, ticker=ticker, data_asof_date=data_asof,
@@ -149,10 +149,10 @@ def test_lever2_triggered_open_uses_pending_plus_post_horizon(tmp_db_v22, tmp_pa
     assert shed["shed_count"] == 1
 
 
-def test_lever2_repeated_runs_do_not_refetch_shed(tmp_db_v22, tmp_path, monkeypatch):
+def test_lever2_repeated_runs_do_not_refetch_shed(tmp_db_at_head, tmp_path, monkeypatch):
     # Two observe runs with the shed active: _bar_for_date never called for the
     # shed detection on EITHER run (cheap re-skip; no fetch).
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-15",
                               bucket="watch")  # 10 sessions
     cfg = _cfg(tmp_path, db_path)

@@ -12,7 +12,7 @@ from tests.pipeline.conftest_temporal import (  # noqa: F401
     _FakeLease,
     _plant_detection,
     _stub_window,
-    tmp_db_v22,
+    tmp_db_at_head,
 )
 
 
@@ -162,8 +162,8 @@ from swing.data.repos.pattern_forward_observations import (  # noqa: E402
 from swing.pipeline.runner import _step_pattern_observe  # noqa: E402
 
 
-def test_observation_appended_with_provider_tag(tmp_db_v22, tmp_path):
-    conn, db_path = tmp_db_v22
+def test_observation_appended_with_provider_tag(tmp_db_at_head, tmp_path):
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
     cfg = _cfg(tmp_path, db_path)
     lease = _FakeLease(db_path, run_id=1, data_asof="2026-05-29")
@@ -183,8 +183,8 @@ def test_observation_appended_with_provider_tag(tmp_db_v22, tmp_path):
     assert chain[0].status == "pending"             # below pivot, above invalidation
 
 
-def test_pending_to_triggered_open_on_breakout(tmp_db_v22, tmp_path):
-    conn, db_path = tmp_db_v22
+def test_pending_to_triggered_open_on_breakout(tmp_db_at_head, tmp_path):
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28", pivot=10.0)
     cfg = _cfg(tmp_path, db_path)
     lease = _FakeLease(db_path, 1, "2026-05-29")
@@ -198,8 +198,8 @@ def test_pending_to_triggered_open_on_breakout(tmp_db_v22, tmp_path):
     assert obs.status == "triggered_open" and obs.status_change_event == "entry_fired"
 
 
-def test_sessions_since_detection_counts_from_data_asof(tmp_db_v22, tmp_path):
-    conn, db_path = tmp_db_v22
+def test_sessions_since_detection_counts_from_data_asof(tmp_db_at_head, tmp_path):
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-22")  # Fri
     cfg = _cfg(tmp_path, db_path)
     lease = _FakeLease(db_path, 1, "2026-05-29")
@@ -214,8 +214,8 @@ def test_sessions_since_detection_counts_from_data_asof(tmp_db_v22, tmp_path):
     assert obs.sessions_since_detection == 5
 
 
-def test_idempotent_same_day_reobservation(tmp_db_v22, tmp_path):
-    conn, db_path = tmp_db_v22
+def test_idempotent_same_day_reobservation(tmp_db_at_head, tmp_path):
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
     cfg = _cfg(tmp_path, db_path)
     lease = _FakeLease(db_path, 1, "2026-05-29")
@@ -229,8 +229,8 @@ def test_idempotent_same_day_reobservation(tmp_db_v22, tmp_path):
     assert len(get_observations_for_detection(conn, det_id)) == 1  # no dup; no UNIQUE error
 
 
-def test_empty_open_pool_warns(tmp_db_v22, tmp_path):
-    conn, db_path = tmp_db_v22  # no detections planted
+def test_empty_open_pool_warns(tmp_db_at_head, tmp_path):
+    conn, db_path = tmp_db_at_head  # no detections planted
     cfg = _cfg(tmp_path, db_path)
     lease = _FakeLease(db_path, 1, "2026-05-29")
     warnings: list[dict] = []
@@ -241,8 +241,8 @@ def test_empty_open_pool_warns(tmp_db_v22, tmp_path):
                for w in warnings)
 
 
-def test_no_bar_for_date_warns_and_skips(tmp_db_v22, tmp_path):
-    conn, db_path = tmp_db_v22
+def test_no_bar_for_date_warns_and_skips(tmp_db_at_head, tmp_path):
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
     cfg = _cfg(tmp_path, db_path)
     lease = _FakeLease(db_path, 1, "2026-05-29")
@@ -259,7 +259,7 @@ def test_no_bar_for_date_warns_and_skips(tmp_db_v22, tmp_path):
 
 
 def test_no_bar_warning_round_trips_into_the_coverage_skip_index(
-    tmp_db_v22, tmp_path,
+    tmp_db_at_head, tmp_path,
 ):
     # PRODUCER -> CONSUMER contract (cold-audit MINOR, 2026-08-06). The
     # coverage_gaps monitor's CALIBRATION-C clauses 1 and 2b are BOTH driven by
@@ -274,7 +274,7 @@ def test_no_bar_warning_round_trips_into_the_coverage_skip_index(
 
     from swing.monitoring.research_health import _observe_skip_index
 
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
     cfg = _cfg(tmp_path, db_path)
     lease = _FakeLease(db_path, 1, "2026-05-29")
@@ -303,12 +303,12 @@ def test_no_bar_warning_round_trips_into_the_coverage_skip_index(
     assert ("AAA", "2026-05-29") in _observe_skip_index(conn)
 
 
-def test_missing_provenance_treated_as_no_bar(tmp_db_v22, tmp_path):
+def test_missing_provenance_treated_as_no_bar(tmp_db_at_head, tmp_path):
     # Codex chain #1 Major #2: _bar_for_date must NOT fabricate provider
     # provenance. A matching df row WITH an EMPTY provenance dict has no
     # VERIFIED provider -> treat as no-bar (skip + #27 warning), never
     # fabricate "yfinance" into the append-only log.
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
     cfg = _cfg(tmp_path, db_path)
     lease = _FakeLease(db_path, run_id=1, data_asof="2026-05-29")
@@ -331,12 +331,12 @@ def test_missing_provenance_treated_as_no_bar(tmp_db_v22, tmp_path):
     assert any(w.get("reason") == "no bar for observation_date" for w in warnings)
 
 
-def test_terminal_detection_not_observed_at_step_boundary(tmp_db_v22, tmp_path):
+def test_terminal_detection_not_observed_at_step_boundary(tmp_db_at_head, tmp_path):
     # Codex chain #2 R2 Minor #3: the terminal-guard invariant lives at the
     # STEP boundary -- list_observable_detections excludes a detection whose
     # latest status is terminal, so _step_pattern_observe never appends a new
     # row for it (and _advance_status is never reached -> no ValueError).
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-27")
     from swing.data.models import PatternForwardObservation
     from swing.data.repos.pattern_forward_observations import insert_observation
@@ -358,10 +358,10 @@ def test_terminal_detection_not_observed_at_step_boundary(tmp_db_v22, tmp_path):
     assert len(get_observations_for_detection(conn, det_id)) == 1
 
 
-def test_forward_walk_freezes_past_bar(tmp_db_v22, tmp_path):
+def test_forward_walk_freezes_past_bar(tmp_db_at_head, tmp_path):
     # #26/#37-by-construction discriminator: a past observation's frozen
     # ohlc_today_json is NEVER re-read from a later archive.
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-27")
     cfg = _cfg(tmp_path, db_path)
     # Session N = 2026-05-28: record close 9.00.
@@ -393,7 +393,7 @@ def test_forward_walk_freezes_past_bar(tmp_db_v22, tmp_path):
     assert chain[1].observation_date == "2026-05-29" and json.loads(chain[1].ohlc_today_json)["close"] == 9.10
 
 
-def test_non_finite_ohlc_skips_with_warning(tmp_db_v22, tmp_path):
+def test_non_finite_ohlc_skips_with_warning(tmp_db_at_head, tmp_path):
     """Phase 18 18-A PRIMARY regression (the REAL 06-10 shape): a completed-session
     bar with Close=NaN, O/H/L/V finite, provider=yfinance must be SKIPPED with a
     `non_finite_ohlc` warning -- NO observation row enters the append-only log.
@@ -407,7 +407,7 @@ def test_non_finite_ohlc_skips_with_warning(tmp_db_v22, tmp_path):
     _advance_status -> 0 rows, 1 `non_finite_ohlc` warning. The row-count
     assertion distinguishes the two paths (and the skip also prevents the phantom
     trigger)."""
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")  # pivot 10.0
     cfg = _cfg(tmp_path, db_path)
     lease = _FakeLease(db_path, run_id=1, data_asof="2026-05-29")
@@ -432,7 +432,7 @@ def test_non_finite_ohlc_skips_with_warning(tmp_db_v22, tmp_path):
                       "observation_date": "2026-05-29", "reason": "non_finite_ohlc"}]
 
 
-def test_non_finite_skip_does_not_misnumber_later_observation(tmp_db_v22, tmp_path):
+def test_non_finite_skip_does_not_misnumber_later_observation(tmp_db_at_head, tmp_path):
     """Phase 18 18-A RD watch-item (a): the one-session hole a non-finite skip
     creates must NOT mis-number a LATER observation. sessions_since_detection is
     date-derived (_sessions_since over dates), never recorded-row contiguity, so
@@ -443,7 +443,7 @@ def test_non_finite_skip_does_not_misnumber_later_observation(tmp_db_v22, tmp_pa
     row's sessions_since_detection must be the date-derived 5 (business days
     2026-05-22 excl -> 2026-05-29 incl), NOT 1 (which a contiguity-counting impl
     that ignored the hole would yield)."""
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-22")  # Fri
     cfg = _cfg(tmp_path, db_path)
     import pandas as pd
@@ -471,12 +471,12 @@ def test_non_finite_skip_does_not_misnumber_later_observation(tmp_db_v22, tmp_pa
     assert chain[0].sessions_since_detection == 5           # date-derived, NOT 1
 
 
-def test_volume_only_nan_still_observed(tmp_db_v22, tmp_path):
+def test_volume_only_nan_still_observed(tmp_db_at_head, tmp_path):
     """Phase 18 18-A discriminator: a completed bar with finite OHLC but NaN
     volume is NOT skipped (Volume-NaN exemption reconciled -- the caller's
     is_finite_ohlc gates OHLC only). One row is appended; the engine ignores
     volume so the NaN volume is inert. An impl that gated volume would FAIL this."""
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
     cfg = _cfg(tmp_path, db_path)
     lease = _FakeLease(db_path, run_id=1, data_asof="2026-05-29")

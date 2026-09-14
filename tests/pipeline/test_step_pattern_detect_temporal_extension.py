@@ -12,16 +12,16 @@ import pytest
 from swing.data.repos.pattern_detection_events import list_detection_events
 
 # Reuse the proven harness from the shared temporal conftest module.
-from tests.pipeline.conftest_temporal import (  # noqa: F401  (tmp_db_v22 fixture)
-    tmp_db_v22,
+from tests.pipeline.conftest_temporal import (  # noqa: F401  (tmp_db_at_head fixture)
+    tmp_db_at_head,
     _build_bars, _seed_aplus_candidate_and_run, _seed_run_with_zero_aplus,
     _drive_detect, _StubOhlcvCache,
 )
 
 
-def test_detection_event_appended_with_metadata(tmp_db_v22):
+def test_detection_event_appended_with_metadata(tmp_db_at_head):
     conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(
-        tmp_db_v22, ticker="AAA", sector="Tech", industry="Software",
+        tmp_db_at_head, ticker="AAA", sector="Tech", industry="Software",
         adr_pct=3.2, rs_rank=42)
     run_warnings: list[dict] = []
     _drive_detect(conn, cfg, lease, eval_run_id,
@@ -41,8 +41,8 @@ def test_detection_event_appended_with_metadata(tmp_db_v22):
     assert "window" in anchors and "evidence" in anchors
 
 
-def test_chart_render_id_populated_on_success(tmp_db_v22):
-    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_v22, ticker="AAA")
+def test_chart_render_id_populated_on_success(tmp_db_at_head):
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_at_head, ticker="AAA")
     _drive_detect(conn, cfg, lease, eval_run_id,
                   _StubOhlcvCache({"AAA": _build_bars()}), [])
     det = list_detection_events(conn, ticker="AAA")[0]
@@ -52,8 +52,8 @@ def test_chart_render_id_populated_on_success(tmp_db_v22):
     assert row[0] == "theme2_annotated" and row[1] == det.pattern_class
 
 
-def test_chart_render_failure_leaves_null_and_warns(tmp_db_v22):
-    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_v22, ticker="AAA")
+def test_chart_render_failure_leaves_null_and_warns(tmp_db_at_head):
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_at_head, ticker="AAA")
     run_warnings: list[dict] = []
     with patch("swing.pipeline.runner.render_and_capture_detection_chart",
                return_value=None):
@@ -64,14 +64,14 @@ def test_chart_render_failure_leaves_null_and_warns(tmp_db_v22):
     assert any(w.get("reason") == "chart render failed" for w in run_warnings)
 
 
-def test_idempotent_rerun_skips_recompute_frozen_facts(tmp_db_v22):
+def test_idempotent_rerun_skips_recompute_frozen_facts(tmp_db_at_head):
     # Codex chain #2 Major #5 (+ R2 Minor #1 scope fix): a re-run with DIFFERENT
     # bars must NOT duplicate AND must NOT recompute/replace the FROZEN detection
     # facts. The frozen-fact tuple is structural_anchors_json + composite_score
     # + per_pattern_metadata_json + detector_version + data_asof_date.
     # chart_render_id is a NULLABLE AUDIT LINKAGE (not a frozen fact) --
     # asserted SEPARATELY as "the same-run skip did not refresh the linkage".
-    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_v22, ticker="AAA")
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_at_head, ticker="AAA")
     _drive_detect(conn, cfg, lease, eval_run_id,
                   _StubOhlcvCache({"AAA": _build_bars()}), [])
     first = list_detection_events(conn, ticker="AAA")
@@ -93,21 +93,21 @@ def test_idempotent_rerun_skips_recompute_frozen_facts(tmp_db_v22):
     assert [d.chart_render_id for d in second] == linkage_before
 
 
-def test_pattern_evaluations_still_written_l7(tmp_db_v22):
-    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_v22, ticker="AAA")
+def test_pattern_evaluations_still_written_l7(tmp_db_at_head):
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_at_head, ticker="AAA")
     _drive_detect(conn, cfg, lease, eval_run_id,
                   _StubOhlcvCache({"AAA": _build_bars()}), [])
     n_eval = conn.execute("SELECT COUNT(*) FROM pattern_evaluations").fetchone()[0]
     assert n_eval >= 1  # the existing write is UNCHANGED (L7)
 
 
-def test_detection_insert_failure_is_audited_not_silent(tmp_db_v22):
+def test_detection_insert_failure_is_audited_not_silent(tmp_db_at_head):
     # gotcha #27: a failed detection-event INSERT leaves the pattern_evaluations
     # row written but NO detection row -- a SILENT substrate desync. The except
     # block must convert this into an AUDITED skip (run_warnings entry), not a
     # silent continue.
     conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(
-        tmp_db_v22, ticker="AAA")
+        tmp_db_at_head, ticker="AAA")
     run_warnings: list[dict] = []
     with patch("swing.data.repos.pattern_detection_events.insert_detection_event",
                side_effect=RuntimeError("boom")):
@@ -128,7 +128,7 @@ def test_detection_insert_failure_is_audited_not_silent(tmp_db_v22):
     assert "pattern_class" in desync[0]
 
 
-def test_cand_is_none_skip_is_audited_not_silent(tmp_db_v22):
+def test_cand_is_none_skip_is_audited_not_silent(tmp_db_at_head):
     # Major #1 (gotcha #27): if an emitted verdict's ticker is ABSENT from
     # candidate_by_ticker, the detect step skips the detection append -- which
     # leaves a pattern_evaluations row with NO pattern_detection_events row (a
@@ -144,7 +144,7 @@ def test_cand_is_none_skip_is_audited_not_silent(tmp_db_v22):
     # iteration (so candidate_by_ticker is EMPTY -> .get("AAA") is None ->
     # the cand-is-None branch fires).
     conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(
-        tmp_db_v22, ticker="AAA")
+        tmp_db_at_head, ticker="AAA")
     from swing.data.repos.candidates import fetch_candidates_for_run
     real_candidates = list(fetch_candidates_for_run(conn, eval_run_id))
 
@@ -186,8 +186,8 @@ def test_cand_is_none_skip_is_audited_not_silent(tmp_db_v22):
     assert "pattern_class" in missing[0]
 
 
-def test_empty_aplus_pool_warns_and_writes_nothing(tmp_db_v22):
-    conn, cfg, lease, eval_run_id = _seed_run_with_zero_aplus(tmp_db_v22)
+def test_empty_aplus_pool_warns_and_writes_nothing(tmp_db_at_head):
+    conn, cfg, lease, eval_run_id = _seed_run_with_zero_aplus(tmp_db_at_head)
     run_warnings: list[dict] = []
     _drive_detect(conn, cfg, lease, eval_run_id, _StubOhlcvCache({}), run_warnings)
     assert conn.execute("SELECT COUNT(*) FROM pattern_detection_events").fetchone()[0] == 0
