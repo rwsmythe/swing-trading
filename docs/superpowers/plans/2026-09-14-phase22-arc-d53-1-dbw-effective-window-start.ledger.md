@@ -52,6 +52,47 @@ quotes of the delivered role-mail bodies, byte-for-byte.
 - The interim span (first v1.1.0 run .. this arc's first run) and the DBW tile denominator move are
   recorded here at return.
 
+## Cell intake (executing cell)
+
+Rules read from the MAIN repo (`C:/Users/rwsmy/swing-trading/docs/implementer-dispatch-recipe.md`,
+`docs/harness-architecture.md` section 5.1) at main SHA `d44081450d103f95c00639f1d3dcb28546d689b4`.
+
+### STOP before F1 -- premise correction plus two forks the brief and rulings do not settle
+
+No code written, no production commit made. Returned to the orchestrator for a ruling.
+
+1. **Premise correction (brief section 2 F1 parenthetical).** The brief says a zero-envelope row
+   lacks a parseable `trough_1_date`. The code: `_build_zero_evidence` stamps
+   `trough_1_date = anchor_date` (`swing/patterns/double_bottom_w.py:231`), and every caller passes
+   `anchor_date=candidate_window.end_date` (`:530`, `:544`, `:556`, `:575`). Live (plain sqlite3,
+   `mode=ro`, `SELECT ... FROM pattern_evaluations WHERE pattern_class='double_bottom_w'`):
+   1,563 DBW rows, 1,563 with `geometric_score = 0`, and all 1,563 carry
+   `trough_1_date == window_end_date`. Every DBW row reviewable today is a zero envelope with a
+   parseable trough 1 equal to the window END. Encoded literally, F1 turns a confirm of any of
+   them into a `start_date == end_date` exemplar. (Incidental: the brief's "1,563 evaluations for
+   all five classes" is 1,563 PER class, 7,815 total; latest run 175 is still `v1.0.0`, so the
+   interim span has not started.)
+2. **Fork A -- zero-envelope rows.** A1: derive whenever parseable (one-day exemplars). A2: treat
+   `geometric_score == 0` as "no usable trough 1" and refuse like missing/unparseable (matches
+   F2's non-zero condition and the brief's stated reason).
+3. **Fork B -- decision scope.** The route writes `start_date = window_start_date` for all six
+   decisions. B1: `confirm` only (leaves `pattern_present_outside_window` without a corrected
+   start and `multiple_overlapping_patterns`, both `confirmed` and read by
+   `pattern_outcomes.py:110`, plus `watch`, read by the template corpus at `runner.py:2480`).
+   B2: every decision whose exemplar is a measurement input (`confirm`, `watch`,
+   `pattern_present_outside_window` without a corrected start, `multiple_overlapping_patterns`);
+   `reject`/`relabel` keep today's start. B3: all six, which under A2 makes zero-score DBW rows
+   (all 1,563 today) un-rejectable.
+4. **Fork C -- the override twin is not reachable as specified through a browser.**
+   `swing/web/templates/patterns/review.html.j2:205-206` pre-fills `corrected_window_start_date`
+   with `vm.window_start_date`, so every browser submit carries it. Under
+   `pattern_present_outside_window` an unedited form therefore sends the generator start (trough 2
+   under v1.1.0) as the "corrected" start, and the route cannot tell a typed value from the
+   pre-fill. The refusal's named recovery sends the operator down that path. C1: accept (byte
+   tests pass; the defect stays live on the recovery path). C2: treat a submitted start equal to
+   `evaluation.window_start_date` as not-corrected for DBW. C3: pre-fill the DBW form with trough 1
+   (a VM/template edit outside the brief's four sites).
+
 ## Rounds
 
 (Reviewer A rounds appended by the cell; Reviewer B by the orchestrator.)
