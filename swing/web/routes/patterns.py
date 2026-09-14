@@ -728,10 +728,12 @@ def _dbw_exemplar_window(
 def _dbw_recovery_text(evaluation, reason: str) -> str:
     return (
         f"{reason}, and the window start {evaluation.window_start_date} is "
-        "the detector anchor, not the start of the W. To record it, choose "
-        "the decision pattern_present_outside_window and type the "
-        "first-trough date into the window-correction start field (a date "
-        f"different from the pre-filled {evaluation.window_start_date})."
+        "the detector anchor, not the start of the W. To record it: "
+        "(1) RELOAD this page (this message has replaced the review form); "
+        "(2) choose the decision pattern_present_outside_window; "
+        "(3) type the first-trough start date into the window-correction "
+        "start field (a date different from the pre-filled "
+        f"{evaluation.window_start_date})."
     )
 
 

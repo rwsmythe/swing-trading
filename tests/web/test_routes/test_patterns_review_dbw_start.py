@@ -127,6 +127,21 @@ def _rendered_prefill_start(client, eval_id: int) -> str:
     return m.group(1)
 
 
+def _assert_recovery_text(body: str, eval_id: int) -> None:
+    """CHARC's Reviewer-B-gate ruling: the refusal fragment replaces the
+    review form, so the message must say, IN ORDER, reload the page, choose
+    pattern_present_outside_window, type the first-trough start date. It
+    keeps the evaluation id and the zero score, and is ASCII-only."""
+    assert body.isascii()
+    assert f"evaluation {eval_id}" in body
+    assert "geometric_score is 0" in body
+    low = body.lower()
+    i_reload = low.find("reload")
+    i_decision = low.find("pattern_present_outside_window")
+    i_type = low.find("first-trough start date")
+    assert -1 < i_reload < i_decision < i_type, (i_reload, i_decision, i_type)
+
+
 @pytest.mark.parametrize(
     "decision",
     ["confirm", "watch", "pattern_present_outside_window",
@@ -229,8 +244,7 @@ def test_dbw_zero_row_untouched_submit_refuses_before_any_write(
             headers={"HX-Request": "true"},
         )
     assert r.status_code == 400
-    assert "pattern_present_outside_window" in r.text
-    assert "first-trough date" in r.text
+    _assert_recovery_text(r.text, eval_id)
     assert [x for x in _exemplars(cfg) if x.ticker == "DBW"] == []
 
 
@@ -249,7 +263,8 @@ def test_dbw_nonzero_row_unparseable_trough_1_refuses(seeded_db):
             headers={"HX-Request": "true"},
         )
     assert r.status_code == 400
-    assert "first-trough date" in r.text
+    assert "reload" in r.text.lower()
+    assert "first-trough start date" in r.text
     assert [x for x in _exemplars(cfg) if x.ticker == "DBW"] == []
 
 
@@ -325,7 +340,7 @@ def test_dbw_alternate_spelling_of_prefill_is_not_a_correction(seeded_db):
             headers={"HX-Request": "true"},
         )
     assert r.status_code == 400
-    assert "first-trough date" in r.text
+    _assert_recovery_text(r.text, eval_id)
     assert [x for x in _exemplars(cfg) if x.ticker == "DBW"] == []
 
 
