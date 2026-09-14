@@ -102,6 +102,7 @@ No code written, no production commit made. Returned to the orchestrator for a r
 | Round | Reviewed head | Crit | Major | Minor | New / reopened | Reverts | Verdict | Context depth (orchestrator fills) |
 |---|---|---|---|---|---|---|---|---|
 | 1 | `edcc4217` | 0 | 1 | 1 | 2 new / 0 reopened | 0 | NEW_CRITICAL_MAJOR_FOUND | |
+| 2 | `c227db38` | 0 | 0 | 0 | 0 new / 0 reopened | 0 | NO_NEW_CRITICAL_MAJOR (loop ends) | |
 
 Pre-review suite at `edcc4217`: `12358 passed, 13 skipped` (`-n 4`), ruff clean.
 
@@ -193,3 +194,40 @@ Literal block quote of `20260914T221000Z-charc-ruling-d53-1-forks-a2-c2-together
 > confirm / watch / outside-window / overlapping on DBW rows until F1 merges) is correct.
 >
 > -- CHARC
+
+### Round 2 -- mechanical assertions
+
+- Invocation: `MSYS_NO_PATHCONV=1 wsl.exe bash <scratchpad>/loop531/run_r2.sh` (same runner shape as r1;
+  LF verified with `file`; output and exit files pre-created Windows-side).
+- Exit code MEASURED: `0` (`codex-exit-r2.txt`; `wsl rc=0` observed before reading).
+- Transcript non-empty: 1,089,454 bytes.
+- Banner: `model: gpt-5.6-sol`, `reasoning effort: high`.
+- `grep -c '^ERROR'` = 0.
+- `grep -c '^tokens used'` = 1; value **212,957**.
+- Verdict tokens: `^NO_NEW_CRITICAL_MAJOR` = 2 (0.152.1 double emission), `^NEW_CRITICAL_MAJOR_FOUND` = 0.
+- Scratch-in-input DISCLOSURE: no `.codex*`/`.copowers*` files were read, but the reviewer read this
+  COMMITTED ledger from the worktree (transcript lines 10003 and 10020 echo its round-1 section), so it
+  had the round-1 adjudication in view. The committed per-round ledger is the protocol's record and sits
+  in the reviewed tree by design; the round's verdict is clean, so there is no replayed finding to
+  discount. Recorded, not re-run.
+- Content filter: none observed.
+
+### Round 2 -- evidence (durable copy)
+
+`~/swing-data/review-transcripts/22-d53-1-exec/`: `codex-prompt-r2.md`, `codex-diff-r2.txt` (45,979 bytes;
+`git diff -U8 25e7a79f..c227db38 -- swing tests`), `codex-review-r2.txt` (1,089,454 bytes),
+`codex-exit-r2.txt` (`0`), `run_r2.sh`.
+
+### Round 2 -- findings and adjudication
+
+None. Reviewer's summary: the ruled route order, pre-write refusals, tuple carriage and indexing, the
+effective start reused at slice and persist, the unchanged anchors JSON, chart propagation and test
+coverage all confirmed. It could not execute pytest in WSL (no pytest there); the suite is run
+Windows-side by the cell.
+
+### Convergence
+
+Loop ended at round 2 (first clean verdict), inside the three-round ceiling. Summed `tokens used`
+across counted rounds: 223,482 + 212,957 = **436,439**.
+
+Final-head suite at `12d1b888` (code identical to `c227db38`): `12366 passed, 13 skipped` (`-n 4`), ruff clean.
