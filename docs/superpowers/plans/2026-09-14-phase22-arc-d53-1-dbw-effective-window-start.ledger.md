@@ -231,3 +231,61 @@ Loop ended at round 2 (first clean verdict), inside the three-round ceiling. Sum
 across counted rounds: 223,482 + 212,957 = **436,439**.
 
 Final-head suite at `12d1b888` (code identical to `c227db38`): `12366 passed, 13 skipped` (`-n 4`), ruff clean.
+
+
+## Reviewer B (orchestrator's gate) -- recorded by the orchestrator
+
+- Reviewed head `064a6490` (code = `c227db38`), cold audit, repo read access, cwd = the worktree.
+  Invocation `MSYS_NO_PATHCONV=1 wsl.exe bash .../reviewer-b/run_b.sh` (`codex exec -p strong -s read-only`).
+- Assertions: exit code MEASURED `0`; transcript non-empty; banner `gpt-5.6-sol` / reasoning effort `high`;
+  `^ERROR` = 0; `^tokens used` = 1, value **199,773**; `^NEW_CRITICAL_MAJOR_FOUND` present (x3, the 0.152.1 echo),
+  `^NO_NEW_CRITICAL_MAJOR` = 0.
+- Evidence: `~/swing-data/review-transcripts/22-d53-1-exec/reviewer-b/` (`prompt-b.md`, `diff-b.txt`
+  = `git diff f18fac23..064a6490 -- swing tests`, `review-b.txt`, `exit-b.txt`, `run_b.sh`).
+- Claims 1-5 HOLD (no DBW exemplar from window_start_date or a zero envelope under the four decisions; refusal
+  precedes every write; pre-fill equality not defeatable; tuple extension complete; other classes unchanged).
+- **major #1** -- the refusal fragment replaces the review form (no `hx-target`; `app.py` `_handle_http_exc`),
+  destroying the recovery controls it names. PRE-EXISTING across every 400 the route raises; D53.1 placed a 400
+  on the ruled recovery path. **minor m2** -- a malformed persisted `window_end_date` passes through (single
+  writer, no CHECK). **minor m3** -- seven invariant pins pass on both sides (labelled, twins exist).
+
+## B-gate ruling -- CHARC is the ruling seat; the orchestrator is courier only
+
+Literal block quote of `20260914T233826Z-charc-ruling-d53-1-b-gate-i-reload-first-text.md`, body byte-for-byte:
+
+> RULING (CHARC, the named ruler; RD CC holds). Courier: block-quote into the D53.1 ledger.
+> Verified on disk by me before ruling: review.html.j2 form carries hx-post + hx-headers and NO
+> hx-target (innerHTML of the form itself); app.py _handle_http_exc returns a fragment for an
+> HX-Request; base.html.j2's responseHandling override makes the 4xx swap happen. B major #1 is
+> real and PRE-EXISTING across every 400 the route raises; D53.1 put a 400 on the ruled
+> recovery path, which is what made it visible.
+>
+> B major #1 -- BRANCH (i), with the rider COMMISSIONED rather than banked:
+> 1. In this arc: the refusal text tells the operator to RELOAD the page, then choose
+>    pattern_present_outside_window and type the first-trough start. Route text only, inside
+>    the ruled sites. The witness reloads between steps. This is a documented recovery on a
+>    defect that writes nothing; the structural fix widens a measurement-guard arc into a
+>    form-wide UX change with its own browser witness, and "fix the surrounding surface at the
+>    gate" is the unbounded-arc failure the introduced-vs-banked boundary exists to stop.
+> 2. The structural fix is D56, its own register row and a tests+template rider, sequenced by
+>    you after D32+D50: the review form's error fragment renders in a sibling region (hx-target
+>    on the form to an error div beside it, the form surviving), covering EVERY 400 the route
+>    raises -- and C3 (pre-fill the DBW correction start with trough 1 for non-zero rows) rides
+>    WITH it, same template, same class. Its own browser witness. I bank the row now.
+> 3. Not accepted as a defense: "a reload restores the form" without the message saying so.
+>    An undocumented recovery is the unactionable-surface class (D35); a documented one is not.
+>
+> m2 -- OUT OF SCOPE as you propose, and thank you for stating it rests on the single writer,
+> not on the schema; the row that carries this must say the same (window_end_date has no CHECK).
+> Not a schema-prevented value; a single-writer value. If a second writer ever lands, it re-opens.
+> m3 -- NO ACTION. A deliberate pass-both-sides pin is a pin when it is LABELLED as one and its
+> discriminating twin exists; the cell labelled them and ran the mutation on the zero-score pin.
+>
+> WITNESS: steps 1-5 on the live DB against the worktree's code on a side port, reload between
+> steps, as you laid out. Step 4 (typed-start exemplar) and step 5 (reject) WRITE live exemplar
+> rows: the operator chooses live-honest vs copy at each, per RD's concurrence; a witness must not
+> mint an exemplar to pass. Step 6 waits for run 176 or a seeded copy plus the unseeded live state.
+> The refusal text change is a code change after B ran: minor scope (message text), suite on the
+> final head, no re-round (the stopping rule); B does not re-run for it.
+>
+> -- CHARC
