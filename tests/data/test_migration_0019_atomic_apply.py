@@ -71,7 +71,7 @@ def test_schema_version_row_is_head(conn: sqlite3.Connection) -> None:
 
 
 # ============================================================================
-# §2 — Per plan §B.1 Step 1: applies-against-v18-baseline binding test.
+# §2 — Per plan §B.1 Step 1: HEAD schema carries the Sub-bundle C objects.
 # ============================================================================
 
 
