@@ -1,0 +1,5 @@
+exemplar_id,ticker,timing_mode,h1_outcome,best_bucket,first_rejecting_gate,h2_fired_faithful,h2_fired_isolated,fired_classes_faithful,fired_classes_isolated,rs_path,data_source,n_bars,screenable,h2_anchor_mode_limited_possible,h2_anchor_mode_limited_reason
+twosmw-fig10-40-lulu,LULU,single_session,skip_gate_rejection,skip,vcp,False,False,,high_tight_flag,P0,tiingo,828,True,False,
+twosmw-fig10-40-lulu,LULU,window_sweep,surfaced_aplus,aplus,trend_template_min_passes,False,True,,double_bottom_w;high_tight_flag;vcp,P0,tiingo,814,True,False,
+twosmw-fig11-6-dks,DKS,single_session,skip_insufficient_history,skip,,False,False,,high_tight_flag,P0,tiingo,115,False,False,
+twosmw-fig11-6-dks,DKS,window_sweep,skip_insufficient_history,skip,,False,True,,cup_with_handle;double_bottom_w;flat_base;high_tight_flag;vcp,P1,tiingo,55,False,False,

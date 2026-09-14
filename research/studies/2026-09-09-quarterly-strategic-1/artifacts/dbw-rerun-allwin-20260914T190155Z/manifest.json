@@ -1,0 +1,53 @@
+{
+  "bootstrap_b": 2000,
+  "config_snapshot": {
+    "allowed_miss_names": [
+      "TT8_rs_rank"
+    ],
+    "fallback_extreme_pct": 20.0,
+    "horizon_weeks": 12,
+    "min_passes": 7,
+    "rising_ma_period_days": 21,
+    "rs_rank_min_pass": 70,
+    "screenable_floor": 221
+  },
+  "control_k": 5,
+  "control_seed": 20260608,
+  "exemplar_set_sha256": "70bc2e9ed1533c97aa6c92580d3bf89528a1f71eb9437ec5766d353805abf564",
+  "finished_iso_utc": "20260914T191308Z",
+  "harness_version": "0.1.0",
+  "l2_lock_preserved": true,
+  "n_excluded": 7,
+  "n_screenable": 1,
+  "n_total": 2,
+  "n_unmapped": 0,
+  "only_filter": [
+    "twosmw-fig10-40-lulu",
+    "twosmw-fig11-6-dks"
+  ],
+  "per_exemplar_provenance": [
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-40-lulu",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig11-6-dks",
+      "rs_path": "P1",
+      "rs_paths_all": [
+        "P0",
+        "P1"
+      ]
+    }
+  ],
+  "skip_reason_counts": {
+    "coverage_skip": 10
+  },
+  "started_iso_utc": "20260914T190155Z",
+  "window_back": 60,
+  "window_fwd": 5
+}
