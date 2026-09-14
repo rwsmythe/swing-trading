@@ -45,17 +45,18 @@ Tolerance bands per spec section 5.6 + section 10.6 LOCK (BINDING):
   geometric_score; cap at 1.10 at the evidence layer (composite layer
   applies its own min(1.0, ...) cap downstream per spec section 5.8).
 
-Anchor_date contract: DBW uses swing-LOW (trough_1 anchor). Different
-from HTF (swing-HIGH for pole peak). For ``zigzag_pivot`` mode
-candidates, the ``candidate_window.anchor_date`` IS the inferred base
-START (a down-swing endpoint per foundation.py:458-461 - the inferred
-base start); for DBW this is interpreted as ``trough_1_date`` (the
-first trough of the W). The detector enforces alignment between the
-backward-sliced trough_1 and the candidate_window.anchor_date for
-zigzag_pivot mode (within +/- 1 calendar day of tolerance) to defend
-against scoring a later W against bars clipped to an earlier anchor.
-For ``ma_crossover`` / ``high_low_breakout`` modes (TRIGGER EVENT
-anchors), the detector backward-slices freely from end_date.
+Anchor_date contract: DBW uses swing-LOW anchors (the W troughs).
+Different from HTF (swing-HIGH for pole peak). For ``zigzag_pivot``
+mode candidates, the ``candidate_window.anchor_date`` is a down-swing
+endpoint (foundation.py:458-461). A W has two such lows: trough_1 (where
+a window anchored mid-formation lands) and trough_2 (the most-recent
+low of a COMPLETED W, i.e. the anchor of the generator's last window,
+which is the window the pipeline runner selects). The detector accepts
+a backward-sliced W only when the anchor aligns with its trough_1 OR its
+trough_2 (within +/- 1 calendar day of tolerance); an anchor that is
+neither trough belongs to a different W and is refused. For
+``ma_crossover`` / ``high_low_breakout`` modes (TRIGGER EVENT anchors),
+the detector backward-slices freely from end_date.
 """
 from __future__ import annotations
 
@@ -75,7 +76,7 @@ from swing.patterns.foundation import (
 )
 
 # Detector version pin. Bump on any algorithm change.
-DETECTOR_VERSION: str = "double_bottom_w@v1.0.0"
+DETECTOR_VERSION: str = "double_bottom_w@v1.1.0"
 
 # Spec section 5.6 + section 10.6 LOCK constants.
 _TROUGH_1_DRAWDOWN_BOUND: float = 0.15            # >= 15%
@@ -248,8 +249,9 @@ def _build_zero_evidence(
 
 # Anchor-alignment tolerance for zigzag_pivot mode (Codex R1 Major #2).
 # When candidate_window.anchor_reason starts with "zigzag_pivot", the
-# detector enforces ``abs(trough_1_date - candidate_window.anchor_date)
-# <= _ZIGZAG_ANCHOR_ALIGN_TOLERANCE_DAYS``. The +/- 1 calendar day
+# detector requires ``abs(trough_1_date - anchor_date)`` OR
+# ``abs(trough_2_date - anchor_date)`` to be
+# <= _ZIGZAG_ANCHOR_ALIGN_TOLERANCE_DAYS. The +/- 1 calendar day
 # tolerance defends against off-by-one numerical edge cases at zigzag
 # pivot identification without admitting an entire alternate W
 # structure anchored elsewhere.
@@ -262,8 +264,8 @@ def _backward_slice_dbw_structure(
 ) -> tuple[date, float, date, float, date, float, date, float] | None:
     """Backward-slice to locate (prior_peak, trough_1, center_peak, trough_2).
 
-    DBW uses swing-LOW anchor for trough_1 (distinct from HTF swing-HIGH
-    for pole peak). Algorithm: extract zigzag swings over bars; walk the
+    DBW uses swing-LOW anchors (distinct from HTF swing-HIGH for pole
+    peak). Algorithm: extract zigzag swings over bars; walk the
     swings in REVERSE order to find the most-recent (down-up-down-up)
     sequence ending at or before ``candidate_window.end_date``. The
     structural landmarks are:
@@ -282,15 +284,19 @@ def _backward_slice_dbw_structure(
 
     Anchor contract (Codex R1 Major #2): when
     ``candidate_window.anchor_reason`` starts with ``"zigzag_pivot"``,
-    the anchor_date is the inferred base START (per foundation.py:458-461
-    + spec section 5.1.3 line 502). For DBW the inferred base start is
-    interpreted as ``trough_1_date`` (the first W trough). This helper
-    rejects candidate (prior_peak, trough_1, ...) tuples whose
-    ``trough_1_date`` does not align with ``candidate_window.anchor_date``
-    within ``_ZIGZAG_ANCHOR_ALIGN_TOLERANCE_DAYS`` calendar days; this
-    defends against a window anchored at trough_A scoring a later W
-    structure anchored at trough_B that happens to fit in the same
-    clipped bars.
+    the anchor_date is a down-swing endpoint (per foundation.py:458-461
+    + spec section 5.1.3 line 502). For DBW that endpoint is one of the
+    W's two troughs: trough_1 for a window anchored mid-formation, or
+    trough_2 for the most-recent-low window of a completed W (the window
+    the pipeline runner selects). This helper rejects candidate
+    (prior_peak, trough_1, center_peak, trough_2) tuples when the anchor
+    aligns with NEITHER ``trough_1_date`` NOR ``trough_2_date`` within
+    ``_ZIGZAG_ANCHOR_ALIGN_TOLERANCE_DAYS`` calendar days; this defends
+    against a window anchored at trough_A scoring a W structure that
+    does not contain trough_A but happens to fit in the same clipped
+    bars. Tuples are scanned most-recent first, so an anchor on a trough
+    shared by two adjacent Ws (trough_2 of one, trough_1 of the next)
+    resolves to the more recent W.
 
     For other modes (``ma_crossover``, ``high_low_breakout``) the
     anchor_date is a TRIGGER EVENT (not a base start); no alignment is
@@ -319,7 +325,7 @@ def _backward_slice_dbw_structure(
     # (in-progress post-trough_2 recovery), skip it and look at the
     # preceding 4. Iterate ALL possible tail positions (not just the two
     # most recent) so an earlier W structure can be matched when the
-    # zigzag_pivot anchor_date is on an earlier trough_1.
+    # zigzag_pivot anchor_date is on one of an earlier W's troughs.
     n = len(swings)
     for tail_idx in range(n - 1, 2, -1):
         s_trough_2 = swings[tail_idx]
@@ -351,11 +357,16 @@ def _backward_slice_dbw_structure(
             <= window_end_date
         ):
             continue
-        # Codex R1 Major #2: enforce trough_1 alignment with the
-        # candidate_window.anchor_date for zigzag_pivot mode.
+        # Codex R1 Major #2 + D53: in zigzag_pivot mode the anchor must
+        # align with trough_1 OR trough_2 of this tuple; an anchor that
+        # is neither trough belongs to a different W and is refused.
         if enforce_anchor_alignment:
-            delta_days = abs((trough_1_date - anchor_date).days)
-            if delta_days > _ZIGZAG_ANCHOR_ALIGN_TOLERANCE_DAYS:
+            t1_delta_days = abs((trough_1_date - anchor_date).days)
+            t2_delta_days = abs((trough_2_date - anchor_date).days)
+            if (
+                t1_delta_days > _ZIGZAG_ANCHOR_ALIGN_TOLERANCE_DAYS
+                and t2_delta_days > _ZIGZAG_ANCHOR_ALIGN_TOLERANCE_DAYS
+            ):
                 continue
         return (
             prior_peak_date,
@@ -488,7 +499,8 @@ def detect_double_bottom_w(
         ``swing/patterns/_sanitize.py``).
     candidate_window : CandidateWindow
         One window emitted by ``generate_candidate_windows``. DBW uses
-        swing-LOW anchor semantics (trough_1); the detector backward-
+        swing-LOW anchor semantics (trough_1 or trough_2 in zigzag_pivot
+        mode); the detector backward-
         slices the zigzag swings to identify (prior_peak, trough_1,
         center_peak, trough_2) leading up to ``candidate_window.end_date``.
     conn : sqlite3.Connection | None
@@ -536,9 +548,9 @@ def detect_double_bottom_w(
         )
 
     # Step 2: backward-slice to identify the DBW structural landmarks.
-    # Codex R1 Major #2: for zigzag_pivot mode, the helper enforces
-    # trough_1 alignment with candidate_window.anchor_date (within
-    # +/- 1 day tolerance).
+    # Codex R1 Major #2: for zigzag_pivot mode, the helper requires
+    # candidate_window.anchor_date to align with trough_1 or trough_2
+    # (within +/- 1 day tolerance).
     sliced = _backward_slice_dbw_structure(bars, candidate_window)
     if sliced is None:
         return _build_zero_evidence(

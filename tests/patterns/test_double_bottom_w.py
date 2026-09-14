@@ -175,12 +175,12 @@ def _candidate_window_at_end(
     (the pivot at center_peak height after trough_2 recovery).
 
     Default reason_prefix is ``ma_crossover`` (TRIGGER EVENT semantic):
-    the last bar IS the trigger event, not the inferred base START.
-    For DBW the inferred base START is trough_1 (the first W trough);
-    ``zigzag_pivot`` mode anchor_date MUST align with trough_1 per
-    foundation.py:458-461 + Codex R1 Major #2 (DBW backward-slice
-    enforces alignment for zigzag_pivot mode). Tests that want zigzag
-    semantics use :func:`_candidate_window_at_trough_1_zigzag` below.
+    the last bar IS the trigger event, not a down-swing endpoint.
+    ``zigzag_pivot`` mode anchor_date MUST align with the W's trough_1
+    or trough_2 per foundation.py:458-461 + Codex R1 Major #2 + D53 (DBW
+    backward-slice enforces alignment for zigzag_pivot mode). Tests that
+    want zigzag semantics use :func:`_candidate_window_at_trough_1_zigzag`
+    or :func:`_zigzag_window_at` below.
     """
     anchor_dt = bars.index[-1].date()
     return CandidateWindow(
@@ -201,11 +201,13 @@ def _candidate_window_at_trough_1_zigzag(
 ) -> CandidateWindow:
     """Build a zigzag_pivot CandidateWindow with anchor_date == trough_1.
 
-    Per spec + foundation.py:458-461 zigzag_pivot mode anchor_date IS the
-    inferred base START. For DBW the base start is trough_1 (the first
-    W trough). DBW backward-slice enforces alignment between the sliced
-    trough_1 and candidate_window.anchor_date in zigzag_pivot mode
-    (+/- 1 calendar day tolerance per Codex R1 Major #2 fix).
+    Per spec + foundation.py:458-461 zigzag_pivot mode anchor_date is a
+    down-swing endpoint. This helper builds the mid-formation shape
+    (anchor on trough_1); the completed-W shape (anchor on trough_2) is
+    the generator's last window. DBW backward-slice accepts a W whose
+    trough_1 OR trough_2 aligns with candidate_window.anchor_date in
+    zigzag_pivot mode (+/- 1 calendar day tolerance per Codex R1 Major
+    #2 fix + D53).
     """
     return CandidateWindow(
         ticker=ticker,
@@ -682,14 +684,16 @@ def test_dbw_stage_2_gate_fails_without_conn_returns_zero_score() -> None:
 
 def test_dbw_zigzag_pivot_anchor_aligned_with_trough_1_detects_w() -> None:
     """Codex R1 Major #2 (positive case): for zigzag_pivot mode the
-    candidate_window.anchor_date IS the inferred base START (per
-    foundation.py:458-461 + spec section 5.1.3 line 502). For DBW the
-    base start is trough_1 (the first W trough). With anchor_date ==
-    trough_1_date and reason_prefix='zigzag_pivot', the detector finds
-    the W and emits all-criteria-pass evidence.
+    candidate_window.anchor_date is a down-swing endpoint (per
+    foundation.py:458-461 + spec section 5.1.3 line 502). With
+    anchor_date == trough_1_date (the mid-formation anchor) and
+    reason_prefix='zigzag_pivot', the detector finds the W and emits
+    all-criteria-pass evidence.
 
-    This test pins the canonical correct usage of the zigzag_pivot
-    contract for DBW. Discriminating test below
+    This test pins the trough_1 half of the zigzag_pivot contract for
+    DBW; the trough_2 half is pinned by
+    test_dbw_production_composition_latest_zigzag_window_detects_w.
+    Discriminating test below
     (test_dbw_zigzag_pivot_anchor_misaligned_with_trough_1_rejects)
     plants the WRONG anchor under the same reason_prefix and asserts
     rejection.
@@ -709,15 +713,16 @@ def test_dbw_zigzag_pivot_anchor_aligned_with_trough_1_detects_w() -> None:
 
 def test_dbw_zigzag_pivot_anchor_misaligned_with_trough_1_rejects() -> None:
     """Codex R1 Major #2 (discriminating case): when the candidate
-    window's reason_prefix is 'zigzag_pivot' but the anchor_date does
-    NOT align with the bars-derived trough_1_date (more than +/- 1
-    calendar day away), the detector rejects the candidate W and
+    window's reason_prefix is 'zigzag_pivot' but the anchor_date aligns
+    with NEITHER the bars-derived trough_1_date NOR trough_2_date (more
+    than +/- 1 calendar day from each), the detector rejects the W and
     returns zero-evidence. Without the alignment check the detector
     would have happily scored the W structure in the same bars against
     a window anchored elsewhere.
 
-    Layout: $UVWX bars have trough_1 at 2026-01-24. We plant the
-    anchor at 2026-02-10 (~17 days off; the center_peak vicinity).
+    Layout: $UVWX bars have trough_1 at 2026-01-24 and trough_2 at
+    2026-03-03. We plant the anchor at 2026-02-10 (17 days after
+    trough_1, 21 days before trough_2; the center_peak vicinity).
     Pre-fix behavior: detector ignores anchor_date and finds the W ->
     geometric_score 1.10 (wrong). Post-fix behavior:
     _backward_slice_dbw_structure enforces anchor alignment -> returns
@@ -810,3 +815,153 @@ def test_dbw_non_zigzag_mode_skips_anchor_alignment_check() -> None:
     # Backward-slice from end_date succeeds; W found; criteria pass.
     assert evidence.trough_1_date == date(2026, 1, 24)
     assert evidence.geometric_score == pytest.approx(1.10)
+
+
+# ---------------------------------------------------------------------------
+# D53: production composition (generator -> windows[-1] -> detector)
+# ---------------------------------------------------------------------------
+
+
+def _zigzag_window_at(bars: pd.DataFrame, anchor: date) -> CandidateWindow:
+    """A zigzag_pivot window anchored at ``anchor`` in the generator's shape
+    (``start_date == anchor_date``, ``end_date`` = last bar)."""
+    return CandidateWindow(
+        ticker="UVWX",
+        timeframe="daily",
+        start_date=anchor,
+        end_date=bars.index[-1].date(),
+        anchor_date=anchor,
+        anchor_reason="zigzag_pivot:test_anchor",
+    )
+
+
+def _detect_as_runner(
+    bars: pd.DataFrame, window: CandidateWindow
+) -> DoubleBottomWEvidence:
+    """Call the detector the way ``_step_pattern_detect`` does (Stage-2
+    conn + ticker + asof_date). Without the conn the Stage-2 gate fires
+    before the slice and every window scores 0.0 for the wrong reason."""
+    return detect_double_bottom_w(
+        bars,
+        window,
+        conn=_stage_2_conn(),
+        ticker="UVWX",
+        asof_date=bars.index[-1].date(),
+    )
+
+
+def test_dbw_production_composition_latest_zigzag_window_detects_w() -> None:
+    """D53: the runner hands the detector ``windows[-1]`` from
+    ``generate_candidate_windows(bars, "zigzag_pivot")`` -- the LATEST
+    down-swing anchor, which on a completed W is trough_2. The detector
+    must score that window, not refuse it. This is the only test in this
+    file that routes the window through the production generator.
+    """
+    from swing.patterns.foundation import generate_candidate_windows
+
+    bars = _bars_uvwx_dbw()
+    windows = generate_candidate_windows(bars, "zigzag_pivot", ticker="UVWX")
+    window = windows[-1]
+    evidence = _detect_as_runner(bars, window)
+    assert window.anchor_reason.startswith("zigzag_pivot")
+    assert evidence.trough_1_date == date(2026, 1, 24)
+    assert evidence.trough_2_date == date(2026, 3, 3)
+    # Pin the generator shape the fix depends on: the last window is
+    # anchored on trough_2, not trough_1.
+    assert window.anchor_date == evidence.trough_2_date
+    assert evidence.geometric_score == pytest.approx(1.10)
+
+
+def test_dbw_zigzag_anchor_two_days_after_trough_2_rejects() -> None:
+    """D53 boundary (refused side): an anchor 2 calendar days after
+    trough_2 aligns with neither trough -> zero envelope."""
+    bars = _bars_uvwx_dbw()
+    evidence = _detect_as_runner(bars, _zigzag_window_at(bars, date(2026, 3, 5)))
+    assert evidence.criteria_pass["criterion_1"] is True
+    assert evidence.criteria_pass["criterion_2"] is False
+    assert evidence.geometric_score == 0.0
+
+
+def test_dbw_zigzag_anchor_one_day_after_trough_2_detects_w() -> None:
+    """D53 boundary (accepted side): an anchor 1 calendar day after
+    trough_2 is inside the +/- 1 day tolerance -> the W scores 1.10."""
+    bars = _bars_uvwx_dbw()
+    evidence = _detect_as_runner(bars, _zigzag_window_at(bars, date(2026, 3, 4)))
+    assert evidence.trough_1_date == date(2026, 1, 24)
+    assert evidence.trough_2_date == date(2026, 3, 3)
+    assert evidence.geometric_score == pytest.approx(1.10)
+
+
+def _bars_shared_trough_two_ws() -> pd.DataFrame:
+    """Two overlapping Ws sharing a trough: troughs A (2026-01-24),
+    B (2026-03-03), C (2026-04-06). W1 = (A, B); W2 = (B, C)."""
+    segments = [
+        (26.67 * 0.95, 26.67, 8),
+        (26.67, 20.0, 12),   # -> A
+        (20.0, 24.0, 20),
+        (24.0, 19.0, 18),    # -> B
+        (19.0, 23.0, 18),
+        (23.0, 18.5, 16),    # -> C
+        (18.5, 23.0, 6),     # pivot
+    ]
+    return _bars_from_segments(segments, date(2026, 1, 5))
+
+
+@pytest.mark.parametrize(
+    ("anchor", "expected_t1", "expected_t2"),
+    [
+        # A is trough_1 of W1 only.
+        (date(2026, 1, 24), date(2026, 1, 24), date(2026, 3, 3)),
+        # B is trough_2 of W1 AND trough_1 of W2: the reverse scan meets
+        # W2 first, exactly as the trough_1-only rule already resolved it.
+        (date(2026, 3, 3), date(2026, 3, 3), date(2026, 4, 6)),
+        # C is trough_2 of W2 only (the runner's windows[-1]).
+        (date(2026, 4, 6), date(2026, 3, 3), date(2026, 4, 6)),
+    ],
+)
+def test_dbw_shared_trough_anchor_scores_a_w_containing_the_anchor(
+    anchor: date, expected_t1: date, expected_t2: date
+) -> None:
+    """D53 overlapping-W control: accepting trough_1 OR trough_2 never
+    lets a window score a W that does not contain its anchor, and a
+    shared trough resolves to the more recent W (unchanged from the
+    trough_1-only rule)."""
+    bars = _bars_shared_trough_two_ws()
+    evidence = _detect_as_runner(bars, _zigzag_window_at(bars, anchor))
+    assert (evidence.trough_1_date, evidence.trough_2_date) == (
+        expected_t1,
+        expected_t2,
+    )
+    assert evidence.geometric_score > 0.0
+
+
+def test_dbw_shared_trough_runner_window_is_the_latest_w() -> None:
+    """D53: through the production generator on the two-W bars, the
+    runner's windows[-1] scores the LATEST W (B, C)."""
+    from swing.patterns.foundation import generate_candidate_windows
+
+    bars = _bars_shared_trough_two_ws()
+    windows = generate_candidate_windows(bars, "zigzag_pivot", ticker="UVWX")
+    window = windows[-1]
+    assert window.anchor_date == date(2026, 4, 6)
+    evidence = _detect_as_runner(bars, window)
+    assert evidence.trough_1_date == date(2026, 3, 3)
+    assert evidence.trough_2_date == date(2026, 4, 6)
+    assert evidence.geometric_score > 0.0
+
+
+def test_dbw_detector_version_is_v1_1_0_and_runner_registry_carries_it() -> None:
+    """D53 F2: the anchor-alignment change bumps DETECTOR_VERSION, and the
+    runner's registry tuple carries the same string (compared, not
+    grepped)."""
+    from swing.patterns.double_bottom_w import DETECTOR_VERSION
+    from swing.pipeline.runner import _pattern_detect_registry
+
+    assert DETECTOR_VERSION == "double_bottom_w@v1.1.0"
+    registered = {
+        pattern_class: (fn, version)
+        for fn, pattern_class, version in _pattern_detect_registry()
+    }
+    fn, version = registered["double_bottom_w"]
+    assert fn is detect_double_bottom_w
+    assert version == DETECTOR_VERSION
