@@ -35,10 +35,12 @@ Do this, in order:
    Then ARM WAKE-ON-MAIL for the rest of the session (harness-architecture
    section 3; adopted 2026-09-07): call the Monitor tool ONCE with
    persistent=true and this command (role = rd):
-       cd "C:/Users/rwsmy/swing-trading"; prev=$(ls comms/rd/inbox | wc -l); while true; do n=$(ls comms/rd/inbox | wc -l); if [ "$n" -gt "$prev" ]; then echo "[comms] rd inbox: $n unread (+$((n-prev)))"; fi; prev=$n; sleep 2; done
-   One event per arrival wakes you; drain with the read command above. It
-   costs nothing while idle and dies with the session (every generation
-   re-arms). ONE RULER PER ITEM binds you the moment it is armed: rule only
+       cd "C:/Users/rwsmy/swing-trading"; count() { set -- comms/rd/inbox/*; if [ -e "$1" ]; then n=$#; else n=0; fi; }; count; prev=$n; while true; do count; if [ "$n" -gt "$prev" ]; then echo "[comms] rd inbox: $n unread (+$((n-prev)))"; fi; prev=$n; sleep 10; done
+   One event per arrival wakes you; drain with the read command above. The
+   count is a builtin glob (NO bash fork: the 2026-09-14 form -- the old
+   ls-pipe-wc forked bash twice every 2 s per seat, and each fork re-opens
+   the slow installed bash.exe); it costs nothing while idle and dies with
+   the session (every generation re-arms). ONE RULER PER ITEM binds you the moment it is armed: rule only
    the items that name your seat; as a CC, hold, and speak only to dissent
    from a LANDED ruling, upward. Re-list the inbox before every post.
 
