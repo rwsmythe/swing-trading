@@ -38,7 +38,7 @@ from swing.pipeline.runner import _advance_status, _step_pattern_observe
 
 # Reuse the proven harness from the shared temporal conftest module
 # (one shared fixture set across T-2.4 / T-2.5 / T-2.6).
-from tests.pipeline.conftest_temporal import (  # noqa: F401  (tmp_db_v22 fixture)
+from tests.pipeline.conftest_temporal import (  # noqa: F401  (tmp_db_at_head fixture)
     _FakeLease,
     _StubOhlcvCache,
     _build_bars,
@@ -46,12 +46,12 @@ from tests.pipeline.conftest_temporal import (  # noqa: F401  (tmp_db_v22 fixtur
     _plant_detection,
     _seed_aplus_candidate_and_run,
     _stub_window,
-    tmp_db_v22,
+    tmp_db_at_head,
 )
 
 
-def test_detect_then_forward_walk_e2e(tmp_db_v22):
-    conn, db_path = tmp_db_v22
+def test_detect_then_forward_walk_e2e(tmp_db_at_head):
+    conn, db_path = tmp_db_at_head
 
     # 1. Detect: one aplus candidate -> frozen detections + captured charts.
     _conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(
@@ -115,7 +115,7 @@ def test_detect_then_forward_walk_e2e(tmp_db_v22):
     assert len(list_detection_events(conn, ticker="AAA")) == 5
 
 
-def test_real_detect_anchors_parse_through_advance_status(tmp_db_v22):
+def test_real_detect_anchors_parse_through_advance_status(tmp_db_at_head):
     # Minor #1: prove that EVERY production detector-emitted detection's
     # structural_anchors_json is semantically consumable by _advance_status
     # WITHOUT crashing (closes the planted-detection residual-risk gap -- the
@@ -123,7 +123,7 @@ def test_real_detect_anchors_parse_through_advance_status(tmp_db_v22):
     # The real _build_bars detections freeze pivot_price=0.0, so they resolve
     # to triggered_open on high>=0.0; the assertion is "no crash + valid
     # status", not a specific transition.
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     _conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(
         (conn, db_path), ticker="AAA", data_asof_date="2026-05-27")
     _drive_detect(conn, cfg, lease, eval_run_id,

@@ -539,18 +539,15 @@ _AES_EXPECTED_COLS: frozenset[str] = frozenset({
 })
 
 
-def test_account_equity_snapshots_table_exists_with_8_columns(
+def test_account_equity_snapshots_table_has_the_head_column_set(
     conn: sqlite3.Connection,
 ) -> None:
-    # Test name preserved for git-history continuity; Phase 11 added a 9th
-    # column (schwab_account_hash) so the count assertion below tracks HEAD.
     cur = conn.execute("PRAGMA table_info(account_equity_snapshots)")
     cols = {r[1] for r in cur.fetchall()}
     assert cols == _AES_EXPECTED_COLS, (
         f"column drift; missing {_AES_EXPECTED_COLS - cols}; "
         f"extra {cols - _AES_EXPECTED_COLS}"
     )
-    assert len(cols) == 10  # Phase 11: 8 -> 9 (schwab_account_hash); Phase 16: 9 -> 10 (basis)
 
 
 def test_account_equity_snapshots_unique_date_source(

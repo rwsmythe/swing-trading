@@ -135,7 +135,9 @@ So future instances don't chase ghosts: layer discipline is CLEAN (no web→pipe
 | Check | INFO | ATTENTION | Calibration basis |
 |---|---|---|---|
 | CLAUDE.md total chars | always reported | > 100,000 | 52,612 today; 228K was the 2026-05-28 restructure trigger |
-| CLAUDE.md line-3 chars | always reported | > 9,000 | 5,818 today (one phase after compaction; compaction is due at every phase close regardless) |
+| CLAUDE.md line-3 chars | always reported | > 2,000 | RECONCILED 2026-09-14 to the orchestrator-context trigger (was 9,000; the probe read OK on 09-08 while the operative trigger was OVER) |
+| CLAUDE.md §Gotchas section chars | always reported | > 55,000 | added 2026-09-14 — the orchestrator-context cap, now MEASURED; 363 chars from breach on 09-08 and invisible to the probe |
+| CLAUDE.md §Gotchas bullets over 700 chars | count + the five largest | any | added 2026-09-14 — the per-bullet trigger+fix cap; the compression list rides the next gotcha commit |
 | Each live charter/context doc | always reported | > 120,000 chars | orchestrator-context.md fires TODAY at 136K — intentional; its archive discipline should be exercised at Phase 16 close |
 | docs/*.md count | always reported | > 600 | 437 today; forces the D10 retention proposal before the corpus doubles |
 | Root session artifacts | count + oldest | any older than 14 days | 11 today, oldest 2 days |

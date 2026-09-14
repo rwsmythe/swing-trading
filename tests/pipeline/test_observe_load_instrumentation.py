@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import patch
 
 from tests.pipeline.conftest_temporal import (  # noqa: F401
-    tmp_db_v22, _build_bars, _cfg, _FakeLease, _plant_detection, _stub_window)
+    tmp_db_at_head, _build_bars, _cfg, _FakeLease, _plant_detection, _stub_window)
 from swing.data.repos.pattern_forward_observations import (
     get_observations_for_detection)
 
@@ -57,10 +57,10 @@ def test_ohlcv_cache_telemetry_counts_hit_vs_fetch(tmp_path, monkeypatch):
     assert cache.drain_telemetry() == {"in_memory_hit": 0, "fetch_window": 0}
 
 
-def test_observe_emits_fetch_telemetry_metrics_entry(tmp_db_v22, tmp_path):
+def test_observe_emits_fetch_telemetry_metrics_entry(tmp_db_at_head, tmp_path):
     # Plant 2 open detections; drive observe with a telemetry-bearing stub;
     # assert one observe_load metrics entry where observed == fetch_window == 2.
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
     _plant_detection(conn, ticker="BBB", data_asof_date="2026-05-28")
     cfg = _cfg(tmp_path, db_path)
@@ -76,11 +76,11 @@ def test_observe_emits_fetch_telemetry_metrics_entry(tmp_db_v22, tmp_path):
     assert entry["fetch_window"] + entry["in_memory_hit"] == 2  # == get_or_fetch
 
 
-def test_observe_load_excludes_prior_step_fetches(tmp_db_v22, tmp_path):
+def test_observe_load_excludes_prior_step_fetches(tmp_db_at_head, tmp_path):
     # Codex R1 MAJOR: the runner shares one OhlcvCache across detect/charts/
     # observe. Simulate prior-step fetches on the SAME cache before observe;
     # the observe_load audit must reflect observe-ONLY fetches (entry reset).
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
     cfg = _cfg(tmp_path, db_path)
     cache = _TeleStub({"AAA": _build_bars()})
@@ -95,11 +95,11 @@ def test_observe_load_excludes_prior_step_fetches(tmp_db_v22, tmp_path):
     assert entry["observed"] == 1
 
 
-def test_observe_scaling_one_obs_per_open_detection(tmp_db_v22, tmp_path):
+def test_observe_scaling_one_obs_per_open_detection(tmp_db_at_head, tmp_path):
     # Plant 5 open detections; drive observe; assert 5 observation rows (one per
     # open detection) and the idempotent already-observed-today guard holds on a
     # second drive (still 5).
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     det_ids = [
         _plant_detection(conn, ticker=t, data_asof_date="2026-05-28")
         for t in ("AAA", "BBB", "CCC", "DDD", "EEE")]

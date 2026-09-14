@@ -21,7 +21,7 @@ from swing.data.repos.watchlist import (
 from swing.pipeline.runner import _step_watchlist
 from swing.watchlist.service import STABLE_CRITERION_NAMES
 
-from tests.pipeline.conftest_temporal import _FakeLease, tmp_db_v22  # noqa: F401
+from tests.pipeline.conftest_temporal import _FakeLease, tmp_db_at_head  # noqa: F401
 
 DATA_ASOF = "2026-06-10"
 
@@ -82,8 +82,8 @@ def _seed(conn, *, ticker: str) -> int:
     return eval_run_id
 
 
-def test_step_watchlist_pin_suppresses_removal_and_warns(tmp_db_v22):
-    conn, db_path = tmp_db_v22
+def test_step_watchlist_pin_suppresses_removal_and_warns(tmp_db_at_head):
+    conn, db_path = tmp_db_at_head
     eval_run_id = _seed(conn, ticker="KEEP")
 
     cfg = SimpleNamespace(paths=SimpleNamespace(db_path=db_path))
@@ -113,9 +113,9 @@ def test_step_watchlist_pin_suppresses_removal_and_warns(tmp_db_v22):
     assert archived == 0
 
 
-def test_step_watchlist_no_warnings_list_does_not_crash(tmp_db_v22):
+def test_step_watchlist_no_warnings_list_does_not_crash(tmp_db_at_head):
     """run_warnings=None (the default) must not raise even with a suppressed removal."""
-    conn, db_path = tmp_db_v22
+    conn, db_path = tmp_db_at_head
     eval_run_id = _seed(conn, ticker="KEEP")
 
     cfg = SimpleNamespace(paths=SimpleNamespace(db_path=db_path))
