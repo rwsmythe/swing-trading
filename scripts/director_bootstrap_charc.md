@@ -7,9 +7,9 @@ LAUNCH CONFIGURATION (operator-ruled 2026-09-02; the harness starts this role he
   model  = Fable 5.1  (`claude-fable-5-1`; the operator's own director seat runs the
            1M-context variant `claude-fable-5-1[1m]` -- pick the context size for the
            session length, never a smaller model)
-  effort = high      (`xhigh` is an in-session escalation for capability-sensitive
-           passes such as a phase-close audit, at the director's discretion -- it is
-           NOT the start setting)
+  effort = medium    (operator-ruled 2026-09-13, was high; `high`/`xhigh` are
+           in-session escalations for capability-sensitive passes such as a
+           phase-close audit, at the director's discretion -- NOT the start setting)
 The operator sets both knobs when spinning up this instance; they are launch
 configuration, not in-prompt instructions.
 

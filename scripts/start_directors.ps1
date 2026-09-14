@@ -136,8 +136,8 @@ $RoleTitles = @{ 'charc' = 'CHARC'; 'rd' = 'RD'; 'orchestrator' = 'ORCHESTRATOR'
 # did: 2026-09-01 .. 2026-09-06 every launcher-started role ran opus/max or
 # opus/xhigh while the bootstraps declared fable/high and opus/high).
 $RoleLaunch = @{
-    'charc'        = @{ Model = 'fable'; Effort = 'high' }
-    'rd'           = @{ Model = 'fable'; Effort = 'high' }
+    'charc'        = @{ Model = 'fable'; Effort = 'medium' }
+    'rd'           = @{ Model = 'fable'; Effort = 'medium' }
     'orchestrator' = @{ Model = 'opus';  Effort = 'high' }
 }
 

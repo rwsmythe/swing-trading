@@ -22,8 +22,8 @@ _SCRIPT = _SCRIPTS / "start_directors.ps1"
 # launcher's $RoleLaunch table MUST agree; from 2026-09-01 to 2026-09-06 it did
 # not (opus/max, opus/xhigh) and every launcher-started role ran off-config.
 _BOOTSTRAP_LAUNCH = {
-    "charc": ("director_bootstrap_charc.md", "Fable 5.1", "high", "fable"),
-    "rd": ("director_bootstrap_rd.md", "Fable 5.1", "high", "fable"),
+    "charc": ("director_bootstrap_charc.md", "Fable 5.1", "medium", "fable"),
+    "rd": ("director_bootstrap_rd.md", "Fable 5.1", "medium", "fable"),
     "orchestrator": ("orchestrator_bootstrap.md", "Opus 5", "high", "opus"),
 }
 
@@ -144,10 +144,10 @@ def test_orchestrator_session_name_not_director_prefixed():
     assert 'return "director-$role-$stamp"' in text     # directors UNCHANGED
 
 
-# Behavioral -DryRun (skip-guarded): directors launch fable/high + keep the
+# Behavioral -DryRun (skip-guarded): directors launch fable/medium + keep the
 # 'director-<role>-<stamp>' name.
 
-def test_dryrun_charc_launches_fable_high_and_director_name():
+def test_dryrun_charc_launches_fable_medium_and_director_name():
     if shutil.which("powershell") is None or shutil.which("claude") is None:
         pytest.skip("powershell + claude CLI required for the behavioral DryRun")
     r = subprocess.run(
@@ -157,7 +157,7 @@ def test_dryrun_charc_launches_fable_high_and_director_name():
     assert r.returncode == 0
     out = r.stdout + r.stderr
     # bootstrap START config; director naming unchanged
-    assert "claude --model fable --effort high --permission-mode auto" in out
+    assert "claude --model fable --effort medium --permission-mode auto" in out
     assert "session name 'director-charc-" in out
 
 
