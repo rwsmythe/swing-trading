@@ -574,8 +574,8 @@ def test_dbw_bar_clipping_future_bar_leak_rejected() -> None:
     """Per dispatch brief LOCK L10 + T2.SB3 forward-binding lesson #2:
     bars MUST be clipped to ``bars.index <= candidate_window.end_date``
     BEFORE anchor identification. Plant a future bar with LOWEST-LOW
-    (DBW's swing-LOW anchor for trough_1) after window.end_date;
-    detector must NOT use it as trough_1.
+    (a would-be W trough) after window.end_date; detector must NOT use
+    it as a trough.
     """
     bars = _bars_uvwx_dbw()
     # Append a future bar with an EVEN LOWER trough beyond window.end_date.
