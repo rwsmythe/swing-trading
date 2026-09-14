@@ -630,9 +630,11 @@ def _dbw_exemplar_start_date(
 ) -> str:
     """Return a double_bottom_w exemplar's start_date, or raise a typed 400.
 
-    The evaluation's ``window_start_date`` is the candidate generator's
-    anchor (trough 2 for a v1.1.0 verdict), never the pattern start, so it
-    is never used here. Order (CHARC's D53.1 ruling):
+    The evaluation's ``window_start_date`` is not read as the start here.
+    The runner persists the evidence trough 1 there for a non-zero DBW
+    verdict, but a zero-score row (and every row written before D53.1)
+    carries the candidate generator's anchor, which for a v1.1.0 verdict
+    is trough 2. Order (CHARC's D53.1 ruling):
 
     (i)   a submitted corrected start EQUAL to ``window_start_date`` is not
           a correction -- the review form pre-fills that value, so an
