@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -529,6 +529,16 @@ def patterns_review_post(
                 start_date = corrected_window_start_date
             if corrected_window_end_date:
                 end_date = corrected_window_end_date
+        if (
+            canonical_proposed == "double_bottom_w"
+            and decision in _DBW_START_GUARDED_DECISIONS
+        ):
+            # D53.1 F1: refuses (typed 400) BEFORE any write below.
+            start_date = _dbw_exemplar_start_date(
+                evaluation,
+                decision=decision,
+                corrected_window_start_date=corrected_window_start_date,
+            )
 
         # Build primary exemplar row.
         with conn:
@@ -597,6 +607,74 @@ def patterns_review_post(
 
     return Response(
         status_code=204, headers={"HX-Redirect": "/patterns/queue"},
+    )
+
+
+# D53.1 F1: decisions whose double_bottom_w exemplar is READ as a pattern
+# instance -- the three that persist final_decision='confirmed' (read by
+# swing/metrics/pattern_outcomes.py) and 'watch' (read by the runner's
+# template corpus). reject and relabel keep the evaluation's window start.
+_DBW_START_GUARDED_DECISIONS: frozenset[str] = frozenset({
+    "confirm",
+    "watch",
+    "pattern_present_outside_window",
+    "multiple_overlapping_patterns",
+})
+
+
+def _dbw_exemplar_start_date(
+    evaluation,
+    *,
+    decision: str,
+    corrected_window_start_date: str | None,
+) -> str:
+    """Return a double_bottom_w exemplar's start_date, or raise a typed 400.
+
+    The evaluation's ``window_start_date`` is the candidate generator's
+    anchor (trough 2 for a v1.1.0 verdict), never the pattern start, so it
+    is never used here. Order (CHARC's D53.1 ruling):
+
+    (i)   a submitted corrected start EQUAL to ``window_start_date`` is not
+          a correction -- the review form pre-fills that value, so an
+          untouched submit is indistinguishable from a typed one;
+    (ii)  a typed start that differs wins (the route honours a corrected
+          start only under ``pattern_present_outside_window``);
+    (iii) a non-zero ``geometric_score`` takes ``trough_1_date`` from the
+          structural evidence;
+    (iv)  otherwise refuse, naming the recovery. A zero score means the
+          detector found no W (its zero envelope stamps trough_1_date at
+          the window END, which is not a trough), so the operator who sees
+          one is the only source of its start. A non-zero row whose
+          evidence has no parseable trough_1_date refuses the same way.
+    """
+    typed = (corrected_window_start_date or "").strip()
+    if (
+        decision == "pattern_present_outside_window"
+        and typed
+        and typed != evaluation.window_start_date
+    ):
+        return typed
+    if evaluation.geometric_score > 0:
+        try:
+            evidence = json.loads(evaluation.structural_evidence_json)
+            trough_1 = evidence["trough_1_date"]
+            return date.fromisoformat(trough_1).isoformat()
+        except (ValueError, TypeError, KeyError):
+            pass
+        reason = "its structural evidence has no parseable trough_1_date"
+    else:
+        reason = "its geometric_score is 0 (the detector found no W)"
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Cannot record double_bottom_w evaluation {evaluation.id} as a "
+            f"pattern: {reason}, and the window start "
+            f"{evaluation.window_start_date} is the detector anchor, not "
+            "the start of the W. To record it, choose the decision "
+            "pattern_present_outside_window and type the first-trough date "
+            "into the window-correction start field (a date different from "
+            f"the pre-filled {evaluation.window_start_date})."
+        ),
     )
 
 
