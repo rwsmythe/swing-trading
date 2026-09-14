@@ -97,6 +97,50 @@ No code written, no production commit made. Returned to the orchestrator for a r
 
 (Reviewer A rounds appended by the cell; Reviewer B by the orchestrator.)
 
+### Round table (Reviewer A, tier `strong`, executing)
+
+| Round | Reviewed head | Crit | Major | Minor | New / reopened | Reverts | Verdict | Context depth (orchestrator fills) |
+|---|---|---|---|---|---|---|---|---|
+| 1 | `edcc4217` | 0 | 1 | 1 | 2 new / 0 reopened | 0 | NEW_CRITICAL_MAJOR_FOUND | |
+
+Pre-review suite at `edcc4217`: `12358 passed, 13 skipped` (`-n 4`), ruff clean.
+
+### Round 1 -- mechanical assertions
+
+- Invocation: `MSYS_NO_PATHCONV=1 wsl.exe bash <scratchpad>/loop531/run_r1.sh` (runner:
+  `cat prompt diff | codex exec -p strong -s read-only --skip-git-repo-check -`, cwd = the worktree for
+  repo read access; runner written LF via `printf`, output and exit files pre-created Windows-side).
+- Exit code MEASURED: `0` (written by the runner to `codex-exit-r1.txt`; the wrapper's `wsl rc=0` awaited
+  before reading).
+- Transcript non-empty: 794,216 bytes.
+- Banner: `model: gpt-5.6-sol`, `reasoning effort: high`.
+- `grep -c '^ERROR'` = 0.
+- `grep -c '^tokens used'` = 1; value **223,482**.
+- Verdict tokens: `^NEW_CRITICAL_MAJOR_FOUND` = 2 (the 0.152.1 double emission), `^NO_NEW_CRITICAL_MAJOR` = 0.
+- Scratch-in-input: no `.codex*`/`.copowers*` files exist in the worktree; the transcript's only hits on
+  those names are the prompt echo and CLAUDE.md/doc prose.
+- Content filter: none observed.
+
+### Round 1 -- evidence (durable copy)
+
+`~/swing-data/review-transcripts/22-d53-1-exec/`: `codex-prompt-r1.md` (6,970 bytes),
+`codex-diff-r1.txt` (39,822 bytes; `git diff -U8 25e7a79f..edcc4217`), `codex-review-r1.txt`
+(794,216 bytes), `codex-exit-r1.txt` (2 bytes, `0`), `run_r1.sh` (818 bytes).
+
+### Round 1 -- findings and adjudication
+
+1. **major** -- `swing/web/routes/patterns.py` (the DBW guard): a typed corrected start was trusted as
+   arbitrary text; any value differing byte-for-byte from the pre-fill won, so a zero-score row could
+   bypass the refusal with a non-date, an inverted interval, or another spelling of the pre-filled date.
+   **Disposition: ACCEPTED, INTRODUCED** (the byte comparison and the typed-start recovery are this
+   arc's; the route's pre-existing acceptance of arbitrary corrected text for OTHER classes is untouched
+   and noted as pre-existing, not banked by this arc). **FIXED in `c227db38`:** typed start and end parse
+   as dates or refuse (typed 400); the untouched-submit comparison is by date; a start after the end
+   refuses; all before any write. Tests RED first (4 failed), then green.
+2. **minor** -- declared exclusions unpinned (relabel on a zero row; a typed start ignored under
+   confirm/watch/multiple_overlapping_patterns). **FIXED in `c227db38`** (pins; they pass on both sides by
+   design, they guard against a future widening).
+
 
 ## Fork ruling after the cell's pre-F1 stop -- CHARC is the ruling seat; the orchestrator is courier only
 
