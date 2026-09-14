@@ -694,7 +694,7 @@ def test_dbw_zigzag_pivot_anchor_aligned_with_trough_1_detects_w() -> None:
     DBW; the trough_2 half is pinned by
     test_dbw_production_composition_latest_zigzag_window_detects_w.
     Discriminating test below
-    (test_dbw_zigzag_pivot_anchor_misaligned_with_trough_1_rejects)
+    (test_dbw_zigzag_pivot_anchor_misaligned_with_both_troughs_rejects)
     plants the WRONG anchor under the same reason_prefix and asserts
     rejection.
     """
@@ -711,7 +711,7 @@ def test_dbw_zigzag_pivot_anchor_aligned_with_trough_1_detects_w() -> None:
     assert evidence.geometric_score == pytest.approx(1.10)
 
 
-def test_dbw_zigzag_pivot_anchor_misaligned_with_trough_1_rejects() -> None:
+def test_dbw_zigzag_pivot_anchor_misaligned_with_both_troughs_rejects() -> None:
     """Codex R1 Major #2 (discriminating case): when the candidate
     window's reason_prefix is 'zigzag_pivot' but the anchor_date aligns
     with NEITHER the bars-derived trough_1_date NOR trough_2_date (more
