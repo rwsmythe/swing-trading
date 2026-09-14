@@ -151,7 +151,7 @@ def _claude_md_checks(root: Path) -> list[tuple[str, str]]:
     gotchas_end = len(lines)
     for i, ln in enumerate(lines):
         if gotchas_start is None:
-            if ln.strip() == "## Gotchas":
+            if ln == "## Gotchas":
                 gotchas_start = i
             continue
         if ln.startswith("## "):

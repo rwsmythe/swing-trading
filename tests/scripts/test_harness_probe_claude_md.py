@@ -179,6 +179,34 @@ def test_no_gotchas_header_is_info_not_found(root):
     assert not any(r[1].startswith("CLAUDE.md Gotchas bullets") for r in rows)
 
 
+def test_gotchas_section_runs_to_eof_when_no_closing_header(root):
+    """No top-level "## " header follows the Gotchas section -> the section
+    runs to EOF (close_section=False exercises that branch directly, rather
+    than only exercising the has-a-closing-header path every other test
+    uses)."""
+    bullet = "- " + ("x" * 699)  # 701 chars, over the per-bullet cap.
+    _write_claude_md(root, _claude_md_text(gotchas_lines=[bullet], close_section=False))
+    rows = harness_probe._claude_md_checks(root)
+    section_rows = [r for r in rows if r[1].startswith("CLAUDE.md Gotchas section chars")]
+    bullet_rows = [r for r in rows if r[1].startswith("CLAUDE.md Gotchas bullets")]
+    assert len(section_rows) == 1
+    assert bullet_rows[0][0] == "ATTENTION"
+    assert "over 700: 1" in bullet_rows[0][1]
+
+
+def test_indented_gotchas_text_is_not_mistaken_for_the_header(root):
+    """A line reading exactly "## Gotchas" starts the section; indented or
+    otherwise-decorated text that merely CONTAINS that text (e.g. inside a
+    code fence) must not be mistaken for the real header."""
+    _write_claude_md(root, _claude_md_text(
+        has_gotchas=False,
+        gotchas_lines=["    ## Gotchas", "- a bullet under the fake header"],
+    ))
+    rows = harness_probe._claude_md_checks(root)
+    info_rows = [line for level, line in rows if level == "INFO"]
+    assert any("section not found" in line.lower() for line in info_rows)
+
+
 def test_missing_claude_md_is_attention_never_crash(root):
     rows = harness_probe._claude_md_checks(root)
     assert rows == [("ATTENTION", "CLAUDE.md missing")]
