@@ -207,6 +207,21 @@ def test_indented_gotchas_text_is_not_mistaken_for_the_header(root):
     assert any("section not found" in line.lower() for line in info_rows)
 
 
+def test_over_cap_bullet_preview_with_non_ascii_is_forced_ascii(root):
+    """The module's contract is ASCII output; a non-ASCII char inside the
+    first 60 chars of an over-cap bullet must not survive into the printed
+    preview (Codex R2 minor -- verbatim bullet[:60] could carry non-ASCII
+    CLAUDE.md text through to stdout)."""
+    bullet = "- " + "—" + ("x" * 750)  # em-dash (non-ASCII) + filler.
+    _write_claude_md(root, _claude_md_text(gotchas_lines=[bullet]))
+    rows = harness_probe._claude_md_checks(root)
+    info_rows = [line for level, line in rows if level == "INFO"]
+    assert any(line.startswith(f"{len(bullet)} ") for line in info_rows)
+    for line in info_rows:
+        line.encode("ascii")  # must not raise -- strictly ASCII, not just cp1252.
+    assert not any("—" in line for line in info_rows)
+
+
 def test_missing_claude_md_is_attention_never_crash(root):
     rows = harness_probe._claude_md_checks(root)
     assert rows == [("ATTENTION", "CLAUDE.md missing")]

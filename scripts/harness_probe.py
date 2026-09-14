@@ -183,7 +183,11 @@ def _claude_md_checks(root: Path) -> list[tuple[str, str]]:
     ))
     if over:
         for b in sorted(over, key=len, reverse=True)[:5]:
-            rows.append(("INFO", f"{len(b)} {b[:60]}"))
+            # Module contract is ASCII output; the bullet preview is
+            # arbitrary CLAUDE.md text, so force it through the same
+            # encode-safe boundary the rest of the probe's output relies on.
+            preview = b[:60].encode("ascii", errors="replace").decode("ascii")
+            rows.append(("INFO", f"{len(b)} {preview}"))
 
     return rows
 
