@@ -135,6 +135,9 @@ $RoleTitles = @{ 'charc' = 'CHARC'; 'rd' = 'RD'; 'orchestrator' = 'ORCHESTRATOR'
 # this table against the bootstrap text so the two cannot drift again (they
 # did: 2026-09-01 .. 2026-09-06 every launcher-started role ran opus/max or
 # opus/xhigh while the bootstraps declared fable/high and opus/high).
+# The fast bash copy the CLI is pointed at (see Invoke-Preflight for why).
+$GitBashPath = 'C:\Program Files\Git\usr\bin\bash-cc.exe'
+
 $RoleLaunch = @{
     'charc'        = @{ Model = 'fable'; Effort = 'medium' }
     'rd'           = @{ Model = 'fable'; Effort = 'medium' }
@@ -191,6 +194,16 @@ function Invoke-Preflight {
     # inherits its parent's environment block, and the launcher may itself
     # have been started from a shell that predates the operator's setx).
     $env:DISABLE_AUTOUPDATER = '1'
+    # THE FAST BASH COPY MUST EXIST (2026-09-14, operator-applied workaround):
+    # every open of the installed usr\bin\bash.exe costs 60-900 ms on this box
+    # (root cause unproven after an admin-level elimination) while identical
+    # bytes at any other path are instant. The CLI honours
+    # CLAUDE_CODE_GIT_BASH_PATH; the spawned shell sets it (Build-LaunchCommand).
+    # A Git reinstall wipes the copy silently, and a seat launched without it
+    # pays 100+ s per Bash tool call -- so refuse, loudly, before the probe.
+    if (-not (Test-Path $GitBashPath)) {
+        throw "fast bash copy missing at $GitBashPath -- recreate it (admin): Copy-Item 'C:\Program Files\Git\usr\bin\bash.exe' '$GitBashPath'; then relaunch. Refusing to launch a seat onto the slow bash path."
+    }
     $cmd = Get-Command claude -ErrorAction SilentlyContinue
     if ($null -eq $cmd) {
         throw "claude CLI not found on PATH. Install Claude Code or open a shell where 'claude' resolves."
@@ -305,7 +318,7 @@ function Build-LaunchCommand($role, $argList) {
     # vehicles carry it regardless of what the launcher's caller had. CLI
     # updates are then a deliberate act between runs (`claude update`).
     $scrub = ($SessionMarkers | ForEach-Object { "Remove-Item Env:$_ -ErrorAction SilentlyContinue" }) -join '; '
-    return "$scrub; `$env:DISABLE_AUTOUPDATER='1'; `$env:SWING_ROLE='$role'; Set-Location '$RepoRoot'; claude " + ($argList -join ' ')
+    return "$scrub; `$env:DISABLE_AUTOUPDATER='1'; `$env:CLAUDE_CODE_GIT_BASH_PATH='$GitBashPath'; `$env:SWING_ROLE='$role'; Set-Location '$RepoRoot'; claude " + ($argList -join ' ')
 }
 
 function Get-EncodedCommand($inner) {

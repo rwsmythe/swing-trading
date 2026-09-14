@@ -291,6 +291,45 @@ def test_dryrun_launch_line_disables_autoupdate_after_scrub_before_claude():
     assert at < launch.index("; claude ")
 
 
+# --- Git-bash path: the launcher points every role at the fast bash copy ---
+#
+# 2026-09-14, operator-applied workaround (coa-chess CHARC's diagnosis, ours
+# reproduced): every open of the ONE installed file
+# C:\Program Files\Git\usr\bin\bash.exe costs 60-900 ms on this box (root cause
+# unproven after an admin-level elimination); identical bytes at any other
+# path are instant. The CLI honours CLAUDE_CODE_GIT_BASH_PATH; the launcher
+# sets it in the spawned shell beside DISABLE_AUTOUPDATER and REFUSES to
+# launch if the copy is absent -- a Git reinstall wipes it silently, and a
+# seat launched without it pays 100+ s per Bash tool call.
+
+_GIT_BASH_COPY = r"C:\Program Files\Git\usr\bin\bash-cc.exe"
+
+
+def test_launcher_names_the_bash_copy_and_refuses_when_absent():
+    text = _script_text()
+    assert _GIT_BASH_COPY in text
+    # the preflight refuses BEFORE the first claude invocation
+    probe = "(claude --version | Out-String)"
+    guard = "Test-Path $GitBashPath"
+    assert guard in text
+    assert text.index(guard) < text.index(probe), (
+        "the launcher probes the CLI before it checks the bash copy exists")
+    assert "throw" in text[text.index(guard):text.index(guard) + 400]
+
+
+def test_dryrun_launch_line_sets_git_bash_path_after_scrub_before_claude():
+    r, out = _dryrun("-Role", "charc")
+    assert r.returncode == 0
+    launch = next(ln for ln in out.splitlines() if "  launch: " in ln)
+    stanza = "$env:CLAUDE_CODE_GIT_BASH_PATH='" + _GIT_BASH_COPY + "'"
+    assert stanza in launch
+    at = launch.index(stanza)
+    last_scrub = max(
+        launch.index(f"Remove-Item Env:{name} -ErrorAction SilentlyContinue")
+        for name in _SESSION_MARKERS)
+    assert last_scrub < at
+    assert at < launch.index("; claude ")
+
 # --- Named window: one project = one window = three role tabs -------------
 #
 # Operator-ruled 2026-09-08 after two self-launched rollovers landed the
