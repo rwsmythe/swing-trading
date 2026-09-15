@@ -50,3 +50,69 @@ Every fact below was read from code on `62da7933` or from the live DB opened `mo
 - (b) witness on a COPY DB via a worktree `swing web`, including one successful submit.
 
 **No other fork found.** Cell after the ruling: `implementer-sonnet-high` (tests + template + one helper; locked design once F-A..F-D are ruled).
+
+---
+
+## Round-0 RULING (CHARC, PRIMARY on all four) -- literal block quote
+
+**Ruling seat:** CHARC. **Courier:** orchestrator (transcription only). **Source:** role-mail `20260915T182237Z-charc-d56-round-0-ruling-f-a-in-f-b-c-d-a-with.md`, posted 2026-09-15T18:22:37Z. CHARC corrected the D56 register row's citation at `ac3f6a80`.
+
+> RULING PACKET -- D56 round 0 (ledger 81e5be74). CHARC, PRIMARY on all four.
+> One pass. Block-quote into the ledger; dispatch off that commit. Verified
+> before ruling: review.html.j2:155-159 (no hx-target), exemplars.html.j2
+> :125/:137/:147/:157 (four hx-post forms, no hx-target anywhere in the file),
+> _dbw_recovery_text (:728-737). P2 is right and the mis-citation is MINE:
+> the D56 register row cited the EXEMPLARS route's lines as the review route's;
+> corrected on the row in the commit that carries this ruling.
+>
+> F-A -- RULED (a), IN, with the bound stated. Same class, same one-attribute
+>   fix, and my own citation already pointed at that route. Bound: the
+>   exemplars page gets ONE page-level error region and the four inline forms
+>   get hx-target to it; nothing else on that page changes (its other D35-class
+>   items stay banked). Page-level, never per-row: a per-row region reintroduces
+>   the <tr>-fragment wrap gotcha and the colspan path for no gain.
+>
+> F-B -- RULED (a), with one condition that makes the text safe under C3. Drop
+>   step (1), renumber. The clause "a date different from the pre-filled X"
+>   stays -- but X must be what the form SHOWS, and after C3 that differs by
+>   row kind (trough_1_date for a parseable non-zero row; window_start_date for
+>   an unparseable row; no change for a zero row). So the refusal text derives
+>   X from the SAME helper the form's pre-fill uses (F-C's one helper), never
+>   from evaluation.window_start_date directly -- or it is the #31 class again,
+>   one arc later. Pin it: for each of the three row kinds, the refusal's named
+>   pre-fill equals the form's rendered pre-fill (a TestClient test can read
+>   both from the same response).
+>
+> F-C -- RULED (a). Rule (i) keeps comparing to window_start_date; ONE trough-1
+>   helper feeds both C3's pre-fill and (iii)'s extraction; rule (i)'s docstring
+>   amended by replacement (it currently promises the form pre-fills
+>   window_start_date -- the #31 sentence). The pin: an untouched non-zero
+>   submit under pattern_present_outside_window stores the SAME start as before
+>   C3, asserted on all three row kinds (parseable non-zero, unparseable,
+>   zero). (b) is more code for an identical stored value; refused.
+>
+> F-D -- RULED (a), LIVE for GET and refusal paths only, with two additions.
+>   (1) The zero-write proof is MEASURED, not assumed: SELECT COUNT(*) FROM
+>   pattern_exemplars on the live DB (plain sqlite3, mode=ro) before and after
+>   the witness, equal, into the ledger. A witness must not mint an exemplar
+>   (the 09-14 rule); the count is what proves it did not. (2) Because F-A
+>   brings the exemplars page in, the witness drives ONE refusal on that page
+>   too (an invalid action is enough) and sees its region take the fragment
+>   with every row's controls intact. The success path stays TestClient-only;
+>   eval 7835 showing 2026-07-29 pre-filled is the C3 witness step.
+>
+> Reviewer B -- REQUIRED, not waived. The D53.1 gate called D56 a "tests +
+>   template rider", but C3 and the one-helper change land in
+>   swing/web/routes/patterns.py, which is production code; charter 2.9 binds.
+>   B runs once at your gate over the finished tree, the usual five assertions,
+>   introduced-vs-banked disposition; the stop rule from D32+D50 applies if it
+>   starts enumerating routes to one failure. Cell: implementer-sonnet-high is
+>   fine for the locked design.
+>
+> Register D56 citation corrected at ac3f6a80.
+
+---
+
+## Dispatch (orchestrator)
+
+**Brief:** [`docs/phase22-arc-d56-error-region-c3-dispatch-brief.md`](phase22-arc-d56-error-region-c3-dispatch-brief.md), encoding the ruling above. One placement decision made at encoding, not a design fork: the E3 helper lives in `swing/web/view_models/patterns/review_form.py`, because `routes/patterns.py` already imports that module and the VM needs the helper for the pre-fill; putting it in the route would make the VM import the route. The pre-fill reaches the template through a NEW VM field — `window_start_date` stays literal (the header renders it; rule (i) compares to it). **Cell:** `implementer-sonnet-high` (the executing default; locked design, CHARC concurred). **Worktree / base SHA:** recorded in the next entry.
