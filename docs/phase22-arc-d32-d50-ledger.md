@@ -533,3 +533,66 @@ Only `scripts/backup_inventory.py`, its test, and this ledger changed since `c06
 | B2R-5 | (test gap) | The B3 test exercises only the hash failure, not stat, and asserts no `main()` exit status. | **ACCEPT, add** a stat-failure case and a `main()` exit-0 assertion. |
 
 **Authority:** no new ruling needed -- every item is a residual of the requirements CHARC already ruled for B2 and B3 (fail closed; every file classified; exit 0; error rows counted). The orchestrator authorizes a second fix pass on the same cell, same scope lock, followed by one more bounded B re-read.
+
+---
+
+## Fix leg pass 2
+
+**Cell:** the same `implementer-sonnet-high`, continuing on branch `d32-d50-exec` from `f5ff5280` (the bounded-re-read
+ledger section above). **Commits:**
+- `75c710e9` -- `fix(scripts): B2R-1..B2R-5 -- fail-closed schema-read errors, no silent skip, metadata preserved,
+  exact sentinels` (`scripts/backup_inventory.py`, `tests/scripts/test_backup_inventory.py`).
+- `f0fc2ecb` -- `test(scripts): correct the B2R-2 discriminating test to actually discriminate`
+  (`tests/scripts/test_backup_inventory.py` only) -- the first `75c710e9` draft of the B2R-2 test patched only
+  `Path.stat`, which does not exercise the real defect on this box: `Path.is_file()` (`follow_symlinks=True`)
+  resolves to `os.path.isfile()`, a Windows C builtin that calls the OS-level stat syscall directly and bypasses
+  the patchable `Path.stat` method entirely (measured empirically, both by direct probe and by re-running the
+  original test against the pre-`75c710e9` script: it failed, but only on the new error COLUMN not existing --
+  `len(rows) == 3` still passed, i.e. the file was never silently dropped -- so the test was not proving what its
+  name claimed). Corrected by also patching `Path.is_file` to return `False` for the bad path, reproducing the
+  observable consequence of the real swallow without depending on Windows ACLs; re-verified red against the
+  pre-pass-2 script with the corrected assertion firing for the right reason (`len(rows) == 2`, matching the
+  ruling's own description of the defect).
+
+`git log -1 --format='%(trailers)'` prints empty on both `75c710e9` and `f0fc2ecb`.
+
+**Red-then-green, all five items:**
+
+- **B2R-1** (`test_no_twin_is_claimed_when_the_schema_version_read_errors`, new) -- red against the pre-pass-2
+  script: `AssertionError: assert 'C:\...swing-pre-22a4-migration-20260908T010203Z.db' == 'indeterminate'` -- a
+  byte-identical corrupt (non-sqlite) CLI-copy/gate-image pair read as a positive twin because a schema-version
+  read failure was never recorded on `Entry.error`. Green post-fix: both members' schema-version column shows
+  `error:...`, the CLI copy's twin is `indeterminate`, `0 of 1`.
+- **B2R-2** (`test_a_stat_failure_on_a_matched_file_yields_an_error_row_not_a_silent_skip`, new, corrected in
+  `f0fc2ecb`) -- red against the pre-pass-2 script (corrected assertion): `AssertionError: assert 2 == 3` -- the
+  bad file silently dropped with NO row at all (`Path.is_file()` swallowing the injected failure before the
+  per-file guard ever ran). Green post-fix: 3 rows, the bad file's own error row (`error:OSError:synthetic stat
+  failure` in the new error column, sha256/twin both `indeterminate`), `# errors: 1`.
+- **B2R-3** (`test_a_per_file_stat_or_hash_error_does_not_abort_the_scan`, amended) -- red against the pre-pass-2
+  script: `AssertionError: assert 'error:OSError:synthetic hash failure' == '36'` -- the schema version, already
+  successfully read before the hash step failed, was being discarded/zeroed instead of preserved. Green post-fix:
+  the bad row's schema-version column shows the real `36` and its size matches the real file, while sha256/twin
+  stay `indeterminate` and the exception text moved to the new dedicated error column.
+- **B2R-4** (`test_summary_twin_count_uses_exact_sentinels_not_a_string_prefix`, new) -- red against the
+  pre-pass-2 script: `AttributeError: module 'backup_inventory' has no attribute '_is_positive_twin'` -- no
+  extracted, independently-testable classifier existed; the buggy string-prefix check was inlined in `render()`.
+  Green post-fix: `_is_positive_twin` is exact-sentinel-set membership, asserted directly (a `render()`-level
+  fixture cannot reproduce the prefix bug on Windows, since an absolute path always leads with the drive letter).
+- **B2R-5** (`test_main_exits_0_with_an_error_row_present`, new) -- a coverage item, not a code defect: it PASSED
+  against the pre-pass-2 script too (the CLI already exited 0 with an error present under the first fix leg),
+  recorded per the ruling's own `(test gap)` classification rather than misreported as a red-then-green fix.
+
+**Suite (final head `f0fc2ecb`):** `python -m pytest -m "not slow" -q -n 4` --
+`12432 passed, 13 skipped, 1159 warnings in 849.26s (0:14:09)`, exit code 0.
+
+**Scope-lock diff-stat**, `git diff --stat c0600ea1..f0fc2ecb`:
+
+```
+ docs/phase22-arc-d32-d50-ledger.md     | 166 +++++++++++++++++++++++++++
+ scripts/backup_inventory.py            | 179 +++++++++++++++++++++++++------
+ tests/scripts/test_backup_inventory.py | 198 ++++++++++++++++++++++++++++++++-
+ 3 files changed, 510 insertions(+), 33 deletions(-)
+```
+
+Only `scripts/backup_inventory.py`, its test, and this ledger changed since `c0600ea1` -- the second bounded B
+re-read's diff-stat assertion holds.
