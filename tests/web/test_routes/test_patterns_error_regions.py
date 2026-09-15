@@ -1,7 +1,21 @@
 """Phase 22 D56 -- E1/E2: the pattern-review form and the exemplars page's
-four inline forms get a sibling error region via ``hx-target``, so an error
-response (400/404/422/500 -- ``hx-target`` does not care about status) no
-longer replaces the controls with the error fragment.
+four inline forms get a sibling error region via ``hx-target``.
+
+The PRODUCTION mechanism this fixes is status-agnostic by construction:
+``hx-target`` does not inspect the response status, so BEFORE this fix any
+error response on these two routes -- 400, 404, 422, or 500 -- replaced
+the form's controls with the error fragment (``app.py``'s dispatch is one
+shared code path per status FAMILY, not per code). THIS FILE's own tests
+exercise the two statuses these two routes actually raise via
+``HTTPException`` -- 400 (decision/action validation) and 404 (missing
+candidate/exemplar) -- read straight from real responses; they do not
+independently re-prove the 422 (``RequestValidationError``, a DIFFERENT
+FastAPI exception handler, not exercised by any input these two routes'
+tests construct) or 500 path. A 500 IS reachable on the exemplars route
+(the promote_to_gold corrupt-``labeler_evidence_json`` raise,
+``routes/patterns.py:264,273``) but grepping ``tests/`` for that raise's
+message text found NO existing test exercising it -- an open gap, not a
+covered one; not this file's scope to close.
 
 CHARC's D56 round-0 ruling (docs/phase22-arc-d56-ledger.md) F-A: the
 exemplars page gets exactly ONE page-level error region (never per-row --

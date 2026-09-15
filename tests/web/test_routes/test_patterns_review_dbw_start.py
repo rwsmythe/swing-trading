@@ -43,6 +43,7 @@ from swing.patterns.double_bottom_w import (
     _build_zero_evidence,
 )
 from swing.web.app import create_app
+from swing.web.routes.patterns import _dbw_recovery_text
 
 TROUGH_1 = date(2026, 3, 2)
 CENTER = date(2026, 3, 20)
@@ -557,10 +558,22 @@ def test_dbw_refusal_text_has_no_reload_step_and_steps_are_contiguous(
 def test_dbw_refusal_text_prefill_matches_form_rendered_prefill(seeded_db):
     """T4 (F-B pin): the refusal's named pre-fill X equals the value the
     form's corrected_window_start_date input ACTUALLY renders, read BOTH
-    from real responses (GET the form; POST the refusal) -- for the two row
-    kinds that CAN refuse. (The third kind, parseable non-zero, never
-    refuses on an untouched submit -- T3 covers its pre-fill correctness;
-    there is no refusal text to compare it against here.)"""
+    from real responses (GET the form; POST the refusal) -- on ALL THREE
+    DBW row kinds (B-1, Reviewer B minor).
+
+    The parseable-non-zero kind never reaches the refusal path THROUGH THE
+    ROUTE (rule (iii) always resolves it directly, so an untouched submit
+    of that row kind is a 204, not a 400 -- T3 already pins that). But
+    ``_dbw_recovery_text`` is still a function the route CAN call on that
+    evaluation on some other refusing path (e.g. a malformed end date under
+    pattern_present_outside_window), so its pre-fill claim is pinned
+    directly: call it on the same evaluation object the form rendered, and
+    assert the named date matches. Without this case, reverting
+    ``_dbw_recovery_text``'s pre-fill to ``evaluation.window_start_date``
+    directly (the pre-D56-E5 code) stays GREEN on this test -- both
+    row kinds below coincide with ``window_start_date`` pre- and post-fix,
+    so only the parseable-non-zero case (whose pre-fill DIFFERS from
+    ``window_start_date``) can catch a regression of the fix itself."""
     cfg, cfg_path = seeded_db
     app = create_app(cfg, cfg_path)
 
@@ -590,3 +603,20 @@ def test_dbw_refusal_text_prefill_matches_form_rendered_prefill(seeded_db):
     assert r2.status_code == 400
     assert prefill2 == TROUGH_2.isoformat()
     assert f"pre-filled {prefill2}" in r2.text
+
+    # Parseable non-zero (B-1): the route never refuses this row kind on an
+    # untouched submit, so call _dbw_recovery_text directly on the same
+    # evaluation object the form rendered, and pin its named pre-fill
+    # against the form's ACTUAL rendered value (trough 1, per T3) -- not
+    # window_start_date (trough 2).
+    eval_id3 = _seed_dbw(cfg, _nonzero_evidence())
+    with TestClient(app) as client:
+        prefill3 = _rendered_prefill_start(client, eval_id3)
+    assert prefill3 == TROUGH_1.isoformat()
+    conn = connect(cfg.paths.db_path)
+    try:
+        evaluation3 = evals_repo.get_evaluation_by_id(conn, eval_id3)
+    finally:
+        conn.close()
+    text3 = _dbw_recovery_text(evaluation3, "any reason")
+    assert f"pre-filled {prefill3}" in text3
