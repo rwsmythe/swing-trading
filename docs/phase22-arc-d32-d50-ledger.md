@@ -900,3 +900,30 @@ post made. Ready for the section-4 witness on the copy and the orchestrator's ow
 **Merge:** `a3b2f90c` (`--no-ff`, parents `6f2947bb` main + `d05787a3` branch; never rebased -- the ledger cites branch SHAs). **Composition read at merge:** `git diff --name-only eface268..main` and `eface268..d32-d50-exec` share ZERO files (main side: D57's scripts/tests, `weekly_glance`, CHARC docs); no caller of any deleted per-gate creator in swing/, scripts/, tests/, research/; no schema change, so the running `swing web` and the scheduled pipeline are unaffected at `connect()`. **Merged-head suite (D52 as amended, orchestrator seat, `-n 4`):** `12456 passed, 13 skipped, 0 failed` on `a3b2f90c` (16m37s). `ruff check swing/ scripts/backup_inventory.py`: all checks passed. **Co-Authored-By** on `origin/main..HEAD` by trailer KEY: 0. **Evidence** in `~/swing-data/review-transcripts/d32-d50-exec/`, every worktree dotfile reconciled by sha256 before teardown (24 matched, 4 B exit files copied then verified).
 
 **Spend (summed `tokens used` footers):** Reviewer A 673,705 (r1 429,974 + r2 243,731); Reviewer B 560,446 (full 235,984 + bounded 92,461 + bounded 104,154 + confirming 127,847). **Rework:** A converged in 2 rounds; B took four reads before the stop rule changed the positive from a denylist to an allowlist.
+
+---
+
+## RD return QA -- pre-image disposition (RD PRIMARY), literal block quote
+
+**Author:** RD. **Courier:** orchestrator (transcription only). **Source:** `comms/orchestrator/read/20260915T165058Z-rd-rd-qa-pass-d32-d50-pre-image-disposition.md` (posted 2026-09-15T16:50:58Z). Headers omitted.
+
+> RD RETURN QA -- D32+D50 pre-image disposition (rd-state section 5(b); ledger round-0 line 162). PRIMARY: rd for this item; charc CC (merge gate is yours, already passed).
+>
+> VERDICT: PASS on my gate. The disposition may proceed as the return states it: (a) move the 31 root gate images to backups/pre-images/, (b) delete ONLY the 21 CLI copies with a positive twin, one pair at a time with the delete-time re-hash, (c) keep everything else. Landing: block-quote this packet into docs/phase22-arc-d32-d50-ledger.md (courier: orchestrator).
+>
+> WHAT I VERIFIED, WITH METHOD (against the live root and the witness inventory.tsv, read-only; nothing re-run):
+> 1. Schema read = `SELECT version FROM schema_version` (scripts/backup_inventory.py:219), guarded by a sqlite_master existence check; PRAGMA user_version never used. As ruled.
+> 2. Twin count: 21 rows carry a gate path in the twin column (tsv rows 46,47,49,50,52-68), matching the summary line "21 of 38". One pair independently re-hashed by me with Get-FileHash: swing-pre-phase8-migration-20260507T223936Z.db == backups/swing-20260507T123936.db, F5CA33A7... identical. The eligibility predicate requires BOTH members to pass all six clauses (script docstring + ledger closing pass) -- the ruled shape.
+> 3. The 3 withheld (rows 70, 72, 74): every -wal sidecar on the box is 0 BYTES (eight files, listed by me). So all three are TRUE byte-identical twins withheld conservatively -- the fail-closed rule doing what it was written for. Cost ~3.9 GB retained. Do NOT relax it this sitting; if anyone wants those 3.9 GB, the path is a CHARC-ruled follow-on (remove the 0-byte sidecars, re-run the inventory), never a hand override of the predicate.
+> 4. The 14 `none` KEEP, with the sole-image evidence: schemas 1,4,5,6,7,8,10,11 exist ONLY as these CLI copies (rows 36-44); row 51 (schema 17) is the ONLY schema-17 image anywhere in the inventory; rows 45/48/69 are distinct-hash snapshots of schemas 12/14/35; row 71 is the 22-A copy whose gate twins carry the sidecar (renders `none` by the closing-pass rule -- legibility caveat only: a reader of the TSV cannot tell it from a no-match; the ledger discloses it). The return's "sole images of schemas 1-12, 14, 17" is right on 17 and slightly overstated on 12 and 14 (root/backups hold OTHER schema-12 and -14 images, different hashes) -- the disposition is the same, KEEP.
+> 5. Unclassified row 73 (swing-20260902T091828Z.db, schema 36, unique hash, Z-suffixed name): KEEP, per the ruling's "keep everything else". R0-6 named-not-skipped worked.
+> 6. My 22-A4 images: rd-state said "my two 22-A4 pre-images". CORRECTION: there is ONE root 22-A4 gate image (row 7, schema 37, -wal present) and ONE CLI copy of it (row 74, withheld twin). Both KEEP -- row 7 moves under (a); row 74 is not deletable under (b).
+>
+> OUTSIDE THE INVENTORY'S DECLARED SCOPE, for the operator's sitting (not a defect in the arc -- R0-6 scoped the root scan to swing-pre-*.db and the docstring says so; a bounded search reported with its bound):
+> - swing-data/swing-CORRUPTED-post-phase7-migration-20260505T162747Z.db (7 MB, 2026-05-05) sits in the root and is neither scanned nor classified.
+> - swing-data/s9step0-copy.db-wal (0 bytes) is an ORPHAN sidecar; its .db is gone.
+> Neither is touched by (a)/(b)/(c). Dispose separately or leave; your call, operator.
+>
+> NOTED, not mine: the CLAUDE.md two-backups gotcha is now false (CHARC's compression); the em-dash in cli.py's WARN line banked to the orchestrator; the production proof is the first real migration (22-B).
+
+**Courier note:** RD's correction of the return's wording is accepted -- the 14 `none` copies are the sole images of schemas 1, 4-8, 10, 11 and 17; the schema-12 and -14 rows are distinct-hash snapshots of schemas that also exist elsewhere. The disposition is unchanged (KEEP).
