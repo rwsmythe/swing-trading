@@ -471,3 +471,47 @@ arc is the first real migration after merge (22-B), not this ledger.**
 
 **Record (per the ruling):** trailer defect on `cc24f716` -- its final message paragraph begins `R-1:` and git parses it as a trailer; it is NOT a `Co-Authored-By`; recorded, not rewritten; the arc merges `--no-ff`.
 **Record:** the executing cell ended at 427,685 tokens (over the 400K cap, measured by the orchestrator via `cell_depth.py`); the fix leg goes to a fresh cell.
+
+---
+
+## Fix leg -- B2 + B3
+
+**Cell:** fresh `implementer-sonnet-high`. **Worktree:** `.worktrees/d32-d50-exec`, continuing on branch `d32-d50-exec`
+from `3ae98ced`. **Commit:** `e690ebe6` -- `fix(scripts): B2+B3 -- fail-closed sidecar twin check, per-file scan
+isolation` (touches `scripts/backup_inventory.py` and `tests/scripts/test_backup_inventory.py` only; no other commit in
+this leg). `git log -1 --format='%(trailers)'` on `e690ebe6` prints empty.
+
+**B2 red-then-green.** `test_no_twin_is_claimed_across_a_wal_sidecar` (existing test, its gate-side assertion
+strengthened) and `test_no_twin_is_claimed_across_a_journal_sidecar` (new, its sibling). Both proven red by temporarily
+checking out the pre-fix script alone (`git checkout 3ae98ced -- scripts/backup_inventory.py`, tests unchanged, then
+restored via `git checkout HEAD --`) before the fix commit landed, and separately via a scoped `git stash push -u -- 
+scripts/backup_inventory.py` (captured, applied back, dropped) while drafting the fix:
+- `test_no_twin_is_claimed_across_a_wal_sidecar` (gate-side wal case) --
+  `AssertionError: assert 'none' == 'indeterminate-wal-sidecar'`
+- `test_no_twin_is_claimed_across_a_journal_sidecar` (new) --
+  `AssertionError: assert '...swing-pre-22a4-migration-20260908T010203Z.db' == 'indeterminate-journal-sidecar'`
+  (pre-fix the code never checked for a `-journal` sidecar at all, so the byte-identical gate path was reported as a
+  positive twin).
+
+Post-fix: both green, plus the pre-existing CLI-side wal case unchanged.
+
+**B3 red-then-green.** `test_a_per_file_stat_or_hash_error_does_not_abort_the_scan` (new; `sha256_of` monkeypatched to
+raise `OSError` for one of three fixture files) --
+red: `OSError: synthetic hash failure`, propagating out of `_scan` -> `inventory` -> `render` and aborting the whole
+scan (only the exception traceback, zero rows). Post-fix: green -- 3 rows, the bad file's row carries
+`error:OSError:synthetic hash failure` in the schema-version column, `indeterminate` in both the sha256 and twin
+columns, the other two files unaffected, `# errors: 1` in the summary, and the run exits 0.
+
+**Suite (final head `e690ebe6`):** `python -m pytest -m "not slow" -q -n 4` --
+`12428 passed, 13 skipped, 1159 warnings in 1067.62s (0:17:47)`, exit code 0.
+
+**Scope-lock diff-stat**, `git diff --stat c0600ea1..e690ebe6` (the orchestrator's stated merge condition):
+
+```
+ docs/phase22-arc-d32-d50-ledger.md     | 104 ++++++++++++++++++++++++++++++
+ scripts/backup_inventory.py            | 113 ++++++++++++++++++++++++++-------
+ tests/scripts/test_backup_inventory.py |  70 +++++++++++++++++++-
+ 3 files changed, 262 insertions(+), 25 deletions(-)
+```
+
+Only `scripts/backup_inventory.py`, its test, and this ledger changed since `c0600ea1` -- the bounded B re-read holds.
