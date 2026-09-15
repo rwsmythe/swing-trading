@@ -259,6 +259,10 @@ def test_a_per_file_stat_or_hash_error_does_not_abort_the_scan(
     assert bad_row[5] == "indeterminate"  # sha256 column: the word sentinel
     assert bad_row[7] == "indeterminate"  # twin column
     assert bad_row[9] == "error:OSError:synthetic hash failure"  # the exception text
+    # B3R-2: both sidecar flags -- already obtained before the hash step
+    # failed -- survive onto the error row (neither goes back to "unknown").
+    assert bad_row[6] == "absent"
+    assert bad_row[10] == "absent"
     ok_row = rows[str(ok)]
     assert ok_row[4] == "36" and len(ok_row[5]) == 64  # the other file unaffected
     assert ok_row[9] == "-"
@@ -338,9 +342,166 @@ def test_a_stat_failure_on_a_matched_file_yields_an_error_row_not_a_silent_skip(
     assert bad_row[9] == "error:OSError:synthetic stat failure"
     assert bad_row[5] == "indeterminate"  # nothing was obtained before stat failed
     assert bad_row[7] == "indeterminate"
+    # neither sidecar was ever probed -- both stay the "unknown" default,
+    # never the "absent" a probe never actually confirmed (B3R-2).
+    assert bad_row[6] == "unknown"
+    assert bad_row[10] == "unknown"
     ok_row = rows[str(ok)]
     assert ok_row[4] == "36" and len(ok_row[5]) == 64
     assert "# errors: 1" in text
+
+
+def test_a_present_journal_sidecar_is_reported(tmp_path: Path) -> None:
+    """B3R-2 (major): the journal-sidecar flag was obtained but never
+    rendered, so an error row could not report it. Additive column,
+    appended AFTER the existing ones so every existing column index --
+    including ``path`` at [8] that ``_rows()`` keys off -- stays stable."""
+    root = tmp_path / "r"
+    p = _image(root / "swing-pre-b7-migration-1Z.db", 23)
+    Path(str(p) + "-journal").write_bytes(b"")
+    text = inv.render(inv.inventory(root, root / "backups"), root, root / "backups")
+    row = _rows(text)[str(p)]
+    assert row[10] == "present"
+    assert row[6] == "absent"  # the existing wal-sidecar column is untouched
+
+
+def test_no_twin_is_claimed_when_a_sidecar_probe_is_unknown(
+        tmp_path: Path, monkeypatch) -> None:
+    """The class fix (SS-3/SS-4): a sidecar probe hitting a REAL OSError
+    (permission denied, a flaky mount) must never read the same as a
+    genuinely ABSENT sidecar. Pre-fix, ``Path(...).exists()`` (default
+    ``follow_symlinks=True``) resolves on this Windows/Python build to the
+    NATIVE ``os.path._path_exists`` builtin (measured:
+    ``os.path.exists is genericpath.exists`` is False) -- a C-level
+    GetFileAttributes-style check that folds every failure, not-found or
+    otherwise, into a bare False WITHOUT going through the patchable
+    ``os.stat`` at all (the same bypass Reviewer B's B2R-2 measured for
+    ``Path.is_file()``). The fix routes the probe through ``os.stat``
+    directly instead -- the one primitive ``Path.stat()`` itself already
+    calls (proven by B3's per-file guard) -- so this is BOTH the
+    production fix and what makes the fault injectable at all: patching
+    ``os.stat`` has no effect on the pre-fix code (it never reaches the
+    patched primitive) and a full effect on the post-fix code."""
+    root = tmp_path / "r"
+    backups = root / "backups"
+    gate = _image(root / "swing-pre-22a4-migration-20260908T010203Z.db", 37, marker="A")
+    backups.mkdir(parents=True)
+    cli_copy = backups / "swing-20260908T150203.db"
+    shutil.copyfile(gate, cli_copy)
+    wal_path = Path(str(cli_copy) + "-wal")
+
+    real_stat = os.stat
+
+    def _boom(path, *a, **kw):
+        if Path(path) == wal_path:
+            raise PermissionError(13, "synthetic permission failure")
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(os, "stat", _boom)
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    row = _rows(text)[str(cli_copy)]
+    assert row[7] == "indeterminate-wal-unknown"
+    assert "# cli-copy with a byte-identical gate twin: 0 of 1" in text
+
+
+def test_a_directory_probe_failure_is_a_visible_row_not_a_silent_empty_scan(
+        tmp_path: Path, monkeypatch) -> None:
+    """SS-1 class fix: ``directory.is_dir()`` resolves to the same NATIVE
+    ``os.path._path_isdir`` builtin as the sidecar probes (measured:
+    ``os.path.isdir is genericpath.isdir`` is False) -- it folds a
+    permission-denied or unreadable-mount failure into a bare False, and a
+    backups directory that genuinely EXISTS but cannot be examined then
+    reads IDENTICALLY to one that was never created: every file inside it
+    silently vanishes from the inventory with no trace at all.
+    Discriminating: ``os.stat`` -- the primitive the fix routes the check
+    through instead, and the same one ``Path.stat()`` already calls
+    directly (B3) -- is patched to raise only for the backups directory
+    path; pre-fix the native probe never reaches it (an empty scan of that
+    location, indistinguishable from "not created"); post-fix it is one
+    visible ``scan-error`` row and the other locations (root) still scan."""
+    root = tmp_path / "r"
+    backups = root / "backups"
+    backups.mkdir(parents=True)
+    _image(root / "swing-pre-22a4-migration-1Z.db", 37, marker="A")
+    _image(backups / "swing-20260801T101010.db", 36, marker="B")
+
+    real_stat = os.stat
+
+    def _boom(path, *a, **kw):
+        if Path(path) == backups:
+            raise PermissionError(13, "synthetic permission failure")
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(os, "stat", _boom)
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    rows = _rows(text)
+    assert any(cols[0] == "root" for cols in rows.values())  # root still scanned
+    scan_error_rows = [cols for cols in rows.values() if cols[1] == "scan-error"]
+    assert len(scan_error_rows) == 1
+    assert scan_error_rows[0][8] == str(backups)
+    assert scan_error_rows[0][9].startswith("error:")
+    assert "# errors: 1" in text
+
+
+def test_a_directory_listing_failure_is_a_visible_row_not_a_crash(
+        tmp_path: Path, monkeypatch) -> None:
+    """SS-2 class fix: unlike the existence probes, ``Path.glob()``'s
+    internal ``os.scandir()`` call is NOT wrapped in any try/except
+    anywhere in the stdlib glob machinery (verified: ``glob.py``'s
+    ``_Globber.scandir`` has no except clause at all) -- so a directory
+    that STATS fine but cannot be LISTED (permission denied enumerating
+    its contents) previously propagated an uncaught OSError out of
+    ``render()`` and crashed the WHOLE inventory, every location, not just
+    this one. Discriminating: ``Path.glob`` is patched to raise only for
+    the backups directory; pre-fix the render() call itself raises;
+    post-fix it is one visible ``scan-error`` row and root still scans."""
+    root = tmp_path / "r"
+    backups = root / "backups"
+    backups.mkdir(parents=True)
+    _image(root / "swing-pre-22a4-migration-1Z.db", 37, marker="A")
+
+    real_glob = Path.glob
+
+    def _boom(self, pattern, **kw):
+        if self == backups:
+            raise PermissionError(13, "synthetic listing failure")
+        return real_glob(self, pattern, **kw)
+
+    monkeypatch.setattr(Path, "glob", _boom)
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    rows = _rows(text)
+    assert any(cols[0] == "root" for cols in rows.values())
+    scan_error_rows = [cols for cols in rows.values() if cols[1] == "scan-error"]
+    assert len(scan_error_rows) == 1
+    assert scan_error_rows[0][8] == str(backups)
+    assert "# errors: 1" in text
+
+
+def test_root_probe_unknown_is_reported_distinctly_from_absent(
+        tmp_path: Path, monkeypatch, capsys) -> None:
+    """SS-5 class fix: ``main()``'s ``root.is_dir()`` check resolves to the
+    same native builtin as the other probes, printing "root not found" for
+    a root that actually EXISTS but could not be examined (permission
+    denied) -- an operator cannot tell "create the directory" from "fix the
+    permission" from that message. Does not change the exit code (no scan
+    ran either way, since the fixed code also refuses to scan an UNKNOWN
+    root); discriminates on the message content. ``os.stat`` -- routed
+    through post-fix, never reached pre-fix (the native probe bypasses
+    it) -- is patched to raise only for the root path."""
+    root = tmp_path / "r"
+    root.mkdir()
+    real_stat = os.stat
+
+    def _boom(path, *a, **kw):
+        if Path(path) == root:
+            raise PermissionError(13, "synthetic permission failure")
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(os, "stat", _boom)
+    rc = inv.main(["--root", str(root)])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "not found" not in captured.err
 
 
 def test_summary_twin_count_uses_exact_sentinels_not_a_string_prefix() -> None:

@@ -33,6 +33,21 @@ Classes, by NAME only:
   cli-copy      ``swing-YYYYMMDDTHHMMSS.db``   (swing/cli.py db-migrate)
   weekly-backup ``swing-YYYYWW.db``            (swing/data/backup.py _WEEKLY_BACKUP_RE)
   unclassified  anything else -- PRINTED with its path, never skipped
+  scan-error    a whole DIRECTORY (root/backups/pre-images) that could not
+                be examined or listed -- one visible row, path = the
+                directory, never a silent empty scan of it (the class-sweep
+                fix below).
+
+Every filesystem probe (a directory's existence, its listing, a ``-wal``/
+``-journal`` sidecar) distinguishes ABSENT (confirmed not-there) from
+UNKNOWN (any other ``OSError`` -- permission denied, a flaky mount, a
+symlink loop): a plain pathlib Boolean probe (``exists``/``is_dir``/
+``is_file``) cannot make that distinction (it folds every failure into
+``False``) and is never used for one here. ``wal_sidecar``/
+``journal_sidecar`` are each one of ``present``/``absent``/``unknown``;
+UNKNOWN withholds a positive twin exactly like ``present`` does. The
+``journal_sidecar`` column is appended AFTER ``error`` so every earlier
+column index is stable across this addition.
 
 THIS SCRIPT WRITES NOTHING AND MOVES NOTHING. Each DB is opened with plain
 ``sqlite3`` as ``file:...?mode=ro&immutable=1``. ``immutable=1`` is load-bearing,
@@ -51,13 +66,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import re
 import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from stat import S_ISREG
+from stat import S_ISDIR, S_ISREG
 
 _CLI_COPY_RE = re.compile(r"^swing-\d{8}T\d{6}\.db$")
 _WEEKLY_RE = re.compile(r"^swing-\d{6}\.db$")
@@ -73,9 +89,38 @@ class Entry:
     mtime: str
     version: str
     sha256: str
-    wal_sidecar: bool
-    journal_sidecar: bool
+    wal_sidecar: str  # "present" | "absent" | "unknown"
+    journal_sidecar: str  # "present" | "absent" | "unknown"
     error: str | None = None
+
+
+def _probe(path: Path) -> tuple[str, os.stat_result | None]:
+    """The class fix (Reviewer B's Expansion-#13 sweep, SS-1..SS-5): every
+    Boolean filesystem probe this script used to call -- ``Path.exists()``,
+    ``Path.is_dir()``, ``Path.is_file()`` with the default
+    ``follow_symlinks=True`` -- resolves on THIS Windows/Python build to a
+    native ``os.path._path_isdir``/``_path_isfile``/``_path_exists`` builtin
+    (verified: ``os.path.isdir is genericpath.isdir`` is ``False``) that
+    does NOT call the patchable ``os.stat`` at all and folds EVERY failure
+    (not-found, permission-denied, an unreadable mount, anything) into a
+    bare ``False`` -- the same bypass Reviewer B's B2R-2 measured for
+    ``Path.is_file()`` alone, generalised here to every sibling probe.
+    ``os.stat`` is the one primitive under this ``Path.stat()`` already
+    calls directly (proven by B3's existing per-file guard), so routing
+    every existence/type check through IT, instead of through a Boolean
+    Path method, is what makes the ABSENT/UNKNOWN distinction both real and
+    testable. Returns ("absent", None) for a confirmed not-there path
+    (``FileNotFoundError``/``NotADirectoryError`` -- a missing path or a
+    path component that is a file, not a directory), ("unknown", None) for
+    any OTHER ``OSError`` (permission denied, I/O failure, anything this
+    script cannot diagnose), or ("present", the stat result) otherwise."""
+    try:
+        st = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return "absent", None
+    except OSError:
+        return "unknown", None
+    return "present", st
 
 
 def classify(name: str) -> str:
@@ -116,11 +161,49 @@ def sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
+def _directory_error_entry(location: str, directory: Path, reason: str) -> Entry:
+    """SS-1/SS-2: a directory-level probe/listing failure is a VISIBLE row,
+    never a silent empty scan and never a crash of the other locations --
+    the same "scan continues, evidence not a gate" posture B3 already gives
+    per-file failures, generalised one level up. One row per unreachable
+    directory; never rows for files that could not even be enumerated."""
+    return Entry(
+        location=location, cls="scan-error", path=directory, size=0,
+        mtime="unknown", version="unknown", sha256="indeterminate",
+        wal_sidecar="unknown", journal_sidecar="unknown",
+        error=f"error:DirectoryUnreadable:{reason}",
+    )
+
+
 def _scan(location: str, directory: Path, pattern: str) -> list[Entry]:
-    if not directory.is_dir():
+    """SS-1 (the directory-existence check) + SS-2 (the listing itself).
+
+    ``directory.is_dir()`` swallows every ``OSError`` into ``False`` with
+    no ABSENT/UNKNOWN discrimination (see ``_probe``'s docstring) -- a
+    directory that genuinely exists but cannot be examined (permission
+    denied, a flaky mount) previously read IDENTICALLY to one that was
+    never created, and every file inside it vanished with no trace.
+    ``directory.glob(pattern)`` is worse: its internal ``os.scandir()`` call
+    is not wrapped in any try/except anywhere in the stdlib glob machinery,
+    so a directory that STATS fine but cannot be LISTED previously
+    propagated an uncaught ``OSError`` out of this function and crashed the
+    WHOLE inventory, every location, not just this one. Both now degrade to
+    one visible ``scan-error`` row (never a positive claim, never silence).
+    """
+    state, st = _probe(directory)
+    if state == "absent":
         return []
+    if state == "unknown":
+        return [_directory_error_entry(location, directory, "could not determine "
+                                        "whether this directory exists")]
+    if not S_ISDIR(st.st_mode):
+        return []
+    try:
+        paths = sorted(directory.glob(pattern))
+    except OSError as exc:
+        return [_directory_error_entry(location, directory, f"{type(exc).__name__}:{exc}")]
     out = []
-    for p in sorted(directory.glob(pattern)):
+    for p in paths:
         entry = _scan_one(location, p)
         if entry is not None:
             out.append(entry)
@@ -153,8 +236,8 @@ def _scan_one(location: str, p: Path) -> Entry | None:
     """
     size = 0
     mtime = "unknown"
-    wal_sidecar = False
-    journal_sidecar = False
+    wal_sidecar = "unknown"
+    journal_sidecar = "unknown"
     version: str | None = None
     sha256: str | None = None
     error: str | None = None
@@ -164,8 +247,8 @@ def _scan_one(location: str, p: Path) -> Entry | None:
             return None
         size = st.st_size
         mtime = datetime.fromtimestamp(st.st_mtime, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        wal_sidecar = Path(str(p) + "-wal").exists()
-        journal_sidecar = Path(str(p) + "-journal").exists()
+        wal_sidecar = _probe(Path(str(p) + "-wal"))[0]
+        journal_sidecar = _probe(Path(str(p) + "-journal"))[0]
         version = read_schema_version(p)
         sha256 = sha256_of(p)
     except OSError as exc:
@@ -197,11 +280,21 @@ def inventory(root: Path, backups_dir: Path) -> list[Entry]:
 
 
 def _sidecar_reason(e: Entry) -> str | None:
-    """None = clean; else the specific hole that withholds a positive twin."""
-    if e.wal_sidecar:
+    """None = clean; else the specific hole that withholds a positive twin.
+
+    SS-3/SS-4: an UNKNOWN sidecar probe (a real OSError the -wal/-journal
+    check could not resolve, never a confirmed absence) withholds the twin
+    the SAME as a confirmed-present sidecar -- the fail-closed rule already
+    ruled for B2/B3 extends to "we could not tell" as much as "it is
+    there"."""
+    if e.wal_sidecar == "present":
         return "indeterminate-wal-sidecar"
-    if e.journal_sidecar:
+    if e.wal_sidecar == "unknown":
+        return "indeterminate-wal-unknown"
+    if e.journal_sidecar == "present":
         return "indeterminate-journal-sidecar"
+    if e.journal_sidecar == "unknown":
+        return "indeterminate-journal-unknown"
     return None
 
 
@@ -210,6 +303,8 @@ _TWIN_SENTINELS = frozenset({
     "indeterminate",
     "indeterminate-wal-sidecar",
     "indeterminate-journal-sidecar",
+    "indeterminate-wal-unknown",
+    "indeterminate-journal-unknown",
 })
 
 
@@ -259,13 +354,17 @@ def render(entries: list[Entry], root: Path, backups_dir: Path) -> str:
         "# backup_inventory (read-only)",
         f"# root={root}",
         f"# backups_dir={backups_dir}",
-        "location\tclass\tsize_bytes\tmtime_utc\tschema_version\tsha256\twal_sidecar\ttwin\tpath\terror",
+        # B3R-2: journal_sidecar is APPENDED after error -- every existing
+        # column index (path at [8], error at [9]) stays stable.
+        "location\tclass\tsize_bytes\tmtime_utc\tschema_version\tsha256\twal_sidecar\ttwin\t"
+        "path\terror\tjournal_sidecar",
     ]
     for e in entries:
         lines.append("\t".join([
             e.location, e.cls, str(e.size), e.mtime, e.version, e.sha256,
-            "present" if e.wal_sidecar else "absent", twin_by_path[e.path], str(e.path),
+            e.wal_sidecar, twin_by_path[e.path], str(e.path),
             e.error if e.error is not None else "-",
+            e.journal_sidecar,
         ]))
     lines.append("# summary")
     keys = sorted({(e.location, e.cls) for e in entries})
@@ -293,8 +392,15 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     root = args.root
     backups_dir = args.backups_dir if args.backups_dir is not None else root / "backups"
-    if not root.is_dir():
+    # SS-5: distinguish a root that is genuinely ABSENT from one that
+    # EXISTS but could not be checked (permission denied, an I/O failure)
+    # -- root.is_dir() folded both into the same "not found" message.
+    state, st = _probe(root)
+    if state == "absent" or (state == "present" and not S_ISDIR(st.st_mode)):
         sys.stderr.write(_ascii(f"root not found: {root}\n"))
+        return 2
+    if state == "unknown":
+        sys.stderr.write(_ascii(f"root exists but could not be checked: {root}\n"))
         return 2
     text = render(inventory(root, backups_dir), root, backups_dir)
     sys.stdout.write(_ascii(text))
