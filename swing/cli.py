@@ -33,7 +33,13 @@ from swing.cli_config import config_group
 from swing.cli_latches import latches_group
 from swing.cli_schwab import schwab_group
 from swing.config import load as load_config
-from swing.data.db import connect, ensure_schema, open_connection
+from swing.data.db import (
+    EXPECTED_SCHEMA_VERSION,
+    backup_gate_for_pre_version,
+    connect,
+    ensure_schema,
+    open_connection,
+)
 from swing.data.models import PROVENANCE_CORRECTED_FIELDS
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
 from swing.data.yfinance_audit_context import set_yfinance_audit_base_context
@@ -252,28 +258,13 @@ def db_migrate(ctx: click.Context) -> None:
 
     cfg = ctx.obj["config"]
     db_path = cfg.paths.db_path
+    backups_dir = cfg.paths.backups_dir
 
-    # Spec §3: automatic backup before migration. DB runs in WAL mode, so a plain
-    # shutil.copy2 can miss committed data still in the -wal sidecar. Use SQLite's
-    # backup API, which produces a single consistent file regardless of WAL state.
-    if db_path.exists():
-        cfg.paths.backups_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%dT%H%M%S")
-        backup_path = cfg.paths.backups_dir / f"swing-{ts}.db"
-        src = open_connection(db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
-        dst = _sqlite3.connect(backup_path)
-        try:
-            src.backup(dst)
-        finally:
-            dst.close()
-            src.close()
-        click.echo(f"Backup: {backup_path}")
-
-    # Pre-version snoop so we can detect the v16 → v17 first-time landing
-    # and ratify the migration's hard-coded seed against the operator's
-    # actual swing.config.toml values (Codex R1 Major #1 fix). The
-    # ratification ONLY fires on the v16 → v17 transition; subsequent
-    # db-migrate invocations leave the active policy alone.
+    # Pre-version snoop, taken BEFORE any backup decision (D32/D50 F2). It also
+    # detects the v16 → v17 first-time landing so the migration's hard-coded
+    # seed is ratified against the operator's actual swing.config.toml values
+    # (Codex R1 Major #1 fix); that ratification ONLY fires on the v16 → v17
+    # transition, and subsequent db-migrate invocations leave the policy alone.
     pre_version = 0
     if db_path.exists():
         _probe = open_connection(db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
@@ -289,6 +280,41 @@ def db_migrate(ctx: click.Context) -> None:
                 pre_version = int(_row2[0]) if _row2 else 0
         finally:
             _probe.close()
+
+    # ONE backup per migration (D32/D50 F2, operator-ruled branch (b)). A gate in
+    # swing.data.db covers the transition -> the gate writes its named,
+    # integrity-verified image into backups_dir and the CLI takes NO copy. No gate
+    # covers it -> the CLI's own consistent snapshot is the safety net. No
+    # transition (already at HEAD) -> no copy at all. The gate decision reads the
+    # same table run_migrations iterates.
+    gate = None
+    gate_images_before: set[Path] = set()
+    if db_path.exists() and pre_version == EXPECTED_SCHEMA_VERSION:
+        click.echo(
+            f"Schema already at version {pre_version} (HEAD); nothing to migrate, "
+            "no backup taken."
+        )
+    elif db_path.exists() and pre_version < EXPECTED_SCHEMA_VERSION:
+        gate = backup_gate_for_pre_version(pre_version)
+        backups_dir.mkdir(parents=True, exist_ok=True)
+        if gate is None:
+            # Spec §3: DB runs in WAL mode, so a plain shutil.copy2 can miss
+            # committed data still in the -wal sidecar. Use SQLite's backup API,
+            # which produces a single consistent file regardless of WAL state.
+            ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+            backup_path = backups_dir / f"swing-{ts}.db"
+            src = open_connection(db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
+            dst = _sqlite3.connect(backup_path)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+                src.close()
+            click.echo(f"Backup: {backup_path}")
+        else:
+            # Non-recursive on purpose: backups/pre-images/ holds older images
+            # with the same stems, and a "newest matching" read could name one.
+            gate_images_before = set(backups_dir.glob(gate.filename_glob))
 
     # Schwab API T-D.7 (plan §C.5 + §I.1): NO version-specific backup gate
     # fires for 17→18 because the Phase-9 gate is keyed on current==16 AND
@@ -307,7 +333,21 @@ def db_migrate(ctx: click.Context) -> None:
             err=True,
         )
 
-    conn = ensure_schema(db_path)
+    conn = ensure_schema(db_path, backup_dir=backups_dir)
+    if gate is not None:
+        new_images = sorted(set(backups_dir.glob(gate.filename_glob)) - gate_images_before)
+        if len(new_images) != 1:
+            # The gate refuses on its own failure, so reaching here with anything
+            # but exactly one new image is a wiring defect -- alarm, never assert.
+            conn.close()
+            raise click.ClickException(
+                f"Migration from schema version {pre_version} completed, but "
+                f"{len(new_images)} new '{gate.filename_glob}' backup image(s) "
+                f"appeared in {backups_dir} (expected exactly 1): "
+                f"{[str(p) for p in new_images]}. Locate the pre-migration image "
+                "before relying on this migration."
+            )
+        click.echo(f"Backup (pre-migration gate, integrity-verified): {new_images[0]}")
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
     if pre_version <= 16 and version >= 17:
         # First-time v17 landing: ratify the migration's hard-coded seed
