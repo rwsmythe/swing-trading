@@ -38,6 +38,7 @@
 | **harness-architecture §5.1 + §6 compaction** (96K; ~60K canon) | CHARC | Phase-22 close (held deliberately; one pass after 22-B/C) |
 | **Gotchas compression (24 bullets over 700, list in the 09-09 state file → now MEASURED by the probe's top-five) + CLAUDE.md line 3 (4,083 vs 2,000) + the rmtree-ReadOnly `onexc` rider + its gotcha (D42 half 1) + the recipe-template signal (per-cell verdict-token instructions went wrong twice on the riders)** | orchestrator, at the next gotcha commit | owed; the probe reports it every run |
 | **D42 half (2)** per-step status behind a run-level `complete` | Phase-22 sweep | open |
+| **D57** wake-on-mail idle cost on 2.1.272+ — interim rule landed (bounded Monitor only while a reply is expected; lapse idle); long-term launcher-side watcher needs the psmux port first | CHARC shape ruling; operator sequences | open, interim in force |
 | D45 (same-mandate collapse) · D46 (log-containment interface) · D44 · D47 · D48 (B-2 corrector semantics) · D39/D34/D35/D37/D38/D40/D41 sweeps · D51 (schema-manifest comparator, BEFORE 22-B) | standing | standing |
 | Phase-22 queue — [`phase22-scope-charc.md`](phase22-scope-charc.md) | operator commissions | standing |
 | schwabdev 4.0.0 DECLINED for Phase 22 | CHARC | banked |
