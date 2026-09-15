@@ -11,9 +11,13 @@ import importlib.util
 import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "backup_inventory.py"
 
@@ -174,7 +178,15 @@ def test_the_script_runs_as_a_program_ascii_only_and_refuses_a_missing_root(
 
 def test_no_twin_is_claimed_across_a_wal_sidecar(tmp_path: Path) -> None:
     """Codex R1 R-2: equal main files are not equal databases when either side
-    carries a -wal the immutable read and the main-file hash cannot see."""
+    carries a -wal the immutable read and the main-file hash cannot see.
+    Closing pass (CHARC stop rule): the twin column now routes through
+    ``eligibility()`` exclusively. A wal sidecar on the CLI COPY's own side
+    fails ITS clause directly (a named ``indeterminate-<clause>`` value); a
+    wal sidecar on the GATE side makes the gate INELIGIBLE to be a match
+    target, so the join simply finds nothing (the CLI copy itself is still
+    eligible) -- rendered ``"none"``, the same as no byte match existing at
+    all (a deliberate simplification: the gate's own row, with its own
+    wal_sidecar=present column, remains fully visible in the inventory)."""
     root = tmp_path / "r"
     backups = root / "backups"
     gate = _image(root / "swing-pre-22a4-migration-20260908T010203Z.db", 37, marker="A")
@@ -183,14 +195,14 @@ def test_no_twin_is_claimed_across_a_wal_sidecar(tmp_path: Path) -> None:
     shutil.copyfile(gate, cli_wal)
     Path(str(cli_wal) + "-wal").write_bytes(b"committed pages the gate lacks")
     text = inv.render(inv.inventory(root, backups), root, backups)
-    assert _rows(text)[str(cli_wal)][7] == "indeterminate-wal-sidecar"
+    assert _rows(text)[str(cli_wal)][7] == "indeterminate-wal-sidecar-not-definitively-absent"
     assert "# cli-copy with a byte-identical gate twin: 0 of 1" in text
     # Reviewer B (B2): a sidecar on the GATE side withholds the twin too --
     # the candidate pair has a hole on EITHER member, never just the CLI side.
     Path(str(cli_wal) + "-wal").unlink()
     Path(str(gate) + "-wal").write_bytes(b"x")
     text = inv.render(inv.inventory(root, backups), root, backups)
-    assert _rows(text)[str(cli_wal)][7] == "indeterminate-wal-sidecar"
+    assert _rows(text)[str(cli_wal)][7] == "none"
     assert "# cli-copy with a byte-identical gate twin: 0 of 1" in text
 
 
@@ -200,7 +212,10 @@ def test_no_twin_is_claimed_across_a_journal_sidecar(tmp_path: Path) -> None:
     cannot see its pending pages either, on EITHER member of the candidate
     pair. Discriminating: an otherwise byte-identical pair reads as a twin
     with no sidecar; planting an EMPTY -journal beside either member must
-    flip it to indeterminate, never a positive twin."""
+    flip it to indeterminate, never a positive twin. Closing pass: same
+    routing/rendering note as the wal-sidecar sibling above -- the CLI
+    copy's own journal sidecar renders its own clause name; the gate's
+    renders "none" (no eligible match), not a cross-referenced reason."""
     root = tmp_path / "r"
     backups = root / "backups"
     gate = _image(root / "swing-pre-22a4-migration-20260908T010203Z.db", 37, marker="A")
@@ -215,14 +230,16 @@ def test_no_twin_is_claimed_across_a_journal_sidecar(tmp_path: Path) -> None:
     # an EMPTY -journal beside the CLI copy withholds the twin
     Path(str(cli_journal) + "-journal").write_bytes(b"")
     text = inv.render(inv.inventory(root, backups), root, backups)
-    assert _rows(text)[str(cli_journal)][7] == "indeterminate-journal-sidecar"
+    assert (_rows(text)[str(cli_journal)][7]
+            == "indeterminate-journal-sidecar-not-definitively-absent")
     assert "# cli-copy with a byte-identical gate twin: 0 of 1" in text
 
-    # and an EMPTY -journal beside the GATE side withholds it too
+    # and an EMPTY -journal beside the GATE side withholds it too (the CLI
+    # copy is itself eligible, so this is now "none": no eligible match)
     Path(str(cli_journal) + "-journal").unlink()
     Path(str(gate) + "-journal").write_bytes(b"")
     text = inv.render(inv.inventory(root, backups), root, backups)
-    assert _rows(text)[str(cli_journal)][7] == "indeterminate-journal-sidecar"
+    assert _rows(text)[str(cli_journal)][7] == "none"
     assert "# cli-copy with a byte-identical gate twin: 0 of 1" in text
 
 
@@ -257,7 +274,8 @@ def test_a_per_file_stat_or_hash_error_does_not_abort_the_scan(
     assert bad_row[4] == "36"  # schema_version WAS obtained before the hash step failed
     assert bad_row[2] == str(bad.stat().st_size)  # size preserved (B2R-3)
     assert bad_row[5] == "indeterminate"  # sha256 column: the word sentinel
-    assert bad_row[7] == "indeterminate"  # twin column
+    # closing pass: the twin column names the failed clause (eligibility())
+    assert bad_row[7] == "indeterminate-hash-failed"
     assert bad_row[9] == "error:OSError:synthetic hash failure"  # the exception text
     # B3R-2: both sidecar flags -- already obtained before the hash step
     # failed -- survive onto the error row (neither goes back to "unknown").
@@ -289,7 +307,8 @@ def test_no_twin_is_claimed_when_the_schema_version_read_errors(tmp_path: Path) 
     rows = _rows(text)
     assert rows[str(gate)][4].startswith("error:")
     assert rows[str(cli_corrupt)][4].startswith("error:")
-    assert rows[str(cli_corrupt)][7] == "indeterminate"
+    # closing pass: the CLI copy's OWN clause failure is named directly
+    assert rows[str(cli_corrupt)][7] == "indeterminate-schema-read-failed"
     assert "# cli-copy with a byte-identical gate twin: 0 of 1" in text
 
 
@@ -341,7 +360,8 @@ def test_a_stat_failure_on_a_matched_file_yields_an_error_row_not_a_silent_skip(
     bad_row = rows[str(bad)]
     assert bad_row[9] == "error:OSError:synthetic stat failure"
     assert bad_row[5] == "indeterminate"  # nothing was obtained before stat failed
-    assert bad_row[7] == "indeterminate"
+    # closing pass: the CLI copy's OWN clause failure is named directly
+    assert bad_row[7] == "indeterminate-stat-failed"
     # neither sidecar was ever probed -- both stay the "unknown" default,
     # never the "absent" a probe never actually confirmed (B3R-2).
     assert bad_row[6] == "unknown"
@@ -400,7 +420,10 @@ def test_no_twin_is_claimed_when_a_sidecar_probe_is_unknown(
     monkeypatch.setattr(os, "stat", _boom)
     text = inv.render(inv.inventory(root, backups), root, backups)
     row = _rows(text)[str(cli_copy)]
-    assert row[7] == "indeterminate-wal-unknown"
+    # closing pass: eligibility() clause (e) collapses "present" and
+    # "unknown" into ONE requirement (DEFINITIVELY absent or nothing) --
+    # same rendered value as a confirmed-present wal sidecar.
+    assert row[7] == "indeterminate-wal-sidecar-not-definitively-absent"
     assert "# cli-copy with a byte-identical gate twin: 0 of 1" in text
 
 
@@ -445,29 +468,29 @@ def test_a_directory_probe_failure_is_a_visible_row_not_a_silent_empty_scan(
 
 def test_a_directory_listing_failure_is_a_visible_row_not_a_crash(
         tmp_path: Path, monkeypatch) -> None:
-    """SS-2 class fix: unlike the existence probes, ``Path.glob()``'s
-    internal ``os.scandir()`` call is NOT wrapped in any try/except
-    anywhere in the stdlib glob machinery (verified: ``glob.py``'s
-    ``_Globber.scandir`` has no except clause at all) -- so a directory
-    that STATS fine but cannot be LISTED (permission denied enumerating
-    its contents) previously propagated an uncaught OSError out of
-    ``render()`` and crashed the WHOLE inventory, every location, not just
-    this one. Discriminating: ``Path.glob`` is patched to raise only for
-    the backups directory; pre-fix the render() call itself raises;
-    post-fix it is one visible ``scan-error`` row and root still scans."""
+    """SS-2/B4-2 class fix (closing pass): the CONTESTED fact about whether
+    ``Path.glob()`` swallows or propagates a scandir ``OSError`` on this
+    interpreter is why production no longer calls ``Path.glob()`` at all --
+    ``_list_directory`` lists with ``os.scandir()`` directly, the raw
+    primitive both readings agree is the one that actually raises.
+    Discriminating: ``os.scandir`` is patched to raise only for the backups
+    directory; pre-fix (still calling ``Path.glob``, unaffected by this
+    patch) the directory scans normally with zero trace of the simulated
+    failure; post-fix it is one visible ``scan-error`` row and root still
+    scans."""
     root = tmp_path / "r"
     backups = root / "backups"
     backups.mkdir(parents=True)
     _image(root / "swing-pre-22a4-migration-1Z.db", 37, marker="A")
 
-    real_glob = Path.glob
+    real_scandir = os.scandir
 
-    def _boom(self, pattern, **kw):
-        if self == backups:
+    def _boom(path=None, *a, **kw):
+        if path is not None and Path(path) == backups:
             raise PermissionError(13, "synthetic listing failure")
-        return real_glob(self, pattern, **kw)
+        return real_scandir(path, *a, **kw)
 
-    monkeypatch.setattr(Path, "glob", _boom)
+    monkeypatch.setattr(os, "scandir", _boom)
     text = inv.render(inv.inventory(root, backups), root, backups)
     rows = _rows(text)
     assert any(cols[0] == "root" for cols in rows.values())
@@ -504,6 +527,158 @@ def test_root_probe_unknown_is_reported_distinctly_from_absent(
     assert "not found" not in captured.err
 
 
+# --- CHARC stop-rule closing pass: the ALLOWLIST eligibility predicate ---
+#
+# One mutator per clause (a)-(f). Each starts from a REAL eligible
+# byte-identical CLI-copy/gate-image pair (the pre-mutation state IS a
+# positive twin) and mutates exactly ONE input at the boundary the
+# production code actually calls, so only that one clause fails. The
+# symlink mutator (a) fakes the lstat result rather than creating a real
+# OS symlink -- Windows symlinks need elevated privilege (Reviewer B,
+# B4-1), and every other mutator in this file already uses this same
+# "patch the boundary the code calls" technique rather than depending on
+# real OS/ACL mechanics.
+
+def _mutate_not_a_plain_regular_file(monkeypatch, cli_copy: Path, gate: Path) -> None:
+    real_lstat = os.lstat
+
+    def _boom(path, *a, **kw):
+        if Path(path) == cli_copy:
+            return SimpleNamespace(st_mode=stat.S_IFLNK)
+        return real_lstat(path, *a, **kw)
+
+    monkeypatch.setattr(os, "lstat", _boom)
+
+
+def _mutate_stat_failed(monkeypatch, cli_copy: Path, gate: Path) -> None:
+    real_stat = os.stat
+
+    def _boom(path, *a, **kw):
+        if Path(path) == cli_copy:
+            raise OSError("synthetic stat failure")
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(os, "stat", _boom)
+
+
+def _mutate_schema_read_failed(monkeypatch, cli_copy: Path, gate: Path) -> None:
+    real_read = inv.read_schema_version
+
+    def _boom(path):
+        if path == cli_copy:
+            return "error:Synthetic:schema read failed"
+        return real_read(path)
+
+    monkeypatch.setattr(inv, "read_schema_version", _boom)
+
+
+def _mutate_hash_failed(monkeypatch, cli_copy: Path, gate: Path) -> None:
+    real_hash = inv.sha256_of
+
+    def _boom(path):
+        if path == cli_copy:
+            raise OSError("synthetic hash failure")
+        return real_hash(path)
+
+    monkeypatch.setattr(inv, "sha256_of", _boom)
+
+
+def _mutate_wal_sidecar(monkeypatch, cli_copy: Path, gate: Path) -> None:
+    Path(str(cli_copy) + "-wal").write_bytes(b"")
+
+
+def _mutate_journal_sidecar(monkeypatch, cli_copy: Path, gate: Path) -> None:
+    Path(str(cli_copy) + "-journal").write_bytes(b"")
+
+
+_ELIGIBILITY_CLAUSE_TABLE = {
+    "not-a-plain-regular-file": _mutate_not_a_plain_regular_file,
+    "stat-failed": _mutate_stat_failed,
+    "schema-read-failed": _mutate_schema_read_failed,
+    "hash-failed": _mutate_hash_failed,
+    "wal-sidecar-not-definitively-absent": _mutate_wal_sidecar,
+    "journal-sidecar-not-definitively-absent": _mutate_journal_sidecar,
+}
+
+
+def _eligible_pair(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """A real, otherwise-fully-eligible byte-identical CLI-copy/gate-image
+    pair -- unmutated, this IS a positive twin (the control row)."""
+    root = tmp_path / "r"
+    backups = root / "backups"
+    gate = _image(root / "swing-pre-22a4-migration-20260908T010203Z.db", 37, marker="A")
+    backups.mkdir(parents=True)
+    cli_copy = backups / "swing-20260908T150203.db"
+    shutil.copyfile(gate, cli_copy)
+    return root, backups, cli_copy, gate
+
+
+def test_eligibility_predicate_table_covers_every_declared_clause() -> None:
+    """The CLOSURE GUARD (CHARC stop rule, Sharpening A): a clause added to
+    ``eligibility()`` without a matching table row goes red HERE, not
+    silently uncovered -- the same D51 comparator shape (the object SET,
+    not the value set) already used elsewhere in this codebase."""
+    assert set(_ELIGIBILITY_CLAUSE_TABLE) == set(inv._ELIGIBILITY_CLAUSES)
+
+
+@pytest.mark.parametrize("clause_name", sorted(_ELIGIBILITY_CLAUSE_TABLE))
+def test_a_single_failed_clause_withholds_the_positive_twin(
+        tmp_path: Path, monkeypatch, clause_name: str) -> None:
+    """One row per clause (a)-(f): mutate exactly that ONE input on an
+    otherwise-eligible byte-identical pair; the twin must NOT be positive.
+    Honest red-first note (recorded in the ledger, not re-derived here):
+    against the pre-closing-pass head, clauses (b)/(c)/(d)/(e)/(f) ALREADY
+    withheld the positive twin via the prior ad hoc error/sidecar checks --
+    only clause (a) (the symlink route, B4-1) was a genuinely NEW route
+    this table closes. The table stands as the closure instrument
+    regardless of which rows were already green: it is what makes a FUTURE
+    clause additions provably covered, not what makes this one red."""
+    root, backups, cli_copy, gate = _eligible_pair(tmp_path)
+    _ELIGIBILITY_CLAUSE_TABLE[clause_name](monkeypatch, cli_copy, gate)
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    row = _rows(text)[str(cli_copy)]
+    assert not inv._is_positive_twin(row[7]), (clause_name, row)
+
+
+def test_a_fully_eligible_pair_is_the_positive_twin_control(tmp_path: Path) -> None:
+    """The positive control: an unmutated, fully-eligible byte-identical
+    pair IS a positive twin -- proves the table's mutators are each
+    removing something load-bearing, not asserting a permanently-negative
+    predicate."""
+    root, backups, cli_copy, gate = _eligible_pair(tmp_path)
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    row = _rows(text)[str(cli_copy)]
+    assert row[7] == str(gate)
+    assert inv._is_positive_twin(row[7])
+
+
+def test_a_scandir_listing_failure_yields_a_scan_error_row(
+        tmp_path: Path, monkeypatch) -> None:
+    """The scandir listing-failure discriminator, restated at the closing
+    pass alongside the clause table (the production mechanism it exercises
+    -- ``_list_directory`` -- is the same one ``_scan`` calls; see
+    ``test_a_directory_listing_failure_is_a_visible_row_not_a_crash`` above
+    for the full B4-2 CONTESTED-fact writeup)."""
+    root = tmp_path / "r"
+    backups = root / "backups"
+    backups.mkdir(parents=True)
+    _image(root / "swing-pre-22a4-migration-1Z.db", 37, marker="A")
+
+    real_scandir = os.scandir
+
+    def _boom(path=None, *a, **kw):
+        if path is not None and Path(path) == backups:
+            raise PermissionError(13, "synthetic listing failure")
+        return real_scandir(path, *a, **kw)
+
+    monkeypatch.setattr(os, "scandir", _boom)
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    rows = _rows(text)
+    scan_error_rows = [cols for cols in rows.values() if cols[1] == "scan-error"]
+    assert len(scan_error_rows) == 1
+    assert scan_error_rows[0][8] == str(backups)
+
+
 def test_summary_twin_count_uses_exact_sentinels_not_a_string_prefix() -> None:
     """Reviewer B, B2R-4 (minor): the summary classifies twin values by EXACT
     sentinel membership, not by the string prefix ``indeterminate-`` -- a
@@ -512,12 +687,15 @@ def test_summary_twin_count_uses_exact_sentinels_not_a_string_prefix() -> None:
     absolute-path twin value would carry verbatim) is a real positive twin,
     not a sidecar/error-tainted one. A `render()`-level fixture cannot
     reproduce this on Windows (the drive letter always leads an absolute
-    path), so this pins the extracted classifier directly."""
+    path), so this pins the extracted classifier directly. Closing pass:
+    ``_TWIN_SENTINELS`` is now GENERATED from ``_ELIGIBILITY_CLAUSES`` (the
+    structural close) rather than hand-maintained, so this test also pins
+    that generation -- a clause renamed in ``eligibility()`` without a
+    matching sentinel is a drift this test would catch."""
     assert inv._is_positive_twin("indeterminate-decoy/swing-pre-x-migration-1Z.db")
     assert inv._is_positive_twin(r"C:\swing-data\indeterminate-branch\swing-pre-a-migration-1Z.db")
-    assert not inv._is_positive_twin("indeterminate-wal-sidecar")
-    assert not inv._is_positive_twin("indeterminate-journal-sidecar")
-    assert not inv._is_positive_twin("indeterminate")
+    for clause in inv._ELIGIBILITY_CLAUSES:
+        assert not inv._is_positive_twin(f"indeterminate-{clause}")
     assert not inv._is_positive_twin("none")
 
 

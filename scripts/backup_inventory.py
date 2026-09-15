@@ -10,10 +10,16 @@ as ``SELECT version FROM schema_version`` (``unknown`` when the table is absent;
 ``PRAGMA user_version`` reads 0 on this project's DBs and is never used), the
 sha256 of the bytes, and -- for each CLI copy -- the gate image(s) with the SAME
 sha256 (its byte-identical twin), or ``none``. A twin is a claim that licenses a
-delete downstream, so it fails CLOSED: a ``-wal`` or ``-journal`` sidecar beside
-EITHER member of the candidate pair (the CLI copy or the gate image) withholds
-it (``indeterminate-wal-sidecar`` / ``indeterminate-journal-sidecar``) -- never
-a positive twin on a hole in the proof.
+delete downstream, so it is licensed by exactly ONE function: ``eligibility()``
+(the CHARC stop-rule STRUCTURAL CLOSE -- an ALLOWLIST, not a denylist of failure
+routes). A positive twin requires BOTH the CLI copy and the matched gate image to
+pass all six eligibility clauses (a plain regular file, not a symlink; a
+successful stat; a successful schema read; a successful hash; the ``-wal``
+sidecar DEFINITIVELY absent; the ``-journal`` sidecar DEFINITIVELY absent) --
+anything else renders ``f"indeterminate-{clause}"`` (the failed member's OWN
+first-failed clause) or, when only a WOULD-BE match is ineligible, ``"none"``
+(no eligible twin found; the ineligible candidate's own row is still visible in
+the inventory, just not cross-referenced by reason).
 
 A file that raises ``OSError`` on the existence/stat check, the schema-version
 read or the hash -- OR whose schema-version read fails WITHOUT raising (a
@@ -65,6 +71,7 @@ Defaults: root = ~/swing-data ; backups-dir = <root>/backups
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import os
 import re
@@ -91,6 +98,8 @@ class Entry:
     sha256: str
     wal_sidecar: str  # "present" | "absent" | "unknown"
     journal_sidecar: str  # "present" | "absent" | "unknown"
+    lstat_regular_file: bool = False  # CHARC stop-rule clause (a)
+    stat_ok: bool = False  # CHARC stop-rule clause (b)
     error: str | None = None
 
 
@@ -121,6 +130,68 @@ def _probe(path: Path) -> tuple[str, os.stat_result | None]:
     except OSError:
         return "unknown", None
     return "present", st
+
+
+_ELIGIBILITY_CLAUSES = (
+    "not-a-plain-regular-file",              # (a) lstat: regular file, not a symlink
+    "stat-failed",                           # (b) stat ok
+    "schema-read-failed",                    # (c) schema read ok
+    "hash-failed",                           # (d) hash ok
+    "wal-sidecar-not-definitively-absent",   # (e) -wal DEFINITIVELY absent
+    "journal-sidecar-not-definitively-absent",  # (f) -journal DEFINITIVELY absent
+)
+
+
+def eligibility(e: Entry) -> str:
+    """THE STRUCTURAL CLOSE (CHARC stop rule, D32+D50 closing pass). This is
+    the ONLY function in the script that may declare a member eligible to
+    form a positive twin -- an ALLOWLIST, not a denylist. Four bounded
+    Reviewer B reads each found a NEW route to the same failure (an
+    unproven positive twin: a sidecar swallow, an unrendered flag, a
+    symlink whose sidecars are probed on the link path instead of the
+    target, a contested glob-suppression claim); enumerating failure
+    routes is unbounded by construction. A positive is licensed ONLY when
+    EVERY clause below passes, evaluated in order, returning the name of
+    the FIRST clause that fails -- or "eligible" if all six pass. A clause
+    not yet imagined falls through the existing per-file OSError guard
+    (``stat_ok``/``sha256``/``version`` all stay at their fail-closed
+    defaults) and is refused here too, never silently allowed.
+
+    (a) ``lstat_regular_file`` -- an ``os.lstat()`` (never follows a
+        symlink) confirmed a plain regular file. A symlink's lstat mode is
+        never S_ISREG, so this single check both requires "is a regular
+        file" and excludes "is a symlink" in one primitive -- the B4-1
+        fix: a symlinked candidate is hashed/read through its TARGET (the
+        Python I/O layer follows links) but its ``-wal``/``-journal``
+        sidecars are probed on the LINK's own path, so a sidecar beside
+        the real target would be invisible; a symlink can never be
+        eligible, regardless of what its target's own probes would show.
+    (b) ``stat_ok`` -- the (following) ``Path.stat()`` succeeded (size/
+        mtime obtained).
+    (c) ``version`` does not start with ``"error:"`` -- the schema-version
+        read succeeded (raised or not: ``read_schema_version`` folds a
+        raise into the same string).
+    (d) ``sha256`` is not the ``"indeterminate"`` sentinel -- the hash was
+        computed.
+    (e) ``wal_sidecar == "absent"`` -- DEFINITIVELY absent, never
+        ``"present"`` (a real sidecar) and never ``"unknown"`` (an
+        unprobeable one -- fail-closed, the same requirement).
+    (f) ``journal_sidecar == "absent"`` -- the same requirement for the
+        rollback-journal sidecar.
+    """
+    if not e.lstat_regular_file:
+        return "not-a-plain-regular-file"
+    if not e.stat_ok:
+        return "stat-failed"
+    if e.version.startswith("error:"):
+        return "schema-read-failed"
+    if e.sha256 == "indeterminate":
+        return "hash-failed"
+    if e.wal_sidecar != "absent":
+        return "wal-sidecar-not-definitively-absent"
+    if e.journal_sidecar != "absent":
+        return "journal-sidecar-not-definitively-absent"
+    return "eligible"
 
 
 def classify(name: str) -> str:
@@ -175,20 +246,39 @@ def _directory_error_entry(location: str, directory: Path, reason: str) -> Entry
     )
 
 
+def _list_directory(directory: Path, pattern: str) -> list[Path]:
+    """Reviewer B, B4-2 (CONTESTED, closing pass): ``Path.glob()`` wraps
+    ``os.scandir()`` at a layer Codex's read of this interpreter's glob
+    source says can SILENTLY SWALLOW a listing ``OSError`` into an empty
+    result. The sweep cell MEASURED THE OPPOSITE on this box (Python
+    3.14): an uncaught ``PermissionError`` propagating out of ``render()``.
+    Both readings are recorded in the ledger; the fix is the SAME either
+    way, so the disagreement is not resolved here -- list with
+    ``os.scandir()`` directly, the raw primitive, inside the SAME
+    try/except the caller already uses to catch a listing failure. If
+    ``os.scandir()`` itself (or iterating it) raises, the exception
+    propagates OUT of this function uncaught -- the caller's try/except is
+    what converts it to a visible ``scan-error`` row."""
+    out = []
+    with os.scandir(directory) as it:
+        for de in it:
+            if fnmatch.fnmatch(de.name, pattern):
+                out.append(directory / de.name)
+    return out
+
+
 def _scan(location: str, directory: Path, pattern: str) -> list[Entry]:
-    """SS-1 (the directory-existence check) + SS-2 (the listing itself).
+    """SS-1 (the directory-existence check) + SS-2/B4-2 (the listing
+    itself).
 
     ``directory.is_dir()`` swallows every ``OSError`` into ``False`` with
     no ABSENT/UNKNOWN discrimination (see ``_probe``'s docstring) -- a
     directory that genuinely exists but cannot be examined (permission
     denied, a flaky mount) previously read IDENTICALLY to one that was
-    never created, and every file inside it vanished with no trace.
-    ``directory.glob(pattern)`` is worse: its internal ``os.scandir()`` call
-    is not wrapped in any try/except anywhere in the stdlib glob machinery,
-    so a directory that STATS fine but cannot be LISTED previously
-    propagated an uncaught ``OSError`` out of this function and crashed the
-    WHOLE inventory, every location, not just this one. Both now degrade to
-    one visible ``scan-error`` row (never a positive claim, never silence).
+    never created, and every file inside it vanished with no trace. The
+    listing itself (``_list_directory``) is wrapped the same way: any
+    ``OSError`` opening or iterating the directory degrades to one visible
+    ``scan-error`` row (never a positive claim, never silence).
     """
     state, st = _probe(directory)
     if state == "absent":
@@ -199,7 +289,7 @@ def _scan(location: str, directory: Path, pattern: str) -> list[Entry]:
     if not S_ISDIR(st.st_mode):
         return []
     try:
-        paths = sorted(directory.glob(pattern))
+        paths = sorted(_list_directory(directory, pattern))
     except OSError as exc:
         return [_directory_error_entry(location, directory, f"{type(exc).__name__}:{exc}")]
     out = []
@@ -233,6 +323,17 @@ def _scan_one(location: str, p: Path) -> Entry | None:
     Returns ``None`` ONLY for a confirmed non-regular-file match (e.g. a
     directory the glob pattern happened to match) -- never on a failure to
     determine that.
+
+    Closing pass (CHARC stop rule): also populates ``lstat_regular_file``
+    (clause a -- an ``os.lstat()``, which never follows a symlink, run
+    FIRST and independently of the existing following ``Path.stat()``
+    call) and ``stat_ok`` (clause b -- the existing following stat, now
+    named for ``eligibility()``) so the allowlist predicate has real
+    per-clause signal instead of re-deriving it from the coarser ``error``
+    string. A symlinked candidate is still fully scanned (hashed/read
+    through its TARGET, since Python I/O follows links) and gets a normal
+    row -- only its ELIGIBILITY for a positive twin is refused (B4-1: its
+    sidecars are probed on the link path, not the target's).
     """
     size = 0
     mtime = "unknown"
@@ -241,10 +342,15 @@ def _scan_one(location: str, p: Path) -> Entry | None:
     version: str | None = None
     sha256: str | None = None
     error: str | None = None
+    lstat_regular_file = False
+    stat_ok = False
     try:
+        lst = os.lstat(p)
+        lstat_regular_file = S_ISREG(lst.st_mode)
         st = p.stat()
         if not S_ISREG(st.st_mode):
             return None
+        stat_ok = True
         size = st.st_size
         mtime = datetime.fromtimestamp(st.st_mtime, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         wal_sidecar = _probe(Path(str(p) + "-wal"))[0]
@@ -267,6 +373,8 @@ def _scan_one(location: str, p: Path) -> Entry | None:
         sha256=sha256 if sha256 is not None else "indeterminate",
         wal_sidecar=wal_sidecar,
         journal_sidecar=journal_sidecar,
+        lstat_regular_file=lstat_regular_file,
+        stat_ok=stat_ok,
         error=error,
     )
 
@@ -279,33 +387,9 @@ def inventory(root: Path, backups_dir: Path) -> list[Entry]:
     )
 
 
-def _sidecar_reason(e: Entry) -> str | None:
-    """None = clean; else the specific hole that withholds a positive twin.
-
-    SS-3/SS-4: an UNKNOWN sidecar probe (a real OSError the -wal/-journal
-    check could not resolve, never a confirmed absence) withholds the twin
-    the SAME as a confirmed-present sidecar -- the fail-closed rule already
-    ruled for B2/B3 extends to "we could not tell" as much as "it is
-    there"."""
-    if e.wal_sidecar == "present":
-        return "indeterminate-wal-sidecar"
-    if e.wal_sidecar == "unknown":
-        return "indeterminate-wal-unknown"
-    if e.journal_sidecar == "present":
-        return "indeterminate-journal-sidecar"
-    if e.journal_sidecar == "unknown":
-        return "indeterminate-journal-unknown"
-    return None
-
-
-_TWIN_SENTINELS = frozenset({
-    "none",
-    "indeterminate",
-    "indeterminate-wal-sidecar",
-    "indeterminate-journal-sidecar",
-    "indeterminate-wal-unknown",
-    "indeterminate-journal-unknown",
-})
+_TWIN_SENTINELS = frozenset(
+    {"none"} | {f"indeterminate-{clause}" for clause in _ELIGIBILITY_CLAUSES}
+)
 
 
 def _is_positive_twin(twin_value: str) -> bool:
@@ -313,42 +397,54 @@ def _is_positive_twin(twin_value: str) -> bool:
     prefix test. A twin value that legitimately STARTS WITH the same text as
     a sentinel (e.g. a matched gate path under a directory literally named
     ``indeterminate-something``) is a real positive twin, not a tainted one
-    -- only exact equality to a sentinel withholds it."""
+    -- only exact equality to a sentinel withholds it. The sentinel set is
+    generated from ``_ELIGIBILITY_CLAUSES`` (the closing-pass structural
+    close), not hand-maintained -- it cannot drift from ``eligibility()``."""
     return twin_value not in _TWIN_SENTINELS
 
 
-def render(entries: list[Entry], root: Path, backups_dir: Path) -> str:
-    # A twin is a claim that licenses a delete downstream, so it fails CLOSED:
-    # a -wal OR -journal sidecar beside EITHER member of the candidate pair
-    # withholds it -- an immutable read and a main-file hash cannot see a
-    # sidecar's pending/committed pages, so two equal main files are NOT
-    # proven equal databases when either side carries one. An unreadable file
-    # (error row) can never be claimed as, or matched to, a twin either.
-    gate_matches_by_hash: dict[str, list[tuple[Path, str | None]]] = {}
+def _twin_by_path(entries: list[Entry]) -> dict[Path, str]:
+    """THE STRUCTURAL CLOSE, applied (CHARC stop rule): ``eligibility()`` is
+    the ONLY function consulted to decide a positive twin. A gate-image
+    only enters the match pool when it is itself ELIGIBLE; a cli-copy is
+    matched against that pool only when IT is eligible too -- both members,
+    same predicate, no other code path may set a positive value here. When
+    a cli-copy is eligible but its only byte-identical gate match(es) are
+    NOT (a symlink, a tainted sidecar, an unreadable member -- any of the
+    six clauses), the join simply finds nothing: rendered as ``"none"``,
+    identical to no byte match existing at all. This DROPS the prior
+    per-reason-string distinction between "no match" and "a match exists
+    but is tainted" -- a deliberate simplification (the raw per-file rows
+    for both members remain fully visible in the inventory regardless;
+    only the CROSS-REFERENCED reason on the twin column is no longer
+    carried, closing the exact denylist-of-reasons growth this pass
+    exists to stop). A cli-copy that fails a clause ITSELF renders
+    ``f"indeterminate-{clause}"`` -- the one case "which clause failed" is
+    cheap, since it is the row's own state, not a join partner's."""
+    eligible_gate_paths_by_hash: dict[str, list[Path]] = {}
     for e in entries:
-        if e.cls == "gate-image" and e.error is None:
-            gate_matches_by_hash.setdefault(e.sha256, []).append((e.path, _sidecar_reason(e)))
+        if e.cls == "gate-image" and eligibility(e) == "eligible":
+            eligible_gate_paths_by_hash.setdefault(e.sha256, []).append(e.path)
 
     twin_by_path: dict[Path, str] = {}
     for e in entries:
-        if e.error is not None:
-            twin_by_path[e.path] = "indeterminate"
-        elif e.cls != "cli-copy":
+        if e.cls != "cli-copy":
             twin_by_path[e.path] = "-"
-        else:
-            reason = _sidecar_reason(e)
-            if reason is not None:
-                twin_by_path[e.path] = reason
-            else:
-                matches = gate_matches_by_hash.get(e.sha256, [])
-                clean = [p for p, r in matches if r is None]
-                tainted = [r for _, r in matches if r is not None]
-                if clean:
-                    twin_by_path[e.path] = ";".join(str(p) for p in clean)
-                elif tainted:
-                    twin_by_path[e.path] = tainted[0]
-                else:
-                    twin_by_path[e.path] = "none"
+            continue
+        clause = eligibility(e)
+        if clause != "eligible":
+            twin_by_path[e.path] = f"indeterminate-{clause}"
+            continue
+        matches = eligible_gate_paths_by_hash.get(e.sha256, [])
+        twin_by_path[e.path] = ";".join(str(p) for p in matches) if matches else "none"
+    return twin_by_path
+
+
+def render(entries: list[Entry], root: Path, backups_dir: Path) -> str:
+    # A twin is a claim that licenses a delete downstream, so it fails
+    # CLOSED through eligibility() -- see _twin_by_path's docstring for the
+    # structural-close rationale (CHARC stop rule, D32+D50 closing pass).
+    twin_by_path = _twin_by_path(entries)
 
     lines = [
         "# backup_inventory (read-only)",
@@ -381,7 +477,10 @@ def render(entries: list[Entry], root: Path, backups_dir: Path) -> str:
         f"# unclassified: {sum(1 for e in entries if e.cls == 'unclassified')}")
     lines.append(
         f"# errors: {sum(1 for e in entries if e.error is not None)}")
-    lines.append(f"# total: {len(entries)} files, {sum(e.size for e in entries)} bytes")
+    # B4-4: "entries", not "files" -- a scan-error entry's path is a
+    # DIRECTORY, not a file, and this line counts every entry, not just
+    # per-file rows.
+    lines.append(f"# total: {len(entries)} entries, {sum(e.size for e in entries)} bytes")
     return "\n".join(lines) + "\n"
 
 
