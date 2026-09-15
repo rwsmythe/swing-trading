@@ -118,3 +118,25 @@ Every fact below was read from code on `62da7933` or from the live DB opened `mo
 **Brief:** [`docs/phase22-arc-d56-error-region-c3-dispatch-brief.md`](phase22-arc-d56-error-region-c3-dispatch-brief.md), encoding the ruling above. One placement decision made at encoding, not a design fork: the E3 helper lives in `swing/web/view_models/patterns/review_form.py`, because `routes/patterns.py` already imports that module and the VM needs the helper for the pre-fill; putting it in the route would make the VM import the route. The pre-fill reaches the template through a NEW VM field — `window_start_date` stays literal (the header renders it; rule (i) compares to it). **Cell:** `implementer-sonnet-high` (the executing default; locked design, CHARC concurred). **Worktree / base SHA:** recorded in the next entry.
 
 **Dispatched 2026-09-15:** `implementer-sonnet-high`, worktree `.worktrees/d56-exec`, branch `d56-exec`, **base `9567459f`** (the commit carrying the ruling transcription and the brief). Base verified to carry the rules the brief depends on (recipe: the plan-stage protocol, copy-per-round preservation, Reviewer B relocated to the orchestrator). Durable transcript dir created: `~/swing-data/review-transcripts/d56-exec/`.
+
+---
+
+## Executing return + orchestrator QA (2026-09-15)
+
+**Return:** `d56-exec` head `469296ea` (5 commits over `9567459f`: `4c175faf` E1+E2 · `1552a876` E3+E4+C3 · `7ba9cb14` E5 · `932596c7` Codex R1 major · `469296ea` R2 nit). Diff touches only `routes/patterns.py`, the two templates, `view_models/patterns/review_form.py` and three test files (one new). Cell-seat suite on `469296ea`: 12,469 passed / 13 skipped (base 12,456; +13 = the new tests). Ruff clean.
+
+**QA on disk (orchestrator):** trailers empty on all 5 commits; working tree clean; production diff read in full: one parser `extract_dbw_trough_1_date` + `dbw_corrected_start_prefill` in the VM module, rule (iii) calls the parser, rule (i) still compares to `window_start_date`, refusal text names `dbw_corrected_start_prefill(evaluation)`, exemplars page = one region + four `hx-target` (no `hx-swap`), review form = sibling region + `hx-target` + `hx-swap="innerHTML"` (the default, explicit), new VM field `corrected_window_start_date_prefill`, no `app.py` change. Codex's `geometric_score` NOT NULL citation verified: `0020_phase13_charts_patterns_autofill_usability.sql:240`.
+
+**Reviewer A (the cell's), verified from the transcripts:**
+
+| Round | Model / effort | `^ERROR` | footer | verdict tokens | counted | findings |
+|---|---|---|---|---|---|---|
+| R1 | gpt-5.6-sol / high | 0 | 1 (210,367) | NNCM 1 (prompt echo) / NCMF 3 | **NO** — the prompt wrote both tokens line-initially (the recipe's prompt-design hazard) | 1 major (redundant `hx-swap` on the exemplars forms, outside F-A's bound) + 1 minor (fragment tests lacked the real `HX-Target` header, 400 only) — both fixed `932596c7` |
+| R2 | gpt-5.6-sol / high | 0 | 1 (212,208) | NNCM 2 (0.152.1 double-emit) / NCMF 0 | yes — **CONVERGED** | 1 nit (stale test-module docstring), fixed `469296ea` without a round |
+
+The R2 prompt carries zero line-initial tokens (orchestrator grep). Transcript sha256 identical worktree vs durable (`1909dd50…`). A spend: 422,575 (R1 210,367 disqualified + R2 212,208).
+
+**Reviewer B (orchestrator's, charter §2.9, ruled REQUIRED):** cold audit, `codex exec -p strong -s read-only --skip-git-repo-check`, CLAIMS-FIRST over E1-E5 + F-A/F-B/F-C, launched from PowerShell via an LF runner with pre-created output/exit files. Assertions: model `gpt-5.6-sol`, effort `high`, `^ERROR` 0, footer 1 (191,332), `^NO_NEW_CRITICAL_MAJOR` 2 / `^NEW_CRITICAL_MAJOR_FOUND` 0, measured exit 0, transcript 626,189 bytes, no codex process left running. The 3 hits on A's scratch filenames are the prompt's own prohibition echoed plus two lines of `orchestrator-context.md` content, not reads of A's files. **Verdict: CLEAN.** Claims: E1-E5 PASS, F-A PASS, F-C PASS, **F-B FAIL on the TEST, not the code.** Findings:
+- **B-1 minor, INTRODUCED:** T4 pins only the unparseable and zero kinds, where old and new pre-fill are equal, so reverting the refusal text to `evaluation.window_start_date` stays green; CHARC's pin names all three kinds. **ACCEPTED, fix authorized** (a parseable-kind case calling `_dbw_recovery_text` directly against the rendered pre-fill, red shown by temporary revert).
+- **B-2 nit:** the new test module's docstring claims 422/500 coverage it does not directly exercise. **ACCEPTED, fix authorized** (docstring by replacement).
+Both are post-convergence test-only corrections: no further Codex round, verified by the suite. **Authority granted by cell message:** this fix leg (B-1, B-2), sent to the same cell. Evidence: `~/swing-data/review-transcripts/d56-exec/codex-b-*`. B spend 191,332.
