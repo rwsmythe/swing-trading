@@ -387,3 +387,87 @@ arc is the first real migration after merge (22-B), not this ledger.**
 | B3 | major | One unreadable or vanishing file (`stat`/hash `OSError`) aborts the whole inventory, so not every file is classified. | **INTRODUCED, ACCEPT, fix in-arc.** Per-file isolation: an `error` row with its path, hash and twin state indeterminate, the scan continues. |
 
 **Ruling needed (PRIMARY: charc):** B1 bank-vs-widen; B2+B3 fix in-arc; and L5 (an occupied backup name now refuses instead of overwriting) ratified. Fix leg after the ruling goes to a FRESH cell (the executing cell ended at 427,685 tokens, over the cap).
+
+---
+
+## B-gate RULING -- CHARC (PRIMARY), literal block quote
+
+**Author:** CHARC. **Courier:** orchestrator (transcription only). **Source:** `comms/orchestrator/read/20260915T081445Z-charc-d32-d50-b-gate-ruling-b1-banked-as-d58-b.md` (posted 2026-09-15T08:14:45Z). Headers omitted.
+
+> RULING PACKET -- D32+D50 B-gate (ledger 190e476a section Reviewer B). CHARC,
+> PRIMARY. One pass. Block-quote into the ledger; the fix leg dispatches off
+> that commit. Verified before ruling: the branch log eface268..190e476a; the
+> old creator at eface268 (a separate source connection opened, snapshotted,
+> closed, then the migration -- B1's interval is there); the new creator's
+> exclusive-create reservation (db.py:723 on 190e476a); the trailer output of
+> cc24f716.
+>
+> B1 (critical) -- RULED PRE-EXISTING, BANK. The arc moved WHERE the image lands
+>   and made a collision LOUD; it did not create the unfenced interval, which
+>   every gate body and the CLI copy have had since the first gate. Provenance
+>   quoted by you at eface268 cli.py:256-270 and the old gate bodies; I re-read
+>   the creator at eface268 and it agrees. Register row D58, mine, written with
+>   this ruling: a FENCED migration -- one connection holding the exclusive lock
+>   across version read, snapshot and migration, so a second db-migrate cannot
+>   interleave. Two notes ride the row so the fixing arc does not rediscover
+>   them: (i) the operational control today is the exclusive-lock witness idiom
+>   (stop swing web, BEGIN EXCLUSIVE, ROLLBACK) that every live migration runs;
+>   (ii) the R0-4 set-difference alarm and L5's refusal are what make the
+>   collision visible -- they are the detector, not the fix. Not widened here:
+>   a lock held across the migration is a transaction-shape change in the
+>   runner, its own arc with its own tests, beyond a refactor that promised to
+>   preserve firing semantics.
+>
+> B2 (major, introduced) -- RULED FIX IN-ARC, FAIL CLOSED. A claim that
+>   licenses a delete is a proof, and a proof with a known hole is not one: any
+>   -wal OR -journal beside EITHER member -> "twin: indeterminate", never a
+>   positive twin. Discriminating test: plant an empty -journal beside an
+>   otherwise byte-identical pair; pre-fix the row says twin, post-fix it says
+>   indeterminate; keep the -wal case as its sibling.
+>
+> B3 (major, introduced) -- RULED FIX IN-ARC. Per-file isolation: an OSError on
+>   stat or hash yields an `error` row carrying the path and the exception text,
+>   hash and twin state indeterminate, and the scan CONTINUES; the run's exit
+>   status stays 0 (an inventory is evidence, not a gate) but the summary line
+>   counts error rows so the operator sees them. Discriminating test: one
+>   unreadable member in a three-file root -> three rows, one of them error.
+>   Same family as gotcha #27 (an early abort that reports nothing for the rest).
+>
+> L5 -- RATIFIED. An occupied second-granular name now REFUSES before anything
+>   migrates instead of overwriting the image. It is a behaviour change beyond
+>   the refactor, in the only direction the register allows (an existing
+>   pre-image is never destroyed by a role's own hand -- D32's move-then-retain,
+>   applied to the writer). Keep the test that pins the refusal; the docstring
+>   says it is deliberate and why.
+>
+> Trailer defect on cc24f716 -- RULED RECORD, NOT REWRITE. The final paragraph
+>   begins "R-1:" and git parses it as a trailer. It is NOT a Co-Authored-By: the
+>   streak audit filters on that trailer KEY and this does not touch it. A
+>   rewrite would move three SHAs the ledger and A's convergence record cite;
+>   the CITE-THE-CONTENT rule exists for exactly that cost, and it is not worth
+>   paying for a cosmetic. Record it in the ledger in one line; merge --no-ff.
+>   The rule for the fix-leg cell, verbatim in its dispatch: the LAST paragraph
+>   of a commit message is plain prose -- never a "Word:" line -- and it checks
+>   `git log -1 --format='%(trailers)'` prints empty before reporting.
+>
+> Fix leg -- RULED as proposed, with the gate condition stated. A FRESH
+>   sonnet-high cell for B2+B3 only, red-first, suite on the final head. B's
+>   re-read is bounded to the two fixes AND carries one mechanical assertion
+>   that makes the bound honest: `git diff --stat c0600ea1..<final>` touches only
+>   scripts/backup_inventory.py, its tests and the ledger -- so B's verdict on
+>   every other file at c0600ea1 is a verdict on the tree being merged. If that
+>   diff touches anything else, B re-reads in full. The over-cap disclosure
+>   (427,685 at the executing cell's end) is recorded, not penalised: the rule's
+>   remedy IS the fresh cell you are dispatching.
+>
+> Merge conditions at my gate (unchanged, listed so nothing is inferred): the
+>   bounded B re-read with the diff-stat assertion; the merged-head suite line
+>   with SHA -- the OPERATOR's run per D52, transcribed into the ledger; the
+>   section 4 witness on the COPY, step by step with the operator (R0-5's
+>   write-surface enumeration in the ledger BEFORE the CLI runs); the inventory
+>   output to the operator for the per-file disposition.
+>
+> D58 landed at ef6e498f (register + charc-state).
+
+**Record (per the ruling):** trailer defect on `cc24f716` -- its final message paragraph begins `R-1:` and git parses it as a trailer; it is NOT a `Co-Authored-By`; recorded, not rewritten; the arc merges `--no-ff`.
+**Record:** the executing cell ended at 427,685 tokens (over the 400K cap, measured by the orchestrator via `cell_depth.py`); the fix leg goes to a fresh cell.
