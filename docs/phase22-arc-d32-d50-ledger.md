@@ -515,3 +515,21 @@ columns, the other two files unaffected, `# errors: 1` in the summary, and the r
 ```
 
 Only `scripts/backup_inventory.py`, its test, and this ledger changed since `c0600ea1` -- the bounded B re-read holds.
+
+---
+
+## Reviewer B -- bounded re-read of the fix leg (orchestrator)
+
+**Tree:** `1cbd6ef1`. **Bound held mechanically:** `git diff --stat c0600ea1..1cbd6ef1` = the ledger, `scripts/backup_inventory.py`, `tests/scripts/test_backup_inventory.py` only (verified by the orchestrator). **Inputs:** the script and test diffs `3ae98ced..e690ebe6` plus the two current files; A's and B's earlier scratch moved out of the worktree for the round and restored after. **Assertions:** `gpt-5.6-sol` / `high`; `^ERROR` 0; `^tokens used` 1 (92,461); exit file 0, process exited; `^NEW_CRITICAL_MAJOR_FOUND` 2, `^NO_NEW_CRITICAL_MAJOR` 0; prompt carries neither token line-initially. Transcript 315,400 bytes at `~/swing-data/review-transcripts/d32-d50-exec/.codex-b2-review.txt`.
+
+**Verdict:** B2 PASS · B3 FAIL · read-only/ASCII PASS · both new tests discriminating.
+
+| id | B severity | finding | orchestrator adjudication |
+|---|---|---|---|
+| B2R-1 | critical | A file whose schema read ERRORED is not an `Entry.error`, so an identically-hashed unreadable gate can still be named a positive twin. | **ACCEPT, fix.** Byte identity is arguably still proven, but the ruled principle is FAIL CLOSED for a claim that licenses a delete: any member with a schema-read error -> twin indeterminate. Residual of B2. |
+| B2R-2 | major | `Path.is_file()` runs before the guarded block and swallows `OSError`, so an inaccessible or vanishing candidate is silently SKIPPED, not an error row. | **ACCEPT, fix.** Residual of B3 (every matched file gets a row). |
+| B2R-3 | minor | A hash-error row discards the size/mtime/sidecar already read (reports 0 bytes). | **ACCEPT, fix** (same function, no extra round). |
+| B2R-4 | minor | The summary classifies twins by string PREFIX `indeterminate-`, so a relative gate path beginning with that text is misclassified. | **ACCEPT, fix** (compare against the exact sentinel set). |
+| B2R-5 | (test gap) | The B3 test exercises only the hash failure, not stat, and asserts no `main()` exit status. | **ACCEPT, add** a stat-failure case and a `main()` exit-0 assertion. |
+
+**Authority:** no new ruling needed -- every item is a residual of the requirements CHARC already ruled for B2 and B3 (fail closed; every file classified; exit 0; error rows counted). The orchestrator authorizes a second fix pass on the same cell, same scope lock, followed by one more bounded B re-read.
