@@ -129,7 +129,6 @@
                 hx-post="/patterns/exemplars/{{ row.id }}/action"
                 hx-headers='{"HX-Request": "true"}'
                 hx-target="#patterns-exemplars-error"
-                hx-swap="innerHTML"
                 style="display: inline-block;">
             <input type="hidden" name="action" value="promote_to_gold">
             <button type="submit" data-action="promote_to_gold">
@@ -143,7 +142,6 @@
                 hx-post="/patterns/exemplars/{{ row.id }}/action"
                 hx-headers='{"HX-Request": "true"}'
                 hx-target="#patterns-exemplars-error"
-                hx-swap="innerHTML"
                 style="display: inline-block;">
             <input type="hidden" name="action" value="watch">
             <button type="submit" data-action="watch">Watch</button>
@@ -155,7 +153,6 @@
                 hx-post="/patterns/exemplars/{{ row.id }}/action"
                 hx-headers='{"HX-Request": "true"}'
                 hx-target="#patterns-exemplars-error"
-                hx-swap="innerHTML"
                 style="display: inline-block;">
             <input type="hidden" name="action" value="reject">
             <button type="submit" data-action="reject">Reject</button>
@@ -167,7 +164,6 @@
                 hx-post="/patterns/exemplars/{{ row.id }}/action"
                 hx-headers='{"HX-Request": "true"}'
                 hx-target="#patterns-exemplars-error"
-                hx-swap="innerHTML"
                 style="display: inline-block;">
             <input type="hidden" name="action" value="relabel">
             <select name="corrected_pattern_class" required>

@@ -267,21 +267,42 @@ def test_exemplars_success_path_unaffected_by_the_error_region(
 # ---------------------------------------------------------------------------
 # F-D companion (TestClient side): an error response on both routes still
 # lands the http_error_fragment's <div> (never a bare <tr>) so the swap into
-# the sibling region is HTML5-safe.
+# the sibling region is HTML5-safe. Codex R1 minor: send the ACTUAL
+# HX-Target header a browser would send (the resolved region id) -- the
+# app's _is_row_swap_target dispatch reads that header, not just HX-Request
+# -- and cover both the 400 (validation-shaped HTTPException) and 404
+# (StarletteHTTPException) paths, not 400 alone.
 # ---------------------------------------------------------------------------
+
+
+def _region_id(body: str) -> str:
+    m = re.search(r'hx-target="#([\w-]+)"', body)
+    assert m is not None
+    return m.group(1)
 
 
 def test_review_error_response_body_is_a_div_not_a_bare_row(review_eval_id):
     cfg, cfg_path, eval_id = review_eval_id
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
-        r = client.post(
+        get_body = client.get(f"/patterns/{eval_id}/review").text
+        region = _region_id(get_body)
+
+        r400 = client.post(
             f"/patterns/{eval_id}/review",
             data={"decision": "bogus"},
-            headers={"HX-Request": "true"},
+            headers={"HX-Request": "true", "HX-Target": region},
         )
-    assert r.status_code == 400
-    assert r.text.strip().startswith("<div")
+        assert r400.status_code == 400
+        assert r400.text.strip().startswith("<div")
+
+        r404 = client.post(
+            "/patterns/999999/review",
+            data={"decision": "watch"},
+            headers={"HX-Request": "true", "HX-Target": region},
+        )
+        assert r404.status_code == 404
+        assert r404.text.strip().startswith("<div")
 
 
 def test_exemplars_error_response_body_is_a_div_not_a_bare_row(
@@ -293,10 +314,21 @@ def test_exemplars_error_response_body_is_a_div_not_a_bare_row(
     silver_id = exemplars_repo.list_exemplars(conn)[0].id
     conn.close()
     with TestClient(app) as client:
-        r = client.post(
+        get_body = client.get("/patterns/exemplars").text
+        region = _region_id(get_body)
+
+        r400 = client.post(
             f"/patterns/exemplars/{silver_id}/action",
             data={"action": "bogus_action_not_allowed"},
-            headers={"HX-Request": "true"},
+            headers={"HX-Request": "true", "HX-Target": region},
         )
-    assert r.status_code == 400
-    assert r.text.strip().startswith("<div")
+        assert r400.status_code == 400
+        assert r400.text.strip().startswith("<div")
+
+        r404 = client.post(
+            "/patterns/exemplars/999999/action",
+            data={"action": "watch"},
+            headers={"HX-Request": "true", "HX-Target": region},
+        )
+        assert r404.status_code == 404
+        assert r404.text.strip().startswith("<div")
