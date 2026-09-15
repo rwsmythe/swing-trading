@@ -294,7 +294,22 @@ def test_a_stat_failure_on_a_matched_file_yields_an_error_row_not_a_silent_skip(
     """Reviewer B, B2R-2 (major): a bare ``Path.is_file()`` call BEFORE the
     per-file guard swallows ``OSError`` internally and returns False, so a
     candidate that raises on stat vanishes with NO row at all -- not even an
-    error row. The existence/stat check must run INSIDE the guard."""
+    error row. The existence/stat check must run INSIDE the guard.
+
+    On this box/Python (3.14), ``Path.is_file()`` (default
+    ``follow_symlinks=True``) resolves to ``os.path.isfile(self)`` -- a
+    Windows C builtin that calls the OS-level stat syscall directly and
+    bypasses the patchable ``Path.stat`` method entirely (measured: patching
+    ``Path.stat`` alone leaves ``is_file()`` returning True). A REAL
+    permission/vanish error hits that same C path and is caught INSIDE
+    ``is_file()``, surfacing only as its documented False return -- which is
+    exactly the swallow the ruling names and exactly what this test
+    reproduces directly (rather than depending on Windows ACLs, which the
+    brief rules out): ``Path.is_file`` is patched to return False for the
+    bad path (the observable CONSEQUENCE of the real swallow), and
+    ``Path.stat`` is patched to raise for it too (the real failure our own
+    ``_scan_one`` hits when it calls ``.stat()`` directly, unguarded by any
+    swallowing wrapper)."""
     root = tmp_path / "r"
     backups = root / "backups"
     _image(root / "swing-pre-22a4-migration-1Z.db", 37, marker="A")
@@ -302,13 +317,20 @@ def test_a_stat_failure_on_a_matched_file_yields_an_error_row_not_a_silent_skip(
     bad = _image(backups / "swing-20260802T101010.db", 36, marker="C")
 
     real_stat = Path.stat
+    real_is_file = Path.is_file
 
-    def _boom(self, *a, **kw):
+    def _boom_stat(self, *a, **kw):
         if self == bad:
             raise OSError("synthetic stat failure")
         return real_stat(self, *a, **kw)
 
-    monkeypatch.setattr(Path, "stat", _boom)
+    def _swallowed_is_file(self, *a, **kw):
+        if self == bad:
+            return False
+        return real_is_file(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "stat", _boom_stat)
+    monkeypatch.setattr(Path, "is_file", _swallowed_is_file)
     text = inv.render(inv.inventory(root, backups), root, backups)
     rows = _rows(text)
     assert len(rows) == 3  # not 2 -- the bad file is a ROW, not a silent skip
