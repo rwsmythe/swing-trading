@@ -596,3 +596,18 @@ ledger section above). **Commits:**
 
 Only `scripts/backup_inventory.py`, its test, and this ledger changed since `c0600ea1` -- the second bounded B
 re-read's diff-stat assertion holds.
+
+---
+
+## Reviewer B -- bounded re-read 2 (orchestrator)
+
+**Tree:** `4ded0590` (bound held: `git diff --stat c0600ea1..4ded0590` = ledger + `scripts/backup_inventory.py` + its test). **Assertions:** `gpt-5.6-sol`/`high`; `^ERROR` 0; footer 1; exit 0, process exited; `^NEW_CRITICAL_MAJOR_FOUND` 2, `^NO_NEW_CRITICAL_MAJOR` 0; prompt token-free. 340,105 bytes, `~/swing-data/review-transcripts/d32-d50-exec/.codex-b3-review.txt`.
+
+**Verdict:** B3 PASS; B2R-1, B2R-2, B2R-4, B2R-5 PASS; read-only/ASCII PASS; **B2 FAIL, B2R-3 FAIL.**
+
+| id | B severity | finding | adjudication |
+|---|---|---|---|
+| B3R-1 | critical | The sidecar probes use `Path.exists()`, which returns False when the metadata lookup raises, so a real but unprobeable `-wal`/`-journal` reads as absent and the pair can still be named a positive twin. | **ACCEPT.** Same CLASS as B2R-2 (`is_file()` swallowing `OSError`) -- fixed as an instance, not as a class. |
+| B3R-2 | major | The journal-sidecar flag is obtained but never rendered, so an error row cannot report it; the B2R-3 test asserts neither sidecar flag. | **ACCEPT.** |
+
+**Loop shape (the orchestrator's call, recipe section 3):** three bounded B reads, each finding residuals of the previous fixes -- the Expansion-#13 signature. The remedy is NOT another instance fix plus another round. It is ONE CLASS SWEEP by a fresh cell: state the class once -- **every filesystem probe in the script whose failure can be swallowed into a Boolean or skipped (`exists`, `is_file`, `is_dir`, `glob`/`iterdir` over an unreadable directory, `os.path.*`) must distinguish ABSENT (not-found) from UNKNOWN (any other `OSError`), and UNKNOWN on either member withholds a positive twin** -- then read the WHOLE script for members of the class, record each site under uncounted `SS-N` ids, fix, and follow with ONE confirming bounded B round. The previous fix-leg cell ended at 357,044 tokens; the sweep goes to a fresh cell.
