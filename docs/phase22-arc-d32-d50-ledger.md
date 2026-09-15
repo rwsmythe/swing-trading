@@ -927,3 +927,11 @@ post made. Ready for the section-4 witness on the copy and the orchestrator's ow
 > NOTED, not mine: the CLAUDE.md two-backups gotcha is now false (CHARC's compression); the em-dash in cli.py's WARN line banked to the orchestrator; the production proof is the first real migration (22-B).
 
 **Courier note:** RD's correction of the return's wording is accepted -- the 14 `none` copies are the sole images of schemas 1, 4-8, 10, 11 and 17; the schema-12 and -14 rows are distinct-hash snapshots of schemas that also exist elsewhere. The disposition is unchanged (KEEP).
+
+---
+
+## F4 disposition -- step (a) MOVE (orchestrator, on the operator's "do step a first", 2026-09-15)
+
+Source of the roster: the witness inventory (`~/swing-data/review-transcripts/d32-d50-exec/witness/inventory.tsv`), its 31 `location=root` rows. Preconditions asserted before any move: exactly 31 rows; `backups/pre-images/` did not exist; every source present directly in `~/swing-data`; no destination name occupied. Each `.db` moved by same-volume `os.rename` (which raises rather than overwrite), with its sidecars moved alongside -- 6 sidecars on 3 images (`swing-pre-22a-migration-20260902T091929Z.db`, `...20260902T100325Z.db`, `swing-pre-22a4-migration-20260909T082013Z.db`, each `-wal` 0 bytes + `-shm`). **Verified after the move, per file:** sha256 of the moved file == the inventory's sha256, size == the inventory's size, source path gone, sidecars present at the destination and gone from the root -- **31 of 31, zero failures**; 10,220,359,680 bytes; `~/swing-data/swing-pre-*` remaining 0; `backups/pre-images/` holds 37 entries (31 `.db` + 6 sidecars). Nothing deleted.
+
+**Remaining for the disposition:** (b) the 21 twin CLI copies, one pair at a time with the delete-time re-hash of BOTH files and a sidecar check printed here beside each delete, the operator's hand on each delete; NOTE the twin column in the inventory names the gates at their OLD root paths -- they now live under `backups/pre-images/` with the same filenames. (c) keep everything else, including the 3 withheld twins (no hand override). Outside the inventory: `swing-CORRUPTED-post-phase7-migration-20260505T162747Z.db` and the orphan `s9step0-copy.db-wal` in the root, operator's call.
