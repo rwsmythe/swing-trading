@@ -2086,14 +2086,17 @@ def _step_pattern_detect(
     # ----------------------------------------------------------------------
     # Each per-(ticker, pattern_class) entry collects:
     #   (ticker, pattern_class, version_str, window, evidence,
-    #    geometric_score, candidate_close_prices)
+    #    geometric_score, candidate_close_prices, effective_start_date)
     # for pass 2 to consume. T2.SB5 T-A.5.4: composite_score is now
     # derived in Pass 2 AFTER template matching (was Pass 1 in T2.SB4
     # and earlier). candidate_close_prices is the bar Close-slice for
     # the candidate's window, used by match_forward in Pass 2.
     import numpy as _np_pd_inner
     emit_queue: list[
-        tuple[str, str, str, object, object, float, _np_pd_inner.ndarray]
+        tuple[
+            str, str, str, object, object, float, _np_pd_inner.ndarray,
+            _date,
+        ]
     ] = []
 
     # Phase 14 Sub-bundle 2 (T-2.4): retain the Pass-1 fetched bars so the
@@ -2218,13 +2221,36 @@ def _step_pattern_detect(
                 # which preserves the ``min(1.0, ...)`` wrap on the fallback
                 # path (L5 LOCK; DBW evidence may reach 1.10).
                 #
+                # D53.1 F2: the pattern's EFFECTIVE window start, computed
+                # ONCE here and carried (last tuple element) to the Pass-2
+                # persist, so the template slice and the persisted
+                # ``window_start_date`` cannot diverge. For every class
+                # except double_bottom_w it is the generator window's
+                # ``start_date``. A DBW window from the generator is
+                # anchored on the W's most recent low (trough 2 on a
+                # completed W), so for a NON-ZERO DBW verdict the start is
+                # the evidence's ``trough_1_date``. A zero-score DBW verdict
+                # is a non-detection (its zero envelope stamps trough 1 at
+                # the window END) and keeps the generator start. The
+                # anchors-JSON ``window`` block written to the temporal log
+                # stays the generator's own emission (RD ruling 1a).
+                effective_start_date = window.start_date
+                if (
+                    pattern_class == "double_bottom_w"
+                    and geometric_score > 0
+                    and isinstance(
+                        getattr(evidence, "trough_1_date", None), _date
+                    )
+                ):
+                    effective_start_date = evidence.trough_1_date
+
                 # Slice the candidate's close-price series for template
-                # matching in Pass 2. The candidate window's boundaries
-                # come from the foundation primitive's emitted
-                # ``CandidateWindow``; clipping inclusive on both ends
-                # mirrors T2.SB3 detector entry discipline (L12).
+                # matching in Pass 2. The slice starts at the effective
+                # window start (above) and ends at the generator window's
+                # ``end_date``; clipping inclusive on both ends mirrors
+                # T2.SB3 detector entry discipline (L12).
                 try:
-                    _ts_start = pd.Timestamp(window.start_date)
+                    _ts_start = pd.Timestamp(effective_start_date)
                     _ts_end = pd.Timestamp(window.end_date)
                     _window_mask = (bars.index >= _ts_start) & (
                         bars.index <= _ts_end
@@ -2261,6 +2287,7 @@ def _step_pattern_detect(
                         evidence,
                         geometric_score,
                         candidate_close_prices,
+                        effective_start_date,
                     )
                 )
     finally:
@@ -2438,10 +2465,13 @@ def _step_pattern_detect(
         # row's score, not the queued score, counts toward universe).
         # T2.SB5 T-A.5.4: emit tuple shape is now
         # (ticker, pattern_class, version_str, window, evidence,
-        #  geometric_score, candidate_close_prices) - composite_score
-        # is derived AFTER match_forward below.
+        #  geometric_score, candidate_close_prices, effective_start_date)
+        # - composite_score is derived AFTER match_forward below.
         final_emit_list: list[
-            tuple[str, str, str, object, object, float, _np_pd_inner.ndarray]
+            tuple[
+                str, str, str, object, object, float, _np_pd_inner.ndarray,
+                _date,
+            ]
         ] = []
         for tup in emit_queue:
             tup_ticker = tup[0]
@@ -2503,11 +2533,13 @@ def _step_pattern_detect(
         # Resolve each emit's template_match_score + nearest_ids +
         # composite_score per spec section 5.8 formula.
         # ``resolved_emit_list`` extends the tuple shape with:
-        #   (..., template_match_score, nearest_exemplar_ids, composite_score)
+        #   (..., template_match_score, nearest_exemplar_ids, composite_score,
+        #    effective_start_date) -- the Pass-1 effective start carried
+        #   unchanged (D53.1 F2), never recomputed.
         resolved_emit_list: list[
             tuple[
                 str, str, str, object, object, float,
-                float | None, list[int], float,
+                float | None, list[int], float, _date,
             ]
         ] = []
         for tup in final_emit_list:
@@ -2519,6 +2551,7 @@ def _step_pattern_detect(
                 tup_evidence,
                 tup_geometric_score,
                 tup_candidate_close,
+                tup_effective_start_date,
             ) = tup
             template_match_score: float | None = None
             nearest_exemplar_ids: list[int] = []
@@ -2571,6 +2604,7 @@ def _step_pattern_detect(
                     template_match_score,
                     nearest_exemplar_ids,
                     composite_score,
+                    tup_effective_start_date,
                 )
             )
 
@@ -2618,6 +2652,7 @@ def _step_pattern_detect(
             template_match_score,
             nearest_exemplar_ids,
             composite_score,
+            effective_start_date,
         ) in resolved_emit_list:
             # Defensive guard for the cfg-None/no-run-row edge: if the
             # pipeline_runs lookup returned no row, data_asof_date is None and
@@ -2719,7 +2754,10 @@ def _step_pattern_detect(
                 composite_score=float(composite_score),
                 structural_evidence_json=evidence_json,
                 feature_distribution_log_json=fdl_json,
-                window_start_date=window.start_date.isoformat(),
+                # D53.1 F2: the Pass-1 effective start (same value the
+                # template slice used); the generator ``window`` still
+                # feeds the anchors JSON below unchanged.
+                window_start_date=effective_start_date.isoformat(),
                 window_end_date=window.end_date.isoformat(),
                 created_at=_dt_inner.now(UTC).isoformat(),
                 template_match_score=(

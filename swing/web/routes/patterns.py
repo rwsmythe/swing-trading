@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -529,6 +529,17 @@ def patterns_review_post(
                 start_date = corrected_window_start_date
             if corrected_window_end_date:
                 end_date = corrected_window_end_date
+        if (
+            canonical_proposed == "double_bottom_w"
+            and decision in _DBW_START_GUARDED_DECISIONS
+        ):
+            # D53.1 F1: refuses (typed 400) BEFORE any write below.
+            start_date, end_date = _dbw_exemplar_window(
+                evaluation,
+                decision=decision,
+                corrected_window_start_date=corrected_window_start_date,
+                corrected_window_end_date=corrected_window_end_date,
+            )
 
         # Build primary exemplar row.
         with conn:
@@ -597,6 +608,132 @@ def patterns_review_post(
 
     return Response(
         status_code=204, headers={"HX-Redirect": "/patterns/queue"},
+    )
+
+
+# D53.1 F1: decisions whose double_bottom_w exemplar is READ as a pattern
+# instance -- the three that persist final_decision='confirmed' (read by
+# swing/metrics/pattern_outcomes.py) and 'watch' (read by the runner's
+# template corpus). reject and relabel keep the evaluation's window start.
+_DBW_START_GUARDED_DECISIONS: frozenset[str] = frozenset({
+    "confirm",
+    "watch",
+    "pattern_present_outside_window",
+    "multiple_overlapping_patterns",
+})
+
+
+def _dbw_refuse(evaluation, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail=(
+            f"Cannot record double_bottom_w evaluation {evaluation.id} as a "
+            f"pattern: {message}"
+        ),
+    )
+
+
+def _parse_typed_date(evaluation, raw: str, field: str) -> date:
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        raise _dbw_refuse(
+            evaluation,
+            f"the typed {field} {raw!r} is not a date (use YYYY-MM-DD).",
+        ) from None
+
+
+def _dbw_exemplar_window(
+    evaluation,
+    *,
+    decision: str,
+    corrected_window_start_date: str | None,
+    corrected_window_end_date: str | None,
+) -> tuple[str, str]:
+    """Return a double_bottom_w exemplar's (start_date, end_date), or raise a
+    typed 400 before any write.
+
+    The evaluation's ``window_start_date`` is not read as the start here.
+    The runner persists the evidence trough 1 there for a non-zero DBW
+    verdict, but a zero-score row (and every row written before D53.1)
+    carries the candidate generator's anchor, which for a v1.1.0 verdict
+    is trough 2. Order (CHARC's D53.1 ruling):
+
+    (i)   a submitted corrected start naming the SAME DATE as
+          ``window_start_date`` is not a correction -- the review form
+          pre-fills that value, so an untouched submit is indistinguishable
+          from a typed one (compared as dates, so another spelling of the
+          pre-fill is not a correction either);
+    (ii)  a typed start that differs wins (the route honours a corrected
+          window only under ``pattern_present_outside_window``);
+    (iii) a non-zero ``geometric_score`` takes ``trough_1_date`` from the
+          structural evidence;
+    (iv)  otherwise refuse, naming the recovery. A zero score means the
+          detector found no W (its zero envelope stamps trough_1_date at
+          the window END, which is not a trough), so the operator who sees
+          one is the only source of its start. A non-zero row whose
+          evidence has no parseable trough_1_date refuses the same way.
+
+    A typed start or end must parse as a date and the start must not fall
+    after the end; either failure refuses, so no malformed window reaches
+    the measurement-input table.
+    """
+    end = evaluation.window_end_date
+    typed_start: date | None = None
+    if decision == "pattern_present_outside_window":
+        raw_end = (corrected_window_end_date or "").strip()
+        if raw_end:
+            end = _parse_typed_date(evaluation, raw_end, "end").isoformat()
+        raw_start = (corrected_window_start_date or "").strip()
+        if raw_start:
+            parsed = _parse_typed_date(evaluation, raw_start, "start")
+            try:
+                prefill = date.fromisoformat(evaluation.window_start_date)
+            except (ValueError, TypeError):
+                prefill = None
+            if parsed != prefill:
+                typed_start = parsed
+
+    if typed_start is not None:
+        start = typed_start.isoformat()
+    elif evaluation.geometric_score > 0:
+        start = None
+        try:
+            evidence = json.loads(evaluation.structural_evidence_json)
+            start = date.fromisoformat(evidence["trough_1_date"]).isoformat()
+        except (ValueError, TypeError, KeyError):
+            pass
+        if start is None:
+            raise _dbw_refuse(evaluation, _dbw_recovery_text(
+                evaluation,
+                "its structural evidence has no parseable trough_1_date",
+            ))
+    else:
+        raise _dbw_refuse(evaluation, _dbw_recovery_text(
+            evaluation, "its geometric_score is 0 (the detector found no W)",
+        ))
+
+    try:
+        end_parsed = date.fromisoformat(end)
+    except (ValueError, TypeError):
+        end_parsed = None
+    if end_parsed is not None and date.fromisoformat(start) > end_parsed:
+        raise _dbw_refuse(
+            evaluation,
+            f"the window start {start} falls after the window end {end}.",
+        )
+    return start, end
+
+
+def _dbw_recovery_text(evaluation, reason: str) -> str:
+    return (
+        f"{reason}, and the window start {evaluation.window_start_date} is "
+        "the detector anchor, not the start of the W. To record it: "
+        "(1) RELOAD this page (this message has replaced the review form); "
+        "(2) choose the decision pattern_present_outside_window; "
+        "(3) type the first-trough start date into the window-correction "
+        "start field (a date different from the pre-filled "
+        f"{evaluation.window_start_date})."
     )
 
 
