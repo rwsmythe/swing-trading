@@ -161,3 +161,209 @@ move also scan `backups/pre-images/`.
 > usual; the witness on the copy per R0-5; the inventory output to the operator.
 > Nothing here is RD's; RD's successor QAs the return on the pre-image
 > disposition, per the brief section 5.
+
+---
+
+## Executing -- Reviewer A
+
+**Cell:** implementer-opus-high. **Worktree:** `.worktrees/d32-d50-exec`, base `eface268`. **Tier:** `strong`
+(`codex exec -p strong -s read-only --skip-git-repo-check -C <worktree>`, the cold-audit form with repo read access,
+prompt + full `git diff -U8 eface268..HEAD` on stdin; runner `bash run_round.sh N` with literal paths, LF-verified).
+Prior-round scratch lived in the session scratchpad for the whole loop; the prompt forbade reading `.codex-*` /
+`.copowers-*`; both transcripts were grepped and neither reached for them.
+
+### Round ledger
+
+| Round | Reviewed head | Findings (crit / major / minor as raised) | New vs reopened | Adjudicated | Model | Effort | `^ERROR` | `^tokens used` | Verdict token (anchored) | Exit (measured) | Transcript bytes | Depth |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | `f0ce201c` | 2 / 4 / 0 | 6 new, 0 reopened | R-1 major (fixed), R-2 major (fixed), R-3 major (fixed), R-4 major (partially accepted: skip->fail), R-5 major (tests added), R-6 minor (fixed) | gpt-5.6-sol | high | 0 | 1 -- 429,974 | NEW_CRITICAL_MAJOR_FOUND x2 (0.152.1 double emit), other token 0 | exit=0, process exited | 1,016,393 | |
+| 2 | `cc24f716` | 0 / 0 / 0 | -- | none | gpt-5.6-sol | high | 0 | 1 -- 243,731 | NO_NEW_CRITICAL_MAJOR x2, other token 0 | exit=0, process exited | 1,218,369 | |
+
+**Converged at round 2 (first clean verdict; the loop ended there).** Spend: 429,974 + 243,731 = **673,705 tokens**.
+Evidence (copied per round the moment the assertions passed): `~/swing-data/review-transcripts/d32-d50-exec/`
+`.codex-review-r1.txt` (1,016,393), `.codex-prompt-r1.md` (142,875), `.codex-review-r2.txt` (1,218,369),
+`.codex-prompt-r2.md` (156,848), `.copowers-findings.md` (raw final messages + per-finding adjudication).
+
+**Round 1 adjudications (full text in `.copowers-findings.md`):**
+- R-1 same-second name collision: the creator and the CLI copy opened a second-granular name with `connect()`+`backup()`,
+  which overwrites an existing image (pre-existing in all 23 old creators and the CLI copy). Fixed in `cc24f716`: exclusive
+  create reservation; an occupied name refuses BEFORE migration; a failed snapshot removes only its own reserved file.
+  A garbage-bytes occupant made the first draft of the test pass on the pre-fix code (backup() fails on a non-database by
+  itself); the occupant is now a real database and the test is red pre-fix.
+- R-2 inventory twin across a `-wal` sidecar: no twin is claimed when either side has one (`indeterminate-wal-sidecar`).
+- R-3 the image-count alarm raised before the once-only v17 seed ratification (pre-versions 13/15/16): the alarm is now
+  raised after ratification and the final echo.
+- R-4 the base-source equivalence test skipped when `eface268` is unresolvable: now FAILS. A vendored copy of the base
+  source was not adopted (declared as accepted limitation L4 in the round-2 prompt; round 2 called the limitations sound).
+- R-5 added tests: an existing schema-less DB file gets the CLI copy; a DB newer than HEAD is refused with zero backups
+  (both pass on the pre-fix head too -- the behaviour was right, the proof was missing).
+- R-6 inventory error line under cp1252: routed through the ASCII conversion.
+
+### The gate table (`swing/data/db.py:637`), 23 rows
+
+Enumerated from `git show eface268:swing/data/db.py` by parsing each `def _*_backup_gate` body (predicate, creator,
+expected-tables constant, label) and the creator's filename f-string; re-derived by
+`tests/data/test_backup_gate_table.py::test_i_the_roster_re_derives_from_the_base_source_and_behaves_identically`, which
+also runs OLD vs NEW wrappers over every (current 0..39, target in {c, c+1, c+2, 38}) on an in-memory connection and
+requires identical raise/no-raise and message text. Ungated pre-versions: **14, 17**.
+
+| pre | stem (image `swing-pre-<stem>-migration-<UTC>Z.db`) | wrapper | expected-tables constant | label | creator alias |
+|---|---|---|---|---|---|
+| 13 | phase7 | `_phase7_backup_gate` | `PHASE7_EXPECTED_TABLES` | pre-Phase-7 | `_create_pre_migration_backup` |
+| 15 | phase8 | `_phase8_backup_gate` | `PHASE8_PRE_MIGRATION_EXPECTED_TABLES` | pre-Phase-8 | |
+| 16 | phase9 | `_phase9_backup_gate` | `PHASE9_PRE_MIGRATION_EXPECTED_TABLES` | pre-Phase-9 | |
+| 18 | phase12-bundle-c | `_phase12_bundle_c_backup_gate` | `PHASE12_BUNDLE_C_PRE_MIGRATION_EXPECTED_TABLES` | pre-Phase-12-Sub-bundle-C | |
+| 19 | phase13 | `_phase13_backup_gate` | `PHASE13_PRE_MIGRATION_EXPECTED_TABLES` | pre-Phase-13 | |
+| 20 | phase13-sb6c | `_phase13_sb6c_backup_gate` | `PHASE13_SB6C_PRE_MIGRATION_EXPECTED_TABLES` | pre-Phase-13-SB6c | |
+| 21 | phase14 | `_phase14_backup_gate` | `PHASE14_PRE_MIGRATION_EXPECTED_TABLES` | pre-Phase-14 | |
+| 22 | phase14-sb3 | `_phase14_sb3_backup_gate` | `PHASE14_SB3_PRE_MIGRATION_EXPECTED_TABLES` | pre-Phase-14-SB3 | |
+| 23 | b7 | `_b7_backup_gate` | `B7_PRE_MIGRATION_EXPECTED_TABLES` | pre-B7 | |
+| 24 | phase16 | `_phase16_backup_gate` | `PHASE16_PRE_MIGRATION_EXPECTED_TABLES` | pre-phase16 | |
+| 25 | broad-watch-baseline | `_broad_watch_baseline_backup_gate` | `BROAD_WATCH_PRE_MIGRATION_EXPECTED_TABLES` | pre-broad-watch | |
+| 26 | entry-intent | `_entry_intent_backup_gate` | `ENTRY_INTENT_PRE_MIGRATION_EXPECTED_TABLES` | pre-entry-intent | |
+| 27 | watchlist-pin | `_watchlist_pin_backup_gate` | `WATCHLIST_PIN_PRE_MIGRATION_EXPECTED_TABLES` | pre-watchlist-pin | |
+| 28 | cash-recon | `_cash_recon_backup_gate` | `CASH_RECON_PRE_MIGRATION_EXPECTED_TABLES` | pre-cash-recon | |
+| 29 | phase18-arc-c | `_phase18_arc_c_backup_gate` | `PHASE18_ARC_C_PRE_MIGRATION_EXPECTED_TABLES` | pre-phase18-arc-c | |
+| 30 | phase18-arc-h6 | `_phase18_arc_h6_backup_gate` | `PHASE18_ARC_H6_PRE_MIGRATION_EXPECTED_TABLES` | pre-phase18-arc-h6 | |
+| 31 | phase21-arc-a | `_phase21_arc_a_backup_gate` | `PHASE21_ARC_A_PRE_MIGRATION_EXPECTED_TABLES` | pre-phase21-arc-a | `_create_pre_phase21_arc_a_migration_backup` |
+| 32 | phase21-arc-b | `_phase21_arc_b_backup_gate` | `PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES` | pre-phase21-arc-b | `_create_pre_phase21_arc_b_migration_backup` |
+| 33 | h1-amendment | `_h1_amendment_backup_gate` | `H1_AMENDMENT_PRE_MIGRATION_EXPECTED_TABLES` | pre-h1-amendment | `_create_pre_h1_amendment_migration_backup` |
+| 34 | a4-taxonomy | `_a4_taxonomy_backup_gate` | `A4_TAXONOMY_PRE_MIGRATION_EXPECTED_TABLES` | pre-a4-taxonomy | |
+| 35 | demand-c | `_demand_c_backup_gate` | `DEMAND_C_PRE_MIGRATION_EXPECTED_TABLES` | pre-demand-c | |
+| 36 | 22a | `_phase22_arc_a_backup_gate` | `PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES` | pre-22-A | |
+| 37 | 22a4 | `_phase22_arc_a4_backup_gate` | `PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES` | pre-22-A4 | |
+
+### Corrected incidental facts (the ruling's reasoning binds; its facts were verified)
+
+- R0-6 names the CLI copy `swing-<14-digit-ts>.db`. The code writes `swing-%Y%m%dT%H%M%S.db` (`swing/cli.py`), i.e.
+  8 digits, `T`, 6 digits; the inventory matches `^swing-\d{8}T\d{6}\.db$`.
+- `backups/` also holds `swing db-backup`'s weekly `swing-YYYYWW.db` (`swing/data/backup.py:33 _WEEKLY_BACKUP_RE`). The
+  inventory classes those `weekly-backup` rather than `unclassified` (a third named class beside the ruling's two; every
+  other name still prints `unclassified`). The weekly pruner matches only that pattern, so gate images landing in
+  `backups/` are outside its reach (read, `swing/data/backup.py:113-129`).
+- The brief says open with plain sqlite3 `mode=ro`. MEASURED 2026-09-14 on a synthetic image: every `Connection.backup()`
+  image of a WAL-mode source carries the WAL header (bytes 18-19 = `02 02`), and a plain `mode=ro` open of such a file
+  CREATED `-shm` and `-wal` beside it. The inventory therefore opens `mode=ro&immutable=1`
+  (`scripts/backup_inventory.py:73`); its test asserts the tree's names, sizes and mtimes are unchanged.
+- R0-1 says four test-referenced creator names; confirmed by grep of `tests/` for `_create_pre_\w*backup` (the only
+  hits: `_create_pre_migration_backup`, `..._phase21_arc_a_...`, `..._phase21_arc_b_...`, `..._h1_amendment_...`). The
+  other 19 per-gate creators had no reference outside `db.py` (grep of `swing/`, `scripts/`, `tests/`) and were deleted.
+
+### Witness prep (STEP 5)
+
+**(a) D43 -- every path `python -m swing.cli --config <throwaway> db-migrate` writes.** Established by READ (file:line
+below at head `cc24f716`) and cross-checked by EXECUTION: an audit hook (`sys.addaudithook`) recorded every
+write-capable `open`, `os.mkdir/rename/replace/remove/rmdir/truncate/chmod/utime`, `shutil.*`, `sqlite3.connect`,
+`subprocess.Popen`, `os.system/spawn/exec`, `socket.connect`, and ANY-mode `open` under the real `~/swing-data`, plus a
+before/after file tree of the scenario directory. The hook sees Python-level calls; SQLite's own C-level sidecar files
+are covered by the read and by the tree diff (no leftover sidecar in any scenario).
+
+| # | Path written | Established by | Throwaway disposition |
+|---|---|---|---|
+| 1 | `cfg.paths.db_path` (open read-write; WAL reaffirm; migration writes) + transient `-wal`/`-shm` | `swing/data/db.py:951-952` (`db_path.parent.mkdir`, `open_connection(reaffirm_wal=True)`); audit `sqlite3.connect` | point at the temp COPY |
+| 2 | `db_path.parent` (mkdir, exist_ok) | `swing/data/db.py:951`; audit `os.mkdir` | temp |
+| 3 | `cfg.paths.backups_dir` (mkdir) + ONE of: gate image `swing-pre-<stem>-migration-<UTC>Z.db` (gated) or CLI copy `swing-<ts>.db` (ungated), each reserved by `open(...,"xb")`, transient `-journal` during backup | `swing/cli.py:298-335`, `swing/data/db.py:705-744`; audit `open`+`sqlite3.connect` | temp |
+| 4 | `cfg.paths.logs_dir` (mkdir) + `cli.log` on the first emitted record (`delay=True`; none was emitted in any scenario) | `swing/cli.py:236` -> `swing/logging_config.py:85,125` | temp |
+| 5 | v17 seed ratification writes to `db_path` (risk_policy) -- only if `pre_version <= 16` | `swing/cli.py:373-394` | unreachable for v37/v38 |
+| 6 | `user-config.toml` is READ (never written) by `apply_overrides` -- only on the v17 landing; resolves `USERPROFILE`/`HOME` | `swing/cli.py:392`, `swing/config_overrides.py:82`, `swing/config_user.py:22-23` | unreachable for v37/v38; set USERPROFILE+HOME to temp anyway |
+| 7 | relative `[paths]` resolve against `USERPROFILE`/`HOME` or the config's dir | `swing/config.py:758-777` | use ABSOLUTE paths in the throwaway |
+| 8 | TOML-divergence hook (opens `db_path`) | skipped for `db-migrate`: `swing/cli.py:192` | not reached |
+| 9 | yfinance audit context | skipped for `db-migrate`: `swing/cli.py:203` | not reached |
+| 10 | comms, exports, charts, prices-cache, finviz inbox | no reference on the `main` callback or `db_migrate` path (read); audit: zero events | not reached |
+| 11 | Python bytecode caches | environment, not the CLI | `PYTHONDONTWRITEBYTECODE=1` |
+
+Audit result, all four scenarios: `write paths outside scenario dir: []`, `events naming real ~/swing-data: []`, no
+process/socket events.
+
+**(b) Throwaway config template** (replace `<SD>` with an absolute temp dir holding the COPY as `swing.db`, `<PROJ>` with an
+absolute temp project dir containing `reference/rs-universe.csv`; run with `USERPROFILE`/`HOME` set to a temp home,
+`PYTHONPATH=.`, `PYTHONDONTWRITEBYTECODE=1`, cwd = the checkout under test, and assert `swing.__file__` resolves there):
+
+```toml
+[paths]
+db_path = "<SD>/swing.db"
+data_dir = "<SD>"
+logs_dir = "<SD>/logs"
+charts_dir = "<SD>/charts"
+backups_dir = "<SD>/backups"
+prices_cache_dir = "<SD>/prices-cache"
+finviz_inbox_dir = "<PROJ>/data/finviz-inbox"
+exports_dir = "<PROJ>/exports"
+rs_universe_path = "<PROJ>/reference/rs-universe.csv"
+
+[account]
+starting_equity = 1200.0
+starting_date = "2026-03-16"
+risk_equity_floor = 7500.0
+
+[position_limits]
+soft_warn_open = 4
+hard_cap_open = 6
+
+[risk]
+max_risk_pct = 0.005
+
+[vcp]
+prior_trend_min_pct = 25.0
+adr_min_pct = 4.0
+pullback_max_pct = 25.0
+proximity_max_pct = 5.0
+tightness_days_required = 2
+tightness_range_factor = 0.67
+orderliness_max_bar_ratio = 3.0
+orderliness_max_range_cv = 0.60
+
+[trend_template]
+min_passes = 7
+allowed_miss_names = ["TT8_rs_rank"]
+rising_ma_period_days = 21
+high_52w_margin_pct = 25.0
+low_52w_min_pct = 30.0
+
+[rs]
+horizon_weeks = 12
+benchmark_ticker = "SPY"
+rs_rank_min_pass = 70
+fallback_extreme_pct = 20.0
+
+[etf_exclusion]
+exclude_etfs = true
+manual_block = []
+manual_allow = []
+
+[focus_ranking]
+closeness_to_pivot = 0.50
+adr = 0.25
+prior_trend = 0.25
+```
+
+**(c) Synthetic end-to-end through the REAL CLI** (head `cc24f716`; fixtures built by `run_migrations` into a scratch dir;
+the CLI run as `swing.cli.main` under the audit hook from the worktree with `PYTHONPATH=.`; `<RUN>` = the session
+scratchpad run dir; every scenario printed `RESOLVED swing = C:\Users\rwsmy\swing-trading\.worktrees\d32-d50-exec\swing\__init__.py`,
+`EXPECTED_SCHEMA_VERSION = 38`, and `EXIT 0`):
+
+```
+gated_v37 fixture 37 -> post 38
+Backup (pre-migration gate, integrity-verified): <RUN>\gated_v37\sd\backups\swing-pre-22a4-migration-20260915T072304Z.db
+DB at <RUN>\gated_v37\sd\swing.db - schema version 38
+NEW/CHANGED files: sd/backups/swing-pre-22a4-migration-20260915T072304Z.db 839680 ; sd/swing.db 843776   (no swing-<ts>.db)
+
+head_v38 fixture 38 -> post 38
+Schema already at version 38 (HEAD); nothing to migrate, no backup taken.
+DB at <RUN>\head_v38\sd\swing.db - schema version 38
+NEW/CHANGED files: none (backups/ not created)
+
+ungated_v17 fixture 17 -> post 38
+Backup: <RUN>\ungated_v17\sd\backups\swing-20260914T212310.db
+DB at <RUN>\ungated_v17\sd\swing.db - schema version 38
+NEW/CHANGED files: sd/backups/swing-20260914T212310.db 327680 ; sd/swing.db 843776   (no swing-pre-* anywhere)
+
+ungated_v14 fixture 14 -> post 38
+Backup: <RUN>\ungated_v14\sd\backups\swing-20260914T212311.db
+DB at <RUN>\ungated_v14\sd\swing.db - schema version 38
+NEW/CHANGED files: sd/backups/swing-20260914T212311.db 212992 ; sd/swing.db 843776
+```
+
+Not run by this cell (the orchestrator's, with the operator, after return): the real v37 pre-image copy through the CLI,
+`db-migrate` on the v38 live COPY, and `scripts/backup_inventory.py` against the real root. **The production proof of this
+arc is the first real migration after merge (22-B), not this ledger.**
