@@ -185,11 +185,77 @@ def test_no_twin_is_claimed_across_a_wal_sidecar(tmp_path: Path) -> None:
     text = inv.render(inv.inventory(root, backups), root, backups)
     assert _rows(text)[str(cli_wal)][7] == "indeterminate-wal-sidecar"
     assert "# cli-copy with a byte-identical gate twin: 0 of 1" in text
-    # and a sidecar on the GATE side withholds the twin too
+    # Reviewer B (B2): a sidecar on the GATE side withholds the twin too --
+    # the candidate pair has a hole on EITHER member, never just the CLI side.
     Path(str(cli_wal) + "-wal").unlink()
     Path(str(gate) + "-wal").write_bytes(b"x")
     text = inv.render(inv.inventory(root, backups), root, backups)
-    assert _rows(text)[str(cli_wal)][7] == "none"
+    assert _rows(text)[str(cli_wal)][7] == "indeterminate-wal-sidecar"
+    assert "# cli-copy with a byte-identical gate twin: 0 of 1" in text
+
+
+def test_no_twin_is_claimed_across_a_journal_sidecar(tmp_path: Path) -> None:
+    """Reviewer B, B2 (major, FAIL CLOSED): a hot rollback journal is the same
+    class of hole as a -wal sidecar -- an immutable read and a main-file hash
+    cannot see its pending pages either, on EITHER member of the candidate
+    pair. Discriminating: an otherwise byte-identical pair reads as a twin
+    with no sidecar; planting an EMPTY -journal beside either member must
+    flip it to indeterminate, never a positive twin."""
+    root = tmp_path / "r"
+    backups = root / "backups"
+    gate = _image(root / "swing-pre-22a4-migration-20260908T010203Z.db", 37, marker="A")
+    backups.mkdir(parents=True)
+    cli_journal = backups / "swing-20260908T150203.db"
+    shutil.copyfile(gate, cli_journal)
+
+    # pre-sidecar: byte-identical pair, no sidecar anywhere -> a real twin
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    assert _rows(text)[str(cli_journal)][7] == str(gate)
+
+    # an EMPTY -journal beside the CLI copy withholds the twin
+    Path(str(cli_journal) + "-journal").write_bytes(b"")
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    assert _rows(text)[str(cli_journal)][7] == "indeterminate-journal-sidecar"
+    assert "# cli-copy with a byte-identical gate twin: 0 of 1" in text
+
+    # and an EMPTY -journal beside the GATE side withholds it too
+    Path(str(cli_journal) + "-journal").unlink()
+    Path(str(gate) + "-journal").write_bytes(b"")
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    assert _rows(text)[str(cli_journal)][7] == "indeterminate-journal-sidecar"
+    assert "# cli-copy with a byte-identical gate twin: 0 of 1" in text
+
+
+def test_a_per_file_stat_or_hash_error_does_not_abort_the_scan(
+        tmp_path: Path, monkeypatch) -> None:
+    """Reviewer B, B3 (major): one unreadable/vanishing file must not abort
+    the whole inventory -- it becomes its own error row (path + exception
+    text, hash and twin both indeterminate) and the scan continues; exit
+    status stays 0; the summary line counts the error rows."""
+    root = tmp_path / "r"
+    backups = root / "backups"
+    _image(root / "swing-pre-22a4-migration-1Z.db", 37, marker="A")
+    ok = _image(backups / "swing-20260801T101010.db", 36, marker="B")
+    bad = _image(backups / "swing-20260802T101010.db", 36, marker="C")
+
+    real_sha256_of = inv.sha256_of
+
+    def _boom(path: Path) -> str:
+        if path == bad:
+            raise OSError("synthetic hash failure")
+        return real_sha256_of(path)
+
+    monkeypatch.setattr(inv, "sha256_of", _boom)
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    rows = _rows(text)
+    assert len(rows) == 3
+    bad_row = rows[str(bad)]
+    assert bad_row[4].startswith("error:OSError:")  # schema_version column
+    assert bad_row[5] == "indeterminate"  # sha256 column
+    assert bad_row[7] == "indeterminate"  # twin column
+    ok_row = rows[str(ok)]
+    assert ok_row[4] == "36" and len(ok_row[5]) == 64  # the other file unaffected
+    assert "# errors: 1" in text
 
 
 def test_a_missing_non_ascii_root_exits_2_on_a_cp1252_console(tmp_path: Path) -> None:

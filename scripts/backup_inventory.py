@@ -9,8 +9,16 @@ For every file it prints location, class, size, mtime, the schema version read
 as ``SELECT version FROM schema_version`` (``unknown`` when the table is absent;
 ``PRAGMA user_version`` reads 0 on this project's DBs and is never used), the
 sha256 of the bytes, and -- for each CLI copy -- the gate image(s) with the SAME
-sha256 (its byte-identical twin), or ``none``. A twin is never claimed for a file
-with a ``-wal`` sidecar on either side (``indeterminate-wal-sidecar``).
+sha256 (its byte-identical twin), or ``none``. A twin is a claim that licenses a
+delete downstream, so it fails CLOSED: a ``-wal`` or ``-journal`` sidecar beside
+EITHER member of the candidate pair (the CLI copy or the gate image) withholds
+it (``indeterminate-wal-sidecar`` / ``indeterminate-journal-sidecar``) -- never
+a positive twin on a hole in the proof.
+
+A file that raises ``OSError`` on ``stat`` or on hashing does NOT abort the
+scan -- it gets its own row (path, exception text in the schema-version column,
+hash and twin both ``indeterminate``) and the scan continues; the summary line
+counts these rows.
 
 Classes, by NAME only:
   gate-image    ``swing-pre-*``
@@ -57,6 +65,8 @@ class Entry:
     version: str
     sha256: str
     wal_sidecar: bool
+    journal_sidecar: bool
+    error: str | None = None
 
 
 def classify(name: str) -> str:
@@ -104,16 +114,43 @@ def _scan(location: str, directory: Path, pattern: str) -> list[Entry]:
     for p in sorted(directory.glob(pattern)):
         if not p.is_file():
             continue
-        st = p.stat()
+        try:
+            st = p.stat()
+            size = st.st_size
+            mtime = datetime.fromtimestamp(st.st_mtime, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            version = read_schema_version(p)
+            sha256 = sha256_of(p)
+            wal_sidecar = Path(str(p) + "-wal").exists()
+            journal_sidecar = Path(str(p) + "-journal").exists()
+        except OSError as exc:
+            # Per-file isolation (Reviewer B, B3): one unreadable or vanishing
+            # file must not abort the rest of the scan. It becomes its own
+            # error row -- path kept, exception text in the schema-version
+            # column, hash and twin both indeterminate -- and the loop
+            # continues to the next file.
+            out.append(Entry(
+                location=location,
+                cls=classify(p.name),
+                path=p,
+                size=0,
+                mtime="unknown",
+                version=f"error:{type(exc).__name__}:{exc}",
+                sha256="indeterminate",
+                wal_sidecar=False,
+                journal_sidecar=False,
+                error=f"error:{type(exc).__name__}:{exc}",
+            ))
+            continue
         out.append(Entry(
             location=location,
             cls=classify(p.name),
             path=p,
-            size=st.st_size,
-            mtime=datetime.fromtimestamp(st.st_mtime, UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            version=read_schema_version(p),
-            sha256=sha256_of(p),
-            wal_sidecar=Path(str(p) + "-wal").exists(),
+            size=size,
+            mtime=mtime,
+            version=version,
+            sha256=sha256,
+            wal_sidecar=wal_sidecar,
+            journal_sidecar=journal_sidecar,
         ))
     return out
 
@@ -126,14 +163,48 @@ def inventory(root: Path, backups_dir: Path) -> list[Entry]:
     )
 
 
+def _sidecar_reason(e: Entry) -> str | None:
+    """None = clean; else the specific hole that withholds a positive twin."""
+    if e.wal_sidecar:
+        return "indeterminate-wal-sidecar"
+    if e.journal_sidecar:
+        return "indeterminate-journal-sidecar"
+    return None
+
+
 def render(entries: list[Entry], root: Path, backups_dir: Path) -> str:
-    # A twin is claimed ONLY between files with no -wal sidecar: an immutable
-    # read and a main-file hash cannot see a sidecar's pages, so two equal main
-    # files are NOT proven equal databases when either side has one.
-    gate_by_hash: dict[str, list[Path]] = {}
+    # A twin is a claim that licenses a delete downstream, so it fails CLOSED:
+    # a -wal OR -journal sidecar beside EITHER member of the candidate pair
+    # withholds it -- an immutable read and a main-file hash cannot see a
+    # sidecar's pending/committed pages, so two equal main files are NOT
+    # proven equal databases when either side carries one. An unreadable file
+    # (error row) can never be claimed as, or matched to, a twin either.
+    gate_matches_by_hash: dict[str, list[tuple[Path, str | None]]] = {}
     for e in entries:
-        if e.cls == "gate-image" and not e.wal_sidecar:
-            gate_by_hash.setdefault(e.sha256, []).append(e.path)
+        if e.cls == "gate-image" and e.error is None:
+            gate_matches_by_hash.setdefault(e.sha256, []).append((e.path, _sidecar_reason(e)))
+
+    twin_by_path: dict[Path, str] = {}
+    for e in entries:
+        if e.error is not None:
+            twin_by_path[e.path] = "indeterminate"
+        elif e.cls != "cli-copy":
+            twin_by_path[e.path] = "-"
+        else:
+            reason = _sidecar_reason(e)
+            if reason is not None:
+                twin_by_path[e.path] = reason
+            else:
+                matches = gate_matches_by_hash.get(e.sha256, [])
+                clean = [p for p, r in matches if r is None]
+                tainted = [r for _, r in matches if r is not None]
+                if clean:
+                    twin_by_path[e.path] = ";".join(str(p) for p in clean)
+                elif tainted:
+                    twin_by_path[e.path] = tainted[0]
+                else:
+                    twin_by_path[e.path] = "none"
+
     lines = [
         "# backup_inventory (read-only)",
         f"# root={root}",
@@ -141,16 +212,9 @@ def render(entries: list[Entry], root: Path, backups_dir: Path) -> str:
         "location\tclass\tsize_bytes\tmtime_utc\tschema_version\tsha256\twal_sidecar\ttwin\tpath",
     ]
     for e in entries:
-        if e.cls == "cli-copy" and e.wal_sidecar:
-            twin = "indeterminate-wal-sidecar"
-        elif e.cls == "cli-copy":
-            twins = gate_by_hash.get(e.sha256, [])
-            twin = ";".join(str(t) for t in twins) if twins else "none"
-        else:
-            twin = "-"
         lines.append("\t".join([
             e.location, e.cls, str(e.size), e.mtime, e.version, e.sha256,
-            "present" if e.wal_sidecar else "absent", twin, str(e.path),
+            "present" if e.wal_sidecar else "absent", twin_by_path[e.path], str(e.path),
         ]))
     lines.append("# summary")
     keys = sorted({(e.location, e.cls) for e in entries})
@@ -159,12 +223,15 @@ def render(entries: list[Entry], root: Path, backups_dir: Path) -> str:
         lines.append(
             f"# {loc}\t{cls}\tcount={len(group)}\tbytes={sum(e.size for e in group)}")
     cli = [e for e in entries if e.cls == "cli-copy"]
-    twinned = [e for e in cli if not e.wal_sidecar and e.sha256 in gate_by_hash]
+    twinned = [e for e in cli if twin_by_path[e.path] not in ("none", "indeterminate")
+               and not twin_by_path[e.path].startswith("indeterminate-")]
     lines.append(
         f"# cli-copy with a byte-identical gate twin: {len(twinned)} of {len(cli)} "
         f"({sum(e.size for e in twinned)} bytes)")
     lines.append(
         f"# unclassified: {sum(1 for e in entries if e.cls == 'unclassified')}")
+    lines.append(
+        f"# errors: {sum(1 for e in entries if e.error is not None)}")
     lines.append(f"# total: {len(entries)} files, {sum(e.size for e in entries)} bytes")
     return "\n".join(lines) + "\n"
 
