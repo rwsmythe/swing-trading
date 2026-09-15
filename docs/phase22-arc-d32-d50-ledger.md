@@ -71,3 +71,93 @@ move also scan `backups/pre-images/`.
 
 **Cell (after the packet lands):** `implementer-opus-high` (CHARC's minimum; `swing/data` migration-adjacent). Worktree
 `.worktrees/d32-d50-exec` off `main` at or above the commit that lands the ruling.
+
+---
+
+## Round 0 RULING — CHARC (PRIMARY, all six), literal block quote
+
+**Author:** CHARC. **Courier:** orchestrator (transcription only). **Source:** `comms/orchestrator/read/20260915T055125Z-charc-d32-d50-round-0-ruling-r0-1-a-r0-2-r0-6.md` (posted 2026-09-15T05:51:25Z). Transcribed as a literal block quote of the message body, headers omitted.
+
+> RULING PACKET -- D32+D50 round 0 (ledger 92b6ffb4). CHARC, PRIMARY on all six.
+> One pass. Transcribe as a block quote into the ledger; dispatch off that commit.
+> I read the ledger's Round 0, brief 9e18b642 sections 1-4, db.py (run_migrations,
+> ensure_schema, the phase7 and 21-A/22-A4 gate bodies, the narrowness docstring
+> at db.py:1300-1333), cli.py:247-310 and the 0038 monkeypatch test at :224
+> before ruling. Every premise the packet lists as HOLDING, I re-read and it holds.
+>
+> R0-1 -- RULED (a), with three sharpenings.
+>   The D50 defect is 23 hand-copied BODIES and 23 hand-typed PREDICATES. It is
+>   not the 23 NAMES. A one-line wrapper bound to a table row carries no predicate
+>   and cannot be retyped as <=, so keeping the names costs nothing D50 is about
+>   and buys the byte-unchanged test proof that F3(iv) relies on. Branch (b)
+>   would edit 25 test files to prove a refactor did not change behaviour, which
+>   is the proof destroying its own instrument.
+>   (1) run_migrations iterates the TABLE, resolving each row's wrapper by module
+>       attribute at call time. It must NOT keep a hard-coded list of 23 calls:
+>       then a future row would not be called and the table would not be the
+>       single source. The 0038 monkeypatch test (:224) is the reachability test
+>       for that resolution -- it stays byte-unchanged and it is what proves the
+>       wrappers are wired, not decoration.
+>   (2) A closure test, both directions: every module-level `_*_backup_gate` name
+>       maps to exactly one table row, and every table row names a wrapper that
+>       exists. A row without a wrapper, or a wrapper without a row, goes red.
+>       This is the D51 comparator shape (the object set, not the value set).
+>   (3) The phase7 gate (pre 13) goes through the same body. Its clause is
+>       textually different and logically equivalent; the table row is 13, and
+>       test (i) enumerates the 23 from `git show HEAD~:swing/data/db.py` as the
+>       brief says, never from the table under test. The four creator names stay
+>       as aliases of one parameterised creator; the expected-tables constants
+>       stay and the table cites them.
+>
+> R0-2 -- RULED as recommended. (iii) pins the PRESERVED semantics. The runner
+>   evaluates every gate ONCE against the INITIAL version (db.py:1300-1333, the
+>   accepted narrowness; the per-version-firing candidate stays banked at plan
+>   section I, NOT this arc -- F3 is a refactor and changes no firing rule).
+>   The `<=` discriminator, stated so the cell writes the right two cases:
+>   from a GATED N-1 walked to HEAD: exactly ONE file, N-1's stem, and NOT N's.
+>   From an UNGATED pre-version (14 or 17) walked to HEAD: exactly ZERO files.
+>   A `<=` body would fire every gate at or above the start on the second case
+>   (from 17: twenty files). The zero case is the sharper discriminator; write
+>   both.
+>
+> R0-3 -- RULED as recommended. No transition, no copy. The CLI echoes that the
+>   schema is already at HEAD and that no backup was taken, naming the version
+>   read. The pre-18 WARN block is untouched.
+>
+> R0-4 -- RULED (b), with two sharpenings.
+>   (1) The lookup is `gate for pre_version -> spec | None` from the table. The
+>       F2 decision is: spec is None AND pre_version < EXPECTED -> the CLI copy;
+>       spec present -> no CLI copy. The snoop moves BEFORE the copy.
+>   (2) Finding the gate's file: SET-DIFFERENCE of the stem glob in backups_dir
+>       taken immediately before and after ensure_schema, non-recursive (after
+>       F4(a) `backups/pre-images/` holds old images with the same stems -- a
+>       "newest matching" read could name one of those). Exactly one new file ->
+>       echo its path. Zero or more than one -> RAISE with the count, never echo
+>       nothing: alarm-never-assert at the CLI. The gate itself already refuses
+>       on failure, so zero-new-files after a successful ensure_schema is a
+>       defect in this arc's wiring, and the CLI must say so.
+>
+> R0-5 -- RULED as recommended, with the D43 obligation stated.
+>   (3) is a v37 fixture through the REAL CLI with a throwaway config. Prefer the
+>   fixture to be a plain file COPY of a real v37 pre-image (`swing-pre-22a4-
+>   migration-*.db` in the root, 1.5 GB) over the synthetic `_v37`: the witness
+>   is about production bytes, and the 0038 m3c test already proved the
+>   expected-tables constant is a SUBSET of that real shape. Fall back to the
+>   synthetic only if disk is tight (the step needs ~3 GB: copy + gate image);
+>   say which was used. Plus `db-migrate` on the v38 COPY with the same throwaway
+>   config showing no backup written (R0-3). D43 binds: BEFORE running the real
+>   CLI, the cell ENUMERATES every path a `db-migrate` invocation writes under
+>   that config (db_path, backups_dir, and anything the CLI's startup touches --
+>   logs, comms, exports) and points each at temp or states why it cannot be
+>   reached; the ledger records the list. "backups_dir at a temp dir" is one
+>   surface, not the enumeration.
+>
+> R0-6 -- RULED as recommended; the cell's. Classify by name pattern
+>   (`swing-pre-*` = gate image; `swing-<14-digit-ts>.db` = CLI copy); a file
+>   matching NEITHER prints as `unclassified` with its path, never skipped
+>   silently (the #27 class). Scan `backups/pre-images/` after the move.
+>
+> Cell: implementer-opus-high confirmed. B on the merged tree at my gate as
+> usual; the witness on the copy per R0-5; the inventory output to the operator.
+> Nothing here is RD's; RD's successor QAs the return on the pre-image
+> disposition, per the brief section 5.
