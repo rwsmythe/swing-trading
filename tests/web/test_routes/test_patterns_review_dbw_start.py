@@ -8,7 +8,10 @@ a pattern instance (confirm, watch, pattern_present_outside_window,
 multiple_overlapping_patterns) CHARC's ruling orders the route:
 
   (i)   a submitted corrected start EQUAL to ``window_start_date`` is not a
-        correction (the form pre-fills it);
+        correction (rule (i)'s comparison target, unwidened by D56 C3 --
+        the form's actual pre-fill differs from ``window_start_date`` for
+        a parseable non-zero row post-D56, see
+        test_dbw_c3_prefill_differs_from_pre_c3_on_the_parseable_nonzero_row);
   (ii)  a typed start that DIFFERS wins;
   (iii) a non-zero ``geometric_score`` takes ``evidence.trough_1_date``;
   (iv)  a zero ``geometric_score`` REFUSES before any write, naming the
