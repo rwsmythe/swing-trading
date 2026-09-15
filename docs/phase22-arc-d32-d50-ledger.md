@@ -935,3 +935,158 @@ post made. Ready for the section-4 witness on the copy and the orchestrator's ow
 Source of the roster: the witness inventory (`~/swing-data/review-transcripts/d32-d50-exec/witness/inventory.tsv`), its 31 `location=root` rows. Preconditions asserted before any move: exactly 31 rows; `backups/pre-images/` did not exist; every source present directly in `~/swing-data`; no destination name occupied. Each `.db` moved by same-volume `os.rename` (which raises rather than overwrite), with its sidecars moved alongside -- 6 sidecars on 3 images (`swing-pre-22a-migration-20260902T091929Z.db`, `...20260902T100325Z.db`, `swing-pre-22a4-migration-20260909T082013Z.db`, each `-wal` 0 bytes + `-shm`). **Verified after the move, per file:** sha256 of the moved file == the inventory's sha256, size == the inventory's size, source path gone, sidecars present at the destination and gone from the root -- **31 of 31, zero failures**; 10,220,359,680 bytes; `~/swing-data/swing-pre-*` remaining 0; `backups/pre-images/` holds 37 entries (31 `.db` + 6 sidecars). Nothing deleted.
 
 **Remaining for the disposition:** (b) the 21 twin CLI copies, one pair at a time with the delete-time re-hash of BOTH files and a sidecar check printed here beside each delete, the operator's hand on each delete; NOTE the twin column in the inventory names the gates at their OLD root paths -- they now live under `backups/pre-images/` with the same filenames. (c) keep everything else, including the 3 withheld twins (no hand override). Outside the inventory: `swing-CORRUPTED-post-phase7-migration-20260505T162747Z.db` and the orphan `s9step0-copy.db-wal` in the root, operator's call.
+
+---
+
+## F4 disposition -- step (b) DELETE the 21 twin CLI copies (orchestrator + operator, on the operator's "clear the duplicate backups", 2026-09-15)
+
+**Method, per CHARC's stop rule (3):** the inventory NOMINATES, the delete-time check PROVES. For each of the 21 positive-twin rows (tsv lines 46, 47, 49, 50, 52-68), ONE PAIR AT A TIME and immediately before the delete: a read-only check re-hashes (sha256, full file) the CLI copy in `backups/` AND every twin the row names -- remapped from its old root path to `backups/pre-images/` with the same filename, per step (a) -- compares each to the inventory's size and sha256, and lists `-wal`/`-journal`/`-shm` beside each member by `os.scandir` of the parent (not `Path.exists()`, which swallows errors on 3.14). A `-wal` or `-journal` on either member, or any size/hash mismatch, is NOT PROVEN -> KEEP. The check refuses any row outside the 21. Its output is pasted below verbatim; the operator runs the single delete (`! rm -v '<path>'` -- the `!` prefix runs in bash; a first `Remove-Item` on row 46 failed with `command not found` and deleted nothing, confirmed by listing before the retry); a post-delete listing confirms the CLI copy is gone and the twin still present.
+
+**Row 46** -- CLI copy `swing-20260505T060412.db` (inventory: 7176192 bytes, schema 13, sha256 `32f05371ac0b7387...`)
+- CLI copy `backups\swing-20260505T060412.db`: size 7176192 (=), sha256 `32f05371ac0b738721cd48b84f276f38a535022e43930f5a17b14807ba161d4b` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase7-migration-20260505T160412Z.db`: size 7176192 (=), sha256 `32f05371ac0b738721cd48b84f276f38a535022e43930f5a17b14807ba161d4b` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase7-migration-20260505T164337Z.db`: size 7176192 (=), sha256 `32f05371ac0b738721cd48b84f276f38a535022e43930f5a17b14807ba161d4b` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- row 46 post-delete: `swing-20260505T060412.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 47** -- CLI copy `swing-20260505T064337.db` (inventory: 7176192 bytes, schema 13, sha256 `32f05371ac0b7387...`)
+- CLI copy `backups\swing-20260505T064337.db`: size 7176192 (=), sha256 `32f05371ac0b738721cd48b84f276f38a535022e43930f5a17b14807ba161d4b` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase7-migration-20260505T160412Z.db`: size 7176192 (=), sha256 `32f05371ac0b738721cd48b84f276f38a535022e43930f5a17b14807ba161d4b` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase7-migration-20260505T164337Z.db`: size 7176192 (=), sha256 `32f05371ac0b738721cd48b84f276f38a535022e43930f5a17b14807ba161d4b` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- row 47 post-delete: `swing-20260505T064337.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 49** -- CLI copy `swing-20260507T123936.db` (inventory: 8138752 bytes, schema 15, sha256 `f5ca33a74c4a840d...`)
+- CLI copy `backups\swing-20260507T123936.db`: size 8138752 (=), sha256 `f5ca33a74c4a840d18e91a78b070bb2570829d9ed2a4fb06813df2f3e4249af5` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase8-migration-20260507T223936Z.db`: size 8138752 (=), sha256 `f5ca33a74c4a840d18e91a78b070bb2570829d9ed2a4fb06813df2f3e4249af5` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- row 49 post-delete: `swing-20260507T123936.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 50** -- CLI copy `swing-20260511T221810.db` (inventory: 9310208 bytes, schema 16, sha256 `528c8ad2101e1412...`)
+- CLI copy `backups\swing-20260511T221810.db`: size 9310208 (=), sha256 `528c8ad2101e141284742196fe44f5d94eccce41046c6a1f738b8940c55d5eb9` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase9-migration-20260512T081810Z.db`: size 9310208 (=), sha256 `528c8ad2101e141284742196fe44f5d94eccce41046c6a1f738b8940c55d5eb9` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- row 50 post-delete: `swing-20260511T221810.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Delegation (operator, 2026-09-15, in chat: "I will delegate to you after this deletion").** Rows 46, 47, 49, 50 were deleted by the operator's hand. From row 52 onward the operator delegated the delete to the orchestrator. The proof is unchanged: per pair, the check above runs immediately before the delete, the `rm` runs only on a PROVEN verdict and only on the path the check printed, the post-delete listing follows, and the sequence STOPS at the first non-proven pair.
+
+**Row 52** -- CLI copy `swing-20260515T185243.db` (inventory: 12029952 bytes, schema 18, sha256 `1a27b262b82b2d03...`)
+- CLI copy `backups\swing-20260515T185243.db`: size 12029952 (=), sha256 `1a27b262b82b2d03a7b2e1f8a24ddc6f1bc64e6ea4ccf4d62e0897a4990f6b3e` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase12-bundle-c-migration-20260516T045243Z.db`: size 12029952 (=), sha256 `1a27b262b82b2d03a7b2e1f8a24ddc6f1bc64e6ea4ccf4d62e0897a4990f6b3e` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260515T185243.db'`
+- row 52 post-delete: `swing-20260515T185243.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 53** -- CLI copy `swing-20260519T070446.db` (inventory: 13189120 bytes, schema 19, sha256 `d32dcff15d05ebb2...`)
+- CLI copy `backups\swing-20260519T070446.db`: size 13189120 (=), sha256 `d32dcff15d05ebb219d88acea4675966586523b05877a0e3be8188194335b521` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase13-migration-20260519T170446Z.db`: size 13189120 (=), sha256 `d32dcff15d05ebb219d88acea4675966586523b05877a0e3be8188194335b521` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260519T070446.db'`
+- row 53 post-delete: `swing-20260519T070446.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 54** -- CLI copy `swing-20260522T053925.db` (inventory: 14213120 bytes, schema 20, sha256 `647fe1d05c639236...`)
+- CLI copy `backups\swing-20260522T053925.db`: size 14213120 (=), sha256 `647fe1d05c639236fe836135ac51334636c5cbb7d72d36c5db40f3f8cc7c3180` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase13-sb6c-migration-20260522T153925Z.db`: size 14213120 (=), sha256 `647fe1d05c639236fe836135ac51334636c5cbb7d72d36c5db40f3f8cc7c3180` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260522T053925.db'`
+- row 54 post-delete: `swing-20260522T053925.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 55** -- CLI copy `swing-20260529T061104.db` (inventory: 18882560 bytes, schema 21, sha256 `489ea392bc7b3b2e...`)
+- CLI copy `backups\swing-20260529T061104.db`: size 18882560 (=), sha256 `489ea392bc7b3b2e271ae6f45cbfa78cb40f3dfb28644ee43f9b1d95d7438c76` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase14-migration-20260529T161104Z.db`: size 18882560 (=), sha256 `489ea392bc7b3b2e271ae6f45cbfa78cb40f3dfb28644ee43f9b1d95d7438c76` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260529T061104.db'`
+- row 55 post-delete: `swing-20260529T061104.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 56** -- CLI copy `swing-20260530T081107.db` (inventory: 19968000 bytes, schema 22, sha256 `e97480f587ca5212...`)
+- CLI copy `backups\swing-20260530T081107.db`: size 19968000 (=), sha256 `e97480f587ca52121db830aa7744758ba2c9d79dc15eceeb7e1935429786c586` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase14-sb3-migration-20260530T181107Z.db`: size 19968000 (=), sha256 `e97480f587ca52121db830aa7744758ba2c9d79dc15eceeb7e1935429786c586` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260530T081107.db'`
+- row 56 post-delete: `swing-20260530T081107.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 57** -- CLI copy `swing-20260603T210044.db` (inventory: 31887360 bytes, schema 23, sha256 `72f5eca91188b89f...`)
+- CLI copy `backups\swing-20260603T210044.db`: size 31887360 (=), sha256 `72f5eca91188b89fb26a3021d9ce032d1a182ce3fb22e4ca430ad07060d49a76` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-b7-migration-20260604T070044Z.db`: size 31887360 (=), sha256 `72f5eca91188b89fb26a3021d9ce032d1a182ce3fb22e4ca430ad07060d49a76` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260603T210044.db'`
+- row 57 post-delete: `swing-20260603T210044.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 58** -- CLI copy `swing-20260609T073552.db` (inventory: 81108992 bytes, schema 24, sha256 `603420822b4fc596...`)
+- CLI copy `backups\swing-20260609T073552.db`: size 81108992 (=), sha256 `603420822b4fc5962bd9a47d5f8643da6852add83518737c382422b2f03629e1` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase16-migration-20260609T173552Z.db`: size 81108992 (=), sha256 `603420822b4fc5962bd9a47d5f8643da6852add83518737c382422b2f03629e1` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260609T073552.db'`
+- row 58 post-delete: `swing-20260609T073552.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 59** -- CLI copy `swing-20260609T234259.db` (inventory: 86839296 bytes, schema 25, sha256 `326cf6a01736fa86...`)
+- CLI copy `backups\swing-20260609T234259.db`: size 86839296 (=), sha256 `326cf6a01736fa861520b14b4291bb657f47e757565ba8ffbefbded69ee70e5e` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-broad-watch-baseline-migration-20260610T094300Z.db`: size 86839296 (=), sha256 `326cf6a01736fa861520b14b4291bb657f47e757565ba8ffbefbded69ee70e5e` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260609T234259.db'`
+- row 59 post-delete: `swing-20260609T234259.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 60** -- CLI copy `swing-20260610T201507.db` (inventory: 103448576 bytes, schema 26, sha256 `1047517688ed51ba...`)
+- CLI copy `backups\swing-20260610T201507.db`: size 103448576 (=), sha256 `1047517688ed51baff4b9ae595bece09551afb93f4ef2a28a26384940895d94f` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-entry-intent-migration-20260611T061508Z.db`: size 103448576 (=), sha256 `1047517688ed51baff4b9ae595bece09551afb93f4ef2a28a26384940895d94f` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260610T201507.db'`
+- row 60 post-delete: `swing-20260610T201507.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 61** -- CLI copy `swing-20260610T235557.db` (inventory: 103448576 bytes, schema 27, sha256 `2e20fdadb29a238a...`)
+- CLI copy `backups\swing-20260610T235557.db`: size 103448576 (=), sha256 `2e20fdadb29a238aea93fb2a2584afadd2f20491083fa2eefe4b1ec3464c650e` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-watchlist-pin-migration-20260611T095557Z.db`: size 103448576 (=), sha256 `2e20fdadb29a238aea93fb2a2584afadd2f20491083fa2eefe4b1ec3464c650e` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260610T235557.db'`
+- row 61 post-delete: `swing-20260610T235557.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 62** -- CLI copy `swing-20260612T005118.db` (inventory: 105308160 bytes, schema 28, sha256 `5df07dd52f89162d...`)
+- CLI copy `backups\swing-20260612T005118.db`: size 105308160 (=), sha256 `5df07dd52f89162df6af72b2888159036434b91f6d632e592c1208ce1ecf15ca` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-cash-recon-migration-20260612T105118Z.db`: size 105308160 (=), sha256 `5df07dd52f89162df6af72b2888159036434b91f6d632e592c1208ce1ecf15ca` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260612T005118.db'`
+- row 62 post-delete: `swing-20260612T005118.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 63** -- CLI copy `swing-20260614T102039.db` (inventory: 129794048 bytes, schema 29, sha256 `0754195fe981840e...`)
+- CLI copy `backups\swing-20260614T102039.db`: size 129794048 (=), sha256 `0754195fe981840e5b7a84e9e2c84d554a6aff42f3e38faf490c80dae5eb6c79` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase18-arc-c-migration-20260614T202039Z.db`: size 129794048 (=), sha256 `0754195fe981840e5b7a84e9e2c84d554a6aff42f3e38faf490c80dae5eb6c79` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260614T102039.db'`
+- row 63 post-delete: `swing-20260614T102039.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 64** -- CLI copy `swing-20260616T193526.db` (inventory: 147173376 bytes, schema 30, sha256 `b35e40f913e21269...`)
+- CLI copy `backups\swing-20260616T193526.db`: size 147173376 (=), sha256 `b35e40f913e21269209e2e034b0bd88ac38bf4fc8ecaf588e71409be27c975e6` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase18-arc-h6-migration-20260617T053527Z.db`: size 147173376 (=), sha256 `b35e40f913e21269209e2e034b0bd88ac38bf4fc8ecaf588e71409be27c975e6` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260616T193526.db'`
+- row 64 post-delete: `swing-20260616T193526.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 65** -- CLI copy `swing-20260728T111453.db` (inventory: 835268608 bytes, schema 31, sha256 `351caf51b69372fe...`)
+- CLI copy `backups\swing-20260728T111453.db`: size 835268608 (=), sha256 `351caf51b69372fef5283d3948fecda2075e956fb4ed49164b9e77769bd2e355` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase21-arc-a-migration-20260728T211455Z.db`: size 835268608 (=), sha256 `351caf51b69372fef5283d3948fecda2075e956fb4ed49164b9e77769bd2e355` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260728T111453.db'`
+- row 65 post-delete: `swing-20260728T111453.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 66** -- CLI copy `swing-20260803T011407.db` (inventory: 911994880 bytes, schema 32, sha256 `552bb4daa8638ffe...`)
+- CLI copy `backups\swing-20260803T011407.db`: size 911994880 (=), sha256 `552bb4daa8638ffe27cf4628820aa5a6a2aa901935abc758fe860b03b0b9ef3d` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-phase21-arc-b-migration-20260803T111410Z.db`: size 911994880 (=), sha256 `552bb4daa8638ffe27cf4628820aa5a6a2aa901935abc758fe860b03b0b9ef3d` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260803T011407.db'`
+- row 66 post-delete: `swing-20260803T011407.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 67** -- CLI copy `swing-20260803T202248.db` (inventory: 940609536 bytes, schema 33, sha256 `3f4294acaf3cdac0...`)
+- CLI copy `backups\swing-20260803T202248.db`: size 940609536 (=), sha256 `3f4294acaf3cdac061d696875396898cf71a63566b0a3e5faa6eddaadc042642` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-h1-amendment-migration-20260804T062252Z.db`: size 940609536 (=), sha256 `3f4294acaf3cdac061d696875396898cf71a63566b0a3e5faa6eddaadc042642` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260803T202248.db'`
+- row 67 post-delete: `swing-20260803T202248.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Row 68** -- CLI copy `swing-20260810T193142.db` (inventory: 1030258688 bytes, schema 34, sha256 `c0d6f20473515102...`)
+- CLI copy `backups\swing-20260810T193142.db`: size 1030258688 (=), sha256 `c0d6f2047351510251db360dc96bd54488e77faac6dfde78415605b0868dcc0d` (match), sidecars: none -> OK
+- twin `backups\pre-images\swing-pre-a4-taxonomy-migration-20260811T053146Z.db`: size 1030258688 (=), sha256 `c0d6f2047351510251db360dc96bd54488e77faac6dfde78415605b0868dcc0d` (match), sidecars: none -> OK
+- **Verdict: PROVEN twin -- delete licensed**
+- delete (orchestrator, delegated): `removed '/c/Users/rwsmy/swing-data/backups/swing-20260810T193142.db'`
+- row 68 post-delete: `swing-20260810T193142.db` entries remaining in backups/: none; twin(s) still present under pre-images/: True
+
+**Step (b) result, re-derived from the ledger and disk after the last delete:** 21 PROVEN verdicts, 21 post-delete listings with the copy gone and the twin present, 0 mismatches or FAILs; no pair was stopped. 4617224192 bytes freed. `backups/pre-images/` still holds 37 entries (31 `.db` + 6 sidecars), unchanged from step (a). **Step (c) KEEP holds:** the 3 withheld true twins (`swing-20260813T055901.db`, `swing-20260902T000318.db`, `swing-20260908T222007.db`, each with its `-wal`/`-shm`) and every other file in `backups/` are untouched. Still outside the inventory and the operator's call: `swing-CORRUPTED-post-phase7-migration-20260505T162747Z.db` and the orphan `s9step0-copy.db-wal` in the root. Freeing the 3 withheld twins is a CHARC-ruled follow-on, not done here.
