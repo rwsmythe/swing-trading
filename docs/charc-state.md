@@ -40,7 +40,7 @@
 | **D42 half (2)** per-step status behind a run-level `complete` | Phase-22 sweep | open |
 | **CLAUDE.md gotcha "db-migrate writes TWO backups" is now FALSE** (one backup, echoed) + the rmtree `onexc` gotcha (D42) | orchestrator, at its Gotchas compression | owed |
 | **D58** unfenced snapshot-to-migration interval (B1 on D32+D50, pre-existing at `eface268`) — banked; fix = one exclusive-lock connection across read/snapshot/migrate, its own arc | CHARC register; operator sequences | banked 2026-09-15 |
-| **D57** wake cue = cross-session ping (probe PASSED 07:19Z: idle 2.1.272 seat woke in 6 s). Rider brief `phase22-rider-d57-wake-cue-dispatch-brief.md` → orchestrator (sonnet-high, no B); CHARC closes on the §4 witness | CHARC witness at the next fresh launch | MERGED `c8279a93` 2026-09-15, CHARC-verified by execution (DryRun names, ping lines, C3 text); closes on the §4 witness |
+| **D57** wake cue = cross-session ping (probe PASSED 07:19Z: idle 2.1.272 seat woke in 6 s). Rider brief `phase22-rider-d57-wake-cue-dispatch-brief.md` → orchestrator (sonnet-high, no B); CHARC closes on the §4 witness | CHARC | **CLOSED 2026-09-15** on the §4 witness against `swing-orchestrator-20260915-0720` (ping → new turn in 2 s, zero Monitor calls; the mail post alone produced no record) |
 | D45 (same-mandate collapse) · D46 (log-containment interface) · D44 · D47 · D48 (B-2 corrector semantics) · D39/D34/D35/D37/D38/D40/D41 sweeps · D51 (schema-manifest comparator, BEFORE 22-B) | standing | standing |
 | Phase-22 queue — [`phase22-scope-charc.md`](phase22-scope-charc.md) | operator commissions | standing |
 | schwabdev 4.0.0 DECLINED for Phase 22 | CHARC | banked |
