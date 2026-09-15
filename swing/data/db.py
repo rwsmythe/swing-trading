@@ -1,7 +1,9 @@
 """SQLite connection + migrations + schema-version gate."""
 from __future__ import annotations
 
+import contextlib
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -538,32 +540,6 @@ def _current_version(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
-def _create_pre_migration_backup(
-    src_path: Path, *, dest_dir: Path | None = None
-) -> Path:
-    """Create a SQLite-native consistent-snapshot backup of ``src_path``.
-
-    Uses ``sqlite3.Connection.backup()`` (transactional, consistent under live
-    writers). ``shutil.copy2()`` is NOT acceptable per spec §12.1 — a
-    filesystem-level copy of a live SQLite DB can yield a torn snapshot.
-    """
-    if dest_dir is None:
-        dest_dir = src_path.parent
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-phase7-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
 def _verify_backup_integrity(
     backup_path: Path, *, expected_tables: set[str]
 ) -> None:
@@ -624,1516 +600,285 @@ def _resolve_main_db_path(conn: sqlite3.Connection) -> Path | None:
     return None
 
 
-def _phase7_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Enforce the spec §12.1 backup-before-migrate gate for target_version >= 14.
+@dataclass(frozen=True, eq=False)
+class BackupGateSpec:
+    """One pre-migration backup gate: a row of ``_PRE_MIGRATION_BACKUP_GATES``.
 
-    Fires BEFORE the migration loop. If backup creation or verification
-    raises (OSError on unwritable dest, sqlite3.Error on bad I/O, etc.),
-    re-raise as ``MigrationBackupRequiredException`` so callers refuse to
-    migrate; the source DB is unmodified.
+    ``filename_stem`` names the image ``swing-pre-<stem>-migration-<UTC>Z.db``
+    and is preserved byte-for-byte from the hand-copied gate it replaced (the
+    D32 retention sweep and the witness records name files by it).
+    ``expected_tables`` CITES the module constant (the same object).
+    ``gate_name`` is the module-level wrapper ``run_migrations`` resolves BY
+    ATTRIBUTE at call time. ``label`` prefixes both refusal messages.
+    ``creator_alias`` names a legacy creator kept as an alias of the one
+    parameterised creator, resolved by attribute at call time so a patch on
+    that name intercepts; ``None`` calls ``_create_gate_backup`` directly.
     """
-    # Gate fires only when current_version == 13 (the only state with real
-    # production data to back up; fresh installs (current=0) and mid-walk
-    # states from v3-seeded tests don't need backup — the migration walk
-    # passes through v13→v14 within the same run_migrations call and the
-    # intermediate v13 state is transient).
-    if (
-        target_version < 14
-        or current_version >= 14
-        or current_version < 13
-    ):
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        # In-memory DBs cannot be migrated to v14+ via this gate; spec §12.1
-        # presumes a file-backed DB. Surface as the gate-required exception
-        # rather than silently proceeding.
-        raise MigrationBackupRequiredException(
-            "pre-Phase-7 backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
+
+    pre_version: int
+    filename_stem: str
+    expected_tables: set[str]
+    gate_name: str
+    label: str
+    creator_alias: str | None = None
+
+    @property
+    def filename_glob(self) -> str:
+        """Non-recursive glob matching every image this gate can write."""
+        return f"swing-pre-{self.filename_stem}-migration-*.db"
+
+
+# THE gate table (D50). A gate fires exactly when ``current_version ==
+# pre_version AND target_version >= pre_version + 1`` -- strict equality on the
+# PRE version, ``>=`` on the target -- and that predicate is written ONCE, in
+# ``_run_pre_migration_gate``. Ungated pre-versions: 14 and 17 (no gate was ever
+# wired for 0015 or 0018). Ascending pre_version, which is the call order the
+# 23 hand-written calls in ``run_migrations`` had.
+_PRE_MIGRATION_BACKUP_GATES: tuple[BackupGateSpec, ...] = (
+    BackupGateSpec(13, "phase7", PHASE7_EXPECTED_TABLES,
+                   "_phase7_backup_gate", "pre-Phase-7",
+                   creator_alias="_create_pre_migration_backup"),
+    BackupGateSpec(15, "phase8", PHASE8_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase8_backup_gate", "pre-Phase-8"),
+    BackupGateSpec(16, "phase9", PHASE9_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase9_backup_gate", "pre-Phase-9"),
+    BackupGateSpec(18, "phase12-bundle-c", PHASE12_BUNDLE_C_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase12_bundle_c_backup_gate", "pre-Phase-12-Sub-bundle-C"),
+    BackupGateSpec(19, "phase13", PHASE13_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase13_backup_gate", "pre-Phase-13"),
+    BackupGateSpec(20, "phase13-sb6c", PHASE13_SB6C_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase13_sb6c_backup_gate", "pre-Phase-13-SB6c"),
+    BackupGateSpec(21, "phase14", PHASE14_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase14_backup_gate", "pre-Phase-14"),
+    BackupGateSpec(22, "phase14-sb3", PHASE14_SB3_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase14_sb3_backup_gate", "pre-Phase-14-SB3"),
+    BackupGateSpec(23, "b7", B7_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_b7_backup_gate", "pre-B7"),
+    BackupGateSpec(24, "phase16", PHASE16_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase16_backup_gate", "pre-phase16"),
+    BackupGateSpec(25, "broad-watch-baseline", BROAD_WATCH_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_broad_watch_baseline_backup_gate", "pre-broad-watch"),
+    BackupGateSpec(26, "entry-intent", ENTRY_INTENT_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_entry_intent_backup_gate", "pre-entry-intent"),
+    BackupGateSpec(27, "watchlist-pin", WATCHLIST_PIN_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_watchlist_pin_backup_gate", "pre-watchlist-pin"),
+    BackupGateSpec(28, "cash-recon", CASH_RECON_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_cash_recon_backup_gate", "pre-cash-recon"),
+    BackupGateSpec(29, "phase18-arc-c", PHASE18_ARC_C_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase18_arc_c_backup_gate", "pre-phase18-arc-c"),
+    BackupGateSpec(30, "phase18-arc-h6", PHASE18_ARC_H6_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase18_arc_h6_backup_gate", "pre-phase18-arc-h6"),
+    BackupGateSpec(31, "phase21-arc-a", PHASE21_ARC_A_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase21_arc_a_backup_gate", "pre-phase21-arc-a",
+                   creator_alias="_create_pre_phase21_arc_a_migration_backup"),
+    BackupGateSpec(32, "phase21-arc-b", PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase21_arc_b_backup_gate", "pre-phase21-arc-b",
+                   creator_alias="_create_pre_phase21_arc_b_migration_backup"),
+    BackupGateSpec(33, "h1-amendment", H1_AMENDMENT_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_h1_amendment_backup_gate", "pre-h1-amendment",
+                   creator_alias="_create_pre_h1_amendment_migration_backup"),
+    BackupGateSpec(34, "a4-taxonomy", A4_TAXONOMY_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_a4_taxonomy_backup_gate", "pre-a4-taxonomy"),
+    BackupGateSpec(35, "demand-c", DEMAND_C_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_demand_c_backup_gate", "pre-demand-c"),
+    BackupGateSpec(36, "22a", PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase22_arc_a_backup_gate", "pre-22-A"),
+    BackupGateSpec(37, "22a4", PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase22_arc_a4_backup_gate", "pre-22-A4"),
+)
+_GATE_BY_PRE_VERSION: dict[int, BackupGateSpec] = {
+    s.pre_version: s for s in _PRE_MIGRATION_BACKUP_GATES
+}
+
+
+def backup_gate_for_pre_version(pre_version: int) -> BackupGateSpec | None:
+    """The gate a migration starting at ``pre_version`` fires, or ``None``.
+
+    Read from the table ``run_migrations`` iterates, so a caller (the
+    ``db-migrate`` CLI) decides whether a gate covers a transition from the
+    same single source. A returned spec fires for any ``target_version >=
+    pre_version + 1``; whether there is a transition at all is the caller's
+    check."""
+    return _GATE_BY_PRE_VERSION.get(pre_version)
+
+
+def _create_gate_backup(
+    src_path: Path, *, dest_dir: Path | None = None, filename_stem: str,
+) -> Path:
+    """Create a SQLite-native consistent-snapshot backup of ``src_path`` named
+    ``swing-pre-<filename_stem>-migration-<UTC>Z.db`` in ``dest_dir``
+    (``src_path.parent`` when ``None``).
+
+    Uses ``sqlite3.Connection.backup()`` (transactional, consistent under live
+    writers). ``shutil.copy2()`` is NOT acceptable per spec §12.1 -- a
+    filesystem-level copy of a live SQLite DB can yield a torn snapshot.
+    """
+    if dest_dir is None:
+        dest_dir = src_path.parent
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-{filename_stem}-migration-{timestamp}.db"
+    # NO-CLOBBER: the name is second-granular, and connect()+backup() onto an
+    # existing file OVERWRITES it -- possibly the only pre-image of a schema
+    # version. Reserve the name by exclusive create; an occupied name raises
+    # FileExistsError (an OSError), which the gate turns into a refusal BEFORE
+    # any migration runs.
+    with open(backup_path, "xb"):
+        pass
     try:
-        backup_path = _create_pre_migration_backup(src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path, expected_tables=PHASE7_EXPECTED_TABLES
-        )
-    except MigrationBackupRequiredException:
+        src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
+        try:
+            dest_conn = sqlite3.connect(backup_path)
+            try:
+                src_conn.backup(dest_conn)
+            finally:
+                dest_conn.close()
+        finally:
+            src_conn.close()
+    except BaseException:
+        # Remove only the file THIS attempt reserved and partially wrote.
+        with contextlib.suppress(OSError):
+            backup_path.unlink(missing_ok=True)
         raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-Phase-7 backup failed: {exc}"
-        ) from exc
-
-
-def _create_pre_phase8_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Phase 8 mirror of _create_pre_migration_backup with phase8 filename prefix.
-
-    Per spec §8.2 + plan §A.5: backup file pattern
-    ``swing-pre-phase8-migration-<ISO>.db``. SQLite-native Connection.backup()
-    is the only acceptable snapshot mechanism (consistent under live writers).
-    """
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-phase8-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
     return backup_path
 
 
-def _create_pre_phase9_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Phase 9 mirror of _create_pre_migration_backup with phase9 filename prefix.
+def _bind_creator_alias(pre_version: int):
+    """A legacy creator name as an alias of ``_create_gate_backup``, its stem
+    read from the row (not retyped)."""
+    spec = _GATE_BY_PRE_VERSION[pre_version]
+    stem = spec.filename_stem
 
-    Per spec §9.3 + plan §A.0: backup file pattern
-    ``swing-pre-phase9-migration-<ISO>.db``. SQLite-native Connection.backup()
-    is the only acceptable snapshot mechanism (consistent under live writers).
-    """
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-phase9-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
+    def creator(src_path: Path, *, dest_dir: Path | None = None) -> Path:
+        return _create_gate_backup(src_path, dest_dir=dest_dir, filename_stem=stem)
 
-
-def _create_pre_phase12_bundle_c_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Phase 12 Sub-bundle C mirror with phase12-bundle-c filename prefix.
-
-    Per plan §B.4 #1 + spec §11.3: backup file pattern
-    ``swing-pre-phase12-bundle-c-migration-<ISO>.db``. SQLite-native
-    Connection.backup() is the only acceptable snapshot mechanism (consistent
-    under live writers).
-    """
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-phase12-bundle-c-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_phase13_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Phase 13 T2.SB1 mirror with phase13 filename prefix.
-
-    Per plan §B.1 + spec §3.5: backup file pattern
-    ``swing-pre-phase13-migration-<ISO>.db``. SQLite-native
-    Connection.backup() is the only acceptable snapshot mechanism (consistent
-    under live writers).
-    """
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-phase13-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_phase13_sb6c_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Phase 13 T2.SB6c mirror with sb6c filename prefix (OQ-8 LOCK).
-
-    Per plan §B.5: backup file pattern
-    ``swing-pre-phase13-sb6c-migration-<ISO>.db``. SQLite-native
-    Connection.backup() is the only acceptable snapshot mechanism (consistent
-    under live writers).
-    """
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = (
-        dest_dir / f"swing-pre-phase13-sb6c-migration-{timestamp}.db"
+    creator.__name__ = creator.__qualname__ = str(spec.creator_alias)
+    creator.__doc__ = (
+        f"Alias of _create_gate_backup bound to the v{pre_version} row's stem "
+        f"({stem!r})."
     )
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
+    return creator
 
 
-def _create_pre_phase14_sb3_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Phase 14 Sub-bundle 3 mirror with phase14-sb3 filename prefix.
+# The four legacy creator names existing tests call or patch. The other 19
+# per-gate creators had no reference outside their own gate and were deleted.
+_create_pre_migration_backup = _bind_creator_alias(13)
+_create_pre_phase21_arc_a_migration_backup = _bind_creator_alias(31)
+_create_pre_phase21_arc_b_migration_backup = _bind_creator_alias(32)
+_create_pre_h1_amendment_migration_backup = _bind_creator_alias(33)
 
-    SQLite-native Connection.backup() snapshot before the 0023 migration.
-    Backup file pattern ``swing-pre-phase14-sb3-migration-<ISO>.db``.
-    SQLite-native Connection.backup() is the only acceptable snapshot
-    mechanism (consistent under live writers).
+
+def _run_pre_migration_gate(
+    spec: BackupGateSpec,
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """THE backup-before-migrate gate body (spec §12.1), shared by every row.
+
+    Fires ONLY when ``current_version == spec.pre_version AND target_version
+    >= spec.pre_version + 1``. STRICT EQUALITY on the PRE version (never
+    ``current_version <= N`` -- the original bug) and ``>=`` on the target
+    (never ``== N + 1``, which would skip the pre-image for an installation
+    jumping straight to a later head). The shorthand ``pre_version == (target -
+    1)`` is NOT this condition: it diverges at ``target_version >= N + 2``.
+
+    INTENTIONAL NARROWNESS (accepted; carried from the Phase 12 Sub-bundle C
+    gate, Codex R1 Major #1): the predicate is evaluated ONCE per gate at
+    ``run_migrations`` entry against the INITIAL ``current_version``, not before
+    each individual migration. A DB below a gate's pre-version walking past it
+    does not fire that gate; only the gate for the starting version fires.
+    Per-version firing is a banked V2 candidate (plan section I), not
+    implemented here. An operator who skipped a phase takes a manual one-off
+    ``sqlite3.Connection.backup()``.
+
+    A file-backed source is required. On backup creation or verification
+    failure (``OSError`` / ``sqlite3.Error``) the gate raises
+    ``MigrationBackupRequiredException`` so the runner refuses to migrate and
+    the source DB is unchanged. ``backup_dir=None`` falls back to the source
+    DB's parent directory.
     """
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = (
-        dest_dir / f"swing-pre-phase14-sb3-migration-{timestamp}.db"
+    if current_version != spec.pre_version or target_version < spec.pre_version + 1:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            f"{spec.label} backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        if spec.creator_alias is None:
+            backup_path = _create_gate_backup(
+                src_path, dest_dir=backup_dir, filename_stem=spec.filename_stem)
+        else:
+            backup_path = globals()[spec.creator_alias](src_path, dest_dir=backup_dir)
+        _verify_backup_integrity(backup_path, expected_tables=spec.expected_tables)
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"{spec.label} backup failed: {exc}"
+        ) from exc
+
+
+def _bind_gate_wrapper(pre_version: int):
+    """A module-level gate name as a one-line wrapper bound to ITS row. The
+    wrapper carries no predicate; ``backup_gate_spec`` exposes the row so the
+    closure test can prove the binding."""
+    spec = _GATE_BY_PRE_VERSION[pre_version]
+
+    def gate(
+        conn: sqlite3.Connection,
+        *,
+        current_version: int,
+        target_version: int,
+        backup_dir: Path | None,
+    ) -> None:
+        _run_pre_migration_gate(
+            spec, conn, current_version=current_version,
+            target_version=target_version, backup_dir=backup_dir,
+        )
+
+    gate.__name__ = gate.__qualname__ = spec.gate_name
+    gate.__doc__ = (
+        f"Pre-migration backup gate for the v{pre_version} -> v{pre_version + 1} "
+        f"crossing (image stem {spec.filename_stem!r}); body: "
+        "_run_pre_migration_gate."
     )
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_b7_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """B-7 (Phase 15) mirror with the b7 filename prefix.
-
-    SQLite-native Connection.backup() snapshot before the 0024 migration.
-    Backup file pattern ``swing-pre-b7-migration-<ISO>.db``.
-    """
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-b7-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_phase16_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Phase 16 mirror. SQLite-native Connection.backup() before the 0025 migration.
-    Backup file pattern ``swing-pre-phase16-migration-<ISO>.db``."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-phase16-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_broad_watch_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Broad-watch-baseline (0026) mirror. SQLite-native Connection.backup()
-    before the 0026 migration. Backup file pattern
-    ``swing-pre-broad-watch-baseline-migration-<ISO>.db``."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-broad-watch-baseline-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_entry_intent_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """entry_intent (0027) mirror. SQLite-native Connection.backup() before the
-    0027 migration. Backup file ``swing-pre-entry-intent-migration-<ISO>.db``."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-entry-intent-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_watchlist_pin_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """watchlist-pin (0028) mirror. SQLite-native Connection.backup() before the
-    0028 migration. Backup file ``swing-pre-watchlist-pin-migration-<ISO>.db``."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-watchlist-pin-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_cash_recon_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """cash-reconciliation (0029) mirror. SQLite-native Connection.backup()
-    before the 0029 migration. Backup file
-    ``swing-pre-cash-recon-migration-<ISO>.db``."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-cash-recon-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_phase18_arc_c_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Phase 18 Arc 18-C (0030) mirror. SQLite-native Connection.backup()
-    before the 0030 migration. Backup file
-    ``swing-pre-phase18-arc-c-migration-<ISO>.db``."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-phase18-arc-c-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_phase18_arc_h6_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Phase 18 Arc 18-H.6 (0031) mirror. SQLite-native Connection.backup()
-    before the 0031 migration. Backup file
-    ``swing-pre-phase18-arc-h6-migration-<ISO>.db``."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-phase18-arc-h6-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_phase21_arc_a_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Phase 21 Arc 21-A (0032) mirror. SQLite-native Connection.backup()
-    before the 0032 migration. Backup file
-    ``swing-pre-phase21-arc-a-migration-<ISO>.db``."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-phase21-arc-a-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_phase21_arc_b_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Phase 21 Arc 21-B (0033) mirror. SQLite-native Connection.backup()
-    before the 0033 migration. Backup file
-    ``swing-pre-phase21-arc-b-migration-<ISO>.db``."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-phase21-arc-b-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_h1_amendment_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """H1 decision-criteria amendment (0034) mirror. SQLite-native
-    Connection.backup() before the 0034 migration. Backup file
-    ``swing-pre-h1-amendment-migration-<ISO>.db``.
-
-    This snapshot is the belt on the record-level preservation: it captures the
-    live v33 row while `decision_criteria` still reads the pre-registered
-    text."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-h1-amendment-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_a4_taxonomy_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """A-4 discrepancy-taxonomy widening (0035) mirror. SQLite-native
-    Connection.backup() before the 0035 migration. Backup file
-    ``swing-pre-a4-taxonomy-migration-<ISO>.db``.
-
-    0035 REBUILDS `reconciliation_discrepancies` (SQLite cannot ALTER a CHECK)
-    with `foreign_keys=OFF`, i.e. it DROPs a table that
-    `reconciliation_corrections` holds an FK into. A rebuild is the highest-risk
-    shape of migration this project runs; the snapshot is the belt."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-a4-taxonomy-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_demand_c_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Demand C provenance-corrections (0036) mirror. SQLite-native
-    Connection.backup() before the 0036 migration. Backup file
-    ``swing-pre-demand-c-migration-<ISO>.db``.
-
-    0036 is ADDITIVE -- a bare CREATE TABLE plus two indexes -- so it is not
-    the rebuild class the 0035 gate guards. The snapshot is taken anyway
-    because every other version crossing in this file takes one and a gate
-    that is skipped for being "safe enough" is a gate nobody can rely on."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-demand-c-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_phase22_arc_a_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """22-A order<->mandate link (0037) mirror. SQLite-native
-    Connection.backup() before the 0037 migration. Backup file
-    ``swing-pre-22a-migration-<ISO>.db``.
-
-    0037 is ADDITIVE -- new tables, new triggers, six ADD COLUMNs -- so it is
-    not the rebuild class the 0035 gate guards. The snapshot is taken anyway,
-    and here it earns its keep: 0037 installs an IMMUTABILITY BARRIER on
-    ``candidates``, so a post-migration repair of that table is a
-    migration-level operation. The pre-image is the only ordinary way back."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-22a-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_phase22_arc_a4_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """22-A4 per-attempt identity (0038) mirror of the 22-A backup creator.
-    SQLite-native Connection.backup() before the 0038 migration. Backup file
-    ``swing-pre-22a4-migration-<ISO>.db``.
-
-    0038 is ADDITIVE -- one ADD COLUMN, one partial UNIQUE index, one BEFORE
-    UPDATE trigger, no backfill -- so it is not the rebuild class the 0035
-    gate guards. The snapshot is taken anyway, and here it earns its keep: the
-    live database crosses this migration exactly once, holding real
-    money-bearing trades, and the token's immutability trigger makes any
-    post-migration repair of ``trades.attempt_id`` a migration-level
-    operation. The pre-image is the only ordinary way back."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = dest_dir / f"swing-pre-22a4-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _create_pre_phase14_migration_backup(
-    src_path: Path, *, dest_dir: Path,
-) -> Path:
-    """Phase 14 Sub-bundle 2 mirror with phase14 filename prefix.
-
-    SQLite-native Connection.backup() snapshot before the 0022 migration.
-    Backup file pattern ``swing-pre-phase14-migration-<ISO>.db``. Temp file
-    created in dest_dir (os.replace same-filesystem gotcha). SQLite-native
-    Connection.backup() is the only acceptable snapshot mechanism (consistent
-    under live writers).
-    """
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = (
-        dest_dir / f"swing-pre-phase14-migration-{timestamp}.db"
-    )
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
-    try:
-        dest_conn = sqlite3.connect(backup_path)
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return backup_path
-
-
-def _phase8_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Phase 8 spec §8.2 backup-before-migrate gate (plan §A.5 + §1.0 Step 3).
-
-    Fires only when ``current_version == 15 AND target_version >= 16`` —
-    i.e., a real production v15 DB about to receive Phase 8's migration 0016.
-    Mutually exclusive with ``_phase7_backup_gate`` by construction
-    (current_version == 13 vs 15); both gates can coexist without conflict.
-    Filename: ``swing-pre-phase8-migration-<ISO>.db`` (NOT phase7 prefix).
-    """
-    if target_version < 16 or current_version != 15:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-Phase-8 backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase8_migration_backup(
-            src_path, dest_dir=backup_dir,
-        )
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=PHASE8_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-Phase-8 backup failed: {exc}"
-        ) from exc
-
-
-def _phase9_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Phase 9 spec §9.3 backup-before-migrate gate (plan §A.0).
-
-    Fires only when ``current_version == 16 AND target_version >= 17`` —
-    i.e., a real production v16 DB about to receive Phase 9's migration 0017.
-    Mutually exclusive with ``_phase7_backup_gate`` and ``_phase8_backup_gate``
-    by construction (current_version == 13 vs 15 vs 16); all three gates can
-    coexist without conflict. Filename: ``swing-pre-phase9-migration-<ISO>.db``
-    (NOT phase7 / phase8 prefix).
-    """
-    if target_version < 17 or current_version != 16:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-Phase-9 backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase9_migration_backup(
-            src_path, dest_dir=backup_dir,
-        )
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=PHASE9_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-Phase-9 backup failed: {exc}"
-        ) from exc
-
-
-def _phase12_bundle_c_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Phase 12 Sub-bundle C backup-before-migrate gate (plan §B.4 + §A.12).
-
-    Fires only when ``current_version == 18 AND target_version >= 19`` —
-    i.e., a real production v18 DB about to receive Phase 12 Sub-bundle C's
-    migration 0019. Mutually exclusive with the Phase 7/8/9 gates by
-    construction (current_version == 13 vs 15 vs 16 vs 18). Filename:
-    ``swing-pre-phase12-bundle-c-migration-<ISO>.db`` (NOT phase7/8/9 prefix).
-
-    Phase 11 (v17 → v18) did NOT wire a version-specific gate per plan
-    §C.5 LOCK on Phase 11 Sub-bundle B's migration 0018 ship; this gate
-    closes the v18 → v19 transition specifically.
-
-    INTENTIONAL NARROWNESS (ACCEPT-WITH-RATIONALE, Codex R1 Major #1):
-    Multi-step migrations from a pre-v18 baseline (e.g., v15 → v19, v17 →
-    v19) BYPASS this gate by design — the predicate ``current_version != 18``
-    is evaluated ONCE at ``run_migrations`` entry, not before each individual
-    schema-jump migration. A DB at v17 advancing to v19 sees the gate
-    evaluated with ``current_version=17`` (returns early); the migration
-    loop then walks 17→18→19 internally with no further gate evaluation.
-    This matches ``_phase9_backup_gate`` precedent verbatim (equality
-    predicate ``current_version != 16`` at run_migrations entry; multi-step
-    walks from pre-v16 likewise bypass).
-
-    Production operators on v18 (the current state at integration-merge
-    time, per CLAUDE.md Phase 11 ship entry) fire the gate on next
-    ``swing db-migrate``. Operators who skipped a phase (extremely uncommon
-    in this project's history — phase ships are integration-merged
-    sequentially) should run a manual one-off backup via Python
-    ``sqlite3.Connection.backup()`` (the same SQLite-native mechanism the
-    in-tree gates use; matches spec §12.1 binding posture and avoids
-    relying on the ``sqlite3`` CLI being installed on PATH).
-
-    Forward-binding note (V2 hardening candidate): firing the gate before
-    each individual schema-jump migration (per-version backups instead of
-    per-target backups) is a candidate banked at plan §I for V2 dispatch.
-    The current per-target design is preserved because:
-      (a) the only real-world scenario where it matters is a deliberately
-          long-skipped operator state, which has never occurred in the
-          project's history;
-      (b) per-version backups would generate N intermediate snapshots that
-          mostly duplicate each other on a single ``db-migrate`` invocation,
-          consuming disk space proportional to the version-jump distance;
-      (c) the alternative — a single backup at the FIRST in-flight version
-          rather than at the target version — would also work but would
-          require a non-trivial refactor of the four phase-specific gates
-          into a unified version-aware backup-once helper.
-    """
-    if target_version < 19 or current_version != 18:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-Phase-12-Sub-bundle-C backup gate requires a file-backed "
-            "source DB; in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase12_bundle_c_migration_backup(
-            src_path, dest_dir=backup_dir,
-        )
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=PHASE12_BUNDLE_C_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-Phase-12-Sub-bundle-C backup failed: {exc}"
-        ) from exc
-
-
-def _phase13_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Phase 13 T2.SB1 backup-before-migrate gate (plan §B.1 + spec §3.5).
-
-    Fires only when ``current_version == 19 AND target_version >= 20`` —
-    i.e., a real production v19 DB about to receive Phase 13's migration
-    0020. STRICT EQUALITY on pre_version per CLAUDE.md gotcha "Migration
-    runner backup-gate equality form: pre_version == (target - 1) strict
-    equality, NOT pre_version <= (target - 1)". Multi-step migration walks
-    from pre-v19 baselines bypass this gate by design (matches Phase 9 /
-    Phase 12 C.A precedent).
-
-    Filename: ``swing-pre-phase13-migration-<ISO>.db`` (NOT
-    phase7/8/9/12-bundle-c prefix).
-    """
-    if target_version < 20 or current_version != 19:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-Phase-13 backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase13_migration_backup(
-            src_path, dest_dir=backup_dir,
-        )
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=PHASE13_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-Phase-13 backup failed: {exc}"
-        ) from exc
-
-
-def _phase13_sb6c_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Phase 13 T2.SB6c backup-before-migrate gate (plan §B.5 + spec §A.14).
-
-    Fires only when ``current_version == 20 AND target_version >= 21`` —
-    i.e., a real production v20 DB about to receive Phase 13's migration
-    0021. STRICT EQUALITY on pre_version per CLAUDE.md gotcha "Migration
-    runner backup-gate equality form: pre_version == (target - 1) strict
-    equality, NOT pre_version <= (target - 1)" (OQ-3 LOCK). Multi-step
-    migration walks from pre-v20 baselines bypass this gate by design
-    (matches Phase 9 / Phase 12 C.A / Phase 13 T-A.1.1 precedent).
-
-    Filename: ``swing-pre-phase13-sb6c-migration-<ISO>.db`` (NOT
-    phase7/8/9/12-bundle-c/phase13-v20 prefix).
-    """
-    if target_version < 21 or current_version != 20:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-Phase-13-SB6c backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase13_sb6c_migration_backup(
-            src_path, dest_dir=backup_dir,
-        )
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=PHASE13_SB6C_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-Phase-13-SB6c backup failed: {exc}"
-        ) from exc
-
-
-def _phase14_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Phase 14 Sub-bundle 2 backup-before-migrate gate.
-
-    Fires only when ``current_version == 21 AND target_version >= 22`` -- a
-    real production v21 DB about to receive migration 0022. STRICT EQUALITY
-    on pre_version per CLAUDE.md gotcha ``pre_version == (target - 1)`` (NOT
-    ``<=``). Multi-step walks from pre-v21 baselines bypass this gate by
-    design (matches Phase 9 / 12 C.A / 13 precedent).
-
-    Filename: ``swing-pre-phase14-migration-<ISO>.db``.
-    """
-    if target_version < 22 or current_version != 21:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-Phase-14 backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase14_migration_backup(
-            src_path, dest_dir=backup_dir,
-        )
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=PHASE14_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-Phase-14 backup failed: {exc}"
-        ) from exc
-
-
-def _phase14_sb3_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Phase 14 Sub-bundle 3 backup-before-migrate gate (plan §G Task T-3.1).
-
-    Fires only when ``current_version == 22 AND target_version >= 23`` -- a
-    real production v22 DB about to receive migration 0023 (chart_renders
-    surface rename). STRICT EQUALITY on pre_version per CLAUDE.md gotcha
-    ``pre_version == (target - 1)`` (NOT ``<=``). Multi-step walks from
-    pre-v22 baselines bypass this gate by design (matches Phase 9 / 12 C.A /
-    13 / 14 SB2 precedent).
-
-    Filename: ``swing-pre-phase14-sb3-migration-<ISO>.db``.
-    """
-    if target_version < 23 or current_version != 22:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-Phase-14-SB3 backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase14_sb3_migration_backup(
-            src_path, dest_dir=backup_dir,
-        )
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=PHASE14_SB3_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-Phase-14-SB3 backup failed: {exc}"
-        ) from exc
-
-
-def _b7_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """B-7 (Phase 15) backup-before-migrate gate (spec §4.4).
-
-    Fires ONLY when ``current_version == 23 AND target_version >= 24`` -- a real
-    production v23 DB about to receive migration 0024 (failure_mode column).
-    STRICT EQUALITY on pre_version per the ``pre_version == (target - 1)`` gotcha
-    (NOT ``<=``). Multi-step walks from pre-v23 baselines bypass this gate by
-    design (Phase 9 / 12 / 13 / 14 precedent).
-
-    Filename: ``swing-pre-b7-migration-<ISO>.db``.
-    """
-    if target_version < 24 or current_version != 23:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-B7 backup gate requires a file-backed source DB; in-memory "
-            "connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_b7_migration_backup(
-            src_path, dest_dir=backup_dir,
-        )
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=B7_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-B7 backup failed: {exc}"
-        ) from exc
-
-
-def _phase16_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Phase 16 backup-before-migrate gate (spec §5.3).
-
-    Fires ONLY when ``current_version == 24 AND target_version >= 25`` -- a real
-    production v24 DB about to cross v25 (migration 0025, pipeline_step_timings).
-    STRICT EQUALITY on pre_version per the ``pre_version == (target - 1)`` gotcha
-    (NOT ``<=``). Snapshots; does not BLOCK.
-    """
-    if target_version < 25 or current_version != 24:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-phase16 backup gate requires a file-backed source DB; in-memory "
-            "connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase16_migration_backup(src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path, expected_tables=PHASE16_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-phase16 backup failed: {exc}"
-        ) from exc
-
-
-def _broad_watch_baseline_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Broad-watch-baseline (0026) backup-before-migrate gate.
-
-    Fires ONLY when ``current_version == 25 AND target_version >= 26`` -- a real
-    production v25 DB about to cross v26. STRICT EQUALITY on pre_version per the
-    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps from
-    pre-v25 baselines bypass this gate by design.
-    """
-    if target_version < 26 or current_version != 25:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-broad-watch backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_broad_watch_migration_backup(
-            src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path, expected_tables=BROAD_WATCH_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-broad-watch backup failed: {exc}"
-        ) from exc
-
-
-def _entry_intent_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """entry_intent (0027) backup-before-migrate gate.
-
-    Fires ONLY when ``current_version == 26 AND target_version >= 27`` -- a real
-    production v26 DB about to cross v27. STRICT EQUALITY on pre_version per the
-    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps from
-    pre-v26 baselines bypass this gate by design.
-    """
-    if target_version < 27 or current_version != 26:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-entry-intent backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_entry_intent_migration_backup(
-            src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path, expected_tables=ENTRY_INTENT_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-entry-intent backup failed: {exc}"
-        ) from exc
-
-
-def _watchlist_pin_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """watchlist-pin (0028) backup-before-migrate gate.
-
-    Fires ONLY when ``current_version == 27 AND target_version >= 28`` -- a real
-    production v27 DB about to cross v28. STRICT EQUALITY on pre_version per the
-    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps from
-    pre-v27 baselines bypass this gate by design.
-    """
-    if target_version < 28 or current_version != 27:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-watchlist-pin backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_watchlist_pin_migration_backup(
-            src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path, expected_tables=WATCHLIST_PIN_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-watchlist-pin backup failed: {exc}"
-        ) from exc
-
-
-def _cash_recon_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Cash-reconciliation (0029) backup-before-migrate gate.
-
-    Fires ONLY when ``current_version == 28 AND target_version >= 29`` -- a real
-    production v28 DB about to cross v29. STRICT EQUALITY on pre_version per the
-    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps from
-    pre-v28 baselines bypass this gate by design.
-    """
-    if target_version < 29 or current_version != 28:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-cash-recon backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_cash_recon_migration_backup(
-            src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path, expected_tables=CASH_RECON_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-cash-recon backup failed: {exc}"
-        ) from exc
-
-
-def _phase18_arc_c_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Phase 18 Arc 18-C (0030) backup-before-migrate gate.
-
-    Fires ONLY when ``current_version == 29 AND target_version >= 30`` -- a real
-    production v29 DB about to cross v30. STRICT EQUALITY on pre_version per the
-    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps from
-    pre-v29 baselines bypass this gate by design.
-    """
-    if target_version < 30 or current_version != 29:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-phase18-arc-c backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase18_arc_c_migration_backup(
-            src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path, expected_tables=PHASE18_ARC_C_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-phase18-arc-c backup failed: {exc}"
-        ) from exc
-
-
-def _phase18_arc_h6_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Phase 18 Arc 18-H.6 (0031) backup-before-migrate gate.
-
-    Fires ONLY when ``current_version == 30 AND target_version >= 31`` -- a real
-    production v30 DB about to cross v31 (migration 0031, the
-    reconciliation_discrepancies discrepancy_type CHECK widening). STRICT
-    EQUALITY on pre_version per the ``pre_version == (target - 1)`` gotcha (NOT
-    ``<=``); multi-version jumps from pre-v30 baselines bypass this gate by
-    design.
-    """
-    if target_version < 31 or current_version != 30:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-phase18-arc-h6 backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase18_arc_h6_migration_backup(
-            src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=PHASE18_ARC_H6_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-phase18-arc-h6 backup failed: {exc}"
-        ) from exc
-
-
-def _phase21_arc_a_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Phase 21 Arc 21-A (0032) backup-before-migrate gate.
-
-    Fires ONLY when ``current_version == 31 AND target_version >= 32`` -- a real
-    production v31 DB about to cross v32 (migration 0032, the latch_view_events
-    view-telemetry table). STRICT EQUALITY on pre_version per the
-    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps
-    from pre-v31 baselines bypass this gate by design.
-    """
-    if target_version < 32 or current_version != 31:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-phase21-arc-a backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase21_arc_a_migration_backup(
-            src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=PHASE21_ARC_A_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-phase21-arc-a backup failed: {exc}"
-        ) from exc
-
-
-def _phase21_arc_b_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Phase 21 Arc 21-B (0033) backup-before-migrate gate.
-
-    Fires ONLY when ``current_version == 32 AND target_version >= 33`` -- a real
-    production v32 DB about to cross v33 (migration 0033: the
-    latch_view_events rebuild + the latch_order_intents ledger). STRICT EQUALITY
-    on pre_version per the ``pre_version == (target - 1)`` gotcha (NOT ``<=``);
-    multi-version jumps from pre-v32 baselines bypass this gate by design.
-    """
-    if target_version < 33 or current_version != 32:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-phase21-arc-b backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase21_arc_b_migration_backup(
-            src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=PHASE21_ARC_B_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-phase21-arc-b backup failed: {exc}"
-        ) from exc
-
-
-def _h1_amendment_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """H1 decision-criteria amendment (0034) backup-before-migrate gate.
-
-    Fires ONLY when ``current_version == 33 AND target_version >= 34`` -- a real
-    production v33 DB about to cross v34 (migration 0034: the additive
-    ``preregistered_decision_criteria`` column plus the amendment UPDATEs on the
-    'A+ baseline' row). STRICT EQUALITY on pre_version per the
-    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps
-    from pre-v33 baselines bypass this gate by design.
-    """
-    if target_version < 34 or current_version != 33:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-h1-amendment backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_h1_amendment_migration_backup(
-            src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=H1_AMENDMENT_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-h1-amendment backup failed: {exc}"
-        ) from exc
-
-
-def _a4_taxonomy_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """A-4 discrepancy-taxonomy widening (0035) backup-before-migrate gate.
-
-    Fires ONLY when ``current_version == 34 AND target_version >= 35`` -- a real
-    production v34 DB about to cross v35 (migration 0035: the
-    `reconciliation_discrepancies` table REBUILD that widens the
-    discrepancy_type CHECK 11 -> 12). STRICT EQUALITY on pre_version per the
-    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps
-    from pre-v34 baselines bypass this gate by design.
-    """
-    if target_version < 35 or current_version != 34:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-a4-taxonomy backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_a4_taxonomy_migration_backup(
-            src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=A4_TAXONOMY_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-a4-taxonomy backup failed: {exc}"
-        ) from exc
-
-
-def _demand_c_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """Demand C provenance-corrections (0036) backup-before-migrate gate.
-
-    Fires ONLY when ``current_version == 35 AND target_version >= 36`` -- a
-    real production v35 DB about to cross v36. STRICT EQUALITY on pre_version
-    per the ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version
-    jumps from pre-v35 baselines bypass this gate by design.
-    """
-    if target_version < 36 or current_version != 35:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-demand-c backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_demand_c_migration_backup(
-            src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=DEMAND_C_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-demand-c backup failed: {exc}"
-        ) from exc
-
-
-def _phase22_arc_a_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """22-A order<->mandate link (0037) backup-before-migrate gate.
-
-    Fires ONLY when ``current_version == 36 AND target_version >= 37`` -- a
-    real production v36 DB about to cross v37. STRICT EQUALITY on pre_version
-    per the ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version
-    jumps from pre-v36 baselines bypass this gate by design.
-    """
-    if target_version < 37 or current_version != 36:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-22-A backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase22_arc_a_migration_backup(
-            src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=PHASE22_ARC_A_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-22-A backup failed: {exc}"
-        ) from exc
-
-
-def _phase22_arc_a4_backup_gate(
-    conn: sqlite3.Connection,
-    *,
-    current_version: int,
-    target_version: int,
-    backup_dir: Path | None,
-) -> None:
-    """22-A4 per-attempt identity (0038) backup-before-migrate gate.
-
-    Fires ONLY when ``current_version == 37 AND target_version >= 38`` -- a
-    real production v37 DB about to cross v38. STRICT EQUALITY on the PRE
-    version: the condition is exactly ``current_version == 37 AND
-    target_version >= 38``, NOT ``current_version <= 37``. That is the
-    project-canonical clause shape (CLAUDE.md: copy the Phase 9
-    ``pre_version == 16 AND target >= 17`` clause verbatim); the gotcha's
-    ``pre_version == (target - 1)`` phrasing describes the SINGLE-STEP case
-    only and would read false at ``target_version = 39``, where this gate
-    still fires and must. Multi-version jumps from pre-v37 baselines bypass
-    this gate by design, which is why a fixture that wants BOTH a v37 world
-    and production HEAD makes TWO calls rather than retargeting one
-    (``run_migrations`` evaluates every gate ONCE against the INITIAL
-    ``current``).
-    """
-    if target_version < 38 or current_version != 37:
-        return
-    src_path = _resolve_main_db_path(conn)
-    if src_path is None:
-        raise MigrationBackupRequiredException(
-            "pre-22-A4 backup gate requires a file-backed source DB; "
-            "in-memory connections cannot be snapshotted."
-        )
-    if backup_dir is None:
-        backup_dir = src_path.parent
-    try:
-        backup_path = _create_pre_phase22_arc_a4_migration_backup(
-            src_path, dest_dir=backup_dir)
-        _verify_backup_integrity(
-            backup_path,
-            expected_tables=PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES,
-        )
-    except MigrationBackupRequiredException:
-        raise
-    except (OSError, sqlite3.Error) as exc:
-        raise MigrationBackupRequiredException(
-            f"pre-22-A4 backup failed: {exc}"
-        ) from exc
+    gate.backup_gate_spec = spec  # type: ignore[attr-defined]
+    return gate
+
+
+# The 23 gate NAMES survive (tests call and patch them); each is bound to its
+# row. ``run_migrations`` does NOT call these names from a list -- it iterates
+# the table and resolves ``spec.gate_name`` by module attribute at call time.
+_phase7_backup_gate = _bind_gate_wrapper(13)
+_phase8_backup_gate = _bind_gate_wrapper(15)
+_phase9_backup_gate = _bind_gate_wrapper(16)
+_phase12_bundle_c_backup_gate = _bind_gate_wrapper(18)
+_phase13_backup_gate = _bind_gate_wrapper(19)
+_phase13_sb6c_backup_gate = _bind_gate_wrapper(20)
+_phase14_backup_gate = _bind_gate_wrapper(21)
+_phase14_sb3_backup_gate = _bind_gate_wrapper(22)
+_b7_backup_gate = _bind_gate_wrapper(23)
+_phase16_backup_gate = _bind_gate_wrapper(24)
+_broad_watch_baseline_backup_gate = _bind_gate_wrapper(25)
+_entry_intent_backup_gate = _bind_gate_wrapper(26)
+_watchlist_pin_backup_gate = _bind_gate_wrapper(27)
+_cash_recon_backup_gate = _bind_gate_wrapper(28)
+_phase18_arc_c_backup_gate = _bind_gate_wrapper(29)
+_phase18_arc_h6_backup_gate = _bind_gate_wrapper(30)
+_phase21_arc_a_backup_gate = _bind_gate_wrapper(31)
+_phase21_arc_b_backup_gate = _bind_gate_wrapper(32)
+_h1_amendment_backup_gate = _bind_gate_wrapper(33)
+_a4_taxonomy_backup_gate = _bind_gate_wrapper(34)
+_demand_c_backup_gate = _bind_gate_wrapper(35)
+_phase22_arc_a_backup_gate = _bind_gate_wrapper(36)
+_phase22_arc_a4_backup_gate = _bind_gate_wrapper(37)
 
 
 def run_migrations(
@@ -2160,144 +905,17 @@ def run_migrations(
     if current >= target_version:
         return
 
-    _phase7_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase8_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase9_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase12_bundle_c_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase13_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase13_sb6c_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase14_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase14_sb3_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _b7_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase16_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _broad_watch_baseline_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _entry_intent_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _watchlist_pin_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _cash_recon_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase18_arc_c_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase18_arc_h6_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase21_arc_a_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase21_arc_b_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _h1_amendment_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _a4_taxonomy_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _demand_c_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase22_arc_a_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
-    _phase22_arc_a4_backup_gate(
-        conn,
-        current_version=current,
-        target_version=target_version,
-        backup_dir=backup_dir,
-    )
+    # Every gate row, resolved BY MODULE ATTRIBUTE at call time (never a bound
+    # list): the table is the single source, and a future row is called by
+    # construction. At most one row fires (strict equality on the INITIAL
+    # ``current``); a refusing gate raises before any migration is applied.
+    for spec in _PRE_MIGRATION_BACKUP_GATES:
+        globals()[spec.gate_name](
+            conn,
+            current_version=current,
+            target_version=target_version,
+            backup_dir=backup_dir,
+        )
 
     apply_ceiling = min(target_version, EXPECTED_SCHEMA_VERSION)
     migration_files = sorted(_MIGRATIONS_DIR.glob("*.sql"))
@@ -2321,8 +939,15 @@ def run_migrations(
         )
 
 
-def ensure_schema(db_path: Path) -> sqlite3.Connection:
-    """Create or upgrade the DB schema. Use from the CLI migrate command, NOT from app startup."""
+def ensure_schema(
+    db_path: Path, *, backup_dir: Path | None = None,
+) -> sqlite3.Connection:
+    """Create or upgrade the DB schema. Use from the CLI migrate command, NOT from app startup.
+
+    ``backup_dir`` is where a firing pre-migration backup gate writes its image
+    (D32: the CLI passes ``cfg.paths.backups_dir``). ``None`` keeps the gate's
+    own default, the DB's parent directory, for every other caller.
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = open_connection(db_path, reaffirm_wal=True)
     # busy_timeout + foreign_keys + WAL are applied by open_connection (WAL FIRST
@@ -2338,7 +963,9 @@ def ensure_schema(db_path: Path) -> sqlite3.Connection:
         )
 
     try:
-        run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION)
+        run_migrations(
+            conn, target_version=EXPECTED_SCHEMA_VERSION, backup_dir=backup_dir,
+        )
     except Exception:
         conn.close()
         raise
