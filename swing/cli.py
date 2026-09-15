@@ -303,13 +303,31 @@ def db_migrate(ctx: click.Context) -> None:
             # which produces a single consistent file regardless of WAL state.
             ts = datetime.now().strftime("%Y%m%dT%H%M%S")
             backup_path = backups_dir / f"swing-{ts}.db"
-            src = open_connection(db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
-            dst = _sqlite3.connect(backup_path)
+            # NO-CLOBBER: the name is second-granular, and connect()+backup()
+            # onto an existing file overwrites it. Reserve it by exclusive
+            # create; an occupied name refuses BEFORE anything migrates.
             try:
-                src.backup(dst)
-            finally:
-                dst.close()
-                src.close()
+                with open(backup_path, "xb"):
+                    pass
+            except FileExistsError as exc:
+                raise click.ClickException(
+                    f"Backup destination already exists, refusing to overwrite it: "
+                    f"{backup_path}. Nothing was migrated; re-run in a moment."
+                ) from exc
+            try:
+                src = open_connection(db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
+                try:
+                    dst = _sqlite3.connect(backup_path)
+                    try:
+                        src.backup(dst)
+                    finally:
+                        dst.close()
+                finally:
+                    src.close()
+            except BaseException:
+                # remove only the file THIS attempt reserved and partially wrote
+                backup_path.unlink(missing_ok=True)
+                raise
             click.echo(f"Backup: {backup_path}")
         else:
             # Non-recursive on purpose: backups/pre-images/ holds older images
@@ -334,20 +352,23 @@ def db_migrate(ctx: click.Context) -> None:
         )
 
     conn = ensure_schema(db_path, backup_dir=backups_dir)
+    gate_alarm: str | None = None
     if gate is not None:
         new_images = sorted(set(backups_dir.glob(gate.filename_glob)) - gate_images_before)
-        if len(new_images) != 1:
+        if len(new_images) == 1:
+            click.echo(f"Backup (pre-migration gate, integrity-verified): {new_images[0]}")
+        else:
             # The gate refuses on its own failure, so reaching here with anything
             # but exactly one new image is a wiring defect -- alarm, never assert.
-            conn.close()
-            raise click.ClickException(
+            # RAISED ONLY AFTER the post-migration obligations below (the v17
+            # ratification fires once, on this invocation, or never).
+            gate_alarm = (
                 f"Migration from schema version {pre_version} completed, but "
                 f"{len(new_images)} new '{gate.filename_glob}' backup image(s) "
                 f"appeared in {backups_dir} (expected exactly 1): "
                 f"{[str(p) for p in new_images]}. Locate the pre-migration image "
                 "before relying on this migration."
             )
-        click.echo(f"Backup (pre-migration gate, integrity-verified): {new_images[0]}")
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
     if pre_version <= 16 and version >= 17:
         # First-time v17 landing: ratify the migration's hard-coded seed
@@ -393,9 +414,12 @@ def db_migrate(ctx: click.Context) -> None:
                 f"import-from-toml --field <name>` for: "
                 f"capital_floor_constant_dollars, max_concurrent_positions, "
                 f"review_lag_threshold_days, max_account_risk_per_trade_pct."
+                + (f" ALSO: {gate_alarm}" if gate_alarm else "")
             ) from exc
     conn.close()
     click.echo(f"DB at {db_path} - schema version {version}")
+    if gate_alarm is not None:
+        raise click.ClickException(gate_alarm)
 
 
 @main.command("db-backup")

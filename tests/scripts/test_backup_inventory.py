@@ -172,6 +172,36 @@ def test_the_script_runs_as_a_program_ascii_only_and_refuses_a_missing_root(
     assert missing.returncode == 2
 
 
+def test_no_twin_is_claimed_across_a_wal_sidecar(tmp_path: Path) -> None:
+    """Codex R1 R-2: equal main files are not equal databases when either side
+    carries a -wal the immutable read and the main-file hash cannot see."""
+    root = tmp_path / "r"
+    backups = root / "backups"
+    gate = _image(root / "swing-pre-22a4-migration-20260908T010203Z.db", 37, marker="A")
+    backups.mkdir(parents=True)
+    cli_wal = backups / "swing-20260908T150203.db"
+    shutil.copyfile(gate, cli_wal)
+    Path(str(cli_wal) + "-wal").write_bytes(b"committed pages the gate lacks")
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    assert _rows(text)[str(cli_wal)][7] == "indeterminate-wal-sidecar"
+    assert "# cli-copy with a byte-identical gate twin: 0 of 1" in text
+    # and a sidecar on the GATE side withholds the twin too
+    Path(str(cli_wal) + "-wal").unlink()
+    Path(str(gate) + "-wal").write_bytes(b"x")
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    assert _rows(text)[str(cli_wal)][7] == "none"
+
+
+def test_a_missing_non_ascii_root_exits_2_on_a_cp1252_console(tmp_path: Path) -> None:
+    env = dict(os.environ, PYTHONIOENCODING="cp1252")
+    r = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--root", str(tmp_path / "café-→-nope")],
+        capture_output=True, env=env, check=False,
+    )
+    assert r.returncode == 2, r.stderr
+    r.stderr.decode("ascii")
+
+
 def test_the_script_imports_nothing_from_swing() -> None:
     text = _SCRIPT.read_text(encoding="utf-8")
     assert "import swing" not in text and "from swing" not in text

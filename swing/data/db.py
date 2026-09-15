@@ -1,6 +1,7 @@
 """SQLite connection + migrations + schema-version gate."""
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -717,15 +718,28 @@ def _create_gate_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-{filename_stem}-migration-{timestamp}.db"
-    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
+    # NO-CLOBBER: the name is second-granular, and connect()+backup() onto an
+    # existing file OVERWRITES it -- possibly the only pre-image of a schema
+    # version. Reserve the name by exclusive create; an occupied name raises
+    # FileExistsError (an OSError), which the gate turns into a refusal BEFORE
+    # any migration runs.
+    with open(backup_path, "xb"):
+        pass
     try:
-        dest_conn = sqlite3.connect(backup_path)
+        src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
         try:
-            src_conn.backup(dest_conn)
+            dest_conn = sqlite3.connect(backup_path)
+            try:
+                src_conn.backup(dest_conn)
+            finally:
+                dest_conn.close()
         finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
+            src_conn.close()
+    except BaseException:
+        # Remove only the file THIS attempt reserved and partially wrote.
+        with contextlib.suppress(OSError):
+            backup_path.unlink(missing_ok=True)
+        raise
     return backup_path
 
 

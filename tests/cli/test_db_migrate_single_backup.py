@@ -27,7 +27,7 @@ from swing.data.db import EXPECTED_SCHEMA_VERSION, open_connection, run_migratio
 _CLI_COPY_RE = re.compile(r"^swing-\d{8}T\d{6}\.db$")
 
 
-def _config(project_dir: Path, home_dir: Path) -> Path:
+def _config(project_dir: Path, home_dir: Path, *, hard_cap_open: int = 6) -> Path:
     cfg_path = project_dir / "swing.config.toml"
     universe = project_dir / "reference" / "rs-universe.csv"
     universe.parent.mkdir(parents=True, exist_ok=True)
@@ -55,7 +55,7 @@ risk_equity_floor = 7500.0
 
 [position_limits]
 soft_warn_open = 4
-hard_cap_open = 6
+hard_cap_open = {hard_cap_open}
 
 [risk]
 max_risk_pct = 0.005
@@ -254,3 +254,126 @@ def test_cli_decision_reads_the_same_table_the_runner_iterates() -> None:
         assert (spec is None) == (rows == [])
         if spec is not None:
             assert spec is rows[0]
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 fixes: no-clobber (R-1), the deferred alarm (R-3), the F2 boundary
+# states (R-5)
+# ---------------------------------------------------------------------------
+def _real_db(path: Path) -> None:
+    """A REAL database at ``path`` (garbage bytes would make backup() fail on its
+    own, so an overwrite test would pass without any no-clobber protection)."""
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE an_earlier_recovery_image (x)")
+    c.commit()
+    c.close()
+
+
+def _frozen(fixed):
+    from datetime import datetime as _dt
+
+    class _Frozen(_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.replace(tzinfo=tz)
+
+    return _Frozen
+
+
+def test_an_occupied_cli_copy_name_refuses_BEFORE_migrating_and_keeps_the_file(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import datetime as _dt
+
+    import swing.cli as cli_mod
+
+    _build(world["db"], 17)
+    monkeypatch.setattr(cli_mod, "datetime", _frozen(_dt(2030, 1, 2, 3, 4, 5)))
+    world["backups"].mkdir(parents=True)
+    occupied = world["backups"] / "swing-20300102T030405.db"
+    _real_db(occupied)
+    original = occupied.read_bytes()
+    r = _migrate(world)
+    assert r.exit_code != 0
+    assert "refusing to overwrite" in r.output
+    assert occupied.read_bytes() == original
+    assert _names(world["backups"]) == [occupied.name]
+    assert _version(world["db"]) == 17
+
+
+def test_an_occupied_gate_image_name_refuses_BEFORE_migrating_and_keeps_the_file(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import datetime as _dt
+
+    _build(world["db"], 37)
+    monkeypatch.setattr(db_mod, "datetime", _frozen(_dt(2030, 1, 2, 3, 4, 5)))
+    world["backups"].mkdir(parents=True)
+    occupied = world["backups"] / "swing-pre-22a4-migration-20300102T030405Z.db"
+    _real_db(occupied)
+    original = occupied.read_bytes()
+    r = _migrate(world)
+    assert r.exit_code != 0
+    assert isinstance(r.exception, db_mod.MigrationBackupRequiredException)
+    assert "pre-22-A4 backup failed" in str(r.exception)
+    assert occupied.read_bytes() == original
+    assert _names(world["backups"]) == [occupied.name]
+    assert _version(world["db"]) == 37
+
+
+def test_the_image_count_alarm_is_raised_only_AFTER_the_v17_ratification(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """From v16 the gated path also owes the once-only v17 seed ratification. A
+    wiring alarm must not pre-empt it: a retry starts at HEAD and never ratifies."""
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "project").mkdir()
+    (tmp_path / "home").mkdir()
+    cfg = _config(tmp_path / "project", tmp_path / "home", hard_cap_open=11)
+    db = tmp_path / "home" / "swing-data" / "swing.db"
+    _build(db, 16)
+    monkeypatch.setattr(db_mod, "_phase9_backup_gate", lambda *a, **k: None)
+    r = CliRunner().invoke(main, ["--config", str(cfg), "db-migrate"])
+    assert r.exit_code != 0
+    assert "0 new 'swing-pre-phase9-migration-*.db' backup image(s)" in r.output
+    assert "Phase 9 ratification" in r.output
+    c = sqlite3.connect(db)
+    try:
+        cap = c.execute(
+            "SELECT max_concurrent_positions FROM risk_policy WHERE effective_to IS NULL"
+        ).fetchall()
+    finally:
+        c.close()
+    assert cap == [(11,)]
+    assert _version(db) == EXPECTED_SCHEMA_VERSION
+
+
+def test_an_existing_schema_less_db_file_gets_the_cli_copy(world) -> None:
+    world["sd"].mkdir(parents=True)
+    c = sqlite3.connect(world["db"])
+    c.execute("CREATE TABLE operator_marker (m TEXT)")
+    c.execute("INSERT INTO operator_marker VALUES ('keep me')")
+    c.commit()
+    c.close()
+    r = _migrate(world)
+    assert r.exit_code == 0, r.output
+    names = _names(world["backups"])
+    assert len(names) == 1 and _CLI_COPY_RE.match(names[0]), names
+    c = sqlite3.connect(world["backups"] / names[0])
+    try:
+        assert c.execute("SELECT m FROM operator_marker").fetchall() == [("keep me",)]
+        assert c.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='schema_version'").fetchone() is None
+    finally:
+        c.close()
+
+
+def test_a_db_newer_than_head_is_refused_with_no_backup(world) -> None:
+    _build(world["db"], EXPECTED_SCHEMA_VERSION)
+    c = sqlite3.connect(world["db"])
+    c.execute("UPDATE schema_version SET version = ?", (EXPECTED_SCHEMA_VERSION + 1,))
+    c.commit()
+    c.close()
+    r = _migrate(world)
+    assert r.exit_code != 0
+    assert isinstance(r.exception, db_mod.SchemaVersionMismatchError)
+    assert _names(world["backups"]) == []
+    assert not list(world["sd"].glob("swing-pre-*.db"))

@@ -160,7 +160,9 @@ def _load_base_module() -> types.ModuleType:
         cwd=REPO_ROOT, capture_output=True, check=False,
     )
     if proc.returncode != 0:
-        pytest.skip(f"git object {BASE_SHA} not resolvable here: {proc.stderr!r}")
+        # FAIL, never skip: a skipped equivalence proof reads green while proving
+        # nothing. The base is an ancestor of every tree this arc merges into.
+        pytest.fail(f"git object {BASE_SHA} not resolvable here: {proc.stderr!r}")
     # BYTES decoded as UTF-8 explicitly: the file carries non-ASCII prose and
     # this box's default text decoding is cp1252.
     src = proc.stdout.decode("utf-8")
@@ -368,3 +370,73 @@ def test_ensure_schema_backup_dir_is_keyword_only() -> None:
     p = inspect.signature(db_mod.ensure_schema).parameters["backup_dir"]
     assert p.kind is inspect.Parameter.KEYWORD_ONLY
     assert p.default is None
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 R-1: the one creator never overwrites an existing image
+# ---------------------------------------------------------------------------
+def _frozen_db_clock(monkeypatch, fixed) -> None:
+    from datetime import datetime as _dt
+
+    class _Frozen(_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.replace(tzinfo=tz)
+
+    monkeypatch.setattr(db_mod, "datetime", _Frozen)
+
+
+def test_an_occupied_image_name_refuses_the_migration_and_is_not_touched(
+        tmp_path: Path, monkeypatch) -> None:
+    from datetime import datetime as _dt
+
+    c = open_connection(tmp_path / "v26.db")
+    try:
+        run_migrations(c, target_version=26)
+        _frozen_db_clock(monkeypatch, _dt(2030, 1, 2, 3, 4, 5))
+        bak = tmp_path / "bak"
+        bak.mkdir()
+        occupied = bak / "swing-pre-entry-intent-migration-20300102T030405Z.db"
+        # A REAL database: a garbage-bytes file would make backup() fail on its
+        # own and pass this test without any no-clobber protection.
+        o = sqlite3.connect(occupied)
+        o.execute("CREATE TABLE the_only_v26_pre_image (x)")
+        o.commit()
+        o.close()
+        original = occupied.read_bytes()
+        with pytest.raises(MigrationBackupRequiredException,
+                           match=r"^pre-entry-intent backup failed: "):
+            run_migrations(c, target_version=27, backup_dir=bak)
+        assert occupied.read_bytes() == original
+        assert sorted(p.name for p in bak.iterdir()) == [occupied.name]
+        assert _current_version(c) == 26
+    finally:
+        c.close()
+
+
+def test_a_failed_snapshot_removes_only_its_own_reserved_file(
+        tmp_path: Path, monkeypatch) -> None:
+    src = tmp_path / "src.db"
+    sqlite3.connect(src).close()
+    bak = tmp_path / "bak"
+    bak.mkdir()
+    bystander = bak / "swing-pre-b7-migration-20200101T000000Z.db"
+    bystander.write_bytes(b"older image")
+
+    class _SrcThatFailsMidBackup:
+        # the failure lands AFTER the destination file exists -- the case that
+        # leaves a partial image behind unless the creator cleans up its own
+        def backup(self, dest):
+            dest.execute("CREATE TABLE partial (x)")
+            dest.commit()
+            raise sqlite3.OperationalError("source unreadable")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(db_mod, "open_connection",
+                        lambda *_a, **_k: _SrcThatFailsMidBackup())
+    with pytest.raises(sqlite3.OperationalError):
+        db_mod._create_gate_backup(src, dest_dir=bak, filename_stem="b7")
+    assert sorted(p.name for p in bak.iterdir()) == [bystander.name]
+    assert bystander.read_bytes() == b"older image"

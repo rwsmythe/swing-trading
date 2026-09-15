@@ -9,7 +9,8 @@ For every file it prints location, class, size, mtime, the schema version read
 as ``SELECT version FROM schema_version`` (``unknown`` when the table is absent;
 ``PRAGMA user_version`` reads 0 on this project's DBs and is never used), the
 sha256 of the bytes, and -- for each CLI copy -- the gate image(s) with the SAME
-sha256 (its byte-identical twin), or ``none``.
+sha256 (its byte-identical twin), or ``none``. A twin is never claimed for a file
+with a ``-wal`` sidecar on either side (``indeterminate-wal-sidecar``).
 
 Classes, by NAME only:
   gate-image    ``swing-pre-*``
@@ -126,9 +127,12 @@ def inventory(root: Path, backups_dir: Path) -> list[Entry]:
 
 
 def render(entries: list[Entry], root: Path, backups_dir: Path) -> str:
+    # A twin is claimed ONLY between files with no -wal sidecar: an immutable
+    # read and a main-file hash cannot see a sidecar's pages, so two equal main
+    # files are NOT proven equal databases when either side has one.
     gate_by_hash: dict[str, list[Path]] = {}
     for e in entries:
-        if e.cls == "gate-image":
+        if e.cls == "gate-image" and not e.wal_sidecar:
             gate_by_hash.setdefault(e.sha256, []).append(e.path)
     lines = [
         "# backup_inventory (read-only)",
@@ -137,7 +141,9 @@ def render(entries: list[Entry], root: Path, backups_dir: Path) -> str:
         "location\tclass\tsize_bytes\tmtime_utc\tschema_version\tsha256\twal_sidecar\ttwin\tpath",
     ]
     for e in entries:
-        if e.cls == "cli-copy":
+        if e.cls == "cli-copy" and e.wal_sidecar:
+            twin = "indeterminate-wal-sidecar"
+        elif e.cls == "cli-copy":
             twins = gate_by_hash.get(e.sha256, [])
             twin = ";".join(str(t) for t in twins) if twins else "none"
         else:
@@ -153,7 +159,7 @@ def render(entries: list[Entry], root: Path, backups_dir: Path) -> str:
         lines.append(
             f"# {loc}\t{cls}\tcount={len(group)}\tbytes={sum(e.size for e in group)}")
     cli = [e for e in entries if e.cls == "cli-copy"]
-    twinned = [e for e in cli if e.sha256 in gate_by_hash]
+    twinned = [e for e in cli if not e.wal_sidecar and e.sha256 in gate_by_hash]
     lines.append(
         f"# cli-copy with a byte-identical gate twin: {len(twinned)} of {len(cli)} "
         f"({sum(e.size for e in twinned)} bytes)")
@@ -171,11 +177,16 @@ def main(argv: list[str] | None = None) -> int:
     root = args.root
     backups_dir = args.backups_dir if args.backups_dir is not None else root / "backups"
     if not root.is_dir():
-        print(f"root not found: {root}", file=sys.stderr)
+        sys.stderr.write(_ascii(f"root not found: {root}\n"))
         return 2
     text = render(inventory(root, backups_dir), root, backups_dir)
-    sys.stdout.write(text.encode("ascii", "backslashreplace").decode("ascii"))
+    sys.stdout.write(_ascii(text))
     return 0
+
+
+def _ascii(text: str) -> str:
+    """Every byte this script prints is ASCII (a cp1252 console crashes on the rest)."""
+    return text.encode("ascii", "backslashreplace").decode("ascii")
 
 
 if __name__ == "__main__":
