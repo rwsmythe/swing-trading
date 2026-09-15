@@ -780,3 +780,101 @@ gate calls for is next.
 > acceptable per the D52 amendment); the section 4 witness on the COPY, step
 > by step, with R0-5's write-surface enumeration in the ledger first; the
 > inventory output to the operator. Nothing else.
+
+---
+
+## Closing pass (stop rule)
+
+**Cell:** the same closing-pass `implementer-sonnet-high` (continuing mid-task on `d32-d50-exec`). **Worktree:**
+`.worktrees/d32-d50-exec`, continuing from `115927c1`. **Commits:**
+- `2ccedbbb` -- `fix(scripts): CHARC stop rule -- one eligibility predicate as the only path to a positive twin`
+  (`scripts/backup_inventory.py`, `tests/scripts/test_backup_inventory.py`).
+
+`git log -1 --format='%(trailers)'` on `2ccedbbb` prints empty.
+
+**Residuals closed by the predicate, not by a further read (recorded per the ruling's (2)):** the four bounded
+Reviewer B reads' entire finding set -- B4-1 (symlink sidecar-probe mismatch), B4-2 (the contested glob/scandir
+swallow), and the pre-existing B2/B3/B2R/B3R lineage the predicate now subsumes -- is closed by routing every
+twin decision through the single `eligibility()` allowlist and replacing `Path.glob()` with a guarded
+`os.scandir()` listing. No fifth Codex round ran; closure is the per-clause red-first tests below plus the suite
+on the final head, per the STOP RULE's (2).
+
+**B4-2, CONTESTED, recorded per the ruling's Sharpening B (both readings, their method, not resolved):**
+- **This cell's reading (measured, Python 3.14, this box):** `Path.glob(pattern)` on an unlistable-but-stat-able
+  directory raised an UNCAUGHT `PermissionError` straight out of `_scan`/`render()` (reproduced verbatim at the
+  SS-2 sweep pass: `scripts\backup_inventory.py:123: in _scan ... for p in sorted(directory.glob(pattern))`,
+  `PermissionError: [Errno 13] synthetic listing failure`) -- i.e. the failure was VISIBLE, not swallowed.
+- **Codex's reading (B4-2, Reviewer B confirming round, `gpt-5.6-sol`):** its read of this interpreter's `glob`
+  source concluded `Path.glob()` can SUPPRESS a `scandir` `OSError` internally, yielding an EMPTY result instead
+  of raising.
+- **Not resolved, per the ruling:** the fix is identical either way -- `_list_directory` (`scripts/backup_inventory.py`)
+  now lists with `os.scandir()` directly, inside the same `try`/`except OSError` `_scan` already uses to convert
+  a listing failure into a visible `scan-error` row, so neither reading's failure mode survives.
+
+**B4-3, REJECTED per the ruling -- confirmed UNCHANGED on disk:** `main()`'s unprobeable-root handling (`state ==
+"unknown"` -> a distinct stderr message, exit 2) is untouched by this commit; `test_root_probe_unknown_is_reported_distinctly_from_absent`
+(unmodified) still passes, confirming no drift.
+
+**B4-4, accepted, cosmetic:** the summary's total line now reads `# total: {N} entries, {M} bytes` (was `files`)
+-- a `scan-error` entry's `path` is a directory, not a file.
+
+**The structural close:** one function, `eligibility(Entry) -> str` (`scripts/backup_inventory.py`), the ONLY
+code path that may declare a positive twin. Six clauses in order, first-failure-wins: (a) `lstat_regular_file`
+(an `os.lstat()`, never following a symlink -- B4-1's fix: a symlink's lstat mode is never `S_ISREG`, so this one
+primitive both requires "regular file" and excludes "symlink"); (b) `stat_ok`; (c) `version` not `error:`-prefixed;
+(d) `sha256` not `"indeterminate"`; (e) `wal_sidecar == "absent"`; (f) `journal_sidecar == "absent"`. `_twin_by_path`
+(replacing the retired `_sidecar_reason` + the ad hoc `error`/class checks) builds the gate-match pool from
+ELIGIBLE gate images only and gates a cli-copy's own positive claim on ITS OWN eligibility -- both members, same
+predicate, no other code path decides a positive. `_TWIN_SENTINELS` is now GENERATED from `_ELIGIBILITY_CLAUSES`
+(never hand-maintained), closing the drift class the mirror-family gotcha names.
+
+**Deliberate simplification, recorded (not a defect):** when a cli-copy IS eligible but its only byte-identical
+gate match(es) are NOT, the twin renders `"none"` (no eligible match found) rather than a cross-referenced reason
+naming the gate's own failed clause -- the prior code's four hand-named sidecar sentinels (`indeterminate-wal-sidecar`,
+`-journal-sidecar`, `-wal-unknown`, `-journal-unknown`) are retired. The raw row for the ineligible member stays
+fully visible in the inventory (its own `wal_sidecar`/`journal_sidecar`/`error` columns show exactly why), so
+nothing is hidden -- only the twin column's attribution of a NEIGHBOR's failure is dropped, which is precisely
+the denylist-of-reasons growth the stop rule exists to end. `test_no_twin_is_claimed_across_a_wal_sidecar` and
+`_journal_sidecar` (both pre-existing, updated) now pin this exactly: the CLI copy's OWN sidecar renders its own
+clause name; the GATE's sidecar renders `"none"`.
+
+**Per-clause test table (Sharpening A), red-first evidence against the PRE-closing-pass head (`8acb17b2`) --
+honestly reported, per the ruling's own instruction that some rows may already be green:**
+
+| clause | mutator (patches the boundary the code calls, no real OS symlink needed) | pre-closing-pass (`8acb17b2`) | post-fix |
+|---|---|---|---|
+| `not-a-plain-regular-file` (a) | `os.lstat` faked to report `S_IFLNK` for the CLI copy | **RED** -- twin = the gate's own path (a positive twin claimed); the ONLY genuinely new route B4-1 found | green -- `not is_positive_twin(...)` |
+| `stat-failed` (b) | `os.stat` raises for the CLI copy | green already -- twin = `"indeterminate"` (the old generic sentinel, via `error is not None`) | green -- `"indeterminate-stat-failed"` |
+| `schema-read-failed` (c) | `inv.read_schema_version` returns `error:...` for the CLI copy | green already -- twin = `"indeterminate"` | green -- `"indeterminate-schema-read-failed"` |
+| `hash-failed` (d) | `inv.sha256_of` raises for the CLI copy | green already -- twin = `"indeterminate"` | green -- `"indeterminate-hash-failed"` |
+| `wal-sidecar-not-definitively-absent` (e) | a real empty `-wal` file beside the CLI copy | green already -- twin = `"indeterminate-wal-sidecar"` | green -- `"indeterminate-wal-sidecar-not-definitively-absent"` |
+| `journal-sidecar-not-definitively-absent` (f) | a real empty `-journal` file beside the CLI copy | green already -- twin = `"indeterminate-journal-sidecar"` | green -- `"indeterminate-journal-sidecar-not-definitively-absent"` |
+
+Reproduced by running each mutator against `git show 8acb17b2:scripts/backup_inventory.py` loaded standalone
+(script + `_is_positive_twin` unchanged at that commit) -- the exact values above are the real captured output,
+not inferred. The table stands as the CLOSURE INSTRUMENT regardless of which rows were already green (per the
+STOP RULE): `test_eligibility_predicate_table_covers_every_declared_clause` asserts `set(_ELIGIBILITY_CLAUSE_TABLE)
+== set(inv._ELIGIBILITY_CLAUSES)` (the D51 comparator shape, object set not value set) -- a clause added to
+`eligibility()` without a matching table row goes red there, not silently uncovered. Plus one positive-control
+row (`test_a_fully_eligible_pair_is_the_positive_twin_control`, an unmutated pair IS a positive twin) and the
+scandir listing-failure row (`test_a_scandir_listing_failure_yields_a_scan_error_row`, B4-2's fix exercised
+directly). All nine new tests green post-fix; all pre-existing tests (updated where the sentinel-string
+simplification changed an exact expected value; unchanged otherwise) green post-fix.
+
+**Suite (final head `2ccedbbb`):** `python -m pytest -m "not slow" -q -n 4` --
+`12446 passed, 13 skipped, 1159 warnings in 745.45s (0:12:25)`, exit code 0 (+9 over the pre-closing-pass count of
+12437, matching the 9 new tests: the closure guard, 6 parametrized clause rows, the positive control, and the
+scandir listing-failure test).
+
+**Scope-lock diff-stat**, `git diff --stat c0600ea1..2ccedbbb`:
+
+```
+ docs/phase22-arc-d32-d50-ledger.md     | 413 +++++++++++++++++++++++++
+ scripts/backup_inventory.py            | 396 +++++++++++++++++++++---
+ tests/scripts/test_backup_inventory.py | 539 ++++++++++++++++++++++++++++++++-
+ 3 files changed, 1308 insertions(+), 40 deletions(-)
+```
+
+Only `scripts/backup_inventory.py`, its test, and this ledger changed since `c0600ea1` -- the closing pass holds
+the same scope lock as every prior pass on this branch. No Codex round ran (per the STOP RULE's (2)); no mailbox
+post made. Ready for the section-4 witness on the copy and the orchestrator's own gate.
