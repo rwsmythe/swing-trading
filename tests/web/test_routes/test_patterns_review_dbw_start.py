@@ -148,14 +148,23 @@ def _assert_recovery_text(body: str, eval_id: int) -> None:
      "multiple_overlapping_patterns"],
 )
 def test_dbw_untouched_submit_nonzero_row_takes_trough_1(seeded_db, decision):
-    """(i)+(iii): the pre-filled start (the generator start, trough 2) is NOT
-    a correction; a non-zero row takes evidence trough 1."""
+    """(i)+(iii): a non-zero row's untouched submit takes evidence trough 1.
+
+    D56 C3 amendment: pre-D56 the review form pre-filled the generator
+    anchor (trough 2 / window_start_date) on every DBW row, so this test's
+    ``prefill == TROUGH_2`` line pinned THAT. Post-D56 the form pre-fills
+    trough 1 for a parseable non-zero row (the ``dbw_corrected_start_date_
+    prefill`` helper); the untouched-submit path still reaches rule (ii)
+    (the pre-fill differs from ``window_start_date``, rule (i)'s unwidened
+    comparison target) and lands on the SAME trough-1 answer -- the
+    assertion is amended to pin the NEW pre-fill value, and the outcome
+    assertion below (stored start == trough 1) is UNCHANGED."""
     cfg, cfg_path = seeded_db
     eval_id = _seed_dbw(cfg, _nonzero_evidence())
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         prefill = _rendered_prefill_start(client, eval_id)
-        assert prefill == TROUGH_2.isoformat()
+        assert prefill == TROUGH_1.isoformat()
         data = {
             "decision": decision,
             "corrected_window_start_date": prefill,
@@ -391,3 +400,115 @@ def test_dbw_relabel_on_zero_row_unchanged(seeded_db):
     assert len(rows) == 1
     assert rows[0].final_decision == "relabeled"
     assert rows[0].start_date == TROUGH_2.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# D56 C3/E3 -- the trough-1 pre-fill helper. Rule (i) keeps comparing to
+# window_start_date (CHARC F-C, unwidened); ONE helper feeds both the form's
+# pre-fill and step (iii)'s extraction, so the pre-fill and the stored start
+# cannot diverge, on all three DBW row kinds.
+# ---------------------------------------------------------------------------
+
+
+def test_dbw_c3_prefill_differs_from_pre_c3_on_the_parseable_nonzero_row(
+    seeded_db,
+):
+    """T3 arithmetic: pre-C3 the form pre-filled window_start_date
+    (TROUGH_2, the generator/trough-2 anchor) on EVERY DBW row. Post-C3 a
+    parseable non-zero row pre-fills trough 1 instead -- the two dates are
+    different constants in this fixture (2026-03-02 vs 2026-04-08), so this
+    assertion distinguishes pre- from post-fix."""
+    cfg, cfg_path = seeded_db
+    eval_id = _seed_dbw(cfg, _nonzero_evidence())
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        prefill = _rendered_prefill_start(client, eval_id)
+    assert prefill == TROUGH_1.isoformat()
+    assert prefill != TROUGH_2.isoformat()
+
+
+def test_dbw_c3_untouched_submit_same_outcome_all_three_row_kinds(seeded_db):
+    """T3 (F-C pin): under pattern_present_outside_window, an untouched
+    submit -- corrected_window_start_date set to whatever the GET-rendered
+    form ACTUALLY shows -- stores (or refuses on) the SAME outcome C3 was
+    ruled to preserve, on all three DBW row kinds. Rule (i)'s comparison
+    target (window_start_date, literal) never moves, so:
+
+      (a) parseable non-zero: pre-fill is now trough 1, which differs from
+          window_start_date -> rule (ii) takes the typed value -> stores
+          trough 1 -- the SAME answer step (iii) gives directly, so the
+          form-driven path and the direct-computation path agree.
+      (b) unparseable non-zero: pre-fill falls back to window_start_date
+          (C3's rule 2) -> rule (i) calls it "not a correction" -> falls to
+          (iii) -> no parseable trough 1 -> refuses, same as pre-C3 (which
+          always fell back to window_start_date for every row kind).
+      (c) zero score: pre-fill stays window_start_date (C3 never pre-fills
+          a zero row) -> rule (i) calls it "not a correction" -> refuses on
+          the zero-score branch, same as pre-C3.
+    """
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+
+    # (a) parseable non-zero -> stores trough 1.
+    eval_id_a = _seed_dbw(cfg, _nonzero_evidence())
+    with TestClient(app) as client:
+        prefill_a = _rendered_prefill_start(client, eval_id_a)
+    assert prefill_a == TROUGH_1.isoformat()
+    before_a = len(_exemplars(cfg))
+    with TestClient(app) as client:
+        r = client.post(
+            f"/patterns/{eval_id_a}/review",
+            data={
+                "decision": "pattern_present_outside_window",
+                "corrected_window_start_date": prefill_a,
+                "corrected_window_end_date": WINDOW_END.isoformat(),
+            },
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 204
+    after_a = _exemplars(cfg)
+    assert len(after_a) == before_a + 1
+    assert after_a[-1].start_date == TROUGH_1.isoformat()
+
+    # (b) unparseable non-zero -> refuses, no write.
+    ev_b = _nonzero_evidence()
+    blob_b = dataclasses.asdict(ev_b)
+    blob_b["trough_1_date"] = "not-a-date"
+    eval_id_b = _seed_dbw(
+        cfg, ev_b, evidence_json=json.dumps(blob_b, default=str),
+    )
+    with TestClient(app) as client:
+        prefill_b = _rendered_prefill_start(client, eval_id_b)
+    assert prefill_b == TROUGH_2.isoformat()
+    before_b = len(_exemplars(cfg))
+    with TestClient(app) as client:
+        r = client.post(
+            f"/patterns/{eval_id_b}/review",
+            data={
+                "decision": "pattern_present_outside_window",
+                "corrected_window_start_date": prefill_b,
+                "corrected_window_end_date": WINDOW_END.isoformat(),
+            },
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 400
+    assert len(_exemplars(cfg)) == before_b
+
+    # (c) zero score -> refuses, no write.
+    eval_id_c = _seed_dbw(cfg, _zero_evidence())
+    with TestClient(app) as client:
+        prefill_c = _rendered_prefill_start(client, eval_id_c)
+    assert prefill_c == TROUGH_2.isoformat()
+    before_c = len(_exemplars(cfg))
+    with TestClient(app) as client:
+        r = client.post(
+            f"/patterns/{eval_id_c}/review",
+            data={
+                "decision": "pattern_present_outside_window",
+                "corrected_window_start_date": prefill_c,
+                "corrected_window_end_date": WINDOW_END.isoformat(),
+            },
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 400
+    assert len(_exemplars(cfg)) == before_c
