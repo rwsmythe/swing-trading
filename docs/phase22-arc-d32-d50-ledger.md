@@ -704,3 +704,20 @@ of 12432, matching the 5 new tests added).
 Only `scripts/backup_inventory.py`, its test, and this ledger changed since `c0600ea1` -- the class-sweep commit
 holds the bound the bounded-B-reread's diff-stat assertion requires; the confirming B round the orchestrator's
 gate calls for is next.
+
+---
+
+## Reviewer B -- confirming round after the class sweep (orchestrator)
+
+**Tree:** `8acb17b2` (bound held: diff-stat `c0600ea1..8acb17b2` = ledger + `scripts/backup_inventory.py` + its test). **Assertions:** `gpt-5.6-sol`/`high`; `^ERROR` 0; footer 1 (127,847); exit 0, process exited; `^NEW_CRITICAL_MAJOR_FOUND` 2, `^NO_NEW_CRITICAL_MAJOR` 0; prompt token-free. 439,912 bytes, `~/swing-data/review-transcripts/d32-d50-exec/.codex-b4-review.txt`.
+
+**Verdict:** B3, B2R-1..-5, B3R-1, B3R-2, read-only/ASCII PASS; **B2 FAIL; class-wide directory handling FAIL.**
+
+| id | B severity | finding | orchestrator adjudication |
+|---|---|---|---|
+| B4-1 | critical | A symlinked candidate is hashed and read through its target, but its sidecars are probed on the link path, so a `-wal` beside the target is missed and a twin can be claimed. | **Real in principle, not in this data** (nothing creates symlinks under swing-data; Windows symlinks need privilege). But it is the FOURTH way to reach an unproven positive twin, which says enumeration is the wrong shape: see the recommendation. |
+| B4-2 | major | `Path.glob()` on Python 3.14 suppresses a scandir `OSError` internally, so an unlistable directory yields an empty scan; the test patches `glob` above that layer. | **CONTESTED FACT:** the sweep cell MEASURED the opposite on this box (an uncaught `PermissionError` out of `render()`); Codex read the WSL interpreter's glob source. The fix is the same either way -- list with `os.scandir` inside the guard -- so the disagreement need not be settled to close it. |
+| B4-3 | major | An unprobeable ROOT returns exit 2 with a stderr line, not a `scan-error` row. | **Recommend REJECT as a defect:** a non-zero exit with a stderr message is fail-loud, not silent; the class requirement is "never silent", and no positive claim can follow. |
+| B4-4 | minor | The summary calls directory error rows "files". | Accept, cosmetic. |
+
+**Loop state: FOUR bounded B reads on a one-time, read-only evidence script, each finding a new route to the same failure (an unproven positive twin).** Routed to CHARC for a stop rule rather than a fifth instance fix.
