@@ -367,3 +367,23 @@ NEW/CHANGED files: sd/backups/swing-20260914T212311.db 212992 ; sd/swing.db 8437
 Not run by this cell (the orchestrator's, with the operator, after return): the real v37 pre-image copy through the CLI,
 `db-migrate` on the v38 live COPY, and `scripts/backup_inventory.py` against the real root. **The production proof of this
 arc is the first real migration after merge (22-B), not this ledger.**
+
+---
+
+## Reviewer B -- orchestrator (merge gate), one round
+
+**Seat:** orchestrator. **Tree reviewed:** `c0600ea1` (branch head; diff `eface268..c0600ea1` over swing/, scripts/, tests/). **Form:** cold audit, `codex exec -p strong -s read-only --skip-git-repo-check`, cwd = the worktree (repo read access), CLAIMS FIRST then the unchanged-code composition lens; prompt forbade reading A's scratch, and A's `.codex-*`/`.copowers-findings.md` were moved OUT of the worktree for the round (restored after; sha256-matched to the durable copies). The transcript cites the committed ledger's A summary (it read `docs/`), never A's raw files.
+
+**First launch did not happen:** from Git Bash, MSYS rewrote `/mnt/c/...` to `C:/Program Files/Git/mnt/c/...` -> `wsl-exit=127`, zero-byte transcript. Re-launched from PowerShell. Not counted.
+
+**Assertions (the counted round):** banner `model: gpt-5.6-sol`, `reasoning effort: high`; `^ERROR` = 0; `^tokens used` = 1 (235,984), runner exit file `0`, process exited (background task completed); verdict tokens `^NEW_CRITICAL_MAJOR_FOUND` = 2 (0.152.1 double-emit), `^NO_NEW_CRITICAL_MAJOR` = 0; prompt contains neither token line-initially (count 0). Transcript 806,741 bytes. Durable copies: `~/swing-data/review-transcripts/d32-d50-exec/.codex-b-{prompt.md,review.txt,diff.txt,run.sh}`.
+
+**Claims:** F1 PASS · F2/R0-3/R0-4 FAIL-under-concurrency (B1) · F3/R0-1 PASS (independent 23-triple extraction matched) · R0-2 PASS · F4/R0-6 FAIL (B2, B3) · scope PASS. L1, L4, L5 judged sound; L2 challenged by B2; L3 sound given the no-holder condition.
+
+| id | B severity | finding | orchestrator adjudication |
+|---|---|---|---|
+| B1 | critical | The pre-image is not fenced from writes committing between the snapshot and the migration; two concurrent `db-migrate` runs yield two images and the set-difference alarm. | **PRE-EXISTING, not introduced.** At `eface268` the CLI copy snapshots on its own connection and closes it before `ensure_schema` (`git show eface268:swing/cli.py:256-270`), and every old gate body opened, snapshotted and closed a separate source connection before `_apply_migration` -- the same interval. The arc moves where the image lands, not when it is taken. Operational control today is the CLAUDE.md gotcha (stop `swing web`, prove no holder by acquiring the exclusive lock) that every live migration witness runs. The concurrent-run alarm is the R0-4 alarm doing its job. **Recommend BANK** as a register row (a fenced migration: one exclusive lock held across version read, snapshot and migration), not widened into this arc. |
+| B2 | major | The inventory's positive twin claim checks only `-wal`, not `-journal`; a hot rollback journal could make "identical" files recover differently, and F4(b) deletes on that evidence. | **INTRODUCED (new script), ACCEPT, fix in-arc.** A claim that licenses a delete must be fail-closed: any `-wal` OR `-journal` on either member -> indeterminate, never a positive twin. |
+| B3 | major | One unreadable or vanishing file (`stat`/hash `OSError`) aborts the whole inventory, so not every file is classified. | **INTRODUCED, ACCEPT, fix in-arc.** Per-file isolation: an `error` row with its path, hash and twin state indeterminate, the scan continues. |
+
+**Ruling needed (PRIMARY: charc):** B1 bank-vs-widen; B2+B3 fix in-arc; and L5 (an occupied backup name now refuses instead of overwriting) ratified. Fix leg after the ruling goes to a FRESH cell (the executing cell ended at 427,685 tokens, over the cap).
