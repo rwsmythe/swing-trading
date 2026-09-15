@@ -282,10 +282,14 @@ function Save-SessionMap($map) {
 
 function New-SessionName($role) {
     $stamp = (Get-Date).ToString('yyyyMMdd-HHmm')
-    # The orchestrator is not a director -- give it its own non-'director-'
-    # display name; directors keep the established 'director-<role>-<stamp>'.
-    if ($role -eq 'orchestrator') { return "orchestrator-$stamp" }
-    return "director-$role-$stamp"
+    # PROJECT-PREFIXED, one branch for every role (D57, operator-amended
+    # 2026-09-15): the old 'director-' segment (and the orchestrator's
+    # separate non-'director-' carve-out) are both gone. Every role gets
+    # 'swing-<role>-<stamp>' -- charc/rd/orchestrator alike -- because a
+    # bare role name collides across projects sharing this box (coa-chess
+    # runs the same unprefixed scheme), and the wake-on-mail cross-session
+    # ping (harness-architecture section 3) needs an unambiguous target.
+    return "swing-$role-$stamp"
 }
 
 function Build-LaunchCommand($role, $argList) {

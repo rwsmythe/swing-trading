@@ -135,19 +135,22 @@ def test_rolelaunch_never_starts_at_escalation_effort():
     assert "xhigh" not in table and "'max'" not in table, table
 
 
-# Issue 2 static-content distinguisher (always runs): New-SessionName gives the
-# orchestrator a non-'director-' display name; directors keep their scheme.
+# D57 static-content distinguisher (always runs): New-SessionName is ONE
+# branch, project-prefixed, for EVERY role -- no director/orchestrator
+# special case (operator-amended 2026-09-15; the old per-role branch and the
+# orchestrator's separate non-'director-' carve-out are both gone).
 
-def test_orchestrator_session_name_not_director_prefixed():
+def test_session_name_is_project_prefixed_one_branch_every_role():
     text = _script_text()
-    assert 'return "orchestrator-$stamp"' in text       # orchestrator gets its own name
-    assert 'return "director-$role-$stamp"' in text     # directors UNCHANGED
+    assert 'return "swing-$role-$stamp"' in text         # ONE branch, every role
+    assert 'director-$role-$stamp' not in text            # the old segment is gone
+    assert 'return "orchestrator-$stamp"' not in text     # the old special case is gone
 
 
-# Behavioral -DryRun (skip-guarded): directors launch fable/medium + keep the
-# 'director-<role>-<stamp>' name.
+# Behavioral -DryRun (skip-guarded): directors launch fable/medium + get the
+# 'swing-<role>-<stamp>' name.
 
-def test_dryrun_charc_launches_fable_medium_and_director_name():
+def test_dryrun_charc_launches_fable_medium_and_swing_prefixed_name():
     if shutil.which("powershell") is None or shutil.which("claude") is None:
         pytest.skip("powershell + claude CLI required for the behavioral DryRun")
     r = subprocess.run(
@@ -156,15 +159,17 @@ def test_dryrun_charc_launches_fable_medium_and_director_name():
         capture_output=True, text=True, timeout=60)
     assert r.returncode == 0
     out = r.stdout + r.stderr
-    # bootstrap START config; director naming unchanged
+    # bootstrap START config unchanged; the session name is swing-prefixed
     assert "claude --model fable --effort medium --permission-mode auto" in out
-    assert "session name 'director-charc-" in out
+    assert "session name 'swing-charc-" in out
+    assert "session name 'director-charc-" not in out
 
 
-# Issue 2 behavioral -DryRun (skip-guarded): the orchestrator's session name is
-# 'orchestrator-<stamp>', NOT 'director-orchestrator-<stamp>'.
+# D57 behavioral -DryRun (skip-guarded): the orchestrator's session name is
+# 'swing-orchestrator-<stamp>' -- the SAME shape every other role gets, no
+# bare 'orchestrator-<stamp>' and no 'director-' segment.
 
-def test_dryrun_orchestrator_session_name_not_director_prefixed():
+def test_dryrun_orchestrator_session_name_is_swing_prefixed():
     if shutil.which("powershell") is None or shutil.which("claude") is None:
         pytest.skip("powershell + claude CLI required for the behavioral DryRun")
     r = subprocess.run(
@@ -173,8 +178,8 @@ def test_dryrun_orchestrator_session_name_not_director_prefixed():
         capture_output=True, text=True, timeout=60)
     assert r.returncode == 0
     out = r.stdout + r.stderr
-    assert "session name 'orchestrator-" in out          # non-director display name
-    assert "director-orchestrator-" not in out           # the 'director-' wart is gone
+    assert "session name 'swing-orchestrator-" in out    # project-prefixed, one branch
+    assert "director-orchestrator-" not in out           # the 'director-' wart never existed here
 
 
 # --- -Model / -Effort per-launch overrides (skip-guarded DryRun) ------------
