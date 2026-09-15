@@ -53,24 +53,20 @@ Do this, in order:
    over that one inbox; retired generations' mail is preserved read-only under
    comms/orchestrator/_archive/<session_id>/.
    Then WAKE-ON-MAIL (harness-architecture section 3; adopted 2026-09-07,
-   AMENDED 2026-09-15): on Claude Code 2.1.272+ the Monitor tool has NO
-   persistent flag, caps at 30 minutes, and each EXPIRY wakes the session at
-   the cost of its whole context (measured 2026-09-15: ~196K cache-read
-   tokens per wake on a 196K seat; 48 wakes per idle day). So arm a BOUNDED
-   Monitor (timeout_ms 1800000) ONLY while a specific reply is expected
-   inside its window -- a packet just posted, a cell return due, a gate
-   awaiting a transcript -- with this command (role = orchestrator):
-       cd "C:/Users/rwsmy/swing-trading"; count() { set -- comms/orchestrator/inbox/*; if [ -e "$1" ]; then n=$#; else n=0; fi; }; count; prev=$n; while true; do count; if [ "$n" -gt "$prev" ]; then echo "[comms] orchestrator inbox: $n unread (+$((n-prev)))"; fi; prev=$n; sleep 10; done
-   One event per arrival wakes you; drain with the read command above. When
-   it expires and nothing is expected, LET IT LAPSE: answer the expiry notice
-   with NO tool call. Idle mode is the UserPromptSubmit unread line, the Stop
-   hook's continue-on-unread, and the operator's relay. (A seat whose build
-   still accepts persistent=true -- the Monitor result line says
-   "persistent" rather than "expires in 30m" -- may hold ONE persistent
-   watch; it dies with the session.) The count is a builtin glob (NO bash
-   fork: the 2026-09-14 form -- the old ls-pipe-wc forked bash twice every
-   2 s per seat, and each fork re-opens the slow installed bash.exe); the
-   loop itself costs nothing -- the cost is the harness WAKE, not the loop.
+   re-based 2026-09-15 on the cross-session cue): do NOT arm an inbox
+   Monitor. The wake is a cross-session ping: after EVERY `role_mail post`,
+   run the `ping ->` line(s) it prints -- one SendMessage per recipient seat,
+   to the exact session name printed (it is read from comms/.sessions.json,
+   which the launcher overwrites at each fresh start, so it always names the
+   CURRENT generation), with a one-line body naming the project, your role
+   and the subject, e.g. "swing-trading <role>: mail posted -- <subject>".
+   A ping to you wakes you as a new turn at zero idle cost: drain with the
+   read command above. Never put content in the ping -- the mailbox is the
+   record, the ping is the cue. Do not use ListAgents to pick a target by
+   eye: a bare role name is ambiguous across projects on this box (coa-chess
+   seats share the scheme), which is why the printed name carries the
+   `swing-` prefix. Idle mode is the UserPromptSubmit unread line, the Stop
+   hook's continue-on-unread, and the operator's relay -- nothing else runs.
    ONE RULER PER ITEM binds you from your first drain: rule only
    the items that name your seat; as a CC, hold, and speak only to dissent
    from a LANDED ruling, upward. Re-list the inbox before every post.
@@ -110,8 +106,10 @@ make. Then four acts, in this order, nothing between them:
   2. Post the rollover announcement (status, --to charc,rd) and STOP DRAINING --
      peek only from here. The Stop hook's "drain now" is VOID for you from this
      act on: obeying it swallows your successor's first mail.
-  3. TaskStop your inbox Monitor, then VERIFY the loop is gone, SCOPED TO YOUR
-     OWN PROCESS TREE: from PowerShell, for each bash.exe whose CommandLine
+  3. If a Monitor of yours is still armed (a pre-2026-09-15 generation),
+     TaskStop it and verify as before; a generation on the ping convention
+     has nothing to stop. SCOPED TO YOUR OWN PROCESS TREE: from PowerShell,
+     for each bash.exe whose CommandLine
      matches orchestrator/inbox, walk its parent chain; a match that reaches
      YOUR claude.exe (found by walking up from the checking shell's own $PID)
      is a stop failure to report; a match that does NOT is another session

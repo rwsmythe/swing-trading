@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -177,6 +178,97 @@ def test_invalid_to_role_rejected(comms):
                          "subject": "s", "body": "x"})
     assert rc == 1
     assert list(Path(comms).rglob("*.md")) == []
+
+
+# --- D57 C2: cmd_post prints a ping line per recipient (the wake cue) ------
+#
+# Read-only: a missing/malformed comms/.sessions.json NEVER changes post's
+# exit code or the written message -- only the printed ping line differs
+# (harness-architecture section 3 WAKE-ON-MAIL, amended 2026-09-15).
+
+def _write_sessions_map(comms_root, mapping):
+    Path(comms_root).mkdir(parents=True, exist_ok=True)
+    (Path(comms_root) / ".sessions.json").write_text(
+        json.dumps(mapping), encoding="utf-8")
+
+
+def test_post_ping_map_present_prints_exact_recorded_session_name(comms, capsys):
+    # (i) map present -> the exact line with the recorded name
+    _write_sessions_map(comms, {
+        "rd": {"created": "2026-09-15T07:00:00Z", "session_id": None,
+               "session_name": "swing-rd-20260915-0700"},
+    })
+    capsys.readouterr()
+    rc = _post(comms, **{"from": "charc", "to": "rd", "type": "status",
+                         "subject": "arc shipped", "body": "all green"})
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert 'ping -> SendMessage to="swing-rd-20260915-0700"' in out
+
+
+def test_post_ping_no_map_prints_no_session_recorded(comms, capsys):
+    # (ii) no map -> the third form, exit 0, the message still written
+    capsys.readouterr()
+    rc = _post(comms, **{"from": "charc", "to": "rd", "type": "status",
+                         "subject": "arc shipped", "body": "all green"})
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "ping -> rd: no session recorded" in out
+    assert len(_inbox(comms, "rd")) == 1
+
+
+def test_post_ping_malformed_json_prints_no_session_recorded(comms, capsys):
+    # (iii) malformed JSON -> same as (ii)
+    Path(comms).mkdir(parents=True, exist_ok=True)
+    (Path(comms) / ".sessions.json").write_text("{not valid json", encoding="utf-8")
+    capsys.readouterr()
+    rc = _post(comms, **{"from": "charc", "to": "rd", "type": "status",
+                         "subject": "arc shipped", "body": "all green"})
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "ping -> rd: no session recorded" in out
+    assert len(_inbox(comms, "rd")) == 1
+
+
+def test_post_ping_operator_recipient_always_second_form(comms, capsys):
+    # (iv) operator recipient -> the second form, even with a (bogus) recorded
+    # session -- the operator role is GUI/relay, never a SendMessage target.
+    _write_sessions_map(comms, {
+        "operator": {"created": "x", "session_id": None,
+                     "session_name": "should-never-be-used"},
+    })
+    capsys.readouterr()
+    rc = _post(comms, **{"from": "charc", "to": "operator",
+                         "type": "status", "subject": "s", "body": "b"})
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "ping -> operator: no session (GUI/relay)" in out
+    assert "should-never-be-used" not in out
+
+
+def test_post_ping_missing_or_malformed_map_never_changes_exit_code_or_message(comms, capsys):
+    # A missing/malformed map never fails the post (the post already
+    # succeeded) and never alters the persisted message content.
+    rc_clean = _post(comms, **{"from": "charc", "to": "rd", "type": "status",
+                               "subject": "identical body", "body": "payload"})
+    clean_text = _inbox(comms, "rd")[0].read_text(encoding="utf-8")
+
+    comms_broken = Path(comms).parent / "comms-broken"
+    comms_broken.mkdir(parents=True, exist_ok=True)
+    (comms_broken / ".sessions.json").write_text("{broken", encoding="utf-8")
+    rc_broken = _post(comms_broken, **{"from": "charc", "to": "rd",
+                                       "type": "status",
+                                       "subject": "identical body",
+                                       "body": "payload"})
+    broken_text = _inbox(comms_broken, "rd")[0].read_text(encoding="utf-8")
+
+    assert rc_clean == rc_broken == 0
+    # both wrote the same frontmatter fields + body; only the stamp/filename
+    # (and hence exact bytes around it) may differ between the two calls.
+    assert "subject: identical body" in clean_text
+    assert "subject: identical body" in broken_text
+    assert "payload" in clean_text
+    assert "payload" in broken_text
 
 
 # NOTE: orchestrator IS a valid --to, and since 21-D it is a SINGULAR inbox like
