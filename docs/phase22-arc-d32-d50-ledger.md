@@ -611,3 +611,96 @@ re-read's diff-stat assertion holds.
 | B3R-2 | major | The journal-sidecar flag is obtained but never rendered, so an error row cannot report it; the B2R-3 test asserts neither sidecar flag. | **ACCEPT.** |
 
 **Loop shape (the orchestrator's call, recipe section 3):** three bounded B reads, each finding residuals of the previous fixes -- the Expansion-#13 signature. The remedy is NOT another instance fix plus another round. It is ONE CLASS SWEEP by a fresh cell: state the class once -- **every filesystem probe in the script whose failure can be swallowed into a Boolean or skipped (`exists`, `is_file`, `is_dir`, `glob`/`iterdir` over an unreadable directory, `os.path.*`) must distinguish ABSENT (not-found) from UNKNOWN (any other `OSError`), and UNKNOWN on either member withholds a positive twin** -- then read the WHOLE script for members of the class, record each site under uncounted `SS-N` ids, fix, and follow with ONE confirming bounded B round. The previous fix-leg cell ended at 357,044 tokens; the sweep goes to a fresh cell.
+
+---
+
+## Class sweep (SS-N, uncounted)
+
+**Cell:** fresh `implementer-sonnet-high`. **Worktree:** `.worktrees/d32-d50-exec`, continuing on branch
+`d32-d50-exec` from `a611732e`. **Commit:** `1d340010` -- `fix(scripts): class sweep -- every filesystem probe
+distinguishes ABSENT from UNKNOWN` (touches `scripts/backup_inventory.py` and
+`tests/scripts/test_backup_inventory.py` only). `git log -1 --format='%(trailers)'` on `1d340010` prints empty.
+
+**The class, stated once:** every filesystem probe in `scripts/backup_inventory.py` whose failure can be swallowed
+into a Boolean, an empty result, or a skip must distinguish ABSENT (confirmed not-there --
+`FileNotFoundError`/`NotADirectoryError`) from UNKNOWN (any other `OSError` -- permission denied, a flaky mount, an
+I/O failure). An UNKNOWN on either member of a candidate twin pair withholds the positive twin claim, the same as a
+confirmed-present sidecar. An UNKNOWN that affects which files are scanned (a directory that cannot be examined or
+listed) must be a visible row, never a silently empty scan and never an uncaught crash of the whole inventory.
+
+**Mechanism verified before writing the fix (load-bearing, matches the prior cell's note):** on this Windows/Python
+3.14 build, `Path.exists()`/`Path.is_dir()`/`Path.is_file()` with the default `follow_symlinks=True` resolve to
+NATIVE `os.path._path_isdir`/`_path_isfile`/`_path_exists` builtins -- measured directly: `os.path.isdir is
+genericpath.isdir` is `False` (same for `isfile`/`exists`), and `import nt` names them `_path_isdir` etc. These
+native builtins do NOT call the patchable `os.stat` at all, so they cannot be intercepted by monkeypatching
+`os.stat`, and (by the well-established `GetFileAttributesW`-based semantics they wrap) fold EVERY failure into a
+bare `False` with no errno discrimination available at the Python level. `Path.stat()` (used by the existing B3
+per-file guard) and `os.stat()` itself ARE ordinary Python-level calls and ARE patchable -- confirmed empirically
+(the SS-1/SS-3/SS-5 discriminating tests below patch `os.stat` and the fault has no effect on the pre-fix code,
+which never reaches it, and a full effect on the post-fix code, which now routes every existence/type probe through
+a single `os.stat`-based helper, `_probe`). `Path.glob()`'s internal `os.scandir()` call is not wrapped in any
+try/except anywhere in the stdlib glob machinery (`glob.py`'s `_Globber.scandir` has no except clause at all) -- an
+unreadable directory does not "yield nothing," it raises, uncaught, all the way out of `render()`.
+
+**Every candidate site found by reading the whole script (a grep bounds the family from below; this is a read):**
+
+| id | site (pre-fix `a611732e` line) | swallow mechanism | disposition |
+|---|---|---|---|
+| SS-1 | `_scan`'s `if not directory.is_dir(): return []` (`:120`) | native `_path_isdir` folds an UNKNOWN (permission denied on the backups/pre-images dir) into the same empty-list return as a genuinely absent directory -- every file inside vanishes with no trace. | **FIX.** `_scan` (now `scripts/backup_inventory.py:178`) calls `_probe(directory)`; `unknown` -> one visible `scan-error` row (`_directory_error_entry`, `:164`); `absent` -> `[]` unchanged. |
+| SS-2 | `_scan`'s `for p in sorted(directory.glob(pattern)):` (`:123`) | `Path.glob()`'s internal `os.scandir()` is unguarded in the stdlib; an unlistable-but-stat-able directory raises an uncaught `OSError` that propagates out of `render()` and crashes the WHOLE inventory (worse than "yields nothing"). | **FIX.** `_scan` (`:186-189`) wraps the `glob()` call in `try`/`except OSError`; a failure becomes one `scan-error` row and the other two locations still scan. |
+| SS-3 | `_scan_one`'s `wal_sidecar = Path(str(p) + "-wal").exists()` (`:167`) | native `_path_exists` folds an UNKNOWN sidecar probe into `False` (absent) -- an otherwise byte-identical CLI-copy/gate-image pair can be handed a FALSE POSITIVE twin. | **FIX.** `_scan_one` (`:250`) calls `_probe(...)[0]`; `_sidecar_reason` (`:267-283`) treats `"unknown"` the same as `"present"` (new sentinels `indeterminate-wal-unknown`/`-journal-unknown`, `_TWIN_SENTINELS` widened). |
+| SS-4 | `_scan_one`'s `journal_sidecar = Path(str(p) + "-journal").exists()` (`:168`) | same swallow as SS-3, PLUS the flag was obtained but never rendered at all (Reviewer B, B3R-2). | **FIX.** Probe fixed identically to SS-3 (`:251`); the value is now an ADDITIVE output column appended AFTER `error` (`render`, `:338-353`) so every existing column index (`path` at `[8]`, `error` at `[9]`) stays stable; verified against every test that indexes those columns. |
+| SS-5 | `main`'s `if not root.is_dir(): ...return 2` (`:296`) | native `_path_isdir` folds an UNKNOWN root (exists, unprobeable) into the same "root not found" message as a genuinely-missing root -- an operator cannot tell "create the directory" from "fix the permission." | **FIX.** `main` (`:398-405`) calls `_probe(root)`; `absent`/`present-but-not-a-dir` keep the exact original "root not found" message and exit 2 (no behaviour change for the tested case); `unknown` gets a distinct message and still exits 2 (no scan ran either way -- the "exit 0 for a scan that ran" invariant is untouched). |
+| SS-6 | `_scan_one`'s `st = p.stat()` inside the existing per-file `try` guard (pre-fix `:162`, now `:245`) | none -- `Path.stat()` is an ordinary Python-level call (not a native swallow-to-bool builtin); any `OSError` it raises already propagates to the enclosing `except OSError as exc: error = ...` (the B3 fix), producing a per-file error row. | **JUDGED SAFE, NO FIX.** Already fail-loud; this IS the pattern the rest of the sweep generalises, not a member of the swallow-to-Boolean class. |
+| SS-7 | `read_schema_version`'s `sqlite3.connect(...)` / `conn.execute(...)` (`:94-108` pre-fix, `:136-150` post-fix, unchanged by this commit) | none -- not a filesystem existence probe (a SQLite-level failure); already caught explicitly (`except sqlite3.Error` / `except (sqlite3.Error, ValueError, TypeError)`) and converted to a visible `error:...` string, never swallowed into a bare bool/empty result. | **JUDGED SAFE, NO FIX.** Out of the class's scope (not a `Path`/`os` filesystem probe) but confirmed safe by the same fail-loud standard. |
+| SS-8 | `sha256_of`'s `path.open("rb")` (`:113` pre-fix, `:158` post-fix, unchanged) | none -- an `OSError` here propagates directly out of `sha256_of()`, caught by the SAME per-file guard as SS-6 (B3), producing a per-file error row. | **JUDGED SAFE, NO FIX.** Already fail-loud, not swallowed. |
+
+**Red evidence, one line per new/amended discriminating test (against the pre-sweep script, worktree tip
+`a611732e`):**
+
+- `test_a_present_journal_sidecar_is_reported` (new, SS-4 rendering) --
+  `IndexError: list index out of range` at `row[10]` (no journal-sidecar column existed pre-fix).
+- `test_no_twin_is_claimed_when_a_sidecar_probe_is_unknown` (new, SS-3) --
+  `AssertionError: assert 'C:\\...\\swing-pre-22a4-migration-20260908T010203Z.db' == 'indeterminate-wal-unknown'`
+  (an unprobeable wal sidecar was handed a positive twin -- the exact false-positive the brief named).
+- `test_a_directory_probe_failure_is_a_visible_row_not_a_silent_empty_scan` (new, SS-1) --
+  `AssertionError: assert 0 == 1` on `len(scan_error_rows)` (the backups directory silently scanned as empty, no
+  trace of the permission failure).
+- `test_a_directory_listing_failure_is_a_visible_row_not_a_crash` (new, SS-2) --
+  pre-fix the test's own `inv.render(inv.inventory(root, backups), root, backups)` call raises an UNCAUGHT
+  `PermissionError: [Errno 13] synthetic listing failure` out of `_scan` (`scripts\backup_inventory.py:123: in _scan
+  ... for p in sorted(directory.glob(pattern))`) -- not an assertion failure but the crash the fix removes.
+- `test_root_probe_unknown_is_reported_distinctly_from_absent` (new, SS-5) --
+  `assert rc == 2` -- pre-fix `rc == 0` (a different bug surfaced by the same probe: the native `_path_isdir` used
+  the REAL filesystem for the un-obstructed root, so `main()` proceeded to scan and returned 0 instead of ever
+  reaching the UNKNOWN branch at all -- confirming the native probe cannot be driven through the patched `os.stat`,
+  which is exactly SS-1/SS-3/SS-5's point).
+- `test_a_per_file_stat_or_hash_error_does_not_abort_the_scan` (amended, B3R-2 sidecar-survival assertions) --
+  reproduced directly against `a611732e`'s script: `bad_row` has exactly 10 columns pre-fix, so `bad_row[10]`
+  raises `IndexError: list index out of range` (the journal-sidecar flag could not be asserted to survive an error
+  row because it was never rendered at all).
+- `test_a_stat_failure_on_a_matched_file_yields_an_error_row_not_a_silent_skip` (amended, both sidecar flags
+  default to `"unknown"` when stat fails before either probe runs) --
+  `AssertionError: assert 'absent' == 'unknown'` (pre-fix the boolean default `False` rendered as `"absent"` even
+  though the sidecar was never actually probed -- a false claim of absence, not a stated unknown).
+
+All seven pass post-fix (`python -m pytest tests/scripts/test_backup_inventory.py -q` -- `19 passed`); `ruff check
+scripts/backup_inventory.py` -- `All checks passed!`; the script remains pure ASCII (0 non-ASCII bytes, checked
+byte-for-byte).
+
+**Suite (final head `1d340010`):** `python -m pytest -m "not slow" -q -n 4` --
+`12437 passed, 13 skipped, 1159 warnings in 750.37s (0:12:30)`, exit code 0 (+5 over the prior fix-leg-pass-2 count
+of 12432, matching the 5 new tests added).
+
+**Scope-lock diff-stat**, `git diff --stat c0600ea1..1d340010`:
+
+```
+ docs/phase22-arc-d32-d50-ledger.md     | 244 ++++++++++++++++++++++
+ scripts/backup_inventory.py            | 293 +++++++++++++++++++++++----
+ tests/scripts/test_backup_inventory.py | 359 ++++++++++++++++++++++++++++++++-
+ 3 files changed, 859 insertions(+), 37 deletions(-)
+```
+
+Only `scripts/backup_inventory.py`, its test, and this ledger changed since `c0600ea1` -- the class-sweep commit
+holds the bound the bounded-B-reread's diff-stat assertion requires; the confirming B round the orchestrator's
+gate calls for is next.
