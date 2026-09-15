@@ -26,11 +26,35 @@ EXPORTS = REPO_ROOT / "exports" / "research"
 # (>2 trading sessions; 4 calendar days tolerates a normal weekend.)
 T1_MAX_AGE_DAYS = 4
 
+# T3 (watch standard section 4) is a ONE-TIME golden gate: the first priced
+# shadow trade is hand-walked against raw bars, then the machinery is trusted.
+# It PASSED 2026-06-10 (standard section 2.2: WULF/VECO, run 20260611T041306Z;
+# the 1-in-5 spot-checks closed at N=10 on 2026-06-13). A nonzero trigger
+# rate is the standing state of a working engine, not an event -- so the
+# flag fires ONLY while this is None. Set back to None only if the gate is
+# ever re-opened by a standard amendment; never re-derive it from the data.
+T3_GOLDEN_GATE_PASSED_ON: date | None = date(2026, 6, 10)
+
 _FUNNEL_RE = re.compile(
     r"total_detections=(\d+) collapsed_duplicate=(\d+) unique_signals=(\d+)")
 _UNATTR_RE = re.compile(r"total_unattributed=(\d+)")
 _TRIGGER_RE = re.compile(r"trigger rate (\d+)/(\d+)")
+# The `trigger` column is the BROAD-WATCH cohort's (the weekly tier's unit,
+# standard section 2 item 4). summary.md prints one "trigger rate" line PER
+# hypothesis section and the A+ section comes first, so a first-match read
+# reports the A+ arm (7/12) as if it were the funnel -- which it did, from
+# June to 2026-09-15. Read the section, not the first match.
+_BROAD_WATCH_SECTION_RE = re.compile(
+    r"^## Broad-watch baseline\s*$(.*?)(?=^## |\Z)", re.M | re.S)
 _DIR_TS_RE = re.compile(r"shadow-expectancy-(\d{8}T\d{6})Z$")
+
+
+def _broad_watch_trigger(text: str) -> str:
+    """'k/n' from the Broad-watch section, or '?' if the section or its
+    trigger line is absent (never another section's number)."""
+    sm = _BROAD_WATCH_SECTION_RE.search(text)
+    tm = _TRIGGER_RE.search(sm.group(1)) if sm else None
+    return f"{tm.group(1)}/{tm.group(2)}" if tm else "?"
 
 
 def _risk_recon_tags() -> set[str]:
@@ -62,10 +86,9 @@ def scan_artifacts(n_runs: int) -> list[str]:
             if (d / "summary.md").exists() else ""
         fm = _FUNNEL_RE.search(text)
         um = _UNATTR_RE.search(text)
-        tm = _TRIGGER_RE.search(text)
         det, sig = (int(fm.group(1)), int(fm.group(3))) if fm else (-1, -1)
         unattr = int(um.group(1)) if um else -1
-        trig = f"{tm.group(1)}/{tm.group(2)}" if tm else "?"
+        trig = _broad_watch_trigger(text)
         name = d.name.replace("shadow-expectancy-", "")
         rows.append((name, det, sig, unattr, trig))
         print(f"  {name:22} {det:>10} {sig:>8} {unattr:>9} {trig:>9}")
@@ -88,13 +111,16 @@ def scan_artifacts(n_runs: int) -> list[str]:
         flags.append(
             f"T2: newest run has {rows[0][3]} unattributed -- "
             "same-session root-cause.")
-    # T3 — first priced trade (trigger numerator nonzero).
+    # T3 — the FIRST priced trade (trigger numerator nonzero), one-time.
     priced = [r for r in rows if r[4] not in ("?",) and int(r[4].split("/")[0]) > 0]
-    if priced:
+    if priced and T3_GOLDEN_GATE_PASSED_ON is None:
         flags.append(
             "T3: trigger rate is NONZERO (" + priced[0][4] + " in "
             + priced[0][0] + ") -- if this is the FIRST priced trade, the "
             "golden-gate hand-walk is required before trusting accruals.")
+    elif priced:
+        print(f"  T3 golden gate passed {T3_GOLDEN_GATE_PASSED_ON} (standard "
+              "section 2.2); nonzero trigger is the standing state.")
     # Accrual pulse (informational).
     if len(rows) >= 2 and rows[0][2] >= 0 and rows[-1][2] >= 0:
         print(f"  accrual delta across shown runs: "
