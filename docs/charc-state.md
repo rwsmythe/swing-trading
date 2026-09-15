@@ -31,13 +31,14 @@
 | item | owner | state |
 |---|---|---|
 | **D53.1 close check at run 177** (non-zero DBW rows' `window_start_date == trough_1_date`; tile denominator moves) | CHARC (RD reads 2a) | due 2026-09-15 evening |
-| **D32+D50** brief `4bb2b049` → corrected `9e18b642` (schema version from the `schema_version` TABLE); tripwire crossed (`swing/data`), authorized; opus-high; B required; witness on a COPY; the inventory output → the operator's per-file disposition | orchestrator SUCCESSOR dispatches; CHARC gate | queued, next |
+| **D32+D50** MERGED `a3b2f90c`, CHARC QA'd on disk (23 rows, stems byte-identical by composed-set check, wrappers bound, suite 12,456/13/0 at `-n 4`); RD QA PASS on the disposition; the operator's F4 sitting next (move 31, delete 21 twins pair-by-pair with re-hash, keep the rest); production proof = 22-B's migration | operator (disposition); CHARC (22-B proof) | merged 2026-09-15 |
 | **D56** error region + C3 (tests+template rider; its own browser witness) | orchestrator, after D32+D50 | queued |
 | **D55** false-green clipping test (tests-only) | orchestrator sequences | queued |
 | **Charter compaction** — DONE `6a5b7b68` (86,678 / 120,000; ~33K headroom) | CHARC | closed 2026-09-15 |
 | **harness-architecture §5.1 + §6 compaction** (96K; ~60K canon) | CHARC | Phase-22 close (held deliberately; one pass after 22-B/C) |
 | **Gotchas compression (24 bullets over 700, list in the 09-09 state file → now MEASURED by the probe's top-five) + CLAUDE.md line 3 (4,083 vs 2,000) + the rmtree-ReadOnly `onexc` rider + its gotcha (D42 half 1) + the recipe-template signal (per-cell verdict-token instructions went wrong twice on the riders)** | orchestrator, at the next gotcha commit | owed; the probe reports it every run |
 | **D42 half (2)** per-step status behind a run-level `complete` | Phase-22 sweep | open |
+| **CLAUDE.md gotcha "db-migrate writes TWO backups" is now FALSE** (one backup, echoed) + the rmtree `onexc` gotcha (D42) | orchestrator, at its Gotchas compression | owed |
 | **D58** unfenced snapshot-to-migration interval (B1 on D32+D50, pre-existing at `eface268`) — banked; fix = one exclusive-lock connection across read/snapshot/migrate, its own arc | CHARC register; operator sequences | banked 2026-09-15 |
 | **D57** wake cue = cross-session ping (probe PASSED 07:19Z: idle 2.1.272 seat woke in 6 s). Rider brief `phase22-rider-d57-wake-cue-dispatch-brief.md` → orchestrator (sonnet-high, no B); CHARC closes on the §4 witness | CHARC witness at the next fresh launch | MERGED `c8279a93` 2026-09-15, CHARC-verified by execution (DryRun names, ping lines, C3 text); closes on the §4 witness |
 | D45 (same-mandate collapse) · D46 (log-containment interface) · D44 · D47 · D48 (B-2 corrector semantics) · D39/D34/D35/D37/D38/D40/D41 sweeps · D51 (schema-manifest comparator, BEFORE 22-B) | standing | standing |
