@@ -289,3 +289,43 @@ Literal block quote of `20260914T233826Z-charc-ruling-d53-1-b-gate-i-reload-firs
 > final head, no re-round (the stopping rule); B does not re-run for it.
 >
 > -- CHARC
+
+
+## Browser witness (binding, CHARC ruling) -- operator-driven, one step at a time, orchestrator-recorded
+
+Conducted 2026-09-14, HST evening, in a real browser. Code under witness: branch head `77bdf3ae` (the reload-first
+text commit on top of `f94d9f9c`), served by `PYTHONPATH=. python -m swing.cli web` from the worktree -- import path
+verified to resolve the WORKTREE's `swing/web/routes/patterns.py` with `_dbw_exemplar_window` present. The operator's
+long-running `swing web` on 8080 (main code) was NOT used. Database checks by the orchestrator via plain sqlite3
+`mode=ro` after each writing step.
+
+Baseline (live, before step 1): schema_version 38; 1,563 DBW evaluations all geometric_score 0; 0 non-zero;
+pattern_exemplars 34 (max id 34); latest run 175.
+
+| Step | Where | Action | Observed | DB check |
+|---|---|---|---|---|
+| 1 | LIVE, :8081 | open `/patterns/7815/review` (ZETA, run 175, score 0) | header "Window 2026-09-02 to 2026-09-11"; correction start field pre-filled 2026-09-02 | -- |
+| 2 | LIVE, :8081 | `confirm`, untouched | refusal rendered verbatim: "Cannot record double_bottom_w evaluation 7815 as a pattern: its geometric_score is 0 ... (1) RELOAD this page ... (2) choose the decision pattern_present_outside_window; (3) type the first-trough start date ... (a date different from the pre-filled 2026-09-02)." | exemplars 34 / max 34 (no write) |
+| 3 | LIVE, :8081 | reload; `pattern_present_outside_window`, pre-filled start untouched | same refusal | exemplars 34 / max 34 (no write) |
+| 4 | LIVE, :8081 | reload; `pattern_present_outside_window`, typed start 2026-06-25, end pre-filled 2026-09-11 | redirect to `/patterns/queue` | NEW exemplar 35: ZETA, double_bottom_w, confirmed, closed_loop_review, start 2026-06-25, end 2026-09-11 |
+| 5 | COPY, :8082 | `reject` on `/patterns/7810/review` (WT, score 0), untouched | redirect to `/patterns/queue` | COPY exemplar 36: WT, rejected, start 2026-09-02 (reject unchanged, as ruled); LIVE still 35 |
+| 6 | COPY, :8082 | `confirm` untouched on `/patterns/7835/review` (NESR, run 176, v1.1.0, score 0.6667; evidence trough_1 2026-07-29, trough_2 2026-08-20; persisted window_start 2026-08-20 -- interim row) | redirect to `/patterns/queue` | COPY exemplar 36: NESR, confirmed, start **2026-07-29** (= evidence trough 1, not the persisted 2026-08-20), end 2026-09-14; LIVE still 35 |
+
+**Live-vs-copy choices (operator's, per CHARC's ruling and RD's concurrence -- a witness must not mint an exemplar to
+pass).** Step 4 LIVE: the operator saw a W on ZETA and typed his own first-low read (2026-06-25); exemplar 35 is a
+real, operator-typed label, recorded by RD as the first review-route DBW exemplar. Step 5 COPY: the operator saw a
+small W in June on WT and asked how to label it; the semantic was unsettled at the time, so no live label was written
+-- RD has since ruled the OVERLAP test (a W that completed before the evaluation window is out of scope for that
+evaluation; reject it on its own terms). Step 6 COPY: the operator was not sure the skewed NESR shape is a W.
+
+**Copies:** SQLite online-backup API from the live DB opened `mode=ro` into the session scratchpad
+(`witness-db/swing.db`), `PRAGMA integrity_check` ok, schema 38; the step-6 copy was re-taken AFTER run 176 so it
+carried evaluation 7835. Served by a throwaway config (`swing.witness-copy.config.toml`, db_path -> the copy) deleted
+after each use; both side servers (8081, 8082) stopped and their ports verified free.
+
+**Seeded-gate rule:** no step used seeded data. Steps 1-4 ran on the unseeded live state; steps 5-6 ran on byte-copies
+of live rows, including the first real v1.1.0 non-zero row (run 176). The header-shows-trough-1 half of F2 cannot be
+witnessed pre-merge (run 176 executed main, not this branch); it is D53.1's forward close check on the first run after
+merge, per CHARC.
+
+**Witness verdict: PASS, all six steps.**
