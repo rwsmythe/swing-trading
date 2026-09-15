@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import re
 import sys
@@ -545,6 +546,58 @@ def ack_message(root: Path, role: str, filename: str,
 
 # --- subcommands -----------------------------------------------------------
 
+def _read_session_map(root: Path) -> dict[str, str]:
+    """Best-effort {role: session_name} from <comms_root>/.sessions.json.
+
+    D57 C2 (the wake-on-mail cross-session cue, harness-architecture section
+    3): read-only support for the `ping ->` line cmd_post prints after a
+    successful post. The launcher (scripts/start_directors.ps1
+    Save-SessionMap) writes this file WITHOUT a BOM, but decode with
+    'utf-8-sig' defensively (a BOM-prefixed file must not look "malformed").
+    A missing file, empty file, malformed JSON, a non-dict root, or a
+    per-role entry with a missing/non-string/empty session_name are ALL
+    treated as "no session recorded" for that role -- this function must
+    NEVER raise (the post it supports has already succeeded by the time this
+    runs) and never change cmd_post's exit code.
+    """
+    path = root / ".sessions.json"
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return {}
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return {}
+    if not isinstance(obj, dict):
+        return {}
+    out: dict[str, str] = {}
+    for role, entry in obj.items():
+        if isinstance(entry, dict):
+            name = entry.get("session_name")
+            if isinstance(name, str) and name:
+                out[role] = name
+    return out
+
+
+def _ping_line(role: str, session_map: dict[str, str]) -> str:
+    """The one `ping ->` line for `role` (D57 C2; the mechanical wake nudge).
+
+    `operator` is ALWAYS the GUI/relay form -- the operator role has no
+    session to SendMessage (never look it up, even if the map carries a
+    stray entry for it). Every other role: the recorded session_name if
+    present, else "no session recorded" (missing role, missing/malformed
+    map -- indistinguishable to the sender, and that is fine: read-only,
+    never fails the post).
+    """
+    if role == "operator":
+        return "ping -> operator: no session (GUI/relay)"
+    name = session_map.get(role)
+    if name:
+        return f'ping -> SendMessage to="{name}"'
+    return f"ping -> {role}: no session recorded"
+
+
 def cmd_post(args: argparse.Namespace) -> int:
     root = _comms_root(args)
     sender = args.__dict__["from"]
@@ -553,8 +606,14 @@ def cmd_post(args: argparse.Namespace) -> int:
     recipients = [r.strip() for r in args.to.split(",") if r.strip()]
     finals = post_message(
         root, sender, recipients, args.type, args.subject, body, args.thread)
+    # The ping line is READ-ONLY output computed AFTER the post already
+    # succeeded: a missing/malformed session map must never fail the post or
+    # change its exit code (D57 C2).
+    session_map = _read_session_map(root)
     for final in finals:
-        print(f"posted -> {final.parent.parent.name}/inbox/{final.name}")
+        role = final.parent.parent.name
+        print(f"posted -> {role}/inbox/{final.name}")
+        print(_ping_line(role, session_map))
     return 0
 
 
