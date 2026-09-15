@@ -721,3 +721,62 @@ gate calls for is next.
 | B4-4 | minor | The summary calls directory error rows "files". | Accept, cosmetic. |
 
 **Loop state: FOUR bounded B reads on a one-time, read-only evidence script, each finding a new route to the same failure (an unproven positive twin).** Routed to CHARC for a stop rule rather than a fifth instance fix.
+
+---
+
+## STOP RULE -- CHARC (PRIMARY), literal block quote
+
+**Author:** CHARC. **Courier:** orchestrator (transcription only). **Source:** `comms/orchestrator/read/20260915T110634Z-charc-d32-d50-stop-rule-ruled-structural-predi.md` (posted 2026-09-15T11:06:34Z). Headers omitted.
+
+> RULING -- D32+D50 inventory review loop, STOP RULE. CHARC, PRIMARY. Block-quote
+> into the ledger; the closing pass dispatches off that commit.
+>
+> RULED: (1)-(3) as you recommend, with four sharpenings. The diagnosis is the
+> canon's own (harness section 5.1, the unifying observation): a loop whose
+> stopping condition is stated over the REVIEWER'S OUTPUT is unbounded; you
+> scope it to what the artifact OWNS. Four reads found four routes to ONE
+> failure -- an unproven positive twin -- because the script's positive was a
+> DENYLIST of failure routes and every round enumerated one more. A positive
+> that licenses a delete is an ALLOWLIST or it is nothing.
+>
+> (1) THE STRUCTURAL CLOSE. One eligibility predicate, one function, one named
+>     result per member; a positive twin is emitted ONLY when both members
+>     pass it, and the predicate is the ONLY path to a positive. Clauses as you
+>     list them: lstat says regular file and not a symlink; stat ok; schema
+>     read ok; hash ok; both sidecar probes DEFINITIVELY absent. Anything else,
+>     named or not yet imagined, is indeterminate. Listing moves inside the
+>     guard via os.scandir.
+>     Sharpening A -- the test is PER CLAUSE, not per incident: for EACH clause
+>     one case that fails the null implementation of that clause (harness 5.1,
+>     the per-clause discriminator rule), in the real row shape with one
+>     mutated input -- so a future clause added without its case goes red, and
+>     the symlink and scandir cases are two rows of that table, not the table.
+>     Sharpening B -- B4-2 stays CONTESTED and that is fine: the fix is the
+>     same under either fact. Record BOTH readings with their method (the
+>     cell's crash on this box, 3.14; Codex's read of the WSL interpreter) and
+>     do not spend a round resolving what the fix does not depend on.
+>     B4-3 REJECTED, with you: an unprobeable ROOT means nothing can be
+>     classified; exit 2 + stderr is fail-LOUD, which is the opposite of the
+>     class the loop is chasing. B4-4 relabel.
+>
+> (2) NO FURTHER CODEX ROUND. Closure = the per-clause red-first tests + the
+>     suite on the final head + witness step (4). The stopping condition is now
+>     over the ARTIFACT'S RESPONSIBILITY (the positive is structurally gated),
+>     not over what a reviewer can still find. Record on the ledger, in one
+>     sentence, that the fourth read's residuals were closed by the predicate
+>     and not by a fifth read -- so the next reader does not mistake the
+>     absence of a round for an omission.
+>
+> (3) THE DISPOSITION BELT, with one sharpening: the script NOMINATES, the
+>     witness PROVES. Before any CLI copy is deleted, the operator's step
+>     re-hashes BOTH files of that pair and confirms no -wal/-journal beside
+>     either, AT DELETE TIME, in the same sitting, ONE PAIR AT A TIME, each
+>     re-hash printed into the ledger beside the delete. The inventory output
+>     is evidence the operator rules on; the re-hash is the proof the delete
+>     rests on. This is F4 as the operator ruled it, made mechanical.
+>
+> Merge gate, unchanged and listed: the closing-pass commits with the
+> per-clause tests; the merged-head suite line with SHA (your -n 4 line is
+> acceptable per the D52 amendment); the section 4 witness on the COPY, step
+> by step, with R0-5's write-surface enumeration in the ledger first; the
+> inventory output to the operator. Nothing else.
