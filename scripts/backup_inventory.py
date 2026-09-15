@@ -15,10 +15,18 @@ EITHER member of the candidate pair (the CLI copy or the gate image) withholds
 it (``indeterminate-wal-sidecar`` / ``indeterminate-journal-sidecar``) -- never
 a positive twin on a hole in the proof.
 
-A file that raises ``OSError`` on ``stat`` or on hashing does NOT abort the
-scan -- it gets its own row (path, exception text in the schema-version column,
-hash and twin both ``indeterminate``) and the scan continues; the summary line
-counts these rows.
+A file that raises ``OSError`` on the existence/stat check, the schema-version
+read or the hash -- OR whose schema-version read fails WITHOUT raising (a
+readable file that is not a valid database) -- does NOT abort the scan and is
+never silently skipped: it gets its own row with the exception text in a
+dedicated ``error`` column, whatever metadata was ALREADY obtained before the
+failure preserved (size, mtime, sidecar flags, and the schema version itself
+when only the hash step failed), the hash column ``indeterminate`` when the
+hash could not be computed, and the twin column ``indeterminate`` -- a member
+that cannot be read cannot be named a positive twin on either side of the
+pair, byte-identical bytes notwithstanding. The scan continues; the summary
+line counts these rows; the run still exits 0 (an inventory is evidence, not
+a gate).
 
 Classes, by NAME only:
   gate-image    ``swing-pre-*``
@@ -49,6 +57,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from stat import S_ISREG
 
 _CLI_COPY_RE = re.compile(r"^swing-\d{8}T\d{6}\.db$")
 _WEEKLY_RE = re.compile(r"^swing-\d{6}\.db$")
@@ -112,47 +121,71 @@ def _scan(location: str, directory: Path, pattern: str) -> list[Entry]:
         return []
     out = []
     for p in sorted(directory.glob(pattern)):
-        if not p.is_file():
-            continue
-        try:
-            st = p.stat()
-            size = st.st_size
-            mtime = datetime.fromtimestamp(st.st_mtime, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-            version = read_schema_version(p)
-            sha256 = sha256_of(p)
-            wal_sidecar = Path(str(p) + "-wal").exists()
-            journal_sidecar = Path(str(p) + "-journal").exists()
-        except OSError as exc:
-            # Per-file isolation (Reviewer B, B3): one unreadable or vanishing
-            # file must not abort the rest of the scan. It becomes its own
-            # error row -- path kept, exception text in the schema-version
-            # column, hash and twin both indeterminate -- and the loop
-            # continues to the next file.
-            out.append(Entry(
-                location=location,
-                cls=classify(p.name),
-                path=p,
-                size=0,
-                mtime="unknown",
-                version=f"error:{type(exc).__name__}:{exc}",
-                sha256="indeterminate",
-                wal_sidecar=False,
-                journal_sidecar=False,
-                error=f"error:{type(exc).__name__}:{exc}",
-            ))
-            continue
-        out.append(Entry(
-            location=location,
-            cls=classify(p.name),
-            path=p,
-            size=size,
-            mtime=mtime,
-            version=version,
-            sha256=sha256,
-            wal_sidecar=wal_sidecar,
-            journal_sidecar=journal_sidecar,
-        ))
+        entry = _scan_one(location, p)
+        if entry is not None:
+            out.append(entry)
     return out
+
+
+def _scan_one(location: str, p: Path) -> Entry | None:
+    """Per-file isolation (Reviewer B, B3 + the B2 re-read's B2R-1/B2R-2).
+
+    EVERY fallible step -- the existence/stat check included -- runs inside
+    the guard below, so an inaccessible or vanished matched path yields its
+    own error row instead of vanishing with NO row at all (a bare
+    ``Path.is_file()`` call BEFORE the guard swallows ``OSError`` internally
+    and returns False, dropping the candidate silently -- B2R-2) or aborting
+    the whole scan (B3). Whatever was obtained before a failure is KEPT, not
+    zeroed (B2R-3): a hash-step failure after a successful stat/version read
+    still shows the real size, mtime, sidecar flags and schema version, with
+    only the hash and the derived twin state going indeterminate.
+
+    A schema-version read that fails WITHOUT raising (``read_schema_version``
+    catches ``sqlite3.Error``/``ValueError``/``TypeError`` internally and
+    returns an ``error:...`` string) is ALSO treated as this file's error
+    (B2R-1): byte identity between two unreadable/corrupt files does not
+    prove they are the same recoverable database, so a member in that state
+    must never be named a positive twin either.
+
+    Returns ``None`` ONLY for a confirmed non-regular-file match (e.g. a
+    directory the glob pattern happened to match) -- never on a failure to
+    determine that.
+    """
+    size = 0
+    mtime = "unknown"
+    wal_sidecar = False
+    journal_sidecar = False
+    version: str | None = None
+    sha256: str | None = None
+    error: str | None = None
+    try:
+        st = p.stat()
+        if not S_ISREG(st.st_mode):
+            return None
+        size = st.st_size
+        mtime = datetime.fromtimestamp(st.st_mtime, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        wal_sidecar = Path(str(p) + "-wal").exists()
+        journal_sidecar = Path(str(p) + "-journal").exists()
+        version = read_schema_version(p)
+        sha256 = sha256_of(p)
+    except OSError as exc:
+        error = f"error:{type(exc).__name__}:{exc}"
+
+    if error is None and version is not None and version.startswith("error:"):
+        error = version
+
+    return Entry(
+        location=location,
+        cls=classify(p.name),
+        path=p,
+        size=size,
+        mtime=mtime,
+        version=version if version is not None else (error or "unknown"),
+        sha256=sha256 if sha256 is not None else "indeterminate",
+        wal_sidecar=wal_sidecar,
+        journal_sidecar=journal_sidecar,
+        error=error,
+    )
 
 
 def inventory(root: Path, backups_dir: Path) -> list[Entry]:
@@ -170,6 +203,23 @@ def _sidecar_reason(e: Entry) -> str | None:
     if e.journal_sidecar:
         return "indeterminate-journal-sidecar"
     return None
+
+
+_TWIN_SENTINELS = frozenset({
+    "none",
+    "indeterminate",
+    "indeterminate-wal-sidecar",
+    "indeterminate-journal-sidecar",
+})
+
+
+def _is_positive_twin(twin_value: str) -> bool:
+    """Reviewer B, B2R-4 (minor): EXACT sentinel membership, never a string
+    prefix test. A twin value that legitimately STARTS WITH the same text as
+    a sentinel (e.g. a matched gate path under a directory literally named
+    ``indeterminate-something``) is a real positive twin, not a tainted one
+    -- only exact equality to a sentinel withholds it."""
+    return twin_value not in _TWIN_SENTINELS
 
 
 def render(entries: list[Entry], root: Path, backups_dir: Path) -> str:
@@ -209,12 +259,13 @@ def render(entries: list[Entry], root: Path, backups_dir: Path) -> str:
         "# backup_inventory (read-only)",
         f"# root={root}",
         f"# backups_dir={backups_dir}",
-        "location\tclass\tsize_bytes\tmtime_utc\tschema_version\tsha256\twal_sidecar\ttwin\tpath",
+        "location\tclass\tsize_bytes\tmtime_utc\tschema_version\tsha256\twal_sidecar\ttwin\tpath\terror",
     ]
     for e in entries:
         lines.append("\t".join([
             e.location, e.cls, str(e.size), e.mtime, e.version, e.sha256,
             "present" if e.wal_sidecar else "absent", twin_by_path[e.path], str(e.path),
+            e.error if e.error is not None else "-",
         ]))
     lines.append("# summary")
     keys = sorted({(e.location, e.cls) for e in entries})
@@ -223,8 +274,7 @@ def render(entries: list[Entry], root: Path, backups_dir: Path) -> str:
         lines.append(
             f"# {loc}\t{cls}\tcount={len(group)}\tbytes={sum(e.size for e in group)}")
     cli = [e for e in entries if e.cls == "cli-copy"]
-    twinned = [e for e in cli if twin_by_path[e.path] not in ("none", "indeterminate")
-               and not twin_by_path[e.path].startswith("indeterminate-")]
+    twinned = [e for e in cli if _is_positive_twin(twin_by_path[e.path])]
     lines.append(
         f"# cli-copy with a byte-identical gate twin: {len(twinned)} of {len(cli)} "
         f"({sum(e.size for e in twinned)} bytes)")

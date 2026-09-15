@@ -228,10 +228,14 @@ def test_no_twin_is_claimed_across_a_journal_sidecar(tmp_path: Path) -> None:
 
 def test_a_per_file_stat_or_hash_error_does_not_abort_the_scan(
         tmp_path: Path, monkeypatch) -> None:
-    """Reviewer B, B3 (major): one unreadable/vanishing file must not abort
-    the whole inventory -- it becomes its own error row (path + exception
-    text, hash and twin both indeterminate) and the scan continues; exit
-    status stays 0; the summary line counts the error rows."""
+    """Reviewer B, B3 (major) + B2R-3 (minor, the bounded re-read's amendment):
+    one unreadable/vanishing file must not abort the whole inventory -- it
+    becomes its own error row and the scan continues; exit status stays 0;
+    the summary line counts the error rows. B2R-3: metadata ALREADY obtained
+    before the failing step (size, mtime, sidecar flags, and here the schema
+    version, since only the HASH step failed) is preserved, not zeroed --
+    only the hash and the derived twin go indeterminate, and the exception
+    text lives in its own dedicated column."""
     root = tmp_path / "r"
     backups = root / "backups"
     _image(root / "swing-pre-22a4-migration-1Z.db", 37, marker="A")
@@ -250,12 +254,114 @@ def test_a_per_file_stat_or_hash_error_does_not_abort_the_scan(
     rows = _rows(text)
     assert len(rows) == 3
     bad_row = rows[str(bad)]
-    assert bad_row[4].startswith("error:OSError:")  # schema_version column
-    assert bad_row[5] == "indeterminate"  # sha256 column
+    assert bad_row[4] == "36"  # schema_version WAS obtained before the hash step failed
+    assert bad_row[2] == str(bad.stat().st_size)  # size preserved (B2R-3)
+    assert bad_row[5] == "indeterminate"  # sha256 column: the word sentinel
     assert bad_row[7] == "indeterminate"  # twin column
+    assert bad_row[9] == "error:OSError:synthetic hash failure"  # the exception text
     ok_row = rows[str(ok)]
     assert ok_row[4] == "36" and len(ok_row[5]) == 64  # the other file unaffected
+    assert ok_row[9] == "-"
     assert "# errors: 1" in text
+
+
+def test_no_twin_is_claimed_when_the_schema_version_read_errors(tmp_path: Path) -> None:
+    """Reviewer B, B2R-1 (critical, FAIL CLOSED): a member whose schema-version
+    read errored (readable bytes, not a valid database) must never be named a
+    positive twin on EITHER side of the pair -- byte identity alone does not
+    prove two corrupt files are the same recoverable database. Discriminating:
+    a byte-identical CLI-copy/gate-image pair of NON-sqlite bytes reads as a
+    positive twin pre-fix (the schema-read failure was not an ``Entry.error``)
+    and indeterminate post-fix."""
+    root = tmp_path / "r"
+    backups = root / "backups"
+    backups.mkdir(parents=True)
+    payload = b"this is not a sqlite file at all" * 10
+    gate = root / "swing-pre-22a4-migration-20260908T010203Z.db"
+    gate.write_bytes(payload)
+    cli_corrupt = backups / "swing-20260908T150203.db"
+    cli_corrupt.write_bytes(payload)
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    rows = _rows(text)
+    assert rows[str(gate)][4].startswith("error:")
+    assert rows[str(cli_corrupt)][4].startswith("error:")
+    assert rows[str(cli_corrupt)][7] == "indeterminate"
+    assert "# cli-copy with a byte-identical gate twin: 0 of 1" in text
+
+
+def test_a_stat_failure_on_a_matched_file_yields_an_error_row_not_a_silent_skip(
+        tmp_path: Path, monkeypatch) -> None:
+    """Reviewer B, B2R-2 (major): a bare ``Path.is_file()`` call BEFORE the
+    per-file guard swallows ``OSError`` internally and returns False, so a
+    candidate that raises on stat vanishes with NO row at all -- not even an
+    error row. The existence/stat check must run INSIDE the guard."""
+    root = tmp_path / "r"
+    backups = root / "backups"
+    _image(root / "swing-pre-22a4-migration-1Z.db", 37, marker="A")
+    ok = _image(backups / "swing-20260801T101010.db", 36, marker="B")
+    bad = _image(backups / "swing-20260802T101010.db", 36, marker="C")
+
+    real_stat = Path.stat
+
+    def _boom(self, *a, **kw):
+        if self == bad:
+            raise OSError("synthetic stat failure")
+        return real_stat(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "stat", _boom)
+    text = inv.render(inv.inventory(root, backups), root, backups)
+    rows = _rows(text)
+    assert len(rows) == 3  # not 2 -- the bad file is a ROW, not a silent skip
+    bad_row = rows[str(bad)]
+    assert bad_row[9] == "error:OSError:synthetic stat failure"
+    assert bad_row[5] == "indeterminate"  # nothing was obtained before stat failed
+    assert bad_row[7] == "indeterminate"
+    ok_row = rows[str(ok)]
+    assert ok_row[4] == "36" and len(ok_row[5]) == 64
+    assert "# errors: 1" in text
+
+
+def test_summary_twin_count_uses_exact_sentinels_not_a_string_prefix() -> None:
+    """Reviewer B, B2R-4 (minor): the summary classifies twin values by EXACT
+    sentinel membership, not by the string prefix ``indeterminate-`` -- a
+    matched gate path that legitimately starts with that same text (e.g.
+    under a directory literally named ``indeterminate-something``, which the
+    absolute-path twin value would carry verbatim) is a real positive twin,
+    not a sidecar/error-tainted one. A `render()`-level fixture cannot
+    reproduce this on Windows (the drive letter always leads an absolute
+    path), so this pins the extracted classifier directly."""
+    assert inv._is_positive_twin("indeterminate-decoy/swing-pre-x-migration-1Z.db")
+    assert inv._is_positive_twin(r"C:\swing-data\indeterminate-branch\swing-pre-a-migration-1Z.db")
+    assert not inv._is_positive_twin("indeterminate-wal-sidecar")
+    assert not inv._is_positive_twin("indeterminate-journal-sidecar")
+    assert not inv._is_positive_twin("indeterminate")
+    assert not inv._is_positive_twin("none")
+
+
+def test_main_exits_0_with_an_error_row_present(
+        tmp_path: Path, monkeypatch, capsys) -> None:
+    """Reviewer B, B2R-5: the CLI entry point (not just render()) exits 0
+    even when a per-file error is present -- an inventory is evidence, not
+    a gate -- and the error row and summary reach real stdout."""
+    root = tmp_path / "r"
+    backups = root / "backups"
+    ok = _image(backups / "swing-20260801T101010.db", 36, marker="B")
+    bad = _image(backups / "swing-20260802T101010.db", 36, marker="C")
+
+    real_sha256_of = inv.sha256_of
+
+    def _boom(path: Path) -> str:
+        if path == bad:
+            raise OSError("synthetic hash failure")
+        return real_sha256_of(path)
+
+    monkeypatch.setattr(inv, "sha256_of", _boom)
+    rc = inv.main(["--root", str(root), "--backups-dir", str(backups)])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "# errors: 1" in captured.out
+    assert str(ok) in captured.out
+    assert str(bad) in captured.out
 
 
 def test_a_missing_non_ascii_root_exits_2_on_a_cp1252_console(tmp_path: Path) -> None:
