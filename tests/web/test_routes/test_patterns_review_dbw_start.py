@@ -128,18 +128,20 @@ def _rendered_prefill_start(client, eval_id: int) -> str:
 
 
 def _assert_recovery_text(body: str, eval_id: int) -> None:
-    """CHARC's Reviewer-B-gate ruling: the refusal fragment replaces the
-    review form, so the message must say, IN ORDER, reload the page, choose
-    pattern_present_outside_window, type the first-trough start date. It
-    keeps the evaluation id and the zero score, and is ASCII-only."""
+    """D56 F-B amendment: the RELOAD step is dropped -- the D56 E1 error
+    region means the refusal fragment no longer replaces the review form,
+    so "reload" is no longer part of the contract. The message must say,
+    IN ORDER, choose pattern_present_outside_window, type the first-trough
+    start date. It keeps the evaluation id and the zero score, is
+    ASCII-only, and does NOT mention reload."""
     assert body.isascii()
     assert f"evaluation {eval_id}" in body
     assert "geometric_score is 0" in body
     low = body.lower()
-    i_reload = low.find("reload")
+    assert "reload" not in low
     i_decision = low.find("pattern_present_outside_window")
     i_type = low.find("first-trough start date")
-    assert -1 < i_reload < i_decision < i_type, (i_reload, i_decision, i_type)
+    assert -1 < i_decision < i_type, (i_decision, i_type)
 
 
 @pytest.mark.parametrize(
@@ -259,7 +261,12 @@ def test_dbw_zero_row_untouched_submit_refuses_before_any_write(
 
 def test_dbw_nonzero_row_unparseable_trough_1_refuses(seeded_db):
     """A non-zero row whose evidence lacks a parseable trough_1_date refuses
-    the same way (no derived start exists), with no write."""
+    the same way (no derived start exists), with no write.
+
+    D56 F-B amendment: the "reload" assertion is dropped -- the D56 E1
+    error region means the refusal fragment no longer replaces the review
+    form, so step (1) RELOAD is gone from the text (see
+    test_dbw_refusal_text_has_no_reload_step_and_steps_are_contiguous)."""
     cfg, cfg_path = seeded_db
     ev = _nonzero_evidence()
     blob = dataclasses.asdict(ev)
@@ -272,7 +279,7 @@ def test_dbw_nonzero_row_unparseable_trough_1_refuses(seeded_db):
             headers={"HX-Request": "true"},
         )
     assert r.status_code == 400
-    assert "reload" in r.text.lower()
+    assert "reload" not in r.text.lower()
     assert "first-trough start date" in r.text
     assert [x for x in _exemplars(cfg) if x.ticker == "DBW"] == []
 
@@ -512,3 +519,71 @@ def test_dbw_c3_untouched_submit_same_outcome_all_three_row_kinds(seeded_db):
         )
     assert r.status_code == 400
     assert len(_exemplars(cfg)) == before_c
+
+
+# ---------------------------------------------------------------------------
+# D56 E5/F-B -- the refusal text: drop the RELOAD step (false once E1 lands
+# -- the error region means the review form is no longer replaced), and
+# derive the named pre-fill from the SAME E3 helper the form uses, never
+# from evaluation.window_start_date directly.
+# ---------------------------------------------------------------------------
+
+
+def test_dbw_refusal_text_has_no_reload_step_and_steps_are_contiguous(
+    seeded_db,
+):
+    """T5: once E1 lands the refusal fragment no longer replaces the review
+    form (it swaps into the sibling error region), so step (1) RELOAD is
+    false and dropped; the remaining two steps renumber to (1) and (2)."""
+    cfg, cfg_path = seeded_db
+    eval_id = _seed_dbw(cfg, _zero_evidence())
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/patterns/{eval_id}/review", data={"decision": "confirm"},
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 400
+    body = r.text
+    assert "reload" not in body.lower()
+    assert "(1)" in body
+    assert "(2)" in body
+    assert "(3)" not in body
+
+
+def test_dbw_refusal_text_prefill_matches_form_rendered_prefill(seeded_db):
+    """T4 (F-B pin): the refusal's named pre-fill X equals the value the
+    form's corrected_window_start_date input ACTUALLY renders, read BOTH
+    from real responses (GET the form; POST the refusal) -- for the two row
+    kinds that CAN refuse. (The third kind, parseable non-zero, never
+    refuses on an untouched submit -- T3 covers its pre-fill correctness;
+    there is no refusal text to compare it against here.)"""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+
+    # Unparseable non-zero.
+    ev = _nonzero_evidence()
+    blob = dataclasses.asdict(ev)
+    blob["trough_1_date"] = "not-a-date"
+    eval_id = _seed_dbw(cfg, ev, evidence_json=json.dumps(blob, default=str))
+    with TestClient(app) as client:
+        prefill = _rendered_prefill_start(client, eval_id)
+        r = client.post(
+            f"/patterns/{eval_id}/review", data={"decision": "confirm"},
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 400
+    assert prefill == TROUGH_2.isoformat()
+    assert f"pre-filled {prefill}" in r.text
+
+    # Zero score.
+    eval_id2 = _seed_dbw(cfg, _zero_evidence())
+    with TestClient(app) as client:
+        prefill2 = _rendered_prefill_start(client, eval_id2)
+        r2 = client.post(
+            f"/patterns/{eval_id2}/review", data={"decision": "watch"},
+            headers={"HX-Request": "true"},
+        )
+    assert r2.status_code == 400
+    assert prefill2 == TROUGH_2.isoformat()
+    assert f"pre-filled {prefill2}" in r2.text

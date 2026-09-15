@@ -40,6 +40,7 @@ from swing.web.view_models.patterns.exemplars import (
 )
 from swing.web.view_models.patterns.review_form import (
     build_patterns_review_form_vm,
+    dbw_corrected_start_prefill,
     extract_dbw_trough_1_date,
 )
 
@@ -730,14 +731,22 @@ def _dbw_exemplar_window(
 
 
 def _dbw_recovery_text(evaluation, reason: str) -> str:
+    # D56 E5/F-B: step (1) RELOAD is dropped -- false once the D56 E1 error
+    # region lands (the refusal fragment swaps into the sibling region; it
+    # no longer replaces the review form). The remaining steps renumber.
+    # The named pre-fill X is derived from the SAME E3 helper the form's
+    # corrected_window_start_date input uses (dbw_corrected_start_prefill),
+    # never from evaluation.window_start_date directly -- otherwise this
+    # text would drift from what the form actually shows the moment C3's
+    # pre-fill differs (the gotcha #31 class, one arc later).
+    prefill = dbw_corrected_start_prefill(evaluation)
     return (
         f"{reason}, and the window start {evaluation.window_start_date} is "
         "the detector anchor, not the start of the W. To record it: "
-        "(1) RELOAD this page (this message has replaced the review form); "
-        "(2) choose the decision pattern_present_outside_window; "
-        "(3) type the first-trough start date into the window-correction "
+        "(1) choose the decision pattern_present_outside_window; "
+        "(2) type the first-trough start date into the window-correction "
         "start field (a date different from the pre-filled "
-        f"{evaluation.window_start_date})."
+        f"{prefill})."
     )
 
 
