@@ -563,11 +563,14 @@ def test_dbw_refusal_text_prefill_matches_form_rendered_prefill(seeded_db):
 
     The parseable-non-zero kind never reaches the refusal path THROUGH THE
     ROUTE (rule (iii) always resolves it directly, so an untouched submit
-    of that row kind is a 204, not a 400 -- T3 already pins that). But
-    ``_dbw_recovery_text`` is still a function the route CAN call on that
-    evaluation on some other refusing path (e.g. a malformed end date under
-    pattern_present_outside_window), so its pre-fill claim is pinned
-    directly: call it on the same evaluation object the form rendered, and
+    of that row kind is a 204, not a 400 -- T3 already pins that). The
+    route calls ``_dbw_recovery_text`` from exactly two sites in
+    ``_dbw_exemplar_window`` (no parseable trough 1; zero score), and a
+    malformed end date or a start after the end refuses through
+    ``_dbw_refuse`` WITHOUT it, so this row kind cannot reach the text today.
+    The pin is on the function's own contract, so a future caller cannot
+    make it name a date the form does not show: call it on the same
+    evaluation object the form rendered, and
     assert the named date matches. Without this case, reverting
     ``_dbw_recovery_text``'s pre-fill to ``evaluation.window_start_date``
     directly (the pre-D56-E5 code) stays GREEN on this test -- both
