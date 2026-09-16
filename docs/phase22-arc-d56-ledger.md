@@ -154,3 +154,13 @@ Both are post-convergence test-only corrections: no further Codex round, verifie
 **W3 -- exemplars page refusal (row id 2, NVDA, proposed `vcp`; Relabel to `vcp`, the one value the route refuses before any write). PASS.** Operator: all pass -- the banner renders in the ONE page-level region above the table and every row's controls survive. Count after W3, 15:48:25: 35 rows, max id 35 -- unchanged; **row 2 re-read and byte-identical** (`final_decision='rejected'`, `final_pattern_class` NULL, `label_source='claude_silver'`), so the refusal wrote nothing to the row it named either.
 
 **WITNESS RESULT: 3 of 3 PASS, ZERO rows written.** `pattern_exemplars` 35 / max id 35 at the baseline (15:43:25) and after every step (15:45:05, 15:47:05, 15:48:25) -- the measured zero-write proof CHARC's F-D (1) required, on a plain `sqlite3` `mode=ro` connection, never through `swing`'s `connect`. The success path stays TestClient-only, as ruled.
+
+---
+
+## Merge
+
+**`d12aa7b6`**, `git merge --no-ff d56-exec` (parents `333cec8b` + `528b083b`). **`--no-ff`, never rebase:** this ledger and the witness section cite branch SHAs, so a rebase would falsify every citation while leaving it reading true (recipe §1). Diff as merged: 7 files, +720/-28 -- `swing/web/routes/patterns.py`, the two pattern templates, `swing/web/view_models/patterns/review_form.py`, and three test files (one new). **Merged-head suite on `d12aa7b6` (this seat, `-n 4` per D52): 12,469 passed / 13 skipped / 0 failed, 837.84s. `ruff check swing/`: All checks passed.** Trailer audit over `origin/main..HEAD`: zero `Co-Authored-By`. Witness server stopped before the merge; port 8081 free, no straggler `swing web` process.
+
+**Spend:** Reviewer A 422,575 (R2 counted 212,208 + R1 disqualified 210,367); Reviewer B 191,332; cell 355,019 + 411,423 across its two dispatches. **Arc total (review footers): 613,907.**
+
+**Still open at merge (dispositioned):** (1) the exemplars-route 500 path (`routes/patterns.py:264,273`, corrupt `labeler_evidence_json` on `promote_to_gold`) has NO test exercising it -- found by the cell's own grep while correcting a docstring, **BANKED for CHARC's register**, not this arc's scope (F-A bound). (2) The other D35-class items on the exemplars page stay banked, as ruled.
