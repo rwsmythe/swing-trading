@@ -40,6 +40,8 @@ from swing.web.view_models.patterns.exemplars import (
 )
 from swing.web.view_models.patterns.review_form import (
     build_patterns_review_form_vm,
+    dbw_corrected_start_prefill,
+    extract_dbw_trough_1_date,
 )
 
 router = APIRouter()
@@ -660,14 +662,22 @@ def _dbw_exemplar_window(
     is trough 2. Order (CHARC's D53.1 ruling):
 
     (i)   a submitted corrected start naming the SAME DATE as
-          ``window_start_date`` is not a correction -- the review form
-          pre-fills that value, so an untouched submit is indistinguishable
-          from a typed one (compared as dates, so another spelling of the
-          pre-fill is not a correction either);
+          ``window_start_date`` is not a correction -- ``window_start_date``
+          is the row's DETECTOR ANCHOR, the comparison target this rule
+          keeps literally (D56 F-C ruling; unwidened), so an untouched
+          submit of THAT value is indistinguishable from a typed one
+          (compared as dates, so another spelling of it is not a
+          correction either). It is not necessarily what the review form
+          PRE-FILLS: D56 C3 pre-fills trough 1 for a parseable non-zero row
+          via ``dbw_corrected_start_prefill`` (the same helper (iii) uses
+          below), which differs from ``window_start_date`` by design -- an
+          untouched submit of THAT pre-fill therefore reaches (ii) instead,
+          and lands on the same trough-1 answer (iii) computes directly;
     (ii)  a typed start that differs wins (the route honours a corrected
           window only under ``pattern_present_outside_window``);
     (iii) a non-zero ``geometric_score`` takes ``trough_1_date`` from the
-          structural evidence;
+          structural evidence (via ``extract_dbw_trough_1_date`` -- the
+          SAME parse the C3 pre-fill uses, so the two cannot diverge);
     (iv)  otherwise refuse, naming the recovery. A zero score means the
           detector found no W (its zero envelope stamps trough_1_date at
           the window END, which is not a trough), so the operator who sees
@@ -697,12 +707,7 @@ def _dbw_exemplar_window(
     if typed_start is not None:
         start = typed_start.isoformat()
     elif evaluation.geometric_score > 0:
-        start = None
-        try:
-            evidence = json.loads(evaluation.structural_evidence_json)
-            start = date.fromisoformat(evidence["trough_1_date"]).isoformat()
-        except (ValueError, TypeError, KeyError):
-            pass
+        start = extract_dbw_trough_1_date(evaluation.structural_evidence_json)
         if start is None:
             raise _dbw_refuse(evaluation, _dbw_recovery_text(
                 evaluation,
@@ -726,14 +731,22 @@ def _dbw_exemplar_window(
 
 
 def _dbw_recovery_text(evaluation, reason: str) -> str:
+    # D56 E5/F-B: step (1) RELOAD is dropped -- false once the D56 E1 error
+    # region lands (the refusal fragment swaps into the sibling region; it
+    # no longer replaces the review form). The remaining steps renumber.
+    # The named pre-fill X is derived from the SAME E3 helper the form's
+    # corrected_window_start_date input uses (dbw_corrected_start_prefill),
+    # never from evaluation.window_start_date directly -- otherwise this
+    # text would drift from what the form actually shows the moment C3's
+    # pre-fill differs (the gotcha #31 class, one arc later).
+    prefill = dbw_corrected_start_prefill(evaluation)
     return (
         f"{reason}, and the window start {evaluation.window_start_date} is "
         "the detector anchor, not the start of the W. To record it: "
-        "(1) RELOAD this page (this message has replaced the review form); "
-        "(2) choose the decision pattern_present_outside_window; "
-        "(3) type the first-trough start date into the window-correction "
+        "(1) choose the decision pattern_present_outside_window; "
+        "(2) type the first-trough start date into the window-correction "
         "start field (a date different from the pre-filled "
-        f"{evaluation.window_start_date})."
+        f"{prefill})."
     )
 
 

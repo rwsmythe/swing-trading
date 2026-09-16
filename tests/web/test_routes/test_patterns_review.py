@@ -19,6 +19,7 @@ persisted row carries 'flat_base'.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -648,3 +649,22 @@ def test_post_patterns_review_400_when_relabel_target_matches_proposed(
             headers={"HX-Request": "true"},
         )
     assert r.status_code == 400
+
+
+def test_get_patterns_review_non_dbw_class_prefill_is_window_start_date_unchanged(
+    seeded_db_with_evaluation,
+):
+    """D56 T6: the E3 helper only diverges from window_start_date for a
+    double_bottom_w row with geometric_score > 0; this fixture's
+    pattern_class is 'vcp', so the corrected_window_start_date pre-fill
+    stays window_start_date (2026-04-01), exactly as before D56."""
+    cfg, cfg_path, eval_id = seeded_db_with_evaluation
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(f"/patterns/{eval_id}/review")
+    assert r.status_code == 200
+    m = re.search(
+        r'name="corrected_window_start_date"\s+value="([^"]*)"', r.text,
+    )
+    assert m is not None
+    assert m.group(1) == "2026-04-01"

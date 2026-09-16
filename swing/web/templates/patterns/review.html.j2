@@ -152,10 +152,17 @@
 
   {# ----- 6-decision enum form per spec lines 778-783. ----- #}
   <h2>Decision</h2>
+  {# D56 E1: the error region is a SIBLING of the form, never inside it, so
+     an error response (any status -- hx-target does not care) swaps into
+     the region and leaves the form's controls intact. hx-swap="innerHTML"
+     into this always-empty div means a second error REPLACES the first
+     (no stacking). #}
   <form method="post"
         action="/patterns/{{ vm.candidate_id }}/review"
         hx-post="/patterns/{{ vm.candidate_id }}/review"
         hx-headers='{"HX-Request": "true"}'
+        hx-target="#patterns-review-error"
+        hx-swap="innerHTML"
         class="patterns-review-form">
 
     <fieldset>
@@ -203,7 +210,7 @@
       <legend>Window correction (only when decision=pattern_present_outside_window)</legend>
       <label>start
         <input type="date" name="corrected_window_start_date"
-               value="{{ vm.window_start_date }}">
+               value="{{ vm.corrected_window_start_date_prefill }}">
       </label>
       <label>end
         <input type="date" name="corrected_window_end_date"
@@ -226,5 +233,6 @@
 
     <button type="submit">Submit review</button>
   </form>
+  <div id="patterns-review-error"></div>
 </section>
 {% endblock %}

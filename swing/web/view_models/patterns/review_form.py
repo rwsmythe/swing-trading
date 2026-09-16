@@ -167,6 +167,11 @@ class PatternReviewFormVM(BaseLayoutVM):
     annotated_chart_svg_bytes: bytes | None = None
     structural_evidence_pretty: str = ""
     geometric_score_pretty: str = ""
+    # D56 C3/E4 -- the corrected_window_start_date form pre-fill (E3
+    # helper's value). NEVER repurposes window_start_date, which the page
+    # header separately renders (review.html.j2:8) and which rule (i)
+    # still compares to literally.
+    corrected_window_start_date_prefill: str = ""
     # action_form_values dict round-trips hidden anchors through soft-warn
     # confirm fragments. T2.SB6b ships ZERO soft-warn pathways for the
     # review form; reserved for future expansion.
@@ -257,6 +262,63 @@ def _parse_template_match_ids(
             out.append(x)
     # Top-3 per spec section 5.10 item 3.
     return tuple(out[:3])
+
+
+def extract_dbw_trough_1_date(structural_evidence_json: str | None) -> str | None:
+    """D56 E3/C3 -- parse a double_bottom_w evaluation's
+    ``structural_evidence_json`` ``trough_1_date`` as an ISO date string.
+
+    Shared by ``dbw_corrected_start_prefill`` (the review form's pre-fill)
+    AND ``routes/patterns.py``'s ``_dbw_exemplar_window`` rule (iii)
+    extraction, per CHARC's D56 F-C ruling: ONE parse, one set of caught
+    exceptions, so the pre-fill and the stored start cannot diverge.
+    Returns ``None`` on missing/malformed JSON, a non-dict payload, a
+    missing/non-string key, or an unparseable date -- never raises.
+    """
+    if not structural_evidence_json:
+        return None
+    try:
+        evidence = json.loads(structural_evidence_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(evidence, dict):
+        return None
+    raw = evidence.get("trough_1_date")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return date.fromisoformat(raw).isoformat()
+    except ValueError:
+        return None
+
+
+def dbw_corrected_start_prefill(evaluation: PatternEvaluation) -> str:
+    """D56 C3/E3 -- the review form's ``corrected_window_start_date``
+    pre-fill, by row kind (CHARC's D56 F-C ruling):
+
+    - double_bottom_w, geometric_score > 0, parseable structural-evidence
+      ``trough_1_date`` -> that date (the pattern's actual start).
+    - double_bottom_w, geometric_score > 0, unparseable/missing trough 1
+      -> ``window_start_date`` (the same fallback the route refuses on).
+    - double_bottom_w, geometric_score == 0 -> ``window_start_date`` (its
+      ``trough_1_date`` is the window END, not a trough -- never pre-fill
+      it).
+    - every other pattern class -> ``window_start_date`` (UNCHANGED).
+
+    Rule (i) in ``_dbw_exemplar_window`` keeps comparing to
+    ``window_start_date`` literally (ruled, unwidened) -- this helper only
+    changes what the FORM shows, never that comparison target.
+    """
+    if (
+        evaluation.pattern_class == "double_bottom_w"
+        and evaluation.geometric_score > 0
+    ):
+        trough_1 = extract_dbw_trough_1_date(
+            evaluation.structural_evidence_json,
+        )
+        if trough_1 is not None:
+            return trough_1
+    return evaluation.window_start_date
 
 
 def _lookup_rs_rank(
@@ -609,4 +671,5 @@ def build_patterns_review_form_vm(
         outcome_distribution_rows=outcome_rows,
         structural_evidence_pretty=structural_pretty,
         geometric_score_pretty=geom_pretty,
+        corrected_window_start_date_prefill=dbw_corrected_start_prefill(ev),
     )

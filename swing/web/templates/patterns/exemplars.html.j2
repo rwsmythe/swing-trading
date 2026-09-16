@@ -3,6 +3,10 @@
 {% block content %}
 <section class="patterns-exemplars">
   <h1>Pattern exemplars</h1>
+  {# D56 F-A: ONE page-level error region (never per-row -- that
+     reintroduces the <tr>-fragment-wrap gotcha and the colspan path for no
+     gain). All four inline action forms below hx-target here. #}
+  <div id="patterns-exemplars-error"></div>
   <p class="muted">
     Phase 13 T2.SB1 operator spot-check surface for pattern-labeler
     silver-tier outputs. Promote silver rows to gold OR flip
@@ -124,6 +128,7 @@
                 action="/patterns/exemplars/{{ row.id }}/action"
                 hx-post="/patterns/exemplars/{{ row.id }}/action"
                 hx-headers='{"HX-Request": "true"}'
+                hx-target="#patterns-exemplars-error"
                 style="display: inline-block;">
             <input type="hidden" name="action" value="promote_to_gold">
             <button type="submit" data-action="promote_to_gold">
@@ -136,6 +141,7 @@
                 action="/patterns/exemplars/{{ row.id }}/action"
                 hx-post="/patterns/exemplars/{{ row.id }}/action"
                 hx-headers='{"HX-Request": "true"}'
+                hx-target="#patterns-exemplars-error"
                 style="display: inline-block;">
             <input type="hidden" name="action" value="watch">
             <button type="submit" data-action="watch">Watch</button>
@@ -146,6 +152,7 @@
                 action="/patterns/exemplars/{{ row.id }}/action"
                 hx-post="/patterns/exemplars/{{ row.id }}/action"
                 hx-headers='{"HX-Request": "true"}'
+                hx-target="#patterns-exemplars-error"
                 style="display: inline-block;">
             <input type="hidden" name="action" value="reject">
             <button type="submit" data-action="reject">Reject</button>
@@ -156,6 +163,7 @@
                 action="/patterns/exemplars/{{ row.id }}/action"
                 hx-post="/patterns/exemplars/{{ row.id }}/action"
                 hx-headers='{"HX-Request": "true"}'
+                hx-target="#patterns-exemplars-error"
                 style="display: inline-block;">
             <input type="hidden" name="action" value="relabel">
             <select name="corrected_pattern_class" required>
