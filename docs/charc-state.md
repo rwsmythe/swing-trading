@@ -32,7 +32,7 @@
 |---|---|---|
 | **D53.1 close check at run 177** (non-zero DBW rows' `window_start_date == trough_1_date`; tile denominator moves) | CHARC (RD reads 2a) | due 2026-09-15 evening |
 | **D32+D50** MERGED `a3b2f90c`, CHARC QA'd on disk (23 rows, stems byte-identical by composed-set check, wrappers bound, suite 12,456/13/0 at `-n 4`); RD QA PASS on the disposition; the operator's F4 sitting next (move 31, delete 21 twins pair-by-pair with re-hash, keep the rest); production proof = 22-B's migration | operator (disposition); CHARC (22-B proof) | merged 2026-09-15 |
-| **D56** error region + C3 (tests+template rider; its own browser witness) | orchestrator, after D32+D50 | queued |
+| **D56** error regions + C3 — MERGED `d12aa7b6`, CHARC QA'd on disk; witness 3/3, zero writes | CHARC | **CLOSED 2026-09-16** |
 | **D55** false-green clipping test (tests-only) | orchestrator sequences | queued |
 | **Charter compaction** — DONE `6a5b7b68` (86,678 / 120,000; ~33K headroom) | CHARC | closed 2026-09-15 |
 | **harness-architecture §5.1 + §6 compaction** (96K; ~60K canon) | CHARC | Phase-22 close (held deliberately; one pass after 22-B/C) |
