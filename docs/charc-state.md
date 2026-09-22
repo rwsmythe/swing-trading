@@ -39,6 +39,7 @@
 | **orchestrator-context.md `__ROWS__` placeholder** (line ~146, from the 09-10 trim `f2b58728`: the archived-entries pointer table never filled — the archive test's "pointer shows the owner" clause unmet) | orchestrator (content); CHARC FORM flag | owed |
 | **harness-architecture §5.1 + §6 compaction** (~99K; ~60K canon) | CHARC | Phase-22 close (one pass after 22-B/C) |
 | **D42 half (2)** per-step status behind a run-level `complete` | Phase-22 sweep | open |
+| **Opus 5.5 / CLI 2.1.280 (2026-09-22, charter §2.11):** the `opus` alias float ACCEPTED (implementer tier = Opus 5.5 from now; directors on `fable`); rider posted to the orchestrator — `cell_depth.py` prints build + model id per session/cell, the accept record names the cell's resolved model id, text-vs-thinking control at the first Opus 5.5 accept. This seat runs 2.1.272 in-process on a 2.1.280 disk binary; the next launched seat is on 2.1.280 | orchestrator (rider) | posted |
 | **RD's seat** still on the old name + the interim Monitor rule until it rolls; its successor lands on `swing-rd-<stamp>` and the ping convention | RD | at RD's next roll |
 | D45 (same-mandate collapse) · D46 (log-containment interface) · D44 · D47 · D48 · D39/D34/D35/D37/D38/D40/D41 sweeps | standing | standing |
 | Phase-22 queue — [`phase22-scope-charc.md`](phase22-scope-charc.md) | operator commissions | standing |
