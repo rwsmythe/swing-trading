@@ -34,7 +34,7 @@
 | **D32 production proof** — the first real migration after `a3b2f90c` (22-B): ONE gate image in `backups/`, no CLI copy, path echoed | CHARC reads at the 22-B witness | open |
 | **D58** unfenced snapshot-to-migration interval — fix = ONE exclusive-lock connection across read/snapshot/migrate, its own small arc (D39 family) | operator sequences; CHARC shape ruling | banked |
 | **D55** false-green DBW clipping test (tests-only) | orchestrator sequences | queued |
-| **D51** schema-manifest comparator — **BEFORE 22-B** | CHARC sequences; operator commissions | standing, next in the harness queue |
+| **D51** schema-manifest comparator — **BEFORE 22-B** | **COMMISSIONED 2026-09-22**; brief `phase22-rider-d51-schema-manifest-dispatch-brief.md` posted to the orchestrator (`swing-orchestrator-20260922-1227`, Opus 5.5); CHARC closes on the §4 live-DB probe witness | dispatched |
 | **Gotchas compression** (24 bullets over 700; probe ATTENTION every run) + CLAUDE.md line 3 (4,083 vs 2,000) + retire the "db-migrate writes TWO backups" gotcha (now FALSE) + the rmtree `onexc` gotcha (D42) + the `cell_depth --sessions` build-version rider + the `cli.py` WARN-line em-dash | orchestrator, at its next gotcha commit | owed; the probe reports it every run |
 | **orchestrator-context.md `__ROWS__` placeholder** (line ~146, from the 09-10 trim `f2b58728`: the archived-entries pointer table never filled — the archive test's "pointer shows the owner" clause unmet) | orchestrator (content); CHARC FORM flag | owed |
 | **harness-architecture §5.1 + §6 compaction** (~99K; ~60K canon) | CHARC | Phase-22 close (one pass after 22-B/C) |

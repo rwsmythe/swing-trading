@@ -1,0 +1,59 @@
+# Phase 22 rider — D51: the schema-manifest comparator (dispatch brief)
+
+**From:** CHARC. **To:** the orchestrator (riders stage: executing directly, no plan loop; no reviewer B — nothing under `swing/`; ONE reviewer-A round at the `fast` tier on the finished tree, declared on the row). **Operator-commissioned 2026-09-22 ("Let's commission D51").** **Cell:** `implementer-sonnet-high` (settled design; one comparator function, one fixture, one script, one test file). **Worktree:** `.worktrees/d51-schema-manifest` off `main` at or above the commit that lands this brief. **Rules read from main:** `docs/implementer-dispatch-recipe.md`, `docs/harness-architecture.md` §5.1 — the cell names the SHA it read them at. **Sequencing:** BEFORE 22-B (register D51: the 22-B `trades` rebuild is the first consumer).
+
+## §0 READ FIRST (pointers)
+
+- Register row D51 in `docs/tool-director-context.md` §4 — the finding: nothing asserts that the DDL objects the migrations PROMISE (indexes, triggers, CHECKs) are PRESENT at HEAD; each migration test checks its own objects at its own version (search stated on the row: `grep -rn "sqlite_master" tests/` — 249 files, every one per-migration). A table rebuild (the SQLite ALTER-limited idiom; 21-B did one, 22-B will) that forgets to re-create an index or trigger fails OPEN and the suite stays green.
+- The live obligation this makes mechanical: `swing/data/migrations/0038_*.sql` header, item (B) (lines ~93–98): *"22-B DEMAND A REBUILDS `trades` (DROP + CREATE). A rebuild that does not RE-CREATE both `ux_trades_attempt_id` and `trg_trades_attempt_id_immutable` …"* — a comment, i.e. gotcha #31's class (an obligation on a future arc that no test can pin).
+- The HEAD object set, MEASURED 2026-09-22 by CHARC (`ensure_schema` on an empty DB in a scratch dir, then `SELECT type, name, tbl_name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`): **151 objects — 42 tables, 82 indexes, 27 triggers, 0 views**, schema_version 38. (`sqlite_autoindex_*` rows were EXCLUDED by that filter; the fixture INCLUDES them — §2.)
+- Entry point: `swing/data/db.py:ensure_schema(db_path: Path, *, backup_dir=None) -> sqlite3.Connection` (`:942`); `EXPECTED_SCHEMA_VERSION = 38` (`:102`). A `str` path raises (`.parent`); pass a `Path`.
+- Naming rule for the test: `tests/data/test_migration_0035_fills_trades_price_divergence.py:62` docstring — a HEAD-tracking test is `_head`, never `_38`.
+- The gotcha that bounds the script's read mode: **NEVER open a backup / live DB through a path that reaches `ensure_schema`** (it auto-migrates); `connect()` REFUSES a version mismatch by design. The script reads the live DB with plain `sqlite3` in `mode=ro` (URI) — and a read-only open RECREATES `-shm`/`-wal` beside the file; say so in the script's docstring, do not "clean up" beside the live DB.
+
+## §1 THE CHANGE, exactly
+
+**C1 — the manifest and the comparator (`scripts/schema_manifest.py`).** Two pure functions plus a CLI:
+
+- `read_manifest(conn) -> list[ManifestRow]` — every `sqlite_master` row EXCEPT `sqlite_sequence` and `sqlite_stat*` (so `sqlite_autoindex_*` rows ARE included), as `(type, name, tbl_name, sql_sha256)` where `sql_sha256` is the sha256 hex of the `sql` text with whitespace runs collapsed to one space and stripped, and the empty string hashed when `sql IS NULL` (autoindexes). Sorted by `(type, name)`. Nothing else is normalized (case, quoting, comments inside a statement are all part of the DDL as written — a rebuild that re-types DDL differently shows as CHANGED, which is a deliberate fixture update, not noise to suppress).
+- `compare(expected: list[ManifestRow], actual: list[ManifestRow]) -> ManifestDiff` with three sets keyed on `(type, name)`: `missing` (in expected, not in actual), `unexpected` (in actual, not in expected), `changed` (both present, `tbl_name` or `sql_sha256` differs). `ManifestDiff.is_clean` iff all three are empty. `ManifestDiff.render()` prints each category as `<type> <name> (<tbl_name>)` lines under a heading, and ends with the regeneration command (C2) — this string is what the failing test shows.
+- Fixture format: `tests/data/schema_manifest_head.tsv` — a header comment line naming the generator, then ONE LINE PER OBJECT, tab-separated `type\tname\ttbl_name\tsql_sha256`, sorted as above. TSV, not JSON: one object per line so a migration's fixture diff reads as the list of objects it added, dropped or changed. `load_manifest(path)` / `write_manifest(path, rows)` round-trip it.
+
+**C2 — the CLI (same file).**
+
+    python scripts/schema_manifest.py --write            # migrate an EMPTY DB in a tempdir at HEAD, overwrite the fixture
+    python scripts/schema_manifest.py --check            # same migrate, compare to the fixture, print the diff, exit 1 if not clean
+    python scripts/schema_manifest.py --db <path>        # READ-ONLY: open <path> with sqlite3 URI mode=ro (never ensure_schema/connect),
+                                                         # compare to the fixture, print the diff + the DB's schema_version, exit 1 if not clean
+
+`--db` is the operator/witness probe against the LIVE DB (the "DB the code runs against" half of D51); it never writes and never migrates. `--write` and `--check` build their DB under `tempfile.TemporaryDirectory()`, never beside the repo or the live DB.
+
+**C3 — the tests (`tests/data/test_schema_manifest_head.py`).**
+
+1. `test_head_manifest_matches_fixture` — `ensure_schema(tmp_path / "head.db")`, `read_manifest`, `load_manifest(fixture)`, assert `compare(...).is_clean` with `render()` as the message. **This is the instrument.** The cell verifies it RED for its own reason before committing GREEN: delete one fixture line (the `ux_trades_attempt_id` row), run, see `missing: index ux_trades_attempt_id (trades)` in the output, restore, see green — and says so in the commit message with the line it removed.
+2. Comparator discriminators, each on a fresh HEAD DB with ONE mutation through raw `conn.execute` (the 18-B.1 technique — DETECTION of a state the migrations never produce): (a) `DROP INDEX ux_trades_attempt_id` → `missing == {("index","ux_trades_attempt_id")}`, the other two sets empty; (b) `CREATE INDEX ix_probe ON trades(ticker)` → `unexpected` names it only; (c) `DROP TRIGGER trg_trades_attempt_id_immutable` then re-create it with a DIFFERENT body (any legal `BEFORE UPDATE` on `trades` with the same name — e.g. the same trigger with `WHEN 0`) → `changed` names it only; (d) the boundary twin: drop and re-create the trigger with the SAME DDL text (read it from `sqlite_master.sql` first) → clean. (d) is the discriminator against a comparator that hashes something other than the normalized text (e.g. rootpage or the row order).
+3. Fixture round-trip: `write_manifest` then `load_manifest` returns equal rows; the file is sorted and has exactly one non-comment line per object (151 + the autoindex count at HEAD — the cell states the measured total in the test's docstring WITH the command).
+4. The CLI: `--check` exits 0 on the committed fixture; `--db` on a tmp HEAD DB exits 0; `--db` on a tmp HEAD DB with `ux_trades_attempt_id` dropped exits 1 and prints the missing line; `--db` NEVER creates a file beside a read-only target other than the `-shm`/`-wal` SQLite makes (assert the target's mtime and size are unchanged after the run).
+
+**C4 — the rules that ride with it (NOT the cell's; named so they are not lost).** (i) The ORCHESTRATOR adds ONE line to `docs/implementer-dispatch-recipe.md` (its lane) in the merge commit: *every migration commit runs `scripts/schema_manifest.py --write` and commits the fixture diff; the merge gate READS that diff, and a rebuild's diff shows ZERO deletions unless each deletion is named in the migration header.* (ii) A CLAUDE.md gotcha pairs with it at the orchestrator's next gotcha commit (form: trigger + fix, under 700 chars). (iii) CHARC updates register D51 and the 0038 header's item (B) is left AS IS — it stays true; the test is now the thing that enforces it, and the header may cite the test by name (one line, the cell's, in the SAME commit as the test).
+
+## §2 FORK CENSUS (the rulings are made; nothing is open)
+
+- **What is pinned:** `(type, name, tbl_name, sql_sha256)`. The register row said `(name, type, tbl_name)`; the hash is ADDED because the classes this project keeps meeting are inside the DDL text — a CHECK that NULLs (D30), a trigger `WHEN` that fails open (the NULL-`WHEN` gotcha), a REPLACE-blind DELETE trigger — and a rebuild that re-creates a trigger with a weaker body is invisible to a name-only manifest. The hash, not the text, so the fixture stays one line per object; the migration diff is where a CHANGED object's actual change is read.
+- **Autoindexes IN.** `sqlite_autoindex_<table>_<n>` is the only trace of a `UNIQUE`/`PRIMARY KEY` constraint in `sqlite_master`; a rebuild that drops a UNIQUE drops one. The positional `<n>` renumbers if a rebuild reorders constraints — that is a deliberate update, shown in the diff.
+- **Where the comparator lives:** `scripts/`, imported by the test with the same `sys.path` idiom `tests/scripts/` already uses. NOT `swing/data/` (a carve-out for a test instrument; the read-only posture stands and no production code needs it).
+- **Against what:** the SUITE compares an empty-DB migration at HEAD to the fixture (mechanical, every run). The LIVE DB is compared by the `--db` probe at a witness (below) — NOT by a pipeline step or a monitor (a new standing process is a §5 tripwire and is not this rider; if the live probe ever finds drift, that finding decides whether a monitor is worth its process weight).
+- **Reviewer A:** ONE round at `fast` on the finished tree (the comparator's three-set semantics and the hash normalization are worth one adversarial read; the D57 "no round" precedent was scripts-and-docs with a witness as the check — this has no operator witness of its logic). No B: nothing under `swing/`.
+- **Naming:** `_head`, per the version-mirror rule; the fixture carries no version in its name either. The fixture's header comment states the schema version it was generated at, as data.
+
+## §3 SCOPE — exactly this, refuse the rest
+
+`scripts/schema_manifest.py` + `tests/data/test_schema_manifest_head.py` + `tests/data/schema_manifest_head.tsv` + the one-line citation in the 0038 header (C4 iii). NOTHING under `swing/`; no migration; no change to `ensure_schema`/`connect`; no pipeline step; no monitor; no CLI subcommand on `swing`. Suite: the fast suite on the final head. If the cell finds the fixture line count differs from CHARC's 151-plus-autoindexes measurement, it reports the count WITH its command — it does not "fix" the count.
+
+## §4 THE WITNESS
+
+After merge, ONE step with the operator: `python scripts/schema_manifest.py --db "$USERPROFILE/swing-data/swing.db"` with `swing web` stopped (the probe is read-only, but the exclusive-lock idiom is not needed for a `mode=ro` read; stop the server anyway so the measurement is of a quiet file). Expected: `schema_version 38`, clean, exit 0. **A NON-clean result is a FINDING, not a rider failure** — the live DB was migrated incrementally since 2026-04 and may carry drift an empty-DB migration cannot (a hand-created object; a leftover from a rebuild) — and it goes on the register as its own row with the diff quoted. The 22-B live migration witness then runs the same command post-migration; D32's production proof and this probe are read in the same sitting.
+
+## §5 RETURN
+
+The ORCHESTRATOR posts the return report to `charc` after QA (its own QA: the RED-then-GREEN evidence for test 1 quoted from the commit message, the four discriminators named, the A transcript path and verdict token, the fixture line count with its command, the suite line with the SHA). CHARC closes D51 on the §4 witness, not on the merge — and reads the 22-B fixture diff at that arc's gate as the first real use.
