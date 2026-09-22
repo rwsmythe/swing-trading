@@ -149,6 +149,8 @@ Your FINAL chat message is the return report. **Do NOT run `scripts/role_mail.py
 - Every LOCK / brief condition, stated as honored-on-disk (file:line where it matters).
 - Deviations, V1 simplifications (with the V2 dependency), and anything you flagged-not-fixed.
 
+**THE ACCEPT RECORD NAMES THE CELL'S BUILD AND RESOLVED MODEL ID — ORCHESTRATOR-READ, never the cell's claim (charter §2.11, 2026-09-22).** You cannot see which model or Claude Code build you are running on: the `opus` alias floats with the build, and your frontmatter names an alias, not a model. So the orchestrator reads both at accept from `python scripts/cell_depth.py --live <h>` (the `build` and `model` columns, read from your transcript's top-level `version` and `message.model`), exactly as it reads your depth, and writes them into the accept record beside the spend line. A mixed value (`a+b`) is recorded as printed, and it means the cell's work ran under more than one build or model.
+
 ## 5. Disciplines
 - **Honor the brief's locks.** They are binding. A defect/gap OUTSIDE your scope gets FLAGGED in the return report (or, if your brief says so, a `role_mail` fyi the ORCHESTRATOR will send) — never fixed inline (mid-session scope creep), never silently absorbed.
 - **STOP-and-ask** if a brief premise doesn't match live code, or a fix would need a schema/migration/new dependency your brief didn't authorize (those cross a tripwire → route back up). Report the discrepancy; do not work around it.
