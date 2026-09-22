@@ -95,7 +95,10 @@
 --     `trg_trades_attempt_id_immutable` SILENTLY DROPS THE GUARD -- the 0035
 --     header's own lesson about what a rebuild costs, applied forward. CHARC
 --     has banked this as a 22-B PRECONDITION; it is written here so the next
---     rebuild's author meets it in the file rather than in a review.
+--     rebuild's author meets it in the file rather than in a review. D51
+--     (`tests/data/test_schema_manifest_head.py::test_head_manifest_matches_fixture`)
+--     is now what ENFORCES this rather than merely recording it -- a rebuild
+--     that drops either object fails that test, not just this comment.
 -- ============================================================================
 
 BEGIN;
