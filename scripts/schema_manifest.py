@@ -58,13 +58,10 @@ import re
 import sqlite3
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_REPO_ROOT))
-
-from swing.data.db import ensure_schema  # noqa: E402
 
 _DEFAULT_FIXTURE = _REPO_ROOT / "tests" / "data" / "schema_manifest_head.tsv"
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -85,8 +82,10 @@ class ManifestDiff:
     changed: frozenset[tuple[str, str]]
     # (type, name) -> tbl_name, for render()'s "<type> <name> (<tbl_name>)"
     # lines. Populated by compare(); not part of the diff's identity, so it
-    # is excluded from equality/hash via `compare=False`.
-    tbl_name_by_key: dict[tuple[str, str], str]
+    # is excluded from BOTH equality and hash (a dict is unhashable, and a
+    # frozen dataclass's generated __hash__ hashes every comparable field --
+    # without `hash=False` here, `hash(ManifestDiff(...))` would raise).
+    tbl_name_by_key: dict[tuple[str, str], str] = field(compare=False, hash=False)
 
     @property
     def is_clean(self) -> bool:
@@ -194,7 +193,17 @@ def load_manifest(path: Path) -> list[ManifestRow]:
 
 def _head_manifest() -> list[ManifestRow]:
     """Migrates an EMPTY DB in a tempdir to HEAD and reads its manifest.
-    Never touches the repo, the live DB, or any path outside the tempdir."""
+    Never touches the repo, the live DB, or any path outside the tempdir.
+
+    `ensure_schema` is imported HERE, not at module level: the `--db`
+    read-only path never calls this function, and this script's own
+    docstring claims that path is isolated from `swing.data.db` (the
+    auto-migrating/version-refusing module this script exists to avoid).
+    A lazy import makes that isolation true of the IMPORT graph too, not
+    just of which function gets called (Codex review round 1, minor)."""
+    sys.path.insert(0, str(_REPO_ROOT))
+    from swing.data.db import ensure_schema
+
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "head.db"
         conn = ensure_schema(db_path)
