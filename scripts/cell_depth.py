@@ -28,6 +28,17 @@ the rollover trigger):
     python scripts/cell_depth.py --all                 # every cell on disk, deepest first
     python scripts/cell_depth.py --sessions --live 24  # MAIN sessions (directors / orchestrators)
 
+Every row also prints the transcript's ``build`` and ``model``: ``build`` is the
+distinct top-level ``version`` string values (present on nearly every record,
+e.g. ``"2.1.280"``); ``model`` is the distinct ``message.model`` values on
+assistant records (e.g. ``"claude-opus-5-5"``), excluding the harness-injected
+``"<synthetic>"`` value, which did no work. Either column may show more than
+one value, joined with ``+`` in first-seen order (a mid-session ``/model``
+switch or a build upgrade is a real state, not an error to collapse), or ``-``
+when none was found. This is dispatcher-read for the same reason the depth is:
+a cell cannot see which model or build it is running under (the `opus` alias
+floats with the build, charter Section 2.11).
+
 A MAIN session's transcript is ``<project-slug>/<session-id>.jsonl`` -- one
 directory above the cells -- with the same record shape, so the same sum is a
 session's own depth. The harness's context line is something the OPERATOR
@@ -64,6 +75,8 @@ class CellDepth:
     turns: int
     age_hours: float
     label: str
+    build: str
+    model: str
 
     @property
     def name(self) -> str:
@@ -114,15 +127,27 @@ def read_cell(path: Path, *, now: float | None = None) -> CellDepth:
     """One cell's depth figures from its transcript; tolerant of a mid-write tail."""
     peak = cur = turns = 0
     label = ""
+    builds: list[str] = []
+    models: list[str] = []
     with path.open(encoding="utf-8", errors="replace") as fh:
         for line in fh:
             try:
                 rec = json.loads(line)
             except ValueError:
                 continue  # a partial trailing line while the cell is still writing
-            message = rec.get("message") if isinstance(rec, dict) else None
+            if not isinstance(rec, dict):
+                continue
+            # build (top-level version) and model (message.model) are collected from
+            # EVERY record -- not gated on usage, which only assistant turns carry
+            version = rec.get("version")
+            if isinstance(version, str) and version not in builds:
+                builds.append(version)
+            message = rec.get("message")
             if not isinstance(message, dict):
                 continue
+            model = message.get("model")
+            if isinstance(model, str) and model != "<synthetic>" and model not in models:
+                models.append(model)
             if not label:
                 text = _first_text(message)
                 if text:
@@ -138,7 +163,9 @@ def read_cell(path: Path, *, now: float | None = None) -> CellDepth:
     stamp = now if now is not None else time.time()
     age_hours = max(0.0, (stamp - path.stat().st_mtime) / 3600.0)
     return CellDepth(path=path, peak=peak, current=cur, turns=turns,
-                     age_hours=age_hours, label=label)
+                     age_hours=age_hours, label=label,
+                     build="+".join(builds) if builds else "-",
+                     model="+".join(models) if models else "-")
 
 
 def scan(projects_dir: Path, repo_root: Path, *, now: float | None = None,
@@ -164,11 +191,15 @@ def scan(projects_dir: Path, repo_root: Path, *, now: float | None = None,
 
 
 def format_rows(cells: list[CellDepth], cap: int) -> list[str]:
-    rows = [f"{'peak':>9}  {'current':>9}  {'turns':>5}  {'age':>7}  flag  cell / dispatch prompt"]
+    rows = [f"{'peak':>9}  {'current':>9}  {'turns':>5}  {'age':>7}  flag  "
+            f"{'build':<9}  {'model':<16}  cell / dispatch prompt"]
     for c in cells:
         flag = "OVER" if c.peak > cap else "  ok"
+        # never truncate build/model: a clipped model id would read as a DIFFERENT
+        # model, so a mixed value that overflows its column shifts the rest of the
+        # row -- that is correct
         rows.append(f"{c.peak:>9,}  {c.current:>9,}  {c.turns:>5}  {c.age_hours:>6.1f}h  {flag}  "
-                    f"{c.name[:24]}  {c.label}")
+                    f"{c.build:<9}  {c.model:<16}  {c.name[:24]}  {c.label}")
     return rows
 
 

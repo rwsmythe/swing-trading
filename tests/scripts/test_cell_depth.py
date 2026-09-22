@@ -31,12 +31,17 @@ def _load():
 cell_depth = _load()
 
 
-def _record(inp, read, create, text=None):
+def _record(inp, read, create, text=None, version=None, model=None):
     msg = {"usage": {"input_tokens": inp, "cache_read_input_tokens": read,
                      "cache_creation_input_tokens": create}}
     if text is not None:
         msg["content"] = [{"type": "text", "text": text}]
-    return json.dumps({"type": "assistant", "message": msg})
+    if model is not None:
+        msg["model"] = model
+    rec: dict = {"type": "assistant", "message": msg}
+    if version is not None:
+        rec["version"] = version
+    return json.dumps(rec)
 
 
 def _write_cell(subagents: Path, name: str, lines: list[str], *, mtime: float | None = None,
@@ -151,6 +156,99 @@ def test_exit_2_when_no_transcripts_for_repo(projects, capsys):
     projects_dir, repo, _sub = projects
     rc, out = _run(projects_dir, repo, capsys=capsys)
     assert rc == 2 and "no cell transcripts found" in out
+
+
+# --- build (top-level version) + model (message.model) ----------------------
+
+def test_single_build_and_model_read_from_real_locations(projects):
+    projects_dir, repo, sub = projects
+    # baseline: version/model read from their real top-level / message.model locations
+    _write_cell(sub, "plain", [
+        _record(1000, 0, 200_000, text="hi", version="2.1.280", model="claude-opus-5-5"),
+        _record(500, 450_000, 3_000, version="2.1.280", model="claude-opus-5-5"),
+    ])
+    # discriminator: a record with NO usage, carrying a DIFFERENT, earlier version, as
+    # the first record -- an implementation that reads only usage-bearing records
+    # never sees it and gets the wrong build
+    _write_cell(sub, "plant", [
+        json.dumps({"type": "system", "version": "2.1.270"}),
+        _record(1000, 0, 200_000, text="hi", version="2.1.280", model="claude-opus-5-5"),
+        _record(500, 450_000, 3_000, version="2.1.280", model="claude-opus-5-5"),
+    ])
+    cells = {c.name: c for c in cell_depth.scan(projects_dir, repo)}
+    assert cells["agent-aplain.jsonl"].build == "2.1.280"
+    assert cells["agent-aplain.jsonl"].model == "claude-opus-5-5"
+    assert cells["agent-aplant.jsonl"].build == "2.1.270+2.1.280"
+    assert cells["agent-aplant.jsonl"].model == "claude-opus-5-5"
+
+
+def test_synthetic_model_excluded(projects):
+    projects_dir, repo, sub = projects
+    _write_cell(sub, "mix", [
+        _record(0, 0, 0, model="<synthetic>"),
+        _record(100, 0, 0, model="claude-sonnet-5"),
+    ])
+    _write_cell(sub, "onlysynthetic", [
+        _record(0, 0, 0, model="<synthetic>"),
+    ])
+    cells = {c.name: c for c in cell_depth.scan(projects_dir, repo)}
+    assert cells["agent-amix.jsonl"].model == "claude-sonnet-5"
+    assert cells["agent-aonlysynthetic.jsonl"].model == "-"
+
+
+def test_mixed_values_shown_first_seen_order_not_collapsed(projects):
+    projects_dir, repo, sub = projects
+    _write_cell(sub, "mixed", [
+        _record(0, 0, 0, version="2.1.272", model="claude-opus-5"),
+        _record(0, 0, 0, version="2.1.272", model="claude-opus-5-5"),
+        _record(0, 0, 0, version="2.1.280", model="claude-opus-5"),
+    ])
+    [cell] = cell_depth.scan(projects_dir, repo)
+    assert cell.build == "2.1.272+2.1.280"
+    assert cell.model == "claude-opus-5+claude-opus-5-5"
+
+
+def test_mixed_model_order_is_first_seen_not_alphabetical(projects):
+    # sorted() would put claude-opus-5-5 before claude-sonnet-5 ('o' < 's'); the
+    # first-seen order here is the opposite, so a sorted-implementation fails this
+    projects_dir, repo, sub = projects
+    _write_cell(sub, "order", [
+        _record(0, 0, 0, model="claude-sonnet-5"),
+        _record(0, 0, 0, model="claude-opus-5-5"),
+    ])
+    [cell] = cell_depth.scan(projects_dir, repo)
+    assert cell.model == "claude-sonnet-5+claude-opus-5-5"
+
+
+def test_absent_build_and_model_degrade_to_dash(projects):
+    projects_dir, repo, sub = projects
+    _write_cell(sub, "noinfo", [_record(100, 100, 100)])
+    [cell] = cell_depth.scan(projects_dir, repo)
+    assert cell.build == "-"
+    assert cell.model == "-"
+
+
+def test_cli_rows_carry_build_and_model_in_both_modes(projects, capsys):
+    projects_dir, repo, sub = projects
+    _write_cell(sub, "cell1", [_record(0, 0, 0, version="2.1.280", model="claude-sonnet-5")])
+    rc, out = _run(projects_dir, repo, capsys=capsys)
+    assert rc == 0
+    header = out.splitlines()[0]
+    assert "build" in header and "model" in header
+    cell_row = next(line for line in out.splitlines() if "agent-acell1" in line)
+    assert "2.1.280" in cell_row and "claude-sonnet-5" in cell_row
+    out.encode("ascii")
+
+    main = sub.parent.parent / "sess-1.jsonl"
+    main.write_text(_record(0, 0, 0, version="2.1.272", model="claude-fable-5-1") + "\n",
+                    encoding="utf-8")
+    rc2, out2 = _run(projects_dir, repo, "--sessions", capsys=capsys)
+    assert rc2 == 0
+    header2 = out2.splitlines()[0]
+    assert "build" in header2 and "model" in header2
+    session_row = next(line for line in out2.splitlines() if "sess-1.jsonl" in line)
+    assert "2.1.272" in session_row and "claude-fable-5-1" in session_row
+    out2.encode("ascii")
 
 
 # --- --sessions: a MAIN session reads its own depth ---------------------------
