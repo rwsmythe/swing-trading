@@ -281,6 +281,14 @@ def load_evidence_selection(path: Path | str) -> EvidenceSelection | PreflightRe
         if not isinstance(value, str) or value == "":
             return _refuse(FAILURE_EVIDENCE_FILE_MALFORMED,
                            f"{key} must be a non-empty string")
+        # Codex R1-02: SQLite reads TEXT only up to the first U+0000 (its
+        # `length()` of a NUL-led string is 0) while Python counts past it,
+        # so a NUL-bearing selection passes every service check and then
+        # aborts in the citation trigger -- authorize-then-abort (brief 4.4).
+        # Refused here, where the operator's input enters.
+        if "\x00" in value:
+            return _refuse(FAILURE_EVIDENCE_FILE_MALFORMED,
+                           f"{key} must not contain U+0000 (NUL)")
     sha = payload["artifact_commit_sha"]
     if not _SHA_RE.fullmatch(sha):
         return _refuse(FAILURE_EVIDENCE_FILE_MALFORMED,

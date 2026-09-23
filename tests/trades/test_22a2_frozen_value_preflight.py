@@ -149,6 +149,58 @@ def test_a2_34_quoted_text_spanning_two_lines_refuses_not_one_line(tmp_path: Pat
     assert result.failure == "quoted_text_not_one_line"
 
 
+def test_codex_r1_02_a_nul_in_the_selection_refuses_at_the_load_boundary(
+    tmp_path: Path,
+) -> None:
+    """Codex R1-02: SQLite's ``length()`` stops at the first U+0000 while
+    Python counts past it, so a quoted text that BEGINS with NUL passed every
+    service check (byte-substring, one line, the ``_tp_quoted_text_one_line``
+    mirror) and then aborted in the citation trigger's ``length(...) > 0`` --
+    an authorize-then-abort disagreement (brief 4.4): the dry run reads
+    admissible and the apply dies on a raw ``IntegrityError``.  The selection
+    is refused where the operator's input enters, ``evidence_file_malformed``.
+
+    Pre-fix arithmetic (measured on SQLite 3.50.4): ``length(json_extract(
+    '{"q":"\\u0000OII"}', '$.q')) = 0``; the NUL-led line IS a byte-substring
+    of the artifact below and carries no line break, so the pre-fix preflight
+    returns FACTS (``failure is None``).  Post-fix: ``evidence_file_malformed``
+    for the quoted text (leading and interior NUL alike) and for a NUL in
+    either other key; the same line without the NUL still reads facts."""
+    import sqlite3
+
+    measured = sqlite3.connect(":memory:").execute(
+        "SELECT length(json_extract(?, '$.q'))",
+        (json.dumps({"q": "\x00OII"}),)).fetchone()[0]
+    assert measured == 0
+
+    world = GitWorld(tmp_path / "git")
+    world.commit("README.md", b"base\n")
+    nul_line = b"\x00" + LINE57
+    lines = [f"line {i}".encode("ascii") for i in range(1, 57)]
+    sha = world.commit(RD_STATE, b"\n".join([*lines, nul_line, b"line 58", b""]),
+                       author_date=AUTHOR_9F315CC6)
+    world.push()
+    repo = tmp_path / "git" / "work"
+
+    for name, payload in (
+            ("leading.json", _good_payload(sha, "\x00" + LINE57_TEXT)),
+            ("interior.json", _good_payload(sha, "\x00" + LINE57_TEXT[:40])),
+            ("path.json", {**_good_payload(sha), "artifact_path": RD_STATE + "\x00"})):
+        path = _evidence(tmp_path, payload, name)
+        loaded = fve.load_evidence_selection(path)
+        assert isinstance(loaded, fve.PreflightResult), name
+        assert loaded.failure == "evidence_file_malformed", name
+        assert "U+0000" in loaded.detail, name
+        result = fve.run_preflight(path, repo_dir=repo, now_utc=NOW)
+        assert (result.failure, result.facts) == ("evidence_file_malformed", None), name
+
+    # Counterpart: the same selection WITHOUT the NUL is a byte-substring of
+    # that artifact (inside the NUL-led line) and reads facts.
+    ok = fve.run_preflight(_evidence(tmp_path, _good_payload(sha), "ok.json"),
+                           repo_dir=repo, now_utc=NOW)
+    assert ok.failure is None and ok.facts is not None
+
+
 # --------------------------------------------------------------------------- A2-35
 
 def test_a2_35_line57_world_yields_author_instant_ancestry_and_remote_tip(
