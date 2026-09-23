@@ -757,12 +757,7 @@ R4-03, REJECT; RD's recorded R2-04 fact).
 AL2-15 an MM-DD token joined to a four-digit year by a separator outside [0-9.-] (08-10/2025,
 2025_08-10) admits under an author of the session's year, borrowing that year against the record's
 explicit one; the hyphen family refuses (.5) (RD, A-R5, R5-02).
-AL2-16 the reader trusts its local repository's metadata; a deliberate edit of repo_dir's own .git
-(info/grafts, a commit-graph, objects/info/alternates, packed-refs, the local
-refs/remotes/origin/main, repo-local config) can make a real but off-main commit read as an
-ancestor of origin/main, or move origin/main itself; the on-box read cannot distinguish this from
-history; DISCHARGE is an off-box fresh-clone ancestry-and-content check at the witness and any
-later tier-2 gate (RD, A-R5, R5-01).
+AL2-16 (WIDENED BY REPLACEMENT, RD, RULING B, B-01) The reader trusts the disk it stands on: its local repository's metadata (info/grafts, a commit-graph, objects/info/alternates, packed-refs, the local refs/remotes/origin/main, repo-local config) AND the git executable it resolves from PATH. Any of these, deliberately edited, can make a real but off-main commit read as an ancestor of origin/main, move origin/main itself, or fabricate every fact the six calls return; the on-box read cannot distinguish this from history. Its REASON and its DISCHARGE (an off-box check at the witness, step 6, and any later tier-2 gate) are RD's verbatim text in the ledger's AL2-16 (RD, A-R5, R5-01; RD, B, B-01).
 
 ## 8. Envelope (for every review prompt; from brief section 2)
 
