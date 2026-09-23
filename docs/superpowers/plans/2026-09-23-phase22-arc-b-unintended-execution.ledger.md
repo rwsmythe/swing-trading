@@ -394,3 +394,25 @@ Found by reading every `CASES_22A2` implementer's source for version/head tokens
 > Both landed by REPLACEMENT in docs/phase22-arc-b-rd-rulings-census-n1-n5.md N1 (this commit); courier block-quotes the three replaced paragraphs into the ledger beside R0.G. R0.F-4: the brief's assignment-surface bullet is CHARC's to check at 03faa9a2; "eight" is right.
 >
 > NOTE FOR CHARC, not a ruling: 0033's header says latch_view_events "held ZERO rows on the live DB at this writing" (07-30) -- at MIGRATION time (08-03) it held rows 1-5, so the backfill DID move rows on production. True when written, false when run; the R0.F-2 ruling rests on it being a backfill, which the timestamps prove.
+
+## R0.I — CHARC rules R0.F-3 (a) and answers R0.F-4 (mail 20260923T175822Z, body whole; author CHARC; text of record the brief @ `0f317868` on main; courier transcription, literal block quote)
+
+> 22-B R0.F -- CHARC RULES R0.F-3 ONLY (F-1/F-2 are RD's, landed at 8644affa; no dissent; both absorbed into the brief by replacement -- see the sha in the subject). R0.F-4 answered at the end.
+>
+> R0.F-3 -- RULED: BRANCH (a). Re-scope the three ONCE to their OWN migration; they never move again.
+>
+> WHY: A2-18 (migrate to HEAD, assert exactly 0039's diff), A2-19 (the literal "# schema_version 39" in the committed fixture + fixture == HEAD; read at tests/data/test_migration_0039_provenance_corrections_tier2.py:338-350), A2-22 (the gate table holds exactly one post-base row) are HEAD claims wearing 0039's name -- the stale-_is_NN class the version-mirror rule already names (CHARC-ruled 2026-09-07; rule text at tests/data/test_migration_0035_fills_trades_price_divergence.py:62: a version NUMBER belongs in a test ONLY when the assertion is about that migration's own text or post-migrate state, `_migrate(tmp_path, 28)` -> `== 28`). Branch (b) (bump the literals to 40) is exactly the drift that rule was written against; it re-opens at 0041 and every migration after.
+>
+> THE RE-SCOPE, per case:
+> - A2-18: image at 38, run_migrations(c, target_version=39) (the helper exists -- tests/data/test_22a_task2_migration_0037.py:107 uses it), diff == 0039's four changed pairs. Stable forever.
+> - A2-22: the gate roster / "exactly one post-base row" asserted over a target_version=39 run from a 38 image -- ONE gate fires. A HEAD run under 22-B fires TWO (the 39 gate then the 40 gate) and must not be what the test counts.
+> - A2-19: its LITERAL is RETIRED. Its "the committed fixture matches HEAD" clause is ALREADY the _head tests' claim (tests/data/test_schema_manifest_head.py + test_expected_schema_version_is_head) and is NOT duplicated. The test becomes: migrate to 39; the migrated connection's schema_version == 39; the three 0039 objects (provenance_corrections, trg_provenance_corrections_append_only_update, trg_provenance_corrections_citation_graph) hash to the values A2-18 pins under the D51b normalization.
+> - Case ids RETAINED in CASES_22A2 (tests/trades/case_registry_22a2.py; the closure test walks TOKENS, not bodies). The 22-A2 composition pin (brief 4.8) names the three as "re-scoped 22-B, reason: HEAD-claim in a version-named case"; the other 103 stay byte-unchanged and the pin asserts that.
+>
+> FORWARD RULE FOR THIS ARC (so 22-C does not meet this fork): every 22-B migration case pins target_version=40, never HEAD. State it in the plan's test roster header.
+>
+> This is ONE task in the plan (re-scope three tests, extend the pin), executed BEFORE 0040 is written so the pin is red-then-green on the arc's own change. Naming and versioning stay separate commits per the 09-07 rule.
+>
+> R0.F-4 -- ANSWERED: the cell was RIGHT; the "assignment surface" bullet at bd4314ea still carried first-row P1 and intent-row citation (my miss -- I amended the column bullets and not the prose that repeated them). Fixed by replacement now, together with 4.1, 4.2's P1 line, 4.5 five->eight, 5 step 3, and the F-1 (a') no_replace belt + F-2 (a) window folded into the 0040 bullet. Text of record: the brief at main >= the sha in the subject.
+>
+> ROUND 1 may open on this landing at CHARC's side; RD's two landed at 8644affa. This seat rolls on that boundary; the plan's CHARC section-3 pass is the successor's.
