@@ -214,6 +214,7 @@ Both N5 branches leave trade 20 unaffected (0 AMN links, 0 AMN intents).
 
 | round | tier | model/effort | footer | verdict | findings (C/M/m) | task-bearing | depth (orchestrator-read) | tokens used |
 |---|---|---|---|---|---|---|---|---|
+| 1 | fast | gpt-5.6-luna / high | present | NEW_CRITICAL_MAJOR_FOUND | 0/16/2 | 18 (all accepted, applied) |  | 293,572 |
 
 ## R0.D — CHARC rules N4: branch (a), value TERMINAL for generic writers (mail 20260923T173456Z; author CHARC; text of record on main in the brief section 3 @ 605fa4db; literal block quote of the mail body, transcribed by the courier)
 
@@ -416,3 +417,33 @@ Found by reading every `CASES_22A2` implementer's source for version/head tokens
 > R0.F-4 -- ANSWERED: the cell was RIGHT; the "assignment surface" bullet at bd4314ea still carried first-row P1 and intent-row citation (my miss -- I amended the column bullets and not the prose that repeated them). Fixed by replacement now, together with 4.1, 4.2's P1 line, 4.5 five->eight, 5 step 3, and the F-1 (a') no_replace belt + F-2 (a) window folded into the 0040 bullet. Text of record: the brief at main >= the sha in the subject.
 >
 > ROUND 1 may open on this landing at CHARC's side; RD's two landed at 8644affa. This seat rolls on that boundary; the plan's CHARC section-3 pass is the successor's.
+
+## Round 1 — Reviewer A (`fast`), 2026-09-23
+
+**Invocation:** `codex exec -p fast -c model_reasoning_effort=high -s read-only --skip-git-repo-check -` from the worktree (read-only repo access), stdin = prompt + the plan (uncommitted working copy, post R0.G-R0.I encoding) + the brief @ `0f317868` + ledger R0.C-R0.I + the contract doc (180,727 bytes). The `fast` profile's own effort is `medium` (`~/.codex/fast.config.toml`), so `-c model_reasoning_effort=high` is passed to satisfy assertion 2.
+**Assertions:** (1) banner model `gpt-5.6-luna` = the fast profile's model; (2) `reasoning effort: high`; (3) `^ERROR` = 0; (4) `^tokens used` = 1 (293,572); (5) `^NEW_CRITICAL_MAJOR_FOUND` = 2 (codex 0.155.1 emits the final message twice; one distinct token), `^NO_NEW_CRITICAL_MAJOR` = 0. The process was confirmed exited (`pgrep -af "codex exec"`, filtered, = 0; exit file `exit=0`) before the transcript was read. No content-filter event. Scratch: no `.codex-*` / `.copowers-*` existed in the worktree (`ls -a`); round files were staged outside it, and the one transcript hit on `.codex` (line 1133) is prose from a repo doc Codex read, not a prior-round file.
+**Evidence (copy-per-round, `C:/Users/rwsmy/swing-data/review-transcripts/22-b-plan/`):** `.codex-review-r1.txt` 790,639 B · `.codex-prompt-r1.md` 5,479 B · `.codex-bundle-r1.md` 180,727 B · `.copowers-findings.md` (this adjudication + the findings section).
+**Result:** 18 findings — 0 critical / 16 major / 2 minor; **18 task-bearing** (every finding changes a task or a test; none contested as instrument). All ACCEPTED and applied to the plan working copy (uncommitted; the single converged-plan commit rule).
+
+| id | sev | class | disposition (applied) |
+|---|---|---|---|
+| R1-01 | major | TASK | ACCEPT. Verified: a `click.Choice` would reject the value at parse time, so the typed message is unreachable. Surfaces 1-2 use a new `EntryIntentParam(click.ParamType)` that fails with `SEAM_MESSAGE` for the value. |
+| R1-02 | major | TASK (tagged RULING-CONFLICT; it is a plan-internal ordering conflict, not a ruling defect) | ACCEPT. `update_entry_intent` order fixed: read current → same-value no-op → (Task 7) attested-differs refusal → seam refusal → assertable check → write. |
+| R1-03 | major | TASK | ACCEPT. b22_12 narrowed to surfaces 1-7; new b22_13 pins the corrector's UNCONDITIONAL reservation over all three values + None (E14 as ruled). |
+| R1-04 | major | TASK | ACCEPT, verified: `get_authoritative_entry_fill` selects 12 columns (`repos/fills.py:301-308`), leaving `schwab_source_value_json` None. The service uses the helper for identity and a separate envelope read; new b22_107. The binding trigger pins the AUTHORITATIVE entry fill order. |
+| R1-05 | major | TASK | ACCEPT, verified: `envelope_is_canonical` (`latched_origin.py:735`) is 22-A's one-authority rule for exactly this divergence. The service refuses a non-canonical envelope first; new b22_108. |
+| R1-06 | major | TASK | ACCEPT. Closure limited to ADMISSION triggers; the append-only triple, the N4 trigger and the lve belts go in `SCHEMA_ONLY`, each with its own tests. |
+| R1-07 | major | TASK | ACCEPT. The cited-fields predicate tests `type <> 'text'`, so JSON null/numbers cannot slip past `NOT IN`; distinctness and the COALESCE wrap are stated. |
+| R1-08 | major | TASK | ACCEPT. Every date CHECK is COALESCE-closed (`date('2026-00-01')` is NULL and a NULL CHECK passes) and applies to all compared dates, including `outcome_known_at`'s datetime shape. |
+| R1-09 | major | TASK | ACCEPT. Exact serialization specified: `json.dumps(sorted(cite))`; snapshot `sort_keys=True, ensure_ascii=False`. |
+| R1-10 | major | TASK | ACCEPT. New b22_109 (a positive `thesis` + `emotional_state_pre_trade` citation beside a descriptive field). |
+| R1-11 | major | TASK | ACCEPT. b22_63 and b22_97 parametrized over `trim`. |
+| R1-12 | major | TASK | ACCEPT, with a code fact: `mandate_alive_at` FORCES the lapse rule OFF (`latched_origin.py:2444-2446`), so `criteria_lapsed` is unreachable as a structural clear reason. b22_91 is parametrized over `invalidation`/`horizon`/`declined`, and the unreachability is pinned. |
+| R1-13 | major | TASK | ACCEPT. New b22_115: a production write-closure over the execute-site inventory. |
+| R1-14 | major | TASK (contested interpretation → task-bearing, fail-safe) | ACCEPT the gap and REINTERPRET: brief 4.7 / RD §4 bullet 4 "quoted WITH" is encoded as a witness/read QUOTING obligation (Task 13 step 5), not a UI change, because brief §2 OUT excludes UI. **Flagged for the orchestrator/RD:** if it was meant as a card change, that is a scope addition for them to rule. |
+| R1-15 | major | TASK | ACCEPT. The closure maps trigger NAMES (no message-code parsing). |
+| R1-16 | major | TASK | ACCEPT. The b22_150 walk covers every `execute*` call; unresolved SQL must sit on a reviewed `DYNAMIC_SQL_SITES` inventory (a closure check, not a hand list). |
+| R1-17 | minor | TASK | ACCEPT, verified: `trade_group` has no `--db` (`cli.py:577-580`). The DB is opened via `ctx` config + `connect`, as `trade review` does; `ASSIGNMENT_APPLIED_BY = "operator"`. |
+| R1-18 | minor | TASK | ACCEPT. b22_03 strips `\r` before hashing; a CRLF twin is tested. |
+
+**Cell-found in this round's wake (uncounted, CF-1):** `attestation_id` gains `CHECK (attestation_id > 0)`. Per `0037:518-532`, an omitted INTEGER PK presents as -1 inside a BEFORE INSERT trigger, and the conflict-scoped `trg_eia_no_replace` must be able to ignore -1. Applied.
