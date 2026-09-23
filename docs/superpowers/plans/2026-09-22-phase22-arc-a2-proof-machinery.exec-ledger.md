@@ -10,6 +10,7 @@ Plan: `2026-09-22-phase22-arc-a2-proof-machinery.md` (merged at `23313918`). Pla
 | G-T4 | exec cell 2 (implementer-opus-high) | Task 4 | `cd02374b` | 208,150 | resumed. Orchestrator re-measured the P-correction: `9f315cc6:docs/rd-state.md` line 57 = 1015 bytes / **1005 chars** (plan section 4 + ledger R1.0 say 1006 -- a premise count error; sha256 + offsets unaffected; A2-37 asserts 1005). |
 | G-T5 | exec cell 2 | Task 5 | `503e27b2` | 339,960 | NOT resumed (Task 5 cost ~130K; Task 6 would cross the cap mid-task). Fresh exec cell 3 from Task 6. |
 | G-T6 | exec cell 3 (implementer-opus-high) | Task 6 | `aa2d44eb` | 267,300 | resumed for the F2.I-NEG follow-on ONLY (a Task-5 code change, red-first, RD's three discriminators), then gate G-NEG. Red-first evidenced for Task 6 (10/10 red for the expected reasons, then green). Encodings 1-5 carried to Task 12's record. |
+| G-NEG | exec cell 3 | (nothing written) | `392b106f` | 314,529 | STOPPED on a fork, correctly: F2.I-NEG cannot be encoded without editing 0039's citation trigger. Probe on the truthful trade-25 payload: control ADMITTED; 3-segment (no match_only) REFUSED; `record_position` in `interval` REFUSED; at top level REFUSED -- `interval_segment_order` fixes `json_array_length = 4` with `segments[2] = 'match_only'` (orchestrator re-read the 0039 text), `interval_closed` admits only `endpoints`+`segments`, `blob_closed` fixes 28 keys. Routed to CHARC (shape). |
 
 ## G1 record (orchestrator QA of cell 1's gate report, against disk)
 
