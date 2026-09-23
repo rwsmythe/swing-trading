@@ -583,6 +583,13 @@ class AcceptedLatchOrder:
     actual_limit_price: float | None
 
 
+class Tier2EscapePassedThenRaisedError(Exception):
+    """A rung after rung 9's PASSED tier-2 escape raised (Codex R4-06).  The
+    original is ``__cause__``; ``resolve_latched_provenance``'s broad handler
+    maps it to ``aliveness_unverifiable`` carrying ``tier2_consulted=True``
+    (CHARC R2-05), so the refusal never says the evidence was not consulted."""
+
+
 @dataclass(frozen=True)
 class LatchedProvenance:
     """The resolver's verdict for one fill.
@@ -1963,65 +1970,73 @@ def authorize_accepted_order(
         return _refuse("pre_barrier_unproven", order,
                        freeze_tier=order.freeze_tier)
 
-    # THE FIVE ENVELOPE GUARDS.  Demoted deliberately to REFUSAL GUARDS rather
-    # than identity evidence (plan S2.4.1): fill_origin is computed server-side
-    # but FROM the same hidden inputs, so no rung here is independent evidence.
-    shape = assert_fill_consistent_with_order(
-        order, ticker=ticker, price=price, shares=shares,
-        fill_origin=fill_origin, envelope_symbol=envelope_symbol)
-    if shape is not None:
-        return _refuse(shape, order, freeze_tier=order.freeze_tier,
-                       tier2_consulted=tier2_consulted)
+    # Codex R4-06: a rung AFTER a passed rung-9 escape that RAISES (rather
+    # than refuses) reaches the caller's broad handler; the typed wrapper
+    # carries the consulted state there.  Any other raise is unchanged.
+    try:
+        # THE FIVE ENVELOPE GUARDS.  Demoted deliberately to REFUSAL GUARDS rather
+        # than identity evidence (plan S2.4.1): fill_origin is computed server-side
+        # but FROM the same hidden inputs, so no rung here is independent evidence.
+        shape = assert_fill_consistent_with_order(
+            order, ticker=ticker, price=price, shares=shares,
+            fill_origin=fill_origin, envelope_symbol=envelope_symbol)
+        if shape is not None:
+            return _refuse(shape, order, freeze_tier=order.freeze_tier,
+                           tier2_consulted=tier2_consulted)
 
-    verdict = mandate_alive_at(
-        conn, cfg, order=order, fill_session=fill_session,
-        exclude_trade_ids=exclude_trade_ids)
-    if not verdict.admitted:
-        return (replace(verdict, tier2_consulted=True) if tier2_consulted
-                else verdict)
+        verdict = mandate_alive_at(
+            conn, cfg, order=order, fill_session=fill_session,
+            exclude_trade_ids=exclude_trade_ids)
+        if not verdict.admitted:
+            return (replace(verdict, tier2_consulted=True) if tier2_consulted
+                    else verdict)
 
-    evidence = dict(verdict.probe_evidence or {})
-    rung9_verdicts: dict[str, str] | None = None
-    if frozen_value_evidence is not None:
-        # The escape states itself in the blob's own voice (F11): its own
-        # version, and rung 9's verdict `escaped_by_tier2`, never `pass`.
-        evidence["evidence_version"] = LATCH_PROBE_TIER2_EVIDENCE_VERSION
-        rung9_verdicts = {
-            "rung9_stored_freeze_tier": AUTHORIZATION_VERDICT_ESCAPED_BY_TIER2}
-    evidence["authorization"] = _authorization_block({
-        "rung1_link_ticker": order.ticker,
-        "rung2_link_parent": order.place_intent_id,
-        "rung3_validity_outcome": validity["validity_outcome"],
-        "rung3b_latest_validity_child": order.validity_intent_id,
-        "rung3c_link_broker_order_id": order.broker_order_id,
-        "rung4_governing_place_intent": order.place_intent_id,
-        "rung5_cancel_intent_id": None,
-        "rung6_consuming_trade_id": None,
-        "rung7_consumption_scan_fill_ids": [int(r[0]) for r in scanned],
-        "rung8_competitor_link_ids": [int(i) for i in competitor_ids],
-        "rung9_stored_freeze_tier": order.freeze_tier,
-        "guard_fill_origin": fill_origin,
-        "guard_envelope_symbol": envelope_symbol,
-        "guard_quantity": shares,
-        "guard_framework_price_bound": price,
-        "guard_broker_limit_bound": order.actual_limit_price,
-    }, rung9_verdicts)
-    return LatchedProvenance(
-        admitted=True,
-        recognised_but_underivable=False,
-        decline_reason=None,
-        order=order,
-        clear_reason=verdict.clear_reason,
-        clear_session=verdict.clear_session,
-        horizon_session=verdict.horizon_session,
-        bars_through=verdict.bars_through,
-        window_empty=verdict.window_empty,
-        archive_status=verdict.archive_status,
-        probe_evidence=evidence,
-        freeze_tier=order.freeze_tier,
-        frozen_value_evidence=frozen_value_evidence,
-        tier2_consulted=tier2_consulted,
-    )
+        evidence = dict(verdict.probe_evidence or {})
+        rung9_verdicts: dict[str, str] | None = None
+        if frozen_value_evidence is not None:
+            # The escape states itself in the blob's own voice (F11): its own
+            # version, and rung 9's verdict `escaped_by_tier2`, never `pass`.
+            evidence["evidence_version"] = LATCH_PROBE_TIER2_EVIDENCE_VERSION
+            rung9_verdicts = {
+                "rung9_stored_freeze_tier": AUTHORIZATION_VERDICT_ESCAPED_BY_TIER2}
+        evidence["authorization"] = _authorization_block({
+            "rung1_link_ticker": order.ticker,
+            "rung2_link_parent": order.place_intent_id,
+            "rung3_validity_outcome": validity["validity_outcome"],
+            "rung3b_latest_validity_child": order.validity_intent_id,
+            "rung3c_link_broker_order_id": order.broker_order_id,
+            "rung4_governing_place_intent": order.place_intent_id,
+            "rung5_cancel_intent_id": None,
+            "rung6_consuming_trade_id": None,
+            "rung7_consumption_scan_fill_ids": [int(r[0]) for r in scanned],
+            "rung8_competitor_link_ids": [int(i) for i in competitor_ids],
+            "rung9_stored_freeze_tier": order.freeze_tier,
+            "guard_fill_origin": fill_origin,
+            "guard_envelope_symbol": envelope_symbol,
+            "guard_quantity": shares,
+            "guard_framework_price_bound": price,
+            "guard_broker_limit_bound": order.actual_limit_price,
+        }, rung9_verdicts)
+        return LatchedProvenance(
+            admitted=True,
+            recognised_but_underivable=False,
+            decline_reason=None,
+            order=order,
+            clear_reason=verdict.clear_reason,
+            clear_session=verdict.clear_session,
+            horizon_session=verdict.horizon_session,
+            bars_through=verdict.bars_through,
+            window_empty=verdict.window_empty,
+            archive_status=verdict.archive_status,
+            probe_evidence=evidence,
+            freeze_tier=order.freeze_tier,
+            frozen_value_evidence=frozen_value_evidence,
+            tier2_consulted=tier2_consulted,
+        )
+    except Exception as exc:
+        if tier2_consulted:
+            raise Tier2EscapePassedThenRaisedError(str(exc)) from exc
+        raise
 
 
 def _rung9_tier2_escape(
@@ -2913,7 +2928,7 @@ def resolve_latched_provenance(
             competitor_rung=competitor_liveness_rung,
             tier2=tier2,
         )
-    except Exception:  # noqa: BLE001 -- see below; this is DELIBERATE
+    except Exception as exc:  # noqa: BLE001 -- see below; this is DELIBERATE
         # BROAD ON PURPOSE, AND THE BREADTH IS THE POINT (Codex 22A-R8-03,
         # generalizing 22A-R7-02). It was `except LatchProbeInvariantError`,
         # and the VERY NEXT ROUND found a different escape: a `+inf` frozen
@@ -2933,7 +2948,10 @@ def resolve_latched_provenance(
             req.ticker, order.broker_order_id, order.link_id, fill_session)
         return _refuse("aliveness_unverifiable", order,
                        horizon_session=fill_session,
-                       freeze_tier=order.freeze_tier)
+                       freeze_tier=order.freeze_tier,
+                       # Codex R4-06: carried, never set, here (CHARC R2-05).
+                       tier2_consulted=isinstance(
+                           exc, Tier2EscapePassedThenRaisedError))
     if not verdict.admitted:
         return verdict
 

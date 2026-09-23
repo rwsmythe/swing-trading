@@ -398,6 +398,14 @@ def _later_rung_refuses(monkeypatch, where: str) -> None:
         def underivable(conn, order):
             raise ValueError("keys refused for the test")
         monkeypatch.setattr(lo, "_cohort_keys_for_fire", underivable)
+    elif where == "guard_raises":
+        def raising_guard(order, **kw):
+            raise ValueError("a guard raised for the test")
+        monkeypatch.setattr(lo, "assert_fill_consistent_with_order", raising_guard)
+    elif where == "probe_raises":
+        def raising_probe(conn, cfg, *, order, **kw):
+            raise ValueError("the probe raised for the test")
+        monkeypatch.setattr(lo, "mandate_alive_at", raising_probe)
     else:
         def dead(conn, cfg, *, order, **kw):
             return lo.LatchedProvenance(
@@ -408,7 +416,12 @@ def _later_rung_refuses(monkeypatch, where: str) -> None:
 
 @pytest.mark.parametrize(("where", "reason"), [("guard", "quantity_exceeds_order"),
                                                 ("probe", "mandate_not_alive"),
-                                                ("keys", "keys_not_derivable")])
+                                                ("keys", "keys_not_derivable"),
+                                                # Codex R4-06: a later rung that
+                                                # RAISES reaches the broad
+                                                # handler, which keeps the flag.
+                                                ("guard_raises", "aliveness_unverifiable"),
+                                                ("probe_raises", "aliveness_unverifiable")])
 def test_r2_05_i_rung9_passed_then_a_later_rung_refused_says_passed(
     tmp_path: Path, ticking_clock, monkeypatch, where: str, reason: str,
 ) -> None:
