@@ -405,25 +405,32 @@ def test_a2_96_hypothesis_list_prints_the_line_once_under_its_row(
 
 
 @pytest.mark.parametrize("state", ("rewritten", "unverifiable", "admit", "moved"))
-def test_hypothesis_status_carries_the_marker_and_the_named_line(
+def test_hypothesis_status_renders_the_named_lines_and_no_marker(
     tmp_path: Path, ticking_clock, monkeypatch, state: str,
 ) -> None:
-    """CHARC G-T10-1 (4) + RD G-T10-2: the shown N carries the marker (count +
-    canonical surface), ``unverifiable`` never merged with ``excluded``, and
-    ABSENT at zero exclusions; the named line prints below."""
+    """CHARC G-T10-1 (4) + RD G-T10-F4: ``hypothesis status`` is a per-cohort
+    DETAIL surface (the fifth named surface), so it renders the FULL named
+    line below the shown N and NO compact marker -- a "see hypothesis list"
+    pointer on the surface that already holds the line is a wrong pointer.
+    An impl that keeps both FAILS; zero exclusions -> neither."""
     conn = _world(tmp_path, monkeypatch, state)
     try:
         cfg, cfg_path = _install(conn, tmp_path, monkeypatch)
     finally:
         conn.close()
     out = _cli(cfg_path, "hypothesis", "status", str(H1_ID))
-    (sample,) = [line for line in out.splitlines() if "Current sample:" in line]
+    lines = out.splitlines()
+    (i,) = [k for k, line in enumerate(lines) if "Current sample:" in line]
+    sample = lines[i]
+    assert "see hypothesis list" not in out
+    assert "(1 excluded" not in out
+    assert "(1 unverifiable:" not in out
     if state == "rewritten":
-        assert sample.split(":", 1)[1].strip() == "1 (1 excluded: see hypothesis list)"
-        assert STALE_LINE in out
+        assert sample.split(":", 1)[1].strip() == "1"
+        assert lines[i + 1].strip() == STALE_LINE
     elif state == "unverifiable":
-        assert sample.split(":", 1)[1].strip() == "1 (1 unverifiable: see hypothesis list)"
-        assert UNVERIFIABLE_PREFIX in out
+        assert sample.split(":", 1)[1].strip() == "1"
+        assert lines[i + 1].strip().startswith(UNVERIFIABLE_PREFIX)
     elif state == "moved":
         assert sample.split(":", 1)[1].strip() == "2"
         assert OBSERVED_LINE in out

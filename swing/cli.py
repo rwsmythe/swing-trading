@@ -4977,10 +4977,7 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
     from swing.data.db import connect
     from swing.data.repos.hypothesis import get_hypothesis
     from swing.recommendations.hypothesis import compute_tripwire_status
-    from swing.trades.frozen_value_evidence import (
-        tier2_cohort_lines,
-        tier2_count_marker,
-    )
+    from swing.trades.frozen_value_evidence import tier2_cohort_lines
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
@@ -4999,11 +4996,10 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
     click.echo(f"  Status:           {h.status}")
     click.echo(f"  Statement:        {h.statement}")
     click.echo(f"  Target sample:    {h.target_sample_size}")
-    # 22-A2 Task 10: the shown N carries RD's marker (G-T10-2), and the
-    # cohort's named lines print below it (CHARC G-T10-1 (4)).
-    marker = tier2_count_marker(tw.tier2_excluded, see="hypothesis list")
-    click.echo(f"  Current sample:   {tw.current_sample}"
-               + (f" {marker}" if marker else ""))
+    # 22-A2: a per-cohort DETAIL surface (CHARC G-T10-1 (4)) -- the cohort's
+    # full named lines print below the shown N and NO compact marker rides on
+    # it (RD G-T10-F4: a pointer to another surface is wrong here).
+    click.echo(f"  Current sample:   {tw.current_sample}")
     for named in tier2_cohort_lines(tw.tier2_excluded, tw.tier2_observed):
         click.echo(f"    {named}")
     click.echo(f"  Decision criteria:{h.decision_criteria}")
