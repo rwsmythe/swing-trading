@@ -214,3 +214,28 @@ Both N5 branches leave trade 20 unaffected (0 AMN links, 0 AMN intents).
 
 | round | tier | model/effort | footer | verdict | findings (C/M/m) | task-bearing | depth (orchestrator-read) | tokens used |
 |---|---|---|---|---|---|---|---|---|
+
+## R0.D — CHARC rules N4: branch (a), value TERMINAL for generic writers (mail 20260923T173456Z; author CHARC; text of record on main in the brief section 3 @ 605fa4db; literal block quote of the mail body, transcribed by the courier)
+
+> 22-B CENSUS ROUND 0 -- CHARC RULES N4 ONLY. N1/N2/N3/N5 are RD's; I hold on them and will speak only to dissent from a LANDED ruling, upward. Verified at the sites before ruling: review_form.html.j2:129-133 (the select is always rendered and always submitted; the empty option is "unclassified"); routes/trades.py:3618-3621 (presence-gated, so "" reaches update_entry_intent as None); repos/trades.py:970-992 (the writer validates membership only, never the CURRENT value); cli.py:1690-1712 (review --entry-intent) and the backfill-intent --force/--trade-id re-prompt path; reconciliation_auto_correct.py:200-208 (_RESERVED_JOURNAL_FIELDS -- the coupled-column mechanism already routes hypothesis_label/candidate_id/trade_origin) and :2300-2309 (the dynamic UPDATE builder). The defect is real; it fires at exactly the moment F2 edge (i) says to assign.
+>
+> N4 RULING: BRANCH (a). unintended_execution is TERMINAL for every generic writer. The full text is on main in the brief, section 3 "N4" @ 605fa4db (amended by replacement; F5's surface set corrected to the census's EIGHT; section 2 item (4) gains the new trigger as a D51 addition). The shape, so the courier can transcribe it and the cell can build it:
+>
+> THREE LAYERS, each named to the writer it catches; the SQL layer is the TWIN of the service layer (AUTHORIZE-THEN-ABORT, trigger set within the service set):
+> (1) update_entry_intent reads the CURRENT value inside the caller's transaction and raises a typed AttestedIntentError when it is unintended_execution and the new value differs. One check covers the web review route, trade review --entry-intent, and backfill-intent (all three call it). --force / --trade-id SKIP an attested row with the message; they never prompt over it.
+> (2) The corrector: ("trades","entry_intent") joins _RESERVED_JOURNAL_FIELDS -- the existing mechanism, its message routing to assign-intent. This is the ONLY layer that reaches the dynamic UPDATE trades SET {field} builder (gotcha 36: a column-name grep cannot see it).
+> (3) The SQL twin in 0040: trg_trades_entry_intent_attested_terminal, BEFORE UPDATE OF entry_intent ON trades WHEN COALESCE(OLD.entry_intent,'') = 'unintended_execution' AND NEW.entry_intent IS NOT OLD.entry_intent -> RAISE(ABORT). A NEW trades dependant, created after the RENAME with the five verbatim ones. F6 is UNTOUCHED: the table DDL still carries exactly ONE edit; a trigger is a separate sqlite_master object; the D51 diff shows it as an ADDITION (section 2 item (4) amended). Same-value UPDATE passes (idempotent); NULL -> value passes (the assignment path).
+>
+> THE REVIEW FORM renders the attested value READ-ONLY with no select and OMITS the field from the POST, so the presence gate preserves it. A handcrafted POST with entry_intent="" for an attested trade gets the typed refusal as a 4xx fragment, value preserved.
+>
+> THE MESSAGE tells the truth of this arc: "entry_intent is attested (entry_intent_attestations row N); no reversal surface exists -- a reversal is a NEW evidence class with its own record." It does NOT name assign-intent as the recovery: assign-intent refuses a non-NULL row under F5. A mistaken attestation is a register item (mine, banked when the first one exists), not a channel in 22-B.
+>
+> BRANCH (b) REJECTED: an overwritable attested column makes the attestation row and the journal disagree BY DESIGN, and "attested, column now X" is a report about a defect the schema could have refused.
+>
+> DISCRIMINATORS for section 4.2 (each in the real row shape): TestClient review POST for an attested trade WITHOUT the field -> preserved; WITH "" -> 4xx typed, preserved; CLI trade review --entry-intent standard on an attested trade -> ClickException with the message; backfill-intent --force -> row skipped, message printed, value preserved; the corrector on ("trades","entry_intent") -> ReservedJournalFieldError; a RAW UPDATE trades SET entry_intent='standard' on plain sqlite3 -> the trigger ABORTS (layer 3 tested ALONE, so the service layer cannot mask it); the same-value UPDATE -> passes.
+>
+> RULING-FACT CORRECTIONS the cell reported: ACCEPTED as the code has them (the quoted "trades" DDL, the dependant sources, 27/28 synthetic, outcome_known_at from the earliest trim/exit/STOP fill, provenance_corrections' actual columns and the ignore_check_constraints planting, the envelope-keys read for multi-field corrections, F5 = eight). The brief's section 1/2 text they correct is SUPERSEDED by the ledger's R0.C where they differ; the plan builds from the code, and the ledger is the record. F2-S3's precondition HOLDS by the cell's walk and F3's death-then-fill IS expressible (service.py:720-848) -- both are the plan's to pin by test, not to re-argue.
+>
+> FRESH-CELL RE-DISPATCH: concur. 339,945 at census return leaves no room for the plan and three rounds; a fresh opus-high off the committed ledger plus the five landed rulings is the right shape, and the round-gate depth read stays a GATE for the new cell too.
+>
+> Courier: block-quote this ruling into the ledger and post the landed commit; the ruling is in flight until then.
