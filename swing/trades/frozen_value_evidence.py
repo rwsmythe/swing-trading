@@ -55,7 +55,7 @@ FROZEN_VALUE_EVIDENCE_VERSION = "2026-09-23.1"
 # OBSERVATION, never as a verdict (G-T7F-AMEND).  Deliberately a DIFFERENT
 # string from (A), so a builder writing one constant under the other's key is
 # visible to every literal comparison.
-FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION = "2026-09-23.4"
+FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION = "2026-09-23.5"
 
 # Every git call's own timeout (seconds).  The replay uses the same name.
 GIT_TIMEOUT_SECONDS = 10.0
@@ -575,15 +575,17 @@ def render_price(value: float) -> str:
     return f"{round(value, COMPARE_DP):.{COMPARE_DP}f}"
 
 
-_TOKEN_CLASS = {"ticker": "A-Za-z0-9", "session": "0-9.", "numeral": "0-9."}
+_TOKEN_CLASS = {"ticker": "A-Za-z0-9", "session": "0-9.-", "numeral": "0-9."}
 
 
 def find_token(text: str, token: str, *, kind: str) -> str | None:
     """``token`` as a WHOLE token of ``text``, or None.
 
-    ``ticker`` is bounded by non-``[A-Za-z0-9]``; ``session`` and ``numeral``
-    by non-``[0-9.]`` (RD's F13).  Containment proves MENTION, never
-    exclusivity (AL2-2).
+    ``ticker`` is bounded by non-``[A-Za-z0-9]``; ``numeral`` by non-``[0-9.]``
+    (RD's F13); ``session`` by non-``[0-9.-]`` -- the hyphen joins date fields,
+    so a date-shaped neighbour (``2025-08-10``, ``08-10-2026``) never yields an
+    ISO or MM-DD sub-match (RD's A-R2 item 1).  Containment proves MENTION,
+    never exclusivity (AL2-2).
     """
     cls = _TOKEN_CLASS[kind]
     pattern = rf"(?<![{cls}]){re.escape(token)}(?![{cls}])"
@@ -1587,6 +1589,13 @@ def frozen_value_evidence_digest() -> str:
 # ``\n``, one trailing ``\r`` removed; the quote carries neither), refused as
 # ``quoted_text_not_a_whole_line`` (renamed from ``..._not_one_line``) after the
 # unchanged presence check.  A sub-line quote that .3 admitted is refused.
+#
+# ``.5`` (RD ruling A-R2 item 1, R2-01; CHARC's .5 shape): ``_TOKEN_CLASS``'s
+# ``session`` class gains the hyphen (``0-9.-``), so the ISO search and the
+# MM-DD fallback are bounded by non-``[0-9.-]`` on both sides.  A record line
+# carrying ``2025-08-10`` or ``08-10-2026`` no longer yields an MM-DD sub-match
+# the year rule would re-date; ``2026-08-10T...`` still admits.  The callers of
+# ``find_token(kind="session")`` are ``_criterion3``'s two calls and no other.
 FROZEN_VALUE_EVIDENCE_HISTORY: tuple[tuple[str, str], ...] = (
     ("2026-09-23.2",
      "e098e9cddd4327b545dac89dbc7f017442f016bf9f82c5b9731d4b815fec1c1b"),
@@ -1594,4 +1603,6 @@ FROZEN_VALUE_EVIDENCE_HISTORY: tuple[tuple[str, str], ...] = (
      "f99090619b500e866bf104556bb419b7c26ab85e1cc82ce6e6ddc4b0d1eb5193"),
     ("2026-09-23.4",
      "0b00974d3e2fd7229c97824490c4fb4c813bf3e9992cb59cd95a809fdafe7b04"),
+    ("2026-09-23.5",
+     "ab5ede8893e434a5d23460ae78c0eba176c8427e009bee98fa00010040145c88"),
 )

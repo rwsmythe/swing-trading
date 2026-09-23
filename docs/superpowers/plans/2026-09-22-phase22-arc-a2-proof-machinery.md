@@ -365,8 +365,9 @@ builds a temp repo + bare remote + fetch so `REMOTE_REF` exists; commits with ex
 **Files:** `swing/trades/frozen_value_evidence.py`; `tests/trades/test_22a2_conjunction.py` (new).
 **Build:**
 - `render_price(v) -> str` = `f"{round(v, 2):.2f}"` (the ONE rounding authority, S4.3a).
-- `find_token(text, token, *, kind)`: `ticker` bounded by non-`[A-Za-z0-9]`; `session`/`numeral`
-  bounded by non-`[0-9.]`; returns the matched text or None.
+- `find_token(text, token, *, kind)`: `ticker` bounded by non-`[A-Za-z0-9]`; `numeral` bounded by
+  non-`[0-9.]`; `session` bounded by non-`[0-9.-]` (RD A-R2 item 1: the hyphen joins date fields, so
+  `2025-08-10` / `08-10-2026` never yield an ISO or MM-DD sub-match); returns the matched text or None.
 - `evaluate_conjunction(conn, facts, *, candidate_id, fill_session: date, read_at: str,
   barrier_installed: bool) -> ConjunctionVerdict(admitted, criterion, reason, field, evidence)`.
   Reads (SELECT only) `candidates` (ticker, pivot, initial_stop, evaluation_run_id),
@@ -627,6 +628,7 @@ Pre -> post = what the discriminator reads under the NULL / pre-fix implementati
 | A2-54 | (F6 iii) candidate action session `2026-08-11` -> REFUSE `action_session` | -- |
 | A2-55 | (F13 year rule) line 57 with its `2026-08-10` token removed, author `2025-08-09T10:00:00-10:00` -> REFUSE `action_session` (criterion 3 speaks before 4) | no year rule: REFUSE `window_negative` |
 | A2-56 | (F13 year rule, ISO present) line 57 as-is, same prior-year author -> REFUSE `window_negative` (criterion 3 passes on the ISO token) | year rule applied to ISO: REFUSE `action_session` |
+| A2-56a | (R2-01, RD A-R2 item 1; end to end, 2026 author, session 2026-08-10) `OII 2025-08-10 53.98 41.42` -> REFUSE `action_session`; `OII 08-10 53.98 41.42` -> ADMIT; `OII 2026-08-10T10:03:33Z 53.98 41.42` -> ADMIT; `OII 08-10-2026 53.98 41.42` -> REFUSE `action_session`; line 57 -> ADMIT | `0-9.` session class: the two REFUSE lines ADMIT; a class also holding letters: the `T`-suffix line REFUSES |
 | A2-57 | (F6 ii) record = fire_hi (`2026-08-07T17:39:07-10:00`) -> ADMIT; fire_hi - 1 s -> REFUSE `window_indeterminate`; fire_lo - 1 s -> REFUSE `window_negative` | no bracket: fire_hi-1s ADMITS |
 | A2-58 | refusal order: ticker AND pivot both wrong -> names `ticker`; pivot AND invalidation wrong -> names `pivot` | -- |
 | A2-59 | DECLARED-LIMIT pins (fail if the blindness ever narrows silently): a line reading `pivot 41.42 / stop 53.98` for candidate 53.98/41.42 -> ADMIT (AL2-3); line 57 for a candidate ticker `AMN` with OII's session and values -> ADMIT (AL2-2) | -- |
