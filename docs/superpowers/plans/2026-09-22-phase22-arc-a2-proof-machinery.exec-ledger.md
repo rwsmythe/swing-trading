@@ -7,6 +7,7 @@ Plan: `2026-09-22-phase22-arc-a2-proof-machinery.md` (merged at `23313918`). Pla
 | gate | cell | after | last commit | depth | disposition |
 |---|---|---|---|---|---|
 | G1 | exec cell 1 (implementer-opus-high) | Task 3 (+ R4.0 edits, Tasks 1-2) | `010e8f9f` | 557,321 (OVER) | NOT resumed; fresh exec cell 2 dispatched off `010e8f9f` from Task 4. Cell 1's uncommitted Task-4 drafts (session scratchpad) are NOT carried; cell 2 writes Task 4 from the plan. |
+| G-T4 | exec cell 2 (implementer-opus-high) | Task 4 | `cd02374b` | 208,150 | resumed. Orchestrator re-measured the P-correction: `9f315cc6:docs/rd-state.md` line 57 = 1015 bytes / **1005 chars** (plan section 4 + ledger R1.0 say 1006 -- a premise count error; sha256 + offsets unaffected; A2-37 asserts 1005). |
 
 ## G1 record (orchestrator QA of cell 1's gate report, against disk)
 
