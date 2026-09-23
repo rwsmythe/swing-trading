@@ -412,15 +412,17 @@ def _detect_tier(conn: sqlite3.Connection, cfg,
         # document whose stored reading is canonical, and persisted.
         placement, keys = _envelope_entry_date(raw)
         if keys > 1:
-            # MEASURED at encoding (G1d): the stored reading does NOT refuse a
-            # duplicated entry_date -- the canonicaliser checks duplicates only
-            # for the order id and the symbol -- so this read refuses it
-            # itself, before json.loads' last-key rule can choose one.
+            # RULING G1d (a): the stored reading does NOT refuse a duplicated
+            # entry_date -- the canonicaliser checks duplicates only for the
+            # order id and the symbol -- so this read refuses it itself,
+            # before json.loads' last-key rule can choose one. Its own code:
+            # `envelope_refused` means only "the stored reading is refused".
             raise _RefusalError(
-                "envelope_refused",
-                f"fill {fill_id}'s Schwab envelope carries entry_date {keys} "
-                "times; the placement session cannot be read from it "
-                "unambiguously, so nothing is assigned")
+                "entry_date_ambiguous",
+                "the record's entered date cannot be read: fill "
+                f"{fill_id}'s Schwab envelope carries entry_date {keys} times, "
+                "so the placement session is not one value and nothing is "
+                "assigned")
         if placement is None:
             placement, source = entry, "entry_date_fallback"
         elif _is_iso_date(placement):

@@ -891,11 +891,13 @@ _DUPLICATE_ENTRY_DATES = {
 
 @pytest.mark.parametrize("shape", sorted(_DUPLICATE_ENTRY_DATES))
 def test_duplicate_entry_date_key_refuses_b22_78(tmp_path: Path, shape: str) -> None:
-    """REWRITTEN by RULING G1b as a refusal case. MEASURED: the stored reading
-    of this document is `canonical` (the canonicaliser checks duplicates only
-    for schwab_order_id / schwab_instrument_symbol), so the refusal is the
-    service's Python read counting the ROOT entry_date keys before json.loads'
-    last-key rule can choose one -- reported at G1d, provisional."""
+    """REWRITTEN by RULING G1b as a refusal case; its code RULED at G1d (a).
+    MEASURED: the stored reading of this document is `canonical` (the
+    canonicaliser checks duplicates only for schwab_order_id /
+    schwab_instrument_symbol), so the refusal is the service's Python read
+    counting the ROOT entry_date keys before json.loads' last-key rule can
+    choose one. Its code is its OWN, `entry_date_ambiguous`: `envelope_refused`
+    means only that the stored reading's state is refused, which it is not."""
     from swing.trades.latched_origin import canonical_envelope_identity
 
     first, last = _DUPLICATE_ENTRY_DATES[shape]
@@ -910,8 +912,10 @@ def test_duplicate_entry_date_key_refuses_b22_78(tmp_path: Path, shape: str) -> 
         r = _assign(c, cfg)
     finally:
         c.close()
-    assert (r.admitted, r.refusal_code) == (False, "envelope_refused"), r.message
-    assert "entry_date" in r.message
+    assert (r.admitted, r.refusal_code) == (False, "entry_date_ambiguous"), r.message
+    assert "entered date cannot be read" in r.message
+    assert "carries entry_date 2 times" in r.message
+    assert r.message.isascii()
     _nothing_written(path)
 
 
