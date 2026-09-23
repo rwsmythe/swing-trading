@@ -35,6 +35,9 @@
         <th data-cohort-name="{{ cohort.cohort_name }}">
           {{ cohort.cohort_name }}
           <br><span class="muted">n = {{ cohort.n_closed }} / target {{ cohort.target_sample_size }}</span>
+          {% for line in cohort.tier2_lines %}
+          <br><span class="muted tier2-cohort-line">{{ line }}</span>
+          {% endfor %}
           {% if cohort.legacy_trades_count > 0 %}
           <br><span class="muted">({{ cohort.legacy_trades_count }} legacy)</span>
           {% endif %}

@@ -27,10 +27,16 @@ import sqlite3
 
 def lookup_active_recommendation_label(
     conn: sqlite3.Connection, *, ticker: str, starting_equity: float,
+    budget_seconds: float | None = None,
 ) -> str | None:
     """Return the suggested hypothesis label for ``ticker`` from the latest
     completed pipeline run's active hypothesis match, or ``None`` if there
     is no run / no candidate / no match.
+
+    22-A2 Task 10: the prefill CONSUMES the cohort read (the prioritizer's
+    N) and renders no count, so it renders nothing of it (RD G-T10-2);
+    ``budget_seconds`` is threaded to that read (the web entry form passes
+    ``WEB_REPLAY_BUDGET_SECONDS``, the CLI none -- CHARC G-T10-1 (2)).
     """
     from swing.data.repos.candidates import fetch_candidates_for_run
     from swing.data.repos.hypothesis import list_hypotheses
@@ -58,6 +64,7 @@ def lookup_active_recommendation_label(
 
     _, progress_summaries = build_recommendation_progress(
         conn, registry, starting_equity=starting_equity,
+        budget_seconds=budget_seconds,
     )
     prioritized = prioritize_recommendations(
         matches, registry=registry, progress=progress_summaries,

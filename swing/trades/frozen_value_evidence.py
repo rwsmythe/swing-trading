@@ -170,8 +170,11 @@ VERDICT_ADMIT = "ADMIT"
 VERDICT_STALE = "tier2_evidence_stale"
 VERDICT_UNVERIFIABLE = FAILURE_TIER2_UNVERIFIABLE
 REPLAY_VERDICTS: tuple[str, ...] = (VERDICT_ADMIT, VERDICT_STALE, VERDICT_UNVERIFIABLE)
-# CHARC R4.2 ruling 1: the TOTAL wall-clock replay budget the two WEB readers
-# pass; the CLI readers and the drift reader pass none.
+# CHARC R4.2 ruling 1: the TOTAL wall-clock replay budget, per invocation of
+# ``tier2_cohort_exclusions``, that every WEB caller of a cohort reader passes
+# (G-T10-1 (2): the dashboard VM, the trade-entry prefill, the tier and
+# deviation VMs, the card route and the metrics index); the CLI and the drift
+# reader pass none.
 WEB_REPLAY_BUDGET_SECONDS = 2.0
 REASON_WEB_BUDGET_EXHAUSTED = "web_budget_exhausted"
 # S12.1 #9 at the replay (CHARC's G-T7 Q1 principle): no git subprocess runs
@@ -1246,12 +1249,70 @@ def _tier2_rows(conn: sqlite3.Connection) -> list:
             if r.admission_tier == PROVENANCE_ADMISSION_TIER_LATCH_TIER2]
 
 
+@dataclass(frozen=True)
+class Tier2CohortRead:
+    """One invocation's read of every tier-2 row, by ``trade_id`` (CHARC
+    G-T7FE item C: a NAMED result, never a bare tuple).
+
+    ``exclusions`` is exactly the non-ADMIT set: the rows a cohort read must
+    NOT count, each with its verdict and reason (RD's F10 sub-ruling).
+    ``observations`` is every ADMITTED row whose verdict carries a non-empty
+    observation (today: ``derivation_version_moved``) -- counted, and
+    rendered beside the count.  A reader COUNTS from ``exclusions`` only; the
+    count logic never reads ``observations``.  Nothing here is persisted."""
+
+    exclusions: dict[int, ReplayVerdict]
+    observations: dict[int, ReplayVerdict]
+
+    def excluded_among(self, trade_ids) -> tuple[tuple[int, str, str | None], ...]:
+        """``(trade_id, verdict, reason)`` for the ids this read excludes, in
+        trade-id order -- the NAMES a cohort's N owes its reader."""
+        return tuple((tid, self.exclusions[tid].verdict, self.exclusions[tid].reason)
+                     for tid in sorted({t for t in trade_ids if t is not None})
+                     if tid in self.exclusions)
+
+    def observed_among(self, trade_ids) -> tuple[tuple[int, str], ...]:
+        """``(trade_id, observation)`` for the counted ids carrying one."""
+        out: list[tuple[int, str]] = []
+        for tid in sorted({t for t in trade_ids if t is not None}):
+            v = self.observations.get(tid)
+            if v is not None and v.derivation_observation:
+                out.append((tid, v.derivation_observation))
+        return tuple(out)
+
+
+def tier2_cohort_lines(excluded, observed) -> tuple[str, ...]:
+    """The NAMED lines one cohort renders on the four named surfaces: one per
+    excluded trade (verdict + reason), one per counted trade carrying an
+    observation.  ASCII (they reach the CLI)."""
+    return (
+        tuple(f"tier-2 not counted: trade {tid} {verdict} ({reason})"
+              for tid, verdict, reason in excluded)
+        + tuple(f"tier-2 counted with observation: trade {tid} ({observation})"
+                for tid, observation in observed))
+
+
+def tier2_count_marker(excluded, *, see: str) -> str | None:
+    """RD G-T10-2: the compact marker beside a SHOWN cohort N -- the count and
+    the canonical surface to open; ``unverifiable`` is never merged with
+    ``excluded``; None at zero exclusions."""
+    unverifiable = sum(1 for _tid, verdict, _r in excluded
+                       if verdict == VERDICT_UNVERIFIABLE)
+    stale = len(excluded) - unverifiable
+    parts = ([f"{stale} excluded"] if stale else []) + (
+        [f"{unverifiable} unverifiable"] if unverifiable else [])
+    return f"({', '.join(parts)}: see {see})" if parts else None
+
+
 def tier2_cohort_exclusions(conn: sqlite3.Connection, *, now: datetime,
                             repo_dir: Path | None = None,
                             budget_seconds: float | None = None,
-                            ) -> dict[int, ReplayVerdict]:
-    """The tier-2 rows a cohort read must NOT count, by ``trade_id``, each with
-    its verdict and reason (RD's F10 sub-ruling: excluded and NAMED).
+                            ) -> Tier2CohortRead:
+    """Every tier-2 row's read-time verdict for a cohort read, by ``trade_id``:
+    the rows it must NOT count, each with its verdict and reason (RD's F10
+    sub-ruling: excluded and NAMED), and the admitted rows carrying an
+    observation (CHARC G-T7FE item C).  Its callers are exactly the four
+    cohort readers (CHARC G-T9 item 1, G-T10-1).
 
     ONE ``replay_verdict`` per tier-2 row per call, and ONE resolution of the
     remote ref per call (CHARC G-T9 item 2: one ``rev-parse`` + one reflog
@@ -1269,11 +1330,12 @@ def tier2_cohort_exclusions(conn: sqlite3.Connection, *, now: datetime,
     deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
     rows = _tier2_rows(conn)
     if not rows:
-        return {}
+        return Tier2CohortRead(exclusions={}, observations={})
     repo = EVIDENCE_REPO_DIR if repo_dir is None else repo_dir
     resolution = (None if conn.in_transaction
                   else resolve_remote_ref(repo, deadline=deadline))
     excluded: dict[int, ReplayVerdict] = {}
+    observed: dict[int, ReplayVerdict] = {}
     for row in rows:
         if deadline is not None and time.monotonic() >= deadline:
             result = ReplayVerdict(
@@ -1285,7 +1347,9 @@ def tier2_cohort_exclusions(conn: sqlite3.Connection, *, now: datetime,
                                     deadline=deadline, resolution=resolution)
         if result.verdict != VERDICT_ADMIT:
             excluded[row.trade_id] = result
-    return excluded
+        elif result.derivation_observation:
+            observed[row.trade_id] = result
+    return Tier2CohortRead(exclusions=excluded, observations=observed)
 
 
 # ==========================================================================

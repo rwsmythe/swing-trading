@@ -21,7 +21,8 @@ from __future__ import annotations
 import math
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from swing.config import Config
 from swing.data.db import connect
@@ -43,7 +44,11 @@ from swing.metrics.policy import (
     read_at_trade_time_policy,
 )
 from swing.trades.derived_metrics import initial_risk_per_share
+from swing.trades.frozen_value_evidence import tier2_cohort_lines
 from swing.web.view_models.metrics.shared import BaseLayoutVM
+
+if TYPE_CHECKING:
+    from swing.trades.frozen_value_evidence import Tier2CohortRead
 
 # Per plan §A.11: hypothesis-progress card cap on transition timeline.
 # Newest-first; V1 UI brevity. Prior transitions remain in the audit
@@ -133,6 +138,17 @@ class CohortProgressVM:
     # incidental. PROVENANCE DETAIL only: rendered behind a collapsed
     # affordance, never inline beside the live criterion.
     preregistered_decision_criteria: str | None = None
+    # 22-A2 Task 10 (RD's F10 sub-ruling; CHARC G-T7FE item C): the cohort's
+    # tier-2 trades this read did NOT count, NAMED ``(trade_id, verdict,
+    # reason)``, and the counted ones carrying an observation
+    # ``(trade_id, observation)``.  Empty in the zero-data state.
+    tier2_excluded: tuple[tuple[int, str, str | None], ...] = ()
+    tier2_observed: tuple[tuple[int, str], ...] = ()
+
+    @property
+    def tier2_lines(self) -> tuple[str, ...]:
+        """The named lines the card renders for this cohort."""
+        return tier2_cohort_lines(self.tier2_excluded, self.tier2_observed)
 
     def __post_init__(self) -> None:
         if self.n_closed < 0:
@@ -341,8 +357,12 @@ def _build_cohort_vm(
     conn: sqlite3.Connection,
     *,
     row: tuple,
+    cohort_read: Tier2CohortRead,
 ) -> CohortProgressVM:
-    """Construct a CohortProgressVM from a hypothesis_registry row tuple."""
+    """Construct a CohortProgressVM from a hypothesis_registry row tuple.
+
+    22-A2 Task 10: ``cohort_read`` is the card's ONE tier-2 read; a trade it
+    excludes is not counted and is NAMED (RD's F10 sub-ruling)."""
     (
         hyp_id, name, statement, target_sample_size, decision_criteria,
         status, consecutive_loss_tripwire, absolute_loss_tripwire_pct,
@@ -350,7 +370,8 @@ def _build_cohort_vm(
         preregistered_decision_criteria,
     ) = row
 
-    trades = _list_cohort_trades_sorted(conn, name)
+    in_cohort = _list_cohort_trades_sorted(conn, name)
+    trades = [t for t in in_cohort if t.id not in cohort_read.exclusions]
     classifications: list[str] = []
     legacy_count = 0
     cumulative_R_pct = 0.0  # noqa: N806 spec column name (per spec §3.2)
@@ -416,14 +437,23 @@ def _build_cohort_vm(
         latest_status_changed_at=status_changed_at,
         latest_status_change_reason=status_change_reason,
         preregistered_decision_criteria=preregistered_decision_criteria,
+        tier2_excluded=cohort_read.excluded_among(t.id for t in in_cohort),
+        tier2_observed=cohort_read.observed_among(t.id for t in trades),
     )
 
 
 def build_hypothesis_progress_card_vm(
     *, cfg: Config, conn: sqlite3.Connection | None = None,
+    budget_seconds: float | None = None,
 ) -> HypothesisProgressCardVM:
     """Build the per-cohort governance VM eagerly populating discrepancies
-    field per §A.18."""
+    field per §A.18.
+
+    22-A2 Task 10: ONE tier-2 read per invocation, shared by every cohort;
+    ``budget_seconds`` is the caller's (the card route and the metrics index
+    pass ``WEB_REPLAY_BUDGET_SECONDS``, CHARC G-T10-1 (2))."""
+    from swing.trades.frozen_value_evidence import tier2_cohort_exclusions
+
     own_conn = conn is None
     if own_conn:
         conn = connect(cfg.paths.db_path)
@@ -441,7 +471,10 @@ def build_hypothesis_progress_card_vm(
             "status_change_reason, preregistered_decision_criteria "
             "FROM hypothesis_registry ORDER BY id",
         ).fetchall()
-        cohorts = tuple(_build_cohort_vm(conn, row=r) for r in rows)
+        cohort_read = tier2_cohort_exclusions(
+            conn, now=datetime.now(UTC), budget_seconds=budget_seconds)
+        cohorts = tuple(
+            _build_cohort_vm(conn, row=r, cohort_read=cohort_read) for r in rows)
     finally:
         if own_conn:
             conn.close()

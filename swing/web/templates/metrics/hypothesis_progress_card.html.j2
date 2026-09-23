@@ -33,6 +33,9 @@
       <progress max="{{ cohort.target_sample_size }}" value="{{ cohort.n_closed }}">
         {{ cohort.n_closed }}/{{ cohort.target_sample_size }}
       </progress>
+      {% for line in cohort.tier2_lines %}
+      <p class="muted tier2-cohort-line">{{ line }}</p>
+      {% endfor %}
 
       <p class="cohort-tripwire">
         Consecutive-loss tripwire:

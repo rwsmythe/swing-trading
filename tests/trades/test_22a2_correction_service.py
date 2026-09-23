@@ -395,8 +395,11 @@ def test_a2_74_dry_run_authorizes_as_apply_and_leaves_the_db_identical(
 # REFERENCE to a guarded entry point anywhere under ``swing/``, keyed by its
 # enclosing function.  Task 9 added ``replay_verdict`` (the read-time verdict,
 # one function for every consumer) and ``tier2_cohort_exclusions``, whose
-# caller set is EMPTY until Task 10's four cohort readers land -- each is
-# added here by name when it does.
+# callers are EXACTLY the four P35 cohort readers (CHARC G-T9 item 1 +
+# G-T10-1 (1), Task 10): the breakdown threads its ONE read into every
+# per-hypothesis ``compute_tripwire_status``, which calls only when handed
+# none -- so no fifth caller exists, and a CLI command or web route that
+# shows a cohort N reaches the verdict THROUGH one of the four.
 _EXPECTED_CALLERS: dict[str, set[str]] = {
     "run_preflight": {
         "swing.trades.cohort_provenance_correction:correct_cohort_provenance",
@@ -410,7 +413,13 @@ _EXPECTED_CALLERS: dict[str, set[str]] = {
         "swing.trades.frozen_value_evidence:tier2_cohort_exclusions",
         "swing.trades.cohort_provenance_correction:read_provenance_corrections",
     },
-    "tier2_cohort_exclusions": set(),
+    "tier2_cohort_exclusions": {
+        "swing.recommendations.hypothesis:compute_tripwire_status",
+        "swing.journal.stats:compute_hypothesis_progress_breakdown",
+        "swing.metrics.tier:compute_tier_comparison",
+        "swing.web.view_models.metrics.hypothesis_progress_card:"
+        "build_hypothesis_progress_card_vm",
+    },
 }
 
 

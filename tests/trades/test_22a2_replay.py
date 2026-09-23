@@ -356,7 +356,7 @@ def test_a2_89_one_replay_per_row_and_one_ref_resolution_per_invocation(
 
         monkeypatch.setattr(fve, "replay_verdict", counting)
         counter = _GitCounter(monkeypatch)
-        first = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work)
+        first = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work).exclusions
         assert set(first) == {T25_TRADE_ID, 91, 92}
         for v in first.values():
             assert (v.verdict, v.reason) == ("tier2_evidence_stale",
@@ -370,7 +370,7 @@ def test_a2_89_one_replay_per_row_and_one_ref_resolution_per_invocation(
         calls_first = len(counter.calls)
         # (iii) A SECOND invocation re-resolves: no cache across calls (a
         # cached verdict is a stored grade, F10-shape).
-        second = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work)
+        second = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work).exclusions
         assert set(second) == {T25_TRADE_ID, 91, 92}
         assert len(replays) == 6
         assert _ref_resolutions(counter) == (2, 2)
@@ -446,7 +446,7 @@ def test_the_invocation_resolves_no_ref_under_a_caller_held_transaction(
         counter = _GitCounter(monkeypatch)
         w.conn.execute("BEGIN")
         try:
-            out = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work)
+            out = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work).exclusions
             (report,) = cpc.read_provenance_corrections(w.conn, now=NOW)
         finally:
             w.conn.rollback()
@@ -462,7 +462,8 @@ def test_the_invocation_resolves_no_ref_under_a_caller_held_transaction(
 def test_an_admitted_row_is_not_an_exclusion(tmp_path: Path, ticking_clock) -> None:
     w = _tier2_world(tmp_path)
     try:
-        assert fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work) == {}
+        assert fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work) == (
+            fve.Tier2CohortRead(exclusions={}, observations={}))
     finally:
         w.conn.close()
 
@@ -473,8 +474,9 @@ def test_zero_tier2_rows_make_zero_git_calls(tmp_path: Path, monkeypatch) -> Non
     conn, _ids = build_pre_barrier_world(tmp_path, "empty")
     try:
         counter = _GitCounter(monkeypatch)
-        assert fve.tier2_cohort_exclusions(conn, now=NOW) == {}
-        assert fve.tier2_cohort_exclusions(conn, now=NOW, budget_seconds=0.0) == {}
+        empty = fve.Tier2CohortRead(exclusions={}, observations={})
+        assert fve.tier2_cohort_exclusions(conn, now=NOW) == empty
+        assert fve.tier2_cohort_exclusions(conn, now=NOW, budget_seconds=0.0) == empty
         assert counter.calls == []
     finally:
         conn.close()
@@ -495,12 +497,13 @@ def test_an_exhausted_budget_excludes_every_unverdicted_row_by_name(
         monkeypatch.setattr(fve, "_tier2_rows", lambda conn: [w.row, other])
         counter = _GitCounter(monkeypatch)
         out = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work,
-                                          budget_seconds=0.0)
+                                          budget_seconds=0.0).exclusions
         assert set(out) == {T25_TRADE_ID, 26}
         for v in out.values():
             assert (v.verdict, v.reason) == ("tier2_unverifiable", "web_budget_exhausted")
         assert counter.calls == []
-        assert fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work) == {}
+        assert fve.tier2_cohort_exclusions(
+            w.conn, now=NOW, repo_dir=w.git.work).exclusions == {}
     finally:
         w.conn.close()
 
@@ -517,7 +520,7 @@ def test_the_budget_is_checked_between_git_calls_not_only_between_rows(
         counter = _GitCounter(monkeypatch, delay=1.0)
         started = time.monotonic()
         out = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work,
-                                          budget_seconds=0.5)
+                                          budget_seconds=0.5).exclusions
         elapsed = time.monotonic() - started
         assert (out[T25_TRADE_ID].verdict, out[T25_TRADE_ID].reason) == (
             "tier2_unverifiable", "web_budget_exhausted")

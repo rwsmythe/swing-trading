@@ -4943,6 +4943,7 @@ def hypothesis_list_cmd(ctx: click.Context) -> None:
     from swing.data.db import connect
     from swing.data.repos.hypothesis import list_hypotheses
     from swing.recommendations.hypothesis import compute_tripwire_status
+    from swing.trades.frozen_value_evidence import tier2_cohort_lines
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
@@ -4960,6 +4961,10 @@ def hypothesis_list_cmd(ctx: click.Context) -> None:
                 f"{tw.current_sample}/{h.target_sample_size:<7} "
                 f"{tw_label:<9} {h.name}"
             )
+            # 22-A2 Task 10 (CHARC G-T10-1 (3)): the cohort's tier-2 names,
+            # ONCE, under ITS row -- an exclusion is a fact about that N.
+            for named in tier2_cohort_lines(tw.tier2_excluded, tw.tier2_observed):
+                click.echo(f"    {named}")
     finally:
         conn.close()
 
@@ -4972,6 +4977,10 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
     from swing.data.db import connect
     from swing.data.repos.hypothesis import get_hypothesis
     from swing.recommendations.hypothesis import compute_tripwire_status
+    from swing.trades.frozen_value_evidence import (
+        tier2_cohort_lines,
+        tier2_count_marker,
+    )
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
@@ -4990,7 +4999,13 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
     click.echo(f"  Status:           {h.status}")
     click.echo(f"  Statement:        {h.statement}")
     click.echo(f"  Target sample:    {h.target_sample_size}")
-    click.echo(f"  Current sample:   {tw.current_sample}")
+    # 22-A2 Task 10: the shown N carries RD's marker (G-T10-2), and the
+    # cohort's named lines print below it (CHARC G-T10-1 (4)).
+    marker = tier2_count_marker(tw.tier2_excluded, see="hypothesis list")
+    click.echo(f"  Current sample:   {tw.current_sample}"
+               + (f" {marker}" if marker else ""))
+    for named in tier2_cohort_lines(tw.tier2_excluded, tw.tier2_observed):
+        click.echo(f"    {named}")
     click.echo(f"  Decision criteria:{h.decision_criteria}")
     # D29 rider (codex-auto-review): this is the FOURTH criterion-rendering
     # surface and the only CLI one. The preserved pre-registered original is

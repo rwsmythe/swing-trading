@@ -26,6 +26,7 @@ from swing.metrics.funnel import TREND_MIN_RUNS as _FUNNEL_TREND_MIN_RUNS
 from swing.metrics.honesty import BootstrapCI, SuppressedMetric
 from swing.metrics.process_grade_trend import compute_process_grade_trend
 from swing.metrics.tier import APLUS_COHORT
+from swing.trades.frozen_value_evidence import WEB_REPLAY_BUDGET_SECONDS
 from swing.web.view_models.metrics.capital_friction import build_capital_friction_vm
 from swing.web.view_models.metrics.deviation_outcome import build_deviation_outcome_vm
 from swing.web.view_models.metrics.hypothesis_progress_card import (
@@ -249,7 +250,9 @@ def _extract_trade_process(cfg: Config, conn, session_date: str) -> _OverviewCar
 
 
 def _extract_hypothesis_progress(cfg: Config, conn, session_date: str) -> _OverviewCard:
-    vm = build_hypothesis_progress_card_vm(cfg=cfg, conn=conn)
+    # 22-A2 Task 10 (CHARC G-T10-1 (2)): a WEB caller -> the web budget.
+    vm = build_hypothesis_progress_card_vm(
+        cfg=cfg, conn=conn, budget_seconds=WEB_REPLAY_BUDGET_SECONDS)
     n = len(vm.cohorts)
     if n == 0:
         return _OverviewCard(headline_suppressed_text="no registered cohorts")
