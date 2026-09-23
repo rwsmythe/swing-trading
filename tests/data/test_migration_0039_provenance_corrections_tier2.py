@@ -813,3 +813,103 @@ def test_g_neg_interval_admits_exactly_one_more_typed_key(tmp_path: Path) -> Non
             iv.__setitem__("record_position", "inside_coverage"))))
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# G-T7F + G-T7F-AMEND (CHARC, 2026-09-23): the grammar/derivation split.  The
+# blob carries ``derivation_version``; SQL asserts it is TEXT and nothing about
+# its value (a derivation change is invisible to SQL by construction).  Each
+# clause is proved to be the one refusing by re-creating the HEAD trigger
+# with ONLY that clause cut (a test-world instrument, as the G-NEG belt).
+# ---------------------------------------------------------------------------
+_DV_TYPE_CLAUSE = ("             AND json_type(NEW.cited_frozen_value_evidence_json, "
+                   "'$.derivation_version') = 'text'\n")
+_DV_CLOSED_ENTRY = "'$.evidence_version', '$.derivation_version',"
+
+
+def _recreate_citation_with(conn: sqlite3.Connection, old: str, new: str) -> None:
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+                       "AND name = ?", (CITATION,)).fetchone()[0]
+    assert sql.count(old) == 1, old
+    conn.execute(f"DROP TRIGGER {CITATION}")
+    conn.execute(sql.replace(old, new))
+    conn.commit()
+
+
+def _with_seventh(payload: dict, fn) -> dict:
+    blob = json.loads(payload[PROVENANCE_TIER2_EVIDENCE_FIELD])
+    fn(blob)
+    return {**payload, PROVENANCE_TIER2_EVIDENCE_FIELD: json.dumps(blob)}
+
+
+def test_g_t7f_the_truthful_row_carries_the_derivation_version(tmp_path: Path) -> None:
+    """The literal blob carries the key; blob_closed's +1 entry is what admits
+    it (cut the entry -> the SAME truthful row is refused as an extra key)."""
+    from swing.trades.frozen_value_evidence import FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION
+
+    conn, payload, _ids = truthful_tier2_payload(tmp_path)
+    try:
+        blob = json.loads(payload[PROVENANCE_TIER2_EVIDENCE_FIELD])
+        assert blob["derivation_version"] == FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION
+        assert not _refused(conn, payload)
+        _recreate_citation_with(conn, _DV_CLOSED_ENTRY, "'$.evidence_version',")
+        assert _refused(conn, payload)
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(("label", "mutate"), [
+    ("absent", lambda b: b.pop("derivation_version")),
+    ("integer", lambda b: b.__setitem__("derivation_version", 1)),
+    ("null", lambda b: b.__setitem__("derivation_version", None)),
+    ("object", lambda b: b.__setitem__("derivation_version", {"v": "x"})),
+])
+def test_g_t7f_an_absent_or_non_text_derivation_version_aborts(
+        tmp_path: Path, label: str, mutate) -> None:
+    """ABORT on the raw INSERT; ACCEPTED with the ``derivation_version`` type
+    clause cut.  NOTE the attribution: blob_closed (``json_remove(...) = '{}'``)
+    refuses an EXTRA key and passes an ABSENT one, so absence aborts on the
+    type clause -- whose ``json_type`` of a missing path is NULL, collapsed to a
+    refusal by the enclosing COALESCE (the NULL-WHEN gotcha)."""
+    conn, payload, _ids = truthful_tier2_payload(tmp_path)
+    try:
+        bad = _with_seventh(payload, mutate)
+        assert _refused(conn, bad), label
+        assert not _refused(conn, payload)
+        _recreate_citation_with(conn, _DV_TYPE_CLAUSE, "")
+        assert not _refused(conn, bad), label
+    finally:
+        conn.close()
+
+
+def test_g_t7f_sql_asserts_the_derivation_version_type_and_never_its_value() -> None:
+    code = _strip_comments(head_create_statement(CITATION)[1])
+    assert code.count("'$.derivation_version'") == 2
+    assert _DV_CLOSED_ENTRY in code
+    assert _DV_TYPE_CLAUSE.strip() in code
+    assert "json_extract(NEW.cited_frozen_value_evidence_json, '$.derivation_version')" \
+        not in code
+
+
+def test_g_t7f_blob_closed_path_list_equals_the_python_roster() -> None:
+    """The #11 comparator for the seventh blob's CLOSED roster: the trigger's
+    ``json_remove`` path list IS the Python ``FROZEN_VALUE_BLOB_KEYS``."""
+    from swing.trades.frozen_value_evidence import FROZEN_VALUE_BLOB_KEYS
+
+    code = _strip_comments(head_create_statement(CITATION)[1])
+    block = re.search(
+        r"json_remove\(NEW\.cited_frozen_value_evidence_json,(.*?)\)\s*=\s*'\{\}'",
+        code, re.S)
+    assert block, "could not locate the blob_closed path list"
+    paths = re.findall(r"'\$\.([a-z_]+)'", block.group(1))
+    assert paths == list(FROZEN_VALUE_BLOB_KEYS)
+    assert len(paths) == 29 and "derivation_version" in paths
+
+
+def test_g_t7f_amend_the_header_declares_the_grammar_bump_obligation() -> None:
+    text = M0039.read_text(encoding="utf-8")
+    header = text[: text.index("\nBEGIN;")]
+    for needle in ("GRAMMAR-BUMP OBLIGATION", "FROZEN_VALUE_EVIDENCE_VERSION",
+                   "PRE-EXISTING", "per-version recompute adapter",
+                   "declared exclusion", "FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION"):
+        assert needle in header, needle

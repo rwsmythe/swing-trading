@@ -2993,6 +2993,10 @@ def journal_provenance_corrections_cmd(ctx, trade_id):
                 f"{v.evaluated_at}, origin/main "
                 f"{v.resolved_origin_main_sha or 'unresolved'}, barrier "
                 f"installed at read {v.barrier_installed_at_read}")
+            if v.derivation_observation is not None:
+                # G-T7F-AMEND: a moved derivation version is CONTEXT beside
+                # the verdict, on its own line; never persisted.
+                click.echo(f"  observation: {v.derivation_observation}")
         click.echo(f"  applied {c.applied_value_json}")
         click.echo(f"  reason  {c.correction_reason}")
         if report.drift_lines:

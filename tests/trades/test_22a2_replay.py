@@ -463,3 +463,151 @@ def test_a2_90_the_drift_reader_renders_the_read_time_verdict_for_tier2_only(
     assert lines[0].startswith("  read-time verdict: ADMIT evaluated_at ")
     assert f"origin/main {tip.decode('ascii').strip()}" in lines[0]
     assert lines[0].endswith("barrier installed at read True")
+
+
+# ------------------------------------------------------ G-T7F-AMEND (CHARC; RD's dissent)
+# A moved DERIVATION version is CONTEXT DRIFT, never divergence: the verdict
+# follows the RECOMPUTATION under current code; the moved version is an
+# OBSERVATION beside it, and it is on the reason line of every key mismatch.
+
+OLD_DERIVATION = "2026-09-01.1"
+
+
+def _stored_under(w: _World, version: str, **forge):
+    """The row as if written under an OLDER derivation version (and, optionally,
+    one verdict-bearing value forged)."""
+    blob = json.loads(w.row.cited_frozen_value_evidence_json)
+    blob["derivation_version"] = version
+    for dotted, value in forge.items():
+        node = blob
+        *head, last = dotted.split(".")
+        for part in head:
+            node = node[part]
+        node[last] = value
+    return dataclasses.replace(w.row, cited_frozen_value_evidence_json=json.dumps(blob))
+
+
+def _moved(stored: str) -> str:
+    return (f"derivation_version_moved (stored {stored}, "
+            f"current {fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION})")
+
+
+def test_g_t7f_amend_derivation_bumped_keys_equal_admits_with_the_observation(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """PRE (a version-only-stale impl): ``tier2_evidence_stale`` because the
+    version moved.  POST: ADMIT -- the fresh recomputation under current code
+    agrees on every verdict-bearing key -- with the observation beside it."""
+    w = _tier2_world(tmp_path)
+    try:
+        stored = json.loads(w.row.cited_frozen_value_evidence_json)
+        assert stored["derivation_version"] == fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION
+        assert OLD_DERIVATION != fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION
+        v = _replay(w, _stored_under(w, OLD_DERIVATION))
+        assert (v.verdict, v.reason) == ("ADMIT", None), v
+        assert v.derivation_observation == _moved(OLD_DERIVATION)
+    finally:
+        w.conn.close()
+
+
+def test_g_t7f_amend_derivation_bumped_one_key_differs_names_both(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """PRE (a keys-only impl): the reason names the key and omits the version.
+    POST: stale, naming BOTH the mismatched key AND the moved version."""
+    w = _tier2_world(tmp_path)
+    try:
+        row = _stored_under(w, OLD_DERIVATION, **{
+            "interval.endpoints.fire_hi.raw": "2026-08-07T17:39:08"})
+        v = _replay(w, row)
+        assert v.verdict == "tier2_evidence_stale"
+        assert v.reason == ("interval.endpoints.fire_hi.raw_mismatch; "
+                            + _moved(OLD_DERIVATION))
+        assert v.derivation_observation == _moved(OLD_DERIVATION)
+    finally:
+        w.conn.close()
+
+
+def test_g_t7f_amend_a_moved_version_is_on_every_stale_reason_line(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """The encoding of "the moved version is always on the reason line": a
+    CRITERION refusal under a moved derivation version names it too (a code
+    change can never read as an evidence change).  The observation rides
+    beside an unverifiable verdict without entering its reason."""
+    w = _tier2_world(tmp_path)
+    try:
+        row = _stored_under(w, OLD_DERIVATION)
+        w.git.rewrite_remote_dropping(w.sha)
+        v = _replay(w, row)
+        assert v.verdict == "tier2_evidence_stale"
+        assert v.reason == ("criterion 1: not_ancestor_of_origin_main; "
+                            + _moved(OLD_DERIVATION))
+        git(w.git.work, "update-ref", "-d", "refs/remotes/origin/main")
+        v = _replay(w, row)
+        assert v.verdict == "tier2_unverifiable"
+        assert "derivation_version_moved" not in v.reason
+        assert v.derivation_observation == _moved(OLD_DERIVATION)
+    finally:
+        w.conn.close()
+
+
+def test_g_t7f_amend_derivation_unchanged_carries_no_observation(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """The counterfactual: an unmoved version is ADMIT with NO observation, and
+    a key mismatch under it names the key alone (A2-86's reason, unchanged)."""
+    w = _tier2_world(tmp_path)
+    try:
+        v = _replay(w)
+        assert (v.verdict, v.reason, v.derivation_observation) == ("ADMIT", None, None)
+        current = fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION
+        v = _replay(w, _stored_under(w, current, **{
+            "interval.endpoints.fire_hi.raw": "2026-08-07T17:39:08"}))
+        assert v.reason == "interval.endpoints.fire_hi.raw_mismatch"
+        assert v.derivation_observation is None
+    finally:
+        w.conn.close()
+
+
+def test_g_t7f_amend_no_evidence_version_moved_reason_exists_anywhere() -> None:
+    """G-T7F renamed G-T7 Q2's reason and the AMEND made it an observation: a
+    moved GRAMMAR version cannot reach replay (the trigger refuses the write)."""
+    swing_root = Path(fve.__file__).resolve().parents[1]
+    hits = [str(path) for path in swing_root.rglob("*.py")
+            if "evidence_version_moved" in path.read_bytes().decode("utf-8")]
+    assert hits == []
+    assert "derivation_observation" in {f.name for f in dataclasses.fields(fve.ReplayVerdict)}
+    assert dataclasses.fields(fve.ReplayVerdict)[-1].name == "derivation_observation"
+
+
+def test_g_t7f_amend_the_drift_reader_renders_the_observation_on_its_own_line(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The observation is rendered on ITS OWN line (A2-90 pins the verdict
+    line's ending); absent when the version has not moved."""
+    from swing.cli import main
+    from tests.cli.test_correct_cohort_provenance_command import _t25_world
+
+    runner, argv, _db, evidence = _t25_world(tmp_path / "t2", monkeypatch)
+    r = runner.invoke(main, [*argv, "--reason", "tier-2", "--frozen-value-evidence",
+                             str(evidence)])
+    assert r.exit_code == 0, r.output
+    read = [argv[0], argv[1], "journal", "provenance-corrections"]
+    r = runner.invoke(main, read)
+    assert r.exit_code == 0, r.output
+    assert "derivation_version_moved" not in r.output
+    written = fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION
+    monkeypatch.setattr(fve, "FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION", "2099-01-01.1")
+    r = runner.invoke(main, read)
+    assert r.exit_code == 0, r.output
+    r.output.encode("ascii")
+    lines = r.output.splitlines()
+    (verdict,) = [ln for ln in lines if "read-time verdict" in ln]
+    assert verdict.startswith("  read-time verdict: ADMIT evaluated_at ")
+    assert verdict.endswith("barrier installed at read True")
+    assert "derivation_version_moved" not in verdict
+    observed = [ln for ln in lines if "derivation_version_moved" in ln]
+    assert observed == [
+        f"  observation: derivation_version_moved (stored {written}, current 2099-01-01.1)"]
+    assert lines.index(observed[0]) == lines.index(verdict) + 1

@@ -52,6 +52,23 @@
 -- seventh column's data has nowhere to go. A reverse is itself a new numbered
 -- migration, never a hand edit.
 --
+-- THE GRAMMAR-BUMP OBLIGATION (CHARC G-T7F-AMEND, RD's second facet; D60).
+-- The seventh blob carries TWO versions. `$.evidence_version` is the blob's
+-- GRAMMAR (the key roster, the types, the bindings) and is pinned by LITERAL
+-- in the citation trigger below, mirroring the Python
+-- FROZEN_VALUE_EVIDENCE_VERSION; `$.derivation_version` is the version of the
+-- CODE the values are a function of (FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION,
+-- bound to an AST digest by test) and is typed TEXT here, never bound, so a
+-- derivation bump needs NO migration. A FUTURE MIGRATION THAT BUMPS THE
+-- GRAMMAR VERSION MUST DECLARE, AS PART OF THAT MIGRATION, HOW THE PRE-EXISTING
+-- `latch_ladder_tier2` ROWS REPLAY: EITHER a per-version recompute adapter
+-- (the read-time replay re-derives an old-grammar row under its own grammar),
+-- OR a declared exclusion with its reason (those rows read excluded and named,
+-- never admitted on the stored grade). The composition that migration's gate
+-- reads is CODE x THE LIVE ROWS, not only CODE x THE LIVE SCHEMA: the trigger
+-- guards only the rows written after it, and the rows already written are
+-- replayed by code that no longer speaks their grammar.
+--
 -- THE D51 MANIFEST DIFF (condition 4) reads exactly FOUR changed line pairs --
 -- `# schema_version`, `table provenance_corrections`, and the two changed
 -- triggers -- and ZERO deletions. Any other changed or deleted line is an
@@ -1941,7 +1958,8 @@ FOR EACH ROW WHEN NOT (
              -- TIER2-PREDICATE blob_closed
              json_type(NEW.cited_frozen_value_evidence_json) = 'object'
              AND json_remove(NEW.cited_frozen_value_evidence_json,
-                 '$.evidence_version', '$.ruling_citation', '$.verification_method',
+                 '$.evidence_version', '$.derivation_version',
+                 '$.ruling_citation', '$.verification_method',
                  '$.evaluated_at', '$.artifact_path', '$.artifact_commit_sha',
                  '$.quoted_text', '$.quoted_ticker_text', '$.quoted_action_session_text',
                  '$.quoted_pivot_text', '$.quoted_invalidation_text', '$.live_pivot_raw',
@@ -1954,6 +1972,11 @@ FOR EACH ROW WHEN NOT (
              -- TIER2-PREDICATE evidence_version
              AND json_type(NEW.cited_frozen_value_evidence_json, '$.evidence_version') = 'text'
              AND json_extract(NEW.cited_frozen_value_evidence_json, '$.evidence_version') = '2026-09-23.1'
+             -- TIER2-PREDICATE derivation_version
+             -- The DERIVATION version (CHARC G-T7F item 3 (B)): TEXT, and nothing
+             -- about its value. A derivation change is invisible to SQL by
+             -- construction; the read-time replay compares it, as an observation.
+             AND json_type(NEW.cited_frozen_value_evidence_json, '$.derivation_version') = 'text'
              -- TIER2-PREDICATE attestation_texts
              AND json_type(NEW.cited_frozen_value_evidence_json, '$.ruling_citation') = 'text'
              AND json_type(NEW.cited_frozen_value_evidence_json, '$.verification_method') = 'text'

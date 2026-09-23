@@ -36,10 +36,26 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-# The seventh-column blob's own version (``$.evidence_version`` of
-# ``cited_frozen_value_evidence_json``), mirrored by migration 0039's citation
-# trigger literal.  A drift test reads the literal out of the HEAD trigger.
+# CHARC G-T7F item 3: TWO versions, because the blob carries two quantities.
+#
+# (A) The GRAMMAR version -- ``$.evidence_version`` of
+# ``cited_frozen_value_evidence_json``: the key roster, the types, the
+# bindings.  Migration 0039's citation trigger pins it by LITERAL (a drift test
+# reads the literal out of the HEAD trigger), so it moves only with a trigger
+# edit, which is a migration by nature -- and that migration must DECLARE how
+# the rows already written replay (0039's reversibility header, D60).
 FROZEN_VALUE_EVIDENCE_VERSION = "2026-09-23.1"
+
+# (B) The DERIVATION version -- ``$.derivation_version``: the code the blob's
+# values are a function of.  Bound to the AST digest of that code through
+# ``FROZEN_VALUE_EVIDENCE_HISTORY`` (bottom of this module); a behaviour edit
+# to any member fails the suite until this moves.  SQL asserts only that the
+# stored value is TEXT (a derivation change is invisible to SQL by
+# construction), and the read-time replay compares it to this constant as an
+# OBSERVATION, never as a verdict (G-T7F-AMEND).  Deliberately a DIFFERENT
+# string from (A), so a builder writing one constant under the other's key is
+# visible to every literal comparison.
+FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION = "2026-09-23.2"
 
 # Every git call's own timeout (seconds).  The replay uses the same name.
 GIT_TIMEOUT_SECONDS = 10.0
@@ -103,8 +119,9 @@ CRITERION3_FIELDS: tuple[str, ...] = ("ticker", "action_session", "pivot", "inva
 
 # The seventh-column blob's CLOSED key roster (plan section 2), in order.
 FROZEN_VALUE_BLOB_KEYS: tuple[str, ...] = (
-    "evidence_version", "ruling_citation", "verification_method", "evaluated_at",
-    "artifact_path", "artifact_commit_sha", "quoted_text", "quoted_ticker_text",
+    "evidence_version", "derivation_version", "ruling_citation",
+    "verification_method", "evaluated_at", "artifact_path", "artifact_commit_sha",
+    "quoted_text", "quoted_ticker_text",
     "quoted_action_session_text", "quoted_pivot_text", "quoted_invalidation_text",
     "live_pivot_raw", "live_invalidation_raw", "pivot_equal_at_dp",
     "invalidation_equal_at_dp", "compare_dp", "author_instant", "author_date_et",
@@ -695,6 +712,7 @@ def _build_frozen_value_blob(facts: ArtifactFacts, ctx: dict, *, found: dict,
     sel = facts.selection
     blob = {
         "evidence_version": FROZEN_VALUE_EVIDENCE_VERSION,
+        "derivation_version": FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION,
         "ruling_citation": RULING_CITATION,
         "verification_method": VERIFICATION_METHOD,
         "evaluated_at": read_at,
@@ -760,6 +778,11 @@ def _tp_blob_closed(blob, ctx, **_):
 
 def _tp_evidence_version(blob, ctx, **_):
     return blob["evidence_version"] == FROZEN_VALUE_EVIDENCE_VERSION
+
+
+def _tp_derivation_version(blob, ctx, **_):
+    """TYPE ONLY, as the trigger: the value is the replay's to compare."""
+    return _is_text(blob["derivation_version"])
 
 
 _ATTESTATION_TEXT_KEYS = (
@@ -931,7 +954,8 @@ def _tp_record_position_consistent(blob, ctx, **_):
 # The blob predicates' mirrors, in the trigger's order.  A tuple of NAMED
 # functions so the A2-60 walk sees each one referenced from evaluate_conjunction.
 _BLOB_MIRRORS = (
-    _tp_seventh_present, _tp_blob_closed, _tp_evidence_version, _tp_attestation_texts,
+    _tp_seventh_present, _tp_blob_closed, _tp_evidence_version, _tp_derivation_version,
+    _tp_attestation_texts,
     _tp_evaluated_at_is_applied_at, _tp_artifact_commit_sha_shape,
     _tp_quoted_text_one_line, _tp_quoted_ticker, _tp_quoted_action_session,
     _tp_quoted_pivot, _tp_quoted_invalidation, _tp_live_pivot_raw,
@@ -983,13 +1007,18 @@ class ReplayVerdict:
     """One row's read-time verdict.  ``reason`` is None iff ``ADMIT``.
     ``resolved_origin_main_sha`` is None when git never resolved the ref;
     ``barrier_installed_at_read`` is None when the row was never replayed (an
-    exhausted budget).  Nothing here is persisted."""
+    exhausted budget).  ``derivation_observation`` is
+    ``derivation_version_moved (stored X, current Y)`` when the row's stored
+    ``derivation_version`` is not the current constant, else None: CONTEXT
+    beside the verdict, never the verdict (G-T7F-AMEND).  Nothing here is
+    persisted."""
 
     verdict: str
     reason: str | None
     evaluated_at: str
     resolved_origin_main_sha: str | None
     barrier_installed_at_read: bool | None
+    derivation_observation: str | None = None
 
 
 _ABSENT = object()
@@ -1043,7 +1072,14 @@ def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
     descendant count, ref age, the resolved sha, the committer instant, the
     segments -- are never compared (doctrine #6, E-15).  The barrier state is
     an observation returned beside the verdict (A2-88), and it is the
-    ``barrier_installed`` the recomputation uses.  ``deadline`` is the
+    ``barrier_installed`` the recomputation uses.
+
+    A moved DERIVATION version is CONTEXT DRIFT, never divergence
+    (G-T7F-AMEND, RD's doctrine #6): the verdict follows the RECOMPUTATION
+    under the current code -- every key equal is ADMIT -- and the move is
+    returned beside it as ``derivation_observation``.  When the verdict is
+    stale, the moved version is appended to the reason line, so a code change
+    can never read as an evidence change.  ``deadline`` is the
     caller's budget (``tier2_cohort_exclusions``); ``None`` waits out every
     call's own timeout.
     """
@@ -1057,11 +1093,15 @@ def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
     evaluated_at = now.isoformat()
     sha: str | None = None
     barrier: bool | None = None
+    observation: str | None = None
 
     def verdict(kind: str, reason: str | None) -> ReplayVerdict:
+        if kind == VERDICT_STALE and observation is not None:
+            reason = observation if reason is None else f"{reason}; {observation}"
         return ReplayVerdict(verdict=kind, reason=reason, evaluated_at=evaluated_at,
                              resolved_origin_main_sha=sha,
-                             barrier_installed_at_read=barrier)
+                             barrier_installed_at_read=barrier,
+                             derivation_observation=observation)
 
     try:
         barrier = barrier_installed(conn)
@@ -1071,6 +1111,11 @@ def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
             stored = json.loads(row.cited_frozen_value_evidence_json)
         except (TypeError, ValueError):
             stored = None
+        if isinstance(stored, dict):
+            held = stored.get("derivation_version")
+            current = FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION
+            if held != current:
+                observation = f"derivation_version_moved (stored {held}, current {current})"
         selection = _stored_selection(stored)
         if selection is None:
             return verdict(VERDICT_STALE, REASON_STORED_EVIDENCE_MALFORMED)
@@ -1161,21 +1206,28 @@ def tier2_cohort_exclusions(conn: sqlite3.Connection, *, now: datetime,
 
 
 # ==========================================================================
-# THE EVIDENCE-SIDE DEPENDENCY PIN (CHARC G-T7 Q2).  ``FROZEN_VALUE_EVIDENCE_VERSION``
-# is BOUND to a digest of the source of every function the seventh-column blob
-# is a function of, through the pattern ``DERIVATION_RULE_HISTORY`` runs for
-# ``_derive``: an append-only ``(version, digest)`` history whose CURRENT pair
-# a test asserts, so an edit to any member without a version bump FAILS THE
-# SUITE (22A-R14-01's lesson, met on this arc's own version constant).
+# THE EVIDENCE-SIDE DEPENDENCY PIN (CHARC G-T7 Q2, as corrected by G-T7F).
+# ``FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION`` is BOUND to a digest of every
+# function the seventh-column blob is a function of, through the pattern
+# ``DERIVATION_RULE_HISTORY`` runs for ``_derive``: an append-only
+# ``(version, digest)`` history whose CURRENT pair a test asserts, so a
+# behaviour edit to any member without a version bump FAILS THE SUITE
+# (22A-R14-01's lesson, met on this arc's own version constant).
 #
-# MEMBERSHIP IS COMPUTED, NOT HAND-LISTED.  The ruling names six members; they
-# are the ROOTS below, and the digest covers their STATIC REFERENCE CLOSURE:
-# every module-level function, class and constant a member names, followed
-# transitively, including into other ``swing`` modules (a module-level
-# ``from swing... import`` or one inside a function body).  A hand-enumerated
-# manifest is the instrument whose holes 22-A's own derivation pin was widened
-# three times to close; a walk cannot forget a helper.  Stdlib and third-party
-# names are outside the walk.  The walk fails LOUD on a name it cannot place.
+# MEMBERSHIP IS COMPUTED, NOT HAND-LISTED.  The ROOTS below are the members the
+# rulings name (G-T7 Q2's six + G-T7F item 2's ``read_artifact_facts``); the
+# digest covers their STATIC REFERENCE CLOSURE: every module-level function,
+# class and constant a member names, followed transitively, including into
+# other ``swing`` modules (a module-level ``from swing... import`` or one
+# inside a function body).  Stdlib and third-party names are outside the walk.
+# The walk fails LOUD on a name it cannot place.
+#
+# THE DIGEST HASHES BEHAVIOUR, NOT TEXT (G-T7F item 1).  A function or class
+# contributes its ``ast.dump`` with every docstring node removed; a constant
+# contributes the ``ast.dump`` of its assigned value.  Comments never reach the
+# AST and ``ast.dump`` carries no line numbers, so a docstring, comment or
+# layout edit moves nothing -- D59's lesson (comments are not behaviour) on the
+# one instrument that would otherwise force a version bump over prose.
 # ==========================================================================
 
 FROZEN_VALUE_EVIDENCE_DIGEST_ROOTS: tuple[str, ...] = (
@@ -1185,26 +1237,13 @@ FROZEN_VALUE_EVIDENCE_DIGEST_ROOTS: tuple[str, ...] = (
     f"{__name__}:find_token",
     f"{__name__}:evaluate_conjunction",
     f"{__name__}:_build_frozen_value_blob",
+    f"{__name__}:read_artifact_facts",
 )
 
-# The version is what the digest PINS, never an input to it.
-_DIGEST_EXCLUDED: frozenset[str] = frozenset({f"{__name__}:FROZEN_VALUE_EVIDENCE_VERSION"})
-
-
-def _canonical(obj: object) -> str:
-    """A rendering that is a function of the VALUE, not of the process: sets and
-    dicts are sorted (``repr(frozenset)`` follows PYTHONHASHSEED), and a callable
-    renders as its qualified name (its ``repr`` carries a memory address)."""
-    if callable(obj) and hasattr(obj, "__qualname__"):
-        return f"<{getattr(obj, '__module__', '?')}:{obj.__qualname__}>"
-    if isinstance(obj, (set, frozenset)):
-        return f"{type(obj).__name__}({sorted(_canonical(x) for x in obj)!r})"
-    if isinstance(obj, dict):
-        items = sorted(f"{_canonical(k)}: {_canonical(v)}" for k, v in obj.items())
-        return "{" + ", ".join(items) + "}"
-    if isinstance(obj, (tuple, list)):
-        return f"{type(obj).__name__}({[_canonical(x) for x in obj]!r})"
-    return repr(obj)
+# The derivation version is what the digest PINS, never an input to it.  The
+# GRAMMAR version is an ordinary member: the builder emits it.
+_DIGEST_EXCLUDED: frozenset[str] = frozenset(
+    {f"{__name__}:FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION"})
 
 
 def _module_definitions(module: object) -> tuple[dict[str, object], dict[str, str]]:
@@ -1231,13 +1270,33 @@ def _module_definitions(module: object) -> tuple[dict[str, object], dict[str, st
     return defs, imported
 
 
+def _member_body(node: object) -> str:
+    """One member's digested BEHAVIOUR: a function's or class's ``ast.dump``
+    with every docstring node removed (its own and any nested definition's),
+    or a constant's assigned value's ``ast.dump``.  Works on a COPY; the
+    parsed tree is never mutated."""
+    import ast
+    import copy
+
+    if isinstance(node, (ast.Assign, ast.AnnAssign)):
+        if node.value is None:
+            raise LookupError("digest closure: an annotation-only name has no value")
+        return ast.dump(node.value)
+    clone = copy.deepcopy(node)
+    for sub in ast.walk(clone):  # type: ignore[arg-type]
+        if (isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and sub.body and isinstance(sub.body[0], ast.Expr)
+                and isinstance(sub.body[0].value, ast.Constant)
+                and isinstance(sub.body[0].value.value, str)):
+            sub.body = sub.body[1:]
+    return ast.dump(clone)  # type: ignore[arg-type]
+
+
 def frozen_value_evidence_digest_parts() -> list[tuple[str, str, str]]:
     """``(kind, "module:attr", body)`` for every member of the closure, sorted by
-    spec.  Functions and classes contribute their SOURCE; constants a canonical
-    rendering of their value."""
+    spec.  The body is ``_member_body``'s -- behaviour, never text."""
     import ast
     import importlib
-    import inspect
 
     cache: dict[str, tuple[dict[str, object], dict[str, str]]] = {}
     seen: set[str] = set()
@@ -1259,14 +1318,13 @@ def frozen_value_evidence_digest_parts() -> list[tuple[str, str, str]]:
                 stack.append(imported[attr])
                 continue
             raise LookupError(f"digest closure: {spec} is not a module-level definition")
-        obj = getattr(module, attr)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            kind, body = "function", inspect.getsource(obj)
+            kind = "function"
         elif isinstance(node, ast.ClassDef):
-            kind, body = "class", inspect.getsource(obj)
+            kind = "class"
         else:
-            kind, body = "constant", _canonical(obj)
-        parts.append((kind, spec, body))
+            kind = "constant"
+        parts.append((kind, spec, _member_body(node)))
         for sub in ast.walk(node):  # type: ignore[arg-type]
             if isinstance(sub, ast.Name):
                 if sub.id in defs:
@@ -1293,12 +1351,16 @@ def frozen_value_evidence_digest() -> str:
 
 
 # APPEND-ONLY.  A behaviour change to any member appends a new pair and moves
-# ``FROZEN_VALUE_EVIDENCE_VERSION`` with it in the SAME commit -- and the 0039
-# citation trigger binds ``$.evidence_version`` to that literal, so a bump is a
-# deliberate act that also moves the trigger.  A stored blob keeps the version
-# it was written under; the replay names a moved version as its own reason
-# (``evidence_version_moved``, Task 9).
+# ``FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION`` with it in the SAME commit -- NO
+# migration: SQL types the stored value and never binds it.  A stored blob
+# keeps the derivation version it was written under; the replay returns a
+# moved one as an observation beside its verdict (G-T7F-AMEND).
+#
+# SEEDED 2026-09-23 on the AST digest (G-T7F).  The first entry is ``.2``, not
+# ``.1``: ``2026-09-23.1`` is the GRAMMAR version's string, and it was the
+# version this history's earlier source-text pair carried on this branch
+# (``ee157a28``) -- no version string is ever re-bound to a second digest.
 FROZEN_VALUE_EVIDENCE_HISTORY: tuple[tuple[str, str], ...] = (
-    ("2026-09-23.1",
-     "23893a66d73f0a30529eaa7f458e136bd296b1c5b017d277318526eff7cbdb31"),
+    ("2026-09-23.2",
+     "e098e9cddd4327b545dac89dbc7f017442f016bf9f82c5b9731d4b815fec1c1b"),
 )

@@ -133,7 +133,9 @@ def test_a2_42_trade25_admits_and_builder_equals_the_hand_built_literal(
         literal = load_seventh_blob(conn, applied_at=payload["applied_at"])
         # The closed roster: the plan's section 2, as the hand-built literal carries it.
         assert set(blob) == set(literal)
-        assert len(blob) == 28
+        # 28 + CHARC's G-T7F `derivation_version` (the grammar/derivation split).
+        assert len(blob) == 29
+        assert "derivation_version" in blob
         # The ISO session match comes from the RESOLUTION token "T5 RESOLVED
         # 2026-08-10" (RD's note), equal to the action session by coincidence.
         assert (blob["quoted_ticker_text"], blob["quoted_action_session_text"],
@@ -147,7 +149,8 @@ def test_a2_42_trade25_admits_and_builder_equals_the_hand_built_literal(
         for key in sorted(fve.VERDICT_BEARING_KEYS):
             assert _at(blob, key) == _at(literal, key), key
         # And the constants the literal carries are the module's.
-        for key in ("evidence_version", "ruling_citation", "verification_method",
+        for key in ("evidence_version", "derivation_version", "ruling_citation",
+                    "verification_method",
                     "anchor_strength", "time_anchor_residual", "compare_dp"):
             assert blob[key] == literal[key], key
         # It inserts RAW through the HEAD citation trigger.
@@ -156,6 +159,40 @@ def test_a2_42_trade25_admits_and_builder_equals_the_hand_built_literal(
         assert conn.execute(
             "SELECT admission_tier FROM provenance_corrections").fetchone() == (
             "latch_ladder_tier2",)
+    finally:
+        conn.close()
+
+
+def test_g_t7f_the_blob_carries_the_derivation_version_and_its_twin_types_it(
+    tmp_path: Path,
+) -> None:
+    """G-T7F item 3 (B): the builder writes the DERIVATION constant under
+    ``derivation_version`` (and the GRAMMAR constant under ``evidence_version``
+    -- two different strings, so a swap is visible); the service twin of the
+    trigger's text-only predicate refuses a non-text value, naming it."""
+    conn = _world(tmp_path)
+    try:
+        verdict = _evaluate(conn, _facts())
+        assert verdict.admitted, verdict
+        blob = verdict.evidence
+        assert blob is not None
+        assert blob["derivation_version"] == fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION
+        assert blob["evidence_version"] == fve.FROZEN_VALUE_EVIDENCE_VERSION
+        assert blob["derivation_version"] != blob["evidence_version"]
+        assert list(blob) == list(fve.FROZEN_VALUE_BLOB_KEYS)
+        ctx = fve._read_context(conn, T25_CANDIDATE_ID)
+        assert fve._first_failing_mirror(blob, ctx, read_at=READ_AT,
+                                         fill_session=FILL_SESSION) is None
+        for bad in (1, None, ["2026-09-23.2"]):
+            forged = {**blob, "derivation_version": bad}
+            assert fve._first_failing_mirror(
+                forged, ctx, read_at=READ_AT, fill_session=FILL_SESSION,
+            ) == "derivation_version", bad
+        # The twin asserts TYPE ONLY: any text value passes it (SQL has nothing
+        # truthful to assert about the value, R8-03's family).
+        other = {**blob, "derivation_version": "any-other-text"}
+        assert fve._first_failing_mirror(other, ctx, read_at=READ_AT,
+                                         fill_session=FILL_SESSION) is None
     finally:
         conn.close()
 
@@ -543,9 +580,11 @@ def _module_reach(module: object, root: str) -> set[str]:
 def test_a2_60_every_trigger_predicate_has_a_reached_service_check() -> None:
     _path, trigger = head_create_statement("trg_provenance_corrections_citation_graph")
     sql_ids = _MARKER.findall(trigger)
-    # 28 + CHARC's G-NEG belt `record_position_consistent`.
-    assert len(sql_ids) == len(set(sql_ids)) == 29
+    # 28 + CHARC's G-NEG belt `record_position_consistent` + CHARC's G-T7F
+    # `derivation_version` (text only).
+    assert len(sql_ids) == len(set(sql_ids)) == 30
     assert "record_position_consistent" in sql_ids
+    assert "derivation_version" in sql_ids
     py_ids = [pid for pid, _ in fve.TIER2_TRIGGER_PREDICATES]
     assert len(py_ids) == len(set(py_ids))
     assert set(sql_ids) - set(py_ids) == set(), "trigger predicate with no service check"
