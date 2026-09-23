@@ -25,11 +25,15 @@ from __future__ import annotations
 import copy
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
+from swing.data import db as _db
 from swing.data.db import EXPECTED_SCHEMA_VERSION, open_connection, run_migrations
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "tier2"
@@ -66,6 +70,59 @@ T25_VALIDITY_TS = "2026-08-10T12:05:00"
 T25_LIMIT = 53.98
 T25_AUTHOR_INSTANT = "2026-08-10T02:41:33-10:00"
 T25_APPLIED_AT = "2026-09-23T12:00:00.000"
+# THE WORLDS' BARRIER ARMING STAMP, PINNED (see ``pinned_migration_clock``):
+# strictly AFTER record_at (2026-08-10T12:41:33Z, so the four-segment
+# ``before_barrier`` shape the live row has is kept) and strictly BEFORE every
+# read literal (T25_APPLIED_AT and the tests' READ_AT, 2026-09-23T12:00:00.000).
+# It is deliberately NOT the live 2026-09-02T10:03:33Z: the 0039 mutation
+# ``barrier_armed_at_raw`` writes that value and must still MOVE the blob.
+T25_BARRIER_ARMED_AT = "2026-09-22T12:00:00Z"
+
+
+@contextmanager
+def pinned_migration_clock(instant: str = T25_BARRIER_ARMED_AT) -> Iterator[None]:
+    """Every migration applied inside this block reads SQLite's ``'now'`` as
+    ``instant`` -- the TEST SEAM that pins the barrier's arming stamp.
+
+    Migration 0037 seeds ``candidates_immutability_epoch.applied_at`` with
+    ``strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`` -- the WALL clock at migrate
+    time -- while these worlds are READ at literal instants.  Once real time
+    passed 2026-09-23T12:00Z the covered segment [barrier_armed_at, read_at]
+    went non-positive and every admission refused at
+    ``interval_segment_order`` (the clock time bomb, 2026-09-23).
+
+    The migration TEXT is untouched (the production way; no immutable boundary
+    is moved after the fact): ``_apply_migration`` is wrapped so that, for the
+    duration of each migration file ONLY, ``strftime`` on the migrating
+    connection is an application-defined override that substitutes
+    ``instant`` for a ``'now'`` argument and delegates every call to the REAL
+    SQLite ``strftime`` on a private in-memory connection.  After the file,
+    the override stays registered (SQLite cannot restore a shadowed built-in)
+    but is DISARMED: it delegates unchanged, so a later ``'now'`` (the link
+    minting trigger's ``linked_at``) reads the real wall clock exactly as the
+    built-in would.
+    """
+    sqlite_now = instant.removesuffix("Z").replace("T", " ")
+    real_apply = _db._apply_migration
+
+    def apply(conn: sqlite3.Connection, sql_path: Path) -> None:
+        armed = [True]
+
+        def strftime(*args: object) -> object:
+            if armed[0]:
+                args = tuple(sqlite_now if a == "now" else a for a in args)
+            marks = ",".join("?" * len(args))
+            with closing(sqlite3.connect(":memory:")) as aux:
+                return aux.execute(f"SELECT strftime({marks})", args).fetchone()[0]
+
+        conn.create_function("strftime", -1, strftime)
+        try:
+            real_apply(conn, sql_path)
+        finally:
+            armed[0] = False
+
+    with mock.patch.object(_db, "_apply_migration", apply):
+        yield
 
 
 def _seed_rows(conn: sqlite3.Connection, *, with_envelope_reading: bool) -> None:
@@ -146,7 +203,8 @@ def base_last_word_payload(tmp_path: Path) -> dict[str, Any]:
     from swing.data.db import ensure_schema
     from swing.trades import cohort_provenance_correction as cpc
 
-    conn = ensure_schema(tmp_path / "t25_base.db")
+    with pinned_migration_clock():
+        conn = ensure_schema(tmp_path / "t25_base.db")
     try:
         _seed_rows(conn, with_envelope_reading=True)
         conn.commit()
@@ -175,7 +233,8 @@ def build_last_word_world(tmp_path: Path, name: str = "t25_lw") -> sqlite3.Conne
 
     root = tmp_path / name
     root.mkdir(parents=True, exist_ok=True)
-    conn = ensure_schema(root / "swing.db")
+    with pinned_migration_clock():
+        conn = ensure_schema(root / "swing.db")
     _seed_rows(conn, with_envelope_reading=True)
     conn.commit()
     return conn
@@ -195,10 +254,12 @@ def build_pre_barrier_world(
     root = tmp_path / name
     root.mkdir(parents=True, exist_ok=True)
     conn = open_connection(root / "swing.db")
-    run_migrations(conn, target_version=36)
+    with pinned_migration_clock():
+        run_migrations(conn, target_version=36)
     _seed_rows(conn, with_envelope_reading=False)   # no FEI table at v36
     conn.commit()
-    run_migrations(conn, target_version=target_version, backup_dir=root / "bak")
+    with pinned_migration_clock():
+        run_migrations(conn, target_version=target_version, backup_dir=root / "bak")
     if with_envelope_reading:
         record_reading(conn)
     place = place_row(

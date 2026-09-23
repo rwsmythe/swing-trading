@@ -39,6 +39,7 @@ from tests._tier2_world_22a2 import (
     T25_TICKER,
     insert_payload,
     load_seventh_blob,
+    pinned_migration_clock,
     truthful_tier2_payload,
 )
 from tests.data._migration_text import head_create_statement
@@ -72,7 +73,8 @@ def _world(tmp_path: Path, *, ticker: str = T25_TICKER, pivot: float = T25_PIVOT
            session: str = T25_ACTION_SESSION) -> sqlite3.Connection:
     """A HEAD database carrying trade 25's evaluation run, candidate and
     pipeline row, with ONE field varied."""
-    conn = ensure_schema(tmp_path / "conj.db")
+    with pinned_migration_clock():
+        conn = ensure_schema(tmp_path / "conj.db")
     conn.execute(
         "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
         "action_session_date, finviz_csv_path, tickers_evaluated, aplus_count, "
@@ -115,6 +117,43 @@ def _at(blob: dict, dotted: str) -> object:
         assert isinstance(value, dict)
         value = value[part]
     return value
+
+
+# ------------------------------------------------ the pinned migrate-time clock
+
+def test_every_22a2_world_arms_the_barrier_at_the_pinned_literal(
+        tmp_path: Path) -> None:
+    """THE CLOCK TIME BOMB (2026-09-23): migration 0037 stamps the epoch's
+    ``applied_at`` from SQLite's wall clock, and these worlds are READ at the
+    literal 2026-09-23T12:00:00.000 -- so after that instant passed, every
+    admission refused at ``interval_segment_order``.  Each world must arm at
+    the pinned literal, which lies after record_at and before every read."""
+    from tests._tier2_world_22a2 import (
+        T25_APPLIED_AT,
+        T25_BARRIER_ARMED_AT,
+        build_last_word_world,
+        build_pre_barrier_world,
+    )
+
+    def armed(conn: sqlite3.Connection) -> str:
+        return conn.execute("SELECT applied_at FROM candidates_immutability_epoch "
+                            "WHERE epoch_id = 1").fetchone()[0]
+
+    worlds = {
+        "conjunction _world": _world(tmp_path / "c"),
+        "build_pre_barrier_world": build_pre_barrier_world(tmp_path, "pb")[0],
+        "build_last_word_world": build_last_word_world(tmp_path, "lw"),
+    }
+    try:
+        assert {k: armed(c) for k, c in worlds.items()} == dict.fromkeys(
+            worlds, T25_BARRIER_ARMED_AT)
+    finally:
+        for c in worlds.values():
+            c.close()
+    record_at = datetime.fromisoformat(T25_AUTHOR_INSTANT)
+    pinned = datetime.fromisoformat(T25_BARRIER_ARMED_AT)
+    for read in (READ_AT, T25_APPLIED_AT):
+        assert record_at < pinned < datetime.fromisoformat(read + "+00:00")
 
 
 # --------------------------------------------------------------------------- A2-42
