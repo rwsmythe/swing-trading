@@ -21,18 +21,46 @@ The scan is keyed on the TWO named tables ONLY -- never on "any DROP TABLE"
 AL2-4: a hand-run DROP followed by a byte-identical CREATE is undetectable by
 construction; this scan sees file-borne drops only.
 
-QUOTED CONTENTS ARE NOT STATEMENTS (CHARC ruling A-R4, Codex R4-02), stated by
-quote kind because SQLite gives the two kinds different meanings: the contents
-of every SINGLE-quoted literal are blanked before BOTH searches (a DROP inside
-a string is not a drop, and an era-record text inside a string is not an era
-record); the contents of every DOUBLE-quoted span are blanked for the
-ERA-RECORD search ONLY and PRESERVED for the drop patterns, because a
-double-quoted name in DROP position is an identifier (a2_03 and the R3-03
-forms) while a double-quoted span in an expression is SQLite's legacy string
-fallback.  THE CONSEQUENCE IS FAIL-CLOSED: a real era record written as
-``INSERT INTO "candidates_immutability_epoch_events"`` reads as NO era record
-and its file's drop is flagged -- curable by unquoting; the bare, backtick and
-bracket forms still match.
+QUOTED CONTENTS AND THE DROP/RENAME SEARCH (CHARC ruling A-R5, R5-03,
+correcting ruling A-R4 / Codex R4-02): SQLite's grammar admits a
+single-quoted STRING TOKEN as an object name, so
+``DROP TRIGGER 'trg_candidates_no_update'`` really drops (measured on SQLite
+3.50.4) -- R4-02's premise that "a DROP inside a literal is not a drop
+either" was FALSE for the single-quote form.  So the DROP/RENAME search now
+runs on the comment-stripped text with NOTHING BLANKED (R4-02's single-quote
+blanking for this half is REVERSED): ``_ident`` and ``_SCHEMA_QUALIFIER``
+carry the single-quoted form beside the bare, double-quoted, backtick and
+bracket forms, and a DROP-shaped or RENAME-shaped text sitting inside ANY
+string literal reads as the real thing -- FAIL-CLOSED, the direction a guard
+is meant to err in, curable by a human reading the file.
+
+THE ERA-RECORD search is UNCHANGED from R4-02 and keeps blanking BOTH quote
+kinds before it runs (a DROP inside a string is not a drop w.r.t. THIS
+search either, and an era-record text inside a string is not an era
+record): a real era record written as
+``INSERT INTO "candidates_immutability_epoch_events"`` OR
+``INSERT INTO 'candidates_immutability_epoch_events'`` reads as NO era
+record and its file's drop is flagged -- also fail-closed, curable by
+unquoting; the bare, backtick and bracket forms still match.
+
+A THIRD violation family (CHARC A-R5, R5-03(c)):
+``ALTER TABLE <optional qualifier><barrier table ident> RENAME TO`` -> a
+violation with target ``rename table <t>``.  A rename carries the six
+triggers off the barrier table (``sqlite_master.tbl_name`` moves with it,
+measured) and a later ``DROP TABLE`` of the renamed-away table is the
+implicit drop of the barrier wearing another name -- the classic SQLite
+rebuild idiom (RENAME the table away, CREATE the new shape under the old
+name, copy the rows, DROP the renamed-away table) moves the barrier without
+ever naming it in a DROP of the barrier table itself.  RENAME TO ONLY, never
+RENAME COLUMN (a column rename leaves the trigger bound to the table it was
+already on).
+
+D51 (the HEAD-manifest test) and this (t1) scan COMPOSE; neither substitutes
+for the other.  D51 pins that the barrier is PRESENT AT HEAD (it structurally
+cannot see a drop-and-recreate inside one file -- the triggers are back by
+the time the manifest reads).  (t1) pins that NO post-0037 file RETIRES the
+barrier IN TEXT (the textual half D51 cannot see).  A red on either
+instrument is the F2 re-open condition firing.
 """
 
 from __future__ import annotations
@@ -146,15 +174,21 @@ def _blank_quoted(text: str, kinds: str) -> str:
 
 
 def _ident(name: str) -> str:
-    """Regex for an identifier, bare or quoted with "", ``, or []."""
+    """Regex for an identifier, bare or quoted with '', "", ``, or [].
+
+    The single-quoted form (R5-03) matters ONLY to the DROP/RENAME search
+    (nothing is blanked there any more); the ERA-RECORD search blanks
+    single-quoted contents before it runs, so this form never fires there.
+    """
     e = re.escape(name)
-    return rf"(?:\"{e}\"|`{e}`|\[{e}\]|\b{e}\b)"
+    return rf"(?:'{e}'|\"{e}\"|`{e}`|\[{e}\]|\b{e}\b)"
 
 
-# An optional schema qualifier: bare or quoted ("", ``, []), with optional
+# An optional schema qualifier: bare or quoted ('', "", ``, []), with optional
 # whitespace around the dot (Codex R3-03 -- ``"main"."x"`` and ``main . x`` are
-# valid SQLite and drop the same object as ``main.x``).
-_SCHEMA_QUALIFIER = r"(?:(?:\"[^\"]+\"|`[^`]+`|\[[^\]]+\]|\w+)\s*\.\s*)?"
+# valid SQLite and drop the same object as ``main.x``; R5-03 adds the
+# single-quoted form, ``'main'.'x'``).
+_SCHEMA_QUALIFIER = r"(?:(?:'[^']+'|\"[^\"]+\"|`[^`]+`|\[[^\]]+\]|\w+)\s*\.\s*)?"
 
 
 def _drop_patterns() -> list[tuple[str, re.Pattern[str]]]:
@@ -176,11 +210,26 @@ def _drop_patterns() -> list[tuple[str, re.Pattern[str]]]:
                 re.IGNORECASE,
             ),
         ))
+    # R5-03(c): ALTER TABLE <barrier table> RENAME TO -- RENAME TO only, never
+    # RENAME COLUMN (a column rename leaves the trigger on the table).
+    for table in BARRIER_TABLES:
+        pats.append((
+            f"rename table {table}",
+            re.compile(
+                rf"\balter\s+table\s+{_SCHEMA_QUALIFIER}{_ident(table)}\s+rename\s+to\b",
+                re.IGNORECASE,
+            ),
+        ))
     return pats
 
 
 def scan_migrations(dirpath: Path) -> list[Violation]:
-    """Every file-borne barrier drop above 0037 lacking a same-file era record."""
+    """Every file-borne barrier drop/rename above 0037 lacking a same-file
+    era record.  R5-03: the DROP/RENAME search runs on the comment-stripped
+    text with NOTHING blanked (fail-closed on quoted contents); the
+    ERA-RECORD search is unchanged and still blanks both quote kinds before
+    it runs.
+    """
     violations: list[Violation] = []
     patterns = _drop_patterns()
     for path in sorted(Path(dirpath).glob("*.sql")):
@@ -190,9 +239,8 @@ def scan_migrations(dirpath: Path) -> list[Violation]:
         stripped = _strip_sql_comments(path.read_text(encoding="utf-8"))
         if _ERA_RECORD.search(_blank_quoted(stripped, "'\"")):
             continue
-        drop_text = _blank_quoted(stripped, "'")
         for target, pat in patterns:
-            for hit in pat.finditer(drop_text):
+            for hit in pat.finditer(stripped):
                 violations.append(Violation(
                     path=path.name, statement=hit.group(0), target=target))
     return violations
@@ -347,15 +395,86 @@ def test_codex_r4_02_charc_positive_twin_a_drop_inside_an_era_records_literal(tm
     assert scan_migrations(tmp_path) == []
 
 
-def test_codex_r4_02_a_drop_inside_a_single_quoted_literal_is_not_a_drop(tmp_path):
-    """The discriminator that blanking reaches the DROP patterns too.  CHARC's
-    twin above carries a real era record, so the file is skipped before any
-    drop pattern runs and it passes with or without blanking; this file has
-    NO era record, so only the blanking keeps the literal from reading as a
-    drop."""
+def test_r5_03_a_drop_shaped_single_quoted_literal_now_flags_fail_closed(tmp_path):
+    """R5-03 SUPERSEDES this test's old name and assertion (was
+    ``..._is_not_a_drop``, asserted zero violations).  R4-02's premise --
+    "a DROP inside a literal is not a drop either" -- rested on the false
+    belief that SQLite never treats a single-quoted span as a name; it does
+    (``DROP TRIGGER 'x'`` DROPS).  So the DROP search no longer blanks
+    single-quoted spans at all: this file's DROP-shaped literal (no era
+    record present) now reads as a real drop -- FAIL-CLOSED, curable by a
+    human reading the file.  This is the cell's replacement case for CHARC's
+    (corrected) R4-02 positive twin (the twin above still passes, but for
+    the reason that its file HAS a real era record and is skipped before any
+    drop pattern runs -- CHARC's own ownership note)."""
     _write(tmp_path, "0040_x.sql",
-           "SELECT 'DROP TRIGGER trg_candidates_no_update';\n"
-           "SELECT 'it''s DROP TABLE candidates';\n")
+           "SELECT 'DROP TRIGGER trg_candidates_no_update';\n")
+    found = scan_migrations(tmp_path)
+    assert [v.target for v in found] == ["trigger trg_candidates_no_update"]
+
+
+# --------------------------------------------------------------------------- CHARC A-R5, R5-03
+# The drop search's single-quote blanking is REVERSED (nothing is blanked);
+# _ident and _SCHEMA_QUALIFIER gain the single-quoted form; a new RENAME TO
+# violation family is added.  The three below are the packet's "RED today"
+# discriminators -- red against the pre-fix scanner (single-quote blanking,
+# no RENAME pattern), green after.
+
+
+def test_r5_03_single_quoted_trigger_name_in_drop_position_is_a_violation(tmp_path):
+    """SQLite grammar: a single-quoted STRING TOKEN in DROP-name position is
+    a name, and the drop really fires (measured on SQLite 3.50.4)."""
+    _write(tmp_path, "0040_x.sql", "DROP TRIGGER 'trg_candidates_no_update';\n")
+    found = scan_migrations(tmp_path)
+    assert [v.target for v in found] == ["trigger trg_candidates_no_update"]
+
+
+def test_r5_03_single_quoted_schema_qualified_table_drop_is_a_violation(tmp_path):
+    _write(tmp_path, "0040_x.sql", "DROP TABLE IF EXISTS 'main'.'candidates';\n")
+    found = scan_migrations(tmp_path)
+    assert [v.target for v in found] == ["table candidates"]
+
+
+def test_r5_03_alter_table_rename_to_rebuild_is_a_violation_naming_the_rename(tmp_path):
+    """The classic SQLite rebuild idiom: RENAME the barrier table away,
+    CREATE the new shape under the old name, copy the rows, DROP the
+    renamed-away table.  The DROP at the end targets ``candidates_old``, not
+    a barrier table name (a2_04's bound-target form), so the ONE violation
+    is the RENAME itself."""
+    _write(tmp_path, "0040_x.sql",
+           "ALTER TABLE candidates RENAME TO candidates_old;\n"
+           "CREATE TABLE candidates (id INTEGER PRIMARY KEY);\n"
+           "INSERT INTO candidates SELECT * FROM candidates_old;\n"
+           "DROP TABLE candidates_old;\n")
+    found = scan_migrations(tmp_path)
+    assert [v.target for v in found] == ["rename table candidates"]
+
+
+def test_r5_03_alter_table_rename_to_with_quoted_schema_qualifier_is_a_violation(
+    tmp_path,
+):
+    _write(tmp_path, "0040_x.sql", 'ALTER TABLE "main"."candidates" RENAME TO x;\n')
+    found = scan_migrations(tmp_path)
+    assert [v.target for v in found] == ["rename table candidates"]
+
+
+def test_r5_03_alter_table_rename_to_of_a_non_barrier_table_is_not_a_violation(
+    tmp_path,
+):
+    """The target stays bound to the barrier tables, the a2_04 form."""
+    _write(tmp_path, "0040_x.sql", "ALTER TABLE candidates_archive RENAME TO y;\n")
+    assert scan_migrations(tmp_path) == []
+
+
+def test_r5_03_alter_table_rename_column_is_not_a_violation(tmp_path):
+    """RENAME TO only, never RENAME COLUMN -- a column rename leaves the
+    trigger bound to the table it was already on."""
+    _write(tmp_path, "0040_x.sql", "ALTER TABLE candidates RENAME COLUMN a TO b;\n")
+    assert scan_migrations(tmp_path) == []
+
+
+def test_r5_03_alter_table_add_column_is_not_a_violation(tmp_path):
+    _write(tmp_path, "0040_x.sql", "ALTER TABLE candidates ADD COLUMN z;\n")
     assert scan_migrations(tmp_path) == []
 
 
