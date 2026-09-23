@@ -111,3 +111,24 @@ The orchestrator's measurement of (b)'s precondition (live v39, `mode=ro`): 14 o
 > Items 2 and 4: read; b22_209's disagreeing-reading plant is the right encoding of the drift case (a rewrite is a new key and ensure appends -- my scenario was b22_116's); the dry run taking BEGIN IMMEDIATE and writing nothing is fine.
 >
 > Noted: 13230/13/0 on the full suite, the 22-A sweep at zero offenders with nothing added to it, and the manifest set unchanged with exactly the two 22-B trigger bodies moved -- exactly RULING G1b's acceptance.
+
+## RULING G2 — RD confirms the FIFTH reasoned exclusion: `swing/web/view_models/metrics/trade_process_card.py` is OBSERVATIONAL; `count_per_cohort` keeps counting the unintended trade there and b22_137's pin is correct (author RD; courier transcription by the orchestrator, literal block quote). The G2 OPEN item is CLOSED by this ruling; no code change follows.
+
+### RULING G2.1 — RD's ruling mail (20260923T235235Z, body whole)
+
+> 22-B G2 -- RD RULES the one item named to this seat: the FIFTH reasoned exclusion is CONFIRMED. `swing/web/view_models/metrics/trade_process_card.py` belongs on the OBSERVATIONAL side of the roster; `count_per_cohort` keeps counting the unintended trade there, and b22_137 pinning that count is the correct pin. PRIMARY: orchestrator (courier; transcribe as a block quote into the exec ledger). CHARC: CC, nothing asked.
+>
+> READ BEFORE RULING (the exec branch, not the cell's description): `trade_process_card.py:161` calls `count_per_cohort(conn)` once and consumes the result ONLY as `n_closed` on each `CohortTabVM` (`:193`), the tab-navigation count; the per-tab metrics come from `compute_trade_process_metrics(conn, hypothesis_label=name)` (`:186-188`), which lives in `metrics/process.py`, already on the roster as the observational facet. The caller performs no membership test, no re-count and no re-filter of its own. `cohort.py:201-211` states `count_per_cohort` carries NO intent predicate by design (D29) because filtering it "would hide trades from the very tab that lists them". The plan @ 22-b-exec line 286 already carries the site on the roster with the walk's finding; line 274 (E13) keeps `count_per_cohort` unfiltered per clause (4).
+>
+> THE RULING'S REASONING (this is what binds; the line numbers are illustrations):
+> 1. A caller that only passes a count through inherits its callee's classification. `count_per_cohort` is observational by the plan's own E13 and by my N2 ruling (exclusion in code applies to the FOUR decision readers; the observational counts are untouched). Its sole caller cannot be a decision reader by consuming an observational count unchanged.
+> 2. Clause (4) itself names the destination: the value's realized result "is reported in the trade-process card's own facet as an execution datum, never as a hypothesis sample." The card is where clause (4) SENDS the trade. Excluding it from the card's tabs would hide the one surface the doctrine routes it to -- the zero-data rule in its plainest form (silence read as absence).
+> 3. Consistency with a standing read obligation of mine: the card's per-tab N is already known to diverge from the tier page's N (it counts tier-2-excluded rows until D61), which is why witness step 5 quotes BOTH with their methods. An observational N that differs from the decision N is the designed state, not a defect; adding the unintended trade to that divergence is the same design.
+>
+> PRECONDITIONS, all existing today: (i) the caller performs no membership computation of its own (read, `:156-194`); (ii) `count_per_cohort` stays unfiltered (E13 + b22_137); (iii) the roster is a CLOSURE test (b22_130) so a future caller that DOES compute membership fails until classified -- this ruling covers the caller as it stands on 22-b-exec @ 3d69c001 and nothing a later edit makes of it.
+>
+> DECLARED, NOT RULED: the card's per-tab N now includes unintended trades AND tier-2-excluded rows while the tier page's N includes neither. The witness step-5 quote obligation (R1-14, confirmed) already covers this; no UI change is asked (brief section 2 OUT).
+>
+> Owned: the plan listed `count_per_cohort` and not its caller; my plan read passed that list. The static walk is the instrument that found the omission -- the same datum as G1b's: a closure encoded as a whole-tree test finds what three rounds of prose reading and two director reads did not.
+>
+> Depth at this seat: ~228K. Nothing else owed until the executing return.
