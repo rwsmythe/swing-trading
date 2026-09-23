@@ -360,3 +360,17 @@ Plan: `2026-09-22-phase22-arc-a2-proof-machinery.md` (merged at `23313918`). Pla
 4. The full fast suite, green, before round 5; after round 5, again on the final head.
 
 **No sixth round is authorized.** If round 5 is not clean, cell 18 fixes only minors, plus search-findable residuals of its own diff that have a mechanical fix. It routes everything else, and a sixth round needs a new written authorization.
+
+## RULING A-R4 (RD on CHARC's items) -- RD, LANDED 2026-09-23 (no dissent; AL2-14 PLACED for R4-03; the scrub-as-rule precondition verified by execution in the linked worktree)
+
+**Author: RD (seat `swing-rd-20260923-0048`). Courier: the orchestrator. CHARC CC.** Transcribed BYTE-FOR-BYTE (script-extracted, every line verified present) from `comms/orchestrator/read/20260923T124604Z-rd-rd-on-a-r4-charc-packet-no-dissent-al2-1.md` (posted 2026-09-23T12:46:04Z); posted as plain paragraphs, so the `> ` prefix is the transcriber's and the ONLY added byte. **Encoding owner:** cell 18. It writes AL2-14 by replacement into plan section 7 and the plan ledger's AL2 reasons, with CHARC's optional pin. RD's `GIT_ASKPASS` / `GIT_EDITOR` / `GIT_TERMINAL_PROMPT` fact goes into the `_run_git` docstring.
+
+> RD on CHARC's A-R4 packet (12:44:50Z). CC on R4-03; reader on the rest. Depth 247K at post.
+>
+> NO DISSENT on any of the four. Two things only, one asked of me and one verified.
+>
+> 1. R4-03 -- the AL2 line CHARC offered is PLACED, as AL2-14, with its reason, so the fifth round and Reviewer B read it as accepted rather than re-finding it: "AL2-14 a trade whose label commits after a reader's snapshot is neither counted nor named in that invocation and is counted or named by the next; every cohort read is per-invocation (CHARC A-R4 R4-03, REJECT; RD's recorded R2-04 fact). Reason: the replayed set is a superset of the COUNTED set and F10's named clause attaches to a trade the read HOLDS; naming from a second enumeration would take N from one snapshot and names from another -- gotcha 30 inside a single row." The plan section 7 line and the ledger's AL2 reason are the cell's to write by replacement; CHARC's pin (commit during the second hypothesis's query; the earlier cohort's N and names unchanged; nothing named on the wrong cohort) is welcome and, if written, is the discriminator that fails the reviewer's allocation.
+>
+> 2. R4-01 shape -- the scrub-as-rule precondition EXISTS on this box, verified by execution: `env -i PATH SYSTEMROOT git -C .worktrees/22-a2-exec --no-replace-objects rev-parse ...` and the `log -g` read both succeed in the linked worktree (gitfile .git), and a Python subprocess with every GIT_* key removed from os.environ plus GIT_NO_REPLACE_OBJECTS=1, cwd the worktree, returns rc 0. One fact for the docstring, read not inferred: this box's tool shells carry GIT_ASKPASS=, GIT_EDITOR=true and GIT_TERMINAL_PROMPT=0; the scrub drops all three, harmless because none of the six calls reaches the network or an editor. Declining --git-dir for this pair is right for the reason CHARC gave.
+>
+> Nothing else from me until the fifth-round return reaches my gate.
