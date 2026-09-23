@@ -71,7 +71,7 @@ two-valued, F2 = b).
 
 **Tier-2 refusal vocabulary** (the `field`/`reason` a refusal NAMES; F6, F7, F13): selection --
 `evidence_file_malformed`, `artifact_unreadable`, `quoted_text_not_in_artifact`,
-`quoted_text_not_one_line`; criterion 1 -- `not_ancestor_of_origin_main`; criterion 2 --
+`quoted_text_not_a_whole_line`; criterion 1 -- `not_ancestor_of_origin_main`; criterion 2 --
 `recorded_on_fill_session`, `recorded_after_fill_session`; criterion 3 -- `ticker`,
 `action_session`, `pivot`, `invalidation` (in THAT order); criterion 4 -- `window_negative`,
 `window_indeterminate`; process -- `tier2_unverifiable` (git timeout / git missing / no `REMOTE_REF`
@@ -91,7 +91,7 @@ COMPUTES unless marked (sel) = operator selection (F9).
 | `evaluated_at` | text | the single `applied_at` stamp | `= NEW.applied_at` |
 | `artifact_path` (sel) | text | from the evidence file | type only |
 | `artifact_commit_sha` (sel) | text | from the evidence file; 40 lowercase hex | `length = 40 AND NOT GLOB '*[^0-9a-f]*'` |
-| `quoted_text` (sel) | text | byte-substring of `git show sha:path`, ONE line | no `char(10)`, no `char(13)` |
+| `quoted_text` (sel) | text | exactly ONE WHOLE line of `git show sha:path` (terminator stripped) | no `char(10)`, no `char(13)` |
 | `quoted_ticker_text` | text | the token found (= candidate ticker) | `= ca.ticker` AND `instr(quoted_text, .) > 0` |
 | `quoted_action_session_text` | text | ISO `YYYY-MM-DD` if present as a token, else `MM-DD` under the year rule | `= er.action_session_date` OR (`= substr(er.action_session_date, 6)` AND `substr(author_date_et,1,4) = substr(er.action_session_date,1,4)`); AND `instr > 0` |
 | `quoted_pivot_text` | text | `f"{round(ca.pivot, 2):.2f}"` found as a token | `instr(quoted_text, .) > 0` (F8, REQUIRED) |
@@ -349,7 +349,8 @@ builds a temp repo + bare remote + fetch so `REMOTE_REF` exists; commits with ex
   `resolved_remote_ref_sha`, `descendant_count`, `remote_ref_updated_at`, `remote_ref_age_seconds`.
 - `read_artifact_facts(selection, *, repo_dir, now_utc) -> PreflightResult`: `git show sha:path`
   (bytes; `utf-8`) -> the quoted text must be a byte-substring (`quoted_text_not_in_artifact`) and
-  contain no `\n`/`\r` (`quoted_text_not_one_line`); `git show -s --format=%aI%n%cI sha`;
+  exactly one whole line of the blob split on `\n` with one trailing `\r` removed, carrying neither
+  (`quoted_text_not_a_whole_line`); `git show -s --format=%aI%n%cI sha`;
   `git rev-parse REMOTE_REF`; `git merge-base --is-ancestor sha <resolved>` (exit 0 -> True, 1 ->
   False, other -> unverifiable); `git rev-list --count sha..<resolved>` (only when ancestor, else
   null); `git log -g -1 --date=iso-strict --format=%gd REMOTE_REF` parsed for the `@{...}` instant
@@ -598,7 +599,7 @@ Pre -> post = what the discriminator reads under the NULL / pre-fix implementati
 |---|---|---|
 | A2-32 | evidence file with a 4th key / missing key / non-str / duplicate key / 39-char sha -> `evidence_file_malformed` | -- |
 | A2-33 | quoted text not a byte-substring of the artifact -> `quoted_text_not_in_artifact` | -- |
-| A2-34 | quoted text spanning two lines (contains `\n`) -> `quoted_text_not_one_line` (s-i) | whole-file selection accepted |
+| A2-34 | quoted text spanning two lines (contains `\n`) -> `quoted_text_not_a_whole_line` (s-i) | whole-file selection accepted |
 | A2-35 | line-57 fixture in a git world: facts carry author `2026-08-10T02:41:33-10:00`, `is_ancestor` True, resolved sha == the bare remote's tip | -- |
 | A2-36 | (C1 discriminator, brief 4.2) commit present locally but NOT an ancestor of `REMOTE_REF` -> `is_ancestor` False | ancestry check absent: True |
 | A2-37 | non-ASCII artifact line (the em-dash in line 57) round-trips; decoding as cp1252 would fail the substring check (bytes-captured) | `text=True` default: mismatch |

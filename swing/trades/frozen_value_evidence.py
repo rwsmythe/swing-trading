@@ -55,7 +55,7 @@ FROZEN_VALUE_EVIDENCE_VERSION = "2026-09-23.1"
 # OBSERVATION, never as a verdict (G-T7F-AMEND).  Deliberately a DIFFERENT
 # string from (A), so a builder writing one constant under the other's key is
 # visible to every literal comparison.
-FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION = "2026-09-23.3"
+FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION = "2026-09-23.4"
 
 # Every git call's own timeout (seconds).  The replay uses the same name.
 GIT_TIMEOUT_SECONDS = 10.0
@@ -75,7 +75,9 @@ EVIDENCE_FILE_KEYS: tuple[str, ...] = ("artifact_path", "artifact_commit_sha", "
 FAILURE_EVIDENCE_FILE_MALFORMED = "evidence_file_malformed"
 FAILURE_ARTIFACT_UNREADABLE = "artifact_unreadable"
 FAILURE_QUOTED_TEXT_NOT_IN_ARTIFACT = "quoted_text_not_in_artifact"
-FAILURE_QUOTED_TEXT_NOT_ONE_LINE = "quoted_text_not_one_line"
+# RD ruling A-R1 item 2 (OBS-1) + CHARC A-R1-SHAPE: the selection is exactly
+# ONE WHOLE artifact line (terminator stripped).  Checked AFTER presence.
+FAILURE_QUOTED_TEXT_NOT_A_WHOLE_LINE = "quoted_text_not_a_whole_line"
 FAILURE_TIER2_UNVERIFIABLE = "tier2_unverifiable"
 
 # The preflight functions and their git helpers: A2-41 pins that none of them
@@ -478,9 +480,17 @@ def read_artifact_facts(selection: EvidenceSelection, *, repo_dir: Path,
             return _refuse(FAILURE_QUOTED_TEXT_NOT_IN_ARTIFACT,
                            f"quoted_text is not a byte-substring of "
                            f"{selection.artifact_path} at {sha}")
-        if "\n" in selection.quoted_text or "\r" in selection.quoted_text:
-            return _refuse(FAILURE_QUOTED_TEXT_NOT_ONE_LINE,
-                           "quoted_text must be ONE line (no line break)")
+        # ONE WHOLE LINE: equal to one element of the blob split on \n with one
+        # trailing \r removed; the quote carries neither (byte equality with
+        # the quote's UTF-8 encoding is equality of the decoded element).
+        quoted = selection.quoted_text.encode("utf-8")
+        if (b"\n" in quoted or b"\r" in quoted
+                or not any((line[:-1] if line.endswith(b"\r") else line) == quoted
+                           for line in blob.stdout.split(b"\n"))):
+            return _refuse(FAILURE_QUOTED_TEXT_NOT_A_WHOLE_LINE,
+                           f"quoted_text must be exactly one whole line of "
+                           f"{selection.artifact_path} at {sha} (no line break, "
+                           f"no partial line)")
 
         anc = git("merge-base", "--is-ancestor", sha, resolved)
         if anc.returncode not in (0, 1):
@@ -1567,9 +1577,17 @@ def frozen_value_evidence_digest() -> str:
 # ``_ref_stage`` / ``_reflog_stage`` (new members, with ``_budgeted_git``,
 # ``_failure_detail`` and ``RemoteRefResolution``).  The facts it returns for a
 # given repo state are unchanged; the digest records the member edit.
+#
+# ``.4`` (RD ruling A-R1 item 2, OBS-1; CHARC A-R1-SHAPE): ``read_artifact_facts``
+# admits a selection only when it is exactly ONE WHOLE artifact line (split on
+# ``\n``, one trailing ``\r`` removed; the quote carries neither), refused as
+# ``quoted_text_not_a_whole_line`` (renamed from ``..._not_one_line``) after the
+# unchanged presence check.  A sub-line quote that .3 admitted is refused.
 FROZEN_VALUE_EVIDENCE_HISTORY: tuple[tuple[str, str], ...] = (
     ("2026-09-23.2",
      "e098e9cddd4327b545dac89dbc7f017442f016bf9f82c5b9731d4b815fec1c1b"),
     ("2026-09-23.3",
      "f99090619b500e866bf104556bb419b7c26ab85e1cc82ce6e6ddc4b0d1eb5193"),
+    ("2026-09-23.4",
+     "0b00974d3e2fd7229c97824490c4fb4c813bf3e9992cb59cd95a809fdafe7b04"),
 )

@@ -65,7 +65,10 @@ RULED_MEMBERS = (
 FIRST_DERIVATION_VERSION = "2026-09-23.2"
 # CHARC G-T9 item 2 moved ``read_artifact_facts`` (the per-invocation ref
 # resolution): the second pair.
-CURRENT_DERIVATION_VERSION = "2026-09-23.3"
+SECOND_DERIVATION_VERSION = "2026-09-23.3"
+# RD ruling A-R1 item 2 (OBS-1, the whole-line selection) moved
+# ``read_artifact_facts`` again: the third pair.
+CURRENT_DERIVATION_VERSION = "2026-09-23.4"
 GRAMMAR_VERSION = "2026-09-23.1"
 
 
@@ -153,7 +156,7 @@ def test_the_grammar_version_is_split_from_the_derivation_version() -> None:
     assert fve.FROZEN_VALUE_EVIDENCE_VERSION == GRAMMAR_VERSION
     assert fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION == CURRENT_DERIVATION_VERSION
     assert [v for v, _d in fve.FROZEN_VALUE_EVIDENCE_HISTORY] == [
-        FIRST_DERIVATION_VERSION, CURRENT_DERIVATION_VERSION]
+        FIRST_DERIVATION_VERSION, SECOND_DERIVATION_VERSION, CURRENT_DERIVATION_VERSION]
     assert fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION != fve.FROZEN_VALUE_EVIDENCE_VERSION
     assert GRAMMAR_VERSION not in [v for v, _d in fve.FROZEN_VALUE_EVIDENCE_HISTORY]
 

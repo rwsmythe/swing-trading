@@ -2728,7 +2728,7 @@ def _echo_tier2_note(view) -> None:
         "Tier-2 evidence for a pre-barrier linked mandate: a JSON file with "
         "exactly three keys -- artifact_path, artifact_commit_sha, quoted_text "
         "-- naming WHERE the contemporaneous record of the frozen values is "
-        "(a file at a commit on origin/main, and one line of it quoted "
+        "(a file at a commit on origin/main, and one WHOLE line of it quoted "
         "verbatim). It is a SELECTION: the ticker, session, pivot and "
         "invalidation values are never typed; the service reads them from the "
         "record and checks them against the cited candidate row."

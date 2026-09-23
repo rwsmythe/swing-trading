@@ -134,7 +134,7 @@ def test_a2_33_quoted_text_not_in_artifact(tmp_path: Path) -> None:
 
 # --------------------------------------------------------------------------- A2-34
 
-def test_a2_34_quoted_text_spanning_two_lines_refuses_not_one_line(tmp_path: Path) -> None:
+def test_a2_34_quoted_text_spanning_two_lines_refuses_not_a_whole_line(tmp_path: Path) -> None:
     _, sha = _world(tmp_path)
     two_lines = LINE57_TEXT + "\nline 58"
     # Pre-fix arithmetic: the two-line selection IS a byte-substring of the
@@ -142,11 +142,11 @@ def test_a2_34_quoted_text_spanning_two_lines_refuses_not_one_line(tmp_path: Pat
     assert two_lines.encode("utf-8") in _rd_state_bytes()
     result = fve.run_preflight(_evidence(tmp_path, _good_payload(sha, two_lines)),
                                repo_dir=tmp_path / "git" / "work", now_utc=NOW)
-    assert result.failure == "quoted_text_not_one_line"
+    assert result.failure == "quoted_text_not_a_whole_line"
     whole_file = _rd_state_bytes().decode("utf-8")
     result = fve.run_preflight(_evidence(tmp_path, _good_payload(sha, whole_file), "w.json"),
                                repo_dir=tmp_path / "git" / "work", now_utc=NOW)
-    assert result.failure == "quoted_text_not_one_line"
+    assert result.failure == "quoted_text_not_a_whole_line"
 
 
 def test_codex_r1_02_a_nul_in_the_selection_refuses_at_the_load_boundary(
@@ -177,7 +177,9 @@ def test_codex_r1_02_a_nul_in_the_selection_refuses_at_the_load_boundary(
     world.commit("README.md", b"base\n")
     nul_line = b"\x00" + LINE57
     lines = [f"line {i}".encode("ascii") for i in range(1, 57)]
-    sha = world.commit(RD_STATE, b"\n".join([*lines, nul_line, b"line 58", b""]),
+    # Line 58 is line 57 without its NUL: the counterpart below quotes a WHOLE
+    # line (OBS-1, RD ruling A-R1 item 2), not a substring of the NUL-led one.
+    sha = world.commit(RD_STATE, b"\n".join([*lines, nul_line, LINE57, b"line 59", b""]),
                        author_date=AUTHOR_9F315CC6)
     world.push()
     repo = tmp_path / "git" / "work"
@@ -194,8 +196,8 @@ def test_codex_r1_02_a_nul_in_the_selection_refuses_at_the_load_boundary(
         result = fve.run_preflight(path, repo_dir=repo, now_utc=NOW)
         assert (result.failure, result.facts) == ("evidence_file_malformed", None), name
 
-    # Counterpart: the same selection WITHOUT the NUL is a byte-substring of
-    # that artifact (inside the NUL-led line) and reads facts.
+    # Counterpart: the same selection WITHOUT the NUL is a whole line of that
+    # artifact (line 58) and reads facts.
     ok = fve.run_preflight(_evidence(tmp_path, _good_payload(sha), "ok.json"),
                            repo_dir=repo, now_utc=NOW)
     assert ok.failure is None and ok.facts is not None
