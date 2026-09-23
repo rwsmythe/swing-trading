@@ -124,6 +124,16 @@
 
   <fieldset>
     <legend>Design intent (tuition vs error - optional)</legend>
+    {% if vm.entry_intent_attested %}
+    {# Arc 22-B N4: an attested value is TERMINAL for every generic writer.
+       READ-ONLY, and no field is submitted, so the presence gate preserves it. #}
+    <p>
+      Entry intent:
+      <span data-field="entry_intent_attested">{{ vm.entry_intent_attested_label }}</span>
+    </p>
+    <p><small>Attested with its recorded evidence; it cannot be changed here.
+       No reversal surface exists.</small></p>
+    {% else %}
     <label>
       Entry intent
       <select name="entry_intent">
@@ -136,6 +146,7 @@
     <p><small>Was this a standard signal-driven entry or a by-design hypothesis
        test? Correct it here if the entry-time classification was wrong; leave
        it unclassified to clear it.</small></p>
+    {% endif %}
   </fieldset>
 
   <fieldset>

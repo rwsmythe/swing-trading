@@ -144,6 +144,33 @@ def record_envelope_readings(conn: sqlite3.Connection) -> int:
     return ensure_entry_fill_identities(conn)
 
 
+def attest_trade20(db_path: Any, **trade: Any) -> int:
+    """Trade 20 CLOSED and not yet reviewed, ATTESTED through the real writer.
+
+    Seeds trade 20 (+ fills 41/44 + AMN row 5) raw on a v40 DB, then assigns
+    ``unintended_execution`` through ``assign`` -- the one writer of the value
+    -- so the attestation row and the value land exactly as in production.
+    Trade 20 admits on tier 2 (leg 2), whose path never reads ``cfg`` (only
+    the structural probe does), so ``cfg`` is None. Returns the attestation id.
+    """
+    from swing.data.db import open_connection
+    from swing.trades.entry_intent_assignment import assign
+
+    c = open_connection(db_path)
+    try:
+        seed_amn_row5(c)
+        seed_trade20(c, **{"state": "closed", **trade})
+        c.commit()
+        result = assign(c, None, trade_id=int(trade.get("id", TRADE20["id"])),
+                        cite=["notes", "why_now"],
+                        reason="Stale A+ latch order fired after the mandate died",
+                        applied_by="operator")
+    finally:
+        c.close()
+    assert result.admitted, result.message
+    return int(result.attestation_id)
+
+
 def envelope(**overrides: Any) -> str:
     base = json.loads(FILL41_ENVELOPE)
     base.update(overrides)

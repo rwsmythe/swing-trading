@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from swing.config import Config
 from swing.data.db import connect
-from swing.data.models import Fill, ReviewLog, Trade
+from swing.data.models import UNINTENDED_EXECUTION, Fill, ReviewLog, Trade
 from swing.data.repos.cash import list_cash
 from swing.data.repos.fills import (
     list_fills_for_trade,
@@ -28,6 +28,7 @@ from swing.trades.exit import ExitReason
 from swing.trades.exit_auto_fill import PossibleDuplicateFill
 from swing.trades.intent import (
     entry_intent_display_choices,
+    entry_intent_label,
     suggest_entry_intent,
 )
 from swing.trades.review import ReviewPriors
@@ -1349,6 +1350,13 @@ class ReviewVM:
     # constructible (5-VM existing-fields rule needs no other change).
     entry_intent_choices: tuple[tuple[str, str], ...] = ()
     entry_intent_selected: str | None = None
+    # Arc 22-B N4 (R0.D): an attested `unintended_execution` renders READ-ONLY
+    # (no <select>, so the field is absent from the POST and the presence gate
+    # preserves it). The label is computed HERE -- the template never calls
+    # entry_intent_label (no such Jinja global, R3-04). Review-form fields
+    # only, not base-layout; safe defaults.
+    entry_intent_attested: bool = False
+    entry_intent_attested_label: str = ""
 
     # Phase 5 lesson — base.html.j2 dereferences these. New page VMs MUST
     # carry safe defaults (5-VM existing-fields rule; brief §6.2 watch item 8).
@@ -1597,6 +1605,10 @@ def build_review_vm(
             if trade.entry_intent is not None
             else suggest_entry_intent(trade.hypothesis_label)
         ),
+        entry_intent_attested=trade.entry_intent == UNINTENDED_EXECUTION,
+        entry_intent_attested_label=(
+            entry_intent_label(trade.entry_intent) or ""
+            if trade.entry_intent == UNINTENDED_EXECUTION else ""),
     )
 
 

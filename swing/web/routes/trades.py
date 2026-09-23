@@ -3594,6 +3594,26 @@ async def review_post(
                 status_code=409,
                 detail="Trade already reviewed; V1 supports single-review only",
             )
+        # Arc 22-B N4 layer 1, BEFORE the review commits (R2-02): an attested
+        # `unintended_execution` is TERMINAL. The form renders it read-only and
+        # omits the field, so only a handcrafted POST reaches this; it gets the
+        # typed refusal as a 4xx fragment and NOTHING is written.
+        if entry_intent_present:
+            from swing.data.models import AttestedIntentError
+            from swing.data.repos.trades import assert_entry_intent_change_allowed
+            try:
+                assert_entry_intent_change_allowed(
+                    conn, trade_id=trade_id, entry_intent=ei)
+            except AttestedIntentError as exc:
+                from swing.web.view_models.trades import build_review_vm
+                vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+                if vm is None:
+                    return templates.TemplateResponse(
+                        request, "partials/trade_form_error.html.j2",
+                        {"error_message": str(exc)}, status_code=409)
+                return templates.TemplateResponse(
+                    request, "partials/review_form.html.j2",
+                    {"vm": vm, "error_message": str(exc)}, status_code=409)
         # Hotfix 2026-05-05 (operator-witnessed gate finding S6): the prior
         # implementation called update_trade_review_fields directly inside
         # `with conn:`, persisting Phase 6 review fields BUT never firing the

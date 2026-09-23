@@ -967,6 +967,40 @@ def update_trade_review_fields(
         raise ValueError(f"trade {trade_id} not found")
 
 
+def assert_entry_intent_change_allowed(
+    conn: sqlite3.Connection, *, trade_id: int, entry_intent: str | None,
+) -> None:
+    """N4 layer 1 (CHARC, R0.D), a PURE READ: raise ``AttestedIntentError``
+    when the row's CURRENT ``entry_intent`` is ``unintended_execution`` and
+    ``entry_intent`` differs. The value is TERMINAL for every generic writer.
+
+    Shared by ``update_entry_intent`` (its step (c)) and by the two review
+    surfaces, which call it BEFORE ``complete_trade_review`` commits (R2-02),
+    so a refusal writes nothing. A same value returns (idempotent). A missing
+    row or a pre-v27 schema returns: the writer owns those errors.
+    """
+    from swing.data.models import (
+        UNINTENDED_EXECUTION,
+        AttestedIntentError,
+        attested_message,
+    )
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()}
+    if "entry_intent" not in cols:
+        return
+    row = conn.execute(
+        "SELECT entry_intent FROM trades WHERE id = ?", (trade_id,)).fetchone()
+    if row is None or row[0] != UNINTENDED_EXECUTION or entry_intent == row[0]:
+        return
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'entry_intent_attestations'").fetchone() is not None
+    found = conn.execute(
+        "SELECT attestation_id FROM entry_intent_attestations WHERE trade_id = ?",
+        (trade_id,)).fetchone() if has_table else None
+    raise AttestedIntentError(attested_message(found[0] if found else "?"))
+
+
 def update_entry_intent(
     conn: sqlite3.Connection, *, trade_id: int, entry_intent: str | None,
 ) -> None:
@@ -981,7 +1015,8 @@ def update_entry_intent(
     PRAGMA-aware: a non-None entry_intent against a pre-v27 schema raises a clean
     ValueError (NOT a leaked OperationalError). Validates against
     ENTRY_INTENTS_ASSERTABLE (Literal is not runtime-enforced); the
-    evidence-bearing value raises EntryIntentSeamError (Arc 22-B, F5).
+    evidence-bearing value raises EntryIntentSeamError (Arc 22-B, F5), and a
+    change FROM an attested value raises AttestedIntentError (N4 layer 1).
     `... or None` nullability respected by the caller; NULL is a legal value
     (the backfill `skip` path). Missing trade_id raises ValueError.
     """
@@ -1007,15 +1042,19 @@ def update_entry_intent(
             raise ValueError(f"trade {trade_id} not found")
         return
     # Arc 22-B (F5 seam), in order: (a) read the CURRENT value; (b) same value
-    # -> return without writing (idempotent); (d) the evidence-bearing value is
-    # refused, typed (only `swing trade assign-intent` writes it); (e) a
-    # non-member keeps today's message; (f) write.
+    # -> return without writing (idempotent); (c) N4 layer 1: an attested
+    # `unintended_execution` is TERMINAL -> AttestedIntentError; (d) the
+    # evidence-bearing value is refused, typed (only `swing trade
+    # assign-intent` writes it); (e) a non-member keeps today's message; (f)
+    # write.
     row = conn.execute(
         "SELECT entry_intent FROM trades WHERE id = ?", (trade_id,)).fetchone()
     if row is None:
         raise ValueError(f"trade {trade_id} not found")
     if entry_intent == row[0]:
         return
+    assert_entry_intent_change_allowed(
+        conn, trade_id=trade_id, entry_intent=entry_intent)
     if entry_intent == UNINTENDED_EXECUTION:
         raise EntryIntentSeamError(SEAM_MESSAGE)
     if entry_intent is not None and entry_intent not in ENTRY_INTENTS_ASSERTABLE:

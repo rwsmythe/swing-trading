@@ -1696,6 +1696,18 @@ def trade_review_cmd(
             disqualifying=disqualifying_process_violation,
         )
 
+        # Arc 22-B N4 layer 1, BEFORE the review commits (R2-02): an attested
+        # `unintended_execution` is terminal, so a refused intent change must
+        # not leave a completed review behind it. The same pure read
+        # update_entry_intent's step (c) makes.
+        if entry_intent is not None:
+            from swing.data.repos.trades import assert_entry_intent_change_allowed
+            try:
+                assert_entry_intent_change_allowed(
+                    conn, trade_id=trade_id, entry_intent=entry_intent)
+            except ValueError as exc:
+                raise click.ClickException(str(exc)) from exc
+
         # B.7: route through `complete_trade_review` service so the review
         # fields write + state_transition(closed → reviewed) land atomically
         # in a single transaction. The service opens its own `with conn:`
@@ -1828,8 +1840,15 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
     (renders 'Unclassified'). The re-runnable command + its summary ARE the audit
     (no provenance table for V1)."""
     from swing.config_overrides import apply_overrides
-    from swing.data.models import EntryIntentSeamError
-    from swing.data.repos.trades import update_entry_intent
+    from swing.data.models import (
+        UNINTENDED_EXECUTION,
+        AttestedIntentError,
+        EntryIntentSeamError,
+    )
+    from swing.data.repos.trades import (
+        assert_entry_intent_change_allowed,
+        update_entry_intent,
+    )
     from swing.trades.intent import entry_intent_label, suggest_entry_intent
 
     cfg = apply_overrides(ctx.obj["config"])
@@ -1853,6 +1872,17 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
         for tid, ticker, edate, hyp, pg, tags, current in rows:
             already_set = current is not None
             if already_set and trade_id is None and not force:
+                n_skipped_set += 1
+                continue
+            if current == UNINTENDED_EXECUTION:
+                # Arc 22-B N4: an attested value is TERMINAL. --force /
+                # --trade-id SKIP it with the message; they never prompt over
+                # it (the message comes from the same read layer 1 makes).
+                try:
+                    assert_entry_intent_change_allowed(
+                        conn, trade_id=tid, entry_intent=None)
+                except AttestedIntentError as exc:
+                    click.echo(f"#{tid} {ticker} {edate} | {exc}")
                 n_skipped_set += 1
                 continue
             suggestion = suggest_entry_intent(hyp)

@@ -269,6 +269,22 @@ class EntryIntentSeamError(ValueError):
     """
 
 
+def attested_message(attestation_id: int | str) -> str:
+    """N4's words (CHARC, R0.D), ASCII. It does NOT name `assign-intent` as a
+    recovery: `assign-intent` refuses a non-NULL row (F5), and a mistaken
+    attestation is a register item, not a channel in 22-B."""
+    return (f"entry_intent is attested (entry_intent_attestations row "
+            f"{attestation_id}); no reversal surface exists -- a reversal is a "
+            "NEW evidence class with its own record")
+
+
+class AttestedIntentError(ValueError):
+    """N4 layer 1: a generic writer was asked to CHANGE an attested
+    `unintended_execution` value (the value is TERMINAL for every generic
+    writer). A ValueError so the CLI/web boundaries surface it cleanly; the
+    SQL twin is `trg_trades_entry_intent_attested_terminal` (0040)."""
+
+
 @dataclass(frozen=True)
 class Trade:
     """Phase 7 Sub-A T3 — Trade dataclass.
