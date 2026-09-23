@@ -724,6 +724,8 @@ never coverage (F2.I s1). AL2-8 an MM-DD record across a year boundary refuses; 
 excluded; a local repo that LACKS the cited object (shallow/pruned clone) reads
 `tier2_evidence_stale` / `not_ancestor_of_origin_main`, indistinguishable at read from rewritten
 history -- the rendered `resolved_origin_main_sha` + ref age tell them apart. AL2-11 the S12.2b instrument items are carved to `22-A2i` (brief OUT).
+AL2-12 a service-rendered numeral adjacent to a leading `-` or a trailing exponent suffix admits
+(`-53.98`, `53.98e2`) (RD A-R2 item 2, R2-02; AL2-3's sibling with its own reason).
 
 ## 8. Envelope (for every review prompt; from brief section 2)
 
