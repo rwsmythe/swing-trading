@@ -834,14 +834,22 @@ def entry_post(
     # entry_intent is Form("") so empty == unclassified == VALID; only a
     # NON-EMPTY non-member is rejected. Re-rendering WITHOUT the bad anchor
     # clears it (4-tier-ladder behavior).
-    from swing.data.models import ENTRY_INTENTS
-    if entry_intent and entry_intent not in ENTRY_INTENTS:
+    from swing.data.models import (
+        ENTRY_INTENTS_ASSERTABLE,
+        SEAM_MESSAGE,
+        UNINTENDED_EXECUTION,
+    )
+    if entry_intent and entry_intent not in ENTRY_INTENTS_ASSERTABLE:
+        # Arc 22-B (F5 seam): the evidence-bearing value gets the typed message
+        # naming its one writer; any other non-member keeps today's text.
         return _rerender_entry_form_with_error(
             request=request, templates=templates, cfg=cfg, cache=cache,
             executor=executor, ticker=ticker, entry_date=entry_date,
             entry_price=entry_price, shares=shares, initial_stop=initial_stop,
             rationale=rationale, notes=notes,
-            error_message=f"invalid entry_intent {entry_intent!r}",
+            error_message=(
+                SEAM_MESSAGE if entry_intent == UNINTENDED_EXECUTION
+                else f"invalid entry_intent {entry_intent!r}"),
             origin=origin_coerced,
             submitted_schwab_source_value_json=schwab_source_value_json,
             submitted_auto_fill_audit_at=auto_fill_audit_at,
@@ -3542,7 +3550,11 @@ async def review_post(
     #     persisted value, so "foo" never re-renders -> operator not trapped).
     # Persisted via the dedicated update_entry_intent writer BELOW (its OWN
     # transaction) -- complete_trade_review is NOT widened.
-    from swing.data.models import ENTRY_INTENTS
+    from swing.data.models import (
+        ENTRY_INTENTS_ASSERTABLE,
+        SEAM_MESSAGE,
+        UNINTENDED_EXECUTION,
+    )
     # FastAPI collapses a present-but-empty form field ("") to the Form(None)
     # default, making it indistinguishable from an ABSENT field at the
     # parameter level. To honor absence != clear (Codex R1 Major), detect
@@ -3552,10 +3564,13 @@ async def review_post(
     raw_form = await request.form()
     entry_intent_present = "entry_intent" in raw_form
     ei = entry_intent or None  # ... or None: empty string -> NULL (nullable CHECK)
-    if entry_intent_present and ei is not None and ei not in ENTRY_INTENTS:
+    if (entry_intent_present and ei is not None
+            and ei not in ENTRY_INTENTS_ASSERTABLE):
         from swing.web.view_models.trades import build_review_vm
         vm = build_review_vm(trade_id=trade_id, cfg=cfg)
-        ei_err = f"Invalid entry_intent {ei!r}"
+        # Arc 22-B (F5 seam): the evidence-bearing value is refused typed.
+        ei_err = (SEAM_MESSAGE if ei == UNINTENDED_EXECUTION
+                  else f"Invalid entry_intent {ei!r}")
         if vm is None:
             return templates.TemplateResponse(
                 request, "partials/trade_form_error.html.j2",

@@ -574,6 +574,36 @@ def weather_cmd(ctx: click.Context, ticker: str, as_of_date_str: str | None) -> 
     click.echo(result.rationale)
 
 
+class EntryIntentParam(click.ParamType):
+    """`--entry-intent` for the GENERIC writers (Arc 22-B, F5 seam).
+
+    NOT a `click.Choice`: a Choice would reject `unintended_execution` at parse
+    time with its generic "not one of" text, so the typed seam message (which
+    names the ONE writer of that value) would be unreachable. Accepts the
+    entry-time values (`ENTRY_INTENTS_ASSERTABLE`); refuses the evidence-bearing
+    value with `SEAM_MESSAGE`; anything else fails with the generic message.
+    """
+
+    name = "entry_intent"
+
+    def convert(self, value, param, ctx):
+        from swing.data.models import (
+            ENTRY_INTENTS_ASSERTABLE,
+            SEAM_MESSAGE,
+            UNINTENDED_EXECUTION,
+        )
+        if value in ENTRY_INTENTS_ASSERTABLE:
+            return value
+        if value == UNINTENDED_EXECUTION:
+            self.fail(SEAM_MESSAGE, param, ctx)
+        self.fail(
+            f"{value!r} is not one of {sorted(ENTRY_INTENTS_ASSERTABLE)}",
+            param, ctx)
+
+    def get_metavar(self, param, ctx=None):
+        return "[standard|hypothesis_test_by_design]"
+
+
 @main.group("trade")
 def trade_group() -> None:
     """Trade lifecycle: entry, exit, list, stop adjust, advisory."""
@@ -600,7 +630,7 @@ def trade_group() -> None:
               help="Optional free-text pre-trade hypothesis label. Frozen at "
                    "entry time; aggregated by `swing journal review`.")
 @click.option("--entry-intent", "entry_intent",
-              type=click.Choice(["standard", "hypothesis_test_by_design"]),
+              type=EntryIntentParam(),
               default=None,
               help="Design intent for this entry (tuition-vs-error "
                    "instrument). The advisory suggestion shown in the web "
@@ -1556,7 +1586,7 @@ def _render_trade_analysis(a) -> list[str]:
                    "market_regime_shift, adverse_event_shock, execution_error, "
                    "failed_to_advance, other. Omit for a winner / unattributed.")
 @click.option("--entry-intent", "entry_intent",
-              type=click.Choice(["standard", "hypothesis_test_by_design"]),
+              type=EntryIntentParam(),
               default=None,
               help="Optional correction of the trade's design intent. Omit to "
                    "leave the persisted value unchanged; pass a value to set it.")
@@ -1733,6 +1763,7 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
     (renders 'Unclassified'). The re-runnable command + its summary ARE the audit
     (no provenance table for V1)."""
     from swing.config_overrides import apply_overrides
+    from swing.data.models import EntryIntentSeamError
     from swing.data.repos.trades import update_entry_intent
     from swing.trades.intent import entry_intent_label, suggest_entry_intent
 
@@ -1773,6 +1804,12 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
             try:
                 with conn:
                     update_entry_intent(conn, trade_id=tid, entry_intent=choice)
+            except EntryIntentSeamError as exc:
+                # Arc 22-B F5 seam: the evidence-bearing value is never written
+                # here; say why, leave the row as it was, and keep going.
+                click.echo(f"  {exc}")
+                n_skipped_op += 1
+                continue
             except ValueError as exc:
                 raise click.ClickException(str(exc)) from exc
             n_set += 1

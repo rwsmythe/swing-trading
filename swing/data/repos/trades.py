@@ -979,17 +979,19 @@ def update_entry_intent(
     update_trade_review_fields to preserve that writer's focus.
 
     PRAGMA-aware: a non-None entry_intent against a pre-v27 schema raises a clean
-    ValueError (NOT a leaked OperationalError). Validates against ENTRY_INTENTS
-    (Literal is not runtime-enforced). `... or None` nullability respected by the
-    caller; NULL is a legal value (the backfill `skip` path). Missing trade_id
-    raises ValueError.
+    ValueError (NOT a leaked OperationalError). Validates against
+    ENTRY_INTENTS_ASSERTABLE (Literal is not runtime-enforced); the
+    evidence-bearing value raises EntryIntentSeamError (Arc 22-B, F5).
+    `... or None` nullability respected by the caller; NULL is a legal value
+    (the backfill `skip` path). Missing trade_id raises ValueError.
     """
-    from swing.data.models import ENTRY_INTENTS
+    from swing.data.models import (
+        ENTRY_INTENTS_ASSERTABLE,
+        SEAM_MESSAGE,
+        UNINTENDED_EXECUTION,
+        EntryIntentSeamError,
+    )
 
-    if entry_intent is not None and entry_intent not in ENTRY_INTENTS:
-        raise ValueError(
-            f"entry_intent must be one of {sorted(ENTRY_INTENTS)} or None, "
-            f"got {entry_intent!r}")
     has_col = "entry_intent" in {
         r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()
     }
@@ -1004,6 +1006,22 @@ def update_entry_intent(
         if cur.fetchone() is None:
             raise ValueError(f"trade {trade_id} not found")
         return
+    # Arc 22-B (F5 seam), in order: (a) read the CURRENT value; (b) same value
+    # -> return without writing (idempotent); (d) the evidence-bearing value is
+    # refused, typed (only `swing trade assign-intent` writes it); (e) a
+    # non-member keeps today's message; (f) write.
+    row = conn.execute(
+        "SELECT entry_intent FROM trades WHERE id = ?", (trade_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"trade {trade_id} not found")
+    if entry_intent == row[0]:
+        return
+    if entry_intent == UNINTENDED_EXECUTION:
+        raise EntryIntentSeamError(SEAM_MESSAGE)
+    if entry_intent is not None and entry_intent not in ENTRY_INTENTS_ASSERTABLE:
+        raise ValueError(
+            f"entry_intent must be one of {sorted(ENTRY_INTENTS_ASSERTABLE)} or "
+            f"None, got {entry_intent!r}")
     cur = conn.execute(
         "UPDATE trades SET entry_intent = ? WHERE id = ?", (entry_intent, trade_id))
     if cur.rowcount == 0:

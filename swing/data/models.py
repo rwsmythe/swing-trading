@@ -242,6 +242,27 @@ FAILURE_MODES: frozenset[str] = frozenset({
 # Asserted identical to the migration 0027 CHECK by the 0027 schema test.
 ENTRY_INTENTS: frozenset[str] = frozenset({"standard", "hypothesis_test_by_design"})
 
+# Arc 22-B (F5, the single-writer seam). `unintended_execution` is the
+# evidence-bearing value: it is written ONLY by `swing trade assign-intent`,
+# which records its evidence in `entry_intent_attestations`. Every GENERIC
+# writer of trades.entry_intent (the eight surfaces of the 22-B census C.4)
+# validates against ENTRY_INTENTS_ASSERTABLE -- the entry-time values -- and
+# refuses the evidence-bearing value with the typed EntryIntentSeamError.
+UNINTENDED_EXECUTION = "unintended_execution"
+ENTRY_INTENTS_ASSERTABLE: frozenset[str] = frozenset(
+    {"standard", "hypothesis_test_by_design"})
+SEAM_MESSAGE = (
+    "entry_intent 'unintended_execution' is evidence-bearing: it is written "
+    "only by 'swing trade assign-intent', which records its evidence")
+
+
+class EntryIntentSeamError(ValueError):
+    """A generic writer was asked to write the evidence-bearing intent value.
+
+    Subclasses ValueError so every existing `except ValueError` boundary (the
+    CLI ClickException wrap, the web 4xx) keeps working.
+    """
+
 
 @dataclass(frozen=True)
 class Trade:

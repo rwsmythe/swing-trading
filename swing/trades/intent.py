@@ -1,25 +1,30 @@
 """Tuition-vs-error instrument: entry_intent presentation + advisory prefill.
 
-PURE (no I/O). The schema-CHECK enum ENTRY_INTENTS lives in swing.data.models
-(the schema-enum home, to avoid an upward import); this module owns the
+PURE (no I/O). The schema-CHECK enum lives in swing.data.models (the
+schema-enum home, to avoid an upward import); this module owns the
 display/advisory helpers. The no-drift test asserts ENTRY_INTENT_DISPLAY's
-values equal ENTRY_INTENTS. NEVER consulted by the service/persist layer for
-the stored value -- suggest_entry_intent only seeds the visible form control's
-default (spec §5: THE SINGLE PREFILL RULE).
+values equal ENTRY_INTENTS_ASSERTABLE (the choices a form may offer). NEVER
+consulted by the service/persist layer for the stored value --
+suggest_entry_intent only seeds the visible form control's default
+(spec §5: THE SINGLE PREFILL RULE).
 """
 from __future__ import annotations
 
-# Ordered (value, label) for the form <select> + display (mirrors
+# Ordered (value, label) for the form <select> CHOICES (mirrors
 # review.FAILURE_MODE_DISPLAY). ASCII-only labels (#16 cp1252 stdout + parity).
-# A frozenset has NO iteration-order guarantee -- forms/labels iterate THIS
-# tuple, never ENTRY_INTENTS directly. The no-drift test asserts
-# {v for v,_ in ENTRY_INTENT_DISPLAY} == ENTRY_INTENTS.
+# A frozenset has NO iteration-order guarantee -- forms iterate THIS tuple.
+# Arc 22-B: the choices are the ENTRY-TIME values only (the generic writers'
+# set); the no-drift test asserts
+# {v for v,_ in ENTRY_INTENT_DISPLAY} == ENTRY_INTENTS_ASSERTABLE.
 ENTRY_INTENT_DISPLAY: tuple[tuple[str, str], ...] = (
     ("standard", "Standard entry"),
     ("hypothesis_test_by_design", "Hypothesis test (by design)"),
 )
 
-_ENTRY_INTENT_LABELS: dict[str, str] = dict(ENTRY_INTENT_DISPLAY)
+# Arc 22-B: the LABELS cover the whole stored value set (the schema enum),
+# a sibling of the choices -- a value no form offers still renders its own
+# label wherever a trade renders.
+ENTRY_INTENT_LABELS: dict[str, str] = dict(ENTRY_INTENT_DISPLAY)
 
 
 def entry_intent_display_choices() -> tuple[tuple[str, str], ...]:
@@ -31,7 +36,7 @@ def entry_intent_label(value: str | None) -> str | None:
     """Map a stored token to its display label; None -> None; unknown -> itself."""
     if value is None:
         return None
-    return _ENTRY_INTENT_LABELS.get(value, value)
+    return ENTRY_INTENT_LABELS.get(value, value)
 
 
 def suggest_entry_intent(hypothesis_label: str | None) -> str | None:
