@@ -435,3 +435,30 @@ Plan: `2026-09-22-phase22-arc-a2-proof-machinery.md` (merged at `23313918`). Pla
 > WHY I restate rather than hold to the letter, said plainly so the operator can override it: five counted rounds and 3.44M tokens have converged on the arc's OWN defects and now return members of two DECLARED classes per round (local-repo tampering; token-grammar residuals of the AL2-3/8/12 family). A loop whose stopping condition is stated over the reviewer's output does not terminate on an open-ended class; the harness's own rule is to scope the gate to what the arc owns. The declaration of the two classes with their reasons is the fix; a sixth round against the same contract would find a third member. OPERATOR: this is my gate and my call; if you want a sixth counted round anyway, say so and I hold the gate for it.
 >
 > What my gate still requires, unchanged: B's transcript on the tree being merged with its findings dispositioned; every AL2-1..16 on the list with its reason; the .6 pair's fixture diff = derivation_version only; the four cohort readers' markers rendered; A2-98..104 on the shipping tree; the H1 count quoted from the reader. At the witness, step 6 adds the OFF-BOX ancestry-and-content check for trade 25's cited sha on a fresh clone (AL2-16's discharge).
+
+## ORCHESTRATOR DECISION -- the Reviewer A loop CLOSES at round 5; no sixth counted round (2026-09-23)
+
+**Author: the orchestrator (the generation launched 2026-09-23 as the successor to session `7a4e5079`).** Written after the A-R5 packet was fully ruled: CHARC `ae27b56f`, RD's items and gate at `29885f55`.
+
+**Decision.** No sixth counted round is authorized. The loop closes on the round-5 verdict at `7e8bfb84`. That verdict is anchored `NEW_CRITICAL_MAJOR_FOUND`, and it satisfies RD's superseded gate, because every critical and major in it is DISPOSITIONED:
+- R5-01 is ACCEPTED as AL2-16, with its off-box discharge at witness step 6.
+- R5-02 is ACCEPTED as AL2-15.
+- R5-03 is FIXED test-only by the next cell, per CHARC's shape.
+
+No production change of critical or major scope lands after the verdict: the next cell's diff is `tests/data` plus plan and ledger text only. CHARC's recommended class stopping condition ("the sixth is the last round the class may buy") is moot, because no sixth round is bought. Its intent holds through AL2-16, which banks every member of the class.
+
+**Operator override, open.** CHARC's conditional `.7` shape (take the graft belt now, with a sixth counted round) lapsed on RD's decline, and RD routed the disagreement up to the operator. If the operator orders the belt and a sixth round, CHARC's shape governs as written, and this decision is superseded by that instruction.
+
+**Next, in order:**
+- **Cell 19** lands, red-first where a test applies:
+  - R5-03, per CHARC's A-R5 shape: test-only, in `tests/data`. The drop search runs with nothing blanked; the single-quoted name form is added; `ALTER TABLE <barrier table> RENAME TO` becomes a violation; the era-record search keeps blanking both quote kinds.
+  - AL2-15, AL2-16 and the AL2-4 widening, by replacement in plan section 7 and in the plan ledger's AL2 reasons, in RD's words.
+  - RD's superseding composition sentence, wherever the plan text states the old one.
+  - The full fast suite on the final head.
+- Then **Reviewer B** on the tree being merged.
+- Then **RD's measurement gate**, the `--no-ff` merge, and the witness.
+
+The post-merge riders go on CHARC's register:
+- the future `.7` pair (the MM-DD boundary rule, the behavioural rewrite of `test_22a2_session_hyphen_bound.py:146`, and the graft belt at `os.devnull`, plus commitGraph only on a measured red case);
+- D65;
+- an off-box verifier primitive.
