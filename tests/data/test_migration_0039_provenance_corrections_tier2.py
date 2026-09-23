@@ -351,7 +351,7 @@ def test_a2_18_the_manifest_diff_is_three_changed_objects_and_nothing_else(
             if r.name in V39_OBJECT_HASHES} == V39_OBJECT_HASHES
 
 
-def test_a2_19_the_committed_fixture_is_the_v39_head(tmp_path: Path) -> None:
+def test_a2_19_the_0039_migration_yields_v39_and_its_three_objects(tmp_path: Path) -> None:
     # Re-scoped by Arc 22-B (R0.I): the "# schema_version 39" literal is
     # RETIRED and the fixture == HEAD clause is the `_head` tests' claim. The
     # case now pins 0039's own post-migrate state.

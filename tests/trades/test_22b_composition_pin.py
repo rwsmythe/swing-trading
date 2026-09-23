@@ -106,7 +106,7 @@ BASE_PINS_22A2: dict[tuple[str, str], str] = {
      "test_a2_18_the_manifest_diff_is_three_changed_objects_and_nothing_else"):
         "52d9a345f38a6022b06417042b3b85e0cda1ad3166db21d67bb0a9f8cb3059e3",
     (_M4,
-     "test_a2_19_the_committed_fixture_is_the_v39_head"):
+     "test_a2_19_the_0039_migration_yields_v39_and_its_three_objects"):
         "f98949737f60f71444fc5a93dd9e5d189dc96109eef671a19fba4c05e3efab01",
     (_M4,
      "test_a2_20_the_reversibility_header_names_the_edits_and_the_gate"):
@@ -367,8 +367,8 @@ RE_SCOPED_22B: dict[str, tuple[tuple[str, str], str, str]] = {
         _REASON),
     "A2-19": (
         (_M4,
-         "test_a2_19_the_committed_fixture_is_the_v39_head"),
-        "5fac52f74ac597130d8ea93573e695d896d7a7d4d1130653bc1554f2742bdcd9",
+         "test_a2_19_the_0039_migration_yields_v39_and_its_three_objects"),
+        "bb068ea5a9e280e009f9e12dd5f150b205b200a04eefe4c78b4839ecca06d330",
         _REASON),
     "A2-22": (
         (_M3,
