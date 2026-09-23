@@ -127,6 +127,23 @@ def seed_trade20(conn: sqlite3.Connection, *, with_outcome: bool = True,
     return int(trade["id"])
 
 
+def record_envelope_readings(conn: sqlite3.Connection) -> int:
+    """The AUTHORITY's stored reading of every envelope-bearing entry fill.
+
+    RULING G1b: 0040's binding trigger compares the attestation's order id to
+    the STORED ``fill_envelope_identity`` reading, never to the envelope. In
+    production the entry writer records that reading
+    (``_record_envelope_identity_or_log``) and ``assign`` re-verifies it; a
+    fixture that plants fills RAW must establish it the same way before it
+    plants an attestation row naming an order id.
+    """
+    from swing.data.repos.fill_envelope_identity import (
+        ensure_entry_fill_identities,
+    )
+
+    return ensure_entry_fill_identities(conn)
+
+
 def envelope(**overrides: Any) -> str:
     base = json.loads(FILL41_ENVELOPE)
     base.update(overrides)

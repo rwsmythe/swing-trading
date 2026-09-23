@@ -31,6 +31,7 @@ from tests._22b_fixtures import (
     TRADE20,
     envelope,
     insert_row,
+    record_envelope_readings,
     seed_amn_row5,
     seed_trade20,
 )
@@ -229,6 +230,9 @@ def test_dry_run_writes_nothing_and_returns_the_predicates_b22_83(tmp_path: Path
     assert r.outcome_known_at == "2026-08-11T16:00:00"
     assert r.attestation_id is None
     _nothing_written(path)
+    # RULING G1b: the dry run takes assign's own path (ensure inside BEGIN
+    # IMMEDIATE) and ROLLBACKs it, the stored readings ensure appended included.
+    assert _fresh(path, "SELECT COUNT(*) FROM fill_envelope_identity") == [(0,)]
 
 
 # ---------------------------------------------------------------------------
@@ -746,7 +750,7 @@ def test_drift_reader_names_moved_leg1_view_fields_b22_195(tmp_path: Path,
 
 
 @pytest.mark.parametrize("move", ["earlier_entry_fill", "envelope_rewritten",
-                                  "entry_fill_deleted"])
+                                  "envelope_rewritten_unread", "entry_fill_deleted"])
 def test_drift_reader_names_a_moved_authoritative_fill_and_a_changed_envelope_b22_116(
         tmp_path: Path, move: str) -> None:
     c, _, _ = _assigned(tmp_path)
@@ -757,9 +761,16 @@ def test_drift_reader_names_a_moved_authoritative_fill_and_a_changed_envelope_b2
                                     "quantity": 1.0, "price": 36.0})
             tag = "(v)"
         elif move == "envelope_rewritten":
+            # RULING G1b: (vi) compares the STORED reading of the CURRENT
+            # document; the production writer reads a new document first.
             c.execute("UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = 41",
                       (envelope(schwab_order_id="999"),))
-            tag = "(vi)"
+            record_envelope_readings(c)
+            tag = "(vi) the entry fill's order id changed"
+        elif move == "envelope_rewritten_unread":
+            c.execute("UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = 41",
+                      (envelope(schwab_order_id="999"),))
+            tag = "(vi) the entry fill's current envelope has no stored reading"
         else:
             c.execute("DELETE FROM fills WHERE fill_id = 41")
             assert c.execute("SELECT entry_fill_id FROM entry_intent_attestations"
@@ -866,22 +877,102 @@ def test_padded_or_duplicate_key_envelope_refuses_b22_108(tmp_path: Path,
         r = _assign(c, cfg)
     finally:
         c.close()
-    assert (r.admitted, r.refusal_code) == (False, "non_canonical_envelope")
+    assert (r.admitted, r.refusal_code) == (False, "envelope_refused")
     _nothing_written(path)
 
 
-def test_duplicate_entry_date_key_reads_one_authority_b22_78(tmp_path: Path) -> None:
-    """SQLite's json_extract reads the FIRST duplicate key and json.loads the
-    LAST: the service reads the SQL way, so the row passes trg_eia_tier2."""
-    env = ('{"entry_date": "2026-08-01", "entry_price": 36.43, '
+_DUPLICATE_ENTRY_DATES = {
+    # (first, last): the fixture's own dates, and the discriminating twin where
+    # both precede 08-03 so a bare json.loads read (last key) would ADMIT.
+    "first_0801_last_0805": ("2026-08-01", "2026-08-05"),
+    "first_0801_last_0802": ("2026-08-01", "2026-08-02"),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_DUPLICATE_ENTRY_DATES))
+def test_duplicate_entry_date_key_refuses_b22_78(tmp_path: Path, shape: str) -> None:
+    """REWRITTEN by RULING G1b as a refusal case. MEASURED: the stored reading
+    of this document is `canonical` (the canonicaliser checks duplicates only
+    for schwab_order_id / schwab_instrument_symbol), so the refusal is the
+    service's Python read counting the ROOT entry_date keys before json.loads'
+    last-key rule can choose one -- reported at G1d, provisional."""
+    from swing.trades.latched_origin import canonical_envelope_identity
+
+    first, last = _DUPLICATE_ENTRY_DATES[shape]
+    env = (f'{{"entry_date": "{first}", "entry_price": 36.43, '
            '"schwab_instrument_symbol": "AMN", '
-           '"schwab_order_id": "1007427919619", "shares": 5, '
-           '"entry_date": "2026-08-05"}')
-    assert json.loads(env)["entry_date"] == "2026-08-05"
+           f'"schwab_order_id": "1007427919619", "shares": 5, '
+           f'"entry_date": "{last}"}}')
+    assert json.loads(env)["entry_date"] == last
+    assert canonical_envelope_identity(env).state == "canonical"
     c, cfg, path = _world(tmp_path, env=env)
     try:
         r = _assign(c, cfg)
     finally:
         c.close()
-    assert r.admitted, r.message
-    assert _row(path)["placement_session"] == "2026-08-01"
+    assert (r.admitted, r.refusal_code) == (False, "envelope_refused"), r.message
+    assert "entry_date" in r.message
+    _nothing_written(path)
+
+
+# ---------------------------------------------------------------------------
+# RULING G1b -- the stored reading is the refuse-first; drift is contained
+# ---------------------------------------------------------------------------
+def test_a_refused_reading_on_the_entry_fill_refuses_b22_208(tmp_path: Path) -> None:
+    """An undecodable envelope: the authority stores `refused` (the production
+    writer reads it at entry), and the assignment refuses envelope_refused --
+    never admits, nothing written."""
+    c, cfg, path = _world(tmp_path, env='{"schwab_order_id": "1007427919619"')
+    try:
+        record_envelope_readings(c)
+        c.commit()
+        assert c.execute("SELECT envelope_state FROM fill_envelope_identity "
+                         "WHERE fill_id = 41").fetchall() == [("refused",)]
+        r = _assign(c, cfg)
+        assert not c.in_transaction
+    finally:
+        c.close()
+    assert (r.admitted, r.refusal_code) == (False, "envelope_refused"), r.message
+    _nothing_written(path)
+    assert _fresh(path, "SELECT COUNT(*) FROM fill_envelope_identity") == [(1,)]
+
+
+def test_a_drifted_reading_refuses_identity_drift_b22_209(tmp_path: Path) -> None:
+    """A stored reading of the entry fill's CURRENT document that disagrees with
+    what the canonicaliser reads today (a forged or older-grammar row, planted
+    raw): ensure's record_identity raises, contained into identity_drift,
+    fail-closed, nothing written. MEASURED: rewriting the envelope AFTER a
+    reading does NOT drift -- the new document is a new (fill_id,
+    envelope_raw) key and ensure appends a fresh reading."""
+    c, cfg, path = _world(tmp_path)
+    try:
+        doc = c.execute("SELECT schwab_source_value_json FROM fills "
+                        "WHERE fill_id = 41").fetchone()[0]
+        insert_row(c, "fill_envelope_identity", {
+            "fill_id": 41, "envelope_raw": doc, "envelope_state": "canonical",
+            "broker_order_id": "999", "instrument_symbol": "AMN",
+            "canonicalizer_version": "planted",
+            "recorded_ts": "2026-09-23T00:00:00Z"})
+        c.commit()
+        r = _assign(c, cfg)
+        assert not c.in_transaction
+    finally:
+        c.close()
+    assert (r.admitted, r.refusal_code) == (False, "identity_drift"), r.message
+    _nothing_written(path)
+    assert _fresh(path, "SELECT COUNT(*) FROM fill_envelope_identity") == [(1,)]
+
+
+def test_an_envelope_with_no_reading_after_ensure_raises_the_invariant_b22_212(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An envelope present with NO stored reading after ensure is an invariant
+    breach: it RAISES and rolls back, it is never a refusal."""
+    c, cfg, path = _world(tmp_path)
+    try:
+        monkeypatch.setattr(svc, "ensure_entry_fill_identities", lambda conn: 0)
+        with pytest.raises(svc.EnvelopeReadingMissingError):
+            _assign(c, cfg)
+        assert not c.in_transaction
+    finally:
+        c.close()
+    _nothing_written(path)

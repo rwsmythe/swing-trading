@@ -76,7 +76,13 @@
 --         INSERT twin does not name the table (it refuses the value outright);
 --       * trades -> FIVE rows: trg_provenance_corrections_citation_graph (the
 --         v39 row above) plus this migration's trg_eia_trade_binding,
---         trg_eia_cited_fields, trg_eia_audit_trail and trg_eia_tier2.
+--         trg_eia_cited_fields, trg_eia_audit_trail and trg_eia_tier2;
+--       * fill_envelope_identity (`sql LIKE '%fill_envelope_identity%' AND
+--         tbl_name <> 'fill_envelope_identity'`) -> TWO rows (RULING G1b):
+--         trg_provenance_corrections_citation_graph (the v39 reader) and
+--         this migration's trg_eia_trade_binding, which binds the STORED
+--         envelope reading. No object in this migration reads a fill's
+--         envelope itself (the 22-A sweep test is the check).
 --
 -- (viii) DECLARED LIMITATION (CHARC, G1 (d)): 0037 pairs the PK clause of
 --     trg_loml_no_replace with CHECK (link_id > 0) (0037:340), but
@@ -368,8 +374,12 @@ BEGIN SELECT RAISE(ABORT, 'latch_view_events first_viewed_ts and ticker are immu
 --    admission trigger below is the SQL twin of a service check
 --    (AUTHORIZE-THEN-ABORT: the trigger predicate set is a subset of the
 --    service's); every validation WHEN is `NOT COALESCE(<predicate>, 0)`, and
---    every JSON source read by a trigger goes through a json_valid guard
---    (json_each / json_extract on malformed text RAISE, even behind AND).
+--    every JSON column of THIS table read by a trigger goes through a
+--    json_valid guard (json_each / json_extract on malformed text RAISE, even
+--    behind AND). No trigger reads a fill's envelope (RULING G1b, 22-A
+--    PERSIST-CANONICAL): the order id is bound to the authority's STORED
+--    reading in fill_envelope_identity, and placement_session is a
+--    service-only derivation SQL stores and bounds but never re-reads.
 --    The row carries NO P&L, MFE or MAE: running state is not evidence.
 CREATE TABLE entry_intent_attestations (
     -- An OMITTED integer PK presents as -1 inside a BEFORE INSERT trigger; the
@@ -480,7 +490,10 @@ CREATE TABLE entry_intent_attestations (
 -- The binding: the trade, its entry date, NO relabel (entry_intent IS NULL at
 -- insert -- the service inserts BEFORE it updates `trades`), the AUTHORITATIVE
 -- entry fill (repos/fills.py get_authoritative_entry_fill's order), and the
--- envelope's order id read the one way both domains read it (<ENV> guard).
+-- order id the AUTHORITY stored for the fill's CURRENT document (RULING G1b):
+-- stored values only. An envelope-less fill joins no reading and reads NULL
+-- on both sides; an id named over a REFUSED reading, or over a document never
+-- read, ABORTS.
 CREATE TRIGGER trg_eia_trade_binding
 BEFORE INSERT ON entry_intent_attestations
 FOR EACH ROW
@@ -495,12 +508,14 @@ WHEN NOT COALESCE(
                              WHERE f.trade_id = NEW.trade_id AND f.action = 'entry'
                              ORDER BY f.fill_datetime ASC, f.fill_id ASC LIMIT 1)
     AND NEW.entry_broker_order_id IS (
-        SELECT json_extract(CASE WHEN json_valid(f.schwab_source_value_json)
-                                 THEN f.schwab_source_value_json END,
-                            '$.schwab_order_id')
-        FROM fills f WHERE f.fill_id = NEW.entry_fill_id),
+        SELECT fei.broker_order_id
+        FROM fill_envelope_identity fei
+        JOIN fills f ON f.fill_id = fei.fill_id
+                    AND fei.envelope_raw = f.schwab_source_value_json
+        WHERE f.fill_id = NEW.entry_fill_id_at_assignment
+          AND fei.envelope_state = 'canonical'),
     0)
-BEGIN SELECT RAISE(ABORT, 'entry_intent_attestations: the row does not bind to its trade (the trade exists with this entry_date and NULL entry_intent; the authoritative entry fill; its envelope order id)'); END;
+BEGIN SELECT RAISE(ABORT, 'entry_intent_attestations: the row does not bind to its trade (the trade exists with this entry_date and NULL entry_intent; the authoritative entry fill; the order id of its stored canonical envelope reading)'); END;
 
 -- The citation: a closed allowlist of TEXT members, no duplicates, at least
 -- one DESCRIPTIVE field (notes/why_now, F2 S4), and a snapshot whose key set
@@ -620,9 +635,11 @@ BEGIN SELECT RAISE(ABORT, 'entry_intent_attestations: outcome_known_at is not th
 
 -- P1 for tier 2 (N1, RD; R0.H leg window): no structural record exists for the
 -- order (no link, no order-naming intent; with no order id, none for the
--- ticker at or before the entry -- E9), the placement session is read the one
--- way both domains read it, and the admitted leg's evidence is EXACTLY what
--- the leg decides on, bound by VALUE.
+-- ticker at or before the entry -- E9), the placement session is paired with
+-- its source (a fallback IS the entry date; an envelope-sourced value is the
+-- service's derivation, stored and bounded here but never re-read from the
+-- envelope -- RULING G1b), and the admitted leg's evidence is EXACTLY what the
+-- leg decides on, bound by VALUE.
 --   SPEAK = the ticker's latch_view_events rows with
 --           date(first_viewed_ts) >= '2026-08-03' (recorded under the
 --           actionability instrument; earlier rows are 0033's backfill);
@@ -644,12 +661,7 @@ WHEN NOT COALESCE(NEW.admission_tier IS NOT 'contemporaneous_record' OR (
                              WHERE i.actual_broker_order_id IS NOT NULL
                                AND i.ticker = (SELECT ticker FROM trades WHERE id = NEW.trade_id)
                                AND i.detection_date <= NEW.trade_entry_date)))
-    AND ((NEW.placement_session_source = 'schwab_envelope'
-          AND NEW.placement_session IS (
-              SELECT json_extract(CASE WHEN json_valid(f.schwab_source_value_json)
-                                       THEN f.schwab_source_value_json END,
-                                  '$.entry_date')
-              FROM fills f WHERE f.fill_id = NEW.entry_fill_id_at_assignment))
+    AND (NEW.placement_session_source = 'schwab_envelope'
          OR (NEW.placement_session_source = 'entry_date_fallback'
              AND NEW.placement_session = NEW.trade_entry_date))
     AND NOT EXISTS (

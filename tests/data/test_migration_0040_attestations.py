@@ -25,6 +25,7 @@ from tests._22b_fixtures import (
     TRADE20,
     envelope,
     insert_row,
+    record_envelope_readings,
     seed_amn_row5,
     seed_trade20,
 )
@@ -98,6 +99,7 @@ def _world(tmp_path: Path, name: str = "w", *, trade: dict | None = None,
     if outcome_dt is not None:
         c.execute("UPDATE fills SET fill_datetime = ? WHERE fill_id = 44",
                   (outcome_dt,))
+    record_envelope_readings(c)
     return c
 
 
@@ -131,6 +133,7 @@ def _structural_world(tmp_path: Path, name: str = "s") -> tuple[sqlite3.Connecti
     c.execute("UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = ?",
               (envelope(schwab_order_id=BROKER_ORDER_ID,
                         schwab_instrument_symbol="FTRE"), fill_id))
+    record_envelope_readings(c)
     return c, {"link_id": link_id, "candidate_id": cand, "fill_id": fill_id,
                "order_id": BROKER_ORDER_ID}
 
@@ -633,6 +636,73 @@ def test_malformed_json_is_a_constraint_abort_b22_48(tmp_path: Path, column: str
     try:
         with pytest.raises(sqlite3.IntegrityError):
             insert_row(c, "entry_intent_attestations", row)
+    finally:
+        c.close()
+
+
+# ---------------------------------------------------------------------------
+# RULING G1b -- the binding trigger reads the STORED reading, never the envelope
+# ---------------------------------------------------------------------------
+BINDING_MSG = "does not bind to its trade"
+
+
+def _plant_reading(c: sqlite3.Connection, fill_id: int, raw: str, *,
+                   state: str = "canonical", order_id: str | None = None,
+                   symbol: str | None = None) -> None:
+    """A reading planted RAW (a forged or older-grammar row -- the case the
+    stored reading is trusted for BY THE TRIGGER, which compares stored values
+    only)."""
+    insert_row(c, "fill_envelope_identity", {
+        "fill_id": fill_id, "envelope_raw": raw, "envelope_state": state,
+        "broker_order_id": order_id, "instrument_symbol": symbol,
+        "canonicalizer_version": "planted", "recorded_ts": "2026-09-23T00:00:00Z"})
+
+
+def test_an_order_id_other_than_the_stored_canonical_reading_aborts_b22_210(
+        tmp_path: Path) -> None:
+    """The twin ALONE on plain sqlite3. (a) the real reading: a row naming an
+    order id one byte off ABORTS. (b) a stored reading that DISAGREES with the
+    document's own text: the row naming the DOCUMENT's id ABORTS and the row
+    naming the STORED id passes -- stored values only. Pre-fix (the retired
+    json_extract bind) (b) inverts: the document's id passed, the stored one
+    aborted."""
+    c = _world(tmp_path)
+    try:
+        msg = _plant(c, tier2_row(entry_broker_order_id=AMN_ORDER_ID + "0"))
+        assert msg is not None and BINDING_MSG in msg, msg
+        assert _plant(c, tier2_row()) is None  # the b22_50 control
+    finally:
+        c.close()
+    doc = envelope(shares=6)  # a new document for fill 41, never read
+    c = _world(tmp_path, "forged", fill41_env=None)
+    try:
+        c.execute("UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = 41",
+                  (doc,))
+        _plant_reading(c, 41, doc, order_id="999", symbol="AMN")
+        msg = _plant(c, tier2_row())  # names the document's own order id
+        assert msg is not None and BINDING_MSG in msg, msg
+        assert _plant(c, tier2_row(entry_broker_order_id="999")) is None
+    finally:
+        c.close()
+
+
+def test_an_order_id_over_a_refused_reading_aborts_b22_211(tmp_path: Path) -> None:
+    """A padded order id is a document the authority REFUSES, so its stored
+    reading is `refused` and names no order: a raw row naming the id ABORTS.
+    Pre-fix the json_extract bind read the padded value, and the row naming it
+    PASSED."""
+    padded = " " + AMN_ORDER_ID + " "
+    c = _world(tmp_path, fill41_env=envelope(schwab_order_id=padded))
+    try:
+        state = c.execute(
+            "SELECT fei.envelope_state FROM fill_envelope_identity fei "
+            "JOIN fills f ON f.fill_id = fei.fill_id "
+            "AND fei.envelope_raw = f.schwab_source_value_json "
+            "WHERE f.fill_id = 41").fetchone()
+        assert state == ("refused",)
+        for named in (padded, AMN_ORDER_ID):
+            msg = _plant(c, tier2_row(entry_broker_order_id=named))
+            assert msg is not None and BINDING_MSG in msg, (named, msg)
     finally:
         c.close()
 

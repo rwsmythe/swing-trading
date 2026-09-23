@@ -283,6 +283,18 @@ def _foreign_trades_objects(c: sqlite3.Connection) -> dict[str, str]:
     return {name: _stored(c, name) for _t, name in c.execute(_CENSUS_SQL)}
 
 
+# RULING G1b: trg_eia_trade_binding binds the STORED envelope reading, so it
+# names a THIRD table; a future rebuild of fill_envelope_identity meets R0.J.
+_FEI_CENSUS_SQL = ("SELECT type, name FROM sqlite_master "
+                   "WHERE sql LIKE '%fill_envelope_identity%' "
+                   "AND tbl_name <> 'fill_envelope_identity' "
+                   "AND type IN ('trigger','view')")
+
+
+def _foreign_fei_objects(c: sqlite3.Connection) -> dict[str, str]:
+    return {name: _stored(c, name) for _t, name in c.execute(_FEI_CENSUS_SQL)}
+
+
 def _citation_graph_fires(c: sqlite3.Connection, payload: dict) -> None:
     """A 22-A2 fully-cited row INSERTS; its one-mutation twin ABORTS with the
     citation-graph trigger's OWN message (a `no such table` error is a FAIL)."""
@@ -322,9 +334,11 @@ def test_every_foreign_object_referencing_trades_is_unchanged_and_still_fires_b2
             seed_amn_row5(c)
             c.commit()
         v39 = _foreign_trades_objects(c)
+        fei39 = _foreign_fei_objects(c)
         with pinned_migration_clock():
             _to_40(c, tmp_path, f"b40_{shape}")
         v40 = _foreign_trades_objects(c)
+        fei40 = _foreign_fei_objects(c)
         if shape == "fresh":
             _seed_rows(c, with_envelope_reading=True)
             seed_amn_row5(c)
@@ -333,6 +347,19 @@ def test_every_foreign_object_referencing_trades_is_unchanged_and_still_fires_b2
         for name, sql in v39.items():
             assert v40[name] == sql, name
         assert set(v40) - set(v39) == V40_NEW_FOREIGN_TRADES_OBJECTS
+        # (3) the THIRD table (RULING G1b): the v39 readers of
+        # fill_envelope_identity are byte-identical and 0040 adds exactly one.
+        assert set(fei39) == {"trg_provenance_corrections_citation_graph"}
+        for name, sql in fei39.items():
+            assert fei40[name] == sql, name
+        assert set(fei40) - set(fei39) == {"trg_eia_trade_binding"}
+        header = M0040.read_text(encoding="utf-8").split("\nBEGIN;")[0]
+        flat = " ".join(line.lstrip("- ").strip() for line in header.splitlines())
+        for needle in ("LIKE '%fill_envelope_identity%' AND "
+                       "tbl_name <> 'fill_envelope_identity'",
+                       "-> TWO rows (RULING G1b)",
+                       "this migration's trg_eia_trade_binding"):
+            assert needle in flat, needle
         _citation_graph_fires(c, payload)
     finally:
         c.close()
@@ -500,7 +527,7 @@ def test_migration_never_reads_the_docs_tree_b22_30() -> None:
 def _attested_trade(tmp_path: Path, *, drop: tuple[str, ...] = ()) -> Path:
     """A v40 DB carrying trade 20 ATTESTED: its attestation row planted raw
     (the Task-4 baseline row), then the value written -- the service's order."""
-    from tests._22b_fixtures import insert_row
+    from tests._22b_fixtures import insert_row, record_envelope_readings
     from tests.data.test_migration_0040_attestations import tier2_row
 
     p = _v40_path(tmp_path, "n4")
@@ -508,6 +535,7 @@ def _attested_trade(tmp_path: Path, *, drop: tuple[str, ...] = ()) -> Path:
     try:
         seed_amn_row5(c)
         seed_trade20(c, entry_intent=None)
+        record_envelope_readings(c)
         insert_row(c, "entry_intent_attestations", tier2_row())
         c.execute("UPDATE trades SET entry_intent = 'unintended_execution' "
                   "WHERE id = 20")

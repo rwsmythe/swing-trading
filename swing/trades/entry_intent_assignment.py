@@ -11,7 +11,8 @@ trigger predicate set is a subset of this module's), so a row this module
 admits passes SQL, and a row it refuses never reaches SQL.
 
 F4 (CHARC): `preflight` reads only; `assign` REJECTS a caller-held
-transaction, re-runs `preflight` inside ONE `BEGIN IMMEDIATE`, INSERTs the
+transaction, opens ONE `BEGIN IMMEDIATE`, establishes the stored envelope
+readings FIRST (RULING G1b, below), re-runs `preflight` inside it, INSERTs the
 attestation row THEN updates `trades.entry_intent`. Both rows or neither. The
 schema enforces that order in both directions (`trg_eia_trade_binding`
 requires `trades.entry_intent IS NULL` at the attestation insert; the
@@ -28,6 +29,15 @@ The tier is DETECTED, never chosen (F3 + census N1/N5, RD):
     telemetry recorded under the actionability instrument; leg 2, the
     placement strictly before the instrument's deployment session.
 
+RULING G1b (CHARC, 2026-09-23; 22-A PERSIST-CANONICAL): ZERO SQL reads of a
+fill envelope, no exemption. The order id is the AUTHORITY's STORED reading
+(`fill_envelope_identity`), established by `ensure_entry_fill_identities`
+inside the write reservation before any read -- rung 6's idiom -- and its
+state is the refuse-first. `entry_date` is read ONCE, in Python, from a
+document whose stored reading is canonical, and persisted; SQL stores and
+bounds that value but never re-reads the envelope. `drift_report` (vi) is the
+replay.
+
 Every message is ASCII (the CLI prints it on a cp1252 console).
 """
 from __future__ import annotations
@@ -42,6 +52,11 @@ from swing.data.models import UNINTENDED_EXECUTION, EntryIntentAttestation
 from swing.data.repos.entry_intent_attestations import (
     get_attestation,
     insert_attestation,
+)
+from swing.data.repos.fill_envelope_identity import (
+    EnvelopeIdentityDriftError,
+    ensure_entry_fill_identities,
+    stored_identity,
 )
 from swing.data.repos.fills import get_authoritative_entry_fill
 
@@ -66,10 +81,9 @@ day. The same literal is migration 0040's leg-2 bind and leg-1 window, and
 """
 ASSIGNMENT_APPLIED_BY = "operator"
 
-# The <ENV> guard of 0040 (R3-06): `json_extract('', ...)` RAISES, so a NULL,
-# blank or malformed envelope reads as NULL in SQL exactly as it does here.
-_ENV = ("CASE WHEN json_valid(schwab_source_value_json) "
-        "THEN schwab_source_value_json END")
+# The canonical state token of `fill_envelope_identity.envelope_state`
+# (0037's CHECK; `swing.trades.latched_origin.ENVELOPE_CANONICAL`).
+_CANONICAL = "canonical"
 _TRADE_COLUMNS = ("id", "ticker", "entry_date", "entry_intent", "notes",
                   "why_now", "thesis", "emotional_state_pre_trade")
 
@@ -92,6 +106,12 @@ class AssignmentResult:
 
 
 AssignmentVerdict = AssignmentResult
+
+
+class EnvelopeReadingMissingError(RuntimeError):
+    """An envelope-bearing entry fill has NO stored reading after
+    `ensure_entry_fill_identities` ran: an invariant breach, never a refusal
+    (RULING G1b). `assign` rolls back and re-raises it."""
 
 
 class _RefusalError(Exception):
@@ -127,6 +147,36 @@ def _array_texts(conn: sqlite3.Connection, raw: str | None) -> set[str]:
         "SELECT value FROM json_each(CASE WHEN json_valid(?1) "
         "THEN ?1 ELSE '[]' END)", (raw,)).fetchall()
     return {r[0] for r in rows if isinstance(r[0], str)}
+
+
+def _envelope_absent(raw: object) -> bool:
+    """NULL or blank (whitespace-only): no envelope, so no reading is expected."""
+    return raw is None or (isinstance(raw, str) and not raw.strip())
+
+
+def _fill_envelope(conn: sqlite3.Connection, fill_id: int) -> object:
+    """The envelope COLUMN of one fill -- its value, never a json_* of it."""
+    return conn.execute("SELECT schwab_source_value_json FROM fills "
+                        "WHERE fill_id = ?", (fill_id,)).fetchone()[0]
+
+
+def _envelope_entry_date(raw: str) -> tuple[object, int]:
+    """``($.entry_date, how many ROOT entry_date keys)``, read in PYTHON -- the
+    one engine that reads the envelope (RULING G1b). Called only on a document
+    whose stored reading is canonical, which the canonicaliser decoded with
+    this same `json.loads`. The ROOT is the LAST object the hook sees (the
+    decoder builds inside-out), the canonicaliser's own idiom."""
+    objects: list[list[tuple[str, Any]]] = []
+
+    def _hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        objects.append(list(pairs))
+        return dict(pairs)
+
+    payload = json.loads(raw, object_pairs_hook=_hook)
+    if not isinstance(payload, dict) or not objects:
+        return None, 0
+    return (payload.get("entry_date"),
+            sum(1 for key, _value in objects[-1] if key == "entry_date"))
 
 
 # --------------------------------------------------------------------------
@@ -311,25 +361,31 @@ def _pre_rows(conn: sqlite3.Connection, ticker: str,
 
 def _detect_tier(conn: sqlite3.Connection, cfg,
                  trade: dict[str, Any]) -> dict[str, Any]:
-    from swing.trades.latched_origin import (
-        broker_order_id_from_envelope,
-        envelope_is_canonical,
-        find_accepted_latch_order,
-    )
+    from swing.trades.latched_origin import find_accepted_latch_order
 
     fill_id = trade["entry_fill_id"]
     # Identity came from get_authoritative_entry_fill, which does NOT hydrate
-    # the envelope; the envelope is a SEPARATE read.
-    raw = conn.execute("SELECT schwab_source_value_json FROM fills "
-                       "WHERE fill_id = ?", (fill_id,)).fetchone()[0]
-    absent = raw is None or (isinstance(raw, str) and not raw.strip())
-    if not absent and not envelope_is_canonical(raw):
-        raise _RefusalError(
-            "non_canonical_envelope",
-            f"fill {fill_id}'s Schwab envelope would be read differently by "
-            "Python and SQL (padded, duplicated or non-string values); nothing "
-            "is assigned on an ambiguous order identity")
-    order_id = None if absent else broker_order_id_from_envelope(raw)
+    # the envelope; the envelope is a SEPARATE read of the column.
+    raw = _fill_envelope(conn, fill_id)
+    order_id = None
+    if not _envelope_absent(raw):
+        # RULING G1b: the STORED reading of THIS document is the order id and
+        # its state is the refuse-first (same authority as
+        # envelope_is_canonical, persisted). `assign` ran ensure first.
+        reading = stored_identity(conn, fill_id, raw)
+        if reading is None:
+            raise EnvelopeReadingMissingError(
+                f"fill {fill_id} carries a Schwab envelope with no stored "
+                "reading after ensure_entry_fill_identities; the order id "
+                "cannot be established and nothing is assigned")
+        state, order_id, _symbol = reading
+        if state != _CANONICAL:
+            raise _RefusalError(
+                "envelope_refused",
+                f"fill {fill_id}'s Schwab envelope is one the authority REFUSED "
+                "to read (fill_envelope_identity state "
+                f"{str(state)!r}); nothing is assigned on an order identity "
+                "that cannot be established")
     ticker, entry = trade["ticker"], trade["entry_date"]
     if order_id is not None:
         links = find_accepted_latch_order(conn, broker_order_id=order_id)
@@ -352,9 +408,19 @@ def _detect_tier(conn: sqlite3.Connection, cfg,
                 "accepted-order link, so it cannot tie this fill to a mandate; "
                 "tier 2 cannot apply because the instrument recorded it; the "
                 "recovery is a link backfilled under 22-A's rules")
-        placement = conn.execute(
-            f"SELECT json_extract({_ENV}, '$.entry_date') FROM fills "
-            "WHERE fill_id = ?", (fill_id,)).fetchone()[0]
+        # ONE engine (RULING G1b): the entry_date is read in Python, from a
+        # document whose stored reading is canonical, and persisted.
+        placement, keys = _envelope_entry_date(raw)
+        if keys > 1:
+            # MEASURED at encoding (G1d): the stored reading does NOT refuse a
+            # duplicated entry_date -- the canonicaliser checks duplicates only
+            # for the order id and the symbol -- so this read refuses it
+            # itself, before json.loads' last-key rule can choose one.
+            raise _RefusalError(
+                "envelope_refused",
+                f"fill {fill_id}'s Schwab envelope carries entry_date {keys} "
+                "times; the placement session cannot be read from it "
+                "unambiguously, so nothing is assigned")
         if placement is None:
             placement, source = entry, "entry_date_fallback"
         elif _is_iso_date(placement):
@@ -413,7 +479,9 @@ def preflight(
     The FIRST failing step returns a typed refusal (``refusal_code`` + an ASCII
     ``message`` naming the recovery); an admission carries the built
     attestation row. ``LatchProbeInvariantError`` propagates (an invariant
-    breach, never a refusal).
+    breach, never a refusal), as does ``EnvelopeReadingMissingError``: the
+    order id is the STORED envelope reading, which ``assign`` establishes
+    inside its transaction before calling this (RULING G1b).
     """
     stamp = (now or datetime.now()).isoformat(timespec="seconds")
     counts: dict[str, int] = {}
@@ -487,22 +555,32 @@ def assign(
     """Assign `unintended_execution` with its evidence: both rows or neither.
 
     REJECTS a caller-held transaction (never auto-detects). The write is ONE
-    ``BEGIN IMMEDIATE`` that re-runs ``preflight`` inside it, so the verdict
-    and the write see one world. ``dry_run`` runs the preflight and writes
-    nothing.
+    ``BEGIN IMMEDIATE``: it establishes the stored envelope readings FIRST
+    (``ensure_entry_fill_identities``, before any read -- RULING G1b, rung 6's
+    idiom; a drift raise becomes the typed refusal ``identity_drift``,
+    fail-closed), then re-runs ``preflight`` inside it, so the verdict and the
+    write see one world. ``dry_run`` takes the same path and ROLLBACKs it, the
+    readings ``ensure`` appended included, so it writes nothing.
     """
     if conn.in_transaction:
         raise RuntimeError(
             "assign() owns its transaction; the caller holds one open. "
             "Nothing was written.")
-    if dry_run:
-        return preflight(conn, cfg, trade_id=trade_id, cite=cite, reason=reason,
-                         applied_by=applied_by)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        try:
+            ensure_entry_fill_identities(conn)
+        except EnvelopeIdentityDriftError as exc:
+            conn.execute("ROLLBACK")
+            detail = str(exc).encode("ascii", "backslashreplace").decode("ascii")
+            return AssignmentResult(
+                False, "identity_drift",
+                "a stored envelope reading disagrees with what the authority "
+                f"reads out of the same document today ({detail}); the order "
+                "identity cannot be trusted, so nothing is assigned")
         verdict = preflight(conn, cfg, trade_id=trade_id, cite=cite,
                             reason=reason, applied_by=applied_by)
-        if not verdict.admitted:
+        if dry_run or not verdict.admitted:
             conn.execute("ROLLBACK")
             return verdict
         attestation_id = _write(conn, verdict.attestation)
@@ -582,13 +660,38 @@ def drift_report(conn: sqlite3.Connection, trade_id: int) -> list[str]:
         out.append("(v) the authoritative entry fill is no longer "
                    f"{att.entry_fill_id_at_assignment}")
     if fill is not None:
-        order_id, env_date = conn.execute(
-            f"SELECT json_extract({_ENV}, '$.schwab_order_id'), "
-            f"json_extract({_ENV}, '$.entry_date') FROM fills WHERE fill_id = ?",
-            (int(fill.fill_id),)).fetchone()
-        if order_id != att.entry_broker_order_id:
-            out.append("(vi) the entry fill's envelope order id changed")
-        if (att.placement_session_source == "schwab_envelope"
-                and env_date != att.placement_session):
+        out.extend(_drift_vi(conn, int(fill.fill_id), att))
+    return out
+
+
+def _drift_vi(conn: sqlite3.Connection, fill_id: int,
+              att: EntryIntentAttestation) -> list[str]:
+    """(vi), in Python over STORED values (RULING G1b): the CURRENT
+    authoritative fill's CURRENT stored reading against the frozen order id,
+    and (source schwab_envelope) the entry_date re-read from that canonical
+    document against the persisted placement -- the replay of the
+    service-only derivation. A pure read: it never calls ``ensure``, so a
+    document never read is named UNVERIFIED rather than assumed."""
+    raw = _fill_envelope(conn, fill_id)
+    if _envelope_absent(raw):
+        order_id, env_date, keys = None, None, 0
+    else:
+        reading = stored_identity(conn, fill_id, raw)
+        if reading is None:
+            return ["(vi) the entry fill's current envelope has no stored "
+                    "reading; its order id and entry_date are unverified"]
+        if reading[0] != _CANONICAL:
+            return ["(vi) the entry fill's current envelope reading is "
+                    f"{str(reading[0])!r}; its order id is unverifiable"]
+        order_id = reading[1]
+        env_date, keys = _envelope_entry_date(raw)
+    out: list[str] = []
+    if order_id != att.entry_broker_order_id:
+        out.append("(vi) the entry fill's order id changed")
+    if att.placement_session_source == "schwab_envelope":
+        if keys > 1:
+            out.append("(vi) the entry fill's envelope carries entry_date "
+                       f"{keys} times")
+        elif env_date != att.placement_session:
             out.append("(vi) the entry fill's envelope entry_date changed")
     return out
