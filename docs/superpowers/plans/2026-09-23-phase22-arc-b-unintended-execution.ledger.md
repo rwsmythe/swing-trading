@@ -214,7 +214,7 @@ Both N5 branches leave trade 20 unaffected (0 AMN links, 0 AMN intents).
 
 | round | tier | model/effort | footer | verdict | findings (C/M/m) | task-bearing | depth (orchestrator-read) | tokens used |
 |---|---|---|---|---|---|---|---|---|
-| 1 | fast | gpt-5.6-luna / high | present | NEW_CRITICAL_MAJOR_FOUND | 0/16/2 | 18 (all accepted, applied) |  | 293,572 |
+| 1 | fast | gpt-5.6-luna / high | present | NEW_CRITICAL_MAJOR_FOUND | 0/16/2 | 18 (all accepted, applied) | 386,359 at return (build 2.1.280, claude-opus-5-5; orchestrator-read `cell_depth.py --live 1`) -- rounds 2-3 re-dispatched to a fresh cell | 293,572 |
 
 ## R0.D — CHARC rules N4: branch (a), value TERMINAL for generic writers (mail 20260923T173456Z; author CHARC; text of record on main in the brief section 3 @ 605fa4db; literal block quote of the mail body, transcribed by the courier)
 
