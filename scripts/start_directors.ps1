@@ -148,11 +148,17 @@ $RoleLaunch = @{
 # shell. A successor launched FROM a session must not inherit them (see
 # Build-LaunchCommand). Enumerated 2026-09-07 from a live director shell;
 # tests/scripts/test_start_directors_orchestrator.py pins the scrub.
+#
+# NO_COLOR + GIT_EDITOR (docs/phase22-rider-launcher-color-scrub-dispatch-
+# brief.md, CHARC, 2026-09-23): injected by the Bash tool into the shell it
+# runs commands in, inherited by a self-launched successor via Start-Process,
+# and honored by the successor's own claude CLI (colors off, empty-commit-
+# message aborts) -- not set anywhere in config.
 $SessionMarkers = @(
     'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDECODE', 'CLAUDE_PID',
     'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN',
     'CLAUDE_CODE_BRIDGE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_EXECPATH',
-    'CLAUDE_EFFORT'
+    'CLAUDE_EFFORT', 'NO_COLOR', 'GIT_EDITOR'
 )
 
 # Short, quoting-safe directive prompts (no newlines, quotes, or semicolons --

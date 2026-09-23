@@ -228,7 +228,7 @@ _SESSION_MARKERS = (
     "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_PID",
     "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
     "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH",
-    "CLAUDE_EFFORT",
+    "CLAUDE_EFFORT", "NO_COLOR", "GIT_EDITOR",
 )
 
 
@@ -252,6 +252,28 @@ def test_dryrun_launch_line_scrubs_markers_before_claude():
         assert launch.index(stanza) < claude_at, f"{name} scrubbed AFTER claude"
     # the role assignment still follows the scrub and precedes claude
     assert launch.index("$env:SWING_ROLE='charc'") < claude_at
+
+
+# --- the launcher scrubs the Bash-tool environment leak (2026-09-23) -------
+# Claude Code injects NO_COLOR=1 and GIT_EDITOR=true into the shell its Bash
+# tool runs commands in; a self-launched successor inherits them via
+# Start-Process, and the successor's session (and every generation after it)
+# then renders without colors. docs/phase22-rider-launcher-color-scrub-
+# dispatch-brief.md. The scrub must precede EVERY env-set stanza -- never just
+# come first in the source -- so a scrubbed name can never be re-set by
+# accident.
+
+
+def test_dryrun_launch_line_scrubs_new_names_before_autoupdate_disable():
+    r, out = _dryrun("-Role", "charc")
+    assert r.returncode == 0
+    launch = next(ln for ln in out.splitlines() if "  launch: " in ln)
+    autoupdate_at = launch.index("$env:DISABLE_AUTOUPDATER='1'")
+    for name in ("NO_COLOR", "GIT_EDITOR"):
+        stanza = f"Remove-Item Env:{name} -ErrorAction SilentlyContinue"
+        assert stanza in launch, name
+        assert launch.index(stanza) < autoupdate_at, (
+            f"{name} scrubbed AFTER $env:DISABLE_AUTOUPDATER is set")
 
 
 # --- CLI auto-update under a live run (coa-chess finding, 2026-09-09) ------
