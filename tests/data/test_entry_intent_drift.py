@@ -103,6 +103,14 @@ _MEMBER_SITES: dict[str, dict[str, str]] = {
         "swing/trades/intent.py": "widened: the display LABEL",
         "swing/trades/reconciliation_auto_correct.py":
             "prose: the corrector reservation's comment",
+        "swing/data/repos/trades.py":
+            "prose: N4 layer 1's docstring + comment (Task 7; the value is the "
+            "imported UNINTENDED_EXECUTION)",
+        "swing/web/routes/trades.py":
+            "prose: the review POST's N4 comment (Task 7)",
+        "swing/web/view_models/trades.py":
+            "prose: ReviewVM's N4 field comment (Task 7; the builder compares "
+            "the imported UNINTENDED_EXECUTION)",
     },
 }
 
