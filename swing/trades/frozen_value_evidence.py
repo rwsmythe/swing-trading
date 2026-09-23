@@ -30,6 +30,7 @@ import math
 import re
 import sqlite3
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -143,6 +144,24 @@ VERDICT_BEARING_KEYS: frozenset[str] = frozenset({
     "interval.record_position",
 })
 
+# --------------------------------------------------------------------------
+# The read-time replay's vocabulary (Task 9; plan section 1).
+# --------------------------------------------------------------------------
+VERDICT_ADMIT = "ADMIT"
+VERDICT_STALE = "tier2_evidence_stale"
+VERDICT_UNVERIFIABLE = FAILURE_TIER2_UNVERIFIABLE
+REPLAY_VERDICTS: tuple[str, ...] = (VERDICT_ADMIT, VERDICT_STALE, VERDICT_UNVERIFIABLE)
+# CHARC R4.2 ruling 1: the TOTAL wall-clock replay budget the two WEB readers
+# pass; the CLI readers and the drift reader pass none.
+WEB_REPLAY_BUDGET_SECONDS = 2.0
+REASON_WEB_BUDGET_EXHAUSTED = "web_budget_exhausted"
+# S12.1 #9 at the replay (CHARC's G-T7 Q1 principle): no git subprocess runs
+# inside a transaction the caller holds.
+REASON_CALLER_HOLDS_TRANSACTION = "caller_holds_transaction"
+REASON_STORED_EVIDENCE_MALFORMED = "stored_evidence_malformed"
+REASON_FILL_SESSION_MALFORMED = "entry_fill_session_date_malformed"
+REASON_AUTHOR_INSTANT_CHANGED = "author_instant_changed"
+
 
 @dataclass(frozen=True)
 class EvidenceSelection:
@@ -192,6 +211,11 @@ class Tier2Request:
 
 class _GitProcessError(Exception):
     """A git PROCESS failure -> ``tier2_unverifiable`` (E-10)."""
+
+
+class _BudgetExhaustedError(_GitProcessError):
+    """The caller's TOTAL replay budget ran out before a git call started
+    (CHARC R4.2 ruling 1): checked BETWEEN calls, never by killing one."""
 
 
 def _refuse(failure: str, detail: str) -> PreflightResult:
@@ -283,25 +307,36 @@ def _parse_reflog_instant(stdout: bytes) -> datetime | None:
 
 
 def read_artifact_facts(selection: EvidenceSelection, *, repo_dir: Path,
-                        now_utc: datetime) -> PreflightResult:
+                        now_utc: datetime,
+                        deadline: float | None = None) -> PreflightResult:
     """Read what git says about ``selection``.  Never raises.
 
     Order: the ref (process), the commit and its dates, the blob, the quoted
     text (byte-substring, then one line), ancestry, descendants, the reflog.
+    ``deadline`` is the replay budget's (``None`` at write and on the CLI):
+    once past it no further git call starts and the result is
+    ``tier2_unverifiable`` with detail ``web_budget_exhausted``.
     """
     try:
         if now_utc.utcoffset() is None:
             return _refuse(FAILURE_TIER2_UNVERIFIABLE, "now_utc must be offset-aware")
         sha = selection.artifact_commit_sha
 
-        ref = _run_git(repo_dir, "rev-parse", "--verify", "--quiet", f"{REMOTE_REF}^{{commit}}")
+        def git(*args: str) -> subprocess.CompletedProcess[bytes]:
+            # The replay budget, checked BEFORE each call starts (never by
+            # killing one mid-flight; each is already bounded by its timeout).
+            if deadline is not None and time.monotonic() >= deadline:
+                raise _BudgetExhaustedError(REASON_WEB_BUDGET_EXHAUSTED)
+            return _run_git(repo_dir, *args)
+
+        ref = git("rev-parse", "--verify", "--quiet", f"{REMOTE_REF}^{{commit}}")
         if ref.returncode != 0:
             return _refuse(FAILURE_TIER2_UNVERIFIABLE,
                            f"{REMOTE_REF} does not resolve in {repo_dir} "
                            f"(exit {ref.returncode}) {_stderr(ref)}".strip())
         resolved = ref.stdout.decode("ascii").strip()
 
-        dates = _run_git(repo_dir, "show", "-s", "--format=%aI%n%cI", f"{sha}^{{commit}}")
+        dates = git("show", "-s", "--format=%aI%n%cI", f"{sha}^{{commit}}")
         if dates.returncode != 0:
             return _refuse(FAILURE_ARTIFACT_UNREADABLE,
                            f"commit {sha} is not readable: {_stderr(dates)}")
@@ -309,7 +344,7 @@ def read_artifact_facts(selection: EvidenceSelection, *, repo_dir: Path,
         author_instant = datetime.fromisoformat(date_lines[0].strip())
         committer_instant = datetime.fromisoformat(date_lines[1].strip())
 
-        blob = _run_git(repo_dir, "cat-file", "blob", f"{sha}:{selection.artifact_path}")
+        blob = git("cat-file", "blob", f"{sha}:{selection.artifact_path}")
         if blob.returncode != 0:
             return _refuse(FAILURE_ARTIFACT_UNREADABLE,
                            f"{selection.artifact_path} at {sha} is not a readable file: "
@@ -322,7 +357,7 @@ def read_artifact_facts(selection: EvidenceSelection, *, repo_dir: Path,
             return _refuse(FAILURE_QUOTED_TEXT_NOT_ONE_LINE,
                            "quoted_text must be ONE line (no line break)")
 
-        anc = _run_git(repo_dir, "merge-base", "--is-ancestor", sha, resolved)
+        anc = git("merge-base", "--is-ancestor", sha, resolved)
         if anc.returncode not in (0, 1):
             return _refuse(FAILURE_TIER2_UNVERIFIABLE,
                            f"git merge-base exited {anc.returncode}: {_stderr(anc)}")
@@ -330,14 +365,14 @@ def read_artifact_facts(selection: EvidenceSelection, *, repo_dir: Path,
 
         descendant_count: int | None = None
         if is_ancestor:
-            count = _run_git(repo_dir, "rev-list", "--count", f"{sha}..{resolved}")
+            count = git("rev-list", "--count", f"{sha}..{resolved}")
             if count.returncode != 0:
                 return _refuse(FAILURE_TIER2_UNVERIFIABLE,
                                f"git rev-list exited {count.returncode}: {_stderr(count)}")
             descendant_count = int(count.stdout.decode("ascii").strip())
 
-        log = _run_git(repo_dir, "log", "-g", "-1", "--date=iso-strict", "--format=%gD",
-                       REMOTE_REF, "--")
+        log = git("log", "-g", "-1", "--date=iso-strict", "--format=%gD",
+                  REMOTE_REF, "--")
         if log.returncode != 0:
             return _refuse(FAILURE_TIER2_UNVERIFIABLE,
                            f"git log -g exited {log.returncode}: {_stderr(log)}")
@@ -358,6 +393,8 @@ def read_artifact_facts(selection: EvidenceSelection, *, repo_dir: Path,
             failure=None,
             detail="",
         )
+    except _BudgetExhaustedError:
+        return _refuse(FAILURE_TIER2_UNVERIFIABLE, REASON_WEB_BUDGET_EXHAUSTED)
     except _GitProcessError as exc:
         return _refuse(FAILURE_TIER2_UNVERIFIABLE, str(exc))
     except Exception as exc:  # noqa: BLE001 -- E-6: the preflight never raises; fail closed
@@ -929,6 +966,198 @@ def _first_failing_mirror(blob: dict, ctx: dict, *, read_at: str,
         if not ok:
             return mirror.__name__.removeprefix("_tp_")
     return None
+
+
+# ==========================================================================
+# THE READ-TIME REPLAY (Task 9).  RD's F10: the stored tier is an ATTESTATION
+# of what was verified at write time; the VERDICT is computed at read time by
+# THIS function, and every consumer calls it (never ``admission_tier``).
+# CHARC's F10-shape: the SAME evaluation as the write path -- the same
+# ``read_artifact_facts`` under the same timeout, the same
+# ``evaluate_conjunction`` -- so the two cannot drift.  P37: ``conn`` is a
+# read-only connection; the replay opens NO transaction and writes nothing.
+# ==========================================================================
+
+@dataclass(frozen=True)
+class ReplayVerdict:
+    """One row's read-time verdict.  ``reason`` is None iff ``ADMIT``.
+    ``resolved_origin_main_sha`` is None when git never resolved the ref;
+    ``barrier_installed_at_read`` is None when the row was never replayed (an
+    exhausted budget).  Nothing here is persisted."""
+
+    verdict: str
+    reason: str | None
+    evaluated_at: str
+    resolved_origin_main_sha: str | None
+    barrier_installed_at_read: bool | None
+
+
+_ABSENT = object()
+
+
+def _at_path(blob: object, dotted: str) -> object:
+    node = blob
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return _ABSENT
+        node = node[part]
+    return node
+
+
+def _stored_selection(stored: object) -> EvidenceSelection | None:
+    """The row's own selection (F9) out of its stored blob, or None."""
+    if not isinstance(stored, dict):
+        return None
+    values = [stored.get(k) for k in EVIDENCE_FILE_KEYS]
+    if not all(isinstance(v, str) and v for v in values):
+        return None
+    if not _SHA_RE.fullmatch(values[1]):
+        return None
+    return EvidenceSelection(*values)
+
+
+def _fill_session_of(value: object) -> date | None:
+    """The TEXT -> ``date`` boundary: EXTENDED ``YYYY-MM-DD`` round-trip, or None
+    (a non-string, an unparseable value and a week date alike)."""
+    try:
+        parsed = date.fromisoformat(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.isoformat() == value else None
+
+
+def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
+                   repo_dir: Path | None = None,
+                   deadline: float | None = None) -> ReplayVerdict:
+    """Re-derive ``row``'s tier-2 verdict at read time.  Never raises for a
+    tier-2 row: ignorance is ``tier2_unverifiable``, never ADMIT.
+
+    Order: the barrier observation and the caller-held-transaction refusal
+    (before any git) -> the stored selection -> the fill session (TEXT ->
+    date) -> ``read_artifact_facts`` (a PROCESS failure is unverifiable; git
+    answering negatively is stale, E-10) -> the stored ``author_instant``
+    against git's -> ``evaluate_conjunction`` against the CURRENT rows (a
+    refusal is stale naming the criterion) -> the ``VERDICT_BEARING_KEYS`` of
+    the recomputed blob against the stored blob (the first differing key in
+    sorted order is named ``<key>_mismatch``).  Recorded-only keys --
+    descendant count, ref age, the resolved sha, the committer instant, the
+    segments -- are never compared (doctrine #6, E-15).  The barrier state is
+    an observation returned beside the verdict (A2-88), and it is the
+    ``barrier_installed`` the recomputation uses.  ``deadline`` is the
+    caller's budget (``tier2_cohort_exclusions``); ``None`` waits out every
+    call's own timeout.
+    """
+    from swing.data.models import PROVENANCE_ADMISSION_TIER_LATCH_TIER2
+    from swing.data.repos.candidates_immutability_epoch import barrier_installed
+
+    if row.admission_tier != PROVENANCE_ADMISSION_TIER_LATCH_TIER2:
+        raise ValueError(
+            f"replay_verdict reads tier-2 rows only; correction "
+            f"{row.provenance_correction_id} is {row.admission_tier!r}")
+    evaluated_at = now.isoformat()
+    sha: str | None = None
+    barrier: bool | None = None
+
+    def verdict(kind: str, reason: str | None) -> ReplayVerdict:
+        return ReplayVerdict(verdict=kind, reason=reason, evaluated_at=evaluated_at,
+                             resolved_origin_main_sha=sha,
+                             barrier_installed_at_read=barrier)
+
+    try:
+        barrier = barrier_installed(conn)
+        if conn.in_transaction:
+            return verdict(VERDICT_UNVERIFIABLE, REASON_CALLER_HOLDS_TRANSACTION)
+        try:
+            stored = json.loads(row.cited_frozen_value_evidence_json)
+        except (TypeError, ValueError):
+            stored = None
+        selection = _stored_selection(stored)
+        if selection is None:
+            return verdict(VERDICT_STALE, REASON_STORED_EVIDENCE_MALFORMED)
+        fill_session = _fill_session_of(row.entry_fill_session_date)
+        if fill_session is None:
+            return verdict(VERDICT_STALE, REASON_FILL_SESSION_MALFORMED)
+
+        read = read_artifact_facts(
+            selection, repo_dir=EVIDENCE_REPO_DIR if repo_dir is None else repo_dir,
+            now_utc=now, deadline=deadline)
+        if read.failure is not None or read.facts is None:
+            if read.failure in (None, FAILURE_TIER2_UNVERIFIABLE):
+                return verdict(VERDICT_UNVERIFIABLE,
+                               read.detail or FAILURE_TIER2_UNVERIFIABLE)
+            return verdict(VERDICT_STALE, read.failure)
+        facts = read.facts
+        sha = facts.resolved_remote_ref_sha
+        if stored.get("author_instant") != facts.author_instant.isoformat():
+            return verdict(VERDICT_STALE, REASON_AUTHOR_INSTANT_CHANGED)
+
+        conj = evaluate_conjunction(
+            conn, facts, candidate_id=row.cited_candidate_id,
+            fill_session=fill_session, read_at=row.applied_at,
+            barrier_installed=barrier)
+        if not conj.admitted or conj.evidence is None:
+            if conj.criterion is None:
+                return verdict(VERDICT_UNVERIFIABLE, conj.field or conj.reason)
+            return verdict(VERDICT_STALE, f"criterion {conj.criterion}: {conj.reason}")
+        # Compare in the STORED blob's domain: the recomputed blob through the
+        # same JSON round trip the column went through.
+        recomputed = json.loads(json.dumps(conj.evidence))
+        for key in sorted(VERDICT_BEARING_KEYS):
+            if _at_path(recomputed, key) != _at_path(stored, key):
+                return verdict(VERDICT_STALE, f"{key}_mismatch")
+        return verdict(VERDICT_ADMIT, None)
+    except Exception as exc:  # noqa: BLE001 -- ignorance reads unverifiable, never ADMIT
+        return verdict(VERDICT_UNVERIFIABLE,
+                       f"replay could not complete: {type(exc).__name__}: {exc}")
+
+
+def _tier2_rows(conn: sqlite3.Connection) -> list:
+    """Every ``latch_ladder_tier2`` correction row (one SELECT; no transaction)."""
+    from swing.data.models import PROVENANCE_ADMISSION_TIER_LATCH_TIER2
+    from swing.data.repos.provenance_corrections import list_provenance_corrections
+
+    return [r for r in list_provenance_corrections(conn)
+            if r.admission_tier == PROVENANCE_ADMISSION_TIER_LATCH_TIER2]
+
+
+def tier2_cohort_exclusions(conn: sqlite3.Connection, *, now: datetime,
+                            repo_dir: Path | None = None,
+                            budget_seconds: float | None = None,
+                            ) -> dict[int, ReplayVerdict]:
+    """The tier-2 rows a cohort read must NOT count, by ``trade_id``, each with
+    its verdict and reason (RD's F10 sub-ruling: excluded and NAMED).
+
+    ONE ``replay_verdict`` per tier-2 row per call: the memo is a local of THIS
+    call, keyed ``(provenance_correction_id, resolved_origin_main_sha)`` and
+    discarded on return -- there is no cache across calls (F10-shape: a cached
+    verdict is a stored grade).  ``budget_seconds`` is a TOTAL wall-clock
+    budget (CHARC R4.2 ruling 1) checked before each git call starts; past
+    it, every row not yet verdicted reads ``tier2_unverifiable`` /
+    ``web_budget_exhausted`` -- excluded and named, never admitted.  The rows
+    are collected by one SELECT before any git runs; zero tier-2 rows make
+    zero git calls.
+    """
+    deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
+    memo: dict[tuple[int, str | None], ReplayVerdict] = {}
+    memo_key: dict[int, tuple[int, str | None]] = {}
+    excluded: dict[int, ReplayVerdict] = {}
+    for row in _tier2_rows(conn):
+        rid = row.provenance_correction_id
+        if rid in memo_key:
+            result = memo[memo_key[rid]]
+        elif deadline is not None and time.monotonic() >= deadline:
+            result = ReplayVerdict(
+                verdict=VERDICT_UNVERIFIABLE, reason=REASON_WEB_BUDGET_EXHAUSTED,
+                evaluated_at=now.isoformat(), resolved_origin_main_sha=None,
+                barrier_installed_at_read=None)
+        else:
+            result = replay_verdict(conn, row, now=now, repo_dir=repo_dir,
+                                    deadline=deadline)
+        memo_key[rid] = (rid, result.resolved_origin_main_sha)
+        memo[memo_key[rid]] = result
+        if result.verdict != VERDICT_ADMIT:
+            excluded[row.trade_id] = result
+    return excluded
 
 
 # ==========================================================================

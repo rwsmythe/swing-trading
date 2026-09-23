@@ -2982,6 +2982,17 @@ def journal_provenance_corrections_cmd(ctx, trade_id):
             f"{c.cited_run_ts_utc} -> {c.cited_status_window_upper_utc}"
         )
         click.echo(f"  derivation rule {c.derivation_rule_version}")
+        if report.replay is not None:
+            # 22-A2 Task 9: a tier-2 row's READ-TIME verdict (RD's F10) --
+            # computed now against origin/main and the current rows, never
+            # the stored tier.
+            v = report.replay
+            reason = "" if v.reason is None else f" ({v.reason})"
+            click.echo(
+                f"  read-time verdict: {v.verdict}{reason} evaluated_at "
+                f"{v.evaluated_at}, origin/main "
+                f"{v.resolved_origin_main_sha or 'unresolved'}, barrier "
+                f"installed at read {v.barrier_installed_at_read}")
         click.echo(f"  applied {c.applied_value_json}")
         click.echo(f"  reason  {c.correction_reason}")
         if report.drift_lines:

@@ -3110,6 +3110,9 @@ CITATION_INVALIDATED = "CITATION INVALIDATED"
 class ProvenanceCorrectionReport:
     correction: Any                 # ProvenanceCorrection
     drift_lines: tuple[str, ...]
+    # 22-A2 Task 9: a ``latch_ladder_tier2`` row's READ-TIME verdict
+    # (``frozen_value_evidence.ReplayVerdict``); None for every other tier.
+    replay: Any = None
 
     @property
     def has_drift(self) -> bool:
@@ -3491,8 +3494,18 @@ def _fill_anchor_drift(
 
 def read_provenance_corrections(
     conn: sqlite3.Connection, *, trade_id: int | None = None,
+    now: datetime | None = None,
 ) -> list[ProvenanceCorrectionReport]:
-    """Every correction with its citations, its frozen anchors and any DRIFT."""
+    """Every correction with its citations, its frozen anchors and any DRIFT.
+
+    A ``latch_ladder_tier2`` row also carries its READ-TIME verdict (22-A2
+    Task 9, RD's F10): ``replay_verdict`` runs AFTER the read transaction below
+    is released -- the rows are collected, the snapshot is let go, THEN git
+    runs (S12.1 #9: no git inside a transaction).  ``now`` is the verdict's
+    ``evaluated_at`` (default: the wall clock).  A caller that holds its own
+    transaction gets ``tier2_unverifiable`` / ``caller_holds_transaction`` for
+    each tier-2 row -- never a verdict computed under that transaction.
+    """
     # ONE READ SNAPSHOT FOR THE WHOLE REPORT (Codex R5 Major 3). This is the
     # EXACT defect already fixed for the preview, on the surface next door: the
     # reader runs many independent SELECTs, so a production
@@ -3525,7 +3538,7 @@ def read_provenance_corrections(
     try:
         if owns_read_tx:
             conn.execute("BEGIN DEFERRED")
-        return _read_provenance_corrections_inner(conn, trade_id=trade_id)
+        reports = _read_provenance_corrections_inner(conn, trade_id=trade_id)
     finally:
         if owns_read_tx and conn.in_transaction:
             try:
@@ -3544,6 +3557,19 @@ def read_provenance_corrections(
                     "not open, on a snapshot that no longer moves.",
                     cleanup_error)
                 raise
+    # The read transaction is released; only now does any git run.
+    if not any(r.correction.admission_tier == PROVENANCE_ADMISSION_TIER_LATCH_TIER2
+               for r in reports):
+        return reports
+    from swing.trades import frozen_value_evidence as fve
+
+    at = datetime.now(UTC) if now is None else now
+    return [
+        replace(r, replay=fve.replay_verdict(conn, r.correction, now=at))
+        if r.correction.admission_tier == PROVENANCE_ADMISSION_TIER_LATCH_TIER2
+        else r
+        for r in reports
+    ]
 
 
 def _read_provenance_corrections_inner(

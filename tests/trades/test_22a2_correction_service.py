@@ -393,8 +393,10 @@ def test_a2_74_dry_run_authorizes_as_apply_and_leaves_the_db_identical(
 
 # The ONE caller walk (CHARC R4.2 ruling 2, gotcha #31): every Name/Attribute
 # REFERENCE to a guarded entry point anywhere under ``swing/``, keyed by its
-# enclosing function.  ``tier2_cohort_exclusions`` / ``replay_verdict`` join
-# this table when they exist (Tasks 9-10).
+# enclosing function.  Task 9 added ``replay_verdict`` (the read-time verdict,
+# one function for every consumer) and ``tier2_cohort_exclusions``, whose
+# caller set is EMPTY until Task 10's four cohort readers land -- each is
+# added here by name when it does.
 _EXPECTED_CALLERS: dict[str, set[str]] = {
     "run_preflight": {
         "swing.trades.cohort_provenance_correction:correct_cohort_provenance",
@@ -402,7 +404,13 @@ _EXPECTED_CALLERS: dict[str, set[str]] = {
     },
     "evaluate_conjunction": {
         "swing.trades.latched_origin:_rung9_tier2_escape",
+        "swing.trades.frozen_value_evidence:replay_verdict",
     },
+    "replay_verdict": {
+        "swing.trades.frozen_value_evidence:tier2_cohort_exclusions",
+        "swing.trades.cohort_provenance_correction:read_provenance_corrections",
+    },
+    "tier2_cohort_exclusions": set(),
 }
 
 
