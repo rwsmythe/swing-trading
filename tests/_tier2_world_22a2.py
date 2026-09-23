@@ -168,11 +168,28 @@ def base_last_word_payload(tmp_path: Path) -> dict[str, Any]:
         conn.close()
 
 
+def build_last_word_world(tmp_path: Path, name: str = "t25_lw") -> sqlite3.Connection:
+    """Trade 25's rows at HEAD with NO latch rows: fill 48's order resolves to
+    no link, so the production service's tier is ``last_word``."""
+    from swing.data.db import ensure_schema
+
+    root = tmp_path / name
+    root.mkdir(parents=True, exist_ok=True)
+    conn = ensure_schema(root / "swing.db")
+    _seed_rows(conn, with_envelope_reading=True)
+    conn.commit()
+    return conn
+
+
 def build_pre_barrier_world(
     tmp_path: Path, name: str = "t25", *, target_version: int = EXPECTED_SCHEMA_VERSION,
+    with_envelope_reading: bool = True,
 ) -> tuple[sqlite3.Connection, dict[str, int]]:
     """Trade 25's rows on v36, then migrated, then the latch rows -> a
-    ``pre_barrier_reconstructed`` link on candidate 12284."""
+    ``pre_barrier_reconstructed`` link on candidate 12284.
+
+    ``with_envelope_reading=False`` leaves fill 48's envelope UNREAD, so the
+    correction service's own PERSIST-CANONICAL write is observable (A2-76)."""
     from tests._latch_link_fixtures_22a import insert_intent, place_row, validity_row
 
     root = tmp_path / name
@@ -182,7 +199,8 @@ def build_pre_barrier_world(
     _seed_rows(conn, with_envelope_reading=False)   # no FEI table at v36
     conn.commit()
     run_migrations(conn, target_version=target_version, backup_dir=root / "bak")
-    record_reading(conn)
+    if with_envelope_reading:
+        record_reading(conn)
     place = place_row(
         T25_CANDIDATE_ID, run_id=T25_RUN_ID, ticker=T25_TICKER,
         detection_date=T25_ACTION_SESSION, action_session_date=T25_ACTION_SESSION,

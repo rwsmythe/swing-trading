@@ -97,13 +97,18 @@ def test_help_is_still_available_even_though_it_is_not_in_params(
 
 
 def test_the_service_signature_accepts_no_cohort_VALUE() -> None:
-    """SIX parameters, and not one of them can carry a cohort key.
+    """EIGHT parameters, and not one of them can carry a cohort key.
 
     `cfg` joined the manifest with 22-A (task 11): it is the CONFIG HANDLE the
     latch ladder needs to run its derivation at all, and it carries no value
     this surface writes -- without it the resolver returns `no_config` and
     every correction reports the `last_word` tier, which would be a true
     statement about a probe that never happened.
+
+    `frozen_value_evidence` and `evidence_repo` joined with 22-A2 (Task 7):
+    the tier-2 evidence is a SELECTION -- where the record is, never what it
+    says (F9) -- and the repo that selection names. Neither carries a value
+    this surface writes; the tier they can open is DETECTED from the ladder.
 
     The manifest is asserted as an EQUALITY rather than a set of absences on
     purpose: a value parameter added under any spelling fails here, which a
@@ -117,7 +122,7 @@ def test_the_service_signature_accepts_no_cohort_VALUE() -> None:
     names = set(inspect.signature(correct_cohort_provenance).parameters)
     assert names == {
         "conn", "trade_id", "cited_candidate_id", "cited_recommendation_id",
-        "reason", "cfg",
+        "reason", "cfg", "frozen_value_evidence", "evidence_repo",
     }
     # `applied_at` is DELIBERATELY absent: an audit time a caller can supply
     # is an audit time a caller can falsify, and this table exists to hold

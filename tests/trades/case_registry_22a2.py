@@ -52,7 +52,7 @@ CASES_22A2["A2-22"] = "tests/data/test_backup_gate_table.py"
 # Ids whose task has not landed yet.  Task 12 removes every entry.
 PENDING: frozenset[str] = frozenset(
     rid for rid in CASES_22A2
-    if rid not in {f"A2-{n:02d}" for n in range(1, 67)}
+    if rid not in {f"A2-{n:02d}" for n in range(1, 77)}
 )
 
 

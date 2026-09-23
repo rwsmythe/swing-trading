@@ -48,8 +48,9 @@ import math
 import re
 import sqlite3
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from datetime import date as _date
-from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -57,6 +58,7 @@ from zoneinfo import ZoneInfo
 from swing.data.models import (
     PROVENANCE_ADMISSION_TIER_LAST_WORD,
     PROVENANCE_ADMISSION_TIER_LATCH,
+    PROVENANCE_ADMISSION_TIER_LATCH_TIER2,
     PROVENANCE_CORRECTED_FIELDS,
     PROVENANCE_CORRECTION_APPLIED_BY,
     ProvenanceCorrection,
@@ -76,6 +78,12 @@ from swing.evaluation.dates import PIPELINE_LOCAL_TIMEZONE, is_trading_session
 # set) and the transaction it holds while calling it (AL-2). A function-local
 # import would make both unpinnable.
 from swing.trades.entry import log_contained_note
+from swing.trades.frozen_value_evidence import (
+    REMOTE_REF,
+    PreflightResult,
+    Tier2Request,
+    run_preflight,
+)
 from swing.trades.latched_origin import resolve_latched_provenance
 
 log = logging.getLogger(__name__)
@@ -138,6 +146,26 @@ def _applied_at_now() -> str:
 # than a parameter precisely so it is not part of the PUBLIC surface: an audit
 # time a caller can supply is an audit time a caller can falsify.
 _APPLIED_AT_CLOCK = _applied_at_now
+
+
+# 22-A2 (E-18): an ALREADY-APPLIED re-run that supplied tier-2 evidence returns
+# the existing id (SELECT-first) and says where the evidence IS judged -- the
+# read-time replay -- so the input is never silently ignored.
+TIER2_ALREADY_APPLIED_NOTE = (
+    "already applied; evidence not re-evaluated here -- the read-time verdict "
+    "is on journal provenance-corrections")
+
+# 22-A2 (R0.10 encoding 3): supplied evidence with NO latch order to escape.
+TIER2_NO_LATCH_REFUSAL = (
+    "no accepted latch order: tier-2 evidence is admissible only as rung 9's "
+    "escape on a pre-barrier linked mandate")
+
+
+def _preflight_now_utc() -> datetime:
+    """The tier-2 preflight's reflog-age reference (recorded-only), read off
+    THIS surface's own audit clock -- never supplied by a caller."""
+    return datetime.fromisoformat(_APPLIED_AT_CLOCK()).replace(tzinfo=UTC)
+
 
 # The EXACT naive-ISO grammar every timestamp this module reads must satisfy:
 # `YYYY-MM-DDTHH:MM:SS` with an optional fractional part, a LITERAL `T`, no
@@ -1719,6 +1747,12 @@ class CohortProvenanceCorrectionPreview:
     cited_latch_place_intent_id: int | None = None
     cited_latch_broker_order_id: str | None = None
     cited_latch_admission_basis: str | None = None
+    # 22-A2: a tier-2 admission's four clauses (criterion -> verdict text) and
+    # its interval prose; ``tier2_note`` when evidence met an already-applied
+    # trade (E-18).
+    tier2_clauses: tuple[tuple[str, str], ...] = ()
+    tier2_interval_prose: str | None = None
+    tier2_note: str | None = None
 
 
 def _reason_or_refuse(reason: Any) -> str:
@@ -1750,6 +1784,10 @@ class _LatchCitation:
     # session and the fill won the tie. Those are DIFFERENT admissions and an
     # operator reading only "latch_ladder" cannot tell them apart.
     admission_basis: str | None = None
+    # 22-A2: the seventh-column blob (``json.dumps(..., sort_keys=True)``),
+    # present ONLY when rung 9 was escaped by the four-part conjunction. Its
+    # presence is what the tier is DETECTED from.
+    frozen_value_evidence_json: str | None = None
 
 
 def _resolve_latch_citation(
@@ -1759,6 +1797,7 @@ def _resolve_latch_citation(
     trade: Any,
     trade_id: int,
     entry_fill: _EntryFill,
+    tier2: Tier2Request | None = None,
 ) -> _LatchCitation | None:
     """The 22-A ladder, run over the trade's AUTHORITATIVE ENTRY FILL (S2.7).
 
@@ -1874,6 +1913,7 @@ def _resolve_latch_citation(
         conn, cfg, req,
         trade_id=trade_id,
         exclude_trade_ids=frozenset({trade_id}),
+        tier2=tier2,
     )
     if latched.decline_reason == "origin_envelope_inconsistent":
         # RD'S 22A-R3-13 RULING IS SCOPED TO THE ENTRY PATH, AND THIS IS THE
@@ -1907,15 +1947,31 @@ def _resolve_latch_citation(
             detail = (
                 f" The probe reports clear_reason={latched.clear_reason!r} on "
                 f"session {latched.clear_session}.")
+        # 22-A2 (R0.10 encoding 3): supplied evidence is never silently
+        # ignored. A tier-2 refusal PRINTS its criterion/field; any other
+        # ladder refusal says the evidence was never reached.
+        named = str(latched.decline_reason)
+        if latched.decline_reason == "tier2_evidence_refused":
+            named = f"{named}: {latched.tier2_refusal}"
+        elif tier2 is not None:
+            detail += (" (the supplied --frozen-value-evidence was not "
+                       f"consulted: {latched.decline_reason})")
         raise _refuse(
             f"trade {trade_id}'s entry fill names broker order "
             f"{order.broker_order_id if order else '?'}, whose accepted latch "
-            f"mandate the 22-A ladder REFUSED ({latched.decline_reason})."
+            f"mandate the 22-A ladder REFUSED ({named})."
             f"{detail} A refused mandate does not fall back to the last-word "
             "ladder: correcting through the other authority would be citation "
             "shopping, which is what this surface exists to prevent."
         )
     if not latched.admitted:
+        if tier2 is not None:
+            raise _refuse(
+                f"trade {trade_id}: {TIER2_NO_LATCH_REFUSAL}. Its entry fill "
+                f"{entry_fill.fill_id} resolves to no accepted latch order, so "
+                "the correction's tier would be last_word and the supplied "
+                "--frozen-value-evidence has nothing to escape. Nothing was "
+                "written.")
         return None
 
     order = latched.order
@@ -1932,6 +1988,9 @@ def _resolve_latch_citation(
         fire_candidate_id=int(order.candidate_id),
         probe_json=json.dumps(evidence, sort_keys=True),
         admission_basis=evidence.get("admission_basis"),
+        frozen_value_evidence_json=(
+            None if latched.frozen_value_evidence is None
+            else json.dumps(latched.frozen_value_evidence, sort_keys=True)),
     )
 
 
@@ -1952,6 +2011,39 @@ def _admission_basis_of(raw: Any) -> str | None:
     return basis if isinstance(basis, str) else None
 
 
+def _tier2_surface(
+    latch: _LatchCitation | None,
+) -> tuple[tuple[tuple[str, str], ...], str | None]:
+    """A tier-2 admission's operator surface: the four clauses (criterion ->
+    verdict text) and the interval prose, both read off the ONE blob the row
+    will carry -- never re-derived, so the preview, the result and the row
+    cannot disagree. ``((), None)`` for any other tier.
+
+    Every clause's verdict is ``PASS``: an admission is the conjunction of all
+    four (a refusal raises and never reaches here). The shape is Task 8's
+    output line, ``f"{criterion}: {verdict}"``. ASCII only.
+    """
+    if latch is None or latch.frozen_value_evidence_json is None:
+        return (), None
+    blob = json.loads(latch.frozen_value_evidence_json)
+    endpoints = blob["interval"]["endpoints"]
+    clauses = (
+        (f"criterion 1 ancestor of {REMOTE_REF} at "
+         f"{blob['resolved_remote_ref_sha']} (commit "
+         f"{blob['artifact_commit_sha']})", "PASS"),
+        (f"criterion 2 authored {blob['author_date_et']} (America/New_York) "
+         f"before the fill session {blob['fill_session_date']}", "PASS"),
+        (f"criterion 3 quoted text carries ticker "
+         f"{blob['quoted_ticker_text']}, action session "
+         f"{blob['quoted_action_session_text']}, pivot "
+         f"{blob['quoted_pivot_text']}, invalidation "
+         f"{blob['quoted_invalidation_text']}", "PASS"),
+        (f"criterion 4 recorded {endpoints['record_at']['utc']} after the "
+         f"fire's upper bound {endpoints['fire_hi']['utc']}", "PASS"),
+    )
+    return clauses, str(blob["uncovered_window_prose"])
+
+
 @dataclass(frozen=True)
 class _Authorized:
     trade: Any
@@ -1962,9 +2054,15 @@ class _Authorized:
 
     @property
     def admission_tier(self) -> str:
-        """The tier is DETECTED from the record and never chosen (S2.7)."""
-        return (PROVENANCE_ADMISSION_TIER_LAST_WORD if self.latch is None
-                else PROVENANCE_ADMISSION_TIER_LATCH)
+        """The tier is DETECTED from the record and never chosen (S2.7):
+        no latch -> ``last_word``; a latch admitted by rung 9's tier-2 escape
+        (the seventh-column blob present) -> ``latch_ladder_tier2``; any other
+        latch admission -> ``latch_ladder``."""
+        if self.latch is None:
+            return PROVENANCE_ADMISSION_TIER_LAST_WORD
+        if self.latch.frozen_value_evidence_json is not None:
+            return PROVENANCE_ADMISSION_TIER_LATCH_TIER2
+        return PROVENANCE_ADMISSION_TIER_LATCH
 
 
 def _authorize(
@@ -1975,6 +2073,7 @@ def _authorize(
     cited_recommendation_id: int,
     reason: Any,
     cfg: Any = None,
+    tier2: Tier2Request | None = None,
 ) -> _Authorized:
     """Every authorization check, in refusal-ladder order.
 
@@ -2057,7 +2156,8 @@ def _authorize(
     # dispatched between rather than composed.
     entry_fill = resolve_authoritative_entry_fill(conn, trade_id)
     latch = _resolve_latch_citation(
-        conn, cfg, trade=trade, trade_id=trade_id, entry_fill=entry_fill)
+        conn, cfg, trade=trade, trade_id=trade_id, entry_fill=entry_fill,
+        tier2=tier2)
     anchored = _anchor_half(
         conn,
         trade_id=trade_id,
@@ -2179,6 +2279,8 @@ def preview_cohort_provenance_correction(
     cited_recommendation_id: int,
     reason: str | None = None,
     cfg: Any = None,
+    frozen_value_evidence: Path | None = None,
+    evidence_repo: Path | None = None,
 ) -> CohortProvenanceCorrectionPreview:
     """``--dry-run``: NET-ZERO, and that is a weaker claim than write-free.
 
@@ -2199,7 +2301,15 @@ def preview_cohort_provenance_correction(
     before it returns, in EVERY transaction posture, by a SAVEPOINT rolled
     back unconditionally.  What is NOT guaranteed, and is stated rather than
     implied: for the duration of the call the connection takes a WRITE LOCK.
+
+    22-A2: ``frozen_value_evidence`` is the tier-2 SELECTION, handled exactly
+    as the apply handles it -- the git preflight runs HERE, before this call
+    opens its transaction or its SAVEPOINT (S12.1 #9), and its result is
+    consulted only at rung 9's escape, after SELECT-first (E-6).
     """
+    preflight = (None if frozen_value_evidence is None
+                 else run_preflight(frozen_value_evidence, repo_dir=evidence_repo,
+                                    now_utc=_preflight_now_utc()))
     # A DRY RUN MUST AT LEAST BE COHERENT WITH ITSELF (Codex R2 Major 4). The
     # authorization ladder runs a dozen separate SELECTs, and under sqlite3's
     # default isolation each one sees whatever is committed at that instant --
@@ -2368,6 +2478,12 @@ def preview_cohort_provenance_correction(
                 raise anomaly from savepoint_error
         raise
     try:
+        # ONE stamp is the blob's `evaluated_at` and the interval's `read_at`
+        # (E-7). Taken only when evidence was supplied: a preview writes no
+        # row, so without evidence it has nothing to stamp.
+        tier2 = (None if preflight is None
+                 else Tier2Request(preflight=preflight,
+                                   applied_at=_APPLIED_AT_CLOCK()))
         auth = _authorize(
             conn,
             trade_id=trade_id,
@@ -2375,9 +2491,13 @@ def preview_cohort_provenance_correction(
             cited_recommendation_id=cited_recommendation_id,
             reason=reason,
             cfg=cfg,
+            tier2=tier2,
         )
         if auth.already_applied is not None:
-            return _preview_from_existing(auth.trade, auth.already_applied)
+            return _preview_from_existing(
+                auth.trade, auth.already_applied,
+                tier2_note=(None if preflight is None
+                            else TIER2_ALREADY_APPLIED_NOTE))
         anchored, derived, latch = auth.anchored, auth.derived, auth.latch
         tier = auth.admission_tier
     finally:
@@ -2467,6 +2587,7 @@ def preview_cohort_provenance_correction(
                 "preview's answer is trustworthy.", cleanup_error)
             raise cleanup_error
     trade = anchored.trade
+    tier2_clauses, tier2_prose = _tier2_surface(latch)
     return CohortProvenanceCorrectionPreview(
         trade_id=trade_id,
         ticker=str(trade.ticker),
@@ -2508,10 +2629,14 @@ def preview_cohort_provenance_correction(
             None if latch is None else latch.broker_order_id),
         cited_latch_admission_basis=(
             None if latch is None else latch.admission_basis),
+        tier2_clauses=tier2_clauses,
+        tier2_interval_prose=tier2_prose,
     )
 
 
-def _preview_from_existing(trade: Any, existing: Any) -> CohortProvenanceCorrectionPreview:
+def _preview_from_existing(
+    trade: Any, existing: Any, *, tier2_note: str | None = None,
+) -> CohortProvenanceCorrectionPreview:
     """The preview for an ALREADY-APPLIED trade, read off the audit row.
 
     Every value comes from the FROZEN columns rather than being re-derived, so
@@ -2560,6 +2685,7 @@ def _preview_from_existing(trade: Any, existing: Any) -> CohortProvenanceCorrect
         cited_latch_broker_order_id=existing.cited_latch_broker_order_id,
         cited_latch_admission_basis=_admission_basis_of(
             existing.cited_latch_probe_json),
+        tier2_note=tier2_note,
     )
 
 
@@ -2580,6 +2706,9 @@ class CohortProvenanceCorrectionResult:
     cited_latch_place_intent_id: int | None = None
     cited_latch_broker_order_id: str | None = None
     cited_latch_admission_basis: str | None = None
+    tier2_clauses: tuple[tuple[str, str], ...] = ()
+    tier2_interval_prose: str | None = None
+    tier2_note: str | None = None
 
 
 def _compose_reason(
@@ -2630,6 +2759,8 @@ def correct_cohort_provenance(
     cited_recommendation_id: int,
     reason: str | None = None,
     cfg: Any = None,
+    frozen_value_evidence: Path | None = None,
+    evidence_repo: Path | None = None,
 ) -> CohortProvenanceCorrectionResult:
     """Outer: owns ``BEGIN IMMEDIATE`` / COMMIT / ROLLBACK, and REJECTS a
     caller-held transaction -- never auto-detects, because an auto-detect
@@ -2653,6 +2784,15 @@ def correct_cohort_provenance(
     the CALLER's, and auto-detecting an outer one re-introduces the race the
     explicit lock closed -- so the obligation lands here, and a test pins it
     rather than a comment promising it.
+
+    22-A2: ``frozen_value_evidence`` is the tier-2 SELECTION (F9) and
+    ``evidence_repo`` the git repo it names (default: this package's repo).
+    THE GIT PREFLIGHT RUNS HERE, after the caller-held-transaction rejection
+    and BEFORE ``BEGIN IMMEDIATE`` -- git never runs inside the write
+    reservation (S12.1 #9). It parses and reads but never refuses; its result
+    is consulted only at rung 9's escape, which the authorization reaches
+    after its SELECT-first already-applied return (E-6). The tier is DETECTED
+    from what the ladder admits, never chosen by supplying evidence.
     """
     if conn.in_transaction:
         raise CallerHeldTransactionError(
@@ -2666,6 +2806,9 @@ def correct_cohort_provenance(
     # ``try`` being entered skipped the handler and left the reservation held
     # on a connection the CLI goes on using.  Same one-bytecode window as the
     # preview path, same recovery, and the two now agree.
+    preflight = (None if frozen_value_evidence is None
+                 else run_preflight(frozen_value_evidence, repo_dir=evidence_repo,
+                                    now_utc=_preflight_now_utc()))
     try:
         conn.execute("BEGIN IMMEDIATE")
         result = _correct_cohort_provenance_inner(
@@ -2675,6 +2818,7 @@ def correct_cohort_provenance(
             cited_recommendation_id=cited_recommendation_id,
             reason=reason,
             cfg=cfg,
+            tier2_preflight=preflight,
         )
         conn.commit()
         return result
@@ -2737,6 +2881,7 @@ def _correct_cohort_provenance_inner(
     cited_recommendation_id: int,
     reason: str | None = None,
     cfg: Any = None,
+    tier2_preflight: PreflightResult | None = None,
 ) -> CohortProvenanceCorrectionResult:
     """Never commits. Every callee is repo-level, so no inner ``with conn:``
     can close the caller's transaction out from under it.
@@ -2766,6 +2911,14 @@ def _correct_cohort_provenance_inner(
         _maybe_get_active_risk_policy_id,
     )
 
+    # ONE STAMP, TAKEN ONCE, BEFORE THE AUTHORIZATION (22-A2 E-7): it is the
+    # row's `applied_at`, the tier-2 blob's `evaluated_at` and the interval's
+    # `read_at` -- three readers of one string, so they cannot disagree by
+    # the gap between two clock reads. `tier2_preflight` ran BEFORE this
+    # transaction (the outer's obligation; S12.1 #9).
+    applied_at = _APPLIED_AT_CLOCK()
+    tier2 = (None if tier2_preflight is None
+             else Tier2Request(preflight=tier2_preflight, applied_at=applied_at))
     auth = _authorize(
         conn,
         trade_id=trade_id,
@@ -2773,6 +2926,7 @@ def _correct_cohort_provenance_inner(
         cited_recommendation_id=cited_recommendation_id,
         reason=reason,
         cfg=cfg,
+        tier2=tier2,
     )
     if auth.already_applied is not None:
         existing = auth.already_applied
@@ -2796,6 +2950,9 @@ def _correct_cohort_provenance_inner(
             cited_latch_broker_order_id=existing.cited_latch_broker_order_id,
             cited_latch_admission_basis=_admission_basis_of(
                 existing.cited_latch_probe_json),
+            # E-18: the evidence was PARSED, never consulted -- and said so.
+            tier2_note=(None if tier2_preflight is None
+                        else TIER2_ALREADY_APPLIED_NOTE),
         )
 
     anchored = auth.anchored
@@ -2871,7 +3028,7 @@ def _correct_cohort_provenance_inner(
             pre_value_json=json.dumps(pre_values, sort_keys=True),
             applied_value_json=json.dumps(applied_values, sort_keys=True),
             corrected_fields_json=json.dumps(list(COHORT_CORRECTED_FIELDS)),
-            applied_at=_APPLIED_AT_CLOCK(),
+            applied_at=applied_at,
             applied_by=PROVENANCE_CORRECTION_APPLIED_BY,
             correction_reason=stored_reason,
             risk_policy_id_at_correction=_maybe_get_active_risk_policy_id(conn),
@@ -2890,8 +3047,11 @@ def _correct_cohort_provenance_inner(
             cited_latch_broker_order_id=(
                 None if latch is None else latch.broker_order_id),
             cited_latch_probe_json=None if latch is None else latch.probe_json,
+            cited_frozen_value_evidence_json=(
+                None if latch is None else latch.frozen_value_evidence_json),
         ),
     )
+    tier2_clauses, tier2_prose = _tier2_surface(latch)
 
     return CohortProvenanceCorrectionResult(
         correction_id=correction_id,
@@ -2913,6 +3073,8 @@ def _correct_cohort_provenance_inner(
             None if latch is None else latch.broker_order_id),
         cited_latch_admission_basis=(
             None if latch is None else latch.admission_basis),
+        tier2_clauses=tier2_clauses,
+        tier2_interval_prose=tier2_prose,
     )
 
 
