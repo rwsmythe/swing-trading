@@ -174,7 +174,7 @@ def _seq(conn: sqlite3.Connection):
 def _migrate_to_head(conn: sqlite3.Connection, tmp_path: Path) -> None:
     run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION,
                    backup_dir=tmp_path / "gate_bak")
-    assert _current_version(conn) == EXPECTED_SCHEMA_VERSION == 39
+    assert _current_version(conn) == EXPECTED_SCHEMA_VERSION == 40
 
 
 def _strip_comments(sql: str) -> str:

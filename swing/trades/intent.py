@@ -24,7 +24,10 @@ ENTRY_INTENT_DISPLAY: tuple[tuple[str, str], ...] = (
 # Arc 22-B: the LABELS cover the whole stored value set (the schema enum),
 # a sibling of the choices -- a value no form offers still renders its own
 # label wherever a trade renders.
-ENTRY_INTENT_LABELS: dict[str, str] = dict(ENTRY_INTENT_DISPLAY)
+ENTRY_INTENT_LABELS: dict[str, str] = {
+    **dict(ENTRY_INTENT_DISPLAY),
+    "unintended_execution": "Unintended execution",
+}
 
 
 def entry_intent_display_choices() -> tuple[tuple[str, str], ...]:

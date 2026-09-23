@@ -42,11 +42,14 @@ def _make_trade(**over) -> Trade:
 
 
 def test_expected_schema_version_is_head():
-    assert EXPECTED_SCHEMA_VERSION == 39
+    assert EXPECTED_SCHEMA_VERSION == 40
 
 
 def test_entry_intents_constant():
-    assert ENTRY_INTENTS == frozenset({"standard", "hypothesis_test_by_design"})
+    # Arc 22-B (0040) widened the schema enum; the drift test
+    # (tests/data/test_entry_intent_drift.py) is the comparator of record.
+    assert ENTRY_INTENTS == frozenset(
+        {"standard", "hypothesis_test_by_design", "unintended_execution"})
 
 
 def test_migrate_to_27_adds_nullable_checked_column(tmp_path):

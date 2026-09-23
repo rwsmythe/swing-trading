@@ -239,8 +239,13 @@ FAILURE_MODES: frozenset[str] = frozenset({
 # so the Trade dataclass __post_init__ can validate without an upward import
 # from swing/trades/ (the same import-cycle reason FAILURE_MODES lives here).
 # NULL = unclassified (a distinct third facet; never coerced to 'standard').
-# Asserted identical to the migration 0027 CHECK by the 0027 schema test.
-ENTRY_INTENTS: frozenset[str] = frozenset({"standard", "hypothesis_test_by_design"})
+# Arc 22-B (migration 0040): widened with 'unintended_execution' -- the READ
+# path must hydrate an attested row. Only `swing trade assign-intent` WRITES it
+# (the seam below); every generic writer validates ENTRY_INTENTS_ASSERTABLE.
+# Asserted identical to the stored `trades` CHECK by the drift test
+# (tests/data/test_entry_intent_drift.py), the one mirror that defends the set.
+ENTRY_INTENTS: frozenset[str] = frozenset(
+    {"standard", "hypothesis_test_by_design", "unintended_execution"})
 
 # Arc 22-B (F5, the single-writer seam). `unintended_execution` is the
 # evidence-bearing value: it is written ONLY by `swing trade assign-intent`,

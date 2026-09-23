@@ -115,6 +115,8 @@ ROSTER: tuple[tuple[int, str, str, str, str], ...] = (
 POST_BASE_ROSTER: tuple[tuple[int, str, str, str, str], ...] = (
     (38, "22a2", "_phase22_arc_a2_backup_gate",
      "PHASE22_ARC_A2_PRE_MIGRATION_EXPECTED_TABLES", "pre-22-A2"),
+    (39, "22b", "_phase22_arc_b_backup_gate",
+     "PHASE22_ARC_B_PRE_MIGRATION_EXPECTED_TABLES", "pre-22-B"),
 )
 ALL_ROSTER = ROSTER + POST_BASE_ROSTER
 UNGATED_PRE_VERSIONS = (14, 17)
