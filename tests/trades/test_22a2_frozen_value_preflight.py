@@ -87,8 +87,8 @@ _MALFORMED: dict[str, Callable[[Path], Path]] = {
     "empty_value": _write_text(json.dumps({**_good_payload(_SHA), "quoted_text": ""})),
     # json.loads alone would silently keep the LAST duplicate.
     "duplicate_key": _write_text(
-        '{"artifact_path": "docs/rd-state.md", "artifact_commit_sha": "%s", '
-        '"quoted_text": "a", "quoted_text": "b"}' % _SHA),
+        '{"artifact_path": "docs/rd-state.md", "artifact_commit_sha": "' + _SHA + '", '
+        '"quoted_text": "a", "quoted_text": "b"}'),
     "sha_39": _write_text(json.dumps(_good_payload(_SHA[:39]))),
     "sha_upper": _write_text(json.dumps(_good_payload(_SHA.upper()))),
     "not_object": _write_text(json.dumps([RD_STATE, _SHA, "q"])),
