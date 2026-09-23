@@ -1130,7 +1130,12 @@ def _first_failing_mirror(blob: dict, ctx: dict, *, read_at: str,
 @dataclass(frozen=True)
 class ReplayVerdict:
     """One row's read-time verdict.  ``reason`` is None iff ``ADMIT``.
-    ``resolved_origin_main_sha`` is None when git never resolved the ref;
+    ``resolved_origin_main_sha`` is None when git never resolved the ref, and
+    is kept when the ref resolved and a LATER artifact read failed;
+    ``remote_ref_age_seconds`` is the ref's reflog age at ``evaluated_at``
+    (None when the ref or its reflog did not resolve) -- together they are
+    AL2-10's distinguisher between a repo lacking the cited object and
+    rewritten history (Codex R1-05).
     ``barrier_installed_at_read`` is None when the row was never replayed (an
     exhausted budget).  ``derivation_observation`` is
     ``derivation_version_moved (stored X, current Y)`` when the row's stored
@@ -1143,6 +1148,7 @@ class ReplayVerdict:
     evaluated_at: str
     resolved_origin_main_sha: str | None
     barrier_installed_at_read: bool | None
+    remote_ref_age_seconds: int | None = None
     derivation_observation: str | None = None
 
 
@@ -1247,7 +1253,8 @@ def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
     caller's budget (``tier2_cohort_exclusions``); ``None`` waits out every
     call's own timeout.  ``resolution`` is the invocation's ONE ref read
     (``tier2_cohort_exclusions`` / ``read_provenance_corrections``, CHARC
-    G-T9 item 2); ``None`` -- a direct call -- resolves the ref here.
+    G-T9 item 2); ``None`` -- a direct call -- resolves the ref here, FIRST,
+    right after the caller-held-transaction refusal (Codex R1-05).
     """
     from swing.data.models import PROVENANCE_ADMISSION_TIER_LATCH_TIER2
     from swing.data.repos.candidates_immutability_epoch import barrier_installed
@@ -1257,7 +1264,9 @@ def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
             f"replay_verdict reads tier-2 rows only; correction "
             f"{row.provenance_correction_id} is {row.admission_tier!r}")
     evaluated_at = now.isoformat()
+    repo = EVIDENCE_REPO_DIR if repo_dir is None else repo_dir
     sha: str | None = None
+    age: int | None = None
     barrier: bool | None = None
     observation: str | None = None
 
@@ -1267,12 +1276,23 @@ def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
         return ReplayVerdict(verdict=kind, reason=reason, evaluated_at=evaluated_at,
                              resolved_origin_main_sha=sha,
                              barrier_installed_at_read=barrier,
-                             derivation_observation=observation)
+                             derivation_observation=observation,
+                             remote_ref_age_seconds=age)
 
     try:
         barrier = barrier_installed(conn)
         if conn.in_transaction:
             return verdict(VERDICT_UNVERIFIABLE, REASON_CALLER_HOLDS_TRANSACTION)
+        # Codex R1-05: the ref is resolved FIRST (a direct call resolves it
+        # here; an invocation passes its one read), so the verdict keeps the
+        # resolved sha and the ref's age whatever a later read answers.  A
+        # resolution for another repo is never adopted (and is refused below).
+        if resolution is None:
+            resolution = resolve_remote_ref(repo, deadline=deadline)
+        if resolution.repo_dir == repo and resolution.ref_failure is None:
+            sha = resolution.resolved_sha
+            if resolution.updated_at is not None and now.utcoffset() is not None:
+                age = int((now - resolution.updated_at).total_seconds())
         try:
             stored = json.loads(row.cited_frozen_value_evidence_json)
         except (TypeError, ValueError):
@@ -1290,7 +1310,7 @@ def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
             return verdict(VERDICT_STALE, REASON_FILL_SESSION_MALFORMED)
 
         read = read_artifact_facts(
-            selection, repo_dir=EVIDENCE_REPO_DIR if repo_dir is None else repo_dir,
+            selection, repo_dir=repo,
             now_utc=now, deadline=deadline, resolution=resolution)
         if read.failure is not None or read.facts is None:
             if read.failure in (None, FAILURE_TIER2_UNVERIFIABLE):

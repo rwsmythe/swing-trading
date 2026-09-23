@@ -651,6 +651,90 @@ def test_a2_90_the_drift_reader_renders_the_read_time_verdict_for_tier2_only(
     assert lines[0].endswith("barrier installed at read True")
 
 
+# --------------------------------------------------------------------------- Codex R1-05
+# AL2-10's distinguisher: a repo that LACKS the cited object (shallow/pruned
+# clone) and rewritten history both read stale; the resolved origin/main sha
+# and the ref's age are what tell them apart, so the verdict must carry both
+# even when the artifact read fails AFTER the ref resolved.
+
+_ABSENT_SHA = "0123456789abcdef" * 2 + "01234567"
+
+
+def _absent_object_row(w: _World):
+    blob = json.loads(w.row.cited_frozen_value_evidence_json)
+    blob["artifact_commit_sha"] = _ABSENT_SHA
+    return dataclasses.replace(w.row, cited_frozen_value_evidence_json=json.dumps(blob))
+
+
+@pytest.mark.parametrize("supplied", [False, True])
+def test_codex_r1_05_a_failed_artifact_read_keeps_the_resolved_sha_and_ref_age(
+    tmp_path: Path, ticking_clock, supplied: bool,
+) -> None:
+    """PRE: the sha is set only from a SUCCESSFUL artifact read, and the ref
+    age is never carried -- a cited object the repo lacks reads stale with
+    origin/main ``None``.  POST: the ref is resolved FIRST; the verdict keeps
+    its sha and carries its age, for a direct call and for a caller-supplied
+    resolution alike."""
+    w = _tier2_world(tmp_path)
+    try:
+        own = fve.resolve_remote_ref(w.git.work)
+        assert own.resolved_sha == w.git.remote_tip() and own.updated_at is not None
+        kw = {"resolution": own} if supplied else {}
+        v = _replay(w, _absent_object_row(w), **kw)
+        assert v.verdict == "tier2_evidence_stale", v
+        assert v.reason == fve.FAILURE_ARTIFACT_UNREADABLE
+        assert v.resolved_origin_main_sha == own.resolved_sha
+        assert v.remote_ref_age_seconds == int((NOW - own.updated_at).total_seconds())
+        # The admitted row carries both too.
+        ok = _replay(w, **kw)
+        assert ok.verdict == "ADMIT"
+        assert (ok.resolved_origin_main_sha, ok.remote_ref_age_seconds) == (
+            v.resolved_origin_main_sha, v.remote_ref_age_seconds)
+    finally:
+        w.conn.close()
+
+
+def test_codex_r1_05_an_unresolved_ref_carries_neither(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """The counterfactual: no ref, no sha and no age -- never a stale value."""
+    w = _tier2_world(tmp_path)
+    try:
+        git(w.git.work, "update-ref", "-d", "refs/remotes/origin/main")
+        v = _replay(w)
+        assert v.verdict == "tier2_unverifiable"
+        assert (v.resolved_origin_main_sha, v.remote_ref_age_seconds) == (None, None)
+    finally:
+        w.conn.close()
+
+
+def test_codex_r1_05_the_drift_reader_renders_the_sha_and_ref_age_on_a_failed_read(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The CLI line shows both, so the shallow-clone case is distinguishable:
+    the correction is applied against one repo, then read against a repo that
+    LACKS the cited object (its own origin/main resolves)."""
+    from swing.cli import main
+    from tests.cli.test_correct_cohort_provenance_command import _t25_world
+
+    runner, argv, db, evidence = _t25_world(tmp_path / "t2", monkeypatch)
+    r = runner.invoke(main, [*argv, "--reason", "tier-2", "--frozen-value-evidence",
+                             str(evidence)])
+    assert r.exit_code == 0, r.output
+    other = GitWorld(tmp_path / "pruned-git")
+    other.commit("README.md", b"a clone without the cited commit\n")
+    other.push()
+    monkeypatch.setattr(fve, "EVIDENCE_REPO_DIR", other.work)
+    r = runner.invoke(main, [argv[0], argv[1], "journal", "provenance-corrections"])
+    assert r.exit_code == 0, r.output
+    r.output.encode("ascii")
+    (line,) = [ln for ln in r.output.splitlines() if "read-time verdict" in ln]
+    assert line.startswith("  read-time verdict: tier2_evidence_stale "
+                           f"({fve.FAILURE_ARTIFACT_UNREADABLE})"), line
+    assert f"origin/main {other.remote_tip()} (ref age " in line, line
+    assert "s), barrier installed at read True" in line, line
+
+
 # ------------------------------------------------------ G-T7F-AMEND (CHARC; RD's dissent)
 # A moved DERIVATION version is CONTEXT DRIFT, never divergence: the verdict
 # follows the RECOMPUTATION under current code; the moved version is an

@@ -2988,11 +2988,17 @@ def journal_provenance_corrections_cmd(ctx, trade_id):
             # the stored tier.
             v = report.replay
             reason = "" if v.reason is None else f" ({v.reason})"
+            # Codex R1-05 (AL2-10's distinguisher): the resolved origin/main
+            # sha AND the ref's age, kept even when a later artifact read
+            # failed -- a fetch cures a stale ref, nothing cures a rewrite.
+            ref_age = ("unknown" if v.remote_ref_age_seconds is None
+                       else f"{v.remote_ref_age_seconds}s")
             click.echo(
                 f"  read-time verdict: {v.verdict}{reason} evaluated_at "
                 f"{v.evaluated_at}, origin/main "
-                f"{v.resolved_origin_main_sha or 'unresolved'}, barrier "
-                f"installed at read {v.barrier_installed_at_read}")
+                f"{v.resolved_origin_main_sha or 'unresolved'} (ref age "
+                f"{ref_age}), barrier installed at read "
+                f"{v.barrier_installed_at_read}")
             if v.derivation_observation is not None:
                 # G-T7F-AMEND: a moved derivation version is CONTEXT beside
                 # the verdict, on its own line; never persisted.
