@@ -99,7 +99,7 @@ from pathlib import Path
 #   FRESH connection. NO BACKFILL -- every pre-existing row reads NULL, which
 #   is what the partial index is for. ADDITIVE: nothing rebuilt, no existing
 #   row mutated. Atomic BEGIN/COMMIT.
-EXPECTED_SCHEMA_VERSION = 38
+EXPECTED_SCHEMA_VERSION = 39
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -415,6 +415,14 @@ PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     }
 )
 
+# 22-A2 (migration 0039) pre-migration expected-table set. 0038 created NO
+# table (it added `trades.attempt_id` and one trigger), so the v38 floor is the
+# 22-A4 floor, read out of `0038_trade_attempt_identity.sql` rather than
+# recalled. A FLOOR, not a manifest (the 22-A4 ruling above).
+PHASE22_ARC_A2_PRE_MIGRATION_EXPECTED_TABLES: set[str] = set(
+    PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES
+)
+
 
 class SchemaVersionMismatchError(RuntimeError):
     """Raised when the DB schema version doesn't match what the code expects."""
@@ -685,6 +693,8 @@ _PRE_MIGRATION_BACKUP_GATES: tuple[BackupGateSpec, ...] = (
                    "_phase22_arc_a_backup_gate", "pre-22-A"),
     BackupGateSpec(37, "22a4", PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES,
                    "_phase22_arc_a4_backup_gate", "pre-22-A4"),
+    BackupGateSpec(38, "22a2", PHASE22_ARC_A2_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase22_arc_a2_backup_gate", "pre-22-A2"),
 )
 _GATE_BY_PRE_VERSION: dict[int, BackupGateSpec] = {
     s.pre_version: s for s in _PRE_MIGRATION_BACKUP_GATES
@@ -879,6 +889,7 @@ _a4_taxonomy_backup_gate = _bind_gate_wrapper(34)
 _demand_c_backup_gate = _bind_gate_wrapper(35)
 _phase22_arc_a_backup_gate = _bind_gate_wrapper(36)
 _phase22_arc_a4_backup_gate = _bind_gate_wrapper(37)
+_phase22_arc_a2_backup_gate = _bind_gate_wrapper(38)
 
 
 def run_migrations(

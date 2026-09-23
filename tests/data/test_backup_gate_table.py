@@ -106,6 +106,17 @@ ROSTER: tuple[tuple[int, str, str, str, str], ...] = (
     (37, "22a4", "_phase22_arc_a4_backup_gate",
      "PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES", "pre-22-A4"),
 )
+
+# POST-BASE rows (P33, 22-A2): gates added AFTER the D50 base. A row here
+# cannot be cross-checked against ``eface268``'s source -- it did not exist
+# there -- so it is asserted against the LIVE table only, and the table must
+# equal ``ROSTER + POST_BASE_ROSTER`` in order. The base roster stays exactly
+# the 23 rows the base re-derives.
+POST_BASE_ROSTER: tuple[tuple[int, str, str, str, str], ...] = (
+    (38, "22a2", "_phase22_arc_a2_backup_gate",
+     "PHASE22_ARC_A2_PRE_MIGRATION_EXPECTED_TABLES", "pre-22-A2"),
+)
+ALL_ROSTER = ROSTER + POST_BASE_ROSTER
 UNGATED_PRE_VERSIONS = (14, 17)
 
 # The four legacy creator names tests monkeypatch or call; each stays as an
@@ -130,8 +141,9 @@ def _gate_images(d: Path) -> list[Path]:
 def test_i_the_table_is_exactly_the_roster_enumerated_from_the_base() -> None:
     table = db_mod._PRE_MIGRATION_BACKUP_GATES
     assert len(ROSTER) == 23
-    assert len(table) == len(ROSTER)
-    for spec, (pre, stem, gate_name, const, label) in zip(table, ROSTER, strict=True):
+    assert len(table) == len(ALL_ROSTER)
+    for spec, (pre, stem, gate_name, const, label) in zip(
+            table, ALL_ROSTER, strict=True):
         assert spec.pre_version == pre
         assert spec.filename_stem == stem
         assert spec.gate_name == gate_name
@@ -143,7 +155,7 @@ def test_i_the_table_is_exactly_the_roster_enumerated_from_the_base() -> None:
 
 
 def test_i_the_ungated_pre_versions_have_no_row_and_the_lookup_says_so() -> None:
-    gated = {r[0] for r in ROSTER}
+    gated = {r[0] for r in ALL_ROSTER}
     for v in range(0, EXPECTED_SCHEMA_VERSION + 2):
         spec = db_mod.backup_gate_for_pre_version(v)
         if v in gated:
@@ -249,7 +261,7 @@ def test_closure_every_creator_alias_is_bound_to_its_rows_stem(tmp_path: Path) -
 # REAL runner, writes exactly ONE image -- its own stem, integrity-verified --
 # and NOT its successor's.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("row", ROSTER, ids=[f"v{r[0]}" for r in ROSTER])
+@pytest.mark.parametrize("row", ALL_ROSTER, ids=[f"v{r[0]}" for r in ALL_ROSTER])
 def test_ii_each_gate_fires_exactly_once_walking_its_pre_version_to_head(
         tmp_path: Path, row) -> None:
     pre, stem, _gate_name, const, _label = row
@@ -440,3 +452,20 @@ def test_a_failed_snapshot_removes_only_its_own_reserved_file(
         db_mod._create_gate_backup(src, dest_dir=bak, filename_stem="b7")
     assert sorted(p.name for p in bak.iterdir()) == [bystander.name]
     assert bystander.read_bytes() == b"older image"
+
+
+def test_a2_22_the_post_base_roster_is_one_22a2_row_after_the_base_23() -> None:
+    """22-A2 P33: the base-derived roster stays 23 rows cross-checked against
+    ``eface268``; the post-base roster is exactly the one 22-A2 row; the live
+    table is base + post-base, in order."""
+    assert len(ROSTER) == 23
+    assert POST_BASE_ROSTER == (
+        (38, "22a2", "_phase22_arc_a2_backup_gate",
+         "PHASE22_ARC_A2_PRE_MIGRATION_EXPECTED_TABLES", "pre-22-A2"),
+    )
+    table = db_mod._PRE_MIGRATION_BACKUP_GATES
+    assert [(s.pre_version, s.filename_stem, s.gate_name, s.label) for s in table] == [
+        (r[0], r[1], r[2], r[4]) for r in ROSTER + POST_BASE_ROSTER]
+    spec = db_mod.backup_gate_for_pre_version(38)
+    assert spec is not None and spec.filename_stem == "22a2"
+    assert spec.expected_tables is db_mod.PHASE22_ARC_A2_PRE_MIGRATION_EXPECTED_TABLES

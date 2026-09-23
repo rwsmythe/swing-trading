@@ -572,9 +572,14 @@ def build_entry_form_vm(
             from swing.recommendations.hypothesis_prefill import (
                 lookup_active_recommendation_label,
             )
+            from swing.trades.frozen_value_evidence import (
+                WEB_REPLAY_BUDGET_SECONDS,
+            )
+            # 22-A2 Task 10 (CHARC G-T10-1 (2)): a WEB caller -> web budget.
             resolved_hypothesis_label = lookup_active_recommendation_label(
                 conn, ticker=ticker,
                 starting_equity=cfg.account.starting_equity,
+                budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
             )
             # Phase 13 T3.SB1 dispatch brief §5 watch item 7 — banner-pin
             # counters mirror DashboardVM. Helper module already exists at

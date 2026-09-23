@@ -44,6 +44,7 @@
         <td>
           <strong>{{ row.n_closed }}</strong>
           <span class="muted">/ target {{ row.target_sample_size }}</span>
+          {% if row.tier2_marker %}<span class="muted tier2-marker">{{ row.tier2_marker }}</span>{% endif %}
         </td>
         <td><span class="deviation-class">{{ row.doctrine_deviation_class }}</span></td>
         <td>

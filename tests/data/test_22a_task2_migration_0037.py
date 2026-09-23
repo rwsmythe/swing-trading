@@ -39,6 +39,7 @@ from swing.trades.latched_origin import (
     PROBE_GUARD_KEYS,
     PROVENANCE_ADMISSION_TIERS,
 )
+from tests.data._migration_text import head_create_statement
 from tests._latch_link_fixtures_22a import (
     BROKER_ORDER_ID,
     DETECTION_DATE,
@@ -96,7 +97,7 @@ def _v36(tmp_path: Path, name: str = "v36.db") -> sqlite3.Connection:
 # The migration itself
 # ---------------------------------------------------------------------------
 def test_expected_schema_version_is_head() -> None:
-    assert EXPECTED_SCHEMA_VERSION == 38
+    assert EXPECTED_SCHEMA_VERSION == 39
 
 
 def test_migration_applies_to_a_v36_fixture_and_stamps_37(tmp_path: Path) -> None:
@@ -133,7 +134,7 @@ def test_running_the_migration_twice_is_a_no_op(conn) -> None:
     # wherever HEAD is.  (The sibling at `test_migration_applies_to_a_v36_
     # fixture_and_stamps_37` builds a v36 database and IS about 0037's own
     # result; it correctly stays pinned at 37.)
-    assert _current_version(conn) == 38
+    assert _current_version(conn) == 39
     assert conn.execute(
         "SELECT * FROM candidates_immutability_epoch").fetchall() == before
 
@@ -834,7 +835,9 @@ def test_the_migrations_authorization_closure_list_matches_the_roster() -> None:
     hand-maintained copy of the other and a rung added to one without the other
     fails here rather than in production.
     """
-    text = MIGRATION.read_text(encoding="utf-8")
+    # P34 / 22-A2 encoding 9: the closure list is read from the citation
+    # trigger's HEAD definition (0039 re-creates it), never a superseded text.
+    text = head_create_statement("trg_provenance_corrections_citation_graph")[1]
     marker = "json_remove(json_extract(NEW.cited_latch_probe_json, '$.authorization'),"
     assert marker in text
     after = text.split(marker, 1)[1]
@@ -1186,8 +1189,12 @@ def test_the_migrations_probe_evidence_closure_list_matches_the_roster() -> None
     dropped from the migration alone fails here; a key dropped from the emitter
     alone fails the task-6 emission test; a key dropped from both still fails
     both, which is precisely what the circular version could not do.
+
+    P34 / 22-A2 encoding 9 (G-T12 P34-1): the closure list is read from the
+    citation trigger's HEAD definition (0039 re-creates it), never a
+    superseded text -- the same shape as :840's authorization closure test.
     """
-    text = MIGRATION.read_text(encoding="utf-8")
+    text = head_create_statement("trg_provenance_corrections_citation_graph")[1]
     marker = "json_remove(NEW.cited_latch_probe_json,"
     assert marker in text
     closure = text.split(marker, 1)[1].split("= '{}'", 1)[0]
@@ -1200,8 +1207,11 @@ def test_the_migrations_probe_evidence_closure_list_matches_the_roster() -> None
 
 
 def test_the_migrations_probe_guard_closure_list_matches_the_roster() -> None:
-    """``$.probe_guards`` is closed on the PROBE_GUARD_CLAUSES roster."""
-    text = MIGRATION.read_text(encoding="utf-8")
+    """``$.probe_guards`` is closed on the PROBE_GUARD_CLAUSES roster.
+
+    P34 / 22-A2 encoding 9 (G-T12 P34-1): HEAD, not the superseded 0037 text.
+    """
+    text = head_create_statement("trg_provenance_corrections_citation_graph")[1]
     marker = "json_remove(json_extract(NEW.cited_latch_probe_json, '$.probe_guards'),"
     assert marker in text
     closure = text.split(marker, 1)[1].split("= '{}'", 1)[0]

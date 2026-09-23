@@ -237,6 +237,19 @@ class CohortStatistics:
     # incidental. PROVENANCE DETAIL only: rendered behind a collapsed
     # affordance, never inline beside the live criterion.
     preregistered_decision_criteria: str | None = None
+    # 22-A2 Task 10 (RD's F10 sub-ruling; CHARC G-T7FE item C): the cohort's
+    # tier-2 trades this read did NOT count, NAMED ``(trade_id, verdict,
+    # reason)``, and the counted ones carrying an observation
+    # ``(trade_id, observation)``.  Empty in the zero-data state.
+    tier2_excluded: tuple[tuple[int, str, str | None], ...] = ()
+    tier2_observed: tuple[tuple[int, str], ...] = ()
+
+    @property
+    def tier2_lines(self) -> tuple[str, ...]:
+        """The named lines the tier page renders for this cohort."""
+        from swing.trades.frozen_value_evidence import tier2_cohort_lines
+
+        return tier2_cohort_lines(self.tier2_excluded, self.tier2_observed)
 
     def __post_init__(self) -> None:
         # Phase 9 forward-binding lesson #1: validate every new dataclass.
@@ -398,6 +411,10 @@ class DeviationOutcomeRow:
     row_suppressed: bool
     target_sample_size: int
     preregistered_decision_criteria: str | None = None
+    # 22-A2 Task 10 (RD G-T10-2): the compact marker beside the shown
+    # ``n_closed`` -- the count of this cohort's tier-2 trades the read did
+    # not count and the canonical surface naming them; None at zero.
+    tier2_marker: str | None = None
 
     def __post_init__(self) -> None:
         if not self.cohort_name:
@@ -513,6 +530,8 @@ def _compute_cohort_stats(
     live_policy: RiskPolicy,
     trades: list[Trade],
     preregistered_decision_criteria: str | None = None,
+    tier2_excluded: tuple[tuple[int, str, str | None], ...] = (),
+    tier2_observed: tuple[tuple[int, str], ...] = (),
 ) -> CohortStatistics:
     """Build :class:`CohortStatistics` for a pre-filtered trade list.
 
@@ -584,6 +603,8 @@ def _compute_cohort_stats(
         decision_criteria=decision_criteria,
         target_sample_size=target_sample_size,
         preregistered_decision_criteria=preregistered_decision_criteria,
+        tier2_excluded=tier2_excluded,
+        tier2_observed=tier2_observed,
     )
 
 
@@ -626,6 +647,7 @@ def compute_tier_comparison(
     conn: sqlite3.Connection,
     *,
     exclude_unresolved_discrepancies: bool = False,
+    budget_seconds: float | None = None,
 ) -> TierComparisonResult:
     """Compute the §3.3 tier-comparison aggregate.
 
@@ -640,13 +662,30 @@ def compute_tier_comparison(
     :data:`COHORT_MINIMUM_N` and re-trigger surface-level suppression —
     the discriminating regression test
     ``test_filter_re_suppresses_when_n_drops_below_5`` pins this cascade.
+
+    22-A2 Task 10 (RD's F10 sub-ruling): ONE tier-2 read per invocation; a
+    tier-2 trade whose read-time verdict is not ADMIT is removed from its
+    cohort BEFORE the discrepancy filter (so ``excluded_trades_count`` stays
+    the discrepancy count) and is NAMED in ``tier2_excluded``.
+    ``budget_seconds`` is the caller's: every caller today is a WEB view
+    model and passes ``WEB_REPLAY_BUDGET_SECONDS`` (CHARC G-T10-1 (2)).
+
+    CHARC A-R2 item 4 (R2-04), tier (1): every cohort's trades are loaded
+    FIRST and the tier-2 read is taken after the last load, so every counted
+    trade's row was replayed (a correction's relabel and its row commit
+    together).
     """
+    from datetime import UTC, datetime
+
+    from swing.trades.frozen_value_evidence import tier2_cohort_exclusions
+
     live_policy = read_live_policy(conn)
     cohort_meta = _load_cohort_meta(conn)
 
     cohorts: list[CohortStatistics] = []
     total_excluded = 0
     registered_names = set(cohort_meta)
+    loaded: dict[str, list[Trade]] = {}
     for name in TAXONOMY_COHORTS:
         # D29: the cohort's intent-facet predicate, grounded per hypothesis
         # in its OWN authority (H1 = criterion text; the rest = the epoch
@@ -665,19 +704,29 @@ def compute_tier_comparison(
         # path: the sole runtime writer is swing/trades/hypothesis.py:270,
         # which UPDATEs status / status_changed_at / status_change_reason
         # only -- never `name`, never DELETE.
-        trades = list_closed_trades_for_cohort(
+        loaded[name] = list_closed_trades_for_cohort(
             conn,
             hypothesis_label=name,
             entry_intent=cohort_entry_intent(
                 name, registered_names=registered_names,
             ),
         )
+    # R2-04 tier (1): the read FOLLOWS the last cohort load.
+    read = tier2_cohort_exclusions(
+        conn, now=datetime.now(UTC), budget_seconds=budget_seconds)
+    for name in TAXONOMY_COHORTS:
+        in_cohort = loaded[name]
+        trades = [t for t in in_cohort if t.id not in read.exclusions]
+        tier2_excluded = read.excluded_among(t.id for t in in_cohort)
         if exclude_unresolved_discrepancies:
             pre_filter_n = len(trades)
             trades = filter_trades_without_unresolved_material_discrepancies(
                 conn, trades,
             )
             total_excluded += pre_filter_n - len(trades)
+        # Codex R1-04: an observation line says "counted", so it is taken over
+        # the trades the N ACTUALLY counts -- after the discrepancy filter.
+        tier2_observed = read.observed_among(t.id for t in trades)
         meta = cohort_meta.get(name)
         if meta is None:
             # Defensive: hypothesis_registry seed missing the cohort name
@@ -700,6 +749,8 @@ def compute_tier_comparison(
                 live_policy=live_policy,
                 trades=trades,
                 preregistered_decision_criteria=preregistered,
+                tier2_excluded=tier2_excluded,
+                tier2_observed=tier2_observed,
             ),
         )
 
@@ -753,6 +804,7 @@ def compute_deviation_outcome(
     conn: sqlite3.Connection,
     *,
     exclude_unresolved_discrepancies: bool = False,
+    budget_seconds: float | None = None,
 ) -> DeviationOutcomeResult:
     """Compute the §3.7 deviation-outcome aggregate.
 
@@ -775,9 +827,12 @@ def compute_deviation_outcome(
     material reconciliation discrepancies are filtered out BEFORE
     classification (delegates to :func:`compute_tier_comparison`).
     """
+    from swing.trades.frozen_value_evidence import tier2_count_marker
+
     tier = compute_tier_comparison(
         conn,
         exclude_unresolved_discrepancies=exclude_unresolved_discrepancies,
+        budget_seconds=budget_seconds,
     )
     by_name = {c.cohort_name: c for c in tier.cohorts}
     aplus = by_name[APLUS_COHORT]
@@ -823,6 +878,10 @@ def compute_deviation_outcome(
                 preregistered_decision_criteria=(
                     c.preregistered_decision_criteria
                 ),
+                # RD G-T10-2: this surface SHOWS the cohort's N, so the N
+                # carries the marker; the names live on the tier page.
+                tier2_marker=tier2_count_marker(
+                    c.tier2_excluded, see="tier comparison"),
             ),
         )
 

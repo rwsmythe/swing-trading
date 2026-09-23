@@ -38,6 +38,7 @@ from swing.metrics.tier import (
     TierComparisonResult,
     compute_tier_comparison,
 )
+from swing.trades.frozen_value_evidence import WEB_REPLAY_BUDGET_SECONDS
 from swing.web.view_models.metrics.shared import BaseLayoutVM
 
 
@@ -92,9 +93,11 @@ def build_tier_comparison_vm(
         banner_resolve_link = (
             fetch_first_pending_ambiguity_resolve_link_path(conn)
         )
+        # 22-A2 Task 10 (CHARC G-T10-1 (2)): a WEB caller -> the web budget.
         result = compute_tier_comparison(
             conn,
             exclude_unresolved_discrepancies=exclude_unresolved_discrepancies,
+            budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
         )
     finally:
         if own_conn:

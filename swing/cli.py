@@ -2653,6 +2653,24 @@ def _echo_admission_tier(view) -> None:
     click.echo(
         f"  probe admission basis         "
         f"{getattr(view, 'cited_latch_admission_basis', None)}")
+    # 22-A2: a `latch_ladder_tier2` admission prints the four criteria it
+    # PASSED, one per line, and the interval prose -- both read off the ONE
+    # blob the row carries (the service's `_tier2_surface`), never re-derived
+    # here. Empty for every other tier, so nothing prints.
+    clauses = getattr(view, "tier2_clauses", ()) or ()
+    for criterion, verdict in clauses:
+        click.echo(f"  {criterion}: {verdict}")
+    prose = getattr(view, "tier2_interval_prose", None)
+    if prose:
+        click.echo(f"  {'uncovered window':<30}{prose}")
+
+
+def _echo_tier2_note(view) -> None:
+    """E-18: evidence supplied against an ALREADY-APPLIED trade is not
+    re-evaluated; say where the read-time verdict lives. ASCII only."""
+    note = getattr(view, "tier2_note", None)
+    if note:
+        click.echo(f"  NOTE: {note}")
 
 
 @journal_group.command("correct-cohort-provenance")
@@ -2696,10 +2714,30 @@ def _echo_admission_tier(view) -> None:
     "--dry-run", "dry_run", is_flag=True, default=False,
     help="Full validation + before/after + the exact derived label; writes nothing.",
 )
+# 22-A2 (Task 8). Declared LAST so it is the last entry of `cmd.params` (the
+# manifest the CLI test reads). NO `exists=True` and NO parsing here: click
+# existence-checks and rejects DURING PARSING, before the command body runs, so
+# a missing file on an ALREADY-APPLIED trade would exit 2 instead of returning
+# the existing correction id -- the same reason `--reason` is not required.
+# The service owns every check on this file (E-6) and consults its result only
+# at rung 9's escape, after SELECT-first.
+@click.option(
+    "--frozen-value-evidence", "frozen_value_evidence",
+    type=click.Path(dir_okay=False, path_type=Path), default=None,
+    help=(
+        "Tier-2 evidence for a pre-barrier linked mandate: a JSON file with "
+        "exactly three keys -- artifact_path, artifact_commit_sha, quoted_text "
+        "-- naming WHERE the contemporaneous record of the frozen values is "
+        "(a file at a commit on origin/main, and one WHOLE line of it quoted "
+        "verbatim). It is a SELECTION: the ticker, session, pivot and "
+        "invalidation values are never typed; the service reads them from the "
+        "record and checks them against the cited candidate row."
+    ),
+)
 @click.pass_context
 def journal_correct_cohort_provenance_cmd(
     ctx, trade_id, cited_candidate_id, cited_recommendation_id, reason,
-    dry_run,
+    dry_run, frozen_value_evidence,
 ):
     """Fill a trade's EMPTY cohort keys from the framework's own record.
 
@@ -2725,6 +2763,11 @@ def journal_correct_cohort_provenance_cmd(
     `latch_ladder`: the citation is FORCED to that order's own fire -- which
     may have drifted out of the current bucket, because a mandate does not die
     of drift -- and the last-word ranking is not consulted at all.
+
+    A latch order linked from a PRE-BARRIER fire is refused unless
+    --frozen-value-evidence proves the fire's values were recorded before the
+    fill; then the tier is `latch_ladder_tier2` and the four criteria it
+    passed are printed one per line with the uncovered-window prose.
 
     V1 records provenance ONCE per trade. There is no re-correction path, so
     the --dry-run reading is the decision point.
@@ -2752,6 +2795,7 @@ def journal_correct_cohort_provenance_cmd(
                     # correction silently reports the `last_word` tier -- a
                     # true statement about a probe that never happened.
                     cfg=cfg,
+                    frozen_value_evidence=frozen_value_evidence,
                 )
             except CohortProvenanceCorrectionError as exc:
                 raise click.ClickException(str(exc)) from exc
@@ -2762,6 +2806,7 @@ def journal_correct_cohort_provenance_cmd(
                     f"{preview.already_applied_correction_id}; the values "
                     "below are what is RECORDED, not a fresh derivation."
                 )
+                _echo_tier2_note(preview)
             else:
                 click.echo(
                     f"DRY RUN -- nothing written. trade {preview.trade_id} "
@@ -2832,6 +2877,7 @@ def journal_correct_cohort_provenance_cmd(
                 cited_recommendation_id=cited_recommendation_id,
                 reason=reason,
                 cfg=cfg,
+                frozen_value_evidence=frozen_value_evidence,
             )
         except CohortProvenanceCorrectionError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -2845,6 +2891,7 @@ def journal_correct_cohort_provenance_cmd(
             f"{result.cited_candidate_id} and daily_recommendations row "
             f"{result.cited_daily_recommendation_id}. Nothing was written."
         )
+        _echo_tier2_note(result)
     else:
         click.echo(
             f"provenance correction {result.correction_id} applied to trade "
@@ -2935,6 +2982,27 @@ def journal_provenance_corrections_cmd(ctx, trade_id):
             f"{c.cited_run_ts_utc} -> {c.cited_status_window_upper_utc}"
         )
         click.echo(f"  derivation rule {c.derivation_rule_version}")
+        if report.replay is not None:
+            # 22-A2 Task 9: a tier-2 row's READ-TIME verdict (RD's F10) --
+            # computed now against origin/main and the current rows, never
+            # the stored tier.
+            v = report.replay
+            reason = "" if v.reason is None else f" ({v.reason})"
+            # Codex R1-05 (AL2-10's distinguisher): the resolved origin/main
+            # sha AND the ref's age, kept even when a later artifact read
+            # failed -- a fetch cures a stale ref, nothing cures a rewrite.
+            ref_age = ("unknown" if v.remote_ref_age_seconds is None
+                       else f"{v.remote_ref_age_seconds}s")
+            click.echo(
+                f"  read-time verdict: {v.verdict}{reason} evaluated_at "
+                f"{v.evaluated_at}, origin/main "
+                f"{v.resolved_origin_main_sha or 'unresolved'} (ref age "
+                f"{ref_age}), barrier installed at read "
+                f"{v.barrier_installed_at_read}")
+            if v.derivation_observation is not None:
+                # G-T7F-AMEND: a moved derivation version is CONTEXT beside
+                # the verdict, on its own line; never persisted.
+                click.echo(f"  observation: {v.derivation_observation}")
         click.echo(f"  applied {c.applied_value_json}")
         click.echo(f"  reason  {c.correction_reason}")
         if report.drift_lines:
@@ -4881,6 +4949,7 @@ def hypothesis_list_cmd(ctx: click.Context) -> None:
     from swing.data.db import connect
     from swing.data.repos.hypothesis import list_hypotheses
     from swing.recommendations.hypothesis import compute_tripwire_status
+    from swing.trades.frozen_value_evidence import tier2_cohort_lines
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
@@ -4898,6 +4967,10 @@ def hypothesis_list_cmd(ctx: click.Context) -> None:
                 f"{tw.current_sample}/{h.target_sample_size:<7} "
                 f"{tw_label:<9} {h.name}"
             )
+            # 22-A2 Task 10 (CHARC G-T10-1 (3)): the cohort's tier-2 names,
+            # ONCE, under ITS row -- an exclusion is a fact about that N.
+            for named in tier2_cohort_lines(tw.tier2_excluded, tw.tier2_observed):
+                click.echo(f"    {named}")
     finally:
         conn.close()
 
@@ -4910,6 +4983,7 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
     from swing.data.db import connect
     from swing.data.repos.hypothesis import get_hypothesis
     from swing.recommendations.hypothesis import compute_tripwire_status
+    from swing.trades.frozen_value_evidence import tier2_cohort_lines
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
@@ -4928,7 +5002,12 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
     click.echo(f"  Status:           {h.status}")
     click.echo(f"  Statement:        {h.statement}")
     click.echo(f"  Target sample:    {h.target_sample_size}")
+    # 22-A2: a per-cohort DETAIL surface (CHARC G-T10-1 (4)) -- the cohort's
+    # full named lines print below the shown N and NO compact marker rides on
+    # it (RD G-T10-F4: a pointer to another surface is wrong here).
     click.echo(f"  Current sample:   {tw.current_sample}")
+    for named in tier2_cohort_lines(tw.tier2_excluded, tw.tier2_observed):
+        click.echo(f"    {named}")
     click.echo(f"  Decision criteria:{h.decision_criteria}")
     # D29 rider (codex-auto-review): this is the FOURTH criterion-rendering
     # surface and the only CLI one. The preserved pre-registered original is

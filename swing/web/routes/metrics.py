@@ -14,6 +14,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
 from swing.data.db import open_connection
+from swing.trades.frozen_value_evidence import WEB_REPLAY_BUDGET_SECONDS
 from swing.web.view_models.metrics.capital_friction import (
     build_capital_friction_vm,
 )
@@ -290,7 +291,9 @@ def metrics_hypothesis_progress(request: Request):
     supersession of spec §3.2 V1-limitation).
     """
     cfg = request.app.state.cfg
-    vm = build_hypothesis_progress_card_vm(cfg=cfg)
+    # 22-A2 Task 10 (CHARC G-T10-1 (2)): a WEB caller -> the web budget.
+    vm = build_hypothesis_progress_card_vm(
+        cfg=cfg, budget_seconds=WEB_REPLAY_BUDGET_SECONDS)
     return request.app.state.templates.TemplateResponse(
         request, "metrics/hypothesis_progress_card.html.j2", {"vm": vm},
     )

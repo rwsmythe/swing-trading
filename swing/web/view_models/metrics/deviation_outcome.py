@@ -39,6 +39,7 @@ from swing.metrics.tier import (
     DeviationOutcomeResult,
     compute_deviation_outcome,
 )
+from swing.trades.frozen_value_evidence import WEB_REPLAY_BUDGET_SECONDS
 from swing.web.view_models.metrics.shared import BaseLayoutVM
 
 
@@ -90,9 +91,11 @@ def build_deviation_outcome_vm(
         banner_resolve_link = (
             fetch_first_pending_ambiguity_resolve_link_path(conn)
         )
+        # 22-A2 Task 10 (CHARC G-T10-1 (2)): a WEB caller -> the web budget.
         result = compute_deviation_outcome(
             conn,
             exclude_unresolved_discrepancies=exclude_unresolved_discrepancies,
+            budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
         )
     finally:
         if own_conn:

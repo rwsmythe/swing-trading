@@ -59,6 +59,7 @@ two-valued, F2 = b).
 | `FROZEN_VALUE_EVIDENCE_VERSION` | `"2026-09-23.1"` (seventh-column blob) | frozen_value_evidence.py |
 | decline reason `tier2_evidence_refused` | joins the decline-reason roster (22-A task 8 closure) | latched_origin.py |
 | `GIT_TIMEOUT_SECONDS` | `10.0` | frozen_value_evidence.py |
+| `WEB_REPLAY_BUDGET_SECONDS` | `2.0` (TOTAL wall-clock replay budget the two WEB readers pass; CHARC R4.2 ruling 1) | frozen_value_evidence.py |
 | `REMOTE_REF` | `"refs/remotes/origin/main"` | frozen_value_evidence.py |
 | `EVIDENCE_REPO_DIR` | repo root of the package (`Path(__file__).resolve().parents[2]`) | frozen_value_evidence.py |
 | `RULING_CITATION` | module constant text naming S12.1 + RD 2026-08-24 + R0.7-R0.12 (F9 sub-choice) | frozen_value_evidence.py |
@@ -66,10 +67,11 @@ two-valued, F2 = b).
 | `TIME_ANCHOR_RESIDUAL` | constant text: author/committer dates are caller-settable; ancestry is the anchor (S12.1 #7) | frozen_value_evidence.py |
 | `EVIDENCE_FILE_KEYS` | `("artifact_path", "artifact_commit_sha", "quoted_text")` (F9) | frozen_value_evidence.py |
 | replay verdicts | `"ADMIT"`, `"tier2_evidence_stale"`, `"tier2_unverifiable"` | frozen_value_evidence.py |
+| replay reason `web_budget_exhausted` | a `tier2_unverifiable` reason: the web budget ran out before this row was verdicted | frozen_value_evidence.py |
 
 **Tier-2 refusal vocabulary** (the `field`/`reason` a refusal NAMES; F6, F7, F13): selection --
 `evidence_file_malformed`, `artifact_unreadable`, `quoted_text_not_in_artifact`,
-`quoted_text_not_one_line`; criterion 1 -- `not_ancestor_of_origin_main`; criterion 2 --
+`quoted_text_not_a_whole_line`; criterion 1 -- `not_ancestor_of_origin_main`; criterion 2 --
 `recorded_on_fill_session`, `recorded_after_fill_session`; criterion 3 -- `ticker`,
 `action_session`, `pivot`, `invalidation` (in THAT order); criterion 4 -- `window_negative`,
 `window_indeterminate`; process -- `tier2_unverifiable` (git timeout / git missing / no `REMOTE_REF`
@@ -89,7 +91,7 @@ COMPUTES unless marked (sel) = operator selection (F9).
 | `evaluated_at` | text | the single `applied_at` stamp | `= NEW.applied_at` |
 | `artifact_path` (sel) | text | from the evidence file | type only |
 | `artifact_commit_sha` (sel) | text | from the evidence file; 40 lowercase hex | `length = 40 AND NOT GLOB '*[^0-9a-f]*'` |
-| `quoted_text` (sel) | text | byte-substring of `git show sha:path`, ONE line | no `char(10)`, no `char(13)` |
+| `quoted_text` (sel) | text | exactly ONE WHOLE line of `git show sha:path` (terminator stripped) | no `char(10)`, no `char(13)` |
 | `quoted_ticker_text` | text | the token found (= candidate ticker) | `= ca.ticker` AND `instr(quoted_text, .) > 0` |
 | `quoted_action_session_text` | text | ISO `YYYY-MM-DD` if present as a token, else `MM-DD` under the year rule | `= er.action_session_date` OR (`= substr(er.action_session_date, 6)` AND `substr(author_date_et,1,4) = substr(er.action_session_date,1,4)`); AND `instr > 0` |
 | `quoted_pivot_text` | text | `f"{round(ca.pivot, 2):.2f}"` found as a token | `instr(quoted_text, .) > 0` (F8, REQUIRED) |
@@ -100,7 +102,7 @@ COMPUTES unless marked (sel) = operator selection (F9).
 | `compare_dp` | integer | `2` | `= 2` |
 | `author_instant` | text | `git show -s --format=%aI sha` (offset kept) | type only |
 | `author_date_et` | text | author instant -> America/New_York, `.date().isoformat()` (F7 a) | `< fill_session_date` (text compare of ISO dates; consistency only) |
-| `committer_instant` | text | `%cI`; RECORDED, never verdict-bearing (F7 sub-choice) | type only |
+| `committer_instant` | text | `%cI`; never a criterion input (F7 sub-choice); COMPARED at replay -- it cannot drift for a stored sha (RD A-R3 item 2) | type only |
 | `fill_session_date` | text | the authoritative entry fill's session | `= NEW.entry_fill_session_date` |
 | `resolved_remote_ref_sha` | text | `git rev-parse REMOTE_REF` at write | type only |
 | `descendant_count` | integer | `git rev-list --count sha..<resolved>`; RECORDED | type only |
@@ -347,12 +349,24 @@ builds a temp repo + bare remote + fetch so `REMOTE_REF` exists; commits with ex
   `resolved_remote_ref_sha`, `descendant_count`, `remote_ref_updated_at`, `remote_ref_age_seconds`.
 - `read_artifact_facts(selection, *, repo_dir, now_utc) -> PreflightResult`: `git show sha:path`
   (bytes; `utf-8`) -> the quoted text must be a byte-substring (`quoted_text_not_in_artifact`) and
-  contain no `\n`/`\r` (`quoted_text_not_one_line`); `git show -s --format=%aI%n%cI sha`;
+  exactly one whole line of the blob split on `\n` with one trailing `\r` removed, carrying neither
+  (`quoted_text_not_a_whole_line`); `git show -s --format=%aI%n%cI sha`;
   `git rev-parse REMOTE_REF`; `git merge-base --is-ancestor sha <resolved>` (exit 0 -> True, 1 ->
   False, other -> unverifiable); `git rev-list --count sha..<resolved>` (only when ancestor, else
-  null); `git log -g -1 --date=iso-strict --format=%gd REMOTE_REF` parsed for the `@{...}` instant
-  (null when no reflog). Object/path missing -> `artifact_unreadable`. Timeout, git absent, missing
-  ref -> `tier2_unverifiable`.
+  null); `git log -g -1 --date=iso-strict --format=%gD%n%H REMOTE_REF` parsed for the `@{...}`
+  instant (null when no reflog, and null -- age unknown, never a refusal -- when the entry's `%H` is
+  not the resolved sha, i.e. the ref moved between the two stages: R4-07, folded into `.6`).
+  Object/path missing -> `artifact_unreadable`. Timeout, git absent, missing ref ->
+  `tier2_unverifiable`.
+- Every one of those calls goes through `_run_git`, which runs `git --no-replace-objects <args>` with
+  `GIT_NO_REPLACE_OBJECTS=1` in a copy of the environment from which EVERY `GIT_*` key is removed
+  (RD A-R4 R4-01 ACCEPT (a), CHARC's `.6` shape): the read is `repo_dir`'s own repository with no
+  object replaced, whatever the caller's environment or local replace refs. No `--git-dir` binding
+  (a linked worktree's `.git` is a gitfile). Discriminators in `test_22a2_git_isolation.py`: D1 the
+  replace-ref forgery and its twin (`author_instant == d1`, the per-row call set unchanged), D2 one
+  case per variable that moves a read on git 2.52 (`GIT_DIR`, `GIT_COMMON_DIR`,
+  `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_REPLACE_REF_BASE`;
+  `GIT_NAMESPACE` moved nothing and is dropped, named), the R4-07 staged move.
 - `PreflightResult(facts | None, failure | None, detail: str)` -- **never raises** (encoding E-6).
 - `run_preflight(evidence_file, *, repo_dir=None, now_utc) -> PreflightResult` = load + read.
 **Acceptance:** A2-32..A2-41 green. No `sqlite3` import in the module's preflight half (A2-41).
@@ -362,8 +376,9 @@ builds a temp repo + bare remote + fetch so `REMOTE_REF` exists; commits with ex
 **Files:** `swing/trades/frozen_value_evidence.py`; `tests/trades/test_22a2_conjunction.py` (new).
 **Build:**
 - `render_price(v) -> str` = `f"{round(v, 2):.2f}"` (the ONE rounding authority, S4.3a).
-- `find_token(text, token, *, kind)`: `ticker` bounded by non-`[A-Za-z0-9]`; `session`/`numeral`
-  bounded by non-`[0-9.]`; returns the matched text or None.
+- `find_token(text, token, *, kind)`: `ticker` bounded by non-`[A-Za-z0-9]`; `numeral` bounded by
+  non-`[0-9.]`; `session` bounded by non-`[0-9.-]` (RD A-R2 item 1: the hyphen joins date fields, so
+  `2025-08-10` / `08-10-2026` never yield an ISO or MM-DD sub-match); returns the matched text or None.
 - `evaluate_conjunction(conn, facts, *, candidate_id, fill_session: date, read_at: str,
   barrier_installed: bool) -> ConjunctionVerdict(admitted, criterion, reason, field, evidence)`.
   Reads (SELECT only) `candidates` (ticker, pivot, initial_stop, evaluation_run_id),
@@ -378,9 +393,10 @@ builds a temp repo + bare remote + fetch so `REMOTE_REF` exists; commits with ex
   (with `interval` + `uncovered_window_prose`, e.g. "writer_absence_only 2.38 days (2026-08-08T03:39:07Z
   to 2026-08-10T12:41:33Z); match_only 22.89 days; covered from 2026-09-02T10:03:33Z").
 - `VERDICT_BEARING_KEYS` (frozenset): the selection, `quoted_*_text`, `live_*_raw`,
-  `author_instant`, `author_date_et`, `fill_session_date`, every endpoint's `raw` and `utc`. Recorded-
-  only keys (never compared at replay): `evaluated_at`, `resolved_remote_ref_sha`,
-  `descendant_count`, `remote_ref_*`, `committer_instant`, `segments[*].kind` of `covered`.
+  `author_instant`, `author_date_et`, `committer_instant` (RD A-R3 item 2), `fill_session_date`,
+  every endpoint's `raw` and `utc`. Recorded-only keys (never compared at replay; each drifts):
+  `evaluated_at`, `resolved_remote_ref_sha`, `descendant_count`, `remote_ref_*`, the terminal segment's
+  kind.
 - `TIER2_TRIGGER_PREDICATES: tuple[tuple[str, str], ...]` -- `(predicate_id, service_check_name)`,
   one per `-- TIER2-PREDICATE` marker in 0039 (AUTHORIZE-THEN-ABORT, brief section 4.4).
 **Acceptance:** A2-42..A2-60 green.
@@ -476,10 +492,16 @@ and on refusal the tier-2 reason + field. ASCII only.
   -> not admitted -> stale naming criterion/field; admitted -> compare `VERDICT_BEARING_KEYS` of the
   recomputed blob with the stored blob -> any difference -> stale `<key>_mismatch`; else `ADMIT`.
   Descendant growth and ref-age change are never compared (doctrine #6).
-- `tier2_cohort_exclusions(conn, *, now, repo_dir=None) -> dict[int, ReplayVerdict]` -- selects
-  `provenance_corrections` rows with tier `latch_ladder_tier2`, calls `replay_verdict` per row with
-  a memo scoped to THIS call keyed on `(provenance_correction_id, resolved_origin_main_sha)`, returns
-  the non-ADMIT rows by `trade_id`. No cache across calls (F10-shape).
+- `tier2_cohort_exclusions(conn, *, now, repo_dir=None, budget_seconds: float | None = None) ->
+  dict[int, ReplayVerdict]` -- selects `provenance_corrections` rows with tier `latch_ladder_tier2`,
+  calls `replay_verdict` per row with a memo scoped to THIS call keyed on
+  `(provenance_correction_id, resolved_origin_main_sha)`, returns the non-ADMIT rows by `trade_id`.
+  No cache across calls (F10-shape). `budget_seconds` is a TOTAL wall-clock budget (CHARC R4.2
+  ruling 1), checked BETWEEN git calls (never by killing a call mid-flight -- each call is already
+  bounded by `GIT_TIMEOUT_SECONDS`); on overrun every row not yet verdicted reads
+  `tier2_unverifiable` with reason `web_budget_exhausted` -- EXCLUDED and NAMED, never admitted. The
+  two WEB readers pass `WEB_REPLAY_BUDGET_SECONDS`; the CLI readers and the drift reader pass none.
+  Zero tier-2 rows -> zero git calls.
 - Drift reader: tier-2 rows render `read-time verdict: <verdict> (<reason>) evaluated_at <now>,
   origin/main <sha>, barrier installed at read <bool>`; replay runs OUTSIDE any read transaction the
   reader holds (collect rows, release, then replay).
@@ -491,14 +513,18 @@ and on refusal the tier-2 reason + field. ASCII only.
 `swing/web/view_models/metrics/hypothesis_progress_card.py` (+ its template and the tier surface
 template); `swing/cli.py` (hypothesis list line); `tests/trades/test_22a2_cohort_readers.py` (new);
 web tests via `with TestClient(app) as client:`.
-**Build:** each reader calls `tier2_cohort_exclusions(conn, now=...)` once per invocation, removes
+**Build:** each reader calls `tier2_cohort_exclusions(conn, now=...)` once per invocation (the two
+web readers with `budget_seconds=WEB_REPLAY_BUDGET_SECONDS`; the CLI readers with none), removes
 those trade ids from what it counts (Python filter, or a dynamic `NOT IN (?,...)` with the
 empty-list short-circuit), and exposes `tier2_excluded: tuple[(trade_id, verdict, reason), ...]`.
 Surfaces: `swing hypothesis list` prints one line per excluded trade; the journal review-progress
 output likewise; the web card + tier surface render one line (empty in the zero-data state -- the
 field is on the VM with a safe default; no new base-layout field). No reader reads
-`admission_tier` as a verdict.
-**Acceptance:** A2-91..A2-97 green.
+`admission_tier` as a verdict. ORDERING (CHARC A-R2 item 4, R2-04): each reader takes its read AFTER
+the last trade query it counts from; `compute_tripwire_status` given a caller's read (the breakdown's)
+calls `Tier2CohortRead.recheck` after its own query instead, excluding and naming any tier-2 row the
+read did not replay as `tier2_unverifiable` / `tier2_row_committed_mid_read` (a reason, not a verdict).
+**Acceptance:** A2-91..A2-97, A2-97b, A2-97c, A2-97d green.
 
 ### Task 11 -- The acceptance case (trade 25) end to end + the live-copy evidence
 
@@ -513,6 +539,11 @@ mandate `armed` over sessions 2026-08-10..2026-08-14; extend the helper if it ca
 artifact commit carries line 57's exact bytes as line 57 of `docs/rd-state.md`, authored
 `2026-08-10T02:41:33-10:00`, pushed and fetched. The evidence file = `{artifact_path:
 "docs/rd-state.md", artifact_commit_sha: <that commit>, quoted_text: <line 57 decoded>}`.
+**The ISO session token's source (RD R4.1 note):** on trade 25, `quoted_action_session_text` =
+`2026-08-10` is matched from line 57's RESOLUTION date ("T5 RESOLVED 2026-08-10", char offset 16),
+equal to the action session by coincidence (P36) -- admissible by design under F13 (containment
+proves mention; AL2-2). A2-42/A2-98 do NOT prove the session was matched from the fire clause's
+`08-10` (that token would admit only under the year rule, and does).
 **Live-copy evidence (NOT a committed test):** on a `sqlite3.backup()` copy of live under a scratch
 config (the ledger R0.0 method), from the worktree with `PYTHONPATH=.`: `journal
 correct-cohort-provenance 25 --cited-candidate 12284 --cited-recommendation 169 --reason "<r>"
@@ -584,7 +615,7 @@ Pre -> post = what the discriminator reads under the NULL / pre-fix implementati
 |---|---|---|
 | A2-32 | evidence file with a 4th key / missing key / non-str / duplicate key / 39-char sha -> `evidence_file_malformed` | -- |
 | A2-33 | quoted text not a byte-substring of the artifact -> `quoted_text_not_in_artifact` | -- |
-| A2-34 | quoted text spanning two lines (contains `\n`) -> `quoted_text_not_one_line` (s-i) | whole-file selection accepted |
+| A2-34 | quoted text spanning two lines (contains `\n`) -> `quoted_text_not_a_whole_line` (s-i) | whole-file selection accepted |
 | A2-35 | line-57 fixture in a git world: facts carry author `2026-08-10T02:41:33-10:00`, `is_ancestor` True, resolved sha == the bare remote's tip | -- |
 | A2-36 | (C1 discriminator, brief 4.2) commit present locally but NOT an ancestor of `REMOTE_REF` -> `is_ancestor` False | ancestry check absent: True |
 | A2-37 | non-ASCII artifact line (the em-dash in line 57) round-trips; decoding as cp1252 would fail the substring check (bytes-captured) | `text=True` default: mismatch |
@@ -612,6 +643,7 @@ Pre -> post = what the discriminator reads under the NULL / pre-fix implementati
 | A2-54 | (F6 iii) candidate action session `2026-08-11` -> REFUSE `action_session` | -- |
 | A2-55 | (F13 year rule) line 57 with its `2026-08-10` token removed, author `2025-08-09T10:00:00-10:00` -> REFUSE `action_session` (criterion 3 speaks before 4) | no year rule: REFUSE `window_negative` |
 | A2-56 | (F13 year rule, ISO present) line 57 as-is, same prior-year author -> REFUSE `window_negative` (criterion 3 passes on the ISO token) | year rule applied to ISO: REFUSE `action_session` |
+| A2-56a | (R2-01, RD A-R2 item 1; end to end, 2026 author, session 2026-08-10) `OII 2025-08-10 53.98 41.42` -> REFUSE `action_session`; `OII 08-10 53.98 41.42` -> ADMIT; `OII 2026-08-10T10:03:33Z 53.98 41.42` -> ADMIT; `OII 08-10-2026 53.98 41.42` -> REFUSE `action_session`; line 57 -> ADMIT | `0-9.` session class: the two REFUSE lines ADMIT; a class also holding letters: the `T`-suffix line REFUSES |
 | A2-57 | (F6 ii) record = fire_hi (`2026-08-07T17:39:07-10:00`) -> ADMIT; fire_hi - 1 s -> REFUSE `window_indeterminate`; fire_lo - 1 s -> REFUSE `window_negative` | no bracket: fire_hi-1s ADMITS |
 | A2-58 | refusal order: ticker AND pivot both wrong -> names `ticker`; pivot AND invalidation wrong -> names `pivot` | -- |
 | A2-59 | DECLARED-LIMIT pins (fail if the blindness ever narrows silently): a line reading `pivot 41.42 / stop 53.98` for candidate 53.98/41.42 -> ADMIT (AL2-3); line 57 for a candidate ticker `AMN` with OII's session and values -> ADMIT (AL2-2) | -- |
@@ -640,7 +672,7 @@ Pre -> post = what the discriminator reads under the NULL / pre-fix implementati
 | A2-72 | evidence + a ladder refusal at an earlier rung -> message carries "was not consulted" | -- |
 | A2-73 | evidence failing criterion 3 -> refusal message names `tier2_evidence_refused` + `criterion 3: pivot`; nothing written | -- |
 | A2-74 | dry-run == apply's authorization (same refusals, same tier) and leaves the DB byte-identical (`iterdump` equal) | -- |
-| A2-75 | the git preflight is called only from the two service entry points (AST walk of `swing/`: callers of `run_preflight`) | -- |
+| A2-75 | (CHARC R4.2 ruling 2, gotcha #31) ONE AST caller walk over `swing/`, each caller set asserted BOTH ways: callers of `run_preflight` == the two correction entry points; callers of `evaluate_conjunction` == rung 9's escape seam in `latched_origin.py` only (and `replay_verdict` inside its own module); callers of `tier2_cohort_exclusions` == exactly the P35 reader set + the drift reader | a new caller anywhere: set differs |
 | A2-76 | the fill-48 `fill_envelope_identity` reading is written by the apply and absent after the dry-run | -- |
 
 ### Task 8 -- CLI
@@ -674,10 +706,13 @@ Pre -> post = what the discriminator reads under the NULL / pre-fix implementati
 | A2-91 | `compute_tripwire_status` (H1): REWRITTEN -> N drops by exactly one and the exclusion names trade + reason; GROWN -> N unchanged | stored-tier reader: N unchanged |
 | A2-92 | journal review progress: same pair | -- |
 | A2-93 | tier surface (`swing/metrics/tier.py`): same pair | -- |
-| A2-94 | web hypothesis progress card (TestClient, lifespan): exclusion line rendered; zero-data state renders none and 200 | -- |
+| A2-94 | web hypothesis progress card (TestClient, lifespan): exclusion line rendered; zero-data state renders none and 200 AND starts no subprocess (monkeypatched `subprocess.run` records zero calls) | -- |
 | A2-95 | tier surface page (TestClient): same | -- |
 | A2-96 | `swing hypothesis list` prints the exclusion line | -- |
 | A2-97 | `tier2_unverifiable` excludes and names too (never admitted on the stored grade) | -- |
+| A2-97b | (CHARC R4.2 ruling 1) web card with a monkeypatched SLOW git (sleep past the budget): the row renders EXCLUDED with `web_budget_exhausted` and the GET returns 200 within ~`WEB_REPLAY_BUDGET_SECONDS` + one call timeout | no budget: GET held for every call's full timeout |
+| A2-97c | the CLI reader on the same slow git passes `budget_seconds=None` and waits the full per-call timeout (no `web_budget_exhausted`) | a budget leaked into the CLI: row reads `web_budget_exhausted` |
+| A2-97d | (R2-04) a tier-2 row in the real write shape (relabel + raw-inserted forged row, another connection) committed from inside each reader's counting query on its first call: the four readers read N 1 with the row named stale; `compute_tripwire_status` given an earlier read (and the breakdown, committed on the tripwire's query) names it `tier2_row_committed_mid_read` | read-before-query: N 2, nothing named |
 
 ### Task 11 -- acceptance (brief section 4)
 
@@ -695,14 +730,34 @@ Pre -> post = what the discriminator reads under the NULL / pre-fix implementati
 
 AL2-1 SQL cannot verify the service's criterion-3 verdict (S4.3a residual; F8). AL2-2 containment
 proves mention, not exclusivity (the AMN mention; F13). AL2-3 swapped numerals admit (F13).
-AL2-4 a hand-run barrier DROP is undetectable; (t1) sees file-borne drops only (P14, F2.T).
+AL2-4 a hand-run barrier DROP is undetectable; (t1) sees file-borne drops only (P14, F2.T) -- and a
+file-borne retirement through a statement family outside DROP TRIGGER / DROP TABLE / ALTER TABLE
+RENAME TO (PRAGMA writable_schema edits of sqlite_master are the known member) is seen by D51 when
+the barrier is not re-created and by nothing when it is; a red on either instrument is the F2
+re-open condition (RD, A-R5, R5-03, CHARC's offered line, RD's wording).
 AL2-5 `gap_era_reconstructed` is named and UNMINTED; two-valued `LATCH_FREEZE_TIERS` does not close
 the vocabulary (F2). AL2-6 the time anchor is practical, not cryptographic; ref age recorded, never
 verdict-bearing (S12.1 #7, F5). AL2-7 `match_only` is net-change evidence, recorded as a gap kind,
 never coverage (F2.I s1). AL2-8 an MM-DD record across a year boundary refuses; the ISO form admits
 (F13 year rule). AL2-9 SQL binds endpoints raw only; UTC conversions and durations are service-recorded
 (R8-03). AL2-10 replay needs the local repo + git; without them rows read `tier2_unverifiable` and are
-excluded. AL2-11 the S12.2b instrument items are carved to `22-A2i` (brief OUT).
+excluded; a local repo that LACKS the cited object (shallow/pruned clone) reads
+`tier2_evidence_stale` / `artifact_unreadable` (the commit read fails before ancestry is asked), and
+one whose local history does not reach it reads `not_ancestor_of_origin_main` -- either is
+indistinguishable at read from rewritten history, and the rendered `resolved_origin_main_sha` + ref
+age (kept on every verdict whose ref resolved, R1-05) tell them apart. AL2-11 the S12.2b instrument items are carved to `22-A2i` (brief OUT).
+AL2-12 a service-rendered numeral adjacent to a leading `-` or a trailing exponent suffix admits
+(`-53.98`, `53.98e2`) (RD A-R2 item 2, R2-02; AL2-3's sibling with its own reason).
+AL2-13 a raw insert carrying forged attestation labels (`ruling_citation`, `verification_method`,
+`anchor_strength`, `time_anchor_residual`) replays ADMIT until D65 binds the four literals in the
+trigger (RD A-R3 item 1, R3-01 = (c); discharged by the D65 post-merge rider, main `81e59741`).
+AL2-14 a trade whose label commits after a reader's snapshot is neither counted nor named in that
+invocation and is counted or named by the next; every cohort read is per-invocation (CHARC A-R4
+R4-03, REJECT; RD's recorded R2-04 fact).
+AL2-15 an MM-DD token joined to a four-digit year by a separator outside [0-9.-] (08-10/2025,
+2025_08-10) admits under an author of the session's year, borrowing that year against the record's
+explicit one; the hyphen family refuses (.5) (RD, A-R5, R5-02).
+AL2-16 (WIDENED BY REPLACEMENT, RD, RULING B, B-01) The reader trusts the disk it stands on: its local repository's metadata (info/grafts, a commit-graph, objects/info/alternates, packed-refs, the local refs/remotes/origin/main, repo-local config) AND the git executable it resolves from PATH. Any of these, deliberately edited, can make a real but off-main commit read as an ancestor of origin/main, move origin/main itself, or fabricate every fact the six calls return; the on-box read cannot distinguish this from history. Its REASON and its DISCHARGE (an off-box check at the witness, step 6, and any later tier-2 gate) are RD's verbatim text in the ledger's AL2-16 (RD, A-R5, R5-01; RD, B, B-01).
 
 ## 8. Envelope (for every review prompt; from brief section 2)
 
@@ -715,7 +770,11 @@ model and three-valued `LATCH_FREEZE_TIERS` (22-A2i); the S12.2b items (22-A2i);
 `trades.initial_stop` correction surface; any new UI surface (the two exclusion render lines are F10's
 "never silently uncounted" on existing readers, R0.12 note 8).
 
-## 9. The witness (post-merge; ONE step per operator result; orchestrator-run)
+## 9. The witness (post-merge; ONE step per operator result; OPERATOR-EXECUTED, ORCHESTRATOR-SCRIPTED)
+
+Per CHARC R4.2 ruling 3: steps 2, 4 and 5 write the operator's live DB and are run by the OPERATOR
+only -- never by a cell or the orchestrator seat. Steps 1 and 3 are read-only; the orchestrator
+seat may run them as PREPARATION, but the result the record quotes is the operator's. Step 6 is RD's.
 
 1. Stop `swing web`; plain sqlite3 `BEGIN EXCLUSIVE; ROLLBACK` on live succeeds.
 2. `swing db-migrate`: the 22a2 gate image is written and its path ECHOED (the D32 production proof);

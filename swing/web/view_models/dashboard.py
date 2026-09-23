@@ -39,6 +39,10 @@ from swing.trades.equity import (
     sizing_equity,
     total_current_risk,
 )
+from swing.trades.frozen_value_evidence import (
+    WEB_REPLAY_BUDGET_SECONDS,
+    tier2_count_marker,
+)
 from swing.web.chart_scope import (
     latest_completed_pipeline_run,
     resolve_chart_scope,
@@ -206,6 +210,7 @@ def latest_evaluation_run_id(conn) -> int | None:
 
 def build_recommendation_progress(
     conn, registry, *, starting_equity: float,
+    budget_seconds: float | None = None,
 ):
     """Return `(progress_by_id, progress_summaries)` for the recommendation
     surfaces. Used by both the dashboard panel build path and the CLI
@@ -227,6 +232,10 @@ def build_recommendation_progress(
     `current_sample` and changed the prioritizer's ranking; the R2 fix
     suppresses ONLY the absolute-loss signal, leaving every other
     behavior intact.
+
+    22-A2 Task 10: ``budget_seconds`` is threaded to the breakdown's ONE
+    tier-2 read (CHARC G-T10-1 (2)): the dashboard VM and the web
+    trade-entry prefill pass ``WEB_REPLAY_BUDGET_SECONDS``, the CLI none.
     """
     from dataclasses import replace
 
@@ -237,7 +246,7 @@ def build_recommendation_progress(
     # degenerate config; we override the resulting field below regardless.
     threshold_equity = starting_equity if starting_equity > 0 else 1.0
     progress_rows = compute_hypothesis_progress_breakdown(
-        conn, starting_equity=threshold_equity,
+        conn, starting_equity=threshold_equity, budget_seconds=budget_seconds,
     )
     if starting_equity <= 0:
         progress_rows = [
@@ -298,6 +307,10 @@ class HypothesisRecommendation:
     # (closed-vs-open distinction lives in journal-stats compute fn). Default
     # 0 preserves any hand-constructed test sites that omit the kwarg.
     hypothesis_in_flight_n: int = 0
+    # 22-A2 Task 10 (RD G-T10-2): the compact marker beside the shown N --
+    # the count of the cohort's tier-2 trades the read did not count and the
+    # canonical surface naming them; None at zero exclusions.
+    hypothesis_tier2_marker: str | None = None
 
 
 # Top-N cap for the dashboard recommendations panel. Pinned as a module
@@ -483,6 +496,12 @@ def _build_active_recommendations(
                 progress_by_id[r.hypothesis_id].in_flight_sample
                 if r.hypothesis_id in progress_by_id else 0
             ),
+            hypothesis_tier2_marker=(
+                tier2_count_marker(
+                    progress_by_id[r.hypothesis_id].tier2_excluded,
+                    see="hypothesis list")
+                if r.hypothesis_id in progress_by_id else None
+            ),
         )
         for r in top_recommendations
     )
@@ -559,6 +578,7 @@ def build_hyp_recs_section(
                 build_recommendation_progress(
                     conn, registry,
                     starting_equity=cfg.account.starting_equity,
+                    budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
                 )
             )
             all_matches = []
@@ -1204,6 +1224,7 @@ def build_dashboard(
                     build_recommendation_progress(
                         conn, registry,
                         starting_equity=cfg.account.starting_equity,
+                        budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
                     )
                 )
                 all_matches = []

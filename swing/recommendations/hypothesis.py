@@ -29,8 +29,12 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from swing.data.models import Candidate, HypothesisRegistryEntry, Trade
+
+if TYPE_CHECKING:
+    from swing.trades.frozen_value_evidence import Tier2CohortRead
 
 
 # C.10 migration helper (was: list_all_exits shim from repos/trades.py).
@@ -191,6 +195,12 @@ class TripwireStatus:
     consecutive_tripwire_fired: bool
     absolute_tripwire_fired: bool
     any_tripwire_fired: bool
+    # 22-A2 Task 10 (RD's F10 sub-ruling; CHARC G-T7FE item C): the cohort's
+    # tier-2 trades this read did NOT count, NAMED ``(trade_id, verdict,
+    # reason)``, and the counted ones carrying an observation
+    # ``(trade_id, observation)``.  Empty in the zero-data state.
+    tier2_excluded: tuple[tuple[int, str, str | None], ...] = ()
+    tier2_observed: tuple[tuple[int, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -476,6 +486,7 @@ def compute_tripwire_status(
     *,
     hypothesis_id: int,
     starting_equity: float,
+    cohort_read: Tier2CohortRead | None = None,
 ) -> TripwireStatus:
     """Compute per-hypothesis tripwire signals from closed trades.
 
@@ -499,13 +510,30 @@ def compute_tripwire_status(
     Absolute-loss tripwire: cumulative realized P&L across matched
     trades; fires when cumulative_loss <= -starting_equity * pct/100.
 
+    22-A2 Task 10 (RD's F10 sub-ruling): a tier-2 trade whose READ-TIME
+    verdict is not ADMIT counts toward NEITHER the sample nor the tripwire
+    arithmetic, and is NAMED in ``tier2_excluded``.  ``cohort_read`` is the
+    caller's one read (``compute_hypothesis_progress_breakdown`` threads its
+    own into every hypothesis, CHARC G-T10-1 (1)); ``None`` -- every direct
+    caller, the CLI -- reads here, with no budget.  The count never reads
+    ``observations``; they are carried for the render only.
+
+    CHARC A-R2 item 4 (R2-04): the read here is taken AFTER this function's
+    last trade query (ordering), so every row the query counts was replayed.
+    A SUPPLIED read predates that query by construction, so it is
+    ``recheck``-ed after the query instead: a row committed in between is
+    excluded and named ``tier2_row_committed_mid_read``, never counted.
+
     Raises ValueError if `hypothesis_id` is unknown.
     """
     # Local import keeps the module DB-agnostic at import time so the
     # matcher / prioritizer tests don't pull in repo modules.
+    from datetime import UTC, datetime
+
     from swing.data.repos.hypothesis import get_hypothesis
     from swing.data.repos.trades import list_closed_trades
     from swing.metrics.cohort_intent import trade_counts_toward_cohort
+    from swing.trades.frozen_value_evidence import tier2_cohort_exclusions
     from swing.trades.voided_trades import voided_trade_ids
 
     h = get_hypothesis(conn, hypothesis_id)
@@ -515,7 +543,7 @@ def compute_tripwire_status(
     # 20-A B-2 — exclude voided trades from the tripwire sample (Codex R1 MAJOR).
     voided = voided_trade_ids(conn)
     closed = [t for t in list_closed_trades(conn) if t.id not in voided]
-    matched = [
+    in_cohort = [
         t for t in closed
         if _label_matches_hypothesis(t.hypothesis_label, h.name)
         # D29 — the cohort's own authority decides which intents count.
@@ -529,6 +557,13 @@ def compute_tripwire_status(
     exits_by_trade: dict[int, list] = {}
     for e in _list_all_exitshape_via_fills(conn):
         exits_by_trade.setdefault(e.trade_id, []).append(e)
+    # R2-04: the tier-2 read FOLLOWS the last trade query (tier 1); a supplied
+    # read is re-checked here instead (tier 2).
+    if cohort_read is None:
+        cohort_read = tier2_cohort_exclusions(conn, now=datetime.now(UTC))
+    else:
+        cohort_read = cohort_read.recheck(conn, now=datetime.now(UTC))
+    matched = [t for t in in_cohort if t.id not in cohort_read.exclusions]
 
     def _r_for(trade) -> float:
         es = exits_by_trade.get(trade.id, [])
@@ -562,4 +597,6 @@ def compute_tripwire_status(
         consecutive_tripwire_fired=consec_fired,
         absolute_tripwire_fired=abs_fired,
         any_tripwire_fired=consec_fired or abs_fired,
+        tier2_excluded=cohort_read.excluded_among(t.id for t in in_cohort),
+        tier2_observed=cohort_read.observed_among(t.id for t in matched),
     )

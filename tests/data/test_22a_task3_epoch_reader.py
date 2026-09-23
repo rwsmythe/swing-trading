@@ -41,7 +41,11 @@ from swing.data.repos.latch_order_mandate_links import (
     list_links_for_broker_order,
     list_links_for_ticker,
 )
-from swing.trades.latched_origin import LATCH_PROBE_EVIDENCE_VERSION
+from swing.trades.latched_origin import (
+    LATCH_PROBE_EVIDENCE_VERSION,
+    LATCH_PROBE_TIER2_EVIDENCE_VERSION,
+)
+from tests.data._migration_text import head_create_statement
 from tests._latch_link_fixtures_22a import (
     BROKER_ORDER_ID,
     INITIAL_STOP,
@@ -274,6 +278,12 @@ def test_the_epoch_is_read_in_exactly_one_place() -> None:
     """
     reader = "data/repos/candidates_immutability_epoch.py"
     migration = "data/migrations/0037_latch_order_mandate_links.sql"
+    # P34 / 22-A2 encoding 9: the citation trigger's rung-9 twin reads the
+    # boundary, and its HEAD definition lives in the LAST migration that
+    # creates it (0039 re-creates it); that file is a legitimate site.
+    head_twin = head_create_statement(
+        "trg_provenance_corrections_citation_graph")[0].relative_to(
+            SWING).as_posix()
 
     def _sites(needle: str) -> set[str]:
         hits = set()
@@ -284,7 +294,8 @@ def test_the_epoch_is_read_in_exactly_one_place() -> None:
                 hits.add(path.relative_to(SWING).as_posix())
         return hits
 
-    assert _sites("max_candidate_id_at_barrier") == {reader, migration}
+    assert _sites("max_candidate_id_at_barrier") == {
+        reader, migration, head_twin}
     for name in BARRIER_TRIGGER_NAMES:
         assert _sites(name) == {reader, migration}, name
 
@@ -440,16 +451,28 @@ def test_a_latch_ladder_row_missing_any_citation_is_rejected(conn) -> None:
 
 
 def test_an_unknown_admission_tier_is_rejected(conn) -> None:
+    # 22-A2 flipped `latch_ladder_tier2` from REJECTED to a known tier (A2-24
+    # pins its acceptance and its paired rule); an unknown tier is still
+    # rejected BY THE TIER CHECK -- matched on the enum message, not on the
+    # paired-NULL one, so a tier2-shaped value cannot pass for the wrong reason.
     row = _real_correction(conn)
-    with pytest.raises(ValueError, match="admission_tier"):
-        replace(row, admission_tier="latch_ladder_tier2")
+    with pytest.raises(ValueError, match="is not one of"):
+        replace(row, admission_tier="latch_ladder_tier3")
 
 
 def test_the_evidence_version_constant_matches_the_migration() -> None:
     """#11 on a VERSION STRING.  The migration pins ``$.evidence_version`` to a
-    literal; if the two ever disagree, every truthful correction row ABORTS."""
-    text = MIGRATION.read_text(encoding="utf-8")
-    found = set(re.findall(
-        r"json_extract\(NEW\.cited_latch_probe_json, '\$\.evidence_version'\)\s*"
-        r"= '([^']+)'", text))
-    assert found == {LATCH_PROBE_EVIDENCE_VERSION}, found
+    literal; if the two ever disagree, every truthful correction row ABORTS.
+
+    P34 / 22-A2 encoding 9: read from the citation trigger's HEAD definition
+    (0039 re-creates it), where the version is chosen PER TIER by a CASE: the
+    set of probe-version literals there is EXACTLY the two constants (F11's
+    tier-2-only bump; R0.10 encoding 1).
+    """
+    text = head_create_statement("trg_provenance_corrections_citation_graph")[1]
+    tail = text.split(
+        "json_extract(NEW.cited_latch_probe_json, '$.evidence_version')", 1)[1]
+    case = tail.split(" END", 1)[0]
+    found = set(re.findall(r"THEN '([^']+)'", case))
+    assert found == {LATCH_PROBE_EVIDENCE_VERSION,
+                     LATCH_PROBE_TIER2_EVIDENCE_VERSION}, found

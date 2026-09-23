@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 from swing.data.models import CashMovement, Trade
@@ -329,10 +329,17 @@ class HypothesisProgress:
     # operator can see in-flight attribution. Default 0 for hand-constructed
     # sites that omit the kwarg.
     in_flight_sample: int = 0
+    # 22-A2 Task 10 (RD's F10 sub-ruling; CHARC G-T7FE item C): the cohort's
+    # tier-2 trades (closed or in flight) this read did NOT count, NAMED
+    # ``(trade_id, verdict, reason)``, and the counted ones carrying an
+    # observation ``(trade_id, observation)``.  Empty in the zero-data state.
+    tier2_excluded: tuple[tuple[int, str, str | None], ...] = ()
+    tier2_observed: tuple[tuple[int, str], ...] = ()
 
 
 def compute_hypothesis_progress_breakdown(
     conn: sqlite3.Connection, *, starting_equity: float,
+    budget_seconds: float | None = None,
 ) -> list[HypothesisProgress]:
     """Return one `HypothesisProgress` per registered hypothesis.
 
@@ -343,6 +350,20 @@ def compute_hypothesis_progress_breakdown(
     baseline; this prose used to say "all four".) Tripwire signals
     are computed for ALL hypotheses (even closed ones); the CLI render
     layer chooses how to display "tripwire fired but hypothesis closed."
+
+    22-A2 Task 10: ONE tier-2 read per invocation (CHARC G-T10-1 (1)),
+    threaded into every per-hypothesis ``compute_tripwire_status`` -- so one
+    journal review is one replay pass, never 1+H.  A tier-2 trade whose
+    read-time verdict is not ADMIT is counted in NEITHER the sample nor the
+    in-flight decoration (the same cohort question), and is NAMED in
+    ``tier2_excluded``.  ``budget_seconds`` is the caller's (the web callers
+    pass ``WEB_REPLAY_BUDGET_SECONDS``, the CLI none).
+
+    CHARC A-R2 item 4 (R2-04): the read is taken AFTER the last top-level
+    trade query this function counts from (tier 1, ordering).  Each
+    per-hypothesis tripwire query runs after the read by construction, so
+    ``compute_tripwire_status`` re-checks it (tier 2); a trade the tripwire
+    excluded as committed mid-read is NAMED on its hypothesis's row.
     """
     # Local imports avoid pulling repo + recommendations modules into
     # `swing.journal.stats` import time (the journal stats module is
@@ -357,6 +378,7 @@ def compute_hypothesis_progress_breakdown(
         _label_matches_hypothesis,
         compute_tripwire_status,
     )
+    from swing.trades.frozen_value_evidence import tier2_cohort_exclusions
     from swing.trades.voided_trades import voided_trade_ids
 
     # 20-A B-2 — exclude voided (phantom/test) trades from hypothesis progress
@@ -369,6 +391,9 @@ def compute_hypothesis_progress_breakdown(
     exits_by_trade: dict[int, list[_ExitShape]] = {}
     for e in _list_all_exitshape_via_fills(conn):
         exits_by_trade.setdefault(e.trade_id, []).append(e)
+    # R2-04 tier (1): the read FOLLOWS every trade query above.
+    read = tier2_cohort_exclusions(
+        conn, now=datetime.now(UTC), budget_seconds=budget_seconds)
 
     rows: list[HypothesisProgress] = []
     for h in hypotheses:
@@ -385,11 +410,15 @@ def compute_hypothesis_progress_breakdown(
                 entry_intent=t.entry_intent, hypothesis_name=name,
             )
 
-        matched = [t for t in closed if _in_cohort(t)]
+        cohort_closed = [t for t in closed if _in_cohort(t)]
+        cohort_open = [t for t in open_trades if _in_cohort(t)]
+        matched = [t for t in cohort_closed if t.id not in read.exclusions]
         n = len(matched)
         # The in-flight decoration is the SAME cohort-membership question
-        # asked of open trades, so it takes the same predicate.
-        in_flight = sum(1 for t in open_trades if _in_cohort(t))
+        # asked of open trades, so it takes the same predicate -- and the
+        # same tier-2 exclusion.
+        in_flight_counted = [t for t in cohort_open if t.id not in read.exclusions]
+        in_flight = len(in_flight_counted)
         if n > 0:
             rs = []
             for t in matched:
@@ -415,6 +444,7 @@ def compute_hypothesis_progress_breakdown(
 
         tw = compute_tripwire_status(
             conn, hypothesis_id=h.id, starting_equity=starting_equity,
+            cohort_read=read,
         )
         rows.append(HypothesisProgress(
             hypothesis_id=h.id,
@@ -431,6 +461,12 @@ def compute_hypothesis_progress_breakdown(
             tripwire_fired=tw.any_tripwire_fired,
             consecutive_loss_tripwire_threshold=h.consecutive_loss_tripwire,
             in_flight_sample=in_flight,
+            # R2-04 tier (2): the tripwire's own later query may exclude a
+            # row committed after the read; that exclusion is named here too.
+            tier2_excluded=tuple(sorted(set(read.excluded_among(
+                t.id for t in cohort_closed + cohort_open)) | set(tw.tier2_excluded))),
+            tier2_observed=read.observed_among(
+                t.id for t in matched + in_flight_counted),
         ))
     return rows
 
@@ -443,6 +479,8 @@ def render_hypothesis_progress(rows: Iterable[HypothesisProgress]) -> str:
     gets the actionable signal in the same line as the sample fraction,
     not buried in a separate section.
     """
+    from swing.trades.frozen_value_evidence import tier2_cohort_lines
+
     lines = ["", "## Hypothesis investigation progress"]
     for r in rows:
         suffix_bits: list[str] = []
@@ -476,4 +514,8 @@ def render_hypothesis_progress(rows: Iterable[HypothesisProgress]) -> str:
         if extras:
             line += "; " + "; ".join(extras)
         lines.append(line)
+        # 22-A2 Task 10: the cohort's tier-2 names, under ITS row.
+        lines.extend(
+            f"  {named}" for named in tier2_cohort_lines(
+                r.tier2_excluded, r.tier2_observed))
     return "\n".join(lines)

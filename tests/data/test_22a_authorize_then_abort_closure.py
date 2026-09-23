@@ -74,13 +74,14 @@ from swing.trades.latched_origin import (
     SQL_BOUND,
     assert_fill_consistent_with_order,
 )
+from tests.data._migration_text import head_create_statement
 from tests.trades.test_22a_task8_resolver import _constructed_reason_strings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MIGRATION_0037 = (
-    REPO_ROOT / "swing" / "data" / "migrations"
-    / "0037_latch_order_mandate_links.sql"
-)
+# P34 / 22-A2 encoding 9: the SQL side is read from the citation trigger's
+# HEAD definition -- the LAST migration that creates it (0039 re-creates it).
+CITATION_TRIGGER_MIGRATION = head_create_statement(
+    "trg_provenance_corrections_citation_graph")[0]
 
 ALL_CLAUSES = AUTHORIZATION_CLAUSES + PROBE_GUARD_CLAUSES
 SQL_BOUND_KEYS = tuple(c.key for c in ALL_CLAUSES if c.binding == SQL_BOUND)
@@ -176,7 +177,7 @@ def _strip_sql_comments(text: str) -> str:
 
 
 def _migration_sql() -> str:
-    return _strip_sql_comments(MIGRATION_0037.read_text(encoding="utf-8"))
+    return _strip_sql_comments(CITATION_TRIGGER_MIGRATION.read_text(encoding="utf-8"))
 
 
 def _migration_clause_keys() -> set[str]:
@@ -601,7 +602,7 @@ def test_R3M2_a_COMMENT_ONLY_clause_satisfies_neither_walk(monkeypatch) -> None:
     The control beside it is what stops the blanking from silently disabling
     the walks: the same line WITHOUT its comment marker IS seen.
     """
-    real = MIGRATION_0037.read_text(encoding="utf-8")
+    real = CITATION_TRIGGER_MIGRATION.read_text(encoding="utf-8")
     clause = ("         AND json_extract(NEW.cited_latch_probe_json, "
               "'$.authorization.comment_only_guard.input') = NEW.trade_id")
 
@@ -615,7 +616,7 @@ def test_R3M2_a_COMMENT_ONLY_clause_satisfies_neither_walk(monkeypatch) -> None:
         ("a BLOCK comment", real + "\n/*" + clause + "*/\n"),
     ):
         monkeypatch.setattr(
-            "tests.data.test_22a_authorize_then_abort_closure.MIGRATION_0037",
+            "tests.data.test_22a_authorize_then_abort_closure.CITATION_TRIGGER_MIGRATION",
             _WriteOnce(text))
         assert "comment_only_guard" not in _migration_clause_keys(), (
             f"{label} is reported as a clause; the exact membership check can "
@@ -623,7 +624,7 @@ def test_R3M2_a_COMMENT_ONLY_clause_satisfies_neither_walk(monkeypatch) -> None:
         assert "comment_only_guard" not in _migration_bound_keys(), label
 
     monkeypatch.setattr(
-        "tests.data.test_22a_authorize_then_abort_closure.MIGRATION_0037",
+        "tests.data.test_22a_authorize_then_abort_closure.CITATION_TRIGGER_MIGRATION",
         _WriteOnce(real + "\n" + clause + "\n"))
     assert "comment_only_guard" in _migration_clause_keys(), (
         "the control: LIVE SQL must still be seen, or the blanking has "

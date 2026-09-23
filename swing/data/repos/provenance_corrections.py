@@ -64,6 +64,9 @@ _COLUMNS: tuple[str, ...] = (
     "cited_latch_place_intent_id",
     "cited_latch_broker_order_id",
     "cited_latch_probe_json",
+    # --- 22-A2 (migration 0039): the seventh citation column, in the same
+    # one tuple for the same reason.
+    "cited_frozen_value_evidence_json",
 )
 
 _SELECT = "provenance_correction_id, " + ", ".join(_COLUMNS)
