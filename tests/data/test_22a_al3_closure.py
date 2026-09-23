@@ -56,12 +56,18 @@ from swing.trades.latched_origin import (
     SERVICE_VALIDATED,
     SQL_BOUND,
 )
+from tests.data._migration_text import head_create_statement
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION_0037 = (
     REPO_ROOT / "swing" / "data" / "migrations"
     / "0037_latch_order_mandate_links.sql"
 )
+# P34 / 22-A2 encoding 9: the walks read the citation trigger's HEAD
+# definition -- the LAST migration that creates it (0039 re-creates it) -- so
+# they can never stay green against a superseded text (#31's shape).
+CITATION_TRIGGER_MIGRATION = head_create_statement(
+    "trg_provenance_corrections_citation_graph")[0]
 PLAN = (
     REPO_ROOT / "docs" / "superpowers" / "plans"
     / "2026-08-24-phase22-arc-a-entry-path-order-mandate-binding.md"
@@ -168,7 +174,7 @@ def _when_body() -> list[str]:
     neighbour's prose, and so a comment DESCRIBING a binding is never mistaken
     for one.
     """
-    lines = MIGRATION_0037.read_text(encoding="utf-8").splitlines()
+    lines = CITATION_TRIGGER_MIGRATION.read_text(encoding="utf-8").splitlines()
     start = next(i for i, ln in enumerate(lines) if ln.startswith(_TRIGGER))
     end = next(i for i in range(start, len(lines)) if lines[i] == "BEGIN")
     return ["" if ln.lstrip().startswith("--") else ln
@@ -270,6 +276,7 @@ def test_a_non_blob_member_names_an_anchor_that_exists_in_0037() -> None:
     reference to text that no longer exists.
     """
     sql = MIGRATION_0037.read_text(encoding="utf-8")
+    head = CITATION_TRIGGER_MIGRATION.read_text(encoding="utf-8")
     non_blob = {k: e for k, e in _roster().items()
                 if e["axis"] == PREDICATE_WEAKER}
     assert non_blob, (
@@ -282,6 +289,9 @@ def test_a_non_blob_member_names_an_anchor_that_exists_in_0037() -> None:
         assert entry["anchor"] in sql, (
             f"non-blob member `{key}`'s ANCHOR is not in 0037 verbatim: "
             f"{entry['anchor']!r}")
+        assert entry["anchor"] in head, (
+            f"non-blob member `{key}`'s ANCHOR is not in the HEAD citation "
+            f"trigger's migration verbatim: {entry['anchor']!r}")
 
 
 @pytest.mark.parametrize("key", sorted(_roster() | _exclusions()))
@@ -468,17 +478,17 @@ def test_DECLARED_the_boundness_walk_cannot_see_a_WEAKENED_predicate(
     later change makes it answer False, the walk has become sharper than this
     declaration says -- correct the declaration, never silence the test.
     """
-    weakened = MIGRATION_0037.read_text(encoding="utf-8").replace(
+    weakened = CITATION_TRIGGER_MIGRATION.read_text(encoding="utf-8").replace(
         "                   AND x.intent_kind = 'validity'\n"
         "                 ORDER BY x.recorded_ts DESC, x.intent_id DESC "
         "LIMIT 1)",
         "                   AND x.intent_kind = 'validity')", 1)
-    assert weakened != MIGRATION_0037.read_text(encoding="utf-8"), (
+    assert weakened != CITATION_TRIGGER_MIGRATION.read_text(encoding="utf-8"), (
         "the weakening matched nothing, so this measures nothing")
     copy = tmp_path / "0037_weakened.sql"
     copy.write_text(weakened, encoding="utf-8")
     monkeypatch.setattr(
-        "tests.data.test_22a_al3_closure.MIGRATION_0037", copy)
+        "tests.data.test_22a_al3_closure.CITATION_TRIGGER_MIGRATION", copy)
     assert _input_bound()["rung3b_latest_validity_child"] is True, (
         "the walk now distinguishes a weakened predicate; the declaration "
         "above is stale and must be corrected")

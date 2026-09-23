@@ -1,0 +1,89 @@
+{
+  "anchor_strength": "remote_replicated_ancestry",
+  "artifact_commit_sha": "9f315cc64a8f171049b510021e6418bc261c50b7",
+  "artifact_path": "docs/rd-state.md",
+  "author_date_et": "2026-08-10",
+  "author_instant": "2026-08-10T02:41:33-10:00",
+  "committer_instant": "2026-08-10T02:41:33-10:00",
+  "compare_dp": 2,
+  "descendant_count": 684,
+  "evaluated_at": "2026-09-23T12:00:00.000",
+  "evidence_version": "2026-09-23.1",
+  "fill_session_date": "2026-08-17",
+  "interval": {
+    "endpoints": {
+      "barrier_armed_at": {
+        "clock_domain": "utc_z",
+        "raw": "2026-09-02T10:03:33Z",
+        "source": "candidates_immutability_epoch.applied_at",
+        "utc": "2026-09-02T10:03:33Z"
+      },
+      "fire_hi": {
+        "clock_domain": "naive_local_pipeline",
+        "raw": "2026-08-07T17:39:07",
+        "source": "pipeline_runs.finished_ts",
+        "utc": "2026-08-08T03:39:07Z"
+      },
+      "fire_lo": {
+        "clock_domain": "naive_local_pipeline",
+        "raw": "2026-08-07T17:30:02",
+        "source": "evaluation_runs.run_ts",
+        "utc": "2026-08-08T03:30:02Z"
+      },
+      "read_at": {
+        "clock_domain": "naive_utc_ms",
+        "raw": "2026-09-23T12:00:00.000",
+        "source": "provenance_corrections.applied_at",
+        "utc": "2026-09-23T12:00:00.000Z"
+      },
+      "record_at": {
+        "clock_domain": "iso_offset",
+        "raw": "2026-08-10T02:41:33-10:00",
+        "source": "git_author_instant",
+        "utc": "2026-08-10T12:41:33Z"
+      }
+    },
+    "segments": [
+      {
+        "from": "2026-08-08T03:30:02Z",
+        "kind": "fire",
+        "seconds": 545,
+        "to": "2026-08-08T03:39:07Z"
+      },
+      {
+        "from": "2026-08-08T03:39:07Z",
+        "kind": "writer_absence_only",
+        "seconds": 205346,
+        "to": "2026-08-10T12:41:33Z"
+      },
+      {
+        "from": "2026-08-10T12:41:33Z",
+        "kind": "match_only",
+        "seconds": 1977720,
+        "to": "2026-09-02T10:03:33Z"
+      },
+      {
+        "from": "2026-09-02T10:03:33Z",
+        "kind": "covered",
+        "seconds": 1821387,
+        "to": "2026-09-23T12:00:00.000Z"
+      }
+    ]
+  },
+  "invalidation_equal_at_dp": 1,
+  "live_invalidation_raw": 41.41999816894531,
+  "live_pivot_raw": 53.97999954223633,
+  "pivot_equal_at_dp": 1,
+  "quoted_action_session_text": "2026-08-10",
+  "quoted_invalidation_text": "41.42",
+  "quoted_pivot_text": "53.98",
+  "quoted_text": "- **T5 RESOLVED 2026-08-10 \u2014 OII A+ (pivot 53.98), the 7th post-epoch fire / 9th mandate ever: TAKEN.** Operator confirmed: **buy stop-limit resting per the A+ fire, waiting for the pivot.** Sequence verified against the run record: the fire run executed **08-07T17:30 (Friday) for action session 08-10** \u2014 so the order placed during the item-4 witness came AFTER the fire, per the mandate. Clean, unlike AMN. **Frozen at fire: pivot 53.98 / `initial_stop` 41.42** (the 08-10 fire row \u2014 NOT the 40.50/37.89 in older rows; freeze-at-fire governs). **The first mandate born with the full 21-B machinery live** (cancel affordance, decision surface). **At fill it labels `standard` from the FIRE per the latch posture \u2014 unambiguous provided the setup HOLDS. If it decays before the pivot is reached, this is the first live case for the AMN doctrine bound** (a latch does not survive its own invalidation; a fill after that point does not label from the fire) **with the machinery in place to act \u2014 watch it.**",
+  "quoted_ticker_text": "OII",
+  "remote_ref_age_seconds": null,
+  "remote_ref_updated_at": null,
+  "resolved_remote_ref_sha": "348f126bb463519999ae7b183de98af448112557",
+  "ruling_citation": "22-A plan S12.1 (the settled tier-2 doctrine) + RD ruling 2026-08-24 + 22-A2 rulings R0.7-R0.12 (F6-F13)",
+  "time_anchor_residual": "author and committer dates are caller-settable; origin/main ancestry is the anchor (S12.1 #7)",
+  "uncovered_window_prose": "writer_absence_only 2.38 days (2026-08-08T03:39:07Z to 2026-08-10T12:41:33Z); match_only 22.89 days (2026-08-10T12:41:33Z to 2026-09-02T10:03:33Z); covered from 2026-09-02T10:03:33Z",
+  "verification_method": "four-part conjunction: (1) the artifact commit is an ancestor of refs/remotes/origin/main; (2) the author instant's America/New_York date strictly precedes the fill session; (3) the quoted text contains the cited candidate's ticker, action session, pivot and initial_stop as service-rendered tokens; (4) the record is at or after the fire's pipeline finished_ts"
+}

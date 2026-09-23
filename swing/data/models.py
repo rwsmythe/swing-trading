@@ -3022,13 +3022,24 @@ LATCH_FREEZE_TIERS = frozenset(
     {FREEZE_TIER_LIVE_AT_ACCEPTANCE, FREEZE_TIER_PRE_BARRIER}
 )
 
-# TWO-VALUED in 22-A; ``latch_ladder_tier2`` arrives with 22-A2 and the tier-2
-# evidence class it belongs to.
+# THREE-VALUED from 22-A2 (migration 0039, a table rebuild -- the column-level
+# CHECK could not be widened by ALTER).  ``latch_ladder_tier2`` is rung 9's
+# refuse-by-default ESCAPED by the four-part frozen-value conjunction on a
+# PRE-barrier link; its evidence is the seventh column below.  The SQL half of
+# this enum is the stored CHECK and the citation trigger's tier literals; a
+# drift test compares them (#11).
 PROVENANCE_ADMISSION_TIER_LAST_WORD = "last_word"
 PROVENANCE_ADMISSION_TIER_LATCH = "latch_ladder"
+PROVENANCE_ADMISSION_TIER_LATCH_TIER2 = "latch_ladder_tier2"
 PROVENANCE_ADMISSION_TIERS = frozenset(
-    {PROVENANCE_ADMISSION_TIER_LAST_WORD, PROVENANCE_ADMISSION_TIER_LATCH}
+    {PROVENANCE_ADMISSION_TIER_LAST_WORD, PROVENANCE_ADMISSION_TIER_LATCH,
+     PROVENANCE_ADMISSION_TIER_LATCH_TIER2}
 )
+
+# The seventh citation column (0039).  NULL on every ``last_word`` and
+# ``latch_ladder`` row; present -- a closed, versioned JSON blob the citation
+# trigger binds -- on every ``latch_ladder_tier2`` row.
+PROVENANCE_TIER2_EVIDENCE_FIELD = "cited_frozen_value_evidence_json"
 
 # The five citation columns 0037 adds to ``provenance_corrections``.  The
 # paired-NULL rule is stated ONCE, here, and consumed by the dataclass
@@ -3357,6 +3368,8 @@ class ProvenanceCorrection:
     cited_latch_place_intent_id: int | None = None
     cited_latch_broker_order_id: str | None = None
     cited_latch_probe_json: str | None = None
+    # --- 22-A2 (migration 0039): the seventh citation column.
+    cited_frozen_value_evidence_json: str | None = None
 
     def __post_init__(self) -> None:
         for fname in (
@@ -3462,14 +3475,29 @@ class ProvenanceCorrection:
             name: getattr(self, name)
             for name in PROVENANCE_LATCH_CITATION_FIELDS
         }
+        # THE THREE-WAY PAIRED rule (22-A2): last_word -> the five latch
+        # citations AND the seventh NULL; latch_ladder -> the five present and
+        # the seventh NULL; latch_ladder_tier2 -> all six present.
+        seventh = getattr(self, PROVENANCE_TIER2_EVIDENCE_FIELD)
         if self.admission_tier == PROVENANCE_ADMISSION_TIER_LAST_WORD:
             present = sorted(k for k, v in cited.items() if v is not None)
+            if seventh is not None:
+                present.append(PROVENANCE_TIER2_EVIDENCE_FIELD)
             if present:
                 raise ValueError(
                     f"admission_tier 'last_word' carries latch citations "
                     f"{present}: the tier a row claims and the evidence it "
                     "carries may not disagree")
         else:
+            if self.admission_tier == PROVENANCE_ADMISSION_TIER_LATCH_TIER2:
+                cited[PROVENANCE_TIER2_EVIDENCE_FIELD] = seventh
+            elif seventh is not None:
+                raise ValueError(
+                    f"admission_tier {self.admission_tier!r} carries "
+                    f"{PROVENANCE_TIER2_EVIDENCE_FIELD}: frozen-value evidence "
+                    "belongs only to a latch_ladder_tier2 row (an escaped rung "
+                    "9); the tier a row claims and the evidence it carries may "
+                    "not disagree")
             absent = sorted(k for k, v in cited.items() if v is None)
             if absent:
                 raise ValueError(

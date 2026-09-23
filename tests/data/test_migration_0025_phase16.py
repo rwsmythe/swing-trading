@@ -26,7 +26,7 @@ def _migrate_to(db_path: Path, version: int, backup_dir: Path | None = None):
 
 
 def test_expected_schema_version_is_head():
-    assert EXPECTED_SCHEMA_VERSION == 38
+    assert EXPECTED_SCHEMA_VERSION == 39
 
 
 def test_migrate_to_25_creates_table(tmp_path):

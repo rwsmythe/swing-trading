@@ -728,7 +728,7 @@ def test_expected_schema_version_is_head() -> None:
     it asserts is bumped by each schema-bumping arc, in its own commit. See
     ``tests/data/test_migration_0035_fills_trades_price_divergence.py``.
     """
-    assert EXPECTED_SCHEMA_VERSION == 38, (
+    assert EXPECTED_SCHEMA_VERSION == 39, (
         f"EXPECTED_SCHEMA_VERSION must be the HEAD schema, got {EXPECTED_SCHEMA_VERSION}"
     )
 
@@ -793,7 +793,7 @@ def test_schema_version_row_is_head(
     conn = _v21_conn(tmp_path)
     try:
         ver = conn.execute("SELECT version FROM schema_version").fetchone()
-        assert ver[0] == 38, f"schema_version != HEAD, got {ver[0]}"
+        assert ver[0] == 39, f"schema_version != HEAD, got {ver[0]}"
     finally:
         conn.close()
 

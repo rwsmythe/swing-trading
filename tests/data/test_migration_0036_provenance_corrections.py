@@ -54,11 +54,11 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 
 def test_expected_schema_version_is_head() -> None:
-    assert EXPECTED_SCHEMA_VERSION == 38
+    assert EXPECTED_SCHEMA_VERSION == 39
 
 
 def test_migration_applies_and_stamps_version_head(conn) -> None:
-    assert _current_version(conn) == 38
+    assert _current_version(conn) == 39
 
 
 def test_table_and_both_indexes_exist_read_from_sqlite_master(conn) -> None:
@@ -105,6 +105,11 @@ def test_every_declared_column_is_present_and_notnull_as_designed(conn) -> None:
         "cited_latch_place_intent_id",
         "cited_latch_broker_order_id",
         "cited_latch_probe_json",
+        # --- ADDED BY MIGRATION 0039 (22-A2, the rebuild). NULL on every
+        # 'last_word' and 'latch_ladder' row, present on every
+        # 'latch_ladder_tier2' row -- enforced by the citation trigger's
+        # per-tier paired rule, not by column nullability.
+        "cited_frozen_value_evidence_json",
     }
     for required in (
         "trade_id", "entry_fill_id_at_correction", "entry_fill_snapshot_json",
@@ -163,7 +168,7 @@ def test_rerunning_the_migration_is_a_clean_no_op(conn) -> None:
     ).fetchone()[0]
     run_migrations(conn)
     run_migrations(conn)
-    assert _current_version(conn) == 38
+    assert _current_version(conn) == 39
     after = conn.execute(
         "SELECT sql FROM sqlite_master WHERE name='provenance_corrections'",
     ).fetchone()[0]

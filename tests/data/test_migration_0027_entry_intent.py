@@ -42,7 +42,7 @@ def _make_trade(**over) -> Trade:
 
 
 def test_expected_schema_version_is_head():
-    assert EXPECTED_SCHEMA_VERSION == 38
+    assert EXPECTED_SCHEMA_VERSION == 39
 
 
 def test_entry_intents_constant():

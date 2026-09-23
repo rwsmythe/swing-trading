@@ -42,6 +42,7 @@ from swing.data.models import (
     LATCH_FREEZE_TIERS,
     PROVENANCE_ADMISSION_TIER_LAST_WORD,
     PROVENANCE_ADMISSION_TIER_LATCH,
+    PROVENANCE_ADMISSION_TIER_LATCH_TIER2,
     PROVENANCE_ADMISSION_TIERS,
 )
 from swing.evaluation.dates import is_trading_session, session_offset
@@ -98,6 +99,12 @@ __all__ = [
     "PROVENANCE_ADMISSION_TIERS",
     "PROVENANCE_ADMISSION_TIER_LAST_WORD",
     "PROVENANCE_ADMISSION_TIER_LATCH",
+    "PROVENANCE_ADMISSION_TIER_LATCH_TIER2",
+    "AUTHORIZATION_VERDICT_PASS",
+    "AUTHORIZATION_VERDICT_ESCAPED_BY_TIER2",
+    "AUTHORIZATION_VERDICTS",
+    "LATCH_PROBE_EVIDENCE_VERSION",
+    "LATCH_PROBE_TIER2_EVIDENCE_VERSION",
     "AUTHORIZATION_CLAUSES",
     "AUTHORIZATION_KEYS",
     "PROBE_GUARD_CLAUSES",
@@ -131,6 +138,25 @@ __all__ = [
 # true if both halves name the same version -- so a drift test asserts the
 # literal in the migration equals this constant (#11).
 LATCH_PROBE_EVIDENCE_VERSION = "2026-08-25.1"
+
+# 22-A2 (F11): the probe blob of a ``latch_ladder_tier2`` row carries its OWN
+# version, because its rung-9 entry states the escape in its own voice
+# (``escaped_by_tier2``) -- a vocabulary change, and the bump is the designed
+# mechanism for one.  ``latch_ladder`` blobs keep ``LATCH_PROBE_EVIDENCE_VERSION``
+# byte-unchanged (R0.10 encoding 1).  Migration 0039's citation trigger chooses
+# the version PER TIER; a drift test reads both literals out of it (#11).
+LATCH_PROBE_TIER2_EVIDENCE_VERSION = "2026-09-23.1"
+
+# The $.authorization VERDICT vocabulary (F11).  Every entry of a latch blob
+# reads ``pass`` except rung 9 on a tier-2 row, which reads ``escaped_by_tier2``:
+# rung 9 did NOT pass on its own evidence for a pre-barrier input, so ``pass``
+# there would be a false attestation.  Mirrored by the citation trigger's
+# literals; the drift test compares the two.
+AUTHORIZATION_VERDICT_PASS = "pass"
+AUTHORIZATION_VERDICT_ESCAPED_BY_TIER2 = "escaped_by_tier2"
+AUTHORIZATION_VERDICTS: frozenset[str] = frozenset(
+    {AUTHORIZATION_VERDICT_PASS, AUTHORIZATION_VERDICT_ESCAPED_BY_TIER2}
+)
 
 # THE ENVELOPE CANONICALISER'S OWN VERSION (22-A round 11, PERSIST-CANONICAL).
 # Every stored reading records the version that produced it, so a reading made
