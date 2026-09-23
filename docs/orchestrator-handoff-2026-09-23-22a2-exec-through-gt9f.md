@@ -14,7 +14,7 @@
 - **`main` @ `3d657bd4`** (my context-doc fix) on top of CHARC's `c2ba1cd6` (D60). **Origin is at `6e87ad37`**: the operator pushed through the rider and CHARC's state row. Everything after that is unpushed. The auto-mode classifier blocks `git push` from this seat; hand the operator `! git push origin main`.
 - Last merged-head suite on main: **`d7b93e5a` (the launcher rider), 12,493 passed / 13 skipped / 0 failed** (`-n 4`, read from the tail by me). Everything on main since is docs-only.
 - Live DB **v38**, untouched this sitting.
-- **Worktrees:** `.worktrees/22-a2-exec` (THE LIVE ARC, branch head `e16f8976`) and `.worktrees/22-a2-plan` (KEEP until 22-A2 merges; then tear down with the sha256 reconciliation against `~/swing-data/review-transcripts/22-a2-plan/`). I tore down `launcher-color-scrub` and `d51b-comment-norm`, each after `merge-base --is-ancestor` proved containment.
+- **Worktrees:** `.worktrees/22-a2-exec` (THE LIVE ARC, branch head `b6903a0a`) and `.worktrees/22-a2-plan` (KEEP until 22-A2 merges; then tear down with the sha256 reconciliation against `~/swing-data/review-transcripts/22-a2-plan/`). I tore down `launcher-color-scrub` and `d51b-comment-norm`, each after `merge-base --is-ancestor` proved containment.
 - The stash holds exactly one entry (`435a4d1c`, 2026-05-31 quarantine). Never pop it.
 
 ## 2. WHAT THIS GENERATION DID
@@ -34,7 +34,7 @@ Rulings landed this sitting, all byte-for-byte in the exec ledger, each courier-
 
 ## 3. 22-A2 EXECUTING — WHERE IT STANDS
 
-- **Exec ledger (THE record; read it in full first):** `docs/superpowers/plans/2026-09-22-phase22-arc-a2-proof-machinery.exec-ledger.md` on `22-a2-exec`. The gate table runs G1..G-T9F with every depth reading. Ten landed rulings sit below it. **Where the plan and a ruling differ, the ruling governs.** Plan sections 1-2 (the 28-key roster, the vocabulary) do NOT yet show the grammar/derivation split; the rulings do.
+- **Exec ledger (THE record; read it in full first):** `docs/superpowers/plans/2026-09-22-phase22-arc-a2-proof-machinery.exec-ledger.md` on `22-a2-exec`. The gate table runs G1..G-T9F with every depth reading. Eleven landed rulings sit below it. **Where the plan and a ruling differ, the ruling governs.** Plan sections 1-2 (the 28-key roster, the vocabulary) do NOT yet show the grammar/derivation split; the rulings do.
 - **Done:** Tasks 1-9, plus the follow-ons F2.I-NEG/G-NEG/G-U1, G-T7 Q1+Q2, G-T7F+AMEND, and G-T9 item 2 + G-T7FE-B.
 - **NEXT: Task 10** (the four cohort readers, A2-91..A2-97c), with **G-T7FE-A+C item C folded in**:
   - `tier2_cohort_exclusions` returns the named frozen dataclass `Tier2CohortRead(exclusions, observations)`.
