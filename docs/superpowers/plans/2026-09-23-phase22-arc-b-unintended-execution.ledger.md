@@ -111,6 +111,105 @@
 >
 > Any further fork the census finds is ADDED to the packet with both branches and a named ruler, not decided in the plan. **A census that finds none says so in one line; the loop opens on that line (the F1 pre-loop gate is already cleared).**
 
+## R0.C — Census (cell)
+
+**Cell:** the 22-B writing-plans implementer, 2026-09-23. **Surfaces:** code at worktree `22-b-plan` (base `9d89e304`); the live DB `%USERPROFILE%/swing-data/swing.db` opened with plain `sqlite3` `mode=ro` URI (never `swing`'s `connect`); three weekly backup images (`backups/swing-202631/32/33.db`) COPIED to the session scratchpad first and opened `mode=ro` there. No Codex. Every count below carries its method; a grep count is a LOWER bound, a read is named as a read.
+
+### C.1 Kept premises re-verified (claim / mechanic that makes it true / surface measured)
+
+| # | claim (brief/ruling) | result | mechanic + surface |
+|---|---|---|---|
+| K1 | `trades` 58 cols / 14 CHECKs / 3,419 DDL chars | HOLDS | `PRAGMA table_info`; `\bCHECK\b` over `sqlite_master.sql`; live v39 |
+| K2 | 5 `trades` dependants | HOLDS — **source correction:** partial UNIQUE from `0014:230` (not "0014/0027-era"; 0027 never touches it); `idx_trades_candidate_id` + `idx_trades_pattern_evaluation_id` from `0021:39,41` (the brief names no source); attempt pair `0038:113,117` | `sqlite_master WHERE tbl_name='trades'` (live) + grep of each name over `swing/data/migrations/*.sql` |
+| K3 | 5 tables FK→`trades` | HOLDS | `sql LIKE '%REFERENCES trades%'`, live |
+| K4 | intent set NULL 1 / by_design 20 / standard 7; 28 trades, 0 open | HOLDS (all 28 `state='reviewed'`) | `GROUP BY`, live |
+| K5 | trade 20 bytes (two-space `notes`, `why_now`, `thesis`, `emotional_state_pre_trade='["distracted"]'`, `hypothesis_label` NULL) | HOLDS | `repr()` of the row, live |
+| K6 | `MIN(latch_order_intents.recorded_ts)` = `2026-08-08T20:01:08`, 13 rows, AMN 0 | HOLDS as a FIRST-ROW fact — **but see N1: the instrument was DEPLOYED before 08-07** | live `MIN`/`COUNT`; backups w31/w32/w33 |
+| K7 | 0 corrections on trade 20; trades-field corrections only `current_stop`×4, `entry_date`×1; `provenance_corrections` 2 rows (23, 25) | HOLDS | `GROUP BY affected_table, field_name`, live |
+| K8 | 0027's CHECK is COLUMN-level inside `trades` DDL → widening is a rebuild | HOLDS; stored DDL begins `CREATE TABLE "trades" (` (the 0014 RENAME product), so the one-edit proof compares STORED v39 text + one edit against STORED v40 text | live `sqlite_master.sql` read |
+| K9 | `trades` has no AUTOINCREMENT → no sequence carry | HOLDS (`id INTEGER PRIMARY KEY`) | stored DDL |
+| K10 | gate shape `BackupGateSpec(38,"22a2",…)` exists; `EXPECTED_SCHEMA_VERSION=39` | HOLDS (`db.py:102`; gate table `db.py:645-698`); manifest "header" = the `# schema_version N` line of `tests/data/schema_manifest_head.tsv` | read |
+| K11 | D51 hash re-types "verbatim" safely | HOLDS: `scripts/schema_manifest.py` drops line-start `--` lines and collapses whitespace before sha256, so re-created dependants hash identical iff their TOKENS match | read of `schema_manifest.py:1-80` |
+| K12 | no SQL-vs-Python drift test exists for `trades.entry_intent` | CONFIRMED ABSENT (`test_migration_0027_entry_intent.py:48` hard-codes the constant; nothing compares the stored CHECK to `ENTRY_INTENTS`) → the plan adds it | read of the 0027 test + `tests/trades/test_intent.py` |
+| K13 | `H1_COHORT_CLAUSE` + `entry_intent = 'standard'` predicate | HOLDS (`cohort_intent.py:73-87,171-176`) — **but see N2** | read |
+| K14 | clauses (1)–(3) at `research-director-context-archive.md` line 84 | HOLDS; exact span = from `(1) A+ fires` through `graded as practice. ` (before `**Epoch-integrity`) | Python slice, `encoding='utf-8'` |
+| K15 | clause (4) byte-for-byte at `e5feec2a` | HOLDS: ONE line starting `> **(4)`; body (leading `> ` removed, no newline) = 1,024 UTF-8 bytes, NON-ASCII (em-dash), sha256 `5a78e547f64df25e0f891bd271c8d5e51bbd884866ca6d04c6c85b7803ef3886`; the RD file is byte-identical `e5feec2a`→`9d89e304` | `git show e5feec2a:…` read as BYTES; `git diff --stat` empty |
+| K16 | F2 S1: every entry fill is synthetic `T16:00:00` | HOLDS 28/28 (and every exit/stop/trim fill too: 16/12/3) | `substr(fill_datetime,12)`, live |
+| K17 | `pre_trade_locked_at` synthetic "28/28 by construction" (RD edge (ii)) | **27/28** — trade 19 is the exception (its `entry_date` was corrected 07-23→07-31 via the coupled surface; `pre_trade_locked_at` kept 07-23). Doctrine unaffected (the field is never citable) | `pre_trade_locked_at = entry_date||'T16:00:00'`, live |
+| K18 | F2 S3 precondition: no writer of the four fields outside the audited corrector | **HOLDS** (walk below, C.2) | read |
+| K19 | F3 precondition: death-then-fill expressible | **HOLDS — expressible** (C.3) | read of `swing/latches/service.py` + `swing/trades/latched_origin.py` |
+| K20 | CLI surface name | `swing trade entry` (not "enter"); `assign-intent` is unused in `trade_group` | `grep '@trade_group.command'` |
+| K21 | A2-09 pin | `tests/trades/test_22a2_case_closure.py:79-140` pins 22-A's SIX cases by `inspect.getsource` sha256; 22-B's pin is the same shape over 22-A2's own `CASES_22A2` implementers. Hazard: A2-08's roster regex `a2_(\d{2,3}[a-z]?)` walks ALL of `tests/`, so a 22-B test NAME carrying `a2_<digits>` registers as a phantom | read |
+
+### C.2 F2 S3 — the `UPDATE trades` walk (by READ)
+
+Method: `grep -rin` over `swing/**/*.py` for `update trades`, `trades\s*SET`, bare/trailing `UPDATE` lines, f-string `UPDATE {` builders, `REPLACE INTO trades`, `DELETE FROM trades`, `INSERT INTO trades`; each hit READ; migrations grepped separately. Result — production UPDATE sites and the columns each SETs:
+
+| site | columns written |
+|---|---|
+| `swing/data/repos/fills.py:211` | `current_size`, `current_avg_cost`, `last_fill_at` |
+| `swing/data/repos/trades.py:685` | `current_stop` |
+| `swing/data/repos/trades.py:965` (dynamic, fixed list) | the 10 review fields + `failure_mode` |
+| `swing/data/repos/trades.py:1008` | `entry_intent` |
+| `swing/data/repos/trades.py:1054` | `entry_date` |
+| `swing/data/repos/trades.py:1108` | `hypothesis_label`, `candidate_id`, `trade_origin` |
+| `swing/diagnostics/backfill_trades_sector_industry.py:303,315` | `sector`, `industry` |
+| `swing/trades/entry.py:2257` | `risk_policy_id_at_lock` |
+| `swing/trades/state.py:149` | `state` |
+| `swing/trades/reconciliation_auto_correct.py:2309` (dynamic) | ANY real column, audited (`reconciliation_corrections` row) — the audited corrector |
+| `0014_phase7…sql:89,97,102,110` (one-shot, v13→14) | `state`, `pre_trade_locked_at`, `trade_origin`, size aggregates |
+
+No `REPLACE INTO trades`, no `DELETE FROM trades`; the only INSERT is `insert_trade_with_event` (capture, `trades.py:374-562`). **No site writes `notes|why_now|thesis|emotional_state_pre_trade` outside the audited corrector — P2's precondition holds; no finding to report.** I could not reproduce the comment's "21" at `reconciliation_auto_correct.py:190` (its method is unstated); by the method above there are 10 production statements + the corrector's dynamic builder + 4 one-shot migration statements.
+
+**Two P2 encoding corrections found on the walk (not forks — they make S2's "over the trail" true):**
+- **(P2-a)** `provenance_corrections` has NO `affected_table`/`field_name` columns. Its equivalents are `trade_id` + `corrected_fields_json`, whose entries are TABLE-QUALIFIED (`"trades.hypothesis_label"`, …), and its 0036/0039 CHECK pins that array to EXACTLY the three cohort keys — so a provenance row naming a citable text field is SCHEMA-UNREACHABLE today (the leg is required by S2 and is vacuous-by-schema until a future widening). Consequence for §4.2's "planted `provenance_corrections` row on `notes` (raw insert)": a raw insert cannot plant it (CHECK). Encoding: the test plants it on a scratch DB under `PRAGMA ignore_check_constraints=ON`, from the 22-A2 fully-cited fixture (`tests/trades/_cohort_provenance_fixtures.py`) with the array rewritten to include `trades.notes`; the citation-graph trigger's citations are satisfied by the fixture. Challenge invited.
+- **(P2-b)** `_handle_multi_field_correction` (`reconciliation_auto_correct.py:2870-2960`) writes ONE audit row per multi-field correction with `field_name` = `'price'` if present else the FIRST key; the other fields appear only as keys inside `pre_correction_value_json`/`applied_value_json`. So `field_name IN cited` alone is FAIL-OPEN for a cited field riding as a non-first key. Encoding: P2 (service AND trigger) matches `field_name IN cited` OR any key of the JSON envelopes in `cited ∪ {'trades.'||f}`. Live incidence: 0 `trades` rows touching a text field (live `GROUP BY`).
+
+### C.3 F3 precondition — death-then-fill IS expressible (file:line)
+
+- `swing/latches/service.py:720-848` `_resolve_terminal`: the NON-fill terminal is the EARLIEST of invalidation / declined / criteria_lapsed / horizon (`order_key` = session, then rank); the fill is returned ONLY when `fill.order_key <= nonfill.order_key` (`:845-847`). A fill STRICTLY AFTER a death returns the DEATH terminal (`clear_reason` = the rung, `clear_session` = its date, `clear_trade_id` None). The windowed rung never matches a post-death fill (`effective_end` bound, `:826-832`); the exact `candidate_id` rung consumes it without recording it (`:834-837`). So the ledger PRESERVES the death; the fill is visible separately (the trade's own entry fill), never on the latch.
+- 22-A already asks exactly the F3 question: `swing/trades/latched_origin.py:1181` `find_accepted_latch_order(conn, broker_order_id=…)` (link by the entry fill's envelope order id) → `:2400` `mandate_alive_at(…, fill_session, exclude_trade_ids)` delegating to `derive_latches` with the probe bounded BEFORE the fill session (a same-session breach is outside `bar_bound` → admits, `latched_origin.py:19-29`), returning `clear_reason`/`clear_session`/`probe_evidence`.
+- **Encoding:** the structural-LINK tier delegates to those two functions (no second comparison — gotcha #31) and records `probe_evidence` JSON on the attestation (the `provenance_corrections.cited_latch_probe_json` precedent). `criteria_lapsed` reaches a terminal only when the lapse rule is ARMED (`criteria_lapse_armed` default False, `service.py:1242`), so today it is a reachable CHECK member with no live producer.
+
+### C.4 F5 — the refusing-surface count is EIGHT, not five (by READ of every `ENTRY_INTENTS` / `entry_intent` Choice/allowlist site)
+
+1. `swing/cli.py:602-603` `trade entry --entry-intent` `click.Choice`; 2. `swing/cli.py:1558-1559` `trade review --entry-intent`; 3. **`swing/cli.py:1723-1778` `trade backfill-intent`** — a free-text `click.prompt` validated only by `update_entry_intent` (brief omits); 4. `swing/web/routes/trades.py:837-838` entry form; 5. `swing/web/routes/trades.py:3545-3558` review form; 6. **`swing/trades/entry.py:569-576` `EntryRequest.__post_init__`** — the gate of the ONLY insert path (`entry.py:2180-2242`), and it validates against `ENTRY_INTENTS`, so widening the constant OPENS the insert path unless it refuses (brief omits); 7. `swing/data/repos/trades.py:987-992` `update_entry_intent`; 8. **the audited corrector** `reconciliation_auto_correct.py:2309` — `_RESERVED_JOURNAL_FIELDS` (`:200`) does not reserve `("trades","entry_intent")`, so `swing journal correct` can write the value with only a `reconciliation_corrections` row (brief omits). Encoding (same F5 rule, more sites): each refuses with the typed message naming `assign-intent`; (8) via a value-conditional reservation through the existing `_reservation_applies`. Plus: `swing/trades/intent.py:17` `ENTRY_INTENT_DISPLAY` feeds BOTH web `<select>`s (`view_models/trades.py:862,1592`) and its no-drift test asserts equality with `ENTRY_INTENTS` — so the display map is split: LABELS cover all three values, CHOICES exclude the new one (a named `models.py` constant for the assertable-at-entry set).
+
+### C.5 NEW FORKS (each: both branches executable, ONE ruler)
+
+**N1 — P1's "instrument": first ROW or DEPLOYMENT? Ruler: RD.** Measured: the weekly image `backups/swing-202632.db` (mtime 2026-08-03 17:30 HST) is at schema **v33 with `latch_order_intents` PRESENT and 0 rows**; `swing-202631.db` (07-27) is v31. So 21-B's prepared-order instrument was LIVE at least 4 sessions before trade 20's 08-07 entry and first USED 08-08 (K6). Two corroborating facts: 21-A's `latch_view_events` recorded the AMN latch (candidate 11926, detection 2026-08-03) displayed `armed` on 08-01/08-02; and trade 20's entry fill 41 carries a Schwab source envelope dating the order `2026-08-01` (operator-corrected to 08-07), so the ORDER PLACEMENT may itself predate or postdate deployment (deployment is bounded only to (07-27, 08-03]; no in-DB record timestamps a migration's application). RD's own AMN geometry (§3: invalidation close ON 08-07, the fill session) would make the fill a same-session MANDATE fill under R6 had a link existed.
+- **(a) First-row grain (as encoded):** `instrument_earliest_recorded_ts = MIN(latch_order_intents.recorded_ts)`; trade 20 ADMITS tier 2 (08-08 > 08-07). The witness is as briefed.
+- **(b) Deployment grain:** the instrument's start is a pinned session constant (≤ 2026-08-03 by the w32 image — an upper bound; the header cites the image); tier 2 requires `entry_date` (and, if RD rules it, the order-placement session) STRICTLY BEFORE it. Trade 20 REFUSES ("the instrument existed and did not fire"); the arc ships the surface with trade 20 still NULL and NAMED; witness step 3 becomes a refusal witness and step 4 does not run.
+
+**N2 — clause (4) "counts toward NO hypothesis cohort" vs the code. Ruler: RD.** `cohort_intent.py:171-176`: for every epoch-contract cohort (H2–H5) `cohort_entry_intent` is `None` and `trade_counts_toward_cohort` returns True for ANY `entry_intent`; the SQL half (`metrics/cohort.py:78-83`) applies no intent filter when passed `None`. So an `unintended_execution` trade whose `hypothesis_label` matches H2–H5 COUNTS. RD's F1 check ("lands in NO cohort by the existing predicates") holds for H1 by its criterion and for H2–H5 only by LABEL ABSENCE — true for trade 20 (label NULL), not in general.
+- **(a) Exclude in code:** `unintended_execution` is excluded from EVERY cohort — `trade_counts_toward_cohort` returns False for it and the SQL path adds `entry_intent IS NOT 'unintended_execution'` whenever no criterion predicate applies — grounded in clause (4) as a named authority; the four readers + `hypothesis list` get the case. Cohort code CHANGES (the brief said none).
+- **(b) No cohort code change:** the assignment service REFUSES a trade whose `hypothesis_label` matches any registered epoch-contract cohort (typed: the label would place it in H<n>, which applies no intent predicate); a test pins the refusal. Residual (declared): a LATER label write (e.g. `correct-cohort-provenance`) can still place an attested trade in an H2–H5 cohort.
+
+**N3 — the "named exclusion" for trade 20 has no mechanism. Ruler: RD.** The readers' named-exclusion output is `tier2_excluded` (`frozen_value_evidence.py:1481` `tier2_cohort_exclusions` → `tier2_cohort_lines`), which names only IN-COHORT (label-matched) trades excluded by a 22-A2 tier-2 replay verdict; intent-filtered trades are dropped silently at `recommendations/hypothesis.py:547-552` (and the tier / journal / card equivalents); trade 20 (NULL label) is in NO cohort's candidate set, so it cannot appear in any per-cohort line. §2's last bullet, §4.3, RD §4 bullet 1 and §5 step 4 ("20 NAMED as `unintended_execution` in the excluded-with-reason line") rest on a surface that does not exist.
+- **(a) Per-cohort only:** a label-matched `unintended_execution` trade is named under its cohort's row (needs N2(a)); trade 20 appears in NO line; §4.3 becomes "every N unchanged and 20 in no cohort's candidate set, before and after", with the naming discriminator on synthetic H1-/H2-labelled trades.
+- **(b) Program-level line:** each of the four readers and `swing hypothesis list` emits ONE line naming every `unintended_execution` trade regardless of label ("not counted toward any cohort: trade N (unintended_execution)"); trade 20 appears; new output on four surfaces.
+
+**N4 — the single-writer seam in REVERSE: may a generic writer change a trade ALREADY carrying `unintended_execution`? Ruler: CHARC (F5's owner).** Clause (4) forbids relabelling TO the value; nothing covers FROM. Concrete composition defect: under F5 the review form's choices exclude the value, so for an attested trade `review_form.html.j2:129-133` renders no `selected` option, the browser submits `""`, and `routes/trades.py:3553-3621` calls `update_entry_intent(…, None)` — **the first web review CLEARS the attested value**, which is exactly when RD's edge (i) says to assign. `trade review --entry-intent`, `backfill-intent --force` and the corrector reach it too.
+- **(a) Terminal for generic writers:** all eight C.4 surfaces refuse to change a row whose CURRENT `entry_intent` is `unintended_execution` (typed: "attested; a reversal is a new evidence class"); the review form renders the attested value read-only and omits the field from the POST.
+- **(b) Overwritable:** generic writers may change it; the attestation row persists; the drift reader names "attested, column now <v>".
+
+**N5 — the intent-only structural branch cannot be keyed to the fill as ruled. Ruler: RD.** F3 (a) says "no link, but a `latch_order_intents` row → cite the intent (`place`, and `validity` if present)". But `place`/`decline` rows carry NO broker order id (0033 CHECK: "`place` and `decline` … have observed nothing"), so a place row ties to a fill only by a ticker/date heuristic — the heuristic 22-A's case 4 declined (`test_a_place_intent_without_a_validity_row_falls_through_case_4`); and `mandate_alive_at` needs a LINK (its frozen-value guards). Rows that DO name a broker order: `validity` (accepted), `cancel`, `attest acted_manually`.
+- **(a) Key by broker order id:** an unlinked intent matches iff its `actual_broker_order_id` equals the entry fill's envelope order id (`broker_order_id_from_envelope`); the latch is that row's `candidate_id`'s derivation (`build_latch_derivation`), death-before-fill bounded before the fill session with the subject trade excluded — the `mandate_alive_at` discipline minus the link-only frozen-value guards; cite the intent row (and its `validated_place_intent_id`).
+- **(b) Structural = link only:** an unlinked intent naming the order REFUSES (typed: "a latch intent without an accepted-order link cannot tie this fill to a mandate; tier 2 cannot apply because the instrument recorded it"); `cited_latch_intent_id` stays in the schema only if RD keeps (a).
+
+Both N5 branches leave trade 20 unaffected (0 AMN links, 0 AMN intents).
+
+### C.6 Encodings the plan will carry (not forks; each challengeable)
+
+- **E1** F1 hash input = the UTF-8 bytes of the clause-(4) line with its leading `> ` removed, no trailing newline; derived from `docs/training-epoch-intent-contract.md` with explicit `encoding`/bytes (the cp1252 DECODE gotcha: the clause is non-ASCII).
+- **E2** `outcome_known_at` = the EARLIEST non-entry fill (`action IN ('trim','exit','stop')`). Trade 20's outcome fill is fill 44, `action='stop'`, `2026-08-11T16:00:00` — an `exit`-only encoding would record NULL and treat a closed trade as open.
+- **E3** P2 per C.2 (P2-a, P2-b).
+- **E4** the structural-link tier per C.3.
+- **E5** the F5 surfaces per C.4.
+- **E6** the drift reader is a pure function in `entry_intent_assignment.py` exercised by test (no new CLI command beyond `assign-intent`); it compares the cited-text snapshot AND the frozen `trade_entry_date` against live.
+- **E7** 0040 re-creates the five dependants from `0014:230`, `0021:39,41`, `0038:113,117`.
+- **E8** the 22-A2 composition pin covers `CASES_22A2`'s implementers; no 22-B test name carries an `a2_<digits>` token.
+
 ## Round table
 
 | round | tier | model/effort | footer | verdict | findings (C/M/m) | task-bearing | depth (orchestrator-read) | tokens used |
