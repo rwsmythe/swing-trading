@@ -730,7 +730,11 @@ Pre -> post = what the discriminator reads under the NULL / pre-fix implementati
 
 AL2-1 SQL cannot verify the service's criterion-3 verdict (S4.3a residual; F8). AL2-2 containment
 proves mention, not exclusivity (the AMN mention; F13). AL2-3 swapped numerals admit (F13).
-AL2-4 a hand-run barrier DROP is undetectable; (t1) sees file-borne drops only (P14, F2.T).
+AL2-4 a hand-run barrier DROP is undetectable; (t1) sees file-borne drops only (P14, F2.T) -- and a
+file-borne retirement through a statement family outside DROP TRIGGER / DROP TABLE / ALTER TABLE
+RENAME TO (PRAGMA writable_schema edits of sqlite_master are the known member) is seen by D51 when
+the barrier is not re-created and by nothing when it is; a red on either instrument is the F2
+re-open condition (RD, A-R5, R5-03, CHARC's offered line, RD's wording).
 AL2-5 `gap_era_reconstructed` is named and UNMINTED; two-valued `LATCH_FREEZE_TIERS` does not close
 the vocabulary (F2). AL2-6 the time anchor is practical, not cryptographic; ref age recorded, never
 verdict-bearing (S12.1 #7, F5). AL2-7 `match_only` is net-change evidence, recorded as a gap kind,
@@ -750,6 +754,15 @@ trigger (RD A-R3 item 1, R3-01 = (c); discharged by the D65 post-merge rider, ma
 AL2-14 a trade whose label commits after a reader's snapshot is neither counted nor named in that
 invocation and is counted or named by the next; every cohort read is per-invocation (CHARC A-R4
 R4-03, REJECT; RD's recorded R2-04 fact).
+AL2-15 an MM-DD token joined to a four-digit year by a separator outside [0-9.-] (08-10/2025,
+2025_08-10) admits under an author of the session's year, borrowing that year against the record's
+explicit one; the hyphen family refuses (.5) (RD, A-R5, R5-02).
+AL2-16 the reader trusts its local repository's metadata; a deliberate edit of repo_dir's own .git
+(info/grafts, a commit-graph, objects/info/alternates, packed-refs, the local
+refs/remotes/origin/main, repo-local config) can make a real but off-main commit read as an
+ancestor of origin/main, or move origin/main itself; the on-box read cannot distinguish this from
+history; DISCHARGE is an off-box fresh-clone ancestry-and-content check at the witness and any
+later tier-2 gate (RD, A-R5, R5-01).
 
 ## 8. Envelope (for every review prompt; from brief section 2)
 
