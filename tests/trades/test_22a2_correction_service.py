@@ -51,6 +51,9 @@ REASON = "22-A2 Task 7: trade 25's tier-2 correction"
 TIER2_NOTE = ("already applied; evidence not re-evaluated here -- the read-time "
               "verdict is on journal provenance-corrections")
 NOT_CONSULTED = "the supplied --frozen-value-evidence was not consulted"
+# CHARC ruling R2-05 (a): the sibling sentence when rung 9 RAN and PASSED and a
+# later rung refused.
+PASSED_RUNG9 = "the supplied --frozen-value-evidence PASSED rung 9; the ladder refused at"
 NO_LATCH = ("no accepted latch order: tier-2 evidence is admissible only as rung "
             "9's escape on a pre-barrier linked mandate")
 
@@ -378,6 +381,124 @@ def test_a2_73_evidence_failing_criterion_3_refuses_naming_the_field(
         assert _trade_keys(conn) == before
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------------------- R2-05
+# CHARC ruling R2-05 (a): ``LatchedProvenance.tier2_consulted`` is True only
+# when rung 9's escape RAN and PASSED; the refusal message forks on it.
+
+def _later_rung_refuses(monkeypatch, where: str) -> None:
+    """Make a rung AFTER rung 9 refuse: the envelope guards or the probe."""
+    from swing.trades import latched_origin as lo
+
+    if where == "guard":
+        monkeypatch.setattr(lo, "assert_fill_consistent_with_order",
+                            lambda order, **kw: "quantity_exceeds_order")
+    elif where == "keys":
+        def underivable(conn, order):
+            raise ValueError("keys refused for the test")
+        monkeypatch.setattr(lo, "_cohort_keys_for_fire", underivable)
+    else:
+        def dead(conn, cfg, *, order, **kw):
+            return lo.LatchedProvenance(
+                admitted=False, recognised_but_underivable=True,
+                decline_reason="mandate_not_alive", order=order)
+        monkeypatch.setattr(lo, "mandate_alive_at", dead)
+
+
+@pytest.mark.parametrize(("where", "reason"), [("guard", "quantity_exceeds_order"),
+                                                ("probe", "mandate_not_alive"),
+                                                ("keys", "keys_not_derivable")])
+def test_r2_05_i_rung9_passed_then_a_later_rung_refused_says_passed(
+    tmp_path: Path, ticking_clock, monkeypatch, where: str, reason: str,
+) -> None:
+    """(i) the R2-05 case: the evidence WAS consulted and passed; the message
+    says so and names the later rung, and never says "not consulted"."""
+    repo, evidence = _evidence(tmp_path)
+    conn, cfg = _t25(tmp_path)
+    _later_rung_refuses(monkeypatch, where)
+    try:
+        with pytest.raises(cpc.CohortProvenanceCorrectionError) as exc:
+            _apply(conn, cfg, frozen_value_evidence=evidence, evidence_repo=repo)
+        message = str(exc.value)
+        assert f"({PASSED_RUNG9} {reason})" in message, message
+        assert NOT_CONSULTED not in message
+        assert _count(conn) == 0
+    finally:
+        conn.close()
+
+
+def test_r2_05_ii_a_refusal_before_rung9_is_not_consulted_unchanged(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """(ii) evidence supplied, refused BEFORE rung 9 (``no_config``): the
+    not-consulted sentence, unchanged; never PASSED."""
+    repo, evidence = _evidence(tmp_path)
+    conn, _cfg = _t25(tmp_path)
+    try:
+        with pytest.raises(cpc.CohortProvenanceCorrectionError) as exc:
+            _apply(conn, None, frozen_value_evidence=evidence, evidence_repo=repo)
+        message = str(exc.value)
+        assert f"({NOT_CONSULTED}: no_config)" in message
+        assert PASSED_RUNG9 not in message
+    finally:
+        conn.close()
+
+
+def test_r2_05_iii_rung9_itself_refusing_carries_neither_sentence(
+    tmp_path: Path, ticking_clock, monkeypatch,
+) -> None:
+    """(iii) rung 9 refuses (criterion 3): the criterion/field is named (E-8)
+    and NEITHER sentence appears -- even with a later rung primed to refuse,
+    rung 9 speaks first.  An impl setting the field on rung-9 ENTRY builds a
+    ``tier2_evidence_refused`` decline carrying True, which the invariant
+    refuses, so this refusal never reaches the operator."""
+    repo, evidence = _evidence(tmp_path, line57=_pivot_absent_line())
+    conn, cfg = _t25(tmp_path)
+    _later_rung_refuses(monkeypatch, "guard")
+    try:
+        with pytest.raises(cpc.CohortProvenanceCorrectionError) as exc:
+            _apply(conn, cfg, frozen_value_evidence=evidence, evidence_repo=repo)
+        message = str(exc.value)
+        assert "tier2_evidence_refused: criterion 3: pivot" in message, message
+        assert NOT_CONSULTED not in message
+        assert PASSED_RUNG9 not in message
+    finally:
+        conn.close()
+
+
+def test_r2_05_iv_no_evidence_carries_neither_sentence(
+    tmp_path: Path, ticking_clock, monkeypatch,
+) -> None:
+    """(iv) no evidence supplied: neither sentence (the pre-barrier refusal)."""
+    conn, cfg = _t25(tmp_path)
+    _later_rung_refuses(monkeypatch, "guard")
+    try:
+        with pytest.raises(cpc.CohortProvenanceCorrectionError,
+                           match="pre_barrier_unproven") as exc:
+            _apply(conn, cfg)
+        message = str(exc.value)
+        assert NOT_CONSULTED not in message
+        assert PASSED_RUNG9 not in message
+    finally:
+        conn.close()
+
+
+def test_r2_05_v_tier2_consulted_is_never_true_on_a_tier2_refusal() -> None:
+    """(v) the invariant, and the default: bare construction is False."""
+    from swing.trades.latched_origin import LatchedProvenance
+
+    with pytest.raises(ValueError, match="tier2_consulted"):
+        LatchedProvenance(admitted=False, recognised_but_underivable=True,
+                          decline_reason="tier2_evidence_refused",
+                          tier2_consulted=True)
+    bare = LatchedProvenance(admitted=False, recognised_but_underivable=True,
+                             decline_reason="tier2_evidence_refused")
+    assert bare.tier2_consulted is False
+    passed = LatchedProvenance(admitted=False, recognised_but_underivable=True,
+                               decline_reason="mandate_not_alive",
+                               tier2_consulted=True)
+    assert passed.tier2_consulted is True
 
 
 # --------------------------------------------------------------------------- A2-74

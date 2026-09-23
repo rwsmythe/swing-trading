@@ -1948,11 +1948,15 @@ def _resolve_latch_citation(
                 f" The probe reports clear_reason={latched.clear_reason!r} on "
                 f"session {latched.clear_session}.")
         # 22-A2 (R0.10 encoding 3): supplied evidence is never silently
-        # ignored. A tier-2 refusal PRINTS its criterion/field; any other
-        # ladder refusal says the evidence was never reached.
+        # ignored. A tier-2 refusal PRINTS its criterion/field; a refusal at a
+        # LATER rung after rung 9's escape passed says it PASSED (CHARC ruling
+        # R2-05); any other ladder refusal says the evidence was never reached.
         named = str(latched.decline_reason)
         if latched.decline_reason == "tier2_evidence_refused":
             named = f"{named}: {latched.tier2_refusal}"
+        elif latched.tier2_consulted:
+            detail += (" (the supplied --frozen-value-evidence PASSED rung 9; "
+                       f"the ladder refused at {latched.decline_reason})")
         elif tier2 is not None:
             detail += (" (the supplied --frozen-value-evidence was not "
                        f"consulted: {latched.decline_reason})")

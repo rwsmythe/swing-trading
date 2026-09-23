@@ -615,6 +615,11 @@ class LatchedProvenance:
     frozen_value_evidence: dict | None = None
     # 22-A2 (E-8): the criterion/field of a ``tier2_evidence_refused``.
     tier2_refusal: str | None = None
+    # 22-A2 (CHARC ruling R2-05): True only when rung 9's tier-2 escape RAN
+    # and PASSED, so a LATER rung's refusal can say the supplied evidence was
+    # consulted rather than "not consulted".  Defaulted: every existing
+    # constructor (the roster-wide properties build each reason bare) stands.
+    tier2_consulted: bool = False
 
     def __post_init__(self) -> None:
         if self.decline_reason is not None and self.decline_reason not in DECLINE_REASONS:
@@ -640,6 +645,11 @@ class LatchedProvenance:
         if self.frozen_value_evidence is not None and not self.admitted:
             raise ValueError(
                 "a frozen-value evidence blob is carried only by an admission")
+        # One direction only (CHARC R2-05): rung 9 refusing is the opposite of
+        # rung 9 passing.
+        if self.tier2_consulted and self.decline_reason == "tier2_evidence_refused":
+            raise ValueError(
+                "tier2_consulted is never True on a tier2_evidence_refused decline")
 
 
 def broker_order_id_from_envelope(raw: str | None) -> str | None:
@@ -1933,6 +1943,7 @@ def authorize_accepted_order(
     both_pre = (order.freeze_tier == FREEZE_TIER_PRE_BARRIER
                 and read_time_tier == FREEZE_TIER_PRE_BARRIER)
     frozen_value_evidence: dict | None = None
+    tier2_consulted = False
     if both_live:
         if tier2 is not None:
             return _refuse("tier2_evidence_refused", order,
@@ -1945,6 +1956,9 @@ def authorize_accepted_order(
         if refusal is not None:
             return _refuse("tier2_evidence_refused", order,
                            freeze_tier=order.freeze_tier, tier2_refusal=refusal)
+        # CHARC R2-05: the ONE site -- the escape RAN and PASSED.  Every later
+        # rung's verdict below carries it.
+        tier2_consulted = True
     else:
         return _refuse("pre_barrier_unproven", order,
                        freeze_tier=order.freeze_tier)
@@ -1956,13 +1970,15 @@ def authorize_accepted_order(
         order, ticker=ticker, price=price, shares=shares,
         fill_origin=fill_origin, envelope_symbol=envelope_symbol)
     if shape is not None:
-        return _refuse(shape, order, freeze_tier=order.freeze_tier)
+        return _refuse(shape, order, freeze_tier=order.freeze_tier,
+                       tier2_consulted=tier2_consulted)
 
     verdict = mandate_alive_at(
         conn, cfg, order=order, fill_session=fill_session,
         exclude_trade_ids=exclude_trade_ids)
     if not verdict.admitted:
-        return verdict
+        return (replace(verdict, tier2_consulted=True) if tier2_consulted
+                else verdict)
 
     evidence = dict(verdict.probe_evidence or {})
     rung9_verdicts: dict[str, str] | None = None
@@ -2004,6 +2020,7 @@ def authorize_accepted_order(
         probe_evidence=evidence,
         freeze_tier=order.freeze_tier,
         frozen_value_evidence=frozen_value_evidence,
+        tier2_consulted=tier2_consulted,
     )
 
 
@@ -2942,7 +2959,9 @@ def resolve_latched_provenance(
             window_empty=verdict.window_empty,
             archive_status=verdict.archive_status,
             probe_evidence=verdict.probe_evidence,
-            freeze_tier=order.freeze_tier)
+            freeze_tier=order.freeze_tier,
+            # CHARC R2-05: carried from the admitted verdict, never set here.
+            tier2_consulted=verdict.tier2_consulted)
 
     submitted = getattr(req, "hypothesis_label", None)
     if submitted is not None and submitted != keys.hypothesis_label:
