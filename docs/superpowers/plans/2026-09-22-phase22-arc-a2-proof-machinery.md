@@ -747,6 +747,9 @@ AL2-12 a service-rendered numeral adjacent to a leading `-` or a trailing expone
 AL2-13 a raw insert carrying forged attestation labels (`ruling_citation`, `verification_method`,
 `anchor_strength`, `time_anchor_residual`) replays ADMIT until D65 binds the four literals in the
 trigger (RD A-R3 item 1, R3-01 = (c); discharged by the D65 post-merge rider, main `81e59741`).
+AL2-14 a trade whose label commits after a reader's snapshot is neither counted nor named in that
+invocation and is counted or named by the next; every cohort read is per-invocation (CHARC A-R4
+R4-03, REJECT; RD's recorded R2-04 fact).
 
 ## 8. Envelope (for every review prompt; from brief section 2)
 
