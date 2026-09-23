@@ -215,6 +215,7 @@ Both N5 branches leave trade 20 unaffected (0 AMN links, 0 AMN intents).
 | round | tier | model/effort | footer | verdict | findings (C/M/m) | task-bearing | depth (orchestrator-read) | tokens used |
 |---|---|---|---|---|---|---|---|---|
 | 1 | fast | gpt-5.6-luna / high | present | NEW_CRITICAL_MAJOR_FOUND | 0/16/2 | 18 (all accepted, applied) | 386,359 at return (build 2.1.280, claude-opus-5-5; orchestrator-read `cell_depth.py --live 1`) -- rounds 2-3 re-dispatched to a fresh cell | 293,572 |
+| 2 | fast | gpt-5.6-luna / high | present | NEW_CRITICAL_MAJOR_FOUND | 0/8/6 | 11 (all 14 accepted, applied; R2-05 reframed, R2-14 in part) |  | 405,845 |
 
 ## R0.D — CHARC rules N4: branch (a), value TERMINAL for generic writers (mail 20260923T173456Z; author CHARC; text of record on main in the brief section 3 @ 605fa4db; literal block quote of the mail body, transcribed by the courier)
 
@@ -504,3 +505,52 @@ Residual classes swept with NO hit: R1-01 (no `click.Choice` left on a generic s
 > OWNED: item (3) as I first wrote it carried the mechanism without its admissibility precondition against the v39 schema -- harness 5.1's rule, met on my own brief. The D51 manifest cannot see a runtime-order defect; the cell's self-check found what only execution finds, before a counted round was spent on it. Credit to the third cell.
 >
 > SS-1..SS-10: read, no ruling asked, none needed from this seat. SS-3 (entry_date read outside envelope_is_canonical's keys; json.loads keeps LAST, json_extract FIRST) is the right fix shape -- the service reads it the trigger's way.
+
+## R0.J-RULING encoded (third cell, before round 2; no Codex)
+
+CHARC's four conditions went into the plan working copy, and branch (b) with its drop-in marker was deleted:
+- (i) The Task 3 step 3 bracket is exactly two statements wide around the RENAME, with one comment line naming the reason.
+- (ii) `_apply_migration` reads the prior `legacy_alter_table` value and restores that prior value in its `finally` (never a hard OFF). b22_45 runs with prior 0 and prior 1.
+- (iii) b22_44 is two parts (set equality plus the trigger firing with its OWN message; a `no such table` error counts as a FAIL), run on both shapes. Task 13 step 3 runs the same helper on the live copy.
+- (iv) Header item (vii) states the census.
+Backup: `.plan-working-copy-after-r0j.md` (sha256 `2db615e8664c94439c2e89366584e3d0db52f8f782346914e24b32631d4c0275`, 339 lines, 73,431 B). That working copy is the round-2 input.
+
+## Round 2 — Reviewer A (`fast`), 2026-09-23
+
+**Invocation:** `codex exec -p fast -c model_reasoning_effort=high -s read-only --skip-git-repo-check -`, run from the worktree (read-only repo access). It ran through an LF runner script (`file` verified) under `wsl.exe bash -lc`, with the output and exit files pre-created Windows-side.
+- stdin: the prompt, the plan (post-R0.J working copy), the brief @ `43227001`, ledger excerpt R0.C, R0.D-R0.I, R0.J and R0.J-RULING, and the contract doc.
+- Excluded from the bundle: the round table, the Round 1 section, and the self-check section. The prompt forbids reading this ledger file, `.codex*`/`.copowers*` files, and `review-transcripts`.
+- Staging was OUTSIDE the worktree, in the session scratchpad; the worktree holds no `.codex-*`/`.copowers-*` files.
+
+**Assertions:**
+1. Banner model `gpt-5.6-luna` (the fast profile's).
+2. `reasoning effort: high`.
+3. `^ERROR` = 0.
+4. `^tokens used` = 1 (405,845).
+5. `^NEW_CRITICAL_MAJOR_FOUND` = 2 (codex 0.155.1 prints its final message twice; one distinct token); `^NO_NEW_CRITICAL_MAJOR` = 0.
+
+**Process checks:**
+- Process confirmed exited before the transcript was read: `pgrep -af 'codex exec'`, with pgrep/grep filtered out, returned 0; the exit file reads `exit=0`.
+- Scratch check: transcript hits on `ledger.md` / `review-transcripts` are lines of the echoed input or of repo docs Codex read (CLAUDE.md-family prose). No exec read of the ledger or of a prior-round file.
+- No content-filter event.
+
+**Evidence (copy-per-round, `C:/Users/rwsmy/swing-data/review-transcripts/22-b-plan/`):** `.codex-review-r2.txt` 1,164,560 B · `.codex-prompt-r2.md` 5,997 B · `.codex-bundle-r2.md` 210,094 B · `.copowers-findings.md` 22,130 B (round-2 response appended). Post-fix plan backup: `.plan-working-copy-after-r2.md`, 79,950 B, sha256 `beada97145fe28f83cb2d089b28ace192b9609507db4755d1d4ff85ab00b2dca`.
+
+**Result:** 14 findings, 0 critical / 8 major / 6 minor. 11 are task-bearing and 3 are instrument (R2-11/12/13, per the reviewer's own class; none contested). All 14 are ACCEPTED (R2-05 reframed, R2-14 partly declined) and applied to the plan working copy, which stays uncommitted.
+
+| id | sev | class | disposition (applied) |
+|---|---|---|---|
+| R2-01 | major | TASK | ACCEPT. `ensure_schema` goes straight to HEAD, so b22_44's fresh shape is now empty → `target_version=39` → snapshot → `target_version=40`, plus a separate `ensure_schema` DB compared to the snapshot. |
+| R2-02 | major | TASK | ACCEPT, verified: both review surfaces commit `complete_trade_review` in their own `with conn:` BEFORE `update_entry_intent` (`cli.py` ~1669-1712, `routes/trades.py` ~3592-3621). New pure read `assert_entry_intent_change_allowed`, called by both surfaces BEFORE the review commit and by `update_entry_intent` step (c). b22_121 and b22_123 assert the review fields and `state` are unchanged. |
+| R2-03 | major | TASK | ACCEPT. The `no_entry_fill` refusal comes before any envelope read; new b22_119. |
+| R2-04 | major | TASK | ACCEPT. Every date CHECK copies the `0033:100-126` precedent (year 1-9999; the ISO-seconds GLOB with hh/mm/ss bounds for `outcome_known_at`), with the Python mirror via `strptime`. b22_77 gains the invalid-time and year-0000 cases. |
+| R2-05 | major | TASK (reframed) | PARTLY FALSE BY EXECUTION: `json_valid(x) AND json_type(x)='array'` in a CHECK short-circuits and yields `IntegrityError` (measured). The TRIGGER half is real, also measured: BEFORE triggers run before CHECKs, and `json_each(NEW.x)` raises `OperationalError: malformed JSON` even behind a `json_valid` conjunct. Fix: `json_each(CASE WHEN json_valid(NEW.x) THEN NEW.x ELSE '[]' END)`, with the predicate leading on `json_valid` (measured: the trigger's own ABORT). New b22_48. |
+| R2-06 | major | TASK | ACCEPT. Telemetry evidence is bound to EXACTLY the PRE set, both directions plus values. Deployment evidence and the probe JSON's link/rung/session/decline/fire keys are bound by VALUE (`json_extract`, never bytes: the service serializes with spaces). New b22_79; Task 11's derived-value list updated. |
+| R2-07 | major | TASK | ACCEPT. New b22_46: the header census text, plus the same facts by execution at v39. |
+| R2-08 | minor | TASK | ACCEPT. New b22_47: a static parse showing the bracket is exactly three statements. |
+| R2-09 | minor | TASK | ACCEPT. New b22_117 (entry-date drift) and b22_118 (leg-1 actionability drift, with the belt dropped in the test DB). |
+| R2-10 | minor | TASK | ACCEPT, verified: `dashboard.py` ~495-504 renders only `tier2_count_marker`. It is removed from the renderer-site list. |
+| R2-11 | minor | INSTRUMENT | ACCEPT. Witness step 3 now captures the `hypothesis list` pre-image first. |
+| R2-12 | minor | INSTRUMENT | ACCEPT. b22_83 asserts only the structured `AssignmentResult` (its fields are named in the plan); stdout stays in b22_110. |
+| R2-13 | minor | INSTRUMENT | ACCEPT. The brief pin becomes `43227001` in the plan header and the acceptance-map heading. |
+| R2-14 | major | TASK | ACCEPT IN PART. `drift_report` gains (v) the authoritative entry fill has moved, and (vi) the envelope order id / `entry_date` has changed, both compared against the already-frozen `entry_fill_id` / `entry_broker_order_id` / `placement_session` (no new column); new b22_116. DECLINED: snapshotting fill quantity, price and origin, because they are not admission inputs. |
