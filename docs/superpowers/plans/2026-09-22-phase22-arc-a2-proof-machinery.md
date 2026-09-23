@@ -727,8 +727,10 @@ never coverage (F2.I s1). AL2-8 an MM-DD record across a year boundary refuses; 
 (F13 year rule). AL2-9 SQL binds endpoints raw only; UTC conversions and durations are service-recorded
 (R8-03). AL2-10 replay needs the local repo + git; without them rows read `tier2_unverifiable` and are
 excluded; a local repo that LACKS the cited object (shallow/pruned clone) reads
-`tier2_evidence_stale` / `not_ancestor_of_origin_main`, indistinguishable at read from rewritten
-history -- the rendered `resolved_origin_main_sha` + ref age tell them apart. AL2-11 the S12.2b instrument items are carved to `22-A2i` (brief OUT).
+`tier2_evidence_stale` / `artifact_unreadable` (the commit read fails before ancestry is asked), and
+one whose local history does not reach it reads `not_ancestor_of_origin_main` -- either is
+indistinguishable at read from rewritten history, and the rendered `resolved_origin_main_sha` + ref
+age (kept on every verdict whose ref resolved, R1-05) tell them apart. AL2-11 the S12.2b instrument items are carved to `22-A2i` (brief OUT).
 AL2-12 a service-rendered numeral adjacent to a leading `-` or a trailing exponent suffix admits
 (`-53.98`, `53.98e2`) (RD A-R2 item 2, R2-02; AL2-3's sibling with its own reason).
 AL2-13 a raw insert carrying forged attestation labels (`ruling_citation`, `verification_method`,
