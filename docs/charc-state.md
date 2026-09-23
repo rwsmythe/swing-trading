@@ -31,6 +31,7 @@
 
 | item | owner | state |
 |---|---|---|
+| **22-B brief DRAFTED 2026-09-23** (`phase22-arc-b-commissioning-brief.md`, STATUS DRAFT, NOT dispatched; operator: "draft it so it's ready when 22-A2 lands") — the `trades` rebuild (58 cols / 14 CHECKs / 5 dependants / 5 FK children, measured; ONE textual edit under the F12 conditions transposed), the `entry_intent_attestations` append-only table whose schema is RD's admissibility test, the CLI-only `assign-intent` surface with the tier DETECTED, the single-writer seam (five refusing surfaces), six pre-specified forks (F1 the §VII.F text → RD names / CHARC pins; F2 tier-2 predicates + open-trade edge → RD; F3 structural citation via the 22-A link → RD, CHARC's stake; F4/F5/F6 CHARC-ruled). Go/no-go = the operator's at 22-A2's landing; §1 re-measured post-22-A2 before dispatch; witness before 10-03 or after 10-20 | operator go; CHARC re-verifies + posts the dispatch | draft on main |
 | **D32 production proof** — the first real migration after `a3b2f90c` (22-B): ONE gate image in `backups/`, no CLI copy, path echoed | CHARC reads at the 22-B witness | open |
 | **D58** unfenced snapshot-to-migration interval — fix = ONE exclusive-lock connection across read/snapshot/migrate, its own small arc (D39 family) | operator sequences; CHARC shape ruling | banked |
 | **D55** false-green DBW clipping test (tests-only) | orchestrator sequences | queued |
