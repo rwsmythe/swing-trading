@@ -913,3 +913,185 @@ def test_g_t7f_amend_the_header_declares_the_grammar_bump_obligation() -> None:
                    "PRE-EXISTING", "per-version recompute adapter",
                    "declared exclusion", "FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION"):
         assert needle in header, needle
+
+
+# ---------------------------------------------------------------------------
+# G-T12 P34-1 + S-1 (CHARC, 2026-09-23): the interval vocabulary's SQL-vs-
+# Python comparator, and the behavioural leg for uncovered_barrier_absent.
+# ---------------------------------------------------------------------------
+def test_the_interval_vocabulary_sql_and_python_agree() -> None:
+    """S-1 -- THE COMPARATOR IS MANDATORY (CLAUDE.md #11, the 22-A amendment:
+    the drift test is the one mirror that defends the set).
+
+    The interval vocabulary crosses SQL (0039's ``interval_closed`` ..
+    ``record_position_consistent`` predicates) and Python
+    (``frozen_value_evidence.py:134-152``'s ``INTERVAL_ENDPOINTS``,
+    ``_ENDPOINT_DOMAIN_SOURCE``, ``SEGMENT_KINDS``, ``SEGMENT_COVERED``,
+    ``SEGMENT_UNCOVERED_BARRIER_ABSENT``, ``RECORD_POSITIONS``) with NO
+    comparator before this test.  Four legs, each direction covered by
+    set/tuple equality (a member only in SQL or only in Python both fail the
+    same assertion, naming the disagreeing side).
+    """
+    from swing.trades.frozen_value_evidence import (
+        INTERVAL_ENDPOINTS,
+        RECORD_POSITIONS,
+        SEGMENT_COVERED,
+        SEGMENT_KINDS,
+        SEGMENT_UNCOVERED_BARRIER_ABSENT,
+        _ENDPOINT_DOMAIN_SOURCE,
+    )
+
+    code = head_create_statement(CITATION)[1]
+
+    # Leg 1 -- record_position's IN-list.
+    m = re.search(r"'\$\.interval\.record_position'\)\s*IN\s*\(([^)]*)\)", code)
+    assert m, "could not locate the interval.record_position IN-list"
+    found1 = set(re.findall(r"'([^']+)'", m.group(1)))
+    assert found1 == set(RECORD_POSITIONS), (
+        f"record_position IN-list vs RECORD_POSITIONS disagree: "
+        f"only in SQL {sorted(found1 - set(RECORD_POSITIONS))}, "
+        f"only in Python {sorted(set(RECORD_POSITIONS) - found1)}"
+    )
+
+    # Leg 2 -- the terminal IN-list, BOTH occurrences (the length-4 branch's
+    # segments[3] and the length-3 branch's segments[2]), and the ORDERED
+    # non-terminal kinds at segments[0..2] (segments[2] read from the
+    # length-4 branch's literal EQUALITY -- 'match_only' -- never the
+    # length-3 branch's terminal IN-list, which the regex below cannot match
+    # since it requires '=' immediately, not 'IN').
+    terminal_groups = re.findall(
+        r"segments\[\d+\]\.kind'\)\s*IN\s*\(([^)]*)\)", code)
+    assert len(terminal_groups) == 2, (
+        f"expected 2 terminal segment.kind IN-lists, found "
+        f"{len(terminal_groups)}: the parser found nothing it expected"
+    )
+    terminal_set = {SEGMENT_COVERED, SEGMENT_UNCOVERED_BARRIER_ABSENT}
+    for group in terminal_groups:
+        found2 = set(re.findall(r"'([^']+)'", group))
+        assert found2 == terminal_set, (
+            f"terminal segment.kind IN-list vs "
+            f"{{SEGMENT_COVERED, SEGMENT_UNCOVERED_BARRIER_ABSENT}} disagree: "
+            f"only in SQL {sorted(found2 - terminal_set)}, "
+            f"only in Python {sorted(terminal_set - found2)}"
+        )
+
+    def _kind_eq(index: int) -> str:
+        eq = re.search(rf"segments\[{index}\]\.kind'\)\s*=\s*'([^']+)'", code)
+        assert eq, f"could not locate a literal segments[{index}].kind equality"
+        return eq.group(1)
+
+    ordered = (_kind_eq(0), _kind_eq(1), _kind_eq(2))
+    assert ordered == SEGMENT_KINDS, (
+        f"ordered segments[0..2].kind {ordered} != SEGMENT_KINDS {SEGMENT_KINDS}"
+    )
+
+    # Leg 3 -- the endpoints json_remove closure list.
+    marker = ("json_remove(json_extract(NEW.cited_frozen_value_evidence_json, "
+              "'$.interval.endpoints'),")
+    assert marker in code, "could not locate the interval.endpoints closure marker"
+    closure = code.split(marker, 1)[1].split("= '{}'", 1)[0]
+    found3 = set(re.findall(r"'\$\.(\w+)'", closure))
+    assert found3 == set(INTERVAL_ENDPOINTS), (
+        f"interval.endpoints closure list vs INTERVAL_ENDPOINTS disagree: "
+        f"only in SQL {sorted(found3 - set(INTERVAL_ENDPOINTS))}, "
+        f"only in Python {sorted(set(INTERVAL_ENDPOINTS) - found3)}"
+    )
+
+    # Leg 4 -- per-endpoint clock_domain + source literals.
+    for name in INTERVAL_ENDPOINTS:
+        domain_m = re.search(
+            rf"'\$\.interval\.endpoints\.{name}\.clock_domain'\)\s*=\s*'([^']+)'",
+            code)
+        source_m = re.search(
+            rf"'\$\.interval\.endpoints\.{name}\.source'\)\s*=\s*'([^']+)'",
+            code)
+        assert domain_m, f"could not locate {name}.clock_domain literal"
+        assert source_m, f"could not locate {name}.source literal"
+        found4 = (domain_m.group(1), source_m.group(1))
+        assert found4 == _ENDPOINT_DOMAIN_SOURCE[name], (
+            f"{name}: SQL (clock_domain, source) {found4} != Python "
+            f"_ENDPOINT_DOMAIN_SOURCE {_ENDPOINT_DOMAIN_SOURCE[name]}"
+        )
+
+
+@pytest.mark.parametrize(("barrier_z", "record_position", "length"), [
+    # record = barrier + 1 s: [fire, writer_absence_only, uncovered_barrier_absent]
+    ("2026-08-10T12:41:32Z", "inside_coverage", 3),
+    # record = barrier - 1 s: [fire, writer_absence_only, match_only,
+    #                          uncovered_barrier_absent]
+    ("2026-08-10T12:41:34Z", "before_barrier", 4),
+])
+def test_uncovered_barrier_absent_terminal_is_accepted_both_shapes(
+        tmp_path: Path, barrier_z: str, record_position: str, length: int) -> None:
+    """The behavioural leg (G-T12 S-1): NO PRODUCTION WRITE PATH CAN EMIT
+    ``uncovered_barrier_absent`` -- an ABSENCE, WITH ITS SEARCH, so this raw-
+    blob trigger test IS the leg (the ruling's fallback, taken).
+
+    ``evaluate_conjunction`` (the only caller of ``build_interval``, A2-75)
+    has exactly TWO call sites (grep, ``swing/``):
+    ``frozen_value_evidence.py:1223`` inside ``replay_verdict`` -- a READ-ONLY
+    recompute for a stored-vs-recomputed COMPARISON; the segments array it
+    builds is never persisted (doctrine #6, E-15: recorded-only keys,
+    including segments, are never compared and this call never INSERTs) --
+    and ``latched_origin.py:2034`` inside ``_rung9_tier2_escape``, the ONLY
+    call site that feeds an INSERT-bound blob.
+
+    ``_rung9_tier2_escape`` is reached only from the ``both_pre`` branch
+    (``latched_origin.py:1941-1944``), which runs only AFTER the earlier
+    guard ``if not installed: return _refuse("barrier_not_installed", ...)``
+    (``latched_origin.py:1908-1914``) has ALREADY returned when the barrier
+    is absent -- so at line 1944's call site ``barrier_installed=installed``
+    is ALWAYS ``True`` (``installed`` is
+    ``candidates_immutability_epoch.barrier_installed(conn)``, returned
+    straight through by ``freeze_tier_for_candidate``,
+    ``candidates_immutability_epoch.py:237-253``).  No production caller can
+    ever pass ``False`` into ``build_interval`` on a path that reaches an
+    INSERT -- confirmed by the sole write site,
+    ``swing/data/repos/provenance_corrections.py:insert_provenance_correction``
+    (``def`` at line 82), called from exactly one place,
+    ``cohort_provenance_correction.py:3061``, with
+    ``cited_frozen_value_evidence_json=latch.frozen_value_evidence_json`` --
+    itself ``_rung9_tier2_escape``'s output.
+
+    ``build_interval`` -- a real service function, never a hand-typed dict --
+    still supplies the segments (the G-NEG precedent's own technique,
+    ``test_g_neg_the_record_position_belt_refuses_a_forged_position`` above),
+    so the trigger is exercised against a genuinely service-computed blob on
+    a raw INSERT rather than an invented one.
+    """
+    from datetime import datetime
+
+    from swing.trades import frozen_value_evidence as fve
+    from tests._tier2_world_22a2 import (
+        T25_AUTHOR_INSTANT,
+        T25_PIPELINE_FINISHED,
+        T25_RUN_TS,
+    )
+
+    interval = fve.build_interval(
+        fire_lo_raw=T25_RUN_TS, fire_hi_raw=T25_PIPELINE_FINISHED,
+        author_instant=datetime.fromisoformat(T25_AUTHOR_INSTANT),
+        barrier_armed_raw=barrier_z, read_at="2026-09-23T12:00:00.000",
+        barrier_installed=False)
+    segments = interval["segments"]
+    assert len(segments) == length
+    assert segments[-1]["kind"] == "uncovered_barrier_absent"
+    assert interval["record_position"] == record_position
+
+    conn, payload, _ids = truthful_tier2_payload(tmp_path)
+    try:
+        blob = json.loads(payload[PROVENANCE_TIER2_EVIDENCE_FIELD])
+        blob["interval"]["segments"] = segments
+        blob["interval"]["record_position"] = record_position
+        accepted = {**payload,
+                   PROVENANCE_TIER2_EVIDENCE_FIELD: json.dumps(blob)}
+        assert not _refused(conn, accepted)
+
+        # A FOREIGN terminal is refused (same shape, same record_position;
+        # only the terminal kind moves off the closed vocabulary).
+        blob["interval"]["segments"][-1]["kind"] = "not_a_real_terminal"
+        forged = {**payload,
+                 PROVENANCE_TIER2_EVIDENCE_FIELD: json.dumps(blob)}
+        assert _refused(conn, forged)
+    finally:
+        conn.close()

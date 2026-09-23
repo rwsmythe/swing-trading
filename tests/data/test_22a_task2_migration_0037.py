@@ -1189,8 +1189,12 @@ def test_the_migrations_probe_evidence_closure_list_matches_the_roster() -> None
     dropped from the migration alone fails here; a key dropped from the emitter
     alone fails the task-6 emission test; a key dropped from both still fails
     both, which is precisely what the circular version could not do.
+
+    P34 / 22-A2 encoding 9 (G-T12 P34-1): the closure list is read from the
+    citation trigger's HEAD definition (0039 re-creates it), never a
+    superseded text -- the same shape as :840's authorization closure test.
     """
-    text = MIGRATION.read_text(encoding="utf-8")
+    text = head_create_statement("trg_provenance_corrections_citation_graph")[1]
     marker = "json_remove(NEW.cited_latch_probe_json,"
     assert marker in text
     closure = text.split(marker, 1)[1].split("= '{}'", 1)[0]
@@ -1203,8 +1207,11 @@ def test_the_migrations_probe_evidence_closure_list_matches_the_roster() -> None
 
 
 def test_the_migrations_probe_guard_closure_list_matches_the_roster() -> None:
-    """``$.probe_guards`` is closed on the PROBE_GUARD_CLAUSES roster."""
-    text = MIGRATION.read_text(encoding="utf-8")
+    """``$.probe_guards`` is closed on the PROBE_GUARD_CLAUSES roster.
+
+    P34 / 22-A2 encoding 9 (G-T12 P34-1): HEAD, not the superseded 0037 text.
+    """
+    text = head_create_statement("trg_provenance_corrections_citation_graph")[1]
     marker = "json_remove(json_extract(NEW.cited_latch_probe_json, '$.probe_guards'),"
     assert marker in text
     closure = text.split(marker, 1)[1].split("= '{}'", 1)[0]
