@@ -491,9 +491,12 @@ CREATE TABLE entry_intent_attestations (
 -- insert -- the service inserts BEFORE it updates `trades`), the AUTHORITATIVE
 -- entry fill (repos/fills.py get_authoritative_entry_fill's order), and the
 -- order id the AUTHORITY stored for the fill's CURRENT document (RULING G1b):
--- stored values only. An envelope-less fill joins no reading and reads NULL
--- on both sides; an id named over a REFUSED reading, or over a document never
--- read, ABORTS.
+-- stored values only. An id named over a REFUSED reading, or over a document
+-- never read, ABORTS. RULING G1d item 3 (the NULL-id close): a NULL order id
+-- is admissible ONLY IF the fill has NO envelope (ensure's own predicate for
+-- what gets a reading) OR a CANONICAL reading exists for its CURRENT
+-- document -- so a NULL id over a refused reading, or over an envelope with
+-- no reading, ABORTS. A presence test on the envelope column, never a json_*.
 CREATE TRIGGER trg_eia_trade_binding
 BEFORE INSERT ON entry_intent_attestations
 FOR EACH ROW
@@ -513,7 +516,16 @@ WHEN NOT COALESCE(
         JOIN fills f ON f.fill_id = fei.fill_id
                     AND fei.envelope_raw = f.schwab_source_value_json
         WHERE f.fill_id = NEW.entry_fill_id_at_assignment
-          AND fei.envelope_state = 'canonical'),
+          AND fei.envelope_state = 'canonical')
+    AND (NEW.entry_broker_order_id IS NOT NULL
+         OR EXISTS (SELECT 1 FROM fills f
+                    WHERE f.fill_id = NEW.entry_fill_id_at_assignment
+                      AND f.schwab_source_value_json IS NULL)
+         OR EXISTS (SELECT 1 FROM fill_envelope_identity fei
+                    JOIN fills f ON f.fill_id = fei.fill_id
+                                AND fei.envelope_raw = f.schwab_source_value_json
+                    WHERE f.fill_id = NEW.entry_fill_id_at_assignment
+                      AND fei.envelope_state = 'canonical')),
     0)
 BEGIN SELECT RAISE(ABORT, 'entry_intent_attestations: the row does not bind to its trade (the trade exists with this entry_date and NULL entry_intent; the authoritative entry fill; the order id of its stored canonical envelope reading)'); END;
 

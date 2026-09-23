@@ -707,6 +707,149 @@ def test_an_order_id_over_a_refused_reading_aborts_b22_211(tmp_path: Path) -> No
         c.close()
 
 
+# ---------------------------------------------------------------------------
+# RULING G1d item 3 -- the NULL-id close on trg_eia_trade_binding. A NULL
+# entry_broker_order_id is admissible ONLY IF the fill has NO envelope or a
+# CANONICAL reading exists for its CURRENT document. Each ABORT case is shown
+# to PASS on the CONTROL trigger (the RULING G1b body, the close cut out), so
+# the tests discriminate the close and nothing else.
+# ---------------------------------------------------------------------------
+_CLOSE_START = "AND (NEW.entry_broker_order_id IS NOT NULL"
+# trg_eia_trade_binding's manifest hash at RULING G1b (before the close), from
+# tests/data/schema_manifest_head.tsv @ d1a84022.
+_G1B_BINDING_SHA256 = ("e71258684e01b0e0c1431b2e497b40df"
+                       "85beefa7fab3018dfb817afc53e72307")
+_NO_KEY_DOC = json.dumps({k: v for k, v in json.loads(envelope()).items()
+                          if k != "schwab_order_id"})
+
+
+def _manifest_sha(sql: str) -> str:
+    """The manifest's OWN hash (scripts/schema_manifest.py, loaded by the
+    tests/data/test_schema_manifest_head.py idiom)."""
+    import hashlib
+    import importlib.util
+    import sys
+
+    mod = sys.modules.get("schema_manifest")
+    if mod is None:
+        script = Path(__file__).resolve().parents[2] / "scripts" / "schema_manifest.py"
+        spec = importlib.util.spec_from_file_location("schema_manifest", script)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        sys.modules["schema_manifest"] = mod
+        spec.loader.exec_module(mod)
+    return hashlib.sha256(mod._normalize_sql(sql).encode("utf-8")).hexdigest()
+
+
+def _install_control_binding(c: sqlite3.Connection) -> None:
+    """Replace trg_eia_trade_binding with its RULING G1b body: the stored body
+    with the close's conjunct cut out, proven to be the pre-close trigger by
+    its manifest hash. (A stored body WITHOUT the close must itself be that
+    body -- the same hash -- so the control is never anything else.)"""
+    sql = c.execute("SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+                    "AND name = 'trg_eia_trade_binding'").fetchone()[0]
+    if _CLOSE_START in sql:
+        import re
+
+        start = sql.index(_CLOSE_START)
+        end = re.search(r",\s*0\)\s*BEGIN", sql).start()  # the WHEN's COALESCE tail
+        assert start < end and sql.count(_CLOSE_START) == 1
+        control = sql[:start].rstrip() + sql[end:]
+    else:
+        control = sql
+    assert _manifest_sha(control) == _G1B_BINDING_SHA256
+    c.execute("DROP TRIGGER trg_eia_trade_binding")
+    c.execute(control)
+
+
+def _null_id_verdicts(c: sqlite3.Connection) -> tuple[str | None, str | None]:
+    """(the real trigger's verdict, the control trigger's verdict) on the
+    NULL-id row; each verdict is None if the row landed, else the message.
+    The real verdict runs inside a SAVEPOINT rolled back afterwards (the table
+    is append-only), so the control meets the same world."""
+    c.execute("SAVEPOINT g1d_real")
+    real = _plant(c, tier2_row(entry_broker_order_id=None))
+    c.execute("ROLLBACK TO g1d_real")
+    c.execute("RELEASE g1d_real")
+    _install_control_binding(c)
+    return real, _plant(c, tier2_row(entry_broker_order_id=None))
+
+
+def _reading_state(c: sqlite3.Connection) -> list[tuple]:
+    return c.execute(
+        "SELECT fei.envelope_state, fei.broker_order_id FROM fill_envelope_identity fei "
+        "JOIN fills f ON f.fill_id = fei.fill_id "
+        "AND fei.envelope_raw = f.schwab_source_value_json "
+        "WHERE f.fill_id = 41").fetchall()
+
+
+def test_a_null_id_over_a_refused_reading_aborts_b22_213(tmp_path: Path) -> None:
+    """The fabrication class (R0.K): a raw row with NO order id over a padded
+    document, which the authority REFUSES. Pre-close, NULL IS NULL admitted
+    it (the control)."""
+    c = _world(tmp_path, fill41_env=envelope(schwab_order_id=" " + AMN_ORDER_ID + " "))
+    try:
+        assert _reading_state(c) == [("refused", None)]
+        real, control = _null_id_verdicts(c)
+    finally:
+        c.close()
+    assert real is not None and BINDING_MSG in real, real
+    assert control is None
+
+
+def test_a_null_id_over_a_fill_with_no_envelope_passes_b22_214(tmp_path: Path) -> None:
+    """NULL envelope: no reading is expected (ensure's own predicate), so the
+    NULL id binds."""
+    c = _world(tmp_path)
+    try:
+        c.execute("UPDATE fills SET schwab_source_value_json = NULL WHERE fill_id = 41")
+        assert c.execute("SELECT COUNT(*) FROM fill_envelope_identity "
+                         "WHERE fill_id = 41 AND envelope_raw IS NULL").fetchone() == (0,)
+        real, control = _null_id_verdicts(c)
+    finally:
+        c.close()
+    assert (real, control) == (None, None)
+
+
+def test_a_null_id_over_a_canonical_no_key_reading_passes_b22_215(
+        tmp_path: Path) -> None:
+    """A document the authority reads CANONICAL with no order id: the NULL id
+    is the stored reading's own value."""
+    c = _world(tmp_path, fill41_env=_NO_KEY_DOC)
+    try:
+        assert _reading_state(c) == [("canonical", None)]
+        real, control = _null_id_verdicts(c)
+    finally:
+        c.close()
+    assert (real, control) == (None, None)
+
+
+@pytest.mark.parametrize("how", ["reading_deleted_raw", "document_never_read"])
+def test_a_null_id_over_an_unread_envelope_aborts_b22_216(tmp_path: Path,
+                                                          how: str) -> None:
+    """A non-NULL envelope with NO reading of its CURRENT document ABORTS
+    (fail-closed; `assign` always ensures first, so at assignment the reading
+    exists by construction). The ruling's case deletes the reading row raw
+    (the fei no-delete barrier dropped in the test DB, the b22_127 technique);
+    its sibling rewrites the document raw after the reading, so the stored
+    reading names an OLDER document."""
+    c = _world(tmp_path, fill41_env=_NO_KEY_DOC)
+    try:
+        assert _reading_state(c) == [("canonical", None)]
+        if how == "reading_deleted_raw":
+            c.execute("DROP TRIGGER trg_fei_no_delete")
+            c.execute("DELETE FROM fill_envelope_identity WHERE fill_id = 41")
+        else:
+            c.execute("UPDATE fills SET schwab_source_value_json = ? WHERE fill_id = 41",
+                      (json.dumps({**json.loads(_NO_KEY_DOC), "shares": 6}),))
+        assert _reading_state(c) == []
+        real, control = _null_id_verdicts(c)
+    finally:
+        c.close()
+    assert real is not None and BINDING_MSG in real, real
+    assert control is None
+
+
 def test_relabel_refused_when_trades_entry_intent_is_set_b22_71(tmp_path: Path) -> None:
     c = _world(tmp_path, trade={"entry_intent": "standard"})
     try:
