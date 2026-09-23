@@ -217,6 +217,36 @@ def test_a2_68_one_stamp_is_the_column_the_evaluated_at_and_the_read_at(
         conn.close()
 
 
+def test_codex_r1_03_the_ref_age_is_anchored_at_the_rows_applied_at(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """Codex R1-03: the stored ``remote_ref_age_seconds`` is the ref's age AT
+    THE ROW'S ``applied_at`` (the interval's ``read_at``), not at the
+    preflight's earlier clock read.  This clock never returns the same value
+    twice, so the two anchors differ by whole seconds: PRE the stored age is
+    the preflight's (smaller); POST it is ``applied_at - updated_at``.  The
+    dry run reaches the same seam (``_rung9_tier2_escape``) with its own
+    ``applied_at`` stamp."""
+    repo, evidence = _evidence(tmp_path)
+    conn, cfg = _t25(tmp_path)
+    try:
+        _apply(conn, cfg, frozen_value_evidence=evidence, evidence_repo=repo)
+        row = _row(conn)
+        applied_at = row["applied_at"]
+        blob = json.loads(row["cited_frozen_value_evidence_json"])
+        preflight_read = ticking_clock[0]
+        assert preflight_read != applied_at
+        anchor_at = datetime.fromisoformat(applied_at).replace(tzinfo=UTC)
+        updated_at = datetime.fromisoformat(blob["remote_ref_updated_at"])
+        assert blob["remote_ref_age_seconds"] == int(
+            (anchor_at - updated_at).total_seconds())
+        preflight_at = datetime.fromisoformat(preflight_read).replace(tzinfo=UTC)
+        assert blob["remote_ref_age_seconds"] != int(
+            (preflight_at - updated_at).total_seconds())
+    finally:
+        conn.close()
+
+
 # --------------------------------------------------------------------------- A2-69
 
 @pytest.mark.parametrize("entry", ["apply", "preview"])

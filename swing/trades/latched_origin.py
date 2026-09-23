@@ -33,8 +33,8 @@ from __future__ import annotations
 import json
 import logging
 import math
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
 from swing.data.models import (
@@ -2031,8 +2031,18 @@ def _rung9_tier2_escape(
         return (f"{failure}: {preflight.detail}" if preflight.detail else failure,
                 None)
     try:
+        # Codex R1-03: the recorded ref age is anchored at the row's OWN
+        # ``applied_at`` (the one stamp the column, ``evaluated_at`` and the
+        # interval's ``read_at`` share, E-7), which is known only here -- the
+        # preflight ran earlier, on its own clock read.  Recorded-only; the
+        # conjunction never reads it.
+        facts = preflight.facts
+        if facts.remote_ref_updated_at is not None:
+            anchor = datetime.fromisoformat(tier2.applied_at).replace(tzinfo=UTC)
+            facts = replace(facts, remote_ref_age_seconds=int(
+                (anchor - facts.remote_ref_updated_at).total_seconds()))
         conj = fve.evaluate_conjunction(
-            conn, preflight.facts, candidate_id=order.candidate_id,
+            conn, facts, candidate_id=order.candidate_id,
             fill_session=fill_session, read_at=tier2.applied_at,
             barrier_installed=barrier_installed)
     except Exception as exc:  # noqa: BLE001 -- ignorance refuses, never admits
