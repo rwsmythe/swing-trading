@@ -68,6 +68,8 @@ _MEMBER_SITES: dict[str, dict[str, str]] = {
             "value-agnostic: H1's own criterion predicate names 'standard'",
         "swing/trades/intent.py":
             "tight-by-design: the entry-time CHOICES; widened: the LABELS",
+        "swing/trades/entry_intent_assignment.py":
+            "prose: the mandate-fill refusal message (clause (1))",
         "swing/web/view_models/metrics/process_grade_trend.py":
             "widened in Task 9: the per-intent CSS class map",
         "swing/web/view_models/metrics/trade_process_card.py":
@@ -96,6 +98,8 @@ _MEMBER_SITES: dict[str, dict[str, str]] = {
             "widened: the v40 CHECK + the N4 trigger",
         "swing/data/models.py":
             "widened: ENTRY_INTENTS; the UNINTENDED_EXECUTION constant + SEAM_MESSAGE",
+        "swing/trades/entry_intent_assignment.py":
+            "prose: docstrings (the value is the imported UNINTENDED_EXECUTION)",
         "swing/trades/intent.py": "widened: the display LABEL",
         "swing/trades/reconciliation_auto_correct.py":
             "prose: the corrector reservation's comment",
