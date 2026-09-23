@@ -9,8 +9,8 @@
 
 | round | kind | Codex tier | findings | task-bearing | verdict token | tokens used | ctx depth (orchestrator fills) |
 |---|---|---|---|---|---|---|---|
-| 0 | premise + fork census | none (no Codex, by protocol) | n/a | n/a | n/a | 0 | |
-| 0-bis | plan-cell premise re-read (R0.10) | none (no Codex; the loop did not open) | 2 new forks (F12 CHARC, F13 RD) | both | n/a | 0 | |
+| 0 | premise + fork census | none (no Codex, by protocol) | n/a | n/a | n/a | 0 | 460,189 (census cell; OVER) |
+| 0-bis | plan-cell premise re-read (R0.10) | none (no Codex; the loop did not open) | 2 new forks (F12 CHARC, F13 RD) | both | n/a | 0 | 412,618 (plan cell 1; OVER) |
 
 **STATUS: RE-OPENED ON ROUTING (2026-09-22, the plan cell).** R0.4-R0.9 are fully ruled, but the plan cell's premise re-read found TWO forks the rulings do not decide (R0.10: F12 blocks the migration task outright; F13 blocks criterion 3's encoding). **The plan is NOT written and NO review round has run. None runs until F12 and F13 are LANDED below as block quotes.**
 
@@ -355,3 +355,16 @@ Premises: P36; F6(iii) (four fields: ticker, action session, pivot, invalidation
 9. **The migration-text tests in P34 are re-pointed to each trigger's HEAD definition** (the last migration that creates it) rather than left reading 0037.
 
 **Routing:** F12 -> CHARC; F13 -> RD. One ruler per item; one pass each. The plan cell STOPS here (recipe PLAN-STAGE rule 1). The next plan cell starts from THIS ledger: every file:line above was read at `e2b4d9c3`.
+
+### R0.11 RULING -- RD (R0.10 addendum, F13), LANDED 2026-09-23
+
+**Author: RD. Courier: the orchestrator.** Transcribed BYTE-FOR-BYTE (script-extracted, span verified present) from `comms/orchestrator/read/20260923T000533Z-rd-rd-ruling-22-a2-r0-10-f13-a-s-i-year-bou.md` (posted 2026-09-23T00:05:33Z), the span from the F13 block quote through RD's reading of encodings 1-9; RD's closing CALENDAR note is not a ruling and is omitted. **F12 and P37 remain OPEN (CHARC); no review round opens until they land.**
+
+> **F13 -- RULING: (a) TOKEN CONTAINMENT of the service-rendered values, with (s-i) the ONE-LINE selection bound, plus ONE addition: the MM-DD session form is admitted only when the author instant's ET year equals the cited action session's year; otherwise REFUSE naming `action_session`.**
+> Reason. What criterion 3 proves is that the cited candidate's two frozen values, its ticker and its session were ON RECORD before the fill and equal the current row at the mandate grain. Containment of the four service-rendered tokens proves exactly that. (b)'s label binding buys the swapped-numeral case -- and a swapped record still proves both values were recorded pre-fill and match, which is the claim being tested; what it fails to prove (which number the author CALLED the pivot) is not something the conjunction was ever ruled to establish. A hand-maintained label vocabulary is the roster class this project keeps meeting, bought for a case that needs a pre-fill, remote-replicated document stating the candidate's own two values in each other's roles. Refused.
+> The one-line bound (s-i) is what keeps "the record" a record: under (s-ii) a whole-file selection degrades the claim to "a document that mentions these tokens somewhere", and the AMN-mention limit stops being a limit and becomes the design. Line 57 is one line of 1006 chars; a markdown table row is one line; both are records.
+> The year addition: `08-10` carries no year, and criterion 2 bounds the record only from ABOVE (before the fill). The author instant, already converted to ET under F7, supplies the year at zero cost. A mismatch refuses naming `action_session` -- the same field the F6(iii) discriminator already names. Discriminator: the same line 57 with an author date in the prior year REFUSES `action_session`; with the ISO form present it ADMITS regardless (ISO carries its own year).
+> Rounding: the service renders pivot and `initial_stop` as `f"{round(v, 2):.2f}"` and is the ONLY rounding authority (S4.3a); SQL binds the found texts to their sources and the F8 `instr` check, and never rounds. Refusal order ticker -> action_session -> pivot -> invalidation, naming the field. Trade 25 ADMITS on line 57 (OII, 08-10, 53.98, 41.42 all present as whole tokens). The AMN-mention and swapped-numeral limits go on the accepted-limitations list WITH these reasons, and the reviewer is invited to challenge them.
+> Preconditions that exist today: F6(iii) (four fields), F7 (the ET author instant), F8 (numerals carried as quoted), F9 (selection not value), S4.3a. None is a follow-on.
+
+ENCODINGS 1-9, my reading (no objection; stated so a later reader sees the test applied): (1) tier-2-only bump preserves the byte-unchanged 22-A gate -- yes. (2) the escape's three preconditions -- yes; stored/read-time disagreement refusing is the three-valued discipline. (3) evidence with no escape to take REFUSES and names why -- yes; an ignored operator input is a silent path. (4) SQL binds endpoints, records no duration -- that is F2.I as ruled. (5) reflog age, null when absent, never verdict-bearing -- yes. (6) replay re-derives the stored endpoints and refuses on mismatch (= `stale`); barrier state observed, never decides -- yes. (7) implicit DROP TABLE covered by (t1) -- strengthens my F2 re-open condition; yes. (8) the two web readers render the named exclusion -- REQUIRED by F10, not merely permitted. (9) migration-text tests re-pointed to HEAD trigger definitions -- yes (#31's shape).
