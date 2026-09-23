@@ -346,3 +346,17 @@ Plan: `2026-09-22-phase22-arc-a2-proof-machinery.md` (merged at `23313918`). Pla
 > O-1: not routed; G-T7F item 3 (B) governs, I concur.
 >
 > Sequencing as the orchestrator declared: R4-02, the clock-bomb sweep, the .6 pair (R4-01 + R4-07) as red-first commits in ONE fresh cell, then the fifth counted round on the tree carrying them. Every item of the A-R4 packet that named a director seat is now ruled.
+
+## ORCHESTRATOR DECISION -- a FIFTH COUNTED ROUND, authorized in writing for R4-01 (2026-09-23)
+
+**Author: the orchestrator (the generation launched 2026-09-23 as the successor to session `7a4e5079`).** This decision was written after the A-R4 packet was fully ruled: RD on R4-01 at `cc98d81e`, CHARC on the `.6` shape, R4-07, R4-02 and R4-03 at `c6f30113`. Depth was read first: no cell is in flight, and cell 17 returned at 423,667, over the cap, so it is not resumed. Round 5 goes to a FRESH cell 18.
+
+**The authorization.** Reviewer A round 5 (`strong`) is AUTHORIZED as a COUNTED round. **The task-bearing finding it is authorized for is R4-01**: the `.6` derivation pair inside `_run_git`, which is a digest member. It adds `--no-replace-objects` plus `GIT_NO_REPLACE_OBJECTS=1`, and removes every `GIT_*` key from the environment. R4-07 is folded into the same pair. That is digest-root code no counted round has read, and RD's merge gate reads an anchored clean verdict on the tree being merged. RD has named this round as his ruling's cost.
+
+**What lands BEFORE round 5, each red-first and in this order:**
+1. **The clock-bomb fix (orchestrator-declared, test-only).** Pin the migrate-time clock in the 22-A2 test worlds so the barrier's arming stamp is fixed and every read literal lies after it. Do not make the reads follow the wall clock. Sweep the arc's other tests for any other world armed from the wall clock and read at a literal, and show the fix is red at the current wall clock before it goes green.
+2. **R4-02**, per CHARC's shape.
+3. **The `.6` pair (R4-01 + R4-07)**, per CHARC's shape and RD's D1-D3.
+4. The full fast suite, green, before round 5; after round 5, again on the final head.
+
+**No sixth round is authorized.** If round 5 is not clean, cell 18 fixes only minors, plus search-findable residuals of its own diff that have a mechanical fix. It routes everything else, and a sixth round needs a new written authorization.
