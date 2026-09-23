@@ -430,6 +430,7 @@ ENCODINGS 1-9 (no ruling requested; my read in the same pass, silence would have
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 1 | plan review | gpt-5.6-luna | medium | 0 | present | NEW_CRITICAL_MAJOR_FOUND (x2, 0.155.1 double emit; the other token 0) | 0/1/0 (reviewer) | 1 (F-R1-a, self-found; R1-01's count REJECTED) | 142,964 | ~/swing-data/review-transcripts/22-a2-plan/.codex-review-r1.txt (490896), .codex-prompt-r1.md (4888) | |
 | 2 | plan review | gpt-5.6-luna | medium | 0 | present | NEW_CRITICAL_MAJOR_FOUND (x2; the other token 0) | 0/1/0 (reviewer) | 1 (A2-70 extended to three entry points; R2-01's defect REJECTED) | 105,143 | ~/swing-data/review-transcripts/22-a2-plan/.codex-review-r2.txt (331817), .codex-prompt-r2.md (4888) | |
+| 3 | plan review | gpt-5.6-luna | medium | 0 | present | NO_NEW_CRITICAL_MAJOR (x2; the other token 0) | 0/0/0 | 0 -- LOOP ENDS | 84,264 | ~/swing-data/review-transcripts/22-a2-plan/.codex-review-r3.txt (251892), .codex-prompt-r3.md (4888) | |
 
 ## R1.1 ROUND 1 (fast, gpt-5.6-luna / medium) -- adjudication
 
@@ -441,3 +442,22 @@ ENCODINGS 1-9 (no ruling requested; my read in the same pass, silence would have
 
 
 - **R2-01 (MAJOR, reviewer TASK-BEARING) "preflight ordering contradicts SELECT-first" -- REJECTED on the defect, PARTIALLY ADOPTED as a test.** The plan's `run_preflight` never raises and never refuses (E-6, Task 4 "never raises", A2-41); its result is consulted only at rung 9, which `_authorize` reaches after the SELECT-first already-applied return (`cohort_provenance_correction.py` `_authorize`: `get_correction_for_trade` then `return _Authorized(trade=trade, already_applied=existing)` before `_gate_on_unset_state` and the ladder). Parsing before SELECT-first is not refusing before it -- the gotcha orders REFUSALS. The plan text was compressed enough to be read otherwise, so Task 7 now states it outright. ADOPTED from the proposed fix: A2-70 now runs through all three entry points (both service functions and the CLI), adds a nonexistent-path case, and pins the caller-side obligation that click never parses or existence-checks the file (`click.Path` without `exists=True`, Task 8); Task 4 names a missing/unreadable file as `evidence_file_malformed`. **Task-bearing: 1 (the A2-70 test extension).**
+
+## R3.1 ROUND 3 (fast, gpt-5.6-luna / medium) -- CLEAN; the loop stops
+
+Round 3 returned zero findings ("No new defects found in the plan against the stated rulings and inspected code paths") and the clean token. **Zero task-bearing findings -> the plan loop ENDS at round 3** (recipe PLAN-STAGE rule 4). Summed `tokens used` over the three counted rounds: 142,964 + 105,143 + 84,264 = **332,371**.
+
+## SS -- UNCOUNTED SELF-SWEEP over the whole plan (no Codex, no round number, no effect on convergence)
+
+| id | kind | finding | disposition |
+|---|---|---|---|
+| SS-1 | task-bearing residual | Task 3 step A seeded row 1 "through the PRODUCTION writer" on a v38 DB -- but once Task 3 lands, the production service writes the v39 column list and cannot write a v38 row. | FIXED: derive the row from the real emitter one version up (`build_cadl_case` + `correct_cohort_provenance` on v39, the `_seed_correction` pattern at `test_22a_task2_migration_0037.py:879`), then plant its 40 v38 columns by RAW INSERT on the same world at v38 (the `_insert_correction` pattern, `:907`) so the v38 trigger must ADMIT it; never with a trigger dropped. |
+| SS-2 | instrument | Task 3 D.2's paired-NULL sentence ("each gain ... IS NULL evaluated per tier") was self-contradictory. | FIXED: `last_word` arm gains `IS NULL`; the rung-9 CASE carries `latch_ladder -> IS NULL`, `latch_ladder_tier2 -> IS NOT NULL` + the block. |
+| SS-3 | instrument | Replay read `row.entry_fill_session_date` (TEXT) into a `date` parameter without naming the boundary. | FIXED: `date.fromisoformat` at the call, a malformed value a typed stale reason (CLAUDE.md TEXT->date gotcha). |
+| SS-4 | instrument | Task 11 said "reuse the 22-A task-9 probe-world builder" without naming how a pre-barrier fire is produced (the epoch boundary is immutable once seeded). | FIXED: names `build_world(..., pre_barrier=True)` (`tests/trades/test_22a_task9_entry_wiring.py:67`, over `tests/_latch_probe_world_22a.py`), which lands the boundary above the fire. |
+| SS-5 | test residual | A2-28 listed "candidate id > boundary" as an isolatable mutation; it is not -- the minting CASE makes a `pre_barrier_reconstructed` link imply `<= boundary`, and changing the cited candidate trips a dozen other bindings first (a non-discriminating case). | FIXED: removed from the mutation list; the clause is declared a BELT, the twin of 0037's `> boundary`. |
+| SS-6 | test residual | A2-29's grep gate ("near a price key") was underspecified -- exactly R9-05's complaint about the 22-A gate. | FIXED: the span between the first and last `-- TIER2-PREDICATE` markers, comment-stripped, case/whitespace-normalized, no `round(`/`printf(`/`format(`/`cast(`. |
+| SS-7 | test residual | A2-99 cited A2-27 (a TRIGGER test) as criterion 4's end-to-end service refusal. | FIXED: the service-level criterion-4 mutation is A2-57 (record at fire_hi - 1 s); A2-27 stays as the trigger-side uncomputed-interval case. |
+| SS-8 | test residual | A2-89's memo assertion ("two rows sharing a sha -> one call each") discriminated nothing (the memo key includes the row id). | FIXED: one `replay_verdict` per row per call, and a SECOND call re-runs git -- the discriminator is a module-level cache (no git call on the second invocation). |
+
+**Plan committed ONCE at convergence** (recipe section 2). Final plan: 728 lines.
