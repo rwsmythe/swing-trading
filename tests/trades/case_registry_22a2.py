@@ -5,10 +5,7 @@ copy, established by READ of the plan, and ``test_22a2_case_closure.py`` walks
 the test tree in BOTH directions against it: every id here has exactly one
 implementing test function (a module-level ``test_*`` whose name carries the
 token ``a2_NN``), and no test function anywhere carries an ``a2_NN`` token
-absent from here (a PHANTOM).
-
-``PENDING`` names ids whose task has not landed yet; the closure test skips
-them BY NAME.  Task 12 empties it.
+absent from here (a PHANTOM).  Every id is landed; there is no skip list.
 """
 from __future__ import annotations
 
@@ -48,12 +45,6 @@ CASES_22A2: dict[str, str] = {
 # Roster ids whose implementing test lives in a pre-existing module the plan
 # names (A2-22: the backup-gate roster split, P33).
 CASES_22A2["A2-22"] = "tests/data/test_backup_gate_table.py"
-
-# Ids whose task has not landed yet.  Task 12 removes every entry.
-PENDING: frozenset[str] = frozenset(
-    rid for rid in CASES_22A2
-    if rid not in {f"A2-{n:02d}" for n in range(1, 105)} | {"A2-97b", "A2-97c"}
-)
 
 
 def token(roster_id: str) -> str:

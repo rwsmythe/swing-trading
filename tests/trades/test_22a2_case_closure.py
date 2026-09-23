@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from tests.trades.case_registry_22a import PLAN_CASES, slug
-from tests.trades.case_registry_22a2 import CASES_22A2, PENDING, token
+from tests.trades.case_registry_22a2 import CASES_22A2, token
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -66,11 +66,6 @@ def test_a2_08_every_roster_id_has_exactly_one_implementing_test() -> None:
     wrong: list[str] = []
     for rid, module in sorted(CASES_22A2.items()):
         hits = found.get(token(rid), [])
-        if rid in PENDING:
-            # A pending id may not ALREADY have an implementation elsewhere;
-            # when its task lands, the id leaves PENDING.
-            assert not hits, f"{rid} is implemented but still PENDING: {hits}"
-            continue
         if len(hits) != 1:
             missing.append(f"{rid}: {len(hits)} implementing tests {hits}")
             continue
