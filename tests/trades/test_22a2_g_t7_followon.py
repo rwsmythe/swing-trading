@@ -63,6 +63,9 @@ RULED_MEMBERS = (
     "swing.trades.frozen_value_evidence:_parse_reflog_instant",
 )
 FIRST_DERIVATION_VERSION = "2026-09-23.2"
+# CHARC G-T9 item 2 moved ``read_artifact_facts`` (the per-invocation ref
+# resolution): the second pair.
+CURRENT_DERIVATION_VERSION = "2026-09-23.3"
 GRAMMAR_VERSION = "2026-09-23.1"
 
 
@@ -148,7 +151,9 @@ def test_the_grammar_version_is_split_from_the_derivation_version() -> None:
     history's constant; (B) the derivation version is a DIFFERENT string, so a
     builder that wrote one constant into the other's key is visible."""
     assert fve.FROZEN_VALUE_EVIDENCE_VERSION == GRAMMAR_VERSION
-    assert fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION == FIRST_DERIVATION_VERSION
+    assert fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION == CURRENT_DERIVATION_VERSION
+    assert [v for v, _d in fve.FROZEN_VALUE_EVIDENCE_HISTORY] == [
+        FIRST_DERIVATION_VERSION, CURRENT_DERIVATION_VERSION]
     assert fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION != fve.FROZEN_VALUE_EVIDENCE_VERSION
     assert GRAMMAR_VERSION not in [v for v, _d in fve.FROZEN_VALUE_EVIDENCE_HISTORY]
 

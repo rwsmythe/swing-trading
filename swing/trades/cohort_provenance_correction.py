@@ -3564,8 +3564,14 @@ def read_provenance_corrections(
     from swing.trades import frozen_value_evidence as fve
 
     at = datetime.now(UTC) if now is None else now
+    # ONE resolution of the remote ref for the whole read (CHARC G-T9 item 2),
+    # passed into every tier-2 row's replay; none under a caller-held
+    # transaction, where each row refuses before any git (S12.1 #9).
+    resolution = (None if conn.in_transaction
+                  else fve.resolve_remote_ref(fve.EVIDENCE_REPO_DIR))
     return [
-        replace(r, replay=fve.replay_verdict(conn, r.correction, now=at))
+        replace(r, replay=fve.replay_verdict(conn, r.correction, now=at,
+                                             resolution=resolution))
         if r.correction.admission_tier == PROVENANCE_ADMISSION_TIER_LATCH_TIER2
         else r
         for r in reports

@@ -55,7 +55,7 @@ FROZEN_VALUE_EVIDENCE_VERSION = "2026-09-23.1"
 # OBSERVATION, never as a verdict (G-T7F-AMEND).  Deliberately a DIFFERENT
 # string from (A), so a builder writing one constant under the other's key is
 # visible to every literal comparison.
-FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION = "2026-09-23.2"
+FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION = "2026-09-23.3"
 
 # Every git call's own timeout (seconds).  The replay uses the same name.
 GIT_TIMEOUT_SECONDS = 10.0
@@ -83,6 +83,8 @@ FAILURE_TIER2_UNVERIFIABLE = "tier2_unverifiable"
 PREFLIGHT_FUNCTIONS: tuple[str, ...] = (
     "load_evidence_selection", "read_artifact_facts", "run_preflight",
     "_run_git", "_parse_reflog_instant",
+    # G-T9 item 2: the per-invocation ref resolution and its stages.
+    "resolve_remote_ref", "_budgeted_git", "_ref_stage", "_reflog_stage",
 )
 
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -323,9 +325,87 @@ def _parse_reflog_instant(stdout: bytes) -> datetime | None:
     return instant
 
 
+def _budgeted_git(repo_dir: Path, deadline: float | None):
+    """``_run_git`` bound to ``repo_dir`` under the replay budget, checked
+    BEFORE each call starts (never by killing one mid-flight; each is already
+    bounded by its own timeout)."""
+    def git(*args: str) -> subprocess.CompletedProcess[bytes]:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise _BudgetExhaustedError(REASON_WEB_BUDGET_EXHAUSTED)
+        return _run_git(repo_dir, *args)
+    return git
+
+
+def _failure_detail(exc: Exception) -> str:
+    """The ``tier2_unverifiable`` detail an exception reads as (E-6: every
+    outcome is a value, never a raise)."""
+    if isinstance(exc, _BudgetExhaustedError):
+        return REASON_WEB_BUDGET_EXHAUSTED
+    if isinstance(exc, _GitProcessError):
+        return str(exc)
+    return f"preflight could not complete: {type(exc).__name__}: {exc}"
+
+
+def _ref_stage(git, repo_dir: Path) -> tuple[str | None, str | None]:
+    """``REMOTE_REF``'s commit: ``(sha, None)``, or ``(None, detail)`` when it
+    does not resolve.  A process failure RAISES (the caller maps it)."""
+    ref = git("rev-parse", "--verify", "--quiet", f"{REMOTE_REF}^{{commit}}")
+    if ref.returncode != 0:
+        return None, (f"{REMOTE_REF} does not resolve in {repo_dir} "
+                      f"(exit {ref.returncode}) {_stderr(ref)}".strip())
+    return ref.stdout.decode("ascii").strip(), None
+
+
+def _reflog_stage(git) -> tuple[datetime | None, str | None]:
+    """The ref's last reflog instant: ``(instant or None, None)``, or
+    ``(None, detail)`` on a git exit.  A process failure RAISES."""
+    log = git("log", "-g", "-1", "--date=iso-strict", "--format=%gD",
+              REMOTE_REF, "--")
+    if log.returncode != 0:
+        return None, f"git log -g exited {log.returncode}: {_stderr(log)}"
+    return _parse_reflog_instant(log.stdout), None
+
+
+@dataclass(frozen=True)
+class RemoteRefResolution:
+    """ONE read of ``REMOTE_REF`` in ``repo_dir`` -- one ``rev-parse`` and one
+    reflog read -- for every row of ONE replay invocation (CHARC G-T9 item 2:
+    a per-invocation resolution, never a cache; each invocation resolves
+    afresh).  Each stage is its value or the ``tier2_unverifiable`` detail
+    ``read_artifact_facts`` would have produced at that stage, applied at the
+    SAME point of each row's read, so a row's verdict is the one a
+    self-resolving read gives.  ``reflog_failure`` is None when the ref did
+    not resolve (the reflog is never read then)."""
+
+    repo_dir: Path
+    resolved_sha: str | None
+    ref_failure: str | None
+    updated_at: datetime | None
+    reflog_failure: str | None
+
+
+def resolve_remote_ref(repo_dir: Path, *,
+                       deadline: float | None = None) -> RemoteRefResolution:
+    """Resolve ``REMOTE_REF`` once.  Never raises; budget-checked per call."""
+    git = _budgeted_git(repo_dir, deadline)
+    try:
+        resolved, failure = _ref_stage(git, repo_dir)
+    except Exception as exc:  # noqa: BLE001 -- E-6: a value, never a raise
+        resolved, failure = None, _failure_detail(exc)
+    if failure is not None:
+        return RemoteRefResolution(repo_dir, None, failure, None, None)
+    try:
+        updated_at, reflog_failure = _reflog_stage(git)
+    except Exception as exc:  # noqa: BLE001 -- E-6: a value, never a raise
+        updated_at, reflog_failure = None, _failure_detail(exc)
+    return RemoteRefResolution(repo_dir, resolved, None, updated_at, reflog_failure)
+
+
 def read_artifact_facts(selection: EvidenceSelection, *, repo_dir: Path,
                         now_utc: datetime,
-                        deadline: float | None = None) -> PreflightResult:
+                        deadline: float | None = None,
+                        resolution: RemoteRefResolution | None = None,
+                        ) -> PreflightResult:
     """Read what git says about ``selection``.  Never raises.
 
     Order: the ref (process), the commit and its dates, the blob, the quoted
@@ -333,25 +413,28 @@ def read_artifact_facts(selection: EvidenceSelection, *, repo_dir: Path,
     ``deadline`` is the replay budget's (``None`` at write and on the CLI):
     once past it no further git call starts and the result is
     ``tier2_unverifiable`` with detail ``web_budget_exhausted``.
+    ``resolution`` is a replay invocation's ONE ref read (G-T9 item 2): its
+    stages stand in for the ``rev-parse`` and the reflog read at the same
+    points; ``None`` (the write path, the preflight, a direct replay) reads
+    the ref here, in the order above.  A resolution for another repo is
+    refused, never used.
     """
     try:
         if now_utc.utcoffset() is None:
             return _refuse(FAILURE_TIER2_UNVERIFIABLE, "now_utc must be offset-aware")
         sha = selection.artifact_commit_sha
+        git = _budgeted_git(repo_dir, deadline)
 
-        def git(*args: str) -> subprocess.CompletedProcess[bytes]:
-            # The replay budget, checked BEFORE each call starts (never by
-            # killing one mid-flight; each is already bounded by its timeout).
-            if deadline is not None and time.monotonic() >= deadline:
-                raise _BudgetExhaustedError(REASON_WEB_BUDGET_EXHAUSTED)
-            return _run_git(repo_dir, *args)
-
-        ref = git("rev-parse", "--verify", "--quiet", f"{REMOTE_REF}^{{commit}}")
-        if ref.returncode != 0:
+        if resolution is None:
+            resolved, failure = _ref_stage(git, repo_dir)
+        elif resolution.repo_dir != repo_dir:
             return _refuse(FAILURE_TIER2_UNVERIFIABLE,
-                           f"{REMOTE_REF} does not resolve in {repo_dir} "
-                           f"(exit {ref.returncode}) {_stderr(ref)}".strip())
-        resolved = ref.stdout.decode("ascii").strip()
+                           f"the ref resolution is for {resolution.repo_dir}, "
+                           f"not {repo_dir}")
+        else:
+            resolved, failure = resolution.resolved_sha, resolution.ref_failure
+        if failure is not None:
+            return _refuse(FAILURE_TIER2_UNVERIFIABLE, failure)
 
         dates = git("show", "-s", "--format=%aI%n%cI", f"{sha}^{{commit}}")
         if dates.returncode != 0:
@@ -388,12 +471,12 @@ def read_artifact_facts(selection: EvidenceSelection, *, repo_dir: Path,
                                f"git rev-list exited {count.returncode}: {_stderr(count)}")
             descendant_count = int(count.stdout.decode("ascii").strip())
 
-        log = git("log", "-g", "-1", "--date=iso-strict", "--format=%gD",
-                  REMOTE_REF, "--")
-        if log.returncode != 0:
-            return _refuse(FAILURE_TIER2_UNVERIFIABLE,
-                           f"git log -g exited {log.returncode}: {_stderr(log)}")
-        updated_at = _parse_reflog_instant(log.stdout)
+        if resolution is None:
+            updated_at, failure = _reflog_stage(git)
+        else:
+            updated_at, failure = resolution.updated_at, resolution.reflog_failure
+        if failure is not None:
+            return _refuse(FAILURE_TIER2_UNVERIFIABLE, failure)
         age = None if updated_at is None else int((now_utc - updated_at).total_seconds())
 
         return PreflightResult(
@@ -410,13 +493,8 @@ def read_artifact_facts(selection: EvidenceSelection, *, repo_dir: Path,
             failure=None,
             detail="",
         )
-    except _BudgetExhaustedError:
-        return _refuse(FAILURE_TIER2_UNVERIFIABLE, REASON_WEB_BUDGET_EXHAUSTED)
-    except _GitProcessError as exc:
-        return _refuse(FAILURE_TIER2_UNVERIFIABLE, str(exc))
     except Exception as exc:  # noqa: BLE001 -- E-6: the preflight never raises; fail closed
-        return _refuse(FAILURE_TIER2_UNVERIFIABLE,
-                       f"preflight could not complete: {type(exc).__name__}: {exc}")
+        return _refuse(FAILURE_TIER2_UNVERIFIABLE, _failure_detail(exc))
 
 
 def run_preflight(evidence_file: Path | str, *, repo_dir: Path | None = None,
@@ -1057,7 +1135,8 @@ def _fill_session_of(value: object) -> date | None:
 
 def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
                    repo_dir: Path | None = None,
-                   deadline: float | None = None) -> ReplayVerdict:
+                   deadline: float | None = None,
+                   resolution: RemoteRefResolution | None = None) -> ReplayVerdict:
     """Re-derive ``row``'s tier-2 verdict at read time.  Never raises for a
     tier-2 row: ignorance is ``tier2_unverifiable``, never ADMIT.
 
@@ -1081,7 +1160,9 @@ def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
     stale, the moved version is appended to the reason line, so a code change
     can never read as an evidence change.  ``deadline`` is the
     caller's budget (``tier2_cohort_exclusions``); ``None`` waits out every
-    call's own timeout.
+    call's own timeout.  ``resolution`` is the invocation's ONE ref read
+    (``tier2_cohort_exclusions`` / ``read_provenance_corrections``, CHARC
+    G-T9 item 2); ``None`` -- a direct call -- resolves the ref here.
     """
     from swing.data.models import PROVENANCE_ADMISSION_TIER_LATCH_TIER2
     from swing.data.repos.candidates_immutability_epoch import barrier_installed
@@ -1125,7 +1206,7 @@ def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
 
         read = read_artifact_facts(
             selection, repo_dir=EVIDENCE_REPO_DIR if repo_dir is None else repo_dir,
-            now_utc=now, deadline=deadline)
+            now_utc=now, deadline=deadline, resolution=resolution)
         if read.failure is not None or read.facts is None:
             if read.failure in (None, FAILURE_TIER2_UNVERIFIABLE):
                 return verdict(VERDICT_UNVERIFIABLE,
@@ -1172,10 +1253,13 @@ def tier2_cohort_exclusions(conn: sqlite3.Connection, *, now: datetime,
     """The tier-2 rows a cohort read must NOT count, by ``trade_id``, each with
     its verdict and reason (RD's F10 sub-ruling: excluded and NAMED).
 
-    ONE ``replay_verdict`` per tier-2 row per call: the memo is a local of THIS
-    call, keyed ``(provenance_correction_id, resolved_origin_main_sha)`` and
-    discarded on return -- there is no cache across calls (F10-shape: a cached
-    verdict is a stored grade).  ``budget_seconds`` is a TOTAL wall-clock
+    ONE ``replay_verdict`` per tier-2 row per call, and ONE resolution of the
+    remote ref per call (CHARC G-T9 item 2: one ``rev-parse`` + one reflog
+    read, passed into every row's replay; the per-row git calls stay per row,
+    each row citing its own commit).  Nothing survives the call -- there is
+    no cache across calls (F10-shape: a cached verdict is a stored grade),
+    and under a caller-held transaction no resolution runs (each row refuses
+    before git, S12.1 #9).  ``budget_seconds`` is a TOTAL wall-clock
     budget (CHARC R4.2 ruling 1) checked before each git call starts; past
     it, every row not yet verdicted reads ``tier2_unverifiable`` /
     ``web_budget_exhausted`` -- excluded and named, never admitted.  The rows
@@ -1183,23 +1267,22 @@ def tier2_cohort_exclusions(conn: sqlite3.Connection, *, now: datetime,
     zero git calls.
     """
     deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
-    memo: dict[tuple[int, str | None], ReplayVerdict] = {}
-    memo_key: dict[int, tuple[int, str | None]] = {}
+    rows = _tier2_rows(conn)
+    if not rows:
+        return {}
+    repo = EVIDENCE_REPO_DIR if repo_dir is None else repo_dir
+    resolution = (None if conn.in_transaction
+                  else resolve_remote_ref(repo, deadline=deadline))
     excluded: dict[int, ReplayVerdict] = {}
-    for row in _tier2_rows(conn):
-        rid = row.provenance_correction_id
-        if rid in memo_key:
-            result = memo[memo_key[rid]]
-        elif deadline is not None and time.monotonic() >= deadline:
+    for row in rows:
+        if deadline is not None and time.monotonic() >= deadline:
             result = ReplayVerdict(
                 verdict=VERDICT_UNVERIFIABLE, reason=REASON_WEB_BUDGET_EXHAUSTED,
                 evaluated_at=now.isoformat(), resolved_origin_main_sha=None,
                 barrier_installed_at_read=None)
         else:
-            result = replay_verdict(conn, row, now=now, repo_dir=repo_dir,
-                                    deadline=deadline)
-        memo_key[rid] = (rid, result.resolved_origin_main_sha)
-        memo[memo_key[rid]] = result
+            result = replay_verdict(conn, row, now=now, repo_dir=repo,
+                                    deadline=deadline, resolution=resolution)
         if result.verdict != VERDICT_ADMIT:
             excluded[row.trade_id] = result
     return excluded
@@ -1360,7 +1443,15 @@ def frozen_value_evidence_digest() -> str:
 # ``.1``: ``2026-09-23.1`` is the GRAMMAR version's string, and it was the
 # version this history's earlier source-text pair carried on this branch
 # (``ee157a28``) -- no version string is ever re-bound to a second digest.
+#
+# ``.3`` (CHARC G-T9 item 2): ``read_artifact_facts`` takes an optional
+# per-invocation ref resolution, its ref and reflog reads factored into
+# ``_ref_stage`` / ``_reflog_stage`` (new members, with ``_budgeted_git``,
+# ``_failure_detail`` and ``RemoteRefResolution``).  The facts it returns for a
+# given repo state are unchanged; the digest records the member edit.
 FROZEN_VALUE_EVIDENCE_HISTORY: tuple[tuple[str, str], ...] = (
     ("2026-09-23.2",
      "e098e9cddd4327b545dac89dbc7f017442f016bf9f82c5b9731d4b815fec1c1b"),
+    ("2026-09-23.3",
+     "f99090619b500e866bf104556bb419b7c26ab85e1cc82ce6e6ddc4b0d1eb5193"),
 )

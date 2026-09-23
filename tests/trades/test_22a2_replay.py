@@ -10,8 +10,8 @@ transaction and writes nothing (P37).  A process failure is
 ``tier2_unverifiable``; git answering negatively, or any conjunction refusal,
 is ``tier2_evidence_stale``; descendant growth and ref age are never compared
 (doctrine #6).  ``tier2_cohort_exclusions`` replays every tier-2 row once per
-call (a memo scoped to the call; no cache across calls) under an optional
-TOTAL wall-clock budget (CHARC R4.2 ruling 1).
+call, resolving the remote ref ONCE per call (CHARC G-T9 item 2; no cache
+across calls) under an optional TOTAL wall-clock budget (CHARC R4.2 ruling 1).
 
 The world is trade 25's real row shape with a real tier-2 row written by the
 correction service over a throwaway git world whose ``docs/rd-state.md`` line
@@ -315,12 +315,38 @@ def test_a2_88_barrier_absent_at_read_is_an_observation_only(
 
 # --------------------------------------------------------------------------- A2-89
 
-def test_a2_89_one_replay_per_row_per_call_and_no_cache_across_calls(
+def _ref_resolutions(counter: _GitCounter) -> tuple[int, int]:
+    """(``rev-parse`` calls, reflog reads) among the counted git calls."""
+    rev_parse = sum(1 for c in counter.calls if c[1:2] == ("rev-parse",))
+    reflog = sum(1 for c in counter.calls if c[1:3] == ("log", "-g"))
+    return rev_parse, reflog
+
+
+def _three_rows(w: _World) -> list:
+    """Trade 25's row and two duck-typed copies (the model refuses a trade id
+    its snapshot does not carry), each citing the same commit."""
+    return [w.row] + [
+        SimpleNamespace(**{**dataclasses.asdict(w.row),
+                           "provenance_correction_id": 90 + n, "trade_id": 90 + n})
+        for n in (1, 2)]
+
+
+def test_a2_89_one_replay_per_row_and_one_ref_resolution_per_invocation(
     tmp_path: Path, ticking_clock, monkeypatch,
 ) -> None:
+    """CHARC G-T9 item 2 (the per-row memo DROPPED): (i) one ``replay_verdict``
+    per tier-2 row per invocation; (ii) exactly ONE ref resolution (one
+    ``rev-parse`` + one reflog read) per invocation regardless of row count --
+    a per-row-resolve impl makes THREE of each here; (iii) a SECOND invocation
+    re-resolves and re-runs git -- a module-level cache makes zero calls.  The
+    per-row calls (``show``, ``cat-file``, ``merge-base``) stay per row: each
+    row cites its own commit."""
     w = _tier2_world(tmp_path)
     try:
         w.git.rewrite_remote_dropping(w.sha)
+        tip = w.git.remote_tip()     # before the counter: it runs git itself
+        rows = _three_rows(w)
+        monkeypatch.setattr(fve, "_tier2_rows", lambda conn: rows)
         replays: list[int] = []
         real = fve.replay_verdict
 
@@ -331,20 +357,104 @@ def test_a2_89_one_replay_per_row_per_call_and_no_cache_across_calls(
         monkeypatch.setattr(fve, "replay_verdict", counting)
         counter = _GitCounter(monkeypatch)
         first = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work)
-        assert set(first) == {T25_TRADE_ID}
-        assert first[T25_TRADE_ID].verdict == "tier2_evidence_stale"
-        assert replays == [w.row.provenance_correction_id]
+        assert set(first) == {T25_TRADE_ID, 91, 92}
+        for v in first.values():
+            assert (v.verdict, v.reason) == ("tier2_evidence_stale",
+                                             "criterion 1: not_ancestor_of_origin_main")
+            assert v.resolved_origin_main_sha == tip
+        # (i)
+        assert replays == [r.provenance_correction_id for r in rows]
+        # (ii)
+        assert _ref_resolutions(counter) == (1, 1)
+        assert sum(1 for c in counter.calls if c[1:2] == ("show",)) == 3
         calls_first = len(counter.calls)
-        assert calls_first > 0
-        # A SECOND call re-runs git: a cached verdict is a stored grade.
+        # (iii) A SECOND invocation re-resolves: no cache across calls (a
+        # cached verdict is a stored grade, F10-shape).
         second = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work)
-        assert second[T25_TRADE_ID].verdict == "tier2_evidence_stale"
-        assert len(replays) == 2
+        assert set(second) == {T25_TRADE_ID, 91, 92}
+        assert len(replays) == 6
+        assert _ref_resolutions(counter) == (2, 2)
         assert len(counter.calls) == 2 * calls_first
-        # The memo: the same row selected twice in ONE call replays once.
-        monkeypatch.setattr(fve, "_tier2_rows", lambda conn: [w.row, w.row])
-        fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work)
-        assert len(replays) == 3
+    finally:
+        w.conn.close()
+
+
+def test_a_direct_replay_resolves_the_ref_itself(
+    tmp_path: Path, ticking_clock, monkeypatch,
+) -> None:
+    """The write path and a direct call are unchanged: with no resolution
+    passed, ``replay_verdict`` resolves the ref itself (one of each)."""
+    w = _tier2_world(tmp_path)
+    try:
+        counter = _GitCounter(monkeypatch)
+        assert _replay(w).verdict == "ADMIT"
+        assert _ref_resolutions(counter) == (1, 1)
+    finally:
+        w.conn.close()
+
+
+def test_a_resolution_for_another_repo_is_refused_not_used(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """A resolution read in one repo never stands in for another's ref."""
+    w = _tier2_world(tmp_path)
+    try:
+        other = fve.resolve_remote_ref(tmp_path)
+        v = _replay(w, resolution=other)
+        assert v.verdict == "tier2_unverifiable"
+        assert "resolution" in v.reason
+        own = fve.resolve_remote_ref(w.git.work)
+        assert own.resolved_sha == w.git.remote_tip()
+        assert _replay(w, resolution=own).verdict == "ADMIT"
+    finally:
+        w.conn.close()
+
+
+def test_the_drift_reader_resolves_the_ref_once_per_invocation(
+    tmp_path: Path, ticking_clock, monkeypatch,
+) -> None:
+    """``read_provenance_corrections`` is the second invocation site (CHARC
+    G-T9): three tier-2 reports, ONE ``rev-parse`` + ONE reflog read; a second
+    read re-resolves."""
+    w = _tier2_world(tmp_path)
+    try:
+        monkeypatch.setattr(fve, "EVIDENCE_REPO_DIR", w.git.work)
+        real_inner = cpc._read_provenance_corrections_inner
+
+        def tripled(conn, **kw):
+            (report,) = real_inner(conn, **kw)
+            return [dataclasses.replace(report, correction=row) for row in _three_rows(w)]
+
+        monkeypatch.setattr(cpc, "_read_provenance_corrections_inner", tripled)
+        counter = _GitCounter(monkeypatch)
+        reports = cpc.read_provenance_corrections(w.conn, now=NOW)
+        assert [r.replay.verdict for r in reports] == ["ADMIT"] * 3
+        assert _ref_resolutions(counter) == (1, 1)
+        cpc.read_provenance_corrections(w.conn, now=NOW)
+        assert _ref_resolutions(counter) == (2, 2)
+    finally:
+        w.conn.close()
+
+
+def test_the_invocation_resolves_no_ref_under_a_caller_held_transaction(
+    tmp_path: Path, ticking_clock, monkeypatch,
+) -> None:
+    """S12.1 #9 at the invocation: the per-invocation resolution never runs git
+    inside a caller-held transaction; each row reads unverifiable, zero git."""
+    w = _tier2_world(tmp_path)
+    try:
+        counter = _GitCounter(monkeypatch)
+        w.conn.execute("BEGIN")
+        try:
+            out = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work)
+            (report,) = cpc.read_provenance_corrections(w.conn, now=NOW)
+        finally:
+            w.conn.rollback()
+        assert (out[T25_TRADE_ID].verdict, out[T25_TRADE_ID].reason) == (
+            "tier2_unverifiable", "caller_holds_transaction")
+        assert (report.replay.verdict, report.replay.reason) == (
+            "tier2_unverifiable", "caller_holds_transaction")
+        assert counter.calls == []
     finally:
         w.conn.close()
 
@@ -611,3 +721,91 @@ def test_g_t7f_amend_the_drift_reader_renders_the_observation_on_its_own_line(
     assert observed == [
         f"  observation: derivation_version_moved (stored {written}, current 2099-01-01.1)"]
     assert lines.index(observed[0]) == lines.index(verdict) + 1
+
+
+# ---------------------------------------------------------- G-T7FE-B (RD, ruling (a))
+# When the derivation version has moved, EVERY ``tier2_evidence_stale`` reason
+# carries it -- criterion refusals, ``author_instant_changed`` and
+# ``<key>_mismatch`` alike; ``tier2_unverifiable`` carries it in the
+# observation FIELD only; an unmoved version is on no reason.  Pins on
+# behaviour encoded at abcbd632, each proven by a one-line mutation.
+
+FORGED_AUTHOR_INSTANT = "2026-08-10T09:00:00-04:00"
+
+
+def test_g_t7fe_b_a_criterion_3_refusal_under_a_moved_version_names_both(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """The five-cent pivot.  A ``_mismatch``-only suffix impl FAILS."""
+    w = _tier2_world(tmp_path)
+    try:
+        with candidates_barrier_lifted(w.conn):
+            w.conn.execute("UPDATE candidates SET pivot = 53.93 WHERE id = ?",
+                           (T25_CANDIDATE_ID,))
+        w.conn.commit()
+        v = _replay(w, _stored_under(w, OLD_DERIVATION))
+        assert v.verdict == "tier2_evidence_stale"
+        assert v.reason == "criterion 3: pivot; " + _moved(OLD_DERIVATION)
+        assert v.derivation_observation == _moved(OLD_DERIVATION)
+    finally:
+        w.conn.close()
+
+
+def test_g_t7fe_b_author_instant_changed_under_a_moved_version_names_both(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """A ``_mismatch``-only suffix impl FAILS."""
+    w = _tier2_world(tmp_path)
+    try:
+        v = _replay(w, _stored_under(w, OLD_DERIVATION,
+                                     author_instant=FORGED_AUTHOR_INSTANT))
+        assert v.verdict == "tier2_evidence_stale"
+        assert v.reason == "author_instant_changed; " + _moved(OLD_DERIVATION)
+    finally:
+        w.conn.close()
+
+
+def test_g_t7fe_b_an_unmoved_version_is_on_no_stale_reason(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """Every stale class under the CURRENT version: no ``derivation_version``
+    token on any reason.  An always-append impl FAILS."""
+    w = _tier2_world(tmp_path)
+    try:
+        current = fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION
+        reasons = [
+            _replay(w, _stored_under(w, current,
+                                     author_instant=FORGED_AUTHOR_INSTANT)).reason,
+            _replay(w, _stored_under(w, current, **{
+                "interval.endpoints.fire_hi.raw": "2026-08-07T17:39:08"})).reason,
+        ]
+        with candidates_barrier_lifted(w.conn):
+            w.conn.execute("UPDATE candidates SET pivot = 53.93 WHERE id = ?",
+                           (T25_CANDIDATE_ID,))
+        w.conn.commit()
+        v = _replay(w)
+        reasons.append(v.reason)
+        assert v.derivation_observation is None
+        assert reasons == ["author_instant_changed",
+                           "interval.endpoints.fire_hi.raw_mismatch",
+                           "criterion 3: pivot"]
+        assert not any("derivation_version" in r for r in reasons)
+    finally:
+        w.conn.close()
+
+
+def test_g_t7fe_b_unverifiable_under_a_moved_version_carries_it_in_the_field_only(
+    tmp_path: Path, ticking_clock, monkeypatch,
+) -> None:
+    """A hung git: no verdict was reached, so the version is context, never a
+    cause.  An append-on-unverifiable impl FAILS."""
+    w = _tier2_world(tmp_path)
+    try:
+        _GitCounter(monkeypatch, timeout=True)
+        v = _replay(w, _stored_under(w, OLD_DERIVATION))
+        assert v.verdict == "tier2_unverifiable"
+        assert v.reason == "git rev-parse timed out after 10.0s"
+        assert "derivation_version" not in v.reason
+        assert v.derivation_observation == _moved(OLD_DERIVATION)
+    finally:
+        w.conn.close()
