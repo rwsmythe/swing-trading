@@ -235,15 +235,76 @@ def test_a2_86_a_stored_verdict_bearing_value_differing_reads_key_mismatch(
         v = _replay(w, forged)
         assert v.verdict == "tier2_evidence_stale"
         assert v.reason == "interval.endpoints.fire_hi.raw_mismatch"
-        # A RECORDED-only key differing is not compared (E-15).
-        blob = json.loads(w.row.cited_frozen_value_evidence_json)
-        blob["descendant_count"] += 7
-        blob["committer_instant"] = "2030-01-01T00:00:00+00:00"
-        recorded = dataclasses.replace(w.row,
-                                       cited_frozen_value_evidence_json=json.dumps(blob))
-        assert _replay(w, recorded).verdict == "ADMIT"
     finally:
         w.conn.close()
+
+
+# RD ruling A-R3 item 2 (R3-02): A2-86's old recorded-only leg bundled a
+# legitimately drifting value (the descendant count) with one that CANNOT drift
+# for a fixed sha (the committer instant -- the commit object covers its
+# committer date, so a different date is a different sha).  It splits in two:
+# GROWTH still admits; FORGERY reads stale.
+
+def test_a_r3_02_growth_a_differing_descendant_count_alone_still_admits(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """The GROWTH half: the descendant count is recorded-only (E-15), so a
+    stored count differing from the recomputation is never compared."""
+    w = _tier2_world(tmp_path)
+    try:
+        blob = json.loads(w.row.cited_frozen_value_evidence_json)
+        blob["descendant_count"] += 7
+        grown = dataclasses.replace(w.row, cited_frozen_value_evidence_json=json.dumps(blob))
+        v = _replay(w, grown)
+        assert v.verdict == "ADMIT", v
+        assert v.reason is None
+    finally:
+        w.conn.close()
+
+
+def test_a_r3_02_forgery_a_forged_committer_instant_reads_stale(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """The FORGERY half: a RAW-INSERTED row (the 18-B.1 technique; it passes
+    0039's type-only check) whose ``committer_instant`` is 2030 on the REAL
+    sha.  Pre-fix it replays ADMIT; post-fix it is STALE, named."""
+    def mutate(blob):
+        assert blob["committer_instant"] != "2030-01-01T00:00:00+00:00"
+        blob["committer_instant"] = "2030-01-01T00:00:00+00:00"
+    v = _raw_replay(tmp_path, mutate)
+    assert v.verdict == "tier2_evidence_stale", v
+    assert v.reason == "committer_instant_mismatch"
+
+
+def test_a_r3_02_committer_instant_is_compared_byte_wise_against_the_writer_form(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """RD's rendering-invariance case, encoded BYTE-WISE (the author check's
+    precedent at the replay): the recomputation renders git's instant through
+    ``datetime.fromisoformat(...).isoformat()`` exactly as the writer did, so
+    a change in how git RENDERS the instant cannot stale a row; the STORED
+    text is not normalized.  So (1) the writer always stores the isoformat
+    form, and (2) the same instant re-serialized with ``Z`` for ``+00:00`` --
+    a form no writer produces, reachable only by a raw insert -- reads stale."""
+    w = _tier2_world(tmp_path)
+    try:
+        stored = json.loads(w.row.cited_frozen_value_evidence_json)["committer_instant"]
+        instant = datetime.fromisoformat(stored)
+        assert stored == instant.isoformat()
+        facts = fve.read_artifact_facts(
+            fve.EvidenceSelection(RD_STATE, w.sha, LINE57.decode("utf-8")),
+            repo_dir=w.git.work, now_utc=NOW).facts
+        assert facts is not None and stored == facts.committer_instant.isoformat()
+    finally:
+        w.conn.close()
+
+    def mutate(blob):
+        utc = datetime.fromisoformat(blob["committer_instant"]).astimezone(UTC)
+        blob["committer_instant"] = utc.isoformat().replace("+00:00", "Z")
+        assert datetime.fromisoformat(blob["committer_instant"]) == utc
+    v = _raw_replay(tmp_path / "z", mutate)
+    assert v.verdict == "tier2_evidence_stale", v
+    assert v.reason == "committer_instant_mismatch"
 
 
 # --------------------------------------------------------------------------- A2-87

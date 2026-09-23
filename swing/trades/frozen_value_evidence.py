@@ -155,15 +155,19 @@ RECORD_POSITIONS: tuple[str, ...] = (
 
 # E-15: the keys the replay COMPARES (dotted paths into the blob).  The
 # RECORDED-only keys are E-15's own list -- evaluated_at, the resolved sha, the
-# descendant count, the ref age, the committer instant, and the terminal
-# (``covered``) segment kind -- and are never compared: each legitimately
-# drifts between write and read.  The DERIVED keys (``REPLAY_DERIVED_KEYS``,
-# RD ruling A-R1 item 1) are compared too, by their own rule.
+# descendant count, the ref age, and the terminal (``covered``) segment kind --
+# and are never compared: each legitimately drifts between write and read.
+# The committer instant is NOT among them (RD ruling A-R3 item 2, R3-02): the
+# commit object covers its committer date, so for a stored sha the value has
+# exactly one legitimate source and is compared here -- as the writer renders
+# it, ``facts.committer_instant.isoformat()`` -- while criterion 2 still never
+# reads it (F7).  The DERIVED keys (``REPLAY_DERIVED_KEYS``, RD ruling A-R1
+# item 1) are compared too, by their own rule.
 VERDICT_BEARING_KEYS: frozenset[str] = frozenset({
     "artifact_path", "artifact_commit_sha", "quoted_text",
     "quoted_ticker_text", "quoted_action_session_text", "quoted_pivot_text",
     "quoted_invalidation_text", "live_pivot_raw", "live_invalidation_raw",
-    "author_instant", "author_date_et", "fill_session_date",
+    "author_instant", "author_date_et", "committer_instant", "fill_session_date",
     *(f"interval.endpoints.{e}.{k}" for e in INTERVAL_ENDPOINTS for k in ("raw", "utc")),
     "interval.record_position",
 })
@@ -762,7 +766,7 @@ def evaluate_conjunction(conn: sqlite3.Connection, facts: ArtifactFacts, *,
 
     (1) the artifact commit is an ancestor of ``REMOTE_REF``; (2) the author
     instant's America/New_York DATE strictly precedes ``fill_session`` (F7;
-    the committer instant is never verdict-bearing); (3) the quoted text
+    the committer instant is never a criterion input); (3) the quoted text
     contains the cited candidate's ticker, action session, pivot and
     initial_stop as service-rendered whole tokens (F13); (4) the record is
     STRICTLY after the fire's upper bound ``pipeline_runs.finished_ts`` (F6 ii
@@ -1226,9 +1230,11 @@ def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
     sorted order is named ``<key>_mismatch``), together with the DERIVED
     keys (``REPLAY_DERIVED_KEYS``: every segment except the terminal kind, and
     the prose as the rendering of the stored interval -- RD ruling A-R1).
-    Recorded-only keys -- descendant count, ref age, the resolved sha, the
-    committer instant, the terminal segment kind -- are never compared
-    (doctrine #6, E-15).  The barrier state is
+    Recorded-only keys -- evaluated_at, the resolved sha, the descendant
+    count, the ref age, the terminal segment kind -- are never compared
+    (doctrine #6, E-15): each legitimately drifts.  The committer instant is
+    not among them: it cannot drift for a stored sha, so it is compared, as
+    the writer renders it (RD ruling A-R3 item 2).  The barrier state is
     an observation returned beside the verdict (A2-88), and it is the
     ``barrier_installed`` the recomputation uses.
 

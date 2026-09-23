@@ -102,7 +102,7 @@ COMPUTES unless marked (sel) = operator selection (F9).
 | `compare_dp` | integer | `2` | `= 2` |
 | `author_instant` | text | `git show -s --format=%aI sha` (offset kept) | type only |
 | `author_date_et` | text | author instant -> America/New_York, `.date().isoformat()` (F7 a) | `< fill_session_date` (text compare of ISO dates; consistency only) |
-| `committer_instant` | text | `%cI`; RECORDED, never verdict-bearing (F7 sub-choice) | type only |
+| `committer_instant` | text | `%cI`; never a criterion input (F7 sub-choice); COMPARED at replay -- it cannot drift for a stored sha (RD A-R3 item 2) | type only |
 | `fill_session_date` | text | the authoritative entry fill's session | `= NEW.entry_fill_session_date` |
 | `resolved_remote_ref_sha` | text | `git rev-parse REMOTE_REF` at write | type only |
 | `descendant_count` | integer | `git rev-list --count sha..<resolved>`; RECORDED | type only |
@@ -382,9 +382,10 @@ builds a temp repo + bare remote + fetch so `REMOTE_REF` exists; commits with ex
   (with `interval` + `uncovered_window_prose`, e.g. "writer_absence_only 2.38 days (2026-08-08T03:39:07Z
   to 2026-08-10T12:41:33Z); match_only 22.89 days; covered from 2026-09-02T10:03:33Z").
 - `VERDICT_BEARING_KEYS` (frozenset): the selection, `quoted_*_text`, `live_*_raw`,
-  `author_instant`, `author_date_et`, `fill_session_date`, every endpoint's `raw` and `utc`. Recorded-
-  only keys (never compared at replay): `evaluated_at`, `resolved_remote_ref_sha`,
-  `descendant_count`, `remote_ref_*`, `committer_instant`, `segments[*].kind` of `covered`.
+  `author_instant`, `author_date_et`, `committer_instant` (RD A-R3 item 2), `fill_session_date`,
+  every endpoint's `raw` and `utc`. Recorded-only keys (never compared at replay; each drifts):
+  `evaluated_at`, `resolved_remote_ref_sha`, `descendant_count`, `remote_ref_*`, the terminal segment's
+  kind.
 - `TIER2_TRIGGER_PREDICATES: tuple[tuple[str, str], ...]` -- `(predicate_id, service_check_name)`,
   one per `-- TIER2-PREDICATE` marker in 0039 (AUTHORIZE-THEN-ABORT, brief section 4.4).
 **Acceptance:** A2-42..A2-60 green.
