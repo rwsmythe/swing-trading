@@ -216,7 +216,7 @@ Both N5 branches leave trade 20 unaffected (0 AMN links, 0 AMN intents).
 |---|---|---|---|---|---|---|---|---|
 | 1 | fast | gpt-5.6-luna / high | present | NEW_CRITICAL_MAJOR_FOUND | 0/16/2 | 18 (all accepted, applied) | 386,359 at return (build 2.1.280, claude-opus-5-5; orchestrator-read `cell_depth.py --live 1`) -- rounds 2-3 re-dispatched to a fresh cell | 293,572 |
 | 2 | fast | gpt-5.6-luna / high | present | NEW_CRITICAL_MAJOR_FOUND | 0/8/6 | 11 (all 14 accepted, applied; R2-05 reframed, R2-14 in part) | 370,011 at return (build 2.1.280, claude-opus-5-5; orchestrator-read `cell_depth.py --live 1`) -- round 3 re-dispatched to a fresh cell | 405,845 |
-| 3 | fast | gpt-5.6-luna / high | present | NEW_CRITICAL_MAJOR_FOUND | 0/9/1 | 10 (all accepted, applied); R3-09 surfaced fork R0.K, loop STOPPED | | 451,928 |
+| 3 | fast | gpt-5.6-luna / high | present | NEW_CRITICAL_MAJOR_FOUND | 0/9/1 | 10 (all accepted, applied); R3-09 surfaced fork R0.K, loop STOPPED | 334,797 at return (build 2.1.280, claude-opus-5-5; orchestrator-read `cell_depth.py --live 1`) | 451,928 |
 
 ## R0.D — CHARC rules N4: branch (a), value TERMINAL for generic writers (mail 20260923T173456Z; author CHARC; text of record on main in the brief section 3 @ 605fa4db; literal block quote of the mail body, transcribed by the courier)
 
