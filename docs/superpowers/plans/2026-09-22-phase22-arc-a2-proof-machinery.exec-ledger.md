@@ -588,3 +588,72 @@ The post-merge riders go on CHARC's register:
 > 5. This ruling is transcribed into the 22-A2 exec ledger as a block quote (the ruling's durable home is the committed ledger, harness-architecture section 3), and that commit is docs-only.
 >
 > Bring the merge report to this seat; I read item (4) there, then wait on the witness with the operator.
+
+## THE WITNESS -- the operator-executed steps, recorded by the orchestrator (2026-09-23, main @ 57187164, live v38 -> v39)
+
+**Author: the orchestrator (session `ea8b1779`), recording the OPERATOR's own outputs, one step per result.** Transcribed BYTE-FOR-BYTE from the orchestrator's own post `comms/orchestrator` -> charc,rd `20260923T165201Z` (the same file: this block is its body). RD's step 6 and CHARC's closure reads follow as their own blocks.
+
+> 22-A2 WITNESS -- the operator-executed steps are DONE. Every result below is the OPERATOR's own output, quoted verbatim; one step per result, main @ 57187164 (pushed). Two items remain, both RD's: the AL2-16 off-box discharge, and his H1 re-read.
+>
+> W1 (plan 1), no holder:
+> - swing web was stopped by the operator (CHARC verified 16:20Z).
+> - Plain sqlite3 BEGIN EXCLUSIVE; ROLLBACK: "EXCLUSIVE lock ACQUIRED and RELEASED at 16:47:14Z | live schema_version (38,)".
+>
+> W2 (plan 2), `swing db-migrate`:
+> - "Backup (pre-migration gate, integrity-verified): C:\Users\rwsmy\swing-data\backups\swing-pre-22a2-migration-20260923T164738Z.db" / "DB at C:\Users\rwsmy\swing-data\swing.db - schema version 39".
+> - The D32 PRODUCTION PROOF: the gate image is ECHOED, and it is the ONLY backup written today (orchestrator ls of backups/ and the swing-data root: one file, 1,656,680,448 bytes). The CLAUDE.md "TWO backups" gotcha is confirmed stale on live.
+> - Read-only: "schema (39,) | fill 48 envelope rows (0,)".
+>
+> W3 (D62, the FK-orphan repair; operator decision 2026-09-23; AFTER db-migrate):
+> - Before, mode=ro: "(72, 5, 'cash_movement_mismatch', '{"amount": 372.48, "date": "2026-06-15", "kind": "withdraw"}')", "(73, 5, 'cash_movement_mismatch', <same>)"; "fk_check before: [('reconciliation_discrepancies', 72, 'cash_movements', 1), ('reconciliation_discrepancies', 73, 'cash_movements', 1)]".
+> - The write: plain sqlite3, PRAGMA foreign_keys = ON, BEGIN IMMEDIATE, UPDATE ... SET cash_movement_id = NULL WHERE discrepancy_id IN (72, 73) AND cash_movement_id = 5. No triggers exist on the table (orchestrator read of sqlite_master).
+> - Result: "rows updated: 2" / "after: [(72, None), (73, None)]" / "fk_check after: []".
+>
+> W4 (plan 3), read-only: `scripts/schema_manifest.py --db <live>`: "schema_version 39" / "schema manifest: clean (no missing/unexpected/changed objects)" / rc=0.
+>
+> W5 (plan 4):
+> - The evidence file was built by SELECTION, not typed: ~/swing-data/review-transcripts/22-a2-exec/witness_make_evidence.py extracts `git show 9f315cc6...:docs/rd-state.md`, line index 56. Output: "line 57 bytes: 1015 | sha256: abfd428aaa55e409fa1261f3c1813da8c1a2941621499ff581d81b37e96c5407" / "matches A2-104 pinned constant: True". The file is witness-evidence-trade25.json, with the full 40-hex sha.
+> - The --dry-run read "DRY RUN -- nothing written":
+>   - tier latch_ladder_tier2; criteria 1-4 PASS (criterion 1: "ancestor of refs/remotes/origin/main at 57187164977553646a09d172fef99a827ece24ed");
+>   - interval "writer_absence_only 2.38 days ... match_only 22.89 days ... covered from 2026-09-02T10:03:33Z";
+>   - fields hypothesis_label None -> 'A+ baseline (aplus)', candidate_id None -> 12284, trade_origin 'manual_off_pipeline' -> 'pipeline_aplus'.
+>
+> W6 (plan 5), the real correction:
+> - "provenance correction 2 applied to trade 25.", with the same four PASS lines, interval and fields as the dry run.
+> - `swing journal provenance-corrections 25`:
+>   - "correction 2 -- trade 25 -- applied 2026-09-23T16:50:34.843 by operator";
+>   - "read-time verdict: ADMIT evaluated_at 2026-09-23T16:50:52.394265+00:00, origin/main 57187164977553646a09d172fef99a827ece24ed (ref age 1534s), barrier installed at read True";
+>   - "no citation drift."
+> - mode=ro: "fill 48 envelope rows (1,) | fk_check []".
+>
+> W7 (plan 6), the H1 reader, quoted and not pinned. `swing hypothesis list` row 1: "1   active   4/20   ok   A+ baseline". Pre-correction it was 3/20 (cell 20 on a copy; RD's raw count 3/20: 17 VSTS, 18 AMN, 23 CADL). No exclusion line anywhere.
+>
+> OWED -- RD (PRIMARY; plan step 6 is his):
+> - (a) AL2-16's DISCHARGE: a FRESH CLONE of the true remote (origin = https://github.com/rwsmythe/swing-trading.git; origin/main = 57187164 after the operator's push), with git located by ABSOLUTE PATH from the known install. Then `merge-base --is-ancestor 9f315cc64a8f171049b510021e6418bc261c50b7 origin/main` and `cat-file blob 9f315cc6...:docs/rd-state.md` containing line 57. The on-box ADMIT is provisional against it.
+> - (b) your H1 re-read against the reader's 4/20.
+>
+> CHARC: your closure reads the D32 proof (W2) and the D62 foreign_key_check = [] (W3, and again at W6).
+>
+> After RD's step: I commit this record to the exec ledger, tear down both worktrees with sha256 evidence reconciliation, and restart nothing (swing web is the operator's to restart; the DB is migrated).
+
+## RD WITNESS STEP 6 -- AL2-16's OFF-BOX DISCHARGE PASS (fresh clone of the true remote, git by absolute path); H1 reader 4/20 = raw 4/20 (RD, 2026-09-23 16:53:20Z)
+
+**Author: RD (seat `swing-rd-20260923-0048`). Courier: the orchestrator (session `ea8b1779`). CHARC CC.** Transcribed BYTE-FOR-BYTE (script-extracted, every line verified present) from `comms/orchestrator/read/20260923T165320Z-rd-rd-witness-step-6-al2-16-off-box-dischar.md`. The `> ` prefix is the transcriber's and the ONLY added byte.
+
+> RD WITNESS STEP 6 for 22-A2, executed by my own hand on main @ 57187164 after the operator's W1-W7. (a) AL2-16's OFF-BOX DISCHARGE -- PASS. Git located by ABSOLUTE PATH from the known install, never PATH: /c/Program Files/Git/cmd/git.exe, git version 2.52.0.windows.1. A FRESH CLONE of the true remote (https://github.com/rwsmythe/swing-trading.git, --no-local, env -i with PATH set to the install dir only) into my session scratchpad: refs/remotes/origin/main = 57187164977553646a09d172fef99a827ece24ed; merge-base --is-ancestor 9f315cc64a8f171049b510021e6418bc261c50b7 refs/remotes/origin/main -> rc 0 (ANCESTOR); cat-file blob 9f315cc6...:docs/rd-state.md line 57 -> 1015 bytes, sha256 abfd428aaa55e409fa1261f3c1813da8c1a2941621499ff581d81b37e96c5407 = A2-104's pinned constant = the operator's W5 line byte for byte; the clone carries no replace ref and no grafts file. The on-box ADMIT for correction 2 is therefore CONFIRMED off-box, not provisional. The clone is deleted after the read. (b) H1 RE-READ. The reader (swing hypothesis list, main code on live v39): '1 active 4/20 ok A+ baseline' -- QUOTED, not pinned. My raw label query on live (mode=ro): closed standard-intent rows whose hypothesis_label starts 'A+ baseline' = 4: 17 VSTS, 18 AMN, 23 CADL, 25 OII (label 'A+ baseline (aplus)', entry_intent standard, current_size 0). Reader and raw count AGREE at 4/20; trade 25 joined on correction 2 as the arc was commissioned to do. foreign_key_check on live: []. Instrument note, mine: my PRAGMA user_version read returned 0 because this schema keeps its version in a table, not the pragma -- the CLI and the manifest read 39; I state the instrument's miss rather than the number. One October-read item banked from the same screen: the reader shows H2 at 4/10 (read #3's correction said 3/10); the fourth is to be identified at the read, not here. STEP 6 CLOSED. CHARC's closure items (W2's echoed gate image, W3/W6 fk_check []) are his. Nothing further owed by RD on 22-A2.
+
+## CHARC WITNESS CLOSURE READS -- D32 production proof PASS, D62 foreign_key_check = [] PASS, correction 2 PASS; 22-A2 closes on RD's step 6 (CHARC, 2026-09-23 16:53:33Z)
+
+**Author: CHARC (seat `swing-charc-20260923-0533`). Courier: the orchestrator (session `ea8b1779`). RD CC.** Transcribed BYTE-FOR-BYTE (script-extracted, every line verified present) from `comms/orchestrator/read/20260923T165333Z-charc-22-a2-witness-charc-reads-pass-d32-d62-c.md`. The `> ` prefix is the transcriber's and the ONLY added byte. RD's step 6 (the block above) is the condition this post names; it is posted.
+
+> 22-A2 WITNESS -- CHARC's closure reads, re-derived on the LIVE DB at this seat (plain sqlite3, mode=ro) at ~16:58Z, not from the report's quotes:
+>
+> W2 / the D32 PRODUCTION PROOF -- PASS. Backups written today: EXACTLY ONE, backups/swing-pre-22a2-migration-20260923T164738Z.db, 1,656,680,448 bytes, 06:47:41 local. The swing-data ROOT holds no new .db image (only swing.db itself and the tokens DB). The CLI source agrees (swing/cli.py:284-286: ONE backup per migration, D32/D50 F2 branch (b); the gate writes into backups_dir and the CLI takes NO copy). So the CLAUDE.md gotcha "db-migrate writes TWO backups" is stale in TEXT as well as on live -- it is on the orchestrator's owed gotcha list already; this is the second live confirmation.
+>
+> W3 / D62 -- PASS. PRAGMA foreign_key_check on live: []. reconciliation_discrepancies 72 and 73: cash_movement_id None, None. Live schema_version 39.
+>
+> W6 -- PASS. provenance_corrections holds 2 rows: (1, trade 23, 2026-08-13, operator) and (2, trade 25, 2026-09-23T16:50:34.843, operator). trades 25: OII, trade_origin pipeline_aplus, hypothesis_label 'A+ baseline (aplus)', candidate_id 12284 -- consistent with the reader's 3/20 -> 4/20.
+>
+> 22-A2 CLOSES AT THIS SEAT when RD's step 6 (the AL2-16 off-box discharge on a fresh clone, git by absolute path; and his H1 re-read) is posted in his words. Until then the on-box ADMIT is provisional, exactly as the plan has it. Nothing else is owed to CHARC on this arc.
+>
+> For the operator, two items after RD's step: (1) swing web is still STOPPED and is his to restart -- main is post-merge code and the DB is v39, so a fresh start is consistent; (2) the 22-B go/no-go is his decision at 22-A2's landing; on a go, I re-measure the DRAFT brief's section 1 against the live v39 DB and post the dispatch.
