@@ -713,3 +713,103 @@ def test_the_head_citation_trigger_keeps_every_fei_consumer_marked() -> None:
     blanked = "\n".join("" if ln.lstrip().startswith("--") else ln
                         for ln in head.split("\n"))
     assert len(reference.findall(blanked)) == len(head_marks)
+
+
+# ---------------------------------------------------------------------------
+# G-NEG (CHARC, 2026-09-23): match_only OPTIONAL, record_position inside the
+# interval, and ONE length-consistency belt SQL can assert without a utc read.
+# RD's F2.I-NEG cases on the trade-25 world with only the barrier moved.
+# ---------------------------------------------------------------------------
+_BELT = "-- TIER2-PREDICATE record_position_consistent"
+
+
+def _drop_the_belt(conn: sqlite3.Connection) -> None:
+    """Re-create the HEAD citation trigger with ONLY the belt clause cut, to
+    prove the belt is what refuses (a test-world instrument; no production
+    row is ever planted this way)."""
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+                       "AND name = ?", (CITATION,)).fetchone()[0]
+    lines = sql.split("\n")
+    start = next(i for i, ln in enumerate(lines) if _BELT in ln)
+    end = next(i for i in range(start, len(lines))
+               if lines[i].rstrip().endswith("ELSE 0 END"))
+    cut = "\n".join(lines[:start] + lines[end + 1:])
+    assert "record_position_consistent" not in cut
+    assert "'$.interval.record_position'" in cut      # interval_closed still binds it
+    assert len(cut.split("\n")) == len(lines) - (end - start + 1)
+    conn.execute(f"DROP TRIGGER {CITATION}")
+    conn.execute(cut)
+    conn.commit()
+
+
+@pytest.mark.parametrize(("barrier_z", "truthful", "forged"), [
+    # record = barrier + 1 s: [fire, writer_absence_only, covered]
+    ("2026-08-10T12:41:32Z", "inside_coverage", "before_barrier"),
+    # record = barrier - 1 s: [fire, writer_absence_only, match_only 1 s, covered]
+    ("2026-08-10T12:41:34Z", "before_barrier", "inside_coverage"),
+])
+def test_g_neg_the_record_position_belt_refuses_a_forged_position(
+        tmp_path: Path, barrier_z: str, truthful: str, forged: str) -> None:
+    from datetime import datetime
+
+    from swing.trades import frozen_value_evidence as fve
+    from tests._tier2_world_22a2 import (
+        T25_AUTHOR_INSTANT,
+        T25_PIPELINE_FINISHED,
+        T25_RUN_TS,
+    )
+
+    segments = fve.build_interval(
+        fire_lo_raw=T25_RUN_TS, fire_hi_raw=T25_PIPELINE_FINISHED,
+        author_instant=datetime.fromisoformat(T25_AUTHOR_INSTANT),
+        barrier_armed_raw=barrier_z, read_at="2026-09-23T12:00:00.000",
+        barrier_installed=True)["segments"]
+    assert len(segments) == (3 if truthful == "inside_coverage" else 4)
+    conn, payload, _ids = truthful_tier2_payload(tmp_path)
+
+    def shaped(position: str) -> dict:
+        blob = json.loads(payload[PROVENANCE_TIER2_EVIDENCE_FIELD])
+        blob["interval"]["segments"] = segments
+        blob["interval"]["record_position"] = position
+        return {**payload, PROVENANCE_TIER2_EVIDENCE_FIELD: json.dumps(blob)}
+
+    try:
+        # The control: the truthful position on this segment shape ADMITS
+        # (the amended interval_segment_order accepts length 3 AND 4).
+        assert not _refused(conn, shaped(truthful))
+        # The forged position ABORTS.
+        assert _refused(conn, shaped(forged))
+        # ... and it is the belt that aborts it: with the belt cut, ACCEPTED.
+        _drop_the_belt(conn)
+        assert not _refused(conn, shaped(forged))
+    finally:
+        conn.close()
+
+
+def test_g_neg_interval_admits_exactly_one_more_typed_key(tmp_path: Path) -> None:
+    """interval_closed widens by exactly record_position IN the pair."""
+    conn, payload, _ids = truthful_tier2_payload(tmp_path)
+
+    def with_interval(fn) -> dict:
+        blob = json.loads(payload[PROVENANCE_TIER2_EVIDENCE_FIELD])
+        fn(blob["interval"])
+        return {**payload, PROVENANCE_TIER2_EVIDENCE_FIELD: json.dumps(blob)}
+
+    try:
+        assert not _refused(conn, payload)
+        assert _refused(conn, with_interval(lambda iv: iv.pop("record_position")))
+        assert _refused(conn, with_interval(
+            lambda iv: iv.__setitem__("record_position", "after_barrier")))
+        assert _refused(conn, with_interval(
+            lambda iv: iv.__setitem__("record_position", 1)))
+        assert _refused(conn, with_interval(lambda iv: iv.__setitem__("extra", "x")))
+        # length 2 and 5 refuse; a length-3 list whose [2] is match_only refuses
+        assert _refused(conn, with_interval(
+            lambda iv: iv.__setitem__("segments", iv["segments"][:2])))
+        assert _refused(conn, with_interval(
+            lambda iv: iv.__setitem__("segments", iv["segments"] + iv["segments"][-1:])))
+        assert _refused(conn, with_interval(lambda iv: (
+            iv.__setitem__("segments", iv["segments"][:3]),
+            iv.__setitem__("record_position", "inside_coverage"))))
+    finally:
+        conn.close()

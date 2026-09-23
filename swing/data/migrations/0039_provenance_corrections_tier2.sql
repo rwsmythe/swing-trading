@@ -2035,11 +2035,16 @@ FOR EACH ROW WHEN NOT (
              AND json_type(NEW.cited_frozen_value_evidence_json, '$.remote_ref_updated_at') IN ('text', 'null')
              AND json_type(NEW.cited_frozen_value_evidence_json, '$.remote_ref_age_seconds') IN ('integer', 'null')
              -- TIER2-PREDICATE interval_closed
+             -- endpoints + segments + ONE typed key, record_position: where
+             -- record_at sits relative to barrier_armed_at (CHARC G-NEG).
              AND json_type(NEW.cited_frozen_value_evidence_json, '$.interval') = 'object'
              AND CASE WHEN json_type(NEW.cited_frozen_value_evidence_json, '$.interval') = 'object'
                       THEN json_remove(json_extract(NEW.cited_frozen_value_evidence_json, '$.interval'),
-                             '$.endpoints', '$.segments') = '{}'
+                             '$.endpoints', '$.segments', '$.record_position') = '{}'
                       ELSE 0 END
+             AND json_type(NEW.cited_frozen_value_evidence_json, '$.interval.record_position') = 'text'
+             AND json_extract(NEW.cited_frozen_value_evidence_json, '$.interval.record_position')
+                 IN ('before_barrier', 'inside_coverage')
              AND json_type(NEW.cited_frozen_value_evidence_json, '$.interval.endpoints') = 'object'
              AND CASE WHEN json_type(NEW.cited_frozen_value_evidence_json, '$.interval.endpoints') = 'object'
                       THEN json_remove(json_extract(NEW.cited_frozen_value_evidence_json, '$.interval.endpoints'),
@@ -2103,15 +2108,25 @@ FOR EACH ROW WHEN NOT (
              AND json_extract(NEW.cited_frozen_value_evidence_json, '$.interval.endpoints.read_at.clock_domain') = 'naive_utc_ms'
              AND json_extract(NEW.cited_frozen_value_evidence_json, '$.interval.endpoints.read_at.source') = 'provenance_corrections.applied_at'
              -- TIER2-PREDICATE interval_segment_order
-             -- The four segment kinds, in order; SQL recomputes NO duration
-             -- and never reads a utc value (R8-03, AL2-9).
+             -- The emitted kinds in the canonical order fire,
+             -- writer_absence_only, match_only, covered -- match_only OPTIONAL
+             -- (RD F2.I-NEG; CHARC G-NEG). Its presence IFF record_at.utc <
+             -- barrier_armed_at.utc is the SERVICE twin's (this predicate's
+             -- mirror): SQL recomputes NO duration and never reads a utc
+             -- value (R8-03, AL2-9), so here it asserts the ORDER only.
              AND json_type(NEW.cited_frozen_value_evidence_json, '$.interval.segments') = 'array'
-             AND json_array_length(NEW.cited_frozen_value_evidence_json, '$.interval.segments') = 4
+             AND json_array_length(NEW.cited_frozen_value_evidence_json, '$.interval.segments') IN (3, 4)
              AND json_extract(NEW.cited_frozen_value_evidence_json, '$.interval.segments[0].kind') = 'fire'
              AND json_extract(NEW.cited_frozen_value_evidence_json, '$.interval.segments[1].kind') = 'writer_absence_only'
-             AND json_extract(NEW.cited_frozen_value_evidence_json, '$.interval.segments[2].kind') = 'match_only'
-             AND json_extract(NEW.cited_frozen_value_evidence_json, '$.interval.segments[3].kind')
-                 IN ('covered', 'uncovered_barrier_absent')
+             AND CASE json_array_length(NEW.cited_frozen_value_evidence_json, '$.interval.segments')
+                 WHEN 4 THEN (
+                     json_extract(NEW.cited_frozen_value_evidence_json, '$.interval.segments[2].kind') = 'match_only'
+                     AND json_extract(NEW.cited_frozen_value_evidence_json, '$.interval.segments[3].kind')
+                         IN ('covered', 'uncovered_barrier_absent'))
+                 WHEN 3 THEN
+                     json_extract(NEW.cited_frozen_value_evidence_json, '$.interval.segments[2].kind')
+                         IN ('covered', 'uncovered_barrier_absent')
+                 ELSE 0 END
              AND NOT EXISTS (
                  SELECT 1 FROM json_each(NEW.cited_frozen_value_evidence_json, '$.interval.segments') s
                   WHERE CASE WHEN s.type = 'object' THEN (
@@ -2123,6 +2138,15 @@ FOR EACH ROW WHEN NOT (
                             OR json_type(s.value, '$.seconds')
                                NOT IN ('integer', 'real'))
                         ELSE 1 END)
+             -- TIER2-PREDICATE record_position_consistent
+             -- CHARC's G-NEG belt: two representations of ONE fact agree,
+             -- with no utc read and no duration -- 'before_barrier' iff a
+             -- match_only span exists (length 4), 'inside_coverage' iff not
+             -- (length 3). An absent or foreign value reads NULL/0: refused.
+             AND CASE json_array_length(NEW.cited_frozen_value_evidence_json, '$.interval.segments')
+                 WHEN 4 THEN json_extract(NEW.cited_frozen_value_evidence_json, '$.interval.record_position') = 'before_barrier'
+                 WHEN 3 THEN json_extract(NEW.cited_frozen_value_evidence_json, '$.interval.record_position') = 'inside_coverage'
+                 ELSE 0 END
              ) ELSE 0 END)
          ELSE 0 END
 

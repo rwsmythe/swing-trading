@@ -13,6 +13,7 @@ and inserts the builder's blob RAW through the citation trigger.
 from __future__ import annotations
 
 import ast
+import copy
 import importlib
 import inspect
 import json
@@ -138,7 +139,11 @@ def test_a2_42_trade25_admits_and_builder_equals_the_hand_built_literal(
         assert (blob["quoted_ticker_text"], blob["quoted_action_session_text"],
                 blob["quoted_pivot_text"], blob["quoted_invalidation_text"]) == (
             "OII", "2026-08-10", "53.98", "41.42")
-        # Two independent representations agree on every verdict-bearing key.
+        # Two independent representations agree on every verdict-bearing key
+        # (RD's F2.I-NEG consequence (iii): record_position is one of them).
+        assert "interval.record_position" in fve.VERDICT_BEARING_KEYS
+        assert blob["interval"]["record_position"] == "before_barrier"
+        assert len(blob["interval"]["segments"]) == 4
         for key in sorted(fve.VERDICT_BEARING_KEYS):
             assert _at(blob, key) == _at(literal, key), key
         # And the constants the literal carries are the module's.
@@ -175,6 +180,148 @@ def test_a2_43_interval_durations_and_prose_on_trade25_live_values() -> None:
     # The whole interval and prose equal the hand-built literal.
     assert interval == literal["interval"]
     assert prose == literal["uncovered_window_prose"]
+
+
+# ------------------------------------------------------------ F2.I-NEG (RD, 2026-09-23)
+# The trade-25 world with ONLY the barrier time moved.  Trade 25's record is
+# 2026-08-10T12:41:33Z; the discriminators put the barrier 1 s before, at, and
+# 1 s after it.
+
+T25_RECORD_UTC = "2026-08-10T12:41:33Z"
+BARRIER_RECORD_PLUS_1 = "2026-08-10T12:41:32Z"   # record = barrier + 1 s
+BARRIER_RECORD_MINUS_1 = "2026-08-10T12:41:34Z"  # record = barrier - 1 s
+BARRIER_AT_RECORD = T25_RECORD_UTC               # record == barrier
+
+
+def _t25_interval(barrier_z: str) -> dict:
+    return fve.build_interval(
+        fire_lo_raw=T25_RUN_TS, fire_hi_raw=T25_PIPELINE_FINISHED,
+        author_instant=datetime.fromisoformat(T25_AUTHOR_INSTANT),
+        barrier_armed_raw=barrier_z, read_at=READ_AT, barrier_installed=True)
+
+
+def _kinds(interval: dict) -> list[str]:
+    return [s["kind"] for s in interval["segments"]]
+
+
+def test_f2i_neg_record_after_barrier_emits_no_match_only() -> None:
+    interval = _t25_interval(BARRIER_RECORD_PLUS_1)
+    # Pre-fix arithmetic: the literal impl emits match_only = -1 s; a clamp
+    # impl emits match_only = 0 s; either fails the exact kind list.
+    assert _kinds(interval) == ["fire", "writer_absence_only", "covered"]
+    assert interval["record_position"] == "inside_coverage"
+    assert all(s["seconds"] > 0 for s in interval["segments"])
+    # writer_absence_only END = min(record_at, barrier_armed_at): the barrier.
+    wao = interval["segments"][1]
+    assert (wao["from"], wao["to"], wao["seconds"]) == (
+        "2026-08-08T03:39:07Z", BARRIER_RECORD_PLUS_1, 205_345)
+    assert interval["segments"][2]["from"] == BARRIER_RECORD_PLUS_1
+    prose = fve.render_uncovered_window_prose(interval)
+    assert "inside coverage" in prose
+    assert prose == (
+        "writer_absence_only 2.38 days (2026-08-08T03:39:07Z to 2026-08-10T12:41:32Z); "
+        "covered from 2026-08-10T12:41:32Z; "
+        "record authored inside coverage at 2026-08-10T12:41:33Z")
+
+
+def test_f2i_neg_record_before_barrier_keeps_a_one_second_match_only() -> None:
+    interval = _t25_interval(BARRIER_RECORD_MINUS_1)
+    assert _kinds(interval) == ["fire", "writer_absence_only", "match_only", "covered"]
+    assert interval["segments"][2]["seconds"] == 1
+    assert interval["segments"][1]["seconds"] == 205_346
+    assert interval["record_position"] == "before_barrier"
+    assert all(s["seconds"] > 0 for s in interval["segments"])
+
+
+def test_f2i_neg_record_at_barrier_emits_no_empty_match_only() -> None:
+    interval = _t25_interval(BARRIER_AT_RECORD)
+    # Pre-fix arithmetic: a clamp/literal impl emits match_only = 0 s.
+    assert "match_only" not in _kinds(interval)
+    assert _kinds(interval) == ["fire", "writer_absence_only", "covered"]
+    assert interval["record_position"] == "inside_coverage"
+    assert all(s["seconds"] > 0 for s in interval["segments"])
+
+
+_REAL_READ_CONTEXT = fve._read_context
+
+
+def _moved_barrier_world(tmp_path: Path, monkeypatch, barrier_z: str):
+    """The conjunction world with ONLY the epoch's applied_at moved (the test
+    world's epoch is stamped at migration time and is immutable)."""
+    conn = _world(tmp_path)
+
+    def moved(c, candidate_id):
+        return {**_REAL_READ_CONTEXT(c, candidate_id), "barrier_armed_at": barrier_z}
+    monkeypatch.setattr(fve, "_read_context", moved)
+    return conn, fve._read_context(conn, T25_CANDIDATE_ID)
+
+
+def test_f2i_neg_each_barrier_position_admits_through_the_conjunction(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The three discriminators end to end: the built blob passes every
+    trigger-predicate mirror (the presence IFF and the belt included)."""
+    for barrier_z, n_segments, position in (
+            (BARRIER_RECORD_PLUS_1, 3, "inside_coverage"),
+            (BARRIER_RECORD_MINUS_1, 4, "before_barrier"),
+            (BARRIER_AT_RECORD, 3, "inside_coverage")):
+        conn, _ctx = _moved_barrier_world(tmp_path / barrier_z[-3:-1], monkeypatch,
+                                          barrier_z)
+        verdict = _evaluate(conn, _facts())
+        assert verdict.admitted, (barrier_z, verdict)
+        assert verdict.evidence is not None
+        interval = verdict.evidence["interval"]
+        assert interval == _t25_interval(barrier_z)
+        assert (len(interval["segments"]), interval["record_position"]) == (
+            n_segments, position)
+        assert verdict.evidence["uncovered_window_prose"] == (
+            fve.render_uncovered_window_prose(interval))
+        conn.close()
+
+
+def test_f2i_neg_service_mirrors_refuse_what_sql_cannot_see(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The presence IFF (match_only iff record_at.utc < barrier_armed_at.utc)
+    and seconds > 0 live in the interval_segment_order service mirror (SQL
+    never reads a utc value, R8-03); the length belt is its own mirror."""
+    conn, ctx = _moved_barrier_world(tmp_path, monkeypatch, BARRIER_RECORD_PLUS_1)
+    admitted = _evaluate(conn, _facts())
+    assert admitted.evidence is not None
+    good = admitted.evidence
+
+    def first_fail(blob: dict) -> str | None:
+        return fve._first_failing_mirror(blob, ctx, read_at=READ_AT,
+                                         fill_session=FILL_SESSION)
+    assert first_fail(good) is None
+
+    # (1) a match_only forged into an inside-coverage record, belt satisfied:
+    # SQL-consistent (length 4, before_barrier), the IFF refuses it.
+    forged = copy.deepcopy(good)
+    segs = forged["interval"]["segments"]
+    segs.insert(2, {"kind": "match_only", "from": T25_RECORD_UTC,
+                    "to": BARRIER_RECORD_PLUS_1, "seconds": 1})
+    forged["interval"]["record_position"] = "before_barrier"
+    assert first_fail(forged) == "interval_segment_order"
+
+    # (2) a zero-second segment is never admissible.
+    zero = copy.deepcopy(good)
+    zero["interval"]["segments"][1]["seconds"] = 0
+    assert first_fail(zero) == "interval_segment_order"
+
+    # (3) CHARC's belt: record_position disagreeing with the segment count.
+    belt = copy.deepcopy(good)
+    belt["interval"]["record_position"] = "before_barrier"
+    assert first_fail(belt) == "record_position_consistent"
+
+    # (4) interval_closed admits exactly one more typed key.
+    bad_pos = copy.deepcopy(good)
+    bad_pos["interval"]["record_position"] = "after_barrier"
+    assert first_fail(bad_pos) == "interval_closed"
+    missing = copy.deepcopy(good)
+    del missing["interval"]["record_position"]
+    assert first_fail(missing) == "interval_closed"
+    conn.close()
 
 
 # --------------------------------------------------------------------------- A2-44
@@ -312,10 +459,21 @@ def test_a2_56_iso_token_carries_its_own_year(tmp_path: Path) -> None:
 
 # --------------------------------------------------------------------------- A2-57
 
-def test_a2_57_record_must_be_at_or_after_fire_hi(tmp_path: Path) -> None:
+def test_a2_57_record_must_be_strictly_after_fire_hi(tmp_path: Path) -> None:
+    """RD's G-U1 ruling: the fire bracket [fire_lo, fire_hi] is CLOSED on both
+    ends -- finished_ts is second-truncated (lease.py ``timespec="seconds"``),
+    so a record EQUAL to either bound is order-indeterminate."""
     conn = _world(tmp_path)
-    at_hi = _evaluate(conn, _facts(author="2026-08-07T17:39:07-10:00"))
-    assert at_hi.admitted, at_hi
+    # Pre-fix arithmetic: the `>=` impl ADMITS at_hi with a 0 s writer_absence_only.
+    assert _refusal(_evaluate(conn, _facts(author="2026-08-07T17:39:07-10:00"))) == (
+        4, "window_indeterminate", None)
+    # The boundary twin: one second past fire_hi admits, writer_absence_only 1 s.
+    past_hi = _evaluate(conn, _facts(author="2026-08-07T17:39:08-10:00"))
+    assert past_hi.admitted, past_hi
+    assert past_hi.evidence is not None
+    segs = past_hi.evidence["interval"]["segments"]
+    assert [s["kind"] for s in segs][:2] == ["fire", "writer_absence_only"]
+    assert segs[1]["seconds"] == 1
     assert _refusal(_evaluate(conn, _facts(author="2026-08-07T17:39:06-10:00"))) == (
         4, "window_indeterminate", None)
     assert _refusal(_evaluate(conn, _facts(author="2026-08-07T17:30:02-10:00"))) == (
@@ -385,7 +543,9 @@ def _module_reach(module: object, root: str) -> set[str]:
 def test_a2_60_every_trigger_predicate_has_a_reached_service_check() -> None:
     _path, trigger = head_create_statement("trg_provenance_corrections_citation_graph")
     sql_ids = _MARKER.findall(trigger)
-    assert len(sql_ids) == len(set(sql_ids)) == 28
+    # 28 + CHARC's G-NEG belt `record_position_consistent`.
+    assert len(sql_ids) == len(set(sql_ids)) == 29
+    assert "record_position_consistent" in sql_ids
     py_ids = [pid for pid, _ in fve.TIER2_TRIGGER_PREDICATES]
     assert len(py_ids) == len(set(py_ids))
     assert set(sql_ids) - set(py_ids) == set(), "trigger predicate with no service check"

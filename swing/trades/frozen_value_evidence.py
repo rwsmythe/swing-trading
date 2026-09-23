@@ -83,7 +83,7 @@ VERIFICATION_METHOD = (
     "refs/remotes/origin/main; (2) the author instant's America/New_York date "
     "strictly precedes the fill session; (3) the quoted text contains the cited "
     "candidate's ticker, action session, pivot and initial_stop as "
-    "service-rendered tokens; (4) the record is at or after the fire's pipeline "
+    "service-rendered tokens; (4) the record is strictly after the fire's pipeline "
     "finished_ts")
 ANCHOR_STRENGTH = "remote_replicated_ancestry"
 TIME_ANCHOR_RESIDUAL = (
@@ -124,6 +124,12 @@ _ENDPOINT_DOMAIN_SOURCE: dict[str, tuple[str, str]] = {
 SEGMENT_KINDS: tuple[str, ...] = ("fire", "writer_absence_only", "match_only")
 SEGMENT_COVERED = "covered"
 SEGMENT_UNCOVERED_BARRIER_ABSENT = "uncovered_barrier_absent"
+# RD's F2.I-NEG + CHARC's G-NEG: where record_at sits relative to
+# barrier_armed_at, recorded inside ``interval`` (a verdict-bearing key).
+RECORD_POSITION_BEFORE_BARRIER = "before_barrier"
+RECORD_POSITION_INSIDE_COVERAGE = "inside_coverage"
+RECORD_POSITIONS: tuple[str, ...] = (
+    RECORD_POSITION_BEFORE_BARRIER, RECORD_POSITION_INSIDE_COVERAGE)
 
 # E-15: the keys the replay COMPARES (dotted paths into the blob).  Everything
 # else is RECORDED only -- evaluated_at, the resolved sha, the descendant
@@ -134,6 +140,7 @@ VERDICT_BEARING_KEYS: frozenset[str] = frozenset({
     "quoted_invalidation_text", "live_pivot_raw", "live_invalidation_raw",
     "author_instant", "author_date_et", "fill_session_date",
     *(f"interval.endpoints.{e}.{k}" for e in INTERVAL_ENDPOINTS for k in ("raw", "utc")),
+    "interval.record_position",
 })
 
 
@@ -442,8 +449,15 @@ def build_interval(*, fire_lo_raw: str, fire_hi_raw: str, author_instant: dateti
                    barrier_armed_raw: str, read_at: str,
                    barrier_installed: bool) -> dict:
     """F2.I (I-1 + s1): five endpoints -- each its raw source value, its UTC
-    rendering, clock domain and source column -- and four segments in order.
-    The durations are the SERVICE's record; SQL binds only the raws (AL2-9)."""
+    rendering, clock domain and source column -- and the segments the ORDERED
+    endpoints induce (RD's F2.I-NEG): ``fire`` [fire_lo, fire_hi];
+    ``writer_absence_only`` [fire_hi, min(record_at, barrier_armed_at));
+    ``match_only`` [record_at, barrier_armed_at); ``covered`` (or
+    ``uncovered_barrier_absent``) [barrier_armed_at, read_at].  A segment of
+    zero or negative length is NOT EMITTED -- so a record authored at or after
+    the barrier has no ``match_only`` and ``record_position`` reads
+    ``inside_coverage`` (else ``before_barrier``).  The durations are the
+    SERVICE's record; SQL binds only the raws (AL2-9)."""
     fire_lo = _local_naive_utc(fire_lo_raw)
     fire_hi = _local_naive_utc(fire_hi_raw)
     record_at = author_instant.astimezone(UTC)
@@ -472,8 +486,11 @@ def build_interval(*, fire_lo_raw: str, fire_hi_raw: str, author_instant: dateti
     }
     instants = {"fire_lo": fire_lo, "fire_hi": fire_hi, "record_at": record_at,
                 "barrier_armed_at": barrier, "read_at": read}
+    # writer_absence_only ENDS at min(record_at, barrier_armed_at): one
+    # formula, no branch (F2.I-NEG consequence (iv)).
+    wao_end = "record_at" if record_at <= barrier else "barrier_armed_at"
     spans = (("fire", "fire_lo", "fire_hi"),
-             ("writer_absence_only", "fire_hi", "record_at"),
+             ("writer_absence_only", "fire_hi", wao_end),
              ("match_only", "record_at", "barrier_armed_at"),
              (SEGMENT_COVERED if barrier_installed else SEGMENT_UNCOVERED_BARRIER_ABSENT,
               "barrier_armed_at", "read_at"))
@@ -481,12 +498,16 @@ def build_interval(*, fire_lo_raw: str, fire_hi_raw: str, author_instant: dateti
         {"kind": kind, "from": utc[a], "to": utc[b],
          "seconds": _seconds(instants[a], instants[b])}
         for kind, a, b in spans
+        if instants[b] > instants[a]
     ]
-    return {"endpoints": endpoints, "segments": segments}
+    position = (RECORD_POSITION_BEFORE_BARRIER if record_at < barrier
+                else RECORD_POSITION_INSIDE_COVERAGE)
+    return {"endpoints": endpoints, "segments": segments, "record_position": position}
 
 
 def render_uncovered_window_prose(interval: dict) -> str:
-    """F9: the service renders the prose; nobody types it."""
+    """F9: the service renders the prose; nobody types it.  A record authored
+    inside coverage names itself (RD's F2.I-NEG consequence (ii))."""
     parts = []
     for seg in interval["segments"]:
         if seg["kind"] in ("writer_absence_only", "match_only"):
@@ -494,6 +515,9 @@ def render_uncovered_window_prose(interval: dict) -> str:
                          f"({seg['from']} to {seg['to']})")
         elif seg["kind"] in (SEGMENT_COVERED, SEGMENT_UNCOVERED_BARRIER_ABSENT):
             parts.append(f"{seg['kind']} from {seg['from']}")
+    if interval["record_position"] == RECORD_POSITION_INSIDE_COVERAGE:
+        parts.append("record authored inside coverage at "
+                     f"{interval['endpoints']['record_at']['utc']}")
     return "; ".join(parts)
 
 
@@ -565,8 +589,10 @@ def evaluate_conjunction(conn: sqlite3.Connection, facts: ArtifactFacts, *,
     instant's America/New_York DATE strictly precedes ``fill_session`` (F7;
     the committer instant is never verdict-bearing); (3) the quoted text
     contains the cited candidate's ticker, action session, pivot and
-    initial_stop as service-rendered whole tokens (F13); (4) the record is at
-    or after the fire's upper bound ``pipeline_runs.finished_ts`` (F6 ii).
+    initial_stop as service-rendered whole tokens (F13); (4) the record is
+    STRICTLY after the fire's upper bound ``pipeline_runs.finished_ts`` (F6 ii
+    as amended by RD's G-U1: the fire bracket is CLOSED on both ends and
+    ``finished_ts`` is second-truncated, so equality is order-indeterminate).
     On admit the seventh-column blob is built and checked against every
     trigger predicate's service-side mirror before it is returned.
     """
@@ -589,7 +615,8 @@ def evaluate_conjunction(conn: sqlite3.Connection, facts: ArtifactFacts, *,
     if missing is not None:
         return _refused(3, missing, missing)
 
-    # Criterion 4 -- the fire is a BRACKET [run_ts, finished_ts] (R8-01).
+    # Criterion 4 -- the fire is a CLOSED BRACKET [run_ts, finished_ts] (R8-01;
+    # RD's G-U1): < fire_lo negative; fire_lo..fire_hi inclusive indeterminate.
     try:
         if ctx["run_ts"] is None or ctx["finished_ts"] is None:
             raise ValueError("fire bracket unresolvable")
@@ -600,7 +627,7 @@ def evaluate_conjunction(conn: sqlite3.Connection, facts: ArtifactFacts, *,
     record_at = facts.author_instant.astimezone(UTC)
     if record_at < fire_lo:
         return _refused(4, REASON_WINDOW_NEGATIVE)
-    if record_at < fire_hi:
+    if record_at <= fire_hi:
         return _refused(4, REASON_WINDOW_INDETERMINATE)
 
     # ADMIT: build the blob, then run every trigger predicate's mirror.
@@ -784,7 +811,10 @@ def _tp_remote_ref_attestation(blob, ctx, **_):
 
 def _tp_interval_closed(blob, ctx, **_):
     iv = blob["interval"]
-    return (isinstance(iv, dict) and set(iv) == {"endpoints", "segments"}
+    return (isinstance(iv, dict)
+            and set(iv) == {"endpoints", "segments", "record_position"}
+            and _is_text(iv["record_position"])
+            and iv["record_position"] in RECORD_POSITIONS
             and isinstance(iv["endpoints"], dict)
             and set(iv["endpoints"]) == set(INTERVAL_ENDPOINTS))
 
@@ -818,16 +848,47 @@ def _tp_interval_endpoint_read_at(blob, ctx, *, read_at, **_):
     return _endpoint_ok(blob, "read_at", read_at)
 
 
+def _parse_utc_z(text: str) -> datetime:
+    if not (_is_text(text) and text.endswith("Z")):
+        raise ValueError(f"not a UTC-Z instant: {text!r}")
+    parsed = datetime.fromisoformat(text[:-1])
+    if parsed.utcoffset() is not None:
+        raise ValueError(f"not a UTC-Z instant: {text!r}")
+    return parsed
+
+
 def _tp_interval_segment_order(blob, ctx, **_):
+    """The trigger twin asserts the ORDER only (it never reads a utc value,
+    R8-03); this service check adds what SQL cannot: ``match_only`` present
+    IFF record_at.utc < barrier_armed_at.utc (RD's F2.I-NEG (i)), and every
+    emitted segment has seconds > 0."""
     segs = blob["interval"]["segments"]
-    if not (isinstance(segs, list) and len(segs) == 4):
+    if not (isinstance(segs, list) and len(segs) in (3, 4)):
         return False
     kinds = [s.get("kind") if isinstance(s, dict) else None for s in segs]
-    if kinds[:3] != list(SEGMENT_KINDS) or kinds[3] not in (
-            SEGMENT_COVERED, SEGMENT_UNCOVERED_BARRIER_ABSENT):
+    tail = (SEGMENT_COVERED, SEGMENT_UNCOVERED_BARRIER_ABSENT)
+    if kinds[:2] != list(SEGMENT_KINDS[:2]) or kinds[-1] not in tail:
         return False
-    return all(set(s) == {"kind", "from", "to", "seconds"} and _is_text(s["from"])
-               and _is_text(s["to"]) and _is_number(s["seconds"]) for s in segs)
+    has_match_only = len(segs) == 4
+    if has_match_only and kinds[2] != SEGMENT_KINDS[2]:
+        return False
+    if not all(set(s) == {"kind", "from", "to", "seconds"} and _is_text(s["from"])
+               and _is_text(s["to"]) and _is_number(s["seconds"]) and s["seconds"] > 0
+               for s in segs):
+        return False
+    endpoints = blob["interval"]["endpoints"]
+    record_at = _parse_utc_z(endpoints["record_at"]["utc"])
+    barrier = _parse_utc_z(endpoints["barrier_armed_at"]["utc"])
+    return has_match_only == (record_at < barrier)
+
+
+def _tp_record_position_consistent(blob, ctx, **_):
+    """CHARC's G-NEG belt, the service twin: 'before_barrier' iff length 4,
+    'inside_coverage' iff length 3."""
+    iv = blob["interval"]
+    n = len(iv["segments"])
+    return ((n == 4 and iv["record_position"] == RECORD_POSITION_BEFORE_BARRIER)
+            or (n == 3 and iv["record_position"] == RECORD_POSITION_INSIDE_COVERAGE))
 
 
 # The blob predicates' mirrors, in the trigger's order.  A tuple of NAMED
@@ -842,6 +903,7 @@ _BLOB_MIRRORS = (
     _tp_interval_closed, _tp_interval_endpoint_fire_lo, _tp_interval_endpoint_fire_hi,
     _tp_interval_endpoint_record_at, _tp_interval_endpoint_barrier_armed_at,
     _tp_interval_endpoint_read_at, _tp_interval_segment_order,
+    _tp_record_position_consistent,
 )
 
 # (predicate id in the HEAD citation trigger, "module:service check").  The
