@@ -14,6 +14,7 @@ queries by ``hypothesis_label`` use the same canonical form.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Collection
 
 from swing.data.models import Trade
 from swing.data.repos.trades import (
@@ -35,6 +36,7 @@ def list_trades_for_cohort(
     hypothesis_label: str | None,
     state_filter: tuple[str, ...] | None = None,
     entry_intent: str | None = None,
+    exclude_entry_intents: Collection[str] = (),
 ) -> list[Trade]:
     """Return trades matching the cohort filter.
 
@@ -48,6 +50,12 @@ def list_trades_for_cohort(
           Sentinel convention: ``None`` = no predicate (today's behavior);
           ``'__unclassified__'`` = ``entry_intent IS NULL``; any other
           value = ``entry_intent = ?`` equality.
+        exclude_entry_intents: Arc 22-B (N2 (a), E13) -- one
+          ``entry_intent IS NOT ?`` clause per value (NULL-safe: a NULL
+          intent still counts). Default EMPTY, so the observational callers
+          (``metrics/process.py``; ``count_per_cohort`` does not call this)
+          stay unfiltered; the governed readers pass
+          ``cohort_intent.cohort_excluded_entry_intents(name)``.
 
     Per plan §A.11.1: include ALL trades labeled with the cohort regardless
     of cohort status (active / paused / closed). Paused intervals do NOT
@@ -81,6 +89,9 @@ def list_trades_for_cohort(
         else:
             where_clauses.append("entry_intent = ?")
             params.append(entry_intent)
+    for excluded in exclude_entry_intents:
+        where_clauses.append("entry_intent IS NOT ?")
+        params.append(excluded)
 
     cols = _trade_select_cols(conn)
     sql = f"SELECT {cols} FROM trades"  # noqa: S608
@@ -103,6 +114,7 @@ def list_trades_for_cohort(
 def list_closed_trades_for_cohort(
     conn: sqlite3.Connection, *, hypothesis_label: str | None,
     entry_intent: str | None = None,
+    exclude_entry_intents: Collection[str] = (),
 ) -> list[Trade]:
     """Return trades in 'closed' or 'reviewed' state for the cohort.
 
@@ -115,7 +127,56 @@ def list_closed_trades_for_cohort(
         hypothesis_label=hypothesis_label,
         state_filter=("closed", "reviewed"),
         entry_intent=entry_intent,
+        exclude_entry_intents=exclude_entry_intents,
     )
+
+
+def list_intent_excluded_for_cohort(
+    conn: sqlite3.Connection,
+    *,
+    hypothesis_label: str,
+    state_filter: tuple[str, ...] | None,
+) -> tuple[tuple[int, str], ...]:
+    """The cohort's label-matched trades clause (4) removes, NAMED
+    ``(trade_id, reason)`` in id order (Arc 22-B, N3 (a) + RD's plan read).
+
+    The same label match as :func:`list_trades_for_cohort`, voided trades
+    excluded, ``entry_intent IN CONTRACT_EXCLUDED_ENTRY_INTENTS``. ONE
+    ``LEFT JOIN entry_intent_attestations``: ``reason`` carries the
+    ``UNATTESTED`` token when no evidence row exists for the trade -- the
+    production detector for a value the schema could not see written (a
+    fabricated or pre-trigger raw write). Declared residual: an unattested
+    row with a NULL label matches no cohort and is unnamed here; it was in
+    no cohort, so no count moved. ``state_filter`` of ``None`` applies no
+    state predicate (a caller counting from its own loaded trade lists
+    intersects the result with them).
+    """
+    from swing.metrics.cohort_intent import (
+        CONTRACT_EXCLUDED_ENTRY_INTENTS,
+        intent_exclusion_reason,
+    )
+    from swing.trades.voided_trades import voided_trade_ids
+
+    if state_filter is not None and not state_filter:
+        return ()  # an empty IN () is invalid SQL
+    fragment, params = label_matches_hypothesis_sql(
+        canonicalize_hypothesis_label(hypothesis_label))
+    states = (f"AND t.state IN ({','.join('?' for _ in state_filter)}) "
+              if state_filter else "")
+    intents = ",".join("?" for _ in CONTRACT_EXCLUDED_ENTRY_INTENTS)
+    rows = conn.execute(
+        "SELECT t.id, t.entry_intent, a.attestation_id IS NOT NULL "
+        "FROM trades t "
+        "LEFT JOIN entry_intent_attestations a ON a.trade_id = t.id "
+        f"WHERE {fragment} {states}"
+        f"AND t.entry_intent IN ({intents}) "
+        "ORDER BY t.id",  # noqa: S608
+        [*params, *(state_filter or ()), *CONTRACT_EXCLUDED_ENTRY_INTENTS],
+    ).fetchall()
+    voided = voided_trade_ids(conn)
+    return tuple(
+        (int(tid), intent_exclusion_reason(intent, attested=bool(attested)))
+        for tid, intent, attested in rows if tid not in voided)
 
 
 def count_per_cohort(conn: sqlite3.Connection) -> dict[str, int]:

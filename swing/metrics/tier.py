@@ -62,8 +62,13 @@ from swing.data.repos.fills import list_fills_for_trade
 from swing.metrics.cohort import (
     filter_trades_without_unresolved_material_discrepancies,
     list_closed_trades_for_cohort,
+    list_intent_excluded_for_cohort,
 )
-from swing.metrics.cohort_intent import cohort_entry_intent
+from swing.metrics.cohort_intent import (
+    cohort_entry_intent,
+    cohort_excluded_entry_intents,
+    intent_exclusion_lines,
+)
 from swing.metrics.honesty import (
     BootstrapCI,
     HonestyBadges,
@@ -243,6 +248,11 @@ class CohortStatistics:
     # ``(trade_id, observation)``.  Empty in the zero-data state.
     tier2_excluded: tuple[tuple[int, str, str | None], ...] = ()
     tier2_observed: tuple[tuple[int, str], ...] = ()
+    # Arc 22-B (N3 (a), E12): the cohort's label-matched closed trades
+    # clause (4) removes, NAMED ``(trade_id, reason)`` (``, UNATTESTED`` when
+    # no evidence row exists -- RD's plan read). Never folded into
+    # ``tier2_excluded``, which is 22-A2's replay-verdict channel.
+    intent_excluded: tuple[tuple[int, str], ...] = ()
 
     @property
     def tier2_lines(self) -> tuple[str, ...]:
@@ -250,6 +260,11 @@ class CohortStatistics:
         from swing.trades.frozen_value_evidence import tier2_cohort_lines
 
         return tier2_cohort_lines(self.tier2_excluded, self.tier2_observed)
+
+    @property
+    def intent_lines(self) -> tuple[str, ...]:
+        """The clause-(4) lines the tier page renders beside the tier-2 ones."""
+        return intent_exclusion_lines(self.intent_excluded)
 
     def __post_init__(self) -> None:
         # Phase 9 forward-binding lesson #1: validate every new dataclass.
@@ -532,6 +547,7 @@ def _compute_cohort_stats(
     preregistered_decision_criteria: str | None = None,
     tier2_excluded: tuple[tuple[int, str, str | None], ...] = (),
     tier2_observed: tuple[tuple[int, str], ...] = (),
+    intent_excluded: tuple[tuple[int, str], ...] = (),
 ) -> CohortStatistics:
     """Build :class:`CohortStatistics` for a pre-filtered trade list.
 
@@ -605,6 +621,7 @@ def _compute_cohort_stats(
         preregistered_decision_criteria=preregistered_decision_criteria,
         tier2_excluded=tier2_excluded,
         tier2_observed=tier2_observed,
+        intent_excluded=intent_excluded,
     )
 
 
@@ -710,6 +727,10 @@ def compute_tier_comparison(
             entry_intent=cohort_entry_intent(
                 name, registered_names=registered_names,
             ),
+            # Arc 22-B (N2 (a)): clause (4), for every cohort.
+            exclude_entry_intents=cohort_excluded_entry_intents(
+                name, registered_names=registered_names,
+            ),
         )
     # R2-04 tier (1): the read FOLLOWS the last cohort load.
     read = tier2_cohort_exclusions(
@@ -751,6 +772,10 @@ def compute_tier_comparison(
                 preregistered_decision_criteria=preregistered,
                 tier2_excluded=tier2_excluded,
                 tier2_observed=tier2_observed,
+                # Arc 22-B (N3 (a)): the clause-(4) trades, NAMED.
+                intent_excluded=list_intent_excluded_for_cohort(
+                    conn, hypothesis_label=name,
+                    state_filter=("closed", "reviewed")),
             ),
         )
 

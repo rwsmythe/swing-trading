@@ -32,8 +32,15 @@ from swing.data.repos.hypothesis_status_history import (
     list_history_for_hypothesis,
 )
 from swing.evaluation.dates import PageKind, topbar_session_date
-from swing.metrics.cohort import list_closed_trades_for_cohort
-from swing.metrics.cohort_intent import cohort_entry_intent
+from swing.metrics.cohort import (
+    list_closed_trades_for_cohort,
+    list_intent_excluded_for_cohort,
+)
+from swing.metrics.cohort_intent import (
+    cohort_entry_intent,
+    cohort_excluded_entry_intents,
+    intent_exclusion_lines,
+)
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
@@ -144,11 +151,20 @@ class CohortProgressVM:
     # ``(trade_id, observation)``.  Empty in the zero-data state.
     tier2_excluded: tuple[tuple[int, str, str | None], ...] = ()
     tier2_observed: tuple[tuple[int, str], ...] = ()
+    # Arc 22-B (N3 (a), E12): the cohort's label-matched closed trades
+    # clause (4) removes, NAMED ``(trade_id, reason)`` (``, UNATTESTED`` when
+    # no evidence row exists -- RD's plan read).
+    intent_excluded: tuple[tuple[int, str], ...] = ()
 
     @property
     def tier2_lines(self) -> tuple[str, ...]:
         """The named lines the card renders for this cohort."""
         return tier2_cohort_lines(self.tier2_excluded, self.tier2_observed)
+
+    @property
+    def intent_lines(self) -> tuple[str, ...]:
+        """The clause-(4) lines the card renders beside the tier-2 ones."""
+        return intent_exclusion_lines(self.intent_excluded)
 
     def __post_init__(self) -> None:
         if self.n_closed < 0:
@@ -346,6 +362,8 @@ def _list_cohort_trades_sorted(
         conn,
         hypothesis_label=cohort_name,
         entry_intent=cohort_entry_intent(cohort_name),
+        # Arc 22-B (N2 (a)): clause (4), for every cohort.
+        exclude_entry_intents=cohort_excluded_entry_intents(cohort_name),
     )
     return sorted(
         trades,
@@ -440,6 +458,9 @@ def _build_cohort_vm(
         preregistered_decision_criteria=preregistered_decision_criteria,
         tier2_excluded=cohort_read.excluded_among(t.id for t in in_cohort),
         tier2_observed=cohort_read.observed_among(t.id for t in trades),
+        # Arc 22-B (N3 (a)): the clause-(4) trades, NAMED.
+        intent_excluded=list_intent_excluded_for_cohort(
+            conn, hypothesis_label=name, state_filter=("closed", "reviewed")),
     )
 
 

@@ -5080,6 +5080,7 @@ def hypothesis_list_cmd(ctx: click.Context) -> None:
     """List all registered hypotheses with status + sample progress."""
     from swing.data.db import connect
     from swing.data.repos.hypothesis import list_hypotheses
+    from swing.metrics.cohort_intent import intent_exclusion_lines
     from swing.recommendations.hypothesis import compute_tripwire_status
     from swing.trades.frozen_value_evidence import tier2_cohort_lines
 
@@ -5103,6 +5104,9 @@ def hypothesis_list_cmd(ctx: click.Context) -> None:
             # ONCE, under ITS row -- an exclusion is a fact about that N.
             for named in tier2_cohort_lines(tw.tier2_excluded, tw.tier2_observed):
                 click.echo(f"    {named}")
+            # Arc 22-B (N3 (a)): the clause-(4) names, under ITS row too.
+            for named in intent_exclusion_lines(tw.intent_excluded):
+                click.echo(f"    {named}")
     finally:
         conn.close()
 
@@ -5114,6 +5118,7 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
     """Print detailed status for one hypothesis."""
     from swing.data.db import connect
     from swing.data.repos.hypothesis import get_hypothesis
+    from swing.metrics.cohort_intent import intent_exclusion_lines
     from swing.recommendations.hypothesis import compute_tripwire_status
     from swing.trades.frozen_value_evidence import tier2_cohort_lines
 
@@ -5139,6 +5144,8 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
     # it (RD G-T10-F4: a pointer to another surface is wrong here).
     click.echo(f"  Current sample:   {tw.current_sample}")
     for named in tier2_cohort_lines(tw.tier2_excluded, tw.tier2_observed):
+        click.echo(f"    {named}")
+    for named in intent_exclusion_lines(tw.intent_excluded):
         click.echo(f"    {named}")
     click.echo(f"  Decision criteria:{h.decision_criteria}")
     # D29 rider (codex-auto-review): this is the FOURTH criterion-rendering

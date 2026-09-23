@@ -25,9 +25,11 @@ thing this module exists to prevent.
 
 2. EPOCH-CONTRACT-GROUNDED -- every OTHER registered hypothesis.
    Their criteria say nothing about intent, so their predicate follows
-   from the 2026-06-10 training-epoch declaration (operator-confirmed;
-   ``docs/research-director-context-archive.md``), which is program-wide
-   doctrine rather than criterion text. That contract's forward intent
+   from the training-epoch intent contract, whose live home is
+   ``docs/training-epoch-intent-contract.md`` (clauses (1)-(3) are the
+   operator-confirmed 2026-06-10 declaration, quoted there verbatim from
+   its provenance record ``docs/research-director-context-archive.md``),
+   which is program-wide doctrine rather than criterion text. That contract's forward intent
    clause names "H2/H4 narrow-cohort fires" as "the ONLY legitimate
    by_design entries remaining (pre-registered program, not retired
    tuition)". A ``hypothesis_test_by_design`` entry IS the designed sample
@@ -42,10 +44,27 @@ Consequence, and it is the point: applying H1's criterion-mandated filter
 to the other cohorts would zero H2 and retroactively un-achieve H3's
 closed-target-met status -- a NEW self-contradiction of exactly the kind
 D29 exists to remove.
+
+3. CONTRACT-EXCLUSION -- clause (4) of the same contract, a NAMED third
+   grounding (Arc 22-B, RD N2 (a)). ``unintended_execution`` -- an execution
+   nobody decided to make -- "counts toward NO hypothesis cohort." That is
+   program-wide, so it applies to EVERY cohort (H1 and H2-H5 alike, and an
+   orphan label too: an orphan is not a hypothesis cohort, and excluding
+   there is the fail-closed direction). It is not a blanket filter borrowed
+   from one authority: it cites its OWN sentence, pinned by
+   :data:`CONTRACT_EXCLUSION_CLAUSE` against the committed doc, and it runs
+   BEFORE the criterion check so H1 and H2-H5 agree. ``NULL`` is still
+   unclassified, not excluded. The two authorities above are unchanged:
+   H2-H5 still answer ``epoch_contract`` -- the authority did not change,
+   its text did. An excluded trade is NAMED under the cohort whose label it
+   carries (N3 (a)), with an ``UNATTESTED`` token when no evidence row
+   exists for it (RD's plan read), by :func:`intent_exclusion_lines`.
 """
 from __future__ import annotations
 
 from collections.abc import Collection
+
+from swing.data.models import UNINTENDED_EXECUTION
 
 # The registered cohort whose criterion mandates an intent predicate.
 APLUS_BASELINE_COHORT: str = "A+ baseline"
@@ -85,6 +104,20 @@ H1_COHORT_CLAUSE: str = (
 _CRITERION_MANDATED_INTENT: dict[str, str] = {
     APLUS_BASELINE_COHORT: "standard",
 }
+
+# Clause (4)'s sentence, verbatim -- the authority the exclusion below cites.
+# Pinned against ``docs/training-epoch-intent-contract.md`` by test, so a
+# doctrine edit that drops it FAILS rather than leaving a filter citing an
+# authority that no longer says it.
+CONTRACT_EXCLUSION_CLAUSE: str = "It counts toward NO hypothesis cohort."
+
+# The ``entry_intent`` values clause (4) removes from EVERY cohort.
+CONTRACT_EXCLUDED_ENTRY_INTENTS: tuple[str, ...] = (UNINTENDED_EXECUTION,)
+
+# RD's plan read: the reason token for an excluded value that carries NO
+# ``entry_intent_attestations`` row -- a trade removed from a cohort without
+# its evidence, named on every read.
+UNATTESTED_TOKEN: str = "UNATTESTED"
 
 
 def cohort_entry_intent(
@@ -168,9 +201,46 @@ def trade_counts_toward_cohort(
     argument, so the two paths cannot drift -- including in the
     unregistered-cohort case, where both answer "no predicate".
     """
+    # Clause (4) FIRST, for every cohort -- before the criterion check.
+    if entry_intent in CONTRACT_EXCLUDED_ENTRY_INTENTS:
+        return False
     required = cohort_entry_intent(
         hypothesis_name, registered_names=registered_names,
     )
     if required is None:
         return True
     return entry_intent == required
+
+
+def cohort_excluded_entry_intents(
+    hypothesis_name: str,
+    *,
+    registered_names: Collection[str] | None = None,
+) -> tuple[str, ...]:
+    """The ``entry_intent`` values excluded from ``hypothesis_name``'s count.
+
+    Clause (4) is program-wide ("NO hypothesis cohort"), so the answer is
+    :data:`CONTRACT_EXCLUDED_ENTRY_INTENTS` for EVERY name, registered or
+    orphan (an orphan label is not a hypothesis cohort, and excluding there
+    is the fail-closed direction -- declared). The parameters mirror
+    :func:`cohort_entry_intent` so the SQL call sites read the same way. The
+    SQL half is ``list_trades_for_cohort(exclude_entry_intents=...)``; the
+    in-memory half is :func:`trade_counts_toward_cohort`.
+    """
+    del hypothesis_name, registered_names  # the same answer for every cohort
+    return CONTRACT_EXCLUDED_ENTRY_INTENTS
+
+
+def intent_exclusion_reason(entry_intent: str, *, attested: bool) -> str:
+    """The reason an excluded trade is named with: its intent, plus
+    :data:`UNATTESTED_TOKEN` when no attestation row exists for it."""
+    return entry_intent if attested else f"{entry_intent}, {UNATTESTED_TOKEN}"
+
+
+def intent_exclusion_lines(
+    intent_excluded: Collection[tuple[int, str]],
+) -> tuple[str, ...]:
+    """The ONE renderer of a cohort's intent exclusions (N3 (a)): one ASCII
+    line per ``(trade_id, reason)``, rendered beside the tier-2 lines."""
+    return tuple(f"not counted: trade {tid} ({reason})"
+                 for tid, reason in intent_excluded)

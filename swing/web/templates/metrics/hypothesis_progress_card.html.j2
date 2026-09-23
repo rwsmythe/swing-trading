@@ -36,6 +36,9 @@
       {% for line in cohort.tier2_lines %}
       <p class="muted tier2-cohort-line">{{ line }}</p>
       {% endfor %}
+      {% for line in cohort.intent_lines %}
+      <p class="muted intent-cohort-line">{{ line }}</p>
+      {% endfor %}
 
       <p class="cohort-tripwire">
         Consecutive-loss tripwire:

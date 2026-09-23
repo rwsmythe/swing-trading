@@ -38,6 +38,9 @@
           {% for line in cohort.tier2_lines %}
           <br><span class="muted tier2-cohort-line">{{ line }}</span>
           {% endfor %}
+          {% for line in cohort.intent_lines %}
+          <br><span class="muted intent-cohort-line">{{ line }}</span>
+          {% endfor %}
           {% if cohort.legacy_trades_count > 0 %}
           <br><span class="muted">({{ cohort.legacy_trades_count }} legacy)</span>
           {% endif %}

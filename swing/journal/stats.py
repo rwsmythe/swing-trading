@@ -335,6 +335,10 @@ class HypothesisProgress:
     # observation ``(trade_id, observation)``.  Empty in the zero-data state.
     tier2_excluded: tuple[tuple[int, str, str | None], ...] = ()
     tier2_observed: tuple[tuple[int, str], ...] = ()
+    # Arc 22-B (N3 (a), E12): the cohort's label-matched trades (closed or in
+    # flight) clause (4) removes, NAMED ``(trade_id, reason)`` -- with
+    # ``, UNATTESTED`` when no evidence row exists (RD's plan read).
+    intent_excluded: tuple[tuple[int, str], ...] = ()
 
 
 def compute_hypothesis_progress_breakdown(
@@ -373,6 +377,7 @@ def compute_hypothesis_progress_breakdown(
         list_closed_trades,
         list_open_trades,
     )
+    from swing.metrics.cohort import list_intent_excluded_for_cohort
     from swing.metrics.cohort_intent import trade_counts_toward_cohort
     from swing.recommendations.hypothesis import (
         _label_matches_hypothesis,
@@ -446,6 +451,13 @@ def compute_hypothesis_progress_breakdown(
             conn, hypothesis_id=h.id, starting_equity=starting_equity,
             cohort_read=read,
         )
+        # Clause (4) (N2 (a)): _in_cohort refused these; NAMED here (N3 (a))
+        # over the same closed + in-flight lists this row counts from.
+        loaded_ids = {t.id for t in closed} | {t.id for t in open_trades}
+        intent_excluded = tuple(
+            named for named in list_intent_excluded_for_cohort(
+                conn, hypothesis_label=h.name, state_filter=None)
+            if named[0] in loaded_ids)
         rows.append(HypothesisProgress(
             hypothesis_id=h.id,
             name=h.name,
@@ -467,6 +479,7 @@ def compute_hypothesis_progress_breakdown(
                 t.id for t in cohort_closed + cohort_open)) | set(tw.tier2_excluded))),
             tier2_observed=read.observed_among(
                 t.id for t in matched + in_flight_counted),
+            intent_excluded=intent_excluded,
         ))
     return rows
 
@@ -479,6 +492,7 @@ def render_hypothesis_progress(rows: Iterable[HypothesisProgress]) -> str:
     gets the actionable signal in the same line as the sample fraction,
     not buried in a separate section.
     """
+    from swing.metrics.cohort_intent import intent_exclusion_lines
     from swing.trades.frozen_value_evidence import tier2_cohort_lines
 
     lines = ["", "## Hypothesis investigation progress"]
@@ -518,4 +532,7 @@ def render_hypothesis_progress(rows: Iterable[HypothesisProgress]) -> str:
         lines.extend(
             f"  {named}" for named in tier2_cohort_lines(
                 r.tier2_excluded, r.tier2_observed))
+        # Arc 22-B (N3 (a)): the cohort's clause-(4) names, beside them.
+        lines.extend(
+            f"  {named}" for named in intent_exclusion_lines(r.intent_excluded))
     return "\n".join(lines)
