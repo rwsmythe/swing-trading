@@ -111,6 +111,11 @@ _MEMBER_SITES: dict[str, dict[str, str]] = {
         "swing/web/view_models/trades.py":
             "prose: ReviewVM's N4 field comment (Task 7; the builder compares "
             "the imported UNINTENDED_EXECUTION)",
+        "swing/metrics/cohort_intent.py":
+            "prose: clause (4)'s grounding in the module docstring (Task 8; "
+            "CONTRACT_EXCLUDED_ENTRY_INTENTS is the imported UNINTENDED_EXECUTION)",
+        "swing/recommendations/hypothesis.py":
+            "prose: TripwireStatus.intent_excluded's field comment (Task 8)",
     },
 }
 
