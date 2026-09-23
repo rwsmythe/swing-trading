@@ -264,3 +264,55 @@ def test_a_read_carries_the_rows_it_replayed(mid) -> None:
     read = fve.tier2_cohort_exclusions(mid.conn, now=fve.datetime.now(fve.UTC))
     assert read.replayed_row_ids == frozenset({row.provenance_correction_id})
     assert isinstance(mid.conn, sqlite3.Connection)
+
+
+# --------------------------------------------------------------------------- AL2-14 (CHARC's pin)
+
+def test_al2_14_a_label_committed_during_a_later_hypothesis_is_named_on_no_cohort(
+    mid, monkeypatch,
+) -> None:
+    """AL2-14 (CHARC A-R4 R4-03, REJECT; RD placed the line): trade 25's label
+    commits during the NEXT hypothesis's tripwire query, after H1's row was
+    computed.  The invocation is a snapshot: H1's N and names stay what H1's
+    own reads held (N 1, nothing named), and NOTHING is named on the cohort
+    that holds the query (trade 25 is not in it).  Under the reviewer's
+    proposed allocation -- a final global re-check that assigns late rows by
+    CURRENT membership -- trade 25 would be named on H1 as
+    ``tier2_row_committed_mid_read`` while H1's N came from the earlier
+    snapshot: ``tier2_excluded`` would read ``(MID_READ,)`` beside N 1, and
+    the first assertion below fails.  The next invocation counts it."""
+    import swing.data.repos.trades as trades_repo
+    import swing.recommendations.hypothesis as hyp_mod
+    from swing.journal.stats import compute_hypothesis_progress_breakdown
+
+    real_tw = hyp_mod.compute_tripwire_status
+    real_list = trades_repo.list_closed_trades
+    state = {"h1_done": False, "during": None}
+
+    def tripwire(conn, *, hypothesis_id, **kw):
+        state["during"] = hypothesis_id
+        try:
+            return real_tw(conn, hypothesis_id=hypothesis_id, **kw)
+        finally:
+            if hypothesis_id == H1_ID:
+                state["h1_done"] = True
+
+    def listing(*a, **kw):
+        if state["h1_done"] and not mid.committed:
+            assert state["during"] != H1_ID
+            mid.commit()
+        return real_list(*a, **kw)
+
+    monkeypatch.setattr(hyp_mod, "compute_tripwire_status", tripwire)
+    monkeypatch.setattr(trades_repo, "list_closed_trades", listing)
+    rows = {r.hypothesis_id: r for r in compute_hypothesis_progress_breakdown(
+        mid.conn, starting_equity=1200.0)}
+    assert mid.committed == 1, "the commit never landed inside a later query"
+    assert (rows[H1_ID].current_sample, rows[H1_ID].tier2_excluded) == (1, ())
+    assert all(T25_TRADE_ID not in {tid for tid, *_ in r.tier2_excluded}
+               for r in rows.values())
+    # The next invocation counts it: replayed, excluded (the planted row is a
+    # forgery), and named on H1.
+    rows = {r.hypothesis_id: r for r in compute_hypothesis_progress_breakdown(
+        mid.conn, starting_equity=1200.0)}
+    assert (rows[H1_ID].current_sample, rows[H1_ID].tier2_excluded) == (1, (STALE,))
