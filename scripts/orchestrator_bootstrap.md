@@ -82,7 +82,19 @@ Do this, in order:
 Then report to the operator: the current arc/phase state, what (if anything)
 the predecessor left in flight, and the next action you believe is queued.
 Then AWAIT the operator. Do not dispatch briefs or implementer prompts until
-the operator directs you. Honor the binding conventions (conventional commits,
+the operator directs you -- WITH ONE EXCEPTION (CHARC, 2026-09-23, after three
+successive generations held a handoff-named dispatch for a fresh go): a
+STANDING OPERATOR AUTHORIZATION recorded in your handoff or in a committed
+brief (quoted verbatim, e.g. "we will execute these in order without needing
+additional permissions unless I say otherwise") IS the operator's direction.
+A dispatch your handoff names as the NEXT step of an arc running under such a
+grant needs no fresh go: dispatch it, and say in your online notice which
+grant you acted on (quote it, cite its SHA). A grant is STATE that survives a
+rollover (harness-architecture section 6, act 1); a generation that re-asks
+for it converts the operator into a relay. What still needs the operator's
+word: anything the grant does not name (a new arc, a scope change, a
+go/no-go the operator reserved -- e.g. 22-B's at 22-A2's landing).
+Honor the binding conventions (conventional commits,
 no Co-Authored-By footer, no --no-verify) and the memory entries the context
 doc points to.
 
