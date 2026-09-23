@@ -32,7 +32,7 @@ Every fact below was re-read on the live DB (`mode=ro`, v39) or in the code on `
 
 Clauses (1)–(3) are unchanged. The pin: CHARC rules the shape (RD's expectation from the brief: the sha256 of the ratified clause text in `0040`'s header, derived independently by a test from the committed doc; never checked at migration runtime).
 
-**Gate order:** the operator ratifies the exact text BEFORE the plan loop opens (the brief's own rule). RD asks the operator for that ratification in the same session this packet posts.
+**RATIFIED BY THE OPERATOR, 2026-09-23 ~17:15Z, in the RD session, his words verbatim: "clause (4) is ratified."** The text above is the ratified text, byte-for-byte as it stands at this commit; any later edit is a new amendment, not a correction. The gate before the plan loop is CLEARED; the pin (CHARC's shape) is derived from this file's clause (4) block quote.
 
 ---
 
