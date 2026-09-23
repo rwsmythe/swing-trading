@@ -428,9 +428,9 @@ ENCODINGS 1-9 (no ruling requested; my read in the same pass, silence would have
 
 | round | kind | asserted model | effort | ^ERROR | footer | verdict token | crit/major/minor | task-bearing | tokens used | preserved transcript (bytes) | ctx depth |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | plan review | gpt-5.6-luna | medium | 0 | present | NEW_CRITICAL_MAJOR_FOUND (x2, 0.155.1 double emit; the other token 0) | 0/1/0 (reviewer) | 1 (F-R1-a, self-found; R1-01's count REJECTED) | 142,964 | ~/swing-data/review-transcripts/22-a2-plan/.codex-review-r1.txt (490896), .codex-prompt-r1.md (4888) | |
-| 2 | plan review | gpt-5.6-luna | medium | 0 | present | NEW_CRITICAL_MAJOR_FOUND (x2; the other token 0) | 0/1/0 (reviewer) | 1 (A2-70 extended to three entry points; R2-01's defect REJECTED) | 105,143 | ~/swing-data/review-transcripts/22-a2-plan/.codex-review-r2.txt (331817), .codex-prompt-r2.md (4888) | |
-| 3 | plan review | gpt-5.6-luna | medium | 0 | present | NO_NEW_CRITICAL_MAJOR (x2; the other token 0) | 0/0/0 | 0 -- LOOP ENDS | 84,264 | ~/swing-data/review-transcripts/22-a2-plan/.codex-review-r3.txt (251892), .codex-prompt-r3.md (4888) | |
+| 1 | plan review | gpt-5.6-luna | medium | 0 | present | NEW_CRITICAL_MAJOR_FOUND (x2, 0.155.1 double emit; the other token 0) | 0/1/0 (reviewer) | 1 (F-R1-a, self-found; R1-01's count REJECTED) | 142,964 | ~/swing-data/review-transcripts/22-a2-plan/.codex-review-r1.txt (490896), .codex-prompt-r1.md (4888) || 392,931 at RETURN (plan cell 2; one orchestrator read -- the cell had no SendMessage, so no per-round gate reading exists) |
+| 2 | plan review | gpt-5.6-luna | medium | 0 | present | NEW_CRITICAL_MAJOR_FOUND (x2; the other token 0) | 0/1/0 (reviewer) | 1 (A2-70 extended to three entry points; R2-01's defect REJECTED) | 105,143 | ~/swing-data/review-transcripts/22-a2-plan/.codex-review-r2.txt (331817), .codex-prompt-r2.md (4888) || 392,931 at RETURN (plan cell 2; one orchestrator read -- the cell had no SendMessage, so no per-round gate reading exists) |
+| 3 | plan review | gpt-5.6-luna | medium | 0 | present | NO_NEW_CRITICAL_MAJOR (x2; the other token 0) | 0/0/0 | 0 -- LOOP ENDS | 84,264 | ~/swing-data/review-transcripts/22-a2-plan/.codex-review-r3.txt (251892), .codex-prompt-r3.md (4888) || 392,931 at RETURN (plan cell 2; one orchestrator read -- the cell had no SendMessage, so no per-round gate reading exists) |
 
 ## R1.1 ROUND 1 (fast, gpt-5.6-luna / medium) -- adjudication
 
