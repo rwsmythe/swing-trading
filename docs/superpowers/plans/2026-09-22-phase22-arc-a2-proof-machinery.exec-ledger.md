@@ -9,6 +9,7 @@ Plan: `2026-09-22-phase22-arc-a2-proof-machinery.md` (merged at `23313918`). Pla
 | G1 | exec cell 1 (implementer-opus-high) | Task 3 (+ R4.0 edits, Tasks 1-2) | `010e8f9f` | 557,321 (OVER) | NOT resumed; fresh exec cell 2 dispatched off `010e8f9f` from Task 4. Cell 1's uncommitted Task-4 drafts (session scratchpad) are NOT carried; cell 2 writes Task 4 from the plan. |
 | G-T4 | exec cell 2 (implementer-opus-high) | Task 4 | `cd02374b` | 208,150 | resumed. Orchestrator re-measured the P-correction: `9f315cc6:docs/rd-state.md` line 57 = 1015 bytes / **1005 chars** (plan section 4 + ledger R1.0 say 1006 -- a premise count error; sha256 + offsets unaffected; A2-37 asserts 1005). |
 | G-T5 | exec cell 2 | Task 5 | `503e27b2` | 339,960 | NOT resumed (Task 5 cost ~130K; Task 6 would cross the cap mid-task). Fresh exec cell 3 from Task 6. |
+| G-T6 | exec cell 3 (implementer-opus-high) | Task 6 | `aa2d44eb` | 267,300 | resumed for the F2.I-NEG follow-on ONLY (a Task-5 code change, red-first, RD's three discriminators), then gate G-NEG. Red-first evidenced for Task 6 (10/10 red for the expected reasons, then green). Encodings 1-5 carried to Task 12's record. |
 
 ## G1 record (orchestrator QA of cell 1's gate report, against disk)
 
