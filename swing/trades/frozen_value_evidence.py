@@ -151,9 +151,12 @@ RECORD_POSITION_INSIDE_COVERAGE = "inside_coverage"
 RECORD_POSITIONS: tuple[str, ...] = (
     RECORD_POSITION_BEFORE_BARRIER, RECORD_POSITION_INSIDE_COVERAGE)
 
-# E-15: the keys the replay COMPARES (dotted paths into the blob).  Everything
-# else is RECORDED only -- evaluated_at, the resolved sha, the descendant
-# count, the ref age, the committer instant, the segments -- and never compared.
+# E-15: the keys the replay COMPARES (dotted paths into the blob).  The
+# RECORDED-only keys are E-15's own list -- evaluated_at, the resolved sha, the
+# descendant count, the ref age, the committer instant, and the terminal
+# (``covered``) segment kind -- and are never compared: each legitimately
+# drifts between write and read.  The DERIVED keys (``REPLAY_DERIVED_KEYS``,
+# RD ruling A-R1 item 1) are compared too, by their own rule.
 VERDICT_BEARING_KEYS: frozenset[str] = frozenset({
     "artifact_path", "artifact_commit_sha", "quoted_text",
     "quoted_ticker_text", "quoted_action_session_text", "quoted_pivot_text",
@@ -162,6 +165,17 @@ VERDICT_BEARING_KEYS: frozenset[str] = frozenset({
     *(f"interval.endpoints.{e}.{k}" for e in INTERVAL_ENDPOINTS for k in ("raw", "utc")),
     "interval.record_position",
 })
+
+# RD ruling A-R1 item 1 (R1-01): the DERIVED values of the blob, compared at
+# replay in the same sorted-key order as ``VERDICT_BEARING_KEYS``.  The
+# segments are a pure function of the endpoints plus the barrier state, so
+# each segment's kind, from, to and seconds must equal the recomputation's --
+# EXCEPT the terminal segment's kind, which follows the barrier at READ
+# (E-15).  The prose must be the rendering of the STORED interval.
+REPLAY_DERIVED_KEYS: frozenset[str] = frozenset({
+    "interval.segments", "uncovered_window_prose"})
+_TERMINAL_SEGMENT_KINDS: frozenset[str] = frozenset({
+    SEGMENT_COVERED, SEGMENT_UNCOVERED_BARRIER_ABSENT})
 
 # --------------------------------------------------------------------------
 # The read-time replay's vocabulary (Task 9; plan section 1).
@@ -1144,6 +1158,35 @@ def _fill_session_of(value: object) -> date | None:
     return parsed if parsed.isoformat() == value else None
 
 
+def _canonical(value: object) -> str:
+    """A TYPE-STRICT comparison form: ``1``, ``1.0`` and ``true`` differ."""
+    return json.dumps(value, sort_keys=True)
+
+
+def _terminal_kind_exempt(segments: object) -> object:
+    """``segments`` with the TERMINAL segment's kind masked when it is one of
+    the two barrier-following kinds; any other shape is returned unchanged
+    (and so compared whole)."""
+    if (not isinstance(segments, list) or not segments
+            or not isinstance(segments[-1], dict)
+            or segments[-1].get("kind") not in _TERMINAL_SEGMENT_KINDS):
+        return segments
+    return [*segments[:-1], {**segments[-1], "kind": None}]
+
+
+def _replay_key_agrees(key: str, recomputed: dict, stored: object) -> bool:
+    """One key of the replay's sorted comparison (E-15 + RD ruling A-R1)."""
+    if key == "interval.segments":
+        return (_canonical(_terminal_kind_exempt(_at_path(recomputed, key)))
+                == _canonical(_terminal_kind_exempt(_at_path(stored, key))))
+    if key == "uncovered_window_prose":
+        # Reached only after every ``interval.*`` key agreed, so the stored
+        # interval is the recomputation's up to the terminal kind.
+        return _at_path(stored, key) == render_uncovered_window_prose(
+            _at_path(stored, "interval"))  # type: ignore[arg-type]
+    return _at_path(recomputed, key) == _at_path(stored, key)
+
+
 def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
                    repo_dir: Path | None = None,
                    deadline: float | None = None,
@@ -1158,9 +1201,12 @@ def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
     against git's -> ``evaluate_conjunction`` against the CURRENT rows (a
     refusal is stale naming the criterion) -> the ``VERDICT_BEARING_KEYS`` of
     the recomputed blob against the stored blob (the first differing key in
-    sorted order is named ``<key>_mismatch``).  Recorded-only keys --
-    descendant count, ref age, the resolved sha, the committer instant, the
-    segments -- are never compared (doctrine #6, E-15).  The barrier state is
+    sorted order is named ``<key>_mismatch``), together with the DERIVED
+    keys (``REPLAY_DERIVED_KEYS``: every segment except the terminal kind, and
+    the prose as the rendering of the stored interval -- RD ruling A-R1).
+    Recorded-only keys -- descendant count, ref age, the resolved sha, the
+    committer instant, the terminal segment kind -- are never compared
+    (doctrine #6, E-15).  The barrier state is
     an observation returned beside the verdict (A2-88), and it is the
     ``barrier_installed`` the recomputation uses.
 
@@ -1239,8 +1285,8 @@ def replay_verdict(conn: sqlite3.Connection, row, *, now: datetime,
         # Compare in the STORED blob's domain: the recomputed blob through the
         # same JSON round trip the column went through.
         recomputed = json.loads(json.dumps(conj.evidence))
-        for key in sorted(VERDICT_BEARING_KEYS):
-            if _at_path(recomputed, key) != _at_path(stored, key):
+        for key in sorted(VERDICT_BEARING_KEYS | REPLAY_DERIVED_KEYS):
+            if not _replay_key_agrees(key, recomputed, stored):
                 return verdict(VERDICT_STALE, f"{key}_mismatch")
         return verdict(VERDICT_ADMIT, None)
     except Exception as exc:  # noqa: BLE001 -- ignorance reads unverifiable, never ADMIT

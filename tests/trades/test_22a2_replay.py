@@ -69,8 +69,10 @@ class _World:
     row: object
 
 
-def _tier2_world(tmp_path: Path) -> _World:
-    """A real tier-2 row, written by the correction service, over a git world."""
+def _tier2_world(tmp_path: Path, *, pristine_copy: Path | None = None) -> _World:
+    """A real tier-2 row, written by the correction service, over a git world.
+    ``pristine_copy``: a byte copy of the same world taken BEFORE the correction
+    (the A-R1 raw-insert discriminators plant their row there)."""
     world = GitWorld(tmp_path / "evidence-git")
     world.commit("README.md", b"base\n")
     sha = world.commit(RD_STATE, _rd_state_bytes(LINE57), author_date=T25_AUTHOR_INSTANT)
@@ -80,6 +82,13 @@ def _tier2_world(tmp_path: Path) -> _World:
         "artifact_path": RD_STATE, "artifact_commit_sha": sha,
         "quoted_text": LINE57.decode("utf-8")}), encoding="utf-8")
     conn, cfg = _t25(tmp_path)
+    if pristine_copy is not None:
+        pristine_copy.parent.mkdir(parents=True, exist_ok=True)
+        copy = sqlite3.connect(pristine_copy)
+        try:
+            conn.backup(copy)
+        finally:
+            copy.close()
     result = _apply(conn, cfg, frozen_value_evidence=evidence, evidence_repo=world.work)
     assert result.admission_tier == PROVENANCE_ADMISSION_TIER_LATCH_TIER2
     (row,) = list_provenance_corrections(conn)
@@ -812,3 +821,142 @@ def test_g_t7fe_b_unverifiable_under_a_moved_version_carries_it_in_the_field_onl
         assert v.derivation_observation == _moved(OLD_DERIVATION)
     finally:
         w.conn.close()
+
+
+# --------------------------------------------------------------------------- A-R1 item 1
+# RD's ruling A-R1 item 1 (R1-01): the segments and the uncovered-window prose
+# are DERIVED -- a pure function of the verdict-bearing endpoints plus the
+# barrier state -- so a stored value has one legitimate source, its
+# recomputation.  The replay compares every segment's kind, from, to and
+# seconds EXCEPT the terminal segment's kind (the one value that follows the
+# barrier at READ), and checks the stored prose against its rendering of the
+# STORED interval.  Every discriminator is a RAW-INSERTED row (the 18-B.1
+# technique: the forgery the service can never write, planted past it) in the
+# real shape, one mutated value each, on the trade-25 world.
+
+def _raw_forged(tmp_path: Path, mutate) -> tuple[_World, sqlite3.Connection, object]:
+    """``(world, conn, row)``: trade 25's truthful service-written row, its blob
+    mutated by ``mutate``, RAW-INSERTED into a byte copy of the same world
+    taken before the correction (same barrier, same ids) -- past the service,
+    through the citation trigger, which must admit it."""
+    from swing.data.db import open_connection
+    from tests._tier2_world_22a2 import insert_payload
+    from tests.trades.test_22a2_correction_service import _row
+
+    pristine = tmp_path / "t25-raw" / "swing.db"
+    w = _tier2_world(tmp_path, pristine_copy=pristine)
+    payload = _row(w.conn)
+    blob = json.loads(payload["cited_frozen_value_evidence_json"])
+    mutate(blob)
+    payload["cited_frozen_value_evidence_json"] = json.dumps(blob)
+    conn = open_connection(pristine)
+    with conn:
+        insert_payload(conn, payload)
+    (row,) = list_provenance_corrections(conn)
+    return w, conn, row
+
+
+def _raw_replay(tmp_path: Path, mutate) -> fve.ReplayVerdict:
+    w, conn, row = _raw_forged(tmp_path, mutate)
+    try:
+        return fve.replay_verdict(conn, row, now=NOW, repo_dir=w.git.work)
+    finally:
+        conn.close()
+        w.conn.close()
+
+
+def _terminal_flip(kind: str) -> str:
+    return {fve.SEGMENT_COVERED: fve.SEGMENT_UNCOVERED_BARRIER_ABSENT,
+            fve.SEGMENT_UNCOVERED_BARRIER_ABSENT: fve.SEGMENT_COVERED}[kind]
+
+
+def test_a_r1_i_a_negated_segment_duration_reads_segments_mismatch(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    def mutate(blob):
+        seg = blob["interval"]["segments"][1]
+        assert seg["kind"] == "writer_absence_only" and seg["seconds"] > 0
+        seg["seconds"] = -seg["seconds"]
+    v = _raw_replay(tmp_path, mutate)
+    assert v.verdict == "tier2_evidence_stale"
+    assert v.reason == "interval.segments_mismatch"
+
+
+def test_a_r1_ii_swapped_segment_bounds_read_segments_mismatch(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    def mutate(blob):
+        seg = blob["interval"]["segments"][1]
+        assert seg["from"] != seg["to"]
+        seg["from"], seg["to"] = seg["to"], seg["from"]
+    v = _raw_replay(tmp_path, mutate)
+    assert v.verdict == "tier2_evidence_stale"
+    assert v.reason == "interval.segments_mismatch"
+
+
+def test_a_r1_iii_only_the_terminal_kind_flipped_admits(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """The boundary twin: the terminal kind follows the barrier at READ (E-15's
+    ``covered`` segment kind), so a row written under the other barrier state
+    ADMITS.  The prose is the rendering the writer would have produced for
+    that interval (the prose rule is (iv)'s, pinned separately below).  An
+    implementation that compares the terminal kind FAILS."""
+    def mutate(blob):
+        seg = blob["interval"]["segments"][-1]
+        assert seg["kind"] == fve.SEGMENT_COVERED
+        seg["kind"] = _terminal_flip(seg["kind"])
+        blob["uncovered_window_prose"] = fve.render_uncovered_window_prose(
+            blob["interval"])
+    v = _raw_replay(tmp_path, mutate)
+    assert v.verdict == "ADMIT", v
+    assert v.reason is None
+
+
+def test_a_r1_iii_the_terminal_kind_flipped_under_the_old_prose_reads_prose_mismatch(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """The kind is exempt; the prose's CONSISTENCY with the stored interval is
+    not -- the stored prose must be the rendering of the stored interval."""
+    def mutate(blob):
+        seg = blob["interval"]["segments"][-1]
+        seg["kind"] = _terminal_flip(seg["kind"])
+    v = _raw_replay(tmp_path, mutate)
+    assert v.verdict == "tier2_evidence_stale"
+    assert v.reason == "uncovered_window_prose_mismatch"
+
+
+def test_a_r1_iv_one_changed_prose_character_reads_prose_mismatch(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    def mutate(blob):
+        prose = blob["uncovered_window_prose"]
+        i = prose.index("days")
+        blob["uncovered_window_prose"] = prose[:i] + "D" + prose[i + 1:]
+    v = _raw_replay(tmp_path, mutate)
+    assert v.verdict == "tier2_evidence_stale"
+    assert v.reason == "uncovered_window_prose_mismatch"
+
+
+def test_a_r1_v_the_unmodified_raw_inserted_row_admits(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    v = _raw_replay(tmp_path, lambda blob: None)
+    assert v.verdict == "ADMIT", v
+    assert v.reason is None
+
+
+def test_a_r1_a_forged_endpoint_still_speaks_before_a_forged_segment(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """The existing sorted-key order: the endpoint keys sort first.  The forged
+    endpoint is a ``utc`` rendering (SQL binds the raws and never reads a utc,
+    R8-03), so the row passes the write barrier and the replay names it."""
+    def mutate(blob):
+        endpoint = blob["interval"]["endpoints"]["fire_hi"]
+        assert endpoint["utc"] == "2026-08-08T03:39:07Z"
+        endpoint["utc"] = "2026-08-08T03:39:08Z"
+        blob["interval"]["segments"][1]["seconds"] += 1
+        blob["uncovered_window_prose"] += "x"
+    v = _raw_replay(tmp_path, mutate)
+    assert v.reason == "interval.endpoints.fire_hi.utc_mismatch"
