@@ -2306,7 +2306,18 @@ def preview_cohort_provenance_correction(
     as the apply handles it -- the git preflight runs HERE, before this call
     opens its transaction or its SAVEPOINT (S12.1 #9), and its result is
     consulted only at rung 9's escape, after SELECT-first (E-6).
+
+    CHARC G-T7 Q1: with evidence supplied, a CALLER-HELD transaction is
+    REFUSED before the preflight, so no git process ever starts under it (S12.1
+    #9 -- a git subprocess under the caller's SAVEPOINT is a network call
+    inside a transaction). The refusal is scoped to supplied evidence; the
+    no-evidence preview still runs inside a caller's transaction, as before.
     """
+    if frozen_value_evidence is not None and conn.in_transaction:
+        raise CallerHeldTransactionError(
+            "tier-2 evidence needs a preflight outside any transaction; call "
+            "the preview on a connection that holds none. Nothing was written."
+        )
     preflight = (None if frozen_value_evidence is None
                  else run_preflight(frozen_value_evidence, repo_dir=evidence_repo,
                                     now_utc=_preflight_now_utc()))

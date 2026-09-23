@@ -929,3 +929,147 @@ def _first_failing_mirror(blob: dict, ctx: dict, *, read_at: str,
         if not ok:
             return mirror.__name__.removeprefix("_tp_")
     return None
+
+
+# ==========================================================================
+# THE EVIDENCE-SIDE DEPENDENCY PIN (CHARC G-T7 Q2).  ``FROZEN_VALUE_EVIDENCE_VERSION``
+# is BOUND to a digest of the source of every function the seventh-column blob
+# is a function of, through the pattern ``DERIVATION_RULE_HISTORY`` runs for
+# ``_derive``: an append-only ``(version, digest)`` history whose CURRENT pair
+# a test asserts, so an edit to any member without a version bump FAILS THE
+# SUITE (22A-R14-01's lesson, met on this arc's own version constant).
+#
+# MEMBERSHIP IS COMPUTED, NOT HAND-LISTED.  The ruling names six members; they
+# are the ROOTS below, and the digest covers their STATIC REFERENCE CLOSURE:
+# every module-level function, class and constant a member names, followed
+# transitively, including into other ``swing`` modules (a module-level
+# ``from swing... import`` or one inside a function body).  A hand-enumerated
+# manifest is the instrument whose holes 22-A's own derivation pin was widened
+# three times to close; a walk cannot forget a helper.  Stdlib and third-party
+# names are outside the walk.  The walk fails LOUD on a name it cannot place.
+# ==========================================================================
+
+FROZEN_VALUE_EVIDENCE_DIGEST_ROOTS: tuple[str, ...] = (
+    "swing.trades.cohort_provenance_correction:_to_utc_naive",
+    f"{__name__}:build_interval",
+    f"{__name__}:render_price",
+    f"{__name__}:find_token",
+    f"{__name__}:evaluate_conjunction",
+    f"{__name__}:_build_frozen_value_blob",
+)
+
+# The version is what the digest PINS, never an input to it.
+_DIGEST_EXCLUDED: frozenset[str] = frozenset({f"{__name__}:FROZEN_VALUE_EVIDENCE_VERSION"})
+
+
+def _canonical(obj: object) -> str:
+    """A rendering that is a function of the VALUE, not of the process: sets and
+    dicts are sorted (``repr(frozenset)`` follows PYTHONHASHSEED), and a callable
+    renders as its qualified name (its ``repr`` carries a memory address)."""
+    if callable(obj) and hasattr(obj, "__qualname__"):
+        return f"<{getattr(obj, '__module__', '?')}:{obj.__qualname__}>"
+    if isinstance(obj, (set, frozenset)):
+        return f"{type(obj).__name__}({sorted(_canonical(x) for x in obj)!r})"
+    if isinstance(obj, dict):
+        items = sorted(f"{_canonical(k)}: {_canonical(v)}" for k, v in obj.items())
+        return "{" + ", ".join(items) + "}"
+    if isinstance(obj, (tuple, list)):
+        return f"{type(obj).__name__}({[_canonical(x) for x in obj]!r})"
+    return repr(obj)
+
+
+def _module_definitions(module: object) -> tuple[dict[str, object], dict[str, str]]:
+    """``(name -> module-level AST node, name -> "swing.module:attr")`` for one
+    module: its own definitions, and the names it imports from ``swing``."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(module))  # type: ignore[arg-type]
+    defs: dict[str, object] = {}
+    imported: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defs[node.name] = node
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for t in targets:
+                if isinstance(t, ast.Name):
+                    defs[t.id] = node
+        elif (isinstance(node, ast.ImportFrom) and node.level == 0 and node.module
+              and node.module.split(".")[0] == "swing"):
+            for alias in node.names:
+                imported[alias.asname or alias.name] = f"{node.module}:{alias.name}"
+    return defs, imported
+
+
+def frozen_value_evidence_digest_parts() -> list[tuple[str, str, str]]:
+    """``(kind, "module:attr", body)`` for every member of the closure, sorted by
+    spec.  Functions and classes contribute their SOURCE; constants a canonical
+    rendering of their value."""
+    import ast
+    import importlib
+    import inspect
+
+    cache: dict[str, tuple[dict[str, object], dict[str, str]]] = {}
+    seen: set[str] = set()
+    parts: list[tuple[str, str, str]] = []
+    stack = list(FROZEN_VALUE_EVIDENCE_DIGEST_ROOTS)
+    while stack:
+        spec = stack.pop()
+        if spec in seen or spec in _DIGEST_EXCLUDED:
+            continue
+        seen.add(spec)
+        mod_name, attr = spec.split(":")
+        module = importlib.import_module(mod_name)
+        if mod_name not in cache:
+            cache[mod_name] = _module_definitions(module)
+        defs, imported = cache[mod_name]
+        node = defs.get(attr)
+        if node is None:
+            if attr in imported:   # a re-export: the member is its home definition
+                stack.append(imported[attr])
+                continue
+            raise LookupError(f"digest closure: {spec} is not a module-level definition")
+        obj = getattr(module, attr)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            kind, body = "function", inspect.getsource(obj)
+        elif isinstance(node, ast.ClassDef):
+            kind, body = "class", inspect.getsource(obj)
+        else:
+            kind, body = "constant", _canonical(obj)
+        parts.append((kind, spec, body))
+        for sub in ast.walk(node):  # type: ignore[arg-type]
+            if isinstance(sub, ast.Name):
+                if sub.id in defs:
+                    stack.append(f"{mod_name}:{sub.id}")
+                elif sub.id in imported:
+                    stack.append(imported[sub.id])
+            elif (isinstance(sub, ast.ImportFrom) and sub.level == 0 and sub.module
+                  and sub.module.split(".")[0] == "swing"):
+                stack.extend(f"{sub.module}:{alias.name}" for alias in sub.names)
+    return sorted(parts, key=lambda p: p[1])
+
+
+def digest_of_parts(parts: list[tuple[str, str, str]]) -> str:
+    """sha256 over the parts, each keyed by its fully-qualified spec (so
+    re-pointing a name is a change even when the value is unchanged)."""
+    import hashlib
+
+    joined = "\x1e".join(f"{kind}\x1f{spec}\x1f{body}" for kind, spec, body in parts)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
+def frozen_value_evidence_digest() -> str:
+    return digest_of_parts(frozen_value_evidence_digest_parts())
+
+
+# APPEND-ONLY.  A behaviour change to any member appends a new pair and moves
+# ``FROZEN_VALUE_EVIDENCE_VERSION`` with it in the SAME commit -- and the 0039
+# citation trigger binds ``$.evidence_version`` to that literal, so a bump is a
+# deliberate act that also moves the trigger.  A stored blob keeps the version
+# it was written under; the replay names a moved version as its own reason
+# (``evidence_version_moved``, Task 9).
+FROZEN_VALUE_EVIDENCE_HISTORY: tuple[tuple[str, str], ...] = (
+    ("2026-09-23.1",
+     "23893a66d73f0a30529eaa7f458e136bd296b1c5b017d277318526eff7cbdb31"),
+)
