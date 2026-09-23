@@ -14,6 +14,7 @@ placement, but the load idiom is identical.
 from __future__ import annotations
 
 import importlib.util
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -23,6 +24,26 @@ from swing.data.db import EXPECTED_SCHEMA_VERSION, ensure_schema
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "schema_manifest.py"
 _FIXTURE = Path(__file__).resolve().parent / "schema_manifest_head.tsv"
+
+# D51b (D59 disposition): the three full-line `--` comment lines migration
+# 0008 gained IN PLACE at `9fa6bd5a`, after the live DB had already applied
+# the (comment-free) migration. Reconstructing "the live 0008 shape" means
+# removing exactly these lines from HEAD's own `hypothesis_registry` DDL
+# text -- read back from `head_conn`, never retyped by hand, so the fixture
+# for this test tracks the real column/comment text rather than a frozen
+# copy that could drift from the migration file.
+_D59_NOTES_COMMENT_LINES = (
+    "-- notes: operator free-text annotations (e.g. mid-investigation context",
+    "-- the operator wants to remember). status-change audit trail uses the",
+    "-- dedicated `status_change_reason` column.",
+)
+
+
+def _without_d59_notes_comment(sql: str) -> str:
+    return "\n".join(
+        line for line in sql.splitlines()
+        if line.strip() not in _D59_NOTES_COMMENT_LINES
+    )
 
 
 def _load():
@@ -141,6 +162,78 @@ def test_trigger_recreated_with_identical_ddl_is_clean(head_conn):
     actual = mod.read_manifest(head_conn)
     diff = mod.compare(expected, actual)
     assert diff.is_clean, diff.render()
+
+
+# --- test 2b: D59 -- line-start-only comment normalization -----------------
+
+def test_comment_only_ddl_difference_compares_clean(head_conn):
+    """D59 -- the live-probe finding this rider fixes: migration 0008's
+    CREATE TABLE gained three full-line `--` comment lines in place at
+    `9fa6bd5a`, AFTER the live DB had already applied the (comment-free)
+    migration -- identical columns, identical CHECK/UNIQUE constraints,
+    identical index. Reconstruct that pre-edit ("live") shape by removing
+    exactly those full-line comments from HEAD's own DDL text (read back,
+    not retyped) and assert the comparator reads the two as the SAME
+    object -- a comment-only edit of an already-applied migration must not
+    register as CHANGED."""
+    head_sql = head_conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='hypothesis_registry'"
+    ).fetchone()[0]
+    live_sql = _without_d59_notes_comment(head_sql)
+    assert live_sql != head_sql  # sanity: the reconstruction actually differs
+
+    live_conn = sqlite3.connect(":memory:")
+    live_conn.execute(live_sql)
+    live_conn.execute("CREATE INDEX ix_hypothesis_status ON hypothesis_registry(status)")
+
+    expected = [r for r in mod.read_manifest(head_conn) if r.tbl_name == "hypothesis_registry"]
+    actual = [r for r in mod.read_manifest(live_conn) if r.tbl_name == "hypothesis_registry"]
+    diff = mod.compare(expected, actual)
+    assert diff.is_clean, diff.render()
+
+
+def test_comment_removed_plus_one_token_semantic_change_reads_changed(head_conn):
+    """The boundary twin of the test above: start from the SAME comment-free
+    reconstruction, then change exactly one token in the DDL (a CHECK bound,
+    `> 0` to `> 1`) -- a real semantic edit must still read CHANGED even with
+    comment normalization in effect. Discriminates the fix from an
+    over-broad implementation that stops detecting real changes."""
+    head_sql = head_conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='hypothesis_registry'"
+    ).fetchone()[0]
+    live_sql = _without_d59_notes_comment(head_sql)
+    semantically_different = live_sql.replace(
+        "target_sample_size > 0", "target_sample_size > 1"
+    )
+    assert semantically_different != live_sql  # sanity: the token actually changed
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute(semantically_different)
+    conn.execute("CREATE INDEX ix_hypothesis_status ON hypothesis_registry(status)")
+
+    expected = [r for r in mod.read_manifest(head_conn) if r.tbl_name == "hypothesis_registry"]
+    actual = [r for r in mod.read_manifest(conn) if r.tbl_name == "hypothesis_registry"]
+    diff = mod.compare(expected, actual)
+    assert diff.changed == frozenset({("table", "hypothesis_registry")})
+    assert diff.missing == frozenset()
+    assert diff.unexpected == frozenset()
+
+
+def test_mid_line_dash_dash_inside_string_literal_is_preserved():
+    """Pins the LINE-START-ONLY form against a general `--`-to-end-of-line
+    strip: a DDL line whose string literal contains `--` MID-LINE (the shape
+    of a RAISE message quoting `--` inside its text, as six live DDL lines
+    do per D59's ruling) is not a line whose first non-blank characters are
+    `--`, so line-start-only normalization must NOT touch it. A general
+    strip would delete everything from that `--` to end of line, corrupting
+    the string literal and desensitizing the hash to the rest of the line on
+    BOTH sides of a comparison."""
+    sql = (
+        "CREATE TRIGGER trg_probe BEFORE INSERT ON probe WHEN NEW.id < 0\n"
+        "BEGIN SELECT RAISE(ABORT, 'bad -- value'); END"
+    )
+    normalized = mod._normalize_sql(sql)
+    assert "bad -- value" in normalized
 
 
 # --- test 3: fixture round-trip ---------------------------------------------
