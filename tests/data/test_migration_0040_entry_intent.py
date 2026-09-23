@@ -46,8 +46,20 @@ LVE_BELTS = (
 )
 # b22_25: the D51 ADDITIONS of 0040 (CHARC-S3.2's expectation). One named
 # constant, extended by Task 4 with the attestation objects + the two twins.
+TWINS = ("trg_trades_entry_intent_unattested_update",
+         "trg_trades_entry_intent_unattested_insert")
+EIA_TRIGGERS = (
+    "trg_eia_trade_binding", "trg_eia_cited_fields", "trg_eia_audit_trail",
+    "trg_eia_outcome", "trg_eia_tier2", "trg_eia_structural",
+    "trg_eia_no_update", "trg_eia_no_delete", "trg_eia_no_replace",
+)
 EXPECTED_0040_ADDITIONS: frozenset[tuple[str, str]] = frozenset(
-    {("trigger", N4)} | {("trigger", b) for b in LVE_BELTS})
+    {("trigger", N4)} | {("trigger", b) for b in LVE_BELTS}
+    # Task 4: the attestation table's objects + the two unattested twins.
+    | {("table", "entry_intent_attestations"),
+       ("index", "sqlite_autoindex_entry_intent_attestations_1")}
+    | {("trigger", t) for t in EIA_TRIGGERS}
+    | {("trigger", t) for t in TWINS})
 
 # The five `trades` dependants and the migration each is re-created from.
 DEPENDANT_SOURCES = {
@@ -250,9 +262,8 @@ def test_the_five_dependants_are_verbatim_from_their_sources_b22_24(
     assert names == {"trades", N4, *DEPENDANT_SOURCES} | TRADES_TWINS_AT_TASK
 
 
-# Task 3 creates no unattested twin (Task 4 does): the set of other `trades`
-# objects created by 0040 at this commit.
-TRADES_TWINS_AT_TASK: set[str] = set()
+# The unattested twins (Task 4): the other `trades` objects 0040 creates.
+TRADES_TWINS_AT_TASK: set[str] = set(TWINS)
 
 
 # ---------------------------------------------------------------------------
@@ -260,9 +271,12 @@ TRADES_TWINS_AT_TASK: set[str] = set()
 # ---------------------------------------------------------------------------
 _CENSUS_SQL = ("SELECT type, name FROM sqlite_master WHERE sql LIKE '%trades%' "
                "AND tbl_name <> 'trades' AND type IN ('trigger','view')")
-# The 0040-created objects on OTHER tables whose bodies name `trades` (Task 4
-# measures and fills it; empty before the attestation section exists).
-V40_NEW_FOREIGN_TRADES_OBJECTS: frozenset[str] = frozenset()
+# The 0040-created objects on OTHER tables whose bodies name `trades`
+# (measured at Task 4 on a target_version=40 image; the header records them).
+V40_NEW_FOREIGN_TRADES_OBJECTS: frozenset[str] = frozenset({
+    "trg_eia_trade_binding", "trg_eia_cited_fields", "trg_eia_audit_trail",
+    "trg_eia_tier2",
+})
 
 
 def _foreign_trades_objects(c: sqlite3.Connection) -> dict[str, str]:
@@ -484,20 +498,19 @@ def test_migration_never_reads_the_docs_tree_b22_30() -> None:
 # N4 layer 3 ALONE on plain sqlite3 (no service)
 # ---------------------------------------------------------------------------
 def _attested_trade(tmp_path: Path, *, drop: tuple[str, ...] = ()) -> Path:
-    """A v40 DB carrying trade 20 with the value set (triggers that would
-    refuse a raw plant are dropped for the PLANT only, then re-created)."""
+    """A v40 DB carrying trade 20 ATTESTED: its attestation row planted raw
+    (the Task-4 baseline row), then the value written -- the service's order."""
+    from tests._22b_fixtures import insert_row
+    from tests.data.test_migration_0040_attestations import tier2_row
+
     p = _v40_path(tmp_path, "n4")
     c = _plain(p)
     try:
+        seed_amn_row5(c)
         seed_trade20(c, entry_intent=None)
-        saved = {n: _stored(c, n) for n in (
-            "trg_trades_entry_intent_unattested_update",) if _stored(c, n)}
-        for n in saved:
-            c.execute(f"DROP TRIGGER {n}")
+        insert_row(c, "entry_intent_attestations", tier2_row())
         c.execute("UPDATE trades SET entry_intent = 'unintended_execution' "
                   "WHERE id = 20")
-        for sql in saved.values():
-            c.execute(sql)
         for n in drop:
             c.execute(f"DROP TRIGGER {n}")
     finally:
@@ -547,8 +560,10 @@ def test_null_to_value_passes_b22_36(tmp_path: Path) -> None:
 
 # Barrier triggers whose WHEN is not `NOT COALESCE(...)`: each shown non-NULL
 # by execution over its NULL operand combinations.
-TOTAL_WHEN: tuple[str, ...] = (N4, "trg_lve_no_replace")
-UNCONDITIONAL = ("trg_lve_no_delete", "trg_lve_view_window_immutable")
+TOTAL_WHEN: tuple[str, ...] = (N4, "trg_lve_no_replace", "trg_eia_no_replace",
+                                *TWINS)
+UNCONDITIONAL = ("trg_lve_no_delete", "trg_lve_view_window_immutable",
+                 "trg_eia_no_delete")
 
 
 def _triggers_in_0040() -> dict[str, str]:

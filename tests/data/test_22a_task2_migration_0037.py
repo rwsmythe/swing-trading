@@ -1664,6 +1664,8 @@ _NO_REPLACE_PK = {
     "trg_fei_no_replace": ("fill_envelope_identity", "identity_id"),
     # Arc 22-B (0040, R0.H): the leg-1 evidence belt on an EXISTING table.
     "trg_lve_no_replace": ("latch_view_events", "view_event_id"),
+    # Arc 22-B (0040): the attestation table's append-only triple.
+    "trg_eia_no_replace": ("entry_intent_attestations", "attestation_id"),
 }
 
 # NEW tables additionally carry `CHECK (pk > 0)`; an EXISTING table cannot
@@ -1672,6 +1674,7 @@ _NO_REPLACE_PK = {
 _NEW_TABLES_WITH_PK_CHECK = {
     "latch_order_mandate_links": "link_id",
     "fill_envelope_identity": "identity_id",
+    "entry_intent_attestations": "attestation_id",
 }
 
 
