@@ -20,6 +20,19 @@ The scan is keyed on the TWO named tables ONLY -- never on "any DROP TABLE"
 
 AL2-4: a hand-run DROP followed by a byte-identical CREATE is undetectable by
 construction; this scan sees file-borne drops only.
+
+QUOTED CONTENTS ARE NOT STATEMENTS (CHARC ruling A-R4, Codex R4-02), stated by
+quote kind because SQLite gives the two kinds different meanings: the contents
+of every SINGLE-quoted literal are blanked before BOTH searches (a DROP inside
+a string is not a drop, and an era-record text inside a string is not an era
+record); the contents of every DOUBLE-quoted span are blanked for the
+ERA-RECORD search ONLY and PRESERVED for the drop patterns, because a
+double-quoted name in DROP position is an identifier (a2_03 and the R3-03
+forms) while a double-quoted span in an expression is SQLite's legacy string
+fallback.  THE CONSEQUENCE IS FAIL-CLOSED: a real era record written as
+``INSERT INTO "candidates_immutability_epoch_events"`` reads as NO era record
+and its file's drop is flagged -- curable by unquoting; the bare, backtick and
+bracket forms still match.
 """
 
 from __future__ import annotations
@@ -98,6 +111,40 @@ def _strip_sql_comments(text: str) -> str:
     return "".join(out)
 
 
+def _blank_quoted(text: str, kinds: str) -> str:
+    """Blank the CONTENTS of every quoted span whose quote char is in ``kinds``.
+
+    Both quote kinds are always RECOGNISED as spans (so a ``'`` inside a
+    double-quoted span never opens a literal), with the doubled-quote escape
+    honoured as ``_strip_sql_comments`` honours it; only the kinds named are
+    blanked.  The quotes themselves are kept and every blanked character
+    becomes a space, so no token can be formed across a blanked span.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "'" or ch == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == ch:
+                    if j + 1 < n and text[j + 1] == ch:
+                        j += 2
+                        continue
+                    break
+                j += 1
+            inner = text[i + 1:j]
+            if ch in kinds:
+                inner = " " * len(inner)
+            out.append(ch + inner + (ch if j < n else ""))
+            i = j + 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _ident(name: str) -> str:
     """Regex for an identifier, bare or quoted with "", ``, or []."""
     e = re.escape(name)
@@ -141,10 +188,11 @@ def scan_migrations(dirpath: Path) -> list[Violation]:
         if m is None or int(m.group(1)) <= _SCAN_ABOVE:
             continue
         stripped = _strip_sql_comments(path.read_text(encoding="utf-8"))
-        if _ERA_RECORD.search(stripped):
+        if _ERA_RECORD.search(_blank_quoted(stripped, "'\"")):
             continue
+        drop_text = _blank_quoted(stripped, "'")
         for target, pat in patterns:
-            for hit in pat.finditer(stripped):
+            for hit in pat.finditer(drop_text):
                 violations.append(Violation(
                     path=path.name, statement=hit.group(0), target=target))
     return violations
@@ -259,3 +307,74 @@ def test_codex_r3_03_a_qualified_drop_of_another_table_is_not_a_violation(tmp_pa
            'DROP TABLE "main"."candidates_archive";\n'
            "DROP TABLE main . provenance_corrections;\n")
     assert scan_migrations(tmp_path) == []
+
+
+# --------------------------------------------------------------------------- Codex R4-02
+# CHARC ruling A-R4 (R4-02): quoted CONTENTS are not statements.  Single-quoted
+# contents are blanked before BOTH searches; double-quoted contents are blanked
+# for the ERA-RECORD search only (a double-quoted name in DROP position is an
+# identifier -- a2_03 and the R3-03 forms).  Pre-fix the era-record search ran
+# over literal contents, so a quoted string carrying the era-record text
+# silenced a live drop.
+
+_LIVE_DROP = "DROP TRIGGER trg_candidates_no_update;\n"
+
+
+def test_codex_r4_02_a_single_quoted_era_record_text_does_not_silence_a_live_drop(
+    tmp_path,
+):
+    _write(tmp_path, "0040_x.sql",
+           "SELECT 'INSERT INTO candidates_immutability_epoch_events';\n" + _LIVE_DROP)
+    found = scan_migrations(tmp_path)
+    assert [v.target for v in found] == ["trigger trg_candidates_no_update"]
+
+
+def test_codex_r4_02_a_double_quoted_era_record_text_does_not_silence_a_live_drop(
+    tmp_path,
+):
+    _write(tmp_path, "0040_x.sql",
+           'SELECT "INSERT INTO candidates_immutability_epoch_events";\n' + _LIVE_DROP)
+    found = scan_migrations(tmp_path)
+    assert [v.target for v in found] == ["trigger trg_candidates_no_update"]
+
+
+def test_codex_r4_02_charc_positive_twin_a_drop_inside_an_era_records_literal(tmp_path):
+    """CHARC's positive twin, as ruled: a real era record whose VALUE is a
+    DROP string, no live drop -> zero violations."""
+    _write(tmp_path, "0040_x.sql",
+           "INSERT INTO candidates_immutability_epoch_events (kind) "
+           "VALUES ('DROP TRIGGER trg_candidates_no_update');\n")
+    assert scan_migrations(tmp_path) == []
+
+
+def test_codex_r4_02_a_drop_inside_a_single_quoted_literal_is_not_a_drop(tmp_path):
+    """The discriminator that blanking reaches the DROP patterns too.  CHARC's
+    twin above carries a real era record, so the file is skipped before any
+    drop pattern runs and it passes with or without blanking; this file has
+    NO era record, so only the blanking keeps the literal from reading as a
+    drop."""
+    _write(tmp_path, "0040_x.sql",
+           "SELECT 'DROP TRIGGER trg_candidates_no_update';\n"
+           "SELECT 'it''s DROP TABLE candidates';\n")
+    assert scan_migrations(tmp_path) == []
+
+
+def test_codex_r4_02_fail_closed_a_double_quoted_era_record_table_reads_as_none(
+    tmp_path,
+):
+    """The ruled consequence, pinned: ``INSERT INTO "candidates_immutability_
+    epoch_events"`` reads as NO era record, so its file's live drop is flagged
+    (FAIL-CLOSED, curable by unquoting); the bare, backtick and bracket forms
+    still match."""
+    table = "candidates_immutability_epoch_events"
+    quoted = f'INSERT INTO "{table}" (kind) VALUES (\'retire\');\n'
+    d = tmp_path / "dq"
+    d.mkdir()
+    _write(d, "0040_x.sql", quoted + _LIVE_DROP)
+    assert [v.target for v in scan_migrations(d)] == ["trigger trg_candidates_no_update"]
+    for i, name in enumerate((table, f"`{table}`", f"[{table}]")):
+        d = tmp_path / str(i)
+        d.mkdir()
+        _write(d, "0040_x.sql",
+               f"INSERT INTO {name} (kind) VALUES ('retire');\n" + _LIVE_DROP)
+        assert scan_migrations(d) == [], name
