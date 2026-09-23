@@ -3,8 +3,9 @@
 RD's F10 sub-ruling: a tier-2 row whose read-time verdict is not ``ADMIT`` does
 NOT count, and it is NAMED in the read's output -- never silently uncounted.
 CHARC G-T7FE-A+C item C: ``tier2_cohort_exclusions`` returns the named
-``Tier2CohortRead(exclusions, observations)``; each reader COUNTS from
-``exclusions`` only and RENDERS both.  CHARC G-T10-1: the four P35 readers are
+``Tier2CohortRead(exclusions, observations, replayed_row_ids)`` (the third a
+required field, CHARC ruling A-R3 item 3); each reader COUNTS from
+``exclusions`` only and RENDERS ``exclusions`` and ``observations``.  CHARC G-T10-1: the four P35 readers are
 the ONLY callers (one invocation per reader invocation; the breakdown threads
 its read into every per-hypothesis tripwire status; the web callers pass
 ``WEB_REPLAY_BUDGET_SECONDS``, the CLI none).  RD G-T10-2: every surface that
