@@ -669,19 +669,23 @@ def compute_tier_comparison(
     the discrepancy count) and is NAMED in ``tier2_excluded``.
     ``budget_seconds`` is the caller's: every caller today is a WEB view
     model and passes ``WEB_REPLAY_BUDGET_SECONDS`` (CHARC G-T10-1 (2)).
+
+    CHARC A-R2 item 4 (R2-04), tier (1): every cohort's trades are loaded
+    FIRST and the tier-2 read is taken after the last load, so every counted
+    trade's row was replayed (a correction's relabel and its row commit
+    together).
     """
     from datetime import UTC, datetime
 
     from swing.trades.frozen_value_evidence import tier2_cohort_exclusions
 
-    read = tier2_cohort_exclusions(
-        conn, now=datetime.now(UTC), budget_seconds=budget_seconds)
     live_policy = read_live_policy(conn)
     cohort_meta = _load_cohort_meta(conn)
 
     cohorts: list[CohortStatistics] = []
     total_excluded = 0
     registered_names = set(cohort_meta)
+    loaded: dict[str, list[Trade]] = {}
     for name in TAXONOMY_COHORTS:
         # D29: the cohort's intent-facet predicate, grounded per hypothesis
         # in its OWN authority (H1 = criterion text; the rest = the epoch
@@ -700,13 +704,18 @@ def compute_tier_comparison(
         # path: the sole runtime writer is swing/trades/hypothesis.py:270,
         # which UPDATEs status / status_changed_at / status_change_reason
         # only -- never `name`, never DELETE.
-        in_cohort = list_closed_trades_for_cohort(
+        loaded[name] = list_closed_trades_for_cohort(
             conn,
             hypothesis_label=name,
             entry_intent=cohort_entry_intent(
                 name, registered_names=registered_names,
             ),
         )
+    # R2-04 tier (1): the read FOLLOWS the last cohort load.
+    read = tier2_cohort_exclusions(
+        conn, now=datetime.now(UTC), budget_seconds=budget_seconds)
+    for name in TAXONOMY_COHORTS:
+        in_cohort = loaded[name]
         trades = [t for t in in_cohort if t.id not in read.exclusions]
         tier2_excluded = read.excluded_among(t.id for t in in_cohort)
         if exclude_unresolved_discrepancies:

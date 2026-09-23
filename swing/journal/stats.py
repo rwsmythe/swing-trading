@@ -358,6 +358,12 @@ def compute_hypothesis_progress_breakdown(
     in-flight decoration (the same cohort question), and is NAMED in
     ``tier2_excluded``.  ``budget_seconds`` is the caller's (the web callers
     pass ``WEB_REPLAY_BUDGET_SECONDS``, the CLI none).
+
+    CHARC A-R2 item 4 (R2-04): the read is taken AFTER the last top-level
+    trade query this function counts from (tier 1, ordering).  Each
+    per-hypothesis tripwire query runs after the read by construction, so
+    ``compute_tripwire_status`` re-checks it (tier 2); a trade the tripwire
+    excluded as committed mid-read is NAMED on its hypothesis's row.
     """
     # Local imports avoid pulling repo + recommendations modules into
     # `swing.journal.stats` import time (the journal stats module is
@@ -375,9 +381,6 @@ def compute_hypothesis_progress_breakdown(
     from swing.trades.frozen_value_evidence import tier2_cohort_exclusions
     from swing.trades.voided_trades import voided_trade_ids
 
-    read = tier2_cohort_exclusions(
-        conn, now=datetime.now(UTC), budget_seconds=budget_seconds)
-
     # 20-A B-2 — exclude voided (phantom/test) trades from hypothesis progress
     # (sample counts + realized aggregates).
     voided = voided_trade_ids(conn)
@@ -388,6 +391,9 @@ def compute_hypothesis_progress_breakdown(
     exits_by_trade: dict[int, list[_ExitShape]] = {}
     for e in _list_all_exitshape_via_fills(conn):
         exits_by_trade.setdefault(e.trade_id, []).append(e)
+    # R2-04 tier (1): the read FOLLOWS every trade query above.
+    read = tier2_cohort_exclusions(
+        conn, now=datetime.now(UTC), budget_seconds=budget_seconds)
 
     rows: list[HypothesisProgress] = []
     for h in hypotheses:
@@ -455,8 +461,10 @@ def compute_hypothesis_progress_breakdown(
             tripwire_fired=tw.any_tripwire_fired,
             consecutive_loss_tripwire_threshold=h.consecutive_loss_tripwire,
             in_flight_sample=in_flight,
-            tier2_excluded=read.excluded_among(
-                t.id for t in cohort_closed + cohort_open),
+            # R2-04 tier (2): the tripwire's own later query may exclude a
+            # row committed after the read; that exclusion is named here too.
+            tier2_excluded=tuple(sorted(set(read.excluded_among(
+                t.id for t in cohort_closed + cohort_open)) | set(tw.tier2_excluded))),
             tier2_observed=read.observed_among(
                 t.id for t in matched + in_flight_counted),
         ))

@@ -472,7 +472,9 @@ def test_an_admitted_row_is_not_an_exclusion(tmp_path: Path, ticking_clock) -> N
     w = _tier2_world(tmp_path)
     try:
         assert fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work) == (
-            fve.Tier2CohortRead(exclusions={}, observations={}))
+            fve.Tier2CohortRead(
+                exclusions={}, observations={},
+                replayed_row_ids=frozenset({w.row.provenance_correction_id})))
     finally:
         w.conn.close()
 
@@ -483,7 +485,8 @@ def test_zero_tier2_rows_make_zero_git_calls(tmp_path: Path, monkeypatch) -> Non
     conn, _ids = build_pre_barrier_world(tmp_path, "empty")
     try:
         counter = _GitCounter(monkeypatch)
-        empty = fve.Tier2CohortRead(exclusions={}, observations={})
+        empty = fve.Tier2CohortRead(exclusions={}, observations={},
+                                    replayed_row_ids=frozenset())
         assert fve.tier2_cohort_exclusions(conn, now=NOW) == empty
         assert fve.tier2_cohort_exclusions(conn, now=NOW, budget_seconds=0.0) == empty
         assert counter.calls == []

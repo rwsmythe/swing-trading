@@ -357,12 +357,14 @@ def _build_cohort_vm(
     conn: sqlite3.Connection,
     *,
     row: tuple,
+    in_cohort: list,
     cohort_read: Tier2CohortRead,
 ) -> CohortProgressVM:
     """Construct a CohortProgressVM from a hypothesis_registry row tuple.
 
     22-A2 Task 10: ``cohort_read`` is the card's ONE tier-2 read; a trade it
-    excludes is not counted and is NAMED (RD's F10 sub-ruling)."""
+    excludes is not counted and is NAMED (RD's F10 sub-ruling).  R2-04:
+    ``in_cohort`` is the cohort's trades, loaded BEFORE that read."""
     (
         hyp_id, name, statement, target_sample_size, decision_criteria,
         status, consecutive_loss_tripwire, absolute_loss_tripwire_pct,
@@ -370,7 +372,6 @@ def _build_cohort_vm(
         preregistered_decision_criteria,
     ) = row
 
-    in_cohort = _list_cohort_trades_sorted(conn, name)
     trades = [t for t in in_cohort if t.id not in cohort_read.exclusions]
     classifications: list[str] = []
     legacy_count = 0
@@ -451,7 +452,11 @@ def build_hypothesis_progress_card_vm(
 
     22-A2 Task 10: ONE tier-2 read per invocation, shared by every cohort;
     ``budget_seconds`` is the caller's (the card route and the metrics index
-    pass ``WEB_REPLAY_BUDGET_SECONDS``, CHARC G-T10-1 (2))."""
+    pass ``WEB_REPLAY_BUDGET_SECONDS``, CHARC G-T10-1 (2)).
+
+    CHARC A-R2 item 4 (R2-04), tier (1): every cohort's trades are loaded
+    FIRST and the read is taken after the last load, so every counted trade's
+    tier-2 row was replayed."""
     from swing.trades.frozen_value_evidence import tier2_cohort_exclusions
 
     own_conn = conn is None
@@ -471,10 +476,13 @@ def build_hypothesis_progress_card_vm(
             "status_change_reason, preregistered_decision_criteria "
             "FROM hypothesis_registry ORDER BY id",
         ).fetchall()
+        loaded = [_list_cohort_trades_sorted(conn, r[1]) for r in rows]
+        # R2-04 tier (1): the read FOLLOWS the last cohort load.
         cohort_read = tier2_cohort_exclusions(
             conn, now=datetime.now(UTC), budget_seconds=budget_seconds)
         cohorts = tuple(
-            _build_cohort_vm(conn, row=r, cohort_read=cohort_read) for r in rows)
+            _build_cohort_vm(conn, row=r, in_cohort=in_cohort, cohort_read=cohort_read)
+            for r, in_cohort in zip(rows, loaded, strict=True))
     finally:
         if own_conn:
             conn.close()

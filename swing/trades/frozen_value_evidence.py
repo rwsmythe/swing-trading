@@ -199,6 +199,12 @@ REASON_CALLER_HOLDS_TRANSACTION = "caller_holds_transaction"
 REASON_STORED_EVIDENCE_MALFORMED = "stored_evidence_malformed"
 REASON_FILL_SESSION_MALFORMED = "entry_fill_session_date_malformed"
 REASON_AUTHOR_INSTANT_CHANGED = "author_instant_changed"
+# CHARC A-R2 item 4 (R2-04), tier (2): a tier-2 row a reader's trade query saw
+# but its read never replayed (committed after the read, before a query that
+# is structurally later).  A REASON under the existing ``VERDICT_UNVERIFIABLE``,
+# never a verdict (``REPLAY_VERDICTS`` is unchanged); referenced only by
+# ``Tier2CohortRead.recheck``, outside the digest closure.
+REASON_TIER2_ROW_COMMITTED_MID_READ = "tier2_row_committed_mid_read"
 
 
 @dataclass(frozen=True)
@@ -1329,10 +1335,36 @@ class Tier2CohortRead:
     ``observations`` is every ADMITTED row whose verdict carries a non-empty
     observation (today: ``derivation_version_moved``) -- counted, and
     rendered beside the count.  A reader COUNTS from ``exclusions`` only; the
-    count logic never reads ``observations``.  Nothing here is persisted."""
+    count logic never reads ``observations``.  ``replayed_row_ids`` is every
+    ``provenance_correction_id`` the read collected (and so verdicted), for
+    ``recheck`` (CHARC A-R2 item 4).  Nothing here is persisted."""
 
     exclusions: dict[int, ReplayVerdict]
     observations: dict[int, ReplayVerdict]
+    replayed_row_ids: frozenset[int]
+
+    def recheck(self, conn: sqlite3.Connection, *, now: datetime) -> Tier2CohortRead:
+        """CHARC A-R2 item 4, tier (2): for a reader whose counting query runs
+        structurally AFTER this read.  Re-SELECTs the tier-2 rows (no replay,
+        no git) and excludes, NAMED ``tier2_unverifiable`` /
+        ``tier2_row_committed_mid_read``, the trade of every row this read did
+        not replay.  A trade already excluded keeps its own verdict; nothing
+        else changes.  Call it AFTER the reader's last trade query."""
+        late: dict[int, ReplayVerdict] = {}
+        for row in _tier2_rows(conn):
+            if (row.provenance_correction_id in self.replayed_row_ids
+                    or row.trade_id in self.exclusions or row.trade_id in late):
+                continue
+            late[row.trade_id] = ReplayVerdict(
+                verdict=VERDICT_UNVERIFIABLE, reason=REASON_TIER2_ROW_COMMITTED_MID_READ,
+                evaluated_at=now.isoformat(), resolved_origin_main_sha=None,
+                barrier_installed_at_read=None)
+        if not late:
+            return self
+        return Tier2CohortRead(
+            exclusions={**self.exclusions, **late},
+            observations={t: v for t, v in self.observations.items() if t not in late},
+            replayed_row_ids=self.replayed_row_ids)
 
     def excluded_among(self, trade_ids) -> tuple[tuple[int, str, str | None], ...]:
         """``(trade_id, verdict, reason)`` for the ids this read excludes, in
@@ -1400,7 +1432,8 @@ def tier2_cohort_exclusions(conn: sqlite3.Connection, *, now: datetime,
     deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
     rows = _tier2_rows(conn)
     if not rows:
-        return Tier2CohortRead(exclusions={}, observations={})
+        return Tier2CohortRead(exclusions={}, observations={},
+                               replayed_row_ids=frozenset())
     repo = EVIDENCE_REPO_DIR if repo_dir is None else repo_dir
     resolution = (None if conn.in_transaction
                   else resolve_remote_ref(repo, deadline=deadline))
@@ -1419,7 +1452,9 @@ def tier2_cohort_exclusions(conn: sqlite3.Connection, *, now: datetime,
             excluded[row.trade_id] = result
         elif result.derivation_observation:
             observed[row.trade_id] = result
-    return Tier2CohortRead(exclusions=excluded, observations=observed)
+    return Tier2CohortRead(
+        exclusions=excluded, observations=observed,
+        replayed_row_ids=frozenset(row.provenance_correction_id for row in rows))
 
 
 # ==========================================================================

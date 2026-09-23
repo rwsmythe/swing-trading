@@ -508,8 +508,11 @@ empty-list short-circuit), and exposes `tier2_excluded: tuple[(trade_id, verdict
 Surfaces: `swing hypothesis list` prints one line per excluded trade; the journal review-progress
 output likewise; the web card + tier surface render one line (empty in the zero-data state -- the
 field is on the VM with a safe default; no new base-layout field). No reader reads
-`admission_tier` as a verdict.
-**Acceptance:** A2-91..A2-97, A2-97b, A2-97c green.
+`admission_tier` as a verdict. ORDERING (CHARC A-R2 item 4, R2-04): each reader takes its read AFTER
+the last trade query it counts from; `compute_tripwire_status` given a caller's read (the breakdown's)
+calls `Tier2CohortRead.recheck` after its own query instead, excluding and naming any tier-2 row the
+read did not replay as `tier2_unverifiable` / `tier2_row_committed_mid_read` (a reason, not a verdict).
+**Acceptance:** A2-91..A2-97, A2-97b, A2-97c, A2-97d green.
 
 ### Task 11 -- The acceptance case (trade 25) end to end + the live-copy evidence
 
@@ -697,6 +700,7 @@ Pre -> post = what the discriminator reads under the NULL / pre-fix implementati
 | A2-97 | `tier2_unverifiable` excludes and names too (never admitted on the stored grade) | -- |
 | A2-97b | (CHARC R4.2 ruling 1) web card with a monkeypatched SLOW git (sleep past the budget): the row renders EXCLUDED with `web_budget_exhausted` and the GET returns 200 within ~`WEB_REPLAY_BUDGET_SECONDS` + one call timeout | no budget: GET held for every call's full timeout |
 | A2-97c | the CLI reader on the same slow git passes `budget_seconds=None` and waits the full per-call timeout (no `web_budget_exhausted`) | a budget leaked into the CLI: row reads `web_budget_exhausted` |
+| A2-97d | (R2-04) a tier-2 row in the real write shape (relabel + raw-inserted forged row, another connection) committed from inside each reader's counting query on its first call: the four readers read N 1 with the row named stale; `compute_tripwire_status` given an earlier read (and the breakdown, committed on the tripwire's query) names it `tier2_row_committed_mid_read` | read-before-query: N 2, nothing named |
 
 ### Task 11 -- acceptance (brief section 4)
 

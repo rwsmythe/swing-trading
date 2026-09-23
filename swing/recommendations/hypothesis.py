@@ -518,6 +518,12 @@ def compute_tripwire_status(
     caller, the CLI -- reads here, with no budget.  The count never reads
     ``observations``; they are carried for the render only.
 
+    CHARC A-R2 item 4 (R2-04): the read here is taken AFTER this function's
+    last trade query (ordering), so every row the query counts was replayed.
+    A SUPPLIED read predates that query by construction, so it is
+    ``recheck``-ed after the query instead: a row committed in between is
+    excluded and named ``tier2_row_committed_mid_read``, never counted.
+
     Raises ValueError if `hypothesis_id` is unknown.
     """
     # Local import keeps the module DB-agnostic at import time so the
@@ -533,8 +539,6 @@ def compute_tripwire_status(
     h = get_hypothesis(conn, hypothesis_id)
     if h is None:
         raise ValueError(f"hypothesis {hypothesis_id} not found")
-    if cohort_read is None:
-        cohort_read = tier2_cohort_exclusions(conn, now=datetime.now(UTC))
 
     # 20-A B-2 — exclude voided trades from the tripwire sample (Codex R1 MAJOR).
     voided = voided_trade_ids(conn)
@@ -547,13 +551,19 @@ def compute_tripwire_status(
             entry_intent=t.entry_intent, hypothesis_name=h.name,
         )
     ]
-    matched = [t for t in in_cohort if t.id not in cohort_read.exclusions]
     # C.10: migrated off ``list_all_exits`` shim. The local helper sources
     # ExitLike rows from non-entry fills, deriving realized_pnl/r_multiple
     # via swing.trades.derived_metrics.
     exits_by_trade: dict[int, list] = {}
     for e in _list_all_exitshape_via_fills(conn):
         exits_by_trade.setdefault(e.trade_id, []).append(e)
+    # R2-04: the tier-2 read FOLLOWS the last trade query (tier 1); a supplied
+    # read is re-checked here instead (tier 2).
+    if cohort_read is None:
+        cohort_read = tier2_cohort_exclusions(conn, now=datetime.now(UTC))
+    else:
+        cohort_read = cohort_read.recheck(conn, now=datetime.now(UTC))
+    matched = [t for t in in_cohort if t.id not in cohort_read.exclusions]
 
     def _r_for(trade) -> float:
         es = exits_by_trade.get(trade.id, [])
