@@ -77,6 +77,14 @@
 --       * trades -> FIVE rows: trg_provenance_corrections_citation_graph (the
 --         v39 row above) plus this migration's trg_eia_trade_binding,
 --         trg_eia_cited_fields, trg_eia_audit_trail and trg_eia_tier2.
+--
+-- (viii) DECLARED LIMITATION (CHARC, G1 (d)): 0037 pairs the PK clause of
+--     trg_loml_no_replace with CHECK (link_id > 0) (0037:340), but
+--     latch_view_events carries no CHECK (view_event_id > 0) and adding one
+--     would be a rebuild of that table, out of 0040, so an explicit
+--     view_event_id of -1 is storable and a later REPLACE on it bypasses
+--     trg_lve_no_replace's PK clause -- the fabrication class, outside the
+--     threat model under R0.K.
 
 BEGIN;
 

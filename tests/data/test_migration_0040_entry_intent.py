@@ -699,6 +699,48 @@ def test_lve_insert_or_replace_on_row5_key_aborts_b22_42(
         c.close()
 
 
+_LVE_NO_REPLACE_UNIQUE_ONLY = """
+CREATE TRIGGER trg_lve_no_replace
+BEFORE INSERT ON latch_view_events
+FOR EACH ROW
+WHEN EXISTS (SELECT 1 FROM latch_view_events
+             WHERE candidate_id = NEW.candidate_id
+               AND view_session_date = NEW.view_session_date
+               AND surface = NEW.surface)
+BEGIN SELECT RAISE(ABORT, 'unique-key clause only (control)'); END;
+"""
+
+
+@pytest.mark.parametrize("pk_clause", [True, False])
+def test_lve_replace_on_an_existing_pk_under_a_fresh_unique_key_b22_207(
+        tmp_path: Path, pk_clause: bool) -> None:
+    """G1 (d), CHARC-CONFIRMED: the PK clause is what stops an INSERT OR
+    REPLACE carrying row 5's view_event_id under a FRESH UNIQUE key. With it
+    the statement ABORTS with the belt's message; on the control (the belt
+    re-created with the UNIQUE-key clause only) the REPLACE's implicit delete
+    runs past trg_lve_no_delete (recursive_triggers OFF) and the old row
+    VANISHES -- the pre-fix path, so this pair discriminates."""
+    c = _lve_db(tmp_path)
+    try:
+        if not pk_clause:
+            c.execute("DROP TRIGGER trg_lve_no_replace")
+            c.execute(_LVE_NO_REPLACE_UNIQUE_ONLY)
+        row = {**LVE_ROW5, "view_session_date": "2026-08-04"}  # fresh UNIQUE key
+        cols = ", ".join(row)
+        sql = (f"INSERT OR REPLACE INTO latch_view_events ({cols}) "
+               f"VALUES ({', '.join('?' * len(row))})")
+        if pk_clause:
+            with pytest.raises(sqlite3.IntegrityError, match=NO_REPLACE_MSG):
+                c.execute(sql, tuple(row.values()))
+        else:
+            c.execute(sql, tuple(row.values()))
+        sessions = [r[0] for r in c.execute(
+            "SELECT view_session_date FROM latch_view_events WHERE view_event_id = 5")]
+    finally:
+        c.close()
+    assert sessions == (["2026-08-03"] if pk_clause else ["2026-08-04"])
+
+
 def test_lve_plain_insert_on_existing_key_takes_the_update_path_b22_43(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from swing.data.repos import latch_view_events as lve
