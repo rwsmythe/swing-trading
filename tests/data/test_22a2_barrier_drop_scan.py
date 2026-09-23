@@ -104,13 +104,19 @@ def _ident(name: str) -> str:
     return rf"(?:\"{e}\"|`{e}`|\[{e}\]|\b{e}\b)"
 
 
+# An optional schema qualifier: bare or quoted ("", ``, []), with optional
+# whitespace around the dot (Codex R3-03 -- ``"main"."x"`` and ``main . x`` are
+# valid SQLite and drop the same object as ``main.x``).
+_SCHEMA_QUALIFIER = r"(?:(?:\"[^\"]+\"|`[^`]+`|\[[^\]]+\]|\w+)\s*\.\s*)?"
+
+
 def _drop_patterns() -> list[tuple[str, re.Pattern[str]]]:
     pats: list[tuple[str, re.Pattern[str]]] = []
     for name in BARRIER_TRIGGER_NAMES:
         pats.append((
             f"trigger {name}",
             re.compile(
-                rf"\bdrop\s+trigger\s+(?:if\s+exists\s+)?(?:\w+\.)?{_ident(name)}",
+                rf"\bdrop\s+trigger\s+(?:if\s+exists\s+)?{_SCHEMA_QUALIFIER}{_ident(name)}",
                 re.IGNORECASE,
             ),
         ))
@@ -118,7 +124,7 @@ def _drop_patterns() -> list[tuple[str, re.Pattern[str]]]:
         pats.append((
             f"table {table}",
             re.compile(
-                rf"\bdrop\s+table\s+(?:if\s+exists\s+)?(?:\w+\.)?{_ident(table)}"
+                rf"\bdrop\s+table\s+(?:if\s+exists\s+)?{_SCHEMA_QUALIFIER}{_ident(table)}"
                 r"(?![A-Za-z0-9_])",
                 re.IGNORECASE,
             ),
@@ -202,3 +208,54 @@ def test_a2_07_real_migrations_scan_clean_and_names_imported():
     # Files at and below 0037 are out of the scan; 0037 itself creates the
     # barrier and 0038+ must not drop it.
     assert scan_migrations(MIGRATIONS_DIR) == [], _RE_OPEN_CONDITION
+
+
+# --------------------------------------------------------------------------- Codex R3-03
+# A schema-qualified DROP whose qualifier is QUOTED, or spaced around the dot,
+# is valid SQLite and drops the same object.  Pre-fix the optional qualifier
+# was ``(?:\w+\.)?``: every form below except the bare ``main.`` scanned clean.
+
+_QUALIFIED_TRIGGER_FORMS = (
+    'DROP TRIGGER "main"."trg_candidates_no_update";\n',
+    "DROP TRIGGER main . trg_candidates_no_update;\n",
+    "DROP TRIGGER [main].[trg_candidates_no_update];\n",
+    "DROP TRIGGER IF EXISTS `main`.`trg_candidates_no_update`;\n",
+    'DROP TRIGGER "main" . trg_candidates_no_update;\n',
+)
+_QUALIFIED_TABLE_FORMS = (
+    "DROP TABLE main . candidates;\n",
+    'DROP TABLE "main"."candidates";\n',
+    "DROP TABLE IF EXISTS [main] . [candidates];\n",
+    "DROP TABLE `temp`.`candidates`;\n",
+)
+
+
+def test_codex_r3_03_a_quoted_or_spaced_schema_qualifier_on_a_trigger_is_a_violation(
+    tmp_path,
+):
+    for i, body in enumerate(_QUALIFIED_TRIGGER_FORMS):
+        d = tmp_path / str(i)
+        d.mkdir()
+        _write(d, "0040_x.sql", body)
+        found = scan_migrations(d)
+        assert [v.target for v in found] == ["trigger trg_candidates_no_update"], body
+
+
+def test_codex_r3_03_a_quoted_or_spaced_schema_qualifier_on_a_table_is_a_violation(
+    tmp_path,
+):
+    for i, body in enumerate(_QUALIFIED_TABLE_FORMS):
+        d = tmp_path / str(i)
+        d.mkdir()
+        _write(d, "0040_x.sql", body)
+        found = scan_migrations(d)
+        assert [v.target for v in found] == ["table candidates"], body
+
+
+def test_codex_r3_03_a_qualified_drop_of_another_table_is_not_a_violation(tmp_path):
+    """The widened qualifier does not widen the TARGET: a qualified drop of a
+    table that merely starts with a barrier table's name is not a hit."""
+    _write(tmp_path, "0040_x.sql",
+           'DROP TABLE "main"."candidates_archive";\n'
+           "DROP TABLE main . provenance_corrections;\n")
+    assert scan_migrations(tmp_path) == []
