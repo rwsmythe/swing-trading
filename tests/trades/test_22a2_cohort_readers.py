@@ -308,6 +308,54 @@ def test_a2_93_tier_surface_counts_from_exclusions_and_names_both(
         conn.close()
 
 
+def test_codex_r1_04_tier_observation_names_only_trades_the_filtered_n_counts(
+    tmp_path: Path, ticking_clock, monkeypatch,
+) -> None:
+    """Codex R1-04: ``tier2_observed`` renders "tier-2 counted with observation"
+    beside the cohort's N, so it must be computed from the trades the N ACTUALLY
+    counts -- AFTER the optional unresolved-discrepancy filter, not before it.
+
+    World: the MOVED state (trade 25 admitted, carrying the observation) plus
+    an unresolved MATERIAL discrepancy on trade 25, read with
+    ``exclude_unresolved_discrepancies=True``.  The filter removes trade 25 from
+    the N (1, the peer only).  Pre-fix arithmetic: the observation was computed
+    before the filter, so ``tier2_observed == ((25, OBSERVATION),)`` beside an
+    N of 1 that does not include trade 25 -- a named line claiming a count that
+    did not happen.  Post-fix: ``()``.  The filter-off twin keeps the line
+    (N 2, observed ((25, OBSERVATION),)), so an impl that simply drops
+    observations fails the twin."""
+    from swing.metrics.tier import compute_tier_comparison
+
+    conn = _world(tmp_path, monkeypatch, "moved")
+    try:
+        conn.execute(
+            "INSERT INTO reconciliation_runs (run_id, source, source_artifact_path, "
+            "source_artifact_sha256, period_start, period_end, started_ts, "
+            "finished_ts, state) VALUES (9101, 'tos_csv', '/tmp/r1-04.csv', "
+            "'r1-04', '2026-08-01', '2026-08-31', '2026-08-31T10:00:00.000', "
+            "'2026-08-31T10:01:00.000', 'completed')")
+        conn.execute(
+            "INSERT INTO reconciliation_discrepancies (discrepancy_id, run_id, "
+            "trade_id, discrepancy_type, field_name, expected_value_json, "
+            "actual_value_json, material_to_review, resolution, resolution_reason, "
+            "created_at) VALUES (9101, 9101, ?, 'stop_mismatch', 'current_stop', "
+            "'\"x\"', '\"y\"', 1, 'unresolved', NULL, '2026-08-31T10:01:00.000')",
+            (T25_TRADE_ID,))
+        conn.commit()
+
+        off = {c.cohort_name: c for c in compute_tier_comparison(conn).cohorts}[H1]
+        assert (off.n_closed, off.tier2_observed) == (
+            2, ((T25_TRADE_ID, OBSERVATION),))
+
+        on = {c.cohort_name: c for c in compute_tier_comparison(
+            conn, exclude_unresolved_discrepancies=True).cohorts}[H1]
+        assert on.n_closed == 1
+        assert on.tier2_observed == ()
+        assert on.tier2_excluded == ()
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize("state", STATES)
 def test_card_vm_counts_from_exclusions_and_names_both(  # A2-94's reader
     tmp_path: Path, ticking_clock, monkeypatch, state: str,

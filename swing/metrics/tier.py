@@ -709,13 +709,15 @@ def compute_tier_comparison(
         )
         trades = [t for t in in_cohort if t.id not in read.exclusions]
         tier2_excluded = read.excluded_among(t.id for t in in_cohort)
-        tier2_observed = read.observed_among(t.id for t in trades)
         if exclude_unresolved_discrepancies:
             pre_filter_n = len(trades)
             trades = filter_trades_without_unresolved_material_discrepancies(
                 conn, trades,
             )
             total_excluded += pre_filter_n - len(trades)
+        # Codex R1-04: an observation line says "counted", so it is taken over
+        # the trades the N ACTUALLY counts -- after the discrepancy filter.
+        tier2_observed = read.observed_among(t.id for t in trades)
         meta = cohort_meta.get(name)
         if meta is None:
             # Defensive: hypothesis_registry seed missing the cohort name
