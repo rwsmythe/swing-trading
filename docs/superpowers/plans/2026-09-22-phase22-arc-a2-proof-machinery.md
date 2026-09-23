@@ -353,9 +353,20 @@ builds a temp repo + bare remote + fetch so `REMOTE_REF` exists; commits with ex
   (`quoted_text_not_a_whole_line`); `git show -s --format=%aI%n%cI sha`;
   `git rev-parse REMOTE_REF`; `git merge-base --is-ancestor sha <resolved>` (exit 0 -> True, 1 ->
   False, other -> unverifiable); `git rev-list --count sha..<resolved>` (only when ancestor, else
-  null); `git log -g -1 --date=iso-strict --format=%gd REMOTE_REF` parsed for the `@{...}` instant
-  (null when no reflog). Object/path missing -> `artifact_unreadable`. Timeout, git absent, missing
-  ref -> `tier2_unverifiable`.
+  null); `git log -g -1 --date=iso-strict --format=%gD%n%H REMOTE_REF` parsed for the `@{...}`
+  instant (null when no reflog, and null -- age unknown, never a refusal -- when the entry's `%H` is
+  not the resolved sha, i.e. the ref moved between the two stages: R4-07, folded into `.6`).
+  Object/path missing -> `artifact_unreadable`. Timeout, git absent, missing ref ->
+  `tier2_unverifiable`.
+- Every one of those calls goes through `_run_git`, which runs `git --no-replace-objects <args>` with
+  `GIT_NO_REPLACE_OBJECTS=1` in a copy of the environment from which EVERY `GIT_*` key is removed
+  (RD A-R4 R4-01 ACCEPT (a), CHARC's `.6` shape): the read is `repo_dir`'s own repository with no
+  object replaced, whatever the caller's environment or local replace refs. No `--git-dir` binding
+  (a linked worktree's `.git` is a gitfile). Discriminators in `test_22a2_git_isolation.py`: D1 the
+  replace-ref forgery and its twin (`author_instant == d1`, the per-row call set unchanged), D2 one
+  case per variable that moves a read on git 2.52 (`GIT_DIR`, `GIT_COMMON_DIR`,
+  `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_REPLACE_REF_BASE`;
+  `GIT_NAMESPACE` moved nothing and is dropped, named), the R4-07 staged move.
 - `PreflightResult(facts | None, failure | None, detail: str)` -- **never raises** (encoding E-6).
 - `run_preflight(evidence_file, *, repo_dir=None, now_utc) -> PreflightResult` = load + read.
 **Acceptance:** A2-32..A2-41 green. No `sqlite3` import in the module's preflight half (A2-41).

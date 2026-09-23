@@ -386,9 +386,12 @@ def test_a2_88_barrier_absent_at_read_is_an_observation_only(
 # --------------------------------------------------------------------------- A2-89
 
 def _ref_resolutions(counter: _GitCounter) -> tuple[int, int]:
-    """(``rev-parse`` calls, reflog reads) among the counted git calls."""
-    rev_parse = sum(1 for c in counter.calls if c[1:2] == ("rev-parse",))
-    reflog = sum(1 for c in counter.calls if c[1:3] == ("log", "-g"))
+    """(``rev-parse`` calls, reflog reads) among the counted git calls.  Every
+    call carries ``--no-replace-objects`` before its subcommand (the ``.6``
+    pair, R4-01), so the subcommand is the THIRD argv element."""
+    assert all(c[1:2] == ("--no-replace-objects",) for c in counter.calls), counter.calls
+    rev_parse = sum(1 for c in counter.calls if c[2:3] == ("rev-parse",))
+    reflog = sum(1 for c in counter.calls if c[2:4] == ("log", "-g"))
     return rev_parse, reflog
 
 
@@ -436,7 +439,7 @@ def test_a2_89_one_replay_per_row_and_one_ref_resolution_per_invocation(
         assert replays == [r.provenance_correction_id for r in rows]
         # (ii)
         assert _ref_resolutions(counter) == (1, 1)
-        assert sum(1 for c in counter.calls if c[1:2] == ("show",)) == 3
+        assert sum(1 for c in counter.calls if c[2:3] == ("show",)) == 3
         calls_first = len(counter.calls)
         # (iii) A SECOND invocation re-resolves: no cache across calls (a
         # cached verdict is a stored grade, F10-shape).
@@ -620,7 +623,7 @@ def test_codex_r4_05_a_budget_exhausted_after_the_ref_resolved_keeps_its_sha(
                                           budget_seconds=0.5).exclusions
         v = out[T25_TRADE_ID]
         assert (v.verdict, v.reason) == ("tier2_unverifiable", "web_budget_exhausted")
-        assert [c[1] for c in counter.calls] == ["rev-parse"]
+        assert [c[1:3] for c in counter.calls] == [("--no-replace-objects", "rev-parse")]
         assert v.resolved_origin_main_sha == tip
         assert v.remote_ref_age_seconds is None
         cold = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work,
@@ -803,6 +806,24 @@ def test_g_t7f_amend_derivation_bumped_keys_equal_admits_with_the_observation(
         v = _replay(w, _stored_under(w, OLD_DERIVATION))
         assert (v.verdict, v.reason) == ("ADMIT", None), v
         assert v.derivation_observation == _moved(OLD_DERIVATION)
+    finally:
+        w.conn.close()
+
+
+def test_r4_01_trade25_written_under_dot5_replays_admit_with_the_moved_observation(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """The ``.6`` pair's replay consequence (G-T7F item 3): trade 25's row as
+    the ``.5`` code wrote it -- the same facts, ``derivation_version``
+    ``2026-09-23.5`` -- replays ADMIT under ``.6`` with the moved version as an
+    observation beside the verdict, never as a verdict."""
+    w = _tier2_world(tmp_path)
+    try:
+        assert fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION == "2026-09-23.6"
+        v = _replay(w, _stored_under(w, "2026-09-23.5"))
+        assert (v.verdict, v.reason) == ("ADMIT", None), v
+        assert v.derivation_observation == (
+            "derivation_version_moved (stored 2026-09-23.5, current 2026-09-23.6)")
     finally:
         w.conn.close()
 

@@ -71,7 +71,10 @@ SECOND_DERIVATION_VERSION = "2026-09-23.3"
 THIRD_DERIVATION_VERSION = "2026-09-23.4"
 # RD ruling A-R2 item 1 (R2-01) moved ``_TOKEN_CLASS`` (the session class
 # gains the hyphen): the fourth pair.
-CURRENT_DERIVATION_VERSION = "2026-09-23.5"
+FOURTH_DERIVATION_VERSION = "2026-09-23.5"
+# RD ruling A-R4 R4-01 (CHARC's .6 shape, R4-07 folded) moved ``_run_git``,
+# ``_reflog_stage`` and ``read_artifact_facts``: the fifth pair.
+CURRENT_DERIVATION_VERSION = "2026-09-23.6"
 GRAMMAR_VERSION = "2026-09-23.1"
 
 
@@ -160,7 +163,7 @@ def test_the_grammar_version_is_split_from_the_derivation_version() -> None:
     assert fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION == CURRENT_DERIVATION_VERSION
     assert [v for v, _d in fve.FROZEN_VALUE_EVIDENCE_HISTORY] == [
         FIRST_DERIVATION_VERSION, SECOND_DERIVATION_VERSION, THIRD_DERIVATION_VERSION,
-        CURRENT_DERIVATION_VERSION]
+        FOURTH_DERIVATION_VERSION, CURRENT_DERIVATION_VERSION]
     assert fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION != fve.FROZEN_VALUE_EVIDENCE_VERSION
     assert GRAMMAR_VERSION not in [v for v, _d in fve.FROZEN_VALUE_EVIDENCE_HISTORY]
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import sqlite3
 import subprocess
@@ -55,7 +56,7 @@ FROZEN_VALUE_EVIDENCE_VERSION = "2026-09-23.1"
 # OBSERVATION, never as a verdict (G-T7F-AMEND).  Deliberately a DIFFERENT
 # string from (A), so a builder writing one constant under the other's key is
 # visible to every literal comparison.
-FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION = "2026-09-23.5"
+FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION = "2026-09-23.6"
 
 # Every git call's own timeout (seconds).  The replay uses the same name.
 GIT_TIMEOUT_SECONDS = 10.0
@@ -331,11 +332,44 @@ def _run_git(repo_dir: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
 
     A timeout or a missing git binary raises ``_GitProcessError``; the exit code
     is the caller's to interpret.
+
+    THE READ IS ``repo_dir``'s OWN REPOSITORY, WITH NO OBJECT REPLACED (RD
+    ruling A-R4, R4-01, ACCEPT (a); CHARC's ``.6`` shape).  A local
+    ``refs/replace/<S>`` makes a genuine, published sha denote forged content
+    and a forged author instant on this box, and an ambient ``GIT_*`` variable
+    can point the read at another repository, object store or replace base.
+    Two obligations, each held two ways:
+
+    (2) IGNORE REPLACEMENT OBJECTS: ``--no-replace-objects`` BEFORE the
+    subcommand (the positive command-line binding) AND
+    ``GIT_NO_REPLACE_OBJECTS=1`` in the environment.
+    (1) READ ``repo_dir``'s OWN REPOSITORY: the environment is a copy of
+    ``os.environ`` with EVERY key whose name starts ``GIT_`` removed -- a RULE,
+    not a roster, so it covers ``GIT_DIR`` / ``GIT_WORK_TREE`` /
+    ``GIT_COMMON_DIR`` / ``GIT_INDEX_FILE``, the object-store pair
+    ``GIT_OBJECT_DIRECTORY`` / ``GIT_ALTERNATE_OBJECT_DIRECTORIES``, the
+    ref-remapping pair ``GIT_NAMESPACE`` / ``GIT_REPLACE_REF_BASE``, and
+    ``GIT_CONFIG*`` without a list that rots when git adds a variable.  ``cwd``
+    stays ``repo_dir``; git discovers its gitdir from there with nothing left
+    to override it.  The authority READ for the set is git(1)'s "Environment
+    Variables" section as shipped with the running git, 2.52.0.windows.1
+    (``share/doc/git-doc/git.html``); ``GIT_REPLACE_REF_BASE`` is not listed
+    there and git honours it anyway, which is exactly why the scrub is a
+    prefix rule.  A positive ``--git-dir`` binding is NOT used (CHARC): in a
+    linked worktree ``repo_dir/.git`` is a gitfile, and a wrong guess about its
+    indirection would turn honest reads into refusals.
+
+    RD's fact, read not inferred: this box's tool shells carry
+    ``GIT_ASKPASS=``, ``GIT_EDITOR=true`` and ``GIT_TERMINAL_PROMPT=0``; the
+    scrub drops all three, harmlessly, because none of the six calls reaches
+    the network or an editor.
     """
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
         return subprocess.run(
-            ["git", *args], cwd=str(repo_dir), capture_output=True,
-            timeout=GIT_TIMEOUT_SECONDS, check=False,
+            ["git", "--no-replace-objects", *args], cwd=str(repo_dir),
+            capture_output=True, timeout=GIT_TIMEOUT_SECONDS, check=False, env=env,
         )
     except subprocess.TimeoutExpired as exc:
         raise _GitProcessError(
@@ -393,14 +427,26 @@ def _ref_stage(git, repo_dir: Path) -> tuple[str | None, str | None]:
     return ref.stdout.decode("ascii").strip(), None
 
 
-def _reflog_stage(git) -> tuple[datetime | None, str | None]:
+def _reflog_stage(git, resolved_sha: str) -> tuple[datetime | None, str | None]:
     """The ref's last reflog instant: ``(instant or None, None)``, or
-    ``(None, detail)`` on a git exit.  A process failure RAISES."""
-    log = git("log", "-g", "-1", "--date=iso-strict", "--format=%gD",
+    ``(None, detail)`` on a git exit.  A process failure RAISES.
+
+    R4-07 (CHARC, folded into the ``.6`` pair): the ONE reflog read also
+    carries the entry's object sha (``%gD`` then ``%H`` on a second line).
+    When it is not ``resolved_sha`` -- the ref moved between the rev-parse
+    stage and this one -- the result is ``(None, None)``: age UNKNOWN, the
+    same value an empty reflog yields, never a refusal (F5: the age is
+    recorded-only)."""
+    log = git("log", "-g", "-1", "--date=iso-strict", "--format=%gD%n%H",
               REMOTE_REF, "--")
     if log.returncode != 0:
         return None, f"git log -g exited {log.returncode}: {_stderr(log)}"
-    return _parse_reflog_instant(log.stdout), None
+    selector, _sep, entry_sha = log.stdout.partition(b"\n")
+    if not selector.strip():
+        return None, None                      # an empty reflog: age unknown
+    if entry_sha.strip().decode("ascii", errors="replace") != resolved_sha:
+        return None, None                      # the ref moved between the stages
+    return _parse_reflog_instant(selector), None
 
 
 @dataclass(frozen=True)
@@ -432,7 +478,7 @@ def resolve_remote_ref(repo_dir: Path, *,
     if failure is not None:
         return RemoteRefResolution(repo_dir, None, failure, None, None)
     try:
-        updated_at, reflog_failure = _reflog_stage(git)
+        updated_at, reflog_failure = _reflog_stage(git, resolved)
     except Exception as exc:  # noqa: BLE001 -- E-6: a value, never a raise
         updated_at, reflog_failure = None, _failure_detail(exc)
     return RemoteRefResolution(repo_dir, resolved, None, updated_at, reflog_failure)
@@ -517,7 +563,7 @@ def read_artifact_facts(selection: EvidenceSelection, *, repo_dir: Path,
             descendant_count = int(count.stdout.decode("ascii").strip())
 
         if resolution is None:
-            updated_at, failure = _reflog_stage(git)
+            updated_at, failure = _reflog_stage(git, resolved)
         else:
             updated_at, failure = resolution.updated_at, resolution.reflog_failure
         if failure is not None:
@@ -1666,6 +1712,18 @@ def frozen_value_evidence_digest() -> str:
 # carrying ``2025-08-10`` or ``08-10-2026`` no longer yields an MM-DD sub-match
 # the year rule would re-date; ``2026-08-10T...`` still admits.  The callers of
 # ``find_token(kind="session")`` are ``_criterion3``'s two calls and no other.
+#
+# ``.6`` (RD ruling A-R4 R4-01, ACCEPT (a); CHARC's ``.6`` shape, R4-07
+# folded): ``_run_git`` runs ``git --no-replace-objects <args>`` with
+# ``GIT_NO_REPLACE_OBJECTS=1`` in an environment from which every ``GIT_*``
+# key is removed, so a local replace ref or an ambient ``GIT_*`` variable can
+# no longer make a genuine sha read as other content, or point the read at
+# another repository, object store or replace base.  ``_reflog_stage`` reads
+# the entry's object sha beside its selector and dates nothing (age unknown,
+# never a refusal) when the ref moved between the two stages.  For an honest
+# repository with no replace ref the facts are unchanged.  The member SET is
+# unchanged (100); the bodies of ``_run_git``, ``_reflog_stage`` and
+# ``read_artifact_facts`` moved.
 FROZEN_VALUE_EVIDENCE_HISTORY: tuple[tuple[str, str], ...] = (
     ("2026-09-23.2",
      "e098e9cddd4327b545dac89dbc7f017442f016bf9f82c5b9731d4b815fec1c1b"),
@@ -1675,4 +1733,6 @@ FROZEN_VALUE_EVIDENCE_HISTORY: tuple[tuple[str, str], ...] = (
      "0b00974d3e2fd7229c97824490c4fb4c813bf3e9992cb59cd95a809fdafe7b04"),
     ("2026-09-23.5",
      "ab5ede8893e434a5d23460ae78c0eba176c8427e009bee98fa00010040145c88"),
+    ("2026-09-23.6",
+     "9d426fd569e63faa65e28263bcbc7412ac2ac165df60627a4eea211258b11ab0"),
 )

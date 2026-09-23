@@ -190,7 +190,7 @@ def test_a2_98_trade25_admits_on_tier2_from_line57_end_to_end(
             "OII", "2026-08-10", "53.98", "41.42")
         assert (blob["evidence_version"], blob["derivation_version"]) == (
             fve.FROZEN_VALUE_EVIDENCE_VERSION, fve.FROZEN_VALUE_EVIDENCE_DERIVATION_VERSION)
-        assert blob["derivation_version"] == literal["derivation_version"] == "2026-09-23.5"
+        assert blob["derivation_version"] == literal["derivation_version"] == "2026-09-23.6"
 
         # The interval: fire 545 s, writer_absence_only 2.38 d (world-independent).
         interval = blob["interval"]
