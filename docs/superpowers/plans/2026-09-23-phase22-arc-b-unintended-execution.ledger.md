@@ -239,3 +239,75 @@ Both N5 branches leave trade 20 unaffected (0 AMN links, 0 AMN intents).
 > FRESH-CELL RE-DISPATCH: concur. 339,945 at census return leaves no room for the plan and three rounds; a fresh opus-high off the committed ledger plus the five landed rulings is the right shape, and the round-gate depth read stays a GATE for the new cell too.
 >
 > Courier: block-quote this ruling into the ledger and post the landed commit; the ruling is in flight until then.
+
+## R0.E — RD rules N1, N2, N3, N5 in one packet (`docs/phase22-arc-b-rd-rulings-census-n1-n5.md` @ `7a6f7539` on main, WHOLE; author RD; literal block quote, transcribed by the courier)
+
+> # Phase 22 — Arc 22-B: RD rulings on the round-0 census forks N1, N2, N3, N5 (ONE packet)
+>
+> **Author:** RD (the named ruler on N1/N2/N3/N5; N4 is CHARC's and is not ruled here). **Date:** 2026-09-23. **Packet answered:** the orchestrator's `20260923T173229Z` query; the census is ledger section R0.C on branch `22-b-plan @ b134d776`. **Status:** RULED, one pass. The courier block-quotes this file into the ledger; each ruling is in flight until that commit is posted back.
+>
+> Facts re-read by me on 2026-09-23 before ruling (method beside each): 21-B's merge `d5d03bb9` is dated `2026-08-03 01:04:14 -1000` (`git show -s`); the weekly image `backups/swing-202632.db` (mtime 2026-08-03 17:30 HST) is v33 with `latch_order_intents` present at 0 rows, and `swing-202631.db` (07-27) is v31 (opened `mode=ro&immutable=1`); no migration log with timestamps exists (`schema_version` has one column, `version`); trade 20's entry fill 41 carries a Schwab envelope `entry_date 2026-08-01` (the order-ENTERED date, D31) operator-corrected to 08-07; `latch_view_events` for AMN: one row, candidate 11926, detection 2026-08-03, first viewed `2026-08-01T05:09:56`, last `2026-08-02T23:43:45`, state `armed`, **`actionable_ever_viewed = 0`** — the same signature as every FTRE and VSTS row (all 0) and unlike OII and CADL (1); `swing/latches/classification.py:71-72` defines `actionable_ever_viewed = 1` as "an actionable mandate was presented".
+>
+> ---
+>
+> ## N1 — What is "the instrument" for P1? Ruling: **NEITHER branch as offered. The semantic is "the structural record could NOT have existed", proven from the instrument's OWN record, in an ordered three-valued probe. First-row grain is REJECTED as a proxy. Trade 20 ADMITS on the primary leg AND on the fallback leg.**
+>
+> **Why not (a), first row:** it errs toward admission — an instrument deployed and unused for days reads as absent. That is a ruling stated on a proxy, and my own rule is that such a ruling voids itself on the first innocent change (a quiet deployment week would admit anything). **Why not (b) as written:** deployment is the right fallback but the wrong PRIMARY — the question P1 asks is not "did the table exist" but "could the framework have recorded this placement", and for any mandate the 21-A panel displayed, the framework's own telemetry answers that directly.
+>
+> **The rule, ordered; the FIRST leg that can speak decides:**
+>
+> 1. **Telemetry leg (primary).** Take the mandate's `latch_view_events` rows for the fire the fill descends from (the AMN row is candidate 11926). If ANY row with `view_session_date` on or before the PLACEMENT session has `actionable_ever_viewed = 1`, the panel presented an actionable prepared order and no intent row was recorded → **REFUSE: "the instrument offered the order and did not fire; this is not an unintended execution the record can prove."** If rows exist and ALL are `actionable_ever_viewed = 0` through the placement session → the framework never offered a recordable placement → the structural record could not exist → **tier 2 admissible.**
+> 2. **Deployment leg (fallback, only when the mandate has NO telemetry rows).** Tier 2 requires the PLACEMENT session strictly before the 21-B instrument's deployment session, a pinned constant **`2026-08-03`** whose derivation the plan states in the constant's docstring: lower bound the merge `d5d03bb9` (2026-08-03 01:04 HST), upper bound the w32 image (2026-08-03 17:30 HST, v33, table present, 0 rows) — both bounds on one calendar day, so the session is determined, not estimated. Placement on or after that session with no telemetry and no intent row → **REFUSE** (the instrument existed; nothing says it was not offered).
+> 3. **Neither leg can speak** (no telemetry rows AND no placement date derivable) → **UNPROVABLE → REFUSE**, naming the missing fact. Unprovable is not absent.
+>
+> **The placement session** is the fill envelope's Schwab order-entered date (`schwab_source_value_json.entry_date` — the D31 value, which is the order's ENTERED date and is here exactly the fact wanted), falling back to `trades.entry_date` when no envelope exists. The fallback is conservative: the fill is never earlier than the placement, so substituting it can only make the placement look LATER, i.e. harder to admit.
+>
+> **Trade 20 under the rule:** leg 1 speaks — AMN telemetry exists, one row, `actionable_ever_viewed = 0`, viewed 07-31/08-01 HST around the 08-01 placement → **ADMITS tier 2.** Leg 2 would also admit (placement 08-01 < deployment 08-03). The witness is as briefed. The attestation row records WHICH leg admitted and its evidence (the telemetry row id, or the constant and the placement date) in the tier-reason JSON, so a replay can re-derive it.
+>
+> **Discriminators the plan carries (one mutation each, real row shape):** the AMN telemetry row with `actionable_ever_viewed` flipped to 1 → REFUSE naming the offer; the same row deleted (no telemetry) with placement 08-01 → ADMIT on leg 2; no telemetry with placement 08-03 → REFUSE (boundary twin: 08-02 → ADMIT); no telemetry and no envelope with `entry_date` 08-03 → REFUSE; the OII shape (actionable 1, a validity row exists) → not tier 2 at all — routes to the structural tier.
+>
+> **Precondition stated:** leg 1 depends on the 21-A telemetry's coverage — a mandate whose panel view was never recorded (telemetry unhealthy) falls to leg 2 by construction; that is the correct direction (a missing observation must not admit). The `latch_view_events` table must be append-only for this leg to be evidence; the plan reads its 0032 triggers and states what it found.
+>
+> ---
+>
+> ## N2 — Clause (4) "counts toward NO hypothesis cohort" vs the code. Ruling: **(a) — exclude in CODE, both halves, grounded in clause (4) as a named authority. The brief's "no cohort code changes" is WITHDRAWN, and the premise behind it was mine.**
+>
+> I wrote in F1 that the value "lands in NO cohort by the existing predicates". True for H1 by its criterion; for H2–H5 it was true only by trade 20's label absence, and I generalized from one row. The cell caught it; own it. A ratified doctrine sentence that the code does not enforce is a docstring with a signature on it — exactly branch (b) of F1, which I refused.
+>
+> **(b) is refused because it is fail-open by declaration:** a refusal at assignment time plus a declared residual that a later label write re-admits the trade is a guard the next arc can walk around without noticing. Clause (4) says NO cohort; the readers must say it.
+>
+> **Encoding, so D29's design is honoured rather than bypassed:** the exclusion is NOT a blanket filter justified by one authority. For epoch-contract cohorts the predicate gains `entry_intent IS NOT 'unintended_execution'` (NULL still counts, as today — NULL is unclassified, not excluded), grounded in the contract's clause (4) exactly as H1's `entry_intent = 'standard'` is grounded in its criterion text: a `CONTRACT_EXCLUSION_CLAUSE` constant pinned by test against the committed contract doc, so a future doctrine edit that drops the sentence FAILS the test rather than leaving a filter citing an authority that no longer says it. `trade_counts_toward_cohort` returns False for the value on every cohort; the SQL half (`metrics/cohort.py`) applies the same predicate when no criterion predicate applies; the four readers and `swing hypothesis list` get the case. `cohort_intent_authority` for H2–H5 still answers `epoch_contract` — the authority did not change, its text did.
+>
+> ---
+>
+> ## N3 — Trade 20 cannot appear in any existing named-exclusion line. Ruling: **(a) per-cohort naming, with N2(a). My §4 bullet 1, the brief's §4.3 and §5 step 4 are RESTATED; (b) is refused.**
+>
+> The line I wrote ("20 NAMED in each reader's exclusion line") was a channel I described without reading — my own 09-08 rule, violated in the packet that cited it. The 22-A2 exclusion lines name LABEL-MATCHED trades dropped by a tier-2 replay; trade 20 has no label and is in no candidate set. Nothing to name it in.
+>
+> **Restated acceptance (replaces §4.3 and my §4 bullet 1):** before and after trade 20's assignment, every reader's N is unchanged AND trade 20 is in NO cohort's candidate set (asserted, not inferred). The naming discriminator runs on SYNTHETIC label-matched trades — one H1-labelled, one H2-labelled, each with `entry_intent = 'unintended_execution'` — which must appear under their cohort's row as excluded with reason `unintended_execution` (N2(a)'s output) and must not count. **Witness step 4 restated:** `journal` (or the trade view) shows trade 20 rendering its OWN label `unintended_execution` (F5's display map — never `Unclassified`, never `standard`); `swing hypothesis list` shows every N unchanged from the pre-assignment quote; the attestation row is read back.
+>
+> **Why not (b):** four surfaces gain a new output line for a population that today has zero label-matched members, and "never silently uncounted" is already served: the trade renders its own intent label wherever a trade renders, and clause (4) routes its result to the trade-process card's facet. A program-level line is a surface for a future case; it is not bought on the case that does not need it.
+>
+> ---
+>
+> ## N5 — The intent-only structural branch. Ruling: **(b) — structural = the LINK only. An unlinked order-naming intent REFUSES, typed, naming the recovery. `cited_latch_intent_id` is DROPPED from the schema; `cited_latch_link_id` is the structural citation.**
+>
+> My F3 clause "no link but a `latch_order_intents` row → cite the intent row" was written against a table I had not read: 0033's CHECK forbids a broker order id on `place`/`decline` rows, so a place row ties to a fill only by a ticker/date heuristic — identity asserted from a date, which my own standing rule forbids in both directions, and the heuristic 22-A's case 4 already declined. Withdrawn.
+>
+> **Why not (a):** it keys by order-id equality (proven identity — admissible in principle) but then re-derives death-before-fill "minus the link-only frozen-value guards" — a second comparison path beside `mandate_alive_at`, the gotcha-#31 shape, and one that drops exactly the guards that make the link tier sound. A weaker structural tier is worse than none: it would carry the structural LABEL on evidence the link tier would refuse.
+>
+> **The refusal's recovery is 22-A's own admitting path:** a validity/cancel/attest row naming the fill's order without a link is a LEGACY shape (links are minted at acceptance since 0037); if such a row ever needs structural admission, the primitive is a link backfilled under 22-A's rules from that row — a follow-on with its own record, not a heuristic in 22-B. Fail closed; the message names it. Trade 20 is unaffected (0 AMN links, 0 AMN intents).
+>
+> ---
+>
+> ## Ruling-fact corrections I accept, and one encoding I adopt
+>
+> - `pre_trade_locked_at` is synthetic on **27/28**, not "28/28 by construction" — trade 19's coupled entry-date correction moved `entry_date` and left the lock stamp. My sentence was a count I had not run. Doctrine unaffected; the field is never citable.
+> - **E2 adopted:** `outcome_known_at` = the EARLIEST non-entry fill (`trim`/`exit`/`stop`). Trade 20's outcome is fill 44 (`stop`, 2026-08-11); an exit-only encoding would have recorded a closed trade as open — the direction that flatters, refused.
+> - **P2-a / P2-b adopted** (the `provenance_corrections` leg is schema-vacuous today and planted under `ignore_check_constraints` from the 22-A2 fixture; multi-field corrections match on envelope keys too). Live incidence 0 on both; the predicate is over the trail, not over today's writers.
+> - **C.4's EIGHT refusing surfaces** (not five) are CHARC's F5 scope; noted here only because my F2 precondition walk relied on the same read — the walk found no unaudited writer of the four citable fields, so P2's precondition HOLDS (the cell's C.2, method stated). No finding.
+> - The K17/K5 byte facts and the K15 hash (`5a78e547…3886`, 1,024 UTF-8 bytes, non-ASCII) are the cell's; CHARC's pin test derives its own.
+>
+> **Consequence for CHARC's lane, flagged not ruled:** N2(a) changes `swing/metrics/cohort_intent.py` and `swing/metrics/cohort.py` — cohort code the brief's §2 said would not change. That is scope his §3 pass and §2 bullet must absorb; the tripwire set is unchanged (no new module, no new schema beyond 0040 and the attestation table).
+>
+> — RD, 2026-09-23
