@@ -2653,6 +2653,24 @@ def _echo_admission_tier(view) -> None:
     click.echo(
         f"  probe admission basis         "
         f"{getattr(view, 'cited_latch_admission_basis', None)}")
+    # 22-A2: a `latch_ladder_tier2` admission prints the four criteria it
+    # PASSED, one per line, and the interval prose -- both read off the ONE
+    # blob the row carries (the service's `_tier2_surface`), never re-derived
+    # here. Empty for every other tier, so nothing prints.
+    clauses = getattr(view, "tier2_clauses", ()) or ()
+    for criterion, verdict in clauses:
+        click.echo(f"  {criterion}: {verdict}")
+    prose = getattr(view, "tier2_interval_prose", None)
+    if prose:
+        click.echo(f"  {'uncovered window':<30}{prose}")
+
+
+def _echo_tier2_note(view) -> None:
+    """E-18: evidence supplied against an ALREADY-APPLIED trade is not
+    re-evaluated; say where the read-time verdict lives. ASCII only."""
+    note = getattr(view, "tier2_note", None)
+    if note:
+        click.echo(f"  NOTE: {note}")
 
 
 @journal_group.command("correct-cohort-provenance")
@@ -2696,10 +2714,30 @@ def _echo_admission_tier(view) -> None:
     "--dry-run", "dry_run", is_flag=True, default=False,
     help="Full validation + before/after + the exact derived label; writes nothing.",
 )
+# 22-A2 (Task 8). Declared LAST so it is the last entry of `cmd.params` (the
+# manifest the CLI test reads). NO `exists=True` and NO parsing here: click
+# existence-checks and rejects DURING PARSING, before the command body runs, so
+# a missing file on an ALREADY-APPLIED trade would exit 2 instead of returning
+# the existing correction id -- the same reason `--reason` is not required.
+# The service owns every check on this file (E-6) and consults its result only
+# at rung 9's escape, after SELECT-first.
+@click.option(
+    "--frozen-value-evidence", "frozen_value_evidence",
+    type=click.Path(dir_okay=False, path_type=Path), default=None,
+    help=(
+        "Tier-2 evidence for a pre-barrier linked mandate: a JSON file with "
+        "exactly three keys -- artifact_path, artifact_commit_sha, quoted_text "
+        "-- naming WHERE the contemporaneous record of the frozen values is "
+        "(a file at a commit on origin/main, and one line of it quoted "
+        "verbatim). It is a SELECTION: the ticker, session, pivot and "
+        "invalidation values are never typed; the service reads them from the "
+        "record and checks them against the cited candidate row."
+    ),
+)
 @click.pass_context
 def journal_correct_cohort_provenance_cmd(
     ctx, trade_id, cited_candidate_id, cited_recommendation_id, reason,
-    dry_run,
+    dry_run, frozen_value_evidence,
 ):
     """Fill a trade's EMPTY cohort keys from the framework's own record.
 
@@ -2725,6 +2763,11 @@ def journal_correct_cohort_provenance_cmd(
     `latch_ladder`: the citation is FORCED to that order's own fire -- which
     may have drifted out of the current bucket, because a mandate does not die
     of drift -- and the last-word ranking is not consulted at all.
+
+    A latch order linked from a PRE-BARRIER fire is refused unless
+    --frozen-value-evidence proves the fire's values were recorded before the
+    fill; then the tier is `latch_ladder_tier2` and the four criteria it
+    passed are printed one per line with the uncovered-window prose.
 
     V1 records provenance ONCE per trade. There is no re-correction path, so
     the --dry-run reading is the decision point.
@@ -2752,6 +2795,7 @@ def journal_correct_cohort_provenance_cmd(
                     # correction silently reports the `last_word` tier -- a
                     # true statement about a probe that never happened.
                     cfg=cfg,
+                    frozen_value_evidence=frozen_value_evidence,
                 )
             except CohortProvenanceCorrectionError as exc:
                 raise click.ClickException(str(exc)) from exc
@@ -2762,6 +2806,7 @@ def journal_correct_cohort_provenance_cmd(
                     f"{preview.already_applied_correction_id}; the values "
                     "below are what is RECORDED, not a fresh derivation."
                 )
+                _echo_tier2_note(preview)
             else:
                 click.echo(
                     f"DRY RUN -- nothing written. trade {preview.trade_id} "
@@ -2832,6 +2877,7 @@ def journal_correct_cohort_provenance_cmd(
                 cited_recommendation_id=cited_recommendation_id,
                 reason=reason,
                 cfg=cfg,
+                frozen_value_evidence=frozen_value_evidence,
             )
         except CohortProvenanceCorrectionError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -2845,6 +2891,7 @@ def journal_correct_cohort_provenance_cmd(
             f"{result.cited_candidate_id} and daily_recommendations row "
             f"{result.cited_daily_recommendation_id}. Nothing was written."
         )
+        _echo_tier2_note(result)
     else:
         click.echo(
             f"provenance correction {result.correction_id} applied to trade "

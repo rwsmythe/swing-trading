@@ -4,7 +4,7 @@ Pins the things a service-level test structurally CANNOT see:
 
   - the commands are REGISTERED on the flat `journal` group;
   - FREE-TYPING A COHORT KEY IS UNREPRESENTABLE -- the click parameter
-    manifest is READ and asserted to be exactly five entries, which a grep for
+    manifest is READ and asserted to be exactly six entries, which a grep for
     `"--label"` could never establish (a grep bounds the family from below and
     would miss `--hypothesis-label` or any other spelling);
   - `--reason` is NOT `required=True` at the parser. Click rejects a missing
@@ -68,14 +68,18 @@ def _cmd(cfg, ids, *extra):
 # ------------------------------------------- free-typing is UNREPRESENTABLE
 
 
-def test_the_click_parameter_manifest_is_exactly_five_entries() -> None:
+def test_a2_77_the_click_parameter_manifest_is_exactly_six_entries() -> None:
     """A manifest READ, not a name grep. `help` is deliberately NOT a member:
     verified on the installed click, the auto help option is appended by
-    `get_params(ctx)` at parse time and never lives in `.params`."""
+    `get_params(ctx)` at parse time and never lives in `.params`.
+
+    22-A2 (Task 8) added the SIXTH, `frozen_value_evidence`, declared LAST.
+    It is a SELECTION -- a path to a file naming where the record is -- and
+    carries no cohort value (F9). PRE: five entries -> the equality fails."""
     cmd = main.commands["journal"].commands["correct-cohort-provenance"]
     assert [p.name for p in cmd.params] == [
         "trade_id", "cited_candidate_id", "cited_recommendation_id",
-        "reason", "dry_run",
+        "reason", "dry_run", "frozen_value_evidence",
     ]
     assert "help" not in {p.name for p in cmd.params}
     for param in cmd.params:
@@ -337,6 +341,9 @@ def test_both_surfaces_print_the_admission_tier(
     assert dry.exit_code == 0, dry.output
     assert "admission tier                last_word" in dry.output
     assert "no accepted latch order" in dry.output
+    # 22-A2: no tier-2 evidence surface on a tier that carries none.
+    assert "criterion 1" not in dry.output
+    assert "uncovered window" not in dry.output
 
     applied = runner.invoke(main, _cmd(cfg, ids, "--reason", REASON))
     assert applied.exit_code == 0, applied.output
@@ -440,3 +447,190 @@ def test_a_drifted_subject_reading_refuses_legibly(
             "SELECT COUNT(*) FROM provenance_corrections").fetchone()[0] == 0
     finally:
         conn.close()
+
+
+# ===========================================================================
+# 22-A2 (Task 8) -- `--frozen-value-evidence`: the tier-2 SELECTION at the CLI
+#
+# Trade 25's REAL row shape (`tests/_tier2_world_22a2.py`) with a
+# `pre_barrier_reconstructed` link, and the evidence a selection into a
+# throwaway git world whose `docs/rd-state.md` line 57 is the pinned
+# acceptance record. The CLI has no repo option: with none, the service reads
+# `frozen_value_evidence.EVIDENCE_REPO_DIR` at call time, so the world is
+# installed there. The config the command resolves is the world's own (its
+# price archive + trend template); the `--config` file only lets the group load.
+# ===========================================================================
+_T25_REASON = "22-A2 Task 8: trade 25's tier-2 correction"
+_TIER2_NOTE = ("already applied; evidence not re-evaluated here -- the read-time "
+               "verdict is on journal provenance-corrections")
+_CLAUSE_LINE = r"^  criterion (\d) .+: PASS$"
+
+
+def _t25_world(tmp_path: Path, monkeypatch, *, line57: bytes | None = None):
+    """``(runner, argv_head, db_path, evidence_file)`` over trade 25's world."""
+    import json
+
+    from swing.trades import frozen_value_evidence as fve
+    from tests._tier2_world_22a2 import (
+        LINE57_FIXTURE,
+        T25_AUTHOR_INSTANT,
+        T25_CANDIDATE_ID,
+        T25_REC_ID,
+        T25_TRADE_ID,
+        build_pre_barrier_world,
+        t25_cfg,
+    )
+    from tests.trades._git_world import GitWorld
+
+    line = LINE57_FIXTURE.read_bytes() if line57 is None else line57
+    world = GitWorld(tmp_path / "evidence-git")
+    world.commit("README.md", b"base\n")
+    body = b"\n".join([*(f"line {i}".encode("ascii") for i in range(1, 57)),
+                       line, b"line 58", b""])
+    sha = world.commit("docs/rd-state.md", body, author_date=T25_AUTHOR_INSTANT)
+    world.push()
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(json.dumps({
+        "artifact_path": "docs/rd-state.md", "artifact_commit_sha": sha,
+        "quoted_text": line.decode("utf-8")}), encoding="utf-8")
+    monkeypatch.setattr(fve, "EVIDENCE_REPO_DIR", world.work)
+
+    conn, _ids = build_pre_barrier_world(tmp_path, "t25")
+    conn.close()
+    cfg = t25_cfg(tmp_path / "t25")
+    monkeypatch.setattr("swing.config_overrides.apply_overrides", lambda _c: cfg)
+
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    cfg_file = _minimal_config(project, home)
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    argv = ["--config", str(cfg_file), "journal", "correct-cohort-provenance",
+            str(T25_TRADE_ID), "--cited-candidate", str(T25_CANDIDATE_ID),
+            "--cited-recommendation", str(T25_REC_ID)]
+    return CliRunner(), argv, cfg.paths.db_path, evidence
+
+
+def _corrections(db_path: Path) -> list[tuple]:
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute(
+            "SELECT provenance_correction_id, admission_tier, "
+            "cited_frozen_value_evidence_json FROM provenance_corrections"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("extra", [("--dry-run",), ()])
+def test_a2_78_both_surfaces_print_the_four_clauses_and_the_prose(
+    tmp_path: Path, monkeypatch, extra,
+) -> None:
+    """The tier, the four clauses ONE PER LINE in criterion order, and the
+    interval prose -- ASCII, so the cp1252 encode that `CliRunner` hides
+    succeeds. PRE: `--frozen-value-evidence` does not exist -> exit 2."""
+    import json
+    import re
+
+    runner, argv, db, evidence = _t25_world(tmp_path, monkeypatch)
+    r = runner.invoke(main, [*argv, "--reason", _T25_REASON,
+                             "--frozen-value-evidence", str(evidence), *extra])
+    assert r.exit_code == 0, r.output
+    r.output.encode("cp1252")
+    r.output.encode("ascii")
+    assert "admission tier                latch_ladder_tier2" in r.output
+    lines = r.output.splitlines()
+    clauses = [ln for ln in lines if re.match(_CLAUSE_LINE, ln)]
+    assert [re.match(_CLAUSE_LINE, ln).group(1) for ln in clauses] == [
+        "1", "2", "3", "4"]
+    assert "refs/remotes/origin/main" in clauses[0]
+    assert "pivot 53.98, invalidation 41.42" in clauses[2]
+    prose_lines = [ln for ln in lines if ln.startswith("  uncovered window")]
+    assert len(prose_lines) == 1
+    assert "writer_absence_only 2.38 days" in prose_lines[0]
+    rows = _corrections(db)
+    if extra:
+        assert rows == []
+    else:
+        assert len(rows) == 1 and rows[0][1] == "latch_ladder_tier2"
+        blob = json.loads(rows[0][2])
+        assert prose_lines[0].endswith(blob["uncovered_window_prose"])
+        assert blob["artifact_commit_sha"] in clauses[0]
+
+
+def test_a2_79_a_tier2_refusal_names_the_reason_and_the_field(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The pivot numeral is absent from the quoted line, so criterion 3 names
+    `pivot`. Exit 1 (a clean ClickException), no traceback, nothing written.
+    PRE: the option does not exist -> exit 2 `No such option`."""
+    from tests._tier2_world_22a2 import LINE57_FIXTURE
+
+    line = LINE57_FIXTURE.read_bytes().replace(b"53.98", b"53.93")
+    runner, argv, db, evidence = _t25_world(tmp_path, monkeypatch, line57=line)
+    for extra in (("--dry-run",), ()):
+        r = runner.invoke(main, [*argv, "--reason", _T25_REASON,
+                                 "--frozen-value-evidence", str(evidence), *extra])
+        assert r.exit_code == 1, r.output
+        assert "tier2_evidence_refused" in r.output
+        assert "criterion 3: pivot" in r.output
+        assert "Traceback" not in r.output
+        r.output.encode("ascii")
+    assert _corrections(db) == []
+
+
+def test_a2_80_help_documents_the_three_key_file_and_no_typed_values(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The option's help names each key of the selection file -- read off the
+    service's own constant, so a key added there fails here -- and says the
+    values are never typed. PRE: no such option in the help."""
+    from swing.trades.frozen_value_evidence import EVIDENCE_FILE_KEYS
+
+    runner, cfg, _ = _setup(tmp_path, monkeypatch)
+    r = runner.invoke(
+        main, ["--config", str(cfg), "journal",
+               "correct-cohort-provenance", "--help"])
+    assert r.exit_code == 0, r.output
+    text = " ".join(r.output.split())
+    assert "--frozen-value-evidence" in text
+    for key in EVIDENCE_FILE_KEYS:
+        assert key in text, key
+    assert "never typed" in text
+    r.output.encode("ascii")
+
+
+@pytest.mark.parametrize("bad", ["malformed", "missing"])
+def test_an_already_applied_replay_with_a_bad_evidence_file_exits_zero(
+    tmp_path: Path, monkeypatch, bad: str,
+) -> None:
+    """The CLI leg of roster case 70 (its service legs live in
+    `tests/trades/test_22a2_correction_service.py`): SELECT-first precedes every
+    payload REFUSAL, and the caller-side obligation (#31) is that CLICK never
+    parses or existence-checks the file. PRE (`click.Path(exists=True)`): the
+    missing path exits 2 before the command body runs."""
+    runner, argv, db, evidence = _t25_world(tmp_path, monkeypatch)
+    first = runner.invoke(main, [*argv, "--reason", _T25_REASON,
+                                 "--frozen-value-evidence", str(evidence)])
+    assert first.exit_code == 0, first.output
+    if bad == "malformed":
+        bad_path = tmp_path / "malformed.json"
+        bad_path.write_bytes(b"{not json")
+    else:
+        bad_path = tmp_path / "does-not-exist.json"
+        assert not bad_path.exists()
+    for extra in ((), ("--dry-run",)):
+        r = runner.invoke(main, [*argv, "--frozen-value-evidence", str(bad_path),
+                                 *extra])
+        assert r.exit_code == 0, r.output
+        assert _TIER2_NOTE in " ".join(r.output.split())
+        r.output.encode("ascii")
+    assert "ALREADY APPLIED" in runner.invoke(
+        main, [*argv, "--frozen-value-evidence", str(bad_path)]).output
+    # The counterfactual: no evidence supplied -> no note.
+    plain = runner.invoke(main, argv)
+    assert plain.exit_code == 0, plain.output
+    assert "evidence not re-evaluated" not in plain.output
+    assert len(_corrections(db)) == 1

@@ -253,7 +253,9 @@ def test_a2_70_already_applied_returns_the_existing_id_with_a_note(
     """SELECT-first precedes every payload REFUSAL: a malformed or absent
     evidence file on an already-applied trade is parsed (never consulted) and
     the existing id returns, with the note naming the read-time surface.  The
-    CLI leg of A2-70 lands with the CLI option (Task 8)."""
+    CLI leg of A2-70 landed with the CLI option (Task 8):
+    ``tests/cli/test_correct_cohort_provenance_command.py::
+    test_an_already_applied_replay_with_a_bad_evidence_file_exits_zero``."""
     repo, evidence = _evidence(tmp_path)
     conn, cfg = _t25(tmp_path)
     try:
