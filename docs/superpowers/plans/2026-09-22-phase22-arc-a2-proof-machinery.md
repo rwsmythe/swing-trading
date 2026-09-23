@@ -59,6 +59,7 @@ two-valued, F2 = b).
 | `FROZEN_VALUE_EVIDENCE_VERSION` | `"2026-09-23.1"` (seventh-column blob) | frozen_value_evidence.py |
 | decline reason `tier2_evidence_refused` | joins the decline-reason roster (22-A task 8 closure) | latched_origin.py |
 | `GIT_TIMEOUT_SECONDS` | `10.0` | frozen_value_evidence.py |
+| `WEB_REPLAY_BUDGET_SECONDS` | `2.0` (TOTAL wall-clock replay budget the two WEB readers pass; CHARC R4.2 ruling 1) | frozen_value_evidence.py |
 | `REMOTE_REF` | `"refs/remotes/origin/main"` | frozen_value_evidence.py |
 | `EVIDENCE_REPO_DIR` | repo root of the package (`Path(__file__).resolve().parents[2]`) | frozen_value_evidence.py |
 | `RULING_CITATION` | module constant text naming S12.1 + RD 2026-08-24 + R0.7-R0.12 (F9 sub-choice) | frozen_value_evidence.py |
@@ -66,6 +67,7 @@ two-valued, F2 = b).
 | `TIME_ANCHOR_RESIDUAL` | constant text: author/committer dates are caller-settable; ancestry is the anchor (S12.1 #7) | frozen_value_evidence.py |
 | `EVIDENCE_FILE_KEYS` | `("artifact_path", "artifact_commit_sha", "quoted_text")` (F9) | frozen_value_evidence.py |
 | replay verdicts | `"ADMIT"`, `"tier2_evidence_stale"`, `"tier2_unverifiable"` | frozen_value_evidence.py |
+| replay reason `web_budget_exhausted` | a `tier2_unverifiable` reason: the web budget ran out before this row was verdicted | frozen_value_evidence.py |
 
 **Tier-2 refusal vocabulary** (the `field`/`reason` a refusal NAMES; F6, F7, F13): selection --
 `evidence_file_malformed`, `artifact_unreadable`, `quoted_text_not_in_artifact`,
@@ -476,10 +478,16 @@ and on refusal the tier-2 reason + field. ASCII only.
   -> not admitted -> stale naming criterion/field; admitted -> compare `VERDICT_BEARING_KEYS` of the
   recomputed blob with the stored blob -> any difference -> stale `<key>_mismatch`; else `ADMIT`.
   Descendant growth and ref-age change are never compared (doctrine #6).
-- `tier2_cohort_exclusions(conn, *, now, repo_dir=None) -> dict[int, ReplayVerdict]` -- selects
-  `provenance_corrections` rows with tier `latch_ladder_tier2`, calls `replay_verdict` per row with
-  a memo scoped to THIS call keyed on `(provenance_correction_id, resolved_origin_main_sha)`, returns
-  the non-ADMIT rows by `trade_id`. No cache across calls (F10-shape).
+- `tier2_cohort_exclusions(conn, *, now, repo_dir=None, budget_seconds: float | None = None) ->
+  dict[int, ReplayVerdict]` -- selects `provenance_corrections` rows with tier `latch_ladder_tier2`,
+  calls `replay_verdict` per row with a memo scoped to THIS call keyed on
+  `(provenance_correction_id, resolved_origin_main_sha)`, returns the non-ADMIT rows by `trade_id`.
+  No cache across calls (F10-shape). `budget_seconds` is a TOTAL wall-clock budget (CHARC R4.2
+  ruling 1), checked BETWEEN git calls (never by killing a call mid-flight -- each call is already
+  bounded by `GIT_TIMEOUT_SECONDS`); on overrun every row not yet verdicted reads
+  `tier2_unverifiable` with reason `web_budget_exhausted` -- EXCLUDED and NAMED, never admitted. The
+  two WEB readers pass `WEB_REPLAY_BUDGET_SECONDS`; the CLI readers and the drift reader pass none.
+  Zero tier-2 rows -> zero git calls.
 - Drift reader: tier-2 rows render `read-time verdict: <verdict> (<reason>) evaluated_at <now>,
   origin/main <sha>, barrier installed at read <bool>`; replay runs OUTSIDE any read transaction the
   reader holds (collect rows, release, then replay).
@@ -491,14 +499,15 @@ and on refusal the tier-2 reason + field. ASCII only.
 `swing/web/view_models/metrics/hypothesis_progress_card.py` (+ its template and the tier surface
 template); `swing/cli.py` (hypothesis list line); `tests/trades/test_22a2_cohort_readers.py` (new);
 web tests via `with TestClient(app) as client:`.
-**Build:** each reader calls `tier2_cohort_exclusions(conn, now=...)` once per invocation, removes
+**Build:** each reader calls `tier2_cohort_exclusions(conn, now=...)` once per invocation (the two
+web readers with `budget_seconds=WEB_REPLAY_BUDGET_SECONDS`; the CLI readers with none), removes
 those trade ids from what it counts (Python filter, or a dynamic `NOT IN (?,...)` with the
 empty-list short-circuit), and exposes `tier2_excluded: tuple[(trade_id, verdict, reason), ...]`.
 Surfaces: `swing hypothesis list` prints one line per excluded trade; the journal review-progress
 output likewise; the web card + tier surface render one line (empty in the zero-data state -- the
 field is on the VM with a safe default; no new base-layout field). No reader reads
 `admission_tier` as a verdict.
-**Acceptance:** A2-91..A2-97 green.
+**Acceptance:** A2-91..A2-97, A2-97b, A2-97c green.
 
 ### Task 11 -- The acceptance case (trade 25) end to end + the live-copy evidence
 
@@ -513,6 +522,11 @@ mandate `armed` over sessions 2026-08-10..2026-08-14; extend the helper if it ca
 artifact commit carries line 57's exact bytes as line 57 of `docs/rd-state.md`, authored
 `2026-08-10T02:41:33-10:00`, pushed and fetched. The evidence file = `{artifact_path:
 "docs/rd-state.md", artifact_commit_sha: <that commit>, quoted_text: <line 57 decoded>}`.
+**The ISO session token's source (RD R4.1 note):** on trade 25, `quoted_action_session_text` =
+`2026-08-10` is matched from line 57's RESOLUTION date ("T5 RESOLVED 2026-08-10", char offset 16),
+equal to the action session by coincidence (P36) -- admissible by design under F13 (containment
+proves mention; AL2-2). A2-42/A2-98 do NOT prove the session was matched from the fire clause's
+`08-10` (that token would admit only under the year rule, and does).
 **Live-copy evidence (NOT a committed test):** on a `sqlite3.backup()` copy of live under a scratch
 config (the ledger R0.0 method), from the worktree with `PYTHONPATH=.`: `journal
 correct-cohort-provenance 25 --cited-candidate 12284 --cited-recommendation 169 --reason "<r>"
@@ -640,7 +654,7 @@ Pre -> post = what the discriminator reads under the NULL / pre-fix implementati
 | A2-72 | evidence + a ladder refusal at an earlier rung -> message carries "was not consulted" | -- |
 | A2-73 | evidence failing criterion 3 -> refusal message names `tier2_evidence_refused` + `criterion 3: pivot`; nothing written | -- |
 | A2-74 | dry-run == apply's authorization (same refusals, same tier) and leaves the DB byte-identical (`iterdump` equal) | -- |
-| A2-75 | the git preflight is called only from the two service entry points (AST walk of `swing/`: callers of `run_preflight`) | -- |
+| A2-75 | (CHARC R4.2 ruling 2, gotcha #31) ONE AST caller walk over `swing/`, each caller set asserted BOTH ways: callers of `run_preflight` == the two correction entry points; callers of `evaluate_conjunction` == rung 9's escape seam in `latched_origin.py` only (and `replay_verdict` inside its own module); callers of `tier2_cohort_exclusions` == exactly the P35 reader set + the drift reader | a new caller anywhere: set differs |
 | A2-76 | the fill-48 `fill_envelope_identity` reading is written by the apply and absent after the dry-run | -- |
 
 ### Task 8 -- CLI
@@ -674,10 +688,12 @@ Pre -> post = what the discriminator reads under the NULL / pre-fix implementati
 | A2-91 | `compute_tripwire_status` (H1): REWRITTEN -> N drops by exactly one and the exclusion names trade + reason; GROWN -> N unchanged | stored-tier reader: N unchanged |
 | A2-92 | journal review progress: same pair | -- |
 | A2-93 | tier surface (`swing/metrics/tier.py`): same pair | -- |
-| A2-94 | web hypothesis progress card (TestClient, lifespan): exclusion line rendered; zero-data state renders none and 200 | -- |
+| A2-94 | web hypothesis progress card (TestClient, lifespan): exclusion line rendered; zero-data state renders none and 200 AND starts no subprocess (monkeypatched `subprocess.run` records zero calls) | -- |
 | A2-95 | tier surface page (TestClient): same | -- |
 | A2-96 | `swing hypothesis list` prints the exclusion line | -- |
 | A2-97 | `tier2_unverifiable` excludes and names too (never admitted on the stored grade) | -- |
+| A2-97b | (CHARC R4.2 ruling 1) web card with a monkeypatched SLOW git (sleep past the budget): the row renders EXCLUDED with `web_budget_exhausted` and the GET returns 200 within ~`WEB_REPLAY_BUDGET_SECONDS` + one call timeout | no budget: GET held for every call's full timeout |
+| A2-97c | the CLI reader on the same slow git passes `budget_seconds=None` and waits the full per-call timeout (no `web_budget_exhausted`) | a budget leaked into the CLI: row reads `web_budget_exhausted` |
 
 ### Task 11 -- acceptance (brief section 4)
 
@@ -702,7 +718,9 @@ verdict-bearing (S12.1 #7, F5). AL2-7 `match_only` is net-change evidence, recor
 never coverage (F2.I s1). AL2-8 an MM-DD record across a year boundary refuses; the ISO form admits
 (F13 year rule). AL2-9 SQL binds endpoints raw only; UTC conversions and durations are service-recorded
 (R8-03). AL2-10 replay needs the local repo + git; without them rows read `tier2_unverifiable` and are
-excluded. AL2-11 the S12.2b instrument items are carved to `22-A2i` (brief OUT).
+excluded; a local repo that LACKS the cited object (shallow/pruned clone) reads
+`tier2_evidence_stale` / `not_ancestor_of_origin_main`, indistinguishable at read from rewritten
+history -- the rendered `resolved_origin_main_sha` + ref age tell them apart. AL2-11 the S12.2b instrument items are carved to `22-A2i` (brief OUT).
 
 ## 8. Envelope (for every review prompt; from brief section 2)
 
@@ -715,7 +733,11 @@ model and three-valued `LATCH_FREEZE_TIERS` (22-A2i); the S12.2b items (22-A2i);
 `trades.initial_stop` correction surface; any new UI surface (the two exclusion render lines are F10's
 "never silently uncounted" on existing readers, R0.12 note 8).
 
-## 9. The witness (post-merge; ONE step per operator result; orchestrator-run)
+## 9. The witness (post-merge; ONE step per operator result; OPERATOR-EXECUTED, ORCHESTRATOR-SCRIPTED)
+
+Per CHARC R4.2 ruling 3: steps 2, 4 and 5 write the operator's live DB and are run by the OPERATOR
+only -- never by a cell or the orchestrator seat. Steps 1 and 3 are read-only; the orchestrator
+seat may run them as PREPARATION, but the result the record quotes is the operator's. Step 6 is RD's.
 
 1. Stop `swing web`; plain sqlite3 `BEGIN EXCLUSIVE; ROLLBACK` on live succeeds.
 2. `swing db-migrate`: the 22a2 gate image is written and its path ECHOED (the D32 production proof);
