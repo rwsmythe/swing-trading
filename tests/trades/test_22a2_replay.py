@@ -603,6 +603,33 @@ def test_the_budget_is_checked_between_git_calls_not_only_between_rows(
         w.conn.close()
 
 
+def test_codex_r4_05_a_budget_exhausted_after_the_ref_resolved_keeps_its_sha(
+    tmp_path: Path, ticking_clock, monkeypatch,
+) -> None:
+    """Codex R4-05 (R1-05's residual): the invocation's one ``rev-parse``
+    finishes inside the budget and the reflog read never starts, so the row is
+    never replayed -- but the ref DID resolve, and the synthetic
+    ``web_budget_exhausted`` verdict keeps that sha (no reflog, so no age).
+    PRE: the synthetic verdict carried ``None``.  Budget 0 (nothing resolved)
+    still carries neither."""
+    w = _tier2_world(tmp_path)
+    try:
+        tip = w.git.remote_tip()     # before the counter: it runs git itself
+        counter = _GitCounter(monkeypatch, delay=1.0)
+        out = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work,
+                                          budget_seconds=0.5).exclusions
+        v = out[T25_TRADE_ID]
+        assert (v.verdict, v.reason) == ("tier2_unverifiable", "web_budget_exhausted")
+        assert [c[1] for c in counter.calls] == ["rev-parse"]
+        assert v.resolved_origin_main_sha == tip
+        assert v.remote_ref_age_seconds is None
+        cold = fve.tier2_cohort_exclusions(w.conn, now=NOW, repo_dir=w.git.work,
+                                           budget_seconds=0.0).exclusions[T25_TRADE_ID]
+        assert (cold.resolved_origin_main_sha, cold.remote_ref_age_seconds) == (None, None)
+    finally:
+        w.conn.close()
+
+
 # --------------------------------------------------------------------------- A2-90
 
 def test_a2_90_the_drift_reader_renders_the_read_time_verdict_for_tier2_only(

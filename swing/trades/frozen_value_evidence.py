@@ -1463,14 +1463,23 @@ def tier2_cohort_exclusions(conn: sqlite3.Connection, *, now: datetime,
     repo = EVIDENCE_REPO_DIR if repo_dir is None else repo_dir
     resolution = (None if conn.in_transaction
                   else resolve_remote_ref(repo, deadline=deadline))
+    # Codex R4-05 (R1-05's residual): a row the budget never reaches still
+    # keeps what the invocation's ONE ref read resolved -- the sha, and the
+    # ref's age when its reflog was read -- exactly as a replayed row does.
+    resolved_sha: str | None = None
+    resolved_age: int | None = None
+    if resolution is not None and resolution.ref_failure is None:
+        resolved_sha = resolution.resolved_sha
+        if resolution.updated_at is not None and now.utcoffset() is not None:
+            resolved_age = int((now - resolution.updated_at).total_seconds())
     excluded: dict[int, ReplayVerdict] = {}
     observed: dict[int, ReplayVerdict] = {}
     for row in rows:
         if deadline is not None and time.monotonic() >= deadline:
             result = ReplayVerdict(
                 verdict=VERDICT_UNVERIFIABLE, reason=REASON_WEB_BUDGET_EXHAUSTED,
-                evaluated_at=now.isoformat(), resolved_origin_main_sha=None,
-                barrier_installed_at_read=None)
+                evaluated_at=now.isoformat(), resolved_origin_main_sha=resolved_sha,
+                barrier_installed_at_read=None, remote_ref_age_seconds=resolved_age)
         else:
             result = replay_verdict(conn, row, now=now, repo_dir=repo,
                                     deadline=deadline, resolution=resolution)
