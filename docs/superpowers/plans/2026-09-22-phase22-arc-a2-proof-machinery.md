@@ -730,6 +730,9 @@ excluded; a local repo that LACKS the cited object (shallow/pruned clone) reads
 history -- the rendered `resolved_origin_main_sha` + ref age tell them apart. AL2-11 the S12.2b instrument items are carved to `22-A2i` (brief OUT).
 AL2-12 a service-rendered numeral adjacent to a leading `-` or a trailing exponent suffix admits
 (`-53.98`, `53.98e2`) (RD A-R2 item 2, R2-02; AL2-3's sibling with its own reason).
+AL2-13 a raw insert carrying forged attestation labels (`ruling_citation`, `verification_method`,
+`anchor_strength`, `time_anchor_residual`) replays ADMIT until D65 binds the four literals in the
+trigger (RD A-R3 item 1, R3-01 = (c); discharged by the D65 post-merge rider, main `81e59741`).
 
 ## 8. Envelope (for every review prompt; from brief section 2)
 
