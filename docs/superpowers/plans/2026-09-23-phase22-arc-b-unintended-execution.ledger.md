@@ -216,6 +216,7 @@ Both N5 branches leave trade 20 unaffected (0 AMN links, 0 AMN intents).
 |---|---|---|---|---|---|---|---|---|
 | 1 | fast | gpt-5.6-luna / high | present | NEW_CRITICAL_MAJOR_FOUND | 0/16/2 | 18 (all accepted, applied) | 386,359 at return (build 2.1.280, claude-opus-5-5; orchestrator-read `cell_depth.py --live 1`) -- rounds 2-3 re-dispatched to a fresh cell | 293,572 |
 | 2 | fast | gpt-5.6-luna / high | present | NEW_CRITICAL_MAJOR_FOUND | 0/8/6 | 11 (all 14 accepted, applied; R2-05 reframed, R2-14 in part) | 370,011 at return (build 2.1.280, claude-opus-5-5; orchestrator-read `cell_depth.py --live 1`) -- round 3 re-dispatched to a fresh cell | 405,845 |
+| 3 | fast | gpt-5.6-luna / high | present | NEW_CRITICAL_MAJOR_FOUND | 0/9/1 | 10 (all accepted, applied); R3-09 surfaced fork R0.K, loop STOPPED | | 451,928 |
 
 ## R0.D — CHARC rules N4: branch (a), value TERMINAL for generic writers (mail 20260923T173456Z; author CHARC; text of record on main in the brief section 3 @ 605fa4db; literal block quote of the mail body, transcribed by the courier)
 
@@ -554,3 +555,79 @@ Backup: `.plan-working-copy-after-r0j.md` (sha256 `2db615e8664c94439c2e89366584e
 | R2-12 | minor | INSTRUMENT | ACCEPT. b22_83 asserts only the structured `AssignmentResult` (its fields are named in the plan); stdout stays in b22_110. |
 | R2-13 | minor | INSTRUMENT | ACCEPT. The brief pin becomes `43227001` in the plan header and the acceptance-map heading. |
 | R2-14 | major | TASK | ACCEPT IN PART. `drift_report` gains (v) the authoritative entry fill has moved, and (vi) the envelope order id / `entry_date` has changed, both compared against the already-frozen `entry_fill_id` / `entry_broker_order_id` / `placement_session` (no new column); new b22_116. DECLINED: snapshotting fill quantity, price and origin, because they are not admission inputs. |
+
+## Round 3 — Reviewer A (`fast`), 2026-09-23 (fourth cell; the LAST counted plan round)
+
+**Invocation:** `codex exec -p fast -c model_reasoning_effort=high -s read-only --skip-git-repo-check -`, run from the worktree (read-only repo access). It ran through an LF runner script (`file` verified; copied beside the evidence as `run_r3.sh`) under `wsl.exe bash -lc`. The output and exit files were pre-created Windows-side.
+- stdin: the round-2 prompt with only the round number and the finding-id prefix changed (`diff`: two lines), the plan (the post-round-2 working copy, sha256 `beada971…2dca` verified before any edit), the brief @ `43227001` (in-tree; `git diff --stat 43227001` empty), ledger R0.C, R0.D-R0.I, R0.J and R0.J-RULING (ledger lines 114-212, 220-421, 471-508), and the contract doc. Total 216,715 B.
+- The prompt forbids reading this ledger file, `.codex*`/`.copowers*` files and `review-transcripts`. It describes both verdict tokens and writes neither line-initially (`grep -c` over the prompt = 0).
+- Staging was OUTSIDE the worktree, in the session scratchpad. The worktree holds no `.codex-*` or `.copowers-*` file (`ls -a | grep`, empty).
+
+**Assertions:**
+1. Banner model `gpt-5.6-luna` (the fast profile's).
+2. `reasoning effort: high`.
+3. `^ERROR` = 0.
+4. `^tokens used` = 1 (451,928).
+5. `^NEW_CRITICAL_MAJOR_FOUND` = 2 (codex 0.155.1 prints its final message twice; one distinct token); `^NO_NEW_CRITICAL_MAJOR` = 0.
+
+**Process checks:**
+- The process was confirmed exited before the transcript was read. `pgrep -af 'codex exec'`, with pgrep/grep filtered out, returned 0; the exit file reads `exit=0`; the harness reported the background task complete.
+- Scratch check: of the transcript's `exec` command lines, 0 name `ledger`, `review-transcripts`, `.copowers` or `.codex` (grep over the line after each `^exec`). No prior-round file was read.
+- No content-filter event (the final message says nothing of one).
+
+**Evidence (copy-per-round, `C:/Users/rwsmy/swing-data/review-transcripts/22-b-plan/`, copied the moment the assertions passed):** `.codex-review-r3.txt` 762,963 B · `.codex-prompt-r3.md` 5,997 B · `.codex-bundle-r3.md` 216,715 B · `run_r3.sh` 845 B · `.copowers-findings.md` (the round-3 response appended). Post-fix plan backup: `.plan-working-copy-after-r3.md`, 348 lines, 89,248 B, sha256 `0b61a2db2f7aa188671fd395329471cd7462e0e084a9ae9cdf82f4a9e8c24460` (byte-identical to the uncommitted working copy, `cmp`).
+
+**Result:** 10 findings, 0 critical / 9 major / 1 minor. The reviewer marked all 10 `[TASK]`. The cell's classification agrees on 9. R3-01 reads as instrument-level wording, but it is contested, so it counts as task-bearing (fail-safe). **10 task-bearing.** All 10 are ACCEPTED and applied to the plan working copy, which stays uncommitted. **R3-09 also surfaced a design question no ruling covers: fork R0.K below. The loop is STOPPED on it.** There is no self-sweep and no converged commit until it is ruled.
+
+| id | sev | class | disposition (applied) |
+|---|---|---|---|
+| R3-01 | major | TASK (contested: wording; counted task-bearing) | ACCEPT. The plan does not declare `outcome_known_at` twice. But the Task 4 date-CHECK paragraph sat INSIDE the `trade_entry_date` column bullet and read as a declaration. It is now a separate bullet headed "a NOTE on the column CHECKs, not a column", and it states that each column is declared once. |
+| R3-02 | major | TASK | ACCEPT. Task 3's b22_25 expects {the N4 trigger, the three belts} only. Task 4's commit extends the named constant with the attestation objects, and the file is listed in Task 4. |
+| R3-03 | major | TASK | ACCEPT, verified: `process_grade_trend.html.j2:69-70` prefixes `intent-`, and `_INTENT_CSS_CLASS` (`process_grade_trend.py:78-82`) holds bare tokens. The mapping value is `"unintended"`. The `app.css` edit is DROPPED: no `.intent-*` rule exists for any value (grep of `swing/web/`; `.process-grade-marker` at `app.css:408` is the only marker rule), and the hook is the class plus `data-entry-intent`, as `test_metrics_process_grade_trend_route.py:139-143` pins. b22_140 asserts `intent-unintended` and the absence of `intent-intent-`. |
+| R3-04 | major | TASK | ACCEPT, verified: `_build_templates` (`web/app.py:133-145`) registers no globals, and `ReviewVM` (`view_models/trades.py:1344-1351`) carries the choices and the raw value only. The VM gains `entry_intent_attested_label: str = ""`, filled by the builder via `swing.trades.intent.entry_intent_label` (`intent.py:30`), and the template renders the field. b22_122 asserts the text. |
+| R3-05 | major | TASK, RULING-CONFLICT (brief §0 item 5) | ACCEPT, verified: `split_into_partials` runs `DELETE FROM fills WHERE fill_id = ?` (`reconciliation_auto_correct.py:3216`), and `0039:84-115` already solved this exact case. The shape is copied: `entry_fill_id … ON DELETE SET NULL`, plus `entry_fill_id_at_assignment NOT NULL`, the pairing CHECK, and `trg_eia_no_update` permitting ONLY the FK-driven nulling (the `0039:700-762` shape). The binding trigger, drift (v) and Task 11 use the frozen number. New b22_191, which goes RED under RESTRICT. b22_72 covers a manual nulling while the fill exists, and b22_116 gains the deleted-fill case. NOT a new fork: the brief's doctrine and the 0039 precedent together fix the answer. |
+| R3-06 | major | TASK | ACCEPT, verified: `envelope_is_canonical` returns True for a blank string (`latched_origin.py:794-795`). Measured with plain sqlite3: `json_extract('', '$.a')` RAISES `malformed JSON`, and so does `0 AND json_extract('', …)`, so short-circuit is no guard. Every envelope read (the binding trigger, `trg_eia_tier2`'s placement, the service's SS-3 read) goes through `<ENV>` = `CASE WHEN json_valid(x) THEN x END`. A blank envelope is ABSENT in both domains and takes the E9 path. New b22_193. Live: 0 blank envelopes of 59 fills (26 NULL). |
+| R3-07 | major | TASK | ACCEPT. Preflight step 2 gains `blank_reason` (`reason.strip()` empty). Python's strip is stricter than SQLite's `trim`, so the service refuses everything the CHECK refuses. New b22_194 (dry-run and write). |
+| R3-08 | major | TASK | ACCEPT. b22_160's map carries each admission trigger's D51b-normalized SQL sha256, plus a seventh entry for the table's own CHECK binds (the table DDL hash and the bind ids). An added predicate changes a hash and FAILS the test, naming the object. This is the repo's existing pin-by-hash idiom (A2-09, b22_170), not a predicate parser. |
+| R3-09 | major | TASK | ACCEPT the finding as stated: drift (iv) now compares every snapshotted leg-1 field (existence, `actionable_ever_viewed`, `first_viewed_ts`, `view_session_date`) and re-derives the PRE set. New b22_195. **The cell's read goes further, and that part is fork R0.K:** a PRE-assignment raw UPDATE of `first_viewed_ts` can MANUFACTURE a telemetry admission, and neither the snapshot nor the drift reader can see it. |
+| R3-10 | minor | TASK | ACCEPT. The convention now reads "every VALIDATION trigger's `WHEN` is `NOT COALESCE(…)`", with a named `TOTAL_WHEN` list for barrier triggers: the N4 trigger in its ruled text (R0.D), and the two `*_no_replace`. b22_37 gains the static half. The N4 trigger's ruled text is NOT rewritten. |
+
+**Cell-found during round 3 (uncounted; found while the round ran, not by Codex):**
+- **CF-R3-1 (task-bearing; authorize-then-abort):** the table bind `trade_entry_date < substr(outcome_known_at,1,10)` (the brief's test (a)) had NO service twin. Preflight step 4 computed the outcome and never refused it, so a same-session outcome was ADMITTED by the service and ABORTED by the CHECK. Live incidence is 1 of 28 trades (trade 11, entry and first stop both 2026-05-22), measured with plain `sqlite3` `mode=ro`, `MIN(fill_datetime)` over `trim`/`exit`/`stop` per trade. That trade is already refused by `already_set`. Fix: the `outcome_not_after_record` refusal; new b22_49 (the raw CHECK boundary twin) and b22_196 (the service twin). Task 11's CHECK entry maps it.
+- **CF-R3-2 (id hygiene):** `…_null_does_not_pass_b22_52..` named an open series whose next members (53, 54) are OTHER tests. It is now ONE parametrized test, b22_52. `test_update_delete_replace_abort_b22_72..74` named three ids with one name. It is now three tests: b22_72, b22_73, b22_74.
+
+## R0.K — NEW fork (fourth cell, from round 3's R3-09; the loop is STOPPED). Ruler: **RD** (the leg-1 evidence semantics; he ruled the belt set at R0.G/R0.H). CHARC absorbs any 0040 change into brief §2 item (4), as at R0.G.
+
+**What no ruling covers.** R0.H (R0.F-2 (a)) windows leg 1 by `first_viewed_ts` at date grain, over the trade's `ticker`'s rows. R0.G/R0.H belt ONLY `actionable_ever_viewed` (monotonic), deletion and REPLACE. They name the property leg 1 needs as "`actionable_ever_viewed` is MONOTONIC and the row cannot VANISH". The two WINDOW inputs are unprotected against a raw UPDATE, and nothing leaves a trail:
+- `first_viewed_ts`: no trigger names it. The identity trigger (`0032:123-139`) covers `candidate_id, evaluation_run_id, ticker, detection_date, pipeline_run_id` only.
+- `ticker`: its coherence with `candidate_id` is enforced, but a coherent re-point to another A+ fire of a different ticker passes.
+
+**Why it is not already covered.**
+- The standard (brief §0 item 1; RD's admissibility test) requires "(b) immutable since, verified against the audit trail, never inferred from writer-absence."
+- RD applied exactly that to `actionable_ever_viewed` and DECLINED the declared-limitation branch twice ("a table that becomes evidence earns the barriers").
+- But brief §2 item (4) ENUMERATES 0040's D51 additions, so the plan can neither add a fourth belt nor declare an AL without contradicting one ruling or the other.
+
+**The exposure, derived from the ruled predicate (Task 4 `trg_eia_tier2`; Task 5 leg 1).** A speaking row needs `date(first_viewed_ts) >= 2026-08-03`. The PRE window needs `date(first_viewed_ts) <= placement`. So leg 1 can speak only when placement >= 08-03, and in that region leg 2 always REFUSES. Leg 1's all-0 PRE set is therefore the ONLY admitting path there, and a raw UPDATE BEFORE assignment can manufacture it:
+- (i) Move an `actionable_ever_viewed = 1` row's `first_viewed_ts` past placement. The refusing row goes silent, and any remaining all-0 PRE row admits.
+- (ii) Move a 0-row's `first_viewed_ts` INTO the window where no PRE row existed. The leg-2 REFUSE becomes a telemetry ADMIT.
+
+The attestation snapshots the PRE rows AFTER the tamper, and the drift reader (R3-09) compares against that snapshot. So neither sees a pre-assignment move. Fabrication by a raw INSERT of a new key is a different class: it is outside every evidence table's threat model in this repo, and it is not raised here.
+
+**Facts (cell, 2026-09-23; plain `sqlite3` `mode=ro` on live v39, and reads of the code):**
+- The sole production UPDATE of the table is `swing/data/repos/latch_view_events.py:157-169`. It SETs `last_viewed_ts`, `latch_state_at_last_view`, `actionable_at_last_view`, `view_count` and `actionable_ever_viewed`, and never `first_viewed_ts` or `ticker`.
+- The writer enumeration comes from grep of `latch_view_events` with UPDATE/INSERT/DELETE/REPLACE over `swing/**/*.py`: 2 sites, the UPDATE above and the INSERT at `:180`. A grep is a LOWER bound; Task 10's execute-site inventory is the closure.
+- Live: 33 rows; 28 have `date(first_viewed_ts) >= '2026-08-03'` (they speak); 0 have `first_viewed_ts > last_viewed_ts` (a shape the writer cannot produce).
+
+**Branches (both executable; the plan carries a marked drop-in at Task 3 step 6):**
+- **(a) A fourth belt in 0040:** `trg_lve_view_window_immutable`, `BEFORE UPDATE OF first_viewed_ts, ticker ON latch_view_events` → `RAISE(ABORT)`.
+  - The writer's UPDATE lists neither column, so the trigger never fires on a production path. (`UPDATE OF` fires only for SET-listed columns; the existing b22_39/b22_43 prove the writer path stays green.)
+  - Discriminators: a raw `UPDATE … SET first_viewed_ts` on a speaking row ABORTS; a coherent raw re-point of `ticker` (with `candidate_id` etc.) ABORTS; the writer's `record_view` merge passes.
+  - Cost: brief §2 item (4)'s addition list gains one member (CHARC absorbs, as at R0.G); b22_25's constant gains it; F6 is untouched (not `trades`).
+  - `view_session_date` is left out on purpose: the leg predicate never reads it (R0.H: "never `view_session_date`"). The drift reader still reports it.
+- **(b) Declared AL-6, service-prevented** (recipe §3's weaker citation; it must say which kind it is):
+  - "The leg-1 window inputs `first_viewed_ts` / `ticker` are WRITER-immutable, not schema-immutable. The sole writer never SETs them (`repos/latch_view_events.py:157-169`; 2 writer sites by grep, a lower bound). Live incidence of a writer-impossible shape: 0 of 33. A post-assignment move is DETECTED by drift (iv). A pre-assignment move is NOT detectable."
+  - This is the writer-absence inference the standard names. RD declined it for `actionable_ever_viewed`.
+
+**Cell's lean, stated as a lean and not a ruling:** (a). The standard is RD's own, and he has applied it twice to this table. The belt costs five SQL lines and two tests. Trade 20 is unaffected under both branches: its only AMN row (id 5) is first viewed 2026-08-01 < 08-03, so it never speaks, and it admits on leg 2.
+
+**No review round and no converged commit until RD rules** (plan-stage rule 1). The plan working copy carries every round-3 fix; the branch the ruling selects replaces the drop-in marker. A successor cell then runs the uncounted self-sweep (rounds 1-3 + SS + round-3 residuals) and makes the single converged commit. No fourth counted round is asked for: the fork is a ruling question, not a review finding the plan can close.
