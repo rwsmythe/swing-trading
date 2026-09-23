@@ -35,6 +35,7 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import date
+from typing import TYPE_CHECKING
 
 from swing.data.models import (
     FREEZE_TIER_LIVE_AT_ACCEPTANCE,
@@ -70,6 +71,9 @@ from swing.latches.reader import (
 # LOUDLY rather than silently changing an admission.
 from swing.latches.service import _Terminal
 from swing.metrics.funnel import APLUS_TRADE_ORIGIN
+
+if TYPE_CHECKING:
+    from swing.trades.frozen_value_evidence import Tier2Request
 
 log = logging.getLogger(__name__)
 
@@ -217,7 +221,8 @@ class LatchProbeInvariantError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# THE DECLINE-REASON ROSTER -- THIRTY-SIX.
+# THE DECLINE-REASON ROSTER -- THIRTY-SEVEN (22-A2 added
+# ``tier2_evidence_refused``, the last member below).
 #
 # Counted by reading the members below, never by grepping for a word.  The
 # plan records why the method has to be stated: a ``^[a-z_]+$`` regex over an
@@ -277,6 +282,11 @@ DECLINE_REASONS: frozenset[str] = frozenset({
     # on 22A-R3-13). Not "untrusted origin", which is a different sentence
     # about a different fill.
     "origin_envelope_inconsistent",
+    # 22-A2 (E-8): a supplied tier-2 request did not open rung 9's escape --
+    # its preflight failed, its conjunction refused, or there was no escape to
+    # take (a post-barrier admission; R0.10 encoding 3).  ONE reason; the
+    # criterion/field lives in ``LatchedProvenance.tier2_refusal``.
+    "tier2_evidence_refused",
 })
 
 
@@ -599,6 +609,12 @@ class LatchedProvenance:
     hypothesis_label: str | None = None
     probe_evidence: dict | None = None
     freeze_tier: str | None = None
+    # 22-A2: the seventh-column blob, set ONLY on an admission that escaped
+    # rung 9 by the four-part conjunction (its presence is what the correction
+    # service detects the tier from -- never chosen).
+    frozen_value_evidence: dict | None = None
+    # 22-A2 (E-8): the criterion/field of a ``tier2_evidence_refused``.
+    tier2_refusal: str | None = None
 
     def __post_init__(self) -> None:
         if self.decline_reason is not None and self.decline_reason not in DECLINE_REASONS:
@@ -614,6 +630,16 @@ class LatchedProvenance:
             )
         if self.admitted and self.decline_reason is not None:
             raise ValueError("an admitted provenance carries no decline reason")
+        # One direction only: the roster-wide properties (22-A task 8/9)
+        # construct EVERY reason bare, so the detail cannot be REQUIRED here;
+        # rung 9 always supplies it.
+        if (self.tier2_refusal is not None
+                and self.decline_reason != "tier2_evidence_refused"):
+            raise ValueError(
+                "tier2_refusal is carried only by a tier2_evidence_refused decline")
+        if self.frozen_value_evidence is not None and not self.admitted:
+            raise ValueError(
+                "a frozen-value evidence blob is carried only by an admission")
 
 
 def broker_order_id_from_envelope(raw: str | None) -> str | None:
@@ -1321,15 +1347,29 @@ def _subject_death_if_proven(
     return verdict
 
 
-def _authorization_block(inputs: dict) -> dict:
-    """``{key: {"input": ..., "verdict": "pass"}}`` over the WHOLE roster."""
+def _authorization_block(inputs: dict, verdicts: dict[str, str] | None = None) -> dict:
+    """``{key: {"input": ..., "verdict": ...}}`` over the WHOLE roster.
+
+    Every verdict is ``pass`` unless ``verdicts`` overrides it -- which only
+    rung 9's tier-2 escape does, recording ``escaped_by_tier2`` in its own
+    voice (F11: ``pass`` there would be a false attestation).  An override is
+    held to the roster keys and the ``AUTHORIZATION_VERDICTS`` vocabulary.
+    """
     missing = sorted(set(AUTHORIZATION_KEYS) - set(inputs))
     extra = sorted(set(inputs) - set(AUTHORIZATION_KEYS))
     if missing or extra:
         raise KeyError(
             f"authorization block does not match AUTHORIZATION_CLAUSES: "
             f"missing {missing}, extra {extra}")
-    return {key: {"input": inputs[key], "verdict": "pass"}
+    overrides = dict(verdicts or {})
+    stray = sorted(set(overrides) - set(AUTHORIZATION_KEYS))
+    unknown = sorted(set(overrides.values()) - AUTHORIZATION_VERDICTS)
+    if stray or unknown:
+        raise KeyError(
+            f"authorization verdict override outside the roster/vocabulary: "
+            f"keys {stray}, verdicts {unknown}")
+    return {key: {"input": inputs[key],
+                  "verdict": overrides.get(key, AUTHORIZATION_VERDICT_PASS)}
             for key in AUTHORIZATION_KEYS}
 
 
@@ -1568,8 +1608,18 @@ def authorize_accepted_order(
     exclude_trade_ids: frozenset[int],
     trade_id: int | None = None,
     competitor_rung=None,
+    tier2: Tier2Request | None = None,
 ) -> LatchedProvenance:
     """Run the ladder over ONE recognised link, then probe the mandate.
+
+    ``tier2`` is 22-A2's rung-9 ESCAPE seam (R0.10 encodings 2-3).  ``None`` --
+    the default, and the ONLY value the entry path ever passes (A2-65) -- is
+    22-A's behaviour byte-for-byte.  The correction path passes the request its
+    pre-transaction preflight produced; rung 9 then escapes a pre-barrier
+    refusal only when the barrier is installed, the stored AND read-time tiers
+    both say ``pre_barrier_reconstructed`` and the four-part conjunction admits
+    this link's fire, and it REFUSES ``tier2_evidence_refused`` when evidence
+    was supplied with no escape to take.
 
     ``trade_id`` is the SUBJECT trade where one already exists (the correction
     path); on the entry path there is no row yet and ``None`` is correct -- the
@@ -1868,8 +1918,34 @@ def authorize_accepted_order(
     # in two spellings, so they agree for every truthfully-minted row -- and it
     # closes the one shape a stored-tier-only rung would admit: a RAW link
     # whose freeze_tier column was written by hand.
-    if (order.freeze_tier != FREEZE_TIER_LIVE_AT_ACCEPTANCE
-            or read_time_tier != FREEZE_TIER_LIVE_AT_ACCEPTANCE):
+    #
+    # 22-A2: THE ESCAPE, never the removal.  Three shapes, each explicit:
+    #   * both tiers LIVE -> the existing pass path; evidence supplied here has
+    #     NO ESCAPE TO TAKE and refuses naming that (encoding 3 -- an operator
+    #     input is never silently ignored);
+    #   * both tiers PRE-BARRIER and a tier-2 request supplied -> the preflight
+    #     and the four-part conjunction decide; an admit ESCAPES to the guards
+    #     and the probe unchanged, a refusal names the criterion/field;
+    #   * anything else (a disagreement, or pre-barrier with no request) ->
+    #     `pre_barrier_unproven` exactly as 22-A shipped (encoding 2).
+    both_live = (order.freeze_tier == FREEZE_TIER_LIVE_AT_ACCEPTANCE
+                 and read_time_tier == FREEZE_TIER_LIVE_AT_ACCEPTANCE)
+    both_pre = (order.freeze_tier == FREEZE_TIER_PRE_BARRIER
+                and read_time_tier == FREEZE_TIER_PRE_BARRIER)
+    frozen_value_evidence: dict | None = None
+    if both_live:
+        if tier2 is not None:
+            return _refuse("tier2_evidence_refused", order,
+                           freeze_tier=order.freeze_tier,
+                           tier2_refusal="no_escape_to_take")
+    elif both_pre and tier2 is not None:
+        refusal, frozen_value_evidence = _rung9_tier2_escape(
+            conn, order=order, fill_session=fill_session, tier2=tier2,
+            barrier_installed=installed)
+        if refusal is not None:
+            return _refuse("tier2_evidence_refused", order,
+                           freeze_tier=order.freeze_tier, tier2_refusal=refusal)
+    else:
         return _refuse("pre_barrier_unproven", order,
                        freeze_tier=order.freeze_tier)
 
@@ -1889,6 +1965,13 @@ def authorize_accepted_order(
         return verdict
 
     evidence = dict(verdict.probe_evidence or {})
+    rung9_verdicts: dict[str, str] | None = None
+    if frozen_value_evidence is not None:
+        # The escape states itself in the blob's own voice (F11): its own
+        # version, and rung 9's verdict `escaped_by_tier2`, never `pass`.
+        evidence["evidence_version"] = LATCH_PROBE_TIER2_EVIDENCE_VERSION
+        rung9_verdicts = {
+            "rung9_stored_freeze_tier": AUTHORIZATION_VERDICT_ESCAPED_BY_TIER2}
     evidence["authorization"] = _authorization_block({
         "rung1_link_ticker": order.ticker,
         "rung2_link_parent": order.place_intent_id,
@@ -1906,7 +1989,7 @@ def authorize_accepted_order(
         "guard_quantity": shares,
         "guard_framework_price_bound": price,
         "guard_broker_limit_bound": order.actual_limit_price,
-    })
+    }, rung9_verdicts)
     return LatchedProvenance(
         admitted=True,
         recognised_but_underivable=False,
@@ -1920,7 +2003,50 @@ def authorize_accepted_order(
         archive_status=verdict.archive_status,
         probe_evidence=evidence,
         freeze_tier=order.freeze_tier,
+        frozen_value_evidence=frozen_value_evidence,
     )
+
+
+def _rung9_tier2_escape(
+    conn,
+    *,
+    order: AcceptedLatchOrder,
+    fill_session: date,
+    tier2: Tier2Request,
+    barrier_installed: bool,
+) -> tuple[str | None, dict | None]:
+    """``(refusal, None)`` or ``(None, seventh-column blob)`` for ONE escape.
+
+    THE ONLY CALLER OF ``evaluate_conjunction`` (E-16; A2-75 pins it).  The
+    preflight already ran, outside any transaction; this reads the DB only.
+    A raising evaluation is IGNORANCE and refuses naming the escape -- fail
+    closed, never the broad handler's ``aliveness_unverifiable``, which would
+    hide which input failed.
+    """
+    from swing.trades import frozen_value_evidence as fve
+
+    preflight = tier2.preflight
+    if preflight.failure is not None or preflight.facts is None:
+        failure = preflight.failure or fve.FAILURE_TIER2_UNVERIFIABLE
+        return (f"{failure}: {preflight.detail}" if preflight.detail else failure,
+                None)
+    try:
+        conj = fve.evaluate_conjunction(
+            conn, preflight.facts, candidate_id=order.candidate_id,
+            fill_session=fill_session, read_at=tier2.applied_at,
+            barrier_installed=barrier_installed)
+    except Exception as exc:  # noqa: BLE001 -- ignorance refuses, never admits
+        log.warning(
+            "22-A2: the tier-2 conjunction for link %s RAISED (%s: %s); the "
+            "escape is refused", order.link_id, type(exc).__name__, exc)
+        return (f"{fve.FAILURE_TIER2_UNVERIFIABLE}: {type(exc).__name__}: {exc}",
+                None)
+    if not conj.admitted or conj.evidence is None:
+        if conj.criterion is None:
+            return (f"{conj.reason or fve.FAILURE_TIER2_UNVERIFIABLE}: "
+                    f"{conj.field}", None)
+        return f"criterion {conj.criterion}: {conj.field or conj.reason}", None
+    return None, conj.evidence
 
 
 # ---------------------------------------------------------------------------
@@ -2525,6 +2651,7 @@ def resolve_latched_provenance(
     *,
     trade_id: int | None = None,
     exclude_trade_ids: frozenset[int] | None = None,
+    tier2: Tier2Request | None = None,
 ) -> LatchedProvenance:
     """The whole ladder for ONE entry request.
 
@@ -2757,6 +2884,7 @@ def resolve_latched_provenance(
             exclude_trade_ids=excluded,
             trade_id=trade_id,
             competitor_rung=competitor_liveness_rung,
+            tier2=tier2,
         )
     except Exception:  # noqa: BLE001 -- see below; this is DELIBERATE
         # BROAD ON PURPOSE, AND THE BREADTH IS THE POINT (Codex 22A-R8-03,

@@ -25,7 +25,9 @@ from __future__ import annotations
 import copy
 import json
 import sqlite3
+from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from swing.data.db import EXPECTED_SCHEMA_VERSION, open_connection, run_migrations
@@ -201,6 +203,45 @@ def build_pre_barrier_world(
     assert link is not None and link[1] == "pre_barrier_reconstructed", link
     return conn, {"place_id": place_id, "validity_id": validity_id,
                   "link_id": link[0]}
+
+
+# The probe window's closes for OII, [anchor 2026-08-10, fill session - 1]:
+# SYNTHETIC, above the stop 41.42 and below the pivot 53.98 (the 22-A probe
+# world's own convention) -- the mandate is ALIVE, so an admission's only open
+# question is rung 9.  The live OII bars are Task 11's evidence.
+T25_CLOSES = {
+    date(2026, 8, 10): 53.10,
+    date(2026, 8, 11): 52.85,
+    date(2026, 8, 12): 53.40,
+    date(2026, 8, 13): 52.95,
+    date(2026, 8, 14): 53.20,
+}
+
+
+def t25_cfg(root: Path) -> SimpleNamespace:
+    """The reader's config surface for trade 25's world, with its archive.
+
+    ``cfg.trend_template`` is REQUIRED here: candidate 12284 carries the FULL
+    criterion roster (``seed_criteria``), so the latch derivation scores it
+    and a bare probe config raises -> ``aliveness_unverifiable``, a refusal
+    unrelated to rung 9.  Values are production's (``swing.config.toml``
+    ``[trend_template]``), exactly as 22-A task 11's CADL fixture carries them.
+    """
+    from swing.config import TrendTemplate
+    from tests._latch_probe_world_22a import write_closes
+
+    cache = root / "prices"
+    cache.mkdir(parents=True, exist_ok=True)
+    cfg = SimpleNamespace(
+        paths=SimpleNamespace(prices_cache_dir=cache, db_path=root / "swing.db"),
+        pipeline=SimpleNamespace(observe_max_pending_window_sessions=30),
+        trend_template=TrendTemplate(
+            min_passes=7, allowed_miss_names=("TT8_rs_rank",),
+            rising_ma_period_days=21, high_52w_margin_pct=25.0,
+            low_52w_min_pct=30.0),
+    )
+    write_closes(cfg, T25_CLOSES, ticker=T25_TICKER)
+    return cfg
 
 
 def load_seventh_blob(conn: sqlite3.Connection, *, applied_at: str) -> dict:

@@ -169,6 +169,20 @@ class PreflightResult:
     detail: str
 
 
+@dataclass(frozen=True)
+class Tier2Request:
+    """What the correction path hands rung 9's escape seam (Task 6).
+
+    ``preflight`` ran BEFORE the transaction (S12.1 #9; git never runs inside
+    ``BEGIN IMMEDIATE``); ``applied_at`` is the ONE stamp the row's column, the
+    blob's ``evaluated_at`` and the interval's ``read_at`` share (E-7).  The
+    entry path never constructs one (A2-65 pins the caller).
+    """
+
+    preflight: PreflightResult
+    applied_at: str
+
+
 class _GitProcessError(Exception):
     """A git PROCESS failure -> ``tier2_unverifiable`` (E-10)."""
 
