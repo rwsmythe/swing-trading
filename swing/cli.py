@@ -40,7 +40,7 @@ from swing.data.db import (
     ensure_schema,
     open_connection,
 )
-from swing.data.models import PROVENANCE_CORRECTED_FIELDS
+from swing.data.models import PROVENANCE_CORRECTED_FIELDS, UNINTENDED_EXECUTION
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
 from swing.data.yfinance_audit_context import set_yfinance_audit_base_context
 from swing.evaluation.orchestration import (
@@ -1748,6 +1748,71 @@ def trade_review_cmd(
         f"Review recorded for trade #{trade_id} ({trade.ticker}). "
         f"Process grade: {process_grade}."
         + (f" Failure mode: {failure_mode}." if failure_mode else ""))
+
+
+@trade_group.command("assign-intent")
+@click.argument("trade_id", type=int)
+@click.option("--value", "value", required=True,
+              type=click.Choice([UNINTENDED_EXECUTION]),
+              help="The evidence-bearing entry_intent value; this command is its "
+                   "ONLY writer.")
+@click.option("--cite", required=True,
+              help="Comma list of the trade's own text fields that carry the "
+                   "evidence: notes, why_now, thesis, emotional_state_pre_trade "
+                   "(at least one of notes / why_now).")
+@click.option("--reason", required=True, help="Why this execution was one nobody "
+                                              "decided to make (non-blank).")
+@click.option("--dry-run", is_flag=True,
+              help="Run every admission check and print it; write nothing.")
+@click.pass_context
+def trade_assign_intent(ctx: click.Context, trade_id: int, value: str, cite: str,
+                        reason: str, dry_run: bool) -> None:
+    """Assign entry_intent 'unintended_execution' WITH its recorded evidence.
+
+    The tier is DETECTED, never chosen. The attestation row and the trades
+    value land together or not at all. A refusal names its recovery.
+    """
+    import json
+
+    from swing.data.db import connect
+    from swing.trades.entry_intent_assignment import ASSIGNMENT_APPLIED_BY, assign
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        result = assign(conn, cfg, trade_id=trade_id,
+                        cite=[part.strip() for part in cite.split(",")],
+                        reason=reason, applied_by=ASSIGNMENT_APPLIED_BY,
+                        dry_run=dry_run)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        conn.close()
+    if not result.admitted:
+        raise click.ClickException(
+            f"REFUSED ({result.refusal_code}): {result.message}")
+    head = f"trade {trade_id}: ADMIT {UNINTENDED_EXECUTION}"
+    click.echo(head + (" (dry run, nothing written)" if dry_run else ""))
+    click.echo(f"tier: {result.tier}")
+    evidence = json.dumps(result.leg_evidence, sort_keys=True)  # ASCII-escaped
+    if result.tier == "structural":
+        probe = result.leg_evidence or {}
+        click.echo(f"P1 (the mandate died before the fill): link "
+                   f"{probe.get('link_id')}, terminal {probe.get('clear_reason')} "
+                   f"on {probe.get('clear_session')}; evidence {evidence}")
+    else:
+        click.echo(f"P1 (the instrument could not have recorded the placement): "
+                   f"leg {result.admitted_leg}, placement session "
+                   f"{result.placement_session}; evidence {evidence}")
+    counts = result.corrections_by_table
+    click.echo(f"P2 (no correction touched the cited fields): corrections "
+               f"{counts.get('reconciliation_corrections')}/"
+               f"{counts.get('provenance_corrections')} over "
+               "reconciliation_corrections, provenance_corrections")
+    click.echo("P3 (the record pre-dates the outcome): outcome "
+               + (result.outcome_known_at or "open"))
+    if not dry_run:
+        click.echo(f"attestation_id: {result.attestation_id}")
 
 
 @trade_group.command("backfill-intent")
