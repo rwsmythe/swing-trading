@@ -186,7 +186,8 @@ def test_codex_r1_02_a_nul_in_the_selection_refuses_at_the_load_boundary(
 
     for name, payload in (
             ("leading.json", _good_payload(sha, "\x00" + LINE57_TEXT)),
-            ("interior.json", _good_payload(sha, "\x00" + LINE57_TEXT[:40])),
+            ("interior.json", _good_payload(sha, LINE57_TEXT[:40] + "\x00"
+                                            + LINE57_TEXT[40:])),
             ("path.json", {**_good_payload(sha), "artifact_path": RD_STATE + "\x00"})):
         path = _evidence(tmp_path, payload, name)
         loaded = fve.load_evidence_selection(path)

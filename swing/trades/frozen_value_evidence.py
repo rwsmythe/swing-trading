@@ -1153,6 +1153,10 @@ def _stored_selection(stored: object) -> EvidenceSelection | None:
     values = [stored.get(k) for k in EVIDENCE_FILE_KEYS]
     if not all(isinstance(v, str) and v for v in values):
         return None
+    # Codex R2-03: the load boundary's U+0000 refusal (R1-02) holds at READ
+    # too -- a raw-inserted NUL-bearing selection is malformed, never replayed.
+    if any("\x00" in v for v in values):
+        return None
     if not _SHA_RE.fullmatch(values[1]):
         return None
     return EvidenceSelection(*values)

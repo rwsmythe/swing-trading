@@ -834,9 +834,11 @@ def test_g_t7fe_b_unverifiable_under_a_moved_version_carries_it_in_the_field_onl
 # technique: the forgery the service can never write, planted past it) in the
 # real shape, one mutated value each, on the trade-25 world.
 
-def _raw_forged(tmp_path: Path, mutate) -> tuple[_World, sqlite3.Connection, object]:
+def _raw_forged(tmp_path: Path, mutate, *,
+                world_mutate=None) -> tuple[_World, sqlite3.Connection, object]:
     """``(world, conn, row)``: trade 25's truthful service-written row, its blob
-    mutated by ``mutate``, RAW-INSERTED into a byte copy of the same world
+    mutated by ``mutate`` (or by ``world_mutate(world, blob)`` when the forgery
+    needs the git world), RAW-INSERTED into a byte copy of the same world
     taken before the correction (same barrier, same ids) -- past the service,
     through the citation trigger, which must admit it."""
     from swing.data.db import open_connection
@@ -848,6 +850,8 @@ def _raw_forged(tmp_path: Path, mutate) -> tuple[_World, sqlite3.Connection, obj
     payload = _row(w.conn)
     blob = json.loads(payload["cited_frozen_value_evidence_json"])
     mutate(blob)
+    if world_mutate is not None:
+        world_mutate(w, blob)
     payload["cited_frozen_value_evidence_json"] = json.dumps(blob)
     conn = open_connection(pristine)
     with conn:
@@ -856,8 +860,8 @@ def _raw_forged(tmp_path: Path, mutate) -> tuple[_World, sqlite3.Connection, obj
     return w, conn, row
 
 
-def _raw_replay(tmp_path: Path, mutate) -> fve.ReplayVerdict:
-    w, conn, row = _raw_forged(tmp_path, mutate)
+def _raw_replay(tmp_path: Path, mutate, **kw) -> fve.ReplayVerdict:
+    w, conn, row = _raw_forged(tmp_path, mutate, **kw)
     try:
         return fve.replay_verdict(conn, row, now=NOW, repo_dir=w.git.work)
     finally:
@@ -960,3 +964,28 @@ def test_a_r1_a_forged_endpoint_still_speaks_before_a_forged_segment(
         blob["uncovered_window_prose"] += "x"
     v = _raw_replay(tmp_path, mutate)
     assert v.reason == "interval.endpoints.fire_hi.utc_mismatch"
+
+
+# --------------------------------------------------------------------------- Codex R2-03
+
+def test_codex_r2_03_a_stored_nul_bearing_selection_reads_stale_not_admit(
+    tmp_path: Path, ticking_clock,
+) -> None:
+    """Codex R2-03: the U+0000 refusal lived only at the load boundary.  A
+    RAW-INSERTED row whose selection is a whole artifact line carrying a NUL
+    AFTER all four tokens passes the trigger (``length()`` and ``instr`` read
+    the prefix; no ``char(0)`` check) and, pre-fix, replays ADMIT -- evidence
+    the service defines as malformed, counted.  Post-fix the replay reads the
+    stored selection as malformed: STALE, named."""
+    nul_line = LINE57 + b"\x00 suffix"
+
+    def world_mutate(w: _World, blob: dict) -> None:
+        body = _rd_state_bytes(LINE57).replace(b"line 58", nul_line)
+        sha = w.git.commit(RD_STATE, body, author_date=T25_AUTHOR_INSTANT)
+        w.git.push()
+        blob["artifact_commit_sha"] = sha
+        blob["quoted_text"] = nul_line.decode("utf-8")
+
+    v = _raw_replay(tmp_path, lambda blob: None, world_mutate=world_mutate)
+    assert v.verdict == "tier2_evidence_stale", v
+    assert v.reason == "stored_evidence_malformed"
