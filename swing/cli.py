@@ -1815,55 +1815,124 @@ def trade_assign_intent(ctx: click.Context, trade_id: int, value: str, cite: str
     import json
 
     from swing.data.db import connect
+    from swing.trades.entry import ascii_safe, log_contained, safe_text
     from swing.trades.entry_intent_assignment import ASSIGNMENT_APPLIED_BY, assign
 
     cfg = ctx.obj["config"]
-    conn = connect(cfg.paths.db_path)
+    # RULING R7 item 3 (CHARC), the 22-A3 shape the entry command carries.
+    # THE DURABILITY BOUNDARY: `result` bound, ADMITTED, and NOT a dry run --
+    # i.e. `assign` returned having COMMITTED the attestation row and the
+    # trades value (its only admitted non-dry-run return follows its COMMIT).
+    # A refused result and a dry run ROLLBACK, so they sit BEFORE it, as does
+    # any exception out of `assign` (`result` stays None). Before the boundary
+    # an error is the honest answer and every path is byte-unchanged; after
+    # it, an error would be a wrong answer in the expensive direction (a
+    # retry reads `already_set` for an assignment reported as failed). The
+    # boundary is RE-EVALUATED at each handler, never cached in a flag, so no
+    # instruction sits between the binding of `result` and its protection.
+    result = None
+    close_error_text = None
+    close_log_error_text = None
+    confirmed = False
+    # ONE CONTINUOUS OUTER GUARD, as in the entry command: opened before the
+    # connection, closed only after the LAST line is printed.
     try:
-        result = assign(conn, cfg, trade_id=trade_id,
-                        cite=[part.strip() for part in cite.split(",")],
-                        reason=reason, applied_by=ASSIGNMENT_APPLIED_BY,
-                        dry_run=dry_run)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-    finally:
-        conn.close()
-    if not result.admitted:
-        raise click.ClickException(
-            f"REFUSED ({result.refusal_code}): {result.message}")
-    # Codex R7-1: on the write path `assign` has COMMITTED by now, so an
-    # output failure must not turn the durable assignment into a nonzero exit
-    # (a retry would read `already_set` for an assignment reported as failed).
-    # Every line goes through the 22-A3 post-durability idiom -- ASCII-coerced
-    # whole, attempted per line on stdout and then stderr -- so the exit code
-    # stays the assignment's verdict, on the dry run as on the write.
-    from swing.trades.entry import ascii_safe
+        conn = connect(cfg.paths.db_path)
+        try:
+            try:
+                result = assign(conn, cfg, trade_id=trade_id,
+                                cite=[part.strip() for part in cite.split(",")],
+                                reason=reason, applied_by=ASSIGNMENT_APPLIED_BY,
+                                dry_run=dry_run)
+            except ValueError as exc:
+                raise click.ClickException(str(exc)) from exc
+        finally:
+            try:
+                conn.close()
+            except BaseException as exc:  # noqa: BLE001 -- the CLASS
+                if result is None or not result.admitted or dry_run:
+                    raise
+                # Rendered ONCE, before logging, and the logger is given the
+                # STRING (the entry command's A3R4-05 reasoning), then
+                # recorded durably, not only printed (A3-AR-05).
+                close_error_text = safe_text(exc)
+                _close_log_error = log_contained(
+                    _pe_backfill_logging.getLogger(__name__),
+                    "22-B: the assignment of trade %s IS DURABLE (attestation "
+                    "%s) and CLOSING the database connection afterwards "
+                    "RAISED (%s); the ledger is unaffected and the command "
+                    "still exits 0.",
+                    trade_id, result.attestation_id, close_error_text)
+                if _close_log_error is not None:
+                    close_log_error_text = safe_text(_close_log_error)
+        if not result.admitted:
+            raise click.ClickException(
+                f"REFUSED ({result.refusal_code}): {result.message}")
+        # Codex R7-1: on the write path `assign` has COMMITTED by now, so an
+        # output failure must not turn the durable assignment into a nonzero
+        # exit. Every line goes through the 22-A3 post-durability idiom --
+        # ASCII-coerced whole, attempted per line on stdout and then stderr --
+        # so the exit code stays the assignment's verdict, on the dry run as
+        # on the write.
 
-    def _emit(line: str) -> None:
-        _echo_either_sink(ascii_safe(line))
+        def _emit(line: str) -> None:
+            _echo_either_sink(ascii_safe(line))
 
-    head = f"trade {trade_id}: ADMIT {UNINTENDED_EXECUTION}"
-    _emit(head + (" (dry run, nothing written)" if dry_run else ""))
-    _emit(f"tier: {result.tier}")
-    evidence = json.dumps(result.leg_evidence, sort_keys=True)  # ASCII-escaped
-    if result.tier == "structural":
-        probe = result.leg_evidence or {}
-        _emit(f"P1 (the mandate died before the fill): link "
-              f"{probe.get('link_id')}, terminal {probe.get('clear_reason')} "
-              f"on {probe.get('clear_session')}; evidence {evidence}")
-    else:
-        _emit(f"P1 (the instrument could not have recorded the placement): "
-              f"leg {result.admitted_leg}, placement session "
-              f"{result.placement_session}; evidence {evidence}")
-    counts = result.corrections_by_table
-    _emit(f"P2 (no correction touched the cited fields): corrections "
-          f"{counts.get('reconciliation_corrections')}/"
-          f"{counts.get('provenance_corrections')} over "
-          "reconciliation_corrections, provenance_corrections")
-    _emit("P3 (the record pre-dates the outcome): outcome "
-          + (result.outcome_known_at or "open"))
-    if not dry_run:
-        _emit(f"attestation_id: {result.attestation_id}")
+        head = f"trade {trade_id}: ADMIT {UNINTENDED_EXECUTION}"
+        _emit(head + (" (dry run, nothing written)" if dry_run else ""))
+        _emit(f"tier: {result.tier}")
+        evidence = json.dumps(result.leg_evidence, sort_keys=True)  # ASCII-escaped
+        if result.tier == "structural":
+            probe = result.leg_evidence or {}
+            _emit(f"P1 (the mandate died before the fill): link "
+                  f"{probe.get('link_id')}, terminal {probe.get('clear_reason')} "
+                  f"on {probe.get('clear_session')}; evidence {evidence}")
+        else:
+            _emit(f"P1 (the instrument could not have recorded the placement): "
+                  f"leg {result.admitted_leg}, placement session "
+                  f"{result.placement_session}; evidence {evidence}")
+        counts = result.corrections_by_table
+        _emit(f"P2 (no correction touched the cited fields): corrections "
+              f"{counts.get('reconciliation_corrections')}/"
+              f"{counts.get('provenance_corrections')} over "
+              "reconciliation_corrections, provenance_corrections")
+        _emit("P3 (the record pre-dates the outcome): outcome "
+              + (result.outcome_known_at or "open"))
+        if not dry_run:
+            confirmed = _echo_either_sink(ascii_safe(
+                "attestation_id: " + safe_text(result.attestation_id)))
+        # THE CLOSE WARNING: a caveat ON a success, so stderr first (the
+        # 22-A3 shape), through the same contained sink as every line above
+        # -- it cannot re-open the R7-1 class. OBSERVATION-ONLY: it says the
+        # close RAISED, never that the connection "could not be closed".
+        if close_error_text is not None:
+            _echo_either_sink(ascii_safe(
+                "WARN (post-commit): the assignment is DURABLE (trade "
+                + safe_text(trade_id) + ", attestation "
+                + safe_text(result.attestation_id)
+                + ") and CLOSING the database connection afterwards RAISED ("
+                + close_error_text + "); the ledger is unaffected."),
+                prefer_err=True)
+        if close_log_error_text is not None:
+            _echo_either_sink(ascii_safe(
+                "WARN (post-commit): the ERROR log for the close failure "
+                "above could not be emitted cleanly -- a logging handler "
+                "RAISED (" + close_log_error_text + "). Some sinks may have "
+                "received the record and some may not; the ledger is "
+                "unaffected."), prefer_err=True)
+    except BaseException:  # noqa: BLE001 -- the CLASS
+        if result is None or not result.admitted or dry_run:
+            raise
+        # DURABLE: ONE LAST CONTAINED ATTEMPT AT THE CONFIRMATION (the entry
+        # command's A3R2-01), at least once and not exactly once (A3R5-06).
+        # There is nowhere left to write if it fails, so the exit code is the
+        # last signal, which is why it must be the TRUE one: 0.
+        if not confirmed:
+            _echo_either_sink(ascii_safe(
+                "trade " + safe_text(trade_id) + ": ADMIT "
+                + UNINTENDED_EXECUTION + " (durable); attestation_id: "
+                + safe_text(result.attestation_id)))
+        return
 
 
 @trade_group.command("backfill-intent")

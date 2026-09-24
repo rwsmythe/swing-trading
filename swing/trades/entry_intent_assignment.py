@@ -654,6 +654,14 @@ def assign(
             conn.execute("ROLLBACK")
             return verdict
         attestation_id = _write(conn, verdict.attestation)
+        # RULING R7 item 3's sweep: the read-back runs BEFORE the COMMIT, so
+        # nothing that can raise sits between the durable fact and the
+        # return. A failing read here ROLLBACKs (an error before the durable
+        # fact, nothing written); after the COMMIT it raised out of `assign`
+        # over a durable row with the caller's `result` never bound. The read
+        # is the row this transaction just wrote; the COMMIT, not the read,
+        # is the durability evidence.
+        attestation = get_attestation(conn, trade_id)
         conn.execute("COMMIT")
     except BaseException:
         if conn.in_transaction:
@@ -666,7 +674,7 @@ def assign(
         corrections_by_table=verdict.corrections_by_table,
         outcome_known_at=verdict.outcome_known_at,
         attestation_id=attestation_id,
-        attestation=get_attestation(conn, trade_id))
+        attestation=attestation)
 
 
 def drift_report(conn: sqlite3.Connection, trade_id: int) -> list[str]:

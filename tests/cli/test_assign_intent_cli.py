@@ -240,3 +240,150 @@ def test_an_output_failure_after_the_commit_keeps_the_success_exit_b22_249(
         # the confirmation still reached the operator on the other sink
         assert "ADMIT unintended_execution" in res.output, res.output
         assert "attestation_id: 1" in res.output, res.output
+
+
+# ---------------------------------------------------------------------------
+# RULING R7 item 3 (CHARC): the 22-A3 close-after-commit shape the entry
+# command carries. THE DURABILITY BOUNDARY is an ADMITTED, NON-dry-run result:
+# `assign` returned having COMMITTED. A refused result and a dry run commit
+# nothing, so they sit BEFORE it and keep today's error path byte-unchanged
+# (the close exception propagates as itself, exactly as the entry command's
+# c2 control pins). After it, the durable row is reported, the close failure
+# is a WARNING naming it, and the exit is 0.
+# ---------------------------------------------------------------------------
+class _CloseRaises:
+    """A forwarding proxy whose `close()` performs the real close and THEN
+    raises (the entry command's 22-A3 probe, same shape): the transaction has
+    already committed or rolled back, so what is durable is genuinely so."""
+
+    def __init__(self, real):
+        object.__setattr__(self, "_real", real)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+    def __enter__(self):
+        object.__getattribute__(self, "_real").__enter__()
+        return self
+
+    def __exit__(self, *a):
+        return object.__getattribute__(self, "_real").__exit__(*a)
+
+    def close(self):
+        object.__getattribute__(self, "_real").close()
+        raise sqlite3.OperationalError("22-B PROBE: close failed")
+
+
+def _patch_connect_to_raise_on_close(monkeypatch) -> None:
+    import swing.data.db as db_mod
+    real_connect = db_mod.connect
+
+    def _wrapped(*a, **kw):
+        return _CloseRaises(real_connect(*a, **kw))
+
+    monkeypatch.setattr(db_mod, "connect", _wrapped)
+
+
+def test_close_raising_after_the_commit_reports_the_durable_row_b22_251(
+        tmp_path: Path, monkeypatch, caplog) -> None:
+    """(a) THE DISCRIMINATOR. Pre-fix the close exception escaped the bare
+    `finally` and Click exited 1 with a traceback over a DURABLE assignment
+    (a retry would then read `already_set`). Post-fix: exit 0, the admission
+    report and the attestation id on stdout, the WARNING (a caveat ON a
+    success, so stderr first, the 22-A3 shape) naming the close failure, and
+    the failure recorded through the logger."""
+    import logging
+
+    runner, cfg, db_path = _setup(tmp_path)
+    _patch_connect_to_raise_on_close(monkeypatch)
+    with caplog.at_level(logging.ERROR, logger="swing.cli"):
+        res = runner.invoke(main, _args(cfg))
+    assert _state(db_path) == (1, "unintended_execution")  # FRESH connection
+    assert res.exit_code == 0, (res.output, res.exception)
+    assert res.exception is None
+    assert "trade 20: ADMIT unintended_execution" in res.stdout
+    assert "attestation_id: 1" in res.stdout
+    warn = [ln for ln in res.stderr.splitlines() if ln.startswith("WARN")]
+    assert len(warn) == 1, res.stderr
+    assert "DURABLE" in warn[0] and "attestation 1" in warn[0]
+    assert "CLOSING the database connection" in warn[0]
+    assert "close failed" in warn[0]
+    assert res.output.isascii()
+    assert "close failed" in caplog.text and "IS DURABLE" in caplog.text
+
+
+def test_close_raising_on_a_refusal_keeps_todays_error_path_b22_252(
+        tmp_path: Path, monkeypatch) -> None:
+    """(b) CONTROL, green pre-fix by design: a refusal commits nothing, so it
+    sits BEFORE the boundary and the close exception propagates AS ITSELF --
+    byte-identical to the pre-fix behaviour (no output at all, the exact
+    exception class), exactly as the entry command's c2 control pins. The
+    exact-class assertion is the discriminator against an unconditional
+    containment (which would surface Click's SystemExit(1) instead)."""
+    runner, cfg, db_path = _setup(tmp_path, entry_intent="standard")
+    _patch_connect_to_raise_on_close(monkeypatch)
+    res = runner.invoke(main, _args(cfg))
+    assert res.exit_code == 1
+    assert type(res.exception) is sqlite3.OperationalError, repr(res.exception)
+    assert "close failed" in str(res.exception)
+    assert res.output == ""  # byte-identical to pre-fix: nothing was printed
+    assert _state(db_path) == (0, "standard")  # FRESH connection
+
+
+def test_close_raising_on_a_dry_run_keeps_todays_error_path_b22_253(
+        tmp_path: Path, monkeypatch) -> None:
+    """(c) CONTROL, green pre-fix by design: a dry run ROLLBACKs, so it sits
+    BEFORE the boundary; the close exception propagates unchanged and nothing
+    is written."""
+    runner, cfg, db_path = _setup(tmp_path)
+    _patch_connect_to_raise_on_close(monkeypatch)
+    res = runner.invoke(main, _args(cfg, "--dry-run"))
+    assert res.exit_code == 1
+    assert type(res.exception) is sqlite3.OperationalError, repr(res.exception)
+    assert "close failed" in str(res.exception)
+    assert res.output == ""
+    assert _state(db_path) == (0, None)  # FRESH connection
+
+
+def test_the_service_reads_its_attestation_before_the_commit_b22_254(
+        tmp_path: Path, monkeypatch) -> None:
+    """(d) THE SWEEP'S SECOND SITE, in `assign` itself: the attestation read-
+    back ran AFTER `COMMIT`, so a failing read raised out of `assign` with the
+    row durable and `result` never bound -- a traceback over a durable
+    assignment. Post-fix the read runs inside the transaction, so its failure
+    ROLLBACKs: an error BEFORE the durable fact, nothing written."""
+    import swing.trades.entry_intent_assignment as svc
+
+    def _boom(conn, trade_id):
+        raise RuntimeError("22-B PROBE: read-back failed")
+
+    runner, cfg, db_path = _setup(tmp_path)
+    monkeypatch.setattr(svc, "get_attestation", _boom)
+    res = runner.invoke(main, _args(cfg))
+    assert res.exit_code == 1
+    assert type(res.exception) is RuntimeError, repr(res.exception)
+    assert _state(db_path) == (0, None)  # FRESH connection: nothing durable
+
+
+def test_a_failure_in_the_output_block_after_the_commit_still_confirms_b22_255(
+        tmp_path: Path, monkeypatch) -> None:
+    """(e) THE SWEEP'S THIRD SITE, the 22-A3 A3R2-01 case: a statement of the
+    output block raising AFTER the commit (the probe fails the `tier:` line's
+    coercion, i.e. NOT a sink failure the per-line idiom already contains).
+    Pre-fix it escaped and Click exited 1 over the durable row; post-fix ONE
+    last contained attempt names the durable attestation and the exit is 0."""
+    import swing.trades.entry as entry_mod
+
+    real_ascii_safe = entry_mod.ascii_safe
+
+    def _probe(text):
+        if isinstance(text, str) and text.startswith("tier:"):
+            raise RuntimeError("22-B PROBE: output block failed")
+        return real_ascii_safe(text)
+
+    runner, cfg, db_path = _setup(tmp_path)
+    monkeypatch.setattr(entry_mod, "ascii_safe", _probe)
+    res = runner.invoke(main, _args(cfg))
+    assert _state(db_path) == (1, "unintended_execution")  # FRESH connection
+    assert res.exit_code == 0, (res.output, res.exception)
+    assert "attestation_id: 1" in res.output
