@@ -552,6 +552,11 @@ def _assign20(db_path: Path):
 
 def test_trade20_before_and_after_every_reader_n_unchanged_b22_180(
         tmp_path: Path) -> None:
+    """This test does NOT pin clause (4): trade 20's ``hypothesis_label`` is
+    NULL, so it reaches no matcher and clause (4) is structurally unreachable
+    on the real shape -- clause (4) is pinned on labelled trades by b22_134 and
+    b22_136 (``tests/metrics/test_22b_cohort_exclusion.py``), and the
+    acceptance is the PAIR (RULING G6 item 1, RD)."""
     db_path, cfg = _world(tmp_path)
     before = _capture(db_path, cfg)
     result = _assign20(db_path)
