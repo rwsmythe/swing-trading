@@ -33,7 +33,7 @@
 |---|---|---|
 | **22-B Reviewer B** — DONE: 0/4/0 on `16becf0c` + re-read 0/0/1 on `3e9085e0`, all dispositioned (RULING B, B2-01) | orchestrator | DONE 09-24 |
 | **CHARC MERGE GATE** — **CLEAR** (`b36eba1a`) on tree `2c1b4be6`; W0–W4 bind the sitting (web STOPPED first; `BEGIN EXCLUSIVE` stated; ONE gate image in `backups_dir` (W3 corrected `eb71bd58`; the two-backups gotcha is STALE since D32/D50); `db-migrate` exit code not the verdict; version 40 + `--db` clean + `foreign_key_check` []) | CHARC (done); operator executes the sitting | CLEAR 09-24 |
-| **22-B witness** — DONE 09-24 (W0–W4 + §5 steps 3–4 PASS); **22-B CLOSED** (`341aa7ca`); RD's step 5 + section-7 line are RD's, post-merge | RD (step 5) | 22-B CLOSED |
+| **22-B witness** — DONE 09-24 (W0–W4 + §5 steps 3–4 PASS); **22-B CLOSED** (`341aa7ca`); RD's step 5 PASS 17:01Z (every H-cohort N agrees across the readers, a raw query, the card and the tier page once each method is named; trade 20 in no cohort tab) + his section-7 line landed; RD rolls next | — | 22-B CLOSED, nothing owed |
 | **PUSH** — main ~217 ahead of origin after the 22-B merge | operator | owed |
 | **Charter COMPACTION** — DONE 09-24 (117,136 of 120K after D68–D71); the NEXT row needs another compaction touch first; harness-architecture §5.1 + §6 compaction (101.0K) at Phase-22 close | CHARC | next touch |
 | **harness-architecture §5.1 ADDITION** (owed since 09-23 AM): the dispositioned-non-clean-A-verdict clarification (`8cfecb84`), by ADDITION at the next touch | CHARC | owed |
