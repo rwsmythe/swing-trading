@@ -281,10 +281,15 @@ def test_malformed_data_asof_session_falls_back_to_page_asof_date(
     cfg, db_path = planted_vsat_env
     conn = connect(db_path)
     try:
-        conn.execute(
-            "UPDATE daily_management_records "
-            "SET data_asof_session = 'not-a-date'"
-        )
+        # 22-I (0041): a malformed STORED snapshot is a state trg_dmr_immutable
+        # now refuses to reach by UPDATE; the guard is dropped on this TEST DB
+        # only, to plant it for the reader under test (plan T16 rule (b)).
+        from tests._22i_guard_seam import guards_dropped
+        with guards_dropped(conn, "trg_dmr_immutable"):
+            conn.execute(
+                "UPDATE daily_management_records "
+                "SET data_asof_session = 'not-a-date'"
+            )
         conn.commit()
     finally:
         conn.close()

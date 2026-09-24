@@ -330,11 +330,17 @@ def test_a_criterion_edited_after_minting_moves_the_label_case_31(
     ).post_values["trades.hypothesis_label"]
     assert baseline == "A+ baseline (aplus); failed: TT8_rs_rank"
 
-    # ONE criterion row edited -- the table the barrier does not reach.
-    conn.execute(
-        "UPDATE candidate_criteria SET result = 'pass' "
-        "WHERE candidate_id = ? AND criterion_name = 'TT8_rs_rank'",
-        (ids["candidate_id"],))
+    # ONE criterion row edited -- the table 0037's candidates barrier does not
+    # reach (0041's trg_cc_no_update now does; see below).
+    # 22-I (0041): a criterion edited after the fire is a state trg_cc_no_update
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_cc_no_update"):
+        conn.execute(
+            "UPDATE candidate_criteria SET result = 'pass' "
+            "WHERE candidate_id = ? AND criterion_name = 'TT8_rs_rank'",
+            (ids["candidate_id"],))
     conn.commit()
 
     result = _apply(conn, cfg, ids)

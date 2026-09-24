@@ -1241,9 +1241,14 @@ def test_R2M3_a_recorded_at_inside_the_margin_REFUSES(conn) -> None:
     Window lower bound 2026-08-11T03:30:26 UTC; recorded_at two hours before
     it is inside the band."""
     ids = build_cadl_case(conn)
-    conn.execute(
-        "UPDATE hypothesis_status_history SET recorded_at = "
-        "'2026-08-11T01:30:26.000' WHERE hypothesis_id = 1")
+    # 22-I (0041): a malformed stored recorded_at is a state trg_hsh_immutable
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_hsh_immutable"):
+        conn.execute(
+            "UPDATE hypothesis_status_history SET recorded_at = "
+            "'2026-08-11T01:30:26.000' WHERE hypothesis_id = 1")
     conn.commit()
     with pytest.raises(CohortProvenanceCorrectionError) as exc:
         preview_cohort_provenance_correction(
@@ -1626,10 +1631,15 @@ def test_R2M5_a_bucket_change_on_the_cited_candidate_is_reported(conn) -> None:
 def test_R2M5_a_criterion_change_moves_the_re_derived_label(conn) -> None:
     ids = build_cadl_case(conn)
     _apply(conn, ids)
-    conn.execute(
-        "UPDATE candidate_criteria SET result = 'fail' "
-        "WHERE candidate_id = ? AND criterion_name = 'tightness'",
-        (ids["candidate_id"],))
+    # 22-I (0041): a criterion edited after the fire is a state trg_cc_no_update
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_cc_no_update"):
+        conn.execute(
+            "UPDATE candidate_criteria SET result = 'fail' "
+            "WHERE candidate_id = ? AND criterion_name = 'tightness'",
+            (ids["candidate_id"],))
     [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
     joined = "\n".join(report.drift_lines)
     assert "RE-DERIVED" in joined
@@ -1639,8 +1649,13 @@ def test_R2M5_a_criterion_change_moves_the_re_derived_label(conn) -> None:
 def test_R2M5_a_registry_rename_is_reported(conn) -> None:
     ids = build_cadl_case(conn)
     _apply(conn, ids)
-    conn.execute(
-        "UPDATE hypothesis_registry SET name = 'A+ baseline v2' WHERE id = 1")
+    # 22-I (0041): a renamed registry row is a state trg_hr_immutable
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_hr_immutable"):
+        conn.execute(
+            "UPDATE hypothesis_registry SET name = 'A+ baseline v2' WHERE id = 1")
     [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
     assert any("hypothesis_registry.name" in line
                for line in report.drift_lines)
@@ -1649,9 +1664,14 @@ def test_R2M5_a_registry_rename_is_reported(conn) -> None:
 def test_R2M5_a_moved_evaluation_run_anchor_is_reported(conn) -> None:
     ids = build_cadl_case(conn)
     _apply(conn, ids)
-    conn.execute(
-        "UPDATE evaluation_runs SET action_session_date = '2026-08-10' "
-        "WHERE id = ?", (ids["evaluation_run_id"],))
+    # 22-I (0041): a moved evaluation_runs anchor is a state trg_er_no_update
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_er_no_update"):
+        conn.execute(
+            "UPDATE evaluation_runs SET action_session_date = '2026-08-10' "
+            "WHERE id = ?", (ids["evaluation_run_id"],))
     [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
     assert any("evaluation_runs.action_session_date" in line
                for line in report.drift_lines)
@@ -1694,10 +1714,15 @@ def test_R4M1_a_pre_1900_history_stamp_REFUSES_in_preview_AND_apply(
     the apply then UPDATED THE TRADE and died at the audit INSERT with an
     untyped IntegrityError. Both entry points now refuse identically."""
     ids = build_cadl_case(conn)
-    conn.execute(
-        "UPDATE hypothesis_status_history SET recorded_at = "
-        "'1899-01-01T00:00:00.000', effective_from = '1899-01-01T00:00:00.000' "
-        "WHERE hypothesis_id = 1")
+    # 22-I (0041): a malformed stored recorded_at is a state trg_hsh_immutable
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_hsh_immutable"):
+        conn.execute(
+            "UPDATE hypothesis_status_history SET recorded_at = "
+            "'1899-01-01T00:00:00.000', effective_from = '1899-01-01T00:00:00.000' "
+            "WHERE hypothesis_id = 1")
     conn.commit()
     with pytest.raises(CohortProvenanceCorrectionError) as preview_exc:
         preview_cohort_provenance_correction(
@@ -1770,10 +1795,15 @@ def test_R4M3_a_criteria_change_that_PRESERVES_the_label_is_still_reported(
     before = _descriptive_label(
         fetch_candidate_by_id(conn, ids["candidate_id"]).candidate,
         "A+ baseline")
-    conn.execute(
-        "UPDATE candidate_criteria SET result = 'fail' "
-        "WHERE candidate_id = ? AND criterion_name = 'TT8_rs_rank'",
-        (ids["candidate_id"],))
+    # 22-I (0041): a criterion edited after the fire is a state trg_cc_no_update
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_cc_no_update"):
+        conn.execute(
+            "UPDATE candidate_criteria SET result = 'fail' "
+            "WHERE candidate_id = ? AND criterion_name = 'TT8_rs_rank'",
+            (ids["candidate_id"],))
     after = _descriptive_label(
         fetch_candidate_by_id(conn, ids["candidate_id"]).candidate,
         "A+ baseline")
@@ -1788,10 +1818,15 @@ def test_R4M3_a_criterion_value_change_is_reported(conn) -> None:
     """`value`, `rule` and `layer` are invisible to re-derivation too."""
     ids = build_cadl_case(conn)
     _apply(conn, ids)
-    conn.execute(
-        "UPDATE candidate_criteria SET value = 'universe, rank 12' "
-        "WHERE candidate_id = ? AND criterion_name = 'TT8_rs_rank'",
-        (ids["candidate_id"],))
+    # 22-I (0041): a criterion edited after the fire is a state trg_cc_no_update
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_cc_no_update"):
+        conn.execute(
+            "UPDATE candidate_criteria SET value = 'universe, rank 12' "
+            "WHERE candidate_id = ? AND criterion_name = 'TT8_rs_rank'",
+            (ids["candidate_id"],))
     [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
     assert any("candidates.criteria" in line for line in report.drift_lines)
 
@@ -1799,9 +1834,14 @@ def test_R4M3_a_criterion_value_change_is_reported(conn) -> None:
 def test_R4M3_deleting_a_PASSING_criterion_is_reported(conn) -> None:
     ids = build_cadl_case(conn)
     _apply(conn, ids)
-    conn.execute(
-        "DELETE FROM candidate_criteria WHERE candidate_id = ? "
-        "AND criterion_name = 'ma_short_rising'", (ids["candidate_id"],))
+    # 22-I (0041): a criterion deleted after the fire is a state trg_cc_no_delete
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_cc_no_delete"):
+        conn.execute(
+            "DELETE FROM candidate_criteria WHERE candidate_id = ? "
+            "AND criterion_name = 'ma_short_rising'", (ids["candidate_id"],))
     [report] = read_provenance_corrections(conn, trade_id=ids["trade_id"])
     assert any("candidates.criteria" in line for line in report.drift_lines)
 

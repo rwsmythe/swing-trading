@@ -61,9 +61,14 @@ def _preview(conn, ids):
 
 def _set_history(conn, hypothesis_id, rows) -> None:
     """Replace one hypothesis's history with `(status, from, to, recorded)`."""
-    conn.execute(
-        "DELETE FROM hypothesis_status_history WHERE hypothesis_id = ?",
-        (hypothesis_id,))
+    # 22-I (0041): an arbitrary stored history (the seeded rows replaced) is
+    # a state trg_hsh_no_delete now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_hsh_no_delete"):
+        conn.execute(
+            "DELETE FROM hypothesis_status_history WHERE hypothesis_id = ?",
+            (hypothesis_id,))
     for status, eff_from, eff_to, recorded in rows:
         conn.execute(
             "INSERT INTO hypothesis_status_history (hypothesis_id, status, "
@@ -271,7 +276,12 @@ def test_a_hypothesis_whose_history_POSTDATES_the_window_is_EXCLUDED(
 
 def test_a_hypothesis_with_no_history_rows_at_all_REFUSES(conn) -> None:
     ids = build_cadl_case(conn)
-    conn.execute("DELETE FROM hypothesis_status_history WHERE hypothesis_id=3")
+    # 22-I (0041): a hypothesis with NO history rows is a state trg_hsh_no_delete
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_hsh_no_delete"):
+        conn.execute("DELETE FROM hypothesis_status_history WHERE hypothesis_id=3")
     with pytest.raises(CohortProvenanceCorrectionError) as exc:
         _preview(conn, ids)
     assert "NO status-history rows at all" in str(exc.value)
@@ -305,9 +315,14 @@ def test_an_empty_recorded_at_is_REFUSED_not_lexically_accepted(conn) -> None:
     know. It is decisive precisely because it was the newest column, and it
     was the one omission from the first validation manifest."""
     ids = build_cadl_case(conn)
-    conn.execute(
-        "UPDATE hypothesis_status_history SET recorded_at = '' "
-        "WHERE hypothesis_id = 1")
+    # 22-I (0041): a malformed stored recorded_at is a state trg_hsh_immutable
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_hsh_immutable"):
+        conn.execute(
+            "UPDATE hypothesis_status_history SET recorded_at = '' "
+            "WHERE hypothesis_id = 1")
     with pytest.raises(CohortProvenanceCorrectionError) as exc:
         _preview(conn, ids)
     assert "recorded_at" in str(exc.value)
@@ -316,9 +331,14 @@ def test_an_empty_recorded_at_is_REFUSED_not_lexically_accepted(conn) -> None:
 @pytest.mark.parametrize("bad", ["20260425T000000", "2026-04-25T00:00:00Z"])
 def test_a_basic_or_offset_recorded_at_is_refused(conn, bad) -> None:
     ids = build_cadl_case(conn)
-    conn.execute(
-        "UPDATE hypothesis_status_history SET recorded_at = ? "
-        "WHERE hypothesis_id = 1", (bad,))
+    # 22-I (0041): a malformed stored recorded_at is a state trg_hsh_immutable
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_hsh_immutable"):
+        conn.execute(
+            "UPDATE hypothesis_status_history SET recorded_at = ? "
+            "WHERE hypothesis_id = 1", (bad,))
     with pytest.raises(CohortProvenanceCorrectionError) as exc:
         _preview(conn, ids)
     assert "recorded_at" in str(exc.value)

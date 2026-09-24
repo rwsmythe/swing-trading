@@ -1,13 +1,23 @@
 """22-I test seam: drop named guards on a TEST DB, restore them on exit.
 
 AL-10 (plan section 5): a trigger cannot be bypassed by a raw INSERT the way a
-Python write-barrier can (the 18-B.1 technique), so exactly TWO kinds of test
-use this seam, each with a one-line reason at the call site:
+Python write-barrier can (the 18-B.1 technique). Plan AL-10 names TWO kinds of
+use; the T16 fixture sweep (rule (d): "(b) with reason") and T10 added the
+rest. Every call site carries its reason, and the kinds in use are:
 
   1. tests that plant HISTORICAL corruption to test DETECTION of a state the
      schema now forbids (a moved / deleted / rewritten row);
-  2. a17 CLAUSE PINS whose parent delete a 0041 ``no_delete`` refuses (the
-     DEAD-BY-PARENT-GUARD exemptions, AL-9): the clause stays executable.
+  2. CLAUSE PINS a 0041 guard makes unreachable: the a17 exemptions whose
+     parent delete a 0041 ``no_delete`` refuses (DEAD-BY-PARENT-GUARD,
+     AL-9); the FK ON DELETE actions earlier migrations still declare (the
+     FK-pin tests, T16 rule (d)); and an older trigger's clause a newer 0041
+     trigger pre-empts (test_migration_0032's identity trigger);
+  3. test DISPOSAL of rows a production service wrote, between iterations
+     (T16 rule (d), with reason);
+  4. fixture construction over MIGRATION-seeded rows no raw INSERT can
+     re-plant (T10's ``rebase_status_history_recorded_at`` -- reported in the
+     22-I exec ledger as a deviation from AL-10's two kinds; the T16 sweep
+     planted the same state at v40, before 0041, where it could).
 
 A name absent from the DB is SKIPPED, so one test body runs at v40 (where the
 0041 guards do not exist) and at v41. The triggers are re-created from their

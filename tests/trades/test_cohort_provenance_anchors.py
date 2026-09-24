@@ -365,9 +365,14 @@ def test_malformed_cited_dates_are_refused_before_any_comparison(
     validation lives in the authorization function, not only in the model or
     the DDL, because `--dry-run` constructs no model and inserts no row."""
     ids = build_cadl_case(conn)
-    conn.execute(
-        "UPDATE evaluation_runs SET action_session_date = ? WHERE id = ?",
-        (bad, ids["evaluation_run_id"]))
+    # 22-I (0041): a malformed / moved evaluation_runs row is a state trg_er_no_update
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_er_no_update"):
+        conn.execute(
+            "UPDATE evaluation_runs SET action_session_date = ? WHERE id = ?",
+            (bad, ids["evaluation_run_id"]))
     with pytest.raises(CohortProvenanceCorrectionError) as exc:
         _preview(conn, ids)
     msg = str(exc.value)
@@ -376,9 +381,14 @@ def test_malformed_cited_dates_are_refused_before_any_comparison(
 
 def test_a_garbage_run_ts_is_refused(conn) -> None:
     ids = build_cadl_case(conn)
-    conn.execute(
-        "UPDATE evaluation_runs SET run_ts = 'garbage' WHERE id = ?",
-        (ids["evaluation_run_id"],))
+    # 22-I (0041): a malformed / moved evaluation_runs row is a state trg_er_no_update
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_er_no_update"):
+        conn.execute(
+            "UPDATE evaluation_runs SET run_ts = 'garbage' WHERE id = ?",
+            (ids["evaluation_run_id"],))
     with pytest.raises(CohortProvenanceCorrectionError) as exc:
         _preview(conn, ids)
     assert "run_ts" in str(exc.value)
@@ -525,9 +535,14 @@ def test_R1M2_a_non_canonical_run_ts_is_refused(conn, bad, why) -> None:
     import datetime as _dt
     assert _dt.datetime.fromisoformat(bad.strip())  # all of them parse
     ids = build_cadl_case(conn)
-    conn.execute(
-        "UPDATE evaluation_runs SET run_ts = ? WHERE id = ?",
-        (bad, ids["evaluation_run_id"]))
+    # 22-I (0041): a malformed / moved evaluation_runs row is a state trg_er_no_update
+    # now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_er_no_update"):
+        conn.execute(
+            "UPDATE evaluation_runs SET run_ts = ? WHERE id = ?",
+            (bad, ids["evaluation_run_id"]))
     with pytest.raises(CohortProvenanceCorrectionError) as exc:
         _preview(conn, ids)
     assert "canonical naive ISO datetime" in str(exc.value), why
