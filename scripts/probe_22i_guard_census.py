@@ -19,11 +19,26 @@ SAFETY -- READ BEFORE RUNNING
     * ``--live-ro`` runs the catalogue checks only (trigger inventory,
       ``recursive_triggers``, negative-id scan, ``foreign_key_check``) against
       the live DB ``mode=ro`` -- the witness sitting's W5 form.
+    * ``--post-migrate`` (22-I T18; requires ``--copy``, keeps the live-path
+      refusal) runs the census on a copy MIGRATED to v41: it adds ONE section,
+      ``G-0041`` (every 0041 guard, driven by ``tests/data/_22i_guard_spec.py``
+      loaded BY PATH -- the spec imports nothing from ``swing``), and applies
+      the ruled expectation corrections to the existing sections: the five
+      PK -> NULL probes (4 pc + 1 eia) expect the engine's ``datatype
+      mismatch`` (CHARC F-I2: engine-refused, not a finding); F-I5's
+      first-view columns expect ``trg_lve_first_view_immutable``; and two
+      in-txn SETUP changes, each rolled back with its probe -- the pc
+      risk-policy-branch probes drop ``trg_rp_no_delete`` before deleting
+      their risk_policy row (a clause pin, the parent delete is refused in
+      production, AL-9), and the lve identity-UPDATE probes drop
+      ``trg_lve_first_view_immutable``, which now pre-empts the older
+      identity trigger they pin.
 
 USAGE
     python scripts/probe_22i_guard_census.py --make-copy
     python scripts/probe_22i_guard_census.py --copy <copy.db> --out <result.txt>
     python scripts/probe_22i_guard_census.py --live-ro --out <result.txt>
+    python scripts/probe_22i_guard_census.py --post-migrate --copy <v41 copy> --out <r>
 
 OUTPUT
     One TSV line per probe: section, table, trigger-under-test, probe id,
@@ -89,6 +104,7 @@ class Probe:
                 self.msg_to_trigger.setdefault(
                     m.group(1).replace("''", "'"), []).append(name)
         self.n_pass = self.n_fail = self.n_info = 0
+        self.post_migrate = False
 
     def _open(self, fk: bool) -> sqlite3.Connection:
         c = sqlite3.connect(str(self.path), isolation_level=None)
@@ -111,7 +127,7 @@ class Probe:
             post=None, fk=True):
         """Run one probe in BEGIN..ROLLBACK. ``expect`` is a predicate over
         the outcome string, given as ('fires', trig) / ('ok',) / ('not', trig)
-        / ('info',)."""
+        / ('outcome', substring) / ('info',)."""
         conn = self.conn if fk else self._open(fk=False)
         conn.execute("BEGIN")
         exc = None
@@ -144,6 +160,8 @@ class Probe:
             ok = outcome == "OK"
         elif kind == "not":
             ok = not (outcome.startswith("TRIGGER:") and expect[1] in outcome)
+        elif kind == "outcome":
+            ok = expect[1] in outcome
         else:
             ok = None
         verdict = "INFO" if ok is None else ("PASS" if ok else "FAIL")
@@ -365,11 +383,19 @@ def lve_update_guards(p: Probe):
           f"UPDATE {t} SET actionable_ever_viewed=1 WHERE view_event_id=?",
           (r0["view_event_id"],))
     # columns with NO update guard (the declared UPDATE-in-place columns)
+    first_view = ("view_session_date", "latch_state_at_first_view",
+                  "actionable_at_first_view")
+    fv = "trg_lve_first_view_immutable"
     for col, val in (("last_viewed_ts", "2099-01-01T00:00:00"), ("view_count", 99),
                      ("latch_state_at_last_view", "superseded"),
                      ("view_session_date", "2099-01-03"),
                      ("latch_state_at_first_view", "superseded"),
                      ("actionable_at_first_view", 1)):
+        if p.post_migrate and col in first_view:  # F-I5 (0041)
+            p.run("B-lve-update", t, fv, f"first-view-update-{col}", ("fires", fv),
+                  [], f"UPDATE {t} SET {col}=? WHERE view_event_id=?",
+                  (val, r0["view_event_id"]))
+            continue
         p.run("B-lve-update", t, None, f"unguarded-update-{col}", ("info",), [],
               f"UPDATE {t} SET {col}=? WHERE view_event_id=?",
               (val, r0["view_event_id"]))
@@ -497,9 +523,11 @@ def pc_append_only_update(p: Probe):
                     f"PRAGMA table_info('{t}')"))
             # (i) plain UPDATE col=NULL (no FK change): the FK-change conjunct
             #     is FALSE, so it must fire regardless.
+            pk_null = p.post_migrate and col == "provenance_correction_id"
+            engine = ("outcome", "datatype mismatch")  # CHARC F-I2: engine-refused
             if live[col] is not None:
                 p.run("C-pc-update", tag, PC_UP, f"plain NULL {col}",
-                      ("fires", PC_UP), [],
+                      engine if pk_null else ("fires", PC_UP), [],
                       f"UPDATE {t} SET {col}=NULL WHERE provenance_correction_id=?",
                       (pcid,))
             # (ii) the NULL-WHEN probe: the legitimate FK-null branch TRUE
@@ -507,7 +535,7 @@ def pc_append_only_update(p: Probe):
             if live[col] is not None:
                 p.run("C-pc-update", tag, PC_UP,
                       f"FKnull+NULL {col}{' (nullable)' if nullable else ''}",
-                      ("fires", PC_UP),
+                      engine if pk_null else ("fires", PC_UP),
                       [("DELETE FROM fills WHERE fill_id=?", (fill,))],
                       f"UPDATE {t} SET entry_fill_id=NULL, {col}=NULL "
                       f"WHERE provenance_correction_id=?", (pcid,), fk=False)
@@ -520,13 +548,19 @@ def pc_append_only_update(p: Probe):
                   f"WHERE provenance_correction_id=?", (pcid,), fk=False)
         # risk-policy branch of the FK-null exception, NULL-WHEN form
         if rp is not None:
+            # 22-I: 0041's trg_rp_no_delete refuses the parent delete these
+            # clause probes set up with; under --post-migrate it is dropped
+            # in-txn (rolled back with the probe) -- "clause pin, parent delete
+            # refused in production" (AL-9).
+            rp_pre = ["DROP TRIGGER trg_rp_no_delete"] if p.post_migrate else []
             p.run("C-pc-update", tag, PC_UP, "control-legit-riskpolicy-null",
-                  ("ok",), [("DELETE FROM risk_policy WHERE policy_id=?", (rp,))],
+                  ("ok",),
+                  rp_pre + [("DELETE FROM risk_policy WHERE policy_id=?", (rp,))],
                   f"UPDATE {t} SET risk_policy_id_at_correction=NULL "
                   f"WHERE provenance_correction_id=?", (pcid,), fk=False)
             p.run("C-pc-update", tag, PC_UP, "RPnull+NULL correction_reason",
                   ("fires", PC_UP),
-                  [("DELETE FROM risk_policy WHERE policy_id=?", (rp,))],
+                  rp_pre + [("DELETE FROM risk_policy WHERE policy_id=?", (rp,))],
                   f"UPDATE {t} SET risk_policy_id_at_correction=NULL, "
                   f"correction_reason=NULL WHERE provenance_correction_id=?",
                   (pcid,), fk=False)
@@ -594,7 +628,9 @@ def eia_no_update(p: Probe):
     for col in p.cols(t):
         if col == "entry_fill_id" or live[col] is None:
             continue
-        p.run("D-eia-update", t, trig, f"FKnull+NULL {col}", ("fires", trig),
+        exp = (("outcome", "datatype mismatch")  # CHARC F-I2: engine-refused
+               if p.post_migrate and col == "attestation_id" else ("fires", trig))
+        p.run("D-eia-update", t, trig, f"FKnull+NULL {col}", exp,
               [("DELETE FROM fills WHERE fill_id=?", (fill,))],
               f"UPDATE {t} SET entry_fill_id=NULL, {col}=NULL WHERE attestation_id=1",
               fk=False)
@@ -625,7 +661,9 @@ def identity_triggers(p: Probe):
         for col in ("candidate_id", "evaluation_run_id", "ticker", "detection_date"):
             p.run("D-identity", t, trig_u, f"update NULL {col}", ("fires", trig_u),
                   drop_upd + (["DROP TRIGGER trg_lve_view_window_immutable"]
-                              if t == "latch_view_events" else []),
+                              if t == "latch_view_events" else [])
+                  + (["DROP TRIGGER trg_lve_first_view_immutable"]
+                     if t == "latch_view_events" and p.post_migrate else []),
                   f"UPDATE {t} SET {col}=NULL WHERE {pk}=?", (live_id,))
 
 
@@ -762,13 +800,172 @@ def step_timings_priced_cost(p: Probe):
 
 
 # --------------------------------------------------------------------------
+# section G-0041: every 0041 guard (22-I T18; --post-migrate only)
+# --------------------------------------------------------------------------
+_SPEC_PATH = Path(__file__).resolve().parents[1] / "tests" / "data" / "_22i_guard_spec.py"
+
+
+def load_spec():
+    """The 22-I guard spec, loaded BY PATH (it imports nothing from swing)."""
+    import importlib.util
+
+    name = "_22i_guard_spec_for_probe"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, _SPEC_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[name] = mod  # dataclass field-type resolution needs it registered
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# The row a partial-UNIQUE barrier's A2 copies must itself satisfy the partial
+# predicate, or its copy collides with nothing.
+_SPECIAL_ROW = {
+    "risk_policy": "is_active = 1",
+    "hypothesis_status_history": "effective_to IS NULL",
+    "daily_management_records": "record_type = 'daily_snapshot' AND is_superseded = 0",
+}
+
+
+def _diff(v):
+    """A value different from ``v`` (a BEFORE trigger fires before any type,
+    NOT NULL, CHECK or FK check, so admissibility does not matter for an
+    abort-expected probe)."""
+    if v is None:
+        return "x"
+    if isinstance(v, bytes):
+        return v + b"x"
+    if isinstance(v, bool):
+        return int(not v)
+    if isinstance(v, int):
+        return v + 1000000
+    if isinstance(v, float):
+        return v + 1.5
+    return str(v) + "x"
+
+
+def _w_seed(col: str, pk_val):
+    """A NULL -> value write-once seed: the row's own id for a self/FK id
+    column (it exists, so the setup statement's FK check passes), else a
+    timestamp."""
+    return pk_val if col.endswith("_id") else "2099-01-01T00:00:00.000"
+
+
+def g0041(p: Probe):
+    spec_mod = load_spec()
+    sec = "G-0041"
+    for table, s in spec_mod.SPEC.items():
+        nr, nd = f"trg_{s.abbr}_no_replace", f"trg_{s.abbr}_no_delete"
+        ut = s.update_trigger
+        order = ", ".join(s.pk)
+        first = p.row(table, f"1=1 ORDER BY {order} ASC LIMIT 1")
+        if first is None:
+            p.out.write(f"{sec}\t{table}\t-\tno-row\tinfo\tno rows to probe\tINFO\n")
+            p.n_info += 1
+            continue
+        last = p.row(table, f"1=1 ORDER BY {order} DESC LIMIT 1")
+        rows = [first] if [first[k] for k in s.pk] == [last[k] for k in s.pk] \
+            else [first, last]
+        # A2 -- REPLACE on each conflict key (the PK omitted), once per table.
+        keys = list(s.conflict_keys)
+        if not s.integer_pk:
+            keys.insert(0, s.pk)
+        for key in keys:
+            r = dict(first)
+            if s.integer_pk:
+                r.pop(s.pk[0])
+            p.run(sec, f"{table}[key]", nr, f"A2-REPLACE-{'+'.join(key)}",
+                  ("fires", nr), [], *Probe.ins(table, r, "INSERT OR REPLACE"))
+        if s.special_conflict:
+            srow = p.row(table, f"{_SPECIAL_ROW[table]} ORDER BY {order} LIMIT 1")
+            if srow is None:
+                p.out.write(f"{sec}\t{table}[partial]\t{nr}\tA2-partial\tinfo\t"
+                            f"no row satisfies {_SPECIAL_ROW[table]}\tINFO\n")
+                p.n_info += 1
+            else:
+                srow.pop(s.pk[0])
+                p.run(sec, f"{table}[partial]", nr, "A2-REPLACE-partial-key",
+                      ("fires", nr), [], *Probe.ins(table, srow, "INSERT OR REPLACE"))
+        for r in rows:
+            where = " AND ".join(f"{k} = ?" for k in s.pk)
+            wp = tuple(r[k] for k in s.pk)
+            tag = f"{table}[{','.join(str(r[k]) for k in s.pk)}]"
+            pkv = r[s.pk[0]]
+
+            def upd(col, val, expect, pid, setup=(), *, _w=where, _wp=wp, _tag=tag,
+                    _t=table, _ut=ut or f"trg_{s.abbr}_"):
+                p.run(sec, _tag, _ut, pid, expect, list(setup),
+                      f"UPDATE {_t} SET {col} = ? WHERE {_w}", (val, *_wp))
+
+            fires = ("fires", ut) if ut else None
+            not_ut = ("not", ut or f"trg_{s.abbr}_")
+            # A4 explicit conflicting PK; A6 DELETE
+            p.run(sec, tag, nr, "A4-explicit-pk", ("fires", nr), [],
+                  *Probe.ins(table, dict(r)))
+            p.run(sec, tag, nd, "A6-delete", ("fires", nd), [],
+                  f"DELETE FROM {table} WHERE {where}", wp)
+            for col in s.I:
+                upd(col, _diff(r[col]), fires, f"I-{col}")
+            for col in s.W:
+                seed = _w_seed(col, pkv)
+                if r[col] is None:
+                    setup = [(f"UPDATE {table} SET {col} = ? WHERE {where}",
+                              (seed, *wp))]
+                    upd(col, _diff(seed), fires, f"W-{col}-value-to-other", setup)
+                else:
+                    upd(col, _diff(r[col]), fires, f"W-{col}-value-to-other")
+            for col in s.D:  # risk_policy.is_active: 0 -> 1 refused
+                setup = ([(f"UPDATE {table} SET {col} = 0 WHERE {where}", wp)]
+                         if r[col] == 1 else [])
+                upd(col, 1, fires, f"D-{col}-0-to-1", setup)
+            for col in s.M:
+                upd(col, _diff(r[col]), not_ut, f"M-{col}")
+            completed = table == "review_log" and r["completed_date"] is not None
+            for col in s.S:
+                upd(col, _diff(r[col]), fires if completed else not_ut,
+                    f"S-{col}-{'completed' if completed else 'pending'}")
+            superseded = table == "daily_management_records" and r["is_superseded"] == 1
+            for col in s.DATA:
+                upd(col, _diff(r[col]), fires if superseded else not_ut,
+                    f"DATA-{col}-{'superseded' if superseded else 'active'}")
+            if table == "daily_management_records":
+                if superseded:
+                    upd("is_superseded", 0, fires, "STATE-is_superseded-1-to-0")
+                    if r["superseded_by_record_id"] is not None:
+                        upd("superseded_by_record_id", None, fires,
+                            "STATE-pointer-value-to-NULL")
+                else:
+                    upd("superseded_by_record_id", pkv, fires,
+                        "STATE-pointer-set-on-an-active-row")
+            for f in s.F:
+                if r[f.col] is None:
+                    p.out.write(f"{sec}\t{tag}\t{ut}\tF-{f.col}-parent-present\tinfo\t"
+                                f"fk is NULL on this row\tINFO\n")
+                    p.n_info += 1
+                    continue
+                frozen = table != "review_log" or completed
+                upd(f.col, None, fires if frozen else not_ut,
+                    f"F-{f.col}-to-NULL-parent-present")
+
+
+# --------------------------------------------------------------------------
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--make-copy", action="store_true")
     ap.add_argument("--copy")
     ap.add_argument("--live-ro", action="store_true")
     ap.add_argument("--out")
+    ap.add_argument("--post-migrate", action="store_true",
+                    help="22-I T18: the census on a copy migrated to v41 "
+                         "(requires --copy): section G-0041 + the ruled "
+                         "expectation corrections")
     a = ap.parse_args(argv)
+    if a.post_migrate and not a.copy:
+        print("REFUSED: --post-migrate requires --copy <migrated copy>",
+              file=sys.stderr)
+        return 2
     ts = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     if a.make_copy:
         SCRATCH.mkdir(parents=True, exist_ok=True)
@@ -796,6 +993,9 @@ def main(argv=None) -> int:
             return 2
         out.write(f"#TARGET\tCOPY\t{copy}\n")
         p = Probe(copy, out)
+        p.post_migrate = bool(a.post_migrate)
+        if p.post_migrate:
+            out.write("#MODE\tpost-migrate (G-0041 + the ruled corrections)\n")
         catalogue(p.conn, out)
         out.write("section\ttable\ttrigger_under_test\tprobe\texpect\toutcome\tverdict\n")
         guard_triple(p)
@@ -809,6 +1009,8 @@ def main(argv=None) -> int:
         loi_validity_and_mint(p)
         exposure(p)
         step_timings_priced_cost(p)
+        if p.post_migrate:
+            g0041(p)
         out.write(f"#SUMMARY\tPASS={p.n_pass}\tFAIL={p.n_fail}\tINFO={p.n_info}\n")
     print(out_path)
     return 0
