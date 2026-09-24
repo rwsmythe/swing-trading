@@ -1837,9 +1837,9 @@ def trade_assign_intent(ctx: click.Context, trade_id: int, value: str, cite: str
 @click.pass_context
 def trade_backfill_intent_cmd(ctx, trade_id, force):
     """Classify each trade's design intent (entry_intent). Idempotent: already-set
-    rows are skipped unless --trade-id or --force. 'skip' leaves a row NULL
-    (renders 'Unclassified'). The re-runnable command + its summary ARE the audit
-    (no provenance table for V1)."""
+    rows are skipped unless --trade-id or --force. 'skip' leaves the row
+    unclassified. The re-runnable command + its summary ARE the audit (no
+    provenance table for V1)."""
     from swing.config_overrides import apply_overrides
     from swing.data.models import (
         UNINTENDED_EXECUTION,
