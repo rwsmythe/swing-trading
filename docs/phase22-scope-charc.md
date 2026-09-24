@@ -164,3 +164,15 @@ $7,500).
 No new detector/pattern work, no research-harness work, no dashboard features. The phase ships
 when the record can say what actually happened to every order the framework caused to exist —
 including the ones nobody decided to fill and the ones the broker no longer backs.
+
+## RE-SEQUENCED 2026-09-24 (CHARC recommendation, operator-CONCURRED the same day: "I concur with your recommendation. Perform the resequencing and kick off the work")
+
+The 2026-09-22 ratified order was **22-A2 → 22-B → 22-C/22-D when a live case exists → sweeps + harness compaction at close.** 22-A2 and 22-B are CLOSED (v40 live, 2026-09-24). The live-case gate on 22-C/22-D cannot open on a flat book (zero open trades, zero resting orders since the 09-17 go-flat), and the 10-03..10-20 trading pause has no witness rung. **The Tier-3 sweeps therefore move AHEAD of 22-C/22-D**, in this order:
+
+1. **22-I (the REPLACE-exposure residual)** — commissioned now; migration `0041` triggers-only; its merge is a witness sitting that lands BEFORE 10-02 EOD HST or AFTER 10-20.
+2. **22-F (handler-escape D34 + transaction-hygiene D39, one census)** — plan cell on 22-I's plan acceptance; code-only, no witness rung, may merge during the pause.
+3. **22-H (D37/D38 timestamps)** — AFTER RD's October read (his read binds on the same clock-domain comparisons 22-H would move).
+4. **22-C / 22-D** keep the live-case gate. **22-G** (D35/D47/D71) stays banked: browser-only, needs a witness rung, after 10-20 at the earliest.
+5. **Harness compaction** (harness-architecture §5.1 + §6) runs alongside, CHARC's.
+
+Brief: [`phase22-arc-i-f-sweeps-commissioning-brief.md`](phase22-arc-i-f-sweeps-commissioning-brief.md). The SEQUENCING CONSTRAINTS above stand except as amended here.
