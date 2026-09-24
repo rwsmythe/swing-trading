@@ -1,6 +1,6 @@
 # Phase 22 arc 22-I — the REPLACE-exposure sweep: implementation plan (migration 0041)
 
-**Brief:** `docs/phase22-arc-i-f-sweeps-commissioning-brief.md` (text of record on main @ `732c5c21`, 22-I only). **Census:** `2026-09-24-phase22-arc-i-replace-exposure-sweep.census.md`. **Ledger (every argument, ruling and measurement this plan encodes):** `2026-09-24-phase22-arc-i-replace-exposure-sweep.ledger.md` (sections "Rulings received", "STEP 3", "STEP-3 RULINGS"). **Probe scripts:** `scripts/probe_22i_guard_census.py`, `scripts/probe_22i_plan_measurements.py`. This plan is a task ladder and a test roster; it carries no argument. Where a line says "(ruling X)", the ledger holds X verbatim.
+**Brief:** `docs/phase22-arc-i-f-sweeps-commissioning-brief.md` (text of record on main @ `732c5c21`, 22-I only; CHARC's architecture pass appended @ `9d3bba10`). **Census:** `2026-09-24-phase22-arc-i-replace-exposure-sweep.census.md`. **Ledger (every argument, ruling and measurement this plan encodes):** `2026-09-24-phase22-arc-i-replace-exposure-sweep.ledger.md` (sections "Rulings received", "STEP 3", "STEP-3 RULINGS"). **Probe scripts:** `scripts/probe_22i_guard_census.py`, `scripts/probe_22i_plan_measurements.py`. This plan is a task ladder and a test roster; it carries no argument. Where a line says "(ruling X)", the ledger holds X verbatim.
 
 **Executing cell:** `implementer-opus-high` (a schema migration; brief §0). **Review:** Reviewer A (`strong`) to convergence per the recipe; Reviewer B at the orchestrator's gate; CHARC merge gate (brief §5 witness sitting).
 
@@ -101,8 +101,9 @@ Each twin-bearing table gets `trg_<abbr>_no_delete` + `trg_<abbr>_no_replace` + 
 - I (21, always): `management_record_id, trade_id, record_type, review_date, data_asof_session, mfe_mae_precision_level, thesis_status, prior_stop, new_stop, stop_changed, stop_change_reason, volume_behavior, relative_strength_status, market_regime_change, sector_condition_change, news_or_event_update, action_taken, action_reason, emotional_state, rule_violation_suspected, management_notes`.
 - F (always): `linked_trade_event_id` → `trade_events.id`.
 - State columns: `is_superseded`, `superseded_by_record_id` (value → NULL refused on every row; S3-F2 and RD's (ii); no SET-NULL exemption on the self-FK).
-- Admitted iff `<I all> AND <F linked_trade_event_id> AND (ACTIVE OR WINDOW OR FROZEN_FK)`, where:
-  - **ACTIVE** = `OLD.is_superseded = 0 AND OLD.superseded_by_record_id IS NULL AND NEW.superseded_by_record_id IS NULL AND NEW.is_superseded IN (0, 1)`. DATA is free (reflow `:621`; step 3 `:822`).
+- Admitted iff `<I all> AND <F linked_trade_event_id> AND (ACTIVE_STAY OR FLIP OR WINDOW OR FROZEN_FK)`, where (RD plan-stage tightening, 2026-09-24 19:20Z: the former single ACTIVE clause admitted a flip that rewrote DATA in the same statement, freezing the rewritten value as the predecessor's verbatim data):
+  - **ACTIVE_STAY** = `OLD.is_superseded = 0 AND OLD.superseded_by_record_id IS NULL AND NEW.superseded_by_record_id IS NULL AND NEW.is_superseded = 0`. DATA is free (reflow `:621`).
+  - **FLIP** = `OLD.is_superseded = 0 AND NEW.is_superseded = 1 AND OLD.superseded_by_record_id IS NULL AND NEW.superseded_by_record_id IS NULL AND <DATA all IS OLD>` (step 3 `:822`). FLIP then WINDOW is the two-statement production path; both stay admitted.
   - **WINDOW** = `OLD.is_superseded = 1 AND OLD.superseded_by_record_id IS NULL AND NEW.superseded_by_record_id IS NOT NULL AND NEW.is_superseded = 1 AND <DATA all IS OLD>` (step 5 `:875`; S3-F2).
   - **FROZEN_FK** = `OLD.is_superseded = 1 AND NEW.is_superseded = 1 AND NEW.superseded_by_record_id IS OLD.superseded_by_record_id AND <DATA minus pipeline_run_id, IS OLD> AND <F pipeline_run_id>` (only the FK-driven nulling on a superseded row).
 - The whole disjunction sits inside the one `COALESCE`.
@@ -235,10 +236,11 @@ Conventions for every task:
 - Manifest. Commit.
 
 **T11 — `dmr`.**
-- Tests first: §4.2 over the ACTIVE/WINDOW/FROZEN_FK clauses:
-  - ACTIVE reflow (`upsert_snapshot` twice on one session) admitted.
+- Tests first: §4.2 over the ACTIVE_STAY/FLIP/WINDOW/FROZEN_FK clauses:
+  - ACTIVE_STAY reflow (`upsert_snapshot` twice on one session) admitted.
   - `tier_upgrade_snapshot` end-to-end admitted (steps 3 → 4 → 5).
   - The three S3-F2 discriminators: WINDOW step 5 admitted; a DATA column on a superseded row aborts; the step-5 shape + a DATA column aborts.
+  - RD's FLIP discriminator: `is_superseded` 0 → 1 together with a DATA column (e.g. `current_stop`) in ONE statement on an active row aborts; the step-3 flip alone (DATA unchanged) admitted.
   - `is_superseded` 1 → 0 aborts.
   - `superseded_by_record_id` value → NULL aborts and value → other aborts.
   - Each I column aborts on an ACTIVE row.

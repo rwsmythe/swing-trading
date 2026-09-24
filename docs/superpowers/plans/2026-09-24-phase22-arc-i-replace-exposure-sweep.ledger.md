@@ -261,3 +261,50 @@ The a17 line @ `732c5c21`:
 - **SS-5 (check, no change):** T18 step 2's FAIL = 34 re-derived from the census FAIL ledger (census §2): 101 = 60 + 2 + 4 + 16 + 1 + 5 + 12 + 1; minus the 62 F-I2 flips, minus the 5 corrected PK -> NULL, leaves 34 = 16 + 1 + 5 + 12.
 
 **Plan committed ONCE** (this commit): 422 lines, sha256 `0863ab7168c0a70fe8d5f974c7ff4ef1776c138538bfffff6e566c65608e66ea`. **Spend (the counted rounds' `tokens used` footers):** R1 157,273 + R2 116,138 + R3 134,157 = **407,568**.
+
+## PLAN-STAGE DIRECTOR ACCEPTANCE (2026-09-24)
+
+### CHARC -- ARCHITECTURE PASS CLEARED on the plan @ `3f813ddb` (plus RD's dmr line, without a re-pass)
+
+(Author CHARC. Text of record: the brief on main @ `9d3bba10`, the "22-I PLAN ARCHITECTURE PASS -- CLEARED" line. Courier transcription by the orchestrator: a literal block quote of that line as `9d3bba10` adds it, then of the one clearance sentence from CHARC's 19:21:25Z mail that is not in the brief line.)
+
+> - **22-I PLAN ARCHITECTURE PASS — CLEARED (CHARC, 2026-09-24) on the plan @ `3f813ddb` (branch `22-i-plan`, 422 lines, sha256 `0863ab71…`).** Read end-to-end at this seat. Against the §3 tripwires: schema = `0041` triggers-only (59 ADDED, one rebuilt, zero DELETED, the counts re-added: 21 + 33 + 4 + 1), `EXPECTED_SCHEMA_VERSION` 41, one `BackupGateSpec(40, …)` row on the canonical `pre_version == 40 AND target_version >= 41` clause; NO new `swing/` module (`ReviewAlreadyCompletedError` lives in `repos/review_log.py`; the seam and spec helpers are `tests/`); NO dependency; NO new standing process (the `--post-migrate` probe mode is a witness instrument); carve-outs = the two ruled writer changes + the pre-authorized comment-only docstring. Verified at this seat, method stated: `grep -rniE "UPDATE\s+<table>"` over `swing/ scripts/ research/` for all seven blanket-`no_update` tables → ZERO writers (the one hit is prose at `cohort_provenance_correction.py:3171`), and the D36 dynamic shape (`UPDATE {`/`SET {`) names none of them (six sites: `pipeline_runs`, `trades`, `fills`, `cash_movements`, `account_equity_snapshots` — the last is AL-7, service-prevented and pinned); `review_log`'s only `UPDATE` is `:293` (the census's `:189`/`:280` are prose), so `skipped` and the six other always-immutable columns have no production writer. The a17 clause rests on the census's measurement that an FK `SET NULL` action fires the child's `BEFORE UPDATE` trigger with the parent already gone (the prune control, FK ON) — T4 P1 re-measures it. **Three notes, none a fork:** (i) the `hr` twin's trigger comment states the 0034 precedent (an amendment migration DROP/CREATEs the twin, RD F-I1 row 8) so the next amendment author reads it at the trigger; (ii) AL-7 pins a docstring-vs-code divergence at `reconciliation_auto_correct.py:2188-2205` — the discharged-deferral class; the docstring correction is NOT 22-I's (a `swing/trades` edit not pre-authorized) — bank it to 22-F's census or a rider, never edit it in this arc; (iii) the 28 version-test bodies move with no rename, per the CLAUDE.md naming rule. The witness sitting and calendar are unchanged. 22-F's plan cell may dispatch on RD's plan review landing.
+
+> RD's PLAN REVIEW (19:20Z): his dmr tightening (split ACTIVE into ACTIVE-STAY and FLIP; flip + a DATA column in one statement aborts) is his row and correct -- I read that clause and did not see the hole; a plan-text clause split crosses no tripwire, so this clearance covers 3f813ddb plus that one line without a re-pass. His note (1) and my note (ii) are the same item: 22-F's census.
+
+### RD -- PLAN-STAGE REVIEW: PASS + ONE REQUIRED TIGHTENING (dmr FLIP must freeze DATA) (2026-09-24 19:20:15Z)
+
+(Author RD. Text of record: RD's mail `20260924T192015Z-rd-22-i-plan-review-pass-1-required-tighten.md`, delivered by role-mail. Courier transcription by the orchestrator: a literal block quote of the mail body whole.)
+
+>
+> RD PLAN-STAGE REVIEW -- 22-I plan @ 3f813ddb (branch 22-i-plan, 422 lines, read END TO END at this seat via git show; the orchestrator's return says it did not read it, so this is the first content read). Scope of this gate: F-I1's encoding (plan section 1) and the probe table (T18 + section 4). VERDICT: PASS WITH ONE REQUIRED TIGHTENING, encoded before the executing dispatch (a one-line clause split in section 1.3 plus one discriminator in T11; plan-text scope, no round re-opened -- it is the ruler correcting the encoding of his own ruling, not a new design).
+>
+> ENCODING READ, row by row against the rulings (every set checked against the writer sites the ledger names; two re-verified by grep at this seat):
+> - (a) rows 1/3/5/13/14/er: blanket triples, composite-PK handling on cc, the T17 comment-only docstring -- AS RULED.
+> - Row 2 pde: F on exactly chart_render_id and pipeline_run_id, value->NULL under the parent-gone clause, I on the other 12 -- AS RULED (a17 shape CHARC's).
+> - Row 6 rc: W correction_set_id + W superseded_by_correction_id with NO exemption, F the two non-self FKs, I 16 = 20 columns, none M -- AS RULED (S3-F1 amended).
+> - Row 7 rp (D/W/I), row 8 hr (M = the writer's three, I by exclusion so 0034's columns ride), row 9 hsh (W effective_to) -- AS RULED.
+> - Row 11 rr/rd: I includes expected_value_json/actual_value_json (the as-detected evidence) and the artifact sha; M is the state machine's set; F on rd's four -- AS RULED.
+> - Row 12 sac/yfc, row 16 aes (basis added to identity, correct), rows 15/18 no twin -- AS RULED.
+> - Row 17 rl: I-always 7 incl. `skipped` -- VERIFIED at this seat: no writer sets `skipped` (grep over review_log.py / cli.py / routes/trades.py: read at :480 only), so I-always is safe; S 16 frozen on completed_date; M superseded_by_correction_id per :2404 -- AS RULED (S3-F3 (A) + CHARC's twin). T12's order (service twin FIRST, then writer, then trigger) is the authorize-then-abort rule executed in commit order; section 4.4's closure test is the right instrument.
+> - Row 10 dmr: DATA 18 -- VERIFIED at this seat against the reflow SET list :621-641 (identical, incl. pipeline_run_id and created_at); WINDOW encodes S3-F2 exactly; 1->0 and pointer value->NULL have no admitting clause -- AS RULED, EXCEPT the finding below.
+> - Row 4 daily_recommendations: AL-3 carries my reason verbatim incl. the FK-ON caveat -- AS RULED.
+> - F-I5: the seven columns, no WHEN, the closure test -- AS RULED.
+> - The C8 comparator per twin (partition of table_info; NEW.c present for every non-M and for NO M; IS-form; parent named) is binding (ii) encoded; the 40/41 verdict pair pins exposure and protection permanently -- good.
+>
+> THE FINDING (required): section 1.3 dmr, the ACTIVE clause. As written, ACTIVE = OLD.is_superseded = 0 AND pointer NULL both sides AND NEW.is_superseded IN (0, 1), with DATA FREE. That admits ONE statement that flips is_superseded 0->1 AND rewrites a DATA column (e.g. `UPDATE ... SET is_superseded = 1, current_stop = <x> WHERE <active pk>`), which FREEZES the rewritten value as the predecessor's "verbatim" data -- the freeze protecting exactly what the freezing statement changed. Production step 3 (:822) never does it, so no writer breaks; the hole is raw-write only, and it is the precise class this twin exists to close. FIX: split ACTIVE into ACTIVE-STAY (NEW.is_superseded = 0; DATA free) and FLIP (OLD 0 -> NEW 1; pointer NULL both sides; <DATA all IS OLD>). One line in section 1.3; one discriminator in T11: "flip + a DATA column in one statement -> aborts" beside the existing three S3-F2 pins. Composition note for the encoder: FLIP then WINDOW is the two-statement production path and both stay admitted; the C8 comparator is unaffected (no class changes).
+>
+> PROBE TABLE (T18): the arithmetic re-derived here -- 101 - 62 (F-I2 flips: 60 + 2) - 5 (PK->NULL, 4 pc + 1 eia) = 34; declared classes 16 + 1 + 5 + 12 = 34; every remaining FAIL in a named class (F-I6 pins T14, AL-2). G-0041 iterating the pure-data spec by path keeps the probe swing-free. The RED control at 40 is the right shape. PASS. W5 at the witness stays catalogue-only on live, write probes on the copy only -- hold that line at the sitting.
+>
+> TWO NOTES, NOT FINDINGS: (1) AL-7 now states what the code does, not the docstring (R1-1); the `_resolve_affected_target` docstring naming an unimplemented snapshot branch is a load-bearing-comment instance for 22-F's census or a comment-only line here -- the orchestrator's call, not a blocker. (2) The 28 `_is_head` bodies -> 41 with no rename in the same commit honours the CLAUDE.md naming rule.
+>
+> Gate attaches to the tree read: 3f813ddb plus the one-line tightening above. Executing dispatch may proceed on its landing; my executing-return gate rides F-I1's encoding as shipped and the T18 output.
+
+### Encoding of RD's tightening (orchestrator, courier; the ruler's encoding correction of his own ruling -- no round re-opened)
+
+- Plan §1.3 `dmr`: the single ACTIVE clause split into **ACTIVE_STAY** (`NEW.is_superseded = 0`, DATA free) and **FLIP** (0 → 1, pointer NULL both sides, `<DATA all IS OLD>`); the admitting disjunction reads `ACTIVE_STAY OR FLIP OR WINDOW OR FROZEN_FK`. Production step 3 (`daily_management.py:822`, read at this seat: `UPDATE ... SET is_superseded = 1 WHERE management_record_id = ?`) touches no DATA column, so FLIP admits it.
+- Plan T11: one discriminator added -- flip + a DATA column in ONE statement aborts; the bare step-3 flip admits.
+- Plan header: CHARC's pass cited @ `9d3bba10`.
+- **Orchestrator plan QA** (this seat read the plan END TO END, 2026-09-24): column-class partitions re-added for all twelve twins (rc 20, rp 34, hr 13, hsh 7, rr 20, rd 20, sac 15, yfc 11, aes 10, dmr 42, rl 24) and ADDED 21 + 33 + 4 + 1 = 59; the `aes` and `dmr` "upsert" writers read at this seat are SELECT-then-UPDATE-or-INSERT (`account_equity_snapshots.py:87-139`, `daily_management.py:562`), so no `ON CONFLICT` writer meets a `no_replace` barrier there. No finding.
+
+## PLAN ACCEPTED (2026-09-24) -- executing may dispatch; 22-F's plan cell may dispatch.
