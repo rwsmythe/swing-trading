@@ -3687,11 +3687,20 @@ def _attestation_iso_seconds_ok(value: object) -> bool:
     return parsed.strftime("%Y-%m-%dT%H:%M:%S") == value
 
 
+def _reject_json_constant(name: str) -> object:
+    raise ValueError(f"non-standard JSON constant {name}")
+
+
 def _json_of_type(value: object, kind: type) -> bool:
+    """The Python mirror of 0040's `json_valid` CHECKs (plus the column's
+    type). Codex R8-1: plain `json.loads` accepts `NaN` / `Infinity` /
+    `-Infinity`, which SQLite's `json_valid` REJECTS, so they are refused here
+    too (measured: the only divergence over the probed inputs)."""
     if not isinstance(value, str):
         return False
     try:
-        return isinstance(json.loads(value), kind)
+        return isinstance(
+            json.loads(value, parse_constant=_reject_json_constant), kind)
     except ValueError:
         return False
 

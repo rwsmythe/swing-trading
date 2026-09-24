@@ -1072,6 +1072,50 @@ def test_model_post_init_mirrors_the_structural_checks_b22_75() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Codex R8-1 (minor): the model's JSON mirror accepted Python's non-standard
+# constants (`NaN`, `Infinity`, `-Infinity`), which SQLite's `json_valid`
+# REJECTS, so the four `json_valid` CHECKs had a Python mirror wider than the
+# CHECK. Swept by execution over 20 inputs: these three are the only
+# divergence between `json.loads` and `json_valid` (3.50.4).
+# ---------------------------------------------------------------------------
+def _with_extra_member(text: str, token: str) -> str:
+    """The column's own valid JSON with ONE extra member spelled `token`."""
+    if text.endswith("]"):
+        return text[:-1] + ", " + token + "]"
+    assert text.endswith("}"), text
+    return text[:-1] + ', "zz_probe": ' + token + "}"
+
+
+_JSON_COLUMNS = ("leg_evidence_json", "cited_fields_json",
+                 "cited_text_snapshot_json", "cited_latch_probe_json")
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity", "1"])
+@pytest.mark.parametrize("column", _JSON_COLUMNS)
+def test_model_json_mirror_rejects_what_json_valid_rejects_b22_256(
+        column: str, token: str) -> None:
+    """THE COMPARATOR: SQLite's verdict on the exact text is measured, and the
+    model must agree with it. `1` is the control (both accept), so the
+    injection shape itself is proven harmless."""
+    ids = {"link_id": 1, "candidate_id": 2, "fill_id": 41, "order_id": "1"}
+    base = (structural_row(ids) if column == "cited_latch_probe_json"
+            else tier2_row())
+    base[column] = _with_extra_member(base[column], token)
+    probe = sqlite3.connect(":memory:")
+    try:
+        sql_accepts = probe.execute("SELECT json_valid(?)",
+                                    (base[column],)).fetchone()[0] == 1
+    finally:
+        probe.close()
+    assert sql_accepts is (token == "1"), (column, token)
+    if sql_accepts:
+        EntryIntentAttestation(attestation_id=None, **base)
+    else:
+        with pytest.raises(ValueError, match="EntryIntentAttestation"):
+            EntryIntentAttestation(attestation_id=None, **base)
+
+
+# ---------------------------------------------------------------------------
 # CHARC-S3 condition 2: the two unattested `trades` twins, raw
 # ---------------------------------------------------------------------------
 def _twin_world(tmp_path: Path, name: str, *, drop: str | None = None) -> sqlite3.Connection:
