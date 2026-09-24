@@ -220,12 +220,13 @@ ADMISSION_MAP: dict[tuple[str, str], AdmissionEntry] = {
                 REFUSAL, "unprovable", ("b22_77",),
                 "_detect_tier: _is_iso_date on the envelope's entry_date"),
             "copied_date_shapes": _p(
-                DERIVED_VALUE, None, ("b22_77", "b22_75"),
-                "trade_entry_date, outcome_known_at and a fallback placement are "
-                "COPIED from trades.entry_date / fills.fill_datetime, which carry "
-                "no shape CHECK; the reached check is "
-                "EntryIntentAttestation.__post_init__ inside preflight, BEFORE "
-                "any SQL (a raise, not a typed refusal -- reported at G4)"),
+                REFUSAL, "source_date_malformed", ("b22_77", "b22_75"),
+                "RULING G4: trade_entry_date, outcome_known_at and a fallback "
+                "placement are COPIED from trades.entry_date / "
+                "fills.fill_datetime, which carry no shape CHECK; _check_trade "
+                "refuses a malformed source value as source_date_malformed at "
+                "step 1, before any lexical comparison and before __post_init__ "
+                "(b22_218-221)"),
             "json_shapes": _p(
                 DERIVED_VALUE, None, ("b22_48",),
                 "every JSON column is json.dumps of a list / a dict"),
@@ -573,6 +574,9 @@ REFUSAL_FIXTURES = {
     "an_envelope_placement_is_a_date": (
         lambda t, n: _base(t, n, env=envelope(entry_date="2026-8-01")), {},
         "unprovable"),
+    "copied_date_shapes": (
+        lambda t, n: _base(t, n, entry_date="2026-8-07"), {},
+        "source_date_malformed"),
 }
 
 
@@ -653,11 +657,10 @@ def test_each_admitting_paths_service_built_row_passes_the_real_triggers_b22_160
 def test_a_copied_value_of_the_wrong_shape_never_reaches_sql_b22_160(
         tmp_path: Path, case: str) -> None:
     """``copied_date_shapes``: trades.entry_date and fills.fill_datetime carry
-    no shape CHECK, and the service has no typed refusal for their shape. What
-    the service DOES reach is the model mirror (``__post_init__``, b22_75)
-    inside ``preflight``, before any SQL -- so the row is never authorized and
-    SQL never aborts it. Pinned: no ``IntegrityError`` and nothing written;
-    the raise-not-refusal legibility is reported at G4, not settled here."""
+    no shape CHECK. RULING G4 (CHARC 2026-09-24): the service refuses a
+    malformed copied source value with the typed code
+    ``source_date_malformed`` at preflight step 1 -- never a raise from
+    ``__post_init__``, never an ``IntegrityError``, nothing written."""
     kw = ({"outcome_dt": "2026-08-11 16:00:00"} if case.startswith("outcome")
           else {"entry_date": "2026-8-07", "with_outcome": False})
     c, cfg, path = _world(tmp_path, case, **kw)
@@ -667,10 +670,8 @@ def test_a_copied_value_of_the_wrong_shape_never_reaches_sql_b22_160(
                            applied_by="operator")
         except sqlite3.IntegrityError as exc:  # pragma: no cover - the failure
             pytest.fail(f"SQL aborted a row the service authorized: {exc}")
-        except ValueError as exc:
-            assert "EntryIntentAttestation" in str(exc)
-        else:
-            assert not r.admitted
+        assert (r.admitted, r.refusal_code) == (False, "source_date_malformed"), (
+            r.refusal_code, r.message)
         assert not c.in_transaction
     finally:
         c.close()

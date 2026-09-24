@@ -980,3 +980,90 @@ def test_an_envelope_with_no_reading_after_ensure_raises_the_invariant_b22_212(
     finally:
         c.close()
     _nothing_written(path)
+
+
+# ---------------------------------------------------------------------------
+# RULING G4 (CHARC 2026-09-24): a copied source date of the wrong shape
+# refuses as `source_date_malformed` at preflight step 1 -- before any lexical
+# comparison and before EntryIntentAttestation.__post_init__. Planted RAW
+# (the fixtures' own INSERT/UPDATE): trades.entry_date and fills.fill_datetime
+# are bare TEXT NOT NULL at v40, so no CHECK and no trigger refuses them.
+# ---------------------------------------------------------------------------
+def _refuses_source_date(tmp_path: Path, name: str, dry_run: bool,
+                         column: str, value: str, **world: Any) -> None:
+    c, cfg, path = _world(tmp_path, f"{name}-{dry_run}", **world)
+    try:
+        r = _assign(c, cfg, dry_run=dry_run)
+        assert not c.in_transaction
+    finally:
+        c.close()
+    assert (r.admitted, r.refusal_code) == (False, "source_date_malformed"), (
+        r.refusal_code, r.message)
+    assert column in r.message and repr(value) in r.message, r.message
+    assert r.message.isascii()
+    assert r.attestation is None and r.attestation_id is None
+    _nothing_written(path)
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_unpadded_entry_date_on_a_closed_trade_refuses_as_malformed_b22_218(
+        tmp_path: Path, dry_run: bool) -> None:
+    """Pre-fix: `outcome_not_after_record` -- '2026-8-07' < '2026-08-11' is
+    FALSE bytewise ('8' > '0'), a mislabeled refusal (the D38 class)."""
+    _refuses_source_date(tmp_path, "b218", dry_run, "trades.entry_date",
+                         "2026-8-07", entry_date="2026-8-07")
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_unpadded_entry_date_with_no_envelope_refuses_as_malformed_b22_219(
+        tmp_path: Path, dry_run: bool) -> None:
+    """Pre-fix: `instrument_existed` -- the fallback placement '2026-8-07' is
+    NOT < '2026-08-03' bytewise, so leg 2 reads as post-deployment."""
+    _refuses_source_date(tmp_path, "b219", dry_run, "trades.entry_date",
+                         "2026-8-07", entry_date="2026-8-07", env=None,
+                         with_outcome=False)
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_outcome_fill_datetime_with_a_space_refuses_as_malformed_b22_220(
+        tmp_path: Path, dry_run: bool) -> None:
+    """Pre-fix: an untyped ValueError from EntryIntentAttestation.__post_init__
+    (outcome_known_at shape)."""
+    _refuses_source_date(tmp_path, "b220", dry_run, "fills.fill_datetime",
+                         "2026-08-11 16:00:00", outcome_dt="2026-08-11 16:00:00")
+
+
+def _entry_fill_dt(value: str):
+    def plant(c) -> None:
+        c.execute("UPDATE fills SET fill_datetime = ? WHERE fill_id = 41", (value,))
+        c.commit()
+    return plant
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("case,column,value,world,plant", [
+    # the pattern-alone hole: YYYY-MM-DD shaped, not a calendar date
+    ("entry_date_not_a_date", "trades.entry_date", "2026-02-31",
+     {"entry_date": "2026-02-31"}, None),
+    ("outcome_hour_25", "fills.fill_datetime", "2026-08-11T25:00:00",
+     {"outcome_dt": "2026-08-11T25:00:00"}, None),
+    # the ENTRY fill's datetime is compared too: get_authoritative_entry_fill
+    # picks the authoritative entry fill by ORDER BY fill_datetime
+    ("entry_fill_datetime_unpadded", "fills.fill_datetime", "2026-8-07T16:00:00",
+     {}, _entry_fill_dt("2026-8-07T16:00:00")),
+])
+def test_every_copied_or_compared_source_date_is_shape_checked_b22_221(
+        tmp_path: Path, dry_run: bool, case: str, column: str, value: str,
+        world: dict, plant) -> None:
+    c, cfg, path = _world(tmp_path, f"{case}-{dry_run}", **world)
+    if plant is not None:
+        plant(c)
+    try:
+        r = _assign(c, cfg, dry_run=dry_run)
+        assert not c.in_transaction
+    finally:
+        c.close()
+    assert (r.admitted, r.refusal_code) == (False, "source_date_malformed"), (
+        case, r.refusal_code, r.message)
+    assert column in r.message and repr(value) in r.message, r.message
+    _nothing_written(path)

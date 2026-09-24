@@ -48,7 +48,12 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
-from swing.data.models import UNINTENDED_EXECUTION, EntryIntentAttestation
+from swing.data.models import (
+    UNINTENDED_EXECUTION,
+    EntryIntentAttestation,
+    _attestation_date_ok,
+    _attestation_iso_seconds_ok,
+)
 from swing.data.repos.entry_intent_attestations import (
     get_attestation,
     insert_attestation,
@@ -182,6 +187,46 @@ def _envelope_entry_date(raw: str) -> tuple[object, int]:
 # --------------------------------------------------------------------------
 # preflight steps, in order; each raises _RefusalError on its first failure
 # --------------------------------------------------------------------------
+def _source_date_malformed(column: str, where: str, value: object,
+                           shape: str) -> _RefusalError:
+    return _RefusalError(
+        "source_date_malformed",
+        f"{column} of {where} is {ascii(value)}, not a {shape} value; the "
+        "service compares dates as text, which is sound only over canonical "
+        "shapes, so nothing is assigned -- correct the stored value first")
+
+
+def _check_source_dates(conn: sqlite3.Connection, trade: dict[str, Any]) -> None:
+    """RULING G4 (CHARC 2026-09-24): every SOURCE date this service copies or
+    compares is shape-checked HERE, in step 1, before any lexical comparison
+    and before `EntryIntentAttestation.__post_init__`. Both columns are bare
+    `TEXT NOT NULL` at v40 (no shape CHECK), and every comparison downstream is
+    bytewise, which is sound only over canonical shapes -- a non-canonical value
+    would otherwise yield a MISLABELED refusal or an untyped raise.
+
+    The set, by read: `trades.entry_date` (copied to `trade_entry_date` and the
+    fallback placement; compared in `_check_outcome`, `_structural`, E9 and the
+    deployment bound) and `fills.fill_datetime` of EVERY fill of the trade --
+    the entry fills (`get_authoritative_entry_fill` picks by ORDER BY
+    fill_datetime) and the trim/exit/stop fills (`_check_outcome`'s MIN, copied
+    to `outcome_known_at`); the fills action CHECK has exactly those four
+    values. The shape authority is the attestation's own (`_attestation_date_ok`
+    / `_attestation_iso_seconds_ok`): exact length AND a real calendar
+    date/time round-trip, so '2026-02-31' is refused as a pattern alone would
+    not."""
+    entry = trade["entry_date"]
+    if not _attestation_date_ok(entry):
+        raise _source_date_malformed("trades.entry_date", f"trade {trade['id']}",
+                                     entry, "YYYY-MM-DD")
+    for fill_id, fill_dt in conn.execute(
+            "SELECT fill_id, fill_datetime FROM fills WHERE trade_id = ? "
+            "ORDER BY fill_id", (trade["id"],)).fetchall():
+        if not _attestation_iso_seconds_ok(fill_dt):
+            raise _source_date_malformed(
+                "fills.fill_datetime", f"fill {fill_id} (trade {trade['id']})",
+                fill_dt, "YYYY-MM-DDTHH:MM:SS")
+
+
 def _check_trade(conn: sqlite3.Connection, trade_id: int) -> dict[str, Any]:
     from swing.trades.voided_trades import voided_trade_ids
 
@@ -200,6 +245,7 @@ def _check_trade(conn: sqlite3.Connection, trade_id: int) -> dict[str, Any]:
             f"trade {trade_id} already carries entry_intent "
             f"'{trade['entry_intent']}'; there is no relabel path -- a "
             "non-empty relabel is a new evidence class with its own record")
+    _check_source_dates(conn, trade)
     fill = get_authoritative_entry_fill(conn, trade_id)
     if fill is None:
         raise _RefusalError(
