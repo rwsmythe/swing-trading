@@ -13,6 +13,7 @@ tests/cli/test_logs_cleanup_cmd.py::test_cleanup_stdout_is_ascii_through_powersh
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tomllib
@@ -21,6 +22,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+import swing.cli as cli_mod
 from swing.cli import main
 from swing.data.db import connect, ensure_schema
 from swing.data.models import Trade
@@ -222,3 +224,163 @@ def test_backfill_subprocess_ascii_stdout(tmp_path: Path) -> None:
     )
     assert completed.returncode == 0, completed.stderr
     completed.stdout.encode("ascii")  # raises if any non-ASCII glyph slipped in
+
+
+# D69 -- the per-row header echo (~cli.py:2103) printed the RAW ticker
+# without `ascii_safe`. A CliRunner captures stdout through an internal
+# UTF-8-charset buffer (never the real console encoder), so an
+# UnicodeEncodeError at the header's own `click.echo` is INVISIBLE to a bare
+# CliRunner invocation -- the same "capsys hides this failure" shape CLAUDE.md
+# names for pytest capsys (gotcha, Windows/tooling section). The discriminator
+# is therefore a POST-HOC strict `.encode("cp1252")` on the CAPTURED text
+# (the established pattern in this suite: test_correct_entry_date_command.py,
+# test_diagnose_subcommands.py) -- it simulates what the REAL cp1252 console
+# would have done with that exact text, without needing a subprocess. U+2713
+# (a checkmark) is chosen because it is OUTSIDE cp1252's 256-slot repertoire
+# (unlike an em-dash or an accented letter, which cp1252 DOES encode) -- see
+# ascii_safe's own docstring in swing/trades/entry.py.
+_NON_CP1252_TICKER = "T✓K"  # "T[checkmark]K"
+
+
+def test_backfill_header_ascii_coerced_for_non_ascii_ticker(tmp_path: Path) -> None:
+    runner, cfg, db_path = _setup(tmp_path)
+    _seed_trade(db_path, ticker=_NON_CP1252_TICKER)
+    res = runner.invoke(
+        main, ["--config", str(cfg), "trade", "backfill-intent"], input="skip\n"
+    )
+    assert res.exit_code == 0, res.output
+    # Post-fix: ascii_safe's backslashreplace escape is pure ASCII (hence
+    # pure cp1252-safe); pre-fix, the raw checkmark glyph in res.output
+    # raises UnicodeEncodeError here -- the discriminator.
+    res.output.encode("cp1252")
+    assert _NON_CP1252_TICKER not in res.output
+    assert "\\u2713" in res.output
+
+
+class _CloseRaises:
+    """Forwarding proxy whose `close()` performs the real close and THEN
+    raises -- the transaction still commits, so a durable row stays durable.
+    Mirrors tests/cli/test_cli_trade_entry_post_commit_warnings.py."""
+
+    def __init__(self, real):
+        object.__setattr__(self, "_real", real)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+    def __enter__(self):
+        object.__getattribute__(self, "_real").__enter__()
+        return self
+
+    def __exit__(self, *a):
+        return object.__getattribute__(self, "_real").__exit__(*a)
+
+    def close(self):
+        object.__getattribute__(self, "_real").close()
+        raise sqlite3.OperationalError("D69 PROBE: close failed")
+
+
+def _patch_backfill_connect_to_raise_on_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch `swing.cli`'s OWN `connect` name.
+
+    `trade_backfill_intent_cmd` resolves the bare name `connect` from
+    `swing.cli`'s MODULE-LEVEL import (`cli.py:36`), unlike most other
+    handlers in this file which locally re-import `connect` inside the
+    function body for exactly this kind of test-patchability. Patching
+    `swing.data.db.connect` (the target every other command's LOCAL import
+    re-resolves at call time) would silently no-op here -- `swing.cli`'s own
+    module-level binding was captured once, at `swing.cli`'s first import,
+    and is untouched by a patch to a DIFFERENT module's attribute (the same
+    "by-name import defeats a same-module-only patch" shape as D67, one
+    level removed). Patching `swing.cli.connect` directly is correct
+    regardless of import timing, because the bare `connect(...)` call inside
+    `trade_backfill_intent_cmd` is a normal global-name lookup against
+    `swing.cli`'s OWN `__dict__` at CALL time.
+    """
+    real_connect = cli_mod.connect
+
+    def _wrapped(*a, **kw):
+        return _CloseRaises(real_connect(*a, **kw))
+
+    monkeypatch.setattr(cli_mod, "connect", _wrapped)
+
+
+def test_backfill_close_raise_after_commit_warns_and_exits_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """D69 (b)/(d): the durability boundary crossed (n_set=1) -- a close()
+    failure is contained: WARN naming the count, logged, exit 0, row durable
+    on a FRESH connection (not the writer's own, per the CLAUDE.md gotcha on
+    reading a writer's own uncommitted-vs-committed connection)."""
+    runner, cfg, db_path = _setup(tmp_path)
+    t1 = _seed_trade(db_path, ticker="AAA")
+    _patch_backfill_connect_to_raise_on_close(monkeypatch)
+    with caplog.at_level("ERROR"):
+        res = runner.invoke(
+            main, ["--config", str(cfg), "trade", "backfill-intent"],
+            input="standard\n",
+        )
+    assert res.exit_code == 0, res.output
+    assert "WARN (post-commit):" in res.output
+    assert "1 row(s)" in res.output
+    assert "close failed" in res.output
+    # Durable on a FRESH connection, not the (raised-on-close) writer's own.
+    assert _read_intent(db_path, t1) == "standard"
+    assert any("D69" in r.message for r in caplog.records)
+
+
+def test_backfill_close_raise_zero_committed_raises_as_today(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D69 (c): before the boundary (n_set=0, every row skipped) every path
+    is byte-unchanged -- a close() failure propagates exactly as a bare
+    `conn.close()` always has, non-zero exit, no WARN line."""
+    runner, cfg, db_path = _setup(tmp_path)
+    _seed_trade(db_path, ticker="AAA")
+    _patch_backfill_connect_to_raise_on_close(monkeypatch)
+    res = runner.invoke(
+        main, ["--config", str(cfg), "trade", "backfill-intent"], input="skip\n",
+    )
+    assert res.exit_code != 0
+    assert isinstance(res.exception, sqlite3.OperationalError)
+    assert "WARN (post-commit):" not in res.output
+
+
+def test_backfill_close_raise_with_abort_in_flight_names_not_substitutes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """D69 (e), D39's template: an exception ALREADY in flight (here,
+    click.Abort from a prompt hitting EOF after one row committed) MUST
+    keep propagating UNCHANGED when close() ALSO raises -- the close
+    failure is named (a durable log record), never substituted for the
+    original.
+
+    Click's OWN top-level handler converts an in-flight `Abort` to
+    `SystemExit(1)` with "Aborted!" printed (unrelated to this fix -- that
+    conversion happens in `click.BaseCommand.main`, one frame above
+    `trade_backfill_intent_cmd`). What this test pins is that OUR close-
+    failure containment does not touch that outcome at all: same exit code,
+    same "Aborted!" text, no WARN line, and the close failure is recorded
+    only via the durable log, never printed over the abort."""
+    runner, cfg, db_path = _setup(tmp_path)
+    t1 = _seed_trade(db_path, ticker="AAA", entry_date="2026-04-01")
+    t2 = _seed_trade(db_path, ticker="BBB", entry_date="2026-04-02")
+    _patch_backfill_connect_to_raise_on_close(monkeypatch)
+    with caplog.at_level("ERROR"):
+        res = runner.invoke(
+            main, ["--config", str(cfg), "trade", "backfill-intent"],
+            # Only ONE answer for TWO NULL rows: the second row's prompt
+            # hits EOF and click.prompt raises click.Abort -- unforced,
+            # not a monkeypatch of click.prompt itself.
+            input="standard\n",
+        )
+    assert res.exit_code != 0
+    assert isinstance(res.exception, SystemExit)
+    assert "Aborted!" in res.output
+    # The abort's own text, never overwritten by the close failure.
+    assert "WARN (post-commit):" not in res.output
+    # The first row's commit is durable regardless of the later abort.
+    assert _read_intent(db_path, t1) == "standard"
+    assert _read_intent(db_path, t2) is None
+    assert any("D69" in r.message and "ALSO RAISED" in r.message
+               for r in caplog.records)

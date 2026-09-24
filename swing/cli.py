@@ -2059,11 +2059,19 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
         assert_entry_intent_change_allowed,
         update_entry_intent,
     )
+    from swing.trades.entry import ascii_safe, log_contained, log_contained_note, safe_text
     from swing.trades.intent import entry_intent_label, suggest_entry_intent
 
     cfg = apply_overrides(ctx.obj["config"])
     conn = connect(cfg.paths.db_path)
     n_set = n_skipped_set = n_skipped_op = 0
+    # D69: THE DURABILITY BOUNDARY -- "at least one row committed in THIS
+    # invocation" (`n_set > 0`), re-evaluated at each handler below, never
+    # cached in a separate flag. `n_set` is incremented only after each row's
+    # own commit (`with conn:`) RETURNS, with nothing between that return and
+    # the increment that can raise.
+    close_error_text = None
+    close_log_error_text = None
     try:
         # Select target trades: by id, or all rows; the IS-NULL/--force gate is
         # applied per-row so the summary counts are exact.
@@ -2094,15 +2102,18 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
                 except AttestedIntentError as exc:
                     # Codex R7-2: `ticker` (and `entry_date`) are unrestricted
                     # text; the whole line is ASCII-coerced.
-                    from swing.trades.entry import ascii_safe
                     click.echo(ascii_safe(f"#{tid} {ticker} {edate} | {exc}"))
                 n_skipped_set += 1
                 continue
             suggestion = suggest_entry_intent(hyp)
             sug_label = entry_intent_label(suggestion) or "(no suggestion)"
-            click.echo(f"#{tid} {ticker} {edate} | label={hyp or '(none)'} | "
-                       f"grade={pg or '-'} | tags={tags or '-'} | "
-                       f"current={current or 'NULL'} | suggested={sug_label}")
+            # D69: `ticker` (and `hypothesis_label`/`mistake_tags`) are
+            # unrestricted text -- the whole line is ASCII-coerced, mirroring
+            # the terminal-value branch above (Codex R7-2) which already did.
+            click.echo(ascii_safe(
+                f"#{tid} {ticker} {edate} | label={hyp or '(none)'} | "
+                f"grade={pg or '-'} | tags={tags or '-'} | "
+                f"current={current or 'NULL'} | suggested={sug_label}"))
             choice = click.prompt(
                 "  intent [standard / hypothesis_test_by_design / skip]",
                 default=(suggestion or "skip"), show_default=True).strip()
@@ -2115,16 +2126,73 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
             except EntryIntentSeamError as exc:
                 # Arc 22-B F5 seam: the evidence-bearing value is never written
                 # here; say why, leave the row as it was, and keep going.
-                click.echo(f"  {exc}")
+                click.echo(ascii_safe(f"  {exc}"))
                 n_skipped_op += 1
                 continue
             except ValueError as exc:
                 raise click.ClickException(str(exc)) from exc
             n_set += 1
-        click.echo(f"{n_set} set, {n_skipped_set} skipped-already-set, "
-                   f"{n_skipped_op} skipped-by-operator")
+        click.echo(ascii_safe(
+            f"{n_set} set, {n_skipped_set} skipped-already-set, "
+            f"{n_skipped_op} skipped-by-operator"))
     finally:
-        conn.close()
+        # D69 (mirrors the 22-A3/assign-intent idiom): BEFORE the boundary
+        # (n_set == 0, nothing durable this invocation) every path is
+        # byte-unchanged -- a bare `conn.close()`, whose failure propagates
+        # (or replaces whatever is already in flight) exactly as it always
+        # has. AFTER the boundary (n_set > 0), a close failure is contained.
+        if n_set > 0:
+            # D39's template: if another exception is ALREADY propagating
+            # (a click.Abort from an interrupted prompt, or the
+            # ClickException raised above from a ValueError), it MUST keep
+            # propagating unchanged -- the close failure is NAMED via a
+            # durable log record (and, if the log sink itself fails, a note
+            # attached to the propagating exception through
+            # `log_contained_note`), never raised in its place.
+            _exc_in_flight = _sys.exc_info()[1]
+            try:
+                conn.close()
+            except BaseException as exc:  # noqa: BLE001 -- the CLASS
+                if _exc_in_flight is not None:
+                    log_contained_note(
+                        _pe_backfill_logging.getLogger(__name__),
+                        _exc_in_flight,
+                        "D69: backfill-intent set %s row(s) durably this "
+                        "invocation; an exception was already propagating "
+                        "when CLOSING the database connection afterwards "
+                        "ALSO RAISED (%s); the ledger is unaffected -- the "
+                        "original exception still propagates.",
+                        n_set, safe_text(exc))
+                else:
+                    close_error_text = safe_text(exc)
+                    _close_log_error = log_contained(
+                        _pe_backfill_logging.getLogger(__name__),
+                        "D69: backfill-intent set %s row(s) durably this "
+                        "invocation and CLOSING the database connection "
+                        "afterwards RAISED (%s); the ledger is unaffected "
+                        "and the command still exits 0.",
+                        n_set, close_error_text)
+                    if _close_log_error is not None:
+                        close_log_error_text = safe_text(_close_log_error)
+        else:
+            conn.close()
+    # Reached only when the try/finally above completed WITHOUT propagating
+    # an exception (n_set == 0 byte-unchanged path never reaches here on a
+    # close failure; n_set > 0 with an exception in flight re-raises it
+    # before this line, per Python's own finally semantics).
+    if close_error_text is not None:
+        _echo_either_sink(ascii_safe(
+            "WARN (post-commit): " + safe_text(n_set) + " row(s) were set "
+            "durably this invocation, and CLOSING the database connection "
+            "afterwards RAISED (" + close_error_text + "); the ledger is "
+            "unaffected."), prefer_err=True)
+    if close_log_error_text is not None:
+        _echo_either_sink(ascii_safe(
+            "WARN (post-commit): the ERROR log for the close failure above "
+            "could not be emitted cleanly -- a logging handler RAISED ("
+            + close_log_error_text + "). Some sinks may have received the "
+            "record and some may not; the ledger is unaffected."),
+            prefer_err=True)
 
 
 @main.group("review")
