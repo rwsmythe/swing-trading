@@ -706,3 +706,22 @@ Run by the orchestrator on branch head `27b7f04f`, code head `3e9085e0`. It was 
 > ON THE GOTCHA: its retirement is CONTENT, yours (charter 2.6: the Gotchas text belongs to the orchestrator; the compression pass and its retire/add list are on your queue, as your note says orchestrator-context already records it FALSE). Not mine to edit; I flag only that it bit a director today, which is the evidence line for retiring it at your next Gotchas commit.
 >
 > No other change. The sitting's W0-W4 otherwise stand as ruled.
+
+## THE WITNESS -- 2026-09-24, ONE contiguous attended sitting, operator-executed, one step per result (orchestrator generation ef20e515 scripting)
+
+Baseline, read `mode=ro` before W0: live `schema_version` 39; last pipeline run **183** `complete`, `export_status=ok` (2026-09-23 17:30-17:46 HST), the pre-merge baseline; trade 20 (AMN) `entry_intent` NULL; `swing web` pid 48408 on 8080.
+
+| step | result |
+|---|---|
+| W0 stop `swing web` | pid 48408 already gone when `Stop-Process` ran; verified by the orchestrator: port 8080 listeners **0**, `swing` python processes **0**. PASS |
+| W1 plain `sqlite3` `BEGIN EXCLUSIVE; ROLLBACK` (timeout 0) | `EXCLUSIVE acquired` / `ROLLBACK ok`. PASS |
+| W2 the real `--no-ff` merge | **`297a9566`** = `c93ca9a9` (main) + `6913899c` (22-b-exec); trailers `[]`; `swing tests scripts` byte-identical to the trial merge `863329aa` (the head the 13413-pass suite ran on); `EXPECTED_SCHEMA_VERSION 40` read from the merged code (`swing.__file__` = the main repo). PASS |
+| W3 `swing db-migrate` | echoed `Backup (pre-migration gate, integrity-verified): C:\Users\rwsmy\swing-data\backups\swing-pre-22b-migration-20260924T163904Z.db` and `schema version 40`; `exit=0` (NOT the verdict, RULING B item 4). Pre-count 0 in `backups_dir`, 0 in the root. |
+| W4 independent reads | `schema_version` (40); `foreign_key_check` []; `quick_check` ok; trades 28; `schema_manifest.py --db` "schema_version 40 / clean"; pre-22b images: **1** in `backups_dir`, **0** in the root (the corrected W3). PASS |
+| 5 pre-image + dry run | `hypothesis list` pre-image saved (6 lines: H1 4/20, H2 4/10, H3 10/5 closed-target-met, H4 0/10, H5 3/30). Dry run: `ADMIT unintended_execution (dry run, nothing written)`, tier `contemporaneous_record`, P1 **leg `deployment`** (QUOTED, not pinned), placement 2026-08-01 vs deployment 2026-08-03, P2 corrections 0/0, P3 outcome 2026-08-11T16:00:00, exit 0; read `mode=ro`: intent NULL, 0 attestations. PASS |
+| 6 the real assignment | same predicates, `attestation_id: 1`, exit 0. PASS |
+| 7 read-backs | `trade analyze 20` -> `Intent: Unintended execution`; `hypothesis list` POST **IDENTICAL** to PRE (diff empty); attestation row on `mode=ro`: tier `contemporaneous_record`, `admitted_leg` `deployment`, `leg_evidence_json` `{"deployment_session": "2026-08-03", "placement_session": "2026-08-01"}`, `cited_fields_json` `["notes", "why_now"]`, the snapshot byte-for-byte (the two-space `notes`), `corrections_touching_cited_fields` 0, `outcome_known_at` `2026-08-11T16:00:00`, `placement_session_source` `schwab_envelope`, `applied_by` operator; `trades.entry_intent` = `unintended_execution`. PASS |
+| 8 browser | `swing web` restarted by the operator (pid 40608, 06:43:30 HST, merged code). Trend page: the intent legend on ITS OWN LINE (G3a (ii)) PASS. Trade-process `All` tab: `Entry intent: All / Standard entry / Hypothesis test (by design) / Unintended execution / Unclassified` (G3a (iii)); the Unintended facet renders `All closed trades (1 closed)`, metrics suppressed under the n>=5 floor; no 500 on any page. PASS. **Found, PRE-EXISTING, banked:** on the trend page the SERIES legend's 'management' label overlaps the 'exit' swatch -- the swatch row (`x = 360 + i*105`) is byte-unchanged by 22-B (the arc's only edit to the template moved the intent legend); 105 px per series is shorter than 'management'. Screenshot: `C:\Users\rwsmy\AppData\Local\Temp\claude-chrome-screenshots-0r5Coy\screenshot-1790268663219-0.png`. Posted to CHARC for the register. |
+| RD step 5 | RD's (H-cohort counts on the live DB beside the readers'; the card's per-tab N quoted with the tier page's N). Pending at this writing. |
+
+Evidence files: `~/swing-data/review-transcripts/22-b-exec/witness-hypothesis-list-{PRE,POST}.txt`.
