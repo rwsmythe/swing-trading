@@ -1682,6 +1682,9 @@ _NO_REPLACE_PK = {
     "trg_sac_no_replace": ("schwab_api_calls", "call_id"),
     "trg_yfc_no_replace": ("yfinance_calls", "call_id"),
     "trg_aes_no_replace": ("account_equity_snapshots", "snapshot_id"),
+    "trg_rp_no_replace": ("risk_policy", "policy_id"),
+    "trg_hr_no_replace": ("hypothesis_registry", "id"),
+    "trg_hsh_no_replace": ("hypothesis_status_history", "history_id"),
 }
 
 # NEW tables additionally carry `CHECK (pk > 0)`; an EXISTING table cannot

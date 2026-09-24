@@ -72,6 +72,15 @@
 --         DROP TRIGGER trg_aes_no_delete;   -- account_equity_snapshots
 --         DROP TRIGGER trg_aes_no_replace;  -- account_equity_snapshots
 --         DROP TRIGGER trg_aes_immutable;   -- account_equity_snapshots
+--         DROP TRIGGER trg_rp_no_delete;    -- risk_policy
+--         DROP TRIGGER trg_rp_no_replace;   -- risk_policy
+--         DROP TRIGGER trg_rp_immutable;    -- risk_policy
+--         DROP TRIGGER trg_hr_no_delete;    -- hypothesis_registry
+--         DROP TRIGGER trg_hr_no_replace;   -- hypothesis_registry
+--         DROP TRIGGER trg_hr_immutable;    -- hypothesis_registry
+--         DROP TRIGGER trg_hsh_no_delete;   -- hypothesis_status_history
+--         DROP TRIGGER trg_hsh_no_replace;  -- hypothesis_status_history
+--         DROP TRIGGER trg_hsh_immutable;   -- hypothesis_status_history
 --
 -- (iii) THE ONE REBUILT OBJECT (F-I2, CHARC-ruled): trg_provenance_corrections_
 --     append_only_update is DROPPED and CREATED again. Its new text is the
@@ -513,6 +522,121 @@ WHEN NOT COALESCE(
   AND NEW.basis IS OLD.basis
 , 0)
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_aes_immutable: account_equity_snapshots: this UPDATE changes a column outside the writer''s measured UPDATE set (equity_dollars, source_artifact_path, recorded_at, recorded_by, notes, schwab_account_hash); a snapshot''s identity is the key the source ladder looks it up by (RD F-I1 row 16). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+-- ============================================================================
+-- 8. risk_policy / hypothesis_registry / hypothesis_status_history -- (c) (RD
+--    F-I1 rows 7, 8, 9). risk_policy: every policy value immutable; is_active
+--    moves 1 -> 0 only (D); effective_to and superseded_by_policy_id are
+--    write-once (the supersession writes the flag twice, trades/risk_policy.py:162
+--    then :203 -- NEW IS OLD covers the repeat); no_replace scoped to the PK and
+--    the partial ux_risk_policy_active. hypothesis_registry: only the writer's
+--    three (status, status_changed_at, status_change_reason; trades/
+--    hypothesis.py:269-273) move; everything else frozen BY EXCLUSION, so 0034's
+--    preregistered_decision_criteria is covered without being named.
+--    hypothesis_status_history: effective_to write-once; no_replace scoped to
+--    the PK and the partial ux_hypothesis_status_history_current.
+-- ============================================================================
+CREATE TRIGGER trg_rp_no_delete BEFORE DELETE ON risk_policy
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rp_no_delete: risk_policy rows are PERMANENT from migration 0041; a risk_policy row is cited by every correction, review and order derivation that stamps it (RD F-I1 row 7). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_rp_no_replace BEFORE INSERT ON risk_policy
+WHEN COALESCE(EXISTS (SELECT 1 FROM risk_policy
+              WHERE (NEW.policy_id != -1 AND policy_id = NEW.policy_id)
+                 OR (NEW.is_active = 1 AND is_active = 1)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rp_no_replace: risk_policy rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_rp_no_delete and reissue or move its id; a risk_policy row is cited by every correction, review and order derivation that stamps it (RD F-I1 row 7). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_rp_immutable
+BEFORE UPDATE ON risk_policy
+FOR EACH ROW
+WHEN NOT COALESCE(
+      NEW.policy_id IS OLD.policy_id
+  AND NEW.effective_from IS OLD.effective_from
+  AND NEW.created_at IS OLD.created_at
+  AND NEW.policy_notes IS OLD.policy_notes
+  AND NEW.max_account_risk_per_trade_pct IS OLD.max_account_risk_per_trade_pct
+  AND NEW.max_concurrent_positions IS OLD.max_concurrent_positions
+  AND NEW.max_portfolio_heat_pct IS OLD.max_portfolio_heat_pct
+  AND NEW.max_sector_concentration_positions IS OLD.max_sector_concentration_positions
+  AND NEW.consecutive_losses_pause_threshold IS OLD.consecutive_losses_pause_threshold
+  AND NEW.consecutive_losses_pause_action IS OLD.consecutive_losses_pause_action
+  AND NEW.consecutive_losses_streak_reset IS OLD.consecutive_losses_streak_reset
+  AND NEW.drawdown_circuit_breaker_enabled IS OLD.drawdown_circuit_breaker_enabled
+  AND NEW.drawdown_pause_threshold_R IS OLD.drawdown_pause_threshold_R
+  AND NEW.drawdown_pause_action IS OLD.drawdown_pause_action
+  AND NEW.drawdown_size_reduction_pct IS OLD.drawdown_size_reduction_pct
+  AND NEW.drawdown_recovery_threshold_R IS OLD.drawdown_recovery_threshold_R
+  AND NEW.capital_floor_constant_dollars IS OLD.capital_floor_constant_dollars
+  AND NEW.scratch_epsilon_R IS OLD.scratch_epsilon_R
+  AND NEW.review_lag_threshold_days IS OLD.review_lag_threshold_days
+  AND NEW.low_sample_size_threshold_class_a_n IS OLD.low_sample_size_threshold_class_a_n
+  AND NEW.low_sample_size_threshold_class_b_n IS OLD.low_sample_size_threshold_class_b_n
+  AND NEW.low_sample_size_threshold_class_c_n IS OLD.low_sample_size_threshold_class_c_n
+  AND NEW.low_sample_size_threshold_class_d_n IS OLD.low_sample_size_threshold_class_d_n
+  AND NEW.global_confidence_floor_n IS OLD.global_confidence_floor_n
+  AND NEW.bootstrap_resample_count IS OLD.bootstrap_resample_count
+  AND NEW.process_grade_weight_entry IS OLD.process_grade_weight_entry
+  AND NEW.process_grade_weight_management IS OLD.process_grade_weight_management
+  AND NEW.process_grade_weight_exit IS OLD.process_grade_weight_exit
+  AND NEW.mfe_mae_default_precision_level IS OLD.mfe_mae_default_precision_level
+  AND NEW.trail_MA_period_days IS OLD.trail_MA_period_days
+  AND NEW.trail_MA_post_2R_period_days IS OLD.trail_MA_post_2R_period_days
+  AND (NEW.effective_to IS OLD.effective_to OR OLD.effective_to IS NULL)
+  AND (NEW.superseded_by_policy_id IS OLD.superseded_by_policy_id OR OLD.superseded_by_policy_id IS NULL)
+  AND (NEW.is_active IS OLD.is_active OR (OLD.is_active = 1 AND NEW.is_active = 0))
+, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rp_immutable: risk_policy: this UPDATE changes a column outside the writer''s measured UPDATE set (none); write-once NULL to value: effective_to, superseded_by_policy_id; is_active moves 1 to 0 only; a risk_policy row is cited by every correction, review and order derivation that stamps it (RD F-I1 row 7). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_hr_no_delete BEFORE DELETE ON hypothesis_registry
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_hr_no_delete: hypothesis_registry rows are PERMANENT from migration 0041; hypothesis_registry is the pre-registration record H1 is pinned against (RD F-I1 row 8). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_hr_no_replace BEFORE INSERT ON hypothesis_registry
+WHEN COALESCE(EXISTS (SELECT 1 FROM hypothesis_registry
+              WHERE (NEW.id != -1 AND id = NEW.id)
+                 OR (name = NEW.name)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_hr_no_replace: hypothesis_registry rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_hr_no_delete and reissue or move its id; hypothesis_registry is the pre-registration record H1 is pinned against (RD F-I1 row 8). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_hr_immutable
+BEFORE UPDATE ON hypothesis_registry
+FOR EACH ROW
+WHEN NOT COALESCE(
+      -- AMENDMENT PRECEDENT (RD F-I1 row 8; CHARC note (i)): a formal amendment
+      -- of a pre-registered hypothesis is a MIGRATION that DROPs and re-CREATEs
+      -- this twin around its UPDATE (0034 is the precedent), never a writer.
+      NEW.id IS OLD.id
+  AND NEW.name IS OLD.name
+  AND NEW.statement IS OLD.statement
+  AND NEW.target_sample_size IS OLD.target_sample_size
+  AND NEW.decision_criteria IS OLD.decision_criteria
+  AND NEW.consecutive_loss_tripwire IS OLD.consecutive_loss_tripwire
+  AND NEW.absolute_loss_tripwire_pct IS OLD.absolute_loss_tripwire_pct
+  AND NEW.created_at IS OLD.created_at
+  AND NEW.notes IS OLD.notes
+  AND NEW.preregistered_decision_criteria IS OLD.preregistered_decision_criteria
+, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_hr_immutable: hypothesis_registry: this UPDATE changes a column outside the writer''s measured UPDATE set (status, status_changed_at, status_change_reason); hypothesis_registry is the pre-registration record H1 is pinned against (RD F-I1 row 8). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_hsh_no_delete BEFORE DELETE ON hypothesis_status_history
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_hsh_no_delete: hypothesis_status_history rows are PERMANENT from migration 0041; hypothesis_status_history is cited and bound by the citation trigger (RD F-I1 row 9). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_hsh_no_replace BEFORE INSERT ON hypothesis_status_history
+WHEN COALESCE(EXISTS (SELECT 1 FROM hypothesis_status_history
+              WHERE (NEW.history_id != -1 AND history_id = NEW.history_id)
+                 OR (NEW.effective_to IS NULL AND effective_to IS NULL AND hypothesis_id = NEW.hypothesis_id)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_hsh_no_replace: hypothesis_status_history rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_hsh_no_delete and reissue or move its id; hypothesis_status_history is cited and bound by the citation trigger (RD F-I1 row 9). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_hsh_immutable
+BEFORE UPDATE ON hypothesis_status_history
+FOR EACH ROW
+WHEN NOT COALESCE(
+      NEW.history_id IS OLD.history_id
+  AND NEW.hypothesis_id IS OLD.hypothesis_id
+  AND NEW.status IS OLD.status
+  AND NEW.effective_from IS OLD.effective_from
+  AND NEW.change_reason IS OLD.change_reason
+  AND NEW.recorded_at IS OLD.recorded_at
+  AND (NEW.effective_to IS OLD.effective_to OR OLD.effective_to IS NULL)
+, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_hsh_immutable: hypothesis_status_history: this UPDATE changes a column outside the writer''s measured UPDATE set (none); write-once NULL to value: effective_to; hypothesis_status_history is cited and bound by the citation trigger (RD F-I1 row 9). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- The version bump is the FINAL statement before COMMIT.
 UPDATE schema_version SET version = 41;

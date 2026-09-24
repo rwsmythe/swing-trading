@@ -186,7 +186,10 @@ def test_comment_only_ddl_difference_compares_clean(head_conn):
     live_conn.execute(live_sql)
     live_conn.execute("CREATE INDEX ix_hypothesis_status ON hypothesis_registry(status)")
 
-    expected = [r for r in mod.read_manifest(head_conn) if r.tbl_name == "hypothesis_registry"]
+    # 22-I: the specimen is the table + its index; 0041's hypothesis_registry
+    # triggers are not part of the D59 reconstruction.
+    expected = [r for r in mod.read_manifest(head_conn)
+                if r.tbl_name == "hypothesis_registry" and r.type != "trigger"]
     actual = [r for r in mod.read_manifest(live_conn) if r.tbl_name == "hypothesis_registry"]
     diff = mod.compare(expected, actual)
     assert diff.is_clean, diff.render()
@@ -211,7 +214,8 @@ def test_comment_removed_plus_one_token_semantic_change_reads_changed(head_conn)
     conn.execute(semantically_different)
     conn.execute("CREATE INDEX ix_hypothesis_status ON hypothesis_registry(status)")
 
-    expected = [r for r in mod.read_manifest(head_conn) if r.tbl_name == "hypothesis_registry"]
+    expected = [r for r in mod.read_manifest(head_conn)
+                if r.tbl_name == "hypothesis_registry" and r.type != "trigger"]  # 22-I
     actual = [r for r in mod.read_manifest(conn) if r.tbl_name == "hypothesis_registry"]
     diff = mod.compare(expected, actual)
     assert diff.changed == frozenset({("table", "hypothesis_registry")})
@@ -265,8 +269,8 @@ def test_committed_fixture_is_sorted_one_line_per_object():
     # Arc 22-I (0041): + the 0041 triggers ADDED (the F-I2 rebuild is CHANGED,
     # not added): T3 the six blanket (a) triples = 18; T4 pde = 3; T5 F-I5 = 1;
     # T6 rr + rd = 6; T7 rc = 3; T8 sac + yfc = 6;
-    # T9 aes = 3.
-    assert len(lines) == 181 + 18 + 3 + 1 + 6 + 3 + 6 + 3
+    # T9 aes = 3; T10 rp + hr + hsh = 9.
+    assert len(lines) == 181 + 18 + 3 + 1 + 6 + 3 + 6 + 3 + 9
     rows = mod.load_manifest(_FIXTURE)
     keys = [(r.type, r.name) for r in rows]
     assert keys == sorted(keys)

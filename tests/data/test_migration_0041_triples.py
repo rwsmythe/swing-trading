@@ -38,7 +38,13 @@ BLANKET = ("pattern_forward_observations", "candidate_criteria", "trade_events",
 BARRIER_TABLES = (*BLANKET, "pattern_detection_events",
                   "reconciliation_runs", "reconciliation_discrepancies",
                   "reconciliation_corrections", "schwab_api_calls", "yfinance_calls",
-                  "account_equity_snapshots")
+                  "account_equity_snapshots", "hypothesis_registry",
+                  "risk_policy", "hypothesis_status_history")
+# Partial-UNIQUE tables: their A1/A2/A3/A8 need a bespoke row (a second
+# ACTIVE / OPEN row is the conflict), so those probes live beside their
+# writers (test_migration_0041_writers.py); A4/A5/A6 run here on the PK.
+SPECIAL = ("risk_policy", "hypothesis_status_history")
+KEYED_TABLES = tuple(t for t in BARRIER_TABLES if t not in SPECIAL)
 PAIR = pytest.mark.parametrize("version", [40, 41])
 
 
@@ -54,7 +60,7 @@ def _check(verdict: str, version: int, trigger: str) -> None:
 
 
 @PAIR
-@pytest.mark.parametrize("table", BARRIER_TABLES)
+@pytest.mark.parametrize("table", KEYED_TABLES)
 def test_a1_ordinary_append_succeeds(tmp_path: Path, table: str, version: int) -> None:
     c = _world(tmp_path, version)
     try:
@@ -65,7 +71,7 @@ def test_a1_ordinary_append_succeeds(tmp_path: Path, table: str, version: int) -
 
 @PAIR
 @pytest.mark.parametrize("verb", ["INSERT OR REPLACE", "REPLACE"])
-@pytest.mark.parametrize("table", BARRIER_TABLES)
+@pytest.mark.parametrize("table", KEYED_TABLES)
 def test_a2_replace_on_each_conflict_key(tmp_path: Path, table: str, verb: str,
                                          version: int) -> None:
     c = _world(tmp_path, version)
@@ -79,7 +85,7 @@ def test_a2_replace_on_each_conflict_key(tmp_path: Path, table: str, verb: str,
 
 @PAIR
 @pytest.mark.parametrize("form", ["INSERT OR IGNORE", "ON CONFLICT DO NOTHING"])
-@pytest.mark.parametrize("table", BARRIER_TABLES)
+@pytest.mark.parametrize("table", KEYED_TABLES)
 def test_a3_ignore_and_do_nothing_are_refused(tmp_path: Path, table: str, form: str,
                                               version: int) -> None:
     """The priced cost, pinned: a BEFORE INSERT trigger cannot see the conflict
@@ -171,7 +177,7 @@ def test_a7_update_of_every_column(tmp_path: Path, table: str, col: str,
 
 @PAIR
 @pytest.mark.parametrize(
-    "table", [t for t in BARRIER_TABLES if SPEC[t].integer_pk])
+    "table", [t for t in KEYED_TABLES if SPEC[t].integer_pk])
 def test_a8_explicit_minus_one_pk_is_the_declared_residual(
         tmp_path: Path, table: str, version: int) -> None:
     """AL-1: no CHECK (pk > 0) is added (a rebuild); an explicit -1 passes the

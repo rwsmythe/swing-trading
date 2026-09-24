@@ -51,7 +51,8 @@ from tests.data._22i_seed import (
 TWIN_TABLES: tuple[str, ...] = (
     "reconciliation_runs", "reconciliation_discrepancies",
     "reconciliation_corrections", "schwab_api_calls", "yfinance_calls",
-    "account_equity_snapshots",
+    "account_equity_snapshots", "risk_policy", "hypothesis_registry",
+    "hypothesis_status_history",
 )
 PAIR = pytest.mark.parametrize("version", [40, 41])
 

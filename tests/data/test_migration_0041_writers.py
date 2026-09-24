@@ -343,3 +343,189 @@ def _resolve_targets_seen(kw) -> set[str]:
         return {_resolve_affected_target(_disc(**kw))[0]}
     except ValueError:
         return set()
+
+
+# ---------------------------------------------------------------------------
+# risk_policy / hypothesis_registry / hypothesis_status_history (T10)
+# ---------------------------------------------------------------------------
+PAIR = pytest.mark.parametrize("version", [40, 41])
+
+
+def _pair_world(tmp_path: Path, version: int):
+    return migrated(tmp_path, version, world=True)
+
+
+def _rp_row(c, **kw) -> dict:
+    from tests.data._22i_seed import row_of
+
+    row = row_of(c, "risk_policy")
+    del row["policy_id"]
+    row.update(kw)
+    return row
+
+
+@PAIR
+def test_rp_append_and_the_partial_unique_barrier(tmp_path: Path, version: int) -> None:
+    """A1 on risk_policy: an INACTIVE policy appends at both versions. A2/A3 on
+    the partial UNIQUE ux_risk_policy_active: a second ACTIVE policy under
+    INSERT OR REPLACE replaces policy 1 at v40 and is refused at v41; INSERT
+    OR IGNORE is a silent no-op at v40 and refused at v41 (the priced cost)."""
+    from tests.data._22i_seed import insert_copy_sql
+
+    c = _pair_world(tmp_path, version)
+    try:
+        assert outcome(c, *insert_copy_sql(c, "risk_policy", _rp_row(c, is_active=0))) == "OK"
+        active = _rp_row(c, is_active=1, policy_notes="new")
+        rep = outcome(c, *insert_copy_sql(c, "risk_policy", active, verb="INSERT OR REPLACE"))
+        ign = outcome(c, *insert_copy_sql(c, "risk_policy", active, verb="INSERT OR IGNORE"))
+    finally:
+        c.close()
+    if version == 40:
+        assert (rep, ign) == ("OK", "OK")
+    else:
+        assert rep == ign == "TRIGGER:trg_rp_no_replace"
+
+
+@PAIR
+@pytest.mark.parametrize("step", ["one_to_zero", "zero_to_one"])
+def test_c5_rp_is_active_directional(tmp_path: Path, step: str, version: int) -> None:
+    c = _pair_world(tmp_path, version)
+    try:
+        off = ("UPDATE risk_policy SET is_active = 0 WHERE policy_id = 1",)
+        if step == "one_to_zero":
+            verdict = outcome(c, *off)
+        else:
+            verdict = outcome(c, "UPDATE risk_policy SET is_active = 1 WHERE policy_id = 1",
+                              setup=[off])
+    finally:
+        c.close()
+    if step == "one_to_zero" or version == 40:
+        assert verdict == "OK", verdict
+    else:
+        assert verdict == "TRIGGER:trg_rp_immutable"
+
+
+@PAIR
+def test_hsh_append_and_the_partial_unique_barrier(tmp_path: Path, version: int) -> None:
+    """A1: a CLOSED interval appends at both versions. A2/A3 on the partial
+    UNIQUE ux_hypothesis_status_history_current: a second OPEN interval for
+    hypothesis 1 replaces / ignores at v40 and is refused at v41."""
+    from tests.data._22i_seed import insert_copy_sql
+
+    c = _pair_world(tmp_path, version)
+    try:
+        closed = dict(hypothesis_id=1, status="paused",
+                      effective_from="2026-01-01T00:00:00.000",
+                      effective_to="2026-02-01T00:00:00.000", change_reason="r",
+                      recorded_at=NOW)
+        assert outcome(c, *insert_copy_sql(c, "hypothesis_status_history", closed)) == "OK"
+        open_ = dict(closed, effective_to=None)
+        rep = outcome(c, *insert_copy_sql(c, "hypothesis_status_history", open_,
+                                          verb="INSERT OR REPLACE"))
+        ign = outcome(c, *insert_copy_sql(c, "hypothesis_status_history", open_,
+                                          verb="INSERT OR IGNORE"))
+    finally:
+        c.close()
+    if version == 40:
+        assert (rep, ign) == ("OK", "OK")
+    else:
+        assert rep == ign == "TRIGGER:trg_hsh_no_replace"
+
+
+def test_rp_supersede_end_to_end(tmp_path: Path) -> None:
+    """supersede_active_policy at 41: the predecessor flag written TWICE
+    (update_policy_active_flag, trades/risk_policy.py:162 then :203), the
+    successor INSERT passing the partial-unique barrier."""
+    from swing.data.db import ensure_schema
+    from swing.trades.risk_policy import supersede_active_policy
+
+    conn = ensure_schema(tmp_path / "rp.db")
+    try:
+        new_id = supersede_active_policy(
+            conn, field_updates={"max_concurrent_positions": 7}, notes="22-I")
+        rows = conn.execute("SELECT policy_id, is_active, effective_to IS NOT NULL, "
+                            "superseded_by_policy_id FROM risk_policy ORDER BY policy_id"
+                            ).fetchall()
+    finally:
+        conn.close()
+    assert rows == [(1, 0, 1, new_id), (new_id, 1, 0, None)]
+
+
+def test_rp_ratification_after_0041(tmp_path: Path) -> None:
+    """The v17 ratification runs AFTER every migration of a fresh walk, i.e.
+    with 0041's triggers already installed; its supersession is admitted."""
+    import dataclasses
+
+    from swing.config import load as load_cfg
+    from swing.data.db import ensure_schema
+    from swing.trades.risk_policy import ratify_seed_from_cfg_on_v17_landing
+    from tests.cli.test_cli_eval import _minimal_config
+
+    project, home = tmp_path / "project", tmp_path / "home"
+    project.mkdir()
+    home.mkdir()
+    cfg = load_cfg(_minimal_config(project, home))
+    conn = ensure_schema(cfg.paths.db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name IN "
+                            "('trg_rp_immutable','trg_rp_no_replace')").fetchone() == (2,)
+        divergent = dataclasses.replace(
+            cfg, account=dataclasses.replace(cfg.account, risk_equity_floor=8500.0))
+        new_id = ratify_seed_from_cfg_on_v17_landing(conn, divergent)
+    finally:
+        conn.close()
+    assert new_id is not None and new_id != 1
+
+
+def test_hr_transition_end_to_end(tmp_path: Path) -> None:
+    """update_hypothesis_status_with_audit (trades/hypothesis.py:145) at 41:
+    close the open interval (NULL -> value), append the successor, and the
+    registry's three writer columns move."""
+    from swing.data.db import ensure_schema
+    from swing.trades.hypothesis import update_hypothesis_status_with_audit
+
+    conn = ensure_schema(tmp_path / "hr.db")
+    try:
+        r = update_hypothesis_status_with_audit(
+            conn, hypothesis_id=1, new_status="paused", change_reason="22-I")
+        status = conn.execute("SELECT status FROM hypothesis_registry WHERE id = 1"
+                              ).fetchone()
+        open_rows = conn.execute("SELECT status FROM hypothesis_status_history "
+                                 "WHERE hypothesis_id = 1 AND effective_to IS NULL"
+                                 ).fetchall()
+    finally:
+        conn.close()
+    assert r == "transition"
+    assert status == ("paused",)
+    assert open_rows == [("paused",)]
+
+
+@PAIR
+def test_hr_preregistered_criteria_frozen(tmp_path: Path, version: int) -> None:
+    """The 0034 preserved-original column is covered BY EXCLUSION: an in-place
+    edit is refused at 41; an amendment is a migration that DROP/CREATEs the
+    twin (the 0034 precedent)."""
+    c = _pair_world(tmp_path, version)
+    try:
+        verdict = outcome(c, "UPDATE hypothesis_registry SET "
+                             "preregistered_decision_criteria = 'rewritten' WHERE id = 1")
+        dc = outcome(c, "UPDATE hypothesis_registry SET decision_criteria = 'x' "
+                        "WHERE id = 1")
+    finally:
+        c.close()
+    if version == 40:
+        assert (verdict, dc) == ("OK", "OK")
+    else:
+        assert verdict == dc == "TRIGGER:trg_hr_immutable"
+
+
+def test_hsh_update_close_open_interval(tmp_path: Path) -> None:
+    """repos/hypothesis_status_history.py:80 at 41: effective_to NULL -> value."""
+    from swing.data.repos.hypothesis_status_history import update_close_open_interval
+
+    c = _world(tmp_path)
+    try:
+        assert outcome(c, lambda k: update_close_open_interval(
+            k, hypothesis_id=1, effective_to=NOW)) == "OK"
+    finally:
+        c.close()

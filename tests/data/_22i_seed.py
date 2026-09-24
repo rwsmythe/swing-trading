@@ -432,8 +432,6 @@ _DIFFERENT: dict[tuple[str, str], Callable[[Any], Any]] = {
     ("daily_management_records", "trail_MA_period_days"): _const(21),
     ("review_log", "review_type"): _const("monthly"),
     ("review_log", "skipped"): _const(1),
-    ("risk_policy", "consecutive_losses_pause_action"): _const("review_required"),
-    ("risk_policy", "consecutive_losses_streak_reset"): _const("review_completed"),
     ("risk_policy", "drawdown_circuit_breaker_enabled"): _const(1),
     ("risk_policy", "drawdown_pause_threshold_R"): _const(-3.0),
     ("risk_policy", "drawdown_pause_action"): _const("reduce_size"),
