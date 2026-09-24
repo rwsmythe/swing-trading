@@ -1921,7 +1921,10 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
                     assert_entry_intent_change_allowed(
                         conn, trade_id=tid, entry_intent=None)
                 except AttestedIntentError as exc:
-                    click.echo(f"#{tid} {ticker} {edate} | {exc}")
+                    # Codex R7-2: `ticker` (and `entry_date`) are unrestricted
+                    # text; the whole line is ASCII-coerced.
+                    from swing.trades.entry import ascii_safe
+                    click.echo(ascii_safe(f"#{tid} {ticker} {edate} | {exc}"))
                 n_skipped_set += 1
                 continue
             suggestion = suggest_entry_intent(hyp)

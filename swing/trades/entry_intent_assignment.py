@@ -512,7 +512,7 @@ def _detect_tier(conn: sqlite3.Connection, cfg,
             raise _RefusalError(
                 "unprovable",
                 f"fill {fill_id} carries no broker order id and a recorded order "
-                f"for {ticker} exists at or before {entry}; the fill can be "
+                f"for {ascii(ticker)} exists at or before {entry}; the fill can be "
                 "neither tied to it nor untied from it")
         placement, source = entry, "entry_date_fallback"
     pre = _pre_rows(conn, ticker, placement)

@@ -1266,3 +1266,31 @@ def test_order_id_echo_is_ascii_b22_248(tmp_path: Path, monkeypatch, site: str) 
     assert r.message.isascii(), r.message
     assert ascii(_NON_ASCII_ORDER_ID) in r.message
     _nothing_written(path)
+
+
+# ---------------------------------------------------------------------------
+# Codex R7-2 (the R6-2 class, swept): the E9 refusal echoes the trade's ticker,
+# which is unrestricted text; it goes through ascii() like every other
+# operator- or record-supplied value in this module's messages.
+# ---------------------------------------------------------------------------
+def test_e9_refusal_ticker_echo_is_ascii_b22_250(tmp_path: Path) -> None:
+    from tests._latch_link_fixtures_22a import insert_intent, place_row, validity_row
+    from tests._latch_link_fixtures_22a import seed_fire as seed_link_fire
+
+    ticker = "\u00c4MN"
+    c, cfg, path = _world(tmp_path, env=None, ticker=ticker)
+    try:
+        cand = seed_link_fire(c, run_id=500, ticker=ticker,
+                              action_session_date="2026-08-03")
+        kw = {"run_id": 500, "ticker": ticker, "detection_date": "2026-08-03"}
+        place_id = insert_intent(c, place_row(cand, idempotency_key="p", **kw))
+        insert_intent(c, validity_row(cand, place_id, key="v",
+                                      actual_broker_order_id="999", **kw))
+        c.commit()
+        r = _assign(c, cfg)
+    finally:
+        c.close()
+    assert (r.admitted, r.refusal_code) == (False, "unprovable"), r.message
+    assert r.message.isascii(), r.message
+    assert ascii(ticker) in r.message
+    _nothing_written(path)

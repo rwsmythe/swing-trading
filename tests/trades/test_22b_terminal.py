@@ -375,3 +375,37 @@ def test_layer1_alone_refuses_with_trigger_absent_b22_127(tmp_path: Path) -> Non
     finally:
         raw.close()
     assert attested_message(att_id).endswith("its own record")
+
+
+def test_backfill_attested_skip_line_is_ascii_b22_250(tmp_path: Path,
+                                                      monkeypatch) -> None:
+    """Codex R7-2: the attested-row skip line in ``backfill-intent`` echoes the
+    trade's ticker (unrestricted text) and entry date. Through a strict cp1252
+    sink (a console without the UTF-8 reconfigure) a non-ASCII ticker raised
+    UnicodeEncodeError and the command exited non-zero. The line is now
+    ASCII-coerced whole."""
+    import click as click_mod
+
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    cfg = _minimal_config(project, home)
+    runner = CliRunner()
+    assert runner.invoke(main, ["--config", str(cfg), "db-migrate"]).exit_code == 0
+    db = Path(tomllib.loads(cfg.read_text())["paths"]["db_path"])
+    att_id = attest_trade20(db, ticker="\U0001F680")
+    real_echo = click_mod.echo
+
+    def _cp1252(message=None, file=None, nl=True, err=False, color=None):
+        ("" if message is None else str(message)).encode("cp1252")
+        return real_echo(message, file=file, nl=nl, err=err, color=color)
+
+    monkeypatch.setattr(click_mod, "echo", _cp1252)
+    res = runner.invoke(main, ["--config", str(cfg), "trade", "backfill-intent",
+                               "--force"], input="")
+    assert res.exit_code == 0, (res.output, res.exception)
+    assert res.output.isascii(), res.output
+    assert attested_message(att_id) in res.output, res.output
+    assert r"#20 \U0001f680 2026-08-07 | " in res.output, res.output
+    assert _row(db)[-1] == UNINTENDED_EXECUTION
