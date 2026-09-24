@@ -98,11 +98,13 @@ def classify(conn: sqlite3.Connection, exc: BaseException | None) -> str:
     return "ERROR:" + msg
 
 
-def outcome(conn: sqlite3.Connection, sql: str | Sequence[Any],
+def outcome(conn: sqlite3.Connection,
+            sql: str | Sequence[Any] | Callable[[sqlite3.Connection], Any],
             params: Sequence[Any] = (), *,
             post: Callable[[sqlite3.Connection], Any] | None = None,
             setup: Sequence[Any] = ()) -> str | tuple[str, Any]:
-    """Run ``setup`` then ONE statement (or a list of ``(sql, params)``) inside
+    """Run ``setup`` then ONE statement (a list of ``(sql, params)``, or a
+    callable taking the connection -- a production function under test) inside
     a SAVEPOINT, always rolled back. Returns the classification, or
     ``(classification, post(conn))`` when ``post`` is given (read inside the
     savepoint, before the rollback; ``None`` on a refusal)."""
@@ -113,7 +115,9 @@ def outcome(conn: sqlite3.Connection, sql: str | Sequence[Any],
         for s in setup:
             conn.execute(*s) if isinstance(s, tuple) else conn.execute(s)
         try:
-            if isinstance(sql, str):
+            if callable(sql):
+                sql(conn)
+            elif isinstance(sql, str):
                 conn.execute(sql, tuple(params))
             else:
                 for s in sql:

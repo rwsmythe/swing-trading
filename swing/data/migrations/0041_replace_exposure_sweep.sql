@@ -50,6 +50,9 @@
 --         DROP TRIGGER trg_er_no_update;    -- evaluation_runs
 --         DROP TRIGGER trg_er_no_delete;    -- evaluation_runs
 --         DROP TRIGGER trg_er_no_replace;   -- evaluation_runs
+--         DROP TRIGGER trg_pde_no_update;   -- pattern_detection_events
+--         DROP TRIGGER trg_pde_no_delete;   -- pattern_detection_events
+--         DROP TRIGGER trg_pde_no_replace;  -- pattern_detection_events
 --
 -- (iii) THE ONE REBUILT OBJECT (F-I2, CHARC-ruled): trg_provenance_corrections_
 --     append_only_update is DROPPED and CREATED again. Its new text is the
@@ -214,6 +217,50 @@ CREATE TRIGGER trg_er_no_replace BEFORE INSERT ON evaluation_runs
 WHEN COALESCE(EXISTS (SELECT 1 FROM evaluation_runs
               WHERE (NEW.id != -1 AND id = NEW.id)), 0)
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_er_no_replace: evaluation_runs rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_er_no_delete and reissue or move its id; evaluation_runs is the run identity every candidate, recommendation and citation hangs off (RD F-I1, added from the excluded list). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+-- ============================================================================
+-- 2. pattern_detection_events -- the (a) triple whose no_update is the a17 TWIN
+--    (CHARC a17, the parent-gone clause accepted @ 7e0463ed). The ONE admitted
+--    UPDATE is chart_render_id or pipeline_run_id going value -> NULL with its
+--    parent row GONE (the ON DELETE SET NULL action; the chart prune/refresh is
+--    REACHABLE, pipeline_runs has no production deleter), every other column
+--    unchanged; the third conjunct makes a no-op UPDATE abort (the v40
+--    trg_eia_no_update shape).
+-- ============================================================================
+CREATE TRIGGER trg_pde_no_update
+BEFORE UPDATE ON pattern_detection_events
+FOR EACH ROW
+WHEN NOT COALESCE(
+      (NEW.chart_render_id IS OLD.chart_render_id
+        OR (OLD.chart_render_id IS NOT NULL AND NEW.chart_render_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM chart_renders WHERE id = OLD.chart_render_id)))
+  AND (NEW.pipeline_run_id IS OLD.pipeline_run_id
+        OR (OLD.pipeline_run_id IS NOT NULL AND NEW.pipeline_run_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM pipeline_runs WHERE id = OLD.pipeline_run_id)))
+  AND (NEW.chart_render_id IS NOT OLD.chart_render_id OR NEW.pipeline_run_id IS NOT OLD.pipeline_run_id)
+  AND NEW.detection_id IS OLD.detection_id
+  AND NEW.ticker IS OLD.ticker
+  AND NEW.detection_date IS OLD.detection_date
+  AND NEW.data_asof_date IS OLD.data_asof_date
+  AND NEW.pattern_class IS OLD.pattern_class
+  AND NEW.structural_anchors_json IS OLD.structural_anchors_json
+  AND NEW.composite_score IS OLD.composite_score
+  AND NEW.detector_version IS OLD.detector_version
+  AND NEW.finviz_screen_state IS OLD.finviz_screen_state
+  AND NEW.source IS OLD.source
+  AND NEW.per_pattern_metadata_json IS OLD.per_pattern_metadata_json
+  AND NEW.created_at IS OLD.created_at
+, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pde_no_update: pattern_detection_events: the ONE admitted UPDATE is the FK-driven nulling of chart_render_id or pipeline_run_id after its parent row is GONE (a17); a detection is the anchor every forward observation hangs off (RD F-I1 row 2). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_pde_no_delete BEFORE DELETE ON pattern_detection_events
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pde_no_delete: pattern_detection_events rows are PERMANENT from migration 0041; a detection is the anchor every forward observation hangs off (RD F-I1 row 2). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_pde_no_replace BEFORE INSERT ON pattern_detection_events
+WHEN COALESCE(EXISTS (SELECT 1 FROM pattern_detection_events
+              WHERE (NEW.detection_id != -1 AND detection_id = NEW.detection_id)
+                 OR (source = NEW.source AND ticker = NEW.ticker AND detection_date = NEW.detection_date AND pattern_class = NEW.pattern_class)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pde_no_replace: pattern_detection_events rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_pde_no_delete and reissue or move its id; a detection is the anchor every forward observation hangs off (RD F-I1 row 2). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- The version bump is the FINAL statement before COMMIT.
 UPDATE schema_version SET version = 41;
