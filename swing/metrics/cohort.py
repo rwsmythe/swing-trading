@@ -215,8 +215,9 @@ def assert_intent_exclusion_disjoint(
     predicate and the naming predicate differ ONLY in the intent test (the
     same label match, states and voided exclusion), so the intersection is
     reachable ONLY by an intent value moving between the two reads. That
-    move is MONOTONE, counted -> excluded, never back:
-    ``unintended_execution`` is terminal on UPDATE
+    move is MONOTONE, counted -> excluded, never back: the unintended-
+    execution value (see ``UNINTENDED_EXECUTION`` in ``swing/data/models.py``)
+    is terminal on UPDATE
     (0040 ``trg_trades_entry_intent_attested_terminal``), unwritable without
     its attestation row (``trg_trades_entry_intent_unattested_update`` /
     ``trg_trades_entry_intent_unattested_insert``), and the attestation
