@@ -53,6 +53,7 @@
 --         DROP TRIGGER trg_pde_no_update;   -- pattern_detection_events
 --         DROP TRIGGER trg_pde_no_delete;   -- pattern_detection_events
 --         DROP TRIGGER trg_pde_no_replace;  -- pattern_detection_events
+--         DROP TRIGGER trg_lve_first_view_immutable;  -- latch_view_events (F-I5)
 --
 -- (iii) THE ONE REBUILT OBJECT (F-I2, CHARC-ruled): trg_provenance_corrections_
 --     append_only_update is DROPPED and CREATED again. Its new text is the
@@ -261,6 +262,29 @@ WHEN COALESCE(EXISTS (SELECT 1 FROM pattern_detection_events
               WHERE (NEW.detection_id != -1 AND detection_id = NEW.detection_id)
                  OR (source = NEW.source AND ticker = NEW.ticker AND detection_date = NEW.detection_date AND pattern_class = NEW.pattern_class)), 0)
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pde_no_replace: pattern_detection_events rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_pde_no_delete and reissue or move its id; a detection is the anchor every forward observation hangs off (RD F-I1 row 2). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+-- ============================================================================
+-- 3. F-I5 -- the latch_view_events FIRST-VIEW twin (RD F-I5 (a); CHARC's
+--    shape, binding). The contract it enforces, QUOTED rather than paraphrased:
+--      0032:31  "first_viewed_ts + latch_state_at_first_view are IMMUTABLE after
+--               insert"
+--      0033:62  "actionable_at_first_view -- set at INSERT, NEVER rewritten"
+--      22-B R0.K narrowed the leg-1 WINDOW to (first_viewed_ts, ticker) -- held
+--               by trg_lve_view_window_immutable -- and did not license the
+--               other first-view columns to move.
+--    The seven columns are exactly the ones the sole writer's merge UPDATE
+--    (repos/latch_view_events.py:157-167) never names; excluded: the five
+--    writer-updated columns, pipeline_run_id (under the identity trigger),
+--    first_viewed_ts / ticker (under the existing window twin). An UPDATE OF
+--    trigger with no WHEN carries no NULL hazard.
+-- ============================================================================
+CREATE TRIGGER trg_lve_first_view_immutable
+BEFORE UPDATE OF candidate_id, evaluation_run_id, detection_date, surface,
+                 view_session_date, latch_state_at_first_view,
+                 actionable_at_first_view
+ON latch_view_events
+FOR EACH ROW
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_lve_first_view_immutable: the latch_view_events first-view columns (candidate_id, evaluation_run_id, detection_date, surface, view_session_date, latch_state_at_first_view, actionable_at_first_view) are IMMUTABLE after insert: leg-1 evidence (0032, 0033, 22-B R0.K; RD F-I5). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- The version bump is the FINAL statement before COMMIT.
 UPDATE schema_version SET version = 41;
