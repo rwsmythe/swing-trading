@@ -106,7 +106,14 @@ from pathlib import Path
 #   `trades`, and the four `latch_view_events` evidence belts. The RENAME is
 #   bracketed by PRAGMA legacy_alter_table (R0.J); `_apply_migration` restores
 #   the PRIOR value of that pragma. Atomic BEGIN/COMMIT.
-EXPECTED_SCHEMA_VERSION = 40
+# v41 (Arc 22-I, migration 0041): the REPLACE-exposure sweep -- TRIGGERS ONLY,
+#   nothing rebuilt, no row written but schema_version. The append-only /
+#   immutability contracts RD's F-I1 partition names get their guards
+#   (no_update/no_delete/no_replace triples, and column-scoped immutability
+#   twins on the UPDATE-in-place tables), the latch_view_events first-view
+#   twin (F-I5), and ONE trigger rebuilt: trg_provenance_corrections_
+#   append_only_update gains its COALESCE wrap (F-I2). Atomic BEGIN/COMMIT.
+EXPECTED_SCHEMA_VERSION = 41
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -482,6 +489,15 @@ PHASE22_ARC_B_PRE_MIGRATION_EXPECTED_TABLES: set[str] = {
     "yfinance_calls",
 }
 
+# 22-I (migration 0041) pre-migration expected-table set: the v40 table set
+# MEASURED from `sqlite_master` on a fresh `run_migrations(target_version=40)`
+# DB (44 names, `sqlite_sequence` included) -- the v39 set plus 0040's one new
+# table, `entry_intent_attestations`. 0041 creates no table. A FLOOR, not a
+# manifest (the 22-A4 ruling above): the check is missing-only.
+PHASE22_ARC_I_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    set(PHASE22_ARC_B_PRE_MIGRATION_EXPECTED_TABLES) | {"entry_intent_attestations"}
+)
+
 
 class SchemaVersionMismatchError(RuntimeError):
     """Raised when the DB schema version doesn't match what the code expects."""
@@ -766,6 +782,8 @@ _PRE_MIGRATION_BACKUP_GATES: tuple[BackupGateSpec, ...] = (
                    "_phase22_arc_a2_backup_gate", "pre-22-A2"),
     BackupGateSpec(39, "22b", PHASE22_ARC_B_PRE_MIGRATION_EXPECTED_TABLES,
                    "_phase22_arc_b_backup_gate", "pre-22-B"),
+    BackupGateSpec(40, "22i", PHASE22_ARC_I_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase22_arc_i_backup_gate", "pre-22-I"),
 )
 _GATE_BY_PRE_VERSION: dict[int, BackupGateSpec] = {
     s.pre_version: s for s in _PRE_MIGRATION_BACKUP_GATES
@@ -962,6 +980,7 @@ _phase22_arc_a_backup_gate = _bind_gate_wrapper(36)
 _phase22_arc_a4_backup_gate = _bind_gate_wrapper(37)
 _phase22_arc_a2_backup_gate = _bind_gate_wrapper(38)
 _phase22_arc_b_backup_gate = _bind_gate_wrapper(39)
+_phase22_arc_i_backup_gate = _bind_gate_wrapper(40)
 
 
 def run_migrations(

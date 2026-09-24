@@ -97,7 +97,7 @@ def _v36(tmp_path: Path, name: str = "v36.db") -> sqlite3.Connection:
 # The migration itself
 # ---------------------------------------------------------------------------
 def test_expected_schema_version_is_head() -> None:
-    assert EXPECTED_SCHEMA_VERSION == 40
+    assert EXPECTED_SCHEMA_VERSION == 41
 
 
 def test_migration_applies_to_a_v36_fixture_and_stamps_37(tmp_path: Path) -> None:
@@ -134,7 +134,7 @@ def test_running_the_migration_twice_is_a_no_op(conn) -> None:
     # wherever HEAD is.  (The sibling at `test_migration_applies_to_a_v36_
     # fixture_and_stamps_37` builds a v36 database and IS about 0037's own
     # result; it correctly stays pinned at 37.)
-    assert _current_version(conn) == 40
+    assert _current_version(conn) == 41
     assert conn.execute(
         "SELECT * FROM candidates_immutability_epoch").fetchall() == before
 
