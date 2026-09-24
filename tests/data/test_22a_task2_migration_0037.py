@@ -1666,6 +1666,15 @@ _NO_REPLACE_PK = {
     "trg_lve_no_replace": ("latch_view_events", "view_event_id"),
     # Arc 22-B (0040): the attestation table's append-only triple.
     "trg_eia_no_replace": ("entry_intent_attestations", "attestation_id"),
+    # Arc 22-I (0041): the REPLACE-exposure sweep's barriers, EXISTING tables.
+    # A composite-PK table carries no -1 clause (pk None: the idiom test below
+    # asserts the composite equality instead).
+    "trg_pfo_no_replace": ("pattern_forward_observations", "observation_id"),
+    "trg_cc_no_replace": ("candidate_criteria", None),
+    "trg_te_no_replace": ("trade_events", "id"),
+    "trg_fac_no_replace": ("finviz_api_calls", "call_id"),
+    "trg_pev_no_replace": ("pattern_evaluations", "id"),
+    "trg_er_no_replace": ("evaluation_runs", "id"),
 }
 
 # NEW tables additionally carry `CHECK (pk > 0)`; an EXISTING table cannot
@@ -1767,6 +1776,10 @@ def test_the_pk_conflict_clause_uses_the_minus_one_idiom(
         (trigger,)).fetchone()
     assert body is not None, f"{trigger} is not installed"
     body = " ".join(body[0].split())
+    if pk is None:  # 22-I: a composite PK has no rowid sentinel to exclude
+        assert "candidate_id = NEW.candidate_id AND criterion_name = NEW.criterion_name" in body
+        assert "!= -1" not in body
+        return
     assert f"NEW.{pk} != -1 AND {pk} = NEW.{pk}" in body, (
         f"{trigger} does not carry the -1 idiom on {pk}")
     assert f"NEW.{pk} IS NOT NULL" not in body, (

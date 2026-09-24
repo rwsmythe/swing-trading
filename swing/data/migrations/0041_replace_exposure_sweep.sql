@@ -32,6 +32,24 @@
 -- (ii) EVERY OBJECT THIS MIGRATION CREATES, each with its retiring statement:
 --
 --         DROP TRIGGER trg_provenance_corrections_append_only_update;  -- then (iii)
+--         DROP TRIGGER trg_pfo_no_update;   -- pattern_forward_observations
+--         DROP TRIGGER trg_pfo_no_delete;   -- pattern_forward_observations
+--         DROP TRIGGER trg_pfo_no_replace;  -- pattern_forward_observations
+--         DROP TRIGGER trg_cc_no_update;    -- candidate_criteria
+--         DROP TRIGGER trg_cc_no_delete;    -- candidate_criteria
+--         DROP TRIGGER trg_cc_no_replace;   -- candidate_criteria
+--         DROP TRIGGER trg_te_no_update;    -- trade_events
+--         DROP TRIGGER trg_te_no_delete;    -- trade_events
+--         DROP TRIGGER trg_te_no_replace;   -- trade_events
+--         DROP TRIGGER trg_fac_no_update;   -- finviz_api_calls
+--         DROP TRIGGER trg_fac_no_delete;   -- finviz_api_calls
+--         DROP TRIGGER trg_fac_no_replace;  -- finviz_api_calls
+--         DROP TRIGGER trg_pev_no_update;   -- pattern_evaluations
+--         DROP TRIGGER trg_pev_no_delete;   -- pattern_evaluations
+--         DROP TRIGGER trg_pev_no_replace;  -- pattern_evaluations
+--         DROP TRIGGER trg_er_no_update;    -- evaluation_runs
+--         DROP TRIGGER trg_er_no_delete;    -- evaluation_runs
+--         DROP TRIGGER trg_er_no_replace;   -- evaluation_runs
 --
 -- (iii) THE ONE REBUILT OBJECT (F-I2, CHARC-ruled): trg_provenance_corrections_
 --     append_only_update is DROPPED and CREATED again. Its new text is the
@@ -119,6 +137,83 @@ FOR EACH ROW WHEN NOT COALESCE((
 BEGIN
     SELECT RAISE(ABORT, 'provenance_corrections is APPEND-ONLY: the only permitted UPDATE is the FK-driven nulling of entry_fill_id or risk_policy_id_at_correction. V1 records provenance ONCE per trade and there is no re-correction path.');
 END;
+
+-- ============================================================================
+-- 1. THE (a) TRIPLES, BLANKET -- RD F-I1 partition (a): pattern_forward_observations,
+--    candidate_criteria, trade_events, finviz_api_calls, pattern_evaluations,
+--    evaluation_runs. Each gets no_update (no WHEN: every column is immutable),
+--    no_delete, and the conflict-scoped no_replace (the PK clause, plus each
+--    UNIQUE key the table declares). No production UPDATE or DELETE reaches any
+--    of them (plan ledger STEP 3 grep, re-read at 22-I executing round 0).
+--    candidate_criteria's PK is composite, so it carries no -1 clause.
+-- ============================================================================
+CREATE TRIGGER trg_pfo_no_update BEFORE UPDATE ON pattern_forward_observations
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pfo_no_update: pattern_forward_observations rows are IMMUTABLE from migration 0041; the forward-observation log is the shadow program measurement substrate (RD F-I1 row 1). A row is APPENDED, never edited. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_pfo_no_delete BEFORE DELETE ON pattern_forward_observations
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pfo_no_delete: pattern_forward_observations rows are PERMANENT from migration 0041; the forward-observation log is the shadow program measurement substrate (RD F-I1 row 1). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_pfo_no_replace BEFORE INSERT ON pattern_forward_observations
+WHEN COALESCE(EXISTS (SELECT 1 FROM pattern_forward_observations
+              WHERE (NEW.observation_id != -1 AND observation_id = NEW.observation_id)
+                 OR (detection_id = NEW.detection_id AND observation_date = NEW.observation_date)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pfo_no_replace: pattern_forward_observations rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_pfo_no_delete and reissue or move its id; the forward-observation log is the shadow program measurement substrate (RD F-I1 row 1). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_cc_no_update BEFORE UPDATE ON candidate_criteria
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_cc_no_update: candidate_criteria rows are IMMUTABLE from migration 0041; a fire''s criteria are the evidence of WHY a mandate fired (RD F-I1 row 3). A row is APPENDED, never edited. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_cc_no_delete BEFORE DELETE ON candidate_criteria
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_cc_no_delete: candidate_criteria rows are PERMANENT from migration 0041; a fire''s criteria are the evidence of WHY a mandate fired (RD F-I1 row 3). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_cc_no_replace BEFORE INSERT ON candidate_criteria
+WHEN COALESCE(EXISTS (SELECT 1 FROM candidate_criteria
+              WHERE (candidate_id = NEW.candidate_id AND criterion_name = NEW.criterion_name)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_cc_no_replace: candidate_criteria rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_cc_no_delete and reissue or move its id; a fire''s criteria are the evidence of WHY a mandate fired (RD F-I1 row 3). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_te_no_update BEFORE UPDATE ON trade_events
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_te_no_update: trade_events rows are IMMUTABLE from migration 0041; trade_events is the audit log every trade mutation writes (RD F-I1 row 5). A row is APPENDED, never edited. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_te_no_delete BEFORE DELETE ON trade_events
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_te_no_delete: trade_events rows are PERMANENT from migration 0041; trade_events is the audit log every trade mutation writes (RD F-I1 row 5). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_te_no_replace BEFORE INSERT ON trade_events
+WHEN COALESCE(EXISTS (SELECT 1 FROM trade_events
+              WHERE (NEW.id != -1 AND id = NEW.id)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_te_no_replace: trade_events rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_te_no_delete and reissue or move its id; trade_events is the audit log every trade mutation writes (RD F-I1 row 5). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_fac_no_update BEFORE UPDATE ON finviz_api_calls
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_fac_no_update: finviz_api_calls rows are IMMUTABLE from migration 0041; finviz_api_calls is the audit head of the screen population (RD F-I1 row 13). A row is APPENDED, never edited. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_fac_no_delete BEFORE DELETE ON finviz_api_calls
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_fac_no_delete: finviz_api_calls rows are PERMANENT from migration 0041; finviz_api_calls is the audit head of the screen population (RD F-I1 row 13). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_fac_no_replace BEFORE INSERT ON finviz_api_calls
+WHEN COALESCE(EXISTS (SELECT 1 FROM finviz_api_calls
+              WHERE (NEW.call_id != -1 AND call_id = NEW.call_id)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_fac_no_replace: finviz_api_calls rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_fac_no_delete and reissue or move its id; finviz_api_calls is the audit head of the screen population (RD F-I1 row 13). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_pev_no_update BEFORE UPDATE ON pattern_evaluations
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pev_no_update: pattern_evaluations rows are IMMUTABLE from migration 0041; a trade row''s pattern_evaluation_id cites these rows, the 22-A anchor (RD F-I1 row 14). A row is APPENDED, never edited. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_pev_no_delete BEFORE DELETE ON pattern_evaluations
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pev_no_delete: pattern_evaluations rows are PERMANENT from migration 0041; a trade row''s pattern_evaluation_id cites these rows, the 22-A anchor (RD F-I1 row 14). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_pev_no_replace BEFORE INSERT ON pattern_evaluations
+WHEN COALESCE(EXISTS (SELECT 1 FROM pattern_evaluations
+              WHERE (NEW.id != -1 AND id = NEW.id)
+                 OR (pipeline_run_id = NEW.pipeline_run_id AND ticker = NEW.ticker AND pattern_class = NEW.pattern_class)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pev_no_replace: pattern_evaluations rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_pev_no_delete and reissue or move its id; a trade row''s pattern_evaluation_id cites these rows, the 22-A anchor (RD F-I1 row 14). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_er_no_update BEFORE UPDATE ON evaluation_runs
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_er_no_update: evaluation_runs rows are IMMUTABLE from migration 0041; evaluation_runs is the run identity every candidate, recommendation and citation hangs off (RD F-I1, added from the excluded list). A row is APPENDED, never edited. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_er_no_delete BEFORE DELETE ON evaluation_runs
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_er_no_delete: evaluation_runs rows are PERMANENT from migration 0041; evaluation_runs is the run identity every candidate, recommendation and citation hangs off (RD F-I1, added from the excluded list). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_er_no_replace BEFORE INSERT ON evaluation_runs
+WHEN COALESCE(EXISTS (SELECT 1 FROM evaluation_runs
+              WHERE (NEW.id != -1 AND id = NEW.id)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_er_no_replace: evaluation_runs rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_er_no_delete and reissue or move its id; evaluation_runs is the run identity every candidate, recommendation and citation hangs off (RD F-I1, added from the excluded list). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- The version bump is the FINAL statement before COMMIT.
 UPDATE schema_version SET version = 41;

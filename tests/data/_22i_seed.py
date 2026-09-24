@@ -418,3 +418,83 @@ _DIFFERENT: dict[tuple[str, str], Callable[[Any], Any]] = {
     ("hypothesis_registry", "status"): _const("paused"),
     ("hypothesis_status_history", "status"): _const("paused"),
 }
+
+
+# ---------------------------------------------------------------------------
+# row builders for the A-series probes (plan section 4.1)
+# ---------------------------------------------------------------------------
+# A FRESH value for the column that makes a row non-conflicting on its key.
+_FRESH: dict[tuple[str, str], Any] = {
+    ("pattern_forward_observations", "observation_date"): "2026-08-12",
+    ("pattern_detection_events", "pattern_class"): "flat_base",
+    ("candidate_criteria", "criterion_name"): "c-new",
+    ("pattern_evaluations", "pattern_class"): "flat_base",
+    ("account_equity_snapshots", "basis"): "cash",
+    ("review_log", "period_end"): "2026-08-16",
+    ("hypothesis_registry", "name"): "H-22i-new",
+}
+
+
+def _keys(table: str) -> list[tuple[str, ...]]:
+    """The conflict targets a probe exercises: the declared UNIQUE keys, the
+    composite PK of a non-INTEGER-PK table, or (none declared) the PK."""
+    from tests.data._22i_guard_spec import SPEC
+
+    spec = SPEC[table]
+    keys = list(spec.conflict_keys)
+    if not spec.integer_pk:
+        keys.insert(0, spec.pk)
+    return keys
+
+
+def payload_column(table: str, exclude: Sequence[str] = ()) -> str:
+    """A non-PK, non-key, non-FK column to carry a 'new payload'."""
+    from tests.data._22i_guard_spec import SPEC
+
+    spec = SPEC[table]
+    skip = set(spec.pk) | set(exclude) | set(spec.f_cols)
+    for key in _keys(table):
+        skip |= set(key)
+    for col in spec.all_columns():
+        if col not in skip:
+            return col
+    raise AssertionError(table)
+
+
+def fresh_row(conn: sqlite3.Connection, table: str) -> dict[str, Any]:
+    """The first seeded row, INTEGER PK omitted, every conflict key made
+    fresh: an ordinary append (A1)."""
+    from tests.data._22i_guard_spec import SPEC
+
+    spec = SPEC[table]
+    row = row_of(conn, table)
+    if spec.integer_pk:
+        del row[spec.pk[0]]
+    for key in _keys(table):
+        col = key[-1]
+        row[col] = _FRESH[(table, col)]
+    return row
+
+
+def conflict_rows(conn: sqlite3.Connection, table: str) -> list[tuple[str, dict[str, Any]]]:
+    """``(label, row)`` per conflict target: the first seeded row with a NEW
+    payload, colliding on that key only (INTEGER PK omitted), or -- a table
+    with no UNIQUE beyond the PK -- colliding on the explicit PK."""
+    from tests.data._22i_guard_spec import SPEC
+
+    spec = SPEC[table]
+    out = []
+    keys = _keys(table)
+    for key in keys:
+        row = row_of(conn, table)
+        if spec.integer_pk:
+            del row[spec.pk[0]]
+        col = payload_column(table, exclude=key)
+        row[col] = different_value(conn, table, col, row[col])
+        out.append(("key:" + ",".join(key), row))
+    if not keys:
+        row = row_of(conn, table)
+        col = payload_column(table)
+        row[col] = different_value(conn, table, col, row[col])
+        out.append(("pk", row))
+    return out

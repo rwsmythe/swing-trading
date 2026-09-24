@@ -262,7 +262,9 @@ def test_committed_fixture_is_sorted_one_line_per_object():
     # Arc 22-B (0040): +18 objects (the N4 trigger, the two unattested twins,
     # the four latch_view_events belts, entry_intent_attestations + its
     # autoindex + its nine triggers).
-    assert len(lines) == 181
+    # Arc 22-I (0041): + the 0041 triggers ADDED (the F-I2 rebuild is CHANGED,
+    # not added): T3 the six blanket (a) triples = 18.
+    assert len(lines) == 181 + 18
     rows = mod.load_manifest(_FIXTURE)
     keys = [(r.type, r.name) for r in rows]
     assert keys == sorted(keys)
