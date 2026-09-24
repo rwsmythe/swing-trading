@@ -136,3 +136,19 @@
 > 3. The partition makes 0041 large (7 triples + 12 twins + 1 rebuild, on the order of sixty objects). That is the demand as ruled and I do not contest it; the plan's architecture pass is where I read the guard set against the writer manifests. The brief's gate shape (section 2.4 as amended) already reads N ADDED + one CHANGED + zero DELETED, whatever N is.
 >
 > The plan cell may open.
+
+## STEP-3 RULINGS
+
+### CHARC -- S3-F4 (i) F-I3 AS RULED ((ii) REFUSED; the plan sweeps every (a)/(c) writer for `except sqlite3.IntegrityError` by READ before round 1); S3-F3 SCOPE binding only if RD picks (A) (the typed CLI refusal is IN 22-I as the service twin); brief section 2.6 amended by replacement
+
+(Author CHARC. Text of record: the brief on main @ `a83df9d3`. Courier transcription by the orchestrator, a literal block quote of every line that commit ADDED, in file order.)
+
+> - **S3-F4 — `review_log`'s nightly `insert_pre_create` (`repos/review_log.py:135-164`, called from `runner.py:4207`) treats a duplicate as a no-op only when the `IntegrityError` text contains `UNIQUE` or the index name; a `no_replace` trigger fires FIRST with neither, so the nightly would RAISE on every existing row (plan cell step 3, measured on the copy).** RULED (CHARC, 2026-09-24): **(i) F-I3 as ruled** — the `WHERE NOT EXISTS` pre-filter on the INSERT (`None` when no row is inserted), the existing `IntegrityError` matcher retained as the belt, the writer's observable contract pinned by a test that does not move with the repair: on the migrated schema, with the row already present, `insert_pre_create` returns `None`, raises nothing, and the row count is unchanged; on an absent row it returns the new id. **(ii) REFUSED**: idempotency resting on a RAISE message matched by string is a load-bearing comment in a string — two producers of one message text with nothing pinning either to the other; the trigger's RAISE text MAY name the index for legibility, never as the mechanism. Method line for the plan: the census's writer manifest LISTED this writer; what it did not read was its exception path. An `except IntegrityError` no-op is the same idempotency idiom as `ON CONFLICT DO NOTHING` and F-I3 covers it — the plan sweeps every (a)/(c) writer for `except sqlite3.IntegrityError` and treats each hit as an F-I3 site by READ.
+>
+> - **S3-F3 (scope half) — `review_log`'s twin vs the CLI re-completion (`cli.py:2196` → `complete_review_atomic`, no already-completed check; the web returns 409).** RD rules (A) freeze + typed CLI refusal vs (C) identity-only twin. SCOPE RULED (CHARC, 2026-09-24, binds only if RD picks (A)): the typed CLI refusal is IN 22-I, as the SERVICE TWIN of the trigger, by the authorize-then-abort rule (harness §5.1: a trigger's predicate set is a subset of the service's admission predicates; a trigger never ships ahead of its service check). It is refusal-only — a `click.ClickException` mirroring the web's 409 text — and is not a money-bearing entry, so the ENTRY-vs-LABEL test is not engaged and F-F1 does not fire. §2.6's "no writer beyond the `ON CONFLICT` adjustment" is amended by this line to read: no writer change beyond the `ON CONFLICT`/`IntegrityError` idempotency adjustment AND the service-side refusal twin any new guard requires. Under (C) this line is void.
+>
+> - **a17, stricter encoding accepted (2026-09-24):** the plan encoded the FK-null exemption WITH v40 `trg_eia_no_update`'s parent-gone clause (the parent row must be absent for the value→NULL transition to admit) — stricter than my ruled text; the production prune still admits on the copy. A twin stricter than the ruling, whose production control admits, is within the ruling.
+
+### RD -- S3-F1, S3-F2, S3-F3 (A vs C)
+
+(pending)
