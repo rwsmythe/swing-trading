@@ -1755,10 +1755,16 @@ def trade_review_cmd(
         # The review has COMMITTED. RULING R3-1: say so BEFORE the intent
         # write, so the recorded line precedes any refusal (the message names
         # the committed review FIRST and the refused intent SECOND).
-        click.echo(
+        # Codex R4-1: this echo now sits BETWEEN two durable writes, so an
+        # output failure here must not suppress the requested intent write.
+        # `--ticker` is unrestricted text, so the WHOLE line is ASCII-coerced,
+        # and the write is contained per sink (the 22-A3 post-durability
+        # idiom, `_echo_either_sink`).
+        from swing.trades.entry import ascii_safe
+        _echo_either_sink(ascii_safe(
             f"Review recorded for trade #{trade_id} ({trade.ticker}). "
             f"Process grade: {process_grade}."
-            + (f" Failure mode: {failure_mode}." if failure_mode else ""))
+            + (f" Failure mode: {failure_mode}." if failure_mode else "")))
 
         # Task 4 (tuition-vs-error): correct entry_intent at review. Optional --
         # an omitted flag leaves the persisted value untouched (no call). When

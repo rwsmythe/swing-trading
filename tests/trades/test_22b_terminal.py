@@ -167,6 +167,72 @@ def test_cli_review_concurrent_attested_race_names_committed_review_b22_240(
     assert row[0] == "reviewed" and row[-1] == UNINTENDED_EXECUTION
 
 
+def _cli_closed_trade20(tmp_path: Path, **trade) -> tuple[CliRunner, Path, Path]:
+    """A migrated CLI world with trade 20 CLOSED, not reviewed, intent NULL."""
+    from swing.data.db import open_connection
+    from tests._22b_fixtures import seed_trade20
+
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    cfg = _minimal_config(project, home)
+    runner = CliRunner()
+    res = runner.invoke(main, ["--config", str(cfg), "db-migrate"])
+    assert res.exit_code == 0, res.output
+    db = Path(tomllib.loads(cfg.read_text())["paths"]["db_path"])
+    seed = open_connection(db)
+    try:
+        seed_trade20(seed, state="closed", **trade)
+        seed.commit()
+    finally:
+        seed.close()
+    return runner, cfg, db
+
+
+_REVIEW_WITH_STANDARD = [
+    "trade", "review", "--trade-id", "20",
+    "--entry-grade", "A", "--management-grade", "A", "--exit-grade", "A",
+    "--mistake-tags", "none_observed", "--lesson-learned", "clean",
+    "--entry-intent", "standard"]
+
+
+@pytest.mark.parametrize("sink", ["cp1252_strict", "every_sink_broken"])
+def test_cli_review_recorded_echo_failure_never_suppresses_the_intent_b22_241(
+        tmp_path: Path, monkeypatch, sink: str) -> None:
+    """Codex R4-1: RULING R3-1 moved the recorded echo BEFORE the intent
+    write, so the echo now sits between two durable writes. An output
+    failure there must not suppress the requested intent write: the line is
+    ASCII-coerced (``--ticker`` is unrestricted text) and contained per
+    sink. ``cp1252_strict`` mimics a console encoder without the UTF-8
+    reconfigure (a non-ASCII ticker outside cp1252's repertoire raises);
+    ``every_sink_broken`` makes every attempt to write the recorded line
+    fail (a closed pipe on both streams). Pre-fix: the echo raised, the
+    intent write was never attempted, and the command exited non-zero."""
+    import click as click_mod
+
+    runner, cfg, db = _cli_closed_trade20(tmp_path, ticker="🚀")
+    real_echo = click_mod.echo
+
+    def _sink(message=None, file=None, nl=True, err=False, color=None):
+        text = "" if message is None else str(message)
+        if sink == "cp1252_strict":
+            text.encode("cp1252")  # raises UnicodeEncodeError off-repertoire
+        elif "Review recorded" in text:
+            raise OSError(32, "Broken pipe")
+        return real_echo(message, file=file, nl=nl, err=err, color=color)
+
+    monkeypatch.setattr(click_mod, "echo", _sink)
+    res = runner.invoke(main, ["--config", str(cfg), *_REVIEW_WITH_STANDARD])
+    assert res.exit_code == 0, (res.output, res.exception)
+    row = _row(db)
+    assert row[0] == "reviewed", row
+    assert row[-1] == "standard", row  # the requested intent write happened
+    if sink == "cp1252_strict":
+        assert "Review recorded for trade #20" in res.output, res.output
+        assert res.output.isascii(), res.output
+
+
 def test_cli_review_without_entry_intent_still_completes(tmp_path: Path) -> None:
     """The control: the terminality check does not block a review that does
     not touch the intent."""
