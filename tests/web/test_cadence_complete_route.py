@@ -193,6 +193,21 @@ def test_get_cadence_complete_404_for_already_completed(test_app_with_completed_
     assert r.status_code == 404
 
 
+def test_post_cadence_complete_409_for_already_completed(test_app_with_completed_daily):
+    """22-I T12a: pins the web re-completion refusal whose text the CLI's
+    service-twin refusal mirrors ("Review already completed")."""
+    with TestClient(test_app_with_completed_daily) as client:
+        r = client.post(
+            "/reviews/1/complete",
+            data={"duration_minutes": "12", "primary_lesson": "Again.",
+                  "next_period_focus": "Again."},
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 409
+    assert "Review already completed" in r.text
+
+
 # ---------------------------------------------------------------------------
 # 3e.16 — trade-activity section rendering.
 # ---------------------------------------------------------------------------

@@ -2157,6 +2157,7 @@ def review_complete_cmd(
 
     from swing.data.db import connect
     from swing.data.repos.review_log import (
+        ReviewAlreadyCompletedError,
         complete_review_atomic,
         list_pending,
     )
@@ -2193,13 +2194,17 @@ def review_complete_cmd(
                 f"{', '.join(missing)}"
             )
 
-        complete_review_atomic(
-            conn, review_id=review_id,
-            completed_date=_date.today().isoformat(),
-            duration_minutes=duration_minutes,
-            primary_lesson=primary_lesson,
-            next_period_focus=next_period_focus,
-        )
+        try:
+            complete_review_atomic(
+                conn, review_id=review_id,
+                completed_date=_date.today().isoformat(),
+                duration_minutes=duration_minutes,
+                primary_lesson=primary_lesson,
+                next_period_focus=next_period_focus,
+            )
+        except ReviewAlreadyCompletedError as exc:
+            # 22-I (RD S3-F3 (A)): the web route's 409 text, verbatim.
+            raise click.ClickException("Review already completed") from exc
     finally:
         conn.close()
     click.echo(f"Review #{review_id} marked complete + aggregates frozen.")

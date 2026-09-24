@@ -19,6 +19,19 @@ from datetime import date, timedelta
 from swing.data.models import ReviewLog, Trade
 
 
+class ReviewAlreadyCompletedError(ValueError):
+    """``complete_review_atomic`` was asked to complete a row whose
+    ``completed_date`` is already set.
+
+    22-I (RD S3-F3 (A)): a completed review's aggregates are FROZEN; a
+    re-completion is refused here, SELECT-first, before any compute. This is
+    the SERVICE TWIN of migration 0041's ``trg_rl_immutable`` (authorize-then-
+    abort, harness section 5.1: the trigger's refusal must be unreachable
+    through the service). The message mirrors the web route's 409 detail
+    (``swing/web/routes/trades.py``, "Review already completed").
+    """
+
+
 # C.10 migration helper (was: list_all_exits shim from repos/trades.py).
 # Mirrors the _ExitShape adapter used in web view models — duck-typed
 # Exit-shape over fills filtered to non-entry actions. Dies in a future
@@ -180,7 +193,9 @@ def complete_review_atomic(
     in ``with conn:`` — the function manages its own BEGIN/COMMIT/ROLLBACK.
 
     Pipeline inside the transaction:
-      1. Read (period_start, period_end) from the review_log row.
+      1. Read (period_start, period_end, completed_date) from the review_log
+         row; an already-completed row is REFUSED with
+         ``ReviewAlreadyCompletedError`` before any compute (22-I).
       2. Select closed trades whose final exit_date falls in [period_start, period_end].
       3. Compute 7 aggregates via swing.journal.stats.compute_stats (5 fields)
          + swing.trades.review.compute_profit_factor + compute_max_drawdown_R.
@@ -220,11 +235,15 @@ def complete_review_atomic(
     try:
         # Step 1: read the period from review_log:
         row = conn.execute(
-            "SELECT period_start, period_end FROM review_log WHERE review_id = ?",
+            "SELECT period_start, period_end, completed_date FROM review_log "
+            "WHERE review_id = ?",
             (review_id,),
         ).fetchone()
         if row is None:
             raise ValueError(f"review_log row #{review_id} not found")
+        if row[2] is not None:
+            # 22-I (RD S3-F3 (A)): the aggregates are FROZEN once completed.
+            raise ReviewAlreadyCompletedError("Review already completed")
         period_start, period_end = row[0], row[1]
 
         # Step 2: select closed trades whose final exit_date in [start, end]:
