@@ -438,7 +438,10 @@ def _world(tmp_path: Path):
     db_path = root / "swing.db"
     c = open_connection(db_path)
     try:
-        run_migrations(c, target_version=40, backup_dir=root / "bak")
+        # 22-I: this world is read by the CLI (`hypothesis list`), whose
+        # connect() refuses any version but EXPECTED_SCHEMA_VERSION -- so it
+        # is pinned to HEAD (41), moved with the version like a head test.
+        run_migrations(c, target_version=41, backup_dir=root / "bak")
     finally:
         c.close()
     plain = sqlite3.connect(db_path)  # foreign keys OFF (the 18-B.1 technique)

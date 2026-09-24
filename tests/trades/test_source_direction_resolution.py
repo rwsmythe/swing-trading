@@ -13,7 +13,7 @@ from swing.trades.reconciliation_auto_correct import (
 
 def _make_pending(conn, *, flag_reason="unrecognized_income_description",
                   tx_id="T9001", net_amount=5.0, iso_date="2026-06-01",
-                  candidate_ids=None):
+                  candidate_ids=None, expected_kind=None):
     cur = conn.execute(
         "INSERT INTO reconciliation_runs (source, state, started_ts, "
         "period_start, period_end) VALUES ('schwab_api', 'completed', '1', "
@@ -25,6 +25,8 @@ def _make_pending(conn, *, flag_reason="unrecognized_income_description",
     }
     if candidate_ids is not None:
         envelope["candidate_cash_movement_ids"] = candidate_ids
+    if expected_kind is not None:
+        envelope["expected_kind"] = expected_kind
     dcur = conn.execute(
         "INSERT INTO reconciliation_discrepancies (run_id, discrepancy_type, "
         "field_name, material_to_review, created_at, resolution, ambiguity_kind, "
@@ -168,14 +170,12 @@ def test_matched_existing_accepts_exact_kind_candidate(tmp_path):
     good_id = int(conn.execute(
         "INSERT INTO cash_movements (date, kind, amount, ref, note) "
         "VALUES ('2026-06-01','deposit',5.0,NULL,'a')").lastrowid)
+    # Persist expected_kind on the envelope (the production emit now does
+    # this) -- planted at INSERT (22-I, 0041: trg_rd_immutable freezes the
+    # as-detected expected_value_json).
     disc_id = _make_pending(
         conn, flag_reason="fallback_multi_match", net_amount=5.0,
-        candidate_ids=[good_id])
-    # Persist expected_kind on the envelope (the production emit now does this).
-    conn.execute(
-        "UPDATE reconciliation_discrepancies SET expected_value_json="
-        "json_set(expected_value_json, '$.expected_kind', 'deposit') "
-        "WHERE discrepancy_id=?", (disc_id,))
+        candidate_ids=[good_id], expected_kind="deposit")
     conn.commit()
     apply_source_direction_resolution(
         conn, discrepancy_id=disc_id, choice_code="matched_existing_row",

@@ -277,6 +277,13 @@ V40_NEW_FOREIGN_TRADES_OBJECTS: frozenset[str] = frozenset({
     "trg_eia_trade_binding", "trg_eia_cited_fields", "trg_eia_audit_trail",
     "trg_eia_tier2",
 })
+# 22-I (0041), measured on a fresh 40 -> 41 pair: the census LIKE matches
+# trg_rd_immutable (its a17 clause reads FROM trades) and, by column NAME only,
+# trg_rr_immutable (trades_reconciled_count) and trg_rl_immutable
+# (n_trades_reviewed). None of the v40 objects' text moves.
+V41_NEW_FOREIGN_TRADES_OBJECTS: frozenset[str] = frozenset({
+    "trg_rd_immutable", "trg_rr_immutable", "trg_rl_immutable",
+})
 
 
 def _foreign_trades_objects(c: sqlite3.Connection) -> dict[str, str]:
@@ -449,11 +456,15 @@ def test_every_foreign_object_referencing_trades_is_unchanged_and_still_fires_b2
         c.close()
     if shape == "fresh":
         # A separate ensure_schema DB's foreign-object set equals the v39 one
-        # plus 0040's own named additions, byte for byte.
+        # plus 0040's own named additions, byte for byte -- plus, from 22-I,
+        # the 0041 objects the census matches, NAMED (a later migration's
+        # addition is a visible change here, never an absorbed one).
         with pinned_migration_clock():
             e = ensure_schema(tmp_path / "ensure" / "swing.db")
         try:
-            assert _foreign_trades_objects(e) == v40
+            head = _foreign_trades_objects(e)
+            assert {n: head[n] for n in v40 if n in head} == v40
+            assert set(head) - set(v40) == V41_NEW_FOREIGN_TRADES_OBJECTS
         finally:
             e.close()
 

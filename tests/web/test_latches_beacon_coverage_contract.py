@@ -52,12 +52,16 @@ _HX = {"HX-Request": "true"}
 def _seed(cfg, ticker: str, pivot: float, stop: float) -> int:
     conn = connect(cfg.paths.db_path)
     with conn:
+        # 22-I (0041): trg_er_no_replace refuses a conflicting INSERT OR
+        # IGNORE (a BEFORE INSERT trigger cannot see the conflict algorithm),
+        # so the idempotent seed pre-filters with WHERE NOT EXISTS.
         conn.execute(
-            "INSERT OR IGNORE INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
             "action_session_date, tickers_evaluated, aplus_count, watch_count, "
-            "skip_count, excluded_count, error_count) VALUES "
-            "(121, '2026-07-17T17:30:05', '2026-07-17', '2026-07-20', "
-            "2, 2, 0, 0, 0, 0)")
+            "skip_count, excluded_count, error_count) SELECT "
+            "121, '2026-07-17T17:30:05', '2026-07-17', '2026-07-20', "
+            "2, 2, 0, 0, 0, 0 "
+            "WHERE NOT EXISTS (SELECT 1 FROM evaluation_runs WHERE id = 121)")
         cur = conn.execute(
             "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
             "pivot, initial_stop, rs_method) VALUES "
