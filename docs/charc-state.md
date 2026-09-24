@@ -32,7 +32,7 @@
 | item | owner | state |
 |---|---|---|
 | **22-B Reviewer B** — DONE: 0/4/0 on `16becf0c` + re-read 0/0/1 on `3e9085e0`, all dispositioned (RULING B, B2-01) | orchestrator | DONE 09-24 |
-| **CHARC MERGE GATE** — **CLEAR** (`b36eba1a`) on tree `2c1b4be6`; W0–W4 bind the sitting (web STOPPED first; `BEGIN EXCLUSIVE` stated; two ~1.6 GB backups; `db-migrate` exit code not the verdict; version 40 + `--db` clean + `foreign_key_check` []) | CHARC (done); operator executes the sitting | CLEAR 09-24 |
+| **CHARC MERGE GATE** — **CLEAR** (`b36eba1a`) on tree `2c1b4be6`; W0–W4 bind the sitting (web STOPPED first; `BEGIN EXCLUSIVE` stated; ONE gate image in `backups_dir` (W3 corrected `eb71bd58`; the two-backups gotcha is STALE since D32/D50); `db-migrate` exit code not the verdict; version 40 + `--db` clean + `foreign_key_check` []) | CHARC (done); operator executes the sitting | CLEAR 09-24 |
 | **22-B witness** (brief §5 as amended: step 4 = `swing trade analyze 20` + the operator's browser look at the trend page; BEFORE 09-30 or AFTER 10-20) → CHARC CLOSES 22-B on it; then the register rows above | operator executes; CHARC closes | after the merge |
 | **PUSH** — main 31 ahead of origin | operator | owed |
 | **Charter COMPACTION** (117.5K of 120K) BEFORE the next register row; harness-architecture §5.1 + §6 compaction (101.0K) at Phase-22 close | CHARC | owed, FIRST charter touch |
