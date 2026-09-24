@@ -3153,44 +3153,8 @@ async def exit_post(
         conn.close()
 
     # Two-call rebuild.
-    #
-    # RULING R1-3-SURFACES (i): this rebuild is a SECONDARY panel of a page
-    # doing something else -- the exit already committed above -- so it
-    # CONTAINS `CohortReadRacedError` ONLY (never a bare except) and returns
-    # the COMMITTED exit with the 22-A3 degraded-success notice naming the
-    # trade (the `#entry-notice` container + `banner-degraded` shape
-    # `POST /trades/entry` already carries at `_entry_notice_literal_inner`
-    # above), instead of a 500 over a durable write.
-    #
-    # BANKED, pre-existing, not this arc's: unlike the entry route's
-    # `except BaseException` at line 2338 (the 22-A3 shape), this rebuild is
-    # UNCONTAINED for any OTHER exception -- git log shows no prior guard at
-    # this call site. The register carries this as the exit-side twin of
-    # 22-A3; this arc closes only the cohort-read shape of the gap.
-    from swing.metrics.cohort import COHORT_READ_RACED_MESSAGE, CohortReadRacedError
-    try:
-        dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor,
-                                       ohlcv_cache=request.app.state.ohlcv_cache)
-    except CohortReadRacedError:
-        log.warning(
-            "22-B: trade %s exit IS DURABLE and the post-commit dashboard "
-            "rebuild raced a cohort read (%s); a degraded-success response "
-            "is returned naming the trade.",
-            trade_id, COHORT_READ_RACED_MESSAGE)
-        row_hidden = (
-            f'<tr id="open-position-{trade_id}" style="display:none"></tr>'
-            if result.fully_closed else ""
-        )
-        return HTMLResponse(Markup(
-            f'{row_hidden}'
-            f'<div id="entry-notice" hx-swap-oob="true">'
-            f'<div class="banner banner-degraded" role="alert">'
-            f'<strong>Trade #{trade_id} exit WAS RECORDED.</strong> '
-            f'The dashboard could not be refreshed '
-            f'({COHORT_READ_RACED_MESSAGE}). Reload the page to see the '
-            f'update.'
-            f'</div></div>'
-        ))
+    dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor,
+                                   ohlcv_cache=request.app.state.ohlcv_cache)
     status_strip_html = templates.get_template("partials/status_strip.html.j2").render(
         request=request, vm=dashboard_vm,
     )
