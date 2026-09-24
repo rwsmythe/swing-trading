@@ -52,7 +52,7 @@ TWIN_TABLES: tuple[str, ...] = (
     "reconciliation_runs", "reconciliation_discrepancies",
     "reconciliation_corrections", "schwab_api_calls", "yfinance_calls",
     "account_equity_snapshots", "risk_policy", "hypothesis_registry",
-    "hypothesis_status_history", "daily_management_records",
+    "hypothesis_status_history", "daily_management_records", "review_log",
 )
 PAIR = pytest.mark.parametrize("version", [40, 41])
 
@@ -61,6 +61,8 @@ F_SUBJECT: dict[tuple[str, str], dict[str, Any]] = {
     ("reconciliation_discrepancies", "trade_id"): {"discrepancy_id": 2},
     ("schwab_api_calls", "pipeline_run_id"): {"call_id": 2},
     ("yfinance_calls", "pipeline_run_id"): {"call_id": 2},
+    # review_log's F is F-shaped only while FROZEN: the COMPLETED row 2
+    ("review_log", "risk_policy_id_at_review_completion"): {"review_id": 2},
 }
 # The parent row each F subject points at, and the PRODUCTION (or probe)
 # statement that deletes it.
@@ -86,6 +88,8 @@ PARENT_DELETE: dict[tuple[str, str], tuple[str, tuple]] = {
 FRESH_OVERRIDES: dict[str, dict[str, Any]] = {
     "daily_management_records": {"review_date": "2026-08-20",
                                  "data_asof_session": "2026-08-20"},
+    # C4d on review_log needs a COMPLETED row (a pending row's F moves freely)
+    "review_log": {"completed_date": "2026-08-17"},
 }
 
 

@@ -11,6 +11,14 @@ trigger never ships ahead of its service check).
           WHERE NOT EXISTS, so its idempotent no-op never reaches the barrier;
           the IntegrityError matcher is retained VERBATIM as the belt ((ii)
           refused: no trigger-name matching).
+    T12c  trg_rl_immutable (RD S3-F3 (A); plan section 1.3): the seven I
+          columns are frozen always; the S aggregates + completed_date + the
+          completion text are frozen once OLD.completed_date IS NOT NULL (the
+          pre-completion row stays writable); risk_policy_id_at_review_completion
+          is F-shaped while frozen (a17, DEAD-BY-PARENT-GUARD);
+          superseded_by_correction_id is M (reconciliation_auto_correct.py:2404
+          overwrites it unconditionally). C1/C2/C4/C6/C8 run in
+          test_migration_0041_twins.py.
 """
 from __future__ import annotations
 
@@ -25,7 +33,8 @@ from swing.data.repos.review_log import (
     complete_review_atomic,
     insert_pre_create,
 )
-from tests.data._22i_seed import migrated, outcome
+from tests.data._22i_guard_spec import SPEC
+from tests.data._22i_seed import TS, different_value, migrated, outcome, row_of
 
 PAIR = pytest.mark.parametrize("version", [40, 41])
 
@@ -143,3 +152,142 @@ def test_rl_no_delete(tmp_path: Path, version: int) -> None:
         assert verdict == "OK", verdict
     else:
         assert verdict == "TRIGGER:trg_rl_no_delete", verdict
+
+
+# ---------------------------------------------------------------------------
+# T12c -- the state-frozen twin
+# ---------------------------------------------------------------------------
+TWIN = "TRIGGER:trg_rl_immutable"
+PENDING, COMPLETED = {"review_id": 1}, {"review_id": 2}
+
+
+def _set(c: sqlite3.Connection, col: str, pk: dict) -> str:
+    v = different_value(c, "review_log", col, row_of(c, "review_log", pk)[col])
+    return outcome(c, f"UPDATE review_log SET {col} = ? WHERE review_id = ?",
+                   (v, pk["review_id"]))
+
+
+@PAIR
+@pytest.mark.parametrize("col", SPEC["review_log"].S)
+def test_rl_s_column_on_a_completed_row_aborts(tmp_path: Path, col: str,
+                                               version: int) -> None:
+    c = _rl_world(tmp_path, version)
+    try:
+        verdict = _set(c, col, COMPLETED)
+    finally:
+        c.close()
+    assert verdict == ("OK" if version == 40 else TWIN), verdict
+
+
+@PAIR
+@pytest.mark.parametrize("col", SPEC["review_log"].S)
+def test_rl_s_column_on_an_uncompleted_row_admitted(tmp_path: Path, col: str,
+                                                    version: int) -> None:
+    c = _rl_world(tmp_path, version)
+    try:
+        verdict = _set(c, col, PENDING)
+    finally:
+        c.close()
+    assert verdict == "OK", verdict
+
+
+@PAIR
+@pytest.mark.parametrize("col", SPEC["review_log"].I)
+def test_rl_i_column_on_a_completed_row_aborts(tmp_path: Path, col: str,
+                                               version: int) -> None:
+    """C1 runs the I set on the PENDING row (twins module); this is its
+    completed-row twin -- I is frozen in BOTH states."""
+    c = _rl_world(tmp_path, version)
+    try:
+        verdict = _set(c, col, COMPLETED)
+    finally:
+        c.close()
+    if version == 40:
+        assert verdict == "OK" or verdict.startswith("CONSTRAINT:"), verdict
+    else:
+        assert verdict == TWIN, verdict
+
+
+@PAIR
+def test_rl_rp_stamp_on_an_uncompleted_row_admitted(tmp_path: Path, version: int) -> None:
+    """F is F-shaped only while frozen: a pending row's stamp moves freely."""
+    c = _rl_world(tmp_path, version)
+    try:
+        verdict = outcome(c, "UPDATE review_log SET risk_policy_id_at_review_completion "
+                             "= 1 WHERE review_id = 1")
+    finally:
+        c.close()
+    assert verdict == "OK", verdict
+
+
+@PAIR
+def test_rl_supersede_2404_on_a_completed_row_admitted(tmp_path: Path,
+                                                       version: int) -> None:
+    """The literal :2404 statement via _supersede_review_log_for_trade_close,
+    on a completed review whose period brackets trade 20's close (fill 44,
+    2026-08-11): NULL -> value, then value -> other (the unconditional
+    overwrite) -- both admitted."""
+    from swing.trades.reconciliation_auto_correct import (
+        _supersede_review_log_for_trade_close,
+    )
+
+    c = _rl_world(tmp_path, version)
+    bracket = ("INSERT INTO review_log (review_id, review_type, period_start, "
+               "period_end, scheduled_date, completed_date, duration_minutes, "
+               "primary_lesson, next_period_focus, created_at) VALUES "
+               "(3, 'weekly', '2026-08-10', '2026-08-16', '2026-08-17', "
+               "'2026-08-17', 20, 'l', 'f', ?)", (TS,))
+    try:
+        def both(k):
+            _supersede_review_log_for_trade_close(k, trade_id=20, new_correction_id=1)
+            _supersede_review_log_for_trade_close(k, trade_id=20, new_correction_id=2)
+        verdict, seen = outcome(
+            c, both, setup=[bracket],
+            post=lambda k: k.execute("SELECT superseded_by_correction_id FROM "
+                                     "review_log WHERE review_id = 3").fetchone())
+    finally:
+        c.close()
+    assert (verdict, seen) == ("OK", (2,))
+
+
+def test_complete_review_atomic_on_an_uncompleted_row_admitted_at_41(
+        tmp_path: Path) -> None:
+    c = _rl_world(tmp_path, 41)
+    try:
+        complete_review_atomic(c, review_id=1, completed_date="2026-08-10",
+                               duration_minutes=15, primary_lesson="lesson",
+                               next_period_focus="focus")
+        row = row_of(c, "review_log", PENDING)
+    finally:
+        c.close()
+    assert row["completed_date"] == "2026-08-10"
+    assert row["primary_lesson"] == "lesson"
+    assert row["risk_policy_id_at_review_completion"] == 1
+
+
+# ---------------------------------------------------------------------------
+# section 4.4 -- the service-twin closure (authorize-then-abort)
+# ---------------------------------------------------------------------------
+def test_rl_trigger_refusal_unreachable_through_service(tmp_path: Path) -> None:
+    """The one trg_rl_immutable refusal a PRODUCTION path can reach is a
+    re-completion (complete_review_atomic -- the CLI and the web both route
+    through it; the :2404 supersede writes only the M column). The service
+    refuses it FIRST with the typed error, and no UPDATE of review_log is
+    ever issued -- so the trigger's refusal is unreachable through the
+    service (harness section 5.1: the trigger's predicate set is a subset of
+    the service's admission predicates)."""
+    c = _rl_world(tmp_path, 41)
+    statements: list[str] = []
+    c.set_trace_callback(statements.append)
+    try:
+        with pytest.raises(ReviewAlreadyCompletedError) as info:
+            complete_review_atomic(c, review_id=2, completed_date="2026-09-01",
+                                   duration_minutes=5, primary_lesson="again",
+                                   next_period_focus="again")
+    finally:
+        c.set_trace_callback(None)
+        c.close()
+    assert not isinstance(info.value, sqlite3.IntegrityError)
+    assert type(info.value) is ReviewAlreadyCompletedError
+    assert not [s for s in statements if "UPDATE review_log" in " ".join(s.split())]
+    assert any("FROM review_log" in s for s in statements)  # the SELECT-first ran

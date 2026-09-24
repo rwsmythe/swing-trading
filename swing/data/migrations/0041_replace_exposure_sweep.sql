@@ -86,6 +86,7 @@
 --         DROP TRIGGER trg_dmr_immutable;   -- daily_management_records
 --         DROP TRIGGER trg_rl_no_delete;    -- review_log
 --         DROP TRIGGER trg_rl_no_replace;   -- review_log
+--         DROP TRIGGER trg_rl_immutable;    -- review_log
 --
 -- (iii) THE ONE REBUILT OBJECT (F-I2, CHARC-ruled): trg_provenance_corrections_
 --     append_only_update is DROPPED and CREATED again. Its new text is the
@@ -783,6 +784,51 @@ WHEN COALESCE(EXISTS (SELECT 1 FROM review_log
               WHERE (NEW.review_id != -1 AND review_id = NEW.review_id)
                  OR (review_type = NEW.review_type AND period_start = NEW.period_start AND period_end = NEW.period_end)), 0)
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rl_no_replace: review_log rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) on the PK or the cadence key (review_type, period_start, period_end) would DELETE the existing row without firing trg_rl_no_delete and reissue or move its id; a completed review freezes the operator''s process-review aggregates (RD F-I1 row 17, S3-F3 (A)). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+-- review_log's twin (S3-F3 (A)): I (review_id, review_type, period_start,
+-- period_end, scheduled_date, skipped, created_at) frozen ALWAYS; the S set
+-- (completed_date, the aggregates, the completion text) frozen once
+-- OLD.completed_date IS NOT NULL, with risk_policy_id_at_review_completion
+-- F-shaped while frozen (a17; DEAD-BY-PARENT-GUARD, trg_rp_no_delete);
+-- superseded_by_correction_id is M (reconciliation_auto_correct.py:2404
+-- overwrites it unconditionally). Its SERVICE TWIN ships FIRST (T12a):
+-- complete_review_atomic refuses a completed row with
+-- ReviewAlreadyCompletedError before any UPDATE, so this refusal is
+-- unreachable through the service (authorize-then-abort, harness 5.1).
+CREATE TRIGGER trg_rl_immutable
+BEFORE UPDATE ON review_log
+FOR EACH ROW
+WHEN NOT COALESCE(
+      NEW.review_id IS OLD.review_id
+  AND NEW.review_type IS OLD.review_type
+  AND NEW.period_start IS OLD.period_start
+  AND NEW.period_end IS OLD.period_end
+  AND NEW.scheduled_date IS OLD.scheduled_date
+  AND NEW.skipped IS OLD.skipped
+  AND NEW.created_at IS OLD.created_at
+  AND (      -- PENDING: the pre-completion row stays writable (the completion itself)
+          OLD.completed_date IS NULL
+       -- FROZEN: once completed, the aggregates + completion text never move
+       OR (NEW.completed_date IS OLD.completed_date
+             AND NEW.duration_minutes IS OLD.duration_minutes
+             AND NEW.n_trades_reviewed IS OLD.n_trades_reviewed
+             AND NEW.primary_lesson IS OLD.primary_lesson
+             AND NEW.next_period_focus IS OLD.next_period_focus
+             AND NEW.total_mistake_cost_R IS OLD.total_mistake_cost_R
+             AND NEW.total_lucky_violation_R IS OLD.total_lucky_violation_R
+             AND NEW.net_R_effective IS OLD.net_R_effective
+             AND NEW.expectancy_R_effective IS OLD.expectancy_R_effective
+             AND NEW.win_rate IS OLD.win_rate
+             AND NEW.avg_win_R IS OLD.avg_win_R
+             AND NEW.avg_loss_R IS OLD.avg_loss_R
+             AND NEW.profit_factor IS OLD.profit_factor
+             AND NEW.max_drawdown_R IS OLD.max_drawdown_R
+             AND NEW.auto_populated_field_keys_json IS OLD.auto_populated_field_keys_json
+             AND (NEW.risk_policy_id_at_review_completion IS OLD.risk_policy_id_at_review_completion
+                  OR (OLD.risk_policy_id_at_review_completion IS NOT NULL AND NEW.risk_policy_id_at_review_completion IS NULL
+                      AND NOT EXISTS (SELECT 1 FROM risk_policy WHERE policy_id = OLD.risk_policy_id_at_review_completion)))))
+, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rl_immutable: review_log: this UPDATE changes an identity column (review_id, review_type, period_start, period_end, scheduled_date, skipped, created_at), or a frozen aggregate / completion field of an ALREADY-completed review (only superseded_by_correction_id moves after completion; risk_policy_id_at_review_completion is nulled only after its policy row is gone); a completed review freezes the operator''s process-review aggregates (RD F-I1 row 17, S3-F3 (A)). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- The version bump is the FINAL statement before COMMIT.
 UPDATE schema_version SET version = 41;
