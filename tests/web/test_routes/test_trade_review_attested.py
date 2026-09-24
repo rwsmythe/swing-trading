@@ -69,6 +69,10 @@ def test_review_post_with_empty_refuses_4xx_preserved_b22_121(tmp_path: Path) ->
     assert attested_message(att_id) in r.text, r.text[-800:]
     assert _row(db) == before  # nothing written: not the review, not the intent
     assert before[0] == "closed" and before[-1] == UNINTENDED_EXECUTION
+    # RULING R3-1: the PRE-CHECK path's message is UNCHANGED -- nothing was
+    # recorded there, so the body carries no "recorded" sentence.
+    assert "was recorded" not in r.text, r.text[-800:]
+    assert "The intent change was refused" not in r.text, r.text[-800:]
 
 
 def test_review_form_renders_read_only_no_select_b22_122(tmp_path: Path) -> None:
@@ -137,6 +141,11 @@ def test_review_second_call_attested_race_renders_409_not_500_b22_228(
     assert committed, "the planted race did not run"
     assert r.status_code == 409, (r.status_code, r.text[-800:])
     assert attested_message(committed[0]) in r.text, r.text[-800:]
+    # RULING R3-1: the concurrent 409 names the COMMITTED review FIRST and the
+    # refused intent change SECOND, in the ruled text.
+    ruled = ("Review for trade #20 was recorded (state reviewed). The intent "
+             f"change was refused: {attested_message(committed[0])}.")
+    assert ruled in r.text, r.text[-800:]
     row = _row(db)
     # AL-6: the review persisted as submitted; the intent was never written.
     assert row[0] == "reviewed" and row[-1] == UNINTENDED_EXECUTION

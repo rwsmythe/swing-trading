@@ -3603,19 +3603,30 @@ async def review_post(
         # submitted and the intent is never written (AL-6, RULING R1-1).
         from swing.data.models import AttestedIntentError
 
-        def _attested_refusal(exc: AttestedIntentError):
+        def _attested_refusal(exc: AttestedIntentError, *,
+                              review_committed: bool):
             # The route's ONE 409 refusal fragment for an attested intent:
             # the pre-check below AND the second call after the review
-            # committed (RULING R1-1 fix (1)) both render through it.
+            # committed (RULING R1-1 fix (1)) both render through it. ONE
+            # fragment, TWO texts (RULING R3-1): after the review committed
+            # the message names the committed review FIRST and the refused
+            # intent change SECOND; the pre-check recorded nothing, so its
+            # message is the refusal alone, unchanged.
             from swing.web.view_models.trades import build_review_vm
+            if review_committed:
+                message = (f"Review for trade #{trade_id} was recorded "
+                           f"(state reviewed). The intent change was refused: "
+                           f"{exc}.")
+            else:
+                message = str(exc)
             vm = build_review_vm(trade_id=trade_id, cfg=cfg)
             if vm is None:
                 return templates.TemplateResponse(
                     request, "partials/trade_form_error.html.j2",
-                    {"error_message": str(exc)}, status_code=409)
+                    {"error_message": message}, status_code=409)
             return templates.TemplateResponse(
                 request, "partials/review_form.html.j2",
-                {"vm": vm, "error_message": str(exc)}, status_code=409)
+                {"vm": vm, "error_message": message}, status_code=409)
 
         if entry_intent_present:
             from swing.data.repos.trades import assert_entry_intent_change_allowed
@@ -3623,7 +3634,7 @@ async def review_post(
                 assert_entry_intent_change_allowed(
                     conn, trade_id=trade_id, entry_intent=ei)
             except AttestedIntentError as exc:
-                return _attested_refusal(exc)
+                return _attested_refusal(exc, review_committed=False)
         # Hotfix 2026-05-05 (operator-witnessed gate finding S6): the prior
         # implementation called update_trade_review_fields directly inside
         # `with conn:`, persisting Phase 6 review fields BUT never firing the
@@ -3665,14 +3676,14 @@ async def review_post(
         # update_entry_intent's in-transaction re-check). The review has
         # already committed as submitted and the intent is never written
         # (AL-6, declared); the refusal renders the route's 409 fragment,
-        # never a 500.
+        # never a 500, and names the committed review first (RULING R3-1).
         if entry_intent_present:
             from swing.data.repos.trades import update_entry_intent
             try:
                 with conn:
                     update_entry_intent(conn, trade_id=trade_id, entry_intent=ei)
             except AttestedIntentError as exc:
-                return _attested_refusal(exc)
+                return _attested_refusal(exc, review_committed=True)
     finally:
         conn.close()
     # code-review I3 (operator-witnessed S5): /trades is unrouted — htmx.js
