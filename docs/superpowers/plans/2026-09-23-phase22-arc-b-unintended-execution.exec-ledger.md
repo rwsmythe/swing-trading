@@ -276,3 +276,21 @@ Measured (cell 5, re-verified by the orchestrator): no journal or trade page ren
 ## G6 stop — merge note (orchestrator)
 
 `main` merged into `22-b-exec` at `3f27edea` (`--no-ff`, docs-only). **Its message says "main through 7038d094"; it actually took `main` through `7879183f`** — CHARC's `docs/harness-architecture.md` §6 act-1 correction (`SELECT version FROM schema_version`, never `PRAGMA user_version`) landed on `main` between my read and the merge. Recorded here, not rewritten (no amending).
+
+## Reviewer A round table (cell 10, `strong`, repo read access, target `git diff e61dad27 HEAD -- swing tests scripts`)
+
+Runs TO CONVERGENCE (first clean verdict with all five assertions passing); no round cap (CHARC 2026-09-24: the three-round cap is the PLAN loop's; my dispatch text said otherwise and was corrected to the cell before round 1 ended). Each row's assertions were re-read by the orchestrator from the transcript, not the cell's claim.
+
+| round | reviewed HEAD | model / effort | `^ERROR` | footer | verdict (anchored) | crit/maj/min | dispositions | cell depth at gate |
+|---|---|---|---|---|---|---|---|---|
+| R1 | `ecd9fa57` | gpt-5.6-sol / high | 0 | 643,922 | FOUND 2 (printed twice by the CLI) / CLEAN 0 | 0 / 3 / 1 | R1-1 FORK (below) · R1-2 FIXED `f865fa39` (b22_226: `update_entry_intent` raised a raw IntegrityError when `assign` committed between its reads and its UPDATE; now re-checks inside its own tx and raises `AttestedIntentError`; red pre-fix) · R1-3 FORK (below) · R1-4 FIXED `4a3b790d` (b22_227: three refusal echoes through `ascii()`; red pre-fix) | 247,144 |
+
+Evidence: `~/swing-data/review-transcripts/22-b-exec/reviewer-a-r1-{prompt,bundle,response,run}.*` (response 2,678,493 B; exit code measured 0). Spend so far: 643,922.
+
+## FORK R1-1 — a refused intent change can leave a completed review committed. Ruler: **CHARC**. OPEN.
+
+Verified at the orchestrator's seat by READ: `swing/cli.py:1700-1753` and `swing/web/routes/trades.py:3597-3659` pre-check attestation with a plain read (the R2-02 shape), then `complete_trade_review` commits in its OWN `with conn:` (`swing/trades/review.py:632`), then `update_entry_intent` runs in a SECOND `with conn:`. A concurrent `assign-intent` committing between the pre-check and the review's commit leaves the review committed and the intent refused -- contradicting plan Task 7's "NOTHING written". The web route's second call is not wrapped (`trades.py:3655`), so after R1-2 it surfaces `AttestedIntentError` as a 500; the CLI shows a ClickException. This is the race the G2a gate note FLAGGED and did not change -- a note, not a ruling. A fix that moves the intent write into the review's transaction touches `swing/trades/review.py` (outside the plan's carve-out) and replaces the plan's R2-02 shape.
+
+## FORK R1-3 — cohort counts and the "not counted" names are read in two separate queries. Ruler: **RD** (whether the transient is acceptable on the measurement surfaces); if RD requires a fix, **CHARC** rules its shape (serialized by the orchestrator). OPEN.
+
+Verified at the orchestrator's seat by READ: `swing/journal/stats.py:454-460` names from `list_intent_excluded_for_cohort` AFTER the count's rows were loaded, filtered only to `loaded_ids`; the same two-read shape at `swing/metrics/tier.py:776`, `swing/recommendations/hypothesis.py:610`, `swing/web/view_models/metrics/hypothesis_progress_card.py:462`. An `assign` committing between the two reads lets one render count trade N AND print it under "not counted". Nothing is written; the next read is consistent; the value's only writer is the operator's CLI. Remedy options named by the cell: a read snapshot on the caller's connection; 22-A2's A-R2 item 4 `recheck` idiom; naming from the loaded rows with a Python-side filter (moves N2 (a)'s SQL predicate). Each touches the ruled N2 (a)/N3 (a) encoding.
