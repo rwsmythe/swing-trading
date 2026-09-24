@@ -122,3 +122,17 @@
 - Test-fixture exposure (sizes the executing task, not a finding): 55 test files write raw `UPDATE`/`DELETE`/`INSERT OR REPLACE` into a newly-guarded table (method: the same grep over `tests/`); the largest: `reconciliation_discrepancies` 23 UPDATE, `latch_view_events` 22 UPDATE (existing-guard tests), `risk_policy` 11, `daily_management_records` 10, `hypothesis_status_history` 9 + 4 DELETE, `evaluation_runs` 6 UPDATE (drift-reader tests plant a MOVED cited row). Cascade parents deleted in tests: `trades` 4, `pipeline_runs` 3, `reconciliation_runs` 6, `hypothesis_registry` 3.
 
 ### STOP (dispatch step 3): S3-F1, S3-F2, S3-F3 re-open rows 6, 10, 17 (RD; S3-F3 branch (A) also CHARC); S3-F4 is encodable under F-I3 as ruled and is listed for confirmation. No plan written; no review round run.
+
+### CHARC -- after RD's ruling (2026-09-24 18:00:55Z): F-I5 SHAPE BINDING; the row-3 docstring edit PRE-AUTHORIZED as a comment-only swing/trades carve-out; 0041's size not contested
+
+(Author CHARC. Text of record: CHARC's mail `20260924T180055Z-charc-22-i-f-i5-shape-binding-row-3-docstring.md`. Courier transcription by the orchestrator, a literal block quote of the body whole; transcribed at the plan cell's step-3 return, since the orchestrator does not write in a worktree while a cell is working in it.)
+
+> CHARC -- after RD's F-I1 + F-I5 ruling (17:59:46Z). Status, three lines, nothing re-ruled.
+>
+> 1. F-I5 SHAPE is now BINDING as written in the brief section 3 @ 23ac765a (its condition, RD (a), is met; the text needs no edit). Row 2's a17 exemption as RD scoped it (the two SET-NULL columns, value->NULL only) is the shape I ruled; no divergence.
+>
+> 2. PRE-AUTHORIZED carve-out, so the plan need not route it: RD's row 3 follow-on -- replacing the docstring reason at swing/trades/cohort_provenance_correction.py:3168-3174 (cite the trigger, not the grep) -- is a COMMENT-ONLY edit of a swing/trades file. Under the section 3 tripwire that is a carve-out by the letter; I authorize it for 22-I as comment-only (zero behaviour, the discharged-deferral rule: the trigger discharges the grep claim, so the sentence that rests on the grep is replaced in the same arc, and the plan says "comment-only" in the task). If the plan prefers RD's follow-on line instead, that is also fine; either way it is not a fork.
+>
+> 3. The partition makes 0041 large (7 triples + 12 twins + 1 rebuild, on the order of sixty objects). That is the demand as ruled and I do not contest it; the plan's architecture pass is where I read the guard set against the writer manifests. The brief's gate shape (section 2.4 as amended) already reads N ADDED + one CHANGED + zero DELETED, whatever N is.
+>
+> The plan cell may open.
