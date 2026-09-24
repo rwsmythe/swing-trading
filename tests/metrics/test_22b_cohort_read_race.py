@@ -33,6 +33,7 @@ from tests.metrics.test_22b_cohort_exclusion import (  # noqa: F401 (fixtures)
     cfg,
     conn,
 )
+from tests.trades.test_22a2_correction_service import ticking_clock  # noqa: F401
 
 RACED_TID = 3            # the H2 trade the planted assign moves mid-render
 RACED_MESSAGE = "cohort read raced an intent write; re-run"
@@ -302,3 +303,78 @@ def test_trade_entry_prefill_renders_the_refusal_nothing_written_b22_235(
     ], obj={"config": cfg})
     _assert_cli_refused(result)
     assert conn.execute("SELECT COUNT(*) FROM trades").fetchone() == (0,)
+
+
+# ---------------------------------------------------------------------------
+# b22_234 -- the tier-2 admission of every fixture trade is UNCHANGED by the
+# unit (the false exclusion the withdrawn bracket produced is the regression
+# FORK R1-3-SHAPE-EXEC exists to refuse). The world is 22-A2's: trade 25's
+# REAL admitted tier-2 row plus a second closed H1 trade (26), so H1 counts
+# TWO with nothing tier-2-excluded -- exactly 22-A2's ``_expected("admit")``.
+# ---------------------------------------------------------------------------
+def _four_governed_readers_h1(conn) -> dict[str, tuple[int, tuple]]:
+    """reader -> (H1 N, H1 tier2_excluded)."""
+    from swing.journal.stats import compute_hypothesis_progress_breakdown
+    from swing.metrics.tier import compute_tier_comparison
+    from swing.recommendations.hypothesis import compute_tripwire_status
+    from swing.web.view_models.metrics.hypothesis_progress_card import (
+        build_hypothesis_progress_card_vm,
+    )
+
+    (j,) = [r for r in compute_hypothesis_progress_breakdown(
+        conn, starting_equity=1200.0) if r.name == H1]
+    (t,) = [c for c in compute_tier_comparison(conn).cohorts if c.cohort_name == H1]
+    (c,) = [c for c in build_hypothesis_progress_card_vm(
+        cfg=None, conn=conn).cohorts if c.cohort_name == H1]  # type: ignore[arg-type]
+    tw = compute_tripwire_status(conn, hypothesis_id=1, starting_equity=1200.0)
+    return {"journal": (j.current_sample, j.tier2_excluded),
+            "tier": (t.n_closed, t.tier2_excluded),
+            "card": (c.n_closed, c.tier2_excluded),
+            "tripwire": (tw.current_sample, tw.tier2_excluded)}
+
+
+def test_tier2_admission_of_every_fixture_trade_is_unchanged_b22_234(
+        tmp_path: Path, ticking_clock, monkeypatch) -> None:
+    import swing.metrics.cohort as cohort_mod
+    import swing.metrics.tier as tier_mod
+    import swing.web.view_models.metrics.hypothesis_progress_card as card_mod
+    from tests._tier2_world_22a2 import T25_TRADE_ID
+    from tests.trades.test_22a2_cohort_readers import H1_PEER, _world
+
+    conn = _world(tmp_path, monkeypatch, "admit")
+    try:
+        real = cohort_mod.assert_intent_exclusion_disjoint
+        seen: list[tuple[frozenset, bool]] = []
+
+        def spy(counted_ids, named):
+            # The unit's own code path runs, over the trades it COUNTS, and
+            # NO transaction is held around the cohort reads at that point.
+            seen.append((frozenset(counted_ids), conn.in_transaction))
+            return real(counted_ids, named)
+
+        for mod in (cohort_mod, tier_mod, card_mod):
+            monkeypatch.setattr(mod, "assert_intent_exclusion_disjoint", spy)
+        got = _four_governed_readers_h1(conn)
+        assert got == {r: (2, ()) for r in got}, got
+        h1_calls = [ids for ids, _tx in seen if T25_TRADE_ID in ids]
+        # journal row + its per-hypothesis tripwire + tier + card + tripwire
+        assert len(h1_calls) == 5, seen
+        assert all(ids == {T25_TRADE_ID, H1_PEER} for ids in h1_calls), h1_calls
+        assert not any(tx for _ids, tx in seen), seen
+
+        # The counterfactual (the check bites): the SAME reader under a
+        # caller-held transaction -- the withdrawn bracket's precondition --
+        # turns the admitted tier-2 trade into a false exclusion.
+        from swing.recommendations.hypothesis import compute_tripwire_status
+
+        conn.execute("BEGIN")
+        try:
+            tw = compute_tripwire_status(conn, hypothesis_id=1,
+                                         starting_equity=1200.0)
+        finally:
+            conn.rollback()
+        assert tw.current_sample == 1
+        assert [(tid, verdict) for tid, verdict, _r in tw.tier2_excluded] == [
+            (T25_TRADE_ID, "tier2_unverifiable")]
+    finally:
+        conn.close()
