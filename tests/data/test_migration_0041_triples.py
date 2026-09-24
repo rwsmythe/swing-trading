@@ -39,11 +39,12 @@ BARRIER_TABLES = (*BLANKET, "pattern_detection_events",
                   "reconciliation_runs", "reconciliation_discrepancies",
                   "reconciliation_corrections", "schwab_api_calls", "yfinance_calls",
                   "account_equity_snapshots", "hypothesis_registry",
-                  "risk_policy", "hypothesis_status_history")
+                  "risk_policy", "hypothesis_status_history",
+                  "daily_management_records")
 # Partial-UNIQUE tables: their A1/A2/A3/A8 need a bespoke row (a second
 # ACTIVE / OPEN row is the conflict), so those probes live beside their
 # writers (test_migration_0041_writers.py); A4/A5/A6 run here on the PK.
-SPECIAL = ("risk_policy", "hypothesis_status_history")
+SPECIAL = ("risk_policy", "hypothesis_status_history", "daily_management_records")
 KEYED_TABLES = tuple(t for t in BARRIER_TABLES if t not in SPECIAL)
 PAIR = pytest.mark.parametrize("version", [40, 41])
 

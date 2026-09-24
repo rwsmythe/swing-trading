@@ -254,6 +254,9 @@ def seed_world(c: sqlite3.Connection) -> dict[str, Any]:
         base, management_record_id=1, review_date="2026-08-10",
         data_asof_session="2026-08-10", mfe_mae_precision_level="daily_approximate",
         is_superseded=0, superseded_by_record_id=None))
+    # the superseded pair hangs off the BARE pipeline run 2 (the FROZEN_FK
+    # probe-delete subject).
+    base = dict(base, pipeline_run_id=2)
     insert_row(c, "daily_management_records", dict(
         base, management_record_id=3, review_date="2026-08-11",
         data_asof_session="2026-08-11", mfe_mae_precision_level="intraday_estimated",
@@ -417,7 +420,7 @@ _DIFFERENT: dict[tuple[str, str], Callable[[Any], Any]] = {
     ("yfinance_calls", "ticker_count"): _const(5),
     ("account_equity_snapshots", "source"): _const("manual"),
     ("account_equity_snapshots", "basis"): _const("cash"),
-    ("daily_management_records", "record_type"): _const("daily_snapshot"),
+    ("daily_management_records", "record_type"): _const("event_log"),
     ("daily_management_records", "mfe_mae_precision_level"): _const("intraday_exact"),
     ("daily_management_records", "thesis_status"): _const("weakening"),
     ("daily_management_records", "stop_changed"): _const(1),

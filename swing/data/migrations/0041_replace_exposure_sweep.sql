@@ -81,6 +81,9 @@
 --         DROP TRIGGER trg_hsh_no_delete;   -- hypothesis_status_history
 --         DROP TRIGGER trg_hsh_no_replace;  -- hypothesis_status_history
 --         DROP TRIGGER trg_hsh_immutable;   -- hypothesis_status_history
+--         DROP TRIGGER trg_dmr_no_delete;   -- daily_management_records
+--         DROP TRIGGER trg_dmr_no_replace;  -- daily_management_records
+--         DROP TRIGGER trg_dmr_immutable;   -- daily_management_records
 --
 -- (iii) THE ONE REBUILT OBJECT (F-I2, CHARC-ruled): trg_provenance_corrections_
 --     append_only_update is DROPPED and CREATED again. Its new text is the
@@ -637,6 +640,127 @@ WHEN NOT COALESCE(
   AND (NEW.effective_to IS OLD.effective_to OR OLD.effective_to IS NULL)
 , 0)
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_hsh_immutable: hypothesis_status_history: this UPDATE changes a column outside the writer''s measured UPDATE set (none); write-once NULL to value: effective_to; hypothesis_status_history is cited and bound by the citation trigger (RD F-I1 row 9). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+-- ============================================================================
+-- 9. daily_management_records -- (c) (RD F-I1 row 10; S3-F2; RD's plan-stage
+--    FLIP tightening, 2026-09-24). The immutable set is always frozen; DATA (the
+--    reflow SET list, daily_management.py:621-640) moves only while the row is
+--    ACTIVE and stays so. Admitted transitions: ACTIVE_STAY (the reflow),
+--    FLIP (is_superseded 0 -> 1, DATA frozen -- step 3, :822), WINDOW (the
+--    pointer NULL -> value on a just-flipped row -- step 5, :875), FROZEN_FK
+--    (pipeline_run_id nulled on a superseded row with its run GONE, a17).
+--    is_superseded 1 -> 0 and the self-FK superseded_by_record_id value -> NULL
+--    / other have no admitting clause (no SET-NULL exemption on the self-FK: its
+--    only cascade is a delete trg_dmr_no_delete refuses). no_replace mirrors
+--    both partial UNIQUE indexes.
+-- ============================================================================
+CREATE TRIGGER trg_dmr_no_delete BEFORE DELETE ON daily_management_records
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_dmr_no_delete: daily_management_records rows are PERMANENT from migration 0041; a superseded snapshot is NEVER updated post-supersede (RD F-I1 row 10, S3-F2, the FLIP tightening). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_dmr_no_replace BEFORE INSERT ON daily_management_records
+WHEN COALESCE(EXISTS (SELECT 1 FROM daily_management_records
+              WHERE (NEW.management_record_id != -1 AND management_record_id = NEW.management_record_id)
+                 OR (record_type = 'daily_snapshot' AND NEW.record_type = 'daily_snapshot' AND trade_id = NEW.trade_id AND data_asof_session = NEW.data_asof_session AND ((is_superseded = 0 AND NEW.is_superseded = 0) OR mfe_mae_precision_level = NEW.mfe_mae_precision_level))), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_dmr_no_replace: daily_management_records rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_dmr_no_delete and reissue or move its id; a superseded snapshot is NEVER updated post-supersede (RD F-I1 row 10, S3-F2, the FLIP tightening). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_dmr_immutable
+BEFORE UPDATE ON daily_management_records
+FOR EACH ROW
+WHEN NOT COALESCE(
+      NEW.management_record_id IS OLD.management_record_id
+  AND NEW.trade_id IS OLD.trade_id
+  AND NEW.record_type IS OLD.record_type
+  AND NEW.review_date IS OLD.review_date
+  AND NEW.data_asof_session IS OLD.data_asof_session
+  AND NEW.mfe_mae_precision_level IS OLD.mfe_mae_precision_level
+  AND NEW.thesis_status IS OLD.thesis_status
+  AND NEW.prior_stop IS OLD.prior_stop
+  AND NEW.new_stop IS OLD.new_stop
+  AND NEW.stop_changed IS OLD.stop_changed
+  AND NEW.stop_change_reason IS OLD.stop_change_reason
+  AND NEW.volume_behavior IS OLD.volume_behavior
+  AND NEW.relative_strength_status IS OLD.relative_strength_status
+  AND NEW.market_regime_change IS OLD.market_regime_change
+  AND NEW.sector_condition_change IS OLD.sector_condition_change
+  AND NEW.news_or_event_update IS OLD.news_or_event_update
+  AND NEW.action_taken IS OLD.action_taken
+  AND NEW.action_reason IS OLD.action_reason
+  AND NEW.emotional_state IS OLD.emotional_state
+  AND NEW.rule_violation_suspected IS OLD.rule_violation_suspected
+  AND NEW.management_notes IS OLD.management_notes
+  AND (NEW.linked_trade_event_id IS OLD.linked_trade_event_id
+        OR (OLD.linked_trade_event_id IS NOT NULL AND NEW.linked_trade_event_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM trade_events WHERE id = OLD.linked_trade_event_id)))
+  AND (      -- ACTIVE_STAY: the reflow (daily_management.py:621); DATA free
+          (OLD.is_superseded = 0 AND OLD.superseded_by_record_id IS NULL
+             AND NEW.is_superseded = 0 AND NEW.superseded_by_record_id IS NULL)
+       -- FLIP: step 3 (:822), is_superseded 0 -> 1, DATA frozen (RD tightening)
+       OR (OLD.is_superseded = 0 AND NEW.is_superseded = 1
+             AND OLD.superseded_by_record_id IS NULL AND NEW.superseded_by_record_id IS NULL
+             AND NEW.current_price IS OLD.current_price
+             AND NEW.current_stop IS OLD.current_stop
+             AND NEW.current_size IS OLD.current_size
+             AND NEW.current_avg_cost IS OLD.current_avg_cost
+             AND NEW.open_R_effective IS OLD.open_R_effective
+             AND NEW.open_MFE_R_to_date IS OLD.open_MFE_R_to_date
+             AND NEW.open_MAE_R_to_date IS OLD.open_MAE_R_to_date
+             AND NEW.intraday_high IS OLD.intraday_high
+             AND NEW.intraday_low IS OLD.intraday_low
+             AND NEW.position_capital_utilization_pct IS OLD.position_capital_utilization_pct
+             AND NEW.position_capital_denominator_dollars IS OLD.position_capital_denominator_dollars
+             AND NEW.position_portfolio_heat_contribution_dollars IS OLD.position_portfolio_heat_contribution_dollars
+             AND NEW.maturity_stage IS OLD.maturity_stage
+             AND NEW.trail_MA_candidate_price IS OLD.trail_MA_candidate_price
+             AND NEW.trail_MA_period_days IS OLD.trail_MA_period_days
+             AND NEW.trail_MA_eligibility_flag IS OLD.trail_MA_eligibility_flag
+             AND NEW.pipeline_run_id IS OLD.pipeline_run_id
+             AND NEW.created_at IS OLD.created_at)
+       -- WINDOW: step 5 (:875), the pointer NULL -> value (S3-F2)
+       OR (OLD.is_superseded = 1 AND OLD.superseded_by_record_id IS NULL
+             AND NEW.is_superseded = 1 AND NEW.superseded_by_record_id IS NOT NULL
+             AND NEW.current_price IS OLD.current_price
+             AND NEW.current_stop IS OLD.current_stop
+             AND NEW.current_size IS OLD.current_size
+             AND NEW.current_avg_cost IS OLD.current_avg_cost
+             AND NEW.open_R_effective IS OLD.open_R_effective
+             AND NEW.open_MFE_R_to_date IS OLD.open_MFE_R_to_date
+             AND NEW.open_MAE_R_to_date IS OLD.open_MAE_R_to_date
+             AND NEW.intraday_high IS OLD.intraday_high
+             AND NEW.intraday_low IS OLD.intraday_low
+             AND NEW.position_capital_utilization_pct IS OLD.position_capital_utilization_pct
+             AND NEW.position_capital_denominator_dollars IS OLD.position_capital_denominator_dollars
+             AND NEW.position_portfolio_heat_contribution_dollars IS OLD.position_portfolio_heat_contribution_dollars
+             AND NEW.maturity_stage IS OLD.maturity_stage
+             AND NEW.trail_MA_candidate_price IS OLD.trail_MA_candidate_price
+             AND NEW.trail_MA_period_days IS OLD.trail_MA_period_days
+             AND NEW.trail_MA_eligibility_flag IS OLD.trail_MA_eligibility_flag
+             AND NEW.pipeline_run_id IS OLD.pipeline_run_id
+             AND NEW.created_at IS OLD.created_at)
+       -- FROZEN_FK: only the FK-driven nulling of pipeline_run_id (a17)
+       OR (OLD.is_superseded = 1 AND NEW.is_superseded = 1
+             AND NEW.superseded_by_record_id IS OLD.superseded_by_record_id
+             AND NEW.current_price IS OLD.current_price
+             AND NEW.current_stop IS OLD.current_stop
+             AND NEW.current_size IS OLD.current_size
+             AND NEW.current_avg_cost IS OLD.current_avg_cost
+             AND NEW.open_R_effective IS OLD.open_R_effective
+             AND NEW.open_MFE_R_to_date IS OLD.open_MFE_R_to_date
+             AND NEW.open_MAE_R_to_date IS OLD.open_MAE_R_to_date
+             AND NEW.intraday_high IS OLD.intraday_high
+             AND NEW.intraday_low IS OLD.intraday_low
+             AND NEW.position_capital_utilization_pct IS OLD.position_capital_utilization_pct
+             AND NEW.position_capital_denominator_dollars IS OLD.position_capital_denominator_dollars
+             AND NEW.position_portfolio_heat_contribution_dollars IS OLD.position_portfolio_heat_contribution_dollars
+             AND NEW.maturity_stage IS OLD.maturity_stage
+             AND NEW.trail_MA_candidate_price IS OLD.trail_MA_candidate_price
+             AND NEW.trail_MA_period_days IS OLD.trail_MA_period_days
+             AND NEW.trail_MA_eligibility_flag IS OLD.trail_MA_eligibility_flag
+             AND NEW.created_at IS OLD.created_at
+             AND (NEW.pipeline_run_id IS OLD.pipeline_run_id
+              OR (OLD.pipeline_run_id IS NOT NULL AND NEW.pipeline_run_id IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM pipeline_runs WHERE id = OLD.pipeline_run_id)))))
+, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_dmr_immutable: daily_management_records: an UPDATE outside the admitted transitions: ACTIVE_STAY (the reflow), FLIP (is_superseded 0 to 1, data frozen), WINDOW (the supersede pointer NULL to value) or FROZEN_FK (pipeline_run_id nulled after its run is gone); a superseded snapshot is NEVER updated post-supersede (RD F-I1 row 10, S3-F2, the FLIP tightening). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- The version bump is the FINAL statement before COMMIT.
 UPDATE schema_version SET version = 41;

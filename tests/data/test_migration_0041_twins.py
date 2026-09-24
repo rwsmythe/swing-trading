@@ -52,7 +52,7 @@ TWIN_TABLES: tuple[str, ...] = (
     "reconciliation_runs", "reconciliation_discrepancies",
     "reconciliation_corrections", "schwab_api_calls", "yfinance_calls",
     "account_equity_snapshots", "risk_policy", "hypothesis_registry",
-    "hypothesis_status_history",
+    "hypothesis_status_history", "daily_management_records",
 )
 PAIR = pytest.mark.parametrize("version", [40, 41])
 
@@ -79,6 +79,13 @@ PARENT_DELETE: dict[tuple[str, str], tuple[str, tuple]] = {
         ("DELETE FROM pipeline_runs WHERE id = ?", (2,)),
     ("yfinance_calls", "pipeline_run_id"):
         ("DELETE FROM pipeline_runs WHERE id = ?", (2,)),
+}
+
+
+# A fresh row that must not collide with a partial UNIQUE key.
+FRESH_OVERRIDES: dict[str, dict[str, Any]] = {
+    "daily_management_records": {"review_date": "2026-08-20",
+                                 "data_asof_session": "2026-08-20"},
 }
 
 
@@ -281,6 +288,7 @@ def test_c4d_fk_null_to_value(tmp_path: Path, table: str, f: FCol,
     try:
         spec = SPEC[table]
         row = fresh_row(c, table) if spec.conflict_keys else _fresh_pk_row(c, table)
+        row.update(FRESH_OVERRIDES.get(table, {}))
         value = _fk_read(table, f.col, _subject(table, f.col))(c)[0]
         row[f.col] = None
         new_pk = 900
