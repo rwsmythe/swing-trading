@@ -3168,10 +3168,10 @@ def _status_interval_drift(
 
     The candidate row and its `candidate_criteria` are deliberately NOT tracked
     here, and the reason is a schema guard, not a grep: the candidate row is
-    held by migration 0037's `trg_candidates_no_update` / `_no_delete` /
-    `_no_replace`, and its criteria by migration 0041's `trg_cc_no_update` /
-    `_no_delete` / `_no_replace`, so there is no path for either to drift
-    through.
+    held by migration 0037's candidates barrier triple (`trg_candidates_*`,
+    named in full only at its reader -- the epoch single-source test), and its
+    criteria by migration 0041's `trg_cc_no_update` / `_no_delete` /
+    `_no_replace`, so there is no path for either to drift through.
     """
     frozen = {
         "hypothesis_id": int(correction.cited_hypothesis_id),
