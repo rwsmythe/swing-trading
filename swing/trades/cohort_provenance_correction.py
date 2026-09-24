@@ -3167,11 +3167,11 @@ def _status_interval_drift(
     true; it must still not be reported as no drift.
 
     The candidate row and its `candidate_criteria` are deliberately NOT tracked
-    here, and the reason is checked rather than assumed: `grep -rniE
-    "update candidate_criteria|delete from candidate_criteria"` over all of
-    `swing/` returns ZERO sites, and `candidates` itself is held by an
-    `ON DELETE RESTRICT` FK. They are written once at run creation and never
-    mutated, so there is no live path for them to drift through.
+    here, and the reason is a schema guard, not a grep: the candidate row is
+    held by migration 0037's `trg_candidates_no_update` / `_no_delete` /
+    `_no_replace`, and its criteria by migration 0041's `trg_cc_no_update` /
+    `_no_delete` / `_no_replace`, so there is no path for either to drift
+    through.
     """
     frozen = {
         "hypothesis_id": int(correction.cited_hypothesis_id),
