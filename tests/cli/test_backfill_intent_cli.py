@@ -550,8 +550,10 @@ def test_backfill_prompt_render_failure_zero_written_raises_as_today(
 
 
 def test_backfill_valueerror_diagnostic_ascii_coerced(tmp_path: Path) -> None:
-    """Codex R3 Major: swing/cli.py:2187's `except ValueError as exc: raise
-    click.ClickException(str(exc)) from exc` hands `update_entry_intent`'s
+    """Codex R3 Major (cited by the reviewer at swing/cli.py:2187, the
+    pre-fix line -- line numbers below it drift with each edit): the
+    `except ValueError as exc: raise click.ClickException(str(exc)) from
+    exc` handler hands `update_entry_intent`'s
     message -- which embeds the OPERATOR'S OWN raw prompt answer via
     `entry_intent!r` -- to Click's own exception renderer un-ascii-safe'd.
     This is the SAME defect class item (a) already fixes for the header/seam/
