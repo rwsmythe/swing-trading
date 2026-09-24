@@ -1140,3 +1140,61 @@ def test_raw_insert_of_a_trade_carrying_the_value_aborts_b22_204(
 
 def test_amn_candidate_constant_is_the_live_one() -> None:
     assert AMN_CANDIDATE_ID == 11926
+
+
+# ---------------------------------------------------------------------------
+# RULING R6-1 (RD 1a + CHARC 1b; Codex R6 Critical 1): the SQL twin of the
+# service's `placement_after_entry` -- one conjunct inside trg_eia_tier2's
+# placement clause, `NEW.placement_session <= NEW.trade_entry_date`. Trade 20
+# enters 2026-08-07 (a Friday); one session later is 2026-08-10. The pair is
+# ONE mutation apart (placement_session only): a telemetry row viewed 08-05 is
+# in the PRE window of both placements, so only the new bound separates them.
+# ---------------------------------------------------------------------------
+_R6_VIEW = {"first": "2026-08-05T09:00:00", "ever": 0}
+
+
+def _placement_row(placement: str, view: dict) -> dict[str, Any]:
+    return tier2_row(placement_session=placement, admitted_leg="telemetry",
+                     leg_evidence_json=_telemetry_evidence([view]))
+
+
+@pytest.mark.parametrize("placement,admits", [("2026-08-10", False),
+                                              ("2026-08-07", True)])
+def test_a_placement_after_the_entry_is_the_triggers_own_abort_b22_243(
+        tmp_path: Path, placement: str, admits: bool) -> None:
+    """(b) The raw INSERT on plain sqlite3 of a placement one session after
+    ``trade_entry_date`` is trg_eia_tier2's OWN ABORT, with its message --
+    never a CHECK, an FK or an OperationalError. (c) Its boundary twin at
+    equality passes to the legs (and here lands, leg 1 speaking)."""
+    c = _at_placement(tmp_path, placement, f"r6_{placement}")
+    try:
+        view = _speaking_row(c, **_R6_VIEW)
+        row = _placement_row(placement, view)
+        if admits:
+            assert _plant(c, row) is None
+            return
+        with pytest.raises(sqlite3.IntegrityError) as exc:
+            insert_row(c, "entry_intent_attestations", row)
+        assert TIER2_RAISE in str(exc.value), str(exc.value)
+        assert "is after the trade entry date" in str(exc.value), str(exc.value)
+        assert c.execute("SELECT COUNT(*) FROM entry_intent_attestations"
+                         ).fetchone() == (0,)
+    finally:
+        c.close()
+
+
+@pytest.mark.parametrize("placement,admits", [("2026-08-10", False),
+                                              ("2026-08-07", True)])
+def test_the_model_mirror_bounds_the_placement_by_the_entry_b22_246(
+        placement: str, admits: bool) -> None:
+    """(e) EntryIntentAttestation.__post_init__ refuses the one-mutation row
+    and admits equality (the #11 mirror of the SQL twin)."""
+    view = {**LVE_ROW5, "view_event_id": 6, "view_session_date": "2026-08-05",
+            "first_viewed_ts": "2026-08-05T09:00:00", "actionable_ever_viewed": 0}
+    row = _placement_row(placement, view)
+    if admits:
+        _model(row)
+        return
+    with pytest.raises(ValueError, match="EntryIntentAttestation: the placement "
+                                         "session must not be after"):
+        _model(row)

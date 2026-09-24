@@ -650,7 +650,8 @@ BEGIN SELECT RAISE(ABORT, 'entry_intent_attestations: outcome_known_at is not th
 -- ticker at or before the entry -- E9), the placement session is paired with
 -- its source (a fallback IS the entry date; an envelope-sourced value is the
 -- service's derivation, stored and bounded here but never re-read from the
--- envelope -- RULING G1b), and the admitted leg's evidence is EXACTLY what the
+-- envelope -- RULING G1b) and is never after the trade's entry date (RULING
+-- R6-1, either source), and the admitted leg's evidence is EXACTLY what the
 -- leg decides on, bound by VALUE.
 --   SPEAK = the ticker's latch_view_events rows with
 --           date(first_viewed_ts) >= '2026-08-03' (recorded under the
@@ -673,9 +674,19 @@ WHEN NOT COALESCE(NEW.admission_tier IS NOT 'contemporaneous_record' OR (
                              WHERE i.actual_broker_order_id IS NOT NULL
                                AND i.ticker = (SELECT ticker FROM trades WHERE id = NEW.trade_id)
                                AND i.detection_date <= NEW.trade_entry_date)))
-    AND (NEW.placement_session_source = 'schwab_envelope'
-         OR (NEW.placement_session_source = 'entry_date_fallback'
-             AND NEW.placement_session = NEW.trade_entry_date))
+    -- RULING R6-1: a placement is never AFTER the trade's entry session, for
+    -- BOTH sources (the service's `placement_after_entry`, refused first and
+    -- typed; this is the backstop for a raw write). Two stored columns, no
+    -- envelope read (RULING G1b). No NULL enters the conjunct on a storable
+    -- row: trade_entry_date is a NOT NULL column (this file, line 393), and
+    -- the paired-tier CHECK makes placement_session NOT NULL on this tier
+    -- ("AND placement_session IS NOT NULL", line 474, its
+    -- contemporaneous_record branch); and since this BEFORE trigger runs ahead of that CHECK, a NULL
+    -- would make the COALESCE fail CLOSED, never open.
+    AND ((NEW.placement_session_source = 'schwab_envelope'
+          OR (NEW.placement_session_source = 'entry_date_fallback'
+              AND NEW.placement_session = NEW.trade_entry_date))
+         AND NEW.placement_session <= NEW.trade_entry_date)
     AND NOT EXISTS (
         SELECT 1 FROM latch_view_events v
         WHERE v.ticker = (SELECT ticker FROM trades WHERE id = NEW.trade_id)
@@ -755,7 +766,7 @@ WHEN NOT COALESCE(NEW.admission_tier IS NOT 'contemporaneous_record' OR (
                      CASE WHEN json_valid(NEW.leg_evidence_json)
                           THEN NEW.leg_evidence_json ELSE '{}' END)) = 2))),
     0)
-BEGIN SELECT RAISE(ABORT, 'entry_intent_attestations: the contemporaneous_record admission is not supported by the record (a structural record exists for the order, the placement session is not the recorded one, the instrument offered the order, or the admitted leg and its evidence do not match)'); END;
+BEGIN SELECT RAISE(ABORT, 'entry_intent_attestations: the contemporaneous_record admission is not supported by the record (a structural record exists for the order, the placement session is not the recorded one or is after the trade entry date, the instrument offered the order, or the admitted leg and its evidence do not match)'); END;
 
 -- The structural tier (F3 (a) narrowed by N5 (b)): the cited LINK is the
 -- fill's order, and the probe JSON binds to the row by VALUE. The

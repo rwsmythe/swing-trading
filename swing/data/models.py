@@ -3806,6 +3806,13 @@ class EntryIntentAttestation:
         if (self.cited_latch_terminal_session is not None
                 and not self.cited_latch_terminal_session < self.trade_entry_date):
             bad("the cited death must be strictly BEFORE the entry session")
+        # RULING R6-1: trg_eia_tier2's `placement_session <= trade_entry_date`
+        # twin (tier 2 only: placement is NULL on structural by the paired
+        # CHECK). Bytewise, sound because both are shape-checked above.
+        if (self.placement_session is not None
+                and not self.placement_session <= self.trade_entry_date):
+            bad("the placement session must not be after the trade's entry "
+                "session")
         if (self.admitted_leg == "deployment"
                 and not self.placement_session < ATTESTATION_DEPLOYMENT_SESSION_BOUND):
             bad("the deployment leg requires placement before 2026-08-03")

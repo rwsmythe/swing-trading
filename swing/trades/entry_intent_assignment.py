@@ -474,6 +474,27 @@ def _detect_tier(conn: sqlite3.Connection, cfg,
             placement, source = entry, "entry_date_fallback"
         elif _is_iso_date(placement):
             source = "schwab_envelope"
+            # RULING R6-1 (RD 1a, CHARC 1b): a placement STRICTLY AFTER the
+            # trade's entry session is a record that contradicts itself (an
+            # order is entered before it fills), refused BEFORE either leg
+            # runs; equality passes and nothing substitutes one date for the
+            # other. The comparison is BYTEWISE, and it is sound only because
+            # BOTH operands are shape-checked canonical YYYY-MM-DD first
+            # (`entry` at step 1 by `_check_source_dates`, `placement` by
+            # `_is_iso_date` just above) -- which is what keeps it out of D38's
+            # lexical class. The fallback needs no branch: its placement IS
+            # the entry date. SQL twin: trg_eia_tier2's placement clause.
+            if placement > entry:
+                raise _RefusalError(
+                    "placement_after_entry",
+                    f"fill {fill_id}'s Schwab envelope was entered "
+                    f"{ascii(placement)}, after the trade's entry session "
+                    f"{ascii(entry)}; an order is entered before it fills, so "
+                    "the record contradicts itself and nothing is assigned. "
+                    "If the trade's entry date is the wrong one, correct it "
+                    "through `swing journal correct-entry-date`; if the "
+                    "envelope is another order's document, that is an "
+                    "identity question for 22-A's path, not this surface")
         else:
             raise _RefusalError(
                 "unprovable",

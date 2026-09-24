@@ -1110,3 +1110,121 @@ def test_entry_intent_param_echo_is_ascii_b22_227() -> None:
         EntryIntentParam().convert(_SNOWMAN, None, None)
     assert exc.value.message.isascii(), exc.value.message
     assert ascii(_SNOWMAN) in exc.value.message
+
+
+# ---------------------------------------------------------------------------
+# RULING R6-1 (RD 1a + CHARC 1b; Codex R6 Critical 1): a placement session
+# STRICTLY AFTER the trade's entry date is the typed refusal
+# `placement_after_entry`, decided at the ISO-shape step BEFORE either leg.
+# Equality passes. Trade 20 enters 2026-08-07 (a Friday); one session later
+# is 2026-08-10 (a Monday).
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_an_envelope_placement_one_session_after_the_entry_refuses_b22_242(
+        tmp_path: Path, dry_run: bool) -> None:
+    """(a) One mutation of trade 20's world: the envelope's entry_date moves to
+    the next session. Pre-fix: `instrument_existed` (leg 2 read 08-10 as a
+    post-deployment placement). Post-fix: `placement_after_entry`, nothing
+    written, both dates named, the recovery named, ASCII."""
+    c, cfg, path = _world(tmp_path, f"b242-{dry_run}",
+                          env=envelope(entry_date="2026-08-10"))
+    try:
+        r = _assign(c, cfg, dry_run=dry_run)
+        assert not c.in_transaction
+    finally:
+        c.close()
+    assert (r.admitted, r.refusal_code) == (False, "placement_after_entry"), (
+        r.refusal_code, r.message)
+    assert r.message.isascii(), r.message
+    assert ascii("2026-08-10") in r.message and ascii("2026-08-07") in r.message
+    assert "fill 41" in r.message
+    assert "swing journal correct-entry-date" in r.message
+    assert "22-A" in r.message
+    assert r.attestation is None and r.attestation_id is None
+    assert r.tier is None and r.admitted_leg is None and r.placement_session is None
+    _nothing_written(path)
+
+
+@pytest.mark.parametrize("speaks", [False, True])
+def test_an_envelope_placement_equal_to_the_entry_passes_the_bound_b22_244(
+        tmp_path: Path, speaks: bool) -> None:
+    """(c) The boundary twin: envelope entry_date == trade entry_date passes
+    this bound and the LEGS decide -- silent telemetry refuses on leg 2
+    (08-07 is after the deployment session); a speaking row before the
+    placement admits on leg 1."""
+    c, cfg, path = _world(tmp_path, f"b244-{speaks}",
+                          env=envelope(entry_date="2026-08-07"))
+    try:
+        if speaks:
+            _speaking(c, first="2026-08-05T09:00:00", ever=0)
+        r = _assign(c, cfg)
+    finally:
+        c.close()
+    if speaks:
+        assert r.admitted, r.message
+        assert (r.admitted_leg, r.placement_session) == ("telemetry", "2026-08-07")
+        row = _row(path)
+        assert (row["placement_session"], row["trade_entry_date"],
+                row["placement_session_source"]) == (
+            "2026-08-07", "2026-08-07", "schwab_envelope")
+    else:
+        assert (r.admitted, r.refusal_code) == (False, "instrument_existed"), r.message
+        _nothing_written(path)
+
+
+# The three LIVE earlier shapes (RD's census at RULING R6-1a: trade 19 FTRE
+# envelope 07-23 / entry 07-31; trade 20 AMN 08-01 / 08-07; trade 22 ORKA
+# 08-09 / 08-10), transplanted onto trade 20's fixture world as dates only --
+# the live DB is never read. Their verdicts are the PRE-fix verdicts.
+_EARLIER_SHAPES = {
+    "trade19_ftre": ("2026-07-31", "2026-07-23", (True, None, "deployment")),
+    "trade20_amn": ("2026-08-07", "2026-08-01", (True, None, "deployment")),
+    "trade22_orka": ("2026-08-10", "2026-08-09",
+                     (False, "instrument_existed", None)),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_EARLIER_SHAPES))
+def test_the_live_earlier_placement_shapes_keep_their_verdicts_b22_245(
+        tmp_path: Path, shape: str) -> None:
+    """(d) An envelope placement EARLIER than the entry is untouched by the
+    bound; trade 20 admits on leg 2 exactly as before."""
+    entry, placement, expected = _EARLIER_SHAPES[shape]
+    c, cfg, path = _world(tmp_path, shape, env=envelope(entry_date=placement),
+                          entry_date=entry)
+    try:
+        c.execute("UPDATE fills SET fill_datetime = ? WHERE fill_id = 41",
+                  (f"{entry}T16:00:00",))
+        c.commit()
+        r = _assign(c, cfg)
+    finally:
+        c.close()
+    assert (r.admitted, r.refusal_code, r.admitted_leg) == expected, r.message
+    if r.admitted:
+        row = _row(path)
+        assert (row["placement_session"], row["trade_entry_date"]) == (
+            placement, entry)
+
+
+def test_cell16_probe_flips_from_admit_to_placement_after_entry_b22_247(
+        tmp_path: Path) -> None:
+    """(f) Codex R6's reproduction, verbatim in shape (cell 16's probe):
+    entry 08-07, envelope 08-09, a silent view first seen 08-08 -- AFTER the
+    entry. Pre-fix it was ADMITTED on leg 1 with placement_session 08-09.
+    The control (envelope 08-06) still refuses `instrument_existed`."""
+    results = {}
+    for label, env_date in (("control", "2026-08-06"), ("probe", "2026-08-09")):
+        c, cfg, path = _world(tmp_path, label, env=envelope(entry_date=env_date))
+        try:
+            _speaking(c, first="2026-08-08T09:00:00", ever=0, session="2026-08-08",
+                      last="2026-08-08T09:30:00")
+            results[label] = _assign(c, cfg)
+        finally:
+            c.close()
+        _nothing_written(path)
+    control, probe = results["control"], results["probe"]
+    assert (control.admitted, control.refusal_code) == (False, "instrument_existed")
+    assert (probe.admitted, probe.refusal_code) == (False, "placement_after_entry"), (
+        probe.admitted_leg, probe.message)
+    assert ascii("2026-08-09") in probe.message and ascii("2026-08-07") in probe.message
+

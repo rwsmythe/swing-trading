@@ -93,6 +93,8 @@ def _p(kind: str, code: str | None, sql_tests: tuple[str, ...], note: str) -> Pr
 # again: manifest e7125868... -> 636c8a6c...). RULING R5-1 moved
 # trg_eia_tier2 (15ac12be... -> a791fd7f...): the telemetry members must be
 # JSON objects, mapped below as `telemetry_members_are_objects`.
+# RULING R6-1 moved trg_eia_tier2 again (a791fd7f... -> 2d6cc25b...): a
+# placement is never after the entry, mapped as `placement_not_after_entry`.
 # ---------------------------------------------------------------------------
 ADMISSION_MAP: dict[tuple[str, str], AdmissionEntry] = {
     ("trigger", "trg_eia_trade_binding"): AdmissionEntry(
@@ -164,7 +166,7 @@ ADMISSION_MAP: dict[tuple[str, str], AdmissionEntry] = {
                 "_check_outcome runs the trigger's own MIN(fill_datetime)"),
         }),
     ("trigger", "trg_eia_tier2"): AdmissionEntry(
-        "a791fd7f0a4ccdb8bec58eba314034b6fb164ff34e86e154cf06dc473776f43e", {
+        "2d6cc25bcf5c394c2eefa289e308470bf178df0212aa5393160c6cb0eae6e9db", {
             "no_link_names_the_order": _p(
                 DERIVED_VALUE, None, ("b22_64",),
                 "the tier is DETECTED: a link for the order routes structural "
@@ -178,6 +180,13 @@ ADMISSION_MAP: dict[tuple[str, str], AdmissionEntry] = {
             "placement_source_pairing": _p(
                 DERIVED_VALUE, None, (),
                 "a fallback placement IS the trade's entry_date by construction"),
+            "placement_not_after_entry": _p(
+                REFUSAL, "placement_after_entry", ("b22_243",),
+                "RULING R6-1: _detect_tier at the ISO-shape step, before either "
+                "leg -- an envelope placement strictly after the trade's "
+                "entry_date refuses (service twin b22_242, b22_247; boundary "
+                "b22_244; earlier shapes b22_245); a fallback placement IS the "
+                "entry_date, so the bound holds there by construction"),
             "no_pre_row_offered_the_order": _p(
                 REFUSAL, "instrument_offered", ("b22_67",),
                 "_detect_tier over _pre_rows: the trigger's own PRE predicate"),
@@ -580,6 +589,9 @@ REFUSAL_FIXTURES = {
     "an_envelope_placement_is_a_date": (
         lambda t, n: _base(t, n, env=envelope(entry_date="2026-8-01")), {},
         "unprovable"),
+    "placement_not_after_entry": (
+        lambda t, n: _base(t, n, env=envelope(entry_date="2026-08-10")), {},
+        "placement_after_entry"),
     "copied_date_shapes": (
         lambda t, n: _base(t, n, entry_date="2026-8-07"), {},
         "source_date_malformed"),
