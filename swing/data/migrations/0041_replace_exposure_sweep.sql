@@ -54,6 +54,12 @@
 --         DROP TRIGGER trg_pde_no_delete;   -- pattern_detection_events
 --         DROP TRIGGER trg_pde_no_replace;  -- pattern_detection_events
 --         DROP TRIGGER trg_lve_first_view_immutable;  -- latch_view_events (F-I5)
+--         DROP TRIGGER trg_rr_no_delete;   -- reconciliation_runs
+--         DROP TRIGGER trg_rr_no_replace;  -- reconciliation_runs
+--         DROP TRIGGER trg_rr_immutable;   -- reconciliation_runs
+--         DROP TRIGGER trg_rd_no_delete;   -- reconciliation_discrepancies
+--         DROP TRIGGER trg_rd_no_replace;  -- reconciliation_discrepancies
+--         DROP TRIGGER trg_rd_immutable;   -- reconciliation_discrepancies
 --
 -- (iii) THE ONE REBUILT OBJECT (F-I2, CHARC-ruled): trg_provenance_corrections_
 --     append_only_update is DROPPED and CREATED again. Its new text is the
@@ -285,6 +291,79 @@ BEFORE UPDATE OF candidate_id, evaluation_run_id, detection_date, surface,
 ON latch_view_events
 FOR EACH ROW
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_lve_first_view_immutable: the latch_view_events first-view columns (candidate_id, evaluation_run_id, detection_date, surface, view_session_date, latch_state_at_first_view, actionable_at_first_view) are IMMUTABLE after insert: leg-1 evidence (0032, 0033, 22-B R0.K; RD F-I5). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+-- ============================================================================
+-- 4. reconciliation_runs / reconciliation_discrepancies -- (c) (RD F-I1 row 11):
+--    no_delete + no_replace (PK only) + a column-scoped immutability twin. The
+--    mutable set is the writers' MEASURED UPDATE set, read at all twelve sites
+--    (repos/reconciliation.py:191/:235/:399/:412/:442, trades/reconciliation.py:721,
+--    trades/reconciliation_auto_correct.py:996/:1002/:1583/:1976/:2053/:2623);
+--    everything else is immutable BY EXCLUSION, incl. the as-detected evidence
+--    (expected_value_json / actual_value_json) and the source artifact sha. The
+--    SET NULL FKs admit value -> NULL only with the parent row GONE (a17):
+--    discrepancies.fill_id is REACHABLE (split_into_partials deletes the fill,
+--    reconciliation_auto_correct.py:3226).
+-- ============================================================================
+CREATE TRIGGER trg_rr_no_delete BEFORE DELETE ON reconciliation_runs
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rr_no_delete: reconciliation_runs rows are PERMANENT from migration 0041; a reconciliation run carries its identity and source artifact as detected (RD F-I1 row 11). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_rr_no_replace BEFORE INSERT ON reconciliation_runs
+WHEN COALESCE(EXISTS (SELECT 1 FROM reconciliation_runs
+              WHERE (NEW.run_id != -1 AND run_id = NEW.run_id)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rr_no_replace: reconciliation_runs rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_rr_no_delete and reissue or move its id; a reconciliation run carries its identity and source artifact as detected (RD F-I1 row 11). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_rr_immutable
+BEFORE UPDATE ON reconciliation_runs
+FOR EACH ROW
+WHEN NOT COALESCE(
+      NEW.run_id IS OLD.run_id
+  AND NEW.source IS OLD.source
+  AND NEW.source_artifact_path IS OLD.source_artifact_path
+  AND NEW.source_artifact_sha256 IS OLD.source_artifact_sha256
+  AND NEW.period_start IS OLD.period_start
+  AND NEW.period_end IS OLD.period_end
+  AND NEW.started_ts IS OLD.started_ts
+  AND (NEW.schwab_api_call_id IS OLD.schwab_api_call_id
+        OR (OLD.schwab_api_call_id IS NOT NULL AND NEW.schwab_api_call_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM schwab_api_calls WHERE call_id = OLD.schwab_api_call_id)))
+, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rr_immutable: reconciliation_runs: this UPDATE changes a column outside the writer''s measured UPDATE set (state, finished_ts, account_equity_journal_dollars, account_equity_source_dollars, equity_delta_dollars, trades_reconciled_count, fills_reconciled_count, discrepancies_count, unresolved_discrepancies_count, summary_json, notes, error_message); FK nulled only after its parent row is gone: schwab_api_call_id; a reconciliation run carries its identity and source artifact as detected (RD F-I1 row 11). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_rd_no_delete BEFORE DELETE ON reconciliation_discrepancies
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rd_no_delete: reconciliation_discrepancies rows are PERMANENT from migration 0041; a discrepancy carries its identity and as-detected evidence (RD F-I1 row 11). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_rd_no_replace BEFORE INSERT ON reconciliation_discrepancies
+WHEN COALESCE(EXISTS (SELECT 1 FROM reconciliation_discrepancies
+              WHERE (NEW.discrepancy_id != -1 AND discrepancy_id = NEW.discrepancy_id)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rd_no_replace: reconciliation_discrepancies rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_rd_no_delete and reissue or move its id; a discrepancy carries its identity and as-detected evidence (RD F-I1 row 11). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_rd_immutable
+BEFORE UPDATE ON reconciliation_discrepancies
+FOR EACH ROW
+WHEN NOT COALESCE(
+      NEW.discrepancy_id IS OLD.discrepancy_id
+  AND NEW.run_id IS OLD.run_id
+  AND NEW.discrepancy_type IS OLD.discrepancy_type
+  AND NEW.ticker IS OLD.ticker
+  AND NEW.field_name IS OLD.field_name
+  AND NEW.expected_value_json IS OLD.expected_value_json
+  AND NEW.actual_value_json IS OLD.actual_value_json
+  AND NEW.delta_text IS OLD.delta_text
+  AND NEW.created_at IS OLD.created_at
+  AND (NEW.trade_id IS OLD.trade_id
+        OR (OLD.trade_id IS NOT NULL AND NEW.trade_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM trades WHERE id = OLD.trade_id)))
+  AND (NEW.fill_id IS OLD.fill_id
+        OR (OLD.fill_id IS NOT NULL AND NEW.fill_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM fills WHERE fill_id = OLD.fill_id)))
+  AND (NEW.cash_movement_id IS OLD.cash_movement_id
+        OR (OLD.cash_movement_id IS NOT NULL AND NEW.cash_movement_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM cash_movements WHERE id = OLD.cash_movement_id)))
+  AND (NEW.linked_daily_management_record_id IS OLD.linked_daily_management_record_id
+        OR (OLD.linked_daily_management_record_id IS NOT NULL AND NEW.linked_daily_management_record_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM daily_management_records WHERE management_record_id = OLD.linked_daily_management_record_id)))
+, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rd_immutable: reconciliation_discrepancies: this UPDATE changes a column outside the writer''s measured UPDATE set (resolution, resolution_reason, resolved_at, resolved_by, ambiguity_kind, mistake_tag_assigned, material_to_review); FK nulled only after its parent row is gone: trade_id, fill_id, cash_movement_id, linked_daily_management_record_id; a discrepancy carries its identity and as-detected evidence (RD F-I1 row 11). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- The version bump is the FINAL statement before COMMIT.
 UPDATE schema_version SET version = 41;

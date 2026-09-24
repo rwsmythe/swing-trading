@@ -226,6 +226,14 @@ def seed_world(c: sqlite3.Connection) -> dict[str, Any]:
         call_id=1, ts=TS, call_type="download_single", ticker="AMN",
         ticker_count=None, response_time_ms=10, status="success", rows_returned=5,
         error_message=None, pipeline_run_id=1, surface="pipeline"))
+    # call 2 of each on the BARE pipeline run 2: the pipeline_run_id probe
+    # delete subjects.
+    insert_row(c, "schwab_api_calls", dict(
+        call_id=2, ts=TS, endpoint="accounts.details", status="success",
+        pipeline_run_id=2, surface="pipeline", environment="production"))
+    insert_row(c, "yfinance_calls", dict(
+        call_id=2, ts=TS, call_type="download_single", ticker="AMN",
+        status="success", pipeline_run_id=2, surface="pipeline"))
     ids["rr"] = insert_row(c, "reconciliation_runs", dict(
         run_id=1, source="schwab_api", source_artifact_path="schwab_api:call/1",
         source_artifact_sha256="abc", period_start="2026-08-01",
@@ -261,6 +269,15 @@ def seed_world(c: sqlite3.Connection) -> dict[str, Any]:
         linked_daily_management_record_id=1, ticker="AMN", field_name="price",
         expected_value_json="36.43", actual_value_json="36.44", delta_text="0.01",
         material_to_review=1, resolution="unresolved", created_at=TS))
+    # discrepancy 2 hangs off the BARE trade 21 (no trade_events / dmr
+    # children): the rd.trade_id probe-delete subject.
+    seed_trade20(c, id=21, ticker="BBB")
+    insert_row(c, "reconciliation_discrepancies", dict(
+        discrepancy_id=2, run_id=1, discrepancy_type="stop_mismatch",
+        trade_id=21, fill_id=None, cash_movement_id=None,
+        linked_daily_management_record_id=None, ticker="BBB", field_name="stop",
+        expected_value_json="1.0", actual_value_json="1.1", delta_text="0.1",
+        material_to_review=0, resolution="unresolved", created_at=TS))
     ids["rc"] = insert_row(c, "reconciliation_corrections", dict(
         correction_id=1, discrepancy_id=1, correction_action="auto_applied",
         correction_choice=None, affected_table="fills", affected_row_id=ENTRY_FILL,
@@ -390,6 +407,10 @@ _DIFFERENT: dict[tuple[str, str], Callable[[Any], Any]] = {
     ("schwab_api_calls", "status"): _const("error"),
     ("schwab_api_calls", "surface"): _const("cli"),
     ("schwab_api_calls", "environment"): _const("sandbox"),
+    ("schwab_api_calls", "linked_snapshot_id"): _const(1),
+    ("schwab_api_calls", "linked_reconciliation_run_id"): _const(1),
+    ("schwab_api_calls", "linked_correction_id"): _const(1),
+    ("review_log", "superseded_by_correction_id"): _const(1),
     ("yfinance_calls", "call_type"): _const("download_intraday"),
     ("yfinance_calls", "status"): _const("empty"),
     ("yfinance_calls", "surface"): _const("web"),
