@@ -33,6 +33,7 @@ from swing.data.repos.hypothesis_status_history import (
 )
 from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.metrics.cohort import (
+    assert_intent_exclusion_disjoint,
     list_closed_trades_for_cohort,
     list_intent_excluded_for_cohort,
 )
@@ -435,6 +436,15 @@ def _build_cohort_vm(
         TransitionEntry.from_history(h)
         for h in history_newest_first[:TRANSITION_TIMELINE_CAP]
     )
+    # Arc 22-B (N3 (a)): the clause-(4) trades, NAMED. The same read at the
+    # same point as before (it was the constructor's last argument, after the
+    # history read; nothing between reads the DB), so R2-04's order holds.
+    intent_excluded = list_intent_excluded_for_cohort(
+        conn, hypothesis_label=name, state_filter=("closed", "reviewed"))
+    # R1-3 (RULING R1-3-SHAPE-EXEC): a trade the intent-filtered load
+    # returned AND the naming read named was moved by a write between the
+    # two reads -- refuse (typed), never the contradictory card row.
+    assert_intent_exclusion_disjoint([t.id for t in in_cohort], intent_excluded)
 
     return CohortProgressVM(
         hypothesis_id=hyp_id,
@@ -458,9 +468,7 @@ def _build_cohort_vm(
         preregistered_decision_criteria=preregistered_decision_criteria,
         tier2_excluded=cohort_read.excluded_among(t.id for t in in_cohort),
         tier2_observed=cohort_read.observed_among(t.id for t in trades),
-        # Arc 22-B (N3 (a)): the clause-(4) trades, NAMED.
-        intent_excluded=list_intent_excluded_for_cohort(
-            conn, hypothesis_label=name, state_filter=("closed", "reviewed")),
+        intent_excluded=intent_excluded,
     )
 
 

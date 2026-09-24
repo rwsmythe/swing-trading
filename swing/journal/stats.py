@@ -377,7 +377,10 @@ def compute_hypothesis_progress_breakdown(
         list_closed_trades,
         list_open_trades,
     )
-    from swing.metrics.cohort import list_intent_excluded_for_cohort
+    from swing.metrics.cohort import (
+        assert_intent_exclusion_disjoint,
+        list_intent_excluded_for_cohort,
+    )
     from swing.metrics.cohort_intent import trade_counts_toward_cohort
     from swing.recommendations.hypothesis import (
         _label_matches_hypothesis,
@@ -458,6 +461,11 @@ def compute_hypothesis_progress_breakdown(
             named for named in list_intent_excluded_for_cohort(
                 conn, hypothesis_label=h.name, state_filter=None)
             if named[0] in loaded_ids)
+        # R1-3 (RULING R1-3-SHAPE-EXEC): a trade the intent test admitted
+        # above AND named here was moved by a write between the two reads --
+        # refuse the row (typed), never render the contradiction.
+        assert_intent_exclusion_disjoint(
+            [t.id for t in cohort_closed + cohort_open], intent_excluded)
         rows.append(HypothesisProgress(
             hypothesis_id=h.id,
             name=h.name,

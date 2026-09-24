@@ -339,12 +339,18 @@ def test_an_else_branch_coercing_unknown_to_standard_fails_b22_136(
     _seed_named_world(conn, cfg)
     assert original(entry_intent=UNINTENDED, hypothesis_name=H1) is False
     monkeypatch.setattr(ci, "trade_counts_toward_cohort", coercing)
+    from swing.metrics.cohort import CohortReadRacedError
     from swing.recommendations.hypothesis import compute_tripwire_status
 
-    tw = compute_tripwire_status(conn, hypothesis_id=_hid(conn, H1),
-                                 starting_equity=7500.0)
-    assert tw.current_sample == 2  # the coerced trade is counted
-    with pytest.raises(AssertionError):
+    # Since R1-3 (RULING R1-3-SHAPE-EXEC) the coerced count meets the naming
+    # read, which still names trade 2, so the disjointness assert refuses the
+    # render (typed) instead of emitting it: the coerced trade IS counted
+    # (it is the id the refusal carries) and b22_134 still goes RED.
+    with pytest.raises(CohortReadRacedError) as exc:
+        compute_tripwire_status(conn, hypothesis_id=_hid(conn, H1),
+                                starting_equity=7500.0)
+    assert exc.value.trade_ids == (2,)  # the coerced trade is counted
+    with pytest.raises((AssertionError, CohortReadRacedError)):
         _assert_excluded_and_named(conn, cfg)
 
 

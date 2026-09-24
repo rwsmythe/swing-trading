@@ -60,6 +60,7 @@ from dataclasses import dataclass
 from swing.data.models import RiskPolicy, Trade
 from swing.data.repos.fills import list_fills_for_trade
 from swing.metrics.cohort import (
+    assert_intent_exclusion_disjoint,
     filter_trades_without_unresolved_material_discrepancies,
     list_closed_trades_for_cohort,
     list_intent_excluded_for_cohort,
@@ -761,6 +762,16 @@ def compute_tier_comparison(
             target_sample_size = int(meta["target_sample_size"])
             raw_prereg = meta["preregistered_decision_criteria"]
             preregistered = str(raw_prereg) if raw_prereg is not None else None
+        # Arc 22-B (N3 (a)): the clause-(4) trades, NAMED. The same read at
+        # the same point as before (it was the call's last argument; nothing
+        # between reads the DB), so R2-04's order is unchanged.
+        intent_excluded = list_intent_excluded_for_cohort(
+            conn, hypothesis_label=name, state_filter=("closed", "reviewed"))
+        # R1-3 (RULING R1-3-SHAPE-EXEC): a trade the intent-filtered load
+        # returned AND the naming read named was moved by a write between
+        # the two reads -- refuse (typed), never the contradictory row.
+        assert_intent_exclusion_disjoint(
+            [t.id for t in in_cohort], intent_excluded)
         cohorts.append(
             _compute_cohort_stats(
                 conn,
@@ -772,10 +783,7 @@ def compute_tier_comparison(
                 preregistered_decision_criteria=preregistered,
                 tier2_excluded=tier2_excluded,
                 tier2_observed=tier2_observed,
-                # Arc 22-B (N3 (a)): the clause-(4) trades, NAMED.
-                intent_excluded=list_intent_excluded_for_cohort(
-                    conn, hypothesis_label=name,
-                    state_filter=("closed", "reviewed")),
+                intent_excluded=intent_excluded,
             ),
         )
 
