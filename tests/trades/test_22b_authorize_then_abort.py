@@ -90,7 +90,9 @@ def _p(kind: str, code: str | None, sql_tests: tuple[str, ...], note: str) -> Pr
 # THE MAP. Hashes: `read_manifest` over `run_migrations(c, target_version=40)`,
 # taken at Task 11 (after RULING G1b moved trg_eia_trade_binding and
 # trg_eia_tier2, and RULING G1d's NULL-id close moved trg_eia_trade_binding
-# again: manifest e7125868... -> 636c8a6c...).
+# again: manifest e7125868... -> 636c8a6c...). RULING R5-1 moved
+# trg_eia_tier2 (15ac12be... -> a791fd7f...): the telemetry members must be
+# JSON objects, mapped below as `telemetry_members_are_objects`.
 # ---------------------------------------------------------------------------
 ADMISSION_MAP: dict[tuple[str, str], AdmissionEntry] = {
     ("trigger", "trg_eia_trade_binding"): AdmissionEntry(
@@ -162,7 +164,7 @@ ADMISSION_MAP: dict[tuple[str, str], AdmissionEntry] = {
                 "_check_outcome runs the trigger's own MIN(fill_datetime)"),
         }),
     ("trigger", "trg_eia_tier2"): AdmissionEntry(
-        "15ac12be5a0de2f4d2e90bdeadfa5b39c46c820b900e38e0444a464aeb3da500", {
+        "a791fd7f0a4ccdb8bec58eba314034b6fb164ff34e86e154cf06dc473776f43e", {
             "no_link_names_the_order": _p(
                 DERIVED_VALUE, None, ("b22_64",),
                 "the tier is DETECTED: a link for the order routes structural "
@@ -182,6 +184,10 @@ ADMISSION_MAP: dict[tuple[str, str], AdmissionEntry] = {
             "telemetry_leg_evidence_is_exactly_the_pre_set": _p(
                 DERIVED_VALUE, None, ("b22_68", "b22_79"),
                 "the evidence IS the PRE rows as read"),
+            "telemetry_members_are_objects": _p(
+                DERIVED_VALUE, None, ("b22_48",),
+                "RULING R5-1: the service serializes each PRE row as a dict, "
+                "so every member is a JSON object by construction"),
             "deployment_leg_has_no_pre_row_and_precedes_0803": _p(
                 REFUSAL, "instrument_existed", ("b22_69", "b22_55"),
                 "_detect_tier: no PRE row and placement >= 2026-08-03 refuses"),

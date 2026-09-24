@@ -624,6 +624,51 @@ def test_the_telemetry_evidence_control_admits_b22_79(tmp_path: Path) -> None:
         c.close()
 
 
+TIER2_RAISE = ("entry_intent_attestations: the contemporaneous_record admission is "
+               "not supported by the record")
+
+
+@pytest.mark.parametrize("member", [
+    "object_control", "plain_string_x", "serialized_object_string",
+    "rows_is_an_object_of_strings", "number"])
+def test_a_telemetry_member_that_is_not_an_object_is_the_triggers_abort_b22_48(
+        tmp_path: Path, member: str) -> None:
+    """RULING R5-1 (Codex R5 Major 1): R2-05 extended from the JSON COLUMNS to
+    the telemetry array's MEMBERS. Every member ``trg_eia_tier2`` reads must be
+    a JSON object: a plain string raised ``OperationalError: malformed JSON``
+    out of ``json_extract(e.value, ...)``, and a serialized-object STRING was
+    re-parsed by ``json_extract`` and ADMITTED (right values, wrong encoding --
+    never written by the service). Each non-object member is now the
+    trigger's OWN ABORT; an object member is the control and passes. SS-sweep
+    variant ``rows_is_an_object_of_strings``: ``$.telemetry_rows`` an OBJECT
+    whose member values are strings reaches the same member read."""
+    c = _at_placement(tmp_path, "2026-08-06", f"m_{member}")
+    try:
+        r6 = _speaking_row(c, first="2026-08-05T09:00:00", ever=0)
+        r7 = _speaking_row(c, first="2026-08-05T10:00:00", ever=0,
+                           session="2026-08-06", view_id=7)
+        ev = json.loads(_telemetry_evidence([r6, r7]))
+        good = ev["telemetry_rows"]
+        if member == "plain_string_x":
+            ev["telemetry_rows"] = [good[0], "x"]
+        elif member == "serialized_object_string":
+            ev["telemetry_rows"] = [json.dumps(m, sort_keys=True) for m in good]
+        elif member == "rows_is_an_object_of_strings":
+            ev["telemetry_rows"] = {"a": "x", "b": "y"}
+        elif member == "number":
+            ev["telemetry_rows"] = [good[0], 5]
+        row = tier2_row(placement_session="2026-08-06", admitted_leg="telemetry",
+                        leg_evidence_json=json.dumps(ev, sort_keys=True))
+        if member == "object_control":
+            assert _plant(c, row) is None
+            return
+        with pytest.raises(sqlite3.IntegrityError) as exc:
+            insert_row(c, "entry_intent_attestations", row)
+        assert TIER2_RAISE in str(exc.value), str(exc.value)
+    finally:
+        c.close()
+
+
 @pytest.mark.parametrize("column", ["cited_fields_json", "cited_text_snapshot_json",
                                     "leg_evidence_json", "cited_latch_probe_json"])
 def test_malformed_json_is_a_constraint_abort_b22_48(tmp_path: Path, column: str) -> None:

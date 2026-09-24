@@ -696,6 +696,14 @@ WHEN NOT COALESCE(NEW.admission_tier IS NOT 'contemporaneous_record' OR (
           AND json_type(CASE WHEN json_valid(NEW.leg_evidence_json)
                              THEN NEW.leg_evidence_json ELSE '{}' END,
                         '$.telemetry_rows') = 'array'
+          -- R5-1 (R2-05 one level down): every MEMBER is a JSON object; a
+          -- string member (even a serialized object) is this trigger's ABORT.
+          AND NOT EXISTS (
+              SELECT 1 FROM json_each(
+                  CASE WHEN json_valid(NEW.leg_evidence_json)
+                       THEN NEW.leg_evidence_json ELSE '{}' END,
+                  '$.telemetry_rows') e
+              WHERE e.type <> 'object')
           AND json_array_length(CASE WHEN json_valid(NEW.leg_evidence_json)
                                      THEN NEW.leg_evidence_json ELSE '{}' END,
                                 '$.telemetry_rows')
@@ -713,10 +721,20 @@ WHEN NOT COALESCE(NEW.admission_tier IS NOT 'contemporaneous_record' OR (
                         CASE WHEN json_valid(NEW.leg_evidence_json)
                              THEN NEW.leg_evidence_json ELSE '{}' END,
                         '$.telemetry_rows') e
-                    WHERE json_extract(e.value, '$.view_event_id') = v.view_event_id
-                      AND json_extract(e.value, '$.actionable_ever_viewed') = 0
-                      AND json_extract(e.value, '$.first_viewed_ts') IS v.first_viewed_ts
-                      AND json_extract(e.value, '$.view_session_date')
+                    -- R5-1: a member is extracted ONLY as an object (no
+                    -- short-circuit is guaranteed, so the CASE is the guard).
+                    WHERE e.type = 'object'
+                      AND json_extract(CASE WHEN e.type = 'object' THEN e.value
+                                            ELSE '{}' END, '$.view_event_id')
+                          = v.view_event_id
+                      AND json_extract(CASE WHEN e.type = 'object' THEN e.value
+                                            ELSE '{}' END, '$.actionable_ever_viewed')
+                          = 0
+                      AND json_extract(CASE WHEN e.type = 'object' THEN e.value
+                                            ELSE '{}' END, '$.first_viewed_ts')
+                          IS v.first_viewed_ts
+                      AND json_extract(CASE WHEN e.type = 'object' THEN e.value
+                                            ELSE '{}' END, '$.view_session_date')
                           IS v.view_session_date)))
          OR (NEW.admitted_leg = 'deployment'
              AND NOT EXISTS (
