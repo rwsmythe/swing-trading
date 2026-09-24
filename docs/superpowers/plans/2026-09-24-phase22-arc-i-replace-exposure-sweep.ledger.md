@@ -6,7 +6,7 @@
 
 | Round | Kind | Tier / model / effort (asserted) | Footer `tokens used` | Verdict token | Findings (crit/major/minor) | Task-bearing | NEW / REOPENED | Reverts | Context depth (ORCHESTRATOR fills from `cell_depth.py --agent <id>`) |
 |---|---|---|---|---|---|---|---|---|---|
-| 0 | premise + fork census, NO Codex | — | — (0 Codex tokens) | — | — | — | — | — | |
+| 0 | premise + fork census, NO Codex | — | — (0 Codex tokens) | — | — | — | — | — | **407,892 at return — OVER the 400K cap** (build 2.1.280, `claude-opus-5-5`; orchestrator-read `cell_depth.py --agent`; Agent usage 410,246). The plan stage RE-DISPATCHES to a FRESH cell off this census + ledger (recipe §3: a normal outcome). |
 
 ## Round 0 — evidence
 
