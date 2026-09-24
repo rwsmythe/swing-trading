@@ -173,7 +173,8 @@ def test_risk_policy_branch_plus_null_fires(tmp_path: Path, version: int,
         policy = c.execute("SELECT risk_policy_id_at_correction FROM "
                            "provenance_corrections").fetchone()[0]
         assert policy is not None
-        with guards_dropped(c, "trg_rp_no_delete"):  # clause pin, parent delete refused in production
+        # clause pin, parent delete refused in production
+        with guards_dropped(c, "trg_rp_no_delete"):
             verdict = outcome(
                 c, "UPDATE provenance_corrections SET risk_policy_id_at_correction = NULL, "
                    "correction_reason = NULL WHERE provenance_correction_id = ?",
@@ -209,7 +210,8 @@ def test_risk_policy_delete_null_admitted(tmp_path: Path) -> None:
     try:
         policy = c.execute("SELECT risk_policy_id_at_correction FROM "
                            "provenance_corrections").fetchone()[0]
-        with guards_dropped(c, "trg_rp_no_delete"):  # clause pin, parent delete refused in production
+        # clause pin, parent delete refused in production
+        with guards_dropped(c, "trg_rp_no_delete"):
             verdict, seen = outcome(
                 c, "DELETE FROM risk_policy WHERE policy_id = ?", (policy,),
                 post=lambda k: k.execute(

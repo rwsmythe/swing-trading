@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.data._22i_seed import TS, TRADE_ID, migrated, outcome
+from tests.data._22i_seed import TRADE_ID, TS, migrated, outcome
 
 TWIN = "TRIGGER:trg_dmr_immutable"
 PAIR = pytest.mark.parametrize("version", [40, 41])
