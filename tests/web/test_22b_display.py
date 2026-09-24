@@ -251,3 +251,94 @@ def test_cli_analyze_label_b22_142(seeded_db) -> None:
     intent_lines = [ln for ln in result.output.splitlines()
                     if ln.startswith("Intent:")]
     assert intent_lines == ["Intent: Unintended execution"]
+
+
+def _null_label_literal_sites() -> tuple[list[str], int, int]:
+    """Static walk for the NULL entry_intent label's text under ``swing/``.
+
+    ``*.py``: every AST ``str`` constant (f-string pieces included) EXCEPT
+    docstrings (the first statement of a module/class/function body) -- so
+    comments are excluded by construction (the tokenizer drops them) and
+    docstrings by position. ``*.j2``: the template text after removing
+    ``{# ... #}`` Jinja comments (HTML comments stay: they reach the page).
+    Returns (violations as ``path:line``, py files read, j2 files read).
+    """
+    import ast
+    import pathlib
+
+    import swing
+
+    root = pathlib.Path(swing.__file__).parent
+    needle = "Unclassified"
+    hits: list[str] = []
+    n_py = n_j2 = 0
+    for path in sorted(root.rglob("*.py")):
+        n_py += 1
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        docstrings = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)) and node.body:
+                first = node.body[0]
+                if (isinstance(first, ast.Expr)
+                        and isinstance(first.value, ast.Constant)
+                        and isinstance(first.value.value, str)):
+                    docstrings.add(id(first.value))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and needle in node.value and id(node) not in docstrings):
+                hits.append(f"{path.relative_to(root.parent).as_posix()}"
+                            f":{node.lineno}")
+    for path in sorted(root.rglob("*.j2")):
+        n_j2 += 1
+        text = path.read_text(encoding="utf-8")
+        stripped = re.sub(r"\{#.*?#\}",
+                          lambda m: "\n" * m.group(0).count("\n"), text,
+                          flags=re.S)
+        for lineno, line in enumerate(stripped.splitlines(), start=1):
+            if needle in line:
+                hits.append(f"{path.relative_to(root.parent).as_posix()}"
+                            f":{lineno}")
+    return hits, n_py, n_j2
+
+
+def test_null_entry_intent_label_has_one_home_b22_217() -> None:
+    """RULING G3c (CHARC 2026-09-24): the NULL sentinel's text lives in ONE
+    place, ``NULL_ENTRY_INTENT_LABEL`` in the label home; the two rendered
+    sites (``trade analyze``, the card's Unclassified facet) import it."""
+    hits, n_py, n_j2 = _null_label_literal_sites()
+    assert n_py > 100 and n_j2 > 10, (n_py, n_j2)
+    # Non-vacuity: the walk SEES the one home (the detector works on the
+    # real tree) ...
+    assert "swing/trades/intent.py" in {h.rsplit(":", 1)[0] for h in hits}
+    # ... and nothing else carries the literal.
+    others = [h for h in hits if not h.startswith("swing/trades/intent.py:")]
+    assert others == [], f"'Unclassified' literal outside the label home: {others}"
+
+    from swing.trades.intent import NULL_ENTRY_INTENT_LABEL, entry_intent_label
+
+    assert NULL_ENTRY_INTENT_LABEL == "Unclassified"
+    # The None contract is unchanged: callers rely on the falsy return.
+    assert entry_intent_label(None) is None
+
+    from swing.web.view_models.metrics.trade_process_card import INTENT_FACETS
+
+    assert dict(INTENT_FACETS)["__unclassified__"] == NULL_ENTRY_INTENT_LABEL
+    assert dict(INTENT_FACETS)[""] == "All"
+
+    from swing.cli import _render_trade_analysis
+    from swing.journal.analyze import TradeAnalysis
+
+    a = TradeAnalysis(
+        trade_id=2, ticker="TST", entry_date="2026-04-20",
+        entry_price=100.0, initial_shares=5, initial_stop=90.0,
+        current_stop=90.0, state="entered", status="open",
+        hypothesis_label=None, notes=None,
+        recommendations=(), exits=(),
+        days_rec_to_entry=None, pct_above_pivot=None, stop_dev_pct=None,
+        realized_pnl_total=0.0, r_multiple_avg=None,
+        entry_intent=None,
+    )
+    intent_lines = [ln for ln in _render_trade_analysis(a)
+                    if ln.startswith("Intent:")]
+    assert intent_lines == [f"Intent: {NULL_ENTRY_INTENT_LABEL}"]

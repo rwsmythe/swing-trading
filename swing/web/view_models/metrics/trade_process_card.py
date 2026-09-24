@@ -38,7 +38,7 @@ from swing.metrics.process import (
     TradeProcessMetricsResult,
     compute_trade_process_metrics,
 )
-from swing.trades.intent import entry_intent_label
+from swing.trades.intent import NULL_ENTRY_INTENT_LABEL, entry_intent_label
 from swing.web.view_models.metrics.shared import BaseLayoutVM
 
 # Special sentinel for the "all closed trades" tab. Distinguishes the
@@ -55,15 +55,17 @@ ALL_COHORTS_KEY: str = "__all__"
 # labelled by the single label home (``entry_intent_label``).
 # RULING G3a (iii): EVERY value facet takes its label from that one home (no
 # second label source on this card). The two sentinels are not stored values,
-# and the label home has no label for them (None -> None; an unknown token ->
-# itself), so "All" / "Unclassified" stay local here.
+# and entry_intent_label has no label for them (None -> None; an unknown token
+# -> itself). RULING G3c: the NULL sentinel's text comes from the label home's
+# NULL_ENTRY_INTENT_LABEL (its only home); "All" is a facet, not an intent
+# label of any kind, and stays local here.
 INTENT_FACETS: tuple[tuple[str, str], ...] = (
     ("", "All"),
     ("standard", entry_intent_label("standard") or ""),
     ("hypothesis_test_by_design",
      entry_intent_label("hypothesis_test_by_design") or ""),
     (UNINTENDED_EXECUTION, entry_intent_label(UNINTENDED_EXECUTION) or ""),
-    ("__unclassified__", "Unclassified"),
+    ("__unclassified__", NULL_ENTRY_INTENT_LABEL),
 )
 
 

@@ -30,6 +30,13 @@ ENTRY_INTENT_LABELS: dict[str, str] = {
 }
 
 
+# RULING G3c (CHARC 2026-09-24): the display text for a NULL entry_intent
+# (an unclassified trade) has ONE home, here. It is a sentinel's label, not a
+# stored value's, so entry_intent_label(None) still returns None and each
+# rendered site writes `entry_intent_label(v) or NULL_ENTRY_INTENT_LABEL`.
+NULL_ENTRY_INTENT_LABEL: str = "Unclassified"
+
+
 def entry_intent_display_choices() -> tuple[tuple[str, str], ...]:
     """Ordered (value, label) pairs for the form <select> + VM."""
     return ENTRY_INTENT_DISPLAY

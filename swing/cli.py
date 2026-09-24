@@ -1382,8 +1382,9 @@ def _render_trade_analysis(a) -> list[str]:
         f"Current stop: ${a.current_stop:.2f}"
     )
     lines.append(f"Hypothesis: {a.hypothesis_label or '(none)'}")
-    from swing.trades.intent import entry_intent_label
-    lines.append(f"Intent: {entry_intent_label(a.entry_intent) or 'Unclassified'}")
+    from swing.trades.intent import NULL_ENTRY_INTENT_LABEL, entry_intent_label
+    lines.append(
+        f"Intent: {entry_intent_label(a.entry_intent) or NULL_ENTRY_INTENT_LABEL}")
     lines.append(f"Notes: {a.notes or '(none)'}")
     lines.append("")
 
