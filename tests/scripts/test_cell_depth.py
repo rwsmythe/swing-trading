@@ -269,3 +269,57 @@ def test_sessions_mode_reads_main_transcripts_and_excludes_cells(projects, capsy
     # and the default (cell) mode still excludes the main session
     rc, out = _run(projects_dir, repo, capsys=capsys)
     assert rc == 1 and "agent-acell" in out and "sess-1.jsonl" not in out
+
+
+# --- --agent: the round-gate read of ONE named cell ----------------------------
+#
+# The selection-rule defect is INFERRED FROM THE CODE, not measured from an
+# incident (CHARC ruling (a), 2026-09-24): --live selects by transcript MTIME,
+# and an executing cell PARKED at a review-round gate writes nothing, so after
+# the window it drops out of --live while a newer cell's row stands alone --
+# the gate would read the wrong cell's depth with nothing saying one is missing.
+# --agent reads the cell the dispatcher names, at any age.
+
+def test_agent_reads_a_parked_cell_older_than_the_live_window(projects, capsys):
+    projects_dir, repo, sub = projects
+    now = time.time()
+    _write_cell(sub, "parked", [_record(0, 350_000, 0, text="the gated cell")],
+                mtime=now - 3 * 3600)                     # parked for 3h at a round gate
+    _write_cell(sub, "newer", [_record(0, 50_000, 0, text="another cell")], mtime=now - 60)
+    # the defect: the one-hour window shows only the newer cell
+    rc, out = _run(projects_dir, repo, "--live", "1", capsys=capsys)
+    assert rc == 0 and "agent-anewer" in out and "agent-aparked" not in out
+    # the fix: the named cell is read regardless of age, and only it
+    rc, out = _run(projects_dir, repo, "--agent", "aparked", capsys=capsys)
+    assert rc == 0
+    assert "agent-aparked" in out and "agent-anewer" not in out
+    assert "350,000" in out and "1 cell(s); 0 over" in out
+    out.encode("ascii")
+
+
+def test_agent_is_repeatable_and_applies_the_cap(projects, capsys):
+    projects_dir, repo, sub = projects
+    _write_cell(sub, "one", [_record(0, 450_000, 0)])
+    _write_cell(sub, "two", [_record(0, 100_000, 0)])
+    _write_cell(sub, "three", [_record(0, 200_000, 0)])
+    rc, out = _run(projects_dir, repo, "--agent", "aone", "--agent", "atwo", capsys=capsys)
+    assert rc == 1 and "1 over the 400,000 cap" in out
+    assert "agent-aone" in out and "agent-atwo" in out and "agent-athree" not in out
+
+
+def test_agent_unknown_id_exits_2_naming_the_searched_glob(projects, capsys):
+    projects_dir, repo, sub = projects
+    _write_cell(sub, "present", [_record(0, 100_000, 0)])
+    rc, out = _run(projects_dir, repo, "--agent", "amissing", capsys=capsys)
+    assert rc == 2
+    assert "amissing" in out and "subagents" in out and "agent-amissing.jsonl" in out
+    out.encode("ascii")
+
+
+def test_agent_with_live_is_a_usage_error(projects, capsys):
+    projects_dir, repo, sub = projects
+    _write_cell(sub, "x", [_record(0, 100_000, 0)])
+    with pytest.raises(SystemExit) as exc:
+        cell_depth.main(["--projects-dir", str(projects_dir), "--repo-root", str(repo),
+                         "--agent", "ax", "--live", "1"])
+    assert exc.value.code == 2

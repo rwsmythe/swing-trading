@@ -23,7 +23,8 @@ Usage (the orchestrator's PRECONDITION before assigning work to a live cell,
 and at every review-round gate; a director's or orchestrator's SELF-READ for
 the rollover trigger):
 
-    python scripts/cell_depth.py --live 12            # cells written in the last 12h
+    python scripts/cell_depth.py --agent <id>         # the ROUND-GATE read: named cell, any age
+    python scripts/cell_depth.py --live 12            # cells written in the last 12h (the census)
     python scripts/cell_depth.py --cap 400000 --live 6 # exit 1 if any listed cell exceeds the cap
     python scripts/cell_depth.py --all                 # every cell on disk, deepest first
     python scripts/cell_depth.py --sessions --live 24  # MAIN sessions (directors / orchestrators)
@@ -47,8 +48,19 @@ itself (the orchestrator measured 396,223 this way before its first live
 rollover, 2026-09-07). The first record's text is the launch prompt, which
 names the role.
 
+``--agent <id>`` (repeatable) reads exactly the named cell(s) --
+``*/subagents/agent-<id>.jsonl``, ``<id>`` being the Agent tool's spawn id as
+returned (it already starts with ``a``) -- regardless of transcript age. It is
+the ROUND-GATE read. ``--live`` selects by transcript MTIME, and an executing
+cell PARKED at a review-round gate writes nothing, so after the window it drops
+out of ``--live`` while a newer cell's row stands alone: the gate would read the
+wrong cell's depth with nothing saying one is missing. (That mechanism is
+INFERRED FROM THE CODE, not measured from an incident -- CHARC ruling (a),
+2026-09-24.) ``--live`` stays the rollover / in-flight census.
+
 Exit status: 0 = every listed cell is at or under --cap (default 400000);
-1 = at least one listed cell exceeds it; 2 = no transcripts found for the repo.
+1 = at least one listed cell exceeds it; 2 = no transcripts found for the repo,
+or a named ``--agent`` cell was not found (the searched glob is printed).
 """
 
 from __future__ import annotations
@@ -190,6 +202,25 @@ def scan(projects_dir: Path, repo_root: Path, *, now: float | None = None,
     return cells
 
 
+def find_agents(projects_dir: Path, repo_root: Path, agent_ids: list[str], *,
+                now: float | None = None) -> tuple[list[CellDepth], list[str]]:
+    """The named cells, any age, deepest first; plus the glob of each id not found."""
+    cells: list[CellDepth] = []
+    missing: list[str] = []
+    pdirs = find_project_dirs(projects_dir, repo_root)
+    for agent_id in agent_ids:
+        patterns = [os.path.join(str(pdir), "*", "subagents", f"agent-{agent_id}.jsonl")
+                    for pdir in pdirs]
+        found = [f for pattern in patterns for f in glob.glob(pattern)]
+        if not found:
+            missing.append(" | ".join(patterns) if patterns else
+                           os.path.join(str(projects_dir), project_slug(repo_root), "*",
+                                        "subagents", f"agent-{agent_id}.jsonl"))
+        cells.extend(read_cell(Path(f), now=now) for f in found)
+    cells.sort(key=lambda c: c.peak, reverse=True)
+    return cells, missing
+
+
 def format_rows(cells: list[CellDepth], cap: int) -> list[str]:
     rows = [f"{'peak':>9}  {'current':>9}  {'turns':>5}  {'age':>7}  flag  "
             f"{'build':<9}  {'model':<16}  cell / dispatch prompt"]
@@ -211,6 +242,9 @@ def main(argv: list[str] | None = None) -> int:
     sel.add_argument("--live", type=float, metavar="HOURS",
                      help="only cells whose transcript was written in the last HOURS")
     sel.add_argument("--all", action="store_true", help="every cell on disk (the default)")
+    sel.add_argument("--agent", action="append", metavar="ID",
+                     help="read exactly this cell (the Agent spawn id), regardless of age; "
+                          "repeatable. The round-gate read.")
     parser.add_argument("--sessions", action="store_true",
                         help="read MAIN sessions (directors / orchestrators) instead of cells")
     parser.add_argument("--projects-dir", default=None,
@@ -222,6 +256,19 @@ def main(argv: list[str] | None = None) -> int:
                     else Path.home() / ".claude" / "projects")
     repo_root = Path(args.repo_root).resolve() if args.repo_root else _REPO_ROOT
     kind = "session" if args.sessions else "cell"
+    if args.agent:
+        if args.sessions:
+            parser.error("--agent reads cells; it cannot be combined with --sessions")
+        cells, missing = find_agents(projects_dir, repo_root, args.agent)
+        if missing:
+            for searched in missing:
+                print(f"no cell transcript found; searched: {searched}")
+            return 2
+        for row in format_rows(cells, args.cap):
+            print(row)
+        over = [c for c in cells if c.peak > args.cap]
+        print(f"{len(cells)} cell(s); {len(over)} over the {args.cap:,} cap")
+        return 1 if over else 0
     cells = scan(projects_dir, repo_root, sessions=args.sessions)
     if not cells:
         print(f"no {kind} transcripts found under {projects_dir} for slug "
