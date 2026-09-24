@@ -7,6 +7,7 @@
 | Round | Kind | Tier / model / effort (asserted) | Footer `tokens used` | Verdict token | Findings (crit/major/minor) | Task-bearing | NEW / REOPENED | Reverts | Context depth (ORCHESTRATOR fills from `cell_depth.py --agent <id>`) |
 |---|---|---|---|---|---|---|---|---|---|
 | 0 | premise + fork census, NO Codex | — | — (0 Codex tokens) | — | — | — | — | — | **407,892 at return — OVER the 400K cap** (build 2.1.280, `claude-opus-5-5`; orchestrator-read `cell_depth.py --agent`; Agent usage 410,246). The plan stage RE-DISPATCHES to a FRESH cell off this census + ledger (recipe §3: a normal outcome). |
+| 1 | plan round, `fast` (WSL codex-cli 0.156.1, `codex exec -p fast -s read-only`, stdin bundle: prompt + plan + ledger + census + brief, 166,019 B; cwd = the worktree, repo read-only) | `gpt-5.6-luna` / `medium` (the fast profile's own values; not `none`) | 157,273 | `^NEW_CRITICAL_MAJOR_FOUND` 2 (the CLI duplicates the final message) / `^NO_NEW_CRITICAL_MAJOR` 0; `^ERROR` 0; exit 0 | 0 / 1 / 0 | 1 (R1-1) | 1 NEW / 0 REOPENED | 0 | (orchestrator) |
 
 ## Round 0 — evidence
 
@@ -170,3 +171,40 @@
 **Courier's fact, supplied because the ruling names it unlocated (not part of RD's text):** the web re-completion refusal is `swing/web/routes/trades.py:3766-3770` on main -- `if review.completed_date is not None: raise HTTPException(status_code=409, detail="Review already completed")`, evaluated after the 404 lookup and before any recompute. The CLI service twin mirrors THAT text. RD's CC note on a17 uniformity (parents that also receive no_delete) is addressed to CHARC and is not a ruling; CHARC's a17 shape stands unless CHARC amends it.
 
 ## ALL STEP-3 RULINGS LANDED (2026-09-24) -- the plan cell is RESUMED to write the plan.
+
+## Plan cell -- PLAN WRITTEN (2026-09-24, resumed on the step-3 rulings; no Codex yet)
+
+**Plan:** `docs/superpowers/plans/2026-09-24-phase22-arc-i-replace-exposure-sweep.md` (415 lines). Encodes: F-I1 (RD) 7 (a) + 13 (c) tables; F-I2 rebuild; F-I5; a17 uniform with the parent-gone clause (CHARC @ `7e0463ed`); S3-F1/F2/F3 (RD); S3-F4 (i) + S3-F3 scope (CHARC @ `a83df9d3`). CHARC's 18:21:25Z a17 addendum arrived via the orchestrator at resume and is ENCODED (plan §1.5 REACHABLE/DEAD table; discriminator C4b / P3 "FK -> NULL with the parent PRESENT aborts" at EVERY a17 site); its transcription is the orchestrator's.
+
+### CHARC's pre-round-1 sweep -- every `except ... IntegrityError` in `swing/` + `scripts/`, by READ (S3-F4 ruling's method line)
+
+Method: `grep -rnE "except[^:]*IntegrityError" swing scripts --include=*.py` -> 10 sites, each read with the write it guards.
+
+| Site | Guards the write to | Idempotency by message? | (a)/(c) table? | Disposition |
+|---|---|---|---|---|
+| `repos/review_log.py:160` | `review_log` INSERT (`insert_pre_create`) | YES (`"UNIQUE"` / index name) | (c) | **F-I3 SITE** -- plan T12b (pre-filter; belt verbatim) |
+| `cli.py:2593`, `:2609`, `:2805` | `cash_movements` INSERT (oof-buy / void) | ref collision belt | no (excluded table) | out of class |
+| `repos/trades.py:1068` | `trades` UPDATE entry_intent | re-check typed | no (`trades`, §2.6) | out of class |
+| `trades/entry.py:2319` | `record_entry` txn (trades + fills + trade_events + watchlist_archive) | matches `UNIQUE constraint failed: trades.ticker` only | the txn touches `te` (a) and `wla` (c) INSERTs with the PK omitted and no UNIQUE key -> their `no_replace` never fires on this path | not an F-I3 site (the matched key is `trades`') |
+| `pipeline/lease.py:278` | `pipeline_runs` INSERT | maps any to ConcurrentRunBlockedError | no | out of class |
+| `repos/latch_view_events.py:191` | `latch_view_events` INSERT lost race | NO -- message-agnostic, re-reads + merges | existing v40 barrier (not new) | unaffected (F-I5 is an UPDATE OF trigger) |
+| `web/routes/latches.py:1314` | `record_intent` (`latch_order_intents`) | NO -- renders a rejection | existing v40 barrier; writer already pre-filtered (census a11) | unaffected |
+| `web/routes/trades.py:2148` | entry POST (the `record_entry` txn) | maps CHECK/FK text | as `entry.py:2319` | not an F-I3 site |
+
+Also by grep: `"UNIQUE` / `UNIQUE constraint` string matchers in `swing/`: `review_log.py:162` and `entry.py:2335` only. **One F-I3 site, already in the plan.**
+
+### Encoding notes (inputs verified against the code; reported up)
+
+- **S3-F4 belt:** the step-3 ledger line "the `IntegrityError` belt retained and widened to the barrier's name" is SUPERSEDED by CHARC's (ii) refusal -- the plan retains the existing matcher VERBATIM and adds no trigger-name match (T12b).
+- **dmr `superseded_by_record_id`:** RD row 10 (i) says "except the three SET NULL FK transitions" while (ii) says "superseded_by_record_id value->NULL/other refused on every row"; the plan encodes (ii) (no exemption on the self-FK), the same reasoning RD gave for `rc`'s self-FK in S3-F1. The a17 exemption stays on `linked_trade_event_id` and `pipeline_run_id`.
+- **COALESCE on barrier WHENs:** the v40 `no_replace` family is `WHEN EXISTS (...)` (never NULL). Brief §2.4 says COALESCE on EVERY `WHEN` 0041 writes, so 0041's barriers read `WHEN COALESCE(EXISTS (...), 0)` -- behaviour-identical, letter-compliant, pinned by T15.
+- **a17 REACHABLE list:** CHARC's addendum named `pipeline_runs` as having "a production parent delete"; by the STEP-3 grep there is NO production `DELETE FROM pipeline_runs` in `swing/`/`scripts/`/`research/` (tests delete it). Classified REACHABLE as "deletable, no production deleter" -- the parent carries no guard, so the exemption is live; the correction is to the incidental fact only.
+- **`review_log` twin:** `risk_policy_id_at_review_completion` is S (frozen once completed) with the a17 F clause while frozen; `superseded_by_correction_id` is M always (`:2404` overwrites); `skipped` is I (no UPDATE writer, by grep of every `review_log` UPDATE).
+- **Service twin type:** `ReviewAlreadyCompletedError(ValueError)` in the EXISTING `swing/data/repos/review_log.py` (no new module); the CLI wraps it to `click.ClickException("Review already completed")`, the web's 409 detail text verbatim.
+- **Test sizing:** 28 test files assert `EXPECTED_SCHEMA_VERSION == 40` (bodies -> 41, no rename in that commit).
+
+## Round 1 -- evidence and adjudication
+
+- Pre-round full fast suite on the worktree (plan uncommitted, no code change): **13417 passed, 13 skipped, 0 failed** (972.72 s, `-n auto`).
+- Transcript: `~/swing-data/review-transcripts/22-i-plan/.codex-review-r1.txt` (527,838 B); prompt `.codex-prompt-r1.md` (4,395 B); the input actually piped `.codex-input-r1.md` (166,019 B); exit file `.codex-exit-r1.txt` (`0`); working findings `.copowers-findings.md`. Review scratch relocated to the session scratchpad for the loop; the prompt forbids reading `.codex-*`, `.copowers-findings.md` and `review-transcripts`; the transcript's 17 exec commands name none of them.
+- **R1-1 (reviewer: major) -- ACCEPTED, TASK-BEARING.** T9's `test_corrector_snapshot_branch_unreachable` said "four precedence branches"; `_resolve_affected_target` has THREE returning branches and a `ValueError` (its docstring `:2188-2193` names a snapshot branch the code `:2194-2205` does not implement). Fixed in the plan: three returns plus the snapshot-typed no-FK case raising `ValueError` with no UPDATE issued; AL-7's reason restated to the code's behaviour. The plan's claim (branch unreachable) is unchanged; the test that pins it now matches the code.
