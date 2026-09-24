@@ -515,7 +515,7 @@ A fix edits `trg_eia_tier2`'s text in 0040. 0040 is UNAPPLIED on live, so the fi
 >
 > Calendar noted: B must be clean on the finished tree by 09-29 EOD HST. Round 6 confirming, then B, then the merge packet to me.
 
-## FORK R6-1 -- an envelope-sourced placement session is not bounded by the trade's entry date. Rulers, SERIALIZED by the orchestrator: **RD** rules the IF (is a placement after the entry a refusal, and under which code, i.e. census N1's P1); then **CHARC** rules the SHAPE (service, 0040 CHECK and/or `trg_eia_tier2`, the model mirror, the admission map). OPEN.
+## FORK R6-1 -- an envelope-sourced placement session is not bounded by the trade's entry date. Rulers, SERIALIZED by the orchestrator: **RD** rules the IF (is a placement after the entry a refusal, and under which code, i.e. census N1's P1); then **CHARC** rules the SHAPE (service, 0040 CHECK and/or `trg_eia_tier2`, the model mirror, the admission map). CLOSED by RULINGS R6-1a and R6-1b below.
 
 Verified at the orchestrator's seat by READ at `f9410643`:
 - **The gap.** `swing/trades/entry_intent_assignment.py:462-475` takes `placement` from the envelope's `entry_date` with no comparison to the trade's `entry_date`. The only placement/entry tie in 0040 is for `entry_date_fallback` (`:676-678`: `placement_session = trade_entry_date`); the `schwab_envelope` source is unbounded.
@@ -546,3 +546,29 @@ Verified at the orchestrator's seat by READ at `f9410643`:
 > SEVERITY: not contested as printed. The defect is reachable through a production path (the operator-corrected-date route keeps the submitted envelope) and it ADMITS on the evidence rule, which is the direction this arc exists to refuse; zero live incidence is a fact about the ledger, not about the rule.
 >
 > R6-2: no dissent; rides with the encoding as the orchestrator disposed. LOOP: round 7 as the next confirming round in a fresh cell, no objection.
+
+## RULING R6-1b -- CHARC rules FORK R6-1 item 1b (the SHAPE): one bound in four places, each the twin of an existing site.
+1. **Service, first and typed:** at the ISO-shape step, before either leg, placement > entry raises `placement_after_entry`, with RD's message (ASCII, both dates through `ascii()`). The comparison is bytewise over two shape-checked canonical ISO dates, and the site comment says so.
+2. **SQL twin:** ONE conjunct `AND NEW.placement_session <= NEW.trade_entry_date` inside `trg_eia_tier2`'s existing placement clause at 0040:676-678. The WHEN stays inside NOT COALESCE. Not a table CHECK and no new trigger.
+3. **Model mirror:** `EntryIntentAttestation.__post_init__` gains the same bound.
+4. **Admission map:** a new `placement_not_after_entry` predicate row.
+
+Tier 2 only. The manifest moves for `trg_eia_tier2` only. Discriminators: RD's five plus the twin's own. R6-2 rides along; round 7 follows. (Author CHARC. Text of record: the brief on main @ `af8c8ebc`. Courier transcription by the orchestrator, a literal block quote of CHARC's mail `20260924T105320Z-charc-22-b-fork-r6-1-item-1b-ruled-service-che.md` from "FACTS AT THIS SEAT" to its end.) FORK R6-1 is CLOSED.
+
+> FACTS AT THIS SEAT, read on 22-b-exec @ 3bc55a18 before RD's ruling arrived: the service takes placement from the envelope with no comparison to entry (entry_intent_assignment.py:462-475); 0040:676-678 pairs the fallback only; 0040:465 forces placement NULL on structural; only two tiers exist (0040:392); trades.entry_date is source_date_malformed-checked at preflight (:219) and the envelope value is ISO-checked at :475.
+>
+> (1) SERVICE FIRST, typed: at the ISO-shape step (:475-481), right after _is_iso_date establishes source schwab_envelope and BEFORE either leg -- if placement > entry, raise placement_after_entry with RD's message (ASCII, both dates through ascii(), the recovery named, nothing substitutes one date for the other). The comparison is BYTEWISE over two CANONICAL ISO dates and is admissible only because both are shape-checked first -- that is what keeps it outside D38's lexical class, and the comment at the site says so. The fallback needs no branch: placement = entry by construction.
+>
+> (2) THE SQL TWIN: in trg_eia_tier2, ONE added conjunct inside the existing placement clause at 0040:676-678 -- AND NEW.placement_session <= NEW.trade_entry_date -- binding both sources in the predicate that already pairs the fallback; the exact G1b-permitted shape RD named (two stored columns, no envelope read). The WHEN stays inside NOT COALESCE; both columns are NOT NULL on this tier by the composite CHECK, so no NULL enters the conjunct (stated, not assumed). NOT a table CHECK and not both: a CHECK's message is generic, and a CHECK can PRE-EMPT the trigger's own message on a discriminator (SS-13), whereas the RAISE names the refusal. No NEW trigger, so SS-12's ordering is untouched. The trigger's predicate stays a SUBSET of the service's (authorize-then-abort): the service refuses first, typed; the trigger is the backstop for a raw write.
+>
+> (3) THE MODEL MIRROR: EntryIntentAttestation.__post_init__ gains the same bound when placement is non-NULL -- the #11 mirror family, so the SQL-vs-Python drift comparator stays the instrument that defends the set.
+>
+> (4) THE ADMISSION MAP: a new predicate row for trg_eia_tier2, placement_not_after_entry, citing the service check and its tests, so the closure asserts the twin in both directions.
+>
+> TIER SCOPE, your question: answered from the schema and RD's fact -- placement_session is NULL on structural by CHECK, so the bound lives on tier 2 only; there is no other tier on which placement exists.
+>
+> D51: the manifest line moves for trg_eia_tier2 ONLY, the same object R5-1 moved; the gate reads it as one changed object. D60: 0040 is unapplied; no replay question.
+>
+> DISCRIMINATORS -- RD's five plus the twin's own: +1 session -> placement_after_entry, nothing written, over the SERVICE (typed) AND the SQL twin (a raw INSERT on plain sqlite3 with placement one day after trade_entry_date -> the trigger's OWN ABORT with its message; the same row at equality -> passes to the legs); the boundary twin at equality passes and the legs decide; trades 19, 20, 22 keep their verdicts, 20 admitting on leg 2 as before; the model mirror refuses the one-mutation row and admits equality; the drift comparator unchanged; cell 16's probe flips ADMIT -> placement_after_entry, the RED first.
+>
+> R6-2 rides with it as disposed (ascii(order_id) at both sites, one non-ASCII test). Round 7 as the next confirming round in a fresh cell: no objection.
