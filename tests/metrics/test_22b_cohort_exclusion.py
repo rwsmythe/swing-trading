@@ -443,3 +443,45 @@ def test_every_cohort_membership_reader_is_governed_or_reasoned_b22_130() -> Non
     assert GOVERNED <= set(found), GOVERNED - set(found)
     # The walk's own discriminator: a planted call in a new module is a hit.
     assert _membership_call_sites("from x import y\ny.list_trades_for_cohort(c)\n") == [2]
+    # R1-3 (RULING R1-3-SHAPE-EXEC) -- ONE obligation: every GOVERNED reader
+    # calls assert_intent_exclusion_disjoint, in the SAME function as its
+    # naming read and AFTER it (a reader that names without asserting is
+    # the silent shape RD's constraint (i) exists to catch).
+    for rel in sorted(GOVERNED):
+        text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        assert _unasserted_naming_sites(text) == [], rel
+        assert _naming_functions(text), (rel, "no naming read found")
+    # The obligation's own discriminators: a naming read with no assert, and
+    # one asserted BEFORE it, are both hits; the asserted-after shape is not.
+    named_only = "def r(c):\n    n = list_intent_excluded_for_cohort(c)\n"
+    assert _unasserted_naming_sites(named_only) == ["r"]
+    before = ("def r(c):\n    assert_intent_exclusion_disjoint((), ())\n"
+              "    n = list_intent_excluded_for_cohort(c)\n")
+    assert _unasserted_naming_sites(before) == ["r"]
+    after = ("def r(c):\n    n = list_intent_excluded_for_cohort(c)\n"
+             "    assert_intent_exclusion_disjoint((), n)\n")
+    assert _unasserted_naming_sites(after) == []
+
+
+def _calls_named(node: ast.AST, name: str) -> list[int]:
+    return [n.lineno for n in ast.walk(node) if isinstance(n, ast.Call) and (
+        (isinstance(n.func, ast.Name) and n.func.id == name)
+        or (isinstance(n.func, ast.Attribute) and n.func.attr == name))]
+
+
+def _naming_functions(text: str) -> list[ast.FunctionDef]:
+    return [f for f in ast.walk(ast.parse(text))
+            if isinstance(f, ast.FunctionDef)
+            and _calls_named(f, "list_intent_excluded_for_cohort")]
+
+
+def _unasserted_naming_sites(text: str) -> list[str]:
+    """Functions whose naming read is not followed by the disjointness
+    assert in the same function body."""
+    bad = []
+    for f in _naming_functions(text):
+        last_named = max(_calls_named(f, "list_intent_excluded_for_cohort"))
+        if not any(ln > last_named for ln in _calls_named(
+                f, "assert_intent_exclusion_disjoint")):
+            bad.append(f.name)
+    return bad
