@@ -123,6 +123,48 @@ def test_trend_renders_own_class_not_standard_or_unclassified_b22_140(
         r'data-marker="grades-intent-legend">([^<]*)<', r.text).group(1)
     assert legend == "intent: standard / by-design / unclassified / unintended"
     assert legend.isascii()
+    _assert_intent_legend_on_its_own_line(r.text)
+
+
+def _assert_intent_legend_on_its_own_line(html: str) -> None:
+    """RULING G3a (ii), CHARC 2026-09-24: the intent legend takes its OWN
+    line -- it shares a baseline with neither the series-swatch row nor any
+    grade-axis label -- and it sits inside the grades panel (no clipping).
+    Pre-fix the legend sat at the swatch row's baseline (y=15), where its
+    Segoe UI 16px text ends x~385 against the first swatch at x=360."""
+    from swing.web.view_models.metrics.process_grade_trend import (
+        GRADES_SVG_HEIGHT,
+    )
+
+    svg = re.search(r'<svg[^>]*data-panel="grades"[^>]*>(.*?)</svg>',
+                    html, re.S).group(1)
+    legend_y = float(re.search(
+        r'<text[^>]*\by="([^"]+)"[^>]*data-marker="grades-intent-legend"',
+        svg, re.S).group(1))
+    group = re.search(r'<g[^>]*data-marker="grades-legend"[^>]*>(.*?)</g>',
+                      svg, re.S).group(1)
+    # The series-swatch row: each swatch <rect> band and its <text> label.
+    swatch_bands = [
+        (float(y), float(y) + float(h)) for y, h in re.findall(
+            r'<rect[^>]*class="process-grade-legend-swatch[^"]*"[^>]*'
+            r'\by="([^"]+)"[^>]*\bheight="([^"]+)"', group, re.S)]
+    swatch_text_ys = [
+        float(y) for y in re.findall(
+            r'<text[^>]*\by="([^"]+)"[^>]*>(?:process|entry|management|exit)<',
+            group, re.S)]
+    assert len(swatch_bands) == 4 and len(swatch_text_ys) == 4
+    assert legend_y not in swatch_text_ys
+    for top, bottom in swatch_bands:
+        assert not (top <= legend_y <= bottom + 10), (legend_y, top, bottom)
+    axis = re.search(
+        r'<g[^>]*data-marker="grade-axis-encoding"[^>]*>(.*?)</g>',
+        svg, re.S).group(1)
+    axis_ys = [float(y) for y in re.findall(r'\by="([^"]+)"', axis)]
+    assert len(axis_ys) == 5
+    for y in axis_ys:
+        assert abs(legend_y - y) >= 16, (legend_y, y)
+    # Inside the panel: a 16px line's descent (5px, Segoe UI) fits below it.
+    assert 16 <= legend_y <= GRADES_SVG_HEIGHT - 5, legend_y
 
 
 def test_process_card_filter_offers_the_value_b22_141(seeded_db) -> None:
@@ -131,6 +173,23 @@ def test_process_card_filter_offers_the_value_b22_141(seeded_db) -> None:
 
     assert (UNINTENDED, entry_intent_label(UNINTENDED)) in INTENT_FACETS
     assert entry_intent_label(UNINTENDED) == "Unintended execution"
+    # RULING G3a (iii), CHARC 2026-09-24: ONE label source. Every facet whose
+    # value is a stored entry_intent value is labelled by entry_intent_label;
+    # a re-hard-coded label goes RED here. The two sentinels ("" = All,
+    # "__unclassified__" = IS NULL) are not values: entry_intent_label has no
+    # label for them (None -> None; an unknown token -> itself).
+    from swing.data.models import ENTRY_INTENTS
+
+    value_facets = [(v, lbl) for v, lbl in INTENT_FACETS if v in ENTRY_INTENTS]
+    assert {v for v, _ in value_facets} == set(ENTRY_INTENTS)
+    for value, label in value_facets:
+        assert label == entry_intent_label(value), (value, label)
+    assert dict(INTENT_FACETS)["standard"] == "Standard entry"
+    sentinels = [v for v, _ in INTENT_FACETS if v not in ENTRY_INTENTS]
+    assert sentinels == ["", "__unclassified__"]
+    # The equality above cannot see a hard-coded label that happens to match
+    # today's text; the SOURCE must call the label home for every value facet.
+    _assert_value_facets_call_the_label_home(ENTRY_INTENTS)
     cfg, cfg_path = seeded_db
     _seed_four_intents(cfg)
     app = create_app(cfg, cfg_path)
@@ -144,11 +203,41 @@ def test_process_card_filter_offers_the_value_b22_141(seeded_db) -> None:
                        nav)
     by_label = {label: (href, cls) for href, cls, label in links}
     assert "Unintended execution" in by_label
+    # G3a (iii) as the witness sees it: the card renders the label home's text.
+    assert "Standard entry" in by_label and "Standard" not in by_label
     href, cls = by_label["Unintended execution"]
     assert href == f"?cohort=__all__&amp;intent={UNINTENDED}"
     # The route accepts the value (not normalized to the All facet).
     assert "active" in cls.split()
     assert "active" not in by_label["All"][1].split()
+
+
+def _assert_value_facets_call_the_label_home(entry_intents) -> None:
+    """Static read of ``INTENT_FACETS``: every (value, label) entry whose value
+    is a stored entry_intent value has a label expression that CALLS
+    ``entry_intent_label`` (bare or under ``or``) -- no string literal."""
+    import ast
+    import pathlib
+
+    import swing.web.view_models.metrics.trade_process_card as mod
+
+    tree = ast.parse(pathlib.Path(mod.__file__).read_text(encoding="utf-8"))
+    names = {"UNINTENDED_EXECUTION": UNINTENDED}
+    [node] = [n for n in ast.walk(tree) if isinstance(n, ast.AnnAssign)
+              and getattr(n.target, "id", None) == "INTENT_FACETS"]
+    seen = set()
+    for elt in node.value.elts:
+        key, label = elt.elts
+        value = (key.value if isinstance(key, ast.Constant)
+                 else names[key.id])
+        if value not in entry_intents:
+            continue
+        calls = [c for c in ast.walk(label) if isinstance(c, ast.Call)
+                 and getattr(c.func, "id", None) == "entry_intent_label"]
+        assert calls, f"facet {value!r} label is not from entry_intent_label"
+        assert not isinstance(label, ast.Constant), value
+        seen.add(value)
+    assert seen == set(entry_intents)
 
 
 def test_cli_analyze_label_b22_142(seeded_db) -> None:

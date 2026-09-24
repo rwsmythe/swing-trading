@@ -53,8 +53,12 @@
       <text x="{{ 360 + loop.index0 * 105 + 14 }}" y="15"
             class="muted">{{ series.metric_name.split('_grade_')[0] }}</text>
       {% endfor %}
-      {# Marker intent annotation legend (spec 7.2) - ASCII only (#16/#32). #}
-      <text x="6" y="15" class="muted"
+      {# Marker intent annotation legend (spec 7.2) - ASCII only (#16/#32).
+         RULING G3a (ii): ITS OWN LINE, never shortened -- at the swatch
+         row's baseline the text ran into the first swatch (x=360). It sits
+         in the grades panel's bottom margin, below the F=0 axis label; the
+         grades panel draws nothing else there. #}
+      <text x="6" y="{{ vm.grades_svg_height - 10 }}" class="muted"
             data-marker="grades-intent-legend">intent: standard / by-design / unclassified / unintended</text>
     </g>
     {# Per-trade markers — always rendered for trades with a grade letter. #}

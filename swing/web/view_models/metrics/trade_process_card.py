@@ -53,10 +53,15 @@ ALL_COHORTS_KEY: str = "__all__"
 # Arc 22-B Task 9: the third stored value is a facet of its own -- clause (4)
 # routes its realized result to this card's facet as an execution datum --
 # labelled by the single label home (``entry_intent_label``).
+# RULING G3a (iii): EVERY value facet takes its label from that one home (no
+# second label source on this card). The two sentinels are not stored values,
+# and the label home has no label for them (None -> None; an unknown token ->
+# itself), so "All" / "Unclassified" stay local here.
 INTENT_FACETS: tuple[tuple[str, str], ...] = (
     ("", "All"),
-    ("standard", "Standard"),
-    ("hypothesis_test_by_design", "Hypothesis test (by design)"),
+    ("standard", entry_intent_label("standard") or ""),
+    ("hypothesis_test_by_design",
+     entry_intent_label("hypothesis_test_by_design") or ""),
     (UNINTENDED_EXECUTION, entry_intent_label(UNINTENDED_EXECUTION) or ""),
     ("__unclassified__", "Unclassified"),
 )
