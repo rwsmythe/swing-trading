@@ -84,6 +84,8 @@
 --         DROP TRIGGER trg_dmr_no_delete;   -- daily_management_records
 --         DROP TRIGGER trg_dmr_no_replace;  -- daily_management_records
 --         DROP TRIGGER trg_dmr_immutable;   -- daily_management_records
+--         DROP TRIGGER trg_rl_no_delete;    -- review_log
+--         DROP TRIGGER trg_rl_no_replace;   -- review_log
 --
 -- (iii) THE ONE REBUILT OBJECT (F-I2, CHARC-ruled): trg_provenance_corrections_
 --     append_only_update is DROPPED and CREATED again. Its new text is the
@@ -761,6 +763,26 @@ WHEN NOT COALESCE(
                   AND NOT EXISTS (SELECT 1 FROM pipeline_runs WHERE id = OLD.pipeline_run_id)))))
 , 0)
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_dmr_immutable: daily_management_records: an UPDATE outside the admitted transitions: ACTIVE_STAY (the reflow), FLIP (is_superseded 0 to 1, data frozen), WINDOW (the supersede pointer NULL to value) or FROZEN_FK (pipeline_run_id nulled after its run is gone); a superseded snapshot is NEVER updated post-supersede (RD F-I1 row 10, S3-F2, the FLIP tightening). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+-- ============================================================================
+-- 10. review_log -- (c) (RD F-I1 row 17; S3-F3 (A); S3-F4 (i)). The barrier
+--    pair: no_delete, and no_replace scoped to the PK and the UNIQUE cadence key
+--    ux_review_log_cadence_period (review_type, period_start, period_end). The
+--    nightly writer insert_pre_create (repos/review_log.py, runner.py:4207)
+--    pre-filters with WHERE NOT EXISTS (F-I3, CHARC S3-F4 (i)), so its
+--    idempotent no-op never reaches this barrier; the barrier is NEVER narrowed
+--    to admit it. The RAISE text deliberately does NOT contain the word the
+--    writer's retained belt matches (UNIQUE / the index name), so the belt can
+--    never become a second, string-matched mechanism ((ii) refused).
+-- ============================================================================
+CREATE TRIGGER trg_rl_no_delete BEFORE DELETE ON review_log
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rl_no_delete: review_log rows are PERMANENT from migration 0041; a completed review freezes the operator''s process-review aggregates (RD F-I1 row 17, S3-F3 (A)). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_rl_no_replace BEFORE INSERT ON review_log
+WHEN COALESCE(EXISTS (SELECT 1 FROM review_log
+              WHERE (NEW.review_id != -1 AND review_id = NEW.review_id)
+                 OR (review_type = NEW.review_type AND period_start = NEW.period_start AND period_end = NEW.period_end)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rl_no_replace: review_log rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) on the PK or the cadence key (review_type, period_start, period_end) would DELETE the existing row without firing trg_rl_no_delete and reissue or move its id; a completed review freezes the operator''s process-review aggregates (RD F-I1 row 17, S3-F3 (A)). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- The version bump is the FINAL statement before COMMIT.
 UPDATE schema_version SET version = 41;

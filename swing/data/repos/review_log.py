@@ -156,19 +156,33 @@ def insert_pre_create(
     """Idempotent: returns new review_id, or None when a row already exists for
     (review_type, period_start, period_end). Caller wraps in ``with conn:``.
 
-    Only swallows UNIQUE constraint violations (idempotent no-op). Any other
-    IntegrityError (CHECK violation, etc.) re-raises so the caller learns about
-    validation failures.
+    22-I (F-I3, CHARC S3-F4 (i)): idempotency is the ``WHERE NOT EXISTS``
+    pre-filter on the cadence key -- an existing period inserts NO row
+    (``rowcount == 0``) and returns None without ever reaching migration
+    0041's ``trg_rl_no_replace`` barrier (a BEFORE INSERT trigger cannot see
+    a conflict algorithm, so an unfiltered duplicate INSERT would abort there).
+
+    The ``IntegrityError`` handler below is RETAINED VERBATIM as the belt (a
+    lost race between the pre-filter and the insert): it only swallows UNIQUE
+    constraint violations (idempotent no-op). Any other IntegrityError (CHECK
+    violation, etc.) re-raises so the caller learns about validation failures.
     """
     try:
         cur = conn.execute(
             """
             INSERT INTO review_log
                 (review_type, period_start, period_end, scheduled_date)
-            VALUES (?, ?, ?, ?)
+            SELECT ?, ?, ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM review_log
+                WHERE review_type = ? AND period_start = ? AND period_end = ?
+            )
             """,
-            (review_type, period_start, period_end, scheduled_date),
+            (review_type, period_start, period_end, scheduled_date,
+             review_type, period_start, period_end),
         )
+        if cur.rowcount == 0:
+            return None
         return int(cur.lastrowid)
     except sqlite3.IntegrityError as exc:
         msg = str(exc)

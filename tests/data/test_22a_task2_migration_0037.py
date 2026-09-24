@@ -1686,6 +1686,7 @@ _NO_REPLACE_PK = {
     "trg_hr_no_replace": ("hypothesis_registry", "id"),
     "trg_hsh_no_replace": ("hypothesis_status_history", "history_id"),
     "trg_dmr_no_replace": ("daily_management_records", "management_record_id"),
+    "trg_rl_no_replace": ("review_log", "review_id"),
 }
 
 # NEW tables additionally carry `CHECK (pk > 0)`; an EXISTING table cannot
