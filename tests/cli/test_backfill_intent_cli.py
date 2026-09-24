@@ -420,6 +420,33 @@ def test_backfill_force_same_value_reanswer_does_not_cross_boundary(
     assert _read_intent(db_path, t1) == "standard"  # unaffected either way
 
 
+def test_backfill_force_same_value_reanswer_summary_shows_set_not_written(
+    tmp_path: Path,
+) -> None:
+    """CHARC ruling (main @ 381943bd), clause (b)'s explicit discriminator
+    half: a same-value --force re-answer, completing NORMALLY (no injected
+    close failure), prints "1 set, 0 skipped-already-set,
+    0 skipped-by-operator" -- `n_set` (the pre-existing, byte-unchanged
+    summary count) increments on the re-answer even though
+    `update_entry_intent` wrote nothing. `n_written` has no summary text of
+    its own (it is an internal boundary counter, not a public summary
+    field); this test pins its NUMERATOR half (`n_set` = 1) explicitly,
+    paired with test_backfill_force_same_value_reanswer_does_not_cross_
+    boundary immediately above, whose close-failure-propagates-unchanged
+    behaviour on this SAME scenario is what proves `n_written` stayed 0 (a
+    crossed boundary would read as a contained WARN instead)."""
+    runner, cfg, db_path = _setup(tmp_path)
+    t1 = _seed_trade(db_path, ticker="AAA", entry_intent="standard")
+    res = runner.invoke(
+        main,
+        ["--config", str(cfg), "trade", "backfill-intent", "--force"],
+        input="standard\n",
+    )
+    assert res.exit_code == 0, res.output
+    assert "1 set, 0 skipped-already-set, 0 skipped-by-operator" in res.output
+    assert _read_intent(db_path, t1) == "standard"
+
+
 def test_backfill_post_boundary_output_failure_is_contained(
     tmp_path: Path,
 ) -> None:

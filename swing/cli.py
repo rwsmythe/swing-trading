@@ -2082,6 +2082,12 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
     # each handler below, never cached elsewhere. Both counters are
     # incremented only after each row's own commit (`with conn:`) RETURNS,
     # with nothing between that return and the increments that can raise.
+    # RULED by CHARC (main @ 381943bd): this shape is the durability
+    # boundary, a second counter at the commit site (not a cached flag);
+    # the client-side re-derivation of the no-write equality is a declared
+    # limitation (single-operator V1) -- the honest fix is `update_entry_
+    # intent` returning a bool, banked as a swing/data follow-on, not taken
+    # here.
     n_written = 0
     close_error_text = None
     close_log_error_text = None
