@@ -1752,12 +1752,24 @@ def trade_review_cmd(
             # v24 so this is the belt to the membership check's suspenders.
             raise click.ClickException(str(exc)) from exc
 
+        # The review has COMMITTED. RULING R3-1: say so BEFORE the intent
+        # write, so the recorded line precedes any refusal (the message names
+        # the committed review FIRST and the refused intent SECOND).
+        click.echo(
+            f"Review recorded for trade #{trade_id} ({trade.ticker}). "
+            f"Process grade: {process_grade}."
+            + (f" Failure mode: {failure_mode}." if failure_mode else ""))
+
         # Task 4 (tuition-vs-error): correct entry_intent at review. Optional --
         # an omitted flag leaves the persisted value untouched (no call). When
         # passed, persist via the dedicated update_entry_intent writer in its
         # OWN transaction (entry_intent is independent of review state, so it is
         # NOT folded into complete_trade_review -- L2/L5 lock). click.Choice
         # already constrains the value; the ValueError wrap is the belt.
+        # RULING R3-1: an `assign-intent` committing after the pre-check makes
+        # this call refuse (AL-6); the review above is already recorded, so the
+        # refusal names only the intent change, and the exit stays NONZERO (the
+        # part the operator asked for did not happen).
         if entry_intent is not None:
             from swing.data.repos.trades import update_entry_intent
             try:
@@ -1766,14 +1778,10 @@ def trade_review_cmd(
                         conn, trade_id=trade_id, entry_intent=entry_intent,
                     )
             except ValueError as exc:
-                raise click.ClickException(str(exc)) from exc
+                raise click.ClickException(
+                    f"Intent change REFUSED: {exc}") from exc
     finally:
         conn.close()
-
-    click.echo(
-        f"Review recorded for trade #{trade_id} ({trade.ticker}). "
-        f"Process grade: {process_grade}."
-        + (f" Failure mode: {failure_mode}." if failure_mode else ""))
 
 
 @trade_group.command("assign-intent")

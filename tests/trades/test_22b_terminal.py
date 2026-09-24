@@ -92,6 +92,79 @@ def test_cli_review_entry_intent_standard_refuses_b22_123(tmp_path: Path) -> Non
     assert res.exit_code != 0
     assert attested_message(att_id) in res.output, res.output
     assert _row(db) == before
+    # RULING R3-1: the PRE-CHECK path's message is UNCHANGED -- nothing was
+    # recorded there, so no "recorded" sentence and no concurrent-path prefix.
+    assert "recorded" not in res.output.lower(), res.output
+    assert "Intent change REFUSED" not in res.output, res.output
+
+
+def test_cli_review_concurrent_attested_race_names_committed_review_b22_240(
+        tmp_path: Path, monkeypatch) -> None:
+    """RULING R3-1 (CLI twin of b22_228): an ``assign`` committing between the
+    review's pre-check and its commit leaves the REVIEW committed and the
+    intent refused. The output names the committed review FIRST ("Review
+    recorded for trade #20 ...", echoed BEFORE the intent write) and the
+    refused intent SECOND ("Intent change REFUSED: <attested message>"); the
+    exit stays NONZERO. The race is planted by execution (the b22_226
+    technique): the pre-check commits a REAL ``assign`` over a SECOND
+    connection, then returns as a read taken before that commit would have."""
+    from swing.data.db import open_connection
+    from swing.data.repos import trades as trades_repo
+    from swing.trades.entry_intent_assignment import assign
+    from tests._22b_fixtures import seed_amn_row5, seed_trade20
+
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    cfg = _minimal_config(project, home)
+    runner = CliRunner()
+    res = runner.invoke(main, ["--config", str(cfg), "db-migrate"])
+    assert res.exit_code == 0, res.output
+    db = Path(tomllib.loads(cfg.read_text())["paths"]["db_path"])
+    seed = open_connection(db)
+    try:
+        seed_amn_row5(seed)
+        seed_trade20(seed, state="closed")
+        seed.commit()
+    finally:
+        seed.close()
+
+    real_check = trades_repo.assert_entry_intent_change_allowed
+    committed: list[int] = []
+
+    def _stale_check(conn, *, trade_id, entry_intent):
+        if not committed:
+            other = open_connection(db)
+            try:
+                r = assign(other, None, trade_id=20, cite=["notes", "why_now"],
+                           reason="Stale A+ latch order fired after the "
+                                  "mandate died", applied_by="operator")
+            finally:
+                other.close()
+            assert r.admitted, r.message
+            committed.append(int(r.attestation_id))
+            return None
+        return real_check(conn, trade_id=trade_id, entry_intent=entry_intent)
+
+    monkeypatch.setattr(trades_repo, "assert_entry_intent_change_allowed",
+                        _stale_check)
+    res = runner.invoke(main, [
+        "--config", str(cfg), "trade", "review", "--trade-id", "20",
+        "--entry-grade", "A", "--management-grade", "A", "--exit-grade", "A",
+        "--mistake-tags", "none_observed", "--lesson-learned", "clean",
+        "--entry-intent", "standard"])
+    assert committed, "the planted race did not run"
+    assert res.exit_code != 0, res.output
+    out = res.output
+    recorded = out.find("Review recorded for trade #20")
+    refused = out.find(f"Intent change REFUSED: {attested_message(committed[0])}")
+    assert recorded != -1, out
+    assert refused != -1, out
+    assert recorded < refused, out  # the committed review FIRST
+    row = _row(db)
+    # AL-6: the review persisted as submitted; the intent was never written.
+    assert row[0] == "reviewed" and row[-1] == UNINTENDED_EXECUTION
 
 
 def test_cli_review_without_entry_intent_still_completes(tmp_path: Path) -> None:
