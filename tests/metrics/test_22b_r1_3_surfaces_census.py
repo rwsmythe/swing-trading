@@ -48,7 +48,7 @@ _GOVERNED_NAMES: tuple[str, ...] = (
 _ONE_HOP_CALLERS: dict[str, dict[str, str]] = {
     "compute_hypothesis_progress_breakdown": {
         "swing/journal/stats.py:344": "DEFINITION",
-        "swing/cli.py:2058": "GOVERNED_CLI (journal review)",
+        "swing/cli.py:2066": "GOVERNED_CLI (journal review)",
         "swing/web/view_models/dashboard.py:248": (
             "the DEFINITION of build_recommendation_progress -- its own "
             "one-hop dependency, not a second call site"
@@ -72,8 +72,8 @@ _ONE_HOP_CALLERS: dict[str, dict[str, str]] = {
     },
     "compute_tripwire_status": {
         "swing/recommendations/hypothesis.py:489": "DEFINITION",
-        "swing/cli.py:5118": "GOVERNED_CLI (hypothesis list)",
-        "swing/cli.py:5166": "GOVERNED_CLI (hypothesis status)",
+        "swing/cli.py:5126": "GOVERNED_CLI (hypothesis list)",
+        "swing/cli.py:5174": "GOVERNED_CLI (hypothesis status)",
         "swing/journal/stats.py:453": (
             "inside compute_hypothesis_progress_breakdown itself -- "
             "already a governed reader (per-hypothesis tripwire compute)"
