@@ -26,6 +26,7 @@ from datetime import datetime
 
 from swing.config import Config
 from swing.data.db import connect
+from swing.data.models import UNINTENDED_EXECUTION
 from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.metrics.cohort import count_per_cohort
 from swing.metrics.discrepancies import (
@@ -37,6 +38,7 @@ from swing.metrics.process import (
     TradeProcessMetricsResult,
     compute_trade_process_metrics,
 )
+from swing.trades.intent import entry_intent_label
 from swing.web.view_models.metrics.shared import BaseLayoutVM
 
 # Special sentinel for the "all closed trades" tab. Distinguishes the
@@ -48,10 +50,14 @@ ALL_COHORTS_KEY: str = "__all__"
 # Intent-facet (value, label) tuple for the All-aggregate selector (Task 6 /
 # spec §7.1 D6). ``value`` of "" = All (no filter); the sentinel
 # "__unclassified__" maps to ``entry_intent IS NULL`` at the metrics layer.
+# Arc 22-B Task 9: the third stored value is a facet of its own -- clause (4)
+# routes its realized result to this card's facet as an execution datum --
+# labelled by the single label home (``entry_intent_label``).
 INTENT_FACETS: tuple[tuple[str, str], ...] = (
     ("", "All"),
     ("standard", "Standard"),
     ("hypothesis_test_by_design", "Hypothesis test (by design)"),
+    (UNINTENDED_EXECUTION, entry_intent_label(UNINTENDED_EXECUTION) or ""),
     ("__unclassified__", "Unclassified"),
 )
 
