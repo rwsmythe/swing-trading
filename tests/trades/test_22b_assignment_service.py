@@ -1067,3 +1067,46 @@ def test_every_copied_or_compared_source_date_is_shape_checked_b22_221(
         case, r.refusal_code, r.message)
     assert column in r.message and repr(value) in r.message, r.message
     _nothing_written(path)
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 Minor 1: every refusal message is ASCII, including the ones that
+# echo an operator- or envelope-supplied value (the CLI prints them on a
+# cp1252 console). Pre-fix each message carried the raw non-ASCII value.
+# ---------------------------------------------------------------------------
+_SNOWMAN = "\u2603"
+
+
+def test_not_citable_echo_is_ascii_b22_227(tmp_path: Path) -> None:
+    c, cfg, path = _world(tmp_path)
+    try:
+        r = _assign(c, cfg, cite=["notes", _SNOWMAN])
+    finally:
+        c.close()
+    assert (r.admitted, r.refusal_code) == (False, "not_citable"), r.message
+    assert r.message.isascii(), r.message
+    assert ascii(_SNOWMAN) in r.message
+    _nothing_written(path)
+
+
+def test_unprovable_envelope_date_echo_is_ascii_b22_227(tmp_path: Path) -> None:
+    c, cfg, path = _world(tmp_path, env=envelope(entry_date=_SNOWMAN))
+    try:
+        r = _assign(c, cfg)
+    finally:
+        c.close()
+    assert (r.admitted, r.refusal_code) == (False, "unprovable"), r.message
+    assert r.message.isascii(), r.message
+    assert ascii(_SNOWMAN) in r.message
+    _nothing_written(path)
+
+
+def test_entry_intent_param_echo_is_ascii_b22_227() -> None:
+    import click
+
+    from swing.cli import EntryIntentParam
+
+    with pytest.raises(click.BadParameter) as exc:
+        EntryIntentParam().convert(_SNOWMAN, None, None)
+    assert exc.value.message.isascii(), exc.value.message
+    assert ascii(_SNOWMAN) in exc.value.message

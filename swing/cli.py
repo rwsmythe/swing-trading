@@ -597,7 +597,7 @@ class EntryIntentParam(click.ParamType):
         if value == UNINTENDED_EXECUTION:
             self.fail(SEAM_MESSAGE, param, ctx)
         self.fail(
-            f"{value!r} is not one of {sorted(ENTRY_INTENTS_ASSERTABLE)}",
+            f"{ascii(value)} is not one of {sorted(ENTRY_INTENTS_ASSERTABLE)}",
             param, ctx)
 
     def get_metavar(self, param, ctx=None):

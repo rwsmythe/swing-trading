@@ -263,7 +263,8 @@ def _check_citation(trade: dict[str, Any], cite: list[str], reason: str) -> list
     for name in cite:
         if name not in CITABLE_FIELDS:
             raise _RefusalError("not_citable",
-                           f"'{name}' is not citable; cite one or more of: {allowed}")
+                           f"{ascii(name)} is not citable; cite one or more of: "
+                           f"{allowed}")
     if len(set(cite)) != len(cite):
         raise _RefusalError("not_citable", "a cited field is named twice")
     if not set(cite) & set(DESCRIPTIVE_FIELDS):
@@ -476,7 +477,7 @@ def _detect_tier(conn: sqlite3.Connection, cfg,
         else:
             raise _RefusalError(
                 "unprovable",
-                f"fill {fill_id}'s envelope entry_date {placement!r} is not a "
+                f"fill {fill_id}'s envelope entry_date {ascii(placement)} is not a "
                 "YYYY-MM-DD session, so the placement session is underivable")
     else:
         # E9, fail-closed: with no order id the fill cannot be untied from a
