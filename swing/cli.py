@@ -2142,9 +2142,35 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
                 f"#{tid} {ticker} {edate} | label={hyp or '(none)'} | "
                 f"grade={pg or '-'} | tags={tags or '-'} | "
                 f"current={current or 'NULL'} | suggested={sug_label}")
-            choice = click.prompt(
-                "  intent [standard / hypothesis_test_by_design / skip]",
-                default=(suggestion or "skip"), show_default=True).strip()
+            try:
+                choice = click.prompt(
+                    "  intent [standard / hypothesis_test_by_design / skip]",
+                    default=(suggestion or "skip"), show_default=True).strip()
+            except OSError as exc:
+                # Codex R2 Major: click.prompt renders its OWN question text
+                # through click.termui's internal (same-module) `echo`,
+                # which this command's `_emit`/`_echo_either_sink`
+                # machinery cannot reach or contain -- a broken output sink
+                # here raises `OSError` (e.g. `BrokenPipeError`), NOT
+                # `click.exceptions.Abort` (that conversion only covers
+                # KeyboardInterrupt/EOFError), so it is never confused with
+                # an operator-driven abort. Before the boundary this is
+                # byte-unchanged (propagates, as today). After it, the
+                # sink is unusable for further interaction -- there is no
+                # answer to read -- so the loop STOPS (never silently
+                # treats the unreached row as "skip") and falls through to
+                # the existing summary/close sequence with whatever this
+                # invocation already wrote.
+                if n_written == 0:
+                    raise
+                log_contained(
+                    _pe_backfill_logging.getLogger(__name__),
+                    "D69: backfill-intent wrote %s row(s) durably this "
+                    "invocation; prompting for trade %s FAILED (%s) -- the "
+                    "output sink is unusable, so remaining rows are left "
+                    "for a future run; the ledger is unaffected.",
+                    n_written, tid, safe_text(exc))
+                break
             if choice in ("skip", ""):
                 n_skipped_op += 1
                 continue

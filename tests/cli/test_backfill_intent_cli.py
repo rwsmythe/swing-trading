@@ -454,3 +454,65 @@ def test_backfill_post_boundary_output_failure_is_contained(
         )
     assert res.exit_code == 0, res.output
     assert _read_intent(db_path, t1) == "standard"
+
+
+def test_backfill_prompt_render_failure_after_commit_stops_gracefully(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Codex R2 Major: click.prompt renders its own question text through
+    click.termui's internal (same-module) echo, which this command's
+    _emit/_echo_either_sink machinery cannot reach -- a broken sink there
+    raises OSError, not click.exceptions.Abort. With TWO NULL rows and only
+    the FIRST prompt answered before the sink breaks: the first row commits
+    (n_written=1, crossing the boundary), the second row's prompt raises
+    OSError, and the command must stop gracefully (not crash) -- the
+    unanswered row is left for a future run, never silently skipped."""
+    import click
+
+    runner, cfg, db_path = _setup(tmp_path)
+    t1 = _seed_trade(db_path, ticker="AAA", entry_date="2026-04-01")
+    t2 = _seed_trade(db_path, ticker="BBB", entry_date="2026-04-02")
+    real_prompt = click.prompt
+    calls: list[int] = []
+
+    def _hostile_prompt(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            return real_prompt(*a, **kw)
+        raise OSError("R2 PROBE: prompt sink gone")
+
+    with pytest.MonkeyPatch.context() as mp, caplog.at_level("ERROR"):
+        mp.setattr(click, "prompt", _hostile_prompt)
+        res = runner.invoke(
+            main, ["--config", str(cfg), "trade", "backfill-intent"],
+            input="standard\n",
+        )
+    assert res.exit_code == 0, res.output
+    assert _read_intent(db_path, t1) == "standard"
+    assert _read_intent(db_path, t2) is None  # never silently skipped/set
+    assert any("D69" in r.message and "prompting for trade" in r.message
+               for r in caplog.records)
+
+
+def test_backfill_prompt_render_failure_zero_written_raises_as_today(
+    tmp_path: Path,
+) -> None:
+    """Codex R2 Major, the byte-unchanged control: a prompt-render OSError
+    with NOTHING written yet (n_written == 0) must still propagate exactly
+    as it always has -- no swallow, no graceful stop."""
+    import click
+
+    runner, cfg, db_path = _setup(tmp_path)
+    _seed_trade(db_path, ticker="AAA")
+
+    def _hostile_prompt(*a, **kw):
+        raise OSError("R2 PROBE: prompt sink gone before any write")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(click, "prompt", _hostile_prompt)
+        res = runner.invoke(
+            main, ["--config", str(cfg), "trade", "backfill-intent"],
+            input="standard\n",
+        )
+    assert res.exit_code != 0
+    assert isinstance(res.exception, OSError)
