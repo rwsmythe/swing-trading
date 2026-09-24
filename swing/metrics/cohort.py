@@ -228,7 +228,8 @@ def assert_intent_exclusion_disjoint(
     render COUNTS is also among the ``(trade_id, reason)`` pairs it NAMES
     "not counted" (the :func:`list_intent_excluded_for_cohort` result).
     Every governed decision reader calls this AFTER its naming read and
-    BEFORE it populates ``intent_excluded``.
+    BEFORE it populates ``intent_excluded``. Callers pass the intent-filtered
+    loaded ids; a superset of the counted ids cannot miss the intersection.
 
     WHY THE ASSERT ALONE IS SUFFICIENT (not merely cheaper). The counted
     predicate and the naming predicate differ ONLY in the intent test (the

@@ -96,6 +96,11 @@ def test_the_assert_docstring_carries_the_sufficiency_argument_b22_230() -> None
     assert "no fourth state" in doc.lower()
     assert "reversal surface" in doc
     assert "re-opens" in doc or "re-rules" in doc
+    # RULING R2-2 item 2 (R2-1 CONFIRMED not a defect): the argument passed
+    # is the intent-filtered load, stated so a later review does not re-find
+    # it as a superset defect.
+    assert ("callers pass the intent-filtered loaded ids; a superset of the "
+            "counted ids cannot miss the intersection") in doc.lower()
 
 
 # ---------------------------------------------------------------------------
