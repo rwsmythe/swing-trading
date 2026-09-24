@@ -202,6 +202,34 @@ def test_post_entry_with_matching_sector_industry_proceeds(
         count = conn.execute(
             "SELECT COUNT(*) FROM trades WHERE ticker='TAMP'"
         ).fetchone()[0]
+        trade_id, current_size = conn.execute(
+            "SELECT id, current_size FROM trades WHERE ticker='TAMP'"
+        ).fetchone()
+        # R4-1 (Codex round 4, D67): this route POSTs through record_entry --
+        # the SAME masking condition D67's own docstring names (this file,
+        # run ISOLATED at -n 0, is the FIRST importer of swing.trades.entry
+        # in its worker process, so entry.py's by-name insert_trade_with_
+        # event binds to the D67 wrapper). record_entry ALWAYS inserts its
+        # OWN entry fill (swing/trades/entry.py, Phase 7 Sub-B B.3) after
+        # calling insert_trade_with_event -- if the wrapper ALSO auto-
+        # inserted one (its original purpose: standing in for record_entry
+        # for tests that seed DIRECTLY, bypassing it), the trade would carry
+        # TWO entry fills and a DOUBLED current_size. Fixed by skipping the
+        # wrapper's own auto-fill whenever `attempt_id` is present in
+        # kwargs -- record_entry ALWAYS passes a freshly-minted attempt_id
+        # (22-A4, `_begin_attempt_identity`); no direct-seed caller in
+        # tests/web/ ever does (grep-verified), so the presence of
+        # attempt_id is the exact discriminator record_entry's own callers
+        # carry and no seed caller does.
+        fill_count = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE trade_id = ? AND action='entry'",
+            (trade_id,),
+        ).fetchone()[0]
+        entry_event_count = conn.execute(
+            "SELECT COUNT(*) FROM trade_events WHERE trade_id = ? "
+            "AND event_type='entry'",
+            (trade_id,),
+        ).fetchone()[0]
         # NO reconciliation_runs row emitted on the happy path.
         recon_count = conn.execute(
             "SELECT COUNT(*) FROM reconciliation_runs"
@@ -214,6 +242,18 @@ def test_post_entry_with_matching_sector_industry_proceeds(
         conn.close()
     assert count == 1, (
         f"Expected 1 trade row, got {count} — happy path must insert."
+    )
+    assert fill_count == 1, (
+        f"Expected exactly 1 entry fill (R4-1), got {fill_count} — a "
+        f"second would mean the D67 wrapper's auto-fill fired ALONGSIDE "
+        f"record_entry's own, doubling the position."
+    )
+    assert current_size == 1, (
+        f"Expected current_size == 1 (the posted share count), got "
+        f"{current_size} — doubled means the R4-1 duplicate-fill defect."
+    )
+    assert entry_event_count == 1, (
+        f"Expected exactly 1 entry trade_event, got {entry_event_count}."
     )
     assert recon_count == 0, (
         f"Expected 0 reconciliation_runs on happy path, got {recon_count}."

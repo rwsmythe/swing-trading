@@ -155,10 +155,33 @@ def _auto_entry_fill_after_insert_trade(monkeypatch):
         trade_id = real_insert(
             conn, trade, event_ts=event_ts, rationale=rationale, **kwargs,
         )
+        # R4-1 (Codex round 4): `record_entry` (swing/trades/entry.py,
+        # Phase 7 Sub-B B.3) ALWAYS inserts its OWN entry fill in the SAME
+        # transaction, immediately after calling `insert_trade_with_event`
+        # by name -- the exact reference this wrapper can capture under
+        # the masking mechanism D67's own docstring above describes. If
+        # this wrapper ALSO auto-inserted a fill here, a trade entered
+        # through `record_entry` (e.g. POST /trades/entry) under that
+        # masking would carry TWO entry fills and a DOUBLED
+        # `current_size` -- reproduced (2 fills, `current_size`=2 for a
+        # 1-share post) before this guard.
+        # `record_entry` ALWAYS passes a freshly-minted, non-None
+        # `attempt_id` (22-A4, `_begin_attempt_identity` mints
+        # unconditionally); no DIRECT-seed caller in tests/web/ ever
+        # passes `attempt_id` to `insert_trade_with_event` (grep-verified
+        # across every call site) -- so its presence in `kwargs` is the
+        # exact discriminator between "record_entry called this, which
+        # will insert its own fill" and "a test is seeding a trade
+        # directly and needs this wrapper's auto-fill to avoid the
+        # half-state `insert_trade_with_event`'s own docstring warns
+        # about." Skip the auto-fill only in the former case.
+        called_via_record_entry = kwargs.get("attempt_id") is not None
         # Only auto-write the entry-fill when the trade is in an active
         # state (entered/managing/partial_exited). Closed/reviewed seeds
         # in some tests intentionally skip the fill flow.
-        if trade.state in ("entered", "managing", "partial_exited"):
+        if not called_via_record_entry and trade.state in (
+            "entered", "managing", "partial_exited",
+        ):
             fills_repo.insert_fill_with_event(
                 conn,
                 Fill(
