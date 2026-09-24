@@ -287,8 +287,9 @@ Runs TO CONVERGENCE (first clean verdict with all five assertions passing); no r
 | round | reviewed HEAD | model / effort | `^ERROR` | footer | verdict (anchored) | crit/maj/min | dispositions | cell depth at gate |
 |---|---|---|---|---|---|---|---|---|
 | R1 | `ecd9fa57` | gpt-5.6-sol / high | 0 | 643,922 | FOUND 2 (printed twice by the CLI) / CLEAN 0 | 0 / 3 / 1 | R1-1 FORK (below) · R1-2 FIXED `f865fa39` (b22_226: `update_entry_intent` raised a raw IntegrityError when `assign` committed between its reads and its UPDATE; now re-checks inside its own tx and raises `AttestedIntentError`; red pre-fix) · R1-3 FORK (below) · R1-4 FIXED `4a3b790d` (b22_227: three refusal echoes through `ascii()`; red pre-fix) | 247,144 |
+| R2 | `c182b7b2` | gpt-5.6-sol / high | 0 | 964,523 | FOUND 2 (printed twice by the CLI) / CLEAN 0 | 0 / 2 / 0 | R2-1 NOT A DEFECT AS RULED, pending CHARC confirmation (below): the four readers pass the intent-filtered, pre-tier-2 list to `assert_intent_exclusion_disjoint`, which is the list the ruling's "differ ONLY in the intent test" argument is about; a superset only adds false TRIPS, and those need a live race whose outcome is the ruled typed refusal; the "not a superset or subset" requirement the reviewer quoted came from cell 14's own round-2 prompt (`reviewer-a-r2-prompt.md:60`, zero hits in brief/plan/ledgers), a steering defect dropped for round 3 · R2-2 FORK (below): the exit route's `except CohortReadRacedError` is unreachable in production because `build_dashboard` contains the error itself; b22_237 bypasses the real path | 273,399 (cell 14) |
 
-Evidence: `~/swing-data/review-transcripts/22-b-exec/reviewer-a-r1-{prompt,bundle,response,run}.*` (response 2,678,493 B; exit code measured 0). Spend so far: 643,922.
+Evidence: `~/swing-data/review-transcripts/22-b-exec/reviewer-a-r1-{prompt,bundle,response,run}.*` (response 2,678,493 B; exit code measured 0). R2: `reviewer-a-r2-{prompt,bundle,response,run,exit}.*` (bundle 757,461 B; response 2,702,743 B; exit code measured 0; one Codex-internal context compaction, not an error). Cell 14 (implementer-opus-high) ran R2. Spend so far: 643,922 + 964,523 = 1,608,445.
 
 ## FORK R1-1 — a refused intent change can leave a completed review committed. Ruler: **CHARC**. OPEN.
 
@@ -417,3 +418,15 @@ Found by cell 11 while encoding RULING R1-3-SHAPE; premise VERIFIED BY READ at t
 > OWNED: "each surface renders its refusal" named the four readers' pages and not their consumers -- existence is not completeness, in my own ruling. Cell 12 was right to route it.
 >
 > Noted, no action from me: the cell's suite died on a transient disk-full; the gate row carries YOUR run with its SHA. Then the item-1/2 encoding to a fresh cell red-first, the full suite, Reviewer A round 2.
+
+## FORK R2-2 -- the exit route's cohort-race handler is unreachable; b22_237 does not exercise the real path. Ruler: **CHARC**. OPEN.
+
+Verified at the orchestrator's seat by READ at `c182b7b2`. `swing/web/view_models/dashboard.py:1275-1288` (added in `eded0067`, RULING R1-3-SURFACES item 1(i)) wraps `build_dashboard`'s only governed read, `build_recommendation_progress` at :1277, in `except CohortReadRacedError` and degrades the hyp-recs panel. So the exit route's own `except CohortReadRacedError` around `build_dashboard(...)` at `swing/web/routes/trades.py:3171-3193` (added in `9e32503d`) never runs in production: in a real race the exit returns its ordinary success fragment, with no degraded notice. b22_237 (`tests/web/test_routes/test_22b_exit_post_cohort_race.py:60-75`) monkeypatches `build_dashboard` wholesale to raise, so it tests the dead handler and not the path the operator hits. By grep, the only other `build_recommendation_progress` callers under `swing/` are `dashboard.py:609` (`build_hyp_recs_section`) and `swing/recommendations/hypothesis_prefill.py:77`.
+
+Root cause: the ruling named `dashboard.py:578` as the hyp-recs isolation site. At the ruling's SHA that line sits inside `build_hyp_recs_section`, while `GET /` reaches the panel through `build_dashboard`'s own call. Cell 13 contained that call too, as the ruling's "the dashboard ... isolate the panel" requires, and the two ruled items together leave the exit handler dead.
+
+Branches, as measured by cell 14:
+- **(A)** The exit route inspects `dashboard_vm.hyp_recs_unavailable_text` and returns the degraded-success notice. The notice's current text, "The dashboard could not be refreshed", names a cause nobody observed (the status strip DID refresh, and the exit response does not render the hyp-recs panel). That is the D39 class, so new text would need ruling.
+- **(B)** Keep the containment in `build_dashboard`, retire the exit handler or keep it as a belt, and repoint b22_237 at the real builder, asserting the ordinary success response plus the closed trade. This departs from the ruling's literal exit text ("returns the COMMITTED exit with the 22-A3 degraded-success notice").
+
+Unchanged on both branches: a durable exit is never reported as a failure and never 500s. The exit rebuild stays uncontained for any exception other than the typed error, which is the banked, pre-existing gap.
