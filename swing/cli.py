@@ -1674,9 +1674,9 @@ def trade_review_cmd(
     # review`'s own pre-commit ValueError, and the AL-6 race's `update_
     # entry_intent` ValueError -- so a close failure can raise it with the
     # close error NAMED and CHAINED (R8's shape) instead of silently
-    # replacing it. Every OTHER raise (nothing durable, no named refusal)
-    # is byte-unchanged: it falls to the bare `conn.close()` below and a
-    # close failure there masks it exactly as it does today.
+    # replacing it. A raise with NOTHING durable and no named refusal is
+    # byte-unchanged (the bare `conn.close()` below). A non-refusal raise AFTER
+    # the review commits resumes; the close failure is WARNED (B2-01).
     review_committed = False
     intent_committed = False
     pending_refusal: click.ClickException | None = None
