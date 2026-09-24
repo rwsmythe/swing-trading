@@ -63,6 +63,12 @@
 --         DROP TRIGGER trg_rc_no_delete;   -- reconciliation_corrections
 --         DROP TRIGGER trg_rc_no_replace;  -- reconciliation_corrections
 --         DROP TRIGGER trg_rc_immutable;   -- reconciliation_corrections
+--         DROP TRIGGER trg_sac_no_delete;   -- schwab_api_calls
+--         DROP TRIGGER trg_sac_no_replace;  -- schwab_api_calls
+--         DROP TRIGGER trg_sac_immutable;   -- schwab_api_calls
+--         DROP TRIGGER trg_yfc_no_delete;   -- yfinance_calls
+--         DROP TRIGGER trg_yfc_no_replace;  -- yfinance_calls
+--         DROP TRIGGER trg_yfc_immutable;   -- yfinance_calls
 --
 -- (iii) THE ONE REBUILT OBJECT (F-I2, CHARC-ruled): trg_provenance_corrections_
 --     append_only_update is DROPPED and CREATED again. Its new text is the
@@ -418,6 +424,62 @@ WHEN NOT COALESCE(
             AND NOT EXISTS (SELECT 1 FROM schwab_api_calls WHERE call_id = OLD.schwab_api_call_id)))
 , 0)
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rc_immutable: reconciliation_corrections: this UPDATE changes a column outside the writer''s measured UPDATE set (none); write-once NULL to value: correction_set_id, superseded_by_correction_id; FK nulled only after its parent row is gone: risk_policy_id_at_correction, schwab_api_call_id; reconciliation_corrections is THE audit trail trg_eia_audit_trail reads (RD F-I1 row 6). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+-- ============================================================================
+-- 6. schwab_api_calls / yfinance_calls -- (c) (RD F-I1 row 12): UPDATE-in-place
+--    BY DESIGN (record_call_finish closes the row), so no blanket no_update: the
+--    twin freezes only what the writers never write -- by exclusion of their
+--    measured UPDATE set (repos/schwab_api_calls.py:102/:119/:133/:165,
+--    reconciliation_auto_correct.py:2370, scripts/fix_phase2_misleading_audit_
+--    rows.py:102; repos/yfinance_calls.py:87). pipeline_run_id keeps the a17
+--    exemption (DELETABLE-NO-PRODUCTION-DELETER).
+-- ============================================================================
+CREATE TRIGGER trg_sac_no_delete BEFORE DELETE ON schwab_api_calls
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_sac_no_delete: schwab_api_calls rows are PERMANENT from migration 0041; an API audit row''s PK and start identity are the immutable handle (RD F-I1 row 12). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_sac_no_replace BEFORE INSERT ON schwab_api_calls
+WHEN COALESCE(EXISTS (SELECT 1 FROM schwab_api_calls
+              WHERE (NEW.call_id != -1 AND call_id = NEW.call_id)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_sac_no_replace: schwab_api_calls rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_sac_no_delete and reissue or move its id; an API audit row''s PK and start identity are the immutable handle (RD F-I1 row 12). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_sac_immutable
+BEFORE UPDATE ON schwab_api_calls
+FOR EACH ROW
+WHEN NOT COALESCE(
+      NEW.call_id IS OLD.call_id
+  AND NEW.ts IS OLD.ts
+  AND NEW.endpoint IS OLD.endpoint
+  AND NEW.surface IS OLD.surface
+  AND NEW.environment IS OLD.environment
+  AND (NEW.pipeline_run_id IS OLD.pipeline_run_id
+        OR (OLD.pipeline_run_id IS NOT NULL AND NEW.pipeline_run_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM pipeline_runs WHERE id = OLD.pipeline_run_id)))
+, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_sac_immutable: schwab_api_calls: this UPDATE changes a column outside the writer''s measured UPDATE set (http_status, response_time_ms, rate_limit_remaining, signature_hash, status, error_message, linked_snapshot_id, linked_reconciliation_run_id, linked_correction_id); FK nulled only after its parent row is gone: pipeline_run_id; an API audit row''s PK and start identity are the immutable handle (RD F-I1 row 12). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_yfc_no_delete BEFORE DELETE ON yfinance_calls
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_yfc_no_delete: yfinance_calls rows are PERMANENT from migration 0041; an API audit row''s PK and start identity are the immutable handle (RD F-I1 row 12). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_yfc_no_replace BEFORE INSERT ON yfinance_calls
+WHEN COALESCE(EXISTS (SELECT 1 FROM yfinance_calls
+              WHERE (NEW.call_id != -1 AND call_id = NEW.call_id)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_yfc_no_replace: yfinance_calls rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_yfc_no_delete and reissue or move its id; an API audit row''s PK and start identity are the immutable handle (RD F-I1 row 12). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_yfc_immutable
+BEFORE UPDATE ON yfinance_calls
+FOR EACH ROW
+WHEN NOT COALESCE(
+      NEW.call_id IS OLD.call_id
+  AND NEW.ts IS OLD.ts
+  AND NEW.call_type IS OLD.call_type
+  AND NEW.ticker IS OLD.ticker
+  AND NEW.ticker_count IS OLD.ticker_count
+  AND NEW.surface IS OLD.surface
+  AND (NEW.pipeline_run_id IS OLD.pipeline_run_id
+        OR (OLD.pipeline_run_id IS NOT NULL AND NEW.pipeline_run_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM pipeline_runs WHERE id = OLD.pipeline_run_id)))
+, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_yfc_immutable: yfinance_calls: this UPDATE changes a column outside the writer''s measured UPDATE set (response_time_ms, status, rows_returned, error_message); FK nulled only after its parent row is gone: pipeline_run_id; an API audit row''s PK and start identity are the immutable handle (RD F-I1 row 12). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- The version bump is the FINAL statement before COMMIT.
 UPDATE schema_version SET version = 41;

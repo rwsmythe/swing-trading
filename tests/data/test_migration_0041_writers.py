@@ -199,3 +199,56 @@ def test_rc_split_into_partials_end_to_end(tmp_path: Path) -> None:
     assert len(rows) == 3
     anchor = rows[0][0]
     assert {r[1] for r in rows} == {anchor}
+
+
+# ---------------------------------------------------------------------------
+# schwab_api_calls / yfinance_calls (T8): the audit-row lifecycle
+# ---------------------------------------------------------------------------
+def test_audit_row_lifecycle_at_41(tmp_path: Path) -> None:
+    """Every writer of both audit tables, through its repo function: the
+    in-flight INSERT, the outcome close, and the three schwab link stamps."""
+    from swing.data.repos import schwab_api_calls as sac
+    from swing.data.repos import yfinance_calls as yfc
+
+    def lifecycle(k):
+        cid = sac.insert_in_flight(k, ts=NOW, endpoint="accounts.details",
+                                   pipeline_run_id=1, surface="pipeline",
+                                   environment="production")
+        sac.update_call_outcome(k, call_id=cid, http_status=200, response_time_ms=5,
+                                rate_limit_remaining=None, signature_hash="s",
+                                status="success", error_message=None)
+        sac.update_call_linked_snapshot(k, call_id=cid, snapshot_id=1)
+        sac.update_call_linked_reconciliation_run(k, call_id=cid, reconciliation_run_id=1)
+        sac.update_call_linked_correction(k, call_id=cid, correction_id=1)
+        yid = yfc.insert_in_flight(k, ts=NOW, call_type="download_single",
+                                   ticker="AMN", ticker_count=None,
+                                   pipeline_run_id=1, surface="pipeline")
+        yfc.update_call_outcome(k, call_id=yid, response_time_ms=5, status="success",
+                                rows_returned=3, error_message=None)
+
+    c = _world(tmp_path)
+    try:
+        assert outcome(c, lifecycle) == "OK"
+    finally:
+        c.close()
+
+
+def test_reconciliation_auto_correct_2370_link_admitted(tmp_path: Path) -> None:
+    """reconciliation_auto_correct.py:2370 -- the literal link stamp."""
+    c = _world(tmp_path)
+    try:
+        assert outcome(c, "UPDATE schwab_api_calls SET linked_correction_id = ? "
+                          "WHERE call_id = ?", (1, 1)) == "OK"
+    finally:
+        c.close()
+
+
+def test_fix_phase2_script_statement_admitted(tmp_path: Path) -> None:
+    """scripts/fix_phase2_misleading_audit_rows.py:102 -- the one writer
+    outside swing/ (status + error_message: both mutable)."""
+    c = _world(tmp_path)
+    try:
+        assert outcome(c, "UPDATE schwab_api_calls SET status = 'auth_failed', "
+                          "error_message = ? WHERE call_id = ?", ("e", 1)) == "OK"
+    finally:
+        c.close()

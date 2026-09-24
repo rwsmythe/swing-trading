@@ -414,7 +414,7 @@ _DIFFERENT: dict[tuple[str, str], Callable[[Any], Any]] = {
     ("yfinance_calls", "call_type"): _const("download_intraday"),
     ("yfinance_calls", "status"): _const("empty"),
     ("yfinance_calls", "surface"): _const("web"),
-    ("yfinance_calls", "ticker_count"): _const(None),
+    ("yfinance_calls", "ticker_count"): _const(5),
     ("account_equity_snapshots", "source"): _const("manual"),
     ("account_equity_snapshots", "basis"): _const("cash"),
     ("daily_management_records", "record_type"): _const("daily_snapshot"),
