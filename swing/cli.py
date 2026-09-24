@@ -1824,12 +1824,20 @@ def trade_assign_intent(ctx: click.Context, trade_id: int, value: str, cite: str
     # i.e. `assign` returned having COMMITTED the attestation row and the
     # trades value (its only admitted non-dry-run return follows its COMMIT).
     # A refused result and a dry run ROLLBACK, so they sit BEFORE it, as does
-    # any exception out of `assign` (`result` stays None). Before the boundary
-    # an error is the honest answer and every path is byte-unchanged; after
-    # it, an error would be a wrong answer in the expensive direction (a
-    # retry reads `already_set` for an assignment reported as failed). The
-    # boundary is RE-EVALUATED at each handler, never cached in a flag, so no
-    # instruction sits between the binding of `result` and its protection.
+    # any exception `assign` raises PRIOR TO its own COMMIT (`result` stays
+    # None). Before the boundary an error is the honest answer and every path
+    # is byte-unchanged; after it, an error would be a wrong answer in the
+    # expensive direction (a retry reads `already_set` for an assignment
+    # reported as failed). The boundary is RE-EVALUATED at each handler,
+    # never cached in a flag, so no instruction sits between the binding of
+    # `result` and its protection. RULING B item 1 (B-01): the one raise this
+    # boundary CANNOT see is `assign`'s COMMIT itself committing and then
+    # losing its return -- `result` stays unbound over a durable attestation,
+    # so `assign-intent` exits nonzero on a write that happened. That residual
+    # is DECLARED, not fixed, as AL-7: unlike the entry command (22-A4), a
+    # retry here cannot duplicate -- `entry_intent_attestations.trade_id` is
+    # UNIQUE and the value is terminal, so the retry refuses `already_set`
+    # and names the value it finds.
     result = None
     close_error_text = None
     close_log_error_text = None
