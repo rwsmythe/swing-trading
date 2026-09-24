@@ -78,3 +78,65 @@ def test_review_form_renders_read_only_no_select_b22_122(tmp_path: Path) -> None
     assert r.status_code == 200
     assert "Unintended execution" in r.text
     assert 'name="entry_intent"' not in r.text
+
+
+def test_review_second_call_attested_race_renders_409_not_500_b22_228(
+        tmp_path: Path, monkeypatch) -> None:
+    """RULING R1-1 fix (1): the route's SECOND call (``update_entry_intent``
+    in its own ``with conn:`` after ``complete_trade_review`` returned) is
+    wrapped, so an ``AttestedIntentError`` there renders the route's existing
+    409 refusal fragment, never a 500.
+
+    The race is made deterministic (the b22_226 technique): the pre-check
+    commits a REAL ``assign(...)`` on a SECOND connection and then returns as a
+    read taken before that commit would have. The review then commits (AL-6:
+    the review's own fields persist as submitted) and the second call refuses
+    typed. Pre-fix: the unwrapped ``AttestedIntentError`` is a 500."""
+    from swing.config import load as _load
+    from swing.data.db import open_connection
+    from swing.data.repos import trades as trades_repo
+    from swing.trades.entry_intent_assignment import assign
+    from swing.web.app import create_app
+    from tests._22b_fixtures import seed_amn_row5, seed_trade20
+
+    db = tmp_path / "race.db"
+    ensure_schema(db).close()
+    seed = open_connection(db)
+    try:
+        seed_amn_row5(seed)
+        seed_trade20(seed, state="closed")
+        seed.commit()
+    finally:
+        seed.close()
+    base = _load(REPO_ROOT / "swing.config.toml")
+    app = create_app(dc_replace(base, paths=dc_replace(base.paths, db_path=db)))
+
+    real_check = trades_repo.assert_entry_intent_change_allowed
+    committed: list[int] = []
+
+    def _stale_check(conn, *, trade_id, entry_intent):
+        if not committed:
+            other = open_connection(db)
+            try:
+                res = assign(other, None, trade_id=20, cite=["notes", "why_now"],
+                             reason="Stale A+ latch order fired after the "
+                                    "mandate died", applied_by="operator")
+            finally:
+                other.close()
+            assert res.admitted, res.message
+            committed.append(int(res.attestation_id))
+            return None
+        return real_check(conn, trade_id=trade_id, entry_intent=entry_intent)
+
+    monkeypatch.setattr(trades_repo, "assert_entry_intent_change_allowed",
+                        _stale_check)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        r = client.post("/trades/20/review",
+                        data={**REVIEW, "entry_intent": "standard"},
+                        headers={"HX-Request": "true"}, follow_redirects=False)
+    assert committed, "the planted race did not run"
+    assert r.status_code == 409, (r.status_code, r.text[-800:])
+    assert attested_message(committed[0]) in r.text, r.text[-800:]
+    row = _row(db)
+    # AL-6: the review persisted as submitted; the intent was never written.
+    assert row[0] == "reviewed" and row[-1] == UNINTENDED_EXECUTION
