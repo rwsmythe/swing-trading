@@ -2065,13 +2065,41 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
     cfg = apply_overrides(ctx.obj["config"])
     conn = connect(cfg.paths.db_path)
     n_set = n_skipped_set = n_skipped_op = 0
-    # D69: THE DURABILITY BOUNDARY -- "at least one row committed in THIS
-    # invocation" (`n_set > 0`), re-evaluated at each handler below, never
-    # cached in a separate flag. `n_set` is incremented only after each row's
-    # own commit (`with conn:`) RETURNS, with nothing between that return and
-    # the increment that can raise.
+    # D69 (Codex R1 Major 2): THE DURABILITY BOUNDARY is "at least one row
+    # ACTUALLY WRITTEN in THIS invocation" -- `n_written`, DELIBERATELY
+    # SEPARATE from `n_set` (the pre-existing, byte-unchanged summary count).
+    # `n_set` alone is NOT a durability boundary: with --force/--trade-id the
+    # operator can re-answer an already-set row with its OWN CURRENT value,
+    # and `update_entry_intent` (swing/data/repos/trades.py) returns WITHOUT
+    # writing when `entry_intent == ` the row's existing value -- `n_set`
+    # would still increment (today's unchanged summary semantic) over a
+    # `with conn:` block that opened no transaction and wrote nothing.
+    # `n_written` only increments when the operator's choice DIFFERS from
+    # the row's already-fetched `current` value (the same equality
+    # `update_entry_intent` itself tests, computed here from data this
+    # command already read -- single-operator V1, no concurrent writer
+    # expected between the read and this row's own update). Re-evaluated at
+    # each handler below, never cached elsewhere. Both counters are
+    # incremented only after each row's own commit (`with conn:`) RETURNS,
+    # with nothing between that return and the increments that can raise.
+    n_written = 0
     close_error_text = None
     close_log_error_text = None
+
+    def _emit(line: str) -> None:
+        # D69 (Codex R1 Major 1): re-evaluated at EVERY call -- once ANY
+        # row in this invocation has been durably written, ALL further
+        # output (this row's own remaining lines, every later row's, and
+        # the final summary) goes through the contained sink, matching the
+        # close()-failure containment above. Before that boundary the call
+        # is byte-unchanged (a bare `click.echo`, which can raise exactly
+        # as it does today).
+        text = ascii_safe(line)
+        if n_written > 0:
+            _echo_either_sink(text)
+        else:
+            click.echo(text)
+
     try:
         # Select target trades: by id, or all rows; the IS-NULL/--force gate is
         # applied per-row so the summary counts are exact.
@@ -2102,7 +2130,7 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
                 except AttestedIntentError as exc:
                     # Codex R7-2: `ticker` (and `entry_date`) are unrestricted
                     # text; the whole line is ASCII-coerced.
-                    click.echo(ascii_safe(f"#{tid} {ticker} {edate} | {exc}"))
+                    _emit(f"#{tid} {ticker} {edate} | {exc}")
                 n_skipped_set += 1
                 continue
             suggestion = suggest_entry_intent(hyp)
@@ -2110,10 +2138,10 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
             # D69: `ticker` (and `hypothesis_label`/`mistake_tags`) are
             # unrestricted text -- the whole line is ASCII-coerced, mirroring
             # the terminal-value branch above (Codex R7-2) which already did.
-            click.echo(ascii_safe(
+            _emit(
                 f"#{tid} {ticker} {edate} | label={hyp or '(none)'} | "
                 f"grade={pg or '-'} | tags={tags or '-'} | "
-                f"current={current or 'NULL'} | suggested={sug_label}"))
+                f"current={current or 'NULL'} | suggested={sug_label}")
             choice = click.prompt(
                 "  intent [standard / hypothesis_test_by_design / skip]",
                 default=(suggestion or "skip"), show_default=True).strip()
@@ -2126,22 +2154,24 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
             except EntryIntentSeamError as exc:
                 # Arc 22-B F5 seam: the evidence-bearing value is never written
                 # here; say why, leave the row as it was, and keep going.
-                click.echo(ascii_safe(f"  {exc}"))
+                _emit(f"  {exc}")
                 n_skipped_op += 1
                 continue
             except ValueError as exc:
                 raise click.ClickException(str(exc)) from exc
             n_set += 1
-        click.echo(ascii_safe(
-            f"{n_set} set, {n_skipped_set} skipped-already-set, "
-            f"{n_skipped_op} skipped-by-operator"))
+            if choice != current:
+                n_written += 1
+        _emit(f"{n_set} set, {n_skipped_set} skipped-already-set, "
+              f"{n_skipped_op} skipped-by-operator")
     finally:
         # D69 (mirrors the 22-A3/assign-intent idiom): BEFORE the boundary
-        # (n_set == 0, nothing durable this invocation) every path is
+        # (n_written == 0, nothing durable this invocation) every path is
         # byte-unchanged -- a bare `conn.close()`, whose failure propagates
         # (or replaces whatever is already in flight) exactly as it always
-        # has. AFTER the boundary (n_set > 0), a close failure is contained.
-        if n_set > 0:
+        # has. AFTER the boundary (n_written > 0), a close failure is
+        # contained.
+        if n_written > 0:
             # D39's template: if another exception is ALREADY propagating
             # (a click.Abort from an interrupted prompt, or the
             # ClickException raised above from a ValueError), it MUST keep
@@ -2157,35 +2187,35 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
                     log_contained_note(
                         _pe_backfill_logging.getLogger(__name__),
                         _exc_in_flight,
-                        "D69: backfill-intent set %s row(s) durably this "
+                        "D69: backfill-intent wrote %s row(s) durably this "
                         "invocation; an exception was already propagating "
                         "when CLOSING the database connection afterwards "
                         "ALSO RAISED (%s); the ledger is unaffected -- the "
                         "original exception still propagates.",
-                        n_set, safe_text(exc))
+                        n_written, safe_text(exc))
                 else:
                     close_error_text = safe_text(exc)
                     _close_log_error = log_contained(
                         _pe_backfill_logging.getLogger(__name__),
-                        "D69: backfill-intent set %s row(s) durably this "
+                        "D69: backfill-intent wrote %s row(s) durably this "
                         "invocation and CLOSING the database connection "
                         "afterwards RAISED (%s); the ledger is unaffected "
                         "and the command still exits 0.",
-                        n_set, close_error_text)
+                        n_written, close_error_text)
                     if _close_log_error is not None:
                         close_log_error_text = safe_text(_close_log_error)
         else:
             conn.close()
     # Reached only when the try/finally above completed WITHOUT propagating
-    # an exception (n_set == 0 byte-unchanged path never reaches here on a
-    # close failure; n_set > 0 with an exception in flight re-raises it
-    # before this line, per Python's own finally semantics).
+    # an exception (n_written == 0 byte-unchanged path never reaches here on
+    # a close failure; n_written > 0 with an exception in flight re-raises
+    # it before this line, per Python's own finally semantics).
     if close_error_text is not None:
         _echo_either_sink(ascii_safe(
-            "WARN (post-commit): " + safe_text(n_set) + " row(s) were set "
-            "durably this invocation, and CLOSING the database connection "
-            "afterwards RAISED (" + close_error_text + "); the ledger is "
-            "unaffected."), prefer_err=True)
+            "WARN (post-commit): " + safe_text(n_written) + " row(s) were "
+            "written durably this invocation, and CLOSING the database "
+            "connection afterwards RAISED (" + close_error_text + "); the "
+            "ledger is unaffected."), prefer_err=True)
     if close_log_error_text is not None:
         _echo_either_sink(ascii_safe(
             "WARN (post-commit): the ERROR log for the close failure above "

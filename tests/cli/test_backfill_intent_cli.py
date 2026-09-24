@@ -384,3 +384,73 @@ def test_backfill_close_raise_with_abort_in_flight_names_not_substitutes(
     assert _read_intent(db_path, t2) is None
     assert any("D69" in r.message and "ALSO RAISED" in r.message
                for r in caplog.records)
+
+
+# Codex R1 (round 1 of the D67+D69 review): two findings against the FIRST
+# cut of the D69 fix, both IN ENVELOPE, adjudicated and fixed rather than
+# banked. Each test below is a discriminator computed under both the
+# pre-R1-fix and post-R1-fix code (see the return report for the recorded
+# results); the fix commit references R1 Major 1 / R1 Major 2 by number.
+
+
+def test_backfill_force_same_value_reanswer_does_not_cross_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex R1 Major 2: `n_set` alone is NOT a durability boundary.
+    `update_entry_intent` (swing/data/repos/trades.py) returns WITHOUT
+    writing when the operator's --force re-answer EQUALS the row's current
+    value -- no transaction opens, nothing commits. `n_set` still
+    increments (the pre-existing, byte-unchanged summary count), but the
+    NEW durability boundary (n_written) must NOT cross on this path: a
+    subsequent close() failure with nothing else written must stay on the
+    byte-unchanged raise-as-today path, not the WARN-and-swallow one."""
+    runner, cfg, db_path = _setup(tmp_path)
+    t1 = _seed_trade(db_path, ticker="AAA", entry_intent="standard")
+    _patch_backfill_connect_to_raise_on_close(monkeypatch)
+    res = runner.invoke(
+        main,
+        ["--config", str(cfg), "trade", "backfill-intent", "--force"],
+        # Re-answer with the SAME value already on the row -- a genuine
+        # no-op at the DB layer even though the summary counts it "set".
+        input="standard\n",
+    )
+    assert res.exit_code != 0
+    assert isinstance(res.exception, sqlite3.OperationalError)
+    assert "WARN (post-commit):" not in res.output
+    assert _read_intent(db_path, t1) == "standard"  # unaffected either way
+
+
+def test_backfill_post_boundary_output_failure_is_contained(
+    tmp_path: Path,
+) -> None:
+    """Codex R1 Major 1: after the durability boundary is crossed, EVERY
+    remaining output line (not just the close()-failure WARN lines) must go
+    through the contained sink. A single seeded trade: the pre-write header
+    prints via the byte-unchanged path (n_written == 0, real click.echo);
+    the post-commit summary must survive BOTH stdout and stderr failing."""
+    import click
+
+    runner, cfg, db_path = _setup(tmp_path)
+    t1 = _seed_trade(db_path, ticker="AAA")
+    real_echo = click.echo
+    calls: list[int] = []
+
+    def _hostile_echo(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            # The row's own header: BEFORE any write this invocation
+            # (byte-unchanged path) -- let it through normally.
+            return real_echo(*a, **kw)
+        # Every later echo (chosen to land on/after the commit): both
+        # stdout and stderr attempts must fail here to prove containment
+        # (click.echo is the shared primitive for both).
+        raise BrokenPipeError("R1 PROBE: sink gone")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(click, "echo", _hostile_echo)
+        res = runner.invoke(
+            main, ["--config", str(cfg), "trade", "backfill-intent"],
+            input="standard\n",
+        )
+    assert res.exit_code == 0, res.output
+    assert _read_intent(db_path, t1) == "standard"
