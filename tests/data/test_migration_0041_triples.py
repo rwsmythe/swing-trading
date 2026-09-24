@@ -40,7 +40,10 @@ BARRIER_TABLES = (*BLANKET, "pattern_detection_events",
                   "reconciliation_corrections", "schwab_api_calls", "yfinance_calls",
                   "account_equity_snapshots", "hypothesis_registry",
                   "risk_policy", "hypothesis_status_history",
-                  "daily_management_records", "review_log")
+                  "daily_management_records", "review_log",
+                  # T13: the (c) no-twin pair (RD F-I1 rows 15, 18) -- no UNIQUE
+                  # key beyond the PK, so A2/A3 run on the explicit PK
+                  "pattern_exemplars", "watchlist_archive")
 # Partial-UNIQUE tables: their A1/A2/A3/A8 need a bespoke row (a second
 # ACTIVE / OPEN row is the conflict), so those probes live beside their
 # writers (test_migration_0041_writers.py); A4/A5/A6 run here on the PK.

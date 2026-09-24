@@ -87,6 +87,10 @@
 --         DROP TRIGGER trg_rl_no_delete;    -- review_log
 --         DROP TRIGGER trg_rl_no_replace;   -- review_log
 --         DROP TRIGGER trg_rl_immutable;    -- review_log
+--         DROP TRIGGER trg_pex_no_delete;   -- pattern_exemplars
+--         DROP TRIGGER trg_pex_no_replace;  -- pattern_exemplars
+--         DROP TRIGGER trg_wla_no_delete;   -- watchlist_archive
+--         DROP TRIGGER trg_wla_no_replace;  -- watchlist_archive
 --
 -- (iii) THE ONE REBUILT OBJECT (F-I2, CHARC-ruled): trg_provenance_corrections_
 --     append_only_update is DROPPED and CREATED again. Its new text is the
@@ -829,6 +833,30 @@ WHEN NOT COALESCE(
                       AND NOT EXISTS (SELECT 1 FROM risk_policy WHERE policy_id = OLD.risk_policy_id_at_review_completion)))))
 , 0)
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rl_immutable: review_log: this UPDATE changes an identity column (review_id, review_type, period_start, period_end, scheduled_date, skipped, created_at), or a frozen aggregate / completion field of an ALREADY-completed review (only superseded_by_correction_id moves after completion; risk_policy_id_at_review_completion is nulled only after its policy row is gone); a completed review freezes the operator''s process-review aggregates (RD F-I1 row 17, S3-F3 (A)). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+-- ============================================================================
+-- 11. pattern_exemplars / watchlist_archive -- (c) with NO twin (RD F-I1 rows
+--    15, 18; AL-11): labels and removed_date are edited in place BY DESIGN, so
+--    only the barrier pair lands -- no_delete, and no_replace scoped to the PK
+--    (neither table declares a UNIQUE key). The sole INSERT writers
+--    (repos/pattern_exemplars.py:91, repos/watchlist.py:89) omit the PK, so an
+--    ordinary append never reaches the barrier.
+-- ============================================================================
+CREATE TRIGGER trg_pex_no_delete BEFORE DELETE ON pattern_exemplars
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pex_no_delete: pattern_exemplars rows are PERMANENT from migration 0041; an exemplar is an audit-trail-with-uniqueness row whose id parent_exemplar_id cites (RD F-I1 row 15). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_pex_no_replace BEFORE INSERT ON pattern_exemplars
+WHEN COALESCE(EXISTS (SELECT 1 FROM pattern_exemplars
+              WHERE (NEW.id != -1 AND id = NEW.id)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pex_no_replace: pattern_exemplars rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_pex_no_delete and reissue or move its id; an exemplar is an audit-trail-with-uniqueness row whose id parent_exemplar_id cites (RD F-I1 row 15). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_wla_no_delete BEFORE DELETE ON watchlist_archive
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_wla_no_delete: watchlist_archive rows are PERMANENT from migration 0041; the watchlist archive is an audit trail of every removal (RD F-I1 row 18). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_wla_no_replace BEFORE INSERT ON watchlist_archive
+WHEN COALESCE(EXISTS (SELECT 1 FROM watchlist_archive
+              WHERE (NEW.id != -1 AND id = NEW.id)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_wla_no_replace: watchlist_archive rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_wla_no_delete and reissue or move its id; the watchlist archive is an audit trail of every removal (RD F-I1 row 18). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- The version bump is the FINAL statement before COMMIT.
 UPDATE schema_version SET version = 41;
