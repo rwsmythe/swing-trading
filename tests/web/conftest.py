@@ -115,6 +115,35 @@ def _auto_entry_fill_after_insert_trade(monkeypatch):
     fixture's ``state in (entered/managing/partial_exited)`` guard means
     tests that legitimately seed closed/reviewed trades skip the
     auto-fill (which would otherwise corrupt the seed state).
+
+    D67 (2026-09-24): this wrapper hard-copied ``insert_trade_with_event``'s
+    keyword roster (``event_ts``/``rationale``) and rotted silently when
+    22-A4 added ``attempt_id`` to the production signature — ``entry.py``
+    passes it unconditionally, so any caller landing on the wrapped
+    function raised ``TypeError: wrapped() got an unexpected keyword
+    argument 'attempt_id'``. MEASURED masking mechanism for why the full
+    suite run never saw it: ``swing/web/app.py:create_app`` imports route
+    modules (and, transitively, ``swing.trades.entry``) LAZILY, inside the
+    function body, not at ``swing.web.app`` module-import time. ``entry.py``
+    itself binds ``insert_trade_with_event`` by name
+    (``from swing.data.repos.trades import insert_trade_with_event``) —
+    an independent reference captured once, at ``entry.py``'s OWN first
+    import, that this fixture's ``monkeypatch.setattr(trades_repo, ...)``
+    can never retarget (it only rewrites ``trades_repo``'s own attribute).
+    So whichever test is the FIRST in a given process to trigger
+    ``swing.trades.entry``'s import decides, for that whole worker
+    process, whether ``entry.py`` calls the real function or this
+    wrapper. In a full run, ``tests/trades/`` sorts before ``tests/web/``
+    and imports ``swing.trades.entry`` directly (no monkeypatch active
+    yet) well before this file's autouse fixture ever runs — so
+    ``entry.py`` is permanently bound to the REAL function and the
+    rotted wrapper is never reached through ``record_entry``. Running
+    THIS FILE alone makes it the first import: the autouse fixture below
+    patches ``trades_repo`` before the test body calls ``create_app()``,
+    so ``entry.py``'s first-ever import captures the ALREADY-WRAPPED
+    reference, and it stays captured for the rest of that process. Fix:
+    take ``**kwargs`` and forward — never hand-copy the production
+    keyword roster a second time.
     """
     from swing.data.models import Fill
     from swing.data.repos import fills as fills_repo
@@ -122,9 +151,9 @@ def _auto_entry_fill_after_insert_trade(monkeypatch):
 
     real_insert = trades_repo.insert_trade_with_event
 
-    def wrapped(conn, trade, *, event_ts, rationale=None):
+    def wrapped(conn, trade, *, event_ts, rationale=None, **kwargs):
         trade_id = real_insert(
-            conn, trade, event_ts=event_ts, rationale=rationale,
+            conn, trade, event_ts=event_ts, rationale=rationale, **kwargs,
         )
         # Only auto-write the entry-fill when the trade is in an active
         # state (entered/managing/partial_exited). Closed/reviewed seeds
