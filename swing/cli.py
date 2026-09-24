@@ -1618,6 +1618,7 @@ def trade_review_cmd(
     from swing.data.db import connect
     from swing.data.repos.review_log import list_unreviewed_closed_trades
     from swing.data.repos.trades import get_trade
+    from swing.trades.entry import ascii_safe, log_contained, safe_text
     from swing.trades.review import (
         canonicalize_mistake_tags,
         complete_trade_review,
@@ -1665,6 +1666,20 @@ def trade_review_cmd(
         )
 
     conn = connect(cfg.paths.db_path)
+    # RULING B item 2 (CHARC, B-02): the close handler RE-EVALUATES two
+    # durability facts, each bound at its OWN writer's return, never cached
+    # earlier. `pending_refusal` holds the refusal `ClickException` for the
+    # three in-flight-refusal cases RULING B names -- the pre-check
+    # `assert_entry_intent_change_allowed` ValueError, `complete_trade_
+    # review`'s own pre-commit ValueError, and the AL-6 race's `update_
+    # entry_intent` ValueError -- so a close failure can raise it with the
+    # close error NAMED and CHAINED (R8's shape) instead of silently
+    # replacing it. Every OTHER raise (nothing durable, no named refusal)
+    # is byte-unchanged: it falls to the bare `conn.close()` below and a
+    # close failure there masks it exactly as it does today.
+    review_committed = False
+    intent_committed = False
+    pending_refusal: click.ClickException | None = None
     try:
         trade = get_trade(conn, trade_id)
         if trade is None:
@@ -1720,7 +1735,8 @@ def trade_review_cmd(
                 assert_entry_intent_change_allowed(
                     conn, trade_id=trade_id, entry_intent=entry_intent)
             except ValueError as exc:
-                raise click.ClickException(str(exc)) from exc
+                pending_refusal = click.ClickException(str(exc))
+                raise pending_refusal from exc
 
         # B.7: route through `complete_trade_review` service so the review
         # fields write + state_transition(closed → reviewed) land atomically
@@ -1750,7 +1766,12 @@ def trade_review_cmd(
             # Defense-in-depth: the repo-layer pre-v24 / membership ValueError
             # surfaces as a clean ClickException, not a traceback. Production is
             # v24 so this is the belt to the membership check's suspenders.
-            raise click.ClickException(str(exc)) from exc
+            pending_refusal = click.ClickException(str(exc))
+            raise pending_refusal from exc
+        # RULING B item 2: bound at the writer's OWN return, never cached
+        # earlier -- `complete_trade_review` opened and closed its own
+        # `with conn:` above, so by this line the review is durable.
+        review_committed = True
 
         # The review has COMMITTED. RULING R3-1: say so BEFORE the intent
         # write, so the recorded line precedes any refusal (the message names
@@ -1760,7 +1781,6 @@ def trade_review_cmd(
         # `--ticker` is unrestricted text, so the WHOLE line is ASCII-coerced,
         # and the write is contained per sink (the 22-A3 post-durability
         # idiom, `_echo_either_sink`).
-        from swing.trades.entry import ascii_safe
         _echo_either_sink(ascii_safe(
             f"Review recorded for trade #{trade_id} ({trade.ticker}). "
             f"Process grade: {process_grade}."
@@ -1784,10 +1804,70 @@ def trade_review_cmd(
                         conn, trade_id=trade_id, entry_intent=entry_intent,
                     )
             except ValueError as exc:
-                raise click.ClickException(
-                    f"Intent change REFUSED: {exc}") from exc
+                pending_refusal = click.ClickException(
+                    f"Intent change REFUSED: {exc}")
+                raise pending_refusal from exc
+            # RULING B item 2: bound at the writer's OWN return, never cached
+            # earlier -- `update_entry_intent`'s `with conn:` above has
+            # exited (committed) by this line.
+            intent_committed = True
     finally:
-        conn.close()
+        # RULING B item 2 (CHARC, B-02): a raise with NO named refusal and
+        # NOTHING durable keeps TODAY's behaviour byte-unchanged -- the bare
+        # `conn.close()` below, whose failure silently replaces whatever was
+        # in flight, exactly as it always has. Only once there is something
+        # to protect (a named refusal, or a durable review) does the close
+        # get wrapped.
+        if pending_refusal is not None or review_committed:
+            try:
+                conn.close()
+            except BaseException as close_exc:  # noqa: BLE001 -- the CLASS
+                if pending_refusal is not None:
+                    # (i) A REFUSAL IN FLIGHT: the typed refusal text
+                    # SURVIVES a close failure, named and chained (R8's
+                    # shape; D39's template -- the cleanup failure chained
+                    # from the original, never instead of it). R3-1's order
+                    # is already satisfied by construction: the "Review
+                    # recorded" line (when review_committed) was echoed
+                    # BEFORE this exception was ever raised, so it reads
+                    # first; the refused-intent (or pre-commit) text is
+                    # `pending_refusal`'s own message, named here second;
+                    # the close failure is named third.
+                    raise click.ClickException(
+                        f"{pending_refusal.message}; the connection close "
+                        f"also failed: {safe_text(close_exc)}"
+                    ) from close_exc
+                # (ii) NOTHING REFUSED and every write that ran IS durable
+                # (review_committed, and intent_committed if an intent
+                # change was requested and it went through) -- the 22-A3
+                # post-commit close shape: log contained, WARN on stderr
+                # through the contained sink, exit 0.
+                durable_what = (
+                    "review and intent change" if intent_committed
+                    else "review")
+                close_error_text = safe_text(close_exc)
+                _close_log_error = log_contained(
+                    _pe_backfill_logging.getLogger(__name__),
+                    "22-B: trade %s %s IS DURABLE and CLOSING the database "
+                    "connection afterwards RAISED (%s); the ledger is "
+                    "unaffected.",
+                    trade_id, durable_what, close_error_text)
+                _echo_either_sink(ascii_safe(
+                    "WARN (post-commit): trade " + safe_text(trade_id)
+                    + " " + durable_what + " IS DURABLE and CLOSING the "
+                    "database connection afterwards RAISED ("
+                    + close_error_text + "); the ledger is unaffected."),
+                    prefer_err=True)
+                if _close_log_error is not None:
+                    _echo_either_sink(ascii_safe(
+                        "WARN (post-commit): the ERROR log for the close "
+                        "failure above could not be emitted cleanly -- a "
+                        "logging handler RAISED ("
+                        + safe_text(_close_log_error) + "). Some sinks may "
+                        "have received the record and some may not; the "
+                        "ledger is unaffected."), prefer_err=True)
+        else:
+            conn.close()
 
 
 @trade_group.command("assign-intent")
