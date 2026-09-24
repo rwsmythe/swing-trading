@@ -117,3 +117,85 @@ def test_reconciliation_literal_writer_site_admitted_at_41(tmp_path: Path,
 
 def test_the_twelve_sites_are_all_rostered() -> None:
     assert len(_repo_sites()) + len(_LITERAL_SITES) == 12
+
+
+# ---------------------------------------------------------------------------
+# reconciliation_corrections (T7; RD S3-F1 as amended)
+# ---------------------------------------------------------------------------
+RC_TWIN = "TRIGGER:trg_rc_immutable"
+
+
+def test_rc_anchor_self_reference_3251_admitted(tmp_path: Path) -> None:
+    """reconciliation_auto_correct.py:3251 -- the anchor's correction_set_id
+    NULL -> self (write-once W: admitted); value -> other then refused."""
+    c = _world(tmp_path)
+    try:
+        stmt = ("UPDATE reconciliation_corrections SET correction_set_id = ? "
+                "WHERE correction_id = ?")
+        assert outcome(c, stmt, (1, 1)) == "OK"
+        assert outcome(c, stmt, (2, 1), setup=[(stmt, (1, 1))]) == RC_TWIN
+    finally:
+        c.close()
+
+
+def test_rc_supersede_repo_208(tmp_path: Path) -> None:
+    """repos/reconciliation_corrections.py:208 (update_superseded_by): NULL ->
+    value admitted; value -> NULL and value -> other refused (no SET-NULL
+    exemption on the self-FK, RD S3-F1 amendment)."""
+    from swing.data.repos.reconciliation_corrections import update_superseded_by
+
+    c = _world(tmp_path)
+    try:
+        assert outcome(c, lambda k: update_superseded_by(k, 1, 2)) == "OK"
+        first = [("UPDATE reconciliation_corrections SET superseded_by_correction_id = 2 "
+                  "WHERE correction_id = 1",)]
+        assert outcome(c, lambda k: update_superseded_by(k, 1, 1),
+                       setup=first) == RC_TWIN
+        assert outcome(c, "UPDATE reconciliation_corrections SET "
+                          "superseded_by_correction_id = NULL WHERE correction_id = 1",
+                       setup=first) == RC_TWIN
+    finally:
+        c.close()
+
+
+def test_rc_entry_date_correction_1543(tmp_path: Path) -> None:
+    """swing/trades/entry_date_correction.py:1543 -- the literal statement."""
+    c = _world(tmp_path)
+    try:
+        assert outcome(c, "UPDATE reconciliation_corrections SET "
+                          "superseded_by_correction_id = ? WHERE correction_id = ?",
+                       (2, 1)) == "OK"
+    finally:
+        c.close()
+
+
+def test_rc_split_into_partials_end_to_end(tmp_path: Path) -> None:
+    """The production split handler at v41: DELETE the consolidated fill, the
+    anchor row, its self-reference (:3251), N partial rows under one set."""
+    from swing.data.db import EXPECTED_SCHEMA_VERSION, ensure_schema
+    from swing.trades.reconciliation_auto_correct import apply_tier2_resolution
+    from tests.trades.test_apply_tier2_resolution import _seed_dhc_pending
+
+    assert EXPECTED_SCHEMA_VERSION == 41
+    conn = ensure_schema(tmp_path / "split.db")
+    try:
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = "
+                            "'trg_rc_immutable'").fetchone() == (1,)
+        world = _seed_dhc_pending(conn)
+        apply_tier2_resolution(
+            conn, discrepancy_id=world["discrepancy_id"],
+            choice_code="split_into_partials",
+            operator_custom_payload=[
+                {"qty": 20, "price": 7.57, "fill_datetime": "2026-04-27T14:23:00"},
+                {"qty": 19, "price": 7.59, "fill_datetime": "2026-04-27T14:23:42"},
+            ],
+            operator_reason="two partial executions")
+        rows = conn.execute(
+            "SELECT correction_id, correction_set_id FROM reconciliation_corrections "
+            "WHERE discrepancy_id = ? ORDER BY correction_id",
+            (world["discrepancy_id"],)).fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 3
+    anchor = rows[0][0]
+    assert {r[1] for r in rows} == {anchor}

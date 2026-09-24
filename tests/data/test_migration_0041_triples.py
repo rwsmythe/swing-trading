@@ -36,7 +36,8 @@ BLANKET = ("pattern_forward_observations", "candidate_criteria", "trade_events",
            "finviz_api_calls", "pattern_evaluations", "evaluation_runs")
 # Tables whose BARRIER PAIR (no_replace + no_delete) the A2-A6 probes cover.
 BARRIER_TABLES = (*BLANKET, "pattern_detection_events",
-                  "reconciliation_runs", "reconciliation_discrepancies")
+                  "reconciliation_runs", "reconciliation_discrepancies",
+                  "reconciliation_corrections")
 PAIR = pytest.mark.parametrize("version", [40, 41])
 
 

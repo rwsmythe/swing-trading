@@ -50,6 +50,7 @@ from tests.data._22i_seed import (
 # The (c) twin tables whose triggers have landed (the list grows per task).
 TWIN_TABLES: tuple[str, ...] = (
     "reconciliation_runs", "reconciliation_discrepancies",
+    "reconciliation_corrections",
 )
 PAIR = pytest.mark.parametrize("version", [40, 41])
 

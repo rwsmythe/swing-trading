@@ -1678,6 +1678,7 @@ _NO_REPLACE_PK = {
     "trg_pde_no_replace": ("pattern_detection_events", "detection_id"),
     "trg_rr_no_replace": ("reconciliation_runs", "run_id"),
     "trg_rd_no_replace": ("reconciliation_discrepancies", "discrepancy_id"),
+    "trg_rc_no_replace": ("reconciliation_corrections", "correction_id"),
 }
 
 # NEW tables additionally carry `CHECK (pk > 0)`; an EXISTING table cannot

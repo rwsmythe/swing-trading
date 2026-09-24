@@ -60,6 +60,9 @@
 --         DROP TRIGGER trg_rd_no_delete;   -- reconciliation_discrepancies
 --         DROP TRIGGER trg_rd_no_replace;  -- reconciliation_discrepancies
 --         DROP TRIGGER trg_rd_immutable;   -- reconciliation_discrepancies
+--         DROP TRIGGER trg_rc_no_delete;   -- reconciliation_corrections
+--         DROP TRIGGER trg_rc_no_replace;  -- reconciliation_corrections
+--         DROP TRIGGER trg_rc_immutable;   -- reconciliation_corrections
 --
 -- (iii) THE ONE REBUILT OBJECT (F-I2, CHARC-ruled): trg_provenance_corrections_
 --     append_only_update is DROPPED and CREATED again. Its new text is the
@@ -364,6 +367,57 @@ WHEN NOT COALESCE(
             AND NOT EXISTS (SELECT 1 FROM daily_management_records WHERE management_record_id = OLD.linked_daily_management_record_id)))
 , 0)
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rd_immutable: reconciliation_discrepancies: this UPDATE changes a column outside the writer''s measured UPDATE set (resolution, resolution_reason, resolved_at, resolved_by, ambiguity_kind, mistake_tag_assigned, material_to_review); FK nulled only after its parent row is gone: trade_id, fill_id, cash_movement_id, linked_daily_management_record_id; a discrepancy carries its identity and as-detected evidence (RD F-I1 row 11). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+-- ============================================================================
+-- 5. reconciliation_corrections -- (c) (RD F-I1 row 6, S3-F1 as amended). The
+--    table trg_eia_audit_trail reads as THE audit trail. No column is mutable:
+--    correction_set_id and superseded_by_correction_id are WRITE-ONCE (NULL ->
+--    value; the anchor self-reference at reconciliation_auto_correct.py:3251,
+--    the supersede pointer at repos/reconciliation_corrections.py:208 and
+--    entry_date_correction.py:1543); the self-FK superseded_by_correction_id
+--    carries NO SET-NULL exemption (its only cascade is a delete this file's
+--    no_delete refuses). risk_policy_id_at_correction / schwab_api_call_id keep
+--    the uniform a17 exemption, DEAD-BY-PARENT-GUARD (both parents get
+--    no_delete below). correction_id is AUTOINCREMENT; the -1 clause applies.
+-- ============================================================================
+CREATE TRIGGER trg_rc_no_delete BEFORE DELETE ON reconciliation_corrections
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rc_no_delete: reconciliation_corrections rows are PERMANENT from migration 0041; reconciliation_corrections is THE audit trail trg_eia_audit_trail reads (RD F-I1 row 6). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_rc_no_replace BEFORE INSERT ON reconciliation_corrections
+WHEN COALESCE(EXISTS (SELECT 1 FROM reconciliation_corrections
+              WHERE (NEW.correction_id != -1 AND correction_id = NEW.correction_id)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rc_no_replace: reconciliation_corrections rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_rc_no_delete and reissue or move its id; reconciliation_corrections is THE audit trail trg_eia_audit_trail reads (RD F-I1 row 6). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_rc_immutable
+BEFORE UPDATE ON reconciliation_corrections
+FOR EACH ROW
+WHEN NOT COALESCE(
+      NEW.correction_id IS OLD.correction_id
+  AND NEW.discrepancy_id IS OLD.discrepancy_id
+  AND NEW.correction_action IS OLD.correction_action
+  AND NEW.correction_choice IS OLD.correction_choice
+  AND NEW.affected_table IS OLD.affected_table
+  AND NEW.affected_row_id IS OLD.affected_row_id
+  AND NEW.field_name IS OLD.field_name
+  AND NEW.pre_correction_value_json IS OLD.pre_correction_value_json
+  AND NEW.source_canonical_value_json IS OLD.source_canonical_value_json
+  AND NEW.applied_value_json IS OLD.applied_value_json
+  AND NEW.operator_truth_value_json IS OLD.operator_truth_value_json
+  AND NEW.applied_at IS OLD.applied_at
+  AND NEW.applied_by IS OLD.applied_by
+  AND NEW.reconciliation_run_id IS OLD.reconciliation_run_id
+  AND NEW.correction_reason IS OLD.correction_reason
+  AND NEW.notes IS OLD.notes
+  AND (NEW.correction_set_id IS OLD.correction_set_id OR OLD.correction_set_id IS NULL)
+  AND (NEW.superseded_by_correction_id IS OLD.superseded_by_correction_id OR OLD.superseded_by_correction_id IS NULL)
+  AND (NEW.risk_policy_id_at_correction IS OLD.risk_policy_id_at_correction
+        OR (OLD.risk_policy_id_at_correction IS NOT NULL AND NEW.risk_policy_id_at_correction IS NULL
+            AND NOT EXISTS (SELECT 1 FROM risk_policy WHERE policy_id = OLD.risk_policy_id_at_correction)))
+  AND (NEW.schwab_api_call_id IS OLD.schwab_api_call_id
+        OR (OLD.schwab_api_call_id IS NOT NULL AND NEW.schwab_api_call_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM schwab_api_calls WHERE call_id = OLD.schwab_api_call_id)))
+, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rc_immutable: reconciliation_corrections: this UPDATE changes a column outside the writer''s measured UPDATE set (none); write-once NULL to value: correction_set_id, superseded_by_correction_id; FK nulled only after its parent row is gone: risk_policy_id_at_correction, schwab_api_call_id; reconciliation_corrections is THE audit trail trg_eia_audit_trail reads (RD F-I1 row 6). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- The version bump is the FINAL statement before COMMIT.
 UPDATE schema_version SET version = 41;
