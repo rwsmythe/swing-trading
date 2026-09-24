@@ -516,3 +516,62 @@ def test_backfill_prompt_render_failure_zero_written_raises_as_today(
         )
     assert res.exit_code != 0
     assert isinstance(res.exception, OSError)
+
+
+# Codex R3 (round 3 of the D67+D69 review, re-run after the aborted round):
+# ONE new Major, IN-ENVELOPE, against the CUMULATIVE R1+R2 fix state.
+
+
+def test_backfill_valueerror_diagnostic_ascii_coerced(tmp_path: Path) -> None:
+    """Codex R3 Major: swing/cli.py:2187's `except ValueError as exc: raise
+    click.ClickException(str(exc)) from exc` hands `update_entry_intent`'s
+    message -- which embeds the OPERATOR'S OWN raw prompt answer via
+    `entry_intent!r` -- to Click's own exception renderer un-ascii-safe'd.
+    This is the SAME defect class item (a) already fixes for the header/seam/
+    summary lines (D69's stated general principle: "every line this command
+    prints that interpolates stored or free text goes through ascii_safe(...)
+    WHOLE"), missed at this one call site. Same discriminator technique as
+    test_backfill_header_ascii_coerced_for_non_ascii_ticker: a CliRunner
+    capture never crashes internally (its own stream isn't the real console
+    encoder); the discriminator is a post-hoc strict `.encode("cp1252")` on
+    the CAPTURED text, simulating the real console. Two NULL rows: the first
+    answer is valid and commits (n_written=1, crossing the durability
+    boundary -- L5's already-accepted exemption is unaffected, since this is
+    the MESSAGE CONTENT we construct, not a failure inside Click's own
+    rendering machinery); the second answer is invalid AND non-ASCII.
+
+    CliRunner's OWN stdin-echo (a test-harness convenience, simulating what
+    an interactive terminal's OS-level keystroke echo would show -- NOT
+    something our code prints, and NOT subject to Python's stdout encoder in
+    a real terminal, where the console driver echoes keystrokes directly)
+    re-prints the raw typed answer verbatim on the PROMPT line regardless of
+    this fix -- that artifact is not the defect under test and would falsely
+    fail `.encode("cp1252")` on the WHOLE captured output even post-fix. The
+    discriminator therefore isolates the ONE line this command itself
+    constructs and prints: the "Error: ..." line built from
+    `ClickException.format_message()`."""
+    runner, cfg, db_path = _setup(tmp_path)
+    t1 = _seed_trade(db_path, ticker="AAA", entry_date="2026-04-01")
+    t2 = _seed_trade(db_path, ticker="BBB", entry_date="2026-04-02")
+    res = runner.invoke(
+        main, ["--config", str(cfg), "trade", "backfill-intent"],
+        input=f"standard\nbad{_NON_CP1252_TICKER[1]}\n",
+    )
+    assert res.exit_code != 0
+    error_lines = [ln for ln in res.output.splitlines() if ln.startswith("Error:")]
+    assert len(error_lines) == 1, res.output
+    error_line = error_lines[0]
+    # Post-fix: ascii_safe's backslashreplace escape is pure ASCII (hence
+    # pure cp1252-safe); pre-fix, the raw checkmark glyph embedded in the
+    # ValueError's `entry_intent!r` raises UnicodeEncodeError here -- the
+    # discriminator.
+    error_line.encode("cp1252")
+    assert "\\u2713" in error_line
+    assert _NON_CP1252_TICKER[1] not in error_line
+    # Exit code + exception chaining preserved (Codex's own requirement):
+    # still a ClickException-driven exit, still chained from a ValueError.
+    assert isinstance(res.exception, SystemExit)
+    # The first row's commit is durable regardless of the second row's
+    # rejected answer; the second stays NULL (never silently set).
+    assert _read_intent(db_path, t1) == "standard"
+    assert _read_intent(db_path, t2) is None

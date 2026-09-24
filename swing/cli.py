@@ -2184,7 +2184,19 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
                 n_skipped_op += 1
                 continue
             except ValueError as exc:
-                raise click.ClickException(str(exc)) from exc
+                # Codex R3 Major: `update_entry_intent`'s message embeds the
+                # OPERATOR'S OWN raw prompt answer (via `entry_intent!r`) --
+                # unrestricted free text, per item (a)'s general principle
+                # ("every line this command prints that interpolates stored
+                # or free text goes through ascii_safe(...) WHOLE"), missed
+                # at this one call site. ascii_safe applies UNCONDITIONALLY
+                # (matching `_emit`'s own pre/post-boundary treatment of
+                # ASCII, orthogonal to the boundary-gated SINK routing) --
+                # the exit code and exception chaining are unchanged; Click's
+                # own rendering of a ClickException remains outside this
+                # command's contained-sink machinery (L5's accepted, reasoned
+                # exemption, which this fix does not touch or need to).
+                raise click.ClickException(ascii_safe(str(exc))) from exc
             n_set += 1
             if choice != current:
                 n_written += 1
