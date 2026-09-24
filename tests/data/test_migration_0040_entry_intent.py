@@ -295,18 +295,102 @@ def _foreign_fei_objects(c: sqlite3.Connection) -> dict[str, str]:
     return {name: _stored(c, name) for _t, name in c.execute(_FEI_CENSUS_SQL)}
 
 
+CITATION_GRAPH_TRIGGER = "trg_provenance_corrections_citation_graph"
+
+
+def citation_graph_twin(payload: dict) -> dict:
+    """b22_44's one-mutation twin: the cited candidate EXISTS but is the wrong
+    graph (AMN's candidate, not trade 25's)."""
+    twin = copy.deepcopy(payload)
+    twin["cited_candidate_id"] = AMN_CANDIDATE_ID
+    return twin
+
+
+def _sql_tokens(sql: str) -> list[str]:
+    """A minimal SQLite lexer: skips ``--`` and ``/* */`` comments OUTSIDE
+    quotes (the trigger's own RAISE literal contains ``--``, and its comments
+    contain apostrophes and the word RAISE), keeps each quoted token whole."""
+    toks: list[str] = []
+    i, n = 0, len(sql)
+    closers = {"'": "'", '"': '"', "`": "`", "[": "]"}
+    while i < n:
+        ch = sql[i]
+        if sql.startswith("--", i):
+            j = sql.find("\n", i)
+            i = n if j < 0 else j + 1
+        elif sql.startswith("/*", i):
+            j = sql.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+        elif ch in closers:
+            close, j = closers[ch], i + 1
+            while True:
+                k = sql.find(close, j)
+                assert k >= 0, f"unterminated {ch} at {i}"
+                if close != "]" and sql.startswith(close * 2, k):
+                    j = k + 2
+                    continue
+                break
+            toks.append(sql[i:k + 1])
+            i = k + 1
+        elif ch.isspace():
+            i += 1
+        elif ch.isalnum() or ch == "_":
+            j = i
+            while j < n and (sql[j].isalnum() or sql[j] == "_"):
+                j += 1
+            toks.append(sql[i:j])
+            i = j
+        else:
+            toks.append(ch)
+            i += 1
+    return toks
+
+
+def citation_graph_raise_literals(c: sqlite3.Connection) -> frozenset[str]:
+    """Every ``RAISE(<kind>, '<literal>')`` message in the citation-graph
+    trigger's STORED body, read from ``sqlite_master`` on ``c`` (never
+    retyped), SQL-unescaped (``''`` -> ``'``) -- the exact text SQLite reports."""
+    sql = _stored(c, CITATION_GRAPH_TRIGGER)
+    assert sql is not None, CITATION_GRAPH_TRIGGER
+    lits = _raise_literals(sql)
+    assert lits, "the citation-graph trigger carries no RAISE literal"
+    return lits
+
+
+def _raise_literals(sql: str) -> frozenset[str]:
+    toks = _sql_tokens(sql)
+    return frozenset(
+        toks[i + 4][1:-1].replace("''", "'")
+        for i in range(len(toks) - 4)
+        if toks[i].upper() == "RAISE" and toks[i + 1] == "("
+        and toks[i + 3] == "," and toks[i + 4].startswith("'"))
+
+
+def citation_graph_aborts(c: sqlite3.Connection, row: dict) -> str:
+    """The ABORT half of b22_44, callable ALONE (RULING G6 item 3, CHARC: on
+    the live copy only this half runs). INSERTing ``row`` must raise an
+    ``IntegrityError`` whose message IS one of the citation-graph trigger's own
+    RAISE literals, read from that trigger's body on ``c`` -- a table-CHECK or
+    FK abort is also an IntegrityError and does not count. The statement is
+    rolled back, so nothing is written. Returns the message."""
+    from tests._tier2_world_22a2 import insert_payload
+
+    literals = citation_graph_raise_literals(c)
+    with pytest.raises(sqlite3.IntegrityError) as exc:
+        insert_payload(c, row)
+    msg = str(exc.value)
+    c.rollback()
+    assert "no such table" not in msg, msg
+    assert msg in literals, (msg, sorted(literals))
+    return msg
+
+
 def _citation_graph_fires(c: sqlite3.Connection, payload: dict) -> None:
     """A 22-A2 fully-cited row INSERTS; its one-mutation twin ABORTS with the
     citation-graph trigger's OWN message (a `no such table` error is a FAIL)."""
     from tests._tier2_world_22a2 import insert_payload
 
-    twin = copy.deepcopy(payload)
-    twin["cited_candidate_id"] = AMN_CANDIDATE_ID  # exists, wrong graph
-    with pytest.raises(sqlite3.IntegrityError) as exc:
-        insert_payload(c, twin)
-    assert "no such table" not in str(exc.value)
-    assert "do not form the citation graph" in str(exc.value), str(exc.value)
-    c.rollback()
+    citation_graph_aborts(c, citation_graph_twin(payload))
     insert_payload(c, payload)
     c.commit()
     assert c.execute("SELECT COUNT(*) FROM provenance_corrections").fetchone()[0] == 1
@@ -372,6 +456,120 @@ def test_every_foreign_object_referencing_trades_is_unchanged_and_still_fires_b2
             assert _foreign_trades_objects(e) == v40
         finally:
             e.close()
+
+
+# RULING G6 item 3 (CHARC): the abort half's message MUST be one of the
+# citation-graph trigger's OWN RAISE literals. A table-CHECK or FK abort is
+# also an IntegrityError and does not prove the trigger fired.
+def _v40_world(tmp_path: Path) -> tuple[sqlite3.Connection, dict]:
+    """Trade 25's fixture world on a target_version=40 image (R0.I) + AMN."""
+    from tests._tier2_world_22a2 import (
+        _seed_rows,
+        base_last_word_payload,
+        pinned_migration_clock,
+    )
+
+    payload = base_last_word_payload(tmp_path)
+    root = tmp_path / "g6"
+    root.mkdir()
+    c = open_connection(root / "swing.db")
+    with pinned_migration_clock():
+        run_migrations(c, target_version=40, backup_dir=root / "b")
+    _seed_rows(c, with_envelope_reading=True)
+    seed_amn_row5(c)
+    c.commit()
+    return c, payload
+
+
+def _pc_count(c: sqlite3.Connection) -> int:
+    return c.execute("SELECT COUNT(*) FROM provenance_corrections").fetchone()[0]
+
+
+def test_the_literal_set_is_read_from_the_stored_body_b22_225(
+        tmp_path: Path) -> None:
+    c, _payload = _v40_world(tmp_path)
+    try:
+        body = _stored(c, CITATION_GRAPH_TRIGGER)
+        lits = citation_graph_raise_literals(c)
+    finally:
+        c.close()
+    # The body names RAISE three times; two sit in comments (measured on the
+    # 0039 text), so a comment-blind reader would over-collect or mis-parse.
+    assert body.count("RAISE") == 3
+    assert len(lits) == 1
+    (lit,) = lits
+    # SQL-unescaped: the stored literal writes the apostrophe twice.
+    assert "snapshot''s" in body and "snapshot's" in lit and "''" not in lit
+    assert lit.startswith("provenance_corrections: the cited rows exist but "
+                          "do not form the citation graph")
+    # The reader itself: a RAISE written in a comment is not a literal, and a
+    # literal's own ``--`` and doubled apostrophe survive whole.
+    assert _raise_literals(
+        "-- RAISE(ABORT, 'in a comment')\n/* RAISE(FAIL, 'in a block') */\n"
+        "SELECT RAISE(ABORT, 'it''s real -- and whole');"
+    ) == {"it's real -- and whole"}
+
+
+def test_a_table_check_abort_is_not_the_citation_graph_abort_b22_222(
+        tmp_path: Path) -> None:
+    from tests._tier2_world_22a2 import insert_payload
+
+    c, payload = _v40_world(tmp_path)
+    try:
+        # The trigger does not read applied_by, so the valid row passes it and
+        # reaches the table CHECK (applied_by = 'operator').
+        row = dict(payload, applied_by="not-the-operator")
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            insert_payload(c, row)
+        c.rollback()
+        with pytest.raises(AssertionError):
+            citation_graph_aborts(c, row)
+        assert _pc_count(c) == 0
+    finally:
+        c.close()
+
+
+def test_an_fk_abort_is_not_the_citation_graph_abort_b22_223(
+        tmp_path: Path) -> None:
+    from tests._tier2_world_22a2 import insert_payload
+
+    c, payload = _v40_world(tmp_path)
+    try:
+        assert c.execute("PRAGMA foreign_keys").fetchone() == (1,)
+        # The trigger does not read risk_policy_id_at_correction; the row
+        # passes it and reaches the FK to risk_policy.
+        row = dict(payload, risk_policy_id_at_correction=987654)
+        with pytest.raises(sqlite3.IntegrityError,
+                           match="FOREIGN KEY constraint failed"):
+            insert_payload(c, row)
+        c.rollback()
+        with pytest.raises(AssertionError):
+            citation_graph_aborts(c, row)
+        assert _pc_count(c) == 0
+    finally:
+        c.close()
+
+
+def test_a_message_merely_containing_the_phrase_is_not_the_trigger_b22_224(
+        tmp_path: Path) -> None:
+    from tests._tier2_world_22a2 import insert_payload
+
+    c, payload = _v40_world(tmp_path)
+    try:
+        # A foreign RAISE whose text CONTAINS the citation-graph phrase: the
+        # valid row passes the real trigger, and this one aborts it.
+        c.execute(
+            "CREATE TEMP TRIGGER forged BEFORE INSERT ON main.provenance_corrections "
+            "BEGIN SELECT RAISE(ABORT, 'forged: the cited rows do not form the "
+            "citation graph'); END")
+        with pytest.raises(sqlite3.IntegrityError, match="^forged: "):
+            insert_payload(c, payload)
+        c.rollback()
+        with pytest.raises(AssertionError):
+            citation_graph_aborts(c, payload)
+        assert _pc_count(c) == 0
+    finally:
+        c.close()
 
 
 def test_header_states_the_r0j_census_b22_46(tmp_path: Path) -> None:
