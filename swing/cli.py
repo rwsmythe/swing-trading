@@ -822,10 +822,17 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
             # the flag was omitted, which is the only branch that triggers
             # pre-fill.
             if hypothesis is None:
-                prefilled = lookup_active_recommendation_label(
-                    conn, ticker=ticker.upper(),
-                    starting_equity=cfg.account.starting_equity,
-                )
+                # Arc 22-B R1-3: the prefill consumes the governed progress
+                # read; a raced read refuses here, BEFORE anything is written
+                # (typed, at the CLI boundary -- never a traceback).
+                from swing.metrics.cohort import CohortReadRacedError
+                try:
+                    prefilled = lookup_active_recommendation_label(
+                        conn, ticker=ticker.upper(),
+                        starting_equity=cfg.account.starting_equity,
+                    )
+                except CohortReadRacedError as exc:
+                    raise click.ClickException(str(exc)) from exc
                 if prefilled is not None:
                     hypothesis = prefilled
                     click.echo(f"Pre-filled --hypothesis: {prefilled}")
@@ -2038,9 +2045,15 @@ def journal_review_cmd(ctx, period, today):
         # Per backend brief §4.5: "Hypothesis investigation progress"
         # section is registry-driven (not period-filtered) — operator wants
         # the full investigation state regardless of `--period`.
-        progress_rows = compute_hypothesis_progress_breakdown(
-            conn, starting_equity=cfg.account.starting_equity,
-        )
+        # Arc 22-B R1-3: a raced governed read refuses the command (typed,
+        # at the CLI boundary), never a traceback and never the row.
+        from swing.metrics.cohort import CohortReadRacedError
+        try:
+            progress_rows = compute_hypothesis_progress_breakdown(
+                conn, starting_equity=cfg.account.starting_equity,
+            )
+        except CohortReadRacedError as exc:
+            raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
 
@@ -5089,12 +5102,23 @@ def hypothesis_list_cmd(ctx: click.Context) -> None:
     conn = connect(cfg.paths.db_path)
     try:
         rows = list_hypotheses(conn)
+        # Arc 22-B R1-3: every row's governed read completes BEFORE anything
+        # prints, so a raced read on a later hypothesis refuses the whole
+        # table (typed, at the CLI boundary) -- never a partial table, never
+        # the contradictory row. The reads run in the same order as before.
+        from swing.metrics.cohort import CohortReadRacedError
+        try:
+            statuses = [
+                (h, compute_tripwire_status(
+                    conn, hypothesis_id=h.id,
+                    starting_equity=cfg.account.starting_equity,
+                ))
+                for h in rows
+            ]
+        except CohortReadRacedError as exc:
+            raise click.ClickException(str(exc)) from exc
         click.echo("ID  STATUS              N/TARGET  TRIPWIRE  NAME")
-        for h in rows:
-            tw = compute_tripwire_status(
-                conn, hypothesis_id=h.id,
-                starting_equity=cfg.account.starting_equity,
-            )
+        for h, tw in statuses:
             tw_label = "FIRED" if tw.any_tripwire_fired else "ok"
             click.echo(
                 f"{h.id:<3} {h.status:<19} "
@@ -5129,10 +5153,16 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
         h = get_hypothesis(conn, hypothesis_id)
         if h is None:
             raise click.ClickException(f"hypothesis {hypothesis_id} not found")
-        tw = compute_tripwire_status(
-            conn, hypothesis_id=h.id,
-            starting_equity=cfg.account.starting_equity,
-        )
+        # Arc 22-B R1-3: a raced governed read refuses (typed, at the CLI
+        # boundary) -- never a traceback, never the contradictory row.
+        from swing.metrics.cohort import CohortReadRacedError
+        try:
+            tw = compute_tripwire_status(
+                conn, hypothesis_id=h.id,
+                starting_equity=cfg.account.starting_equity,
+            )
+        except CohortReadRacedError as exc:
+            raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
 

@@ -211,3 +211,94 @@ def test_an_assign_before_the_first_cohort_read_renders_consistent_b22_233(
     n, named, lines = read(conn)
     assert (n, named) == (0, {RACED_TID})
     assert f"not counted: trade {RACED_TID} ({UNINTENDED})" in lines, lines
+
+
+# ---------------------------------------------------------------------------
+# b22_235 -- every CLI surface over the governed readers renders the refusal
+# as a ClickException at its boundary: the ruled text, no traceback, and no
+# row at all (never the contradictory row, never a partial table)
+# ---------------------------------------------------------------------------
+def _raise_raced(*_args, **_kwargs):
+    from swing.metrics.cohort import CohortReadRacedError
+
+    raise CohortReadRacedError((RACED_TID,))
+
+
+def _assert_cli_refused(result) -> None:
+    assert result.exit_code == 1, result.output
+    # A ClickException exits via SystemExit; a leaked CohortReadRacedError
+    # is the traceback the CLI boundary rule forbids.
+    assert isinstance(result.exception, SystemExit), repr(result.exception)
+    assert f"Error: {RACED_MESSAGE}" in result.output, result.output
+    assert "not counted" not in result.output
+    assert result.output.isascii()
+
+
+def test_journal_review_renders_the_refusal_b22_235(cfg, monkeypatch) -> None:
+    import swing.journal.stats as stats_mod
+    from click.testing import CliRunner
+
+    from swing.cli import journal_review_cmd
+
+    monkeypatch.setattr(stats_mod, "compute_hypothesis_progress_breakdown",
+                        _raise_raced)
+    result = CliRunner().invoke(journal_review_cmd, obj={"config": cfg})
+    _assert_cli_refused(result)
+    assert "Hypothesis investigation progress" not in result.output
+
+
+@pytest.mark.parametrize("raced_hypothesis_id", [1, 3])
+def test_hypothesis_list_renders_the_refusal_and_no_partial_table_b22_235(
+        cfg, monkeypatch, raced_hypothesis_id: int) -> None:
+    """A race on a LATER hypothesis must not leave the earlier rows printed:
+    the command refuses whole (the partial-table direction)."""
+    import swing.recommendations.hypothesis as hyp_mod
+    from click.testing import CliRunner
+
+    from swing.cli import hypothesis_list_cmd
+
+    original = hyp_mod.compute_tripwire_status
+
+    def raced_on_one(conn, *, hypothesis_id, **kwargs):
+        if hypothesis_id == raced_hypothesis_id:
+            _raise_raced()
+        return original(conn, hypothesis_id=hypothesis_id, **kwargs)
+
+    monkeypatch.setattr(hyp_mod, "compute_tripwire_status", raced_on_one)
+    result = CliRunner().invoke(hypothesis_list_cmd, obj={"config": cfg})
+    _assert_cli_refused(result)
+    assert "N/TARGET" not in result.output, result.output
+    assert H1 not in result.output
+
+
+def test_hypothesis_status_renders_the_refusal_b22_235(cfg, monkeypatch) -> None:
+    import swing.recommendations.hypothesis as hyp_mod
+    from click.testing import CliRunner
+
+    from swing.cli import hypothesis_status_cmd
+
+    monkeypatch.setattr(hyp_mod, "compute_tripwire_status", _raise_raced)
+    result = CliRunner().invoke(hypothesis_status_cmd, ["1"], obj={"config": cfg})
+    _assert_cli_refused(result)
+    assert "Current sample" not in result.output
+
+
+def test_trade_entry_prefill_renders_the_refusal_nothing_written_b22_235(
+        cfg, conn, monkeypatch) -> None:
+    """The prefill consumes the governed breakdown's N; a raced read there
+    refuses the command BEFORE the entry is written (result is None), as a
+    ClickException -- never a traceback."""
+    import swing.cli as cli_mod
+    from click.testing import CliRunner
+
+    from tests.cli.test_cli_trade import _PRE_TRADE_OK_FLAGS
+
+    monkeypatch.setattr(cli_mod, "lookup_active_recommendation_label", _raise_raced)
+    result = CliRunner().invoke(cli_mod.trade_entry_cmd, [
+        "--ticker", "AAPL", "--entry-date", "2026-04-15",
+        "--entry-price", "180.0", "--shares", "5",
+        "--initial-stop", "170.0", "--rationale", "vcp-breakout",
+        *_PRE_TRADE_OK_FLAGS,
+    ], obj={"config": cfg})
+    _assert_cli_refused(result)
+    assert conn.execute("SELECT COUNT(*) FROM trades").fetchone() == (0,)
