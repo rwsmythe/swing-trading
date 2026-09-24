@@ -196,6 +196,10 @@ _ENTRY_DATE_COUPLED_SURFACE = "swing journal correct-entry-date"
 # reservation cannot break a replay of anything that has happened.
 _COHORT_PROVENANCE_COUPLED_SURFACE = "swing journal correct-cohort-provenance"
 
+_ENTRY_INTENT_OWNING_SURFACE = (
+    "swing trade assign-intent (unintended_execution) / "
+    "swing trade review --entry-intent (other values)")
+
 # (affected_table, field_name) -> the surface that owns the coupled write.
 _RESERVED_JOURNAL_FIELDS: dict[tuple[str, str], str] = {
     ("trades", "entry_date"): _ENTRY_DATE_COUPLED_SURFACE,
@@ -215,6 +219,12 @@ _RESERVED_JOURNAL_FIELDS: dict[tuple[str, str], str] = {
     # the generic path, so the datetime reservation cannot be stepped around.
     ("fills", "action"): _ENTRY_DATE_COUPLED_SURFACE,
     ("fills", "trade_id"): _ENTRY_DATE_COUPLED_SURFACE,
+    # Arc 22-B (F5 seam surface 8; N4 layer 2): entry_intent is reserved
+    # UNCONDITIONALLY (every value, as ruled -- E14). `unintended_execution` is
+    # coupled to its `entry_intent_attestations` row; the entry-time values
+    # have their own review-time writer. Live corrector writes to this column:
+    # 0, so no replay breaks.
+    ("trades", "entry_intent"): _ENTRY_INTENT_OWNING_SURFACE,
 }
 
 # ---------------------------------------------------------------------------

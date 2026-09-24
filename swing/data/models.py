@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import ClassVar
 
 # Phase 21 Arc 21-B: the migration-0033 enums, IMPORTED under the same rule.
@@ -239,8 +239,50 @@ FAILURE_MODES: frozenset[str] = frozenset({
 # so the Trade dataclass __post_init__ can validate without an upward import
 # from swing/trades/ (the same import-cycle reason FAILURE_MODES lives here).
 # NULL = unclassified (a distinct third facet; never coerced to 'standard').
-# Asserted identical to the migration 0027 CHECK by the 0027 schema test.
-ENTRY_INTENTS: frozenset[str] = frozenset({"standard", "hypothesis_test_by_design"})
+# Arc 22-B (migration 0040): widened with 'unintended_execution' -- the READ
+# path must hydrate an attested row. Only `swing trade assign-intent` WRITES it
+# (the seam below); every generic writer validates ENTRY_INTENTS_ASSERTABLE.
+# Asserted identical to the stored `trades` CHECK by the drift test
+# (tests/data/test_entry_intent_drift.py), the one mirror that defends the set.
+ENTRY_INTENTS: frozenset[str] = frozenset(
+    {"standard", "hypothesis_test_by_design", "unintended_execution"})
+
+# Arc 22-B (F5, the single-writer seam). `unintended_execution` is the
+# evidence-bearing value: it is written ONLY by `swing trade assign-intent`,
+# which records its evidence in `entry_intent_attestations`. Every GENERIC
+# writer of trades.entry_intent (the eight surfaces of the 22-B census C.4)
+# validates against ENTRY_INTENTS_ASSERTABLE -- the entry-time values -- and
+# refuses the evidence-bearing value with the typed EntryIntentSeamError.
+UNINTENDED_EXECUTION = "unintended_execution"
+ENTRY_INTENTS_ASSERTABLE: frozenset[str] = frozenset(
+    {"standard", "hypothesis_test_by_design"})
+SEAM_MESSAGE = (
+    "entry_intent 'unintended_execution' is evidence-bearing: it is written "
+    "only by 'swing trade assign-intent', which records its evidence")
+
+
+class EntryIntentSeamError(ValueError):
+    """A generic writer was asked to write the evidence-bearing intent value.
+
+    Subclasses ValueError so every existing `except ValueError` boundary (the
+    CLI ClickException wrap, the web 4xx) keeps working.
+    """
+
+
+def attested_message(attestation_id: int | str) -> str:
+    """N4's words (CHARC, R0.D), ASCII. It does NOT name `assign-intent` as a
+    recovery: `assign-intent` refuses a non-NULL row (F5), and a mistaken
+    attestation is a register item, not a channel in 22-B."""
+    return (f"entry_intent is attested (entry_intent_attestations row "
+            f"{attestation_id}); no reversal surface exists -- a reversal is a "
+            "NEW evidence class with its own record")
+
+
+class AttestedIntentError(ValueError):
+    """N4 layer 1: a generic writer was asked to CHANGE an attested
+    `unintended_execution` value (the value is TERMINAL for every generic
+    writer). A ValueError so the CLI/web boundaries surface it cleanly; the
+    SQL twin is `trg_trades_entry_intent_attested_terminal` (0040)."""
 
 
 @dataclass(frozen=True)
@@ -3607,3 +3649,182 @@ class ProvenanceCorrection:
                 "entry_fill_snapshot_json['fill_datetime'] must be a string "
                 f"whose date prefix is {self.entry_fill_session_date}; got "
                 f"{fill_dt!r}")
+
+
+# Arc 22-B (migration 0040) -- `entry_intent_attestations`, the Python mirror
+# of EVERY table CHECK (#11: CHECK + constant + __post_init__ in one task).
+ATTESTATION_ADMISSION_TIERS: frozenset[str] = frozenset(
+    {"structural", "contemporaneous_record"})
+ATTESTATION_PLACEMENT_SOURCES: frozenset[str] = frozenset(
+    {"schwab_envelope", "entry_date_fallback"})
+ATTESTATION_ADMITTED_LEGS: frozenset[str] = frozenset({"telemetry", "deployment"})
+ATTESTATION_TERMINAL_RUNGS: frozenset[str] = frozenset(
+    {"invalidation", "criteria_lapsed", "horizon", "declined"})
+# The 21-B instrument's deployment session: the SQL literal of 0040's leg-2
+# bind, mirrored (the service's INSTRUMENT_DEPLOYMENT_SESSION carries its
+# derivation; a drift test asserts the three agree).
+ATTESTATION_DEPLOYMENT_SESSION_BOUND = "2026-08-03"
+
+
+def _attestation_date_ok(value: object) -> bool:
+    """0040's date idiom: length 10, parses, round-trips, year 1..9999."""
+    if not isinstance(value, str) or len(value) != 10:
+        return False
+    try:
+        return date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
+
+
+def _attestation_iso_seconds_ok(value: object) -> bool:
+    """0040's `outcome_known_at` idiom: `YYYY-MM-DDTHH:MM:SS`, valid."""
+    if not isinstance(value, str) or len(value) != 19:
+        return False
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return False
+    return parsed.strftime("%Y-%m-%dT%H:%M:%S") == value
+
+
+def _reject_json_constant(name: str) -> object:
+    raise ValueError(f"non-standard JSON constant {name}")
+
+
+def _json_of_type(value: object, kind: type) -> bool:
+    """The Python mirror of 0040's `json_valid` CHECKs (plus the column's
+    type). Codex R8-1: plain `json.loads` accepts `NaN` / `Infinity` /
+    `-Infinity`, which SQLite's `json_valid` REJECTS, so they are refused here
+    too (measured: the only divergence over the probed inputs)."""
+    if not isinstance(value, str):
+        return False
+    try:
+        return isinstance(
+            json.loads(value, parse_constant=_reject_json_constant), kind)
+    except ValueError:
+        return False
+
+
+@dataclass(frozen=True)
+class EntryIntentAttestation:
+    """One row of `entry_intent_attestations` (Arc 22-B, migration 0040).
+
+    Its SCHEMA IS THE EVIDENCE RULE; this __post_init__ mirrors every table
+    CHECK so a malformed row is refused in Python before SQL sees it. The row
+    carries NO P&L, MFE or MAE (running state is not evidence).
+    """
+
+    attestation_id: int | None
+    trade_id: int
+    assigned_value: str
+    admission_tier: str
+    trade_entry_date: str
+    entry_fill_id: int | None
+    entry_fill_id_at_assignment: int
+    entry_broker_order_id: str | None
+    placement_session: str | None
+    placement_session_source: str | None
+    admitted_leg: str | None
+    leg_evidence_json: str | None
+    cited_latch_link_id: int | None
+    cited_latch_terminal_rung: str | None
+    cited_latch_terminal_session: str | None
+    cited_latch_probe_json: str | None
+    cited_fields_json: str
+    cited_text_snapshot_json: str
+    audit_trail_checked_at: str
+    corrections_touching_cited_fields: int
+    outcome_known_at: str | None
+    reason: str
+    applied_at: str
+    applied_by: str
+
+    def __post_init__(self) -> None:  # noqa: C901 -- one branch per CHECK
+        def bad(msg: str) -> None:
+            raise ValueError(f"EntryIntentAttestation: {msg}")
+
+        if self.attestation_id is not None and not self.attestation_id > 0:
+            bad("attestation_id must be > 0")
+        if self.assigned_value != UNINTENDED_EXECUTION:
+            bad(f"assigned_value must be {UNINTENDED_EXECUTION!r}")
+        if self.admission_tier not in ATTESTATION_ADMISSION_TIERS:
+            bad(f"admission_tier must be one of {sorted(ATTESTATION_ADMISSION_TIERS)}")
+        if not _attestation_date_ok(self.trade_entry_date):
+            bad("trade_entry_date must be a valid YYYY-MM-DD")
+        if self.entry_fill_id_at_assignment is None:
+            bad("entry_fill_id_at_assignment is required")
+        if (self.entry_fill_id is not None
+                and self.entry_fill_id != self.entry_fill_id_at_assignment):
+            bad("entry_fill_id must be NULL or equal entry_fill_id_at_assignment")
+        if (self.placement_session is not None
+                and not _attestation_date_ok(self.placement_session)):
+            bad("placement_session must be a valid YYYY-MM-DD")
+        if (self.placement_session_source is not None
+                and self.placement_session_source not in ATTESTATION_PLACEMENT_SOURCES):
+            bad("placement_session_source is not a known source")
+        if (self.admitted_leg is not None
+                and self.admitted_leg not in ATTESTATION_ADMITTED_LEGS):
+            bad("admitted_leg must be telemetry or deployment")
+        for name in ("leg_evidence_json", "cited_latch_probe_json"):
+            v = getattr(self, name)
+            if v is not None and not _json_of_type(v, object):
+                bad(f"{name} must be valid JSON")
+        if (self.cited_latch_terminal_rung is not None
+                and self.cited_latch_terminal_rung not in ATTESTATION_TERMINAL_RUNGS):
+            bad("cited_latch_terminal_rung must be a death rung")
+        if (self.cited_latch_terminal_session is not None
+                and not _attestation_date_ok(self.cited_latch_terminal_session)):
+            bad("cited_latch_terminal_session must be a valid YYYY-MM-DD")
+        if not _json_of_type(self.cited_fields_json, list) or not json.loads(
+                self.cited_fields_json):
+            bad("cited_fields_json must be a non-empty JSON array")
+        if not _json_of_type(self.cited_text_snapshot_json, dict):
+            bad("cited_text_snapshot_json must be a JSON object")
+        if self.corrections_touching_cited_fields != 0:
+            bad("corrections_touching_cited_fields must be 0")
+        if (self.outcome_known_at is not None
+                and not _attestation_iso_seconds_ok(self.outcome_known_at)):
+            bad("outcome_known_at must be YYYY-MM-DDTHH:MM:SS")
+        if not isinstance(self.reason, str) or not self.reason.strip():
+            bad("reason must be non-blank")
+        for name in ("audit_trail_checked_at", "applied_at", "applied_by"):
+            if getattr(self, name) is None:
+                bad(f"{name} is required")
+        structural = (
+            self.admission_tier == "structural"
+            and self.cited_latch_link_id is not None
+            and self.cited_latch_terminal_rung is not None
+            and self.cited_latch_terminal_session is not None
+            and self.cited_latch_probe_json is not None
+            and self.placement_session is None
+            and self.placement_session_source is None
+            and self.admitted_leg is None
+            and self.leg_evidence_json is None)
+        tier2 = (
+            self.admission_tier == "contemporaneous_record"
+            and self.cited_latch_link_id is None
+            and self.cited_latch_terminal_rung is None
+            and self.cited_latch_terminal_session is None
+            and self.cited_latch_probe_json is None
+            and self.placement_session is not None
+            and self.placement_session_source is not None
+            and self.admitted_leg is not None
+            and self.leg_evidence_json is not None)
+        if not (structural or tier2):
+            bad("the tier's columns are not the paired set (structural XOR tier 2)")
+        if (self.cited_latch_terminal_session is not None
+                and not self.cited_latch_terminal_session < self.trade_entry_date):
+            bad("the cited death must be strictly BEFORE the entry session")
+        # RULING R6-1: trg_eia_tier2's `placement_session <= trade_entry_date`
+        # twin (tier 2 only: placement is NULL on structural by the paired
+        # CHECK). Bytewise, sound because both are shape-checked above.
+        if (self.placement_session is not None
+                and not self.placement_session <= self.trade_entry_date):
+            bad("the placement session must not be after the trade's entry "
+                "session")
+        if (self.admitted_leg == "deployment"
+                and not self.placement_session < ATTESTATION_DEPLOYMENT_SESSION_BOUND):
+            bad("the deployment leg requires placement before 2026-08-03")
+        if (self.outcome_known_at is not None
+                and not self.trade_entry_date < self.outcome_known_at[:10]):
+            bad("the outcome must be on a session AFTER the entry")

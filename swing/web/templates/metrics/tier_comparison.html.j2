@@ -12,6 +12,13 @@
     test).
   </p>
 
+  {#- Arc 22-B RULING R1-3-SURFACES item 1 (ii): this page IS the governed
+      read. A raced cohort read renders the REGION below at 200 with the
+      ruled refusal text -- the /metrics overview's card-suppression idiom
+      -- never an app-wide 500 (D34). -#}
+  {% if vm.cohort_read_raced_message %}
+  <p class="muted governed-region-unavailable">{{ vm.cohort_read_raced_message }}</p>
+  {% else %}
   <p class="discrepancy-filter-toggle">
     {#- Codex R1 M#1 fix: use relative query toggle per dispatch brief §0.12
         + electives amendment §2 acceptance "<a href=...?exclude_discrepancies=1>"
@@ -37,6 +44,9 @@
           <br><span class="muted">n = {{ cohort.n_closed }} / target {{ cohort.target_sample_size }}</span>
           {% for line in cohort.tier2_lines %}
           <br><span class="muted tier2-cohort-line">{{ line }}</span>
+          {% endfor %}
+          {% for line in cohort.intent_lines %}
+          <br><span class="muted intent-cohort-line">{{ line }}</span>
           {% endfor %}
           {% if cohort.legacy_trades_count > 0 %}
           <br><span class="muted">({{ cohort.legacy_trades_count }} legacy)</span>
@@ -132,5 +142,6 @@
       {% if vm.result.overlap_descriptor_suppressed %}</em>{% endif %}
     </p>
   </section>
+  {% endif %}
 </section>
 {% endblock %}

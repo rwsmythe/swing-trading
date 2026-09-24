@@ -26,6 +26,7 @@ from datetime import datetime
 
 from swing.config import Config
 from swing.data.db import connect
+from swing.data.models import UNINTENDED_EXECUTION
 from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
@@ -75,9 +76,14 @@ GRADE_AXIS_LABELS: tuple[tuple[float, str], ...] = (
 # Normalized CSS-class hooks for PGT marker intent annotation (spec §7.2).
 # The raw `hypothesis_test_by_design` enum token MUST NOT be used directly as a
 # CSS class — it normalizes to `by-design` (Codex R1-Major-2).
+# Arc 22-B Task 9: the third stored value maps to the BARE token `unintended`
+# -- the template already prefixes `intent-`, so a value of `intent-unintended`
+# would render `intent-intent-unintended` (R3-03). No app.css rule exists for
+# any `.intent-*` token; the hook is the class plus the data attribute.
 _INTENT_CSS_CLASS: dict[str | None, str] = {
     "standard": "standard",
     "hypothesis_test_by_design": "by-design",
+    UNINTENDED_EXECUTION: "unintended",
     None: "unclassified",
 }
 

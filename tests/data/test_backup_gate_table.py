@@ -115,6 +115,8 @@ ROSTER: tuple[tuple[int, str, str, str, str], ...] = (
 POST_BASE_ROSTER: tuple[tuple[int, str, str, str, str], ...] = (
     (38, "22a2", "_phase22_arc_a2_backup_gate",
      "PHASE22_ARC_A2_PRE_MIGRATION_EXPECTED_TABLES", "pre-22-A2"),
+    (39, "22b", "_phase22_arc_b_backup_gate",
+     "PHASE22_ARC_B_PRE_MIGRATION_EXPECTED_TABLES", "pre-22-B"),
 )
 ALL_ROSTER = ROSTER + POST_BASE_ROSTER
 UNGATED_PRE_VERSIONS = (14, 17)
@@ -454,18 +456,26 @@ def test_a_failed_snapshot_removes_only_its_own_reserved_file(
     assert bystander.read_bytes() == b"older image"
 
 
-def test_a2_22_the_post_base_roster_is_one_22a2_row_after_the_base_23() -> None:
-    """22-A2 P33: the base-derived roster stays 23 rows cross-checked against
-    ``eface268``; the post-base roster is exactly the one 22-A2 row; the live
-    table is base + post-base, in order."""
+def test_a2_22_the_post_base_roster_is_one_22a2_row_after_the_base_23(
+        tmp_path: Path) -> None:
+    """22-A2 P33, re-scoped by Arc 22-B (R0.I): the base-derived roster stays
+    23 rows; 0039's OWN gate is the 22a2 row for pre-version 38, and a
+    38 -> target 39 run writes EXACTLY ONE gate image, the 22a2 one (never a
+    HEAD run, which a later gate row would change)."""
     assert len(ROSTER) == 23
-    assert POST_BASE_ROSTER == (
-        (38, "22a2", "_phase22_arc_a2_backup_gate",
-         "PHASE22_ARC_A2_PRE_MIGRATION_EXPECTED_TABLES", "pre-22-A2"),
-    )
-    table = db_mod._PRE_MIGRATION_BACKUP_GATES
-    assert [(s.pre_version, s.filename_stem, s.gate_name, s.label) for s in table] == [
-        (r[0], r[1], r[2], r[4]) for r in ROSTER + POST_BASE_ROSTER]
     spec = db_mod.backup_gate_for_pre_version(38)
     assert spec is not None and spec.filename_stem == "22a2"
+    assert (spec.pre_version, spec.filename_stem, spec.gate_name, spec.label) == (
+        38, "22a2", "_phase22_arc_a2_backup_gate", "pre-22-A2")
     assert spec.expected_tables is db_mod.PHASE22_ARC_A2_PRE_MIGRATION_EXPECTED_TABLES
+    c = open_connection(tmp_path / "fixture.db", reaffirm_wal=True)
+    try:
+        run_migrations(c, target_version=38, backup_dir=tmp_path / "build_bak")
+        bak = tmp_path / "bak"
+        run_migrations(c, target_version=39, backup_dir=bak)
+        assert _current_version(c) == 39
+    finally:
+        c.close()
+    images = _gate_images(bak)
+    assert len(images) == 1, images
+    assert images[0].match("swing-pre-22a2-migration-*.db")

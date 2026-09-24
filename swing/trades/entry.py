@@ -559,21 +559,31 @@ class EntryRequest:
     candidate_id: int | None = None
     # Tuition-vs-error instrument (spec §7.3). The operator's explicit
     # design-intent selection at entry; default None -> NULL (omitted CLI
-    # flag / unselected web <select>). Validated against ENTRY_INTENTS in
+    # flag / unselected web <select>). Validated against ENTRY_INTENTS_ASSERTABLE in
     # __post_init__ (Literal[...] is NOT runtime-enforced); NEVER derived
     # from hypothesis_label here -- record_entry persists it AS-IS
     # (server-stamp / spec §5 SINGLE PREFILL RULE).
     entry_intent: str | None = None
 
     def __post_init__(self) -> None:
-        from swing.data.models import ENTRY_INTENTS
+        from swing.data.models import (
+            ENTRY_INTENTS_ASSERTABLE,
+            SEAM_MESSAGE,
+            UNINTENDED_EXECUTION,
+            EntryIntentSeamError,
+        )
+        # Arc 22-B (F5 seam): the gate of the ONLY trade-insert path. The
+        # evidence-bearing value is never an entry-time fact -- it is assigned
+        # later by `swing trade assign-intent`, which records its evidence.
+        if self.entry_intent == UNINTENDED_EXECUTION:
+            raise EntryIntentSeamError(SEAM_MESSAGE)
         if (
             self.entry_intent is not None
-            and self.entry_intent not in ENTRY_INTENTS
+            and self.entry_intent not in ENTRY_INTENTS_ASSERTABLE
         ):
             raise ValueError(
                 f"EntryRequest.entry_intent must be None or one of "
-                f"{sorted(ENTRY_INTENTS)}; got {self.entry_intent!r}"
+                f"{sorted(ENTRY_INTENTS_ASSERTABLE)}; got {self.entry_intent!r}"
             )
 
 

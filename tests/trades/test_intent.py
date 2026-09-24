@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from swing.data.models import ENTRY_INTENTS
+from swing.data.models import ENTRY_INTENTS, ENTRY_INTENTS_ASSERTABLE
 from swing.trades.intent import (
     ENTRY_INTENT_DISPLAY,
+    ENTRY_INTENT_LABELS,
     entry_intent_display_choices,
     entry_intent_label,
     suggest_entry_intent,
@@ -12,7 +13,10 @@ from swing.trades.intent import (
 
 
 def test_display_matches_constant_no_drift():
-    assert {v for v, _ in ENTRY_INTENT_DISPLAY} == ENTRY_INTENTS
+    # Arc 22-B: the form CHOICES are the entry-time (assertable) values; the
+    # LABELS cover the whole schema enum (a stored value always renders).
+    assert {v for v, _ in ENTRY_INTENT_DISPLAY} == ENTRY_INTENTS_ASSERTABLE
+    assert set(ENTRY_INTENT_LABELS) == ENTRY_INTENTS
 
 
 def test_display_choices_is_the_ordered_tuple():

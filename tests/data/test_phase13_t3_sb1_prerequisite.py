@@ -52,7 +52,7 @@ def test_expected_schema_version_is_head(tmp_path: Path) -> None:
     that migration's own text or post-migrate state; see the rule text at
     ``tests/data/test_migration_0035_fills_trades_price_divergence.py``.
     """
-    assert EXPECTED_SCHEMA_VERSION == 39, (
+    assert EXPECTED_SCHEMA_VERSION == 40, (
         f"Worktree branched off a stale SHA - expected the HEAD schema, "
         f"got v{EXPECTED_SCHEMA_VERSION}. Re-create worktree off the "
         f"current head SHA."
@@ -197,7 +197,7 @@ def test_sqlite_connect_smoke(tmp_path: Path) -> None:
         assert row is not None
         version = row[0]
         assert isinstance(version, int)
-        assert version == EXPECTED_SCHEMA_VERSION == 39
+        assert version == EXPECTED_SCHEMA_VERSION == 40
         # Verify fills table is queryable with the new columns.
         # (Should succeed even with zero rows.)
         conn.execute(

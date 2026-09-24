@@ -24,6 +24,18 @@ from __future__ import annotations
 
 import sqlite3
 
+# Arc 22-B RULING R1-3-SURFACES item 2: the prefill DEGRADES on both
+# consuming surfaces (CLI `swing trade entry`, the web entry-form GET) --
+# a bookkeeping transient must never refuse a REAL TRADE (R1-1's
+# asymmetry). The suggestion is skipped and the entry PROCEEDS; the
+# operator sees this exact ASCII line (the CLI prints it; the web form
+# renders it beside the field). Shared here so both surfaces render the
+# identical ruled text.
+PREFILL_UNAVAILABLE_TEXT = (
+    "hypothesis suggestion unavailable: cohort read raced an intent write; "
+    "pass --hypothesis or re-run"
+)
+
 
 def lookup_active_recommendation_label(
     conn: sqlite3.Connection, *, ticker: str, starting_equity: float,

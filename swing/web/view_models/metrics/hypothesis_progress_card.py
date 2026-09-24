@@ -32,8 +32,16 @@ from swing.data.repos.hypothesis_status_history import (
     list_history_for_hypothesis,
 )
 from swing.evaluation.dates import PageKind, topbar_session_date
-from swing.metrics.cohort import list_closed_trades_for_cohort
-from swing.metrics.cohort_intent import cohort_entry_intent
+from swing.metrics.cohort import (
+    assert_intent_exclusion_disjoint,
+    list_closed_trades_for_cohort,
+    list_intent_excluded_for_cohort,
+)
+from swing.metrics.cohort_intent import (
+    cohort_entry_intent,
+    cohort_excluded_entry_intents,
+    intent_exclusion_lines,
+)
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
@@ -144,11 +152,20 @@ class CohortProgressVM:
     # ``(trade_id, observation)``.  Empty in the zero-data state.
     tier2_excluded: tuple[tuple[int, str, str | None], ...] = ()
     tier2_observed: tuple[tuple[int, str], ...] = ()
+    # Arc 22-B (N3 (a), E12): the cohort's label-matched closed trades
+    # clause (4) removes, NAMED ``(trade_id, reason)`` (``, UNATTESTED`` when
+    # no evidence row exists -- RD's plan read).
+    intent_excluded: tuple[tuple[int, str], ...] = ()
 
     @property
     def tier2_lines(self) -> tuple[str, ...]:
         """The named lines the card renders for this cohort."""
         return tier2_cohort_lines(self.tier2_excluded, self.tier2_observed)
+
+    @property
+    def intent_lines(self) -> tuple[str, ...]:
+        """The clause-(4) lines the card renders beside the tier-2 ones."""
+        return intent_exclusion_lines(self.intent_excluded)
 
     def __post_init__(self) -> None:
         if self.n_closed < 0:
@@ -214,6 +231,13 @@ class HypothesisProgressCardVM(BaseLayoutVM):
     """
 
     cohorts: tuple[CohortProgressVM, ...] = field(default_factory=tuple)
+    # Arc 22-B RULING R1-3-SURFACES item 1 (ii): this route IS the governed
+    # read. When it raises CohortReadRacedError, the route still renders
+    # its page at 200 with this text carrying the refusal in the governed
+    # region -- the /metrics overview's card-suppression idiom, never the
+    # app-wide 500 (D34). When set, the empty-cohorts invariant below is
+    # RELAXED (the degraded state IS the "no cohorts rendered" case).
+    cohort_read_raced_message: str | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -225,11 +249,12 @@ class HypothesisProgressCardVM(BaseLayoutVM):
                 "HypothesisProgressCardVM.cohorts must be a tuple; got "
                 f"{type(self.cohorts).__name__}"
             )
-        if len(self.cohorts) < 1:
+        if len(self.cohorts) < 1 and self.cohort_read_raced_message is None:
             raise ValueError(
                 "HypothesisProgressCardVM.cohorts must be non-empty; the "
                 "governance surface ALWAYS shows every registered cohort "
-                "(per spec §4.2 binding 'no n<3 suppression')"
+                "(per spec §4.2 binding 'no n<3 suppression') unless "
+                "cohort_read_raced_message is set"
             )
 
 
@@ -346,6 +371,8 @@ def _list_cohort_trades_sorted(
         conn,
         hypothesis_label=cohort_name,
         entry_intent=cohort_entry_intent(cohort_name),
+        # Arc 22-B (N2 (a)): clause (4), for every cohort.
+        exclude_entry_intents=cohort_excluded_entry_intents(cohort_name),
     )
     return sorted(
         trades,
@@ -417,6 +444,15 @@ def _build_cohort_vm(
         TransitionEntry.from_history(h)
         for h in history_newest_first[:TRANSITION_TIMELINE_CAP]
     )
+    # Arc 22-B (N3 (a)): the clause-(4) trades, NAMED. The same read at the
+    # same point as before (it was the constructor's last argument, after the
+    # history read; nothing between reads the DB), so R2-04's order holds.
+    intent_excluded = list_intent_excluded_for_cohort(
+        conn, hypothesis_label=name, state_filter=("closed", "reviewed"))
+    # R1-3 (RULING R1-3-SHAPE-EXEC): a trade the intent-filtered load
+    # returned AND the naming read named was moved by a write between the
+    # two reads -- refuse (typed), never the contradictory card row.
+    assert_intent_exclusion_disjoint([t.id for t in in_cohort], intent_excluded)
 
     return CohortProgressVM(
         hypothesis_id=hyp_id,
@@ -440,6 +476,7 @@ def _build_cohort_vm(
         preregistered_decision_criteria=preregistered_decision_criteria,
         tier2_excluded=cohort_read.excluded_among(t.id for t in in_cohort),
         tier2_observed=cohort_read.observed_among(t.id for t in trades),
+        intent_excluded=intent_excluded,
     )
 
 
@@ -457,12 +494,15 @@ def build_hypothesis_progress_card_vm(
     CHARC A-R2 item 4 (R2-04), tier (1): every cohort's trades are loaded
     FIRST and the read is taken after the last load, so every counted trade's
     tier-2 row was replayed."""
+    from swing.metrics.cohort import CohortReadRacedError
     from swing.trades.frozen_value_evidence import tier2_cohort_exclusions
 
     own_conn = conn is None
     if own_conn:
         conn = connect(cfg.paths.db_path)
     assert conn is not None
+    cohorts: tuple[CohortProgressVM, ...] = ()
+    cohort_read_raced_message: str | None = None
     try:
         unresolved = count_unresolved_material(conn)
         recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
@@ -480,9 +520,15 @@ def build_hypothesis_progress_card_vm(
         # R2-04 tier (1): the read FOLLOWS the last cohort load.
         cohort_read = tier2_cohort_exclusions(
             conn, now=datetime.now(UTC), budget_seconds=budget_seconds)
-        cohorts = tuple(
-            _build_cohort_vm(conn, row=r, in_cohort=in_cohort, cohort_read=cohort_read)
-            for r, in_cohort in zip(rows, loaded, strict=True))
+        # RULING R1-3-SURFACES item 1 (ii): this route IS the governed
+        # read -- render the page at 200 with the refusal text in the
+        # governed region, never a 500 (D34).
+        try:
+            cohorts = tuple(
+                _build_cohort_vm(conn, row=r, in_cohort=in_cohort, cohort_read=cohort_read)
+                for r, in_cohort in zip(rows, loaded, strict=True))
+        except CohortReadRacedError as exc:
+            cohort_read_raced_message = str(exc)
     finally:
         if own_conn:
             conn.close()
@@ -492,4 +538,5 @@ def build_hypothesis_progress_card_vm(
         recent_multi_leg_auto_correction_count=recent_multi_leg,
         banner_resolve_link=banner_resolve_link,
         cohorts=cohorts,
+        cohort_read_raced_message=cohort_read_raced_message,
     )

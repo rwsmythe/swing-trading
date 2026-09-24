@@ -834,14 +834,22 @@ def entry_post(
     # entry_intent is Form("") so empty == unclassified == VALID; only a
     # NON-EMPTY non-member is rejected. Re-rendering WITHOUT the bad anchor
     # clears it (4-tier-ladder behavior).
-    from swing.data.models import ENTRY_INTENTS
-    if entry_intent and entry_intent not in ENTRY_INTENTS:
+    from swing.data.models import (
+        ENTRY_INTENTS_ASSERTABLE,
+        SEAM_MESSAGE,
+        UNINTENDED_EXECUTION,
+    )
+    if entry_intent and entry_intent not in ENTRY_INTENTS_ASSERTABLE:
+        # Arc 22-B (F5 seam): the evidence-bearing value gets the typed message
+        # naming its one writer; any other non-member keeps today's text.
         return _rerender_entry_form_with_error(
             request=request, templates=templates, cfg=cfg, cache=cache,
             executor=executor, ticker=ticker, entry_date=entry_date,
             entry_price=entry_price, shares=shares, initial_stop=initial_stop,
             rationale=rationale, notes=notes,
-            error_message=f"invalid entry_intent {entry_intent!r}",
+            error_message=(
+                SEAM_MESSAGE if entry_intent == UNINTENDED_EXECUTION
+                else f"invalid entry_intent {entry_intent!r}"),
             origin=origin_coerced,
             submitted_schwab_source_value_json=schwab_source_value_json,
             submitted_auto_fill_audit_at=auto_fill_audit_at,
@@ -3542,7 +3550,11 @@ async def review_post(
     #     persisted value, so "foo" never re-renders -> operator not trapped).
     # Persisted via the dedicated update_entry_intent writer BELOW (its OWN
     # transaction) -- complete_trade_review is NOT widened.
-    from swing.data.models import ENTRY_INTENTS
+    from swing.data.models import (
+        ENTRY_INTENTS_ASSERTABLE,
+        SEAM_MESSAGE,
+        UNINTENDED_EXECUTION,
+    )
     # FastAPI collapses a present-but-empty form field ("") to the Form(None)
     # default, making it indistinguishable from an ABSENT field at the
     # parameter level. To honor absence != clear (Codex R1 Major), detect
@@ -3552,10 +3564,13 @@ async def review_post(
     raw_form = await request.form()
     entry_intent_present = "entry_intent" in raw_form
     ei = entry_intent or None  # ... or None: empty string -> NULL (nullable CHECK)
-    if entry_intent_present and ei is not None and ei not in ENTRY_INTENTS:
+    if (entry_intent_present and ei is not None
+            and ei not in ENTRY_INTENTS_ASSERTABLE):
         from swing.web.view_models.trades import build_review_vm
         vm = build_review_vm(trade_id=trade_id, cfg=cfg)
-        ei_err = f"Invalid entry_intent {ei!r}"
+        # Arc 22-B (F5 seam): the evidence-bearing value is refused typed.
+        ei_err = (SEAM_MESSAGE if ei == UNINTENDED_EXECUTION
+                  else f"Invalid entry_intent {ei!r}")
         if vm is None:
             return templates.TemplateResponse(
                 request, "partials/trade_form_error.html.j2",
@@ -3579,6 +3594,47 @@ async def review_post(
                 status_code=409,
                 detail="Trade already reviewed; V1 supports single-review only",
             )
+        # Arc 22-B N4 layer 1, BEFORE the review commits (R2-02): an attested
+        # `unintended_execution` is TERMINAL. The form renders it read-only and
+        # omits the field, so only a handcrafted POST reaches this; it gets the
+        # typed refusal as a 4xx fragment, and the pre-check itself writes
+        # nothing. On the concurrent path (an assign committing after this
+        # pre-check, caught by the second call below) the review persists as
+        # submitted and the intent is never written (AL-6, RULING R1-1).
+        from swing.data.models import AttestedIntentError
+
+        def _attested_refusal(exc: AttestedIntentError, *,
+                              review_committed: bool):
+            # The route's ONE 409 refusal fragment for an attested intent:
+            # the pre-check below AND the second call after the review
+            # committed (RULING R1-1 fix (1)) both render through it. ONE
+            # fragment, TWO texts (RULING R3-1): after the review committed
+            # the message names the committed review FIRST and the refused
+            # intent change SECOND; the pre-check recorded nothing, so its
+            # message is the refusal alone, unchanged.
+            from swing.web.view_models.trades import build_review_vm
+            if review_committed:
+                message = (f"Review for trade #{trade_id} was recorded "
+                           f"(state reviewed). The intent change was refused: "
+                           f"{exc}.")
+            else:
+                message = str(exc)
+            vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+            if vm is None:
+                return templates.TemplateResponse(
+                    request, "partials/trade_form_error.html.j2",
+                    {"error_message": message}, status_code=409)
+            return templates.TemplateResponse(
+                request, "partials/review_form.html.j2",
+                {"vm": vm, "error_message": message}, status_code=409)
+
+        if entry_intent_present:
+            from swing.data.repos.trades import assert_entry_intent_change_allowed
+            try:
+                assert_entry_intent_change_allowed(
+                    conn, trade_id=trade_id, entry_intent=ei)
+            except AttestedIntentError as exc:
+                return _attested_refusal(exc, review_committed=False)
         # Hotfix 2026-05-05 (operator-witnessed gate finding S6): the prior
         # implementation called update_trade_review_fields directly inside
         # `with conn:`, persisting Phase 6 review fields BUT never firing the
@@ -3615,10 +3671,19 @@ async def review_post(
         # Codex R1 Major: PRESENCE-gated. Only touch the persisted intent
         # when the field was actually submitted -- an absent field preserves
         # the operator-stamped value (symmetric with the CLI).
+        # RULING R1-1 fix (1): an `assign-intent` committing between the
+        # pre-check and the review's commit makes THIS call refuse (typed, by
+        # update_entry_intent's in-transaction re-check). The review has
+        # already committed as submitted and the intent is never written
+        # (AL-6, declared); the refusal renders the route's 409 fragment,
+        # never a 500, and names the committed review first (RULING R3-1).
         if entry_intent_present:
             from swing.data.repos.trades import update_entry_intent
-            with conn:
-                update_entry_intent(conn, trade_id=trade_id, entry_intent=ei)
+            try:
+                with conn:
+                    update_entry_intent(conn, trade_id=trade_id, entry_intent=ei)
+            except AttestedIntentError as exc:
+                return _attested_refusal(exc, review_committed=True)
     finally:
         conn.close()
     # code-review I3 (operator-witnessed S5): /trades is unrouted — htmx.js

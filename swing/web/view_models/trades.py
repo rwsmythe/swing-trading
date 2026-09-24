@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from swing.config import Config
 from swing.data.db import connect
-from swing.data.models import Fill, ReviewLog, Trade
+from swing.data.models import UNINTENDED_EXECUTION, Fill, ReviewLog, Trade
 from swing.data.repos.cash import list_cash
 from swing.data.repos.fills import (
     list_fills_for_trade,
@@ -28,6 +28,7 @@ from swing.trades.exit import ExitReason
 from swing.trades.exit_auto_fill import PossibleDuplicateFill
 from swing.trades.intent import (
     entry_intent_display_choices,
+    entry_intent_label,
     suggest_entry_intent,
 )
 from swing.trades.review import ReviewPriors
@@ -295,6 +296,11 @@ class TradeEntryFormVM:
     # the latest evaluation run — template renders "(none)" display
     # and emits an empty hidden input value.
     hypothesis_label: str | None = None
+    # Arc 22-B RULING R1-3-SURFACES item 2: set when the prefill's governed
+    # read raced -- the form renders WITHOUT a suggestion and WITH this
+    # ASCII line visible beside the Hypothesis field (the same text the
+    # CLI prefill prints). None on the ordinary path.
+    hypothesis_suggestion_unavailable_text: str | None = None
     # Phase 7 Sub-C C.4 — draft_* preservation fields for the 18 pre-trade
     # required fields (spec §11.1). Mirrors the rationale/notes
     # preservation pattern: when the MissingPreTradeFieldsException catch
@@ -569,18 +575,30 @@ def build_entry_form_vm(
             # on the same suggested label. None when the ticker has no
             # active recommendation; template renders "(none)" + empty
             # hidden input value.
+            from swing.metrics.cohort import CohortReadRacedError
             from swing.recommendations.hypothesis_prefill import (
+                PREFILL_UNAVAILABLE_TEXT,
                 lookup_active_recommendation_label,
             )
             from swing.trades.frozen_value_evidence import (
                 WEB_REPLAY_BUDGET_SECONDS,
             )
             # 22-A2 Task 10 (CHARC G-T10-1 (2)): a WEB caller -> web budget.
-            resolved_hypothesis_label = lookup_active_recommendation_label(
-                conn, ticker=ticker,
-                starting_equity=cfg.account.starting_equity,
-                budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
-            )
+            # RULING R1-3-SURFACES item 2: the prefill DEGRADES -- a
+            # bookkeeping transient must never refuse a REAL TRADE (R1-1's
+            # asymmetry). A raced read here skips the suggestion and the
+            # form renders WITH that line visible beside the field; the
+            # entry PROCEEDS.
+            hypothesis_suggestion_unavailable_text: str | None = None
+            try:
+                resolved_hypothesis_label = lookup_active_recommendation_label(
+                    conn, ticker=ticker,
+                    starting_equity=cfg.account.starting_equity,
+                    budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
+                )
+            except CohortReadRacedError:
+                resolved_hypothesis_label = None
+                hypothesis_suggestion_unavailable_text = PREFILL_UNAVAILABLE_TEXT
             # Phase 13 T3.SB1 dispatch brief §5 watch item 7 — banner-pin
             # counters mirror DashboardVM. Helper module already exists at
             # swing.metrics.discrepancies (Phase 10 + Phase 12.5 #1 + #2).
@@ -829,6 +847,9 @@ def build_entry_form_vm(
             pipeline_finished_at if coerced_origin == "hyp-recs" else None
         ),
         hypothesis_label=resolved_hypothesis_label,
+        hypothesis_suggestion_unavailable_text=(
+            hypothesis_suggestion_unavailable_text
+        ),
         # Phase 13 T3.SB1 — Schwab auto-fill fields (T-B.1.3).
         auto_fill_kind=auto_fill.kind,
         auto_fill_fill_origin=auto_fill.fill_origin,
@@ -1349,6 +1370,13 @@ class ReviewVM:
     # constructible (5-VM existing-fields rule needs no other change).
     entry_intent_choices: tuple[tuple[str, str], ...] = ()
     entry_intent_selected: str | None = None
+    # Arc 22-B N4 (R0.D): an attested `unintended_execution` renders READ-ONLY
+    # (no <select>, so the field is absent from the POST and the presence gate
+    # preserves it). The label is computed HERE -- the template never calls
+    # entry_intent_label (no such Jinja global, R3-04). Review-form fields
+    # only, not base-layout; safe defaults.
+    entry_intent_attested: bool = False
+    entry_intent_attested_label: str = ""
 
     # Phase 5 lesson — base.html.j2 dereferences these. New page VMs MUST
     # carry safe defaults (5-VM existing-fields rule; brief §6.2 watch item 8).
@@ -1597,6 +1625,10 @@ def build_review_vm(
             if trade.entry_intent is not None
             else suggest_entry_intent(trade.hypothesis_label)
         ),
+        entry_intent_attested=trade.entry_intent == UNINTENDED_EXECUTION,
+        entry_intent_attested_label=(
+            entry_intent_label(trade.entry_intent) or ""
+            if trade.entry_intent == UNINTENDED_EXECUTION else ""),
     )
 
 

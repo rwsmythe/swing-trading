@@ -99,7 +99,14 @@ from pathlib import Path
 #   FRESH connection. NO BACKFILL -- every pre-existing row reads NULL, which
 #   is what the partial index is for. ADDITIVE: nothing rebuilt, no existing
 #   row mutated. Atomic BEGIN/COMMIT.
-EXPECTED_SCHEMA_VERSION = 39
+# v40 (Arc 22-B, migration 0040): the `trades` REBUILD widening ONE enum token
+#   -- `entry_intent` gains 'unintended_execution' (F6: the only DDL edit) --
+#   plus the append-only `entry_intent_attestations` table (its SCHEMA IS THE
+#   EVIDENCE RULE), the N4 terminal trigger and its two unattested twins on
+#   `trades`, and the four `latch_view_events` evidence belts. The RENAME is
+#   bracketed by PRAGMA legacy_alter_table (R0.J); `_apply_migration` restores
+#   the PRIOR value of that pragma. Atomic BEGIN/COMMIT.
+EXPECTED_SCHEMA_VERSION = 40
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -423,6 +430,58 @@ PHASE22_ARC_A2_PRE_MIGRATION_EXPECTED_TABLES: set[str] = set(
     PHASE22_ARC_A4_PRE_MIGRATION_EXPECTED_TABLES
 )
 
+# 22-B (migration 0040) pre-migration expected-table set: the v39 table set
+# MEASURED from `sqlite_master` on a fresh `run_migrations(target_version=39)`
+# DB (43 names, `sqlite_sequence` included), not typed from memory; the live
+# v39 DB carries exactly this set (read `mode=ro`, 2026-09-23). The check is
+# still missing-only (the 22-A4 ruling above): a pre-image with MORE tables is
+# a valid backup.
+PHASE22_ARC_B_PRE_MIGRATION_EXPECTED_TABLES: set[str] = {
+    "account_equity_snapshots",
+    "candidate_criteria",
+    "candidates",
+    "candidates_immutability_epoch",
+    "cash_movements",
+    "chart_renders",
+    "config_revisions",
+    "daily_management_records",
+    "daily_recommendations",
+    "evaluation_runs",
+    "fill_envelope_identity",
+    "fills",
+    "finviz_api_calls",
+    "hypothesis_registry",
+    "hypothesis_status_history",
+    "latch_order_intents",
+    "latch_order_mandate_links",
+    "latch_view_events",
+    "pattern_detection_events",
+    "pattern_evaluations",
+    "pattern_exemplars",
+    "pattern_forward_observations",
+    "pipeline_chart_targets",
+    "pipeline_pattern_classifications",
+    "pipeline_runs",
+    "pipeline_step_timings",
+    "provenance_corrections",
+    "reconciliation_corrections",
+    "reconciliation_discrepancies",
+    "reconciliation_runs",
+    "review_log",
+    "risk_policy",
+    "schema_version",
+    "schwab_api_calls",
+    "sqlite_sequence",
+    "trade_events",
+    "trades",
+    "watchlist",
+    "watchlist_archive",
+    "watchlist_close_track_flag_events",
+    "watchlist_close_track_flags",
+    "weather_runs",
+    "yfinance_calls",
+}
+
 
 class SchemaVersionMismatchError(RuntimeError):
     """Raised when the DB schema version doesn't match what the code expects."""
@@ -487,6 +546,12 @@ def _apply_migration(conn: sqlite3.Connection, sql_path: Path) -> None:
     """
     sql = sql_path.read_text(encoding="utf-8")
     prior_fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+    # Arc 22-B (R0.J, CHARC-ruled): 0040 brackets its RENAME with
+    # `PRAGMA legacy_alter_table`. That pragma is connection-scoped and NOT
+    # transactional (it survives a rollback), so a script failing inside the
+    # bracket would leave it ON. Read the PRIOR value here and restore THAT in
+    # the `finally` -- restore-prior, never a hard OFF.
+    prior_legacy = conn.execute("PRAGMA legacy_alter_table").fetchone()[0]
     conn.execute("PRAGMA foreign_keys=OFF")
     try:
         conn.executescript(sql)
@@ -497,6 +562,10 @@ def _apply_migration(conn: sqlite3.Connection, sql_path: Path) -> None:
     finally:
         conn.execute(
             "PRAGMA foreign_keys=ON" if prior_fk else "PRAGMA foreign_keys=OFF"
+        )
+        conn.execute(
+            "PRAGMA legacy_alter_table=ON" if prior_legacy
+            else "PRAGMA legacy_alter_table=OFF"
         )
 
 
@@ -695,6 +764,8 @@ _PRE_MIGRATION_BACKUP_GATES: tuple[BackupGateSpec, ...] = (
                    "_phase22_arc_a4_backup_gate", "pre-22-A4"),
     BackupGateSpec(38, "22a2", PHASE22_ARC_A2_PRE_MIGRATION_EXPECTED_TABLES,
                    "_phase22_arc_a2_backup_gate", "pre-22-A2"),
+    BackupGateSpec(39, "22b", PHASE22_ARC_B_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_phase22_arc_b_backup_gate", "pre-22-B"),
 )
 _GATE_BY_PRE_VERSION: dict[int, BackupGateSpec] = {
     s.pre_version: s for s in _PRE_MIGRATION_BACKUP_GATES
@@ -890,6 +961,7 @@ _demand_c_backup_gate = _bind_gate_wrapper(35)
 _phase22_arc_a_backup_gate = _bind_gate_wrapper(36)
 _phase22_arc_a4_backup_gate = _bind_gate_wrapper(37)
 _phase22_arc_a2_backup_gate = _bind_gate_wrapper(38)
+_phase22_arc_b_backup_gate = _bind_gate_wrapper(39)
 
 
 def run_migrations(

@@ -54,11 +54,11 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 
 def test_expected_schema_version_is_head() -> None:
-    assert EXPECTED_SCHEMA_VERSION == 39
+    assert EXPECTED_SCHEMA_VERSION == 40
 
 
 def test_migration_applies_and_stamps_version_head(conn) -> None:
-    assert _current_version(conn) == 39
+    assert _current_version(conn) == 40
 
 
 def test_table_and_both_indexes_exist_read_from_sqlite_master(conn) -> None:
@@ -168,7 +168,7 @@ def test_rerunning_the_migration_is_a_clean_no_op(conn) -> None:
     ).fetchone()[0]
     run_migrations(conn)
     run_migrations(conn)
-    assert _current_version(conn) == 39
+    assert _current_version(conn) == 40
     after = conn.execute(
         "SELECT sql FROM sqlite_master WHERE name='provenance_corrections'",
     ).fetchone()[0]

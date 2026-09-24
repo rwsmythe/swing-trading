@@ -65,6 +65,17 @@ M0037 = MIG_DIR / "0037_latch_order_mandate_links.sql"
 M0039 = MIG_DIR / "0039_provenance_corrections_tier2.sql"
 CITATION = "trg_provenance_corrections_citation_graph"
 APPEND_UPDATE = "trg_provenance_corrections_append_only_update"
+# Arc 22-B (R0.I): the D51b-normalized sha256 of 0039's three changed objects,
+# captured from the committed v39 `schema_manifest_head.tsv` at 22-B's base
+# `e61dad27` (before 0040 regenerated it).
+V39_OBJECT_HASHES: dict[str, str] = {
+    "provenance_corrections":
+        "ee7674706ab202b380742998f61517845027f599c5617fb0932640fda400d4c0",
+    APPEND_UPDATE:
+        "b4e0b824ff084ae0833a616593234254415d4a773cff5f93fad1837215fcb98b",
+    CITATION:
+        "bfcaebe8b612b8865f7237a5938a1b66eaa2ba92912cf6c86572b4375644f190",
+}
 VERBATIM = {
     "ux_provenance_corrections_trade": M0036,
     "ix_provenance_corrections_cited_candidate": M0036,
@@ -163,7 +174,7 @@ def _seq(conn: sqlite3.Connection):
 def _migrate_to_head(conn: sqlite3.Connection, tmp_path: Path) -> None:
     run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION,
                    backup_dir=tmp_path / "gate_bak")
-    assert _current_version(conn) == EXPECTED_SCHEMA_VERSION == 39
+    assert _current_version(conn) == EXPECTED_SCHEMA_VERSION == 40
 
 
 def _strip_comments(sql: str) -> str:
@@ -318,11 +329,13 @@ def test_a2_17_the_four_unchanged_objects_are_verbatim(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 def test_a2_18_the_manifest_diff_is_three_changed_objects_and_nothing_else(
         tmp_path: Path) -> None:
+    # Re-scoped by Arc 22-B (R0.I): 0039's OWN diff, v38 -> target 39 -- never
+    # HEAD, so no later migration moves it.
     sm = _load_manifest_module()
     c = _db(tmp_path, "c4", 38)
     try:
         v38 = sm.read_manifest(c)
-        _migrate_to_head(c, tmp_path)
+        run_migrations(c, target_version=39, backup_dir=tmp_path / "gate_bak")
         v39 = sm.read_manifest(c)
     finally:
         c.close()
@@ -334,19 +347,24 @@ def test_a2_18_the_manifest_diff_is_three_changed_objects_and_nothing_else(
         ("trigger", APPEND_UPDATE),
         ("trigger", CITATION),
     })
+    assert {r.name: r.sql_sha256 for r in v39
+            if r.name in V39_OBJECT_HASHES} == V39_OBJECT_HASHES
 
 
-def test_a2_19_the_committed_fixture_is_the_v39_head(tmp_path: Path) -> None:
-    sm = _load_manifest_module()
-    fixture = REPO_ROOT / "tests" / "data" / "schema_manifest_head.tsv"
-    text = fixture.read_text(encoding="utf-8")
-    assert "# schema_version 39\n" in text
-    c = ensure_schema(tmp_path / "c5.db")
+def test_a2_19_the_0039_migration_yields_v39_and_its_three_objects(tmp_path: Path) -> None:
+    # Re-scoped by Arc 22-B (R0.I): the "# schema_version 39" literal is
+    # RETIRED and the fixture == HEAD clause is the `_head` tests' claim. The
+    # case now pins 0039's own post-migrate state.
+    c = _db(tmp_path, "c5", 38)
     try:
-        head = sm.read_manifest(c)
+        run_migrations(c, target_version=39, backup_dir=tmp_path / "gate_bak")
+        assert _current_version(c) == 39
+        sm = _load_manifest_module()
+        v39 = sm.read_manifest(c)
     finally:
         c.close()
-    assert sm.compare(sm.load_manifest(fixture), head).is_clean
+    assert {r.name: r.sql_sha256 for r in v39
+            if r.name in V39_OBJECT_HASHES} == V39_OBJECT_HASHES
 
 
 # ---------------------------------------------------------------------------

@@ -201,6 +201,11 @@ class TripwireStatus:
     # ``(trade_id, observation)``.  Empty in the zero-data state.
     tier2_excluded: tuple[tuple[int, str, str | None], ...] = ()
     tier2_observed: tuple[tuple[int, str], ...] = ()
+    # Arc 22-B (N3 (a), E12): the cohort's label-matched closed trades that
+    # clause (4) removes, NAMED ``(trade_id, reason)`` -- reason
+    # ``unintended_execution``, with ``, UNATTESTED`` when no evidence row
+    # exists (RD's plan read). Rendered by ``intent_exclusion_lines``.
+    intent_excluded: tuple[tuple[int, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -532,6 +537,10 @@ def compute_tripwire_status(
 
     from swing.data.repos.hypothesis import get_hypothesis
     from swing.data.repos.trades import list_closed_trades
+    from swing.metrics.cohort import (
+        assert_intent_exclusion_disjoint,
+        list_intent_excluded_for_cohort,
+    )
     from swing.metrics.cohort_intent import trade_counts_toward_cohort
     from swing.trades.frozen_value_evidence import tier2_cohort_exclusions
     from swing.trades.voided_trades import voided_trade_ids
@@ -589,6 +598,15 @@ def compute_tripwire_status(
     threshold = -starting_equity * (h.absolute_loss_tripwire_pct / 100.0)
     abs_fired = cumulative <= threshold
 
+    # Clause (4) (N2 (a)): trade_counts_toward_cohort already refused these
+    # above; here they are NAMED under this cohort (N3 (a)). The naming read
+    # stays the LAST DB read of this function (it was the constructor's last
+    # argument; the arguments between are pure), so no read order moved.
+    intent_excluded = list_intent_excluded_for_cohort(
+        conn, hypothesis_label=h.name, state_filter=("closed", "reviewed"))
+    # R1-3 (RULING R1-3-SHAPE-EXEC): counted above AND named here means a
+    # write landed between the two reads -- refuse, never the contradiction.
+    assert_intent_exclusion_disjoint([t.id for t in in_cohort], intent_excluded)
     return TripwireStatus(
         hypothesis_id=hypothesis_id,
         current_sample=len(matched),
@@ -599,4 +617,5 @@ def compute_tripwire_status(
         any_tripwire_fired=consec_fired or abs_fired,
         tier2_excluded=cohort_read.excluded_among(t.id for t in in_cohort),
         tier2_observed=cohort_read.observed_among(t.id for t in matched),
+        intent_excluded=intent_excluded,
     )

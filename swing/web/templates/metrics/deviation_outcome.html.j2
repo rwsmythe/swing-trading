@@ -12,6 +12,13 @@
     V1 has NO automated pass/fail evaluation; operator reads + judges.
   </p>
 
+  {#- Arc 22-B RULING R1-3-SURFACES item 1 (ii): this page IS the governed
+      read. A raced cohort read renders the REGION below at 200 with the
+      ruled refusal text -- the /metrics overview's card-suppression idiom
+      -- never an app-wide 500 (D34). -#}
+  {% if vm.cohort_read_raced_message %}
+  <p class="muted governed-region-unavailable">{{ vm.cohort_read_raced_message }}</p>
+  {% else %}
   <p class="discrepancy-filter-toggle">
     {#- Codex R1 M#1 fix: relative query toggle (matches the tier-comparison
         sibling). -#}
@@ -78,5 +85,6 @@
       {% endfor %}
     </tbody>
   </table>
+  {% endif %}
 </section>
 {% endblock %}

@@ -244,9 +244,11 @@ def test_vm_exposes_intent_facets_and_active_intent(cfg, conn_factory) -> None:
     )
     assert vm.intent_facets == INTENT_FACETS
     assert vm.active_entry_intent == "standard"
-    # The four facet values are the All-sentinel + 2 members + unclassified.
+    # The five facet values are the All-sentinel + the 3 stored members
+    # (Arc 22-B Task 9 adds unintended_execution) + unclassified.
     assert {v for v, _ in vm.intent_facets} == {
-        "", "standard", "hypothesis_test_by_design", "__unclassified__",
+        "", "standard", "hypothesis_test_by_design", "unintended_execution",
+        "__unclassified__",
     }
 
 

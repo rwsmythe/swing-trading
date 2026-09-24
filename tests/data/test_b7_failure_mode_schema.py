@@ -42,7 +42,7 @@ def _cols(conn: sqlite3.Connection) -> set[str]:
 
 
 def test_expected_schema_version_is_head() -> None:
-    assert EXPECTED_SCHEMA_VERSION == 39
+    assert EXPECTED_SCHEMA_VERSION == 40
 
 
 def test_migration_0024_adds_failure_mode_column(tmp_path: Path) -> None:

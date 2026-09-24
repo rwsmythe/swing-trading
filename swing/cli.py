@@ -40,7 +40,7 @@ from swing.data.db import (
     ensure_schema,
     open_connection,
 )
-from swing.data.models import PROVENANCE_CORRECTED_FIELDS
+from swing.data.models import PROVENANCE_CORRECTED_FIELDS, UNINTENDED_EXECUTION
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
 from swing.data.yfinance_audit_context import set_yfinance_audit_base_context
 from swing.evaluation.orchestration import (
@@ -574,6 +574,36 @@ def weather_cmd(ctx: click.Context, ticker: str, as_of_date_str: str | None) -> 
     click.echo(result.rationale)
 
 
+class EntryIntentParam(click.ParamType):
+    """`--entry-intent` for the GENERIC writers (Arc 22-B, F5 seam).
+
+    NOT a `click.Choice`: a Choice would reject `unintended_execution` at parse
+    time with its generic "not one of" text, so the typed seam message (which
+    names the ONE writer of that value) would be unreachable. Accepts the
+    entry-time values (`ENTRY_INTENTS_ASSERTABLE`); refuses the evidence-bearing
+    value with `SEAM_MESSAGE`; anything else fails with the generic message.
+    """
+
+    name = "entry_intent"
+
+    def convert(self, value, param, ctx):
+        from swing.data.models import (
+            ENTRY_INTENTS_ASSERTABLE,
+            SEAM_MESSAGE,
+            UNINTENDED_EXECUTION,
+        )
+        if value in ENTRY_INTENTS_ASSERTABLE:
+            return value
+        if value == UNINTENDED_EXECUTION:
+            self.fail(SEAM_MESSAGE, param, ctx)
+        self.fail(
+            f"{ascii(value)} is not one of {sorted(ENTRY_INTENTS_ASSERTABLE)}",
+            param, ctx)
+
+    def get_metavar(self, param, ctx=None):
+        return "[standard|hypothesis_test_by_design]"
+
+
 @main.group("trade")
 def trade_group() -> None:
     """Trade lifecycle: entry, exit, list, stop adjust, advisory."""
@@ -600,7 +630,7 @@ def trade_group() -> None:
               help="Optional free-text pre-trade hypothesis label. Frozen at "
                    "entry time; aggregated by `swing journal review`.")
 @click.option("--entry-intent", "entry_intent",
-              type=click.Choice(["standard", "hypothesis_test_by_design"]),
+              type=EntryIntentParam(),
               default=None,
               help="Design intent for this entry (tuition-vs-error "
                    "instrument). The advisory suggestion shown in the web "
@@ -792,13 +822,26 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
             # the flag was omitted, which is the only branch that triggers
             # pre-fill.
             if hypothesis is None:
-                prefilled = lookup_active_recommendation_label(
-                    conn, ticker=ticker.upper(),
-                    starting_equity=cfg.account.starting_equity,
+                # RULING R1-3-SURFACES item 2: the prefill DEGRADES -- a
+                # bookkeeping transient must never refuse a REAL TRADE
+                # (R1-1's asymmetry). A raced read here skips the
+                # suggestion and the entry PROCEEDS; the operator sees
+                # one ASCII line.
+                from swing.metrics.cohort import CohortReadRacedError
+                from swing.recommendations.hypothesis_prefill import (
+                    PREFILL_UNAVAILABLE_TEXT,
                 )
-                if prefilled is not None:
-                    hypothesis = prefilled
-                    click.echo(f"Pre-filled --hypothesis: {prefilled}")
+                try:
+                    prefilled = lookup_active_recommendation_label(
+                        conn, ticker=ticker.upper(),
+                        starting_equity=cfg.account.starting_equity,
+                    )
+                except CohortReadRacedError:
+                    click.echo(PREFILL_UNAVAILABLE_TEXT)
+                else:
+                    if prefilled is not None:
+                        hypothesis = prefilled
+                        click.echo(f"Pre-filled --hypothesis: {prefilled}")
 
             # NEW (Task 7): sector/industry candidate-row lookup via the canonical
             # helper, mirroring the entry-form VM (Task 6) for cross-surface
@@ -1352,8 +1395,9 @@ def _render_trade_analysis(a) -> list[str]:
         f"Current stop: ${a.current_stop:.2f}"
     )
     lines.append(f"Hypothesis: {a.hypothesis_label or '(none)'}")
-    from swing.trades.intent import entry_intent_label
-    lines.append(f"Intent: {entry_intent_label(a.entry_intent) or 'Unclassified'}")
+    from swing.trades.intent import NULL_ENTRY_INTENT_LABEL, entry_intent_label
+    lines.append(
+        f"Intent: {entry_intent_label(a.entry_intent) or NULL_ENTRY_INTENT_LABEL}")
     lines.append(f"Notes: {a.notes or '(none)'}")
     lines.append("")
 
@@ -1556,7 +1600,7 @@ def _render_trade_analysis(a) -> list[str]:
                    "market_regime_shift, adverse_event_shock, execution_error, "
                    "failed_to_advance, other. Omit for a winner / unattributed.")
 @click.option("--entry-intent", "entry_intent",
-              type=click.Choice(["standard", "hypothesis_test_by_design"]),
+              type=EntryIntentParam(),
               default=None,
               help="Optional correction of the trade's design intent. Omit to "
                    "leave the persisted value unchanged; pass a value to set it.")
@@ -1574,6 +1618,7 @@ def trade_review_cmd(
     from swing.data.db import connect
     from swing.data.repos.review_log import list_unreviewed_closed_trades
     from swing.data.repos.trades import get_trade
+    from swing.trades.entry import ascii_safe, log_contained, safe_text
     from swing.trades.review import (
         canonicalize_mistake_tags,
         complete_trade_review,
@@ -1621,6 +1666,20 @@ def trade_review_cmd(
         )
 
     conn = connect(cfg.paths.db_path)
+    # RULING B item 2 (CHARC, B-02): the close handler RE-EVALUATES two
+    # durability facts, each bound at its OWN writer's return, never cached
+    # earlier. `pending_refusal` holds the refusal `ClickException` for the
+    # three in-flight-refusal cases RULING B names -- the pre-check
+    # `assert_entry_intent_change_allowed` ValueError, `complete_trade_
+    # review`'s own pre-commit ValueError, and the AL-6 race's `update_
+    # entry_intent` ValueError -- so a close failure can raise it with the
+    # close error NAMED and CHAINED (R8's shape) instead of silently
+    # replacing it. A raise with NOTHING durable and no named refusal is
+    # byte-unchanged (the bare `conn.close()` below). A non-refusal raise AFTER
+    # the review commits resumes; the close failure is WARNED (B2-01).
+    review_committed = False
+    intent_committed = False
+    pending_refusal: click.ClickException | None = None
     try:
         trade = get_trade(conn, trade_id)
         if trade is None:
@@ -1666,6 +1725,19 @@ def trade_review_cmd(
             disqualifying=disqualifying_process_violation,
         )
 
+        # Arc 22-B N4 layer 1, BEFORE the review commits (R2-02): an attested
+        # `unintended_execution` is terminal, so a refused intent change must
+        # not leave a completed review behind it. The same pure read
+        # update_entry_intent's step (c) makes.
+        if entry_intent is not None:
+            from swing.data.repos.trades import assert_entry_intent_change_allowed
+            try:
+                assert_entry_intent_change_allowed(
+                    conn, trade_id=trade_id, entry_intent=entry_intent)
+            except ValueError as exc:
+                pending_refusal = click.ClickException(str(exc))
+                raise pending_refusal from exc
+
         # B.7: route through `complete_trade_review` service so the review
         # fields write + state_transition(closed → reviewed) land atomically
         # in a single transaction. The service opens its own `with conn:`
@@ -1694,7 +1766,25 @@ def trade_review_cmd(
             # Defense-in-depth: the repo-layer pre-v24 / membership ValueError
             # surfaces as a clean ClickException, not a traceback. Production is
             # v24 so this is the belt to the membership check's suspenders.
-            raise click.ClickException(str(exc)) from exc
+            pending_refusal = click.ClickException(str(exc))
+            raise pending_refusal from exc
+        # RULING B item 2: bound at the writer's OWN return, never cached
+        # earlier -- `complete_trade_review` opened and closed its own
+        # `with conn:` above, so by this line the review is durable.
+        review_committed = True
+
+        # The review has COMMITTED. RULING R3-1: say so BEFORE the intent
+        # write, so the recorded line precedes any refusal (the message names
+        # the committed review FIRST and the refused intent SECOND).
+        # Codex R4-1: this echo now sits BETWEEN two durable writes, so an
+        # output failure here must not suppress the requested intent write.
+        # `--ticker` is unrestricted text, so the WHOLE line is ASCII-coerced,
+        # and the write is contained per sink (the 22-A3 post-durability
+        # idiom, `_echo_either_sink`).
+        _echo_either_sink(ascii_safe(
+            f"Review recorded for trade #{trade_id} ({trade.ticker}). "
+            f"Process grade: {process_grade}."
+            + (f" Failure mode: {failure_mode}." if failure_mode else "")))
 
         # Task 4 (tuition-vs-error): correct entry_intent at review. Optional --
         # an omitted flag leaves the persisted value untouched (no call). When
@@ -1702,6 +1792,10 @@ def trade_review_cmd(
         # OWN transaction (entry_intent is independent of review state, so it is
         # NOT folded into complete_trade_review -- L2/L5 lock). click.Choice
         # already constrains the value; the ValueError wrap is the belt.
+        # RULING R3-1: an `assign-intent` committing after the pre-check makes
+        # this call refuse (AL-6); the review above is already recorded, so the
+        # refusal names only the intent change, and the exit stays NONZERO (the
+        # part the operator asked for did not happen).
         if entry_intent is not None:
             from swing.data.repos.trades import update_entry_intent
             try:
@@ -1710,14 +1804,237 @@ def trade_review_cmd(
                         conn, trade_id=trade_id, entry_intent=entry_intent,
                     )
             except ValueError as exc:
-                raise click.ClickException(str(exc)) from exc
+                pending_refusal = click.ClickException(
+                    f"Intent change REFUSED: {exc}")
+                raise pending_refusal from exc
+            # RULING B item 2: bound at the writer's OWN return, never cached
+            # earlier -- `update_entry_intent`'s `with conn:` above has
+            # exited (committed) by this line.
+            intent_committed = True
     finally:
-        conn.close()
+        # RULING B item 2 (CHARC, B-02): a raise with NO named refusal and
+        # NOTHING durable keeps TODAY's behaviour byte-unchanged -- the bare
+        # `conn.close()` below, whose failure silently replaces whatever was
+        # in flight, exactly as it always has. Only once there is something
+        # to protect (a named refusal, or a durable review) does the close
+        # get wrapped.
+        if pending_refusal is not None or review_committed:
+            try:
+                conn.close()
+            except BaseException as close_exc:  # noqa: BLE001 -- the CLASS
+                if pending_refusal is not None:
+                    # (i) A REFUSAL IN FLIGHT: the typed refusal text
+                    # SURVIVES a close failure, named and chained (R8's
+                    # shape; D39's template -- the cleanup failure chained
+                    # from the original, never instead of it). R3-1's order
+                    # is already satisfied by construction: the "Review
+                    # recorded" line (when review_committed) was echoed
+                    # BEFORE this exception was ever raised, so it reads
+                    # first; the refused-intent (or pre-commit) text is
+                    # `pending_refusal`'s own message, named here second;
+                    # the close failure is named third.
+                    raise click.ClickException(
+                        f"{pending_refusal.message}; the connection close "
+                        f"also failed: {safe_text(close_exc)}"
+                    ) from close_exc
+                # (ii) NOTHING REFUSED and every write that ran IS durable
+                # (review_committed, and intent_committed if an intent
+                # change was requested and it went through) -- the 22-A3
+                # post-commit close shape: log contained, WARN on stderr
+                # through the contained sink, exit 0.
+                durable_what = (
+                    "review and intent change" if intent_committed
+                    else "review")
+                close_error_text = safe_text(close_exc)
+                _close_log_error = log_contained(
+                    _pe_backfill_logging.getLogger(__name__),
+                    "22-B: trade %s %s IS DURABLE and CLOSING the database "
+                    "connection afterwards RAISED (%s); the ledger is "
+                    "unaffected.",
+                    trade_id, durable_what, close_error_text)
+                _echo_either_sink(ascii_safe(
+                    "WARN (post-commit): trade " + safe_text(trade_id)
+                    + " " + durable_what + " IS DURABLE and CLOSING the "
+                    "database connection afterwards RAISED ("
+                    + close_error_text + "); the ledger is unaffected."),
+                    prefer_err=True)
+                if _close_log_error is not None:
+                    _echo_either_sink(ascii_safe(
+                        "WARN (post-commit): the ERROR log for the close "
+                        "failure above could not be emitted cleanly -- a "
+                        "logging handler RAISED ("
+                        + safe_text(_close_log_error) + "). Some sinks may "
+                        "have received the record and some may not; the "
+                        "ledger is unaffected."), prefer_err=True)
+        else:
+            conn.close()
 
-    click.echo(
-        f"Review recorded for trade #{trade_id} ({trade.ticker}). "
-        f"Process grade: {process_grade}."
-        + (f" Failure mode: {failure_mode}." if failure_mode else ""))
+
+@trade_group.command("assign-intent")
+@click.argument("trade_id", type=int)
+@click.option("--value", "value", required=True,
+              type=click.Choice([UNINTENDED_EXECUTION]),
+              help="The evidence-bearing entry_intent value; this command is its "
+                   "ONLY writer.")
+@click.option("--cite", required=True,
+              help="Comma list of the trade's own text fields that carry the "
+                   "evidence: notes, why_now, thesis, emotional_state_pre_trade "
+                   "(at least one of notes / why_now).")
+@click.option("--reason", required=True, help="Why this execution was one nobody "
+                                              "decided to make (non-blank).")
+@click.option("--dry-run", is_flag=True,
+              help="Run every admission check and print it; write nothing.")
+@click.pass_context
+def trade_assign_intent(ctx: click.Context, trade_id: int, value: str, cite: str,
+                        reason: str, dry_run: bool) -> None:
+    """Assign entry_intent 'unintended_execution' WITH its recorded evidence.
+
+    The tier is DETECTED, never chosen. The attestation row and the trades
+    value land together or not at all. A refusal names its recovery.
+    """
+    import json
+
+    from swing.data.db import connect
+    from swing.trades.entry import ascii_safe, log_contained, safe_text
+    from swing.trades.entry_intent_assignment import ASSIGNMENT_APPLIED_BY, assign
+
+    cfg = ctx.obj["config"]
+    # RULING R7 item 3 (CHARC), the 22-A3 shape the entry command carries.
+    # THE DURABILITY BOUNDARY: `result` bound, ADMITTED, and NOT a dry run --
+    # i.e. `assign` returned having COMMITTED the attestation row and the
+    # trades value (its only admitted non-dry-run return follows its COMMIT).
+    # A refused result and a dry run ROLLBACK, so they sit BEFORE it, as does
+    # any exception `assign` raises PRIOR TO its own COMMIT (`result` stays
+    # None). Before the boundary an error is the honest answer and every path
+    # is byte-unchanged; after it, an error would be a wrong answer in the
+    # expensive direction (a retry reads `already_set` for an assignment
+    # reported as failed). The boundary is RE-EVALUATED at each handler,
+    # never cached in a flag, so no instruction sits between the binding of
+    # `result` and its protection. RULING B item 1 (B-01): the one raise this
+    # boundary CANNOT see is `assign`'s COMMIT itself committing and then
+    # losing its return -- `result` stays unbound over a durable attestation,
+    # so `assign-intent` exits nonzero on a write that happened. That residual
+    # is DECLARED, not fixed, as AL-7: unlike the entry command (22-A4), a
+    # retry here cannot duplicate -- `entry_intent_attestations.trade_id` is
+    # UNIQUE and the value is terminal, so the retry refuses `already_set`
+    # and names the value it finds.
+    result = None
+    close_error_text = None
+    close_log_error_text = None
+    confirmed = False
+    # ONE CONTINUOUS OUTER GUARD, as in the entry command: opened before the
+    # connection, closed only after the LAST line is printed.
+    try:
+        conn = connect(cfg.paths.db_path)
+        try:
+            try:
+                result = assign(conn, cfg, trade_id=trade_id,
+                                cite=[part.strip() for part in cite.split(",")],
+                                reason=reason, applied_by=ASSIGNMENT_APPLIED_BY,
+                                dry_run=dry_run)
+            except ValueError as exc:
+                raise click.ClickException(str(exc)) from exc
+        finally:
+            try:
+                conn.close()
+            except BaseException as exc:  # noqa: BLE001 -- the CLASS
+                # RULING R8 + RULING R8-SCOPE (CHARC): on a REFUSED result --
+                # every refused result, dry run included -- the typed REFUSED
+                # text SURVIVES a close failure: raise it with the close
+                # error NAMED and CHAINED, never let the close exception
+                # mask it (D39's template -- the cleanup failure chained
+                # from the original, never instead of it). This sits BEFORE
+                # the `result is None or dry_run` branch below so a refused
+                # dry run routes here too, not there.
+                if result is not None and not result.admitted:
+                    raise click.ClickException(
+                        f"REFUSED ({result.refusal_code}): {result.message}; "
+                        f"the connection close also failed: "
+                        f"{safe_text(exc)}"
+                    ) from exc
+                if result is None or dry_run:
+                    raise
+                # Rendered ONCE, before logging, and the logger is given the
+                # STRING (the entry command's A3R4-05 reasoning), then
+                # recorded durably, not only printed (A3-AR-05).
+                close_error_text = safe_text(exc)
+                _close_log_error = log_contained(
+                    _pe_backfill_logging.getLogger(__name__),
+                    "22-B: the assignment of trade %s IS DURABLE (attestation "
+                    "%s) and CLOSING the database connection afterwards "
+                    "RAISED (%s); the ledger is unaffected and the command "
+                    "still exits 0.",
+                    trade_id, result.attestation_id, close_error_text)
+                if _close_log_error is not None:
+                    close_log_error_text = safe_text(_close_log_error)
+        if not result.admitted:
+            raise click.ClickException(
+                f"REFUSED ({result.refusal_code}): {result.message}")
+        # Codex R7-1: on the write path `assign` has COMMITTED by now, so an
+        # output failure must not turn the durable assignment into a nonzero
+        # exit. Every line goes through the 22-A3 post-durability idiom --
+        # ASCII-coerced whole, attempted per line on stdout and then stderr --
+        # so the exit code stays the assignment's verdict, on the dry run as
+        # on the write.
+
+        def _emit(line: str) -> None:
+            _echo_either_sink(ascii_safe(line))
+
+        head = f"trade {trade_id}: ADMIT {UNINTENDED_EXECUTION}"
+        _emit(head + (" (dry run, nothing written)" if dry_run else ""))
+        _emit(f"tier: {result.tier}")
+        evidence = json.dumps(result.leg_evidence, sort_keys=True)  # ASCII-escaped
+        if result.tier == "structural":
+            probe = result.leg_evidence or {}
+            _emit(f"P1 (the mandate died before the fill): link "
+                  f"{probe.get('link_id')}, terminal {probe.get('clear_reason')} "
+                  f"on {probe.get('clear_session')}; evidence {evidence}")
+        else:
+            _emit(f"P1 (the instrument could not have recorded the placement): "
+                  f"leg {result.admitted_leg}, placement session "
+                  f"{result.placement_session}; evidence {evidence}")
+        counts = result.corrections_by_table
+        _emit(f"P2 (no correction touched the cited fields): corrections "
+              f"{counts.get('reconciliation_corrections')}/"
+              f"{counts.get('provenance_corrections')} over "
+              "reconciliation_corrections, provenance_corrections")
+        _emit("P3 (the record pre-dates the outcome): outcome "
+              + (result.outcome_known_at or "open"))
+        if not dry_run:
+            confirmed = _echo_either_sink(ascii_safe(
+                "attestation_id: " + safe_text(result.attestation_id)))
+        # THE CLOSE WARNING: a caveat ON a success, so stderr first (the
+        # 22-A3 shape), through the same contained sink as every line above
+        # -- it cannot re-open the R7-1 class. OBSERVATION-ONLY: it says the
+        # close RAISED, never that the connection "could not be closed".
+        if close_error_text is not None:
+            _echo_either_sink(ascii_safe(
+                "WARN (post-commit): the assignment is DURABLE (trade "
+                + safe_text(trade_id) + ", attestation "
+                + safe_text(result.attestation_id)
+                + ") and CLOSING the database connection afterwards RAISED ("
+                + close_error_text + "); the ledger is unaffected."),
+                prefer_err=True)
+        if close_log_error_text is not None:
+            _echo_either_sink(ascii_safe(
+                "WARN (post-commit): the ERROR log for the close failure "
+                "above could not be emitted cleanly -- a logging handler "
+                "RAISED (" + close_log_error_text + "). Some sinks may have "
+                "received the record and some may not; the ledger is "
+                "unaffected."), prefer_err=True)
+    except BaseException:  # noqa: BLE001 -- the CLASS
+        if result is None or not result.admitted or dry_run:
+            raise
+        # DURABLE: ONE LAST CONTAINED ATTEMPT AT THE CONFIRMATION (the entry
+        # command's A3R2-01), at least once and not exactly once (A3R5-06).
+        # There is nowhere left to write if it fails, so the exit code is the
+        # last signal, which is why it must be the TRUE one: 0.
+        if not confirmed:
+            _echo_either_sink(ascii_safe(
+                "trade " + safe_text(trade_id) + ": ADMIT "
+                + UNINTENDED_EXECUTION + " (durable); attestation_id: "
+                + safe_text(result.attestation_id)))
+        return
 
 
 @trade_group.command("backfill-intent")
@@ -1729,11 +2046,19 @@ def trade_review_cmd(
 @click.pass_context
 def trade_backfill_intent_cmd(ctx, trade_id, force):
     """Classify each trade's design intent (entry_intent). Idempotent: already-set
-    rows are skipped unless --trade-id or --force. 'skip' leaves a row NULL
-    (renders 'Unclassified'). The re-runnable command + its summary ARE the audit
-    (no provenance table for V1)."""
+    rows are skipped unless --trade-id or --force. 'skip' leaves the row
+    unclassified. The re-runnable command + its summary ARE the audit (no
+    provenance table for V1)."""
     from swing.config_overrides import apply_overrides
-    from swing.data.repos.trades import update_entry_intent
+    from swing.data.models import (
+        UNINTENDED_EXECUTION,
+        AttestedIntentError,
+        EntryIntentSeamError,
+    )
+    from swing.data.repos.trades import (
+        assert_entry_intent_change_allowed,
+        update_entry_intent,
+    )
     from swing.trades.intent import entry_intent_label, suggest_entry_intent
 
     cfg = apply_overrides(ctx.obj["config"])
@@ -1759,6 +2084,20 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
             if already_set and trade_id is None and not force:
                 n_skipped_set += 1
                 continue
+            if current == UNINTENDED_EXECUTION:
+                # Arc 22-B N4: an attested value is TERMINAL. --force /
+                # --trade-id SKIP it with the message; they never prompt over
+                # it (the message comes from the same read layer 1 makes).
+                try:
+                    assert_entry_intent_change_allowed(
+                        conn, trade_id=tid, entry_intent=None)
+                except AttestedIntentError as exc:
+                    # Codex R7-2: `ticker` (and `entry_date`) are unrestricted
+                    # text; the whole line is ASCII-coerced.
+                    from swing.trades.entry import ascii_safe
+                    click.echo(ascii_safe(f"#{tid} {ticker} {edate} | {exc}"))
+                n_skipped_set += 1
+                continue
             suggestion = suggest_entry_intent(hyp)
             sug_label = entry_intent_label(suggestion) or "(no suggestion)"
             click.echo(f"#{tid} {ticker} {edate} | label={hyp or '(none)'} | "
@@ -1773,6 +2112,12 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
             try:
                 with conn:
                     update_entry_intent(conn, trade_id=tid, entry_intent=choice)
+            except EntryIntentSeamError as exc:
+                # Arc 22-B F5 seam: the evidence-bearing value is never written
+                # here; say why, leave the row as it was, and keep going.
+                click.echo(f"  {exc}")
+                n_skipped_op += 1
+                continue
             except ValueError as exc:
                 raise click.ClickException(str(exc)) from exc
             n_set += 1
@@ -1905,9 +2250,15 @@ def journal_review_cmd(ctx, period, today):
         # Per backend brief §4.5: "Hypothesis investigation progress"
         # section is registry-driven (not period-filtered) — operator wants
         # the full investigation state regardless of `--period`.
-        progress_rows = compute_hypothesis_progress_breakdown(
-            conn, starting_equity=cfg.account.starting_equity,
-        )
+        # Arc 22-B R1-3: a raced governed read refuses the command (typed,
+        # at the CLI boundary), never a traceback and never the row.
+        from swing.metrics.cohort import CohortReadRacedError
+        try:
+            progress_rows = compute_hypothesis_progress_breakdown(
+                conn, starting_equity=cfg.account.starting_equity,
+            )
+        except CohortReadRacedError as exc:
+            raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
 
@@ -4948,6 +5299,7 @@ def hypothesis_list_cmd(ctx: click.Context) -> None:
     """List all registered hypotheses with status + sample progress."""
     from swing.data.db import connect
     from swing.data.repos.hypothesis import list_hypotheses
+    from swing.metrics.cohort_intent import intent_exclusion_lines
     from swing.recommendations.hypothesis import compute_tripwire_status
     from swing.trades.frozen_value_evidence import tier2_cohort_lines
 
@@ -4955,12 +5307,23 @@ def hypothesis_list_cmd(ctx: click.Context) -> None:
     conn = connect(cfg.paths.db_path)
     try:
         rows = list_hypotheses(conn)
+        # Arc 22-B R1-3: every row's governed read completes BEFORE anything
+        # prints, so a raced read on a later hypothesis refuses the whole
+        # table (typed, at the CLI boundary) -- never a partial table, never
+        # the contradictory row. The reads run in the same order as before.
+        from swing.metrics.cohort import CohortReadRacedError
+        try:
+            statuses = [
+                (h, compute_tripwire_status(
+                    conn, hypothesis_id=h.id,
+                    starting_equity=cfg.account.starting_equity,
+                ))
+                for h in rows
+            ]
+        except CohortReadRacedError as exc:
+            raise click.ClickException(str(exc)) from exc
         click.echo("ID  STATUS              N/TARGET  TRIPWIRE  NAME")
-        for h in rows:
-            tw = compute_tripwire_status(
-                conn, hypothesis_id=h.id,
-                starting_equity=cfg.account.starting_equity,
-            )
+        for h, tw in statuses:
             tw_label = "FIRED" if tw.any_tripwire_fired else "ok"
             click.echo(
                 f"{h.id:<3} {h.status:<19} "
@@ -4970,6 +5333,9 @@ def hypothesis_list_cmd(ctx: click.Context) -> None:
             # 22-A2 Task 10 (CHARC G-T10-1 (3)): the cohort's tier-2 names,
             # ONCE, under ITS row -- an exclusion is a fact about that N.
             for named in tier2_cohort_lines(tw.tier2_excluded, tw.tier2_observed):
+                click.echo(f"    {named}")
+            # Arc 22-B (N3 (a)): the clause-(4) names, under ITS row too.
+            for named in intent_exclusion_lines(tw.intent_excluded):
                 click.echo(f"    {named}")
     finally:
         conn.close()
@@ -4982,6 +5348,7 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
     """Print detailed status for one hypothesis."""
     from swing.data.db import connect
     from swing.data.repos.hypothesis import get_hypothesis
+    from swing.metrics.cohort_intent import intent_exclusion_lines
     from swing.recommendations.hypothesis import compute_tripwire_status
     from swing.trades.frozen_value_evidence import tier2_cohort_lines
 
@@ -4991,10 +5358,16 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
         h = get_hypothesis(conn, hypothesis_id)
         if h is None:
             raise click.ClickException(f"hypothesis {hypothesis_id} not found")
-        tw = compute_tripwire_status(
-            conn, hypothesis_id=h.id,
-            starting_equity=cfg.account.starting_equity,
-        )
+        # Arc 22-B R1-3: a raced governed read refuses (typed, at the CLI
+        # boundary) -- never a traceback, never the contradictory row.
+        from swing.metrics.cohort import CohortReadRacedError
+        try:
+            tw = compute_tripwire_status(
+                conn, hypothesis_id=h.id,
+                starting_equity=cfg.account.starting_equity,
+            )
+        except CohortReadRacedError as exc:
+            raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
 
@@ -5007,6 +5380,8 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
     # it (RD G-T10-F4: a pointer to another surface is wrong here).
     click.echo(f"  Current sample:   {tw.current_sample}")
     for named in tier2_cohort_lines(tw.tier2_excluded, tw.tier2_observed):
+        click.echo(f"    {named}")
+    for named in intent_exclusion_lines(tw.intent_excluded):
         click.echo(f"    {named}")
     click.echo(f"  Decision criteria:{h.decision_criteria}")
     # D29 rider (codex-auto-review): this is the FOURTH criterion-rendering

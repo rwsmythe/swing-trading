@@ -88,7 +88,7 @@ def test_m1_the_column_the_check_and_the_version(tmp_path: Path) -> None:
     """The FIRST assertion is the declared first red: an AssertionError on the
     constant (it reads 37), not an OperationalError -- only the SQL that NAMES
     the column produces that transcript, and it is further down."""
-    assert EXPECTED_SCHEMA_VERSION == 39
+    assert EXPECTED_SCHEMA_VERSION == 40
     c = open_connection(tmp_path / "m1.db")
     try:
         run_migrations(c, target_version=38, backup_dir=tmp_path / "bak")
