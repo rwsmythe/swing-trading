@@ -157,6 +157,60 @@ def test_update_entry_intent_same_value_passes_b22_126(tmp_path: Path) -> None:
     assert _row(db)[-1] == UNINTENDED_EXECUTION
 
 
+def test_layer1_race_with_assign_refuses_typed_b22_226(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Codex R1 Major 2: `assign` commits BETWEEN layer 1's reads and the
+    UPDATE. The reads saw NULL, so the N4 trigger is what aborts the UPDATE;
+    the generic writer must still raise the TYPED ``AttestedIntentError`` (a
+    ``ValueError`` every surface converts), never a raw
+    ``sqlite3.IntegrityError``. The race is made deterministic by committing
+    the real ``assign`` on a SECOND connection from inside layer 1's pre-check
+    (which then returns, as a read taken before that commit would have).
+    Pre-fix: ``sqlite3.IntegrityError`` from the trigger's RAISE."""
+    from swing.data.db import open_connection
+    from swing.data.repos import trades as trades_repo
+    from swing.trades.entry_intent_assignment import assign
+    from tests._22b_fixtures import seed_amn_row5, seed_trade20
+
+    db = tmp_path / "t.db"
+    ensure_schema(db).close()
+    seed = open_connection(db)
+    try:
+        seed_amn_row5(seed)
+        seed_trade20(seed, state="closed")
+        seed.commit()
+    finally:
+        seed.close()
+
+    real_check = trades_repo.assert_entry_intent_change_allowed
+    committed: list[int] = []
+
+    def _stale_check(conn, *, trade_id, entry_intent):
+        if not committed:
+            other = open_connection(db)
+            try:
+                res = assign(other, None, trade_id=20, cite=["notes", "why_now"],
+                             reason="Stale A+ latch order fired after the "
+                                    "mandate died", applied_by="operator")
+            finally:
+                other.close()
+            assert res.admitted, res.message
+            committed.append(int(res.attestation_id))
+            return None
+        return real_check(conn, trade_id=trade_id, entry_intent=entry_intent)
+
+    monkeypatch.setattr(trades_repo, "assert_entry_intent_change_allowed",
+                        _stale_check)
+    conn = connect(db)
+    try:
+        with pytest.raises(AttestedIntentError) as exc, conn:
+            update_entry_intent(conn, trade_id=20, entry_intent="standard")
+    finally:
+        conn.close()
+    assert str(exc.value) == attested_message(committed[0])
+    assert _row(db)[-1] == UNINTENDED_EXECUTION
+
+
 def test_layer1_alone_refuses_with_trigger_absent_b22_127(tmp_path: Path) -> None:
     """The trigger DROPPED in the test DB (a pre-trigger shape): the service
     layer alone still refuses. Pre-fix arithmetic: with no layer 1 the same

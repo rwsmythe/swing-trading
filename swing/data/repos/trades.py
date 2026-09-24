@@ -1061,8 +1061,20 @@ def update_entry_intent(
         raise ValueError(
             f"entry_intent must be one of {sorted(ENTRY_INTENTS_ASSERTABLE)} or "
             f"None, got {entry_intent!r}")
-    cur = conn.execute(
-        "UPDATE trades SET entry_intent = ? WHERE id = ?", (entry_intent, trade_id))
+    try:
+        cur = conn.execute(
+            "UPDATE trades SET entry_intent = ? WHERE id = ?",
+            (entry_intent, trade_id))
+    except sqlite3.IntegrityError:
+        # Codex R1 Major 2: `assign-intent` can commit BETWEEN the reads above
+        # (autocommit reads; the caller's `with conn:` opens no transaction
+        # until this UPDATE) and this statement, and the N4 trigger then
+        # aborts it. The UPDATE opened this connection's transaction, so a
+        # re-read here sees that commit: repeat layer 1 and raise the TYPED
+        # refusal. Any other integrity failure re-raises unchanged.
+        assert_entry_intent_change_allowed(
+            conn, trade_id=trade_id, entry_intent=entry_intent)
+        raise
     if cur.rowcount == 0:
         raise ValueError(f"trade {trade_id} not found")
 
