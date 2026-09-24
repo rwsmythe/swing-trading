@@ -36,7 +36,21 @@ from tests.metrics.test_22b_cohort_exclusion import (  # noqa: F401 (fixtures)
 from tests.trades.test_22a2_correction_service import ticking_clock  # noqa: F401
 
 RACED_TID = 3            # the H2 trade the planted assign moves mid-render
-RACED_MESSAGE = "cohort read raced an intent write; re-run"
+# RULING R1-3-SURFACES item 4: the ERROR's text (never a cause it did not
+# observe, D39's banked message rule) -- distinct from the SHORT form the
+# secondary panels + prefill lines render (COHORT_READ_RACED_MESSAGE,
+# unchanged). Built from the SAME ids format as swing/metrics/cohort.py so
+# a drift in either place fails the test, not just the human reading it.
+def _raced_message(*ids: int) -> str:
+    joined = ", ".join(str(i) for i in ids)
+    return (
+        f"cohort read counted and named the same trade(s) {joined}: a "
+        "concurrent intent write, or the counting and naming predicates "
+        "disagree; re-run"
+    )
+
+
+RACED_MESSAGE = _raced_message(RACED_TID)
 
 
 # ---------------------------------------------------------------------------
@@ -58,11 +72,12 @@ def test_the_disjointness_assert_raises_typed_on_intersection_only_b22_229() -> 
     # Intersection -> the typed error, the ruled text, the ids carried.
     with pytest.raises(CohortReadRacedError) as exc:
         assert_intent_exclusion_disjoint([1, 3, None], named)
-    assert str(exc.value) == RACED_MESSAGE
+    assert str(exc.value) == _raced_message(3)
     assert str(exc.value).isascii()
     assert exc.value.trade_ids == (3,)
     with pytest.raises(CohortReadRacedError) as exc:
         assert_intent_exclusion_disjoint((8, 3), named)
+    assert str(exc.value) == _raced_message(3, 8)
     assert exc.value.trade_ids == (3, 8)
 
 

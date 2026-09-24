@@ -185,7 +185,26 @@ def list_intent_excluded_for_cohort(
         for tid, intent, attested in rows if tid not in voided)
 
 
+# RULING R1-3-SURFACES item 1: the SHORT-FORM text a SECONDARY panel or a
+# prefill line renders for a DEGRADED STATE -- never the error itself (a
+# degraded state is not a cause it observed; see
+# ``_cohort_read_raced_error_message`` below for the ERROR's own text,
+# rendered wherever the error itself renders).
 COHORT_READ_RACED_MESSAGE = "cohort read raced an intent write; re-run"
+
+
+def _cohort_read_raced_error_message(trade_ids: tuple[int, ...]) -> str:
+    """RULING R1-3-SURFACES item 4: the message says what was OBSERVED,
+    never a cause it did not observe (D39's banked message rule) -- the
+    ids named, BOTH plausible causes named (a genuine concurrent write, OR
+    a code defect where the counting and naming predicates simply
+    disagree), so either is loud AND correctly labelled."""
+    joined = ", ".join(str(t) for t in trade_ids)
+    return (
+        f"cohort read counted and named the same trade(s) {joined}: a "
+        "concurrent intent write, or the counting and naming predicates "
+        "disagree; re-run"
+    )
 
 
 class CohortReadRacedError(ValueError):
@@ -196,7 +215,7 @@ class CohortReadRacedError(ValueError):
     partial row. A re-run reads clean."""
 
     def __init__(self, trade_ids: tuple[int, ...]) -> None:
-        super().__init__(COHORT_READ_RACED_MESSAGE)
+        super().__init__(_cohort_read_raced_error_message(trade_ids))
         self.trade_ids = trade_ids
 
 
