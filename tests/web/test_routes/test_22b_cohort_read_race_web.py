@@ -9,10 +9,10 @@ The refusal is planted at the ASSERT, in every namespace that binds it
 every governed reader refuses through its REAL code path. The race itself is
 planted by execution in ``tests/metrics/test_22b_cohort_read_race.py``.
 
-What exists today, measured here and not invented: the metrics overview
-isolates each card and shows it "unavailable"; the three standalone metric
-routes have NO route-level degraded message, so the refusal reaches the
-app-wide handler (the error page, status 500, carrying the ruled text).
+Per RULING R1-3-SURFACES item 1 (ii): the metrics overview isolates each
+card and shows it "unavailable"; the three standalone metric routes now
+degrade the GOVERNED REGION and render at 200 (the /metrics overview's
+card-suppression idiom) -- never the app-wide 500 (D34).
 """
 from __future__ import annotations
 
@@ -23,9 +23,15 @@ from fastapi.testclient import TestClient
 
 from swing.web.app import create_app
 
-RACED_MESSAGE = "cohort read raced an intent write; re-run"
 GOVERNED_CARDS = ("/metrics/hypothesis-progress", "/metrics/tier-comparison",
                   "/metrics/deviation-outcome")
+
+
+def _raced_message() -> str:
+    """Read the CURRENT ruled text off the real type, not a copy -- the
+    text is item 4's to own (this file only asserts it renders)."""
+    from swing.metrics.cohort import CohortReadRacedError
+    return str(CohortReadRacedError((3,)))
 
 
 def _refuse_every_governed_read(monkeypatch) -> None:
@@ -67,16 +73,18 @@ def test_metrics_overview_degrades_each_governed_card_b22_236(
 
 
 @pytest.mark.parametrize("path", GOVERNED_CARDS)
-def test_standalone_governed_routes_reach_the_app_handler_b22_236(
+def test_standalone_governed_routes_degrade_the_governed_region_b22_236(
         seeded_db, monkeypatch, path: str) -> None:
-    """No route-level degraded message exists on these three routes; the
-    refusal renders as the app-wide error page with the ruled text, never
-    the card's rows."""
+    """RULING R1-3-SURFACES item 1 (ii): each of the three routes IS the
+    governed read -- it renders its page at 200 with the refusal text in
+    the governed region, never the app-wide 500 (D34), never a partial /
+    contradictory row."""
     cfg, cfg_path = seeded_db
     _refuse_every_governed_read(monkeypatch)
     with TestClient(create_app(cfg, cfg_path),
                     raise_server_exceptions=False) as client:
         resp = client.get(path)
-    assert resp.status_code == 500, (path, resp.status_code)
-    assert RACED_MESSAGE in resp.text
+    assert resp.status_code == 200, (path, resp.status_code, resp.text)
+    assert _raced_message() in resp.text, (path, resp.text)
     assert "not counted" not in resp.text
+    assert "governed-region-unavailable" in resp.text, resp.text

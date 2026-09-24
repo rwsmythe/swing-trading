@@ -12,6 +12,13 @@
     §A.11). ALWAYS rendered regardless of cohort sample size.
   </p>
 
+  {#- Arc 22-B RULING R1-3-SURFACES item 1 (ii): this page IS the governed
+      read. A raced cohort read renders the REGION below at 200 with the
+      ruled refusal text -- the /metrics overview's card-suppression idiom
+      -- never an app-wide 500 (D34). -#}
+  {% if vm.cohort_read_raced_message %}
+  <p class="muted governed-region-unavailable">{{ vm.cohort_read_raced_message }}</p>
+  {% else %}
   <ul class="cohort-row">
     {% for cohort in vm.cohorts %}
     <li class="cohort-cell" data-cohort-id="{{ cohort.hypothesis_id }}">
@@ -92,5 +99,6 @@
     </li>
     {% endfor %}
   </ul>
+  {% endif %}
 </section>
 {% endblock %}

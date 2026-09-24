@@ -57,13 +57,20 @@ class TierComparisonVM(BaseLayoutVM):
     """
 
     result: TierComparisonResult | None = None
+    # Arc 22-B RULING R1-3-SURFACES item 1 (ii): this route IS the governed
+    # read. When it raises CohortReadRacedError, the route still renders
+    # its page at 200 with this text carrying the refusal in the governed
+    # region -- the /metrics overview's card-suppression idiom, never the
+    # app-wide 500 (D34). Mutually exclusive with `result`.
+    cohort_read_raced_message: str | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.result is None:
+        if self.result is None and self.cohort_read_raced_message is None:
             raise ValueError(
                 "TierComparisonVM.result must be supplied (build via "
-                "build_tier_comparison_vm factory)"
+                "build_tier_comparison_vm factory) unless "
+                "cohort_read_raced_message is set"
             )
 
 
@@ -83,10 +90,14 @@ def build_tier_comparison_vm(
     excluded count for template-side rendering of the
     "(excluded N trades with unresolved discrepancies)" context line.
     """
+    from swing.metrics.cohort import CohortReadRacedError
+
     own_conn = conn is None
     if own_conn:
         conn = connect(cfg.paths.db_path)
     assert conn is not None
+    result: TierComparisonResult | None = None
+    cohort_read_raced_message: str | None = None
     try:
         unresolved = count_unresolved_material(conn)
         recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
@@ -94,11 +105,17 @@ def build_tier_comparison_vm(
             fetch_first_pending_ambiguity_resolve_link_path(conn)
         )
         # 22-A2 Task 10 (CHARC G-T10-1 (2)): a WEB caller -> the web budget.
-        result = compute_tier_comparison(
-            conn,
-            exclude_unresolved_discrepancies=exclude_unresolved_discrepancies,
-            budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
-        )
+        try:
+            result = compute_tier_comparison(
+                conn,
+                exclude_unresolved_discrepancies=exclude_unresolved_discrepancies,
+                budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
+            )
+        except CohortReadRacedError as exc:
+            # RULING R1-3-SURFACES item 1 (ii): this route IS the governed
+            # read -- render the page at 200 with the refusal text in the
+            # governed region, never a 500 (D34).
+            cohort_read_raced_message = str(exc)
     finally:
         if own_conn:
             conn.close()
@@ -108,4 +125,5 @@ def build_tier_comparison_vm(
         recent_multi_leg_auto_correction_count=recent_multi_leg,
         banner_resolve_link=banner_resolve_link,
         result=result,
+        cohort_read_raced_message=cohort_read_raced_message,
     )

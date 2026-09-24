@@ -253,6 +253,12 @@ def _extract_hypothesis_progress(cfg: Config, conn, session_date: str) -> _Overv
     # 22-A2 Task 10 (CHARC G-T10-1 (2)): a WEB caller -> the web budget.
     vm = build_hypothesis_progress_card_vm(
         cfg=cfg, conn=conn, budget_seconds=WEB_REPLAY_BUDGET_SECONDS)
+    # Arc 22-B RULING R1-3-SURFACES item 1 (ii): a raced cohort read now
+    # returns a VM with EMPTY cohorts + this field set, instead of raising
+    # -- checked FIRST so it is never mistaken for the real "no cohorts
+    # registered" empty state below (both render as EMPTY tuples).
+    if vm.cohort_read_raced_message is not None:
+        return _OverviewCard(headline_suppressed_text="unavailable")
     n = len(vm.cohorts)
     if n == 0:
         return _OverviewCard(headline_suppressed_text="no registered cohorts")

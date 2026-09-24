@@ -231,6 +231,13 @@ class HypothesisProgressCardVM(BaseLayoutVM):
     """
 
     cohorts: tuple[CohortProgressVM, ...] = field(default_factory=tuple)
+    # Arc 22-B RULING R1-3-SURFACES item 1 (ii): this route IS the governed
+    # read. When it raises CohortReadRacedError, the route still renders
+    # its page at 200 with this text carrying the refusal in the governed
+    # region -- the /metrics overview's card-suppression idiom, never the
+    # app-wide 500 (D34). When set, the empty-cohorts invariant below is
+    # RELAXED (the degraded state IS the "no cohorts rendered" case).
+    cohort_read_raced_message: str | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -242,11 +249,12 @@ class HypothesisProgressCardVM(BaseLayoutVM):
                 "HypothesisProgressCardVM.cohorts must be a tuple; got "
                 f"{type(self.cohorts).__name__}"
             )
-        if len(self.cohorts) < 1:
+        if len(self.cohorts) < 1 and self.cohort_read_raced_message is None:
             raise ValueError(
                 "HypothesisProgressCardVM.cohorts must be non-empty; the "
                 "governance surface ALWAYS shows every registered cohort "
-                "(per spec §4.2 binding 'no n<3 suppression')"
+                "(per spec §4.2 binding 'no n<3 suppression') unless "
+                "cohort_read_raced_message is set"
             )
 
 
@@ -486,12 +494,15 @@ def build_hypothesis_progress_card_vm(
     CHARC A-R2 item 4 (R2-04), tier (1): every cohort's trades are loaded
     FIRST and the read is taken after the last load, so every counted trade's
     tier-2 row was replayed."""
+    from swing.metrics.cohort import CohortReadRacedError
     from swing.trades.frozen_value_evidence import tier2_cohort_exclusions
 
     own_conn = conn is None
     if own_conn:
         conn = connect(cfg.paths.db_path)
     assert conn is not None
+    cohorts: tuple[CohortProgressVM, ...] = ()
+    cohort_read_raced_message: str | None = None
     try:
         unresolved = count_unresolved_material(conn)
         recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
@@ -509,9 +520,15 @@ def build_hypothesis_progress_card_vm(
         # R2-04 tier (1): the read FOLLOWS the last cohort load.
         cohort_read = tier2_cohort_exclusions(
             conn, now=datetime.now(UTC), budget_seconds=budget_seconds)
-        cohorts = tuple(
-            _build_cohort_vm(conn, row=r, in_cohort=in_cohort, cohort_read=cohort_read)
-            for r, in_cohort in zip(rows, loaded, strict=True))
+        # RULING R1-3-SURFACES item 1 (ii): this route IS the governed
+        # read -- render the page at 200 with the refusal text in the
+        # governed region, never a 500 (D34).
+        try:
+            cohorts = tuple(
+                _build_cohort_vm(conn, row=r, in_cohort=in_cohort, cohort_read=cohort_read)
+                for r, in_cohort in zip(rows, loaded, strict=True))
+        except CohortReadRacedError as exc:
+            cohort_read_raced_message = str(exc)
     finally:
         if own_conn:
             conn.close()
@@ -521,4 +538,5 @@ def build_hypothesis_progress_card_vm(
         recent_multi_leg_auto_correction_count=recent_multi_leg,
         banner_resolve_link=banner_resolve_link,
         cohorts=cohorts,
+        cohort_read_raced_message=cohort_read_raced_message,
     )

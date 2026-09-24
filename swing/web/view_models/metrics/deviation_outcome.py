@@ -57,13 +57,21 @@ class DeviationOutcomeVM(BaseLayoutVM):
     """
 
     result: DeviationOutcomeResult | None = None
+    # Arc 22-B RULING R1-3-SURFACES item 1 (ii): this route IS the governed
+    # read (it delegates to compute_tier_comparison). When it raises
+    # CohortReadRacedError, the route still renders its page at 200 with
+    # this text carrying the refusal in the governed region -- the
+    # /metrics overview's card-suppression idiom, never the app-wide 500
+    # (D34). Mutually exclusive with `result`.
+    cohort_read_raced_message: str | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.result is None:
+        if self.result is None and self.cohort_read_raced_message is None:
             raise ValueError(
                 "DeviationOutcomeVM.result must be supplied (build via "
-                "build_deviation_outcome_vm factory)"
+                "build_deviation_outcome_vm factory) unless "
+                "cohort_read_raced_message is set"
             )
 
 
@@ -81,10 +89,14 @@ def build_deviation_outcome_vm(
     material reconciliation discrepancies are filtered out of the cohort
     aggregates (delegated to :func:`compute_deviation_outcome`).
     """
+    from swing.metrics.cohort import CohortReadRacedError
+
     own_conn = conn is None
     if own_conn:
         conn = connect(cfg.paths.db_path)
     assert conn is not None
+    result: DeviationOutcomeResult | None = None
+    cohort_read_raced_message: str | None = None
     try:
         unresolved = count_unresolved_material(conn)
         recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
@@ -92,11 +104,17 @@ def build_deviation_outcome_vm(
             fetch_first_pending_ambiguity_resolve_link_path(conn)
         )
         # 22-A2 Task 10 (CHARC G-T10-1 (2)): a WEB caller -> the web budget.
-        result = compute_deviation_outcome(
-            conn,
-            exclude_unresolved_discrepancies=exclude_unresolved_discrepancies,
-            budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
-        )
+        try:
+            result = compute_deviation_outcome(
+                conn,
+                exclude_unresolved_discrepancies=exclude_unresolved_discrepancies,
+                budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
+            )
+        except CohortReadRacedError as exc:
+            # RULING R1-3-SURFACES item 1 (ii): this route IS the governed
+            # read -- render the page at 200 with the refusal text in the
+            # governed region, never a 500 (D34).
+            cohort_read_raced_message = str(exc)
     finally:
         if own_conn:
             conn.close()
@@ -106,4 +124,5 @@ def build_deviation_outcome_vm(
         recent_multi_leg_auto_correction_count=recent_multi_leg,
         banner_resolve_link=banner_resolve_link,
         result=result,
+        cohort_read_raced_message=cohort_read_raced_message,
     )
