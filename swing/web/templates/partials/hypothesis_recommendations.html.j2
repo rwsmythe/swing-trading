@@ -27,7 +27,17 @@
     Single source of truth — CLAUDE.md "HTMX OOB-swap partial drift" gotcha
     forbids hand-duplicating this markup at any callsite. -#}
 {%- set oob = oob|default(false) -%}
-{% if vm.active_recommendations %}
+{#- Arc 22-B RULING R1-3-SURFACES item 1 (i) -- the hyp-recs panel is a
+    SECONDARY panel; a raced cohort read degrades it to this text instead
+    of vanishing silently (gotcha #27) or 500ing the whole page. Checked
+    BEFORE `vm.active_recommendations` so a degraded-but-empty render is
+    never mistaken for the ordinary "nothing to show" empty state. -#}
+{% if vm.hyp_recs_unavailable_text %}
+<section id="hypothesis-recommendations" class="hypothesis-recommendations"{% if oob %} hx-swap-oob="true"{% endif %}>
+  <h2>Hypothesis-driven recommendations</h2>
+  <p class="muted">{{ vm.hyp_recs_unavailable_text }}</p>
+</section>
+{% elif vm.active_recommendations %}
 <section id="hypothesis-recommendations" class="hypothesis-recommendations"{% if oob %} hx-swap-oob="true"{% endif %}>
   <h2>Hypothesis-driven recommendations</h2>
   <table class="hypothesis-recommendations">

@@ -320,6 +320,15 @@ class HypothesisRecommendation:
 # section.
 _RECOMMENDATIONS_TOP_N = 10
 
+# Arc 22-B RULING R1-3-SURFACES item 1 (i) -- the ruled short-form text for
+# a SECONDARY panel's degraded state (never the ERROR's own long-form text;
+# see swing/metrics/cohort.py's CohortReadRacedError for the ERROR text
+# rendered where the ERROR itself renders, e.g. the governed metrics pages).
+HYP_RECS_UNAVAILABLE_TEXT = (
+    "hypothesis progress unavailable: cohort read raced an intent write; "
+    "re-run"
+)
+
 
 @dataclass(frozen=True)
 class CadenceCardVM:
@@ -368,6 +377,15 @@ class DashboardVM:
     # ad-hoc VM construction (tests, fixtures) doesn't trip the template's
     # `{% if vm.active_recommendations %}` guard.
     active_recommendations: tuple[HypothesisRecommendation, ...] = ()
+    # Arc 22-B RULING R1-3-SURFACES item 1 (i): the hyp-recs panel is a
+    # SECONDARY panel of a page doing something else. When the governed
+    # progress read (``build_recommendation_progress``) raises
+    # ``CohortReadRacedError``, the panel degrades to this ruled text
+    # instead of the table -- every OTHER panel renders. None on the
+    # ordinary path. SIBLING field to `active_recommendations` on
+    # `HypRecsSectionVM` (duck-typed together by
+    # `partials/hypothesis_recommendations.html.j2`).
+    hyp_recs_unavailable_text: str | None = None
     # Spec §3.5 (Phase 4 Task 4.2): SIBLING to flag_tags. {ticker: 'flag (0.78)'}
     # for chart-scope tickers with detected flag patterns. Default empty dict so
     # the dashboard renders gracefully when no classifications are loaded.
@@ -517,6 +535,9 @@ class HypRecsSectionVM:
     Spec §3.5.4 (R2-Major-2 resolution).
     """
     active_recommendations: tuple[HypothesisRecommendation, ...] = ()
+    # Arc 22-B RULING R1-3-SURFACES item 1 (i) -- SIBLING to the field of
+    # the same name on `DashboardVM` (both consumed by the same partial).
+    hyp_recs_unavailable_text: str | None = None
 
 
 def build_hyp_recs_section(
@@ -537,6 +558,7 @@ def build_hyp_recs_section(
     Spec §3.5.4.
     """
     from swing.data.repos.hypothesis import list_hypotheses
+    from swing.metrics.cohort import CohortReadRacedError
     from swing.recommendations.hypothesis import (
         match_candidate_to_hypotheses,
         prioritize_recommendations,
@@ -574,32 +596,54 @@ def build_hyp_recs_section(
             candidates_by_ticker = {c.ticker: c for c in candidates}
             registry = list_hypotheses(conn)
             target_by_id = {h.id: h.target_sample_size for h in registry}
-            progress_by_id, progress_summaries = (
-                build_recommendation_progress(
-                    conn, registry,
-                    starting_equity=cfg.account.starting_equity,
-                    budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
+            top_recommendations: list = []
+            progress_by_id: dict = {}
+            hyp_recs_unavailable_text: str | None = None
+            # RULING R1-3-SURFACES item 1 (i): the hyp-recs panel is a
+            # SECONDARY panel -- CONTAIN CohortReadRacedError ONLY (never a
+            # bare except), degrade to the ruled short-form text, log at
+            # WARNING (gotcha #27). Every OTHER panel on the page this
+            # builder's caller assembles still renders.
+            try:
+                progress_by_id, progress_summaries = (
+                    build_recommendation_progress(
+                        conn, registry,
+                        starting_equity=cfg.account.starting_equity,
+                        budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
+                    )
                 )
-            )
-            all_matches = []
-            for c in candidates:
-                all_matches.extend(
-                    match_candidate_to_hypotheses(c, registry=registry)
+            except CohortReadRacedError as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "hyp-recs panel degraded: cohort read raced an intent "
+                    "write (trade ids %s); re-run", exc.trade_ids)
+                hyp_recs_unavailable_text = HYP_RECS_UNAVAILABLE_TEXT
+            else:
+                all_matches = []
+                for c in candidates:
+                    all_matches.extend(
+                        match_candidate_to_hypotheses(c, registry=registry)
+                    )
+                prioritized = prioritize_recommendations(
+                    all_matches, registry=registry, progress=progress_summaries,
                 )
-            prioritized = prioritize_recommendations(
-                all_matches, registry=registry, progress=progress_summaries,
-            )
-            top_recommendations = list(prioritized[:_RECOMMENDATIONS_TOP_N])
-            # Defense-in-depth: filter again after prioritization in case
-            # the matcher chain ever surfaces a ticker not present in the
-            # pre-filtered candidate set (e.g., future synthesis paths).
-            if exclude_set:
-                top_recommendations = [
-                    r for r in top_recommendations
-                    if r.candidate_ticker.upper() not in exclude_set
-                ]
+                top_recommendations = list(prioritized[:_RECOMMENDATIONS_TOP_N])
+                # Defense-in-depth: filter again after prioritization in
+                # case the matcher chain ever surfaces a ticker not present
+                # in the pre-filtered candidate set (e.g., future synthesis
+                # paths).
+                if exclude_set:
+                    top_recommendations = [
+                        r for r in top_recommendations
+                        if r.candidate_ticker.upper() not in exclude_set
+                    ]
     finally:
         conn.close()
+    if hyp_recs_unavailable_text is not None:
+        return HypRecsSectionVM(
+            active_recommendations=(),
+            hyp_recs_unavailable_text=hyp_recs_unavailable_text,
+        )
     recommended_tickers = sorted(
         {r.candidate_ticker for r in top_recommendations}
     )
@@ -1189,6 +1233,7 @@ def build_dashboard(
             top_recommendations: list = []
             progress_by_id: dict = {}
             target_by_id: dict[int, int] = {}
+            hyp_recs_unavailable_text: str | None = None
             # Bug-fix-C (2026-04-29): structurally exclude open-position
             # tickers from the candidate set BEFORE matching. Mirrors the
             # filter `build_hyp_recs_section` already does (Task 3
@@ -1213,6 +1258,7 @@ def build_dashboard(
             ]
             if hyp_recs_candidates:
                 from swing.data.repos.hypothesis import list_hypotheses
+                from swing.metrics.cohort import CohortReadRacedError
                 from swing.recommendations.hypothesis import (
                     match_candidate_to_hypotheses,
                     prioritize_recommendations,
@@ -1220,25 +1266,39 @@ def build_dashboard(
 
                 registry = list_hypotheses(conn)
                 target_by_id = {h.id: h.target_sample_size for h in registry}
-                progress_by_id, progress_summaries = (
-                    build_recommendation_progress(
-                        conn, registry,
-                        starting_equity=cfg.account.starting_equity,
-                        budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
+                # RULING R1-3-SURFACES item 1 (i): the hyp-recs panel is a
+                # SECONDARY panel of the dashboard page -- CONTAIN
+                # CohortReadRacedError ONLY (never a bare except), degrade
+                # to the ruled short-form text, log at WARNING (gotcha
+                # #27). Every OTHER panel this function assembles still
+                # renders (status strip, open positions, watchlist, etc).
+                try:
+                    progress_by_id, progress_summaries = (
+                        build_recommendation_progress(
+                            conn, registry,
+                            starting_equity=cfg.account.starting_equity,
+                            budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
+                        )
                     )
-                )
-                all_matches = []
-                for c in hyp_recs_candidates:
-                    all_matches.extend(
-                        match_candidate_to_hypotheses(c, registry=registry)
+                except CohortReadRacedError as exc:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "hyp-recs panel degraded: cohort read raced an "
+                        "intent write (trade ids %s); re-run", exc.trade_ids)
+                    hyp_recs_unavailable_text = HYP_RECS_UNAVAILABLE_TEXT
+                else:
+                    all_matches = []
+                    for c in hyp_recs_candidates:
+                        all_matches.extend(
+                            match_candidate_to_hypotheses(c, registry=registry)
+                        )
+                    prioritized = prioritize_recommendations(
+                        all_matches, registry=registry,
+                        progress=progress_summaries,
                     )
-                prioritized = prioritize_recommendations(
-                    all_matches, registry=registry,
-                    progress=progress_summaries,
-                )
-                top_recommendations = list(
-                    prioritized[:_RECOMMENDATIONS_TOP_N]
-                )
+                    top_recommendations = list(
+                        prioritized[:_RECOMMENDATIONS_TOP_N]
+                    )
 
             # Bug-7-family anchor discipline (Phase 4 Task 4.3):
             # classifications bind to pipeline_run_id resolved above.
@@ -1761,6 +1821,7 @@ def build_dashboard(
         ),
         open_trade_rows=open_trade_rows,
         active_recommendations=active_recommendations,
+        hyp_recs_unavailable_text=hyp_recs_unavailable_text,
         pattern_tags=pattern_tags,
         cohort_hints=cohort_hints,
         needs_review_count=needs_review,
