@@ -279,10 +279,15 @@ def test_fk_on_delete_set_null_for_linked_correction(
 
         # Delete the parent correction row; FK ON DELETE SET NULL should
         # null the dependent column without cascade-deleting the call.
-        conn.execute(
-            "DELETE FROM reconciliation_corrections WHERE correction_id = ?",
-            (correction_id,),
-        )
+        # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+        # dropped below, on this TEST DB only, to pin the FK action the DDL
+        # still declares (plan T16 rule (d), with reason).
+        from tests._22i_guard_seam import guards_dropped
+        with guards_dropped(conn, "trg_rc_no_delete"):
+            conn.execute(
+                "DELETE FROM reconciliation_corrections WHERE correction_id = ?",
+                (correction_id,),
+            )
         conn.commit()
 
         call_post = get_call(conn, call_id=call_id)

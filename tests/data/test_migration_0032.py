@@ -298,14 +298,29 @@ def test_the_identity_trigger_also_guards_updates(tmp_path):
     try:
         with conn:
             conn.execute(_INSERT, (cid, "2026-06-25", "2026-06-25", "armed"))
-        with pytest.raises(sqlite3.IntegrityError, match="identity block"):
+        # 22-I (0041): with the FULL trigger set, the newest BEFORE trigger --
+        # trg_lve_first_view_immutable (F-I5), which covers detection_date --
+        # refuses first.
+        with pytest.raises(sqlite3.IntegrityError,
+                           match="trg_lve_first_view_immutable"):
             with conn:
-                # Arc 22-B (SS-12): an identity column OUTSIDE 0040's
-                # trg_lve_view_window_immutable (which guards ticker and fires
-                # first -- SQLite runs the NEWEST BEFORE trigger first), so this
-                # still proves the identity trigger ALONE; ticker is b22_198.
                 conn.execute(
                     "UPDATE latch_view_events SET detection_date = '2026-06-24'")
+        # ...so the identity trigger's own UPDATE refusal is pinned with the
+        # pre-empting 0041 twin dropped on this TEST DB (tests/_22i_guard_seam.py:
+        # it keeps a clause the newer guard pre-empts executable).
+        from tests._22i_guard_seam import guards_dropped
+
+        with guards_dropped(conn, "trg_lve_first_view_immutable"):
+            with pytest.raises(sqlite3.IntegrityError, match="identity block"):
+                with conn:
+                    # Arc 22-B (SS-12): an identity column OUTSIDE 0040's
+                    # trg_lve_view_window_immutable (which guards ticker and
+                    # fires first -- SQLite runs the NEWEST BEFORE trigger
+                    # first), so this still proves the identity trigger ALONE;
+                    # ticker is b22_198.
+                    conn.execute(
+                        "UPDATE latch_view_events SET detection_date = '2026-06-24'")
         # The repo's own monotonic UPDATE (view_count/last_viewed_ts) must NOT
         # be caught by the trigger -- it does not touch the identity columns.
         with conn:

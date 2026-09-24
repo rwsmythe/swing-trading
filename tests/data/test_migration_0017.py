@@ -140,7 +140,13 @@ def test_risk_policy_active_partial_unique_index_forbids_two_active(
     conn: sqlite3.Connection,
 ) -> None:
     """Spec §3.1.2: ux_risk_policy_active partial-unique on is_active=1."""
-    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+    # 22-I (0041, AL-8): the no_replace barrier fires BEFORE conflict
+    # resolution, so the duplicate is refused by its RAISE text, not by
+    # "UNIQUE constraint failed"; the partial index stays pinned by name.
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = "
+        "'ux_risk_policy_active'").fetchone() is not None
+    with pytest.raises(sqlite3.IntegrityError, match="trg_rp_no_replace"):
         conn.execute(
             "INSERT INTO risk_policy ("
             "effective_from, is_active, created_at, "
@@ -333,7 +339,12 @@ def test_reconciliation_discrepancies_fk_cascade_from_runs(
     assert conn.execute(
         "SELECT COUNT(*) FROM reconciliation_discrepancies"
     ).fetchone()[0] == 1
-    conn.execute("DELETE FROM reconciliation_runs WHERE run_id = ?", (run_id,))
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_rr_no_delete", "trg_rd_no_delete"):
+        conn.execute("DELETE FROM reconciliation_runs WHERE run_id = ?", (run_id,))
     assert conn.execute(
         "SELECT COUNT(*) FROM reconciliation_discrepancies"
     ).fetchone()[0] == 0
@@ -472,7 +483,10 @@ def test_hypothesis_status_history_partial_unique_current_index(
     ).fetchone()
     assert seed is not None
     hyp_id, status = seed
-    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+    # 22-I (0041, AL-8): the no_replace barrier fires BEFORE conflict
+    # resolution, so the duplicate is refused by its RAISE text, not by
+    # "UNIQUE constraint failed"; the partial index stays pinned by name.
+    with pytest.raises(sqlite3.IntegrityError, match="trg_hsh_no_replace"):
         conn.execute(
             "INSERT INTO hypothesis_status_history ("
             "hypothesis_id, status, effective_from, effective_to, "
@@ -516,7 +530,12 @@ def test_hypothesis_status_history_fk_cascade_from_registry(
         (hyp_id,),
     ).fetchone()[0]
     assert n_before >= 1
-    conn.execute("DELETE FROM hypothesis_registry WHERE id = ?", (hyp_id,))
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_hr_no_delete", "trg_hsh_no_delete"):
+        conn.execute("DELETE FROM hypothesis_registry WHERE id = ?", (hyp_id,))
     n_after = conn.execute(
         "SELECT COUNT(*) FROM hypothesis_status_history WHERE hypothesis_id = ?",
         (hyp_id,),
@@ -561,7 +580,13 @@ def test_account_equity_snapshots_unique_date_source(
         "'2026-05-08T16:00:00.000', 'operator')"
     )
     # Same date + same source: rejected.
-    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+    # 22-I (0041, AL-8): the no_replace barrier fires BEFORE conflict
+    # resolution, so the duplicate is refused by its RAISE text, not by
+    # "UNIQUE constraint failed"; the partial index stays pinned by name.
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = "
+        "'ux_account_equity_snapshots_date_source_basis'").fetchone() is not None
+    with pytest.raises(sqlite3.IntegrityError, match="trg_aes_no_replace"):
         conn.execute(
             "INSERT INTO account_equity_snapshots ("
             "snapshot_date, equity_dollars, source, recorded_at, recorded_by"

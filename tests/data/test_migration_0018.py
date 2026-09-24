@@ -202,7 +202,12 @@ def test_reconciliation_runs_schwab_api_call_id_fk_set_null_on_audit_delete(
     assert pre[0] == call_id
 
     # Delete the audit row; reconciliation_run survives with NULL pointer.
-    conn.execute("DELETE FROM schwab_api_calls WHERE call_id = ?", (call_id,))
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_sac_no_delete"):
+        conn.execute("DELETE FROM schwab_api_calls WHERE call_id = ?", (call_id,))
     post = conn.execute(
         "SELECT schwab_api_call_id FROM reconciliation_runs WHERE run_id = ?",
         (run_id,),
