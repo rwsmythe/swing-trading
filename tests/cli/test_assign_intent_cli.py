@@ -16,6 +16,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -101,11 +102,21 @@ def test_write_prints_attestation_id_b22_111(tmp_path: Path) -> None:
 
 
 def test_refusal_exits_nonzero_with_the_typed_message_b22_112(tmp_path: Path) -> None:
+    """RULING R8's control (added at cell 19): with NO close failure the
+    output is byte-identical to pre-R8 -- the exact REFUSED line, and
+    nothing about the close-error suffix RULING R8 adds appears."""
     runner, cfg, db_path = _setup(tmp_path, entry_intent="standard")
     res = runner.invoke(main, _args(cfg))
     assert res.exit_code == 1, res.output
     assert "Error:" in res.output and "already_set" in res.output
     assert "no relabel path" in res.output
+    assert res.output == (
+        "Error: REFUSED (already_set): trade 20 already carries "
+        "entry_intent 'standard'; there is no relabel path -- a "
+        "non-empty relabel is a new evidence class with its own "
+        "record\n"
+    )
+    assert "connection close also failed" not in res.output
     assert res.exception is None or isinstance(res.exception, SystemExit)
     assert _state(db_path) == (0, "standard")
 
@@ -312,21 +323,78 @@ def test_close_raising_after_the_commit_reports_the_durable_row_b22_251(
     assert "close failed" in caplog.text and "IS DURABLE" in caplog.text
 
 
-def test_close_raising_on_a_refusal_keeps_todays_error_path_b22_252(
+#: RULING R8's exact refusal text (the `already_set` case `_setup(...,
+#: entry_intent="standard")` seeds) -- shared by b22_252 and its
+#: RULING R8-SCOPE dry-run twin b22_257.
+_ALREADY_SET_REFUSAL_TEXT = (
+    "REFUSED (already_set): trade 20 already carries entry_intent "
+    "'standard'; there is no relabel path -- a non-empty relabel is a "
+    "new evidence class with its own record"
+)
+
+
+def _assert_refusal_survives_close_failure(res) -> None:
+    """The shared RULING R8 + RULING R8-SCOPE assertions: the refusal text
+    is PRESENT (not masked), the close failure is NAMED in the same
+    message, the exception is a `click.ClickException` CHAINED from the
+    close error, and the output is pure ASCII.
+
+    Click's own dispatch (`BaseCommand.main`, `standalone_mode=True`, which
+    `CliRunner.invoke` does not override) catches a raised `ClickException`,
+    prints it, and calls `sys.exit(e.exit_code)` FROM INSIDE that except
+    block -- Python's IMPLICIT chaining therefore attaches the
+    `ClickException` to the resulting `SystemExit` as `__context__`, one
+    level up from the EXPLICIT `from close_exc` chain this fix adds. Both
+    are asserted directly (empirically verified against click 8.3.1, this
+    worktree's pinned version): `res.exception` is that `SystemExit`,
+    `res.exception.__context__` is the `ClickException`, and its own
+    `__cause__` is the close exception.
+    """
+    assert res.exit_code == 1
+    assert _ALREADY_SET_REFUSAL_TEXT in res.output
+    assert "the connection close also failed" in res.output
+    assert "close failed" in res.output
+    assert res.output.isascii()
+    assert type(res.exception) is SystemExit, repr(res.exception)
+    click_exc = res.exception.__context__
+    assert isinstance(click_exc, click.ClickException), repr(click_exc)
+    assert _ALREADY_SET_REFUSAL_TEXT in click_exc.message
+    assert "the connection close also failed" in click_exc.message
+    assert type(click_exc.__cause__) is sqlite3.OperationalError, \
+        repr(click_exc.__cause__)
+    assert "close failed" in str(click_exc.__cause__)
+
+
+def test_close_raising_on_a_refusal_names_it_and_chains_it_b22_252(
         tmp_path: Path, monkeypatch) -> None:
-    """(b) CONTROL, green pre-fix by design: a refusal commits nothing, so it
-    sits BEFORE the boundary and the close exception propagates AS ITSELF --
-    byte-identical to the pre-fix behaviour (no output at all, the exact
-    exception class), exactly as the entry command's c2 control pins. The
-    exact-class assertion is the discriminator against an unconditional
-    containment (which would surface Click's SystemExit(1) instead)."""
+    """(b) FLIPPED by RULING R8: a refusal's close failure NO LONGER masks
+    the typed REFUSED text. Pre-R8 the close exception propagated AS
+    ITSELF and the refusal text was never reached (the `_check_trade`
+    refusal is raised, `assign` ROLLBACKs and returns it BEFORE the
+    boundary, but the bare `raise` in the `finally`'s `except` replaced
+    whatever was in flight with the close exception). Post-R8 the refusal
+    `ClickException` is raised WITH the close error named in its message
+    and CHAINED (`from close_exc`); exit nonzero; nothing written on a
+    FRESH connection."""
     runner, cfg, db_path = _setup(tmp_path, entry_intent="standard")
     _patch_connect_to_raise_on_close(monkeypatch)
     res = runner.invoke(main, _args(cfg))
-    assert res.exit_code == 1
-    assert type(res.exception) is sqlite3.OperationalError, repr(res.exception)
-    assert "close failed" in str(res.exception)
-    assert res.output == ""  # byte-identical to pre-fix: nothing was printed
+    _assert_refusal_survives_close_failure(res)
+    assert _state(db_path) == (0, "standard")  # FRESH connection
+
+
+def test_close_raising_on_a_refused_dry_run_names_it_and_chains_it_b22_257(
+        tmp_path: Path, monkeypatch) -> None:
+    """RULING R8-SCOPE's dry-run twin of b22_252: the chained-refusal shape
+    applies to EVERY refused result, dry run included -- the one branch
+    condition is `result is not None and not result.admitted`, with no
+    `dry_run` test in it (so a refused dry run routes to the SAME new
+    branch, not to the unchanged `result is None or dry_run` one). Same
+    assertions as b22_252, under `--dry-run`."""
+    runner, cfg, db_path = _setup(tmp_path, entry_intent="standard")
+    _patch_connect_to_raise_on_close(monkeypatch)
+    res = runner.invoke(main, _args(cfg, "--dry-run"))
+    _assert_refusal_survives_close_failure(res)
     assert _state(db_path) == (0, "standard")  # FRESH connection
 
 

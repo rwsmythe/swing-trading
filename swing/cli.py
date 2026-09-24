@@ -1850,7 +1850,21 @@ def trade_assign_intent(ctx: click.Context, trade_id: int, value: str, cite: str
             try:
                 conn.close()
             except BaseException as exc:  # noqa: BLE001 -- the CLASS
-                if result is None or not result.admitted or dry_run:
+                # RULING R8 + RULING R8-SCOPE (CHARC): on a REFUSED result --
+                # every refused result, dry run included -- the typed REFUSED
+                # text SURVIVES a close failure: raise it with the close
+                # error NAMED and CHAINED, never let the close exception
+                # mask it (D39's template -- the cleanup failure chained
+                # from the original, never instead of it). This sits BEFORE
+                # the `result is None or dry_run` branch below so a refused
+                # dry run routes here too, not there.
+                if result is not None and not result.admitted:
+                    raise click.ClickException(
+                        f"REFUSED ({result.refusal_code}): {result.message}; "
+                        f"the connection close also failed: "
+                        f"{safe_text(exc)}"
+                    ) from exc
+                if result is None or dry_run:
                     raise
                 # Rendered ONCE, before logging, and the logger is given the
                 # STRING (the entry command's A3R4-05 reasoning), then
