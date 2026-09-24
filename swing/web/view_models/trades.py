@@ -296,6 +296,11 @@ class TradeEntryFormVM:
     # the latest evaluation run — template renders "(none)" display
     # and emits an empty hidden input value.
     hypothesis_label: str | None = None
+    # Arc 22-B RULING R1-3-SURFACES item 2: set when the prefill's governed
+    # read raced -- the form renders WITHOUT a suggestion and WITH this
+    # ASCII line visible beside the Hypothesis field (the same text the
+    # CLI prefill prints). None on the ordinary path.
+    hypothesis_suggestion_unavailable_text: str | None = None
     # Phase 7 Sub-C C.4 — draft_* preservation fields for the 18 pre-trade
     # required fields (spec §11.1). Mirrors the rationale/notes
     # preservation pattern: when the MissingPreTradeFieldsException catch
@@ -570,18 +575,30 @@ def build_entry_form_vm(
             # on the same suggested label. None when the ticker has no
             # active recommendation; template renders "(none)" + empty
             # hidden input value.
+            from swing.metrics.cohort import CohortReadRacedError
             from swing.recommendations.hypothesis_prefill import (
+                PREFILL_UNAVAILABLE_TEXT,
                 lookup_active_recommendation_label,
             )
             from swing.trades.frozen_value_evidence import (
                 WEB_REPLAY_BUDGET_SECONDS,
             )
             # 22-A2 Task 10 (CHARC G-T10-1 (2)): a WEB caller -> web budget.
-            resolved_hypothesis_label = lookup_active_recommendation_label(
-                conn, ticker=ticker,
-                starting_equity=cfg.account.starting_equity,
-                budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
-            )
+            # RULING R1-3-SURFACES item 2: the prefill DEGRADES -- a
+            # bookkeeping transient must never refuse a REAL TRADE (R1-1's
+            # asymmetry). A raced read here skips the suggestion and the
+            # form renders WITH that line visible beside the field; the
+            # entry PROCEEDS.
+            hypothesis_suggestion_unavailable_text: str | None = None
+            try:
+                resolved_hypothesis_label = lookup_active_recommendation_label(
+                    conn, ticker=ticker,
+                    starting_equity=cfg.account.starting_equity,
+                    budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
+                )
+            except CohortReadRacedError:
+                resolved_hypothesis_label = None
+                hypothesis_suggestion_unavailable_text = PREFILL_UNAVAILABLE_TEXT
             # Phase 13 T3.SB1 dispatch brief §5 watch item 7 — banner-pin
             # counters mirror DashboardVM. Helper module already exists at
             # swing.metrics.discrepancies (Phase 10 + Phase 12.5 #1 + #2).
@@ -830,6 +847,9 @@ def build_entry_form_vm(
             pipeline_finished_at if coerced_origin == "hyp-recs" else None
         ),
         hypothesis_label=resolved_hypothesis_label,
+        hypothesis_suggestion_unavailable_text=(
+            hypothesis_suggestion_unavailable_text
+        ),
         # Phase 13 T3.SB1 — Schwab auto-fill fields (T-B.1.3).
         auto_fill_kind=auto_fill.kind,
         auto_fill_fill_origin=auto_fill.fill_origin,

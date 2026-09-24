@@ -146,6 +146,11 @@
         <div><label>Hypothesis:</label>
           <span>{{ vm.hypothesis_label or "(none)" }}</span>
           <input type="hidden" name="hypothesis_label" value="{{ vm.hypothesis_label or '' }}">
+          {#- Arc 22-B RULING R1-3-SURFACES item 2: the negative state
+              renders as a statement, never a silent blank. -#}
+          {% if vm.hypothesis_suggestion_unavailable_text %}
+          <span class="muted hypothesis-suggestion-unavailable">{{ vm.hypothesis_suggestion_unavailable_text }}</span>
+          {% endif %}
         </div>
         {#- Tuition-vs-error design-intent (Task 3 / spec §5 + §7.3). The
             selected option is the draft when a draft exists (incl. an

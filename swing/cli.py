@@ -822,20 +822,26 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
             # the flag was omitted, which is the only branch that triggers
             # pre-fill.
             if hypothesis is None:
-                # Arc 22-B R1-3: the prefill consumes the governed progress
-                # read; a raced read refuses here, BEFORE anything is written
-                # (typed, at the CLI boundary -- never a traceback).
+                # RULING R1-3-SURFACES item 2: the prefill DEGRADES -- a
+                # bookkeeping transient must never refuse a REAL TRADE
+                # (R1-1's asymmetry). A raced read here skips the
+                # suggestion and the entry PROCEEDS; the operator sees
+                # one ASCII line.
                 from swing.metrics.cohort import CohortReadRacedError
+                from swing.recommendations.hypothesis_prefill import (
+                    PREFILL_UNAVAILABLE_TEXT,
+                )
                 try:
                     prefilled = lookup_active_recommendation_label(
                         conn, ticker=ticker.upper(),
                         starting_equity=cfg.account.starting_equity,
                     )
-                except CohortReadRacedError as exc:
-                    raise click.ClickException(str(exc)) from exc
-                if prefilled is not None:
-                    hypothesis = prefilled
-                    click.echo(f"Pre-filled --hypothesis: {prefilled}")
+                except CohortReadRacedError:
+                    click.echo(PREFILL_UNAVAILABLE_TEXT)
+                else:
+                    if prefilled is not None:
+                        hypothesis = prefilled
+                        click.echo(f"Pre-filled --hypothesis: {prefilled}")
 
             # NEW (Task 7): sector/industry candidate-row lookup via the canonical
             # helper, mirroring the entry-form VM (Task 6) for cross-surface

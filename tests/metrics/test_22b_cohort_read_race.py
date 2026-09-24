@@ -284,11 +284,16 @@ def test_hypothesis_status_renders_the_refusal_b22_235(cfg, monkeypatch) -> None
     assert "Current sample" not in result.output
 
 
-def test_trade_entry_prefill_renders_the_refusal_nothing_written_b22_235(
+def test_trade_entry_prefill_degrades_and_the_entry_proceeds_b22_235(
         cfg, conn, monkeypatch) -> None:
-    """The prefill consumes the governed breakdown's N; a raced read there
-    refuses the command BEFORE the entry is written (result is None), as a
-    ClickException -- never a traceback."""
+    """RULING R1-3-SURFACES item 2: the prefill consumes the governed
+    breakdown's N to SUGGEST a --hypothesis value; it renders no cohort
+    row ('never a contradictory row' does not reach it), and a
+    ClickException here would refuse a REAL TRADE for a bookkeeping
+    transient -- the exact inversion R1-1 named. A raced read there now
+    DEGRADES: the suggestion is skipped, the entry PROCEEDS, and the
+    ruled ASCII line is printed. Discriminator: the trade is RECORDED
+    and the line is present, both asserted."""
     import swing.cli as cli_mod
     from click.testing import CliRunner
 
@@ -301,8 +306,17 @@ def test_trade_entry_prefill_renders_the_refusal_nothing_written_b22_235(
         "--initial-stop", "170.0", "--rationale", "vcp-breakout",
         *_PRE_TRADE_OK_FLAGS,
     ], obj={"config": cfg})
-    _assert_cli_refused(result)
-    assert conn.execute("SELECT COUNT(*) FROM trades").fetchone() == (0,)
+    assert result.exit_code == 0, result.output
+    assert result.output.isascii()
+    assert (
+        "hypothesis suggestion unavailable: cohort read raced an intent "
+        "write; pass --hypothesis or re-run"
+    ) in result.output, result.output
+    assert "Pre-filled --hypothesis" not in result.output, result.output
+    (count,) = conn.execute("SELECT COUNT(*) FROM trades").fetchone()
+    assert count == 1, count
+    (ticker,) = conn.execute("SELECT ticker FROM trades").fetchone()
+    assert ticker == "AAPL"
 
 
 # ---------------------------------------------------------------------------
