@@ -69,6 +69,9 @@
 --         DROP TRIGGER trg_yfc_no_delete;   -- yfinance_calls
 --         DROP TRIGGER trg_yfc_no_replace;  -- yfinance_calls
 --         DROP TRIGGER trg_yfc_immutable;   -- yfinance_calls
+--         DROP TRIGGER trg_aes_no_delete;   -- account_equity_snapshots
+--         DROP TRIGGER trg_aes_no_replace;  -- account_equity_snapshots
+--         DROP TRIGGER trg_aes_immutable;   -- account_equity_snapshots
 --
 -- (iii) THE ONE REBUILT OBJECT (F-I2, CHARC-ruled): trg_provenance_corrections_
 --     append_only_update is DROPPED and CREATED again. Its new text is the
@@ -480,6 +483,36 @@ WHEN NOT COALESCE(
             AND NOT EXISTS (SELECT 1 FROM pipeline_runs WHERE id = OLD.pipeline_run_id)))
 , 0)
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_yfc_immutable: yfinance_calls: this UPDATE changes a column outside the writer''s measured UPDATE set (response_time_ms, status, rows_returned, error_message); FK nulled only after its parent row is gone: pipeline_run_id; an API audit row''s PK and start identity are the immutable handle (RD F-I1 row 12). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+-- ============================================================================
+-- 7. account_equity_snapshots -- (c) (RD F-I1 row 16): the value is re-recorded by
+--    design (the source ladder, SELECT-then-UPDATE-or-INSERT at
+--    repos/account_equity_snapshots.py:77/:121) and stamped (audit_service.py:339),
+--    so those columns stay mutable; the identity (snapshot_id and the UNIQUE key
+--    snapshot_date, source, basis) is frozen. The corrector's dynamic
+--    SET {field_name} branch (reconciliation_auto_correct.py:2325-2328) is
+--    SERVICE-prevented (AL-7): _resolve_affected_target never returns this
+--    table; if it ever did, this twin refuses loudly.
+-- ============================================================================
+CREATE TRIGGER trg_aes_no_delete BEFORE DELETE ON account_equity_snapshots
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_aes_no_delete: account_equity_snapshots rows are PERMANENT from migration 0041; a snapshot''s identity is the key the source ladder looks it up by (RD F-I1 row 16). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_aes_no_replace BEFORE INSERT ON account_equity_snapshots
+WHEN COALESCE(EXISTS (SELECT 1 FROM account_equity_snapshots
+              WHERE (NEW.snapshot_id != -1 AND snapshot_id = NEW.snapshot_id)
+                 OR (snapshot_date = NEW.snapshot_date AND source = NEW.source AND basis = NEW.basis)), 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_aes_no_replace: account_equity_snapshots rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_aes_no_delete and reissue or move its id; a snapshot''s identity is the key the source ladder looks it up by (RD F-I1 row 16). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_aes_immutable
+BEFORE UPDATE ON account_equity_snapshots
+FOR EACH ROW
+WHEN NOT COALESCE(
+      NEW.snapshot_id IS OLD.snapshot_id
+  AND NEW.snapshot_date IS OLD.snapshot_date
+  AND NEW.source IS OLD.source
+  AND NEW.basis IS OLD.basis
+, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_aes_immutable: account_equity_snapshots: this UPDATE changes a column outside the writer''s measured UPDATE set (equity_dollars, source_artifact_path, recorded_at, recorded_by, notes, schwab_account_hash); a snapshot''s identity is the key the source ladder looks it up by (RD F-I1 row 16). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- The version bump is the FINAL statement before COMMIT.
 UPDATE schema_version SET version = 41;

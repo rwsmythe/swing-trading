@@ -252,3 +252,94 @@ def test_fix_phase2_script_statement_admitted(tmp_path: Path) -> None:
                           "error_message = ? WHERE call_id = ?", ("e", 1)) == "OK"
     finally:
         c.close()
+
+
+# ---------------------------------------------------------------------------
+# account_equity_snapshots (T9)
+# ---------------------------------------------------------------------------
+def test_aes_upsert_at_41(tmp_path: Path) -> None:
+    """repos/account_equity_snapshots.py:77 (insert) + :121 (the re-record
+    UPDATE of the mutable columns): SELECT-then-UPDATE-or-INSERT, so no
+    conflict-resolution INSERT ever meets trg_aes_no_replace."""
+    from swing.data.repos.account_equity_snapshots import upsert_snapshot
+
+    def both(k):
+        new = upsert_snapshot(k, snapshot_date="2026-08-12", equity_dollars=1.0,
+                              source="manual", source_artifact_path=None,
+                              recorded_at=NOW, recorded_by="op", notes=None,
+                              basis="net_liq")
+        same = upsert_snapshot(k, snapshot_date="2026-08-10", equity_dollars=2.0,
+                               source="schwab_api", source_artifact_path="p",
+                               recorded_at=NOW, recorded_by="pipeline", notes="n",
+                               basis="net_liq")
+        assert new != 1 and same == 1
+
+    c = _world(tmp_path)
+    try:
+        assert outcome(c, both) == "OK"
+    finally:
+        c.close()
+
+
+def test_aes_account_hash_stamp_at_41(tmp_path: Path) -> None:
+    """swing/integrations/schwab/audit_service.py:339 -- the literal stamp."""
+    c = _world(tmp_path)
+    try:
+        assert outcome(c, "UPDATE account_equity_snapshots SET schwab_account_hash = ? "
+                          "WHERE snapshot_id = ?", ("h", 1)) == "OK"
+    finally:
+        c.close()
+
+
+def _disc(**kw):
+    from swing.trades.reconciliation_auto_correct import _DiscrepancyInfo
+
+    base = dict(discrepancy_id=9, run_id=1, discrepancy_type="equity_delta",
+                trade_id=None, fill_id=None, cash_movement_id=None,
+                field_name="equity_dollars", resolution="unresolved",
+                ambiguity_kind=None, expected_value_json=None)
+    base.update(kw)
+    return _DiscrepancyInfo(**base)
+
+
+@pytest.mark.parametrize("kw,expected", [
+    ({"fill_id": 41, "trade_id": 20}, ("fills", 41)),
+    ({"cash_movement_id": 1, "trade_id": 20}, ("cash_movements", 1)),
+    ({"trade_id": 20}, ("trades", 20)),
+    ({"discrepancy_type": "equity_delta"}, ValueError),
+    ({"discrepancy_type": "snapshot_mismatch"}, ValueError),
+])
+def test_corrector_snapshot_branch_unreachable(tmp_path: Path, kw, expected) -> None:
+    """AL-7's SERVICE prevention, pinned: `_resolve_affected_target`
+    (reconciliation_auto_correct.py:2182-2205) has THREE returning branches
+    (fills, cash_movements, trades) and otherwise RAISES -- its docstring
+    (:2188-2193) names a snapshot branch the code does not implement -- so the
+    corrector's dynamic `SET {field_name}` on account_equity_snapshots
+    (:2325-2328) has no caller path from a discrepancy. A snapshot-typed
+    discrepancy with no FK raises ValueError, and no UPDATE is issued (a
+    sqlite3 trace callback on a live connection records none)."""
+    from swing.trades.reconciliation_auto_correct import _resolve_affected_target
+
+    c = _world(tmp_path)
+    seen: list[str] = []
+    c.set_trace_callback(seen.append)
+    try:
+        if expected is ValueError:
+            with pytest.raises(ValueError, match="no resolvable"):
+                _resolve_affected_target(_disc(**kw))
+        else:
+            assert _resolve_affected_target(_disc(**kw)) == expected
+        assert "account_equity_snapshots" not in _resolve_targets_seen(kw)
+    finally:
+        c.set_trace_callback(None)
+        c.close()
+    assert not [s for s in seen if s.lstrip().upper().startswith("UPDATE")]
+
+
+def _resolve_targets_seen(kw) -> set[str]:
+    from swing.trades.reconciliation_auto_correct import _resolve_affected_target
+
+    try:
+        return {_resolve_affected_target(_disc(**kw))[0]}
+    except ValueError:
+        return set()
