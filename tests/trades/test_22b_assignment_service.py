@@ -1228,3 +1228,41 @@ def test_cell16_probe_flips_from_admit_to_placement_after_entry_b22_247(
         probe.admitted_leg, probe.message)
     assert ascii("2026-08-09") in probe.message and ascii("2026-08-07") in probe.message
 
+
+# ---------------------------------------------------------------------------
+# Codex R6 Minor 2: the two refusals that echo the order id pass it through
+# ascii() (the module's ASCII promise). The id is the canonicaliser's reading,
+# which accepts a non-ASCII string (measured).
+# ---------------------------------------------------------------------------
+_NON_ASCII_ORDER_ID = "1007\u00e9427919619"
+
+
+@pytest.mark.parametrize("site", ["unlinked_intent", "ambiguous_links"])
+def test_order_id_echo_is_ascii_b22_248(tmp_path: Path, monkeypatch, site: str) -> None:
+    from tests._latch_link_fixtures_22a import accept_order
+    from tests._latch_link_fixtures_22a import seed_fire as seed_link_fire
+
+    c, cfg, path = _world(tmp_path, site,
+                          env=envelope(schwab_order_id=_NON_ASCII_ORDER_ID))
+    try:
+        if site == "unlinked_intent":
+            for (name,) in c.execute(
+                    "SELECT name FROM sqlite_master WHERE type='trigger' AND "
+                    "tbl_name='latch_order_intents' AND sql LIKE "
+                    "'%INSERT INTO latch_order_mandate_links%'").fetchall():
+                c.execute(f"DROP TRIGGER {name}")
+            accept_order(c, seed_link_fire(c),
+                         actual_broker_order_id=_NON_ASCII_ORDER_ID)
+            c.commit()
+        else:
+            import swing.trades.latched_origin as lo
+
+            monkeypatch.setattr(lo, "find_accepted_latch_order",
+                                lambda conn, *, broker_order_id: [object(), object()])
+        r = _assign(c, cfg)
+    finally:
+        c.close()
+    assert (r.admitted, r.refusal_code) == (False, site), r.message
+    assert r.message.isascii(), r.message
+    assert ascii(_NON_ASCII_ORDER_ID) in r.message
+    _nothing_written(path)

@@ -438,7 +438,7 @@ def _detect_tier(conn: sqlite3.Connection, cfg,
         links = find_accepted_latch_order(conn, broker_order_id=order_id)
         if len(links) > 1:
             raise _RefusalError("ambiguous_links",
-                           f"order {order_id} is named by {len(links)} latch "
+                           f"order {ascii(order_id)} is named by {len(links)} latch "
                            "links; one order cannot descend from two mandates")
         if links:
             out = _structural(conn, cfg, trade, links[0])
@@ -451,7 +451,7 @@ def _detect_tier(conn: sqlite3.Connection, cfg,
         if intent is not None:
             raise _RefusalError(
                 "unlinked_intent",
-                f"latch intent {intent[0]} names order {order_id} without an "
+                f"latch intent {intent[0]} names order {ascii(order_id)} without an "
                 "accepted-order link, so it cannot tie this fill to a mandate; "
                 "tier 2 cannot apply because the instrument recorded it; the "
                 "recovery is a link backfilled under 22-A's rules")
