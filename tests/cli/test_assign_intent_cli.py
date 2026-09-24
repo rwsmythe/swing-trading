@@ -203,3 +203,40 @@ def test_assign_intent_is_the_only_caller_of_assign_b22_114() -> None:
         for owner in _assign_call_sites(path.read_text(encoding="utf-8")):
             found.add((rel, owner))
     assert found == {("swing/cli.py", "trade_assign_intent")}, found
+
+
+# ---------------------------------------------------------------------------
+# Codex R7-1: once `assign` has COMMITTED, an output failure must not turn the
+# durable assignment into a nonzero exit (a retry would then read
+# `already_set` for an assignment the operator was told failed). Every
+# admission line goes through the 22-A3 per-line, per-sink containment
+# (`_echo_either_sink(ascii_safe(...))`), the idiom RULING R4-1-TEXT names.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("sink", ["stdout_broken", "stderr_broken",
+                                  "every_sink_broken"])
+def test_an_output_failure_after_the_commit_keeps_the_success_exit_b22_249(
+        tmp_path: Path, monkeypatch, sink: str) -> None:
+    """``stdout_broken`` and ``every_sink_broken`` are the discriminators
+    (pre-fix: the first echo raised and Click exited 1 over a durable row);
+    ``stderr_broken`` is the control (the lines prefer stdout)."""
+    import click as click_mod
+
+    runner, cfg, db_path = _setup(tmp_path)
+    real_echo = click_mod.echo
+
+    def _sink(message=None, file=None, nl=True, err=False, color=None):
+        broken = (sink == "every_sink_broken"
+                  or (sink == "stdout_broken" and not err)
+                  or (sink == "stderr_broken" and err))
+        if broken:
+            raise OSError(32, "Broken pipe")
+        return real_echo(message, file=file, nl=nl, err=err, color=color)
+
+    monkeypatch.setattr(click_mod, "echo", _sink)
+    res = runner.invoke(main, _args(cfg))
+    assert res.exit_code == 0, (res.output, res.exception)
+    assert _state(db_path) == (1, "unintended_execution")
+    if sink != "every_sink_broken":
+        # the confirmation still reached the operator on the other sink
+        assert "ADMIT unintended_execution" in res.output, res.output
+        assert "attestation_id: 1" in res.output, res.output

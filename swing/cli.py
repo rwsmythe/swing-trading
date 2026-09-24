@@ -1831,28 +1831,39 @@ def trade_assign_intent(ctx: click.Context, trade_id: int, value: str, cite: str
     if not result.admitted:
         raise click.ClickException(
             f"REFUSED ({result.refusal_code}): {result.message}")
+    # Codex R7-1: on the write path `assign` has COMMITTED by now, so an
+    # output failure must not turn the durable assignment into a nonzero exit
+    # (a retry would read `already_set` for an assignment reported as failed).
+    # Every line goes through the 22-A3 post-durability idiom -- ASCII-coerced
+    # whole, attempted per line on stdout and then stderr -- so the exit code
+    # stays the assignment's verdict, on the dry run as on the write.
+    from swing.trades.entry import ascii_safe
+
+    def _emit(line: str) -> None:
+        _echo_either_sink(ascii_safe(line))
+
     head = f"trade {trade_id}: ADMIT {UNINTENDED_EXECUTION}"
-    click.echo(head + (" (dry run, nothing written)" if dry_run else ""))
-    click.echo(f"tier: {result.tier}")
+    _emit(head + (" (dry run, nothing written)" if dry_run else ""))
+    _emit(f"tier: {result.tier}")
     evidence = json.dumps(result.leg_evidence, sort_keys=True)  # ASCII-escaped
     if result.tier == "structural":
         probe = result.leg_evidence or {}
-        click.echo(f"P1 (the mandate died before the fill): link "
-                   f"{probe.get('link_id')}, terminal {probe.get('clear_reason')} "
-                   f"on {probe.get('clear_session')}; evidence {evidence}")
+        _emit(f"P1 (the mandate died before the fill): link "
+              f"{probe.get('link_id')}, terminal {probe.get('clear_reason')} "
+              f"on {probe.get('clear_session')}; evidence {evidence}")
     else:
-        click.echo(f"P1 (the instrument could not have recorded the placement): "
-                   f"leg {result.admitted_leg}, placement session "
-                   f"{result.placement_session}; evidence {evidence}")
+        _emit(f"P1 (the instrument could not have recorded the placement): "
+              f"leg {result.admitted_leg}, placement session "
+              f"{result.placement_session}; evidence {evidence}")
     counts = result.corrections_by_table
-    click.echo(f"P2 (no correction touched the cited fields): corrections "
-               f"{counts.get('reconciliation_corrections')}/"
-               f"{counts.get('provenance_corrections')} over "
-               "reconciliation_corrections, provenance_corrections")
-    click.echo("P3 (the record pre-dates the outcome): outcome "
-               + (result.outcome_known_at or "open"))
+    _emit(f"P2 (no correction touched the cited fields): corrections "
+          f"{counts.get('reconciliation_corrections')}/"
+          f"{counts.get('provenance_corrections')} over "
+          "reconciliation_corrections, provenance_corrections")
+    _emit("P3 (the record pre-dates the outcome): outcome "
+          + (result.outcome_known_at or "open"))
     if not dry_run:
-        click.echo(f"attestation_id: {result.attestation_id}")
+        _emit(f"attestation_id: {result.attestation_id}")
 
 
 @trade_group.command("backfill-intent")
