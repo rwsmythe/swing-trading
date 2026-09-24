@@ -3597,7 +3597,10 @@ async def review_post(
         # Arc 22-B N4 layer 1, BEFORE the review commits (R2-02): an attested
         # `unintended_execution` is TERMINAL. The form renders it read-only and
         # omits the field, so only a handcrafted POST reaches this; it gets the
-        # typed refusal as a 4xx fragment and NOTHING is written.
+        # typed refusal as a 4xx fragment, and the pre-check itself writes
+        # nothing. On the concurrent path (an assign committing after this
+        # pre-check, caught by the second call below) the review persists as
+        # submitted and the intent is never written (AL-6, RULING R1-1).
         from swing.data.models import AttestedIntentError
 
         def _attested_refusal(exc: AttestedIntentError):
