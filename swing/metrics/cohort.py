@@ -174,9 +174,76 @@ def list_intent_excluded_for_cohort(
         [*params, *(state_filter or ()), *CONTRACT_EXCLUDED_ENTRY_INTENTS],
     ).fetchall()
     voided = voided_trade_ids(conn)
+    # RD's constraint (ii) (R1-3), met by construction: the name AND the
+    # UNATTESTED token come from this ONE statement, so they cannot disagree
+    # with each other. The asymmetry, stated: attestations are append-only
+    # (0040 trg_eia_no_delete / trg_eia_no_replace / trg_eia_no_update), so
+    # "absent" can only ever become "present" -- a token read a moment early
+    # is a FALSE ALARM on a row attested since, never a false all-clear.
     return tuple(
         (int(tid), intent_exclusion_reason(intent, attested=bool(attested)))
         for tid, intent, attested in rows if tid not in voided)
+
+
+COHORT_READ_RACED_MESSAGE = "cohort read raced an intent write; re-run"
+
+
+class CohortReadRacedError(ValueError):
+    """One governed cohort render would COUNT a trade and NAME it "not
+    counted" -- a write landed between the reader's counted read and its
+    naming read (Arc 22-B R1-3). Every surface renders it as its refusal
+    (the CLI as a ``ClickException``); never the contradictory row, never a
+    partial row. A re-run reads clean."""
+
+    def __init__(self, trade_ids: tuple[int, ...]) -> None:
+        super().__init__(COHORT_READ_RACED_MESSAGE)
+        self.trade_ids = trade_ids
+
+
+def assert_intent_exclusion_disjoint(
+    counted_ids: Collection[int | None],
+    named: Collection[tuple[int, str]],
+) -> None:
+    """RD's constraint (i) at the render (R1-3; CHARC RULING
+    R1-3-SHAPE-EXEC): raise :class:`CohortReadRacedError` when a trade this
+    render COUNTS is also among the ``(trade_id, reason)`` pairs it NAMES
+    "not counted" (the :func:`list_intent_excluded_for_cohort` result).
+    Every governed decision reader calls this AFTER its naming read and
+    BEFORE it populates ``intent_excluded``.
+
+    WHY THE ASSERT ALONE IS SUFFICIENT (not merely cheaper). The counted
+    predicate and the naming predicate differ ONLY in the intent test (the
+    same label match, states and voided exclusion), so the intersection is
+    reachable ONLY by an intent value moving between the two reads. That
+    move is MONOTONE, counted -> excluded, never back:
+    ``unintended_execution`` is terminal on UPDATE
+    (0040 ``trg_trades_entry_intent_attested_terminal``), unwritable without
+    its attestation row (``trg_trades_entry_intent_unattested_update`` /
+    ``trg_trades_entry_intent_unattested_insert``), and the attestation
+    table is append-only (``trg_eia_no_delete``, ``trg_eia_no_replace``;
+    ``trg_eia_no_update`` passes only the fill-id null-out). So every
+    interleaving is one of three: the write lands BEFORE the counted read
+    -> excluded AND named, consistent; AFTER the naming read -> counted and
+    NOT named, consistent (it was not excluded when read); BETWEEN the reads
+    -> counted AND named, exactly the intersection this detects. There is
+    no fourth state.
+
+    PRECONDITION, NAMED: any future writer that moves a trade from excluded
+    back to counted -- a reversal surface, which N4 says does not exist
+    today -- invalidates this argument; the arc that builds one re-opens
+    FORK R1-3-SHAPE-EXEC and re-rules it.
+
+    No transaction brackets the two reads, deliberately: every governed
+    reader runs the tier-2 replay between them, and the replay refuses
+    under a caller-held transaction (``frozen_value_evidence.py``'s
+    ``REASON_CALLER_HOLDS_TRANSACTION`` guard), so a bracket would turn every
+    admitted tier-2 trade into a false exclusion. The cost, stated: a live
+    race yields a typed re-run refusal instead of a silently consistent read.
+    """
+    counted = {int(t) for t in counted_ids if t is not None}
+    raced = tuple(sorted(counted & {int(tid) for tid, _reason in named}))
+    if raced:
+        raise CohortReadRacedError(raced)
 
 
 def count_per_cohort(conn: sqlite3.Connection) -> dict[str, int]:
