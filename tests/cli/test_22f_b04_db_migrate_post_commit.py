@@ -132,3 +132,67 @@ def test_b04_d_tail_continues_the_v17_ratification_runs_once(world, monkeypatch)
     assert r.exit_code == 0, (r.output, r.exception)
     final = f"DB at {world['db']} - schema version {EXPECTED_SCHEMA_VERSION}"
     assert r.output.index(_WARN) < r.output.index(final)
+
+
+# -- R1-03 (Reviewer A round 1): the read-only witness's CLOSE fails ---------
+# PRE-FIX `applied` was bound inside the try whose `finally` closed the
+# witness, so a failing `_ro.close()` reset `applied` to None and the command
+# RE-RAISED over a migration that the witness had just read as applied (the
+# tail skipped, exit != 0).  POST-FIX `applied` comes from the query alone; a
+# failing witness close is contained (an ERROR record + a WARN line).
+
+
+def _fail_witness_close(monkeypatch) -> list:
+    """Wrap the name `db_migrate` resolves at call time
+    (`swing.cli.open_connection`); only the `mode=ro` URI open is proxied."""
+    import swing.cli as cli_mod
+    real_open = cli_mod.open_connection
+    built: list = []
+
+    def _open(target, *args, **kwargs):
+        conn = real_open(target, *args, **kwargs)
+        if kwargs.get("uri") and "mode=ro" in str(target):
+            proxy = FailingVerbsConn(conn, fail_close=True)
+            built.append(proxy)
+            return proxy
+        return conn
+
+    monkeypatch.setattr(cli_mod, "open_connection", _open)
+    return built
+
+
+def test_r1_03_witness_close_fails_at_target_still_completes(world,
+                                                             monkeypatch,
+                                                             caplog):
+    import logging
+    _build(world["db"], EXPECTED_SCHEMA_VERSION - 1)
+    built = _fail_restore_after(monkeypatch, 1)
+    witnesses = _fail_witness_close(monkeypatch)
+    with caplog.at_level(logging.ERROR):
+        r = _migrate(world)
+    assert _fired(built, "failed_after_executescript") == 1
+    assert len(witnesses) == 1 and witnesses[0].calls["close"] == 1
+    assert witnesses[0].calls["execute:SELECT"] == 1
+    assert _version(world["db"]) == EXPECTED_SCHEMA_VERSION
+    assert r.exit_code == 0, (r.output, r.exception)
+    assert f"{_WARN} {EXPECTED_SCHEMA_VERSION})" in r.output
+    assert "planted on close" in r.output
+    assert f"DB at {world['db']} - schema version {EXPECTED_SCHEMA_VERSION}" in (
+        r.output)
+    assert any("planted on close" in rec.getMessage()
+               for rec in caplog.records)
+
+
+def test_r1_03_witness_close_fails_below_target_still_reraises(world,
+                                                               monkeypatch):
+    """PIN (both trees): below target the original error is re-raised."""
+    _build(world["db"], EXPECTED_SCHEMA_VERSION - 2)
+    built = _fail_restore_after(monkeypatch, 1)
+    witnesses = _fail_witness_close(monkeypatch)
+    r = _migrate(world)
+    assert _fired(built, "failed_after_executescript") == 1
+    assert len(witnesses) == 1 and witnesses[0].calls["close"] == 1
+    assert r.exit_code != 0
+    assert isinstance(r.exception, sqlite3.OperationalError)
+    assert "planted on PRAGMA foreign_keys=" in str(r.exception)
+    assert _WARN not in r.output

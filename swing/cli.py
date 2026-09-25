@@ -386,23 +386,48 @@ def db_migrate(ctx: click.Context) -> None:
         # the live-opens invariant, tests/web/test_live_opens_routed.py) with
         # a `mode=ro` URI -- a plain sqlite3 connection underneath, never
         # swing's schema-guarded `connect`.
+        # R1-03: `applied` is bound from the QUERY alone.  The witness's
+        # close runs after the read and its failure is CONTAINED (an ERROR
+        # record + a WARN line) -- it cannot void a completed read and so
+        # cannot skip the tail over an applied migration.
+        from swing.trades.entry import log_contained, log_contained_note
         applied: int | None = None
+        _ro = None
+        _ro_close_error: Exception | None = None
         try:
             _ro = open_connection(
                 f"file:{db_path}?mode=ro", uri=True,
                 busy_timeout_ms=cfg.web.db_busy_timeout_ms)
-            try:
-                _row = _ro.execute("SELECT version FROM schema_version").fetchone()
-                applied = int(_row[0]) if _row else None
-            finally:
-                _ro.close()
+            _row = _ro.execute("SELECT version FROM schema_version").fetchone()
+            applied = int(_row[0]) if _row else None
         except Exception:  # noqa: BLE001 -- the re-read failed: re-raise exc
             applied = None
+        if _ro is not None:
+            try:
+                _ro.close()
+            except Exception as _close_exc:  # noqa: BLE001 -- contained
+                _ro_close_error = _close_exc
         if applied != EXPECTED_SCHEMA_VERSION:
+            if _ro_close_error is not None:
+                log_contained_note(
+                    _pe_backfill_logging.getLogger(__name__), exc,
+                    "22-F R1-03: db-migrate's read-only schema re-read "
+                    "closed with an error (%s); the original failure "
+                    "propagates.", safe_text(_ro_close_error))
             raise
         _echo_either_sink(ascii_safe(
             f"WARN: the migration IS applied (schema version {applied}); a "
             f"post-commit step failed: {safe_text(exc)}"), prefer_err=True)
+        if _ro_close_error is not None:
+            log_contained(
+                _pe_backfill_logging.getLogger(__name__),
+                "22-F R1-03: db-migrate's read-only schema re-read read "
+                "version %s, then closing it failed (%s); the read stands.",
+                applied, safe_text(_ro_close_error))
+            _echo_either_sink(ascii_safe(
+                "WARN: closing the read-only schema re-read also failed: "
+                f"{safe_text(_ro_close_error)}; the read completed and "
+                "stands."), prefer_err=True)
         conn = open_connection(
             db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     gate_alarm: str | None = None
