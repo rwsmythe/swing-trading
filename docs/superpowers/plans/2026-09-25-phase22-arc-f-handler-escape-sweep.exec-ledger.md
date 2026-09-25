@@ -460,7 +460,7 @@ runner.py:3294 in: def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data
 | round | verdict | crit | major | minor | new/reopened | tokens used | DEPTH (orchestrator) |
 |---|---|---|---|---|---|---|---|
 | R1 | `NEW_CRITICAL_MAJOR_FOUND` | 0 | 9 | 2 | 11 new / 0 reopened | 721,619 | **365,075** (`cell_depth --agent`, cell 8, read at the R1 gate); the cell does NOT resume -- fixes + R2 go to a FRESH cell |
-| R2 | `NEW_CRITICAL_MAJOR_FOUND` | 0 | 9 | 1 | 10 new (4 residuals of R1 fixes) / 0 reopened | 649,427 | |
+| R2 | `NEW_CRITICAL_MAJOR_FOUND` | 0 | 9 | 1 | 10 new (4 residuals of R1 fixes) / 0 reopened | 649,427 | **383,720** (`cell_depth --agent`, cell 9, read at the R2 gate); the cell does NOT resume |
 
 **Summed Codex `tokens used`:** 721,619 (R1) + 649,427 (R2) = 1,371,046.
 
@@ -575,3 +575,23 @@ Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator. Tex
 **Round-level read:** 0 critical, 9 major, 1 minor; all 10 new, 0 reopened; FOUR are residuals of this cell's own Round 1 fixes (R2-02 of R1-03, R2-03 of R1-06, R2-04 of R1-05, R2-05 of R1-09), three of them one class (an INTERRUPT at a cleanup statement) that one ruling can settle. Not converged.
 
 **Summed Codex `tokens used`:** 721,619 (R1) + 649,427 (R2) = **1,371,046**.
+
+### Round 2 gate -- ORCHESTRATOR dispositions (2026-09-25)
+
+Validity, read on disk (`r2/`): banner `model: gpt-5.6-sol` / `reasoning effort: high`; `^ERROR` 0; anchored `^NEW_CRITICAL_MAJOR_FOUND` 2 / `^NO_NEW_CRITICAL_MAJOR` 0; footer 649,427; `exit=0`. Pre-R2 gate run at `5490a266`: 15269 / 13 / 0, worktree RESOLVER, ruff clean. Summed Codex spend 1,371,046. The round COUNTS. **Residual signature:** 4 of 10 findings (R2-02, R2-03, R2-04, R2-05) are residuals of the Round 1 fixes.
+
+| id | orchestrator disposition |
+|---|---|
+| R2-06 | **FIX AUTHORIZED**: `schwab fetch` binds `durable` from each step's own report (`snapshot_id` / `reconciliation_run_id` not None); the G1 fetch test planted against a real snapshot row; an audit-only CONTROL added. RED-first. |
+| R2-08 (a) | **REJECT accepted**: the close before the version-mismatch raise follows no write; the plain close propagating is pre-arc behaviour. |
+| R2-09 | **REJECT accepted**: an open/reload failure after the config file write is the documented pre-arc cascade-failure design (STOP-3 kept that order). CC to CHARC. |
+| R2-10 | **NOT authorized** (minor): the advisory lines are outside the R1-11 authorization, which covered the `UsageError` text; banked. |
+| R2-01, R2-08 (b) | **ROUTED to CHARC** (does census C2-21's "runner-wide close and echo" bind beyond the plan's B-04 encoding?). |
+| R2-02, R2-03, R2-05 | **ROUTED to CHARC as ONE class ruling**: an interrupt at a cleanup statement; the cell proposes generalizing R1-09 (log, re-raise chained, never swallow or retype), fixed narrowly at each site. |
+| R2-04 | **ROUTED to CHARC**: (a) declare the pre-read-before-lock race (the R1-07 two-rare-events reason) or (b) a `wrote: bool` on `CorrectionResult` set inside the service's transaction. |
+| R2-07 | **ROUTED to CHARC**: `reconcile-tos` commits a `failed` run row and re-raises; (a) name the recorded failed run or (b) declare it. |
+
+**Recommendation to the successor (the protocol's residual rule):** after the fixes, run a DEDICATED UNCOUNTED SELF-SWEEP (SS-N ids, no round number) over the Round-1 and Round-2 fix diffs, looking for two classes: interrupts at cleanup statements, and `durable` bound other than from a writer's report. Then ONE confirming Round 3. The residuals are findable by search.
+
+**Also for CHARC (a fact against the R1-05 ruling text):** a no-op with a failing close gives CLI exit 1 / web 500, not "exit 0 / route status", because the helpers do a PLAIN close when nothing was written. The tests pin the real behaviour, and assert that no "IS recorded" text appears.
+
