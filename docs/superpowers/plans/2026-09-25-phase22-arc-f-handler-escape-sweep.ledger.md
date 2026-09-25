@@ -1,6 +1,6 @@
 # Phase 22 arc 22-F plan ledger (handler-escape + transaction-hygiene sweep)
 
-**Branch:** `22-f-plan`, cut from main @ `79035d59`. **Census:** `2026-09-25-phase22-arc-f-handler-escape-sweep.census.md` (this directory). **Plan:** not yet written. Round 0 does not produce one.
+**Branch:** `22-f-plan`, cut from main @ `79035d59`. **Census:** `2026-09-25-phase22-arc-f-handler-escape-sweep.census.md` (this directory). **Plan:** `2026-09-25-phase22-arc-f-handler-escape-sweep.md` (this directory), written by a FRESH plan cell off the committed census + rulings (the R0 cell ended over the cap). Its §1.2 carries the plan-authoring intake corrections (nine facts checked against the code; three are flagged up: §1.2 rows 1, 3 and 6).
 **Evidence (durable, outside the repo):** `C:\Users\rwsmy\swing-data\review-transcripts\22-f-plan\`
 
 ## Round table
@@ -10,6 +10,7 @@ The DEPTH column is filled by the orchestrator from `scripts/cell_depth.py --age
 | round | kind | tier / model | verdict | task-bearing findings | tokens used | depth (orchestrator) | notes |
 |---|---|---|---|---|---|---|---|
 | R0 | premise + fork census (no Codex) | - | - | - | 0 Codex | **405,207 — OVER the 400K cap** (`cell_depth --agent`, read at return 2026-09-25) | census committed; the cell does NOT resume -- the plan loop goes to a FRESH cell off this committed census + the evidence dir; fork packet F-F1..F-F7 routed via the orchestrator |
+| R1 | Codex plan review, round 1 | `fast` / (banner read at the round) | (pending) | (pending) | (pending) | (orchestrator) | plan committed first; the round reviews the committed plan |
 
 ## Rulings
 
