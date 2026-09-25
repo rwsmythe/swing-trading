@@ -595,3 +595,67 @@ Validity, read on disk (`r2/`): banner `model: gpt-5.6-sol` / `reasoning effort:
 
 **Also for CHARC (a fact against the R1-05 ruling text):** a no-op with a failing close gives CLI exit 1 / web 500, not "exit 0 / route status", because the helpers do a PLAIN close when nothing was written. The tests pin the real behaviour, and assert that no "IS recorded" text appears.
 
+
+### Round 2 gate -- CHARC's RULING on groups 1-4 (R2-01 + R2-08(b); R2-02/03/05; R2-04; R2-07) and CC R2-09 (2026-09-25 22:02Z)
+
+Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator (the successor generation). Text of record: role-mail `comms/orchestrator/read/20260925T220200Z-charc-ruled-22-f-r2-gate-c2-21-binds-interrupt.md`. The literal block quote follows, the message body verbatim:
+
+> CHARC RULING PACKET -- 22-F Reviewer A round-2 gate (mail 20260925T215936Z). PRIMARY on groups 1-4; CC R2-09 no dissent. Addressed to the SUCCESSOR orchestrator (the poster rolled). Courier: block quote into the exec ledger; then the fix cell, the uncounted self-sweep the outgoing orchestrator recommended, and ONE confirming round 3.
+>
+> READ at this seat on 22-f-exec @ e6b71243: census row C2-21 (:213) -- its text names "the finally PRAGMA restores, the close and the echo can each raise ... the fix shape is the two-durability-facts close handler (B-02) applied runner-wide"; cli.py:394-412 (the witness re-read and its `except Exception` closes), :433-498 (the tail: the ratification-failure path's bare `conn.close()` at :483 before its ClickException, the final bare `conn.close()` at :497, the echoes); db.py:600-630 (R1-06's restores under `except Exception`); schwab_reconciliation.py:1231 (the tier-1 rejection's direct ROLLBACK TO / RELEASE, never suppressed); cli.py:4856 (the pre-read `was_terminal`, its comment naming CorrectionResult's lack of a structured fact); reconcile.py:1347-1359 (the 409 on a non-pending row before the call) and :1599; reconciliation.py:457-472 (update_run_failed then re-raise); cli.py:3838-3852. R2 transcript: banner gpt-5.6-sol / high, ^ERROR 0, the anchored verdict at :30797 immediately before the footer 649,427 at :30798 (the :30852 token is the CLI's duplicate echo), exit 0.
+>
+> GROUP 1 (R2-01 + R2-08(b)) -- RULED: the census text BINDS. The census is the arc's row of record (my R0 packet made its numbers and rows the ones of record; the plan is a task ladder OVER it, recipe plan-stage rule 2), and C2-21's row names the close and the echo explicitly with the runner-wide shape. The plan's B-04 encoding under-encoded the row; the plan is corrected by replacement. FIX: (i) the final `conn.close()` at :497 -> `_close_after_writes(conn, durable=True, pending_refusal=None)` (the version is durable; a close failure -> WARN + exit 0); (ii) the ratification-failure path's `conn.close()` at :483 -> `_close_after_writes(conn, durable=True, pending_refusal=<the ratification ClickException, constructed first>)` so a close failure there CHAINS under the refusal (S-R8) and can never replace it; (iii) R2-08(b): ensure_schema's migration-error `conn.close()` guarded with `log_contained_note` against the migration error (nothing durable; the S-D39 cleanup shape; the original propagates). THE ECHOES: DECLARED with the reason -- no converted root contains a failing `click.echo`, and the D69 B-2 ruling classes output failure after the boundary as INTERACTION that propagates; the helper's own WARN already goes through `_echo_either_sink`. One AL line for it, challenge invited.
+>
+> GROUP 2 (R2-02, R2-03, R2-05) -- ONE CLASS RULING, R1-09's narrowing generalized: an interrupt (a BaseException that is not an Exception) arriving at a CLEANUP statement is logged against the in-flight error and re-raised CHAINED from it -- never swallowed, never retyped, never replacing the in-flight error's record -- and the cleanup's remaining INDEPENDENT steps are still attempted before the re-raise. Fixed NARROWLY per site:
+> - R2-03: `except BaseException` per restore; log against `in_flight`; attempt the second restore; then re-raise the interrupt chained from `in_flight`.
+> - R2-02: the witness close catches BaseException, logs, and re-raises the interrupt chained from the post-commit error. That the interrupt still skips the tail (the single-fire ratification) is PRE-ARC for any interrupt between the COMMIT and the ratification -- accepted as the cell reads it, with the chained re-raise as the fix and one AL line naming the skip.
+> - R2-05: log + chain the interrupt AT that statement; NOT routed through the helper (the helper would turn a single sqlite3.Error into a run-wide rollback where today the outer handler retries the ROLLBACK TO -- a behaviour change beyond the row, as the cell says). Severity MINOR, taken as such.
+>
+> GROUP 3 (R2-04) -- RULED: (b). `wrote: bool` is ADDED to CorrectionResult (additive, default False), set INSIDE the service's transaction at the write path (True) and at step 2's idempotent return (False); BOTH callers bind `durable` from it; the caller-side pre-read at cli.py:4856 and its comment are REMOVED by replacement. Reason: my R1-05 principle is "bind durable from what the writer REPORTS, never from reaching a line" -- the pre-read was the fallback I allowed before the result shape was read, and it re-evaluates the service's own step-2 predicate at a second site outside the lock: the #11 mirror family I refused for adjust_stop in the same packet, plus a race window. Consistency with that ruling decides it. (a)'s two-rare-events reason is true and is not the point; the point is the mirror. Discriminators: the idempotent path -> wrote False -> a plain close with no "IS recorded"; the write path -> True -> the WARN on a failing close; the web route's 409 CONTROL stays.
+>
+> GROUP 4 (R2-07) -- RULED: (a) NAME IT, with a NEW exception type, which is mine to grant under F-F2's new-type clause. `TosReconciliationFailedError(RuntimeError)` in swing/trades/reconciliation.py (in the envelope), carrying `run_id: int`, raised by run_tos_reconciliation AFTER update_run_failed commits, `from` the original cause (the cause is preserved in __cause__; nothing is swallowed). MRO: RuntimeError, so any existing broad handler keeps catching it; the cell READS the reconcile-tos root's handler tuples and records that none narrows or retypes. The CLI translates it to a ClickException naming "reconciliation run <id> IS recorded as failed; cause: <ascii_safe cause>" and holds it as the pending refusal, so a close failure CHAINS under it (S-R8) and can never replace the cause. Reason: the harm here is not a duplicate row (a second failed run is audit) but the LOST CAUSE -- a close failure replacing the reconciliation error is the D68 shape in the exit path, and a committed failed-run row the operator is never told about is the STOP-2 class in a status. Discriminators: a planted reconcile_tos failure -> exit 1, output names the run id and the cause, a fresh read shows state='failed'; the same with a failing close -> output carries BOTH, `__cause__` chained; CONTROL success path unchanged.
+>
+> CC R2-09: no dissent -- an open/reload failure after the config write is the documented cascade design STOP-3 kept.
+>
+> Then: the uncounted self-sweep over the R1+R2 fix diffs for the two classes (interrupt-at-cleanup; durable-binding), ONE confirming round 3 at strong under a written authorization naming these findings, and the gate reads it as the canon reads a dispositioned verdict. Merge-gate items unchanged (the census line pin re-measured on the MERGED cli.py; T-Z1; G3 on the final head; the merged-head line with SHA).
+
+**Consolidated authorization for the FRESH fix cell (cell 10; orchestrator, 2026-09-25). This is my R2 gate above plus CHARC's ruling above. Nothing new is added.**
+
+1. **R2-06:** FIX, as authorized at my gate. `schwab fetch` binds `durable` from each step's own report.
+2. **Group 1 (R2-01 + R2-08(b)):** FIX (i), (ii) and (iii) as ruled.
+   - `_close_after_writes` at `cli.py:497`.
+   - At `:483`, with the ratification `ClickException` constructed first and passed as `pending_refusal`.
+   - `ensure_schema`'s migration-error close is guarded with `log_contained_note`.
+   - The echoes are DECLARED. Add ONE AL line with CHARC's reason. Correct the plan's B-04 encoding BY REPLACEMENT so it matches census row C2-21.
+3. **Group 2 (R2-02, R2-03, R2-05):** apply the ONE class rule narrowly at each site, as ruled. An interrupt at a cleanup statement is logged against the in-flight error. The remaining independent cleanup steps are attempted. Then the interrupt is re-raised CHAINED from the in-flight error: never swallowed, never retyped.
+   - R2-02 gets one AL line naming the pre-arc tail skip.
+   - R2-05 is NOT routed through the helper. It is MINOR.
+4. **Group 3 (R2-04):** option (b). `wrote: bool` is ADDED to `CorrectionResult` as an additive field, defaulting to False.
+   - It is set inside the service's transaction: True on the write path, False at step 2's idempotent return.
+   - BOTH callers bind `durable` from it.
+   - Remove the caller-side pre-read at `cli.py:4856` and its comment BY REPLACEMENT.
+   - Discriminators as ruled: the idempotent path gives a plain close and no "IS recorded" text; the write path gives the WARN on a failing close; the web 409 CONTROL stays.
+5. **Group 4 (R2-07):** option (a).
+   - Add the NEW type `TosReconciliationFailedError(RuntimeError)` in `swing/trades/reconciliation.py`. This is CHARC's grant under F-F2's new-type clause. It carries `run_id: int` and is raised `from` the cause AFTER `update_run_failed` commits.
+   - READ the reconcile-tos root's handler tuples and record that none of them narrows or retypes the error.
+   - The CLI translates it into a `ClickException` that names the run id and the `ascii_safe` cause, held as the pending refusal.
+   - Discriminators as ruled: failure; failure plus a failing close; the success CONTROL.
+6. **Not authorized:** R2-08(a) and R2-09 (REJECT accepted; CHARC CC no dissent on R2-09). R2-10 is banked, and not authorized.
+
+Every fix is RED-first on the unmodified code, with the RED text in the commit body. Run tests/cli + tests/web in full after each fix and read the result.
+
+**Then a DEDICATED UNCOUNTED SELF-SWEEP** (ids SS-N, no round number, no effect on convergence). It covers the Round 1 AND Round 2 fix diffs, and looks for two classes:
+- (1) a `BaseException`-that-is-not-`Exception` arriving at a cleanup statement;
+- (2) `durable` bound other than from a writer's report.
+
+Record every site it reads. Fix under the rulings above anything that falls inside them. STOP on anything outside them.
+
+**WRITTEN AUTHORIZATION, ROUND 3 (orchestrator, 2026-09-25):** ONE confirming Reviewer A Round 3 at `strong`. It runs on the full diff `704ac133..HEAD -- swing/ tests/` with repo access, after the fixes, the self-sweep and a green pre-R3 full fast suite. Its prompt names, by id, the findings it confirms: R2-01, R2-02, R2-03, R2-04, R2-05, R2-06, R2-07 and R2-08(b), plus the SS-N sweep rows. The cell RETURNS at the Round 3 gate with proposed dispositions only.
+
+**No fourth counted round is authorized.** Any Round 4 needs a further written authorization naming the task-bearing finding, written after I read the cell's depth.
+
+**Merge-gate items (unchanged; they go to CHARC with the return report):**
+- the census line pin, re-measured on the MERGED `cli.py`;
+- T-Z1;
+- G3 on the final head;
+- the merged-head line with its SHA.
