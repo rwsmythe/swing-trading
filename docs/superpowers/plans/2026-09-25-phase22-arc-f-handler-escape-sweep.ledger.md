@@ -399,3 +399,10 @@ Validity (read on disk): the banner is `model: gpt-5.6-luna` / `reasoning effort
 **OPERATOR DECISION (2026-09-25, in session, verbatim "concur with (a)"), on the orchestrator's option (a):** apply the R4-01 fix WITHOUT a fifth round; accept the A6-d reject. The plan goes to CHARC and RD for acceptance with this DISCLOSED UP FRONT: R4 was not a literal `NO_NEW_CRITICAL_MAJOR`, and its one finding is a residual of the loop's own R3-01 fix (the protocol's search-not-buy class). The directors may require a fifth round if they read it otherwise. The executing stage's Reviewer A (`strong`) and Reviewer B remain the downstream net. **No fifth counted round is authorized.**
 
 Spend: four counted rounds, 469,511 Codex tokens.
+
+## R4-01 -- APPLIED (no fifth round, per the operator's decision at the R4 gate)
+
+| id | site in the plan | fix |
+|---|---|---|
+| R4-01 (1) | A2-a, A2-d (T-A2); A3-a, A3-b (T-A3) | each wraps its `_resolve_match_quantity` plant in a counting wrapper and asserts it was called >= 1. The "self-proving" exception text is removed from the T-A2 patch-target paragraph, from A3-a, and from the section 0.4 did-it-fire rule, which now reads "No exceptions (R4-01)" |
+| R4-01 (2) | A6-d (T-A6) | REJECT accepted; the reason is recorded at A6-d in one line (the proxy is `record_exit`'s `conn` argument, so there is no patch target to miss, and the pre-fix `IntegrityError` fails the test) |
