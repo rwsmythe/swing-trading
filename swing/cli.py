@@ -1279,6 +1279,12 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `record_exit`'s OWN
+    # return (its transaction has committed by then); `pending_refusal` is
+    # whichever typed refusal (`ClickException`) is in flight, so a close
+    # failure cannot replace it.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         reason_enum = ExitReason(reason)
         req = ExitRequest(
@@ -1293,8 +1299,13 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
             # 22-F C1-02: a service refusal (`InvalidStateTransition` is a
             # `ValueError`) is the operator's typed error, not a traceback.
             raise click.ClickException(ascii_safe(str(exc))) from exc
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     closed = " (FULL CLOSE)" if result.fully_closed else ""
     click.echo(
         f"Exit {result.exit_id}: ${result.realized_pnl:+.2f} "
@@ -1376,6 +1387,10 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `adjust_stop`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         try:
             adjust_stop(conn, StopAdjustRequest(
@@ -1390,8 +1405,13 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
             # `StopRegressionError` is an `Exception`, not a `ValueError`, so
             # the two clauses are disjoint.
             raise click.ClickException(ascii_safe(str(exc))) from exc
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(f"Trade {trade_id} stop -> ${new_stop:.2f}")
 
 
