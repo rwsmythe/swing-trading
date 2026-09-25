@@ -264,6 +264,88 @@ def test_post_entry_with_matching_sector_industry_proceeds(
     )
 
 
+def test_post_entry_with_minting_failure_still_writes_exactly_one_fill(
+    seeded_db, monkeypatch,
+):
+    """B-1 (Reviewer B, 2026-09-25): ``record_entry`` ALWAYS passes
+    ``attempt_id`` to ``insert_trade_with_event`` BY KEYWORD -- including
+    when ``_begin_attempt_identity``'s mint fails and ``identity.token`` is
+    ``None`` (``swing/trades/entry.py:~726`` catches the mint failure and
+    returns ``_AttemptIdentity()``; the call at ``~:2252`` still reads
+    ``attempt_id=attempt_id`` unconditionally, so the keyword arrives as
+    ``attempt_id=None``, never omitted).
+
+    The D67 wrapper's OLD discriminator (``kwargs.get("attempt_id") is not
+    None``) treats a present-but-None ``attempt_id`` exactly like an
+    absent one -- ``None is not None`` is ``False`` -- so on THIS path it
+    concludes "not called via record_entry" and ALSO auto-inserts a fill,
+    even though ``record_entry`` already inserted its own. The correct
+    discriminator is presence in ``kwargs`` (``"attempt_id" in kwargs``),
+    which is ``True`` here because ``record_entry`` always passes the
+    keyword, mint failure or not.
+
+    PRE-FIX: 2 entry fills (doubled ``current_size``) -- record_entry's own
+    plus the wrapper's spurious auto-fill. POST-FIX: exactly 1.
+    """
+    from swing.trades import entry as entry_mod
+
+    cfg, cfg_path = seeded_db
+    eval_id, _ = _seed_candidate_with_sector_industry(
+        cfg.paths.db_path,
+        ticker="TAMP",
+        sector="Technology",
+        industry="Software-Application",
+    )
+    _patch_price_cache_with_snapshot(monkeypatch)
+
+    def _mint_fails():
+        raise RuntimeError("B-1 discriminator: forced mint failure")
+
+    monkeypatch.setattr(entry_mod, "_mint_attempt_token", _mint_fails)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_entry(
+            client,
+            sector="Technology",
+            industry="Software-Application",
+            sector_industry_evaluation_run_id=eval_id,
+        )
+    assert resp.status_code == 200, (
+        f"Mint failure must not convert a would-have-succeeded entry into "
+        f"a failure (entry.py:~697). Got {resp.status_code}. "
+        f"Body[:500]: {resp.text[:500]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        trade_id, current_size = conn.execute(
+            "SELECT id, current_size FROM trades WHERE ticker='TAMP'"
+        ).fetchone()
+        fill_count = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE trade_id = ? AND action='entry'",
+            (trade_id,),
+        ).fetchone()[0]
+        attempt_id = conn.execute(
+            "SELECT attempt_id FROM trades WHERE id = ?", (trade_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert attempt_id is None, (
+        f"Expected the mint-failed row to carry a NULL attempt_id "
+        f"(the measured premise), got {attempt_id!r}."
+    )
+    assert fill_count == 1, (
+        f"Expected exactly 1 entry fill even under a mint failure, got "
+        f"{fill_count} -- a second means the wrapper's "
+        f"``kwargs.get('attempt_id') is not None`` discriminator "
+        f"mistook a present-but-None attempt_id for an absent one and "
+        f"auto-inserted alongside record_entry's own fill."
+    )
+    assert current_size == 1, (
+        f"Expected current_size == 1, got {current_size} -- doubled means "
+        f"the B-1 duplicate-fill defect on the mint-failed path."
+    )
+
+
 # =====================================================================
 # T-D.1 — Form sector mismatches cached → reject 400 (HTMX error frag).
 # =====================================================================

@@ -165,17 +165,26 @@ def _auto_entry_fill_after_insert_trade(monkeypatch):
         # masking would carry TWO entry fills and a DOUBLED
         # `current_size` -- reproduced (2 fills, `current_size`=2 for a
         # 1-share post) before this guard.
-        # `record_entry` ALWAYS passes a freshly-minted, non-None
-        # `attempt_id` (22-A4, `_begin_attempt_identity` mints
-        # unconditionally); no DIRECT-seed caller in tests/web/ ever
-        # passes `attempt_id` to `insert_trade_with_event` (grep-verified
-        # across every call site) -- so its presence in `kwargs` is the
-        # exact discriminator between "record_entry called this, which
-        # will insert its own fill" and "a test is seeding a trade
-        # directly and needs this wrapper's auto-fill to avoid the
-        # half-state `insert_trade_with_event`'s own docstring warns
-        # about." Skip the auto-fill only in the former case.
-        called_via_record_entry = kwargs.get("attempt_id") is not None
+        # `record_entry` ALWAYS passes `attempt_id` BY KEYWORD (22-A4,
+        # `swing/trades/entry.py:~2252`, `attempt_id=attempt_id`) --
+        # UNCONDITIONALLY, even when `_begin_attempt_identity`'s mint
+        # fails and the token is `None` (`entry.py:~726`'s mint-failure
+        # arm returns `_AttemptIdentity()`, whose `.token` is `None`,
+        # and the call site still reads `attempt_id=attempt_id`, never
+        # omitting the keyword). So `attempt_id=None` is a REAL,
+        # record_entry-originated call, not a direct-seed call -- and
+        # `kwargs.get("attempt_id") is not None` (Reviewer B finding
+        # B-1, 2026-09-25) collapses that case onto "absent", auto-
+        # inserting a SECOND fill alongside record_entry's own on the
+        # mint-failed path (reproduced: 2 fills, doubled current_size).
+        # No DIRECT-seed caller in tests/web/ ever passes `attempt_id`
+        # to `insert_trade_with_event` AT ALL (grep-verified across
+        # every call site) -- so PRESENCE OF THE KEY in `kwargs`, not
+        # the value, is the exact discriminator between "record_entry
+        # called this" (key present, any value) and "a test is seeding
+        # a trade directly" (key absent). Skip the auto-fill only in
+        # the former case.
+        called_via_record_entry = "attempt_id" in kwargs
         # Only auto-write the entry-fill when the trade is in an active
         # state (entered/managing/partial_exited). Closed/reviewed seeds
         # in some tests intentionally skip the fill flow.
