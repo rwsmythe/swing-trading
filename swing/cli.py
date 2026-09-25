@@ -378,13 +378,19 @@ def db_migrate(ctx: click.Context) -> None:
         # 22-F T-F10 B-04 (R1-02, R51): `_apply_migration` restores two
         # connection PRAGMAs in a `finally` AFTER each script's COMMIT, so a
         # failure there escapes a migration that is already DURABLE.  Ask the
-        # FILE, on a fresh plain-sqlite3 read-only connection (never swing's
-        # `connect`): at target -> say so, reopen, and run the tail below (the
+        # FILE, on a fresh read-only connection (never swing's `connect`):
+        # at target -> say so, reopen, and run the tail below (the
         # gate-image check, the single-fire v17 ratification, the final
         # echo); below target, or if the re-read itself fails -> re-raise.
+        # The read-only open routes through `open_connection` (busy_timeout;
+        # the live-opens invariant, tests/web/test_live_opens_routed.py) with
+        # a `mode=ro` URI -- a plain sqlite3 connection underneath, never
+        # swing's schema-guarded `connect`.
         applied: int | None = None
         try:
-            _ro = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            _ro = open_connection(
+                f"file:{db_path}?mode=ro", uri=True,
+                busy_timeout_ms=cfg.web.db_busy_timeout_ms)
             try:
                 _row = _ro.execute("SELECT version FROM schema_version").fetchone()
                 applied = int(_row[0]) if _row else None
