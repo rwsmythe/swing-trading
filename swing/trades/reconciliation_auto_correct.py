@@ -2200,15 +2200,15 @@ def _idempotent_result_for(
 def _resolve_affected_target(
     disc: _DiscrepancyInfo,
 ) -> tuple[str, int]:
-    """Map a discrepancy row to (affected_table, affected_row_id) per
-    spec §5.4 step 2.
+    """Map a discrepancy row to (affected_table, affected_row_id).
 
-    Precedence (Codex R1 lock from C.B context):
+    Precedence (the first non-NULL FK wins):
       - fill_id present → fills
       - cash_movement_id present → cash_movements
-      - discrepancy_type == 'equity_delta' or 'snapshot_mismatch' → account_equity_snapshots
-        (resolution needs the snapshot id; V1 returns the most recent matching row)
       - trade_id present → trades
+
+    Raises ``ValueError`` when fill_id, cash_movement_id and trade_id are
+    all NULL.
     """
     if disc.fill_id is not None:
         return (_AFFECTED_TABLE_FILLS, int(disc.fill_id))
