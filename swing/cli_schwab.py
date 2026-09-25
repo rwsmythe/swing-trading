@@ -187,6 +187,11 @@ def schwab_setup(
     # reordering also surfaces `SchwabPipelineActiveError` to the operator
     # before they type credentials.
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `setup_paste_flow`'s
+    # OWN return; `pending_refusal` is whichever typed refusal is in
+    # flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         # T-A.1 — env-var supersession: `SCHWAB_CLIENT_ID` + `SCHWAB_CLIENT_SECRET`
         # env vars set together → skip prompt; partial set → SchwabConfigMissingError.
@@ -210,8 +215,14 @@ def schwab_setup(
             ) from exc
         except SchwabConfigMissingError as exc:
             raise click.ClickException(ascii_safe(str(exc))) from exc
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        from swing.cli import _close_after_writes
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     masked = _mask_account_hash(result["account_hash"])
     if result["num_accounts"] == 1:
@@ -283,6 +294,11 @@ def schwab_refresh(
     # D3 pattern from T-A.4 hotfix: connect() validates schema BEFORE
     # operator credential prompt — fail fast on schema mismatch.
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `force_refresh`'s
+    # OWN return; `pending_refusal` is whichever typed refusal is in
+    # flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         # T-A.1 — env-var supersession (see schwab_setup for full notes).
         client_id, client_secret = _resolve_credentials_for_cli(cfg, env)
@@ -311,8 +327,14 @@ def schwab_refresh(
             ) from exc
         except SchwabConfigMissingError as exc:
             raise click.ClickException(ascii_safe(str(exc))) from exc
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        from swing.cli import _close_after_writes
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     click.echo(
         f"Refresh complete. Tokens DB at {result['tokens_path']}.",
@@ -355,6 +377,11 @@ def schwab_logout(
     env = environment or cfg.integrations.schwab.environment
 
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `revoke_and_delete`'s
+    # OWN return; `pending_refusal` is whichever typed refusal is in
+    # flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         # T-A.1 — env-var supersession (see schwab_setup for full notes).
         client_id, client_secret = _resolve_credentials_for_cli(cfg, env)
@@ -380,8 +407,14 @@ def schwab_logout(
             # guidance; SchwabApiError.__str__ would redact it). SchwabApiError is a
             # RuntimeError subclass but is caught above, so this only sees the rename error.
             raise click.ClickException(ascii_safe(str(exc))) from exc
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        from swing.cli import _close_after_writes
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     if result["revoke_status"] == "success":
         click.echo(
@@ -1059,6 +1092,11 @@ def schwab_resolve_out_of_framework(ctx: click.Context) -> None:
         )
         return
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `resolve_out_of_framework_orphans`'s
+    # OWN return; `pending_refusal` is whichever typed refusal is in
+    # flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         try:
             _check_pipeline_not_running(conn)
@@ -1069,8 +1107,16 @@ def schwab_resolve_out_of_framework(ctx: click.Context) -> None:
         resolved = resolve_out_of_framework_orphans(
             conn, out_of_framework_tickers=declared,
         )
+        # Each row is resolved in its OWN transaction; zero rows resolved
+        # writes nothing.
+        durable = resolved > 0
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        from swing.cli import _close_after_writes
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(
         f"Resolved {resolved} out-of-framework orphan row(s) for "
         f"{', '.join(declared)}."
@@ -1397,6 +1443,12 @@ def schwab_fetch(
     env = (environment or cfg.integrations.schwab.environment).lower()
 
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at EACH step's (`_step_schwab_snapshot`,
+    # `_step_schwab_orders`)
+    # OWN return; `pending_refusal` is whichever typed refusal is in
+    # flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         # Pipeline-active hard exclusion per plan §H.10 (NO --force override).
         try:
@@ -1492,6 +1544,7 @@ def schwab_fetch(
                     conn, cfg, pipeline_run_id=None,
                     client=sd_client, surface="cli",
                 )
+                durable = True
                 results.append({"step": "snapshot", **r})
             except (SchwabApiError, SchwabSchemaParityError) as exc:
                 # 22-F row 5 (the belt): the parity class is disjoint from
@@ -1506,6 +1559,7 @@ def schwab_fetch(
                     conn, cfg, pipeline_run_id=None,
                     client=sd_client, surface="cli",
                 )
+                durable = True
                 results.append({"step": "orders", **r})
             except (SchwabApiError, SchwabSchemaParityError) as exc:
                 # 22-F row 6 (the belt).
@@ -1529,8 +1583,13 @@ def schwab_fetch(
                 extras.append(f"reconciliation_run_id={r['reconciliation_run_id']}")
             extras_str = "  ".join(extras) if extras else ""
             click.echo(f"  [{step}] {status}  {extras_str}")
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        from swing.cli import _close_after_writes
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
 
 @schwab_group.command("status")

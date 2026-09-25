@@ -14,8 +14,8 @@ Per root, three tests over the ROOT TABLE below (each row carries its opener
   POST-FIX: the refusal text + `the connection close also failed`, exit 1,
   nothing written.
 * G1-c -- CONTROL: nothing durable, no refusal (the root's writer is
-  replaced by a counting wrapper raising a planted `RuntimeError`), close
-  fails.  BOTH TREES: the close error replaces the in-flight error, exactly
+  replaced by a counting wrapper raising a planted error no root translates
+  into a refusal), close fails.  BOTH TREES: the close error replaces the in-flight error, exactly
   as it always has (the byte-unchanged bare-close branch).
 
 Did-it-fire (R3-01): every case asserts the proxies recorded >= 1 `close()`;
@@ -39,6 +39,12 @@ import swing.journal.tos_import  # noqa: F401
 from swing.cli import main
 from tests._22f_proxies import FailingVerbsConn, patch_conn_opener, raising
 from tests.cli.test_cli_trade import _PRE_TRADE_OK_FLAGS, _setup
+
+class _PlantedWriterFailure(Exception):
+    """G1-c's planted writer error: a class NO root translates into a typed
+    refusal (a `RuntimeError` would be -- `schwab logout` maps its
+    rename-failure `RuntimeError` to a `ClickException`)."""
+
 
 _WARN = "WARN: the write IS recorded; the connection close failed: "
 _ALSO = "the connection close also failed"
@@ -361,6 +367,165 @@ def _policy_rows(w: World) -> int:
     return _scalar(w.db, "SELECT COUNT(*) FROM risk_policy")
 
 
+_CLI_SCHWAB_CONNECT = "swing.cli_schwab.connect"
+
+
+def _audit_row(conn: Any) -> None:
+    """A durable `schwab_api_calls` row on the ROOT's connection -- the audit
+    row the real (network-bound) Schwab service would have committed."""
+    conn.execute(
+        "INSERT INTO schwab_api_calls (ts, endpoint, status, surface, "
+        "environment, http_status) VALUES (?, ?, ?, ?, ?, ?)",
+        ("2026-06-18T12:00:00", "accounts.linked", "success", "cli",
+         "production", 200))
+    conn.commit()
+
+
+def _schwab_calls(w: World) -> int:
+    return _scalar(w.db, "SELECT COUNT(*) FROM schwab_api_calls")
+
+
+def _schwab_world(tmp_path: Path, mp: Any) -> World:
+    """Credentials come from the env tier (no prompt); USERPROFILE and HOME
+    point into tmp_path (these roots read and write user-config)."""
+    w = _home_world(tmp_path, mp)
+    mp.setenv("SCHWAB_CLIENT_ID", "cid-sentinel")
+    mp.setenv("SCHWAB_CLIENT_SECRET", "csecret-sentinel")
+    return w
+
+
+def _stub_service(mp: Any, name: str, result: dict) -> Any:
+    from tests._22f_proxies import CountingWrapper
+
+    def _fn(**kw: Any) -> dict:
+        _audit_row(kw["conn"])
+        return result
+    stub = CountingWrapper(_fn)
+    mp.setattr(f"swing.cli_schwab.{name}", stub)
+    return stub
+
+
+def _refusing_service(mp: Any, name: str, exc: BaseException) -> None:
+    mp.setattr(f"swing.cli_schwab.{name}", raising(exc))
+
+
+def _setup_world(tmp_path: Path, mp: Any) -> World:
+    w = _schwab_world(tmp_path, mp)
+    _stub_service(mp, "setup_paste_flow", {
+        "account_hash": "ABCDEF1234567890", "num_accounts": 1,
+        "tokens_path": "tokens.db"})
+    return w
+
+
+def _setup_refusal_world(tmp_path: Path, mp: Any) -> World:
+    from swing.integrations.schwab.client import SchwabAuthError
+    w = _schwab_world(tmp_path, mp)
+    _refusing_service(mp, "setup_paste_flow", SchwabAuthError(401, "bad grant"))
+    return w
+
+
+def _refresh_world(tmp_path: Path, mp: Any) -> World:
+    w = _schwab_world(tmp_path, mp)
+    _stub_service(mp, "force_refresh", {"tokens_path": "tokens.db"})
+    return w
+
+
+def _refresh_refusal_world(tmp_path: Path, mp: Any) -> World:
+    from swing.integrations.schwab.client import SchwabAuthError
+    w = _schwab_world(tmp_path, mp)
+    _refusing_service(mp, "force_refresh", SchwabAuthError(401, "bad grant"))
+    return w
+
+
+def _logout_world(tmp_path: Path, mp: Any) -> World:
+    w = _schwab_world(tmp_path, mp)
+    _stub_service(mp, "revoke_and_delete", {
+        "revoke_status": "success", "deleted_path": "tokens.db.deleted"})
+    return w
+
+
+def _logout_refusal_world(tmp_path: Path, mp: Any) -> World:
+    w = _schwab_world(tmp_path, mp)
+    _refusing_service(mp, "revoke_and_delete",
+                      RuntimeError("could not rename the tokens DB"))
+    return w
+
+
+def _oof_orphan_world(tmp_path: Path, mp: Any) -> World:
+    """The real `resolve_out_of_framework_orphans` over one planted SPCX
+    orphan (the declared set comes from a stubbed `apply_overrides`, as
+    `test_resolve_out_of_framework_cli` does)."""
+    import swing.config_overrides as _config_overrides
+    from tests.cli.test_resolve_out_of_framework_cli import (
+        _plant_orphan,
+        _stub_cfg,
+    )
+    w = _schwab_world(tmp_path, mp)
+    c = sqlite3.connect(str(w.db))
+    try:
+        _plant_orphan(c, "SPCX")
+    finally:
+        c.close()
+    stub = _stub_cfg(w.db, tickers=("SPCX",))
+    mp.setattr(_config_overrides, "apply_overrides", lambda _c: stub)
+    return w
+
+
+def _oof_running_world(tmp_path: Path, mp: Any) -> World:
+    w = _oof_orphan_world(tmp_path, mp)
+    c = sqlite3.connect(str(w.db))
+    try:
+        c.execute(
+            "INSERT INTO pipeline_runs (started_ts, trigger, data_asof_date, "
+            "action_session_date, state, lease_token) VALUES "
+            "('2026-06-15T09:00:00', 'manual', '2026-06-12', '2026-06-15', "
+            "'running', 'tok')")
+        c.commit()
+    finally:
+        c.close()
+    return w
+
+
+def _oof_resolution(w: World) -> str:
+    return _scalar(w.db, "SELECT resolution FROM reconciliation_discrepancies "
+                   "WHERE ticker = 'SPCX'")
+
+
+def _fetch_world(tmp_path: Path, mp: Any) -> World:
+    """`account_hash` configured through user-config; the schwabdev client
+    builder and the snapshot step (both network-bound) are stubbed; the
+    step writes its audit row on the ROOT's connection."""
+    from tests._22f_proxies import CountingWrapper
+    w = _schwab_world(tmp_path, mp)
+    (tmp_path / "home" / "swing-data" / "user-config.toml").write_text(
+        '[integrations.schwab]\naccount_hash = "ABCDEF1234567890"\n',
+        encoding="utf-8")
+    mp.setattr("swing.cli_schwab._build_schwabdev_client_for_fetch",
+               lambda *a, **k: object())
+
+    def _step(conn: Any, cfg: Any, **kw: Any) -> dict:
+        _audit_row(conn)
+        return {"status": "ok", "call_id": 1}
+    mp.setattr("swing.integrations.schwab.pipeline_steps._step_schwab_snapshot",
+               CountingWrapper(_step))
+    return w
+
+
+def _fetch_running_world(tmp_path: Path, mp: Any) -> World:
+    w = _fetch_world(tmp_path, mp)
+    c = sqlite3.connect(str(w.db))
+    try:
+        c.execute(
+            "INSERT INTO pipeline_runs (started_ts, trigger, data_asof_date, "
+            "action_session_date, state, lease_token) VALUES "
+            "('2026-06-15T09:00:00', 'manual', '2026-06-12', '2026-06-15', "
+            "'running', 'tok')")
+        c.commit()
+    finally:
+        c.close()
+    return w
+
+
 # ------------------------------------------------------------ root table ---
 
 ROOTS: list[Root] = [
@@ -573,6 +738,52 @@ ROOTS: list[Root] = [
                                 "capital_floor_constant_dollars"],
         refusal_text="No swing command creates a policy",
     ),
+    Root(
+        id="schwab-resolve-out-of-framework", target=_CLI_SCHWAB_CONNECT,
+        world=_oof_orphan_world,
+        argv=lambda w: ["schwab", "resolve-out-of-framework"],
+        probe=_oof_resolution,
+        writer=("swing.trades.schwab_reconciliation."
+                "resolve_out_of_framework_orphans"),
+        refusal_world=_oof_running_world,
+        refusal_argv=lambda w: ["schwab", "resolve-out-of-framework"],
+        refusal_text="currently in flight",
+    ),
+    Root(
+        id="schwab-fetch", target=_CLI_SCHWAB_CONNECT, world=_fetch_world,
+        argv=lambda w: ["--config", str(w.cfg), "schwab", "fetch",
+                        "--snapshot"],
+        probe=_schwab_calls,
+        writer="swing.integrations.schwab.pipeline_steps._step_schwab_snapshot",
+        refusal_world=_fetch_running_world,
+        refusal_argv=lambda w: ["--config", str(w.cfg), "schwab", "fetch",
+                                "--snapshot"],
+        refusal_text="currently in flight",
+    ),
+    Root(
+        id="schwab-setup", target=_CLI_SCHWAB_CONNECT, world=_setup_world,
+        argv=lambda w: ["--config", str(w.cfg), "schwab", "setup"],
+        probe=_schwab_calls, writer="swing.cli_schwab.setup_paste_flow",
+        refusal_world=_setup_refusal_world,
+        refusal_argv=lambda w: ["--config", str(w.cfg), "schwab", "setup"],
+        refusal_text="Authentication failed: ",
+    ),
+    Root(
+        id="schwab-refresh", target=_CLI_SCHWAB_CONNECT, world=_refresh_world,
+        argv=lambda w: ["--config", str(w.cfg), "schwab", "refresh"],
+        probe=_schwab_calls, writer="swing.cli_schwab.force_refresh",
+        refusal_world=_refresh_refusal_world,
+        refusal_argv=lambda w: ["--config", str(w.cfg), "schwab", "refresh"],
+        refusal_text="Authentication failed during refresh",
+    ),
+    Root(
+        id="schwab-logout", target=_CLI_SCHWAB_CONNECT, world=_logout_world,
+        argv=lambda w: ["--config", str(w.cfg), "schwab", "logout"],
+        probe=_schwab_calls, writer="swing.cli_schwab.revoke_and_delete",
+        refusal_world=_logout_refusal_world,
+        refusal_argv=lambda w: ["--config", str(w.cfg), "schwab", "logout"],
+        refusal_text="could not rename the tokens DB",
+    ),
 ]
 
 _REFUSING = [r for r in ROOTS if r.refusal_argv is not None]
@@ -626,7 +837,7 @@ def test_G1c_control_nothing_durable_close_error_replaces_as_before(
     w = root.world(tmp_path, monkeypatch)
     before = root.probe(w)
     module_name, _, attr = root.writer.rpartition(".")
-    wrapper = raising(RuntimeError("planted writer failure"))
+    wrapper = raising(_PlantedWriterFailure("planted writer failure"))
     monkeypatch.setattr(module_name + "." + attr, wrapper)
     built = _failing_close(monkeypatch, root.target)
     result = w.runner.invoke(main, root.argv(w), input=root.input)
