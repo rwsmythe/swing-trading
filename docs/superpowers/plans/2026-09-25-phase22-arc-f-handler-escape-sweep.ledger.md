@@ -9,7 +9,7 @@ The DEPTH column is filled by the orchestrator from `scripts/cell_depth.py --age
 
 | round | kind | tier / model | verdict | task-bearing findings | tokens used | depth (orchestrator) | notes |
 |---|---|---|---|---|---|---|---|
-| R0 | premise + fork census (no Codex) | - | - | - | - | | census committed; fork packet F-F1..F-F7 routed via the orchestrator |
+| R0 | premise + fork census (no Codex) | - | - | - | 0 Codex | **405,207 — OVER the 400K cap** (`cell_depth --agent`, read at return 2026-09-25) | census committed; the cell does NOT resume -- the plan loop goes to a FRESH cell off this committed census + the evidence dir; fork packet F-F1..F-F7 routed via the orchestrator |
 
 ## Rulings
 
