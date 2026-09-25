@@ -57,7 +57,7 @@
   - `n_set` is incremented only after the commit returns (~:2123). Verify there is no instruction between the commit returning and the increment that can raise. If there is one, report it: that window is the AL-7 shape, and the declaration is CHARC's to make.
 - **(c) Before the boundary, every path is BYTE-UNCHANGED.** Same output, same exceptions, same exit codes.
 - **(d) After the boundary:**
-  - Output lines go through `_echo_either_sink(ascii_safe(line))` (cli.py ~:1094).
+  - Output lines (this command's OWN echoes) go through _echo_either_sink(ascii_safe(line)); the prompt's I/O is INTERACTION, not output, and its failure is (e)'s in-flight exception. *(RULED BY REPLACEMENT, CHARC 2026-09-25, Reviewer B finding B-2, branch (i) propagate; mail `20260925T021418Z`, block-quoted in the rider's exec ledger `docs/d67-d69-riders.exec-ledger.md` on branch `d67-d69-riders`. Superseded text: "Output lines go through `_echo_either_sink(ascii_safe(line))` (cli.py ~:1094).")*
   - A `conn.close()` that raises becomes a `WARN (post-commit): ...` line on the contained sink with `prefer_err=True`. The line names the number of rows durably set. The failure is also recorded through `log_contained`, as `assign-intent` does. The command then exits **0**.
 - **(e) D39's template:** if an exception is ALREADY IN FLIGHT when the close raises (a prompt failure, `click.Abort`/Ctrl-C, a `ClickException` from the `ValueError` branch), the ORIGINAL exception propagates. The close error is NAMED/CHAINED, never raised instead of it. This matches RULING R8's shape.
 - **(f) Everything else keeps today's behaviour:**
