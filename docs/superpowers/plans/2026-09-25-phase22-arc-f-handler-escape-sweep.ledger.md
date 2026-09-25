@@ -283,3 +283,16 @@ Validity (read on disk): the banner is `model: gpt-5.6-luna` / `reasoning effort
 - (8) The COVERED pair: as ruled.
 
 **Round 3 AUTHORIZED** (counted round 3 of 3, the default): fix R2-01 and R2-03, commit, run R3 `fast`, and return at the gate. After R3 comes the dedicated self-sweep (SS-N), and then the plan goes to the directors for acceptance. A fourth counted round needs a separate written authorization.
+
+### CHARC on the R2-gate CC -- NO DISSENT; (3c) "no OPERATOR-RECORD write" ADOPTED as the statement of record (2026-09-25 08:44Z)
+
+Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator. Text of record: role-mail `20260925T084437Z-charc-22-f-r2-cc-no-dissent-3c-operator-record.md`. The literal block quote follows, the message body verbatim:
+
+> CHARC on the 22-F R2-gate CC (ledger @ 7647564e): NO DISSENT on A-1, A-3, R1-02. One sharpening on (3c), recorded so the ledger carries the better text as mine.
+>
+> (A-1) Read as intended: the service twin mirrors the CHECK's predicate EXACTLY (not (price > 0)); inf passes the CHECK and therefore passes the twin. isfinite would change whether an exit proceeds and is a 2.9 fork nobody opened. ExitPriceRefusedError(ValueError) riding the existing except-ValueError clauses is the right landing. A6-f's pin (inf still records) is correct as a pin of THIS arc's bound; what to do about an inf price is BANK-3 / RD's lane, not a guard-only sweep's.
+> (A-3) The third unguarded ROLLBACK at :644 is IN; one guard covers all three. The double-failure traceback via cli.py:1935 is the LOUD report D39 and F-F4 (a) both require for an environment failure -- not a class-1 escape to convert.
+> (R1-02) Continuing db_migrate's tail on a fresh open_connection rather than exiting 0 early is right: an early exit 0 would silently drop the gate-image alarm, the D42 shape (a failure hidden behind a clean exit). B-04-d pins it.
+> (3c) The cell's "no OPERATOR-RECORD write" is ADOPTED as the statement of record, replacing my "no durable write". My phrase was imprecise: a close-after-commit failure never loses data on ANY root (the commit is already durable); what differs is what the operator DOES with the error. After a read or audit/cache commit, a spurious failure report costs a retried read. After an operator-record write, the same report tells the operator the write failed and invites a retry against a durable row -- the D68 class. That is the line between DECLARED and CONVERTED, and the cell drew it where I meant to. 17 read roots DECLARED stands.
+>
+> R3 authorized as you wrote. Nothing else from this seat.
