@@ -336,3 +336,43 @@ Neither is a design fork: each is a missing instrument or discriminator inside a
 Record each hit and its fix under SS-N in the ledger. A hit that is a design fork STOPS and returns.
 
 **FOURTH COUNTED ROUND -- AUTHORIZED IN WRITING, naming the task-bearing findings R3-01 and R3-02.** It is ONE confirming round (tier `fast`) on the settled artifact after the fixes and the self-sweep. Its prompt tells the reviewer that the rulings and the R1-R3 dispositions are FIXED INPUTS, and asks it to confirm R3-01/R3-02 are closed and look for new critical/major defects. **Convergence = R4 returns `NO_NEW_CRITICAL_MAJOR`.** If R4 finds a new major, the cell STOPS and returns; there is NO fifth round without a new written authorization, and the operator is consulted first. After convergence, the orchestrator rolls over (operator's direction) and the successor takes the plan to the directors for acceptance.
+
+## Round 3 fixes -- APPLIED, and the dedicated SELF-SWEEP (uncounted; ids SS-N, no round number, no effect on convergence)
+
+**R3-01 (FIX as authorized):** plan section 0.4. `patch_conn_opener(monkeypatch, target, proxy_factory)` replaces `connect_returning`. There is a did-it-fire rule binding on every proxy- or monkeypatch-driven test, and the opener targets are MEASURED by a Python AST walk that classifies each `connect(`/`open_connection(` call by whether its enclosing function imports the name locally. Map row R53.
+
+**R3-02 (FIX as authorized):** T-F10 C2-21-a..d, map row R54. Discriminators computed under both trees, from `db.py:572-577` as read (`try: executescript; commit / except Exception: conn.rollback(); raise`) and `run_migrations` calling `_apply_migration` with no wrapping (`db.py:1032`):
+- **a** (script E1 after a real `BEGIN;`; `rollback()` E2). Pre: E2 escapes from inside the `except`, `__cause__ is None`, no record. Post: E2 `from` E1, one `MUST BE DISCARDED`.
+- **b** (`KeyboardInterrupt` after `BEGIN;`, rollback works). Pre: `except Exception` does not run, so `in_transaction` is True after (the `finally` PRAGMAs are no-ops in a transaction). Post: False, re-raised.
+- **c** (single failure): E1 re-raised and version 40 on BOTH trees. It is labelled a PIN.
+- **d**: CONTROL.
+- The proxy runs the real `BEGIN;` first because S-D39 rolls back only `if conn.in_transaction`; without an open transaction the post-fix rollback would never be attempted and case a would be vacuous.
+
+**Self-sweep, class (i): every proxy/monkeypatch test.** Does its patch target equal the name resolved at call time, and does it assert that the proxy fired?
+
+| id | site in the plan | read | fix |
+|---|---|---|---|
+| SS-1 | G1-a / G2-a / Part F / T-F11: "`connect` returns the proxy" | WRONG for part of the roster. `pipeline force-clear` resolves `swing.cli.connect` (module global). The five `schwab` roots resolve `swing.cli_schwab.connect`. `account`/`config`/`reconcile`/`watchlist` resolve `<module>.open_connection`. `POST /trades/{id}/review` (`review_post`, `trades.py:3439`) imports `connect` LOCALLY, so it resolves `swing.data.db.connect`, not the module global. The remaining CLI roots import locally (`swing.data.db.connect`). | per-root `target` column in T-G1/T-G2 plus the measured table in section 0.4; Part F "Delivery" bullet; T-F11 names `swing.data.db.connect` (`trade_entry_cmd` imports locally at `cli.py:744`); each case asserts the proxy recorded the failing verb |
+| SS-2 | A2-a/A2-d, A3-a/A3-b (`_resolve_match_quantity` plant) | targets correct: module-level imports at `entry_auto_fill.py:85-89` / `exit_auto_fill.py:88-91` bind the module attribute read at `:445` / `:1194` | targets named; did-it-fire stated as SELF-PROVING (the pre-fix `OverflowError`/`ValueError` and the post-fix `non-finite` text arise only from the plant) |
+| SS-6 | A1 (`trader.get_account_orders`) | correct: both modules call through the module attribute (`entry_auto_fill.py:375`, `exit_auto_fill.py:751`) | target named; a counting wrapper asserted called |
+| SS-7 | A7-a (`build_dashboard`), A7-b (close proxy) | correct: `trades.py:45` module-level import; `exit_post` resolves the module-global `connect` | targets named; call/close counts asserted |
+| SS-8 | B2-c (`_step_schwab_snapshot`) | correct only if patched at the SOURCE module: `schwab_fetch` imports it function-locally (`cli_schwab.py:1463-1466`) | target `swing.integrations.schwab.pipeline_steps._step_schwab_snapshot`; asserted called once |
+| SS-9 | B4-a/b (ladder wrappers) | module-level import at `marketdata_ladder.py:70-71` | targets `...marketdata_ladder.get_quotes_batch` / `.get_price_history`; asserted called once |
+| SS-10 | C1-16 (`list_intents_for_latch`) | correct: `reader.py:273` imports it function-locally from the repo module | asserted called |
+| SS-11 | A6-d ("zero INSERT attempts") | vacuous unless the same proxy is shown to count INSERTs | A6-e runs through the same counting proxy and asserts >= 1 `INSERT` |
+| SS-12 | T-F10 B-04 (`open_connection_returning`) | target correct (`ensure_schema` resolves the `swing.data.db` global at `db.py:1054`) | every B-04 case asserts the proxy recorded the failing `PRAGMA foreign_keys=` |
+
+Not proxy-driven, so no hit: T-A4, T-A5, T-B1/T-B3 (AST), T-C1/T-C2 (raw version write), T-D0..T-D5, T-E, T-H1. T-F8 C2-16 and T-F9 pass the proxy to the service as its `conn` argument, so there is no patch target to get wrong.
+
+**Self-sweep, class (ii): every class-2 / D39 row -- does a test drive THAT site's own cleanup path?**
+
+| id | row | read | fix |
+|---|---|---|---|
+| SS-3 | rows listing several BEGIN/cleanup pairs (C2-01..04 in T-F1, C2-06, C2-09's four `audit_service.py` pairs, the T-F7 files) | the common shape was stated "per row", so one case could stand for several sites | the common shape is now "per SITE", one parametrized case per listed pair |
+| SS-4 | in-try refusal-branch ROLLBACKs (the A-3 class) outside `assign`: `hypothesis.py:199` (not found), `:205` (no-op), `:211` (illegal transition), read at this cell | the common shape fails the FIRST WRITE, which never reaches these; no test drove them | each is driven by its own refusal input, with the rollback failing once and twice; pre/post stated from the common table's "unguarded" column; the executing cell enumerates every other site's in-try ROLLBACKs by READ and records the list per row |
+| SS-5 | T-F5's seven `ROLLBACK TO SAVEPOINT` sites | the extra discriminator drove ONE discrepancy's `ROLLBACK TO` | parametrized over all seven, each driven by the discrepancy branch that reaches it; an unreachable site is recorded with the read, never dropped |
+| (R3-02) | C2-21 | no test drove `_apply_migration`'s own rollback | C2-21-a..d (above) |
+
+Checked, no hit: T-F8 C2-16 (A-3's three ROLLBACKs, each driven, R44); T-F9 (both cohort sites driven); T-F11 (C2-22's own close handler); T-A7 and T-G1/T-G2 (each F4 root's own close).
+
+**No SS hit is a design fork.** Each is a missing target, fire assertion or case inside a ruled task.
