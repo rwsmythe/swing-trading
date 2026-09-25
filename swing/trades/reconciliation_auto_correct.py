@@ -32,6 +32,7 @@ fns NEVER call ``conn.commit()`` / ``conn.rollback()``.
 """
 from __future__ import annotations
 
+import dataclasses as _dataclasses
 import functools
 import json
 import logging
@@ -680,6 +681,13 @@ class CorrectionResult:
     applied_value_json: str | None
     correction_action: str | None
     notes: str | None = None
+    # 22-F R2-04 (CHARC, option (b)): the writer's own report of whether
+    # THIS call wrote.  Set by `_apply_tier2_resolution_inner` inside the
+    # service's transaction -- True on the handler write path, False at
+    # step 2's terminal-state idempotent return -- and the two callers of
+    # `apply_tier2_resolution` bind their close's `durable` from it.  The
+    # other constructors leave the default; no caller reads it there.
+    wrote: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1727,7 +1735,9 @@ def _apply_tier2_resolution_inner(
                     f"operator decision); cannot re-resolve via "
                     f"auto-redirect override"
                 )
-        return _idempotent_result_for(conn, discrepancy_id)
+        # 22-F R2-04: step 2 writes nothing -- reported, not inferred.
+        return _dataclasses.replace(
+            _idempotent_result_for(conn, discrepancy_id), wrote=False)
 
     # Step 2.6 (NEW T-1.6) — sandbox short-circuit per spec §7.6.1 LOCK.
     # Gated on the auto-redirect path (``applied_by_override == 'auto'``):
@@ -1786,7 +1796,7 @@ def _apply_tier2_resolution_inner(
             affected_table=_t2_table, affected_row_id=_t2_row,
         )
 
-    return handler(
+    result = handler(
         conn,
         disc=disc,
         choice_code=choice_code,
@@ -1798,6 +1808,9 @@ def _apply_tier2_resolution_inner(
         correction_action_override=correction_action_override,
         resolved_by_override=resolved_by_override,
     )
+    # 22-F R2-04: every tier-2 handler writes its audit row and flips the
+    # discrepancy on this path (a handler that cannot write RAISES).
+    return _dataclasses.replace(result, wrote=True)
 
 
 def _apply_tier3_override_inner(

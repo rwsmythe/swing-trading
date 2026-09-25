@@ -10,10 +10,10 @@ write IS recorded" over a write that never happened:
   result;
 * `journal discrepancy resolve-ambiguity` -- `apply_tier2_resolution`'s
   step-2 terminal-state idempotent return (`reconciliation_auto_correct.py`
-  step 2, `if disc.resolution in _TERMINAL_RESOLUTIONS`), bound from the
-  CLI's own pre-read of the same predicate taken before the call (its
-  `CorrectionResult` carries no structured idempotent fact -- only prose
-  `notes`).
+  step 2, `if disc.resolution in _TERMINAL_RESOLUTIONS`), bound from
+  `CorrectionResult.wrote`, which the service sets inside its own
+  transaction (R2-04, CHARC option (b); the race it closes is pinned in
+  `tests/cli/test_22f_r2_04_tier2_wrote.py`).
 
 Each case drives the NO-OP with every connection's close failing.  PRE-FIX:
 exit 0 and the false WARN.  POST-FIX: nothing durable and no refusal -> the

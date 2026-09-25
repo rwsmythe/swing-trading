@@ -1595,6 +1595,9 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                     operator_custom_payload=custom_payload,
                 )
                 result = None
+                # 22-F T-G2 (F4): bound at the resolver's OWN return (it
+                # REFUSES a non-pending row, so a normal return wrote).
+                durable = True
             else:
                 result = apply_tier2_resolution(
                     conn,
@@ -1605,8 +1608,11 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                     resolved_by_override="operator_web",  # F2 LOCK
                     environment=environment,
                 )
-            # 22-F T-G2 (F4): bound at the resolver's OWN return.
-            durable = True
+                # 22-F R2-04 (CHARC, option (b)): bound from the WRITER's
+                # report -- False at the service's step-2 idempotent return,
+                # reachable here only through a concurrent resolution after
+                # the 409 pre-check above.
+                durable = result.wrote
         except SourceResolutionRejected as exc:
             # MUST precede the generic `except ValueError` below (subclass).
             return _render_form_with_error(
