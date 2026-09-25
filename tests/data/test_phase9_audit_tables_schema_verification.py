@@ -113,10 +113,12 @@ def test_hypothesis_status_history_status_check_enum_matches_registry(
     """CHECK enum on status matches hypothesis_registry.status vocabulary."""
     with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
         conn.execute(
+            # 22-I (0041): a CLOSED interval, so trg_hsh_no_replace (the
+            # open-row partial key) does not pre-empt the CHECK under test.
             "INSERT INTO hypothesis_status_history ("
-            "hypothesis_id, status, effective_from, recorded_at) "
-            "VALUES (1, 'invalid_status', "
-            "'2026-05-12T00:00:00.000', '2026-05-12T00:00:00.000')"
+            "hypothesis_id, status, effective_from, effective_to, recorded_at) "
+            "VALUES (1, 'invalid_status', '2026-05-12T00:00:00.000', "
+            "'2026-05-13T00:00:00.000', '2026-05-12T00:00:00.000')"
         )
 
 
@@ -249,7 +251,10 @@ def test_account_equity_snapshots_unique_date_source_blocks_duplicate(
         "VALUES ('2026-05-12', 1300.0, 'manual', "
         "'2026-05-12T00:00:00.000', 'operator')"
     )
-    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+    # 22-I (0041, AL-8): the no_replace barrier fires BEFORE conflict
+    # resolution, so the duplicate is refused by its RAISE text, not by
+    # "UNIQUE constraint failed"; the partial index stays pinned by name.
+    with pytest.raises(sqlite3.IntegrityError, match="trg_aes_no_replace"):
         conn.execute(
             "INSERT INTO account_equity_snapshots ("
             "snapshot_date, equity_dollars, source, recorded_at, recorded_by) "

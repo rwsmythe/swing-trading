@@ -780,7 +780,13 @@ def test_fill_origin_enum_all_three_new_values_persistable_via_route(
             )
             # Clean slate for next test.
             conn.execute("DELETE FROM fills")
-            conn.execute("DELETE FROM trades")
+            # 22-I (0041): the trade's trade_events rows (written by the production entry
+            # service) make this cascade delete REFUSED by trg_te_no_delete; the
+            # guard is dropped on this TEST DB only, for test disposal between
+            # iterations (plan T16 rule (d), with reason).
+            from tests._22i_guard_seam import guards_dropped
+            with guards_dropped(conn, "trg_te_no_delete"):
+                conn.execute("DELETE FROM trades")
             conn.commit()
         finally:
             conn.close()
@@ -802,7 +808,13 @@ def test_fill_origin_enum_all_three_new_values_persistable_via_route(
                 ).fetchone()[0]
             )
             conn.execute("DELETE FROM fills")
-            conn.execute("DELETE FROM trades")
+            # 22-I (0041): the trade's trade_events rows (written by the production entry
+            # service) make this cascade delete REFUSED by trg_te_no_delete; the
+            # guard is dropped on this TEST DB only, for test disposal between
+            # iterations (plan T16 rule (d), with reason).
+            from tests._22i_guard_seam import guards_dropped
+            with guards_dropped(conn, "trg_te_no_delete"):
+                conn.execute("DELETE FROM trades")
             conn.commit()
         finally:
             conn.close()

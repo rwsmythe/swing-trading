@@ -58,13 +58,13 @@ def _rows(*, tt_fail=(), vcp_fail=(), tt_na=(), risk="pass", drop=()):
     return out
 
 
-def _run(conn, rid, action, run_ts):
+def _run(conn, rid, action, run_ts, asof=None):
     conn.execute(
         "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
         "action_session_date, tickers_evaluated, aplus_count, watch_count, "
         "skip_count, excluded_count, error_count) "
         "VALUES (?, ?, ?, ?, 1, 0, 0, 0, 0, 0)",
-        (rid, run_ts, action, action))
+        (rid, run_ts, action if asof is None else asof, action))
 
 
 def _candidate(conn, rid, ticker, bucket, rows):
@@ -358,9 +358,9 @@ def test_the_verdicts_carry_the_ACTION_SESSION_date(db, cfg):
     """T3.9. The streak's domain is action sessions; a verdict stamped with a
     `data_asof_date` would silently shift the whole sequence by a session."""
     with db:
-        _run(db, 1, "2026-07-28", "2026-07-27T17:30:00")
-        db.execute("UPDATE evaluation_runs SET data_asof_date='2026-07-27' "
-                   "WHERE id=1")
+        # 22-I (0041, trg_er_no_update): the data_asof_date is planted at
+        # INSERT, not UPDATEd in afterwards.
+        _run(db, 1, "2026-07-28", "2026-07-27T17:30:00", asof="2026-07-27")
         _candidate(db, 1, "VSTS", "watch", _rows(vcp_fail=("tightness",)))
     got = _verdicts(db, cfg)
     assert got[0].action_session == date(2026, 7, 28)

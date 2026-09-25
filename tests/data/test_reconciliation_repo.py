@@ -337,7 +337,12 @@ def test_insert_run_schwab_api_call_id_fk_set_null_on_delete(
         schwab_api_call_id=call_id,
     )
     # Delete the parent schwab_api_calls row.
-    conn.execute("DELETE FROM schwab_api_calls WHERE call_id = ?", (call_id,))
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_sac_no_delete"):
+        conn.execute("DELETE FROM schwab_api_calls WHERE call_id = ?", (call_id,))
     # Reconciliation run still exists; schwab_api_call_id is now NULL.
     r = repo.get_run(conn, rid)
     assert r is not None, "reconciliation run MUST survive parent delete"

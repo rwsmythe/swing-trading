@@ -698,8 +698,12 @@ def test_policy_missing_renders_provisional_badge_even_with_em_dash_value(
     assert 'data-cause="policy_missing"' in rendered
     assert 'data-marker="PROVISIONAL"' in rendered
     # Extra-caveat tooltip cites the ACTUAL recovery path (direct
-    # DB intervention via SQL) per Codex R4.M#1 LOCK.
-    assert "UPDATE risk_policy SET is_active=1" in rendered
+    # DB intervention via SQL) per Codex R4.M#1 LOCK. 22-I Codex R2 Minor 1:
+    # the repair is append-only at v41 (the in-place re-activation UPDATE is
+    # refused by trg_rp_immutable); test_policy_missing_tooltip_repair_
+    # executes_at_head RUNS the rendered SQL.
+    assert "INSERT INTO risk_policy" in rendered
+    assert "UPDATE risk_policy SET is_active=1" not in rendered
     assert "schema-corrupted state" in rendered.lower()
     # The standard snapshot-missing branch is NOT emitted in this case.
     assert 'data-cause="snapshot_missing"' not in rendered
@@ -853,3 +857,86 @@ def test_ineligible_trail_NEVER_renders_the_candidate_price_unlabelled(  # noqa:
     )
     # The ELIGIBLE prompt must NOT appear -- spec 3.5 reserves it for flag=1.
     assert "TRAIL ELIGIBLE" not in cell
+
+
+def test_policy_missing_tooltip_repair_executes_at_head(p14n3_jinja_env, tmp_path):
+    """22-I Codex R2 Minor 1: the policy_missing tooltip's advertised repair
+    must RUN on a head-schema DB in the zero-active state, not merely render.
+    At v41 ``trg_rp_immutable`` refuses ``is_active`` 0 -> 1 and a
+    value -> NULL ``effective_to``, so the repair must be append-only. The SQL
+    is extracted from the RENDERED tooltip (un-escaped), never hand-copied."""
+    import html
+    import re
+
+    from swing.data.repos.risk_policy import NoActivePolicyError
+    from swing.metrics.policy import read_live_policy
+    from swing.trades.risk_policy import supersede_active_policy
+
+    vm = _P14N3_MagicMock()
+    vm.daily_management_tiles = [_build_p14n3_tile_vm(
+        is_provisional=True, util_pct_effective=None, policy_missing=True,
+    )]
+    rendered = p14n3_jinja_env.get_template(
+        "partials/daily_management_tile.html.j2",
+    ).render(vm=vm)
+    title = re.search(
+        r'data-cause="policy_missing"\s+title="([^"]*)"', rendered,
+    ).group(1)
+    tooltip = html.unescape(title)
+    match = re.search(
+        r"((?:UPDATE|INSERT INTO) risk_policy\b.*?WHERE policy_id=<id>)",
+        tooltip, re.S,
+    )
+    assert match is not None, tooltip
+    repair_sql = match.group(1).replace("<id>", "1")
+
+    db_path = tmp_path / "repair.db"
+    ensure_schema(db_path).close()
+    conn = connect(db_path)
+    try:
+        # The zero-active state, reached by the admitted 1 -> 0 transition.
+        conn.execute("UPDATE risk_policy SET is_active = 0 WHERE is_active = 1")
+        conn.commit()
+        with pytest.raises(NoActivePolicyError):
+            read_live_policy(conn)
+
+        conn.execute(repair_sql)
+        conn.commit()
+
+        active = conn.execute(
+            "SELECT policy_id FROM risk_policy WHERE is_active = 1").fetchall()
+        assert len(active) == 1, active
+        assert read_live_policy(conn).policy_id == active[0][0]
+
+        # The ordinary path works again: one supersession runs through.
+        successor = supersede_active_policy(
+            conn, field_updates={}, notes="post-repair supersession")
+        active = conn.execute(
+            "SELECT policy_id FROM risk_policy WHERE is_active = 1").fetchall()
+        assert active == [(successor,)]
+        assert read_live_policy(conn).policy_id == successor
+    finally:
+        conn.close()
+
+
+def test_policy_missing_tile_gives_no_reactivation_advice(p14n3_jinja_env):
+    """22-I Reviewer B B-2: the WHOLE policy_missing tile -- the badge title
+    AND the sibling role=tooltip help -- must not advise re-activating a
+    historical risk_policy row (trg_rp_immutable refuses is_active 0 -> 1 at
+    v41); the help names the append-only INSERT the title spells out."""
+    import html
+    import re
+
+    vm = _P14N3_MagicMock()
+    vm.daily_management_tiles = [_build_p14n3_tile_vm(
+        is_provisional=True, util_pct_effective=None, policy_missing=True,
+    )]
+    rendered = html.unescape(p14n3_jinja_env.get_template(
+        "partials/daily_management_tile.html.j2",
+    ).render(vm=vm))
+    assert re.search(r"reactivat", rendered, re.I) is None, rendered
+    assert re.search(r"SET\s+is_active\s*=\s*1", rendered, re.I) is None
+    help_text = re.search(
+        r'id="provisional-capital-help-1"\s+class="help-detail" role="tooltip">(.*?)</span>',
+        rendered, re.S).group(1)
+    assert "APPEND-ONLY" in help_text and "INSERT" in help_text, help_text

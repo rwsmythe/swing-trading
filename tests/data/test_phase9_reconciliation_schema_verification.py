@@ -388,7 +388,12 @@ def test_discrepancies_run_id_fk_cascade(conn: sqlite3.Connection) -> None:
         "SELECT COUNT(*) FROM reconciliation_discrepancies WHERE run_id = ?",
         (run_id,),
     ).fetchone()[0] == 1
-    conn.execute("DELETE FROM reconciliation_runs WHERE run_id = ?", (run_id,))
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_rr_no_delete", "trg_rd_no_delete"):
+        conn.execute("DELETE FROM reconciliation_runs WHERE run_id = ?", (run_id,))
     assert conn.execute(
         "SELECT COUNT(*) FROM reconciliation_discrepancies WHERE run_id = ?",
         (run_id,),
@@ -541,11 +546,16 @@ def test_discrepancies_linked_daily_management_record_id_fk_set_null(
     trade_id = _insert_trade(conn, ticker="TRDSN3")
     dmr_id = _insert_dmr(conn, trade_id)
     disc_id = _insert_discrepancy(conn, run_id, linked_dmr_id=dmr_id)
-    conn.execute(
-        "DELETE FROM daily_management_records "
-        "WHERE management_record_id = ?",
-        (dmr_id,),
-    )
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_dmr_no_delete"):
+        conn.execute(
+            "DELETE FROM daily_management_records "
+            "WHERE management_record_id = ?",
+            (dmr_id,),
+        )
     row = conn.execute(
         "SELECT linked_daily_management_record_id "
         "FROM reconciliation_discrepancies WHERE discrepancy_id = ?",

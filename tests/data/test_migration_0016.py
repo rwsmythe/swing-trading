@@ -35,7 +35,7 @@ def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 def test_migration_0016_advances_schema_version(conn: sqlite3.Connection) -> None:
     # ensure_schema walks to HEAD; migration 0023 advanced schema_version to 23.
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 40
+    assert version == 41
 
 
 def test_migration_0016_creates_daily_management_records_table(
@@ -128,7 +128,13 @@ def test_migration_0016_active_snapshot_unique_index_predicate(
         "VALUES (1, 'daily_snapshot', '2026-05-07', '2026-05-07', "
         "        '2026-05-07T00:00:00', 'daily_approximate', 0)"
     )
-    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+    # 22-I (0041, AL-8): the no_replace barrier fires BEFORE conflict
+    # resolution, so the duplicate is refused by its RAISE text, not by
+    # "UNIQUE constraint failed"; the partial index stays pinned by name.
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = "
+        "'ux_daily_mgmt_snapshot_active_per_session'").fetchone() is not None
+    with pytest.raises(sqlite3.IntegrityError, match="trg_dmr_no_replace"):
         conn.execute(
             "INSERT INTO daily_management_records "
             "(trade_id, record_type, review_date, data_asof_session, created_at, "

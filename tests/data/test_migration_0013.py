@@ -24,7 +24,7 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 def test_migration_0013_advances_schema_version(conn: sqlite3.Connection) -> None:
     # ensure_schema walks to HEAD; migration 0023 advanced schema_version to 23.
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 40
+    assert version == 41
 
 
 def test_migration_0013_adds_ten_trade_columns(conn: sqlite3.Connection) -> None:
@@ -77,12 +77,20 @@ def test_migration_0013_unique_index_blocks_duplicate_cadence(conn: sqlite3.Conn
            (review_type, period_start, period_end, scheduled_date)
            VALUES ('daily', '2026-04-30', '2026-04-30', '2026-05-01')"""
     )
-    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+    # 22-I (0041, AL-8): trg_rl_no_replace fires BEFORE conflict resolution,
+    # so the duplicate is refused by the barrier's RAISE text rather than by
+    # "UNIQUE constraint failed". The index itself stays pinned structurally.
+    with pytest.raises(sqlite3.IntegrityError, match="trg_rl_no_replace"):
         conn.execute(
             """INSERT INTO review_log
                (review_type, period_start, period_end, scheduled_date)
                VALUES ('daily', '2026-04-30', '2026-04-30', '2026-05-01')"""
         )
+    unique = {r[1]: r[2] for r in conn.execute("PRAGMA index_list(review_log)")}
+    assert unique.get("ux_review_log_cadence_period") == 1
+    cols = [r[2] for r in conn.execute(
+        "PRAGMA index_info(ux_review_log_cadence_period)")]
+    assert cols == ["review_type", "period_start", "period_end"]
 
 
 def test_trade_dataclass_has_ten_review_fields_with_none_default() -> None:

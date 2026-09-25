@@ -80,6 +80,7 @@ def _seed(
     discrepancy_trade_id: int | None = -1,
     fill_origin: str = "schwab_auto",
     source_order_id: str | None = "1007308870656",
+    discrepancy_ticker: str = "FTRE",
 ) -> dict[str, Any]:
     """Plant trade 19's live shape. Returns the key ids."""
     cur = conn.execute(
@@ -180,7 +181,7 @@ def _seed(
             run_id, discrepancy_type,
             trade_id if discrepancy_trade_id == -1 else discrepancy_trade_id,
             fill_id if fill_id_on_discrepancy == -1 else fill_id_on_discrepancy,
-            "FTRE", "price",
+            discrepancy_ticker, "price",
             json.dumps({"price": 18.8}),
             actual_value_json if actual_value_json is not None
             else _live_actual_value_json(),
@@ -888,17 +889,11 @@ def test_r1_M2_a_basic_iso_leg_time_cannot_derive_a_date(conn, raw):
 
 
 def test_r1_M2_a_non_string_leg_time_cannot_derive_a_date(conn):
-    ids = _seed(conn, actual_value_json=_live_actual_value_json())
-    payload = json.loads(conn.execute(
-        "SELECT actual_value_json FROM reconciliation_discrepancies "
-        "WHERE discrepancy_id = ?", (ids["discrepancy_id"],),
-    ).fetchone()[0])
+    # 22-I (0041, trg_rd_immutable): the as-detected evidence is planted at
+    # INSERT, not UPDATEd in afterwards.
+    payload = json.loads(_live_actual_value_json())
     payload["execution_legs"][0]["time"] = 20260731
-    conn.execute(
-        "UPDATE reconciliation_discrepancies SET actual_value_json = ? "
-        "WHERE discrepancy_id = ?",
-        (json.dumps(payload, sort_keys=True), ids["discrepancy_id"]),
-    )
+    ids = _seed(conn, actual_value_json=json.dumps(payload, sort_keys=True))
     conn.commit()
     with pytest.raises(EntryDateCorrectionError, match="unparseable"):
         _apply(conn, ids, to_date="2026-07-31")
@@ -1032,10 +1027,18 @@ def test_r2_M1_a_later_SCALE_IN_fill_cannot_redate_the_whole_trade(conn):
     """
     ids = _seed(conn)
     addon_id = _add_second_entry_fill(conn, ids)
-    conn.execute(
-        "UPDATE reconciliation_discrepancies SET fill_id = ? "
+    # 22-I (0041, trg_rd_immutable): a discrepancy's fill_id is as-detected
+    # evidence, so the mismatch raised ON the add-on is planted as its own row
+    # (the seeded row, re-inserted naming the add-on), never re-pointed.
+    cols = [r[1] for r in conn.execute(
+        "PRAGMA table_info(reconciliation_discrepancies)")
+        if r[1] not in ("discrepancy_id", "fill_id")]
+    cur = conn.execute(
+        f"INSERT INTO reconciliation_discrepancies ({', '.join(cols)}, fill_id) "
+        f"SELECT {', '.join(cols)}, ? FROM reconciliation_discrepancies "
         "WHERE discrepancy_id = ?", (addon_id, ids["discrepancy_id"]),
     )
+    ids = dict(ids, discrepancy_id=int(cur.lastrowid))
     conn.commit()
     with pytest.raises(EntryDateCorrectionError, match="AUTHORITATIVE"):
         _apply(conn, ids)
@@ -1202,11 +1205,8 @@ def test_r3_M2_stale_evidence_whose_qty_no_longer_matches_is_refused(conn):
 
 
 def test_r3_M2_a_ticker_that_no_longer_matches_is_refused(conn):
-    ids = _seed(conn)
-    conn.execute(
-        "UPDATE reconciliation_discrepancies SET ticker = 'OTHER' "
-        "WHERE discrepancy_id = ?", (ids["discrepancy_id"],),
-    )
+    # 22-I (0041, trg_rd_immutable): the ticker is planted at INSERT.
+    ids = _seed(conn, discrepancy_ticker="OTHER")
     conn.commit()
     with pytest.raises(EntryDateCorrectionError, match="no longer matches"):
         _apply(conn, ids)

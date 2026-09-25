@@ -191,10 +191,16 @@ def test_ladder_survives_run_pruning_null_pde_run_id(tmp_path):
     _pde(conn, 5, "WW1", "watch")             # detection_date = 2026-06-03
     hist = _pe(conn, 3, "HIS")                # pre-widen historical -> INCLUDE
     leak = _pe(conn, 6, "LEK")                # post-widen unprovable watch -> EXCLUDE
-    # Simulate run 5 pruning: NULL its surviving watch PDE's pipeline_run_id.
-    conn.execute(
-        "UPDATE pattern_detection_events SET pipeline_run_id = NULL "
-        "WHERE ticker = 'WW1'")
+    # Simulate run 5 pruning: the run row goes, and ON DELETE SET NULL nulls
+    # its surviving watch PDE's pipeline_run_id. 22-I (0041): the raw
+    # `UPDATE ... SET pipeline_run_id = NULL` with the run PRESENT is refused
+    # by trg_pde_no_update (a17: value -> NULL only with the parent GONE), so
+    # the null-out is produced the way the schema produces it (FKs ON).
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    conn.execute("DELETE FROM pipeline_runs WHERE id = 5")
+    assert conn.execute(
+        "SELECT pipeline_run_id FROM pattern_detection_events "
+        "WHERE ticker = 'WW1'").fetchone() == (None,)
     conn.commit()
     got = _included_ids(conn)
     assert hist in got      # boundary (detection_date 2026-06-03) is durable

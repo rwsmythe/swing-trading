@@ -2813,7 +2813,13 @@ def _every_refusal_still_writes(tmp_path, monkeypatch, *, recognised: bool,
         # part of the property.
         conn.execute("DELETE FROM fills WHERE trade_id = ?",
                      (result.trade_id,))
-        conn.execute("DELETE FROM trades WHERE id = ?", (result.trade_id,))
+        # 22-I (0041): the trade's trade_events rows (written by the production entry
+        # service) make this cascade delete REFUSED by trg_te_no_delete; the
+        # guard is dropped on this TEST DB only, for test disposal between
+        # iterations (plan T16 rule (d), with reason).
+        from tests._22i_guard_seam import guards_dropped
+        with guards_dropped(conn, "trg_te_no_delete"):
+            conn.execute("DELETE FROM trades WHERE id = ?", (result.trade_id,))
         conn.commit()
     conn.close()
     return written_rows

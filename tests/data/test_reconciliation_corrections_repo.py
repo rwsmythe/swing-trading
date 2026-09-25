@@ -404,7 +404,12 @@ def test_fk_cascade_from_discrepancy_delete_propagates_to_corrections(
     conn.commit()
     assert repo.get_correction(conn, cid) is not None
 
-    conn.execute("DELETE FROM reconciliation_discrepancies WHERE discrepancy_id = 1")
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_rd_no_delete", "trg_rc_no_delete"):
+        conn.execute("DELETE FROM reconciliation_discrepancies WHERE discrepancy_id = 1")
     conn.commit()
 
     assert repo.get_correction(conn, cid) is None
@@ -423,7 +428,12 @@ def test_fk_cascade_from_run_delete_propagates_to_corrections(
     # Run delete cascades discrepancy delete first, which CASCADEs to corrections
     # — both paths converge on the same destruction. The key behavior to pin
     # is the row is gone after run delete.
-    conn.execute("DELETE FROM reconciliation_runs WHERE run_id = 1")
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_rr_no_delete", "trg_rd_no_delete", "trg_rc_no_delete"):
+        conn.execute("DELETE FROM reconciliation_runs WHERE run_id = 1")
     conn.commit()
     assert repo.get_correction(conn, cid) is None
 
@@ -472,7 +482,12 @@ def test_fk_set_null_from_risk_policy_delete(conn_with_v19_schema_and_run):
     fetched = repo.get_correction(conn, cid)
     assert fetched.risk_policy_id_at_correction == policy_id
 
-    conn.execute("DELETE FROM risk_policy WHERE policy_id = ?", (policy_id,))
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_rp_no_delete"):
+        conn.execute("DELETE FROM risk_policy WHERE policy_id = ?", (policy_id,))
     conn.commit()
 
     fetched_after = repo.get_correction(conn, cid)
@@ -501,7 +516,12 @@ def test_fk_set_null_from_schwab_api_call_delete(conn_with_v19_schema_and_run):
     fetched = repo.get_correction(conn, cid)
     assert fetched.schwab_api_call_id == call_id
 
-    conn.execute("DELETE FROM schwab_api_calls WHERE call_id = ?", (call_id,))
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_sac_no_delete"):
+        conn.execute("DELETE FROM schwab_api_calls WHERE call_id = ?", (call_id,))
     conn.commit()
 
     fetched_after = repo.get_correction(conn, cid)
@@ -525,10 +545,15 @@ def test_fk_set_null_from_superseded_by_correction_delete(
     # not CASCADE-deleted (CASCADE on the parent FK would wipe id1).
     # But correction_id FK on superseded_by_correction_id has ON DELETE SET NULL.
     # The discrepancy FK on id1 still anchors it, so the row survives.
-    conn.execute(
-        "DELETE FROM reconciliation_corrections WHERE correction_id = ?",
-        (id2,),
-    )
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_rc_no_delete", "trg_rc_immutable"):
+        conn.execute(
+            "DELETE FROM reconciliation_corrections WHERE correction_id = ?",
+            (id2,),
+        )
     conn.commit()
     row1 = repo.get_correction(conn, id1)
     assert row1 is not None

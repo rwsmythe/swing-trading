@@ -287,9 +287,14 @@ def test_tier_applies_no_narrowing_when_the_h1_row_is_not_registered(
     historical bad data.
     """
     _seed_h1_shape(conn)
-    conn.execute(
-        "DELETE FROM hypothesis_registry WHERE name = ?", (APLUS_COHORT,),
-    )
+    # 22-I (0041): a registry row absent from the live DB is a state
+    # trg_hr_no_delete (+ its hsh cascade) now refuses to reach by DML; the guard is dropped on this TEST DB
+    # only, to plant it for the reader under test (plan T16 rule (b)).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_hr_no_delete", "trg_hsh_no_delete"):
+        conn.execute(
+            "DELETE FROM hypothesis_registry WHERE name = ?", (APLUS_COHORT,),
+        )
     conn.commit()
 
     result = compute_tier_comparison(conn)

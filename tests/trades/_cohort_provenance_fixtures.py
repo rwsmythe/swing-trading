@@ -364,10 +364,18 @@ def rebase_status_history_recorded_at(
     A fixture that wants an ADMISSIBLE interval says so explicitly here; a
     fixture that wants the retrospective refusal just skips this call.
     """
-    conn.execute(
-        "UPDATE hypothesis_status_history SET recorded_at = ?",
-        (recorded_at,),
-    )
+    # 22-I: 0041's trg_hsh_immutable freezes recorded_at. The seeded rows are
+    # written BY THE MIGRATION (stamped at apply time) and are undeletable, so
+    # the contemporaneous world cannot be re-planted by a raw INSERT; the guard
+    # is dropped on this TEST DB for the rebase only (tests/_22i_guard_seam.py;
+    # a fixture-construction use, reported in the 22-I exec ledger).
+    from tests._22i_guard_seam import guards_dropped
+
+    with guards_dropped(conn, "trg_hsh_immutable"):
+        conn.execute(
+            "UPDATE hypothesis_status_history SET recorded_at = ?",
+            (recorded_at,),
+        )
 
 
 def build_cadl_case(

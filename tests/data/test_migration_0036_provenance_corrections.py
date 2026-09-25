@@ -44,9 +44,37 @@ FILL_SESSION = "2026-08-12"
 FILL_DATETIME = "2026-08-12T16:00:00"
 
 
+# The frozen status interval every row in this module claims (the seeded 0017
+# row, re-stated -- see the ``conn`` fixture).
+HSH_FROZEN_AT = "2026-04-25T00:00:00.000"
+
+
 @pytest.fixture()
 def conn(tmp_path: Path) -> sqlite3.Connection:
-    c = ensure_schema(tmp_path / "swing.db")
+    """A HEAD DB whose seeded 0017 status-history row 1 carries the interval
+    this module's rows claim.
+
+    The seeded row carries `recorded_at` = MIGRATION APPLY TIME, and the
+    citation-graph trigger requires the frozen interval to BE that row, so the
+    fixture states the interval it is going to claim rather than claiming one
+    the DB does not hold. 22-I: from 0041 that row is frozen
+    (trg_hsh_immutable), and a migration-seeded row cannot be re-planted by a
+    raw INSERT -- so the state is planted where the live DB holds it: at v40,
+    BEFORE 0041, which then replays it unchanged (D60).
+    """
+    db = tmp_path / "swing.db"
+    c0 = open_connection(db)
+    try:
+        run_migrations(c0, target_version=40, backup_dir=tmp_path / "bak")
+        c0.execute(
+            "UPDATE hypothesis_status_history SET effective_from = ?, "
+            "effective_to = NULL, recorded_at = ? WHERE history_id = 1",
+            (HSH_FROZEN_AT, HSH_FROZEN_AT),
+        )
+        c0.commit()
+    finally:
+        c0.close()
+    c = ensure_schema(db, backup_dir=tmp_path / "bak")
     try:
         yield c
     finally:
@@ -54,11 +82,11 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 
 def test_expected_schema_version_is_head() -> None:
-    assert EXPECTED_SCHEMA_VERSION == 40
+    assert EXPECTED_SCHEMA_VERSION == 41
 
 
 def test_migration_applies_and_stamps_version_head(conn) -> None:
-    assert _current_version(conn) == 40
+    assert _current_version(conn) == 41
 
 
 def test_table_and_both_indexes_exist_read_from_sqlite_master(conn) -> None:
@@ -168,7 +196,7 @@ def test_rerunning_the_migration_is_a_clean_no_op(conn) -> None:
     ).fetchone()[0]
     run_migrations(conn)
     run_migrations(conn)
-    assert _current_version(conn) == 40
+    assert _current_version(conn) == 41
     after = conn.execute(
         "SELECT sql FROM sqlite_master WHERE name='provenance_corrections'",
     ).fetchone()[0]
@@ -288,15 +316,8 @@ def _seed_parents(conn: sqlite3.Connection) -> dict[str, int]:
         "trade_origin = 'pipeline_aplus' WHERE id = ?",
         ("A+ baseline (aplus)", cand, trade),
     )
-    # The seeded 0017 status-history row carries `recorded_at` = MIGRATION
-    # APPLY TIME. The citation-graph trigger requires the frozen interval to BE
-    # that row, so the fixture states the interval it is going to claim rather
-    # than claiming one the DB does not hold.
-    conn.execute(
-        "UPDATE hypothesis_status_history SET effective_from = ?, "
-        "effective_to = NULL, recorded_at = ? WHERE history_id = 1",
-        ("2026-04-25T00:00:00.000", "2026-04-25T00:00:00.000"),
-    )
+    # The seeded 0017 status-history row 1 was re-stated to the interval this
+    # module claims by the ``conn`` fixture, at v40 (22-I: frozen from 0041).
     conn.commit()
     # THE FOUR FILL-SIDE OPERANDS, READ OFF THE SEEDED FILL (Codex 22A-R15-01).
     # 0037's citation trigger binds the frozen snapshot's quantity / price /

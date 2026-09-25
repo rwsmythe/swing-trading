@@ -1078,9 +1078,14 @@ def test_an_unrelated_corrupt_fire_does_not_block_the_entry_path(tmp_path) -> No
     conn, cfg, candidate_id = build_world(tmp_path, "corrupt-sibling")
     try:
         seed_run(conn, 199, date(2026, 7, 24))
-        conn.execute(
-            "UPDATE evaluation_runs SET action_session_date = '2026-07-25' "
-            "WHERE id = 199")
+        # 22-I (0041): a corrupt sibling evaluation_runs row is a state trg_er_no_update
+        # now refuses to reach by DML; the guard is dropped on this TEST DB
+        # only, to plant it for the reader under test (plan T16 rule (b)).
+        from tests._22i_guard_seam import guards_dropped
+        with guards_dropped(conn, "trg_er_no_update"):
+            conn.execute(
+                "UPDATE evaluation_runs SET action_session_date = '2026-07-25' "
+                "WHERE id = 199")
         conn.execute(
             "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
             "pivot, initial_stop, rs_method) "

@@ -267,10 +267,15 @@ def test_reconciliation_corrections_discrepancy_fk_cascade(
     correction_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
     # Deleting the parent discrepancy cascades to the correction row.
-    conn.execute(
-        "DELETE FROM reconciliation_discrepancies WHERE discrepancy_id = ?",
-        (disc_id,),
-    )
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_rd_no_delete", "trg_rc_no_delete"):
+        conn.execute(
+            "DELETE FROM reconciliation_discrepancies WHERE discrepancy_id = ?",
+            (disc_id,),
+        )
     remaining = conn.execute(
         "SELECT correction_id FROM reconciliation_corrections "
         "WHERE correction_id = ?",
@@ -304,9 +309,14 @@ def test_reconciliation_corrections_run_fk_cascade(
         (disc_id,),
     )
     correction_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    conn.execute(
-        "DELETE FROM reconciliation_runs WHERE run_id = ?", (9001,)
-    )
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_rr_no_delete", "trg_rd_no_delete", "trg_rc_no_delete"):
+        conn.execute(
+            "DELETE FROM reconciliation_runs WHERE run_id = ?", (9001,)
+        )
     remaining = conn.execute(
         "SELECT correction_id FROM reconciliation_corrections "
         "WHERE correction_id = ?",
@@ -627,10 +637,15 @@ def test_review_log_superseded_fk_set_null_on_correction_delete(
     assert pre[0] == correction_id
 
     # Delete the correction; review_log survives with NULL pointer.
-    conn.execute(
-        "DELETE FROM reconciliation_corrections WHERE correction_id = ?",
-        (correction_id,),
-    )
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_rc_no_delete"):
+        conn.execute(
+            "DELETE FROM reconciliation_corrections WHERE correction_id = ?",
+            (correction_id,),
+        )
     post = conn.execute(
         "SELECT superseded_by_correction_id FROM review_log WHERE review_id = ?",
         (review_id,),
@@ -692,10 +707,15 @@ def test_schwab_api_calls_linked_correction_fk_set_null_on_delete(
     ).fetchone()
     assert pre[0] == correction_id
 
-    conn.execute(
-        "DELETE FROM reconciliation_corrections WHERE correction_id = ?",
-        (correction_id,),
-    )
+    # 22-I (0041): the delete is REFUSED in production by the barrier(s)
+    # dropped below, on this TEST DB only, to pin the FK action the DDL
+    # still declares (plan T16 rule (d), with reason).
+    from tests._22i_guard_seam import guards_dropped
+    with guards_dropped(conn, "trg_rc_no_delete"):
+        conn.execute(
+            "DELETE FROM reconciliation_corrections WHERE correction_id = ?",
+            (correction_id,),
+        )
     post = conn.execute(
         "SELECT linked_correction_id FROM schwab_api_calls WHERE call_id = ?",
         (call_id,),

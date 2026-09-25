@@ -193,6 +193,21 @@ def test_get_cadence_complete_404_for_already_completed(test_app_with_completed_
     assert r.status_code == 404
 
 
+def test_post_cadence_complete_409_for_already_completed(test_app_with_completed_daily):
+    """22-I T12a: pins the web re-completion refusal whose text the CLI's
+    service-twin refusal mirrors ("Review already completed")."""
+    with TestClient(test_app_with_completed_daily) as client:
+        r = client.post(
+            "/reviews/1/complete",
+            data={"duration_minutes": "12", "primary_lesson": "Again.",
+                  "next_period_focus": "Again."},
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 409
+    assert "Review already completed" in r.text
+
+
 # ---------------------------------------------------------------------------
 # 3e.16 — trade-activity section rendering.
 # ---------------------------------------------------------------------------
@@ -361,3 +376,36 @@ def test_cadence_references_are_ascii_only(tmp_path: Path):
         # ASCII (no '§', em-dash, smart quotes...).
         for section in sections:
             section.encode("ascii")
+
+
+def test_post_cadence_complete_409_when_the_service_twin_refuses(
+    test_app_with_completed_daily, monkeypatch,
+):
+    """22-I Codex R1 Major 1 (CHARC-ruled in scope): the route's pre-check
+    reads a PENDING snapshot (the losing side of a concurrent re-completion),
+    the DB row is already completed, so ``complete_review_atomic``'s
+    SELECT-first inside BEGIN IMMEDIATE raises ``ReviewAlreadyCompletedError``.
+    The route must translate it to its existing 409 text, not a 500."""
+    from dataclasses import replace as dc_replace
+
+    import swing.data.repos.review_log as review_log_repo
+
+    real_get = review_log_repo.get
+
+    def stale_pending_get(conn, review_id):
+        row = real_get(conn, review_id)
+        assert row is not None and row.completed_date is not None
+        return dc_replace(row, completed_date=None)
+
+    monkeypatch.setattr(review_log_repo, "get", stale_pending_get)
+    with TestClient(test_app_with_completed_daily,
+                    raise_server_exceptions=False) as client:
+        r = client.post(
+            "/reviews/1/complete",
+            data={"duration_minutes": "12", "primary_lesson": "Again.",
+                  "next_period_focus": "Again."},
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 409, r.status_code
+    assert "Review already completed" in r.text

@@ -137,3 +137,37 @@ def test_review_complete_list_mode_shows_pending(populated_db_with_pending_daily
     ])
     assert result.exit_code == 0
     assert "daily" in result.output.lower()
+
+
+def test_cli_review_complete_refuses_completed_row(populated_db_with_pending_daily):
+    """22-I T12a (RD S3-F3 (A)): a re-completion of an ALREADY-completed row is
+    REFUSED at the CLI with the web's 409 text -- exit 1, no traceback, every
+    column of the row unchanged. Before 22-I the CLI silently re-derived every
+    frozen aggregate and overwrote completed_date."""
+    cfg_path, db_path = populated_db_with_pending_daily
+    runner = CliRunner()
+    args = ["--config", str(cfg_path), "review", "complete", "--review-id", "1",
+            "--duration-minutes", "12", "--primary-lesson", "Inaugural review.",
+            "--next-period-focus", "Same setup."]
+    first = runner.invoke(main, args)
+    assert first.exit_code == 0, first.output
+
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    before = conn.execute("SELECT * FROM review_log WHERE review_id = 1").fetchone()
+    conn.close()
+
+    second = runner.invoke(main, [
+        "--config", str(cfg_path), "review", "complete", "--review-id", "1",
+        "--duration-minutes", "55", "--primary-lesson", "Rewrite attempt.",
+        "--next-period-focus", "Other."])
+    assert second.exit_code == 1, second.output
+    assert "Review already completed" in second.output
+    assert "Traceback" not in second.output
+    assert not isinstance(second.exception, Exception) or isinstance(
+        second.exception, SystemExit), repr(second.exception)
+
+    conn = sqlite3.connect(db_path)
+    after = conn.execute("SELECT * FROM review_log WHERE review_id = 1").fetchone()
+    conn.close()
+    assert after == before

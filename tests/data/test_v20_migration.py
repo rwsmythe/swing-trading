@@ -230,11 +230,11 @@ def test_v20_migration_lands_all_tables(tmp_path: Path) -> None:
     # ensure_schema walks to HEAD (v23 post-Phase-14-SB3 migration 0023).
     version_row = conn.execute("SELECT version FROM schema_version").fetchone()
     assert version_row is not None
-    assert version_row[0] == 40, (
+    assert version_row[0] == 41, (
         f"schema_version should be HEAD post-migration, got {version_row[0]}"
     )
-    assert EXPECTED_SCHEMA_VERSION == 40, (
-        "EXPECTED_SCHEMA_VERSION must equal 23 in db.py (post-Phase-14-SB3)"
+    assert EXPECTED_SCHEMA_VERSION == 41, (
+        "EXPECTED_SCHEMA_VERSION must equal 41 in db.py (22-I, migration 0041)"
     )
 
     conn.close()
@@ -829,7 +829,7 @@ def test_schema_version_row_is_head(tmp_path: Path) -> None:
     db_path = tmp_path / "pin_v20.db"
     conn = ensure_schema(db_path)
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 40
+    assert version == 41
     conn.close()
 
 

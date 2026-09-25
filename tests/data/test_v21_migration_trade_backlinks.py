@@ -549,9 +549,13 @@ def test_fk_cascade_on_pattern_evaluations_delete_sets_trade_pattern_evaluation_
                 conn, trade,
                 event_ts="2026-05-22T12:30:00.000",
             )
-        # Direct delete of pattern_evaluations row.
-        conn.execute("DELETE FROM pattern_evaluations WHERE id=?", (pe_id,))
-        conn.commit()
+        # Direct delete of pattern_evaluations row. 22-I: pins 0021's FK
+        # action, a schema property 0041's trg_pev_no_delete makes unreachable
+        # in production (AL-10, clause pin) -- the guard dropped on this test DB.
+        from tests._22i_guard_seam import guards_dropped
+        with guards_dropped(conn, "trg_pev_no_delete"):
+            conn.execute("DELETE FROM pattern_evaluations WHERE id=?", (pe_id,))
+            conn.commit()
         row = conn.execute(
             "SELECT id, pattern_evaluation_id FROM trades WHERE id=?", (tid,),
         ).fetchone()
@@ -606,8 +610,12 @@ def test_pattern_evaluations_direct_delete_sets_trade_pattern_evaluation_id_null
                 conn, trade_b,
                 event_ts="2026-05-22T12:31:00.000",
             )
-        conn.execute("DELETE FROM pattern_evaluations WHERE id=?", (pe_id,))
-        conn.commit()
+        # 22-I: pins 0021's FK action, a schema property 0041's
+        # trg_pev_no_delete makes unreachable in production (AL-10, clause pin).
+        from tests._22i_guard_seam import guards_dropped
+        with guards_dropped(conn, "trg_pev_no_delete"):
+            conn.execute("DELETE FROM pattern_evaluations WHERE id=?", (pe_id,))
+            conn.commit()
         row_a = conn.execute(
             "SELECT pattern_evaluation_id FROM trades WHERE id=?", (tid_a,),
         ).fetchone()
@@ -728,7 +736,7 @@ def test_expected_schema_version_is_head() -> None:
     it asserts is bumped by each schema-bumping arc, in its own commit. See
     ``tests/data/test_migration_0035_fills_trades_price_divergence.py``.
     """
-    assert EXPECTED_SCHEMA_VERSION == 40, (
+    assert EXPECTED_SCHEMA_VERSION == 41, (
         f"EXPECTED_SCHEMA_VERSION must be the HEAD schema, got {EXPECTED_SCHEMA_VERSION}"
     )
 
@@ -793,7 +801,7 @@ def test_schema_version_row_is_head(
     conn = _v21_conn(tmp_path)
     try:
         ver = conn.execute("SELECT version FROM schema_version").fetchone()
-        assert ver[0] == 40, f"schema_version != HEAD, got {ver[0]}"
+        assert ver[0] == 41, f"schema_version != HEAD, got {ver[0]}"
     finally:
         conn.close()
 

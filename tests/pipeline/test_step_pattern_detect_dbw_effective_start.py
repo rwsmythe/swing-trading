@@ -68,6 +68,10 @@ class _StubLease:
 
 @pytest.fixture
 def dbw_env(tmp_path: Path):
+    return _build_env(tmp_path)
+
+
+def _build_env(tmp_path: Path, *, with_criteria: bool = True):
     conn = ensure_schema(tmp_path / "d53_1.db")
     run_id = int(conn.execute(
         """
@@ -97,7 +101,7 @@ def dbw_env(tmp_path: Path):
         criteria=tuple(
             CriterionResult(f"tt{i}", "trend_template", "pass")
             for i in range(1, 9)
-        ),
+        ) if with_criteria else (),
     )])
     conn.commit()
     bars = _bars_uvwx_dbw()
@@ -190,13 +194,16 @@ def test_dbw_template_slice_first_bar_is_trough_1(dbw_env, monkeypatch):
     assert np.array_equal(got, expected)
 
 
-def test_zero_score_dbw_keeps_generator_start(dbw_env):
+def test_zero_score_dbw_keeps_generator_start(tmp_path: Path):
     """A zero-score DBW verdict is a non-detection: its zero envelope
     stamps trough_1_date at the window END, so an implementation that took
     trough_1_date without the non-zero condition would persist the END as
-    the start. The Stage-2 gate is closed here (no trend-template passes)."""
-    dbw_env["conn"].execute("DELETE FROM candidate_criteria")
-    dbw_env["conn"].commit()
+    the start. The Stage-2 gate is closed here (no trend-template passes).
+
+    22-I: the no-criteria state is PLANTED (the candidate inserted with no
+    criteria) rather than made by deleting them -- 0041's trg_cc_no_delete
+    refuses a candidate_criteria DELETE."""
+    dbw_env = _build_env(tmp_path, with_criteria=False)
     _run_step(dbw_env)
     start, end, score, ev_json = _row(dbw_env, "double_bottom_w")
     window = _generator_window(dbw_env)

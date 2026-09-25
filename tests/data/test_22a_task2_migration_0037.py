@@ -97,7 +97,7 @@ def _v36(tmp_path: Path, name: str = "v36.db") -> sqlite3.Connection:
 # The migration itself
 # ---------------------------------------------------------------------------
 def test_expected_schema_version_is_head() -> None:
-    assert EXPECTED_SCHEMA_VERSION == 40
+    assert EXPECTED_SCHEMA_VERSION == 41
 
 
 def test_migration_applies_to_a_v36_fixture_and_stamps_37(tmp_path: Path) -> None:
@@ -134,7 +134,7 @@ def test_running_the_migration_twice_is_a_no_op(conn) -> None:
     # wherever HEAD is.  (The sibling at `test_migration_applies_to_a_v36_
     # fixture_and_stamps_37` builds a v36 database and IS about 0037's own
     # result; it correctly stays pinned at 37.)
-    assert _current_version(conn) == 40
+    assert _current_version(conn) == 41
     assert conn.execute(
         "SELECT * FROM candidates_immutability_epoch").fetchall() == before
 
@@ -1666,6 +1666,30 @@ _NO_REPLACE_PK = {
     "trg_lve_no_replace": ("latch_view_events", "view_event_id"),
     # Arc 22-B (0040): the attestation table's append-only triple.
     "trg_eia_no_replace": ("entry_intent_attestations", "attestation_id"),
+    # Arc 22-I (0041): the REPLACE-exposure sweep's barriers, EXISTING tables.
+    # A composite PK HIDES the rowid rather than removing it, so candidate_criteria
+    # carries the -1 idiom on its hidden rowid (Reviewer B B-1, CHARC ruling) and
+    # the idiom test below also asserts its composite-key clause.
+    "trg_pfo_no_replace": ("pattern_forward_observations", "observation_id"),
+    "trg_cc_no_replace": ("candidate_criteria", "rowid"),
+    "trg_te_no_replace": ("trade_events", "id"),
+    "trg_fac_no_replace": ("finviz_api_calls", "call_id"),
+    "trg_pev_no_replace": ("pattern_evaluations", "id"),
+    "trg_er_no_replace": ("evaluation_runs", "id"),
+    "trg_pde_no_replace": ("pattern_detection_events", "detection_id"),
+    "trg_rr_no_replace": ("reconciliation_runs", "run_id"),
+    "trg_rd_no_replace": ("reconciliation_discrepancies", "discrepancy_id"),
+    "trg_rc_no_replace": ("reconciliation_corrections", "correction_id"),
+    "trg_sac_no_replace": ("schwab_api_calls", "call_id"),
+    "trg_yfc_no_replace": ("yfinance_calls", "call_id"),
+    "trg_aes_no_replace": ("account_equity_snapshots", "snapshot_id"),
+    "trg_rp_no_replace": ("risk_policy", "policy_id"),
+    "trg_hr_no_replace": ("hypothesis_registry", "id"),
+    "trg_hsh_no_replace": ("hypothesis_status_history", "history_id"),
+    "trg_dmr_no_replace": ("daily_management_records", "management_record_id"),
+    "trg_rl_no_replace": ("review_log", "review_id"),
+    "trg_pex_no_replace": ("pattern_exemplars", "id"),
+    "trg_wla_no_replace": ("watchlist_archive", "id"),
 }
 
 # NEW tables additionally carry `CHECK (pk > 0)`; an EXISTING table cannot
@@ -1767,6 +1791,8 @@ def test_the_pk_conflict_clause_uses_the_minus_one_idiom(
         (trigger,)).fetchone()
     assert body is not None, f"{trigger} is not installed"
     body = " ".join(body[0].split())
+    if trigger == "trg_cc_no_replace":  # 22-I B-1: hidden rowid AND composite key
+        assert "candidate_id = NEW.candidate_id AND criterion_name = NEW.criterion_name" in body
     assert f"NEW.{pk} != -1 AND {pk} = NEW.{pk}" in body, (
         f"{trigger} does not carry the -1 idiom on {pk}")
     assert f"NEW.{pk} IS NOT NULL" not in body, (
