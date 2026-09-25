@@ -133,6 +133,18 @@ def _normalize_trade_event_date_to_iso(raw: str, *, field_name: str = "date") ->
     return f"{raw}T16:00:00"
 
 
+class ExitPriceRefusedError(ValueError):
+    """22-F C1-24: an exit price the ``fills.price`` column would refuse.
+
+    Raised by ``record_exit`` BEFORE any statement, for exactly the column's
+    refusal set -- ``<= 0`` (the CHECK) and NaN (the NOT NULL) -- so the
+    operator gets a typed refusal instead of an ``IntegrityError`` at the
+    INSERT. A ``ValueError`` subclass, so the existing ``except ValueError``
+    delivery at the web exit POST and the CLI ``trade exit`` reaches it with
+    no new clause. The CHECK stays the backstop.
+    """
+
+
 def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     """Write an exit/trim/stop fill and drive the state machine.
 
@@ -153,6 +165,10 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
         raise ValueError(f"invalid exit reason: {req.reason}")
     if req.shares <= 0:
         raise ValueError(f"shares must be > 0; got {req.shares}")
+    if not (req.exit_price > 0):
+        raise ExitPriceRefusedError(
+            f"exit price must be > 0; got {req.exit_price!r}"
+        )
 
     trade = get_trade(conn, req.trade_id)
     if trade is None:

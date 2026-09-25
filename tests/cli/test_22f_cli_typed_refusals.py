@@ -302,3 +302,23 @@ def test_A5c_A5d_override_correction_multi_row_head_is_typed(tmp_path):
     _assert_typed(result, "MULTI-ROW")
     assert _correction_count(db_path) == before
     assert _trade_row(db_path, world["trade_id"]) == before_trade
+
+
+# ---------------------------------------------------------------------------
+# T-A6 -- C1-24 CLI half: `trade exit --exit-price 0`.
+# ---------------------------------------------------------------------------
+
+def test_A6b_A6c_trade_exit_price_zero_is_typed_and_writes_nothing(tmp_path):
+    """A6-b / A6-c. PRE-FIX: `record_exit` INSERTs `price=0` and the
+    `fills.price` CHECK raises `sqlite3.IntegrityError` -- not a
+    `ValueError`, so T-A4's clause does not catch it -> a traceback.
+    POST-FIX: `ExitPriceRefusedError(ValueError)` rides T-A4's clause:
+    exit 1, typed; a FRESH read shows nothing written."""
+    runner, cfg = _setup(tmp_path)
+    _entry(runner, cfg)
+    before = _counts(_db(tmp_path))
+    args = _exit_args(cfg, trade_id=1, shares=1)
+    args[args.index("--exit-price") + 1] = "0"
+    result = runner.invoke(main, args)
+    _assert_typed(result, "exit price must be > 0")
+    assert _counts(_db(tmp_path)) == before
