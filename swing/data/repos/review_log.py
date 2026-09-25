@@ -12,11 +12,14 @@ web route instead surfaces *unreviewed closed trades* via
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, timedelta
 
 from swing.data.models import ReviewLog, Trade
+
+log = logging.getLogger(__name__)
 
 
 class ReviewAlreadyCompletedError(ValueError):
@@ -191,6 +194,27 @@ def insert_pre_create(
         raise
 
 
+def _rollback_or_raise(conn: sqlite3.Connection, op: str,
+                       original: BaseException) -> None:
+    """22-F T-F8 (C2-15, S-D39, the 22-A template): ROLLBACK only an open
+    transaction; a ROLLBACK that ALSO fails is raised CHAINED from
+    ``original`` with one ERROR record."""
+    if not conn.in_transaction:
+        return
+    try:
+        conn.execute("ROLLBACK")
+    except BaseException as cleanup_error:  # noqa: BLE001
+        from swing.trades.entry import log_contained_note
+        still = conn.in_transaction
+        log_contained_note(
+            log, cleanup_error,
+            "22-F: %s failed (%s) AND the ROLLBACK of its transaction failed "
+            "(%s); in_transaction reads %s after the failed rollback; this "
+            "connection MUST BE DISCARDED either way.",
+            op, original, cleanup_error, still)
+        raise cleanup_error from original
+
+
 def complete_review_atomic(
     conn: sqlite3.Connection,
     *,
@@ -245,8 +269,8 @@ def complete_review_atomic(
             "complete_review_atomic: next_period_focus is required"
         )
 
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         # Step 1: read the period from review_log:
         row = conn.execute(
             "SELECT period_start, period_end, completed_date FROM review_log "
@@ -355,8 +379,8 @@ def complete_review_atomic(
             ),
         )
         conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
+    except BaseException as exc:  # noqa: BLE001 -- 22-F T-F8
+        _rollback_or_raise(conn, "complete_review_atomic", exc)
         raise
 
 
