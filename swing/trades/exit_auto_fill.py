@@ -156,6 +156,9 @@ _OMISSION_REASON_TEXT: dict[str, str] = {
     "no_execution_price": "no execution-grain price",
     "no_quantity": "no resolvable execution quantity",
     "sub_one_share_quantity": "an execution quantity below one whole share",
+    "non_finite_quantity": (
+        "a non-finite execution quantity from the broker (a data-quality alarm)"
+    ),
 }
 
 
@@ -1168,8 +1171,8 @@ def _build_candidate(
     2): a refusal that leaves OTHER candidates standing produces a list that
     looks complete while omitting a real fill, and the caller can only say so
     out loud if it knows why the omission happened. The reasons are
-    ``'no_execution_price'``, ``'no_quantity'``, ``'sub_one_share_quantity'``
-    and ``'no_usable_date'``, and EVERY one of them is announced -- see
+    ``'no_execution_price'``, ``'no_quantity'``, ``'non_finite_quantity'``,
+    ``'sub_one_share_quantity'`` and ``'no_usable_date'``, and EVERY one of them is announced -- see
     ``_OMISSION_REASON_TEXT``, which the caller renders into the operator's
     advisory on both the populated and the all-refused exit.
 
@@ -1185,9 +1188,13 @@ def _build_candidate(
     would have relocated the incompleteness rather than removed it, which is
     why the choice between reasons is gone instead.
 
-    ``no_quantity`` and ``'sub_one_share_quantity'`` remain MUTUALLY EXCLUSIVE
-    (the ``elif``): a quantity that is missing or non-positive is not also a
-    quantity that truncates away.
+    ``no_quantity``, ``'non_finite_quantity'`` and ``'sub_one_share_quantity'``
+    remain MUTUALLY EXCLUSIVE (the ``elif`` chain): a quantity that is missing
+    or non-positive is not also a quantity that truncates away. The chain is
+    checked in this order: ``None`` or ``<= 0`` -> ``no_quantity``; then
+    non-finite -> ``non_finite_quantity``; then ``int(quantity) <= 0`` ->
+    ``sub_one_share_quantity`` (so a ``-inf`` would read ``no_quantity``; no
+    validated order can carry one).
 
     Uses execution-grain helpers per CLAUDE.md "Pass-1-tier-1 Sub-bundle 1"
     discipline — do NOT consume raw ``so.price``.
@@ -1203,6 +1210,11 @@ def _build_candidate(
         reasons.append("no_execution_price")
     if quantity is None or quantity <= 0:
         reasons.append("no_quantity")
+    # 22-F C1-25 (BANK-3): ``int()`` below raises on a non-finite quantity (a
+    # leg-sum overflow -- each leg is validated finite), which escaped the
+    # build loop and took the exit form down. Refused and announced instead.
+    elif not math.isfinite(quantity):
+        reasons.append("non_finite_quantity")
     # THE TRUNCATION IS SPELLED, NOT A THRESHOLD RE-DERIVED FROM IT
     # (orchestrator B review round 2, MAJOR B). ``int(quantity) <= 0`` is the
     # exact expression the constructor call below performs, checked against the
