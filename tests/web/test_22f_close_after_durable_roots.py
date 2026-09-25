@@ -511,3 +511,55 @@ def test_append_close_notice_escapes_and_keeps_the_status():
     assert out.body.decode("utf-8") == (
         '<p>row</p><div class="close-notice" role="alert">'
         'The &lt;x&gt; IS recorded</div>')
+
+
+
+def test_stop6_interrupt_at_the_close_is_not_answered_with_the_success_body(
+        seeded_db: tuple[Config, Path], monkeypatch, caplog):
+    """STOP-6 (CHARC): an INTERRUPT at the close after the pin committed is
+    the operator's stop signal -- re-raised BARE out of the route, so the
+    route's success body is NOT built or returned (the renderer after the
+    close is a counting wrapper: zero calls); the helper's record names the
+    interrupt; the write is durable (fresh read).
+
+    The route function is called DIRECTLY, not through `TestClient`: an
+    interrupt escaping into the client's event-loop portal kills the portal
+    thread's loop and hangs the client's shutdown (measured), which is the
+    TEST HARNESS's limit, not the route's -- the server's own interrupt
+    handling owns a propagated interrupt in production."""
+    from types import SimpleNamespace
+
+    from fastapi.responses import HTMLResponse
+
+    import swing.web.routes.watchlist as watchlist_routes
+    from tests._22f_proxies import CountingWrapper
+
+    root = next(r for r in ROOTS if r.id == "watchlist-pin")
+    cfg, _cfg_path = seeded_db
+    extra = root.world(cfg, monkeypatch)
+    before = root.probe(cfg, extra)
+
+    class _InterruptOnClose(FailingVerbsConn):
+        def close(self) -> None:
+            self.calls["close"] += 1
+            self._real.close()
+            raise KeyboardInterrupt("planted interrupt on close")
+
+    built = patch_conn_opener(monkeypatch, root.target, _InterruptOnClose)
+    render = CountingWrapper(lambda *_a, **_k: HTMLResponse("success body"))
+    monkeypatch.setattr(watchlist_routes, "_render_expanded_row", render)
+    request = SimpleNamespace(app=SimpleNamespace(
+        state=SimpleNamespace(cfg=cfg)))
+    returned: list = []
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(KeyboardInterrupt,
+                           match="planted interrupt on close"):
+            returned.append(watchlist_routes.watchlist_pin(
+                request, "AAAA", pinned="on", pin_note="future breakout"))
+    assert len(built) == 1 and built[0].calls["close"] == 1  # did-it-fire
+    assert render.calls == 0  # nothing after the close ran
+    assert returned == []  # no success body was returned
+    records = _helper_records(caplog)
+    assert len(records) == 1
+    assert "KeyboardInterrupt" in records[0].getMessage()
+    assert root.probe(cfg, extra) != before  # durable (fresh read)

@@ -1,17 +1,21 @@
 """22-F T-G0 -- unit tests for the web close-after-commit helper,
 `swing/web/routes/__init__.py::close_after_commit(conn, log, *, what)`.
 
-It closes the connection; on a close failure it logs ONE contained ERROR
-record and returns the one-line notice
+It closes the connection; on a close failure (an `Exception`) it logs ONE
+contained ERROR record and returns the one-line notice
 `"<what> IS recorded; the database connection could not be closed cleanly
-(see the log)."`; it NEVER raises (an interrupt at the close included).  A
-working close returns None and logs nothing.  Driven with the closing proxy
+(see the log)."`.  An INTERRUPT at the close (a BaseException that is not an
+Exception) is logged with the same record, the interrupt named, and
+re-raised BARE (STOP-6, CHARC: the operator's stop signal is never
+contained).  A working close returns None and logs nothing.  Driven with the closing proxy
 (`FailingVerbsConn`); every case asserts exactly one `close()` recorded.
 """
 from __future__ import annotations
 
 import logging
 import sqlite3
+
+import pytest
 
 from tests._22f_proxies import FailingVerbsConn
 
@@ -43,7 +47,10 @@ def test_close_failure_returns_the_notice_and_logs_once(caplog):
     assert "planted on close" in errors[0].getMessage()
 
 
-def test_an_interrupt_at_the_close_is_contained_too(caplog):
+def test_an_interrupt_at_the_close_is_logged_and_re_raised_bare(caplog):
+    """STOP-6 (CHARC): `except Exception` keeps the containment above; an
+    INTERRUPT at the close is logged with the same record (the interrupt
+    named) and re-raised BARE -- never swallowed into the notice."""
     class _InterruptOnClose(FailingVerbsConn):
         def close(self) -> None:
             self.calls["close"] += 1
@@ -52,9 +59,16 @@ def test_an_interrupt_at_the_close_is_contained_too(caplog):
 
     proxy = _InterruptOnClose(sqlite3.connect(":memory:"))
     with caplog.at_level(logging.ERROR):
-        notice = _helper()(proxy, _LOG, what="The snapshot")
+        with pytest.raises(KeyboardInterrupt,
+                           match="planted interrupt on close") as info:
+            _helper()(proxy, _LOG, what="The snapshot")
     assert proxy.calls["close"] == 1
-    assert notice is not None and notice.startswith("The snapshot IS recorded")
+    assert info.value.__cause__ is None
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    msg = errors[0].getMessage()
+    assert "The snapshot IS recorded and CLOSING the database connection" in msg
+    assert "KeyboardInterrupt" in msg
 
 
 def test_a_raising_log_sink_does_not_make_the_helper_raise():

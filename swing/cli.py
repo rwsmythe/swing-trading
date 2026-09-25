@@ -1288,6 +1288,18 @@ def _close_after_writes(
       contained sinks, and a NORMAL return (the root exits 0 -- the ledger
       has the row, and a failure exit would invite a retry against it, D68).
 
+    An INTERRUPT at the close (a BaseException that is not an Exception:
+    KeyboardInterrupt, SystemExit, GeneratorExit) is the operator's STOP
+    SIGNAL -- never swallowed, never retyped (STOP-6, CHARC).  The three
+    branches above are for an ``Exception``; for an interrupt:
+
+    * A REFUSAL in flight -> one contained record naming the refusal text and
+      the interrupt, then the interrupt itself is raised ``from`` the refusal.
+    * DURABLE and no refusal -> the ERROR record and the ``WARN: the write IS
+      recorded; ...`` line (the durable fact is still stated), then the
+      interrupt is re-raised BARE (click turns it into its own ``Aborted!``).
+    * NOTHING durable and NO refusal -> the bare close above: it propagates.
+
     ``durable`` is bound by the CALLER at each writer's OWN return, never
     cached earlier.  ``recorded`` (optional) names the durable write in the
     WARN line and the ERROR record, for a root whose retry would append a
@@ -1300,7 +1312,7 @@ def _close_after_writes(
         return
     try:
         conn.close()
-    except BaseException as close_exc:  # noqa: BLE001 -- the CLASS
+    except Exception as close_exc:  # noqa: BLE001 -- the CLASS
         from swing.trades.entry import ascii_safe, log_contained, safe_text
         if pending_refusal is not None:
             raise click.ClickException(
@@ -1324,6 +1336,32 @@ def _close_after_writes(
                 "emitted cleanly -- a logging handler RAISED ("
                 + safe_text(_log_error) + "); the ledger is unaffected."),
                 prefer_err=True)
+    except BaseException as interrupt:
+        # 22-F STOP-6 (CHARC): the non-Exception remainder is the operator's
+        # stop signal -- contain Exception, re-raise the rest.  A sink
+        # failure travels as a NOTE on the interrupt (`log_contained_note`).
+        from swing.trades.entry import ascii_safe, log_contained_note, safe_text
+        interrupt_text = safe_text(interrupt)
+        if pending_refusal is not None:
+            log_contained_note(
+                _pe_backfill_logging.getLogger(__name__), interrupt,
+                "22-F: a refusal is pending (%s) and an INTERRUPT arrived "
+                "while CLOSING the database connection (%s); the interrupt is "
+                "re-raised, chained from the refusal.",
+                ascii_safe(pending_refusal.format_message()), interrupt_text)
+            raise interrupt from pending_refusal
+        recorded_text = (
+            "" if recorded is None else f" -- the recorded write: {recorded}")
+        log_contained_note(
+            _pe_backfill_logging.getLogger(__name__), interrupt,
+            "22-F: a write IS recorded and an INTERRUPT arrived while CLOSING "
+            "the database connection afterwards (%s); the ledger is "
+            "unaffected; the interrupt is re-raised.%s",
+            interrupt_text, recorded_text)
+        _echo_either_sink(ascii_safe(
+            "WARN: the write IS recorded; the connection close was "
+            "interrupted: " + interrupt_text + recorded_text), prefer_err=True)
+        raise
 
 
 @trade_group.command("exit")

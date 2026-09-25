@@ -116,3 +116,80 @@ def test_durable_close_failure_names_the_recorded_write_when_given(capsys,
     errors = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert len(errors) == 1
     assert "evaluation run 42" in errors[0].getMessage()
+
+
+# ---- STOP-6 (CHARC, 2026-09-25): an INTERRUPT at the close -----------------
+# A BaseException that is not an Exception (KeyboardInterrupt, SystemExit,
+# GeneratorExit) is the operator's STOP SIGNAL: never swallowed, never
+# retyped.  `except Exception` keeps the three branches above exactly.
+
+class _InterruptOnClose(FailingVerbsConn):
+    """The real close runs (the handle is released), then the interrupt."""
+
+    def close(self) -> None:
+        self.calls["close"] += 1
+        self._real.close()
+        raise KeyboardInterrupt("planted interrupt on close")
+
+
+def _interrupt_proxy() -> _InterruptOnClose:
+    return _InterruptOnClose(sqlite3.connect(":memory:"))
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_interrupt_at_close_with_refusal_pending_is_re_raised_from_the_refusal(
+        durable, capsys, caplog):
+    """Refusal pending -> ONE record naming the refusal and the interrupt,
+    then the INTERRUPT itself re-raised `from` the refusal (not a
+    ClickException carrying it as text)."""
+    proxy = _interrupt_proxy()
+    refusal = click.ClickException("Trade 7 REFUSED: already closed")
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(KeyboardInterrupt,
+                           match="planted interrupt on close") as info:
+            _helper()(proxy, durable=durable, pending_refusal=refusal)
+    assert proxy.calls["close"] == 1
+    assert info.value.__cause__ is refusal
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    msg = errors[0].getMessage()
+    assert "Trade 7 REFUSED: already closed" in msg
+    assert "KeyboardInterrupt" in msg
+    assert "WARN" not in capsys.readouterr().err
+
+
+def test_interrupt_at_close_after_durable_write_warns_then_re_raises_bare(
+        capsys, caplog):
+    """Durable, no refusal -> the ERROR record and the WARN line (the durable
+    fact IS still stated), then the interrupt re-raised BARE."""
+    proxy = _interrupt_proxy()
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(KeyboardInterrupt,
+                           match="planted interrupt on close") as info:
+            _helper()(proxy, durable=True, pending_refusal=None,
+                      recorded="evaluation run 42")
+    assert proxy.calls["close"] == 1
+    assert info.value.__cause__ is None
+    err = capsys.readouterr().err
+    assert "WARN: the write IS recorded; " in err
+    assert "KeyboardInterrupt" in err
+    assert "the recorded write: evaluation run 42" in err
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "IS recorded" in errors[0].getMessage()
+    assert "KeyboardInterrupt" in errors[0].getMessage()
+    assert "evaluation run 42" in errors[0].getMessage()
+
+
+def test_interrupt_at_close_nothing_durable_no_refusal_propagates_bare(
+        capsys, caplog):
+    """The third state -- the byte-unchanged bare close: the interrupt
+    propagates as it always has, no record, no WARN (a PIN on both trees)."""
+    proxy = _interrupt_proxy()
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(KeyboardInterrupt) as info:
+            _helper()(proxy, durable=False, pending_refusal=None)
+    assert proxy.calls["close"] == 1
+    assert info.value.__cause__ is None
+    assert caplog.records == []
+    assert capsys.readouterr().err == ""

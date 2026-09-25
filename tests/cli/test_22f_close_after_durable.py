@@ -963,3 +963,29 @@ def test_G1a_eval_notice_names_the_run_id(tmp_path, monkeypatch):
     warn = [ln for ln in result.output.splitlines() if _WARN in ln]
     assert len(warn) == 1, result.output
     assert f"evaluation run {run_id}" in warn[0]
+
+
+def test_stop6_interrupt_at_the_close_stops_the_root(tmp_path, monkeypatch):
+    """STOP-6 (CHARC): an INTERRUPT at the close after a durable write is the
+    operator's stop signal.  The root does NOT continue past the close: the
+    trailing `Trade 1 stop -> $175.00` echo is not reached, the WARN still
+    states the durable fact, and click turns the propagated interrupt into
+    its own `Aborted!` exit 1.  The write is durable (fresh read)."""
+    root = next(r for r in ROOTS if r.id == "trade-stop-adjust")
+    w = root.world(tmp_path, monkeypatch)
+    before = root.probe(w)
+
+    class _InterruptOnClose(FailingVerbsConn):
+        def close(self) -> None:
+            self.calls["close"] += 1
+            self._real.close()
+            raise KeyboardInterrupt("planted interrupt on close")
+
+    built = patch_conn_opener(monkeypatch, root.target, _InterruptOnClose)
+    result = w.runner.invoke(main, root.argv(w))
+    assert sum(p.calls["close"] for p in built) >= 1  # did-it-fire
+    assert "Trade 1 stop -> $175.00" not in result.output
+    assert "Aborted!" in result.output
+    assert result.exit_code == 1, (result.output, repr(result.exception))
+    assert "WARN: the write IS recorded; " in result.output
+    assert root.probe(w) != before

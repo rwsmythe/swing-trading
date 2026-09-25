@@ -12,15 +12,17 @@ def close_after_commit(conn, log: logging.Logger, *, what: str) -> str | None:
     durable), so it must not become a 500 that tells the operator the write
     failed and invites a retry against a durable row (the D68 class).
 
-    Closes; on failure logs ONE contained ERROR record and returns the
-    one-line notice ``"<what> IS recorded; the database connection could not
-    be closed cleanly (see the log)."``; returns None on a clean close.
-    NEVER raises -- an interrupt at the close included, because the write it
-    would misreport is already durable.
+    Closes; on an ``Exception`` from the close logs ONE contained ERROR
+    record and returns the one-line notice ``"<what> IS recorded; the
+    database connection could not be closed cleanly (see the log)."``;
+    returns None on a clean close.  An INTERRUPT at the close (a
+    BaseException that is not an Exception) is the operator's stop signal:
+    it is logged with the same record, the interrupt named, and re-raised
+    BARE -- the server's own interrupt handling owns it (STOP-6, CHARC).
     """
     try:
         conn.close()
-    except BaseException as exc:  # noqa: BLE001 -- the CLASS
+    except Exception as exc:  # noqa: BLE001 -- the CLASS
         from swing.trades.entry import log_contained, safe_text
         log_contained(
             log,
@@ -29,6 +31,17 @@ def close_after_commit(conn, log: logging.Logger, *, what: str) -> str | None:
             what, safe_text(exc))
         return (f"{what} IS recorded; the database connection could not be "
                 "closed cleanly (see the log).")
+    except BaseException as interrupt:
+        # 22-F STOP-6 (CHARC): contain Exception, re-raise the rest.  A sink
+        # failure travels as a NOTE on the interrupt (`log_contained_note`).
+        from swing.trades.entry import log_contained_note, safe_text
+        log_contained_note(
+            log, interrupt,
+            "22-F: %s IS recorded and CLOSING the database connection "
+            "afterwards RAISED (%s); the write is unaffected; the INTERRUPT "
+            "is re-raised.",
+            what, safe_text(interrupt))
+        raise
     return None
 
 
