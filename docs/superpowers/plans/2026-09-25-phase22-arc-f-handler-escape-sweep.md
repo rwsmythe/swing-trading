@@ -450,12 +450,14 @@ Claims in `_resolve_affected_target`'s docstring (`reconciliation_auto_correct.p
 | (unstated) raises `ValueError` when all three FKs are NULL | true (`:2199`) | ADD |
 **Pre-commit gate:** `grep -rn "<each deleted docstring phrase>" tests/` empty (the clearance-attaches precondition), output in the commit message. `git diff --stat` shows the one file; an AST comparison of the module with docstrings stripped is identical (the commit states the method and that every changed line was read).
 
-### Amendments (CHARC, R1-gate packet item 2 -- all three GRANTED; the text of record is the ledger block quote)
+### Amendments (CHARC: A-1..A-3 at the plan R1-gate packet item 2; A-4 GRANTED and R1-07 DECLINED at the executing Reviewer A round-1 gate -- the text of record for each is its ledger block quote)
 | id | file | status | bound | task |
 |---|---|---|---|---|
 | **A-1** | `swing/trades/exit.py` | GRANTED | the one price guard and its typed error (`ExitPriceRefusedError(ValueError)`); nothing else in the file moves | T-A6 |
 | **A-2** | `swing/trades/cohort_provenance_correction.py` | GRANTED | message truth + the `in_transaction` re-read at `:2388-2419` and `:3547-3560`; no control-flow change | T-F9 |
 | **A-3** | `swing/trades/entry_intent_assignment.py` | CONFIRMED | the D39 shape on `assign`'s ROLLBACKs (`:644`, `:654`, `:667-668`); R7's COMMIT at `:665` stays | T-F8 |
+| **A-4** | `swing/trades/stop_adjust.py` | GRANTED (exec R1 gate, item 2) | ONE additive change: `adjust_stop` returns `bool` (True when `update_stop_with_event` ran, False on the equal-stop no-op); both callers that bind `durable` (CLI `trade stop-adjust`, web `POST /trades/{id}/stop`) bind it from the return | R1-05 |
+| **R1-07** | `swing/data/repos/pipeline.py` | DECLINED (exec R1 gate, item 3); BANKED to CHARC's register | none -- `force_clear` ignoring `rowcount` (a false "force-cleared" over a zero-row UPDATE) is PRE-ARC and needs a race (a completion between the pre-read and the UPDATE); the arc's own contribution is a false WARN only when that race coincides with a close failure -- two independent rare events, and severity does not pull a pre-existing defect into an arc (harness 5.1). The register row carries the one-liner shape (`return cur.rowcount`; the CLI binds `durable = rows > 0` and says "run already finished"), for the D40/D42-adjacent queue | -- |
 
 ---
 
