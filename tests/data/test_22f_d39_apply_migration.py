@@ -123,3 +123,73 @@ def test_c2_21_d_control_migrates(v40, tmp_path, monkeypatch):
     conn.close()
     assert _mig(built).calls["rollback"] == 0
     assert _version(v40) == EXPECTED_SCHEMA_VERSION
+
+
+# -- R1-06 (Reviewer A round 1): the `finally` PRAGMA restores when an error
+# is ALREADY in flight.  PRE-FIX a failing restore REPLACED the script error
+# (or the rollback's cleanup error) and skipped the second restore.  POST-FIX
+# with an error in flight each restore is attempted independently, a failing
+# one is logged (ERROR) and the in-flight error propagates unchanged; with
+# none in flight the restore's raise is unchanged (B-04 depends on it).
+# The proxy prefix is matched against the UPPER-CASED statement; `prior_fk`
+# is 1 (open_connection sets it) and `prior_legacy` 0, so `=ON` / `=OFF`
+# select the RESTORE statements only (the pre-try toggle is
+# `foreign_keys=OFF`).
+_FK_RESTORE = "PRAGMA FOREIGN_KEYS=ON"
+_LEGACY_RESTORE = "PRAGMA LEGACY_ALTER_TABLE=OFF"
+
+
+def _restore_records(caplog):
+    return [r for r in caplog.records if "R1-06" in r.getMessage()]
+
+
+@pytest.mark.parametrize("prefix,other", [
+    (_FK_RESTORE, "PRAGMA legacy_alter_table=OFF"),
+    (_LEGACY_RESTORE, "PRAGMA foreign_keys=ON"),
+])
+def test_r1_06_restore_fails_while_script_error_in_flight(
+        prefix, other, v40, tmp_path, monkeypatch, caplog):
+    built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
+        real, fail_executescript=sqlite3.OperationalError,
+        fail_sql_prefix=prefix))
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(sqlite3.OperationalError) as info:
+            _ensure(v40, tmp_path)
+    mig = _mig(built)
+    assert mig.calls["failed_sql"] == 1
+    assert "planted on executescript" in str(info.value)
+    assert other in mig.sql_log
+    assert len(_restore_records(caplog)) == 1
+    assert _version(v40) == _V_BEFORE
+
+
+def test_r1_06_restore_fails_while_cleanup_error_in_flight(
+        v40, tmp_path, monkeypatch, caplog):
+    built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
+        real, fail_executescript=sqlite3.OperationalError, fail_rollback=True,
+        fail_sql_prefix=_FK_RESTORE))
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(sqlite3.OperationalError) as info:
+            _ensure(v40, tmp_path)
+    mig = _mig(built)
+    assert mig.calls["failed_sql"] == 1
+    assert mig.calls["rollback"] >= 1
+    assert "cannot rollback" in str(info.value)
+    assert "planted on executescript" in str(info.value.__cause__)
+    assert len(_records(caplog)) == 1
+    assert len(_restore_records(caplog)) == 1
+
+
+def test_r1_06_restore_fails_with_nothing_in_flight_raises_pin(
+        v40, tmp_path, monkeypatch, caplog):
+    """PIN (both trees): the script commits, the restore fails -> the
+    restore's error is raised (B-04's trigger), nothing logged here."""
+    built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
+        real, fail_sql_prefix=_FK_RESTORE))
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(sqlite3.OperationalError,
+                           match="planted on PRAGMA FOREIGN_KEYS=ON"):
+            _ensure(v40, tmp_path)
+    assert _mig(built).calls["failed_sql"] == 1
+    assert _restore_records(caplog) == []
+    assert _version(v40) == EXPECTED_SCHEMA_VERSION

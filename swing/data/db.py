@@ -572,6 +572,9 @@ def _apply_migration(conn: sqlite3.Connection, sql_path: Path) -> None:
     # the `finally` -- restore-prior, never a hard OFF.
     prior_legacy = conn.execute("PRAGMA legacy_alter_table").fetchone()[0]
     conn.execute("PRAGMA foreign_keys=OFF")
+    # 22-F R1-06: the exception propagating out of the try, if any -- the
+    # script's error, or the rollback's cleanup error raised from it.
+    in_flight: BaseException | None = None
     try:
         conn.executescript(sql)
         conn.commit()
@@ -579,6 +582,7 @@ def _apply_migration(conn: sqlite3.Connection, sql_path: Path) -> None:
         # 22-F T-F10 (C2-21, S-D39): an interrupt mid-script rolls back too,
         # and a rollback that ALSO fails is raised CHAINED from the script's
         # error with one MUST BE DISCARDED record -- never in its place.
+        in_flight = exc
         if conn.in_transaction:
             try:
                 conn.rollback()
@@ -591,16 +595,38 @@ def _apply_migration(conn: sqlite3.Connection, sql_path: Path) -> None:
                     "transaction failed (%s); in_transaction reads %s after "
                     "the failed rollback; this connection MUST BE DISCARDED "
                     "either way.", sql_path.name, exc, cleanup_error, still)
+                in_flight = cleanup_error
                 raise cleanup_error from exc
         raise
     finally:
-        conn.execute(
+        fk_restore = (
             "PRAGMA foreign_keys=ON" if prior_fk else "PRAGMA foreign_keys=OFF"
         )
-        conn.execute(
+        legacy_restore = (
             "PRAGMA legacy_alter_table=ON" if prior_legacy
             else "PRAGMA legacy_alter_table=OFF"
         )
+        if in_flight is None:
+            # Nothing in flight: a failing restore raises, unchanged (the
+            # migration is already COMMITTED; `swing db-migrate`'s B-04
+            # re-read depends on this raise).
+            conn.execute(fk_restore)
+            conn.execute(legacy_restore)
+        else:
+            # 22-F R1-06: an error is already in flight -- each restore is
+            # attempted independently, and a failing one is logged against
+            # the in-flight error, never raised in its place.
+            for restore in (fk_restore, legacy_restore):
+                try:
+                    conn.execute(restore)
+                except Exception as restore_error:  # noqa: BLE001
+                    from swing.trades.entry import log_contained_note
+                    log_contained_note(
+                        log, in_flight,
+                        "22-F R1-06: migration %s failed (%s); restoring "
+                        "`%s` afterwards ALSO failed (%s); the original "
+                        "error propagates.", sql_path.name, in_flight,
+                        restore, restore_error)
 
 
 def _preflight_migration_0004(conn: sqlite3.Connection) -> None:
