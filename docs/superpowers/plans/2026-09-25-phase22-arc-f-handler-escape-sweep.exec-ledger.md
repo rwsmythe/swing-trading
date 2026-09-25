@@ -159,6 +159,26 @@ Author: RD (seat `swing-rd-20260924-2100`). Courier: the orchestrator. Text of r
 
 **Encoding (cell 4):** branch (a). T-D5 executes on items 1 and 4 as its spec; (b) and (c) are refused -- no seed command, no auto-seed. Sequencing (the cell's call per the ruling): T-D5 is executed NOW, before Part E. **Recorded deviation (orchestrator-authorized):** cell 4's order is T-D5 (on this ruling), then Part E, Part F, Part G, against plan section 12's Part D -> Part E order; the only change is that Part E would have started while T-D5 was held.
 
+#### STOP-3 -- RULED by CHARC (seat `swing-charc-20260924-1903`), 2026-09-25 16:29Z; courier: the orchestrator. **SUPERSEDES the item-4 DISCRIMINATOR of the STOP-2 ruling above** (STOP-2 items 1-3 and the `risk_policy.py:139-141` retype stand). Text of record: `comms/orchestrator/read/20260925T162916Z-charc-22-f-stop-3-ruled-supersedes-stop-2-item.md` (body below the front-matter, verbatim)
+
+> CHARC RULING -- 22-F STOP-3 (mail 20260925T162822Z). PRIMARY: CHARC. SUPERSEDES the item-4 DISCRIMINATOR of my STOP-2 ruling (its items 1-3 and the retype stand). Courier: the orchestrator, block quote beside STOP-2's with this marked as the supersession.
+>
+> OWNED FIRST: my item-4 discriminator ("each of the six -> typed refusal, NOTHING written") was derived from the case in view -- the two supersede-only writers -- not from the code's states. Four of the six are CASCADE writers whose override-then-cascade ORDER is a documented Phase-9 design (cli_config.py:131-136; routes/config.py:124-132: "cascade fires AFTER the override write so a cascade failure leaves the cfg-side change committed"), with the cascade failure CONTAINED by design (`except Exception` at cli_config.py:175/:253, routes/config.py:171/:247) and pinned by the plan's own D5-k, which I kept. My predecessor recorded exactly this class against himself on the D67/D69 rider ("enumerate the states the loop can be in at that line before ruling a message text"); this is the same error one seat later. Read at this seat on main: the two comments and the four containment clauses, as you cite them.
+>
+> RULING: BRANCH (i), as the cell recommends, with the message states spelled.
+> - policy set and import-from-toml (supersede-only; risk_policy.py:211-213 rolls the write back): per-root ClickException with the STOP-2 item-1 text; nothing written; zero active rows after. As STOP-2 ruled.
+> - The four cascade writers KEEP their override-first order and their containment; D5-k UNCHANGED. Each gains an `except NoActivePolicyError` AHEAD of its `except Exception` (a guard-and-handler edit in two envelope files), and its message says WHAT WAS OBSERVED in that state, in this order: the override WAS written (or deleted), the risk_policy cascade did NOT fire because no policy row is active, and the recovery is the STOP-2 item-1 text (restore from a gate image or a hand repair; no swing command creates a policy). Every other cascade failure cause keeps today's import-from-toml hint, which is TRUE for those causes (an active row exists to supersede). Exit 0 / 204 stay: the durable operation completed and the failure that followed is contained -- the D67/D69 B-2 shape.
+> - The retype at risk_policy.py:139-141 stands; it is what lets the cascade writers' new clause discriminate the no-active-policy cause from every other exception.
+> - (i') REFUSED: leaving the D35 text live on four surfaces is the thing STOP-2 exists to stop. (ii) REFUSED: reversing a documented write order on a config surface is a behaviour change outside section 0.3, and it would invert D5-k for no operator benefit.
+>
+> DISCRIMINATORS (replacing item 4's), on a raw-zeroed temp DB: the two supersede-only writers -> typed refusal, exit 1, nothing written, zero active rows after. The four cascade writers -> exit 0 / 204 as today; the override observed written/deleted on a fresh read; the message contains the item-1 recovery and NO registered command name; zero active rows after (no auto-seed). CONTROL: on a DB with an active row, each cascade writer supersedes as today (byte-unchanged happy path). D5-k stays as the precedence pin.
+>
+> THE D35 PIN ENCODING NOTE -- TAKEN as the cell wrote it: for every registered top-level command or group name N of swing.cli.main, f"swing {N}" does not occur in the message, and "command" is asserted not to be a registered name. My sentence "No swing command creates a policy." stays; the pin is by registered names, not by the substring. The plan's old text fails it, which is the RED.
+>
+> Register (mine): the STOP-2 row gains this facet -- the cascade writers' contained hint named a command that fails in exactly the state the hint is shown for (D35 in a WARNING), fixed here by cause-specific text.
+
+**Encoding (cell 4):** branch (i). T-D5 executes on STOP-2 items 1-3 + the retype, with STOP-3's shapes and discriminators (they REPLACE STOP-2 item 4's). The cell was about to start T-E1 (nothing written) when the ruling arrived; T-D5 runs now, then T-E1.
+
 ## Findings for CHARC's register (FND-1..FND-4)
 
 (Filled as the executing tasks reach them.)
