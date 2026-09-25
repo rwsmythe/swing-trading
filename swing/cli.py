@@ -2161,22 +2161,41 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
                 # `click.exceptions.Abort` (that conversion only covers
                 # KeyboardInterrupt/EOFError), so it is never confused with
                 # an operator-driven abort. Before the boundary this is
-                # byte-unchanged (propagates, as today). After it, the
-                # sink is unusable for further interaction -- there is no
-                # answer to read -- so the loop STOPS (never silently
-                # treats the unreached row as "skip") and falls through to
-                # the existing summary/close sequence with whatever this
-                # invocation already wrote.
+                # byte-unchanged (propagates, as today).
+                #
+                # AFTER the boundary: RULED BY REPLACEMENT (CHARC, Reviewer B
+                # finding B-2, 2026-09-25, mail 20260925T021418Z; UNDOES R2's
+                # catch-break-exit-0 above). The invocation is NOT complete --
+                # it stopped short of its rows -- so exit 0 is the wrong last
+                # signal (clause (d)'s amended first bullet: the prompt's I/O
+                # is INTERACTION, not output, and its failure is clause (e)'s
+                # in-flight exception). One BEST-EFFORT contained WARN line
+                # is emitted first (prefer_err=True, through
+                # `_echo_either_sink(ascii_safe(...))`), recorded through
+                # `log_contained`, and then the ORIGINAL OSError is
+                # RE-RAISED BARE (nothing chained -- nothing else is in
+                # flight yet; the `finally` block's clause (e) handling,
+                # untouched, takes it from here). The summary line is NOT
+                # printed on this path -- it would read as completion. A
+                # re-run without --force/--trade-id re-prompts only the
+                # NULL rows (L2); the written rows stay durable.
                 if n_written == 0:
                     raise
+                _echo_either_sink(ascii_safe(
+                    "WARN (partial): backfill-intent wrote " + safe_text(n_written)
+                    + " row(s) durably this invocation; prompting for trade "
+                    + safe_text(tid) + " FAILED (" + safe_text(exc) + "); "
+                    "this row and the rest are UNANSWERED and left NULL "
+                    "for a re-run; the ledger is unaffected."),
+                    prefer_err=True)
                 log_contained(
                     _pe_backfill_logging.getLogger(__name__),
                     "D69: backfill-intent wrote %s row(s) durably this "
-                    "invocation; prompting for trade %s FAILED (%s) -- the "
-                    "output sink is unusable, so remaining rows are left "
-                    "for a future run; the ledger is unaffected.",
+                    "invocation; prompting for trade %s FAILED (%s) -- this "
+                    "row and the rest are UNANSWERED and left NULL for a "
+                    "re-run; the ledger is unaffected.",
                     n_written, tid, safe_text(exc))
-                break
+                raise
             if choice in ("skip", ""):
                 n_skipped_op += 1
                 continue

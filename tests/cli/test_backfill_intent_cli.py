@@ -483,17 +483,22 @@ def test_backfill_post_boundary_output_failure_is_contained(
     assert _read_intent(db_path, t1) == "standard"
 
 
-def test_backfill_prompt_render_failure_after_commit_stops_gracefully(
+def test_backfill_prompt_render_failure_after_commit_warns_and_propagates(
     tmp_path: Path, caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Codex R2 Major: click.prompt renders its own question text through
-    click.termui's internal (same-module) echo, which this command's
-    _emit/_echo_either_sink machinery cannot reach -- a broken sink there
-    raises OSError, not click.exceptions.Abort. With TWO NULL rows and only
-    the FIRST prompt answered before the sink breaks: the first row commits
-    (n_written=1, crossing the boundary), the second row's prompt raises
-    OSError, and the command must stop gracefully (not crash) -- the
-    unanswered row is left for a future run, never silently skipped."""
+    """RULED BY REPLACEMENT (CHARC, Reviewer B finding B-2, 2026-09-25,
+    mail 20260925T021418Z; UNDOES R2's catch-break-exit-0). click.prompt
+    renders its own question text through click.termui's internal
+    (same-module) echo, which this command's _emit/_echo_either_sink
+    machinery cannot reach -- a broken sink there raises OSError, not
+    click.exceptions.Abort. With TWO NULL rows and only the FIRST prompt
+    answered before the sink breaks: the first row commits (n_written=1,
+    crossing the boundary), the second row's prompt raises OSError. The
+    invocation is NOT complete (it stopped short of trade t2's row), so
+    branch (i) PROPAGATE applies: exit nonzero, the ORIGINAL OSError
+    propagates, one contained WARN line names n_written=1 and trade t2,
+    and the summary line (which would read as completion) is NOT printed.
+    The unanswered row is left NULL for a re-run, never silently skipped."""
     import click
 
     runner, cfg, db_path = _setup(tmp_path)
@@ -514,9 +519,20 @@ def test_backfill_prompt_render_failure_after_commit_stops_gracefully(
             main, ["--config", str(cfg), "trade", "backfill-intent"],
             input="standard\n",
         )
-    assert res.exit_code == 0, res.output
+    assert res.exit_code != 0
+    assert isinstance(res.exception, OSError)
     assert _read_intent(db_path, t1) == "standard"
     assert _read_intent(db_path, t2) is None  # never silently skipped/set
+    # The WARN line (post-boundary, contained) names n_written=1 and t2 --
+    # via the contained sink (stdout/stderr), OR its log record if the
+    # sink itself is what's under test elsewhere; here the sink is intact
+    # so it lands in res.output.
+    assert "WARN (partial):" in res.output
+    assert "1 row(s)" in res.output
+    assert f"trade {t2}" in res.output
+    # The summary line ("N set, ...") must NOT appear -- it would read as
+    # completion over an invocation that stopped short.
+    assert "skipped-already-set" not in res.output
     assert any("D69" in r.message and "prompting for trade" in r.message
                for r in caplog.records)
 
@@ -526,7 +542,11 @@ def test_backfill_prompt_render_failure_zero_written_raises_as_today(
 ) -> None:
     """Codex R2 Major, the byte-unchanged control: a prompt-render OSError
     with NOTHING written yet (n_written == 0) must still propagate exactly
-    as it always has -- no swallow, no graceful stop."""
+    as it always has -- no swallow, no WARN line, pre-boundary byte-
+    unchanged. This is B-2's declared BOUNDARY TWIN (CHARC ruling
+    20260925T021418Z, THE SHAPE): the same hostile prompt raising on the
+    FIRST prompt (before any row is written) takes the untouched
+    ``if n_written == 0: raise`` arm."""
     import click
 
     runner, cfg, db_path = _setup(tmp_path)
@@ -543,6 +563,7 @@ def test_backfill_prompt_render_failure_zero_written_raises_as_today(
         )
     assert res.exit_code != 0
     assert isinstance(res.exception, OSError)
+    assert "WARN" not in res.output
 
 
 # Codex R3 (round 3 of the D67+D69 review, re-run after the aborted round):
