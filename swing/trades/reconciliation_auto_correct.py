@@ -32,7 +32,6 @@ fns NEVER call ``conn.commit()`` / ``conn.rollback()``.
 """
 from __future__ import annotations
 
-import contextlib
 import functools
 import json
 import logging
@@ -56,6 +55,30 @@ from swing.trades.reconciliation_classifier import ClassificationResult
 from swing.trades.reconciliation_validators import default_validator_chain
 
 logger = logging.getLogger(__name__)
+
+
+def _rollback_or_raise_discard(conn: sqlite3.Connection, original: BaseException,
+                               where: str) -> None:
+    """22-F S-D39 (the 22-A template, `cohort_provenance_correction.py`):
+    roll back THIS function's transaction after ``original``; a rollback that
+    ALSO fails is never suppressed -- it is raised CHAINED from ``original``
+    with one ERROR record saying the connection must be discarded.  Returns
+    normally when there is nothing to roll back or the rollback works (the
+    caller then re-raises ``original``)."""
+    if not conn.in_transaction:
+        return
+    try:
+        conn.rollback()
+    except BaseException as cleanup_error:  # noqa: BLE001 -- the CLASS
+        from swing.trades.entry import log_contained_note
+        still = conn.in_transaction
+        log_contained_note(
+            logger, cleanup_error,
+            "22-F: %s failed (%s) AND the rollback of its transaction failed "
+            "(%s); in_transaction reads %s after the failed rollback; this "
+            "connection MUST BE DISCARDED either way.",
+            where, original, cleanup_error, still)
+        raise cleanup_error from original
 
 
 # ---------------------------------------------------------------------------
@@ -749,8 +772,8 @@ def apply_tier1_correction(
             "compose via _apply_tier1_correction_inner inside an existing tx"
         )
 
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         result = _apply_tier1_correction_inner(
             conn,
             discrepancy_id=discrepancy_id,
@@ -762,9 +785,8 @@ def apply_tier1_correction(
         )
         conn.commit()
         return result
-    except Exception:
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F S-D39 (F2)
+        _rollback_or_raise_discard(conn, exc, "apply_tier1_correction")
         raise
 
 
@@ -886,8 +908,8 @@ def apply_tier2_resolution(
             "compose via _apply_tier2_resolution_inner inside an existing tx"
         )
 
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         result = _apply_tier2_resolution_inner(
             conn,
             discrepancy_id=discrepancy_id,
@@ -903,9 +925,8 @@ def apply_tier2_resolution(
         )
         conn.commit()
         return result
-    except Exception:
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F S-D39 (F2)
+        _rollback_or_raise_discard(conn, exc, "apply_tier2_resolution")
         raise
 
 
@@ -962,8 +983,8 @@ def apply_source_direction_resolution(
             "caller MUST NOT hold an open transaction."
         )
 
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         disc = get_discrepancy(conn, discrepancy_id=discrepancy_id)
         if disc is None:
             raise SourceResolutionRejected(
@@ -1078,9 +1099,8 @@ def apply_source_direction_resolution(
                 f"unknown source-direction choice {choice_code!r}")
 
         conn.commit()
-    except Exception:
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F S-D39 (F2)
+        _rollback_or_raise_discard(conn, exc, "apply_source_direction_resolution")
         raise
 
 
@@ -1103,8 +1123,8 @@ def apply_tier3_override(
             "compose via _apply_tier3_override_inner inside an existing tx"
         )
 
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         result = _apply_tier3_override_inner(
             conn,
             correction_id=correction_id,
@@ -1114,9 +1134,8 @@ def apply_tier3_override(
         )
         conn.commit()
         return result
-    except Exception:
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F S-D39 (F2)
+        _rollback_or_raise_discard(conn, exc, "apply_tier3_override")
         raise
 
 
@@ -1139,8 +1158,8 @@ def stamp_pending_ambiguity(
             "compose via _stamp_pending_ambiguity_inner inside an existing tx"
         )
 
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         _stamp_pending_ambiguity_inner(
             conn,
             discrepancy_id=discrepancy_id,
@@ -1149,9 +1168,8 @@ def stamp_pending_ambiguity(
             allow_pending_update=allow_pending_update,
         )
         conn.commit()
-    except Exception:
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F S-D39 (F2)
+        _rollback_or_raise_discard(conn, exc, "stamp_pending_ambiguity")
         raise
 
 
