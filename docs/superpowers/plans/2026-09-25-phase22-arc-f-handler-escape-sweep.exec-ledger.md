@@ -52,6 +52,28 @@ The exit side (T-A3) is NOT affected: `_build_candidate` collects every reason, 
 
 **State at the stop:** T-A1 committed (`1961f0ad`); T-A2 not started in code; nothing uncommitted.
 
+#### STOP-1 -- RULED by RD (2026-09-25 15:08Z): (a) CORRECT THE DRIVE; A2-b one leg, A2-c guard, A2-b'/A2-c' controls REQUIRED; T-A2 RE-CLEARED
+
+Author: RD (seat `swing-rd-20260924-2100`). Courier: the orchestrator. Text of record: role-mail `20260925T150827Z-rd-stop-1-ruling-a-correct-the-drive-a2-b-o.md`. The literal block quote follows, the message body verbatim:
+
+> STOP-1 RULING (RD, sole ruler): (a) -- CORRECT THE DRIVE, NOT THE FIX -- with the controls made REQUIRED, not optional. The fact is verified at this seat before ruling: _compute_execution_price returns None when executions is None or empty (schwab_reconciliation.py:446-453, the docstring's own first bullet), and entry_auto_fill.py:431-444 returns kind="empty" on a None price BEFORE :445-446 is reached. So the A2-b/A2-c drives as I cleared them never reach the guard: they pass on both trees. The cell's measurement is the instrument; my clearance of those two rows rested on a drive I did not compute under the naive substitute, which is the rule I wrote on 2026-09-08 and did not apply here.
+>
+> THE CORRECTION TO MY OWN SUPERSESSION (item 3, R1 gate), stated so the ledger carries it beside the original: "[0,1) IS reachable via the so.quantity fallback" is FALSE AT THE ENTRY SITE. The fallback is only taken when executions is None or empty, and on that same condition the price branch pre-empts the quantity guard. At the entry site [0,1) is reachable ONLY through fractional legs (each leg > 0 and finite, models.py:216, so a leg sum is > 0 and can sit in (0,1)); exact 0.0 is reachable by NO validated path. At the EXIT site the fallback half still holds: _build_candidate derives price and quantity independently and collects every reason (exit_auto_fill.py:1192-1200 on this tree), so executions=None with so.quantity in [0,1) yields ("no_execution_price", "sub_one_share_quantity") there. Two sites, two reachability statements; I had written one for both.
+>
+> THE ROWS AS RULED:
+> - A2-b: ONE execution leg, quantity=0.5, price=10.0 (a valid SchwabExecutionLeg). Pre-fix: populated, shares == 0 (the cell's measured ('populated', 0, None) IS the C1-27 defect, on the real path). Post-fix: kind="empty", advisory contains "below one whole share", NOT "non-finite".
+> - A2-c: a GUARD TEST planted at swing.trades.entry_auto_fill._resolve_match_quantity returning 0.0, counting wrapper asserted called >= 1 (R4-01), labelled "unreachable on validated models" exactly as A2-a and A2-d are. Pre-fix: populated, shares == 0. Post-fix: empty, sub-one-share advisory.
+> - A2-b' and A2-c' (REQUIRED, the former drives kept as CONTROLS): executions=None with quantity=0.5 and with quantity=0.0 -> kind="empty" with the "lacks execution-grain price" advisory on BOTH trees, and the advisory does NOT contain "below one whole share". These pin the pre-emption ORDER that made the original rows vacuous: if a later arc moves the price branch below the quantity guard, the control goes red and says why. A control that pins the ordering is what turns this STOP into a test instead of a memory.
+> - A2-a, A2-a', A2-d, A2-e, A2-f: UNCHANGED.
+>
+> WHY (a) AND NOT (b): (b) leaves C1-27's real content with no discriminator in the arc that fixes it -- a fix with no RED is a fix nobody can tell is present, and the whole 22-F plan rests on RED-first. The fix code is unaffected, so (a) costs two drives and two controls.
+>
+> RE-OPEN AND RE-CLEARANCE, by my own terms: a table-row change re-opens my item-2 read. It is RE-CLEARED HERE on T-A2 as ruled above; the clearance attaches to the ledger transcription of these rows and to the RED output of A2-b and A2-c quoted in the T-A2 commit body (the plan's own RED-first rule, which is what this STOP was). T-A1, T-A3 and A6-f are untouched and their clearance stands. Nothing else re-opens.
+>
+> For the phase record: this is the third correction of one sentence of mine in one arc (the citation, the reachability, now the drive), each caught by a seat that RAN the thing -- the census's grep, the orchestrator's read, the cell's measurement. Rulings stated as semantics survived every time; every stated fact about a path I had not executed did not.
+
+**Encoding obligations (orchestrator, no ruling of its own):** the T-A2 rows are executed AS RULED above; the plan's T-A2 table is superseded for A2-b/A2-c by this block, and A2-b'/A2-c' are added. The T-A2 commit body quotes the RED output of A2-b and A2-c (RD's re-clearance attaches to it). A2-a, A2-a', A2-d, A2-e, A2-f, T-A1, T-A3 and A6-f are unchanged.
+
 ## Findings for CHARC's register (FND-1..FND-4)
 
 (Filled as the executing tasks reach them.)
