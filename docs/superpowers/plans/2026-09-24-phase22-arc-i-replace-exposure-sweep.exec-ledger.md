@@ -338,3 +338,43 @@ The round read B2 by execution: on independent in-memory v40 / v41 DBs (FK ON, `
 Evidence: `~/swing-data/review-transcripts/22-i-exec/reviewer-b-3/` (`b-prompt.md` sha256 `2d7ac25b...`, `b-diff.txt` = `git diff 555acce3..d9845352` sha256 `68202719...`, `b-review.txt`, `b-exit.txt`, `run_b.sh`). Five assertions, read on disk at the orchestrator's seat: banner `gpt-5.6-sol` / high; `^ERROR` 0; `tokens used` 522,469; verdict `NO_NEW_CRITICAL_MAJOR`; exit 0. NO findings of any severity. C1-C11 all PASS, by execution on in-memory DBs: 510 conflict-path probes over all 27 no_replace tables (every INSERT form, INSERT...SELECT, and rowid moves under UPDATE / OR IGNORE / OR REPLACE), no destructive path admitted; 15/15 alias moves (pk / rowid / oid / _rowid_ / RoWiD) refused on the three pk_immutable tables; 259 class-transition probes on the twins; the tooltip SQL executed; 46 seam sites within the four kinds. AL-1..AL-13's rationales were reviewed and none challenged. **This is the B transcript CHARC's merge gate reads.**
 
 RD's docs-only minor (AL-11's citations spelled from the repo root) lands in the next commit, AFTER this B pass, per RD's own ruling that it re-opens nothing (no test asserts on the citation text).
+
+## The gates, the merge and the W0-W5 witness (2026-09-25, orchestrator generation of 06:2xZ)
+
+**Final-tree suite** on `8605a255`: `RESOLVER C:\Users\rwsmy\swing-trading\.worktrees\22-i-exec\swing\__init__.py`, 14845 passed / 13 skipped / 0 failed, exit 0 (posted `20260925T063325Z`).
+
+**CHARC merge gate**: the transcript half and the on-disk half PASSED on `d9845352`, re-checked on `8605a255` (mail `20260925T062436Z`); CLOSED on `530132d5` (mail `20260925T064614Z`). **RD single gate read**: PASS on items (i)-(v) and the five ALSO items (mail `20260925T062716Z`); CLEARED on receipt of the suite line (mail `20260925T063349Z`).
+
+**Merge** `530132d5` (`--no-ff`; parents `75680d15` + `8605a255`; trailers `[]`). **One composition conflict, resolved in the merge commit:** `tests/metrics/test_22b_r1_3_surfaces_census.py` pins `swing/cli.py` call-site lines. D67/D69 on main moved them +182 and 22-I +5; each side's values were wrong for the merged file. The anchors were measured on the merged `cli.py` by grep: 2444 / 5504 / 5552. The `cli.py` hunks do not overlap. **Merged-head suite:** `530132d5`, `RESOLVER C:\Users\rwsmy\swing-trading\swing\__init__.py`, 14857 passed / 13 skipped / 0 failed, exit 0 (= 14845 + D67/D69's 12).
+
+RD's ruling on the resolution (courier: orchestrator; mail `20260925T064702Z`), block-quoted (excerpt: the ruling and its reason):
+
+> RD RULING on the 22-I merge-commit conflict resolution (orchestrator mail 20260925T064503Z). PRIMARY: RD (my clearance clause is the thing being read). RULING: the resolution does NOT re-open my clearance. It stands on 530132d5.
+>
+> WHY IT DOES NOT RE-OPEN: my clearance attaches to the tree I verified, 8605a255, and re-opens on a code or test change to THAT tree. The branch is unchanged. What the merge commit holds beyond a clean union is the composition of two arcs' independent re-derivations of the same anchors -- a value neither branch could have held, because each measured its own cli.py. Re-deriving line-number anchors on the merged file is the merge-integration gate doing its job (harness 5.1: the composition of two arcs is reviewable only at merge), and it is the orchestrator's gate, not mine.
+>
+> WHAT WOULD HAVE RE-OPENED IT: a resolution that edited a hunk of either arc's own change, or that touched any file beyond the two above -- and item 2 is the check that proves neither happened, which is why the ruling is on a read and not on the disclosure.
+
+CHARC concurred from his seat ("from my seat nothing re-opens"). He filed a register note, which RD endorsed: this census test has needed re-deriving on three consecutive landings, so anchor it on call text, not line numbers. It is queued for the orchestrator.
+
+### Witness table (operator present, 2026-09-24 ~20:47-20:55 HST; baseline run 184)
+
+| Step | Action | Result |
+|---|---|---|
+| W0 | The operator stopped `swing web` (PID 40608, started 09-24 06:43, pre-merge code) | Port 8080 has no listener; the PID is gone; no swing python process remains |
+| W1 | Plain `sqlite3`, `timeout=0`: `BEGIN EXCLUSIVE; ROLLBACK` | Acquired and rolled back; live version (`mode=ro`) 40 |
+| W2 | The `--no-ff` merge (above) | `EXPECTED_SCHEMA_VERSION` 41 read from the merged code; RESOLVER is the repo root |
+| W3 | The operator ran `swing db-migrate` | "Backup (pre-migration gate, integrity-verified): ...\backups\swing-pre-22i-migration-20260925T065023Z.db" / "schema version 41". backups/ 47 -> 48: ONE gate image, 1,693,622,272 B (= the pre-migrate live DB), reads 40 |
+| W4 | Read-only checks | Live `mode=ro` version 41; `quick_check` ok; `foreign_key_check` []; `schema_manifest.py --db` CLEAN (D51's second live use); pex/wla/lve `pk_immutable` present |
+| W5 | `probe_22i_guard_census.py --live-ro`, then `--make-copy`, then `--post-migrate --copy` | Live catalogue: 105 triggers on 29 tables, `recursive_triggers` 0, nonpositive_pk 0, `foreign_key_check` []. Copy: `#SUMMARY PASS=1491 FAIL=34 INFO=140`; FAIL by section 22/10/2; G-0041 722 rows, 0 FAIL. RD attended and PASSED it from his own reads (mail `20260925T065506Z`) |
+| after | The operator restarted `swing web` | PID 48672 started 20:54:35 HST; `/`, `/journal` and `/watchlist` all 200 on v41 |
+
+**W5 hash, disclosed.** The `#TARGET`-stripped output hash (`29e45495...`) differs from the b2-fix reference (`f525af5d...`). The difference is data, not schema. With digits masked, 17 rows a side differ, all in G-0041, on two tables whose probe target is the NEWEST row. `yfinance_calls` 11878 now carries `pipeline_run_id` 184 (1 INFO -> 1 PASS). `review_log` 126 is PENDING, where the reference target was completed (15 PASS stay PASS under the pending contract, 1 PASS -> 1 INFO). The FAIL row set is identical and the verdict multiset is identical. Both states were read on the copy; RD also verified them independently and corroborated the reference side from the older v40 copy. **Open instrument item (RD, the orchestrator's queue):** `#SUMMARY` says INFO=140 while the verdict column holds 142 INFO rows, identically in both files; the cause is not yet located.
+
+**Orchestrator slip at W3/W4, disclosed.** Opening the gate image `mode=ro` to confirm it read v40 created `-shm` (32,768 B) and `-wal` (0 B) beside it. That is CLAUDE.md's -wal/-shm gotcha; this instance adds a 0-byte `-wal`. CHARC's ruling (courier: orchestrator; mail `20260925T065243Z`), block-quoted (excerpt: the ruling):
+
+> RULING on the sidecars: REMOVE BOTH, by the operator's hand, AFTER W5 closes and before the swing web restart. Reason: a 0-byte -wal holds no frames, so there is nothing to replay into the image; the -shm is a rebuildable index; the image's mtime precedes both and its size equals the pre-migrate live DB. Removing them leaves the image byte-identical. [...] Method, so the removal is a measurement and not a hope: sha256 the .db BEFORE (sha256sum reads bytes, opens no sqlite handle, creates no sidecar), delete the -wal and -shm, sha256 AFTER, assert equal, record both in the ledger with the count back to 48. Do not open the image with sqlite again; if a future check needs its version, copy it first (the CLAUDE.md line).
+
+Executed: sha256 BEFORE `4755869abe766c4d5d9d38fe894337be6cafc55443055aac228c0caaa797d136`. The operator deleted both sidecars (`rm`). sha256 AFTER `4755869abe766c4d5d9d38fe894337be6cafc55443055aac228c0caaa797d136`: EQUAL. backups/ is back to 48.
+
+**22-I: merged, live-migrated to schema v41, witness complete.** The first v41 nightly is run 185 (09-25 17:30 HST); its baseline is run 184.
