@@ -361,6 +361,7 @@ _TOML_MIRROR_MAP: dict[str, tuple[str, str, type]] = {
 
 def _coerce_policy_value(field: str, raw: str):
     """Coerce a `policy set --value` raw string per the field's type."""
+    from swing.trades.entry import ascii_safe, safe_text
     coercer = _POLICY_FIELD_COERCERS[field]
     try:
         if coercer is int:
@@ -375,7 +376,8 @@ def _coerce_policy_value(field: str, raw: str):
         return raw
     except (TypeError, ValueError) as exc:
         raise click.ClickException(
-            f"cannot coerce --value {raw!r} for field {field}: {exc}"
+            f"cannot coerce --value {safe_text(raw)} for field {field}: "
+            f"{ascii_safe(str(exc))}"
         ) from exc
 
 
@@ -489,6 +491,7 @@ def policy_set(
     """
     from swing.data.db import connect
     from swing.data.repos.risk_policy import NoActivePolicyError
+    from swing.trades.entry import ascii_safe
     from swing.trades.risk_policy import (
         NO_ACTIVE_POLICY_REFUSAL,
         CallerHeldTransactionError,
@@ -509,9 +512,9 @@ def policy_set(
     except NoActivePolicyError as exc:  # 22-F T-D5 (S-CLICK)
         raise click.ClickException(NO_ACTIVE_POLICY_REFUSAL) from exc
     except CallerHeldTransactionError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     finally:
         conn.close()
     click.echo(f"new policy_id={new_id}; field {field} = {coerced}")
@@ -544,6 +547,7 @@ def policy_import_from_toml(
     """
     from swing.data.db import connect
     from swing.data.repos.risk_policy import NoActivePolicyError
+    from swing.trades.entry import ascii_safe
     from swing.trades.risk_policy import (
         NO_ACTIVE_POLICY_REFUSAL,
         CallerHeldTransactionError,
@@ -586,9 +590,9 @@ def policy_import_from_toml(
     except NoActivePolicyError as exc:  # 22-F T-D5 (S-CLICK)
         raise click.ClickException(NO_ACTIVE_POLICY_REFUSAL) from exc
     except CallerHeldTransactionError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     finally:
         conn.close()
     click.echo(f"new policy_id={new_id}; imported {field} = {cfg_value}")
