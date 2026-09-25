@@ -41,6 +41,7 @@ from swing.trades.stop_adjust import (
     StopRegressionError,
     adjust_stop,
 )
+from swing.web.routes import append_close_notice, close_after_commit
 from swing.web.trade_charts import render_trade_window_position_svg
 from swing.web.view_models.dashboard import build_dashboard
 from swing.web.view_models.open_positions_row import (
@@ -3344,6 +3345,11 @@ def stop_post(
         event_ts=datetime.now().isoformat(timespec="seconds"),
         force=force_flag,
     )
+    # 22-F T-G2 (F4): `durable` is bound at `adjust_stop`'s OWN return;
+    # every close after it (the write connection's and the re-read's) is
+    # contained, never a 500 over a durable stop change.
+    durable = False
+    close_notice = None
     conn = connect(cfg.paths.db_path)
     try:
         # Guard: trade must exist and be open before attempting stop adjust.
@@ -3373,15 +3379,23 @@ def stop_post(
                 notes=notes,
                 error_message=error_message,
             )
+        durable = True
     finally:
-        conn.close()
+        if durable:
+            close_notice = close_after_commit(
+                conn, log, what=f"The stop change on trade #{trade_id}")
+        else:
+            conn.close()
 
     # Row-only render (no OOB).
     conn = connect(cfg.paths.db_path)
     try:
         updated = get_trade(conn, trade_id)
     finally:
-        conn.close()
+        # Post-durable (the stop change committed above): contained too.
+        close_notice = close_after_commit(
+            conn, log, what=f"The stop change on trade #{trade_id}",
+        ) or close_notice
     row_vm = build_open_positions_row(
         trade=updated, cfg=cfg, cache=cache,
         ohlcv_cache=request.app.state.ohlcv_cache, executor=executor,
@@ -3389,7 +3403,7 @@ def stop_post(
     row_html = templates.get_template("partials/open_positions_row.html.j2").render(
         request=request, row=row_vm,
     )
-    return HTMLResponse(Markup(row_html))
+    return append_close_notice(HTMLResponse(Markup(row_html)), close_notice)
 
 
 # Tier-2 #3 — open-positions row click-to-expand (chart-display fragment).
@@ -3653,6 +3667,10 @@ async def review_post(
             request, "partials/review_form.html.j2",
             {"vm": vm, "error_message": ei_err}, status_code=400)
 
+    # 22-F T-G2 (F4): `durable` is bound at `complete_trade_review`'s OWN
+    # return; a close failure after it is contained (logged), never a 500
+    # over a durable review.
+    durable = False
     conn = connect(cfg.paths.db_path)
     try:
         trade = get_trade(conn, trade_id)
@@ -3735,6 +3753,8 @@ async def review_post(
             event_ts=review_ts,
             rationale=None,
         )
+        # 22-F T-G2 (F4): bound at `complete_trade_review`'s OWN return.
+        durable = True
         # Task 4: persist the (optional) entry_intent correction via the
         # dedicated writer in its OWN transaction. entry_intent is independent
         # of review state, so it is NOT folded into complete_trade_review (L2/L5
@@ -3759,7 +3779,11 @@ async def review_post(
             except AttestedIntentError as exc:
                 return _attested_refusal(exc, review_committed=True)
     finally:
-        conn.close()
+        if durable:
+            close_after_commit(
+                conn, log, what=f"The review of trade #{trade_id}")
+        else:
+            conn.close()
     # code-review I3 (operator-witnessed S5): /trades is unrouted — htmx.js
     # honors the HX-Redirect header but the browser then 404s. Land on
     # /reviews/pending instead: workflow-natural ("after reviewing, see
@@ -4092,6 +4116,9 @@ async def daily_management_event_post(request: Request, trade_id: int):
             status_code=422,
         )
 
+    # 22-F T-G2 (F4): `durable` is bound at `record_event_log`'s OWN
+    # return; a close failure after it is contained, never a 500.
+    durable = False
     conn = connect(cfg.paths.db_path)
     try:
         try:
@@ -4117,8 +4144,14 @@ async def daily_management_event_post(request: Request, trade_id: int):
         except ValueError as exc:
             # Trade not found / Phase 7 service rejection (terminal state).
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        durable = True
     finally:
-        conn.close()
+        if durable:
+            close_after_commit(
+                conn, log,
+                what=f"The daily-management event on trade #{trade_id}")
+        else:
+            conn.close()
 
     # Success: 204 + HX-Redirect. Target route ``/`` (dashboard) IS
     # registered (Phase 6 R5 I3 lesson — verified by route-table + GET-

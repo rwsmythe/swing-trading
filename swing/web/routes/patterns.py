@@ -23,6 +23,7 @@ the writers for ``pattern_exemplars.created_at`` which is server-stamped).
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import UTC, date, datetime
 from typing import Literal
@@ -44,6 +45,7 @@ from swing.web.view_models.patterns.review_form import (
     extract_dbw_trough_1_date,
 )
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 ALLOWED_ACTIONS: tuple[str, ...] = (
@@ -161,6 +163,9 @@ def patterns_exemplars_action(
         )
 
     cfg = request.app.state.cfg
+    # 22-F T-G2 (F4): `durable` is bound once `_apply_action`'s
+    # `with conn:` has committed.
+    durable = False
     conn = connect(cfg.paths.db_path)
     try:
         now_iso = datetime.now(UTC).isoformat()
@@ -172,8 +177,13 @@ def patterns_exemplars_action(
                 corrected_pattern_class=corrected_pattern_class,
                 now_iso=now_iso,
             )
+        durable = True
     finally:
-        conn.close()
+        if durable:
+            from swing.web.routes import close_after_commit
+            close_after_commit(conn, log, what="The exemplar action")
+        else:
+            conn.close()
 
     return Response(
         status_code=204,
@@ -432,6 +442,9 @@ def patterns_review_post(
         )
 
     cfg = request.app.state.cfg
+    # 22-F T-G2 (F4): `durable` is bound once the exemplar rows' `with conn:`
+    # has committed; the 4xx refusals above it write nothing.
+    durable = False
     conn = connect(cfg.paths.db_path)
     try:
         evaluation = evals_repo.get_evaluation_by_id(conn, candidate_id)
@@ -605,8 +618,13 @@ def patterns_review_post(
                         ),
                     )
                     exemplars_repo.insert_exemplar(conn, extra)
+        durable = True
     finally:
-        conn.close()
+        if durable:
+            from swing.web.routes import close_after_commit
+            close_after_commit(conn, log, what="The pattern review")
+        else:
+            conn.close()
 
     return Response(
         status_code=204, headers={"HX-Redirect": "/patterns/queue"},

@@ -194,7 +194,11 @@ async def config_save(request: Request):
             # Don't propagate — overrides are durable; surface via stderr
             # log + next-startup divergence advisory rather than 500.
         finally:
-            cascade_conn.close()
+            # 22-F T-G2 (F4): the override is written BEFORE this connection
+            # opens, so the connection's whole life is post-durable; every
+            # cascade failure above is already contained. Its close is too.
+            from swing.web.routes import close_after_commit
+            close_after_commit(cascade_conn, log, what="The configuration change")
 
     return _save_redirect_response(request)
 
@@ -283,5 +287,9 @@ async def config_reset(request: Request, field_path: str):
                 policy_field,
             )
         finally:
-            cascade_conn.close()
+            # 22-F T-G2 (F4): the override is deleted BEFORE this connection
+            # opens, so the connection's whole life is post-durable; every
+            # cascade failure above is already contained. Its close is too.
+            from swing.web.routes import close_after_commit
+            close_after_commit(cascade_conn, log, what="The configuration reset")
     return _save_redirect_response(request)

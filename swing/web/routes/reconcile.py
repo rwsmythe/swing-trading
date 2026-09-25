@@ -938,6 +938,10 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
             recent_multi_leg_count=0,
             banner_resolve_link=None,
         )
+    # 22-F T-G2 (F4): `durable` is bound at each writer's OWN return (the
+    # three orphan-branch `resolve_discrepancy` calls, the tier-2 /
+    # source-direction resolver); a close failure after it is contained.
+    durable = False
     try:
         try:
             unresolved_count = count_unresolved_material(conn)
@@ -1034,6 +1038,8 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                     # resolution per Codex R2 Major #1).
                     require_current_resolution=disc.resolution,
                 )
+                # 22-F T-G2 (F4): bound at `resolve_discrepancy`'s OWN return.
+                durable = True
             except sqlite3.OperationalError as exc:
                 if not _is_transient_lock_error(exc):
                     raise
@@ -1145,6 +1151,8 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                     # TOCTOU close (mirrors the orphan/simple-ack path).
                     require_current_resolution=disc.resolution,
                 )
+                # 22-F T-G2 (F4): bound at `resolve_discrepancy`'s OWN return.
+                durable = True
             except sqlite3.OperationalError as exc:
                 if not _is_transient_lock_error(exc):
                     raise
@@ -1241,6 +1249,8 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                     # returning 204. Anchored on the preflight state read.
                     require_current_resolution=disc.resolution,
                 )
+                # 22-F T-G2 (F4): bound at `resolve_discrepancy`'s OWN return.
+                durable = True
             except sqlite3.OperationalError as exc:
                 if not _is_transient_lock_error(exc):
                     raise
@@ -1595,6 +1605,8 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                     resolved_by_override="operator_web",  # F2 LOCK
                     environment=environment,
                 )
+            # 22-F T-G2 (F4): bound at the resolver's OWN return.
+            durable = True
         except SourceResolutionRejected as exc:
             # MUST precede the generic `except ValueError` below (subclass).
             return _render_form_with_error(
@@ -1765,7 +1777,12 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 banner_resolve_link=banner_resolve_link,
             )
     finally:
-        conn.close()
+        if durable:
+            from swing.web.routes import close_after_commit
+            close_after_commit(
+                conn, log, what=f"The resolution of discrepancy {discrepancy_id}")
+        else:
+            conn.close()
 
     # Step 7 — success path. F5 LOCK on HTMX. Arc 4b: source-direction
     # resolutions return None (no correction_id) — surface the discrepancy id.
