@@ -48,3 +48,23 @@
 ## The A-gate (CHARC, required, not optional)
 
 ONE counted Reviewer A round at `-p strong` (banner model asserted `gpt-5.6-sol`, the `e929e580` guards) on the fixed tree, reading R4-1, B-1 and B-2 together. Then Reviewer B re-runs on the fixed tree. Round 4 (run on `gpt-6-astra` via the old fallback) COUNTS.
+
+## Round 5 -- the A-gate round (2026-09-25)
+
+Tree `a344a95d` (commits `f2bf24f5` B-1, `c2aeac29` B-2, `a344a95d` the R1-3-SURFACES census re-derivation; trailers empty). Suite: RESOLVER inside `.worktrees/d67-d69-riders`, 13424 passed / 13 skipped / 0 failed; tamper file `-n 0` 16/16. Round 5 verified on disk at the orchestrator's seat (`~/swing-data/review-transcripts/d67-d69-riders/d67-d69-review-r5.txt`): banner `gpt-5.6-sol` / high; `^ERROR` 0; `tokens used` 45,883; verdict `NEW_CRITICAL_MAJOR_FOUND`; exit 0. One finding, **R5-1 MAJOR**: the B-2 WARN text ("left NULL for a re-run") is false under `--force`/`--trade-id`. Routed to CHARC (mail `20260925T030549Z`).
+
+## CHARC ruling on R5-1 -- the WARN text SUPERSEDED (2026-09-25)
+
+**Author: CHARC** (mail `20260925T030626Z`). **Courier: the orchestrator.** Literal block quote:
+
+> RULING (CHARC, 2026-09-25) on D67/D69 R5-1 (mail 20260925T030549Z). SUPERSEDES the WARN text in my B-2 ruling (mail 20260925T021418Z, "THE SHAPE" first bullet) -- ONE supersession, this phrase only; every other clause of B-2 stands. PRIMARY: charc.
+>
+> The finding is correct and the defect is mine: "left NULL for a re-run" asserted a state the loop never measured. Under --force or --trade-id the prompted row may be ALREADY SET, keeps its prior value, and a plain re-run SKIPS it -- an operator following the line literally never revisits the correction. That is the class my predecessor named on this same rider (a brief's parenthetical is a claim; n_set > 0), now in my own hand: a ruled text that names a row state must be derived from the code's state, not from the case I had in view (the NULL row).
+>
+> THE REPLACEMENT TEXT, adopted as the orchestrator proposed, verbatim:
+> "WARN (partial): backfill-intent wrote N row(s) durably this invocation; prompting for trade T FAILED (<safe_text>); this row and any later rows were NOT answered this invocation and keep their prior value; a plain re-run re-prompts only rows still NULL, and an already-set row needs --force or --trade-id again; the ledger is unaffected."
+> Both sinks carry it (the echoed line and its log_contained twin). The test at :486 updates its substring anchor only; it still asserts n_written and T. The boundary twin is untouched.
+>
+> R6, one counted round at -p strong reading the fix: CONCUR, required by the dispositioned-not-clean rule; A labelled it MAJOR and the line is operator-facing, so it is not a post-verdict minor. The cell at ~260K fits; a fresh cell off the committed tree if the bundle runs large is your call. Then Reviewer B on the final tree. Merge gate for the rider: the B transcript on that tree, the merged-head suite line with its SHA, the ledger carrying this ruling as a block quote.
+
+**Orchestrator authorization (written, 2026-09-25):** R5-1's fix (the task-bearing finding) and ONE counted round R6 at `-p strong` reading it. No R7.
