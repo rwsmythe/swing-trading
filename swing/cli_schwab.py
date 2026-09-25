@@ -40,6 +40,7 @@ from swing.integrations.schwab.client import (
     SchwabConfigMissingError,
     SchwabPipelineActiveError,
     SchwabRefreshTokenExpiredError,
+    SchwabSchemaParityError,
 )
 
 # Refresh-token validity is 7 days per recon §2.11 + troubleshooting.md L64-68.
@@ -1474,6 +1475,7 @@ def schwab_fetch(
             _step_schwab_orders,
             _step_schwab_snapshot,
         )
+        from swing.trades.entry import ascii_safe
 
         results: list[dict] = []
         do_snapshot = fetch_snapshot or fetch_all
@@ -1485,9 +1487,11 @@ def schwab_fetch(
                     client=sd_client, surface="cli",
                 )
                 results.append({"step": "snapshot", **r})
-            except SchwabApiError as exc:
+            except (SchwabApiError, SchwabSchemaParityError) as exc:
+                # 22-F row 5 (the belt): the parity class is disjoint from
+                # `SchwabApiError`.
                 raise click.ClickException(
-                    f"Snapshot step failed: {exc}",
+                    f"Snapshot step failed: {ascii_safe(str(exc))}",
                 ) from exc
 
         if do_orders:
@@ -1497,9 +1501,10 @@ def schwab_fetch(
                     client=sd_client, surface="cli",
                 )
                 results.append({"step": "orders", **r})
-            except SchwabApiError as exc:
+            except (SchwabApiError, SchwabSchemaParityError) as exc:
+                # 22-F row 6 (the belt).
                 raise click.ClickException(
-                    f"Orders step failed: {exc}",
+                    f"Orders step failed: {ascii_safe(str(exc))}",
                 ) from exc
 
         # Echo summary.

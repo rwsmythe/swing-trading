@@ -263,7 +263,10 @@ def _step_schwab_snapshot(
             surface=surface, environment=environment,
             pipeline_run_id=pipeline_run_id,
         )
-    except SchwabApiError as exc:
+    # 22-F row 13: `SchwabSchemaParityError` is NOT a `SchwabApiError`
+    # (disjoint classes), and `get_account_details`' mapper raises it; the
+    # sibling `_step_schwab_orders` tuple already names it.
+    except (SchwabApiError, SchwabSchemaParityError) as exc:
         log.warning(
             "_step_schwab_snapshot: get_account_details failed: %s",
             type(exc).__name__,
