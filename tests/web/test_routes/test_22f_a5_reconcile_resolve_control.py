@@ -61,3 +61,44 @@ def test_A5e_control_web_resolve_reserved_field_caught_by_defense_clause(
         ).fetchone()[0] == 0
     finally:
         conn.close()
+
+
+def test_C1_09_control_immutable_field_is_caught_by_the_value_error_clause(
+    seeded_db: tuple[Config, Path],
+) -> None:
+    """22-F T-A8, C1-09 -- CONFIRMED-HANDLED by READ, pinned as a CONTROL.
+
+    `ImmutableJournalFieldError` derives from `ValueError`
+    (`reconciliation_auto_correct.py:117`), so on this route it is caught by
+    the step-5 `except ValueError as exc` at `routes/reconcile.py:1670` (the
+    fresh-connection re-read, then the 400 re-render with the message in the
+    error band).  Both trees: 400, the refusal text, nothing written."""
+    from tests.web.test_routes.test_22a4_corrector_refusal_delivery import (
+        MINTED_TOKEN,
+        OTHER_TOKEN,
+    )
+    cfg, cfg_path = seeded_db
+    trade_id, disc_id = _seed(cfg.paths.db_path)
+    with TestClient(create_app(cfg, cfg_path)) as client:
+        r = client.post(
+            f"/reconcile/discrepancy/{disc_id}/resolve",
+            data={
+                "choice_code": "operator_truth",
+                "custom_value": '{"attempt_id": "' + OTHER_TOKEN + '"}',
+                "resolution_reason": "broker named a different attempt token",
+                "ambiguity_kind_at_render": "unsupported",
+            },
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 400, (r.status_code, r.text[:400])
+    assert "WRITE-ONCE" in r.text
+    conn = sqlite3.connect(str(cfg.paths.db_path))
+    try:
+        assert conn.execute(
+            "SELECT attempt_id FROM trades WHERE id = ?", (trade_id,),
+        ).fetchone()[0] == MINTED_TOKEN
+        assert conn.execute(
+            "SELECT COUNT(*) FROM reconciliation_corrections",
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
