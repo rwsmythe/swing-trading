@@ -1229,3 +1229,20 @@ def test_post_entry_with_bogus_anchor_pointing_at_nonexistent_eval_rejects(
     assert recon_count == 0
     assert trade_count == 0
 
+
+
+def test_d67_wrapper_names_no_production_keyword_but_event_ts():
+    """Reviewer B B2-2 (2026-09-25): the autouse wrapper must never hold a
+    hand-copied production keyword. It names only ``event_ts`` (which it
+    consumes for its own fill write); every other keyword -- ``rationale``,
+    ``attempt_id``, any future one -- rides in ``**kwargs``, so a rename in
+    ``insert_trade_with_event`` cannot re-break it (the D67 drift class)."""
+    import inspect
+
+    from swing.data.repos import trades as trades_repo
+
+    params = inspect.signature(trades_repo.insert_trade_with_event).parameters
+    kw_only = [n for n, p in params.items() if p.kind is inspect.Parameter.KEYWORD_ONLY]
+    var_kw = [n for n, p in params.items() if p.kind is inspect.Parameter.VAR_KEYWORD]
+    assert kw_only == ["event_ts"]
+    assert var_kw == ["kwargs"]

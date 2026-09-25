@@ -151,10 +151,12 @@ def _auto_entry_fill_after_insert_trade(monkeypatch):
 
     real_insert = trades_repo.insert_trade_with_event
 
-    def wrapped(conn, trade, *, event_ts, rationale=None, **kwargs):
-        trade_id = real_insert(
-            conn, trade, event_ts=event_ts, rationale=rationale, **kwargs,
-        )
+    def wrapped(conn, trade, *, event_ts, **kwargs):
+        # Reviewer B B2-2: name only what this wrapper consumes
+        # (``event_ts``, for its own fill write). ``rationale`` and every
+        # other keyword ride in ``**kwargs`` -- a hand-copied keyword here
+        # is the drift D67 exists to kill.
+        trade_id = real_insert(conn, trade, event_ts=event_ts, **kwargs)
         # R4-1 (Codex round 4): `record_entry` (swing/trades/entry.py,
         # Phase 7 Sub-B B.3) ALWAYS inserts its OWN entry fill in the SAME
         # transaction, immediately after calling `insert_trade_with_event`
