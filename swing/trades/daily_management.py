@@ -952,6 +952,11 @@ def record_event_log(
                 event_ts=req.created_at,
                 rationale="first_daily_management_record",
             )
+
+        # Step 5 -- COMMIT inside the guarded try (22-F R1-02): a failing
+        # COMMIT leaves the transaction open, so it takes the same
+        # rollback-or-raise path as a failing write.
+        conn.commit()
     except BaseException as exc:  # noqa: BLE001 -- 22-F T-F7
         # On ANY exception roll back the transaction we opened. Codex R4
         # Major #1: we ALWAYS own the boundary (the entry guard above
@@ -961,8 +966,6 @@ def record_event_log(
         # record.
         _rollback_or_raise(conn, "record_event_log", exc)
         raise
-    else:
-        conn.commit()
 
     return management_record_id
 

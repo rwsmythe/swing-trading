@@ -158,3 +158,62 @@ def test_control_commits(path, db):
     finally:
         proxy._real.close()
     assert _state(db) == committed
+
+
+# -- R1-02 (Reviewer A round 1; C2-12's COMMIT in the `else:` clause) --------
+# The COMMIT is a write verb of the transaction this function owns: a failing
+# COMMIT leaves the transaction OPEN.  PRE-FIX the COMMIT sat in `else:`,
+# outside the guarded try, so its failure escaped with no rollback (the
+# connection left in_transaction) and a second, failing rollback was never
+# attempted.  POST-FIX the COMMIT is inside the guarded try.
+
+
+class _FailingCommitConn(FailingVerbsConn):
+    """`commit()` raises WITHOUT committing (the transaction stays open)."""
+
+    def commit(self) -> None:
+        self.calls["commit"] += 1
+        raise sqlite3.OperationalError("cannot commit (planted on commit)")
+
+
+@pytest.mark.parametrize("path", sorted(_PATHS))
+def test_r1_02_commit_failure_rolls_back_and_reraises(path, db, caplog):
+    """PRE-FIX: the commit error escapes, rollback NOT called, the
+    transaction left open.  POST-FIX: rolled back, commit error re-raised,
+    no MUST-BE-DISCARDED record."""
+    call, _ = _PATHS[path]
+    proxy = _FailingCommitConn(sqlite3.connect(str(db)))
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(sqlite3.OperationalError,
+                               match="planted on commit"):
+                call(proxy)
+        assert proxy.calls["commit"] == 1
+        assert proxy.calls["rollback"] >= 1
+        assert proxy.in_transaction is False
+    finally:
+        proxy._real.close()
+    assert _records(caplog) == []
+    assert _state(db) == _UNTOUCHED
+
+
+@pytest.mark.parametrize("path", sorted(_PATHS))
+def test_r1_02_commit_and_rollback_fail_raises_cleanup_chained(path, db,
+                                                                caplog):
+    """PRE-FIX: the COMMIT error, no rollback attempted, no record.
+    POST-FIX: the CLEANUP error chained from the commit error, one
+    MUST-BE-DISCARDED record."""
+    call, _ = _PATHS[path]
+    proxy = _FailingCommitConn(sqlite3.connect(str(db)), fail_rollback=True)
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(sqlite3.OperationalError) as info:
+                call(proxy)
+        assert proxy.calls["commit"] == 1
+        assert proxy.calls["rollback"] >= 1
+    finally:
+        proxy._real.close()
+    assert "cannot rollback" in str(info.value)
+    assert "planted on commit" in str(info.value.__cause__)
+    assert len(_records(caplog)) == 1
+    assert _state(db) == _UNTOUCHED
