@@ -15,9 +15,41 @@ The DEPTH column is filled by the orchestrator from `scripts/cell_depth.py --age
 
 (None yet. Each ruling lands here as a literal block quote with its author, date and text-of-record pointer, and the plan loop opens only after every F-F item is ruled.)
 
+### F-F1 -- RULED by RD (2026-09-25 07:29Z), (a) DEGRADE on both rows
+
+Author: RD (seat `swing-rd-20260924-2100`). Courier: the orchestrator. Text of record: role-mail `20260925T072925Z-rd-f-f1-ruling-a-degrade-both-rows-entry-tw.md`. The literal block quote follows, the message body verbatim:
+
+> F-F1 RULING (RD, sole ruler on this item): (a) DEGRADE, on both rows. Read on disk at 22-f-plan base 79035d59 = main; the sites are named below. Preconditions stated with which exist today; what the plan must pin follows each row.
+>
+> 1. C1-01 -- SchwabSchemaParityError on GET /trades/entry/form, GET /trades/{id}/exit/form, and the two POST re-renders.
+>
+> RULING: (a). ENTRY-vs-LABEL applied on the code, not on the census's word: on GET the request carries NO claim -- the operator has typed nothing -- so NULL discards nothing. The honest-unset row exists today: fill_origin='operator_typed' is the dataclass default (entry.py:546, exit.py:65) with the audit columns NULL. The named-warning surface exists today: the kind="error" result at entry_auto_fill.py:383-395 / exit_auto_fill.py:759-771, the exact branch every SchwabApiError sibling takes, whose advisory names the exception class on the form. A parity error says "the framework cannot read the broker's shape today"; it says nothing about whether the operator's fill happened. Refusing the ENTRY on it blocks a money-bearing record on bookkeeping -- the jurisdiction where NEVER means never.
+>
+> Preconditions and pins:
+> (i) Nothing is written on GET before the raise except the schwab_api_calls audit row, which _call_endpoint closes before raising (the census's C1-01 "after its audit close"; I did NOT open trader.py:700). The plan proves it by a fresh-connection read, the way C1-02's row already does for its site.
+> (ii) THE ONE PLACE A CLAIM IS CARRIED: the entry POST re-render RESTORES the submitted anchor over the fresh fetch (routes/trades.py:476-500). So a parity error on the re-fetch during a retry degrades the FRESH VM and the submitted schwab claim survives -- preserved by existing code the fix does not touch. PIN IT or (a) on the re-render is an assumption (gotcha #31's shape): a validation-failed POST carrying a populated schwab anchor, the re-render's fetch raising SchwabSchemaParityError, and the rendered hidden anchor equal to the submitted one with kind 'populated'.
+> (iii) Read, not ruled, outside F-F1: the exit POST re-render (routes/trades.py:3139) rebuilds the VM fresh and does not round-trip the submitted anchor at all, parity error or not. Pre-existing; it does not change whether the exit proceeds; the orchestrator's queue.
+> (iv) Independent of F-F2's shape: (A) widens the tuple, (B) makes the tuple catch it by MRO; under either the sibling branch fires. One test per form that the parity error reaches kind="error" covers both.
+> (v) The degraded form must SHOW the advisory. The sibling does; pin that the rendered form text names SchwabSchemaParityError. A degraded form indistinguishable from a no-Schwab form is the asymmetric surface (harness 5.1, the negative-state rule).
+>
+> 2. C1-25 (BANK-3) -- OverflowError at exit_auto_fill.py:1213.
+>
+> RULING: (a): refuse the CANDIDATE with its own reason token; the form renders. Conditions:
+> (i) A NEW token (non_finite_quantity or equivalent), never folded into no_quantity or sub_one_share_quantity. A missing quantity and an infinite one from the broker are different evidence kinds, and the second is a data-quality alarm the operator should read on the form.
+> (ii) The finiteness test PRECEDES int(quantity) in the same chain, so the truncation is reached only on a finite value. The guard is math.isfinite, not a catch of OverflowError: int(nan) raises ValueError, same class, same fix.
+> (iii) Discriminators: inf -> refused with the new token; nan -> same; 1e18 (finite, huge) -> NOT refused by this guard (pins finiteness, not magnitude); 0.9 -> sub_one_share_quantity unchanged.
+>
+> 3. FOUND BY READ, NOT IN THE CENSUS -- the ENTRY twin of BANK-3.
+>
+> entry_auto_fill.py:445-446: quantity = _resolve_match_quantity(chosen); shares = int(quantity). Bare truncation on the ENTRY form (GET /trades/entry/form): no finiteness guard, no <= 0 guard, and no None guard at the site although the resolver has a return-None path (mappers.py:428). OverflowError on inf, ValueError on nan, TypeError on None. BANK-3 as named covers the exit side only. The ruling above EXTENDS to it under F-F1 with the same answer: refuse the candidate, an "empty"/"error" result with a named advisory, the form proceeds on typed values. Bounded search stated: I read ONE site; I did not enumerate the candidate filter to know whether None is reachable there. The plan answers that by a read of _is_execution_bearing_candidate stated in the row, or by a RED attempt. Whether this becomes a C1 row is the orchestrator's; that its handling is (a) is mine.
+>
+> Posture: nothing the October read quotes moves. Degraded rows carry NULL auto-fill provenance exactly as today.
+
+**Orchestrator disposition of RD's item 3 (the entry twin of BANK-3, `entry_auto_fill.py:445-446`):** it becomes census row **C1-27** (handling = RD's (a) above, bound). The plan states the `_is_execution_bearing_candidate` read or a RED attempt for None-reachability, per RD's bounded-search note. **RD's item 1(iii)** (the exit POST re-render at `routes/trades.py:3139` does not round-trip the submitted anchor) is OUT of 22-F and goes on the orchestrator's queue.
+
 | fork | ruler | status |
 |---|---|---|
-| F-F1 (web entry/exit form: degrade vs refuse on `SchwabSchemaParityError` / BANK-3) | RD | OPEN |
+| F-F1 (web entry/exit form: degrade vs refuse on `SchwabSchemaParityError` / BANK-3) | RD | **RULED (a)** 07:29Z, block-quoted above; + C1-27 |
 | F-F2 (`SchwabSchemaParityError` fix shape: per-site widening vs re-base; `ReservedJournalFieldError` base) | CHARC | OPEN |
 | F-F4 (census scope: invariant / programming-guard escapes DECLARED by class vs converted) | CHARC | OPEN |
 | F-F5 (section 2.7a: the cp1252 premise; uniform `ascii_safe` + a closure test vs per-site) | CHARC | OPEN |
