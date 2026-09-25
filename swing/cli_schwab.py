@@ -120,12 +120,13 @@ def _resolve_credentials_for_cli(cfg: Any, environment: str) -> tuple[str, str]:
     subcommand needing credentials previously open-coded (T-A.1 code-review
     cleanup).
     """
+    from swing.trades.entry import ascii_safe
     try:
         client_id, client_secret = resolve_credentials_env_or_prompt(
             cfg, environment, allow_prompt=True,
         )
     except SchwabConfigMissingError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     if client_id is None or client_secret is None:
         # `resolve_credentials_env_or_prompt` only returns (None, None) when
         # `allow_prompt=False`; CLI path passes `allow_prompt=True` so this
@@ -172,6 +173,7 @@ def schwab_setup(
     # `integrations.schwab.{client_id,client_secret}` is actually consumed.
     # Mirrors swing/cli_schwab.py:982-985, 1266-1269, 1430-1431.
     from swing.config_overrides import apply_overrides
+    from swing.trades.entry import ascii_safe
     cfg = apply_overrides(ctx.obj["config"])
     env = environment or cfg.integrations.schwab.environment
 
@@ -201,13 +203,13 @@ def schwab_setup(
                 account_picker=_build_account_picker(),
             )
         except SchwabPipelineActiveError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
         except SchwabAuthError as exc:
             raise click.ClickException(
-                f"Authentication failed: {exc}",
+                f"Authentication failed: {ascii_safe(str(exc))}",
             ) from exc
         except SchwabConfigMissingError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
     finally:
         conn.close()
 
@@ -274,6 +276,7 @@ def schwab_refresh(
     """
     # Codex R1 Critical #1 fix — apply_overrides() at CLI entry point.
     from swing.config_overrides import apply_overrides
+    from swing.trades.entry import ascii_safe
     cfg = apply_overrides(ctx.obj["config"])
     env = environment or cfg.integrations.schwab.environment
 
@@ -296,18 +299,18 @@ def schwab_refresh(
             raise click.ClickException(
                 f"Refresh token has expired or been revoked. Run "
                 f"`swing schwab setup --environment {env}` to re-auth.\n"
-                f"Detail: {exc}",
+                f"Detail: {ascii_safe(str(exc))}",
             ) from exc
         except SchwabAuthError as exc:
             raise click.ClickException(
-                f"Authentication failed during refresh: {exc}",
+                f"Authentication failed during refresh: {ascii_safe(str(exc))}",
             ) from exc
         except SchwabApiError as exc:
             raise click.ClickException(
-                f"Refresh failed (transient/network): {exc}",
+                f"Refresh failed (transient/network): {ascii_safe(str(exc))}",
             ) from exc
         except SchwabConfigMissingError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
     finally:
         conn.close()
 
@@ -347,6 +350,7 @@ def schwab_logout(
     """
     # Codex R1 Critical #1 fix — apply_overrides() at CLI entry point.
     from swing.config_overrides import apply_overrides
+    from swing.trades.entry import ascii_safe
     cfg = apply_overrides(ctx.obj["config"])
     env = environment or cfg.integrations.schwab.environment
 
@@ -365,17 +369,17 @@ def schwab_logout(
                 force=force,
             )
         except SchwabPipelineActiveError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
         except SchwabApiError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
         except SchwabConfigMissingError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
         except RuntimeError as exc:
             # The v3 logout rewrite raises a clean RuntimeError on a hard tokens-DB
             # rename failure (str carries the operator-actionable "retry / close other"
             # guidance; SchwabApiError.__str__ would redact it). SchwabApiError is a
             # RuntimeError subclass but is caught above, so this only sees the rename error.
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
     finally:
         conn.close()
 
@@ -1099,6 +1103,7 @@ def _verify_marketdata_path(
         or total failure (all symbols failed at quotes layer).
     """
     # Apply user-config.toml overrides best-effort (production path).
+    from swing.trades.entry import ascii_safe
     try:
         from swing.config_overrides import apply_overrides
         cfg = apply_overrides(ctx.obj["config"])
@@ -1136,10 +1141,10 @@ def _verify_marketdata_path(
             )
         except SchwabAuthError as exc:
             raise click.ClickException(
-                f"Authentication failed: {exc}",
+                f"Authentication failed: {ascii_safe(str(exc))}",
             ) from exc
         except SchwabConfigMissingError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
 
         # Invoke T-C.1 wrappers DIRECTLY — NOT via the ladder.
         # Per pre-emption #3: no cache fill, no ladder fetcher installed.
@@ -1165,21 +1170,21 @@ def _verify_marketdata_path(
         except SchwabAuthError as exc:
             raise click.ClickException(
                 f"quotes: authentication failed (HTTP "
-                f"{getattr(exc, 'status_code', '?')}): {exc}",
+                f"{ascii_safe(str(getattr(exc, 'status_code', '?')))}): {ascii_safe(str(exc))}",
             ) from exc
         except SchwabRateLimitError as exc:
             raise click.ClickException(
                 f"quotes: rate limited (HTTP "
-                f"{getattr(exc, 'status_code', '?')}): {exc}",
+                f"{ascii_safe(str(getattr(exc, 'status_code', '?')))}): {ascii_safe(str(exc))}",
             ) from exc
         except SchwabSchemaParityError as exc:
             raise click.ClickException(
-                f"quotes: response shape error: {exc}",
+                f"quotes: response shape error: {ascii_safe(str(exc))}",
             ) from exc
         except SchwabApiError as exc:
             raise click.ClickException(
                 f"quotes: API error (HTTP "
-                f"{getattr(exc, 'status_code', '?')}): {exc}",
+                f"{ascii_safe(str(getattr(exc, 'status_code', '?')))}): {ascii_safe(str(exc))}",
             ) from exc
 
         # Build operator-visible summary for quotes.
@@ -1224,22 +1229,22 @@ def _verify_marketdata_path(
         except SchwabAuthError as exc:
             raise click.ClickException(
                 f"price_history: authentication failed (HTTP "
-                f"{getattr(exc, 'status_code', '?')}): {exc}",
+                f"{ascii_safe(str(getattr(exc, 'status_code', '?')))}): {ascii_safe(str(exc))}",
             ) from exc
         except SchwabRateLimitError as exc:
             raise click.ClickException(
                 f"price_history: rate limited (HTTP "
-                f"{getattr(exc, 'status_code', '?')}): {exc}",
+                f"{ascii_safe(str(getattr(exc, 'status_code', '?')))}): {ascii_safe(str(exc))}",
             ) from exc
         except SchwabSchemaParityError as exc:
             raise click.ClickException(
-                f"price_history: response shape error: {exc}",
+                f"price_history: response shape error: {ascii_safe(str(exc))}",
             ) from exc
         except SchwabApiError as exc:
             # Includes empty-bars transient (status_code=204).
             raise click.ClickException(
                 f"price_history: API error (HTTP "
-                f"{getattr(exc, 'status_code', '?')}): {exc}",
+                f"{ascii_safe(str(getattr(exc, 'status_code', '?')))}): {ascii_safe(str(exc))}",
             ) from exc
 
         n_bars = len(ph_window.bars)
@@ -1349,6 +1354,7 @@ def schwab_fetch(
     # domain-write flags. The verification path has its own simpler
     # codepath (no pipeline-active check, no account_hash preflight, no
     # domain writes).
+    from swing.trades.entry import ascii_safe
     if verify_marketdata:
         if fetch_snapshot or fetch_orders or fetch_all:
             raise click.ClickException(
@@ -1396,7 +1402,7 @@ def schwab_fetch(
         try:
             _check_pipeline_not_running(conn)
         except SchwabPipelineActiveError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
 
         # Codex R4 M#1 fix — preflight account_hash BEFORE prompting for
         # credentials. If account_hash is missing, exit with the
@@ -1447,10 +1453,10 @@ def schwab_fetch(
             )
         except SchwabAuthError as exc:
             raise click.ClickException(
-                f"Authentication failed: {exc}",
+                f"Authentication failed: {ascii_safe(str(exc))}",
             ) from exc
         except SchwabConfigMissingError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
 
         # Override cfg.integrations.schwab.environment when the operator
         # passed an explicit --environment flag — the pipeline steps read
