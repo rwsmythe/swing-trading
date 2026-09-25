@@ -1443,10 +1443,12 @@ def schwab_fetch(
     env = (environment or cfg.integrations.schwab.environment).lower()
 
     conn = connect(cfg.paths.db_path)
-    # 22-F T-G1 (F4, S-B02): `durable` is bound at EACH step's (`_step_schwab_snapshot`,
-    # `_step_schwab_orders`)
-    # OWN return; `pending_refusal` is whichever typed refusal is in
-    # flight.
+    # 22-F T-G1 (F4, S-B02) + R2-06: `durable` is bound from EACH step's
+    # (`_step_schwab_snapshot`, `_step_schwab_orders`) OWN REPORT of a domain
+    # write -- a `snapshot_id` / `reconciliation_run_id` -- never from the
+    # step having returned: a `sandbox_audit_only` / `failed` step wrote only
+    # an audit row, which is not durable (STOP-4). `pending_refusal` is
+    # whichever typed refusal is in flight.
     durable = False
     pending_refusal: click.ClickException | None = None
     try:
@@ -1548,8 +1550,9 @@ def schwab_fetch(
                     conn, cfg, pipeline_run_id=None,
                     client=sd_client, surface="cli",
                 )
-                durable = True
                 recorded_snapshot_id = r.get("snapshot_id")
+                if recorded_snapshot_id is not None:
+                    durable = True
                 results.append({"step": "snapshot", **r})
             except (SchwabApiError, SchwabSchemaParityError) as exc:
                 # 22-F row 5 (the belt): the parity class is disjoint from
@@ -1564,7 +1567,8 @@ def schwab_fetch(
                     conn, cfg, pipeline_run_id=None,
                     client=sd_client, surface="cli",
                 )
-                durable = True
+                if r.get("reconciliation_run_id") is not None:
+                    durable = True
                 results.append({"step": "orders", **r})
             except (SchwabApiError, SchwabSchemaParityError) as exc:
                 # 22-F row 6 (the belt).

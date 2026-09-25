@@ -563,8 +563,19 @@ def _fetch_world(tmp_path: Path, mp: Any) -> World:
                lambda *a, **k: object())
 
     def _step(conn: Any, cfg: Any, **kw: Any) -> dict:
+        # R2-06: the step's DOMAIN write (a real snapshot row through the
+        # production service), reported as the real step reports it -- an
+        # audit row alone is not durable (STOP-4); the audit-only control
+        # is `tests/integrations/schwab/test_22f_r2_06_*`.
+        from swing.trades.account_equity_snapshots import record_snapshot
         _audit_row(conn)
-        return {"status": "ok", "call_id": 1}
+        snap = record_snapshot(conn, equity_dollars=2014.36,
+                               snapshot_date="2026-06-12",
+                               source="schwab_api",
+                               source_artifact_path="schwab_api:call/1",
+                               recorded_by="schwab_api", basis="net_liq")
+        return {"status": "completed", "call_id": 1,
+                "snapshot_id": snap.snapshot_id}
     mp.setattr("swing.integrations.schwab.pipeline_steps._step_schwab_snapshot",
                CountingWrapper(_step))
     return w
@@ -803,7 +814,7 @@ ROOTS: list[Root] = [
         id="schwab-fetch", target=_CLI_SCHWAB_CONNECT, world=_fetch_world,
         argv=lambda w: ["--config", str(w.cfg), "schwab", "fetch",
                         "--snapshot"],
-        probe=_schwab_calls,
+        probe=_snapshots,
         writer="swing.integrations.schwab.pipeline_steps._step_schwab_snapshot",
         refusal_world=_fetch_running_world,
         refusal_argv=lambda w: ["--config", str(w.cfg), "schwab", "fetch",
