@@ -3361,7 +3361,7 @@ def stop_post(
                 detail=f"Trade #{trade_id} not found or not open",
             )
         try:
-            adjust_stop(conn, req)
+            wrote = adjust_stop(conn, req)
         except ValueError as exc:
             # Trade not found or already closed — surface as 404 so the
             # HTMX-aware handler renders trade_form_error.html.j2 (§5.2).
@@ -3379,7 +3379,9 @@ def stop_post(
                 notes=notes,
                 error_message=error_message,
             )
-        durable = True
+        # 22-F R1-05 (CHARC): bound from what the writer REPORTS -- the
+        # equal-stop no-op wrote nothing, so its closes stay bare.
+        durable = wrote
     finally:
         if durable:
             close_notice = close_after_commit(
@@ -3392,10 +3394,13 @@ def stop_post(
     try:
         updated = get_trade(conn, trade_id)
     finally:
-        # Post-durable (the stop change committed above): contained too.
-        close_notice = close_after_commit(
-            conn, log, what=f"The stop change on trade #{trade_id}",
-        ) or close_notice
+        if durable:
+            # Post-durable (the stop change committed above): contained too.
+            close_notice = close_after_commit(
+                conn, log, what=f"The stop change on trade #{trade_id}",
+            ) or close_notice
+        else:
+            conn.close()
     row_vm = build_open_positions_row(
         trade=updated, cfg=cfg, cache=cache,
         ohlcv_cache=request.app.state.ohlcv_cache, executor=executor,

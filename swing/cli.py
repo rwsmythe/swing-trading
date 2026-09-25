@@ -1435,7 +1435,7 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
     pending_refusal: click.ClickException | None = None
     try:
         try:
-            adjust_stop(conn, StopAdjustRequest(
+            wrote = adjust_stop(conn, StopAdjustRequest(
                 trade_id=trade_id, new_stop=new_stop, rationale=rationale,
                 notes=notes,
                 event_ts=_dt.now().isoformat(timespec="seconds"), force=force,
@@ -1447,7 +1447,9 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
             # `StopRegressionError` is an `Exception`, not a `ValueError`, so
             # the two clauses are disjoint.
             raise click.ClickException(ascii_safe(str(exc))) from exc
-        durable = True
+        # 22-F R1-05 (CHARC): bound from what the writer REPORTS -- the
+        # equal-stop no-op wrote nothing.
+        durable = wrote
     except click.ClickException as exc:
         pending_refusal = exc
         raise
@@ -3662,7 +3664,9 @@ def journal_correct_cohort_provenance_cmd(
             )
         except CohortProvenanceCorrectionError as exc:
             raise click.ClickException(ascii_safe(str(exc))) from exc
-        durable = True
+        # 22-F R1-05 (CHARC): an already-applied correction is a no-op
+        # the service REPORTS; nothing was written.
+        durable = not result.already_applied
     except click.ClickException as exc:
         pending_refusal = exc
         raise
@@ -4614,6 +4618,7 @@ def discrepancy_resolve_ambiguity_cmd(
         choice_menu_for_discrepancy,
     )
     from swing.trades.reconciliation_auto_correct import (
+        _TERMINAL_RESOLUTIONS,
         AlreadySupersededError,
         CallerHeldTransactionError,
         MultiRowCorrectionOverrideError,
@@ -4824,6 +4829,9 @@ def discrepancy_resolve_ambiguity_cmd(
             raise click.ClickException(NO_ACTIVE_POLICY_REFUSAL) from exc
 
         try:
+            # The source-direction resolver REFUSES a non-pending row
+            # (SourceResolutionRejected), so it has no silent no-op.
+            was_terminal = False
             if d.field_name == "missing_journal_row":
                 # Arc 4b §4.3 — no-FK-safe source-direction resolver (returns
                 # None; the back-link + correction_id echo below guard on it).
@@ -4836,6 +4844,16 @@ def discrepancy_resolve_ambiguity_cmd(
                 )
                 result = None
             else:
+                # 22-F R1-05 (CHARC): the tier-2 service's step-2
+                # terminal-state idempotent return writes nothing, and its
+                # `CorrectionResult` carries no structured fact saying so
+                # (only prose `notes`).  So the CALLER pre-reads the SAME
+                # predicate step 2 uses -- `disc.resolution in
+                # _TERMINAL_RESOLUTIONS` (reconciliation_auto_correct.py,
+                # `apply_tier2_resolution` step 2) -- on `d`, read above on
+                # this connection BEFORE the call; the frozenset is imported,
+                # never copied.
+                was_terminal = d.resolution in _TERMINAL_RESOLUTIONS
                 result = apply_tier2_resolution(
                     conn,
                     discrepancy_id=discrepancy_id,
@@ -4845,7 +4863,7 @@ def discrepancy_resolve_ambiguity_cmd(
                     risk_policy_id=active_policy.policy_id,
                     schwab_api_call_id=schwab_api_call_id,
                 )
-            durable = True
+            durable = not was_terminal
             # The C.C tier-2 handlers stamp the forward FK
             # (reconciliation_corrections.schwab_api_call_id) but only
             # the tier-1 path invokes `_back_link_schwab_api_call`. To
