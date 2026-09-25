@@ -11,7 +11,7 @@ The DEPTH column is filled by the orchestrator from `scripts/cell_depth.py --age
 |---|---|---|---|---|---|---|---|
 | R0 | premise + fork census (no Codex) | - | - | - | 0 Codex | **405,207 — OVER the 400K cap** (`cell_depth --agent`, read at return 2026-09-25) | census committed; the cell does NOT resume -- the plan loop goes to a FRESH cell off this committed census + the evidence dir; fork packet F-F1..F-F7 routed via the orchestrator |
 | R1 | Codex plan review, round 1, on plan `c4c035c3` (sha256 `cc2e43da...a266a`) | `fast` / `gpt-5.6-luna` (= `~/.codex/fast.config.toml` `model`), effort `medium` | `NEW_CRITICAL_MAJOR_FOUND` (anchored count 2 = the CLI's duplicated final message; the clean token 0) | 3 major, all task-bearing, 0 reopened; 0 critical; 0 minor | 134,901 | **348,615** (`cell_depth --agent`, read at the R1 gate); the cell does NOT resume -- fixes + R2 go to a FRESH cell | assertions: banner model == profile model; effort `medium` (not `none`); `^ERROR` = 0; `^tokens used` = 1; codex process exited (exit file `0`). No reach for prior-round files (grep of the transcript). Evidence: `review-transcripts\22-f-plan\r1\` -- `.codex-review-r1.txt` (207,129 B), `.codex-prompt-r1.md` (4,366 B), the reviewed plan (64,488 B) + ledger copies, `run_r1.sh`, `exit-r1.txt`. Returned at the gate, NO fix applied |
-| R2 | Codex plan review, round 2, on plan `cd103fbc` (plan sha256 `cfade245...891d`) | `fast` / `gpt-5.6-luna` (= `~/.codex/fast.config.toml` `model`), effort `medium` | `NEW_CRITICAL_MAJOR_FOUND` (anchored count 2 = the CLI's duplicated final message; the clean token 0) | 1 major task-bearing (R2-01); 1 minor task-bearing (R2-02, proposed REJECT); 1 minor instrument (R2-03); 0 critical; 0 reopened | 121,033 | (orchestrator) | assertions: banner `model: gpt-5.6-luna` == the profile's `model`; effort `medium` (not `none`); `^ERROR` = 0; `^tokens used` = 1; codex process exited (exit file `0`; no `codex exec` process left). No reach for prior-round files (every `swing-data` hit in the transcript is echoed plan/ledger/CLAUDE.md text, none an exec). Evidence: `review-transcripts\22-f-plan\r2\` -- `.codex-review-r2.txt` (415,454 B, sha256 `556b0bc2...3ba0`), `.codex-prompt-r2.md` (5,146 B, `933e0b3a...a1e3`), `run_r2.sh`, `exit-r2.txt`, the reviewed plan/ledger/census copies. Returned at the gate, NO R2 fix applied |
+| R2 | Codex plan review, round 2, on plan `cd103fbc` (plan sha256 `cfade245...891d`) | `fast` / `gpt-5.6-luna` (= `~/.codex/fast.config.toml` `model`), effort `medium` | `NEW_CRITICAL_MAJOR_FOUND` (anchored count 2 = the CLI's duplicated final message; the clean token 0) | 1 major task-bearing (R2-01); 1 minor task-bearing (R2-02, proposed REJECT); 1 minor instrument (R2-03); 0 critical; 0 reopened | 121,033 | **256,372** (`cell_depth --agent`, read at the R2 gate); the same cell may continue into R3 | assertions: banner `model: gpt-5.6-luna` == the profile's `model`; effort `medium` (not `none`); `^ERROR` = 0; `^tokens used` = 1; codex process exited (exit file `0`; no `codex exec` process left). No reach for prior-round files (every `swing-data` hit in the transcript is echoed plan/ledger/CLAUDE.md text, none an exec). Evidence: `review-transcripts\22-f-plan\r2\` -- `.codex-review-r2.txt` (415,454 B, sha256 `556b0bc2...3ba0`), `.codex-prompt-r2.md` (5,146 B, `933e0b3a...a1e3`), `run_r2.sh`, `exit-r2.txt`, the reviewed plan/ledger/census copies. Returned at the gate, NO R2 fix applied |
 
 ## Rulings
 
@@ -262,3 +262,24 @@ Reviewer severities are Codex's; the task-bearing classification is the reviewer
 | R2-03 | minor, instrument | section 1.2 row 7 | `exit_price` is declared at `routes/trades.py:2404`, not `:2405` | **FIX without a round** (verified: `:2404` `exit_price: float = Form(...)`, `:2405` `shares`) |
 
 Per plan-stage rule 3 the round is NOT clean: R2-01 is a task-bearing major. This cell returns at the gate; nothing is fixed before the orchestrator replies.
+
+## Round 2 gate -- ORCHESTRATOR dispositions (2026-09-25)
+
+Validity (read on disk): the banner is `model: gpt-5.6-luna` / `reasoning effort: medium` (= fast.config.toml); `^ERROR` 0; the `tokens used` footer is 121,033; the anchored `NEW_CRITICAL_MAJOR_FOUND`, with `NO_NEW_CRITICAL_MAJOR` 0; exit 0. **R2 COUNTS** (counted round 2 of 3). `cd103fbc` and `bad64c15` have empty trailers.
+
+**Findings:**
+- **R2-01: FIX as proposed.** T-D0 pins `triage.json` by absolute path + sha256 `b18eb936...cb13`; the executing cell asserts the hash first; the derived roster and the `UNREACHED` map are committed into the test module.
+- **R2-02: REJECT accepted.** Verified: `pipeline_steps.py:586` names `SchwabSchemaParityError` in the handler's own tuple, so it is WIDENED under T-B1's definitions.
+- **R2-03: FIX without a round** (the `:2404` citation).
+
+**The cell's encoding facts, dispositioned at this seat. None is a fork that stops the loop:**
+- (1) The T-D0 closure as AST set == roster ∪ reasoned `UNREACHED` map: ACCEPTED. It is the measured shape of R1-03's closure.
+- (2) The A-1 guard `not (price > 0)`, not `isfinite`: ACCEPTED. Verified at `0014:14`: `price REAL NOT NULL CHECK (price > 0)`. CHARC's text is "the CHECK's predicate", so `isfinite` would have changed whether an exit proceeds.
+- (3) A-3's third ROLLBACK (`:644`): IN, under CHARC's A-3 (same try, same class).
+- (4) R1-02's WARN branch continuing `db_migrate`'s tail on a fresh `open_connection`: ACCEPTED as the correct encoding of MY OWN R1-02 authorization. Exiting before the tail would silently drop the gate-image alarm (and the no-op-at-v41 ratification), a behaviour change the authorization never intended. CHARC is CC'd for dissent.
+- (5) The entry side carries `sub_one_share_quantity` as ADVISORY TEXT (there is no token field on `EntryAutoFillResult`): ACCEPTED. RD's entry text asks for "an empty/error result with a named advisory". RD is CC'd for dissent.
+- (6) `:1195` → `:1194`: noted.
+- (7) CHARC 3(c) read as "no OPERATOR-RECORD write": ACCEPTED as the encoding. The literal reading contradicts CHARC's own "CONFIRMED as DECLARED". CHARC is CC'd for dissent.
+- (8) The COVERED pair: as ruled.
+
+**Round 3 AUTHORIZED** (counted round 3 of 3, the default): fix R2-01 and R2-03, commit, run R3 `fast`, and return at the gate. After R3 comes the dedicated self-sweep (SS-N), and then the plan goes to the directors for acceptance. A fourth counted round needs a separate written authorization.
