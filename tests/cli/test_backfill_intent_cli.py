@@ -549,8 +549,24 @@ def test_backfill_prompt_render_failure_after_commit_warns_and_propagates(
     # The summary line ("N set, ...") must NOT appear -- it would read as
     # completion over an invocation that stopped short.
     assert "skipped-already-set" not in res.output
-    assert any("D69" in r.message and "prompting for trade" in r.message
-               for r in caplog.records)
+    # R6-1 (Codex round 6 Major, cli.py ~:2195/~:2206): the log record
+    # carries the SAME ruled text as the echo (no separate "D69: ..."
+    # framing) -- superseding the pre-fix assertion that looked for a
+    # "D69" prefix. "prompting for trade" is still present, inside the
+    # shared message.
+    assert any("prompting for trade" in r.message for r in caplog.records)
+    # The two sinks must
+    # carry the SAME text -- built ONCE and passed to both, not two
+    # independently-framed strings that happen to share a clause. Isolate
+    # the exact WARN line from the echoed output and the exact message the
+    # log record carries, and assert byte equality.
+    warn_lines = [line for line in res.output.splitlines()
+                  if line.startswith("WARN (partial):")]
+    assert len(warn_lines) == 1
+    warn_records = [r for r in caplog.records
+                     if r.message.startswith("WARN (partial):")]
+    assert len(warn_records) == 1
+    assert warn_records[0].message == warn_lines[0]
 
 
 def test_backfill_prompt_render_failure_zero_written_raises_as_today(

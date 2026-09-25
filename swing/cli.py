@@ -2192,7 +2192,14 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
                 # --force/--trade-id again), never asserting NULL.
                 if n_written == 0:
                     raise
-                _echo_either_sink(ascii_safe(
+                # R6-1 (Codex round 6 Major, cli.py ~:2195/~:2206): build
+                # the ruled message ONCE, and pass that SAME string to
+                # BOTH sinks -- the echo and the log record must carry
+                # byte-identical text, never two independently-framed
+                # strings that happen to share a clause (the prior shape
+                # opened one "WARN (partial): ..." joined with "; " and
+                # the other "D69: ..." joined with " -- ").
+                warn_msg = (
                     "WARN (partial): backfill-intent wrote " + safe_text(n_written)
                     + " row(s) durably this invocation; prompting for trade "
                     + safe_text(tid) + " FAILED (" + safe_text(exc) + "); "
@@ -2200,18 +2207,11 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
                     "invocation and keep their prior value; a plain re-run "
                     "re-prompts only rows still NULL, and an already-set "
                     "row needs --force or --trade-id again; the ledger is "
-                    "unaffected."),
-                    prefer_err=True)
+                    "unaffected.")
+                _echo_either_sink(ascii_safe(warn_msg), prefer_err=True)
                 log_contained(
                     _pe_backfill_logging.getLogger(__name__),
-                    "D69: backfill-intent wrote %s row(s) durably this "
-                    "invocation; prompting for trade %s FAILED (%s) -- this "
-                    "row and any later rows were NOT answered this "
-                    "invocation and keep their prior value; a plain re-run "
-                    "re-prompts only rows still NULL, and an already-set "
-                    "row needs --force or --trade-id again; the ledger is "
-                    "unaffected.",
-                    n_written, tid, safe_text(exc))
+                    "%s", warn_msg)
                 raise
             if choice in ("skip", ""):
                 n_skipped_op += 1
