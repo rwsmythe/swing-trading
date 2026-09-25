@@ -374,6 +374,13 @@ def test_a_db_newer_than_head_is_refused_with_no_backup(world) -> None:
     c.close()
     r = _migrate(world)
     assert r.exit_code != 0
-    assert isinstance(r.exception, db_mod.SchemaVersionMismatchError)
+    # 22-F T-C2 (F-F7, S-GROUP): the refusal is still
+    # `SchemaVersionMismatchError` from `ensure_schema`, now delivered by the
+    # root group as a typed `Error: ...` (exit 1) instead of a traceback.
+    assert isinstance(r.exception, SystemExit), repr(r.exception)
+    assert r.exit_code == 1
+    assert r.output.startswith("Error: DB schema version"), r.output
+    assert "newer than code" in r.output
+    assert "Update the swing package" in r.output
     assert _names(world["backups"]) == []
     assert not list(world["sd"].glob("swing-pre-*.db"))

@@ -221,8 +221,10 @@ class _SchemaGuardGroup(click.Group):
     -- an operator-actionable state ("Run: swing db-migrate") -- into a typed
     `Error: ...` instead of a traceback. Catches ONLY that type. Every
     nested group's command runs inside this `invoke`, so one class covers
-    them all; `db-migrate` never raises it (it reaches `ensure_schema`, not
-    the guarded `connect`)."""
+    them all. `db-migrate` still migrates a STALE DB (it reaches
+    `ensure_schema`, not the guarded `connect`); its one refusal of this
+    type -- a DB NEWER than the code ("Update the swing package") -- is
+    typed here like every other."""
 
     def invoke(self, ctx: click.Context):
         try:
