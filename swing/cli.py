@@ -4636,16 +4636,36 @@ def discrepancy_resolve_ambiguity_cmd(
                 from swing.data.repos.schwab_api_calls import (
                     update_call_linked_correction,
                 )
-                conn.execute("BEGIN IMMEDIATE")
+                # 22-F T-F2 (C2-05, S-D39): BEGIN inside the try, the
+                # rollback trigger is the CLASS, and a rollback that also
+                # fails is raised CHAINED from the write error with one
+                # MUST BE DISCARDED record (never instead of it, unguarded).
                 try:
+                    conn.execute("BEGIN IMMEDIATE")
                     update_call_linked_correction(
                         conn,
                         call_id=schwab_api_call_id,
                         correction_id=result.correction_id,
                     )
                     conn.commit()
-                except Exception:
-                    conn.rollback()
+                except BaseException as link_error:  # noqa: BLE001
+                    if conn.in_transaction:
+                        try:
+                            conn.rollback()
+                        except BaseException as cleanup_error:  # noqa: BLE001
+                            from swing.trades.entry import log_contained_note
+                            log_contained_note(
+                                _pe_backfill_logging.getLogger(__name__),
+                                cleanup_error,
+                                "22-F: the schwab_api_calls back-link of "
+                                "correction %s failed (%s) AND its rollback "
+                                "failed (%s); in_transaction reads %s after "
+                                "the failed rollback; this connection MUST BE "
+                                "DISCARDED either way. The tier-2 correction "
+                                "itself is already committed.",
+                                result.correction_id, link_error,
+                                cleanup_error, conn.in_transaction)
+                            raise cleanup_error from link_error
                     raise
         except CallerHeldTransactionError as e:
             # Should not happen in the CLI path (connection is fresh) —
