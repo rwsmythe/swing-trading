@@ -35,6 +35,7 @@ from swing.cli_schwab import schwab_group
 from swing.config import load as load_config
 from swing.data.db import (
     EXPECTED_SCHEMA_VERSION,
+    SchemaVersionMismatchError,
     backup_gate_for_pre_version,
     connect,
     ensure_schema,
@@ -215,7 +216,23 @@ def install_yfinance_cli_audit_context(cfg) -> None:
     )
 
 
-@click.group()
+class _SchemaGuardGroup(click.Group):
+    """22-F F-F7 (C1-14): the root group turns `SchemaVersionMismatchError`
+    -- an operator-actionable state ("Run: swing db-migrate") -- into a typed
+    `Error: ...` instead of a traceback. Catches ONLY that type. Every
+    nested group's command runs inside this `invoke`, so one class covers
+    them all; `db-migrate` never raises it (it reaches `ensure_schema`, not
+    the guarded `connect`)."""
+
+    def invoke(self, ctx: click.Context):
+        try:
+            return super().invoke(ctx)
+        except SchemaVersionMismatchError as exc:
+            from swing.trades.entry import ascii_safe
+            raise click.ClickException(ascii_safe(str(exc))) from exc
+
+
+@click.group(cls=_SchemaGuardGroup)
 @click.option("--config", "config_path", default="swing.config.toml",
               help="Path to swing.config.toml")
 @click.pass_context
