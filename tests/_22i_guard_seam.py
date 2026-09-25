@@ -1,9 +1,9 @@
 """22-I test seam: drop named guards on a TEST DB, restore them on exit.
 
-AL-10 (plan section 5): a trigger cannot be bypassed by a raw INSERT the way a
-Python write-barrier can (the 18-B.1 technique). Plan AL-10 names TWO kinds of
-use; the T16 fixture sweep (rule (d): "(b) with reason") and T10 added the
-rest. Every call site carries its reason, and the kinds in use are:
+AL-10 (plan section 5, amended 2026-09-25 by CHARC's ruling to these FOUR
+kinds; this docstring is the source of the list and AL-10 restates it): a
+trigger cannot be bypassed by a raw INSERT the way a Python write-barrier can
+(the 18-B.1 technique). Every call site carries its reason, and the kinds are:
 
   1. tests that plant HISTORICAL corruption to test DETECTION of a state the
      schema now forbids (a moved / deleted / rewritten row);
@@ -14,10 +14,13 @@ rest. Every call site carries its reason, and the kinds in use are:
      trigger pre-empts (test_migration_0032's identity trigger);
   3. test DISPOSAL of rows a production service wrote, between iterations
      (T16 rule (d), with reason);
-  4. fixture construction over MIGRATION-seeded rows no raw INSERT can
-     re-plant (T10's ``rebase_status_history_recorded_at`` -- reported in the
-     22-I exec ledger as a deviation from AL-10's two kinds; the T16 sweep
-     planted the same state at v40, before 0041, where it could).
+  4. fixture construction over rows WRITTEN BY A MIGRATION that are held by
+     BOTH a ``no_delete`` and an immutable/``no_update`` guard, which no raw
+     INSERT can re-plant (T10's ``rebase_status_history_recorded_at``); it
+     reproduces the live DB's shape. BOUNDED: a state a raw INSERT can plant
+     uses T16 rule (a), never this seam.
+
+A fifth kind is a REPORTED deviation, never a docstring edit alone.
 
 A name absent from the DB is SKIPPED, so one test body runs at v40 (where the
 0041 guards do not exist) and at v41. The triggers are re-created from their
