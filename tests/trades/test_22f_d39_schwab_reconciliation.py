@@ -539,3 +539,77 @@ def test_r2_05_sqlite_error_at_rejection_rollback_to_unchanged_pin(
     assert proxy.calls["failed_rollback_to"] == 2
     assert type(info.value).__name__ == "_SavepointRollbackError"
     assert _fresh(db) == {"runs": [], "discs": 0, "stop": 4.0}
+
+
+# -- SS-3 / SS-4 (the uncounted self-sweep, CHARC's Round 2 class rule) -----
+# The RELEASE that completes a savepoint cleanup after a SUCCESSFUL
+# `ROLLBACK TO`: in the R1-09 helper (`RELEASE` under
+# `contextlib.suppress(sqlite3.Error)`) and in the R2-05 rejection branch.
+# PRE-FIX an interrupt there escaped with no record and no `__cause__`.
+# POST-FIX it is recorded and re-raised CHAINED from the in-flight error; a
+# `sqlite3.Error` there is unchanged (suppressed in the helper; propagated in
+# the rejection branch).  On both trees the run rolls back WHOLE.
+
+
+class _ReleaseInterruptConn(_SpFailConn):
+    """`RELEASE SAVEPOINT <prefix>...` raises KeyboardInterrupt."""
+
+    def __init__(self, real: sqlite3.Connection, *, release_prefix: str,
+                 **kw: Any) -> None:
+        super().__init__(real, **kw)
+        object.__setattr__(self, "_release_prefix", release_prefix)
+
+    def _check_sql(self, sql: str) -> None:
+        norm = sql.strip().upper()
+        if norm.startswith("RELEASE SAVEPOINT "
+                           + self._release_prefix.upper()):
+            self.calls["interrupted_release"] += 1
+            self.sql_log.append(sql)
+            raise KeyboardInterrupt
+        super()._check_sql(sql)
+
+
+def test_ss_helper_release_interrupt_is_chained(db, monkeypatch, caplog):
+    spec = _SITES["S7-1330-outer-generic"]
+    counters = _plant_site(monkeypatch, spec)
+    proxy = _ReleaseInterruptConn(sqlite3.connect(str(db)),
+                                  release_prefix="correction_sp_",
+                                  fail_sql_prefix=_FAILWRITE_PREFIX,
+                                  fail_sql_times=1,
+                                  raise_on_sql=_trigger(spec["trigger"]))
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(KeyboardInterrupt) as info:
+                _run(proxy)
+    finally:
+        proxy._real.close()
+    for name, cw in counters.items():
+        assert cw.calls >= 1, f"planted {name} never called"
+    assert proxy.calls["failed_sql"] == 1
+    assert proxy.calls["interrupted_release"] == 1  # did-it-fire
+    assert type(info.value) is KeyboardInterrupt
+    assert isinstance(info.value.__cause__, sqlite3.OperationalError)
+    recs = _records(caplog, "MUST BE DISCARDED")
+    assert len(recs) == 1 and "RELEASE" in recs[0].getMessage()
+    assert _fresh(db) == {"runs": [], "discs": 0, "stop": 4.0}
+
+
+def test_ss_rejection_release_interrupt_is_chained(db, monkeypatch, caplog):
+    from swing.trades import reconciliation_auto_correct as rac
+    counters = _plant_site(monkeypatch, dict(
+        recipe=False, tier1=("raise_first", "validator_rejected")))
+    proxy = _ReleaseInterruptConn(sqlite3.connect(str(db)),
+                                  release_prefix="correction_sp_")
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(KeyboardInterrupt) as info:
+                _run(proxy)
+    finally:
+        proxy._real.close()
+    assert counters["tier1"].calls >= 1
+    assert proxy.calls["interrupted_release"] == 1  # did-it-fire
+    assert type(info.value) is KeyboardInterrupt
+    assert isinstance(info.value.__cause__, rac.ValidatorRejectedError)
+    recs = _records(caplog, "MUST BE DISCARDED")
+    assert len(recs) == 1 and "RELEASE" in recs[0].getMessage()
+    assert _fresh(db) == {"runs": [], "discs": 0, "stop": 4.0}

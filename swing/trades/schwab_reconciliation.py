@@ -1084,8 +1084,23 @@ def _rollback_to_savepoint_or_raise(
             "back; this connection MUST BE DISCARDED after the run.",
             sp_name, type(interrupt).__name__, original)
         raise interrupt from original
-    with contextlib.suppress(sqlite3.Error):
-        conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+    try:
+        with contextlib.suppress(sqlite3.Error):
+            conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+    except BaseException as interrupt:  # noqa: BLE001 -- 22-F SS (R2 class)
+        # 22-F self-sweep (CHARC's Round 2 class rule): an INTERRUPT at the
+        # RELEASE that completes this cleanup (the ROLLBACK TO succeeded, so
+        # the partial writes are undone) is recorded and re-raised CHAINED
+        # from the per-discrepancy error -- never swallowed, never retyped.
+        from swing.trades.entry import log_contained_note
+        log_contained_note(
+            log, interrupt,
+            "22-F: RELEASE SAVEPOINT %s was interrupted (%s) after a "
+            "successful ROLLBACK TO and the per-discrepancy error (%s); the "
+            "interrupt propagates to the run, which rolls the WHOLE run back; "
+            "this connection MUST BE DISCARDED after the run.",
+            sp_name, type(interrupt).__name__, original)
+        raise interrupt from original
 
 
 def _rollback_run_or_raise(
@@ -1250,7 +1265,24 @@ def _pivot_classify_and_dispatch_for_run(
                             "DISCARDED after the run.",
                             sp_name, type(interrupt).__name__, e)
                         raise interrupt from e
-                    conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    try:
+                        conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    except sqlite3.Error:
+                        raise  # unchanged
+                    except BaseException as interrupt:  # noqa: BLE001
+                        # 22-F self-sweep (the R2 class rule): an INTERRUPT
+                        # at the RELEASE completing this cleanup, recorded
+                        # and re-raised CHAINED from the rejection.
+                        from swing.trades.entry import log_contained_note
+                        log_contained_note(
+                            log, interrupt,
+                            "22-F: RELEASE SAVEPOINT %s was interrupted (%s) "
+                            "after a successful ROLLBACK TO and the tier-1 "
+                            "rejection (%s); the interrupt propagates to the "
+                            "run, which rolls the WHOLE run back; this "
+                            "connection MUST BE DISCARDED after the run.",
+                            sp_name, type(interrupt).__name__, e)
+                        raise interrupt from e
                     sp_released = True
                     kind = (
                         "multi_match_within_window"
