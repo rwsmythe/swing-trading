@@ -917,3 +917,26 @@ def test_policy_missing_tooltip_repair_executes_at_head(p14n3_jinja_env, tmp_pat
         assert read_live_policy(conn).policy_id == successor
     finally:
         conn.close()
+
+
+def test_policy_missing_tile_gives_no_reactivation_advice(p14n3_jinja_env):
+    """22-I Reviewer B B-2: the WHOLE policy_missing tile -- the badge title
+    AND the sibling role=tooltip help -- must not advise re-activating a
+    historical risk_policy row (trg_rp_immutable refuses is_active 0 -> 1 at
+    v41); the help names the append-only INSERT the title spells out."""
+    import html
+    import re
+
+    vm = _P14N3_MagicMock()
+    vm.daily_management_tiles = [_build_p14n3_tile_vm(
+        is_provisional=True, util_pct_effective=None, policy_missing=True,
+    )]
+    rendered = html.unescape(p14n3_jinja_env.get_template(
+        "partials/daily_management_tile.html.j2",
+    ).render(vm=vm))
+    assert re.search(r"reactivat", rendered, re.I) is None, rendered
+    assert re.search(r"SET\s+is_active\s*=\s*1", rendered, re.I) is None
+    help_text = re.search(
+        r'id="provisional-capital-help-1"\s+class="help-detail" role="tooltip">(.*?)</span>',
+        rendered, re.S).group(1)
+    assert "APPEND-ONLY" in help_text and "INSERT" in help_text, help_text

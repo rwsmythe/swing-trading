@@ -133,7 +133,7 @@
               </button>
               <span id="provisional-capital-help-{{ tile.trade_id }}"
                     class="help-detail" role="tooltip">
-                No active risk_policy row found (zero rows have is_active=1). Schema-corrupted state. Recovery requires DIRECT DB intervention via SQL (reactivate a historical row OR insert a fresh one); the standard `swing config policy ...` CLI raises because supersede_active_policy requires an existing active row to supersede.
+                No active risk_policy row found (zero rows have is_active=1). Schema-corrupted state. Recovery requires DIRECT DB intervention via SQL, and it is APPEND-ONLY: INSERT a new active row copied from a historical one (the badge's title gives the statement); from migration 0041 a historical row is never set active again in place (trg_rp_immutable refuses is_active 0 to 1). The standard `swing config policy ...` CLI raises because supersede_active_policy requires an existing active row to supersede.
               </span>
             {%- elif tile.position_capital_utilization_is_provisional -%}
               <span class="badge badge-provisional" data-marker="PROVISIONAL"
