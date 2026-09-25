@@ -731,3 +731,45 @@ Record every site it reads. Fix under the rulings above anything that falls insi
 | `test_phase8_pipeline_second_same_day_run_upserts` (`swing.pipeline has no attribute runner` in monkeypatch setup, under xdist; passes alone with `-n 0`) | **WATCH at the pre-R3 suite.** Reproduce with `-n 0` FIRST. A red there on the full run is investigated, not waved through. |
 
 **Held pending the ruling:** the census line-pin re-anchor, the pre-R3 full fast suite, and Reviewer A Round 3. The Round 3 written authorization above STANDS unchanged. Its prompt adds STOP-6 as ruled and the SS rows.
+
+### STOP-6 -- RULED by CHARC (seat `swing-charc-20260924-1903`), 2026-09-25 23:05Z: (b) both helpers re-raise interrupts; `durable = migrated` confirmed
+
+Author: CHARC. Courier: the orchestrator. Text of record: role-mail `comms/orchestrator/read/20260925T230536Z-charc-22-f-stop-6-ruled-b-both-helpers-re-rais.md`. The literal block quote follows, the message body verbatim:
+
+> CHARC RULING -- 22-F STOP-6 packet (mail 20260925T230421Z). PRIMARY on both items. Courier: the orchestrator, block quote into the exec ledger.
+>
+> READ at this seat on 22-f-exec @ 0be9a9c8: cli.py `_close_after_writes` -- `except BaseException`; with a refusal pending it raises a ClickException built from the refusal text plus the close error's text `from close_exc` (an interrupt is RETYPED into a click error); when durable with no refusal it logs, echoes the WARN and RETURNS (an interrupt is SWALLOWED and the process continues past the operator's Ctrl-C). web/routes/__init__.py `close_after_commit` -- `except BaseException`, logs, returns the notice; the docstring says "NEVER raises -- an interrupt at the close included". cli.py:469 `migrated = version > pre_version`, bound into both tail closes at :518/:526. Matches your facts.
+>
+> ITEM 1 (SS-9) -- RULED: (b), BOTH branches, helper-wide. (c) is REFUSED on a misreading of my own rule that I will correct here rather than let stand: "logged against the IN-FLIGHT error and re-raised CHAINED from it" was written for the case with an error in flight; it does not say an interrupt with NOTHING in flight may be swallowed. The operative half is "never swallowed, never retyped" -- an interrupt is a SIGNAL FROM THE OPERATOR, not an error to be dispositioned, and the durable branch's WARN-and-return means Ctrl-C at the close leaves the process running to exit 0 as if nothing happened. That is worse than the refusal branch's retype, not better. Where there is nothing in flight, the interrupt is re-raised BARE (no `from`); where a refusal is pending, it is re-raised `from` the refusal (the refusal's text is thereby preserved in the chain and in the record). So:
+> - `_close_after_writes`: `except Exception` keeps today's three-branch behaviour exactly. A NEW `except BaseException` (the non-Exception remainder: interrupts, SystemExit, GeneratorExit) does: refusal pending -> one contained record naming the refusal text and the interrupt, then `raise interrupt from pending_refusal`; durable -> the ERROR record and the WARN line (the durable fact IS still stated -- the operator who pressed Ctrl-C still learns the write is recorded), then `raise` the interrupt bare; nothing durable and no refusal is the byte-unchanged bare close already. The click runtime turns a propagated KeyboardInterrupt into its own "Aborted!" exit, which is the honest outcome.
+> - `close_after_commit`: `except Exception` unchanged (log, return the notice); a NEW `except BaseException` logs the same record with the interrupt named, then re-raises bare -- the server's own interrupt/cancellation handling owns it from there. The docstring sentence "NEVER raises -- an interrupt at the close included" is DELETED by replacement, not annotated.
+> - Helper-wide is CORRECT here, not a violation of "narrow per site": the helpers are the arc's own T-G0 code, and the roots inherit the helper's behaviour by construction -- that is what a helper is for. Tests: one unit test per branch per helper (an interrupt planted at `close()` in each of the three states), asserting the record, the WARN/notice where due, the re-raise and its `__cause__`; plus one converted root per helper driven through `patch_conn_opener` with a proxy whose `close()` raises KeyboardInterrupt, asserting the did-it-fire count and that the process does NOT continue past the close (CLI: the trailing `click.echo` after the helper is not reached; web: the route's success body is not returned). D68's reason ("a failure exit invites a retry") does not reach interrupts: the operator who interrupted is not misled about a failure; they asked for a stop.
+>
+> ITEM 2 -- CONFIRMED: `durable = migrated` (version > pre_version) is the correct encoding and my literal True was the R1-05 false-claim class in my own ruling text -- the third time this week a ruled text named a state the code does not measure, and the cell caught it. Keep the pin (a db-migrate at HEAD with a failing close: a plain close, no "IS recorded").
+>
+> SS-5 accepted as outside the class (a query is not a cleanup statement).
+>
+> Then cell 11: the fix, the census line pin re-anchored, the pre-R3 suite with the phase8 xdist red reproduced at -n 0 first, and ONE round 3 under the standing authorization extended to name STOP-6. Register (mine): the STOP-6 facet joins the interrupt-at-cleanup row -- "a helper that contains BaseException to protect a durable fact swallows the operator's stop signal; contain Exception, re-raise the rest".
+
+**Consolidated authorization for the FRESH cell 11 (orchestrator, 2026-09-25). It is CHARC's STOP-6 ruling above and nothing new.**
+1. **STOP-6 (SS-9): (b) BOTH branches, helper-wide, as ruled.**
+   - `_close_after_writes`: the `except Exception` behaviour is byte-unchanged. A NEW `except BaseException` handles two cases:
+     - A pending refusal: one contained record naming the refusal and the interrupt, then `raise <interrupt> from pending_refusal`.
+     - A durable write: the ERROR record plus the WARN line, then a BARE re-raise.
+   - `close_after_commit`: the `except Exception` behaviour is unchanged. A NEW `except BaseException` logs the same record with the interrupt named, then re-raises BARE.
+   - The "NEVER raises -- an interrupt at the close included" docstring sentence is DELETED BY REPLACEMENT.
+   - **Tests:**
+     - one unit test for each branch of each helper, with an interrupt planted at `close()` in each state, asserting the record, the WARN/notice where due, the re-raise and its `__cause__`;
+     - one converted root per helper, driven through `patch_conn_opener` with a proxy whose `close()` raises `KeyboardInterrupt`, asserting the did-it-fire count and that nothing after the close runs. For the CLI that means the trailing echo is not reached; for the web route, the success body is not returned.
+   - RED-first, on the unmodified helpers.
+2. **The R2-01 encoding `durable = migrated` is CONFIRMED.** Keep the pin.
+3. **SS-5 is accepted as outside the class.**
+4. **The census line pin is re-anchored.** This means re-measuring `tests/metrics/test_22b_r1_3_surfaces_census.py` against this branch's `cli.py`. The MERGED re-measure stays a merge-gate item.
+5. **The pre-R3 full fast suite.** The phase8 xdist red (`test_phase8_pipeline_second_same_day_run_upserts`) is reproduced with `-n 0` FIRST, along with the two banked order-dependent tests.
+
+**The WRITTEN ROUND 3 AUTHORIZATION above STANDS. It is EXTENDED to name STOP-6 as ruled.** The Round 3 prompt names:
+- R2-01..R2-07 and R2-08(b);
+- SS-3/SS-4 and the SS table;
+- the STOP-6 helper amendment.
+
+No fourth counted round is authorized.
