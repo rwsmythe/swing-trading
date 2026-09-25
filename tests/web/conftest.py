@@ -115,6 +115,35 @@ def _auto_entry_fill_after_insert_trade(monkeypatch):
     fixture's ``state in (entered/managing/partial_exited)`` guard means
     tests that legitimately seed closed/reviewed trades skip the
     auto-fill (which would otherwise corrupt the seed state).
+
+    D67 (2026-09-24): this wrapper hard-copied ``insert_trade_with_event``'s
+    keyword roster (``event_ts``/``rationale``) and rotted silently when
+    22-A4 added ``attempt_id`` to the production signature — ``entry.py``
+    passes it unconditionally, so any caller landing on the wrapped
+    function raised ``TypeError: wrapped() got an unexpected keyword
+    argument 'attempt_id'``. MEASURED masking mechanism for why the full
+    suite run never saw it: ``swing/web/app.py:create_app`` imports route
+    modules (and, transitively, ``swing.trades.entry``) LAZILY, inside the
+    function body, not at ``swing.web.app`` module-import time. ``entry.py``
+    itself binds ``insert_trade_with_event`` by name
+    (``from swing.data.repos.trades import insert_trade_with_event``) —
+    an independent reference captured once, at ``entry.py``'s OWN first
+    import, that this fixture's ``monkeypatch.setattr(trades_repo, ...)``
+    can never retarget (it only rewrites ``trades_repo``'s own attribute).
+    So whichever test is the FIRST in a given process to trigger
+    ``swing.trades.entry``'s import decides, for that whole worker
+    process, whether ``entry.py`` calls the real function or this
+    wrapper. In a full run, ``tests/trades/`` sorts before ``tests/web/``
+    and imports ``swing.trades.entry`` directly (no monkeypatch active
+    yet) well before this file's autouse fixture ever runs — so
+    ``entry.py`` is permanently bound to the REAL function and the
+    rotted wrapper is never reached through ``record_entry``. Running
+    THIS FILE alone makes it the first import: the autouse fixture below
+    patches ``trades_repo`` before the test body calls ``create_app()``,
+    so ``entry.py``'s first-ever import captures the ALREADY-WRAPPED
+    reference, and it stays captured for the rest of that process. Fix:
+    take ``**kwargs`` and forward — never hand-copy the production
+    keyword roster a second time.
     """
     from swing.data.models import Fill
     from swing.data.repos import fills as fills_repo
@@ -122,14 +151,48 @@ def _auto_entry_fill_after_insert_trade(monkeypatch):
 
     real_insert = trades_repo.insert_trade_with_event
 
-    def wrapped(conn, trade, *, event_ts, rationale=None):
-        trade_id = real_insert(
-            conn, trade, event_ts=event_ts, rationale=rationale,
-        )
+    def wrapped(conn, trade, *, event_ts, **kwargs):
+        # Reviewer B B2-2: name only what this wrapper consumes
+        # (``event_ts``, for its own fill write). ``rationale`` and every
+        # other keyword ride in ``**kwargs`` -- a hand-copied keyword here
+        # is the drift D67 exists to kill.
+        trade_id = real_insert(conn, trade, event_ts=event_ts, **kwargs)
+        # R4-1 (Codex round 4): `record_entry` (swing/trades/entry.py,
+        # Phase 7 Sub-B B.3) ALWAYS inserts its OWN entry fill in the SAME
+        # transaction, immediately after calling `insert_trade_with_event`
+        # by name -- the exact reference this wrapper can capture under
+        # the masking mechanism D67's own docstring above describes. If
+        # this wrapper ALSO auto-inserted a fill here, a trade entered
+        # through `record_entry` (e.g. POST /trades/entry) under that
+        # masking would carry TWO entry fills and a DOUBLED
+        # `current_size` -- reproduced (2 fills, `current_size`=2 for a
+        # 1-share post) before this guard.
+        # `record_entry` ALWAYS passes `attempt_id` BY KEYWORD (22-A4,
+        # `swing/trades/entry.py:~2252`, `attempt_id=attempt_id`) --
+        # UNCONDITIONALLY, even when `_begin_attempt_identity`'s mint
+        # fails and the token is `None` (`entry.py:~726`'s mint-failure
+        # arm returns `_AttemptIdentity()`, whose `.token` is `None`,
+        # and the call site still reads `attempt_id=attempt_id`, never
+        # omitting the keyword). So `attempt_id=None` is a REAL,
+        # record_entry-originated call, not a direct-seed call -- and
+        # `kwargs.get("attempt_id") is not None` (Reviewer B finding
+        # B-1, 2026-09-25) collapses that case onto "absent", auto-
+        # inserting a SECOND fill alongside record_entry's own on the
+        # mint-failed path (reproduced: 2 fills, doubled current_size).
+        # No DIRECT-seed caller in tests/web/ ever passes `attempt_id`
+        # to `insert_trade_with_event` AT ALL (grep-verified across
+        # every call site) -- so PRESENCE OF THE KEY in `kwargs`, not
+        # the value, is the exact discriminator between "record_entry
+        # called this" (key present, any value) and "a test is seeding
+        # a trade directly" (key absent). Skip the auto-fill only in
+        # the former case.
+        called_via_record_entry = "attempt_id" in kwargs
         # Only auto-write the entry-fill when the trade is in an active
         # state (entered/managing/partial_exited). Closed/reviewed seeds
         # in some tests intentionally skip the fill flow.
-        if trade.state in ("entered", "managing", "partial_exited"):
+        if not called_via_record_entry and trade.state in (
+            "entered", "managing", "partial_exited",
+        ):
             fills_repo.insert_fill_with_event(
                 conn,
                 Fill(

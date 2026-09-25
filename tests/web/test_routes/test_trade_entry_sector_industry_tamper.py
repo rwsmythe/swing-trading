@@ -202,6 +202,34 @@ def test_post_entry_with_matching_sector_industry_proceeds(
         count = conn.execute(
             "SELECT COUNT(*) FROM trades WHERE ticker='TAMP'"
         ).fetchone()[0]
+        trade_id, current_size = conn.execute(
+            "SELECT id, current_size FROM trades WHERE ticker='TAMP'"
+        ).fetchone()
+        # R4-1 (Codex round 4, D67): this route POSTs through record_entry --
+        # the SAME masking condition D67's own docstring names (this file,
+        # run ISOLATED at -n 0, is the FIRST importer of swing.trades.entry
+        # in its worker process, so entry.py's by-name insert_trade_with_
+        # event binds to the D67 wrapper). record_entry ALWAYS inserts its
+        # OWN entry fill (swing/trades/entry.py, Phase 7 Sub-B B.3) after
+        # calling insert_trade_with_event -- if the wrapper ALSO auto-
+        # inserted one (its original purpose: standing in for record_entry
+        # for tests that seed DIRECTLY, bypassing it), the trade would carry
+        # TWO entry fills and a DOUBLED current_size. Fixed by skipping the
+        # wrapper's own auto-fill whenever `attempt_id` is present in
+        # kwargs -- record_entry ALWAYS passes a freshly-minted attempt_id
+        # (22-A4, `_begin_attempt_identity`); no direct-seed caller in
+        # tests/web/ ever does (grep-verified), so the presence of
+        # attempt_id is the exact discriminator record_entry's own callers
+        # carry and no seed caller does.
+        fill_count = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE trade_id = ? AND action='entry'",
+            (trade_id,),
+        ).fetchone()[0]
+        entry_event_count = conn.execute(
+            "SELECT COUNT(*) FROM trade_events WHERE trade_id = ? "
+            "AND event_type='entry'",
+            (trade_id,),
+        ).fetchone()[0]
         # NO reconciliation_runs row emitted on the happy path.
         recon_count = conn.execute(
             "SELECT COUNT(*) FROM reconciliation_runs"
@@ -215,12 +243,106 @@ def test_post_entry_with_matching_sector_industry_proceeds(
     assert count == 1, (
         f"Expected 1 trade row, got {count} — happy path must insert."
     )
+    assert fill_count == 1, (
+        f"Expected exactly 1 entry fill (R4-1), got {fill_count} — a "
+        f"second would mean the D67 wrapper's auto-fill fired ALONGSIDE "
+        f"record_entry's own, doubling the position."
+    )
+    assert current_size == 1, (
+        f"Expected current_size == 1 (the posted share count), got "
+        f"{current_size} — doubled means the R4-1 duplicate-fill defect."
+    )
+    assert entry_event_count == 1, (
+        f"Expected exactly 1 entry trade_event, got {entry_event_count}."
+    )
     assert recon_count == 0, (
         f"Expected 0 reconciliation_runs on happy path, got {recon_count}."
     )
     assert sector_tamper_count == 0, (
         f"Expected 0 sector_tamper discrepancies on happy path, got "
         f"{sector_tamper_count}."
+    )
+
+
+def test_post_entry_with_minting_failure_still_writes_exactly_one_fill(
+    seeded_db, monkeypatch,
+):
+    """B-1 (Reviewer B, 2026-09-25): ``record_entry`` ALWAYS passes
+    ``attempt_id`` to ``insert_trade_with_event`` BY KEYWORD -- including
+    when ``_begin_attempt_identity``'s mint fails and ``identity.token`` is
+    ``None`` (``swing/trades/entry.py:~726`` catches the mint failure and
+    returns ``_AttemptIdentity()``; the call at ``~:2252`` still reads
+    ``attempt_id=attempt_id`` unconditionally, so the keyword arrives as
+    ``attempt_id=None``, never omitted).
+
+    The D67 wrapper's OLD discriminator (``kwargs.get("attempt_id") is not
+    None``) treats a present-but-None ``attempt_id`` exactly like an
+    absent one -- ``None is not None`` is ``False`` -- so on THIS path it
+    concludes "not called via record_entry" and ALSO auto-inserts a fill,
+    even though ``record_entry`` already inserted its own. The correct
+    discriminator is presence in ``kwargs`` (``"attempt_id" in kwargs``),
+    which is ``True`` here because ``record_entry`` always passes the
+    keyword, mint failure or not.
+
+    PRE-FIX: 2 entry fills (doubled ``current_size``) -- record_entry's own
+    plus the wrapper's spurious auto-fill. POST-FIX: exactly 1.
+    """
+    from swing.trades import entry as entry_mod
+
+    cfg, cfg_path = seeded_db
+    eval_id, _ = _seed_candidate_with_sector_industry(
+        cfg.paths.db_path,
+        ticker="TAMP",
+        sector="Technology",
+        industry="Software-Application",
+    )
+    _patch_price_cache_with_snapshot(monkeypatch)
+
+    def _mint_fails():
+        raise RuntimeError("B-1 discriminator: forced mint failure")
+
+    monkeypatch.setattr(entry_mod, "_mint_attempt_token", _mint_fails)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_entry(
+            client,
+            sector="Technology",
+            industry="Software-Application",
+            sector_industry_evaluation_run_id=eval_id,
+        )
+    assert resp.status_code == 200, (
+        f"Mint failure must not convert a would-have-succeeded entry into "
+        f"a failure (entry.py:~697). Got {resp.status_code}. "
+        f"Body[:500]: {resp.text[:500]!r}"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        trade_id, current_size = conn.execute(
+            "SELECT id, current_size FROM trades WHERE ticker='TAMP'"
+        ).fetchone()
+        fill_count = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE trade_id = ? AND action='entry'",
+            (trade_id,),
+        ).fetchone()[0]
+        attempt_id = conn.execute(
+            "SELECT attempt_id FROM trades WHERE id = ?", (trade_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert attempt_id is None, (
+        f"Expected the mint-failed row to carry a NULL attempt_id "
+        f"(the measured premise), got {attempt_id!r}."
+    )
+    assert fill_count == 1, (
+        f"Expected exactly 1 entry fill even under a mint failure, got "
+        f"{fill_count} -- a second means the wrapper's "
+        f"``kwargs.get('attempt_id') is not None`` discriminator "
+        f"mistook a present-but-None attempt_id for an absent one and "
+        f"auto-inserted alongside record_entry's own fill."
+    )
+    assert current_size == 1, (
+        f"Expected current_size == 1, got {current_size} -- doubled means "
+        f"the B-1 duplicate-fill defect on the mint-failed path."
     )
 
 
@@ -1107,3 +1229,20 @@ def test_post_entry_with_bogus_anchor_pointing_at_nonexistent_eval_rejects(
     assert recon_count == 0
     assert trade_count == 0
 
+
+
+def test_d67_wrapper_names_no_production_keyword_but_event_ts():
+    """Reviewer B B2-2 (2026-09-25): the autouse wrapper must never hold a
+    hand-copied production keyword. It names only ``event_ts`` (which it
+    consumes for its own fill write); every other keyword -- ``rationale``,
+    ``attempt_id``, any future one -- rides in ``**kwargs``, so a rename in
+    ``insert_trade_with_event`` cannot re-break it (the D67 drift class)."""
+    import inspect
+
+    from swing.data.repos import trades as trades_repo
+
+    params = inspect.signature(trades_repo.insert_trade_with_event).parameters
+    kw_only = [n for n, p in params.items() if p.kind is inspect.Parameter.KEYWORD_ONLY]
+    var_kw = [n for n, p in params.items() if p.kind is inspect.Parameter.VAR_KEYWORD]
+    assert kw_only == ["event_ts"]
+    assert var_kw == ["kwargs"]

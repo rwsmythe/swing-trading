@@ -2059,11 +2059,54 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
         assert_entry_intent_change_allowed,
         update_entry_intent,
     )
+    from swing.trades.entry import ascii_safe, log_contained, log_contained_note, safe_text
     from swing.trades.intent import entry_intent_label, suggest_entry_intent
 
     cfg = apply_overrides(ctx.obj["config"])
     conn = connect(cfg.paths.db_path)
     n_set = n_skipped_set = n_skipped_op = 0
+    # D69 (Codex R1 Major 2): THE DURABILITY BOUNDARY is "at least one row
+    # ACTUALLY WRITTEN in THIS invocation" -- `n_written`, DELIBERATELY
+    # SEPARATE from `n_set` (the pre-existing, byte-unchanged summary count).
+    # `n_set` alone is NOT a durability boundary: with --force/--trade-id the
+    # operator can re-answer an already-set row with its OWN CURRENT value,
+    # and `update_entry_intent` (swing/data/repos/trades.py) returns WITHOUT
+    # writing when `entry_intent == ` the row's existing value -- `n_set`
+    # would still increment (today's unchanged summary semantic) over a
+    # `with conn:` block that opened no transaction and wrote nothing.
+    # `n_written` only increments when the operator's choice DIFFERS from
+    # the row's already-fetched `current` value (the same equality
+    # `update_entry_intent` itself tests, computed here from data this
+    # command already read -- single-operator V1, no concurrent writer
+    # expected between the read and this row's own update). Re-evaluated at
+    # each handler below, never cached elsewhere. Both counters are
+    # incremented only after each row's own commit (`with conn:`) RETURNS,
+    # with nothing between that return and the increments that can raise.
+    # RULED by CHARC (main @ 381943bd): this shape is the durability
+    # boundary, a second counter at the commit site (not a cached flag);
+    # the client-side re-derivation of the no-write equality is a declared
+    # limitation (single-operator V1) -- the honest fix is `update_entry_
+    # intent` returning a bool, banked as a swing/data follow-on, not taken
+    # here.
+    n_written = 0
+    close_error_text = None
+    close_log_error_text = None
+    close_warn_msg = None
+
+    def _emit(line: str) -> None:
+        # D69 (Codex R1 Major 1): re-evaluated at EVERY call -- once ANY
+        # row in this invocation has been durably written, ALL further
+        # output (this row's own remaining lines, every later row's, and
+        # the final summary) goes through the contained sink, matching the
+        # close()-failure containment above. Before that boundary the call
+        # is byte-unchanged (a bare `click.echo`, which can raise exactly
+        # as it does today).
+        text = ascii_safe(line)
+        if n_written > 0:
+            _echo_either_sink(text)
+        else:
+            click.echo(text)
+
     try:
         # Select target trades: by id, or all rows; the IS-NULL/--force gate is
         # applied per-row so the summary counts are exact.
@@ -2094,18 +2137,83 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
                 except AttestedIntentError as exc:
                     # Codex R7-2: `ticker` (and `entry_date`) are unrestricted
                     # text; the whole line is ASCII-coerced.
-                    from swing.trades.entry import ascii_safe
-                    click.echo(ascii_safe(f"#{tid} {ticker} {edate} | {exc}"))
+                    _emit(f"#{tid} {ticker} {edate} | {exc}")
                 n_skipped_set += 1
                 continue
             suggestion = suggest_entry_intent(hyp)
             sug_label = entry_intent_label(suggestion) or "(no suggestion)"
-            click.echo(f"#{tid} {ticker} {edate} | label={hyp or '(none)'} | "
-                       f"grade={pg or '-'} | tags={tags or '-'} | "
-                       f"current={current or 'NULL'} | suggested={sug_label}")
-            choice = click.prompt(
-                "  intent [standard / hypothesis_test_by_design / skip]",
-                default=(suggestion or "skip"), show_default=True).strip()
+            # D69: `ticker` (and `hypothesis_label`/`mistake_tags`) are
+            # unrestricted text -- the whole line is ASCII-coerced, mirroring
+            # the terminal-value branch above (Codex R7-2) which already did.
+            _emit(
+                f"#{tid} {ticker} {edate} | label={hyp or '(none)'} | "
+                f"grade={pg or '-'} | tags={tags or '-'} | "
+                f"current={current or 'NULL'} | suggested={sug_label}")
+            try:
+                choice = click.prompt(
+                    "  intent [standard / hypothesis_test_by_design / skip]",
+                    default=(suggestion or "skip"), show_default=True).strip()
+            except OSError as exc:
+                # Codex R2 Major: click.prompt renders its OWN question text
+                # through click.termui's internal (same-module) `echo`,
+                # which this command's `_emit`/`_echo_either_sink`
+                # machinery cannot reach or contain -- a broken output sink
+                # here raises `OSError` (e.g. `BrokenPipeError`), NOT
+                # `click.exceptions.Abort` (that conversion only covers
+                # KeyboardInterrupt/EOFError), so it is never confused with
+                # an operator-driven abort. Before the boundary this is
+                # byte-unchanged (propagates, as today).
+                #
+                # AFTER the boundary: RULED BY REPLACEMENT (CHARC, Reviewer B
+                # finding B-2, 2026-09-25, mail 20260925T021418Z; UNDOES R2's
+                # catch-break-exit-0 above). The invocation is NOT complete --
+                # it stopped short of its rows -- so exit 0 is the wrong last
+                # signal (clause (d)'s amended first bullet: the prompt's I/O
+                # is INTERACTION, not output, and its failure is clause (e)'s
+                # in-flight exception). One BEST-EFFORT contained WARN line
+                # is emitted first (prefer_err=True, through
+                # `_echo_either_sink(ascii_safe(...))`), recorded through
+                # `log_contained`, and then the ORIGINAL OSError is
+                # RE-RAISED BARE (nothing chained -- nothing else is in
+                # flight yet; the `finally` block's clause (e) handling,
+                # untouched, takes it from here). The summary line is NOT
+                # printed on this path -- it would read as completion.
+                #
+                # R5-1 / CHARC SUPERSESSION (2026-09-25, mail
+                # 20260925T030626Z): the WARN text ORIGINALLY claimed the
+                # stalled row is "left NULL for a re-run" -- FALSE when this
+                # row (`tid`) was already-set and being re-prompted under
+                # --force/--trade-id (L2, corrected the same round): that
+                # row keeps its PRIOR value, never NULL, and a PLAIN re-run
+                # (no --force/--trade-id) SKIPS it entirely -- an operator
+                # following the literal claim would never revisit it. The
+                # text below states the row's REAL state (unanswered, keeps
+                # its prior value) and the correct re-run contract (a plain
+                # re-run re-prompts NULL rows only; an already-set row needs
+                # --force/--trade-id again), never asserting NULL.
+                if n_written == 0:
+                    raise
+                # R6-1 (Codex round 6 Major, cli.py ~:2195/~:2206): build
+                # the ruled message ONCE, and pass that SAME string to
+                # BOTH sinks -- the echo and the log record must carry
+                # byte-identical text, never two independently-framed
+                # strings that happen to share a clause (the prior shape
+                # opened one "WARN (partial): ..." joined with "; " and
+                # the other "D69: ..." joined with " -- ").
+                warn_msg = (
+                    "WARN (partial): backfill-intent wrote " + safe_text(n_written)
+                    + " row(s) durably this invocation; prompting for trade "
+                    + safe_text(tid) + " FAILED (" + safe_text(exc) + "); "
+                    "this row and any later rows were NOT answered this "
+                    "invocation and keep their prior value; a plain re-run "
+                    "re-prompts only rows still NULL, and an already-set "
+                    "row needs --force or --trade-id again; the ledger is "
+                    "unaffected.")
+                _echo_either_sink(ascii_safe(warn_msg), prefer_err=True)
+                log_contained(
+                    _pe_backfill_logging.getLogger(__name__),
+                    "%s", warn_msg)
+                raise
             if choice in ("skip", ""):
                 n_skipped_op += 1
                 continue
@@ -2115,16 +2223,90 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
             except EntryIntentSeamError as exc:
                 # Arc 22-B F5 seam: the evidence-bearing value is never written
                 # here; say why, leave the row as it was, and keep going.
-                click.echo(f"  {exc}")
+                _emit(f"  {exc}")
                 n_skipped_op += 1
                 continue
             except ValueError as exc:
-                raise click.ClickException(str(exc)) from exc
+                # Codex R3 Major: `update_entry_intent`'s message embeds the
+                # OPERATOR'S OWN raw prompt answer (via `entry_intent!r`) --
+                # unrestricted free text, per item (a)'s general principle
+                # ("every line this command prints that interpolates stored
+                # or free text goes through ascii_safe(...) WHOLE"), missed
+                # at this one call site. ascii_safe applies UNCONDITIONALLY
+                # (matching `_emit`'s own pre/post-boundary treatment of
+                # ASCII, orthogonal to the boundary-gated SINK routing) --
+                # the exit code and exception chaining are unchanged; Click's
+                # own rendering of a ClickException remains outside this
+                # command's contained-sink machinery (L5's accepted, reasoned
+                # exemption, which this fix does not touch or need to).
+                raise click.ClickException(ascii_safe(str(exc))) from exc
             n_set += 1
-        click.echo(f"{n_set} set, {n_skipped_set} skipped-already-set, "
-                   f"{n_skipped_op} skipped-by-operator")
+            if choice != current:
+                n_written += 1
+        _emit(f"{n_set} set, {n_skipped_set} skipped-already-set, "
+              f"{n_skipped_op} skipped-by-operator")
     finally:
-        conn.close()
+        # D69 (mirrors the 22-A3/assign-intent idiom): BEFORE the boundary
+        # (n_written == 0, nothing durable this invocation) every path is
+        # byte-unchanged -- a bare `conn.close()`, whose failure propagates
+        # (or replaces whatever is already in flight) exactly as it always
+        # has. AFTER the boundary (n_written > 0), a close failure is
+        # contained.
+        if n_written > 0:
+            # D39's template: if another exception is ALREADY propagating
+            # (a click.Abort from an interrupted prompt, or the
+            # ClickException raised above from a ValueError), it MUST keep
+            # propagating unchanged -- the close failure is NAMED via a
+            # durable log record (and, if the log sink itself fails, a note
+            # attached to the propagating exception through
+            # `log_contained_note`), never raised in its place.
+            _exc_in_flight = _sys.exc_info()[1]
+            try:
+                conn.close()
+            except BaseException as exc:  # noqa: BLE001 -- the CLASS
+                if _exc_in_flight is not None:
+                    log_contained_note(
+                        _pe_backfill_logging.getLogger(__name__),
+                        _exc_in_flight,
+                        "D69: backfill-intent wrote %s row(s) durably this "
+                        "invocation; an exception was already propagating "
+                        "when CLOSING the database connection afterwards "
+                        "ALSO RAISED (%s); the ledger is unaffected -- the "
+                        "original exception still propagates.",
+                        n_written, safe_text(exc))
+                else:
+                    close_error_text = safe_text(exc)
+                    # SS-1 (self-sweep, same class as R6-1): build the
+                    # ruled message ONCE and pass that SAME string to
+                    # BOTH sinks -- the echo (below, after this try/
+                    # finally returns) and the log record here must
+                    # carry byte-identical text.
+                    close_warn_msg = (
+                        "WARN (post-commit): " + safe_text(n_written)
+                        + " row(s) were written durably this invocation, "
+                        "and CLOSING the database connection afterwards "
+                        "RAISED (" + close_error_text + "); the ledger is "
+                        "unaffected.")
+                    _close_log_error = log_contained(
+                        _pe_backfill_logging.getLogger(__name__),
+                        "%s", close_warn_msg)
+                    if _close_log_error is not None:
+                        close_log_error_text = safe_text(_close_log_error)
+        else:
+            conn.close()
+    # Reached only when the try/finally above completed WITHOUT propagating
+    # an exception (n_written == 0 byte-unchanged path never reaches here on
+    # a close failure; n_written > 0 with an exception in flight re-raises
+    # it before this line, per Python's own finally semantics).
+    if close_error_text is not None:
+        _echo_either_sink(ascii_safe(close_warn_msg), prefer_err=True)
+    if close_log_error_text is not None:
+        _echo_either_sink(ascii_safe(
+            "WARN (post-commit): the ERROR log for the close failure above "
+            "could not be emitted cleanly -- a logging handler RAISED ("
+            + close_log_error_text + "). Some sinks may have received the "
+            "record and some may not; the ledger is unaffected."),
+            prefer_err=True)
 
 
 @main.group("review")
