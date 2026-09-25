@@ -2735,13 +2735,23 @@ def journal_cash_cmd(ctx, deposit, withdraw, interest, dividend, fee, date_str, 
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound once `insert_cash`'s
+    # `with conn:` has committed; `pending_refusal` is whichever typed
+    # refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         with conn:
             cid = insert_cash(conn, CashMovement(
                 id=None, date=date_str, kind=kind, amount=amount, ref=ref, note=note,
             ))
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(f"Cash {kind} #{cid}: ${amount:.2f}{f' ref={ref}' if ref else ''}")
 
 
@@ -2892,6 +2902,10 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str, force):
         )
 
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `_insert`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         # 4. Resolve the target ref + the idempotency policy (FAIL LOUD, amended
         #    brief §4). The partial unique index ux_cash_ref makes the ref unique;
@@ -2960,8 +2974,13 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str, force):
                 if raced is None:
                     raise
                 raise _collision_error(raced, attempted_ref=ref) from None
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(
         f"OOF transfer-out #{cid}: {ticker} ${cost:.2f} on {date_str} "
         f"(ref={ref}). Swing ledger reduced by ${cost:.2f}."
@@ -3051,6 +3070,11 @@ def journal_cash_void_cmd(ctx, cash_movement_id, reason, date_str):
             )
 
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound once `insert_cash`'s
+    # `with conn:` has committed; `pending_refusal` is whichever typed
+    # refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         # 4. Fetch the original; reject not-found + void-of-a-void -- ALWAYS.
         original = find_by_id(conn, cash_movement_id)
@@ -3155,8 +3179,13 @@ def journal_cash_void_cmd(ctx, cash_movement_id, reason, date_str):
             if raced is None:
                 raise
             raise _collision_error(raced) from None
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(
         f"Voided cash_movement #{cash_movement_id} ({original.kind} "
         f"${float(original.amount):.2f}) via {reversing_kind} #{vid} "
@@ -3241,6 +3270,10 @@ def journal_correct_entry_date_cmd(
 
     cfg = apply_overrides(ctx.obj["config"])
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `correct_entry_date`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         if dry_run:
             try:
@@ -3295,8 +3328,13 @@ def journal_correct_entry_date_cmd(
             )
         except EntryDateCorrectionError as exc:
             raise click.ClickException(ascii_safe(str(exc))) from exc
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     click.echo(
         f"correction {result.correction_id} applied to trade "
@@ -3479,6 +3517,10 @@ def journal_correct_cohort_provenance_cmd(
 
     cfg = apply_overrides(ctx.obj["config"])
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `correct_cohort_provenance`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         if dry_run:
             try:
@@ -3578,8 +3620,13 @@ def journal_correct_cohort_provenance_cmd(
             )
         except CohortProvenanceCorrectionError as exc:
             raise click.ClickException(ascii_safe(str(exc))) from exc
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     if result.already_applied:
         click.echo(
@@ -3747,6 +3794,10 @@ def journal_reconcile_tos_cmd(
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `run_tos_reconciliation`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         run = run_tos_reconciliation(
             conn,
@@ -3756,8 +3807,13 @@ def journal_reconcile_tos_cmd(
             notes=notes,
             price_tolerance=price_tolerance,
         )
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     click.echo(
         f"Reconciliation run #{run.run_id}: state={run.state} "

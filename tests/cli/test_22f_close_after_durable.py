@@ -72,6 +72,8 @@ class Root:
     writer: str
     refusal_argv: Callable[[World], list] | None = None
     refusal_text: str | None = None
+    # the world the refusal runs in (default: `world`)
+    refusal_world: Callable[[Path, Any], World] | None = None
 
 
 # ---------------------------------------------------------------- worlds ---
@@ -95,6 +97,94 @@ def _fills(w: World) -> int:
 
 def _current_stop(w: World) -> float:
     return _scalar(w.db, "SELECT current_stop FROM trades WHERE id = 1")
+
+
+def _plain_world(tmp_path: Path, _mp: Any) -> World:
+    runner, cfg = _setup(tmp_path)
+    return World(runner, cfg, _db(tmp_path), {})
+
+
+def _cash_rows(w: World) -> int:
+    return _scalar(w.db, "SELECT COUNT(*) FROM cash_movements")
+
+
+def _oof_world(tmp_path: Path, mp: Any) -> World:
+    from tests.cli.test_oof_buy_command import _SPCX_OVERRIDES
+    from tests.cli.test_oof_buy_command import _setup as _oof_setup
+    runner, cfg, db = _oof_setup(tmp_path, mp, overrides=_SPCX_OVERRIDES)
+    return World(runner, cfg, db, {})
+
+
+def _oof_argv(w: World) -> list:
+    return ["--config", str(w.cfg), "journal", "oof-buy", "--ticker", "SPCX",
+            "--cost", "500", "--date", "2026-06-18"]
+
+
+def _oof_collision_world(tmp_path: Path, mp: Any) -> World:
+    w = _oof_world(tmp_path, mp)
+    r = w.runner.invoke(main, _oof_argv(w))
+    assert r.exit_code == 0, r.output
+    return w
+
+
+def _cash_void_world(tmp_path: Path, _mp: Any) -> World:
+    w = _plain_world(tmp_path, _mp)
+    r = w.runner.invoke(main, ["--config", str(w.cfg), "journal", "cash",
+                               "--withdraw", "100", "--date", "2026-06-18"])
+    assert r.exit_code == 0, r.output
+    return w
+
+
+def _entry_date_world(tmp_path: Path, mp: Any) -> World:
+    from tests.cli.test_correct_entry_date_command import _seed
+    from tests.cli.test_correct_entry_date_command import _setup as _ed_setup
+    runner, cfg, db = _ed_setup(tmp_path, mp)
+    return World(runner, cfg, db, _seed(db))
+
+
+def _entry_date_argv(w: World) -> list:
+    from tests.cli.test_correct_entry_date_command import _args
+    return _args(w.cfg, w.extra)
+
+
+def _entry_date(w: World) -> str:
+    return _scalar(w.db, "SELECT entry_date FROM trades WHERE id = ?",
+                   w.extra["trade_id"])
+
+
+def _provenance_world(tmp_path: Path, mp: Any) -> World:
+    from tests.cli.test_correct_cohort_provenance_command import _seed
+    from tests.cli.test_correct_cohort_provenance_command import (
+        _setup as _cp_setup,
+    )
+    runner, cfg, db = _cp_setup(tmp_path, mp)
+    return World(runner, cfg, db, _seed(db))
+
+
+def _provenance_argv(w: World) -> list:
+    from tests.cli.test_correct_cohort_provenance_command import _cmd
+    return _cmd(w.cfg, w.extra)
+
+
+def _provenance_rows(w: World) -> int:
+    return _scalar(w.db, "SELECT COUNT(*) FROM provenance_corrections")
+
+
+def _tos_world(tmp_path: Path, _mp: Any) -> World:
+    from tests.cli.test_discrepancy_cli import (
+        SYNTHETIC_TOS_TEXT,
+        _seed_open_trade,
+    )
+    w = _plain_world(tmp_path, _mp)
+    _seed_open_trade(w.db)
+    csv = tmp_path / "tos.csv"
+    csv.write_text(SYNTHETIC_TOS_TEXT, encoding="utf-8")
+    w.extra["csv"] = csv
+    return w
+
+
+def _recon_runs(w: World) -> int:
+    return _scalar(w.db, "SELECT COUNT(*) FROM reconciliation_runs")
 
 
 # ------------------------------------------------------------ root table ---
@@ -124,6 +214,60 @@ ROOTS: list[Root] = [
                                 "--new-stop", "165.0", "--rationale",
                                 "manual-trail"],
         refusal_text="force",
+    ),
+    Root(
+        id="journal-cash", target=_DB_CONNECT, world=_plain_world,
+        argv=lambda w: ["--config", str(w.cfg), "journal", "cash",
+                        "--deposit", "100", "--date", "2026-06-18"],
+        probe=_cash_rows, writer="swing.data.repos.cash.insert_cash",
+    ),
+    Root(
+        id="journal-oof-buy", target=_DB_CONNECT, world=_oof_world,
+        argv=_oof_argv, probe=_cash_rows,
+        writer="swing.data.repos.cash.insert_cash",
+        refusal_world=_oof_collision_world, refusal_argv=_oof_argv,
+        refusal_text="--force",
+    ),
+    Root(
+        id="journal-cash-void", target=_DB_CONNECT, world=_cash_void_world,
+        argv=lambda w: ["--config", str(w.cfg), "journal", "cash-void", "1",
+                        "--reason", "entered twice"],
+        probe=_cash_rows, writer="swing.data.repos.cash.insert_cash",
+        refusal_argv=lambda w: ["--config", str(w.cfg), "journal",
+                                "cash-void", "99", "--reason", "x"],
+        refusal_text="no cash_movement with id 99",
+    ),
+    Root(
+        id="journal-correct-entry-date", target=_DB_CONNECT,
+        world=_entry_date_world,
+        argv=_entry_date_argv,
+        probe=_entry_date,
+        writer="swing.trades.entry_date_correction.correct_entry_date",
+        refusal_argv=lambda w: [
+            "--config", str(w.cfg), "journal", "correct-entry-date",
+            str(w.extra["trade_id"]), "--to", "2026-08-03",
+            "--discrepancy", str(w.extra["discrepancy_id"]),
+            "--reason", "typo"],
+        refusal_text="SERVER-DERIVED",
+    ),
+    Root(
+        id="journal-correct-cohort-provenance", target=_DB_CONNECT,
+        world=_provenance_world,
+        argv=lambda w: _provenance_argv(w) + [
+            "--reason", "the framework's own contemporaneous record"],
+        probe=_provenance_rows,
+        writer=("swing.trades.cohort_provenance_correction."
+                "correct_cohort_provenance"),
+        refusal_argv=_provenance_argv,
+        refusal_text="--reason must be a non-empty string",
+    ),
+    Root(
+        id="journal-reconcile-tos", target=_DB_CONNECT, world=_tos_world,
+        argv=lambda w: ["--config", str(w.cfg), "journal", "reconcile-tos",
+                        "--csv-path", str(w.extra["csv"]),
+                        "--period-end", "2026-05-12"],
+        probe=_recon_runs,
+        writer="swing.trades.reconciliation.run_tos_reconciliation",
     ),
 ]
 
@@ -157,7 +301,7 @@ def test_G1a_success_with_close_failure_exits_zero_and_warns(
 @pytest.mark.parametrize("root", _REFUSING, ids=[r.id for r in _REFUSING])
 def test_G1b_refusal_with_close_failure_keeps_the_refusal(
         root: Root, tmp_path, monkeypatch):
-    w = root.world(tmp_path, monkeypatch)
+    w = (root.refusal_world or root.world)(tmp_path, monkeypatch)
     before = root.probe(w)
     built = _failing_close(monkeypatch, root.target)
     result = w.runner.invoke(main, root.refusal_argv(w))
