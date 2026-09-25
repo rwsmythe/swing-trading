@@ -104,6 +104,28 @@ class CallerHeldTransactionError(RuntimeError):
     """
 
 
+def _rollback_or_raise(conn: sqlite3.Connection, op: str,
+                       original: BaseException) -> None:
+    """22-F T-F6 (C2-09, S-D39, the 22-A template): roll back only an open
+    transaction; a rollback that ALSO fails is raised CHAINED from
+    ``original`` with one ERROR record -- never in the original's place
+    unchained."""
+    if not conn.in_transaction:
+        return
+    try:
+        conn.rollback()
+    except BaseException as cleanup_error:  # noqa: BLE001
+        from swing.trades.entry import log_contained_note
+        still = conn.in_transaction
+        log_contained_note(
+            log, cleanup_error,
+            "22-F: audit %s failed (%s) AND the rollback of its transaction "
+            "failed (%s); in_transaction reads %s after the failed rollback; "
+            "this connection MUST BE DISCARDED either way.",
+            op, original, cleanup_error, still)
+        raise cleanup_error from original
+
+
 def record_call_start(
     conn: sqlite3.Connection,
     *,
@@ -173,7 +195,7 @@ def record_call_start(
                     environment=environment,
                 )
                 conn.commit()
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
                 # busy_failed is the BEGIN IMMEDIATE lock-acquisition failure
                 # ONLY (Codex R1 minor): a later OperationalError (insert/commit)
                 # would mislabel the lock-wait telemetry, so only record it when
@@ -181,10 +203,10 @@ def record_call_start(
                 if not begun:
                     waited_s = time.monotonic() - _t0
                     busy_failed = True
-                conn.rollback()
+                _rollback_or_raise(conn, "record_call_start", exc)
                 raise
-            except Exception:
-                conn.rollback()
+            except BaseException as exc:  # noqa: BLE001 -- 22-F T-F6
+                _rollback_or_raise(conn, "record_call_start", exc)
                 raise
     finally:
         _maybe_log_audit_lock_wait(
@@ -248,7 +270,7 @@ def record_call_finish(
                     error_message=error_message,
                 )
                 conn.commit()
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
                 # busy_failed is the BEGIN IMMEDIATE lock-acquisition failure
                 # ONLY (Codex R1 minor): a later OperationalError (update/commit)
                 # would mislabel the lock-wait telemetry, so only record it when
@@ -256,10 +278,10 @@ def record_call_finish(
                 if not begun:
                     waited_s = time.monotonic() - _t0
                     busy_failed = True
-                conn.rollback()
+                _rollback_or_raise(conn, "record_call_finish", exc)
                 raise
-            except Exception:
-                conn.rollback()
+            except BaseException as exc:  # noqa: BLE001 -- 22-F T-F6
+                _rollback_or_raise(conn, "record_call_finish", exc)
                 raise
     finally:
         _maybe_log_audit_lock_wait(
@@ -304,8 +326,8 @@ def link_snapshot_and_stamp_account_hash(
                 "transaction guards re-introduce the very race the explicit "
                 "lock was meant to close'."
             )
-        conn.execute("BEGIN IMMEDIATE")
         try:
+            conn.execute("BEGIN IMMEDIATE")
             repo.update_call_linked_snapshot(
                 conn,
                 call_id=call_id,
@@ -315,8 +337,8 @@ def link_snapshot_and_stamp_account_hash(
                 conn, snapshot_id=snapshot_id, account_hash=account_hash,
             )
             conn.commit()
-        except Exception:
-            conn.rollback()
+        except BaseException as exc:  # noqa: BLE001 -- 22-F T-F6
+            _rollback_or_raise(conn, "link_snapshot_and_stamp_account_hash", exc)
             raise
 
 
@@ -364,16 +386,16 @@ def link_reconciliation_run(
                 "transaction guards re-introduce the very race the explicit "
                 "lock was meant to close'."
             )
-        conn.execute("BEGIN IMMEDIATE")
         try:
+            conn.execute("BEGIN IMMEDIATE")
             repo.update_call_linked_reconciliation_run(
                 conn,
                 call_id=call_id,
                 reconciliation_run_id=reconciliation_run_id,
             )
             conn.commit()
-        except Exception:
-            conn.rollback()
+        except BaseException as exc:  # noqa: BLE001 -- 22-F T-F6
+            _rollback_or_raise(conn, "link_reconciliation_run", exc)
             raise
 
 
