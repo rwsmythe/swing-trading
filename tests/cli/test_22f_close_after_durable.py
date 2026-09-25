@@ -30,6 +30,12 @@ from typing import Any, Callable
 
 import pytest
 
+# `swing.journal.tos_import` binds `connect` at MODULE level; imported here,
+# at collection, it binds the REAL opener. Imported lazily for the first time
+# INSIDE a test that has patched `swing.data.db.connect`, it would bind that
+# test's patched opener for the rest of the process (`reconcile_tos`'s own
+# read connection would then be proxied by whichever test ran first).
+import swing.journal.tos_import  # noqa: F401
 from swing.cli import main
 from tests._22f_proxies import FailingVerbsConn, patch_conn_opener, raising
 from tests.cli.test_cli_trade import _PRE_TRADE_OK_FLAGS, _setup
@@ -74,6 +80,8 @@ class Root:
     refusal_text: str | None = None
     # the world the refusal runs in (default: `world`)
     refusal_world: Callable[[Path, Any], World] | None = None
+    # stdin for a root that confirms (default: none)
+    input: str | None = None
 
 
 # ---------------------------------------------------------------- worlds ---
@@ -222,6 +230,91 @@ def _corrections(w: World) -> int:
     return _scalar(w.db, "SELECT COUNT(*) FROM reconciliation_corrections")
 
 
+def _tos_import_world(tmp_path: Path, _mp: Any) -> World:
+    from tests.cli.test_cli_tos import SYNTHETIC_FIXTURE
+    w = _plain_world(tmp_path, _mp)
+    w.extra["csv"] = SYNTHETIC_FIXTURE
+    return w
+
+
+def _running_run_world(tmp_path: Path, _mp: Any) -> World:
+    w = _plain_world(tmp_path, _mp)
+    c = sqlite3.connect(str(w.db))
+    try:
+        cur = c.execute(
+            "INSERT INTO pipeline_runs (started_ts, trigger, data_asof_date, "
+            "action_session_date, state, lease_token, lease_heartbeat_ts) "
+            "VALUES ('2026-06-15T09:00:00', 'manual', '2026-06-12', "
+            "'2026-06-15', 'running', 'tok', '2026-06-15T09:00:00')")
+        c.commit()
+        w.extra["run_id"] = int(cur.lastrowid)
+    finally:
+        c.close()
+    return w
+
+
+def _run_state(w: World) -> str:
+    return _scalar(w.db, "SELECT state FROM pipeline_runs WHERE id = ?",
+                   w.extra["run_id"])
+
+
+def _hypothesis_world(tmp_path: Path, mp: Any) -> World:
+    from tests.cli.test_cli_hypothesis import _setup as _hyp_setup
+    runner, cfg = _hyp_setup(tmp_path, mp)
+    w = World(runner, cfg, _db(tmp_path), {})
+    w.extra["hid"] = _scalar(
+        w.db, "SELECT id FROM hypothesis_registry WHERE status = 'active' "
+        "ORDER BY id LIMIT 1")
+    return w
+
+
+def _status_history(w: World) -> int:
+    return _scalar(w.db, "SELECT COUNT(*) FROM hypothesis_status_history")
+
+
+def _finviz_stub(cfg: Any, conn: Any) -> None:
+    """Stands in for `_perform_finviz_fetch_no_lease` (which fetches over
+    the network): it writes the fetch's audit row on the root's connection,
+    exactly the row the root then commits."""
+    from swing.data.models import FinvizApiCall
+    from swing.data.repos.finviz_api_calls import insert_call
+    insert_call(conn, FinvizApiCall(
+        call_id=None, ts="2026-06-18T12:00:00", screen_query="v=152",
+        status="ok", row_count=3, response_time_ms=10,
+        rate_limit_remaining=None, signature_hash="abc123",
+        error_message=None))
+
+
+def _finviz_world(tmp_path: Path, mp: Any) -> World:
+    from tests._22f_proxies import CountingWrapper
+    w = _plain_world(tmp_path, mp)
+    stub = CountingWrapper(_finviz_stub)
+    mp.setattr("swing.pipeline.runner._perform_finviz_fetch_no_lease", stub)
+    w.extra["stub"] = stub
+    return w
+
+
+def _finviz_pipeline_running_world(tmp_path: Path, mp: Any) -> World:
+    """The REAL `_perform_finviz_fetch_no_lease` refuses while a pipeline
+    run is `running` (after its token check, so a token is configured)."""
+    w = _running_run_world(tmp_path, mp)
+    home = tmp_path / "home"
+    (home / "swing-data" / "user-config.toml").write_text(
+        '[integrations.finviz]\ntoken = "test-sentinel-token"\n'
+        'screen_query = "v=152&f=test"\n', encoding="utf-8")
+    mp.setenv("USERPROFILE", str(home))
+    mp.setenv("HOME", str(home))
+    return w
+
+
+def _finviz_calls(w: World) -> int:
+    return _scalar(w.db, "SELECT COUNT(*) FROM finviz_api_calls")
+
+
+def _snapshots(w: World) -> int:
+    return _scalar(w.db, "SELECT COUNT(*) FROM account_equity_snapshots")
+
+
 # ------------------------------------------------------------ root table ---
 
 ROOTS: list[Root] = [
@@ -338,6 +431,54 @@ ROOTS: list[Root] = [
                                 "--resolution", "acknowledged_immaterial"],
         refusal_text="would bypass the choice menu",
     ),
+    Root(
+        id="tos-import", target=_DB_CONNECT, world=_tos_import_world,
+        argv=lambda w: ["--config", str(w.cfg), "tos-import", "--csv",
+                        str(w.extra["csv"]), "--auto-confirm"],
+        probe=_cash_rows, writer="swing.data.repos.cash.insert_cash",
+    ),
+    Root(
+        id="pipeline-force-clear", target="swing.cli.connect",
+        world=_running_run_world,
+        argv=lambda w: ["--config", str(w.cfg), "pipeline", "force-clear",
+                        str(w.extra["run_id"]), "--bypass-staleness-check"],
+        probe=_run_state, writer="swing.data.repos.pipeline.force_clear",
+        refusal_argv=lambda w: ["--config", str(w.cfg), "pipeline",
+                                "force-clear", "9999"],
+        refusal_text="run 9999 not found", input="y\n",
+    ),
+    Root(
+        id="hypothesis-update", target=_DB_CONNECT, world=_hypothesis_world,
+        argv=lambda w: ["--config", str(w.cfg), "hypothesis", "update",
+                        str(w.extra["hid"]), "--status", "paused",
+                        "--reason", "g1 probe"],
+        probe=_status_history,
+        writer="swing.trades.hypothesis.update_hypothesis_status_with_audit",
+        refusal_argv=lambda w: ["--config", str(w.cfg), "hypothesis",
+                                "update", "9999", "--status", "paused",
+                                "--reason", "g1 probe"],
+        refusal_text="hypothesis 9999 not found",
+    ),
+    Root(
+        id="finviz-fetch", target=_DB_CONNECT, world=_finviz_world,
+        argv=lambda w: ["--config", str(w.cfg), "finviz", "fetch"],
+        probe=_finviz_calls,
+        writer="swing.pipeline.runner._perform_finviz_fetch_no_lease",
+        refusal_world=_finviz_pipeline_running_world,
+        refusal_argv=lambda w: ["--config", str(w.cfg), "finviz", "fetch"],
+        refusal_text="pipeline run is currently in flight",
+    ),
+    Root(
+        id="account-snapshot", target=_DB_CONNECT, world=_plain_world,
+        argv=lambda w: ["--config", str(w.cfg), "account", "snapshot",
+                        "--equity", "1300", "--date", "2026-06-18"],
+        probe=_snapshots,
+        writer="swing.trades.account_equity_snapshots.record_snapshot",
+        refusal_argv=lambda w: ["--config", str(w.cfg), "account",
+                                "snapshot", "--equity", "0", "--date",
+                                "2026-06-18"],
+        refusal_text="equity_dollars",
+    ),
 ]
 
 _REFUSING = [r for r in ROOTS if r.refusal_argv is not None]
@@ -359,7 +500,7 @@ def test_G1a_success_with_close_failure_exits_zero_and_warns(
     w = root.world(tmp_path, monkeypatch)
     before = root.probe(w)
     built = _failing_close(monkeypatch, root.target)
-    result = w.runner.invoke(main, root.argv(w))
+    result = w.runner.invoke(main, root.argv(w), input=root.input)
     assert _closes(built) >= 1
     assert result.exit_code == 0, (result.output, repr(result.exception))
     assert _WARN in result.output
@@ -373,7 +514,7 @@ def test_G1b_refusal_with_close_failure_keeps_the_refusal(
     w = (root.refusal_world or root.world)(tmp_path, monkeypatch)
     before = root.probe(w)
     built = _failing_close(monkeypatch, root.target)
-    result = w.runner.invoke(main, root.refusal_argv(w))
+    result = w.runner.invoke(main, root.refusal_argv(w), input=root.input)
     assert _closes(built) >= 1
     assert result.exit_code == 1, (result.output, repr(result.exception))
     assert isinstance(result.exception, SystemExit)
@@ -392,7 +533,7 @@ def test_G1c_control_nothing_durable_close_error_replaces_as_before(
     wrapper = raising(RuntimeError("planted writer failure"))
     monkeypatch.setattr(module_name + "." + attr, wrapper)
     built = _failing_close(monkeypatch, root.target)
-    result = w.runner.invoke(main, root.argv(w))
+    result = w.runner.invoke(main, root.argv(w), input=root.input)
     assert wrapper.calls == 1
     assert _closes(built) >= 1
     assert isinstance(result.exception, sqlite3.OperationalError), (

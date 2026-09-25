@@ -5546,12 +5546,17 @@ def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm, verbose):
     if report.new_cash_movements and (auto_confirm or click.confirm(
             f"Commit {len(report.new_cash_movements)} new cash movements?", default=True)):
         conn = connect(cfg.paths.db_path)
+        # 22-F T-G1 (F4, S-B02): `durable` is bound once the `with conn:`
+        # batch of `insert_cash` has committed; no refusal is raised while
+        # this connection is open.
+        durable = False
         try:
             with conn:
                 for c in report.new_cash_movements:
                     insert_cash(conn, c)
+            durable = True
         finally:
-            conn.close()
+            _close_after_writes(conn, durable=durable, pending_refusal=None)
         click.echo("Cash movements committed.")
 
     if report.unmatched_open_fills and not auto_confirm:
@@ -5674,6 +5679,12 @@ def pipeline_force_clear_cmd(ctx, run_id, reason, bypass_staleness_check):
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound once `force_clear`'s
+    # `with conn:` has committed; `pending_refusal` is whichever typed
+    # refusal is in flight (a declined confirm is `click.Abort`, which is
+    # not a refusal and writes nothing -- the bare close).
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         run = find_run(conn, run_id)
         if run is None:
@@ -5715,8 +5726,13 @@ def pipeline_force_clear_cmd(ctx, run_id, reason, bypass_staleness_check):
         with conn:
             force_clear(conn, run_id=run_id,
                         error_message=f"{reason} at {now.isoformat(timespec='seconds')}")
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(f"Run {run_id} force-cleared.")
 
 
@@ -5938,6 +5954,10 @@ def hypothesis_update_cmd(ctx: click.Context, hypothesis_id: int,
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `update_hypothesis_status_with_audit`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         try:
             result = update_hypothesis_status_with_audit(
@@ -5950,8 +5970,14 @@ def hypothesis_update_cmd(ctx: click.Context, hypothesis_id: int,
             raise click.ClickException(f"transition not allowed: {ascii_safe(str(exc))}") from exc
         except ValueError as exc:
             raise click.ClickException(ascii_safe(str(exc))) from exc
+        # An identity transition writes nothing (the INFO no-op below).
+        durable = result != "noop_identity"
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     if result == "noop_identity":
         click.echo(
             f"info: hypothesis #{hypothesis_id} already {new_status}; "
@@ -5986,6 +6012,12 @@ def finviz_fetch_cmd(ctx: click.Context) -> None:
 
     cfg = apply_overrides(ctx.obj["config"])
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound once `conn.commit()` has
+    # returned (the fetch's audit row); `pending_refusal` is whichever typed
+    # refusal is in flight -- including the `status == "error"` refusal
+    # raised AFTER the commit, which S-B02 names over the durable row.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         try:
             # Codex R2 Major-1: missing-credential failures route through the
@@ -6003,6 +6035,7 @@ def finviz_fetch_cmd(ctx: click.Context) -> None:
         # transaction would roll back at conn.close() below + the audit row
         # would be lost.
         conn.commit()
+        durable = True
         recent = list_recent_calls(conn, limit=1)
         if recent:
             r = recent[0]
@@ -6019,8 +6052,12 @@ def finviz_fetch_cmd(ctx: click.Context) -> None:
                 raise click.ClickException(
                     r.error_message or "Finviz fetch failed; see swing finviz status."
                 )
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
 
 @finviz_group.command("status")
@@ -6117,6 +6154,10 @@ def account_snapshot_cmd(
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `record_snapshot`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         try:
             snap = record_snapshot(
@@ -6128,8 +6169,13 @@ def account_snapshot_cmd(
             )
         except ValueError as exc:
             raise click.ClickException(ascii_safe(str(exc))) from exc
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     click.echo(
         f"snapshot #{snap.snapshot_id}: {snap.snapshot_date}  "
