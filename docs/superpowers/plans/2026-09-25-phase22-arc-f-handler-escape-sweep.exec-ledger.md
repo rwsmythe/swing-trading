@@ -458,7 +458,7 @@ runner.py:3294 in: def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data
 
 | round | verdict | crit | major | minor | new/reopened | tokens used | DEPTH (orchestrator) |
 |---|---|---|---|---|---|---|---|
-| R1 | `NEW_CRITICAL_MAJOR_FOUND` | 0 | 9 | 2 | 11 new / 0 reopened | 721,619 | |
+| R1 | `NEW_CRITICAL_MAJOR_FOUND` | 0 | 9 | 2 | 11 new / 0 reopened | 721,619 | **365,075** (`cell_depth --agent`, cell 8, read at the R1 gate); the cell does NOT resume -- fixes + R2 go to a FRESH cell |
 
 **Summed Codex `tokens used`:** 721,619 (R1).
 
@@ -485,3 +485,20 @@ runner.py:3294 in: def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data
 | R1-11 | minor | `cli.py:4894`, `:5238` `UsageError(str(e))` and dry-run advisories interpolate raw exception text | FIX (post-convergence minor): `ascii_safe(str(e))` at the two `UsageError` sites and the advisory lines. No crash today (the CLI entry reconfigures stderr to UTF-8 `errors='replace'`). |
 
 **AL-1's check (owed by the plan, recorded now):** `grep -rn "app.state.*conn\|global .*conn" swing/web` -> one source hit, `swing/web/routes/watchlist.py:38` (a docstring: "NOT a non-existent `request.app.state.db_conn`"), plus its `.pyc`. No route shares a connection across requests; AL-1 holds.
+
+### Round 1 gate -- ORCHESTRATOR dispositions (2026-09-25)
+
+Validity, read on disk (`~/swing-data/review-transcripts/22-f-exec/r1/`): banner `model: gpt-5.6-sol` equals `~/.codex/strong.config.toml`'s `model`; `reasoning effort: high`; `^ERROR` 0; anchored `^NEW_CRITICAL_MAJOR_FOUND` 2 (the duplicated final message) and `^NO_NEW_CRITICAL_MAJOR` 0; footer 721,619; `exit-r1.txt` present. G2 at `2d18672e`: 15236 passed / 13 skipped / 0 failed, with the worktree RESOLVER. The round COUNTS.
+
+| id | orchestrator disposition |
+|---|---|
+| R1-02 | **FIX AUTHORIZED** (C2-12 is a census row in this arc; `daily_management.py` is on the F-F6 list): the COMMIT moves inside the guarded try; RED-first commit-failure tests, single and double failure. |
+| R1-03 | **FIX AUTHORIZED**: `applied` is taken from the query alone; a failing `_ro.close()` is contained and cannot skip the tail. RED-first. |
+| R1-06 | **FIX AUTHORIZED**: the `finally` PRAGMA restores are contained and chained ONLY when an exception is already in flight; the raise on the success path is unchanged (B-04 depends on it). RED-first. |
+| R1-09 | **FIX AUTHORIZED, as narrowed**: a non-`sqlite3.Error` (interrupt) raised by `ROLLBACK TO` is logged with the MUST-BE-DISCARDED record and re-raised chained from the original, NOT retyped. |
+| R1-11 | **FIX AUTHORIZED** (minor): `ascii_safe` on the `UsageError(str(e))` text. |
+| R1-04 | **REJECT accepted**: CHARC's A-2 bound is "message truth + the re-read; no control-flow change"; site R's bare `raise` on the success path has no original to chain from. CC to CHARC as the bound's owner. |
+| R1-10 | **BANK to 22-G** (the AL-7 surface is out of envelope); CC to CHARC's register. |
+| R1-01, R1-05, R1-07, R1-08 | **ROUTED to CHARC as ONE packet** (PRIMARY: CHARC). R1-05 is a fork (no-op returns bound as durable; `stop_adjust.py` is outside section 0.3). R1-07 is an amendment request (`repos/pipeline.py` outside the envelope). R1-01 and R1-08 are containment-truth questions on his rule. **No Round 2 opens until the packet is ruled** (plan-stage protocol rule 2, applied here). |
+
+Cell 8 is at 365,075, so the authorized fixes, the routed items as ruled, and Round 2 go to a FRESH cell off this ledger and `r1/`.
