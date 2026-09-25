@@ -435,6 +435,34 @@ Author: RD (seat `swing-rd-20260924-2100`). Courier: the orchestrator. Text of r
 
 **Carried to the executing cell (orchestrator, no ruling of its own):** Minor 1 (T-A3 check ordering, or a docstring line stating it -- the cell picks and reports which) and Minor 2 (A6-f's docstring names it a BOUND pin that 22-G is expected to invert under BANK-4). Per RD, both land without re-opening this read; a change to any T-A1/T-A2/T-A3 table row re-opens it. The 22-G pre-ruling is recorded here for 22-G's brief; it is NOT a 22-F change.
 
-### ITEM 1 -- CHARC: acceptance, including whether R4's non-literal convergence needs a fifth round
+### ITEM 1 -- CHARC: ACCEPTED @ `23b2dd18` on a DISPOSITIONED NOT-CLEAN verdict; NO FIFTH ROUND (2026-09-25 14:47Z)
 
-(Awaited.)
+Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator. Text of record: role-mail `20260925T144729Z-charc-22-f-plan-accepted-23b2dd18-no-fifth-rou.md`. The literal block quote follows, the message body verbatim:
+
+> CHARC -- 22-F PLAN ACCEPTANCE (item 1): ACCEPTED on branch 22-f-plan @ 23b2dd18 (plan 487 lines; ledger with R1-R4 and the operator decision). NO FIFTH ROUND. The executing cell may dispatch on RD's item 2 landing. Courier: the successor orchestrator, block quote into the 22-F ledger.
+>
+> READ AT THIS SEAT, by method:
+> - The plan end to end (sections 0-12). The ruling-condition map (section 1, R1-R54) carries a row for every condition of my R0 packet (R12-R31), my R1-gate packet (R40-R48) and the R2-gate sharpening (R21), each pointing at a task and test ids; I found no condition of mine without a row.
+> - Tripwires (section 3 / harness 5): NO new module under swing/ (section 0.4's new modules are tests/_22f_proxies.py and tests/_22f_ast.py; the two helpers of T-G0 and the click.Group subclass of T-C2 live in EXISTING modules -- swing/cli.py, swing/web/routes/__init__.py); NO schema (no migrations/ change); NO dependency (pyproject unchanged); NO standing process. The carve-out is F-F6's list plus the three granted amendments with their bounds (section 0.3, section 9), and section 12's T-Z1 gate check makes each of these a CHECK the cell performs (name-status A under swing/ empty; migrations/ and pyproject.toml unchanged; diff --stat lists only envelope files). T-Z1 is a MERGE-GATE item: the executing return quotes its output, and my merge gate reads it.
+> - The four transcripts on disk (~/swing-data/review-transcripts/22-f-plan/r1..r4/): each banner gpt-5.6-luna / medium (= the fast profile, correct for plan stage); ^ERROR 0 on all four; footers 134,901 / 121,033 / 98,133 / 115,444; exit 0 on all four. R4's closure lines read in the reviewer's own words at :4074-4091: R3-02 CLOSED at db.py:572-577; R3-01 NOT CLOSED on R4-01.
+>
+> THE ROUND-4 DISPOSITION -- RULED: the plan is ACCEPTED on a DISPOSITIONED NOT-CLEAN verdict; no fifth round.
+> - The canon already covers this shape (harness 5.1, RD-ruled 2026-09-23 and canonicalized 09-24): a gate reads an anchored verdict in which every critical and major is DECIDED. R4 has ONE finding, R4-01, and it is decided in two halves at 23b2dd18: (1) four tests gain the counting wrapper and the >=1-call assertion, and the "self-proving" exception the cell had written into my R3-01 authorization is deleted from the plan text (the did-it-fire rule now reads "No exceptions"); (2) the A6-d half is REJECTED with a reason I verified by reading T-A6: the proxy is record_exit's conn ARGUMENT, not a patched name, so there is no patch target to miss, and pre-fix the INSERT's IntegrityError fails the test on its own.
+> - The severity arithmetic holds as the cell computed it: a missed plant lets the fixture's finite quantity through, so the test is RED pre-fix (no OverflowError occurs) and RED post-fix (populated, not empty) -- the assertion the reviewer asked for is a belt over a test that already cannot pass vacuously. That is a MINOR wearing a major's label, and the loop's own R3-01 fix produced it (the search-not-buy class). A fifth fast round would be spend without a question to answer.
+> - What actually protects the executing stage is unchanged and stronger than a plan round: Reviewer A at strong on production code, Reviewer B on the finished tree, and the RED-first rule on every test in this plan (the RED run's output in each commit body).
+>
+> CONDITIONS on the executing dispatch (no new ones; the plan's own, named so the return report quotes them):
+> (1) T-Z1's four checks quoted in the return, verbatim output.
+> (2) T-D5 step 0 is a STOP: if `swing config policy import-from-toml` does not repair a no-active-policy DB, the refusal text would name an impossible action (D35) -- return to me before writing the handler.
+> (3) T-D0's first step hashes triage.json's BYTES against b18eb936... and STOPS on a mismatch; the derived roster and UNREACHED map are committed so the landed test reads nothing outside the repo (R2-01 as ruled).
+> (4) T-H1's pre-commit grep of tests/ for each deleted docstring phrase, output in the commit body; the AST-with-docstrings-stripped identity stated with its method.
+> (5) FND-1/2/3/4 arrive in the executing ledger by name with the search; I write the register rows.
+> (6) Merge: code-only, no witness rung (brief 2.11); the merged-head line with its SHA; --no-ff since the ledgers cite branch SHAs.
+>
+> MY OWN ITEM, discharged now: the brief's section 1 numbers (78 / 38 / 17) are amended by replacement on main to the census's measured 81 / 32 / 28-in-except with the method named -- my content, my edit, pathspec commit; the SHA follows in this seat's next post.
+>
+> RD's ITEM 2 (mail 20260925T144636Z), read before posting: PASS with two plan-text minors, landable without re-opening; no composition issue with item 1. His 22-G pre-ruling hands me ONE question, banked here so it is not lost: whether fills.price's CHECK gains a finiteness clause. That is a fills TABLE REBUILD (the SQLite ALTER-limited idiom) = a schema tripwire, so 22-G's brief routes through me for it; the service refusal RD requires is sufficient for the read's integrity and ships without the CHECK. Register row beside D35/BANK-4 at my next charter touch.
+>
+> Both items are now ruled; the executing cell may dispatch under d4f2cbed once both are block-quoted.
+
+**Both items are ruled.** The plan is accepted at `23b2dd18`. The executing dispatch opens under the operator grant `d4f2cbed`, carrying CHARC's six named conditions and RD's Minors 1-2.
