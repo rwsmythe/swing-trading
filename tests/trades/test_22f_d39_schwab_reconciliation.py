@@ -432,3 +432,57 @@ def test_run_tx_control_commits(db):
     assert run.state == "completed"
     after = _fresh(db)
     assert after["runs"] == [("completed",)] and after["discs"] == 1
+
+
+# -- R1-09 (Reviewer A round 1; D-16, as narrowed by the orchestrator) ------
+# An INTERRUPT raised by `ROLLBACK TO SAVEPOINT` itself.  PRE-FIX the helper
+# caught `sqlite3.Error` only, so the interrupt escaped with no ERROR record
+# and no `__cause__` (the per-discrepancy error survived only as implicit
+# context).  POST-FIX the interrupt is logged with a MUST-BE-DISCARDED record
+# and re-raised CHAINED from the per-discrepancy error -- NOT retyped as
+# `_SavepointRollbackError` (an interrupt stays an interrupt).  On both trees
+# the run's BaseException handler rolls the whole run back.
+
+
+class _SpInterruptConn(_SpFailConn):
+    """`ROLLBACK TO SAVEPOINT <prefix>...` raises KeyboardInterrupt."""
+
+    def _check_sql(self, sql: str) -> None:
+        norm = sql.strip().upper()
+        frt = self._fail_rollback_to
+        if frt is not None and norm.startswith(
+                "ROLLBACK TO SAVEPOINT " + frt.upper()):
+            self.calls["failed_rollback_to"] += 1
+            self.sql_log.append(sql)
+            raise KeyboardInterrupt
+        FailingVerbsConn._check_sql(self, sql)
+
+
+@pytest.mark.parametrize("site", sorted(_SITES))
+def test_r1_09_interrupted_rollback_to_stays_an_interrupt_chained(
+        site, db, monkeypatch, caplog):
+    spec = _SITES[site]
+    counters = _plant_site(monkeypatch, spec)
+    proxy = _SpInterruptConn(sqlite3.connect(str(db)),
+                             fail_sql_prefix=_FAILWRITE_PREFIX,
+                             fail_sql_times=1,
+                             raise_on_sql=_trigger(spec["trigger"]),
+                             fail_rollback_to=spec["sp"])
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(KeyboardInterrupt) as info:
+                _run(proxy)
+    finally:
+        proxy._real.close()
+    for name, cw in counters.items():
+        assert cw.calls >= 1, f"planted {name} never called"
+    assert proxy.calls["failed_sql"] == 1
+    assert proxy.calls["failed_rollback_to"] == 1
+    assert type(info.value) is KeyboardInterrupt
+    cause = info.value.__cause__
+    assert cause is not None
+    assert type(cause) is type(_trigger(spec["trigger"]))
+    recs = _records(caplog, "MUST BE DISCARDED")
+    assert len(recs) == 1
+    assert spec["sp"] in recs[0].getMessage()
+    assert _fresh(db) == {"runs": [], "discs": 0, "stop": 4.0}

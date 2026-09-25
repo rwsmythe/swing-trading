@@ -1069,6 +1069,21 @@ def _rollback_to_savepoint_or_raise(
             "the run's transaction, so the WHOLE run is rolled back.",
             sp_name, cleanup_error, original)
         raise err from original
+    except BaseException as interrupt:  # noqa: BLE001 -- 22-F R1-09
+        # 22-F R1-09: an INTERRUPT (not a `sqlite3.Error`) raised by the
+        # ROLLBACK TO itself.  It is NOT retyped -- an interrupt stays an
+        # interrupt -- but it is recorded and chained from the
+        # per-discrepancy error; the run's BaseException handler then rolls
+        # the WHOLE run back.
+        from swing.trades.entry import log_contained_note
+        log_contained_note(
+            log, interrupt,
+            "22-F: ROLLBACK TO SAVEPOINT %s was interrupted (%s) after the "
+            "per-discrepancy error (%s); the savepoint's state is unknown, "
+            "the interrupt propagates to the run, which rolls the WHOLE run "
+            "back; this connection MUST BE DISCARDED after the run.",
+            sp_name, type(interrupt).__name__, original)
+        raise interrupt from original
     with contextlib.suppress(sqlite3.Error):
         conn.execute(f"RELEASE SAVEPOINT {sp_name}")
 
