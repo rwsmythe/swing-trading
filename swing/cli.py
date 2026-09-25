@@ -4686,7 +4686,7 @@ def discrepancy_resolve_ambiguity_cmd(
             except DiscrepancyResolutionStateError as e:
                 raise click.ClickException(ascii_safe(str(e))) from None
             except ValueError as e:
-                raise click.UsageError(str(e)) from None
+                raise click.UsageError(ascii_safe(str(e))) from None
             durable = True
             click.echo(
                 f"resolved orphan discrepancy {discrepancy_id} (referenced "
@@ -4916,7 +4916,7 @@ def discrepancy_resolve_ambiguity_cmd(
             # choice); missing required payload on the handler; malformed
             # payload at handler-level shape validation. Map to
             # UsageError (exit 2) per plan §E.3 acceptance criterion #9.
-            raise click.UsageError(str(e)) from None
+            raise click.UsageError(ascii_safe(str(e))) from None
     except click.ClickException as exc:
         pending_refusal = exc
         raise
@@ -5260,7 +5260,7 @@ def discrepancy_override_correction_cmd(
             # Service-layer ValueError covers per-shape rejection /
             # missing fields. Map to UsageError (exit 2) per plan §E.4
             # acceptance criterion #6.
-            raise click.UsageError(str(e)) from None
+            raise click.UsageError(ascii_safe(str(e))) from None
         durable = True
     except click.ClickException as exc:
         pending_refusal = exc
