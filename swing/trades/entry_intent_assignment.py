@@ -43,6 +43,7 @@ Every message is ASCII (the CLI prints it on a cp1252 console).
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -64,6 +65,8 @@ from swing.data.repos.fill_envelope_identity import (
     stored_identity,
 )
 from swing.data.repos.fills import get_authoritative_entry_fill
+
+_log = logging.getLogger(__name__)
 
 CITABLE_FIELDS: tuple[str, ...] = (
     "notes", "why_now", "thesis", "emotional_state_pre_trade")
@@ -663,9 +666,25 @@ def assign(
         # is the durability evidence.
         attestation = get_attestation(conn, trade_id)
         conn.execute("COMMIT")
-    except BaseException:
+    except BaseException as exc:
+        # 22-F T-F8 (C2-16, S-D39 F3): a failing in-try ROLLBACK (`:644`,
+        # `:654` above) IS `exc`; this handler re-reads `in_transaction` and
+        # tries the cleanup once more.  A cleanup that ALSO fails is raised
+        # CHAINED from `exc` with one ERROR record, never in its place.
         if conn.in_transaction:
-            conn.execute("ROLLBACK")
+            try:
+                conn.execute("ROLLBACK")
+            except BaseException as cleanup_error:  # noqa: BLE001
+                from swing.trades.entry import log_contained_note
+                still = conn.in_transaction
+                log_contained_note(
+                    _log, cleanup_error,
+                    "22-F: assign(trade_id=%s) failed (%s) AND the ROLLBACK "
+                    "of its transaction failed (%s); in_transaction reads %s "
+                    "after the failed rollback; this connection MUST BE "
+                    "DISCARDED either way.",
+                    trade_id, exc, cleanup_error, still)
+                raise cleanup_error from exc
         raise
     return AssignmentResult(
         True, None, None, tier=verdict.tier, admitted_leg=verdict.admitted_leg,
