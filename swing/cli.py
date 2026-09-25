@@ -407,6 +407,21 @@ def db_migrate(ctx: click.Context) -> None:
                 _ro.close()
             except Exception as _close_exc:  # noqa: BLE001 -- contained
                 _ro_close_error = _close_exc
+            except BaseException as _close_interrupt:  # noqa: BLE001
+                # 22-F R2-02 (CHARC's Round 2 class ruling): an INTERRUPT
+                # at the witness close is recorded and re-raised CHAINED
+                # from the post-commit error -- never swallowed, never
+                # retyped.  It skips the tail, as any interrupt between the
+                # COMMIT and the ratification does pre-arc (plan AL-11).
+                log_contained_note(
+                    _pe_backfill_logging.getLogger(__name__),
+                    _close_interrupt,
+                    "22-F R2-02: db-migrate's read-only schema re-read "
+                    "(version %s) was INTERRUPTED at its close (%s) after "
+                    "the post-commit failure (%s); the interrupt propagates, "
+                    "chained from that failure.", applied,
+                    type(_close_interrupt).__name__, safe_text(exc))
+                raise _close_interrupt from exc
         if applied != EXPECTED_SCHEMA_VERSION:
             if _ro_close_error is not None:
                 log_contained_note(

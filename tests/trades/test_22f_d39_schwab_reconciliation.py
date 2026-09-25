@@ -486,3 +486,56 @@ def test_r1_09_interrupted_rollback_to_stays_an_interrupt_chained(
     assert len(recs) == 1
     assert spec["sp"] in recs[0].getMessage()
     assert _fresh(db) == {"runs": [], "discs": 0, "stop": 4.0}
+
+
+# -- R2-05 (Reviewer A round 2; CHARC's class ruling, MINOR) -----------------
+# The tier-1 REJECTION branch's own direct `ROLLBACK TO SAVEPOINT` (never a
+# census C2-08 site: it was never suppressed).  An interrupt there PRE-FIX
+# escaped with no record and no `__cause__` (the rejection survived only as
+# implicit context).  POST-FIX it is recorded and re-raised CHAINED from the
+# rejection AT that statement -- not routed through the helper (a single
+# `sqlite3.Error` there keeps propagating to the per-discrepancy handler,
+# which retries the ROLLBACK TO; unchanged).  On both trees the run's
+# BaseException handler rolls the whole run back.
+def test_r2_05_interrupted_rejection_rollback_to_is_chained(
+        db, monkeypatch, caplog):
+    from swing.trades import reconciliation_auto_correct as rac
+    counters = _plant_site(monkeypatch, dict(
+        recipe=False, tier1=("raise_first", "validator_rejected")))
+    proxy = _SpInterruptConn(sqlite3.connect(str(db)),
+                             fail_rollback_to="correction_sp_")
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(KeyboardInterrupt) as info:
+                _run(proxy)
+    finally:
+        proxy._real.close()
+    assert counters["tier1"].calls >= 1  # did-it-fire (the rejection)
+    assert proxy.calls["failed_rollback_to"] == 1  # did-it-fire
+    assert type(info.value) is KeyboardInterrupt
+    assert isinstance(info.value.__cause__, rac.ValidatorRejectedError)
+    recs = _records(caplog, "MUST BE DISCARDED")
+    assert len(recs) == 1
+    assert "correction_sp_" in recs[0].getMessage()
+    assert _fresh(db) == {"runs": [], "discs": 0, "stop": 4.0}
+
+
+def test_r2_05_sqlite_error_at_rejection_rollback_to_unchanged_pin(
+        db, monkeypatch, caplog):
+    """PIN (both trees): a `sqlite3.Error` at that ROLLBACK TO still reaches
+    the per-discrepancy handler, whose helper retries the ROLLBACK TO (which
+    fails again here) -> `_SavepointRollbackError` -> the whole run rolls
+    back."""
+    counters = _plant_site(monkeypatch, dict(
+        recipe=False, tier1=("raise_first", "validator_rejected")))
+    proxy = _SpFailConn(sqlite3.connect(str(db)),
+                        fail_rollback_to="correction_sp_")
+    try:
+        with pytest.raises(Exception) as info:
+            _run(proxy)
+    finally:
+        proxy._real.close()
+    assert counters["tier1"].calls >= 1
+    assert proxy.calls["failed_rollback_to"] == 2
+    assert type(info.value).__name__ == "_SavepointRollbackError"
+    assert _fresh(db) == {"runs": [], "discs": 0, "stop": 4.0}

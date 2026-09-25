@@ -193,3 +193,48 @@ def test_r1_06_restore_fails_with_nothing_in_flight_raises_pin(
     assert _mig(built).calls["failed_sql"] == 1
     assert _restore_records(caplog) == []
     assert _version(v40) == EXPECTED_SCHEMA_VERSION
+
+
+# -- R2-03 (Reviewer A round 2; CHARC's class ruling): an INTERRUPT from a
+# restore while an error is in flight.  PRE-FIX (R1-06 caught `Exception`)
+# the interrupt escaped from the first restore IN PLACE of the in-flight
+# error, unchained, and the second restore never ran.  POST-FIX the interrupt
+# is logged against the in-flight error, the second (independent) restore is
+# still attempted, and the interrupt is re-raised CHAINED from the in-flight
+# error -- never swallowed, never retyped.
+def test_r2_03_interrupt_from_first_restore_is_chained_and_second_runs(
+        v40, tmp_path, monkeypatch, caplog):
+    built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
+        real, fail_executescript=sqlite3.OperationalError,
+        fail_sql_prefix=_FK_RESTORE, raise_on_sql=KeyboardInterrupt))
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(KeyboardInterrupt) as info:
+                _ensure(v40, tmp_path)
+        mig = _mig(built)
+        assert mig.calls["failed_sql"] == 1  # did-it-fire
+        assert "PRAGMA legacy_alter_table=OFF" in mig.sql_log
+        assert isinstance(info.value.__cause__, sqlite3.OperationalError)
+        assert "planted on executescript" in str(info.value.__cause__)
+        assert len(_restore_records(caplog)) == 1
+    finally:
+        for p in built:
+            p._real.close()
+    assert _version(v40) == _V_BEFORE
+
+
+def test_r2_03_interrupt_from_restore_with_nothing_in_flight_pin(
+        v40, tmp_path, monkeypatch):
+    """PIN (both trees): nothing in flight -> the restore's interrupt is
+    raised as it always was (bare, B-04's trigger class)."""
+    built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
+        real, fail_sql_prefix=_FK_RESTORE, raise_on_sql=KeyboardInterrupt))
+    try:
+        with pytest.raises(KeyboardInterrupt) as info:
+            _ensure(v40, tmp_path)
+        assert _mig(built).calls["failed_sql"] == 1
+        assert info.value.__cause__ is None
+    finally:
+        for p in built:
+            p._real.close()
+    assert _version(v40) == EXPECTED_SCHEMA_VERSION

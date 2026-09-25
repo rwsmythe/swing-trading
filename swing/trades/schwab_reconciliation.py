@@ -1228,7 +1228,28 @@ def _pivot_classify_and_dispatch_for_run(
                     # block) routes to the SAME material tier-2 fresh-savepoint
                     # stamp as a validator rejection — a distinct ambiguity_
                     # kind so the audit names the contradiction.
-                    conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+                    try:
+                        conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+                    except sqlite3.Error:
+                        # Unchanged: the per-discrepancy handler below
+                        # retries the ROLLBACK TO through the helper.
+                        raise
+                    except BaseException as interrupt:  # noqa: BLE001
+                        # 22-F R2-05 (CHARC's Round 2 class ruling): an
+                        # INTERRUPT at this ROLLBACK TO is recorded and
+                        # re-raised CHAINED from the rejection -- never
+                        # swallowed, never retyped; the run's BaseException
+                        # handler rolls the WHOLE run back.
+                        from swing.trades.entry import log_contained_note
+                        log_contained_note(
+                            log, interrupt,
+                            "22-F: ROLLBACK TO SAVEPOINT %s was interrupted "
+                            "(%s) after the tier-1 rejection (%s); the "
+                            "interrupt propagates to the run, which rolls the "
+                            "WHOLE run back; this connection MUST BE "
+                            "DISCARDED after the run.",
+                            sp_name, type(interrupt).__name__, e)
+                        raise interrupt from e
                     conn.execute(f"RELEASE SAVEPOINT {sp_name}")
                     sp_released = True
                     kind = (

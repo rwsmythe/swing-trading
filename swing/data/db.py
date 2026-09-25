@@ -616,6 +616,12 @@ def _apply_migration(conn: sqlite3.Connection, sql_path: Path) -> None:
             # 22-F R1-06: an error is already in flight -- each restore is
             # attempted independently, and a failing one is logged against
             # the in-flight error, never raised in its place.
+            # 22-F R2-03 (CHARC's Round 2 class ruling): an INTERRUPT from a
+            # restore is logged the same way, the remaining (independent)
+            # restore is still attempted, and the interrupt is then re-raised
+            # CHAINED from the in-flight error -- never swallowed, never
+            # retyped.
+            restore_interrupt: BaseException | None = None
             for restore in (fk_restore, legacy_restore):
                 try:
                     conn.execute(restore)
@@ -627,6 +633,19 @@ def _apply_migration(conn: sqlite3.Connection, sql_path: Path) -> None:
                         "`%s` afterwards ALSO failed (%s); the original "
                         "error propagates.", sql_path.name, in_flight,
                         restore, restore_error)
+                except BaseException as interrupt:  # noqa: BLE001 -- R2-03
+                    from swing.trades.entry import log_contained_note
+                    log_contained_note(
+                        log, interrupt,
+                        "22-F R1-06: migration %s failed (%s); restoring "
+                        "`%s` afterwards was INTERRUPTED (%s); the interrupt "
+                        "propagates, chained from the original error.",
+                        sql_path.name, in_flight, restore,
+                        type(interrupt).__name__)
+                    if restore_interrupt is None:
+                        restore_interrupt = interrupt
+            if restore_interrupt is not None:
+                raise restore_interrupt from in_flight
 
 
 def _preflight_migration_0004(conn: sqlite3.Connection) -> None:

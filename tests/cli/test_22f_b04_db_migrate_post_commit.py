@@ -196,3 +196,55 @@ def test_r1_03_witness_close_fails_below_target_still_reraises(world,
     assert isinstance(r.exception, sqlite3.OperationalError)
     assert "planted on PRAGMA foreign_keys=" in str(r.exception)
     assert _WARN not in r.output
+
+
+# -- R2-02 (Reviewer A round 2; CHARC's class ruling): an INTERRUPT from the
+# witness's close.  PRE-FIX (R1-03 caught `Exception`) the interrupt escaped
+# from the close IN PLACE of the post-commit error, unchained and unrecorded.
+# POST-FIX it is recorded and re-raised CHAINED from the post-commit error.
+# That the interrupt still SKIPS the tail is pre-arc for any interrupt
+# between the COMMIT and the ratification (plan AL-11).  click's standalone
+# mode would turn the interrupt into "Aborted!"; `standalone_mode=False`
+# surfaces it as `Abort` whose `__cause__` is the interrupt.
+class _InterruptOnClose(FailingVerbsConn):
+    def close(self) -> None:
+        self.calls["close"] += 1
+        self._real.close()
+        raise KeyboardInterrupt("planted interrupt on close")
+
+
+def test_r2_02_witness_close_interrupt_is_chained_from_the_post_commit_error(
+        world, monkeypatch, caplog):
+    import logging
+
+    import click
+
+    import swing.cli as cli_mod
+    _build(world["db"], EXPECTED_SCHEMA_VERSION - 1)
+    built = _fail_restore_after(monkeypatch, 1)
+    real_open = cli_mod.open_connection
+    witnesses: list = []
+
+    def _open(target, *args, **kwargs):
+        conn = real_open(target, *args, **kwargs)
+        if kwargs.get("uri") and "mode=ro" in str(target):
+            proxy = _InterruptOnClose(conn)
+            witnesses.append(proxy)
+            return proxy
+        return conn
+
+    monkeypatch.setattr(cli_mod, "open_connection", _open)
+    with caplog.at_level(logging.ERROR):
+        r = CliRunner().invoke(main, ["--config", str(world["cfg"]),
+                                      "db-migrate"], standalone_mode=False)
+    assert _fired(built, "failed_after_executescript") == 1
+    assert len(witnesses) == 1 and witnesses[0].calls["close"] == 1
+    assert isinstance(r.exception, click.exceptions.Abort), repr(r.exception)
+    interrupt = r.exception.__cause__
+    assert isinstance(interrupt, KeyboardInterrupt), repr(interrupt)
+    assert isinstance(interrupt.__cause__, sqlite3.OperationalError)
+    assert "planted on PRAGMA foreign_keys=" in str(interrupt.__cause__)
+    assert any("interrupted" in rec.getMessage().lower()
+               and "planted on PRAGMA foreign_keys=" in rec.getMessage()
+               for rec in caplog.records)
+    assert _version(world["db"]) == EXPECTED_SCHEMA_VERSION
