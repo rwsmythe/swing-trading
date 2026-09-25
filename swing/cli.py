@@ -4587,6 +4587,13 @@ def discrepancy_resolve_ambiguity_cmd(
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at each writer's OWN return
+    # -- the orphan branch's `resolve_discrepancy`, or the tier-2 /
+    # source-direction resolver (BEFORE the best-effort back-link, which is
+    # a separate transaction); `pending_refusal` is whichever typed refusal
+    # is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         d = get_discrepancy(conn, discrepancy_id)
         if d is None:
@@ -4638,6 +4645,7 @@ def discrepancy_resolve_ambiguity_cmd(
                 raise click.ClickException(ascii_safe(str(e))) from None
             except ValueError as e:
                 raise click.UsageError(str(e)) from None
+            durable = True
             click.echo(
                 f"resolved orphan discrepancy {discrepancy_id} (referenced "
                 f"{table} id={rid} no longer exists) to acknowledged_immaterial"
@@ -4795,6 +4803,7 @@ def discrepancy_resolve_ambiguity_cmd(
                     risk_policy_id=active_policy.policy_id,
                     schwab_api_call_id=schwab_api_call_id,
                 )
+            durable = True
             # The C.C tier-2 handlers stamp the forward FK
             # (reconciliation_corrections.schwab_api_call_id) but only
             # the tier-1 path invokes `_back_link_schwab_api_call`. To
@@ -4866,8 +4875,12 @@ def discrepancy_resolve_ambiguity_cmd(
             # payload at handler-level shape validation. Map to
             # UsageError (exit 2) per plan §E.3 acceptance criterion #9.
             raise click.UsageError(str(e)) from None
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     if result is not None:
         click.echo(
@@ -5064,6 +5077,10 @@ def discrepancy_override_correction_cmd(
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `apply_tier3_override`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         # Surface the current correction row before prompting so the
         # operator sees what they're overriding (per plan §E.4 acceptance
@@ -5202,8 +5219,13 @@ def discrepancy_override_correction_cmd(
             # missing fields. Map to UsageError (exit 2) per plan §E.4
             # acceptance criterion #6.
             raise click.UsageError(str(e)) from None
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     click.echo(
         f"override applied: prior correction_id={correction_id}; "
@@ -5286,6 +5308,10 @@ def discrepancy_resolve_cmd(
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `resolve_discrepancy`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         # Arc 20-B (D22 gate). The general `discrepancy resolve` must NOT
         # silently bypass the operator choice menu for a
@@ -5377,8 +5403,13 @@ def discrepancy_resolve_cmd(
             raise click.ClickException(ascii_safe(str(e))) from None
         except ValueError as e:
             raise click.ClickException(ascii_safe(str(e))) from None
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(
         f"Discrepancy {discrepancy_id} resolved: resolution={resolution}"
     )

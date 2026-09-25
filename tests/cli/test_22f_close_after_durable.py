@@ -187,6 +187,41 @@ def _recon_runs(w: World) -> int:
     return _scalar(w.db, "SELECT COUNT(*) FROM reconciliation_runs")
 
 
+def _pending_world(tmp_path: Path, _mp: Any) -> World:
+    from tests.cli.test_22f_d39_cli_backlink import _world as _bl_world
+    w = _plain_world(tmp_path, _mp)
+    did, _call_id = _bl_world(w.db)
+    w.extra["did"] = did
+    return w
+
+
+def _resolution(w: World) -> str:
+    return _scalar(w.db, "SELECT resolution FROM reconciliation_discrepancies "
+                   "WHERE discrepancy_id = ?", w.extra["did"])
+
+
+def _tier1_world(tmp_path: Path, _mp: Any) -> World:
+    from tests.cli.test_discrepancy_override_correction_cli import (
+        _seed_cvgi_with_tier1_correction,
+    )
+    w = _plain_world(tmp_path, _mp)
+    w.extra.update(_seed_cvgi_with_tier1_correction(w.db))
+    return w
+
+
+def _override_argv(truth: str) -> Callable[[World], list]:
+    def _argv(w: World) -> list:
+        return ["--config", str(w.cfg), "journal", "discrepancy",
+                "override-correction", str(w.extra["tier1_correction_id"]),
+                "--truth-value", truth, "--reason", "broker statement",
+                "--force"]
+    return _argv
+
+
+def _corrections(w: World) -> int:
+    return _scalar(w.db, "SELECT COUNT(*) FROM reconciliation_corrections")
+
+
 # ------------------------------------------------------------ root table ---
 
 ROOTS: list[Root] = [
@@ -268,6 +303,40 @@ ROOTS: list[Root] = [
                         "--period-end", "2026-05-12"],
         probe=_recon_runs,
         writer="swing.trades.reconciliation.run_tos_reconciliation",
+    ),
+    Root(
+        id="discrepancy-resolve-ambiguity", target=_DB_CONNECT,
+        world=_pending_world,
+        argv=lambda w: ["--config", str(w.cfg), "journal", "discrepancy",
+                        "resolve-ambiguity", str(w.extra["did"]), "--choice",
+                        "keep_journal_as_is", "--reason", "g1 probe"],
+        probe=_resolution,
+        writer=("swing.trades.reconciliation_auto_correct."
+                "apply_tier2_resolution"),
+        refusal_argv=lambda w: ["--config", str(w.cfg), "journal",
+                                "discrepancy", "resolve-ambiguity", "9999",
+                                "--choice", "keep_journal_as_is",
+                                "--reason", "g1 probe"],
+        refusal_text="discrepancy 9999 not found",
+    ),
+    Root(
+        id="discrepancy-override-correction", target=_DB_CONNECT,
+        world=_tier1_world, argv=_override_argv('{"price": 5.25}'),
+        probe=_corrections,
+        writer="swing.trades.reconciliation_auto_correct.apply_tier3_override",
+        refusal_argv=_override_argv('{"price": 1e500}'),
+        refusal_text="validator rejected",
+    ),
+    Root(
+        id="discrepancy-resolve", target=_DB_CONNECT, world=_pending_world,
+        argv=lambda w: ["--config", str(w.cfg), "journal", "discrepancy",
+                        "resolve", str(w.extra["did"]), "--resolution",
+                        "acknowledged_immaterial", "--force"],
+        probe=_resolution, writer="swing.trades.reconciliation.resolve_discrepancy",
+        refusal_argv=lambda w: ["--config", str(w.cfg), "journal",
+                                "discrepancy", "resolve", str(w.extra["did"]),
+                                "--resolution", "acknowledged_immaterial"],
+        refusal_text="would bypass the choice menu",
     ),
 ]
 
