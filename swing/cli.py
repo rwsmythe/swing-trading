@@ -275,7 +275,7 @@ def db_migrate(ctx: click.Context) -> None:
     """Apply DB migrations. Safe to run multiple times. Backs up DB before migrating."""
     import sqlite3 as _sqlite3
 
-    from swing.trades.entry import ascii_safe
+    from swing.trades.entry import ascii_safe, safe_text
 
     cfg = ctx.obj["config"]
     db_path = cfg.paths.db_path
@@ -372,7 +372,33 @@ def db_migrate(ctx: click.Context) -> None:
             err=True,
         )
 
-    conn = ensure_schema(db_path, backup_dir=backups_dir)
+    try:
+        conn = ensure_schema(db_path, backup_dir=backups_dir)
+    except BaseException as exc:
+        # 22-F T-F10 B-04 (R1-02, R51): `_apply_migration` restores two
+        # connection PRAGMAs in a `finally` AFTER each script's COMMIT, so a
+        # failure there escapes a migration that is already DURABLE.  Ask the
+        # FILE, on a fresh plain-sqlite3 read-only connection (never swing's
+        # `connect`): at target -> say so, reopen, and run the tail below (the
+        # gate-image check, the single-fire v17 ratification, the final
+        # echo); below target, or if the re-read itself fails -> re-raise.
+        applied: int | None = None
+        try:
+            _ro = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            try:
+                _row = _ro.execute("SELECT version FROM schema_version").fetchone()
+                applied = int(_row[0]) if _row else None
+            finally:
+                _ro.close()
+        except Exception:  # noqa: BLE001 -- the re-read failed: re-raise exc
+            applied = None
+        if applied != EXPECTED_SCHEMA_VERSION:
+            raise
+        _echo_either_sink(ascii_safe(
+            f"WARN: the migration IS applied (schema version {applied}); a "
+            f"post-commit step failed: {safe_text(exc)}"), prefer_err=True)
+        conn = open_connection(
+            db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     gate_alarm: str | None = None
     if gate is not None:
         new_images = sorted(set(backups_dir.glob(gate.filename_glob)) - gate_images_before)
