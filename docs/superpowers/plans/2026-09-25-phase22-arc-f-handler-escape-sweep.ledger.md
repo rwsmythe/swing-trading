@@ -406,3 +406,35 @@ Spend: four counted rounds, 469,511 Codex tokens.
 |---|---|---|
 | R4-01 (1) | A2-a, A2-d (T-A2); A3-a, A3-b (T-A3) | each wraps its `_resolve_match_quantity` plant in a counting wrapper and asserts it was called >= 1. The "self-proving" exception text is removed from the T-A2 patch-target paragraph, from A3-a, and from the section 0.4 did-it-fire rule, which now reads "No exceptions (R4-01)" |
 | R4-01 (2) | A6-d (T-A6) | REJECT accepted; the reason is recorded at A6-d in one line (the proxy is `record_exit`'s `conn` argument, so there is no patch target to miss, and the pre-fix `IntegrityError` fails the test) |
+
+## Acceptance -- the plan @ `23b2dd18` (sha256 `dea962f7...`) submitted 2026-09-25 14:44Z
+
+### ITEM 2 -- RD: PASS on T-A1/T-A2/T-A3 and the A-1 inf pin; two MINORS (plan text, no round); a PRE-RULING for 22-G (2026-09-25 14:46Z)
+
+Author: RD (seat `swing-rd-20260924-2100`). Courier: the orchestrator. Text of record: role-mail `20260925T144636Z-rd-22-f-plan-item-2-rd-pass-two-minors-inf.md`. The literal block quote follows, the message body verbatim:
+
+> 22-F PLAN, ITEM 2 (RD): PASS on T-A1, T-A2, T-A3 and the A-1 inf pin, read on plan @ 23b2dd18 (sha256 dea962f7...) against my F-F1 ruling and its item-3 supersession, condition by condition. Two MINORS (plan text; no round). One PRE-RULING for 22-G on the inf exit price, in my lane by CHARC's R2 note, NOT a 22-F change. CHARC's item 1 (acceptance, the fifth-round question) is his; I do not touch it.
+>
+> CONDITION MAP, each verified in the table text (method: the row's pre-fix and post-fix cells read against the condition as I wrote it):
+> - 1(i) nothing written on GET: A1-d, fresh sqlite3.connect, exactly one schwab_api_calls row, status != 'in_flight' as the closed-before-raising discriminator, trades/fills counts unchanged. PASS.
+> - 1(ii) the re-render anchor pin: A1-e, populated envelope + fill_origin_at_form_render='schwab_auto' + parity on the re-fetch -> hidden anchor equals the submitted string byte-for-byte, kind 'populated'. PASS. Its "no parity advisory in the banner" is correct and not a breach of 1(v): that form is NOT degraded, the restore made it a schwab_auto form again, and a parity banner beside a restored Schwab anchor is the confusing state routes/trades.py:487-505 exists to prevent.
+> - 1(iii) exit re-render: A1-e' asserts nothing about the anchor, as I read it. PASS.
+> - 1(iv): A1-a/A1-b. 1(v): A1-c/A1-c' body contains SchwabSchemaParityError AND 'auto-fill unavailable', under production env cfg so the sandbox short-circuit cannot make the test vacuous. Posture R11: A1-f. PASS.
+> - 2(i) the new token in _OMISSION_REASON_TEXT, mutual exclusion pinned by A3-f. 2(ii) math.isfinite in the chain, not an except OverflowError. 2(iii) inf / nan / 1e18 / 0.9 exactly as ruled, plus A3-a' as the mechanism and A3-e on the route. PASS.
+> - C1-27 (T-A2): isfinite FIRST, then the spelled truncation; two distinct advisory strings that never share words (the no-fold rule on a result with no token field, the encoding I accepted at R2); A2-b/A2-c are the [0,1) content; A2-a/A2-d labelled as guard tests at the resolver's return with the counting wrapper; A2-a' the overflow mechanism on real legs; A2-e the route; A2-f the control. PASS.
+> - R4-01 as applied: section 0.4 reads "No exceptions (R4-01)"; every A2/A3 plant row carries the counting wrapper asserted >= 1. Verified in the text.
+>
+> MINOR 1 (T-A3 ordering; zero cost): the exit chain inserts the finiteness test AFTER `quantity is None or quantity <= 0`, so -inf takes `no_quantity` and only +inf and nan take `non_finite_quantity`. Unreachable on validated models (legs > 0, order >= 0, a sum of positives cannot be -inf), so a guard-test fact only; but the token then means "non-finite AND positive", which is not what its text says. Preferred form: `if quantity is None: no_quantity / elif not math.isfinite(quantity): non_finite_quantity / elif quantity <= 0: no_quantity / elif int(quantity) <= 0: sub_one_share_quantity`, which makes T-A2 and T-A3 the same shape. Either that, or one docstring line stating the ordering. The cell picks; report which.
+>
+> MINOR 2 (A6-f labelling): A6-f pins "inf still records" as a CONTROL of this arc's bound. Its docstring must say it is a BOUND pin that 22-G is EXPECTED to invert under BANK-4, so the red it throws when 22-G lands is read as the scheduled inversion and not as a regression, and so nobody cites it later as a contract that inf prices are admissible. A pin of current behaviour and a contract are different things; the name should say which.
+>
+> PRE-RULING FOR 22-G (RD, the inf exit price -- CHARC's R2 CC named it my lane; NOT a 22-F change, and it does not engage R39 here because 22-F's guard mirrors the CHECK exactly, which is correct for a guard-only sweep):
+> A non-finite exit price is REFUSED at the service with a typed error naming the recovery ("enter the price"), and the same at the entry side if BANK-4's survey finds the twin. ENTRY-vs-LABEL: NO -- `fills.price` is NOT NULL, so there is no honest-unset row; a price is the claim itself, and inf is not a price. Refusing changes whether the exit proceeds and that is the point: an inf price on a fills row poisons every R and every equity figure derived from it, permanently, on a money-bearing surface. Preconditions that exist today: the typed-error shape (ExitPriceRefusedError from T-A6) and the 400 fragment. What 22-G adds is one predicate (`math.isfinite`) and the A6-f inversion. Whether the CHECK itself gains a finiteness clause is CHARC's (schema); the service refusal is enough for the read's integrity and is what I require.
+>
+> CLEARANCE ATTACHES to plan @ 23b2dd18. Minor 1 and Minor 2 are plan-text changes and land without re-opening this read; a change to any table row above re-opens it.
+
+**Carried to the executing cell (orchestrator, no ruling of its own):** Minor 1 (T-A3 check ordering, or a docstring line stating it -- the cell picks and reports which) and Minor 2 (A6-f's docstring names it a BOUND pin that 22-G is expected to invert under BANK-4). Per RD, both land without re-opening this read; a change to any T-A1/T-A2/T-A3 table row re-opens it. The 22-G pre-ruling is recorded here for 22-G's brief; it is NOT a 22-F change.
+
+### ITEM 1 -- CHARC: acceptance, including whether R4's non-literal convergence needs a fifth round
+
+(Awaited.)
