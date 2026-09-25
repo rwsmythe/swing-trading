@@ -140,7 +140,10 @@ def config_set(ctx: click.Context, field_path: str, raw_value: str, force: bool)
             NoActivePolicyError,
             get_active_policy,
         )
-        from swing.trades.risk_policy import supersede_active_policy
+        from swing.trades.risk_policy import (
+            NO_ACTIVE_POLICY_REFUSAL,
+            supersede_active_policy,
+        )
 
         cfg = ctx.obj["config"]
         policy_field = _CONFIG_SET_RISK_POLICY_CASCADE_MAP[field_path]
@@ -181,6 +184,16 @@ def config_set(ctx: click.Context, field_path: str, raw_value: str, force: bool)
                 f"Cascaded to risk_policy: new policy_id={new_id} with "
                 f"{policy_field}={coerced}"
             )
+        except NoActivePolicyError:
+            # 22-F T-D5 (CHARC STOP-3): the cause-specific text, in the order
+            # observed -- the override IS written, the cascade did not fire,
+            # and the recovery that exists (no command creates a policy).
+            click.echo(
+                "WARNING: override written; the risk_policy cascade did NOT "
+                "fire because no policy row is active. "
+                f"{NO_ACTIVE_POLICY_REFUSAL}",
+                err=True,
+            )
         except Exception as exc:
             click.echo(
                 f"WARNING: risk_policy cascade failed ({exc}); override "
@@ -212,7 +225,10 @@ def config_reset(ctx: click.Context, field_path: str) -> None:
             NoActivePolicyError,
             get_active_policy,
         )
-        from swing.trades.risk_policy import supersede_active_policy
+        from swing.trades.risk_policy import (
+            NO_ACTIVE_POLICY_REFUSAL,
+            supersede_active_policy,
+        )
 
         # Re-load + apply remaining overrides to get the post-reset value
         # (the override we just deleted is gone; the rest still apply).
@@ -262,6 +278,14 @@ def config_reset(ctx: click.Context, field_path: str) -> None:
             click.echo(
                 f"Cascaded reset to risk_policy: new policy_id={new_id} "
                 f"with {policy_field}={post_reset_value}"
+            )
+        except NoActivePolicyError:
+            # 22-F T-D5 (CHARC STOP-3): see `config set`.
+            click.echo(
+                "WARNING: override deleted; the risk_policy cascade did NOT "
+                "fire because no policy row is active. "
+                f"{NO_ACTIVE_POLICY_REFUSAL}",
+                err=True,
             )
         except Exception as exc:
             click.echo(
@@ -369,12 +393,18 @@ def policy_group() -> None:
 def policy_show(ctx: click.Context) -> None:
     """Print the active risk_policy row."""
     from swing.data.db import connect
-    from swing.trades.risk_policy import read_active_policy
+    from swing.data.repos.risk_policy import NoActivePolicyError
+    from swing.trades.risk_policy import (
+        NO_ACTIVE_POLICY_REFUSAL,
+        read_active_policy,
+    )
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
     try:
         active = read_active_policy(conn)
+    except NoActivePolicyError as exc:  # 22-F T-D5 (S-CLICK)
+        raise click.ClickException(NO_ACTIVE_POLICY_REFUSAL) from exc
     finally:
         conn.close()
 
@@ -458,7 +488,9 @@ def policy_set(
     Idempotency: V1 has no short-circuit; every set creates a row.
     """
     from swing.data.db import connect
+    from swing.data.repos.risk_policy import NoActivePolicyError
     from swing.trades.risk_policy import (
+        NO_ACTIVE_POLICY_REFUSAL,
         CallerHeldTransactionError,
         supersede_active_policy,
     )
@@ -474,6 +506,8 @@ def policy_set(
             notes=notes,
             source="cli",
         )
+    except NoActivePolicyError as exc:  # 22-F T-D5 (S-CLICK)
+        raise click.ClickException(NO_ACTIVE_POLICY_REFUSAL) from exc
     except CallerHeldTransactionError as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
@@ -509,7 +543,9 @@ def policy_import_from_toml(
     (operator edits via `swing config policy set` or this command).
     """
     from swing.data.db import connect
+    from swing.data.repos.risk_policy import NoActivePolicyError
     from swing.trades.risk_policy import (
+        NO_ACTIVE_POLICY_REFUSAL,
         CallerHeldTransactionError,
         supersede_active_policy,
     )
@@ -547,6 +583,8 @@ def policy_import_from_toml(
             ),
             source="import_from_toml",
         )
+    except NoActivePolicyError as exc:  # 22-F T-D5 (S-CLICK)
+        raise click.ClickException(NO_ACTIVE_POLICY_REFUSAL) from exc
     except CallerHeldTransactionError as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:

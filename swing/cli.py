@@ -4381,6 +4381,7 @@ def discrepancy_resolve_ambiguity_cmd(
 
     from swing.data.db import connect
     from swing.data.repos.reconciliation import get_discrepancy
+    from swing.data.repos.risk_policy import NoActivePolicyError
     from swing.trades.entry import ascii_safe
     from swing.trades.reconciliation_ambiguity_choices import (
         choice_menu_for_discrepancy,
@@ -4394,7 +4395,10 @@ def discrepancy_resolve_ambiguity_cmd(
         apply_source_direction_resolution,
         apply_tier2_resolution,
     )
-    from swing.trades.risk_policy import read_active_policy
+    from swing.trades.risk_policy import (
+        NO_ACTIVE_POLICY_REFUSAL,
+        read_active_policy,
+    )
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
@@ -4579,7 +4583,10 @@ def discrepancy_resolve_ambiguity_cmd(
                 ) from None
 
         # Resolve active risk policy id (Phase 9 Sub-bundle A surface).
-        active_policy = read_active_policy(conn)
+        try:
+            active_policy = read_active_policy(conn)
+        except NoActivePolicyError as exc:  # 22-F T-D5 (S-CLICK)
+            raise click.ClickException(NO_ACTIVE_POLICY_REFUSAL) from exc
 
         try:
             if d.field_name == "missing_journal_row":
@@ -4818,6 +4825,7 @@ def discrepancy_override_correction_cmd(
         get_correction,
         list_corrections_by_discrepancy,
     )
+    from swing.data.repos.risk_policy import NoActivePolicyError
     from swing.trades.entry import ascii_safe
     from swing.trades.reconciliation_auto_correct import (
         AlreadySupersededError,
@@ -4827,7 +4835,10 @@ def discrepancy_override_correction_cmd(
         ValidatorRejectedError,
         apply_tier3_override,
     )
-    from swing.trades.risk_policy import read_active_policy
+    from swing.trades.risk_policy import (
+        NO_ACTIVE_POLICY_REFUSAL,
+        read_active_policy,
+    )
 
     # Parse --truth-value as JSON BEFORE opening the DB (cheap rejection
     # of malformed payloads; exit 2 via UsageError). Per plan §E.4
@@ -4938,7 +4949,10 @@ def discrepancy_override_correction_cmd(
 
         # Resolve active risk policy id (Phase 9 Sub-bundle A surface)
         # for the audit-row stamp.
-        active_policy = read_active_policy(conn)
+        try:
+            active_policy = read_active_policy(conn)
+        except NoActivePolicyError as exc:  # 22-F T-D5 (S-CLICK)
+            raise click.ClickException(NO_ACTIVE_POLICY_REFUSAL) from exc
 
         try:
             result = apply_tier3_override(

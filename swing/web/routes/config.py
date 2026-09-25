@@ -136,7 +136,10 @@ async def config_save(request: Request):
             NoActivePolicyError,
             get_active_policy,
         )
-        from swing.trades.risk_policy import supersede_active_policy
+        from swing.trades.risk_policy import (
+            NO_ACTIVE_POLICY_REFUSAL,
+            supersede_active_policy,
+        )
 
         cascade_conn = open_connection(
             base_cfg.paths.db_path,
@@ -173,6 +176,14 @@ async def config_save(request: Request):
                 field_updates=cascade_updates,
                 source="cfg_cascade",
             )
+        except NoActivePolicyError:
+            # 22-F T-D5 (CHARC STOP-3): the cause-specific record, in the
+            # order observed; the response stays the save redirect (D5-k).
+            log.error(
+                "Phase 9 T-A.5: override written; the risk_policy cascade "
+                "did NOT fire because no policy row is active. %s",
+                NO_ACTIVE_POLICY_REFUSAL,
+            )
         except Exception:
             log.exception(
                 "Phase 9 T-A.5: cfg-cascade to risk_policy failed; "
@@ -208,7 +219,10 @@ async def config_reset(request: Request, field_path: str):
             NoActivePolicyError,
             get_active_policy,
         )
-        from swing.trades.risk_policy import supersede_active_policy
+        from swing.trades.risk_policy import (
+            NO_ACTIVE_POLICY_REFUSAL,
+            supersede_active_policy,
+        )
 
         cfg_path = request.app.state.cfg_path
         if cfg_path is None:
@@ -252,6 +266,13 @@ async def config_reset(request: Request, field_path: str):
                     f"reset {field_path} to {post_reset_value} via "
                     f"POST /config/reset/{field_path}"
                 ),
+            )
+        except NoActivePolicyError:
+            # 22-F T-D5 (CHARC STOP-3): see `config_save`.
+            log.error(
+                "Phase 9 Codex R2 M#1: override deleted; the risk_policy "
+                "cascade did NOT fire because no policy row is active. %s",
+                NO_ACTIVE_POLICY_REFUSAL,
             )
         except Exception:
             log.exception(
