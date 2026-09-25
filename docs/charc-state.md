@@ -14,7 +14,7 @@
 
 **D67+D69 rider (the orchestrator's):** round 4 authorized in writing (R3-1 fixed at `64bae976`, tree `e9692c0d`; no round 5); then B (`-p strong`), merge, merged-head suite. **My rulings:** clause (b) REPLACED (`381943bd`) — the durability boundary is `n_written > 0`, not `n_set > 0` (which counts same-value no-write re-answers); the client-side equality declared with reason; the service-returns-bool fix BANKED as a follow-on. The D67 row carries the L1 bypass mechanism + the tests-only follow-on (patch at the lookup site; the wrapper must be REACHED).
 
-**Codex strong tier — RESOLVED, no file to create:** WSL `~/.codex/strong.config.toml` EXISTS (07-22, `gpt-5.6-sol`/high) and `-p strong` resolves it (the orchestrator's probe). The R3 drift to `gpt-6-astra` was the CELL's: it searched `config.toml` for `[profiles.*]`, concluded no profile, and took the recipe's no-`-p` fallback whose default model floats. Rounds run COUNT. Two guards proposed to the orchestrator (its recipe content): the banner assertion also asserts the MODEL NAME equals the tier's; a `-p <tier>` whose profile is believed absent FAILS the round loudly, never substitutes. **The open operator question:** whether the canonical strong model moves to `gpt-6-astra` (the Windows base config names it) — his; until ruled, `gpt-5.6-sol`.
+**Codex strong tier — RESOLVED, no file to create:** WSL `~/.codex/strong.config.toml` EXISTS (07-22, `gpt-5.6-sol`/high) and `-p strong` resolves it (the orchestrator's probe). The R3 drift to `gpt-6-astra` was the CELL's: it searched `config.toml` for `[profiles.*]`, concluded no profile, and took the recipe's no-`-p` fallback whose default model floats. Rounds run COUNT. Two guards proposed to the orchestrator (its recipe content): the banner assertion also asserts the MODEL NAME equals the tier's; a `-p <tier>` whose profile is believed absent FAILS the round loudly, never substitutes. **Operator RULED 2026-09-24: strong stays `gpt-5.6-sol` for now** (the Windows base config's `gpt-6-astra` is not the tier's model).
 
 ## #2 — HARNESS + REGISTER WRITES THIS GENERATION
 
@@ -29,7 +29,7 @@
 | **22-I executing** → pre-review return → Reviewer A to convergence → B → **CHARC MERGE GATE + witness sitting W0–W5** | orchestrator · CHARC successor (gate) · operator (sitting) | in flight |
 | **22-F plan cell** (census first; F-F2 → CHARC, F-F1 → RD) | orchestrator | next dispatch |
 | **D67+D69 rider** round 4 → B → merge | orchestrator | in flight |
-| Canonical strong model: stay `gpt-5.6-sol` or move to `gpt-6-astra`? | operator | open question |
+| Canonical strong model | operator | **RULED 2026-09-24: stays `gpt-5.6-sol`** (operator: "maintain strong with sol for now"); no file change -- the WSL `strong.config.toml` already names it and the recipe names only the tier |
 | Charter COMPACTION before the next row; harness-architecture §5.1 compaction at Phase-22 close | CHARC | next touch |
 | Gotchas compression (probe: line-3 4,083 > 2,000; 23 bullets > 700; Gotchas 53,928 of 55,000) + the retire/add list; the "patch where looked up" gotcha candidate | orchestrator (CONTENT) | owed |
 | Post-merge witness-free queue (D68 → 22-F · D71 · the D66 `.7` pair · D65 rider · D62 rider · D61 unit · D64 rider · B-07 · 22-A2i · G3a · the D67 lookup-site rider · the D69 service-bool follow-on) | CHARC shapes; orchestrator sequences | queued |
