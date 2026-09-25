@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from datetime import date as _date_cls
@@ -445,6 +446,33 @@ def resolve_entry_auto_fill(
             auto_fill_audit_at=auto_fill_audit_at,
         )
     quantity = _resolve_match_quantity(chosen)
+    # 22-F C1-27 (the entry twin of BANK-3): `int()` below raises on a
+    # non-finite quantity (a leg-sum overflow; each leg is validated finite)
+    # and truncates a fractional one in (0, 1) to ZERO shares. Both refuse
+    # to the manual path; the two refusals stay distinct strings. The price
+    # branch above pre-empts this guard whenever the `so.quantity` fallback
+    # is taken (executions None/empty).
+    if not math.isfinite(quantity):
+        return EntryAutoFillResult(
+            kind="empty",
+            fill_origin="operator_typed",
+            advisory_text=(
+                f"Schwab BUY fill for {ticker} carries a non-finite quantity; "
+                "auto-fill unavailable (a data-quality alarm). Please enter "
+                "manually."
+            ),
+            auto_fill_audit_at=auto_fill_audit_at,
+        )
+    elif int(quantity) < 1:
+        return EntryAutoFillResult(
+            kind="empty",
+            fill_origin="operator_typed",
+            advisory_text=(
+                f"Schwab BUY fill for {ticker} has an execution quantity "
+                "below one whole share; please enter manually."
+            ),
+            auto_fill_audit_at=auto_fill_audit_at,
+        )
     shares = int(quantity)
     # D31 — the EXECUTION timestamp, not the order-ENTERED one. The
     # provenance stamp rides in the audit envelope only (per-row provenance
