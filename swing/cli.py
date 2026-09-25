@@ -4362,12 +4362,15 @@ def discrepancy_resolve_ambiguity_cmd(
 
     from swing.data.db import connect
     from swing.data.repos.reconciliation import get_discrepancy
+    from swing.trades.entry import ascii_safe
     from swing.trades.reconciliation_ambiguity_choices import (
         choice_menu_for_discrepancy,
     )
     from swing.trades.reconciliation_auto_correct import (
         AlreadySupersededError,
         CallerHeldTransactionError,
+        MultiRowCorrectionOverrideError,
+        ReservedJournalFieldError,
         ValidatorRejectedError,
         apply_source_direction_resolution,
         apply_tier2_resolution,
@@ -4620,6 +4623,12 @@ def discrepancy_resolve_ambiguity_cmd(
             raise click.ClickException(
                 f"validator rejected the operator choice: {e}"
             ) from None
+        except (ReservedJournalFieldError,
+                MultiRowCorrectionOverrideError) as exc:
+            # 22-F C1-05/C1-06: bare-`Exception` refusals (deliberately NOT
+            # `ValueError`s -- CHARC F-F2 RJFE, no re-base); nothing was
+            # written. Typed, not a traceback.
+            raise click.ClickException(ascii_safe(str(exc))) from exc
         except ValueError as e:
             # Service-layer ValueError covers: incompatible (kind,
             # choice); missing required payload on the handler; malformed
@@ -4790,9 +4799,12 @@ def discrepancy_override_correction_cmd(
         get_correction,
         list_corrections_by_discrepancy,
     )
+    from swing.trades.entry import ascii_safe
     from swing.trades.reconciliation_auto_correct import (
         AlreadySupersededError,
         CallerHeldTransactionError,
+        MultiRowCorrectionOverrideError,
+        ReservedJournalFieldError,
         ValidatorRejectedError,
         apply_tier3_override,
     )
@@ -4941,6 +4953,12 @@ def discrepancy_override_correction_cmd(
             raise click.ClickException(
                 f"validator rejected the operator-truth value: {e}"
             ) from None
+        except (ReservedJournalFieldError,
+                MultiRowCorrectionOverrideError) as exc:
+            # 22-F C1-05/C1-06: bare-`Exception` refusals (deliberately NOT
+            # `ValueError`s -- CHARC F-F2 RJFE, no re-base); nothing was
+            # written. Typed, not a traceback.
+            raise click.ClickException(ascii_safe(str(exc))) from exc
         except ValueError as e:
             # Service-layer ValueError covers per-shape rejection /
             # missing fields. Map to UsageError (exit 2) per plan §E.4

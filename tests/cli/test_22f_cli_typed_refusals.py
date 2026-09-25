@@ -162,3 +162,143 @@ def test_A4f_resolve_out_of_framework_pipeline_active_is_typed(
                         lambda _cfg: stub)
     result = CliRunner().invoke(main, ["schwab", "resolve-out-of-framework"])
     _assert_typed(result, "currently in flight")
+
+
+# ---------------------------------------------------------------------------
+# T-A5 -- C1-05 `ReservedJournalFieldError`, C1-06
+# `MultiRowCorrectionOverrideError` at `discrepancy resolve-ambiguity` and
+# `discrepancy override-correction` (CHARC F-F2 RJFE: per-site, NO re-base --
+# both stay bare-`Exception` subclasses).  The world is 22-A4's CLI world
+# (`tests/cli/test_22a4_corrector_refusal_cli.py`: a trade with a minted token
+# and a TRADES-anchored `stop_mismatch` discrepancy).
+# ---------------------------------------------------------------------------
+
+def _recon_world(tmp_path: Path, *, tier2: bool):
+    from tests.cli.test_cli_eval import _minimal_config
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    cfg = _minimal_config(project, home)
+    runner = CliRunner()
+    r = runner.invoke(main, ["--config", str(cfg), "db-migrate"])
+    assert r.exit_code == 0, r.output
+    db_path = home / "swing-data" / "swing.db"
+    from tests.trades.test_22a4_corrector_refusal import (
+        _seed_trade_anchored_world,
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        world = _seed_trade_anchored_world(conn, tier2=tier2)
+    finally:
+        conn.close()
+    return runner, cfg, db_path, world
+
+
+def _seed_head(db_path: Path, world: dict, *, choice: str = "operator_truth",
+               field: str = "current_stop") -> int:
+    from swing.data.db import connect
+    from swing.data.models import ReconciliationCorrection
+    from swing.data.repos.reconciliation_corrections import insert_correction
+    conn = connect(db_path)
+    try:
+        head = ReconciliationCorrection(
+            correction_id=0, discrepancy_id=world["discrepancy_id"],
+            correction_action="operator_resolved_ambiguity",
+            correction_choice=choice, affected_table="trades",
+            affected_row_id=world["trade_id"], field_name=field,
+            pre_correction_value_json='{"current_stop": 4.0}',
+            source_canonical_value_json='{"current_stop": 4.5}',
+            applied_value_json='{"current_stop": 4.5}',
+            operator_truth_value_json=None,
+            applied_at="2026-09-07T12:05:00.000Z", applied_by="operator",
+            correction_set_id=None, superseded_by_correction_id=None,
+            risk_policy_id_at_correction=None, schwab_api_call_id=None,
+            reconciliation_run_id=world["run_id"],
+            correction_reason="seed head", notes=None,
+        )
+        cid = insert_correction(conn, head)
+        conn.commit()
+        return int(cid)
+    finally:
+        conn.close()
+
+
+def _correction_count(db_path: Path) -> int:
+    c = sqlite3.connect(str(db_path))
+    try:
+        return c.execute(
+            "SELECT COUNT(*) FROM reconciliation_corrections").fetchone()[0]
+    finally:
+        c.close()
+
+
+def _trade_row(db_path: Path, trade_id: int) -> tuple:
+    c = sqlite3.connect(str(db_path))
+    try:
+        return c.execute(
+            "SELECT entry_date, current_stop, attempt_id FROM trades "
+            "WHERE id = ?", (trade_id,)).fetchone()
+    finally:
+        c.close()
+
+
+def test_A5a_A5d_resolve_ambiguity_reserved_field_is_typed(tmp_path):
+    """A5-a / A5-d. `--choice operator_truth` with a RESERVED field
+    (`trades.entry_date`, coupled to `correct-entry-date`).  PRE-FIX:
+    `ReservedJournalFieldError` (a bare `Exception`) passes the command's
+    `CallerHeld` / `AlreadySuperseded` / `ValidatorRejected` / `ValueError`
+    ladder -> a traceback.  POST-FIX: exit 1, the service's own text, no
+    traceback; a FRESH read shows no correction row and the trade row
+    unchanged."""
+    runner, cfg, db_path, world = _recon_world(tmp_path, tier2=True)
+    before_trade = _trade_row(db_path, world["trade_id"])
+    before = _correction_count(db_path)
+    result = runner.invoke(main, [
+        "--config", str(cfg), "journal", "discrepancy", "resolve-ambiguity",
+        str(world["discrepancy_id"]), "--choice", "operator_truth",
+        "--custom-value", '{"entry_date": "2026-04-28"}',
+        "--reason", "broker says a different entry date",
+    ])
+    _assert_typed(result, "cannot be written through the generic correction")
+    assert _correction_count(db_path) == before
+    assert _trade_row(db_path, world["trade_id"]) == before_trade
+
+
+def test_A5b_A5d_override_correction_reserved_field_is_typed(tmp_path):
+    """A5-b / A5-d. `override-correction` on a single-row head with a
+    RESERVED field in the truth value.  PRE-FIX: `ReservedJournalFieldError`
+    traceback.  POST-FIX: typed; nothing written (the head is still the only
+    correction row, the trade row unchanged)."""
+    runner, cfg, db_path, world = _recon_world(tmp_path, tier2=False)
+    head_id = _seed_head(db_path, world)
+    before_trade = _trade_row(db_path, world["trade_id"])
+    before = _correction_count(db_path)
+    result = runner.invoke(main, [
+        "--config", str(cfg), "journal", "discrepancy", "override-correction",
+        str(head_id), "--truth-value", '{"entry_date": "2026-04-28"}',
+        "--reason", "override onto a reserved column", "--force",
+    ])
+    _assert_typed(result, "cannot be written through the generic correction")
+    assert _correction_count(db_path) == before
+    assert _trade_row(db_path, world["trade_id"]) == before_trade
+
+
+def test_A5c_A5d_override_correction_multi_row_head_is_typed(tmp_path):
+    """A5-c / A5-d. `override-correction` aimed at a MULTI-ROW head
+    (`correction_choice='correct_entry_date'`).  PRE-FIX:
+    `MultiRowCorrectionOverrideError` traceback.  POST-FIX: typed, the
+    service's text names the MULTI-ROW correction; nothing written."""
+    runner, cfg, db_path, world = _recon_world(tmp_path, tier2=False)
+    head_id = _seed_head(db_path, world, choice="correct_entry_date",
+                         field="entry_date")
+    before_trade = _trade_row(db_path, world["trade_id"])
+    before = _correction_count(db_path)
+    result = runner.invoke(main, [
+        "--config", str(cfg), "journal", "discrepancy", "override-correction",
+        str(head_id), "--truth-value", '{"current_stop": 4.6}',
+        "--reason", "override a multi-row head", "--force",
+    ])
+    _assert_typed(result, "MULTI-ROW")
+    assert _correction_count(db_path) == before
+    assert _trade_row(db_path, world["trade_id"]) == before_trade
