@@ -1153,6 +1153,7 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
     from datetime import datetime as _dt
 
     from swing.data.db import connect
+    from swing.trades.entry import ascii_safe
     from swing.trades.exit import ExitReason, ExitRequest, record_exit
 
     cfg = ctx.obj["config"]
@@ -1165,7 +1166,12 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
             notes=notes, rationale=reason_enum.value,
             event_ts=_dt.now().isoformat(timespec="seconds"),
         )
-        result = record_exit(conn, req)
+        try:
+            result = record_exit(conn, req)
+        except ValueError as exc:
+            # 22-F C1-02: a service refusal (`InvalidStateTransition` is a
+            # `ValueError`) is the operator's typed error, not a traceback.
+            raise click.ClickException(ascii_safe(str(exc))) from exc
     finally:
         conn.close()
     closed = " (FULL CLOSE)" if result.fully_closed else ""
@@ -1240,6 +1246,7 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
     from datetime import datetime as _dt
 
     from swing.data.db import connect
+    from swing.trades.entry import ascii_safe
     from swing.trades.stop_adjust import StopAdjustRequest, StopRegressionError, adjust_stop
 
     # T5: --notes required when --rationale=other (parity with web form).
@@ -1257,6 +1264,11 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
             ))
         except StopRegressionError as exc:
             raise click.ClickException(str(exc)) from exc
+        except ValueError as exc:
+            # 22-F C1-03: `adjust_stop`'s not-found / not-active refusals.
+            # `StopRegressionError` is an `Exception`, not a `ValueError`, so
+            # the two clauses are disjoint.
+            raise click.ClickException(ascii_safe(str(exc))) from exc
     finally:
         conn.close()
     click.echo(f"Trade {trade_id} stop -> ${new_stop:.2f}")

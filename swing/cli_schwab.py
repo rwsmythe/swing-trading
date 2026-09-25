@@ -994,10 +994,14 @@ def purge_marketdata_archive(ctx: click.Context, yes: bool) -> None:
     archive is re-fetchable cache, NOT append-only locked facts; the
     pattern_forward_observations log is untouched."""
     from swing.config_overrides import apply_overrides
+    from swing.trades.entry import ascii_safe
     cfg = apply_overrides(ctx.obj["config"])   # the real CLI cfg pattern
     conn = connect(cfg.paths.db_path)
     try:
         _check_pipeline_not_running(conn)      # raises SchwabPipelineActiveError
+    except SchwabPipelineActiveError as exc:
+        # 22-F C1-04: typed, as the sibling domain-write subcommands give it.
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     finally:
         conn.close()
     cache_dir = Path(cfg.paths.prices_cache_dir)
@@ -1031,6 +1035,7 @@ def schwab_resolve_out_of_framework(ctx: click.Context) -> None:
     (SchwabPipelineActiveError), like the other Schwab domain-write subcommands.
     """
     from swing.config_overrides import apply_overrides
+    from swing.trades.entry import ascii_safe
     from swing.trades.schwab_reconciliation import (
         resolve_out_of_framework_orphans,
     )
@@ -1050,7 +1055,12 @@ def schwab_resolve_out_of_framework(ctx: click.Context) -> None:
         return
     conn = connect(cfg.paths.db_path)
     try:
-        _check_pipeline_not_running(conn)
+        try:
+            _check_pipeline_not_running(conn)
+        except SchwabPipelineActiveError as exc:
+            # 22-F C1-04: typed, as the sibling domain-write subcommands give
+            # it.
+            raise click.ClickException(ascii_safe(str(exc))) from exc
         resolved = resolve_out_of_framework_orphans(
             conn, out_of_framework_tickers=declared,
         )
