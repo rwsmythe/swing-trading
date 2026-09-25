@@ -32,6 +32,7 @@ CLAUDE.md gotchas observed here:
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
@@ -54,6 +55,8 @@ from swing.data.repos.daily_management import (
     tier_upgrade_snapshot,
     upsert_snapshot,
 )
+
+log = logging.getLogger(__name__)
 
 __all__ = [
     # Vocabulary constants:
@@ -684,6 +687,27 @@ def compute_daily_approximate_snapshot(  # noqa: PLR0913  -- spec-locked signatu
 # ---------------------------------------------------------------------------
 
 
+def _rollback_or_raise(conn: sqlite3.Connection, op: str,
+                       original: BaseException) -> None:
+    """22-F T-F7 (C2-12, S-D39, the 22-A template): roll back only an open
+    transaction; a rollback that ALSO fails is raised CHAINED from
+    ``original`` with one ERROR record."""
+    if not conn.in_transaction:
+        return
+    try:
+        conn.rollback()
+    except BaseException as cleanup_error:  # noqa: BLE001
+        from swing.trades.entry import log_contained_note
+        still = conn.in_transaction
+        log_contained_note(
+            log, cleanup_error,
+            "22-F: %s failed (%s) AND the rollback of its transaction failed "
+            "(%s); in_transaction reads %s after the failed rollback; this "
+            "connection MUST BE DISCARDED either way.",
+            op, original, cleanup_error, still)
+        raise cleanup_error from original
+
+
 def record_event_log(
     conn: sqlite3.Connection,
     *,
@@ -820,8 +844,8 @@ def record_event_log(
             "issue BEGIN before calling. The function manages its own "
             "BEGIN IMMEDIATE / COMMIT / ROLLBACK boundary (Codex R4 Major #1)."
         )
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         # Re-read trade state for the entered→managing decision (per §5.2):
         trade = get_trade(conn, trade_id)
         if trade is None:
@@ -928,11 +952,14 @@ def record_event_log(
                 event_ts=req.created_at,
                 rationale="first_daily_management_record",
             )
-    except Exception:
+    except BaseException as exc:  # noqa: BLE001 -- 22-F T-F7
         # On ANY exception roll back the transaction we opened. Codex R4
         # Major #1: we ALWAYS own the boundary (the entry guard above
-        # rejects caller-held transactions outright).
-        conn.rollback()
+        # rejects caller-held transactions outright).  22-F (S-D39): the
+        # trigger is BaseException, and a rollback that also fails is
+        # raised chained from the original with one MUST BE DISCARDED
+        # record.
+        _rollback_or_raise(conn, "record_event_log", exc)
         raise
     else:
         conn.commit()
