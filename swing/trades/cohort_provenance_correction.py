@@ -2409,14 +2409,20 @@ def preview_cohort_provenance_correction(
             except BaseException as cleanup_error:  # noqa: BLE001
                 # R11-03 CONTAINMENT (22-A3 Task 3). See the idiom at
                 # `swing/trades/entry.py`.
+                # 22-F T-F9 (S8 item 8, A-2): MESSAGE TRUTH.  The message
+                # used to say "STILL OPEN" unconditionally; a rollback that
+                # TOOK EFFECT and then raised leaves the transaction CLOSED.
+                # It now reports what the connection says AFTER the failure.
+                still_open = conn.in_transaction
                 log_contained_note(
                     log, cleanup_error,
                     "22-A: the cohort-provenance PREVIEW could not create its "
                     "savepoint (%s) AND could not roll back the transaction it "
-                    "had just opened (%s). The transaction is STILL OPEN and "
-                    "this connection MUST BE DISCARDED rather than reused -- "
-                    "the next caller would inherit a transaction it did not "
-                    "open.", savepoint_error, cleanup_error)
+                    "had just opened (%s); in_transaction reads %s after the "
+                    "failed rollback; this connection MUST BE DISCARDED "
+                    "either way -- if the transaction is still open, the next "
+                    "caller would inherit a transaction it did not open.",
+                    savepoint_error, cleanup_error, still_open)
                 raise cleanup_error from savepoint_error
         else:
             # A CALLER-HELD TRANSACTION IS LEFT OPEN -- BUT THIS FUNCTION'S OWN
@@ -3552,14 +3558,18 @@ def read_provenance_corrections(
                 # R11-03 CONTAINMENT (22-A3 Task 4). This one runs on the
                 # reader's SUCCESS path too -- the read completed and only the
                 # unwind failed.
+                # 22-F T-F9 (S8 item 8, A-2): MESSAGE TRUTH -- the state is
+                # RE-READ after the failure, never assumed "STILL OPEN".
+                still_open = conn.in_transaction
                 log_contained_note(
                     log, cleanup_error,
                     "22-A: the cohort-provenance READER could not roll back "
-                    "the read transaction it opened (%s). It is STILL OPEN "
-                    "and this connection MUST BE DISCARDED rather than "
-                    "reused -- the next caller inherits a transaction it did "
-                    "not open, on a snapshot that no longer moves.",
-                    cleanup_error)
+                    "the read transaction it opened (%s); in_transaction "
+                    "reads %s after the failed rollback; this connection "
+                    "MUST BE DISCARDED either way -- if the transaction is "
+                    "still open, the next caller inherits a transaction it "
+                    "did not open, on a snapshot that no longer moves.",
+                    cleanup_error, still_open)
                 raise
     # The read transaction is released; only now does any git run.
     if not any(r.correction.admission_tier == PROVENANCE_ADMISSION_TIER_LATCH_TIER2
