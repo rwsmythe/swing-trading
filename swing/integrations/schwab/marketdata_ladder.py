@@ -65,6 +65,7 @@ from swing.integrations.schwab.client import (
     SchwabApiError,
     SchwabAuthError,
     SchwabRateLimitError,
+    SchwabSchemaParityError,
 )
 from swing.integrations.schwab.marketdata import (
     get_price_history,
@@ -334,11 +335,16 @@ def fetch_quote_via_ladder(
             environment="production",
             pipeline_run_id=pipeline_run_id,
         )
-    except (SchwabAuthError, SchwabRateLimitError, SchwabApiError) as exc:
+    # 22-F row 11: `SchwabSchemaParityError` is disjoint from
+    # `SchwabApiError`; before this it reached the broad clause below as an
+    # "unexpected error". `exc` is safe to log: both classes' `__str__` are
+    # engineered redacted (status + byte count; `_redact_message`).
+    except (SchwabAuthError, SchwabRateLimitError, SchwabApiError,
+            SchwabSchemaParityError) as exc:
         log.warning(
             "Schwab market-data quote fetch failed for %s "
-            "(%s); falling back to yfinance",
-            ticker, type(exc).__name__,
+            "(%s: %s); falling back to yfinance",
+            ticker, type(exc).__name__, exc,
         )
         entry = yfinance_fallback_fn(ticker)
         return (entry, "yfinance")
@@ -466,11 +472,13 @@ def fetch_window_via_ladder(
             environment="production",
             pipeline_run_id=pipeline_run_id,
         )
-    except (SchwabAuthError, SchwabRateLimitError, SchwabApiError) as exc:
+    # 22-F row 12: the same widening as row 11.
+    except (SchwabAuthError, SchwabRateLimitError, SchwabApiError,
+            SchwabSchemaParityError) as exc:
         log.warning(
-            "Schwab price_history failed for %s (%s); falling back to "
+            "Schwab price_history failed for %s (%s: %s); falling back to "
             "yfinance",
-            ticker, type(exc).__name__,
+            ticker, type(exc).__name__, exc,
         )
         window = yfinance_fallback_fn(ticker, start, end)
         _persist_window_to_archive(ticker, window, "yfinance", cache_dir)

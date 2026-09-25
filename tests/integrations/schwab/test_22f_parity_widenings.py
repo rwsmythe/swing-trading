@@ -97,6 +97,128 @@ def test_B2c_fetch_snapshot_belt_types_a_parity_escape(
     assert "Traceback" not in result.output
 
 
+def _b4_cfg():
+    """Production + ladder enabled so the ladder reaches its try; no
+    `cfg.paths` -> `_resolve_cache_dir` is None -> the archive write no-ops
+    (the `tests/integrations/schwab/test_ladder_catchall_observability.py`
+    world)."""
+    return SimpleNamespace(integrations=SimpleNamespace(schwab=SimpleNamespace(
+        environment="production", marketdata_ladder_enabled=True)))
+
+
+class _Snap:
+    """Stand-in yfinance quote entry."""
+
+
+class _Window:
+    """Stand-in yfinance window."""
+
+
+_LADDER_LOG = "swing.integrations.schwab.marketdata_ladder"
+
+
+def _ladder_records(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == _LADDER_LOG]
+
+
+def _drive_quote(monkeypatch, caplog, exc):
+    """`marketdata_ladder` binds `get_quotes_batch` by its module-level
+    import, so the module attribute is what the ladder resolves per call."""
+    import logging
+    import sqlite3
+
+    from swing.integrations.schwab import marketdata_ladder
+    planted = raising(exc)
+    monkeypatch.setattr(marketdata_ladder, "get_quotes_batch", planted)
+    snap = _Snap()
+    with caplog.at_level(logging.WARNING, logger=_LADDER_LOG):
+        entry, provider = marketdata_ladder.fetch_quote_via_ladder(
+            "AAPL", cfg=_b4_cfg(), schwab_client=object(),
+            yfinance_fallback_fn=lambda t: snap,
+            conn=sqlite3.connect(":memory:"), surface="pipeline",
+            pipeline_run_id=None)
+    assert planted.calls == 1  # did-it-fire
+    assert entry is snap and provider == "yfinance"
+    return _ladder_records(caplog)
+
+
+def _drive_window(monkeypatch, caplog, exc):
+    import logging
+    import sqlite3
+
+    from swing.integrations.schwab import marketdata_ladder
+    planted = raising(exc)
+    monkeypatch.setattr(marketdata_ladder, "get_price_history", planted)
+    window = _Window()
+    with caplog.at_level(logging.WARNING, logger=_LADDER_LOG):
+        got, provider = marketdata_ladder.fetch_window_via_ladder(
+            "AAPL", start=None, end=None, cfg=_b4_cfg(),
+            schwab_client=object(),
+            yfinance_fallback_fn=lambda t, s, e: window,
+            conn=sqlite3.connect(":memory:"), surface="pipeline",
+            pipeline_run_id=None)
+    assert planted.calls == 1  # did-it-fire
+    assert got is window and provider == "yfinance"
+    return _ladder_records(caplog)
+
+
+_QUOTE_PARITY = "<quotes: missing required key 'x'>"
+
+
+def test_B4a_quote_parity_reaches_the_named_clause_with_its_text(
+        monkeypatch, caplog):
+    """B4-a (row 11). PRE-FIX: the parity error falls to the broad
+    `except Exception` (`unexpected error from T-C.1 wrapper`).  POST-FIX:
+    the NAMED clause's record carries the type AND `str(exc)`; no
+    `unexpected error` record; the yfinance fallback is unchanged."""
+    recs = _drive_quote(monkeypatch, caplog,
+                        SchwabSchemaParityError(_QUOTE_PARITY))
+    named = [m for m in recs if "Schwab market-data quote fetch failed" in m]
+    assert len(named) == 1, recs
+    assert "SchwabSchemaParityError" in named[0]
+    assert _QUOTE_PARITY in named[0]
+    assert not any("unexpected error" in m for m in recs), recs
+
+
+def test_B4b_window_parity_reaches_the_named_clause_with_its_text(
+        monkeypatch, caplog):
+    """B4-b (row 12). Same shape for `fetch_window_via_ladder`."""
+    recs = _drive_window(monkeypatch, caplog,
+                         SchwabSchemaParityError(_QUOTE_PARITY))
+    named = [m for m in recs if "Schwab price_history failed" in m]
+    assert len(named) == 1, recs
+    assert "SchwabSchemaParityError" in named[0]
+    assert _QUOTE_PARITY in named[0]
+    assert not any("unexpected error" in m for m in recs), recs
+
+
+def test_B4c_api_error_named_clause_now_carries_the_redacted_text(
+        monkeypatch, caplog):
+    """B4-c. `SchwabApiError(500, "x")` on each: the named clause both trees
+    (fallback unchanged); POST-FIX its record also carries the error's
+    engineered-redacted `__str__`."""
+    from swing.integrations.schwab.client import SchwabApiError
+    want = "SchwabApiError(status=500, body=<1 bytes>)"
+    q = _drive_quote(monkeypatch, caplog, SchwabApiError(500, "x"))
+    assert any("Schwab market-data quote fetch failed" in m and want in m
+               for m in q), q
+    caplog.clear()
+    w = _drive_window(monkeypatch, caplog, SchwabApiError(500, "x"))
+    assert any("Schwab price_history failed" in m and want in m
+               for m in w), w
+
+
+def test_B4d_control_runtime_error_still_the_broad_clause(
+        monkeypatch, caplog):
+    """B4-d CONTROL: a planted `RuntimeError("boom")` reaches the broad
+    clause on both trees."""
+    q = _drive_quote(monkeypatch, caplog, RuntimeError("boom"))
+    assert any("unexpected error" in m and "boom" in m for m in q), q
+    caplog.clear()
+    w = _drive_window(monkeypatch, caplog, RuntimeError("boom"))
+    assert any("unexpected error" in m and "boom" in m for m in w), w
+
+
 def test_B2d_fetch_orders_belt_types_a_parity_escape(
         isolated_db, invoke_cli, monkeypatch):
     """B2-d (row 6). PRE-FIX: traceback.  POST-FIX: exit 1,
