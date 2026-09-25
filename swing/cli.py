@@ -448,6 +448,10 @@ def db_migrate(ctx: click.Context) -> None:
                 "before relying on this migration."
             )
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+    # 22-F R2-01: durable iff THIS invocation moved the version (a fresh DB
+    # reads pre_version 0).  Bound from the file's own report, never from
+    # reaching the tail.
+    migrated = version > pre_version
     if pre_version <= 16 and version >= 17:
         # First-time v17 landing: ratify the migration's hard-coded seed
         # against cfg.{risk.max_risk_pct, position_limits.hard_cap_open,
@@ -479,8 +483,10 @@ def db_migrate(ctx: click.Context) -> None:
                     f"policy_id={ratified_id}."
                 )
         except Exception as exc:
-            conn.close()
-            raise click.ClickException(
+            # 22-F R2-01 (CHARC, census C2-21): the refusal is constructed
+            # FIRST and held as the pending refusal, so a close failure is
+            # named in it and CHAINED (S-R8) -- it can never replace it.
+            ratify_refusal = click.ClickException(
                 f"Phase 9 seed ratification failed: {ascii_safe(str(exc))}. The DB is at "
                 f"v17 but the active policy seed may not match your "
                 f"effective swing.config.toml + user-config.toml values. "
@@ -493,8 +499,16 @@ def db_migrate(ctx: click.Context) -> None:
                 f"capital_floor_constant_dollars, max_concurrent_positions, "
                 f"review_lag_threshold_days, max_account_risk_per_trade_pct."
                 + (f" ALSO: {gate_alarm}" if gate_alarm else "")
-            ) from exc
-    conn.close()
+            )
+            _close_after_writes(conn, durable=migrated,
+                                pending_refusal=ratify_refusal)
+            raise ratify_refusal from exc
+    # 22-F R2-01 (CHARC, census C2-21 "the close ... runner-wide"): the final
+    # close after a migration this invocation APPLIED is the durable branch
+    # (a close failure -> the WARN, the echo below, exit 0).  `migrated` is
+    # the version read above against the pre-snoop -- nothing migrated (already
+    # at HEAD) keeps the pre-arc bare close (the nothing-durable branch, R1-05).
+    _close_after_writes(conn, durable=migrated, pending_refusal=None)
     click.echo(f"DB at {db_path} - schema version {version}")
     if gate_alarm is not None:
         raise click.ClickException(gate_alarm)

@@ -1112,8 +1112,30 @@ def ensure_schema(
         run_migrations(
             conn, target_version=EXPECTED_SCHEMA_VERSION, backup_dir=backup_dir,
         )
-    except Exception:
-        conn.close()
+    except Exception as migration_error:
+        # 22-F R2-08(b) (CHARC, census C2-21 "the close"): nothing durable is
+        # claimed here; the MIGRATION's error propagates.  A failing close is
+        # logged against it (the S-D39 cleanup shape), never raised in its
+        # place; an interrupt from the close is logged and re-raised CHAINED
+        # from it (the R2 class ruling: never swallowed, never retyped).
+        try:
+            conn.close()
+        except Exception as close_error:  # noqa: BLE001 -- contained
+            from swing.trades.entry import log_contained_note
+            log_contained_note(
+                log, migration_error,
+                "22-F R2-08(b): the migration failed (%s); closing its "
+                "connection afterwards ALSO failed (%s); the migration's "
+                "error propagates.", migration_error, close_error)
+        except BaseException as close_interrupt:
+            from swing.trades.entry import log_contained_note
+            log_contained_note(
+                log, close_interrupt,
+                "22-F R2-08(b): the migration failed (%s); closing its "
+                "connection was interrupted (%s); the interrupt propagates, "
+                "chained from the migration's error.",
+                migration_error, type(close_interrupt).__name__)
+            raise close_interrupt from migration_error
         raise
     return conn
 
