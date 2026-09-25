@@ -108,10 +108,25 @@ def test_F2_twin_interrupt_rolls_back(cli_workspace, monkeypatch):
     assert _back_link(db_path, call_id) is None
 
 
-def test_F2_single_failure_write_error_reraised(cli_workspace, monkeypatch,
-                                                caplog):
-    """PIN (both trees): the write fails, the rollback works -> the write
-    error escapes, no record."""
+def _corrections(db_path, did) -> list[int]:
+    c = sqlite3.connect(db_path)
+    try:
+        return [r[0] for r in c.execute(
+            "SELECT correction_id FROM reconciliation_corrections "
+            "WHERE discrepancy_id = ? ORDER BY correction_id", (did,))]
+    finally:
+        c.close()
+
+
+def test_F2_single_failure_names_the_recorded_correction(
+        cli_workspace, monkeypatch, caplog):
+    """R1-01 (CHARC-ruled; SUPERSEDES the T-F2 single-failure PIN, which
+    asserted the bare write error escaping).  The write fails, the rollback
+    works.  PRE-FIX: the bare `raise` -- a traceback that says nothing about
+    the correction the tier-2 resolution already COMMITTED.  POST-FIX: a
+    typed refusal, exit 1, naming the correction id and "IS recorded" and
+    the back-link's failure; a fresh read shows the correction row; no
+    MUST-BE-DISCARDED record."""
     runner, cfg, db_path = cli_workspace
     did, call_id = _world(db_path)
     built = patch_conn_opener(
@@ -120,10 +135,40 @@ def test_F2_single_failure_write_error_reraised(cli_workspace, monkeypatch,
     with caplog.at_level(logging.ERROR):
         r = _invoke(runner, cfg, did, call_id)
     assert _failed(built) == 1
-    assert "planted on UPDATE" in str(r.exception)
+    rows = _corrections(db_path, did)
+    assert len(rows) == 1
+    assert isinstance(r.exception, SystemExit), (type(r.exception), r.output)
+    assert r.exit_code == 1
+    assert "Traceback" not in r.output
+    assert (f"correction {rows[0]} IS recorded; the schwab_api_calls "
+            f"back-link to call {call_id} failed") in r.output
+    assert "planted on UPDATE" in r.output
+    assert r.output.isascii()
     assert not [x for x in caplog.records
                 if "MUST BE DISCARDED" in x.getMessage()]
     assert _back_link(db_path, call_id) is None
+
+
+def test_F2_single_failure_then_retry_is_idempotent_control(
+        cli_workspace, monkeypatch):
+    """R1-01 CONTROL: after the planted back-link failure, a retry reaches
+    `apply_tier2_resolution`'s terminal-state idempotent return -- NO second
+    correction row -- and this time links the call."""
+    runner, cfg, db_path = cli_workspace
+    did, call_id = _world(db_path)
+    built = patch_conn_opener(
+        monkeypatch, "swing.data.db.connect",
+        lambda real: FailingVerbsConn(real, fail_sql_prefix=_UPDATE))
+    first = _invoke(runner, cfg, did, call_id)
+    assert _failed(built) == 1
+    assert first.exit_code == 1
+    rows = _corrections(db_path, did)
+    assert len(rows) == 1
+    monkeypatch.undo()
+    retry = _invoke(runner, cfg, did, call_id)
+    assert retry.exit_code == 0, retry.output
+    assert _corrections(db_path, did) == rows
+    assert _back_link(db_path, call_id) == rows[0]
 
 
 def test_F2_control_backlink_commits(cli_workspace, monkeypatch):

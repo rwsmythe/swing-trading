@@ -4892,7 +4892,17 @@ def discrepancy_resolve_ambiguity_cmd(
                                 result.correction_id, link_error,
                                 cleanup_error, conn.in_transaction)
                             raise cleanup_error from link_error
-                    raise
+                    if not isinstance(link_error, Exception):
+                        # An interrupt stays an interrupt.
+                        raise
+                    # 22-F R1-01 (CHARC-ruled): the tier-2 correction is
+                    # already COMMITTED -- the refusal names it (exit 1
+                    # stays: the back-link is a real failure).
+                    raise click.ClickException(ascii_safe(
+                        f"correction {result.correction_id} IS recorded; "
+                        f"the schwab_api_calls back-link to call "
+                        f"{schwab_api_call_id} failed: {link_error}"
+                    )) from link_error
         except CallerHeldTransactionError as e:
             # Should not happen in the CLI path (connection is fresh) —
             # surface as a friendly error rather than a stack trace.
