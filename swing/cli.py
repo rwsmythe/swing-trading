@@ -1004,13 +1004,31 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
         finally:
             # THE DURABILITY BOUNDARY IS THE BINDING OF `result`. Before the
             # durable fact exists an error is the honest answer, so
-            # `result is None` RE-RAISES and every pre-existing refusal path
-            # is byte-unchanged. After it exists, an error is a wrong answer
-            # in the expensive direction.
+            # `result is None` RE-RAISES (a typed refusal in flight is kept
+            # and the close failure chained to it, 22-F T-F11 below). After
+            # it exists, an error is a wrong answer in the expensive
+            # direction.
+            #
+            # 22-F T-F11 (C2-22, S-R8 = RULING R8): the exception IN FLIGHT
+            # (if any) is read BEFORE the close, so what `close()` does
+            # internally cannot change which refusal is named below.
+            _in_flight = _sys.exc_info()[1]
             try:
                 conn.close()
             except BaseException as exc:  # noqa: BLE001 -- the CLASS
                 if result is None:
+                    # A TYPED REFUSAL SURVIVES A CLOSE FAILURE: raise it with
+                    # the close error NAMED and CHAINED, never let the close
+                    # exception mask it (RULING R8's shape, as `trade
+                    # assign-intent` does).  Nothing is durable on this
+                    # branch.  Any other in-flight error keeps today's
+                    # behaviour (the close error, the original as context).
+                    if isinstance(_in_flight, click.ClickException):
+                        raise click.ClickException(
+                            f"{ascii_safe(_in_flight.format_message())}; "
+                            f"the connection close also failed: "
+                            f"{safe_text(exc)}"
+                        ) from exc
                     raise
                 # AND IT IS RECORDED DURABLY, NOT ONLY PRINTED (Codex
                 # A3-AR-05): CLI output is not retained, so without this the

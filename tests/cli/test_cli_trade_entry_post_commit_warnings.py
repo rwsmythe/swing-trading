@@ -252,18 +252,22 @@ def test_c2_a_close_failure_after_a_durable_entry_keeps_exit_0(
     assert "close failed" in result.stderr
 
 
-def test_c2_control_a_REFUSAL_propagates_the_EXACT_close_exception(
+def test_c2_control_a_REFUSAL_keeps_its_text_and_names_the_close_failure(
         tmp_path, monkeypatch):
-    """THE CONTROL MUST ASSERT THE IDENTITY OF WHAT ESCAPES -- "still fails"
-    does NOT discriminate on this surface.
+    """THE CONTROL MUST ASSERT WHAT ESCAPES -- "still fails" does NOT
+    discriminate on this surface.
 
-    A duplicate-ticker invocation through the same proxy exits non-zero under
-    BOTH a correct conditional containment (the close error replaces the
-    duplicate error) AND an incorrect unconditional one (the duplicate
-    `ClickException` reaches Click's own top-level handling and `CliRunner`
-    surfaces a `SystemExit(1)`).  `SystemExit` is not
-    `sqlite3.OperationalError`, so the exact-class assertion is what makes
-    this control work.
+    SUPERSEDED BY REPLACEMENT (22-F T-F11, C2-22, RULING R8 applied to this
+    command by the accepted 22-F plan): this control used to pin that the
+    close failure propagates UNCHANGED on a refusal, i.e. that the close
+    error REPLACES the refusal.  That was the defect T-F11 closes -- the
+    operator never heard why the entry was refused.  Now the refusal's text
+    SURVIVES with the close failure NAMED (and chained, asserted in
+    `tests/cli/test_22f_t_f11_entry_close_refusal.py`).
+
+    It still discriminates the incorrect UNCONDITIONAL containment it was
+    written against: swallowing the close failure would leave the refusal
+    text alone, without the close failure named.
     """
     runner, cfg = _setup(tmp_path)
 
@@ -274,10 +278,9 @@ def test_c2_control_a_REFUSAL_propagates_the_EXACT_close_exception(
     second = runner.invoke(main, _entry_argv(cfg))
 
     assert second.exit_code != 0
-    assert type(second.exception) is sqlite3.OperationalError, (
-        f"a refusal has no durable result to protect, so the close failure "
-        f"must propagate UNCHANGED; got {second.exception!r}")
-    assert "close failed" in str(second.exception)
+    assert "Already an open position in AAPL" in second.output, second.output
+    assert "the connection close also failed" in second.output
+    assert "close failed" in second.output
     assert len(_trade_rows(cfg)) == 1
 
 
