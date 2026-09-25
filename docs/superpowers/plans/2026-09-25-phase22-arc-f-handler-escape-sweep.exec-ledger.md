@@ -712,3 +712,22 @@ Record every site it reads. Fix under the rulings above anything that falls insi
 - **(c) SPLIT.** (b) for the refusal branch only (the retype is what the rule's letter forbids, and there IS an in-flight error there); (a) for the durable branch.
 
 **Where the cell stopped.** The Round 2 fixes and the in-ruling sweep fixes are committed; the ledger is committed. NOT run: the census line-pin re-anchor, the pre-R3 full fast suite, and Reviewer A Round 3 -- they follow the ruling (a Round 3 on a helper that the ruling may change would review a moving artifact).
+
+### STOP-6 gate -- ORCHESTRATOR dispositions (2026-09-25)
+
+**QA on disk:**
+- `22-f-exec` @ `ec61d42a`. Commits `13dd003b`..`ec61d42a` are all present, the tree is clean, and `%(trailers)` is empty over `704ac133..HEAD`.
+- **Depth:** cell 10 measured `cell_depth --agent` 382,342. The next work goes to a FRESH cell 11 off this ledger.
+- **The STOP-6 fact holds against the code:**
+  - `swing/cli.py:_close_after_writes` catches `BaseException`. With a refusal pending, it raises a `ClickException` from the close error. When durable, it returns normally after the WARN.
+  - `swing/web/routes/__init__.py:close_after_commit` catches `BaseException`. Its docstring says "NEVER raises -- an interrupt at the close included".
+  - The helpers were designed this way on purpose, so this is a conflict between the Round 2 class ruling and T-G0's design. It is not a slip in cell 10's fixes.
+
+| item | orchestrator disposition |
+|---|---|
+| STOP-6 (SS-9) | **ROUTED to CHARC** as branches (a) / (b) / (c) above. Orchestrator view, for CHARC to take or leave: the class rule's own words ("logged against the IN-FLIGHT error") give the durable branch no in-flight error to chain from. The letter is broken only in the refusal branch, where the interrupt becomes text. That reads as (c). This is CHARC's ruling. |
+| SS-15 / R2-01 reading (`durable = migrated`, not the literal `True`) | **ROUTED to CHARC in the same packet.** The ruling text says `durable=True` at both tail closes. The cell encoded `version > pre_version`, which differs only on a `db-migrate` already at HEAD, where the literal would print "the write IS recorded" over a no-op (CHARC's own R1-05 class). There is a test pinning it. It is a one-token change either way. |
+| SS-5 (an interrupt in R1-03's witness QUERY; the witness connection left unclosed) | **ACCEPTED as not in the class**: a query is not a cleanup statement. Nothing is swallowed or retyped, and AL-11 covers the skipped tail. Listed to CHARC as information, not as an item. |
+| `test_phase8_pipeline_second_same_day_run_upserts` (`swing.pipeline has no attribute runner` in monkeypatch setup, under xdist; passes alone with `-n 0`) | **WATCH at the pre-R3 suite.** Reproduce with `-n 0` FIRST. A red there on the full run is investigated, not waved through. |
+
+**Held pending the ruling:** the census line-pin re-anchor, the pre-R3 full fast suite, and Reviewer A Round 3. The Round 3 written authorization above STANDS unchanged. Its prompt adds STOP-6 as ruled and the SS rows.
