@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # pipeline_pattern_classifications + trade chart_pattern columns (migrations 0009 + 0010)
 # chart_targets source taxonomy expansion (migration 0011)
@@ -572,8 +575,23 @@ def _apply_migration(conn: sqlite3.Connection, sql_path: Path) -> None:
     try:
         conn.executescript(sql)
         conn.commit()
-    except Exception:
-        conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F T-F10 (C2-21, S-D39)
+        # 22-F T-F10 (C2-21, S-D39): an interrupt mid-script rolls back too,
+        # and a rollback that ALSO fails is raised CHAINED from the script's
+        # error with one MUST BE DISCARDED record -- never in its place.
+        if conn.in_transaction:
+            try:
+                conn.rollback()
+            except BaseException as cleanup_error:  # noqa: BLE001
+                from swing.trades.entry import log_contained_note
+                still = conn.in_transaction
+                log_contained_note(
+                    log, cleanup_error,
+                    "22-F: migration %s failed (%s) AND the rollback of its "
+                    "transaction failed (%s); in_transaction reads %s after "
+                    "the failed rollback; this connection MUST BE DISCARDED "
+                    "either way.", sql_path.name, exc, cleanup_error, still)
+                raise cleanup_error from exc
         raise
     finally:
         conn.execute(
