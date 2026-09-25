@@ -117,6 +117,26 @@ Author: RD (seat `swing-rd-20260924-2100`). Courier: the orchestrator. Text of r
 
 **Encoding (cell 3):** item 1 -> the T-C2 row's D-10 text replaced (not annotated); no code change, T-C2 stands. Item 2 is CHARC's register row; not fixed here. At G2/G3 a red in either named test is reproduced isolated with `-n 0` FIRST and reported.
 
+#### STOP-2 -- RULED by CHARC (seat `swing-charc-20260924-1903`), 2026-09-25 16:22Z; courier: the orchestrator. Text of record: `comms/orchestrator/read/20260925T162234Z-charc-22-f-stop-2-ruled-a-text-names-restore-1.md` (body below the front-matter, verbatim)
+
+> CHARC RULING -- 22-F STOP-2 (mail 20260925T162108Z). PRIMARY: CHARC. Parts E/F/G PROCEED in parallel now; T-D5 resumes on this text. Courier: the orchestrator, block quote into the exec ledger.
+>
+> READ at this seat on main: trades/risk_policy.py:138-142 raises a plain RuntimeError("No active risk_policy row -- schema corrupted or seed missing") inside supersede_active_policy; seed_initial_policy (:383) has ZERO callers outside its own docstrings (grep -rn seed_initial_policy swing/ = the definition, two docstring lines, and a log string); data/repos/risk_policy.py:28 defines NoActivePolicyError(RuntimeError) -- a RuntimeError SUBCLASS -- caught today at cli_config.py:164/:242, routes/config.py:154/:236, view_models/dashboard.py:1630 and three sites inside trades/risk_policy.py. Matches your facts.
+>
+> RULING: BRANCH (a), with the side fact taken as a 22-F ROW under a guard-and-handler edit that is inside the bound.
+>
+> 1. THE REFUSAL TEXT names the real condition and the recovery that EXISTS, and no command that does not. Text (ASCII): "No active risk_policy row: the policy table is corrupted or unseeded. Recover by restoring ~/swing-data/swing.db from a gate image in ~/swing-data/backups/ (see the migration ledger), or by a hand repair under the operator's own sitting. No swing command creates a policy." T-D5's web 503 handler and CLI ClickException ship as planned with that text; step 0 is re-run against the TEXT'S claim instead of a command: the test asserts the message contains no "swing " command string, which is the D35 pin (a refusal must not name an action that fails).
+>
+> 2. (b) REFUSED for 22-F -- BANKED for my register. A `config policy seed` command is NEW operator behaviour creating a row on a money-bearing table; section 0.3 forbids it without a grant and I do not grant it inside a handler-escape sweep. The register row is the real finding: seed_initial_policy's docstring promises a "repair path" that nobody wired -- a #31-class comment (a seam promising future inheritance), with the operator-facing consequence that a no-active-policy DB is unrepairable except by restore. Whether a seed command should exist is RD's lane (policy creation) and its own small arc if he wants it.
+>
+> 3. (c) REFUSED. Auto-seeding inside supersede_active_policy changes the semantics of a money-bearing write; outside the bound, and a silent repair on a corrupted table is the wrong direction for this project.
+>
+> 4. THE SIDE FACT -- a 22-F ROW, IN BOUNDS: the raise at trades/risk_policy.py:139-141 is RETYPED from RuntimeError to repo.NoActivePolicyError with the message made ASCII. This is a typed-translation edit on a file in the F-F6 list, exactly the guard-and-handler class; NoActivePolicyError already subclasses RuntimeError, so every existing RuntimeError catcher keeps catching it (the cell READS the six writer roots' handler tuples -- cli_config.py:175/:253/:471/:540, routes/config.py:171/:247 -- and records that none narrows; :550/:552 catch CallerHeld* and ValueError only, as you read). With that, F-F4 (3)'s CONVERT reaches the writers through the SAME T-D5 boundary (the app-level 503 on the web; the per-root ClickException on the CLI), and T-D5's closure enumerates supersede_active_policy's callers beside get_active_policy's -- that is "on every root that reaches it" made literal. Discriminators, on a raw-zeroed temp DB: each of the six writers -> typed refusal (503 / exit 1 with the text above), NOTHING written, and zero active rows AFTERWARD (pins that no branch auto-seeds); the R45 precedence pin (routes/config.py:154/:236 keep their local handling) stays.
+>
+> Sequencing: E/F/G do not depend on T-D5; proceed. T-D5 lands after them or before, the cell's call. STOP conditions unchanged.
+
+**Encoding (cell 4):** branch (a). T-D5 executes on items 1 and 4 as its spec; (b) and (c) are refused -- no seed command, no auto-seed. Sequencing (the cell's call per the ruling): T-D5 is executed NOW, before Part E. **Recorded deviation (orchestrator-authorized):** cell 4's order is T-D5 (on this ruling), then Part E, Part F, Part G, against plan section 12's Part D -> Part E order; the only change is that Part E would have started while T-D5 was held.
+
 ## Findings for CHARC's register (FND-1..FND-4)
 
 (Filled as the executing tasks reach them.)
