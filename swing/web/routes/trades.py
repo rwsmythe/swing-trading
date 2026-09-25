@@ -3751,7 +3751,11 @@ def cadence_complete_post(
 
     from fastapi.responses import Response
 
-    from swing.data.repos.review_log import complete_review_atomic, get
+    from swing.data.repos.review_log import (
+        ReviewAlreadyCompletedError,
+        complete_review_atomic,
+        get,
+    )
     from swing.trades.review import (
         get_period_cohort_health_deltas,
         get_period_lessons_summary,
@@ -3800,14 +3804,24 @@ def cadence_complete_post(
         # ``... or None`` per Phase 6 deviation #3 CLAUDE.md gotcha —
         # nullable JSON column rejects empty string under future
         # validation; persist NULL when no auto-fill keys produced.
-        complete_review_atomic(
-            conn, review_id=review_id,
-            completed_date=_date.today().isoformat(),
-            duration_minutes=duration_minutes,
-            primary_lesson=primary_lesson,
-            next_period_focus=next_period_focus,
-            auto_populated_field_keys_json=audit_envelope or None,
-        )
+        # 22-I Codex R1 Major 1 (CHARC-ruled): the pre-check above reads
+        # OUTSIDE the service's BEGIN IMMEDIATE, so a concurrent completion
+        # can land between it and this call; the service twin's SELECT-first
+        # refusal is translated to the same 409, never a 500.
+        try:
+            complete_review_atomic(
+                conn, review_id=review_id,
+                completed_date=_date.today().isoformat(),
+                duration_minutes=duration_minutes,
+                primary_lesson=primary_lesson,
+                next_period_focus=next_period_focus,
+                auto_populated_field_keys_json=audit_envelope or None,
+            )
+        except ReviewAlreadyCompletedError:
+            raise HTTPException(
+                status_code=409,
+                detail="Review already completed",
+            ) from None
     finally:
         conn.close()
     # 204 + HX-Redirect to dashboard so cadence card flips to "completed":
