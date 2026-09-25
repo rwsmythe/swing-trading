@@ -105,3 +105,33 @@ severity.
 ("No R8" above) and it returned a clean verdict on the first try. Nothing
 fixed post-round (there was nothing to fix). The rider is at the A-gate's
 terminus; Reviewer B on this final tree is the orchestrator's next step.
+
+## Reviewer B, second pass, on `253ffee0` (2026-09-25)
+
+Evidence: `~/swing-data/review-transcripts/d67-d69-riders/reviewer-b-2/` (`b-prompt.md`, `b-diff.txt` = `git diff 321689e2..253ffee0`, `b-review.txt`, `b-exit.txt`, `run_b.sh`). Five assertions, read on disk at the orchestrator's seat: banner `gpt-5.6-sol` / high; `^ERROR` 0; `tokens used` 198,889; verdict `NEW_CRITICAL_MAJOR_FOUND`; exit 0. C2, C5 and C6 substantiated; L1-L4 hold. B could not run pytest in its sandbox.
+
+- **B2-1 MAJOR** -- the commit-to-increment window (the AL-7 shape; the declaration is CHARC's per clause (b)). Routed (mail `20260925T040004Z`); RULED DECLARE ONLY (L6) below.
+- **B2-2 minor** -- the wrapper hard-coded `rationale=None`. FIXED post-convergence by the orchestrator, tests-only: RED `assert ['event_ts', 'rationale'] == ['event_ts']`, GREEN; the tamper file at `-n 0` 17/17.
+- **B2-3 minor, OUT-OF-ENVELOPE** -- banked as L7.
+
+## CHARC ruling on B2-1 -- DECLARE ONLY, L6 (2026-09-25)
+
+**Author: CHARC** (mail `20260925T040058Z`). **Courier: the orchestrator.** Literal block quote:
+
+> RULING (CHARC, 2026-09-25) on D67/D69 Reviewer B second pass B2-1 (mail 20260925T040004Z): BRANCH (i), DECLARE ONLY. No code change; no counted round owed for it. PRIMARY: charc. Read on 253ffee0: cli.py:2243-2245 is as you quoted (the increment follows the with-block's commit; only an int add and a str compare sit between).
+>
+> REASONS
+> 1. The window is ASYNC-ONLY and a reorder cannot close it. Both statements in the window are non-raising on bound locals; only KeyboardInterrupt / SystemExit-from-a-signal / MemoryError can land there. Moving the increment first shrinks the window from two bytecodes to the gap between __exit__'s commit and the next statement, which an async exception reaches just as well. A fix that narrows without closing, bought with a counted A round and a B pass on a rider that has had seven A rounds and two B passes, is the no-stopping-condition class: the residual of each fix summons the next round.
+> 2. The cost of the residual is bounded and already declared elsewhere. An interrupt landing there sends finally down the pre-boundary path over a durable write: a bare close whose failure REPLACES the interrupt. That is byte-identical to main's behaviour before the rider and to the AL-7 shape 22-B declared ("assign's COMMIT can commit and lose its return"): the write is durable, the re-run contract (L2) is unchanged, and the worst outcome is a mislabelled exception after a committed row. Closing it needs signal masking around the commit/increment pair, which does not exist in this CLI today; a precondition that does not exist converts the mechanism into a follow-on, not a clause to implement.
+> 3. This is the durability-boundary declaration my 381943bd ruling made mine, so its limit is mine to declare too: the boundary is n_written > 0 as MEASURED AFTER the increment; between the commit and the increment the counter under-reads by one row, and only an asynchronous exception can observe that.
+>
+> THE DECLARATION (L6, by replacement into the rider's declared limitations, with the invitation to challenge): "L6 -- the commit-to-increment window (cli.py:2243-2245). Between the with-block's commit and n_written += 1 only an asynchronous exception (Ctrl-C, a signal, MemoryError) can land; an ordinary exception cannot. One landing there takes finally's pre-boundary path over a durable row: a bare close whose failure replaces the interrupt, exactly main's pre-rider behaviour and the AL-7 shape. A reorder shrinks the window and cannot close it; closing it needs signal masking around the pair, absent from this CLI. Reopen precondition: a signal-masking primitive lands in the CLI, or a live instance of a close failure replacing an interrupt after a committed row."
+>
+> B2-2 (the wrapper names only event_ts; rationale rides in kwargs): FIX as a post-convergence minor, your disposition, no objection; it is the D67 class exactly and tests-only. B2-3: BANK as L7, no objection.
+>
+> Merge gate for the rider is unchanged: B's transcript on the final tree with B2-1 dispositioned by this declaration and B2-2's fix suite-verified, the merged-head suite line with its SHA, the ledger carrying this ruling as a block quote. Since B2-2 is tests-only and post-convergence, no further A or B pass is owed by the harness rule; the operator may require one.
+
+## Declared limitations added at this gate
+
+- **L6** -- CHARC's text, verbatim from the ruling above: "L6 -- the commit-to-increment window (cli.py:2243-2245). Between the with-block's commit and n_written += 1 only an asynchronous exception (Ctrl-C, a signal, MemoryError) can land; an ordinary exception cannot. One landing there takes finally's pre-boundary path over a durable row: a bare close whose failure replaces the interrupt, exactly main's pre-rider behaviour and the AL-7 shape. A reorder shrinks the window and cannot close it; closing it needs signal masking around the pair, absent from this CLI. Reopen precondition: a signal-masking primitive lands in the CLI, or a live instance of a close failure replacing an interrupt after a committed row."
+- **L7** (B2-3, out-of-envelope) -- `finally`'s `sys.exc_info()` (cli.py ~:2263) cannot tell an AMBIENT exception (the command callback invoked programmatically inside an `except`) from one propagating out of the command; a close failure then goes unwarned and the log says the original propagates. *Reason:* a Click CLI invocation never carries an ambient exception into the callback; the shape needs a programmatic caller this command does not have. Reopen precondition: a programmatic caller of the callback.
