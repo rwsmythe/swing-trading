@@ -186,7 +186,10 @@ END;
 --    no_delete, and the conflict-scoped no_replace (the PK clause, plus each
 --    UNIQUE key the table declares). No production UPDATE or DELETE reaches any
 --    of them (plan ledger STEP 3 grep, re-read at 22-I executing round 0).
---    candidate_criteria's PK is composite, so it carries no -1 clause.
+--    candidate_criteria's composite PK HIDES its rowid (the table is not
+--    WITHOUT ROWID), so its no_replace carries the hidden-rowid clause
+--    (NEW.rowid != -1 AND rowid = NEW.rowid) AND the composite-key clause
+--    (Reviewer B B-1, CHARC ruling 2026-09-25).
 -- ============================================================================
 CREATE TRIGGER trg_pfo_no_update BEFORE UPDATE ON pattern_forward_observations
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pfo_no_update: pattern_forward_observations rows are IMMUTABLE from migration 0041; the forward-observation log is the shadow program measurement substrate (RD F-I1 row 1). A row is APPENDED, never edited. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
@@ -208,7 +211,8 @@ BEGIN SELECT RAISE(ABORT, '22-I barrier trg_cc_no_delete: candidate_criteria row
 
 CREATE TRIGGER trg_cc_no_replace BEFORE INSERT ON candidate_criteria
 WHEN COALESCE(EXISTS (SELECT 1 FROM candidate_criteria
-              WHERE (candidate_id = NEW.candidate_id AND criterion_name = NEW.criterion_name)), 0)
+              WHERE (NEW.rowid != -1 AND rowid = NEW.rowid)
+                 OR (candidate_id = NEW.candidate_id AND criterion_name = NEW.criterion_name)), 0)
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_cc_no_replace: candidate_criteria rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_cc_no_delete and reissue or move its id; a fire''s criteria are the evidence of WHY a mandate fired (RD F-I1 row 3). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 CREATE TRIGGER trg_te_no_update BEFORE UPDATE ON trade_events

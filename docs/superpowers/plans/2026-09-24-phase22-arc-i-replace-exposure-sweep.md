@@ -10,7 +10,7 @@
 
 1. `0041` is `CREATE TRIGGER` only, plus exactly ONE `DROP TRIGGER` + `CREATE TRIGGER` (`trg_provenance_corrections_append_only_update`). No table, index, view, column, or row is created, altered, rebuilt or written, apart from `schema_version` 40 → 41.
 2. Every `WHEN` clause `0041` writes is wrapped in `COALESCE(<predicate>, 0)`: `WHEN NOT COALESCE(<admitted>, 0)` for update twins, and `WHEN COALESCE(EXISTS (...), 0)` for conflict barriers. A barrier with no `WHEN` (the plain `no_delete`, the blanket `no_update`, the `UPDATE OF` twin) has no NULL hazard.
-3. Every PK clause in a `no_replace` reads `(NEW.<pk> != -1 AND <pk> = NEW.<pk>)` (the 0037 idiom). `candidate_criteria` has a composite PK and gets no `-1` clause. No `CHECK (pk > 0)` is added, because no table is new (AL-1).
+3. Every PK clause in a `no_replace` reads `(NEW.<pk> != -1 AND <pk> = NEW.<pk>)` (the 0037 idiom). Every ROWID table gets the rowid clause, aliased (`NEW.<pk> != -1 AND <pk> = NEW.<pk>`) or hidden (`NEW.rowid != -1 AND rowid = NEW.rowid`); candidate_criteria's composite PK HIDES its rowid and carries both the rowid clause and the composite-key clause. A table is exempt from the rowid clause only if it is WITHOUT ROWID. Census method: PRAGMA table_info plus the CREATE text, every guarded table. *(Amended by replacement per CHARC's B-1 ruling, 2026-09-25; the superseded sentence said the composite PK gets no `-1` clause.)* No `CHECK (pk > 0)` is added, because no table is new (AL-1).
 4. Every update comparison is `IS` / `IS NOT` (never `=`); every parent-existence test is `NOT EXISTS` (never NULL). **The one exception is F-I2** (Codex R1 Minor 3): the rebuilt `trg_provenance_corrections_append_only_update` keeps the v40 body verbatim by ruling, including its 31 `NEW.c = OLD.c` terms. That is safe because 30 of the compared columns are `NOT NULL` (e.g. `0036:60`, `0036:67`, `0036:149`; measured by `PRAGMA table_info` on a fresh v41 DB), and the 31st, `provenance_correction_id`, is the rowid alias (`INTEGER PRIMARY KEY AUTOINCREMENT`, `0036:24`). So no OLD-side term can be NULL, and a NULL arising from a NEW value is turned into a refusal by the outer `COALESCE`. Every comparison that 0041 itself writes uses `IS` / `IS NOT`.
 5. No barrier is narrowed to admit a writer. A writer a barrier would abort is adjusted under F-I3 (ruled), or its row returns to the ruler. Ruled writer changes in 22-I: ONE F-I3 adjustment (`review_log.insert_pre_create`) and ONE service-twin refusal (`complete_review_atomic`, the CLI boundary). There are no others; brief §2.6 was amended by CHARC @ `a83df9d3` (ledger "STEP-3 RULINGS").
 6. `EXPECTED_SCHEMA_VERSION = 41`; one gate row `BackupGateSpec(40, "22i", PHASE22_ARC_I_PRE_MIGRATION_EXPECTED_TABLES, "_phase22_arc_i_backup_gate", "pre-22-I")`.
@@ -40,7 +40,7 @@ Abbreviations are used in trigger names: `trg_<abbr>_no_update`, `trg_<abbr>_no_
 |---|---|---|---|
 | `pattern_forward_observations` (`pfo`) | `observation_id` | `detection_id = NEW.detection_id AND observation_date = NEW.observation_date` | blanket (no `WHEN`) |
 | `pattern_detection_events` (`pde`) | `detection_id` | `source = NEW.source AND ticker = NEW.ticker AND detection_date = NEW.detection_date AND pattern_class = NEW.pattern_class` | **a17 twin-shaped** (below) |
-| `candidate_criteria` (`cc`) | composite `(candidate_id, criterion_name)` | the PK equality only (no `-1` clause) | blanket |
+| `candidate_criteria` (`cc`) | composite `(candidate_id, criterion_name)`; the composite PK HIDES the rowid | the hidden-rowid clause `(NEW.rowid != -1 AND rowid = NEW.rowid)` OR the composite-key equality (CHARC B-1 ruling, by replacement) | blanket |
 | `trade_events` (`te`) | `id` | none | blanket |
 | `finviz_api_calls` (`fac`) | `call_id` | none | blanket |
 | `pattern_evaluations` (`pev`) | `id` | `pipeline_run_id = NEW.pipeline_run_id AND ticker = NEW.ticker AND pattern_class = NEW.pattern_class` | blanket |
@@ -326,7 +326,7 @@ The verdict pair: `@pytest.mark.parametrize("version,expect", [(40, "exposed"), 
 | A7 | `UPDATE <col>` for EVERY column (value → different value) | OK | `trg_<abbr>_no_update` |
 | A8 | explicit `-1` PK insert (INTEGER-PK tables) | OK | OK — the declared residual AL-1, pinned so a later `CHECK` is a visible change |
 
-For `cc`, A4/A5 use the composite PK and A8 is skipped. For tables with no UNIQUE beyond the PK, A2/A3 run on the PK.
+For `cc`, A4/A5 use the composite PK and A8 is skipped; its hidden-rowid collision (explicit rowid under OR REPLACE / REPLACE / OR IGNORE), the auto-rowid and fresh-explicit-rowid twins, and the composite-key collision are pinned by `test_cc_hidden_rowid_*` / `test_cc_fresh_rowid_insert_is_admitted` / `test_cc_composite_key_collision_still_refused` (B-1). For tables with no UNIQUE beyond the PK, A2/A3 run on the PK.
 
 ### 4.2 (c) twin discriminators — `test_migration_0041_twins.py` (parametrized over the (c) spec rows)
 
@@ -394,7 +394,7 @@ Each pin's docstring states the precondition (backstop on the SAME statement) an
 
 ## 5. Accepted limitations (each with its reason; reviewers are invited to challenge any reason)
 
-- **AL-1 — explicit `-1` PK on existing tables.** A row inserted with an explicit PK of `-1` passes every `no_replace` PK clause, and no `CHECK (pk > 0)` is added. *Reason:* the CHECK needs a table rebuild, which brief §2.6 excludes; live has 0 non-positive PKs on all 43 tables (census a16); no writer supplies an explicit PK (ledger STEP 3 INSERT read); A8 pins it.
+- **AL-1 — explicit `-1` PK on existing tables.** A row inserted with an explicit PK of `-1` passes every `no_replace` PK clause, and no `CHECK (pk > 0)` is added. *Reason:* the CHECK needs a table rebuild, which brief §2.6 excludes; live has 0 non-positive PKs on all 43 tables (census a16); no writer supplies an explicit PK (ledger STEP 3 INSERT read); A8 pins it. The same limit covers candidate_criteria's HIDDEN rowid: an explicit rowid of `-1` is admitted as a fresh row, and a second explicit `-1` under `OR REPLACE` is not refused (CHARC B-1 ruling (d), by replacement).
 - **AL-2 — five citation-trigger inputs admitted by declared design** (`rung7_consumption_scan_fill_ids.input[0]` and `decision_ordering.input[0]` absent; `remote_ref_updated_at`/`remote_ref_age_seconds` JSON null). *Reason:* the trigger's own comments (live dump `:1415-1431`, `:1767-1773`, `:1981-1982`) declare them — completeness limits and nullable-by-contract fields, not NULL-`WHEN` holes; CHARC F-I6 ruling.
 - **AL-3 — the (b) tables stay unguarded:**
   - `daily_recommendations`: row mutable in place by 0036's design (`0036:121-126`); evidence frozen at citation into `cited_recommendation_snapshot_json`; drift reported by the read command. The `0003:98` "immutable session snapshot" comment is stale and left unedited (applied migration). The cited rows 169/172 are held by `ON DELETE RESTRICT`, measured: REPLACE/DELETE abort under FK ON; **the RESTRICT holds only on FK-ON connections — the migration runner runs FK OFF and writes no `daily_recommendations` rows** (RD, verbatim reason).

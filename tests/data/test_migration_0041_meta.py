@@ -99,7 +99,11 @@ def test_0041_pk_clause_idiom() -> None:
             pk = spec.pk[0]
             assert f"NEW.{pk} != -1 AND {pk} = NEW.{pk}" in flat, name
         else:
-            assert "!= -1" not in flat, name  # candidate_criteria: composite PK
+            # candidate_criteria: the composite PK HIDES the rowid, so the
+            # hidden-rowid clause is required too (Reviewer B B-1, CHARC ruling).
+            assert "NEW.rowid != -1 AND rowid = NEW.rowid" in flat, name
+            key = " AND ".join(f"{k} = NEW.{k}" for k in spec.pk)
+            assert key in flat, (name, key)
 
 
 def _objects(conn: sqlite3.Connection) -> dict[tuple[str, str], str | None]:

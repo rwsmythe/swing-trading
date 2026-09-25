@@ -15,6 +15,7 @@ at v41 the named 0041 trigger refuses it.
 """
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -191,5 +192,91 @@ def test_a8_explicit_minus_one_pk_is_the_declared_residual(
         row = fresh_row(c, table)
         row[SPEC[table].pk[0]] = -1
         assert outcome(c, *insert_copy_sql(c, table, row)) == "OK"
+    finally:
+        c.close()
+
+
+# ---------------------------------------------------------------------------
+# Reviewer B B-1 (CHARC-ruled FIX, 2026-09-25): candidate_criteria's composite
+# PK HIDES its rowid (the table is not WITHOUT ROWID), so a conflict on the
+# hidden rowid is a REPLACE path of its own. The seeded world holds rowid 1
+# (1, 'c1') and rowid 2 (1, 'c2').
+# ---------------------------------------------------------------------------
+_CC_COLS = "candidate_id, criterion_name, layer, result, value, rule"
+
+
+@PAIR
+@pytest.mark.parametrize("verb", ["INSERT OR REPLACE", "REPLACE", "INSERT OR IGNORE"])
+def test_cc_hidden_rowid_collision(tmp_path: Path, version: int, verb: str) -> None:
+    """An explicit-rowid collision on a FRESH composite key: exposed at v40
+    (OR REPLACE silently rewrites the fire's evidence row in place; OR IGNORE
+    drops the write), refused by trg_cc_no_replace at v41."""
+    c = _world(tmp_path, version)
+    try:
+        verdict = outcome(
+            c, f"{verb} INTO candidate_criteria (rowid, {_CC_COLS}) "
+               "VALUES (1, 1, 'c-new', 'risk', 'na', 'collide', 'r')")
+        if version == 40:
+            assert verdict == "OK", verdict
+        else:
+            assert verdict == "TRIGGER:trg_cc_no_replace", verdict
+    finally:
+        c.close()
+
+
+@PAIR
+def test_cc_hidden_rowid_collision_rewrites_the_row_at_v40_only(
+        tmp_path: Path, version: int) -> None:
+    """The v40 half is a pin of the exposure, not only a history: the row at
+    rowid 1 is rewritten (criterion 'c1' is gone). At v41 it is untouched."""
+    c = _world(tmp_path, version)
+    try:
+        before = c.execute("SELECT rowid, criterion_name, value FROM "
+                           "candidate_criteria ORDER BY rowid").fetchall()
+        try:
+            c.execute(f"INSERT OR REPLACE INTO candidate_criteria (rowid, {_CC_COLS}) "
+                      "VALUES (1, 1, 'c-new', 'risk', 'na', 'collide', 'r')")
+        except sqlite3.IntegrityError as exc:
+            assert version == 41 and "trg_cc_no_replace" in str(exc), exc
+        after = c.execute("SELECT rowid, criterion_name, value FROM "
+                          "candidate_criteria ORDER BY rowid").fetchall()
+        if version == 40:
+            assert (1, "c-new", "collide") in after and after != before
+            assert "c1" not in {r[1] for r in after}
+        else:
+            assert after == before
+    finally:
+        c.close()
+
+
+@PAIR
+@pytest.mark.parametrize("rowid_clause", ["auto", "fresh-explicit"])
+def test_cc_fresh_rowid_insert_is_admitted(tmp_path: Path, version: int,
+                                          rowid_clause: str) -> None:
+    """The honest twins: an auto-rowid insert (the production writer's shape,
+    candidates.py) and an explicit FRESH rowid are admitted at both versions."""
+    c = _world(tmp_path, version)
+    try:
+        if rowid_clause == "auto":
+            sql = (f"INSERT INTO candidate_criteria ({_CC_COLS}) "
+                   "VALUES (1, 'c-auto', 'risk', 'na', 'v', 'r')")
+        else:
+            sql = (f"INSERT INTO candidate_criteria (rowid, {_CC_COLS}) "
+                   "VALUES (99, 1, 'c-fresh', 'risk', 'na', 'v', 'r')")
+        assert outcome(c, sql) == "OK"
+    finally:
+        c.close()
+
+
+@PAIR
+def test_cc_composite_key_collision_still_refused(tmp_path: Path, version: int) -> None:
+    """The pre-existing composite-key clause is not lost by the rowid clause:
+    OR REPLACE on (1, 'c1') with no rowid given."""
+    c = _world(tmp_path, version)
+    try:
+        verdict = outcome(
+            c, f"INSERT OR REPLACE INTO candidate_criteria ({_CC_COLS}) "
+               "VALUES (1, 'c1', 'risk', 'na', 'collide', 'r')")
+        _check(verdict, version, "trg_cc_no_replace")
     finally:
         c.close()
