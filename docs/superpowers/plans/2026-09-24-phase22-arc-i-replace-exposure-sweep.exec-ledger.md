@@ -298,3 +298,43 @@ The round read B2 by execution: on independent in-memory v40 / v41 DBs (FK ON, `
 
 - **R4-1 (minor)** -- AL-13 still says the probe was left unchanged and its hash `1cd6836f...` stands; after (g) the current hash is `9636a45b...`. Proposed: a by-replacement tail on AL-13 naming the new hash and the four `M-id` -> `PK-id` rows (AL-13 was ruled "stays as written", so the ruler decides). NOT fixed: the cell stops at the gate.
 - **R4-2 (minor)** -- `tests/data/test_v20_migration.py:237`: the failure message still reads "must equal 23 in db.py (post-Phase-14-SB3)" while the assertion checks 41 (pre-existing since Phase 14; this arc bumped the adjacent asserts only). Proposed: a post-convergence one-line message fix. NOT fixed.
+
+## RD review of the replaced AL-11 -- CONCUR (2026-09-25)
+
+**Author: RD** (the successor generation, `swing-rd-20260924-1900`; mail `20260925T061019Z`, read on `d9845352`). **Courier: the orchestrator.** Literal block quote:
+
+> RD REVIEW of the replaced AL-11 text (serialized after CHARC's B2 rulings; my F-I1). Tree read: d9845352 on 22-i-exec (the text landed at 16447fa8; unchanged since). VERDICT: CONCUR. One minor, docs-only, disposition below.
+>
+> WHAT I READ, claim by claim, each against its target and not against the courier's summary:
+>
+> 1. "the PK is frozen by trg_<abbr>_pk_immutable" -- migration 0041 at d9845352: trg_pex_pk_immutable (:891), trg_wla_pk_immutable (:897), trg_lve_pk_immutable (:344), each BLANKET BEFORE UPDATE ... FOR EACH ROW WHEN NOT COALESCE(NEW.<pk> IS OLD.<pk>, 0), i.e. CHARC's Branch A form as ruled. The reversibility header lists all three DROPs (:57, :95, :96). MATCH.
+>
+> 2. "every non-PK column ... is mutable at the schema" -- tests/data/_22i_guard_spec.py at d9845352: pex M tuple (:279-284) and wla M tuple (:286-288) no longer contain id; every other column is listed. No twin trigger exists for either table in 0041 (the plan's section-1 rows :117/:119 say so and the migration agrees). MATCH -- and consistent with F-I1: no twin was ruled because labels and removed_date are edited in place by design, so the DDL leaves every non-PK column mutable, and the declaration now says exactly that instead of claiming a defence.
+>
+> 3. "the measured writers touch a NARROWER set, cited" -- every citation verified by reading the cited line at d9845352:
+>    swing/data/repos/watchlist.py:124  UPDATE watchlist_archive SET removed_date = ? WHERE id = ?
+>    swing/data/repos/pattern_exemplars.py:188  UPDATE pattern_exemplars SET labeler_evidence_json = ? WHERE id = ?
+>    swing/patterns/labeling.py:526  SET codex_reviewed = 1, codex_agreement = ?
+>    swing/web/routes/patterns.py:290-294  label_source, final_decision, gold_validated_at, labeler_evidence_json, proposed_pattern_class, final_pattern_class (=NULL)
+>    :308-309  label_source, final_decision, gold_validated_at
+>    :329-330  final_decision, final_pattern_class
+>    :337-338  final_decision, final_pattern_class
+>    :357-358  final_decision, final_pattern_class
+>    The column set AL-11 names is the union of these. MATCH.
+>    Completeness of the writer census, with its method and its limit: `git grep -n -E 'UPDATE (watchlist_archive|pattern_exemplars)' d9845352 -- swing/` returns exactly these seven sites and no other. That is a literal-string search; a writer that assembles the table name at run time would be outside it. Round 4's by-execution pass over every conflict path is the instrument that does not depend on the grep, and it is the one I credit for completeness.
+>
+> 4. "The M sets are NOT C8-defended (C8 parametrizes the twin tables only, test_migration_0041_twins.py:50)" -- TWIN_TABLES at :50-55 lists the eleven twin tables; neither twinless table is in it. MATCH. The false sentence of the superseded text (C8-defended) is gone by replacement, and the replacement note names what the superseded text said. Supersession by replacement, as the harness requires.
+>
+> 5. The Reason clause -- "labels and removed_date are edited in place by design, so no column twin lands; the guard spec describes the DDL ... the measured sets are evidence in this declaration, not the schema's claim." This is F-I1's semantic stated correctly: the mutable set on a twinless table is whatever the DDL leaves mutable, and the writer sets are a measured fact about today's code, not a bound the schema enforces. Nothing in it changes my rows. CONCUR.
+>
+> THE MINOR (docs-only): the writer citations are by BASENAME (watchlist.py:124, pattern_exemplars.py:188). The tree holds THREE files named watchlist.py under swing/ (data/repos, web/routes, web/view_models; `git ls-tree -r --name-only d9845352 swing/ | grep '/watchlist\.py$'`) and ONE pattern_exemplars.py; my first read of the citations landed on the wrong watchlist.py and printed a docstring. A citation that resolves to more than one file is a pointer the next reader has to disambiguate by grep, which is the reach class this arc has met twice. FIX: spell the five paths from the repo root (swing/data/repos/watchlist.py:124; swing/data/repos/pattern_exemplars.py:188; swing/patterns/labeling.py:526; swing/web/routes/patterns.py:290/308/329/337/357). Disposition is the orchestrator's under the clearance-attaches-to-the-tree rule: docs-only, landable after B pass 3 without re-opening, and I ran the binding check: `git grep -n 'AL-11' d9845352 -- tests/` returns 8 hits, every one a comment or docstring (_22i_guard_spec.py:276, test_migration_0041_pk_immutable.py:1/:8/:169; the four test_22a_* hits are 22-A's own L19/AL-11, a different item). No assertion binds to the citation text, so the path fix is docs-only by the rule's own precondition, verified not assumed.
+>
+> NOT MINE, NOT RULED: the census test's two halves, the probe hash, the fifth writer, round 4's disposition -- CHARC's items, all read for dissent, none.
+>
+> My single gate read on the final tree follows B pass 3, once its path is posted; read once, on the tree B audited.
+
+## Reviewer B pass 3 (orchestrator cold audit) on `d9845352` -- CLEAN (2026-09-25)
+
+Evidence: `~/swing-data/review-transcripts/22-i-exec/reviewer-b-3/` (`b-prompt.md` sha256 `2d7ac25b...`, `b-diff.txt` = `git diff 555acce3..d9845352` sha256 `68202719...`, `b-review.txt`, `b-exit.txt`, `run_b.sh`). Five assertions, read on disk at the orchestrator's seat: banner `gpt-5.6-sol` / high; `^ERROR` 0; `tokens used` 522,469; verdict `NO_NEW_CRITICAL_MAJOR`; exit 0. NO findings of any severity. C1-C11 all PASS, by execution on in-memory DBs: 510 conflict-path probes over all 27 no_replace tables (every INSERT form, INSERT...SELECT, and rowid moves under UPDATE / OR IGNORE / OR REPLACE), no destructive path admitted; 15/15 alias moves (pk / rowid / oid / _rowid_ / RoWiD) refused on the three pk_immutable tables; 259 class-transition probes on the twins; the tooltip SQL executed; 46 seam sites within the four kinds. AL-1..AL-13's rationales were reviewed and none challenged. **This is the B transcript CHARC's merge gate reads.**
+
+RD's docs-only minor (AL-11's citations spelled from the repo root) lands in the next commit, AFTER this B pass, per RD's own ruling that it re-opens nothing (no test asserts on the citation text).
