@@ -54,6 +54,7 @@
 --         DROP TRIGGER trg_pde_no_delete;   -- pattern_detection_events
 --         DROP TRIGGER trg_pde_no_replace;  -- pattern_detection_events
 --         DROP TRIGGER trg_lve_first_view_immutable;  -- latch_view_events (F-I5)
+--         DROP TRIGGER trg_lve_pk_immutable;          -- latch_view_events (B2)
 --         DROP TRIGGER trg_rr_no_delete;   -- reconciliation_runs
 --         DROP TRIGGER trg_rr_no_replace;  -- reconciliation_runs
 --         DROP TRIGGER trg_rr_immutable;   -- reconciliation_runs
@@ -91,6 +92,8 @@
 --         DROP TRIGGER trg_pex_no_replace;  -- pattern_exemplars
 --         DROP TRIGGER trg_wla_no_delete;   -- watchlist_archive
 --         DROP TRIGGER trg_wla_no_replace;  -- watchlist_archive
+--         DROP TRIGGER trg_pex_pk_immutable;  -- pattern_exemplars (B2)
+--         DROP TRIGGER trg_wla_pk_immutable;  -- watchlist_archive (B2)
 --
 -- (iii) THE ONE REBUILT OBJECT (F-I2, CHARC-ruled): trg_provenance_corrections_
 --     append_only_update is DROPPED and CREATED again. Its new text is the
@@ -326,6 +329,23 @@ BEFORE UPDATE OF candidate_id, evaluation_run_id, detection_date, surface,
 ON latch_view_events
 FOR EACH ROW
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_lve_first_view_immutable: the latch_view_events first-view columns (candidate_id, evaluation_run_id, detection_date, surface, view_session_date, latch_state_at_first_view, actionable_at_first_view) are IMMUTABLE after insert: leg-1 evidence (0032, 0033, 22-B R0.K; RD F-I5). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+-- B2 (Reviewer B pass 2; CHARC ruling, Branch A): view_event_id is FROZEN.
+--    latch_view_events' four update guards (trg_lve_identity_coherent_update,
+--    trg_lve_actionable_ever_viewed_monotonic, trg_lve_view_window_immutable,
+--    trg_lve_first_view_immutable) are all `UPDATE OF` lists and none names
+--    view_event_id, so `UPDATE OR REPLACE ... SET view_event_id = <existing>`
+--    deleted the holder with no guard firing. An `UPDATE OF view_event_id`
+--    list would not close it: `UPDATE OF` is keyed on the column NAME and the
+--    rowid is also reachable as rowid / oid / _rowid_ (measured, the B2 fork).
+--    A BLANKET trigger comparing the VALUE closes every spelling; a same-value
+--    SET is a true no-op and is admitted. The WHEN is `IS`, never NULL; the
+--    COALESCE is invariant 2's idiom, kept for uniformity.
+CREATE TRIGGER trg_lve_pk_immutable
+BEFORE UPDATE ON latch_view_events
+FOR EACH ROW
+WHEN NOT COALESCE(NEW.view_event_id IS OLD.view_event_id, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_lve_pk_immutable: latch_view_events.view_event_id is FROZEN from migration 0041. An UPDATE OR REPLACE that moves a row onto another row''s key resolves the conflict by an implicit DELETE of the holder, which does not fire trg_lve_no_delete (recursive_triggers is OFF), and trg_lve_no_replace is BEFORE INSERT and never sees an UPDATE. The rowid is reachable as view_event_id, rowid, oid and _rowid_; this guard compares the value, not the name. The first-view columns are frozen by trg_lve_first_view_immutable; the writer columns stay mutable (RD F-I5). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- ============================================================================
 -- 4. reconciliation_runs / reconciliation_discrepancies -- (c) (RD F-I1 row 11):
@@ -841,10 +861,16 @@ BEGIN SELECT RAISE(ABORT, '22-I barrier trg_rl_immutable: review_log: this UPDAT
 -- ============================================================================
 -- 11. pattern_exemplars / watchlist_archive -- (c) with NO twin (RD F-I1 rows
 --    15, 18; AL-11): labels and removed_date are edited in place BY DESIGN, so
---    only the barrier pair lands -- no_delete, and no_replace scoped to the PK
---    (neither table declares a UNIQUE key). The sole INSERT writers
---    (repos/pattern_exemplars.py:91, repos/watchlist.py:89) omit the PK, so an
---    ordinary append never reaches the barrier.
+--    the barrier pair lands -- no_delete, and no_replace scoped to the PK
+--    (neither table declares a UNIQUE key) -- plus a PK freeze (Reviewer B B2;
+--    CHARC ruling, Branch A): without an update guard, `UPDATE OR REPLACE ...
+--    SET id = <existing>` deleted the holder with no barrier firing. The freeze
+--    is a BLANKET BEFORE UPDATE comparing the VALUE of id, because the rowid is
+--    reachable as id / rowid / oid / _rowid_ and an `UPDATE OF id` list sees
+--    only the first (the B2 fork). Every non-PK column stays mutable at the
+--    schema (AL-11). The sole INSERT writers (repos/pattern_exemplars.py:91,
+--    repos/watchlist.py:89) omit the PK, so an ordinary append never reaches
+--    the barrier, and no production writer names id in a SET list.
 -- ============================================================================
 CREATE TRIGGER trg_pex_no_delete BEFORE DELETE ON pattern_exemplars
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pex_no_delete: pattern_exemplars rows are PERMANENT from migration 0041; an exemplar is an audit-trail-with-uniqueness row whose id parent_exemplar_id cites (RD F-I1 row 15). A delete would erase the record and let a rowid be reissued. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
@@ -861,6 +887,18 @@ CREATE TRIGGER trg_wla_no_replace BEFORE INSERT ON watchlist_archive
 WHEN COALESCE(EXISTS (SELECT 1 FROM watchlist_archive
               WHERE (NEW.id != -1 AND id = NEW.id)), 0)
 BEGIN SELECT RAISE(ABORT, '22-I barrier trg_wla_no_replace: watchlist_archive rows are PERMANENT from migration 0041. A conflicting INSERT (INSERT OR REPLACE / REPLACE / INSERT OR IGNORE / ON CONFLICT DO NOTHING) would DELETE the existing row without firing trg_wla_no_delete and reissue or move its id; the watchlist archive is an audit trail of every removal (RD F-I1 row 18). A writer that needs idempotency pre-filters with WHERE NOT EXISTS. To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_pex_pk_immutable
+BEFORE UPDATE ON pattern_exemplars
+FOR EACH ROW
+WHEN NOT COALESCE(NEW.id IS OLD.id, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_pex_pk_immutable: pattern_exemplars.id is FROZEN from migration 0041. An UPDATE OR REPLACE that moves a row onto another row''s key resolves the conflict by an implicit DELETE of the holder, which does not fire trg_pex_no_delete (recursive_triggers is OFF), and trg_pex_no_replace is BEFORE INSERT and never sees an UPDATE. The rowid is reachable as id, rowid, oid and _rowid_; this guard compares the value, not the name. Every other column stays mutable at the schema (plan AL-11). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
+
+CREATE TRIGGER trg_wla_pk_immutable
+BEFORE UPDATE ON watchlist_archive
+FOR EACH ROW
+WHEN NOT COALESCE(NEW.id IS OLD.id, 0)
+BEGIN SELECT RAISE(ABORT, '22-I barrier trg_wla_pk_immutable: watchlist_archive.id is FROZEN from migration 0041. An UPDATE OR REPLACE that moves a row onto another row''s key resolves the conflict by an implicit DELETE of the holder, which does not fire trg_wla_no_delete (recursive_triggers is OFF), and trg_wla_no_replace is BEFORE INSERT and never sees an UPDATE. The rowid is reachable as id, rowid, oid and _rowid_; this guard compares the value, not the name. Every other column stays mutable at the schema (plan AL-11). To retire the barrier see the reversibility header of 0041_replace_exposure_sweep.sql.'); END;
 
 -- The version bump is the FINAL statement before COMMIT.
 UPDATE schema_version SET version = 41;

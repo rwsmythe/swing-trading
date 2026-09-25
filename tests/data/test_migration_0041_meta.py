@@ -4,7 +4,7 @@
       WHEN fails OPEN);
     * every no_replace over an INTEGER PK carries the 0037 `-1` idiom;
     * the manifest composition, BY EXECUTION: fresh DBs migrated to 40 and 41,
-      sqlite_master diffed by (type, name) -- ADDED == the 59 names of plan
+      sqlite_master diffed by (type, name) -- ADDED == the 62 names of plan
       section 1.4 exactly, CHANGED == {the F-I2 rebuild}, DELETED == {}, and no
       table / index / view text moved;
     * the file is triggers only: no CREATE TABLE / INDEX / VIEW, ALTER, DROP
@@ -126,7 +126,7 @@ def test_0041_manifest_composition(tmp_path: Path) -> None:
     deleted = {k for k in o40 if k not in o41}
     changed = {k for k in o40.keys() & o41.keys() if o40[k] != o41[k]}
     assert added == {("trigger", n) for n in GUARDS_22I_ADDED}
-    assert len(added) == 59
+    assert len(added) == 62
     assert changed == {("trigger", n) for n in REBUILT_22I}
     assert deleted == set()
     # no table / index / view text moved (a rebuild would show here)

@@ -64,7 +64,15 @@ class GuardSpec:
             return (f"trg_{a}_no_update", f"trg_{a}_no_delete", f"trg_{a}_no_replace")
         if self.klass == "c":
             return (f"trg_{a}_no_delete", f"trg_{a}_no_replace", f"trg_{a}_immutable")
-        return (f"trg_{a}_no_delete", f"trg_{a}_no_replace")
+        return (f"trg_{a}_no_delete", f"trg_{a}_no_replace", f"trg_{a}_pk_immutable")
+
+    @property
+    def pk_trigger(self) -> str | None:
+        """The (c) no-twin tables' PK freeze (Reviewer B B2, CHARC Branch A): a
+        BLANKET BEFORE UPDATE whose WHEN compares the rowid's VALUE, so every
+        spelling of the key (<pk>, rowid, oid, _rowid_) is refused. The PK is
+        therefore NOT in the table's M tuple."""
+        return f"trg_{self.abbr}_pk_immutable" if self.klass == "c-notwin" else None
 
     @property
     def update_trigger(self) -> str | None:
@@ -264,17 +272,19 @@ _add(GuardSpec(
 
 # ---------------------------------------------------------------------------
 # (c) no_delete + no_replace, NO twin (ruled: labels / removed_date edited in place)
+# + trg_<abbr>_pk_immutable (Reviewer B B2, CHARC Branch A): every NON-PK column
+# is mutable at the schema (plan AL-11); the PK is frozen, so it is not in M.
 # ---------------------------------------------------------------------------
 _add(GuardSpec(
     "pattern_exemplars", "pex", "c-notwin", ("id",), True,
-    M=("id", "ticker", "timeframe", "start_date", "end_date", "proposed_pattern_class",
+    M=("ticker", "timeframe", "start_date", "end_date", "proposed_pattern_class",
        "final_decision", "final_pattern_class", "label_source", "ai_labeler_version",
        "gold_validated_at", "codex_reviewed", "codex_agreement",
        "geometric_score_json", "labeler_evidence_json", "structural_evidence_json",
        "quality_grade", "notes", "parent_exemplar_id", "created_at", "created_by")))
 _add(GuardSpec(
     "watchlist_archive", "wla", "c-notwin", ("id",), True,
-    M=("id", "ticker", "added_date", "removed_date", "reason", "qualification_count",
+    M=("ticker", "added_date", "removed_date", "reason", "qualification_count",
        "last_data_asof_date", "notes")))
 
 # ---------------------------------------------------------------------------
@@ -286,8 +296,18 @@ LVE_FIRST_VIEW_COLUMNS: tuple[str, ...] = (
 LVE_WRITER_COLUMNS: tuple[str, ...] = (
     "last_viewed_ts", "latch_state_at_last_view", "actionable_at_last_view",
     "view_count", "actionable_ever_viewed")
+# view_event_id is frozen by trg_lve_pk_immutable (Reviewer B B2, CHARC Branch A);
+# pipeline_run_id by the identity trigger; first_viewed_ts / ticker by the window twin.
 LVE_OTHER_COLUMNS: tuple[str, ...] = (
     "view_event_id", "pipeline_run_id", "first_viewed_ts", "ticker")
+
+# The three PK freezes 0041 adds for B2 (one per table whose update guards were
+# all column-scoped): a blanket BEFORE UPDATE, WHEN NOT COALESCE(NEW.pk IS OLD.pk, 0).
+PK_IMMUTABLE_22I: dict[str, tuple[str, str]] = {
+    "pattern_exemplars": ("trg_pex_pk_immutable", "id"),
+    "watchlist_archive": ("trg_wla_pk_immutable", "id"),
+    "latch_view_events": ("trg_lve_pk_immutable", "view_event_id"),
+}
 
 REBUILT_22I: tuple[str, ...] = ("trg_provenance_corrections_append_only_update",)
 
@@ -295,7 +315,7 @@ A_TABLES = tuple(t for t, s in SPEC.items() if s.klass == "a")
 C_TABLES = tuple(t for t, s in SPEC.items() if s.klass == "c")
 C_NOTWIN_TABLES = tuple(t for t, s in SPEC.items() if s.klass == "c-notwin")
 
-# The 59 names 0041 ADDS (plan section 1.4), spelled out rather than derived, so
+# The 62 names 0041 ADDS (plan section 1.4), spelled out rather than derived, so
 # the spec's trigger naming and this list check each other.
 GUARDS_22I_ADDED: tuple[str, ...] = (
     *(f"trg_{a}_{k}" for a in ("pfo", "pde", "cc", "te", "fac", "pev", "er")
@@ -305,4 +325,5 @@ GUARDS_22I_ADDED: tuple[str, ...] = (
       for k in ("no_delete", "no_replace", "immutable")),
     *(f"trg_{a}_{k}" for a in ("pex", "wla") for k in ("no_delete", "no_replace")),
     "trg_lve_first_view_immutable",
+    "trg_pex_pk_immutable", "trg_wla_pk_immutable", "trg_lve_pk_immutable",
 )

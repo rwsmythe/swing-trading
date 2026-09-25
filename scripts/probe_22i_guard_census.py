@@ -32,7 +32,9 @@ SAFETY -- READ BEFORE RUNNING
       their risk_policy row (a clause pin, the parent delete is refused in
       production, AL-9), and the lve identity-UPDATE probes drop
       ``trg_lve_first_view_immutable``, which now pre-empts the older
-      identity trigger they pin.
+      identity trigger they pin. On the two (c) no-twin tables the PK is
+      probed as REFUSED by ``trg_<abbr>_pk_immutable`` (Reviewer B B2, CHARC
+      Branch A); it is no longer an M probe.
 
 USAGE
     python scripts/probe_22i_guard_census.py --make-copy
@@ -922,6 +924,10 @@ def g0041(p: Probe):
                 upd(col, 1, fires, f"D-{col}-0-to-1", setup)
             for col in s.M:
                 upd(col, _diff(r[col]), not_ut, f"M-{col}")
+            if s.pk_trigger:  # B2 (CHARC Branch A): the (c) no-twin PK freeze
+                for col in s.pk:
+                    upd(col, _diff(r[col]), ("fires", s.pk_trigger), f"PK-{col}",
+                        _ut=s.pk_trigger)
             completed = table == "review_log" and r["completed_date"] is not None
             for col in s.S:
                 upd(col, _diff(r[col]), fires if completed else not_ut,
