@@ -74,3 +74,37 @@ T0-T11 by the first executing cell (stopped at 641K context by the orchestrator,
 > Reviewer A may open on this ruling's transcription. The 22-I merge gate is unchanged (W0-W5, the B transcript on the tree merged, the witness sitting before 10-02 EOD HST or after 10-20).
 
 **Encoding (orchestrator, courier):** AL-10 in the plan replaced by the quoted text (formatting: the lead phrase bolded and *Reason:* italicised as the other ALs are; an amendment note appended); the plan's file-table row for `tests/_22i_guard_seam.py` ("Two uses only") repointed to AL-10's four kinds; the seam docstring's header ("Plan AL-10 names TWO kinds") and kind 4 rewritten so the docstring and AL-10 name each other and agree (condition (a)). T10's helper unchanged.
+
+## RD pre-review read -- PASS (i)-(iv); deviations 2 and 3 ACCEPTED (2026-09-25)
+
+**Author: RD** (mail `20260925T021555Z`, read at `6b65eda3`). **Courier: the orchestrator.** Literal block quote of the message body below.
+
+> RD PRE-REVIEW READ of 22-I at 6b65eda3 (branch 22-i-exec, base 555acce3). PRIMARY: rd for items (i)-(iv),(vi) of my executing-return gate and for deviations 2 and 3. Read via `git show 22-i-exec:<path>`, never cd. Verdict: PASS on (i)-(iv); (v) OUTSTANDING (no B yet); (vi) ONE ASK below. Reviewer A may open.
+>
+> (i) SECTION 1 vs 0041, OBJECT BY OBJECT -- MATCH. Method: plan section 1 at 555acce3 read beside the 864-line migration; every column list counted by hand against the trigger text; the C8 comparator (test_migration_0041_twins.py:347) read as the mechanical twin of that count over all 11 twin tables.
+> - Header (ii): 59 DROP lines = the 59 spec names; one CHANGED (F-I2); DELETED 0. Rehearsal record agrees (ADDED 59 == spec, inverse transform byte-identical).
+> - (a) triples: pfo/pde/cc/te/fac/pev/er conflict clauses match 1.2; cc carries no -1 clause; pde no_update is the a17 twin with the no-op-aborts third conjunct and exactly the 12 I columns.
+> - rc: 16 I; correction_set_id AND superseded_by_correction_id are `(NEW.c IS OLD.c OR OLD.c IS NULL)` -- write-once, NO SET-NULL exemption on the self-FK (S3-F1 as amended, lines 439-440). The two a17 F columns keep the uniform exemption.
+> - rp 31 I + D + 2 W; hr 10 I with preregistered_decision_criteria frozen BY EXCLUSION (the H1 amendment stays a migration-only act, the 0034 precedent in the trigger comment); hsh 6 I + W; rr 7 I; rd 9 I + 4 F; sac 5 I; yfc 6 I; aes 4 I -- all match.
+> - dmr: 21 I; four clauses; FLIP and WINDOW each freeze all 18 DATA columns; FROZEN_FK freezes 17 + the pipeline_run_id a17 form; the self-FK has no admitting value->NULL path; no_replace mirrors both partial indexes. This is the plan-stage tightening encoded as ruled.
+> - rl: 7 I always; PENDING (`OLD.completed_date IS NULL`) / FROZEN (15 S + rp F-shaped); superseded_by_correction_id absent from the predicate (M). completed -> NULL is refused (the freeze holds, S3-F3 (A)).
+> - F-I5: UPDATE OF the seven columns, no WHEN. F-I2: rebuild text carries the COALESCE wrap.
+>
+> (ii) THE FLIP DISCRIMINATOR IS PRESENT: test_migration_0041_dmr.py::test_flip_plus_a_data_column_in_one_statement_aborts (v40 OK / v41 TWIN) paired with test_the_bare_step3_flip_is_admitted, plus the WINDOW-after-FLIP admit and the step5+DATA abort. The RED/GREEN pair is the [40, 41] parametrization on one seeded world.
+>
+> (iii) T18 -- RECOUNTED BY ME from probe-output-post-migrate.tsv (sha256 1cd6836f...2afe8 matches the return and the ledger). Method: every row with a FAIL cell, grouped by section column. 34 = 22 C-pc-citation + 12 D-eia; ZERO rows in any G-0041 section. The 22 split 17 engine-constraint pre-emptions (16 CHECK on the snapshot keys + 1 NOT NULL applied_at; F-I6, pinned T14) + 5 `OK | FAIL` = exactly the five AL-2 paths (rung7 input[0] absent/JSON-null, decision_ordering input[0], remote_ref_age_seconds, remote_ref_updated_at). 12 eia = NOT NULL / UNIQUE backstops (F-I6). Every one in a declared class; the plan's 101 - 62 - 5 arithmetic holds.
+>
+> (iv) AL-3's daily_recommendations reason is on the branch VERBATIM including the FK-ON caveat ("the RESTRICT holds only on FK-ON connections -- the migration runner runs FK OFF and writes no daily_recommendations rows"). The 0003:98 comment is unedited, as ruled.
+>
+> (v) Reviewer B: outstanding. My gate closes only on B's transcript on the tree being merged, read at ~/swing-data/review-transcripts/22-i-exec/.
+>
+> (vi) THE ONE ASK: the suite line "14698 passed / 13 skipped at 6b65eda3" carries NO resolver statement -- the exec ledger asserts `swing.__file__` inside the worktree for the REHEARSAL only, not for the pytest run. A worktree pass line without its resolver is not evidence (the editable install resolves MAIN from any worktree). Not blocking pre-review; at the gate I read a suite line WITH its method (e.g. a `swing.__file__` print from inside the pytest process, or the absence-on-main argument for a 22-I-only module). The merged-head run at merge is the binding one and needs no such proof.
+>
+> DEVIATIONS ON MY RULINGS:
+> - Dev 2 (T18's lve first-view drop for the identity probes) -- ACCEPT. F-I5 (a) fires first on UPDATE OF those columns by construction; dropping it under the seam to keep the identity clause executable is CHARC's kind (2). FAIL stays 34.
+> - Dev 3 (the "existing web 409 test" premise was false) -- ACCEPT; the S3-F3 ruling stands unchanged. It rested on the CODE (routes/trades.py:3769 detail "Review already completed"), which exists; what was false was the plan's claim that a TEST pinned it. T12a's test and the CLI twin (cli.py:2207 wraps ReviewAlreadyCompletedError; test_review_complete_cli.py:165) close it. Same class as my S3-F1 lesson: a premise inherited from a census's word, not from a read.
+> - Dev 1: CHARC's ruling read, no dissent. Devs 4-6: not mine, no objection.
+>
+> Gate items (i)-(iv) hold on THIS tree only; any code/test change re-opens them (a clearance attaches to the tree verified).
+
+**Courier's note on RD's last line (a clearance attaches to the tree verified):** the only change since `6b65eda3` is `d2efdc72`, which edits the plan's AL-10 and file-table row and the MODULE DOCSTRING of `tests/_22i_guard_seam.py` (no executable line); the 20 test files that import the seam ran 1216 passed at that tree. Whether that re-opens (i)-(iv) is RD's call; it is posted to RD. **On (vi):** every suite line from here on states its resolver, printed from inside the pytest process (`python -c "import swing,sys,pytest; print(swing.__file__); sys.exit(pytest.main([...]))"` from the worktree root).
