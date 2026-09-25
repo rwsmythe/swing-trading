@@ -281,45 +281,6 @@ def _status_history(w: World) -> int:
     return _scalar(w.db, "SELECT COUNT(*) FROM hypothesis_status_history")
 
 
-def _finviz_stub(cfg: Any, conn: Any) -> None:
-    """Stands in for `_perform_finviz_fetch_no_lease` (which fetches over
-    the network): it writes the fetch's audit row on the root's connection,
-    exactly the row the root then commits."""
-    from swing.data.models import FinvizApiCall
-    from swing.data.repos.finviz_api_calls import insert_call
-    insert_call(conn, FinvizApiCall(
-        call_id=None, ts="2026-06-18T12:00:00", screen_query="v=152",
-        status="ok", row_count=3, response_time_ms=10,
-        rate_limit_remaining=None, signature_hash="abc123",
-        error_message=None))
-
-
-def _finviz_world(tmp_path: Path, mp: Any) -> World:
-    from tests._22f_proxies import CountingWrapper
-    w = _plain_world(tmp_path, mp)
-    stub = CountingWrapper(_finviz_stub)
-    mp.setattr("swing.pipeline.runner._perform_finviz_fetch_no_lease", stub)
-    w.extra["stub"] = stub
-    return w
-
-
-def _finviz_pipeline_running_world(tmp_path: Path, mp: Any) -> World:
-    """The REAL `_perform_finviz_fetch_no_lease` refuses while a pipeline
-    run is `running` (after its token check, so a token is configured)."""
-    w = _running_run_world(tmp_path, mp)
-    home = tmp_path / "home"
-    (home / "swing-data" / "user-config.toml").write_text(
-        '[integrations.finviz]\ntoken = "test-sentinel-token"\n'
-        'screen_query = "v=152&f=test"\n', encoding="utf-8")
-    mp.setenv("USERPROFILE", str(home))
-    mp.setenv("HOME", str(home))
-    return w
-
-
-def _finviz_calls(w: World) -> int:
-    return _scalar(w.db, "SELECT COUNT(*) FROM finviz_api_calls")
-
-
 def _snapshots(w: World) -> int:
     return _scalar(w.db, "SELECT COUNT(*) FROM account_equity_snapshots")
 
@@ -669,15 +630,6 @@ ROOTS: list[Root] = [
                                 "update", "9999", "--status", "paused",
                                 "--reason", "g1 probe"],
         refusal_text="hypothesis 9999 not found",
-    ),
-    Root(
-        id="finviz-fetch", target=_DB_CONNECT, world=_finviz_world,
-        argv=lambda w: ["--config", str(w.cfg), "finviz", "fetch"],
-        probe=_finviz_calls,
-        writer="swing.pipeline.runner._perform_finviz_fetch_no_lease",
-        refusal_world=_finviz_pipeline_running_world,
-        refusal_argv=lambda w: ["--config", str(w.cfg), "finviz", "fetch"],
-        refusal_text="pipeline run is currently in flight",
     ),
     Root(
         id="account-snapshot", target=_DB_CONNECT, world=_plain_world,

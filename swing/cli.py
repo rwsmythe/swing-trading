@@ -6012,12 +6012,6 @@ def finviz_fetch_cmd(ctx: click.Context) -> None:
 
     cfg = apply_overrides(ctx.obj["config"])
     conn = connect(cfg.paths.db_path)
-    # 22-F T-G1 (F4, S-B02): `durable` is bound once `conn.commit()` has
-    # returned (the fetch's audit row); `pending_refusal` is whichever typed
-    # refusal is in flight -- including the `status == "error"` refusal
-    # raised AFTER the commit, which S-B02 names over the durable row.
-    durable = False
-    pending_refusal: click.ClickException | None = None
     try:
         try:
             # Codex R2 Major-1: missing-credential failures route through the
@@ -6035,7 +6029,6 @@ def finviz_fetch_cmd(ctx: click.Context) -> None:
         # transaction would roll back at conn.close() below + the audit row
         # would be lost.
         conn.commit()
-        durable = True
         recent = list_recent_calls(conn, limit=1)
         if recent:
             r = recent[0]
@@ -6052,12 +6045,8 @@ def finviz_fetch_cmd(ctx: click.Context) -> None:
                 raise click.ClickException(
                     r.error_message or "Finviz fetch failed; see swing finviz status."
                 )
-    except click.ClickException as exc:
-        pending_refusal = exc
-        raise
     finally:
-        _close_after_writes(conn, durable=durable,
-                            pending_refusal=pending_refusal)
+        conn.close()
 
 
 @finviz_group.command("status")
