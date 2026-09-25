@@ -82,6 +82,9 @@ class Root:
     refusal_world: Callable[[Path, Any], World] | None = None
     # stdin for a root that confirms (default: none)
     input: str | None = None
+    # False where the root has NO nothing-durable path while its connection
+    # is open (G1-c is then not constructible; the reason is in the row)
+    control: bool = True
 
 
 # ---------------------------------------------------------------- worlds ---
@@ -315,6 +318,49 @@ def _snapshots(w: World) -> int:
     return _scalar(w.db, "SELECT COUNT(*) FROM account_equity_snapshots")
 
 
+def _home_world(tmp_path: Path, mp: Any) -> World:
+    """USERPROFILE and HOME point into tmp_path: these roots WRITE the
+    user-config file (`write_user_overrides` / `delete_user_override`)."""
+    from click.testing import CliRunner
+
+    from tests.cli.test_cli_eval import _minimal_config
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    mp.setenv("USERPROFILE", str(home))
+    mp.setenv("HOME", str(home))
+    cfg = _minimal_config(project, home)
+    runner = CliRunner()
+    r = runner.invoke(main, ["--config", str(cfg), "db-migrate"])
+    assert r.exit_code == 0, r.output
+    return World(runner, cfg, _db(tmp_path), {})
+
+
+def _reset_world(tmp_path: Path, mp: Any) -> World:
+    w = _home_world(tmp_path, mp)
+    r = w.runner.invoke(main, ["--config", str(w.cfg), "config", "set",
+                               "account.risk_equity_floor", "8500.0",
+                               "--force"])
+    assert r.exit_code == 0, r.output
+    return w
+
+
+def _no_active_policy_world(tmp_path: Path, mp: Any) -> World:
+    w = _home_world(tmp_path, mp)
+    c = sqlite3.connect(str(w.db))
+    try:
+        c.execute("UPDATE risk_policy SET is_active = 0")
+        c.commit()
+    finally:
+        c.close()
+    return w
+
+
+def _policy_rows(w: World) -> int:
+    return _scalar(w.db, "SELECT COUNT(*) FROM risk_policy")
+
+
 # ------------------------------------------------------------ root table ---
 
 ROOTS: list[Root] = [
@@ -479,9 +525,58 @@ ROOTS: list[Root] = [
                                 "2026-06-18"],
         refusal_text="equity_dollars",
     ),
+    Root(
+        id="config-set", target=_DB_CONNECT, world=_home_world,
+        argv=lambda w: ["--config", str(w.cfg), "config", "set",
+                        "account.risk_equity_floor", "8500.0", "--force"],
+        probe=_policy_rows,
+        writer="swing.trades.risk_policy.supersede_active_policy",
+        # No G1-c: the override is written BEFORE the cascade connection
+        # opens, so the connection never lives with nothing durable, and
+        # every cascade failure is contained as a WARNING (no refusal).
+        control=False,
+    ),
+    Root(
+        id="config-reset", target=_DB_CONNECT, world=_reset_world,
+        argv=lambda w: ["--config", str(w.cfg), "config", "reset",
+                        "account.risk_equity_floor"],
+        probe=_policy_rows,
+        writer="swing.trades.risk_policy.supersede_active_policy",
+        # No G1-c: as `config set` (the override is deleted first).
+        control=False,
+    ),
+    Root(
+        id="config-policy-set", target=_DB_CONNECT, world=_home_world,
+        argv=lambda w: ["--config", str(w.cfg), "config", "policy", "set",
+                        "--field", "capital_floor_constant_dollars",
+                        "--value", "8500"],
+        probe=_policy_rows,
+        writer="swing.trades.risk_policy.supersede_active_policy",
+        refusal_world=_no_active_policy_world,
+        refusal_argv=lambda w: ["--config", str(w.cfg), "config", "policy",
+                                "set", "--field",
+                                "capital_floor_constant_dollars",
+                                "--value", "8500"],
+        refusal_text="No swing command creates a policy",
+    ),
+    Root(
+        id="config-policy-import-from-toml", target=_DB_CONNECT,
+        world=_home_world,
+        argv=lambda w: ["--config", str(w.cfg), "config", "policy",
+                        "import-from-toml", "--field",
+                        "capital_floor_constant_dollars"],
+        probe=_policy_rows,
+        writer="swing.trades.risk_policy.supersede_active_policy",
+        refusal_world=_no_active_policy_world,
+        refusal_argv=lambda w: ["--config", str(w.cfg), "config", "policy",
+                                "import-from-toml", "--field",
+                                "capital_floor_constant_dollars"],
+        refusal_text="No swing command creates a policy",
+    ),
 ]
 
 _REFUSING = [r for r in ROOTS if r.refusal_argv is not None]
+_CONTROLLED = [r for r in ROOTS if r.control]
 
 
 def _failing_close(monkeypatch, target: str) -> list:
@@ -524,7 +619,8 @@ def test_G1b_refusal_with_close_failure_keeps_the_refusal(
     assert root.probe(w) == before  # nothing written
 
 
-@pytest.mark.parametrize("root", ROOTS, ids=[r.id for r in ROOTS])
+@pytest.mark.parametrize("root", _CONTROLLED,
+                         ids=[r.id for r in _CONTROLLED])
 def test_G1c_control_nothing_durable_close_error_replaces_as_before(
         root: Root, tmp_path, monkeypatch):
     w = root.world(tmp_path, monkeypatch)
