@@ -18,9 +18,9 @@ prioritized over rollback purity.
 """
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
+import logging
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -248,6 +248,32 @@ def _sha256_hex(data: bytes) -> str:
     """Return hex digest. Empty input yields the spec'd empty-SHA256
     constant (e3b0c44298fc...); pre-empted Codex finding."""
     return hashlib.sha256(data).hexdigest()
+
+
+logger = logging.getLogger(__name__)
+
+
+def _rollback_or_raise_discard(conn: sqlite3.Connection, original: BaseException,
+                               where: str) -> None:
+    """22-F S-D39 (the 22-A template): roll back THIS function's transaction
+    after ``original``; a rollback that ALSO fails is never suppressed -- it
+    is raised CHAINED from ``original`` with one ERROR record saying the
+    connection must be discarded.  Returns normally when there is nothing to
+    roll back or the rollback works (the caller re-raises ``original``)."""
+    if not conn.in_transaction:
+        return
+    try:
+        conn.rollback()
+    except BaseException as cleanup_error:  # noqa: BLE001 -- the CLASS
+        from swing.trades.entry import log_contained_note
+        still = conn.in_transaction
+        log_contained_note(
+            logger, cleanup_error,
+            "22-F: %s failed (%s) AND the rollback of its transaction failed "
+            "(%s); in_transaction reads %s after the failed rollback; this "
+            "connection MUST BE DISCARDED either way.",
+            where, original, cleanup_error, still)
+        raise cleanup_error from original
 
 
 def run_tos_reconciliation(
@@ -584,14 +610,15 @@ def run_tos_reconciliation(
         conn.commit()
     except CallerHeldTransactionError:
         raise
-    except Exception:
+    except BaseException as exc:  # noqa: BLE001 -- 22-F S-D39 (F2)
         # Defensive: any exception OUTSIDE the inner try (e.g., the
         # outer INSERT run row itself fails) — best-effort rollback +
         # re-raise. The spec §3.3.3 failure-path is for exceptions
         # DURING reconcile_tos; outer-layer failures (DDL drift,
-        # constraint surprises) get rollback semantics.
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+        # constraint surprises) get rollback semantics.  22-F T-F3 (C2-06,
+        # S-D39): the trigger is the CLASS and a failed rollback is raised
+        # chained, never suppressed.
+        _rollback_or_raise_discard(conn, exc, "run_tos_reconciliation")
         raise
 
     out = repo.get_run(conn, run_id)
@@ -725,9 +752,8 @@ def resolve_discrepancy(
                 (existing.run_id,),
             )
         conn.commit()
-    except Exception:
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F T-F3 (C2-06, S-D39)
+        _rollback_or_raise_discard(conn, exc, "resolve_discrepancy")
         raise
 
 
