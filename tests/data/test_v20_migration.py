@@ -234,7 +234,7 @@ def test_v20_migration_lands_all_tables(tmp_path: Path) -> None:
         f"schema_version should be HEAD post-migration, got {version_row[0]}"
     )
     assert EXPECTED_SCHEMA_VERSION == 41, (
-        "EXPECTED_SCHEMA_VERSION must equal 23 in db.py (post-Phase-14-SB3)"
+        "EXPECTED_SCHEMA_VERSION must equal 41 in db.py (22-I, migration 0041)"
     )
 
     conn.close()
