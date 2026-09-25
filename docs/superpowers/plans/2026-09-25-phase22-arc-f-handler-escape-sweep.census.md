@@ -216,11 +216,11 @@ Facet key:
 ### 4.2 F4: close-after-commit (58 operator roots carry the shape)
 
 - The shape: a bare `finally: <x>.close()` whose try body reaches a commit. The list is in `f4.txt`.
-- **Operator-record writes (32):**
+- **Operator-record writes (41; corrected from 32 by replacement at the 22-F R1 gate, CHARC 3(c) -- method: the count of root entries this listing names, 25 CLI + 16 web, cross-checked against the 58 lines of `f4.txt`):**
   - CLI: `trade exit` (`cli.py:1170`), `trade stop-adjust` (`:1261`), `journal cash` / `oof-buy` / `cash-void` / `correct-entry-date` / `correct-cohort-provenance` / `reconcile-tos` (`:2589`, `:2808`, `:3002`, `:3141`, `:3423`, `:3601`), `discrepancy resolve-ambiguity` / `override-correction` / `resolve` (`:4618`, `:4938`, `:5112`), `tos-import` (`:5254`), `pipeline force-clear` (`:5419`), `hypothesis update` (`:5651`), `finviz fetch` (`:5719`), `account snapshot` (`:5827`), `config set` / `reset`, `policy set` / `import-from-toml` (`cli_config.py:193,275,482,555`), and `schwab resolve-out-of-framework` / `fetch` / `setup` / `refresh` / `logout` (`cli_schwab.py:1058,1512,211,311,379`).
   - Web POSTs: `/account/snapshot` (`account.py:171`), `/config` (`config.py:186`), `/config/reset` (`:265`), `/latches/intent` / `orders` / `view` (`latches.py:1319,242,374`), `/patterns/exemplars/{id}/action` (`patterns.py:176`), `/patterns/{id}/review` (`:609`), `/pipeline/force-clear` (`pipeline.py:287`), `/reconcile/.../resolve` (`reconcile.py:1768`), `/trades/{id}/exit` (`trades.py:3153`), `/trades/{id}/stop` (`:3303`), `/trades/{id}/review` (`:3688`), `/trades/{id}/daily-management/event` (`:4047`), `/watchlist/{ticker}/pin` (`watchlist.py:274`), `/dashboard/weather-chart/refresh` (`dashboard.py:176`).
   - **FIX**: the two-durability-facts handler, citing 22-B B-02 (`trade review`) as the reference implementation. A refusal in flight takes R8's chained shape. With everything durable, the result is the 22-A3 WARN and exit 0 (CLI), or the committed response with the degraded notice (web, per R1-3-SURFACES).
-- **Read paths whose "commit" is a cache or audit row only (26):**
+- **Read paths whose "commit" is a cache or audit row only (17; corrected from 26 by replacement, same method: 12 web + 5 CLI):**
   - GET `/charts/{t}.png`, `/health/tool`, `/health/research`, `/journal/trades/{id}` (+ `/thumbnail`, `/chart`), `/patterns/{id}/review`, `/hyp-recs/refresh`, `/hyp-recs/{t}/expand`, `/trades/open/{id}/expand`, `/trades/{id}/review/chart`, `/trades/entry/sizing-hint`.
   - CLI `eval`, `patterns label-exemplars`, `review-silver-with-codex`, `patterns-exemplars-backfill-labeler-evidence`, `diagnose prune-chart-cache`.
   - No operator verdict rides on a GET's close. **Proposed DECLARED under F-F4 (b).** The split between the two lists is my reading of the labels; the plan confirms each one by what its try body writes.
@@ -295,7 +295,7 @@ Facet key:
 
 **F-F4: CHARC.** Census scope: which builtin and invariant escapes are DECLARED by rule rather than converted one by one.
 
-- **Rows:** INV-MODEL (2446 triples: row-shape `__post_init__` / `_require_*` / `_validate_*` over persisted or server-computed values), INV-TYPE (20), PROG-TX (35 `CallerHeld*`), C1-13, C1-16, C1-17, C1-18, the read-path invariants in 3.3, and F4's 26 read-path closes (4.2).
+- **Rows:** INV-MODEL (2446 triples: row-shape `__post_init__` / `_require_*` / `_validate_*` over persisted or server-computed values), INV-TYPE (20), PROG-TX (35 `CallerHeld*`), C1-13, C1-16, C1-17, C1-18, the read-path invariants in 3.3, and F4's 17 read-path closes (4.2; corrected from 26).
 - **Branch (a), DECLARE by class.**
   - The reason: these are invariant or programming guards, not refusals. The loud 500 or traceback IS the correct report of a violated invariant.
   - The recipe's schema/service-prevented rule governs READ-only consumers (section 3 of the recipe). The citation per class is the write-side constraint (the model's CHECK mirror under gotcha #11). For `CallerHeld*` it is the fresh `connect()` at each root.

@@ -219,3 +219,33 @@ Author: RD (seat `swing-rd-20260924-2100`). Courier: the orchestrator. Text of r
 - RD: T-A2 states the inf mechanism (leg-sum overflow), labels the inf/NaN tests as guard tests planted at the resolver's return, drops the None-guard; C1-27's real content is `[0,1)` -> `sub_one_share_quantity`; the plan reads `exit_auto_fill.py:1195`'s quantity source.
 
 **All R1-gate items are RULED. Round 2 may open** on a FRESH cell once R1-01..03 and these deltas are fixed.
+
+## Round 1 fixes -- APPLIED by the continuation cell (plan edited by replacement; before R2)
+
+Every authorized fix and every listed delta, with where it is discharged in the plan. The plan's section 1 map carries one row per new condition (R40-R52).
+
+| item | discharged at |
+|---|---|
+| R1-01 (exit POST re-render, parity) | T-A1 A1-e'; map R1, R50 |
+| R1-02 (B-04 proxy + boundary) | section 0.4 (`fail_after_executescript`, `open_connection_returning`); T-F10 B-04-a..d; map R51 |
+| R1-03 (INV-MODEL roster + closure; AL-8 removed) | T-D0; section 5 (persisted subset declared, INV-COMPUTED not declared); section 11 FND-4; map R52 |
+| COVERED redefined; ladder WIDENED with `exc` logged; pin; AL-3 deleted | section 1.2 row 6; section 3.1 rows 10-12 + tally (WIDENED 8 / COVERED 3 / UNREACHABLE 7); T-B1; T-B4; map R40, R41 |
+| A-1 (`record_exit` typed guard, route 400, CHECK backstop; AL-4 void) | section 0.3; T-A6; section 9; map R42 |
+| A-2 (message truth + `in_transaction` re-read; AL-5 void) | section 0.3; T-F9; section 9; map R43 |
+| A-3 (both ROLLBACKs; which error the operator hears) | section 0.3; T-F8 C2-16; section 9; map R44 |
+| (a) page names the command; `routes/config.py:154` precedence pinned | T-D5 fix text; D5-k; map R45 |
+| (b) non-constant caller moves the member out of the declarable set | section 5 INV-TYPE row; map R46 |
+| (c) R21 discriminator; 41/17 replace 32/26 with the method | T-G3; section 1.2 row 5; census section 4.2 and its summary line edited by replacement; map R21, R47 |
+| (d) FND-1/2/4 register rows (CHARC's pen) | section 11 preamble + FND-4 row; map R48 |
+| RD supersession (inf mechanism; guard tests labelled and planted at the resolver's return; None-guard dropped; `[0,1)`; the `:1195` read) | section 1.2 rows 4 and 10; T-A2; T-A3; map R10, R49 |
+| AL section | AL-3, AL-4, AL-5, AL-8 retired (one line in section 10; ids not reused) |
+
+**Facts checked against the code while encoding (reported up; the reasoning of each ruling is unchanged):**
+1. **R1-03's "roster EQUALS the AST set" is false by measurement.** A Python AST walk over `swing/**/*.py` (utf-8; module- or class-level functions named `__post_init__`/`_require_*`/`_validate_*` containing any `Raise`) gives 168; the `triage.json` INV-MODEL distinct origin functions are 118; overlap 115; 3 roster-only (named explicitly by `triage.py:8`, not by the pattern); 53 AST-only (not reached from an operator root). Encoded as the recipe's closure form: AST set == pattern roster UNION a reasoned `UNREACHED` exclusion map (plan section 1.2 row 11, T-D0).
+2. **A-1's guard is the column's refusal set exactly, `not (price > 0)`.** Measured on a scratch in-memory table with `fills.price`'s DDL (`REAL NOT NULL CHECK (price > 0)`): NaN is refused (NOT NULL; sqlite3 binds NaN as NULL), **`inf` is ACCEPTED**. The R1 plan's `math.isfinite` guard would have refused `inf` and so changed whether an exit proceeds (a brief section 2.9 fork to RD, and BANK-4's surface). Encoded without `isfinite`; A6-f pins that `inf` still records. The typed error is `ExitPriceRefusedError(ValueError)`, so the existing `except ValueError` clauses deliver it.
+3. **A-3's class has a third member:** the `EnvelopeIdentityDriftError` branch's in-try ROLLBACK at `entry_intent_assignment.py:644` reaches the same handler as `:654`. One guard covers all three; T-F8 drives each (plan section 1.2 row 12).
+4. **R1-02's "WARN + exit 0" would skip `db_migrate`'s tail** (`cli.py:355-420`: the gate-image check/alarm and the SINGLE-FIRE v17 ratification). Returning early is not viable (exit 0 over an obligation that can never run again), so the WARN branch continues the tail on a fresh `open_connection`; B-04-d pins it (plan section 1.2 row 13). Flagged in case the orchestrator reads it as a fork.
+5. **RD's entry refusal "token" `sub_one_share_quantity`:** `EntryAutoFillResult` has no reason-token field; adding one is an interface change outside the guard-only bound. Encoded as the advisory text carrying the exit side's text for that token verbatim (T-A2).
+6. **RD's `:1195`** is `exit_auto_fill.py:1194` on this tree; the source is the same resolver over a validated `SchwabOrderResponse` (plan section 1.2 row 10).
+7. **CHARC 3(c)'s "no write in the root":** all 17 read roots reach a commit by `f4.txt`'s definition (a cache/audit row), so the literal reading would move all 17 and contradict the same item's CONFIRMED-as-DECLARED. Encoded as "no operator-record write"; flagged to CHARC for dissent only (T-G3).
+8. **COVERED pair:** encoded exactly as ruled (`SchwabSchemaParityError`, `_RedactedMessageError`). `RuntimeError`, also a strict base, is not in the pair and is not counted as covering; no site depends on it.
