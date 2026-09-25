@@ -1200,6 +1200,55 @@ def _echo_contained(text: str, *, err: bool = False) -> bool:
     return True
 
 
+def _close_after_writes(
+    conn, *, durable: bool, pending_refusal: click.ClickException | None,
+) -> None:
+    """22-F T-G0 (F4): close a root's connection after its writes -- S-B02
+    exactly (RULING B item 2, the `trade review` shape).
+
+    * NOTHING durable and NO refusal -> a bare ``conn.close()``, byte-
+      unchanged: a close failure propagates as it always has.
+    * A REFUSAL in flight -> S-R8 (RULING R8): the refusal text SURVIVES a
+      close failure, named and CHAINED from the close error, never replaced
+      by it.  A named refusal wins even when an earlier write was durable.
+    * DURABLE and no refusal -> the close failure is contained: one ERROR
+      record, a ``WARN: the write IS recorded; ...`` line through the
+      contained sinks, and a NORMAL return (the root exits 0 -- the ledger
+      has the row, and a failure exit would invite a retry against it, D68).
+
+    ``durable`` is bound by the CALLER at each writer's OWN return, never
+    cached earlier.  ``cli_schwab.py``/``cli_config.py`` import this at
+    function scope (no module-level cycle).
+    """
+    if pending_refusal is None and not durable:
+        conn.close()
+        return
+    try:
+        conn.close()
+    except BaseException as close_exc:  # noqa: BLE001 -- the CLASS
+        from swing.trades.entry import ascii_safe, log_contained, safe_text
+        if pending_refusal is not None:
+            raise click.ClickException(
+                f"{ascii_safe(pending_refusal.format_message())}; the "
+                f"connection close also failed: {safe_text(close_exc)}"
+            ) from close_exc
+        close_error_text = safe_text(close_exc)
+        _log_error = log_contained(
+            _pe_backfill_logging.getLogger(__name__),
+            "22-F: a write IS recorded and CLOSING the database connection "
+            "afterwards RAISED (%s); the ledger is unaffected.",
+            close_error_text)
+        _echo_either_sink(ascii_safe(
+            "WARN: the write IS recorded; the connection close failed: "
+            + close_error_text), prefer_err=True)
+        if _log_error is not None:
+            _echo_either_sink(ascii_safe(
+                "WARN: the ERROR log for the close failure above could not be "
+                "emitted cleanly -- a logging handler RAISED ("
+                + safe_text(_log_error) + "); the ledger is unaffected."),
+                prefer_err=True)
+
+
 @trade_group.command("exit")
 @click.option("--trade-id", type=int, required=True)
 @click.option("--exit-date", required=True)
