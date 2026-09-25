@@ -1538,6 +1538,10 @@ def schwab_fetch(
         results: list[dict] = []
         do_snapshot = fetch_snapshot or fetch_all
         do_orders = fetch_orders or fetch_all
+        # 22-F R1-08 (CHARC): the snapshot step's durable account snapshot,
+        # named by any LATER refusal (the refusal wins the exit code, not
+        # the message's completeness).
+        recorded_snapshot_id = None
         if do_snapshot:
             try:
                 r = _step_schwab_snapshot(
@@ -1545,6 +1549,7 @@ def schwab_fetch(
                     client=sd_client, surface="cli",
                 )
                 durable = True
+                recorded_snapshot_id = r.get("snapshot_id")
                 results.append({"step": "snapshot", **r})
             except (SchwabApiError, SchwabSchemaParityError) as exc:
                 # 22-F row 5 (the belt): the parity class is disjoint from
@@ -1563,6 +1568,12 @@ def schwab_fetch(
                 results.append({"step": "orders", **r})
             except (SchwabApiError, SchwabSchemaParityError) as exc:
                 # 22-F row 6 (the belt).
+                if recorded_snapshot_id is not None:
+                    raise click.ClickException(
+                        "the account snapshot IS recorded (snapshot_id "
+                        f"{recorded_snapshot_id}); the orders step failed: "
+                        f"{ascii_safe(str(exc))}",
+                    ) from exc
                 raise click.ClickException(
                     f"Orders step failed: {ascii_safe(str(exc))}",
                 ) from exc
