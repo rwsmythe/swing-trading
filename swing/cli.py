@@ -3865,7 +3865,11 @@ def journal_reconcile_tos_cmd(
     from pathlib import Path as _Path
 
     from swing.data.db import connect
-    from swing.trades.reconciliation import run_tos_reconciliation
+    from swing.trades.entry import ascii_safe, safe_text
+    from swing.trades.reconciliation import (
+        TosReconciliationFailedError,
+        run_tos_reconciliation,
+    )
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
@@ -3874,14 +3878,23 @@ def journal_reconcile_tos_cmd(
     durable = False
     pending_refusal: click.ClickException | None = None
     try:
-        run = run_tos_reconciliation(
-            conn,
-            csv_path=_Path(csv_path),
-            period_end=period_end,
-            period_start=period_start,
-            notes=notes,
-            price_tolerance=price_tolerance,
-        )
+        try:
+            run = run_tos_reconciliation(
+                conn,
+                csv_path=_Path(csv_path),
+                period_end=period_end,
+                period_start=period_start,
+                notes=notes,
+                price_tolerance=price_tolerance,
+            )
+        except TosReconciliationFailedError as failed:
+            # 22-F R2-07 (CHARC): the service COMMITTED the failed run row;
+            # NAME it and the cause, held as the pending refusal so a close
+            # failure is named in it and chained (S-R8), never in its place.
+            cause = failed.__cause__ if failed.__cause__ is not None else failed
+            raise click.ClickException(ascii_safe(
+                f"reconciliation run {failed.run_id} IS recorded as failed; "
+                f"cause: {safe_text(cause)}")) from failed
         durable = True
     except click.ClickException as exc:
         pending_refusal = exc

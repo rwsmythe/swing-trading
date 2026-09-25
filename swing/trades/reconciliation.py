@@ -224,6 +224,22 @@ class CallerHeldTransactionError(RuntimeError):
     """
 
 
+class TosReconciliationFailedError(RuntimeError):
+    """22-F R2-07 (CHARC, the F-F2 new-type clause): ``reconcile_tos``
+    raised, and ``run_tos_reconciliation`` has ALREADY COMMITTED the run row
+    with ``state='failed'`` (spec 3.3.3's failure path).  Raised ``from`` the
+    cause (preserved in ``__cause__``; nothing is swallowed) and carrying the
+    committed ``run_id`` so the caller can NAME the recorded failed run.
+    A ``RuntimeError``, so any existing broad handler keeps catching it.
+    """
+
+    def __init__(self, run_id: int, cause: BaseException) -> None:
+        super().__init__(
+            f"reconciliation run {run_id} IS recorded as failed: "
+            f"{type(cause).__name__}: {cause}")
+        self.run_id = run_id
+
+
 class DiscrepancyResolutionStateError(ValueError):
     """Phase 18 Arc 18-H.6.1 Codex R1 Major #2 — raised when
     ``resolve_discrepancy`` is called with ``require_current_resolution``
@@ -476,8 +492,10 @@ def run_tos_reconciliation(
                 error_message=f"{type(e).__name__}: {e}",
             )
             conn.commit()
-            # Re-raise so the caller learns; the row is preserved.
-            raise
+            # Re-raise so the caller learns; the row is preserved.  22-F
+            # R2-07: TYPED, naming the committed failed run, chained from
+            # the cause.
+            raise TosReconciliationFailedError(run_id, e) from e
 
         # Success path — populate summary fields.
         # Update fills_reconciled / trades_reconciled best-effort
@@ -763,6 +781,7 @@ __all__ = [
     "DiscrepancyResolutionStateError",
     "MATERIAL_BY_TYPE",
     "RESOLUTION_TYPES",
+    "TosReconciliationFailedError",
     "resolve_discrepancy",
     "run_tos_reconciliation",
 ]
