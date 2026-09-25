@@ -1667,10 +1667,11 @@ _NO_REPLACE_PK = {
     # Arc 22-B (0040): the attestation table's append-only triple.
     "trg_eia_no_replace": ("entry_intent_attestations", "attestation_id"),
     # Arc 22-I (0041): the REPLACE-exposure sweep's barriers, EXISTING tables.
-    # A composite-PK table carries no -1 clause (pk None: the idiom test below
-    # asserts the composite equality instead).
+    # A composite PK HIDES the rowid rather than removing it, so candidate_criteria
+    # carries the -1 idiom on its hidden rowid (Reviewer B B-1, CHARC ruling) and
+    # the idiom test below also asserts its composite-key clause.
     "trg_pfo_no_replace": ("pattern_forward_observations", "observation_id"),
-    "trg_cc_no_replace": ("candidate_criteria", None),
+    "trg_cc_no_replace": ("candidate_criteria", "rowid"),
     "trg_te_no_replace": ("trade_events", "id"),
     "trg_fac_no_replace": ("finviz_api_calls", "call_id"),
     "trg_pev_no_replace": ("pattern_evaluations", "id"),
@@ -1790,10 +1791,8 @@ def test_the_pk_conflict_clause_uses_the_minus_one_idiom(
         (trigger,)).fetchone()
     assert body is not None, f"{trigger} is not installed"
     body = " ".join(body[0].split())
-    if pk is None:  # 22-I: a composite PK has no rowid sentinel to exclude
+    if trigger == "trg_cc_no_replace":  # 22-I B-1: hidden rowid AND composite key
         assert "candidate_id = NEW.candidate_id AND criterion_name = NEW.criterion_name" in body
-        assert "!= -1" not in body
-        return
     assert f"NEW.{pk} != -1 AND {pk} = NEW.{pk}" in body, (
         f"{trigger} does not carry the -1 idiom on {pk}")
     assert f"NEW.{pk} IS NOT NULL" not in body, (
