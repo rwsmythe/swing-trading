@@ -91,6 +91,11 @@ class Root:
     # False where the root has NO nothing-durable path while its connection
     # is open (G1-c is then not constructible; the reason is in the row)
     control: bool = True
+    # the 1-based index of the connection opened through `target` whose close
+    # the case fails (default None: every connection's close fails). A root
+    # that opens a READ connection first through the same name names its
+    # WRITE connection (`swing eval`: the equity read, then `_persist`).
+    nth: int | None = None
 
 
 # ---------------------------------------------------------------- worlds ---
@@ -283,6 +288,99 @@ def _status_history(w: World) -> int:
 
 def _snapshots(w: World) -> int:
     return _scalar(w.db, "SELECT COUNT(*) FROM account_equity_snapshots")
+
+
+# ---- STOP-5 (CHARC, (a) with (a-ii)): the two exemplar-label roots + eval --
+
+def _write_json(path: Path, payload: dict) -> Path:
+    import json
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _silver(evaluation: str) -> dict:
+    return {
+        "evaluation": evaluation, "confidence": "high",
+        "structural_evidence_json": {"pivot_price": 25.0},
+        "geometric_evidence_narrative": "Stage 2 uptrend; pivot at 25.00.",
+    }
+
+
+def _label_world(tmp_path: Path, mp: Any) -> World:
+    w = _plain_world(tmp_path, mp)
+    w.extra["silver"] = _write_json(tmp_path / "silver.json",
+                                    _silver("confirmed"))
+    return w
+
+
+def _label_refusal_world(tmp_path: Path, mp: Any) -> World:
+    """`relabel:<same class>` is refused by the SERVICE (a `ValueError`
+    raised inside `fire_claude_silver_label` before its INSERT), which the
+    root turns into a `ClickException` while its connection is open."""
+    w = _plain_world(tmp_path, mp)
+    w.extra["silver"] = _write_json(tmp_path / "silver-same.json",
+                                    _silver("relabel:vcp"))
+    return w
+
+
+def _label_argv(w: World) -> list:
+    return ["--config", str(w.cfg), "patterns", "label-exemplars",
+            "--ticker", "ABC", "--start", "2024-01-01", "--end",
+            "2024-02-01", "--pattern-class", "vcp",
+            "--silver-response-file", str(w.extra["silver"])]
+
+
+def _exemplars(w: World) -> int:
+    return _scalar(w.db, "SELECT COUNT(*) FROM pattern_exemplars")
+
+
+def _review_world(tmp_path: Path, mp: Any) -> World:
+    """A claude_silver parent planted through the REAL label-exemplars path
+    (before any opener is patched), and a DISAGREEMENT codex response: the
+    durable write is the parent UPDATE plus one codex_silver INSERT."""
+    w = _label_world(tmp_path, mp)
+    r = w.runner.invoke(main, _label_argv(w))
+    assert r.exit_code == 0, r.output
+    w.extra["parent"] = _scalar(w.db, "SELECT MAX(id) FROM pattern_exemplars")
+    w.extra["codex"] = _write_json(tmp_path / "codex.json", {
+        "agreed": False, "alternative_evaluation": "rejected",
+        "alternative_confidence": "high",
+        "alternative_structural_evidence_json": {"reason": "g1 probe"},
+    })
+    return w
+
+
+def _review_argv(exemplar_id: Callable[[World], Any]) -> Callable[[World], list]:
+    return lambda w: ["--config", str(w.cfg), "patterns",
+                      "review-silver-with-codex", "--exemplar-id",
+                      str(exemplar_id(w)), "--codex-response-file",
+                      str(w.extra["codex"])]
+
+
+def _eval_world(tmp_path: Path, mp: Any) -> World:
+    """`swing eval` over a two-ticker screen with `PriceFetcher.get` stubbed
+    (the `tests/cli/test_cli_eval.py` shape: no network)."""
+    import pandas as pd
+
+    from tests.cli.test_cli_eval import _minimal_finviz_csv
+
+    def _fake_get(self, ticker, lookback_days, *, as_of_date=None):
+        closes = [10.0 + i * 0.15 for i in range(260)]
+        idx = pd.bdate_range(end="2026-04-17", periods=260)
+        return pd.DataFrame(
+            {"Open": closes, "High": [c * 1.01 for c in closes],
+             "Low": [c * 0.99 for c in closes], "Close": closes,
+             "Volume": [1_000_000] * 260}, index=idx)
+
+    mp.setattr("swing.prices.PriceFetcher.get", _fake_get)
+    w = _plain_world(tmp_path, mp)
+    w.extra["csv"] = _minimal_finviz_csv(tmp_path / "screen.csv",
+                                         ["AAPL", "MSFT"])
+    return w
+
+
+def _eval_runs(w: World) -> int:
+    return _scalar(w.db, "SELECT COUNT(*) FROM evaluation_runs")
 
 
 def _home_world(tmp_path: Path, mp: Any) -> World:
@@ -736,20 +834,58 @@ ROOTS: list[Root] = [
         refusal_argv=lambda w: ["--config", str(w.cfg), "schwab", "logout"],
         refusal_text="could not rename the tokens DB",
     ),
+    # STOP-5 (CHARC): a retry after a false failure would DUPLICATE a
+    # silver exemplar (no UNIQUE on `pattern_exemplars`), insert a second
+    # codex_silver child, or append a second immutable evaluation run.
+    Root(
+        id="patterns-label-exemplars", target=_DB_CONNECT,
+        world=_label_world, argv=_label_argv, probe=_exemplars,
+        writer="swing.patterns.labeling.fire_claude_silver_label",
+        refusal_world=_label_refusal_world, refusal_argv=_label_argv,
+        refusal_text="silver-response-file shape invalid",
+    ),
+    Root(
+        id="patterns-review-silver-with-codex", target=_DB_CONNECT,
+        world=_review_world,
+        argv=_review_argv(lambda w: w.extra["parent"]), probe=_exemplars,
+        writer="swing.patterns.labeling.fire_codex_review_for_silver_row",
+        refusal_argv=_review_argv(lambda w: 9999),
+        refusal_text="exemplar 9999 not found",
+    ),
+    # No G1-b: `_persist`'s connection raises no refusal while it is open
+    # (the malformed-CSV `ValueError` is raised by the orchestration BEFORE
+    # `_persist` opens it). The module global `swing.cli.connect` opens the
+    # equity READ first, so the WRITE connection is the second (`nth=2`).
+    Root(
+        id="eval", target="swing.cli.connect", world=_eval_world,
+        argv=lambda w: ["--config", str(w.cfg), "eval", "--csv",
+                        str(w.extra["csv"])],
+        probe=_eval_runs, writer="swing.cli.insert_candidates", nth=2,
+    ),
 ]
 
 _REFUSING = [r for r in ROOTS if r.refusal_argv is not None]
 _CONTROLLED = [r for r in ROOTS if r.control]
 
 
-def _failing_close(monkeypatch, target: str) -> list:
-    return patch_conn_opener(monkeypatch, target,
-                             lambda real: FailingVerbsConn(real,
-                                                           fail_close=True))
+def _failing_close(monkeypatch, target: str, nth: int | None = None) -> list:
+    """Every connection opened through `target` fails its close, or -- with
+    `nth` -- only the nth one (a root whose READ connection comes first)."""
+    count = {"n": 0}
+
+    def _factory(real):
+        count["n"] += 1
+        return FailingVerbsConn(real, fail_close=(nth is None
+                                                  or count["n"] == nth))
+    return patch_conn_opener(monkeypatch, target, _factory)
 
 
-def _closes(built: list) -> int:
-    return sum(p.calls["close"] for p in built)
+def _closes(built: list, nth: int | None = None) -> int:
+    """Did-it-fire: the close calls recorded on the FAILING proxies."""
+    if nth is None:
+        return sum(p.calls["close"] for p in built)
+    assert len(built) >= nth, len(built)
+    return built[nth - 1].calls["close"]
 
 
 @pytest.mark.parametrize("root", ROOTS, ids=[r.id for r in ROOTS])
@@ -757,9 +893,9 @@ def test_G1a_success_with_close_failure_exits_zero_and_warns(
         root: Root, tmp_path, monkeypatch):
     w = root.world(tmp_path, monkeypatch)
     before = root.probe(w)
-    built = _failing_close(monkeypatch, root.target)
+    built = _failing_close(monkeypatch, root.target, root.nth)
     result = w.runner.invoke(main, root.argv(w), input=root.input)
-    assert _closes(built) >= 1
+    assert _closes(built, root.nth) >= 1
     assert result.exit_code == 0, (result.output, repr(result.exception))
     assert _WARN in result.output
     assert _PLANTED in result.output
@@ -771,9 +907,9 @@ def test_G1b_refusal_with_close_failure_keeps_the_refusal(
         root: Root, tmp_path, monkeypatch):
     w = (root.refusal_world or root.world)(tmp_path, monkeypatch)
     before = root.probe(w)
-    built = _failing_close(monkeypatch, root.target)
+    built = _failing_close(monkeypatch, root.target, root.nth)
     result = w.runner.invoke(main, root.refusal_argv(w), input=root.input)
-    assert _closes(built) >= 1
+    assert _closes(built, root.nth) >= 1
     assert result.exit_code == 1, (result.output, repr(result.exception))
     assert isinstance(result.exception, SystemExit)
     assert root.refusal_text in result.output
@@ -791,12 +927,28 @@ def test_G1c_control_nothing_durable_close_error_replaces_as_before(
     module_name, _, attr = root.writer.rpartition(".")
     wrapper = raising(_PlantedWriterFailure("planted writer failure"))
     monkeypatch.setattr(module_name + "." + attr, wrapper)
-    built = _failing_close(monkeypatch, root.target)
+    built = _failing_close(monkeypatch, root.target, root.nth)
     result = w.runner.invoke(main, root.argv(w), input=root.input)
     assert wrapper.calls == 1
-    assert _closes(built) >= 1
+    assert _closes(built, root.nth) >= 1
     assert isinstance(result.exception, sqlite3.OperationalError), (
         result.output, repr(result.exception))
     assert _PLANTED in str(result.exception)
     assert _WARN not in result.output
     assert root.probe(w) == before
+
+
+def test_G1a_eval_notice_names_the_run_id(tmp_path, monkeypatch):
+    """STOP-5 (CHARC): a retry of `swing eval` appends a SECOND immutable
+    evaluation run, so the close-failure notice NAMES the run it recorded
+    (the duplicate is then findable)."""
+    root = next(r for r in ROOTS if r.id == "eval")
+    w = root.world(tmp_path, monkeypatch)
+    built = _failing_close(monkeypatch, root.target, root.nth)
+    result = w.runner.invoke(main, root.argv(w))
+    assert _closes(built, root.nth) >= 1
+    assert result.exit_code == 0, (result.output, repr(result.exception))
+    run_id = _scalar(w.db, "SELECT MAX(id) FROM evaluation_runs")
+    warn = [ln for ln in result.output.splitlines() if _WARN in ln]
+    assert len(warn) == 1, result.output
+    assert f"evaluation run {run_id}" in warn[0]

@@ -566,12 +566,23 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
     # Persist seam: a plain single-transaction insert (no lease).
     def _persist(run, candidates) -> int:
         conn = connect(cfg.paths.db_path)
+        # 22-F T-G1 (F4, S-B02; CHARC STOP-5): `durable` is bound once the
+        # `with conn:` holding BOTH inserts has committed -- the durable
+        # point this connection's close follows (the orchestration returns
+        # directly after `persist`). No refusal is raised while it is open.
+        # A retry would append a SECOND immutable evaluation run, so the
+        # close-failure notice names the run this one recorded.
+        durable = False
+        run_id = None
         try:
             with conn:  # commits on success, rolls back on exception
                 run_id = insert_evaluation_run(conn, run)
                 insert_candidates(conn, run_id, candidates)
+            durable = True
         finally:
-            conn.close()
+            _close_after_writes(
+                conn, durable=durable, pending_refusal=None,
+                recorded=(f"evaluation run {run_id}" if durable else None))
         return run_id
 
     try:
@@ -1208,6 +1219,7 @@ def _echo_contained(text: str, *, err: bool = False) -> bool:
 
 def _close_after_writes(
     conn, *, durable: bool, pending_refusal: click.ClickException | None,
+    recorded: str | None = None,
 ) -> None:
     """22-F T-G0 (F4): close a root's connection after its writes -- S-B02
     exactly (RULING B item 2, the `trade review` shape).
@@ -1223,8 +1235,11 @@ def _close_after_writes(
       has the row, and a failure exit would invite a retry against it, D68).
 
     ``durable`` is bound by the CALLER at each writer's OWN return, never
-    cached earlier.  ``cli_schwab.py``/``cli_config.py`` import this at
-    function scope (no module-level cycle).
+    cached earlier.  ``recorded`` (optional) names the durable write in the
+    WARN line and the ERROR record, for a root whose retry would append a
+    second row the operator must be able to find (``swing eval``, STOP-5).
+    ``cli_schwab.py``/``cli_config.py`` import this at function scope (no
+    module-level cycle).
     """
     if pending_refusal is None and not durable:
         conn.close()
@@ -1239,14 +1254,16 @@ def _close_after_writes(
                 f"connection close also failed: {safe_text(close_exc)}"
             ) from close_exc
         close_error_text = safe_text(close_exc)
+        recorded_text = (
+            "" if recorded is None else f" -- the recorded write: {recorded}")
         _log_error = log_contained(
             _pe_backfill_logging.getLogger(__name__),
             "22-F: a write IS recorded and CLOSING the database connection "
-            "afterwards RAISED (%s); the ledger is unaffected.",
-            close_error_text)
+            "afterwards RAISED (%s); the ledger is unaffected.%s",
+            close_error_text, recorded_text)
         _echo_either_sink(ascii_safe(
             "WARN: the write IS recorded; the connection close failed: "
-            + close_error_text), prefer_err=True)
+            + close_error_text + recorded_text), prefer_err=True)
         if _log_error is not None:
             _echo_either_sink(ascii_safe(
                 "WARN: the ERROR log for the close failure above could not be "
@@ -6541,6 +6558,12 @@ def label_exemplars_cmd(
     def _dispatch_from_file(**_kwargs: object) -> _SilverLabelResponse:
         return response
 
+    # 22-F T-G1 (F4, S-B02; CHARC STOP-5): `durable` is bound at
+    # `fire_claude_silver_label`'s OWN return (it commits its INSERT inside
+    # its own `with conn:`); `pending_refusal` is whichever typed refusal is
+    # in flight (the shape-invalid refusal is raised before the INSERT).
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         try:
             exemplar_id = _fire_claude_silver_label(
@@ -6557,6 +6580,7 @@ def label_exemplars_cmd(
                 dispatch_subagent=_dispatch_from_file,
                 now_fn=lambda: _datetime.now(_UTC).isoformat(),
             )
+            durable = True
         except ValueError as exc:
             # Codex R4 M#1 closure: service-layer ValueErrors (most notably
             # _map_silver_evaluation_to_decision rejecting
@@ -6570,8 +6594,12 @@ def label_exemplars_cmd(
                 "silver-response-file shape invalid: "
                 f"{ascii_safe(str(exc))}"
             ) from exc
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     click.echo(
         f"silver exemplar persisted: id={exemplar_id} ticker={ticker} "
@@ -6863,6 +6891,15 @@ def review_silver_with_codex_cmd(
 
     cfg = ctx.obj["config"]
     conn = _connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02; CHARC STOP-5): `durable` is bound at
+    # `fire_codex_review_for_silver_row`'s OWN return (it commits the parent
+    # UPDATE and any codex_silver INSERT inside its own `with conn:`; the
+    # forced RNG below makes the review fire, so its return is always after
+    # a commit); `pending_refusal` is whichever typed refusal is in flight
+    # (every refusal here is raised before that commit). Emit mode writes
+    # nothing and keeps the bare close.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         parent = _exemplars_repo.get_exemplar_by_id(conn, exemplar_id)
         if parent is None:
@@ -6994,6 +7031,7 @@ def review_silver_with_codex_cmd(
                 codex_dispatch=_dispatch_from_file,
                 rng=forced_rng,
             )
+            durable = True
         except ValueError as exc:
             # Service-layer ValueError (e.g., CodexReviewResponse.agreed=
             # False but missing alternative_evaluation) -> clean
@@ -7013,8 +7051,12 @@ def review_silver_with_codex_cmd(
                 f"parent_exemplar_id={exemplar_id} final_decision="
                 f"{codex_response.alternative_evaluation}"
             )
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
 
 def _emit_or_skip_payload(

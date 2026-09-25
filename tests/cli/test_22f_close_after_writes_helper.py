@@ -98,3 +98,21 @@ def test_working_close_is_quiet_on_every_branch(durable, refusal, capsys,
     out = capsys.readouterr()
     assert out.out == "" and out.err == ""
     assert caplog.records == []
+
+
+def test_durable_close_failure_names_the_recorded_write_when_given(capsys,
+                                                                   caplog):
+    """STOP-5 (CHARC, `swing eval`): `recorded=` names the durable write in
+    the WARN line and the ERROR record; the WARN prefix is unchanged."""
+    proxy = _proxy(True)
+    with caplog.at_level(logging.ERROR):
+        assert _helper()(proxy, durable=True, pending_refusal=None,
+                         recorded="evaluation run 42") is None
+    assert proxy.calls["close"] == 1
+    err = capsys.readouterr().err
+    assert ("WARN: the write IS recorded; the connection close failed: "
+            in err)
+    assert "the recorded write: evaluation run 42" in err
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "evaluation run 42" in errors[0].getMessage()
