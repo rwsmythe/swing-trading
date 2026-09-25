@@ -2091,6 +2091,7 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
     n_written = 0
     close_error_text = None
     close_log_error_text = None
+    close_warn_msg = None
 
     def _emit(line: str) -> None:
         # D69 (Codex R1 Major 1): re-evaluated at EVERY call -- once ANY
@@ -2275,13 +2276,20 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
                         n_written, safe_text(exc))
                 else:
                     close_error_text = safe_text(exc)
+                    # SS-1 (self-sweep, same class as R6-1): build the
+                    # ruled message ONCE and pass that SAME string to
+                    # BOTH sinks -- the echo (below, after this try/
+                    # finally returns) and the log record here must
+                    # carry byte-identical text.
+                    close_warn_msg = (
+                        "WARN (post-commit): " + safe_text(n_written)
+                        + " row(s) were written durably this invocation, "
+                        "and CLOSING the database connection afterwards "
+                        "RAISED (" + close_error_text + "); the ledger is "
+                        "unaffected.")
                     _close_log_error = log_contained(
                         _pe_backfill_logging.getLogger(__name__),
-                        "D69: backfill-intent wrote %s row(s) durably this "
-                        "invocation and CLOSING the database connection "
-                        "afterwards RAISED (%s); the ledger is unaffected "
-                        "and the command still exits 0.",
-                        n_written, close_error_text)
+                        "%s", close_warn_msg)
                     if _close_log_error is not None:
                         close_log_error_text = safe_text(_close_log_error)
         else:
@@ -2291,11 +2299,7 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
     # a close failure; n_written > 0 with an exception in flight re-raises
     # it before this line, per Python's own finally semantics).
     if close_error_text is not None:
-        _echo_either_sink(ascii_safe(
-            "WARN (post-commit): " + safe_text(n_written) + " row(s) were "
-            "written durably this invocation, and CLOSING the database "
-            "connection afterwards RAISED (" + close_error_text + "); the "
-            "ledger is unaffected."), prefer_err=True)
+        _echo_either_sink(ascii_safe(close_warn_msg), prefer_err=True)
     if close_log_error_text is not None:
         _echo_either_sink(ascii_safe(
             "WARN (post-commit): the ERROR log for the close failure above "

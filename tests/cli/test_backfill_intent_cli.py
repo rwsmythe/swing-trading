@@ -326,7 +326,18 @@ def test_backfill_close_raise_after_commit_warns_and_exits_zero(
     assert "close failed" in res.output
     # Durable on a FRESH connection, not the (raised-on-close) writer's own.
     assert _read_intent(db_path, t1) == "standard"
-    assert any("D69" in r.message for r in caplog.records)
+    # SS-1 (uncounted self-sweep, same class as R6-1): the echoed
+    # "WARN (post-commit): ..." line and its log_contained twin must be
+    # built ONCE and carry byte-identical text -- not two independently
+    # framed strings (the pre-fix echo opened "WARN (post-commit): ..."
+    # while the log opened "D69: backfill-intent wrote ...").
+    warn_lines = [line for line in res.output.splitlines()
+                  if line.startswith("WARN (post-commit):")]
+    assert len(warn_lines) == 1
+    warn_records = [r for r in caplog.records
+                     if r.message.startswith("WARN (post-commit):")]
+    assert len(warn_records) == 1
+    assert warn_records[0].message == warn_lines[0]
 
 
 def test_backfill_close_raise_zero_committed_raises_as_today(
