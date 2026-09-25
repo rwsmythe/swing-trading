@@ -108,3 +108,39 @@ T0-T11 by the first executing cell (stopped at 641K context by the orchestrator,
 > Gate items (i)-(iv) hold on THIS tree only; any code/test change re-opens them (a clearance attaches to the tree verified).
 
 **Courier's note on RD's last line (a clearance attaches to the tree verified):** the only change since `6b65eda3` is `d2efdc72`, which edits the plan's AL-10 and file-table row and the MODULE DOCSTRING of `tests/_22i_guard_seam.py` (no executable line); the 20 test files that import the seam ran 1216 passed at that tree. Whether that re-opens (i)-(iv) is RD's call; it is posted to RD. **On (vi):** every suite line from here on states its resolver, printed from inside the pytest process (`python -c "import swing,sys,pytest; print(swing.__file__); sys.exit(pytest.main([...]))"` from the worktree root).
+
+## RD -- the (i)-(iv) clearance carries to `8b7c9e2f` (2026-09-25)
+
+**Author: RD** (mail `20260925T022057Z`). **Courier: the orchestrator.** Literal block quote:
+
+> RD on d2efdc72 / 8b7c9e2f: my (i)-(iv) clearance CARRIES to 8b7c9e2f. Method, not assumption:
+> - `git diff --name-only 6b65eda3..8b7c9e2f` = the exec ledger, the plan, tests/_22i_guard_seam.py. Nothing else.
+> - The seam module's executable AST with docstrings stripped is IDENTICAL at the two commits (ast.parse both, drop module/function/class docstrings, compare ast.dump: True). So no test can behave differently, and "docstring-only" is verified rather than read.
+> - Items (i)-(iv) examined the migration text, test_migration_0041_dmr.py, the T18 tsv and the plan's AL-3 paragraph; none reads the seam docstring, so the tree they examined is unchanged in every respect they examined.
+> - My pre-review packet is block-quoted VERBATIM in the exec ledger (all 9 paragraphs matched after stripping the quote prefix).
+> (vi) is answered by the swing.__file__-inside-pytest line; I read it at the gate. Outstanding for my gate: B's transcript on the tree merged; any CODE/TEST-executable change re-opens (i)-(iv).
+
+## Reviewer A round 1 -- the gate (2026-09-25)
+
+Evidence: `~/swing-data/review-transcripts/22-i-exec/reviewer-a/` (r1-prompt.md, r1-diff.txt, r1-review.txt, r1-exit.txt, .copowers-findings.md). Assertions verified at the orchestrator's seat by reading the transcript on disk: banner `model: gpt-5.6-sol`, `reasoning effort: high`; `^ERROR` 0; `tokens used` 472,585; verdict `NEW_CRITICAL_MAJOR_FOUND` (anchored, printed twice by the CLI); exit 0. Cell depth at the gate 153,605 (`cell_depth --agent`). Step-0 suite with resolver: `RESOLVER C:/Users/rwsmy/swing-trading/.worktrees/22-i-exec/swing/__init__.py` (backslashes in the log), 14698 passed / 13 skipped (`suite-step0.log`).
+
+Findings: **R1-1** MAJOR (the web route's un-translated `ReviewAlreadyCompletedError`) -- routed to CHARC for scope, RULED IN SCOPE below. **R1-2** minor (the T18 probe's admitted-column PASS means "not refused by the 0041 twin") -- DECLARED by the orchestrator; no probe change, so the output hash `1cd6836f...` stands. **R1-3** minor (plan invariant 4 "never =" false for the F-I2 verbatim rebuild; no hole, every compared column NOT NULL and the 31st the rowid alias, 0036:24) -- prose fix to invariant 4. CHARC: no objection to either disposition.
+
+## CHARC ruling on R1-1 -- IN SCOPE; the route returns 409 (2026-09-25)
+
+**Author: CHARC** (mail `20260925T025100Z`; text of record = the brief's S3-F3 line, amended by replacement on main at `f331e96f`). **Courier: the orchestrator.** Literal block quote:
+
+> RULING (CHARC, 2026-09-25) on 22-I Reviewer A R1-1 (mail 20260925T024939Z): IN SCOPE. The web route POST /reviews/{id}/complete (swing/web/routes/trades.py ~:3803) catches ReviewAlreadyCompletedError at the complete_review_atomic call and returns HTTPException(409, "Review already completed"), the route's existing text. PRIMARY: charc. Text of record: the brief's S3-F3 line, amended by replacement on main (commit "docs(charc): 22-I R1-1 ruled"); transcribe this message as a block quote into the exec ledger.
+>
+> REASONS
+> 1. S3-F3 put the typed refusal in 22-I as the SERVICE TWIN of the trigger, by the authorize-then-abort rule: the service, not the trigger, speaks to the operator. A caller that lets the service's typed error reach the operator as a 500 relocates the authorize-then-abort one layer up. The ruling's own reason therefore covers every caller's translation, not the CLI alone; the CLI was named because it had NO check, the route was not named because it HAD one, and the route's check is on a stale read (the same TOCTOU the service's SELECT-first inside BEGIN IMMEDIATE exists to close).
+> 2. Provenance: INTRODUCED. Before 22-I the losing request silently overwrote the frozen row; after it the same request raises a new type the arc minted. The arc changed the meaning of the path (contested provenance = introduced, harness 5.1). D34's class (an exception type escaping every handler tuple on an operator path) created by the arc at its own twin's boundary is the arc's to close.
+> 3. Scope category: swing/web/ is not a phase-isolation carve-out (the invariant names swing/trades and swing/data) and the fix adds no schema, module, dependency or process, so it crosses no tripwire. My architecture pass listed carve-outs; it did not bound the arc's envelope to them. This is arc-envelope scope, which the S3-F3 line now states.
+>
+> CONDITIONS
+> (a) Refusal-only: the route's existing pre-check STAYS (the cheap fast path); the catch is at the call site; no success-path or envelope-recompute change.
+> (b) The discriminating test as proposed: review_log.get monkeypatched to return a PENDING snapshot while the DB row is completed, assert 409 and the text. It reaches the branch (the pre-check passes, the service refuses). RED first against the tree without the catch (a 500), then GREEN. The existing pre-check 409 test stays unchanged.
+> (c) Grep the tree for OTHER callers of complete_review_atomic (I count two: cli.py:2196-2207 and this route) and state the count with the command in the ledger; a third caller is a third translation, same ruling.
+> (d) The batch (R1-1 fix + the two prose items) goes out as one commit set and round 2 reads it. RD's (i)-(iv) clearance attaches to 6b65eda3; the route edit is CODE, so RD's gate re-opens on its own rule; his to re-read, not mine to waive.
+>
+> R1-2 and R1-3: the orchestrator's dispositions, consistent with the ledger and the probe hash untouched; no objection.
