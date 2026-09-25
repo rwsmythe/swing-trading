@@ -2176,24 +2176,41 @@ def trade_backfill_intent_cmd(ctx, trade_id, force):
                 # RE-RAISED BARE (nothing chained -- nothing else is in
                 # flight yet; the `finally` block's clause (e) handling,
                 # untouched, takes it from here). The summary line is NOT
-                # printed on this path -- it would read as completion. A
-                # re-run without --force/--trade-id re-prompts only the
-                # NULL rows (L2); the written rows stay durable.
+                # printed on this path -- it would read as completion.
+                #
+                # R5-1 / CHARC SUPERSESSION (2026-09-25, mail
+                # 20260925T030626Z): the WARN text ORIGINALLY claimed the
+                # stalled row is "left NULL for a re-run" -- FALSE when this
+                # row (`tid`) was already-set and being re-prompted under
+                # --force/--trade-id (L2, corrected the same round): that
+                # row keeps its PRIOR value, never NULL, and a PLAIN re-run
+                # (no --force/--trade-id) SKIPS it entirely -- an operator
+                # following the literal claim would never revisit it. The
+                # text below states the row's REAL state (unanswered, keeps
+                # its prior value) and the correct re-run contract (a plain
+                # re-run re-prompts NULL rows only; an already-set row needs
+                # --force/--trade-id again), never asserting NULL.
                 if n_written == 0:
                     raise
                 _echo_either_sink(ascii_safe(
                     "WARN (partial): backfill-intent wrote " + safe_text(n_written)
                     + " row(s) durably this invocation; prompting for trade "
                     + safe_text(tid) + " FAILED (" + safe_text(exc) + "); "
-                    "this row and the rest are UNANSWERED and left NULL "
-                    "for a re-run; the ledger is unaffected."),
+                    "this row and any later rows were NOT answered this "
+                    "invocation and keep their prior value; a plain re-run "
+                    "re-prompts only rows still NULL, and an already-set "
+                    "row needs --force or --trade-id again; the ledger is "
+                    "unaffected."),
                     prefer_err=True)
                 log_contained(
                     _pe_backfill_logging.getLogger(__name__),
                     "D69: backfill-intent wrote %s row(s) durably this "
                     "invocation; prompting for trade %s FAILED (%s) -- this "
-                    "row and the rest are UNANSWERED and left NULL for a "
-                    "re-run; the ledger is unaffected.",
+                    "row and any later rows were NOT answered this "
+                    "invocation and keep their prior value; a plain re-run "
+                    "re-prompts only rows still NULL, and an already-set "
+                    "row needs --force or --trade-id again; the ledger is "
+                    "unaffected.",
                     n_written, tid, safe_text(exc))
                 raise
             if choice in ("skip", ""):

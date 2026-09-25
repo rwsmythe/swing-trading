@@ -498,7 +498,17 @@ def test_backfill_prompt_render_failure_after_commit_warns_and_propagates(
     branch (i) PROPAGATE applies: exit nonzero, the ORIGINAL OSError
     propagates, one contained WARN line names n_written=1 and trade t2,
     and the summary line (which would read as completion) is NOT printed.
-    The unanswered row is left NULL for a re-run, never silently skipped."""
+
+    R5-1 / CHARC SUPERSESSION (2026-09-25, mail 20260925T030626Z): the
+    WARN text no longer claims the unanswered row is "left NULL for a
+    re-run" (false under --force/--trade-id, where an already-set row
+    keeps its prior value and a plain re-run skips it) -- it states the
+    row's real state instead (unanswered, keeps its prior value) and the
+    correct re-run contract. This test's OWN t2 happens to be a fresh
+    NULL row (no --force here), so the row IS left NULL in this specific
+    scenario -- the WARN text's new wording is scenario-agnostic and
+    still true for it, it just no longer OVER-claims for the --force
+    case this test does not exercise."""
     import click
 
     runner, cfg, db_path = _setup(tmp_path)
@@ -530,6 +540,12 @@ def test_backfill_prompt_render_failure_after_commit_warns_and_propagates(
     assert "WARN (partial):" in res.output
     assert "1 row(s)" in res.output
     assert f"trade {t2}" in res.output
+    # R5-1 / CHARC SUPERSESSION substring anchor: the corrected text
+    # states the row's real state and the corrected re-run contract,
+    # never the superseded "left NULL for a re-run" claim.
+    assert "keep their prior value" in res.output
+    assert "an already-set row needs --force or --trade-id again" in res.output
+    assert "left NULL for a re-run" not in res.output
     # The summary line ("N set, ...") must NOT appear -- it would read as
     # completion over an invocation that stopped short.
     assert "skipped-already-set" not in res.output
