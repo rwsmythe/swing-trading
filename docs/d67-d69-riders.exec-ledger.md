@@ -76,3 +76,32 @@ Tree `9f9bf2ef` (`e7dc2466` R5-1 fix: CHARC's text verbatim; `9f9bf2ef` census r
 **R6-1 MAJOR** (`swing/cli.py` ~:2195/~:2206): the two sinks do not carry the same text. The echo opens `WARN (partial): ...` and joins with `; `; the `log_contained` twin opens `D69: ...` and joins with ` -- `. The ruled clause is identical in both; the frame around it is not. Provenance: the asymmetry dates from B-2 (`c2aeac29`), so it was introduced by this rider.
 
 **Orchestrator disposition + WRITTEN AUTHORIZATION (2026-09-25):** FIX. Build the ruled message ONCE and pass that one string to BOTH sinks (`log_contained(..., "%s", msg)`), so the log carries the ruled text byte-for-byte. This satisfies CHARC's "Both sinks carry it" under the strict reading and the loose one alike, so no ruling is needed; CHARC is informed. Before the round: an UNCOUNTED SELF-SWEEP (SS-N) over every echo/log pair in `trade_backfill_intent_cmd` for the same class (text parity between paired sinks; any operator-facing claim of a row state the code did not measure). Then ONE counted round **R7** at `-p strong` reading R6-1's fix. The task-bearing finding is R6-1. No R8: a further major is routed, not bought. A FRESH cell runs it, because the prior cell stands at 340,096 (`cell_depth --agent`).
+
+## Round 7 (2026-09-25, fresh cell)
+
+R6-1 fixed (`cafad0e0`: `warn_msg` built once, passed to both
+`_echo_either_sink(ascii_safe(warn_msg), ...)` and `log_contained(...,
+"%s", warn_msg)`). The mandated uncounted self-sweep found ONE further
+hit of the same class, **SS-1**: the post-commit close-failure WARN pair
+(`cli.py` ~:2270 finally-block `log_contained` vs ~:2294 echo) carried
+independently-framed text for the same event; fixed the same way
+(`d5454930`: a `close_warn_msg` bridge variable built once in the
+`finally` block, consumed by both the `log_contained` call there and the
+later echo). A companion census re-derivation (`5b54ca2d`) followed the
++4-line shift. Suite: RESOLVER inside `.worktrees/d67-d69-riders`, 13424
+passed / 13 skipped / 0 failed; tamper 16/16; ruff clean.
+
+Round 7 verified on disk (`d67-d69-review-r7.txt`, 2850 lines): banner
+`gpt-5.6-sol` / high; `^ERROR` 0; `tokens used` footer 50,523; verdict
+`NO_NEW_CRITICAL_MAJOR` (anchored count 2, the documented codex-cli
+double-emit; the two copies diffed byte-identical apart from the leading
+role header); exit 0. Codex confirmed R4-1/B-1/B-2/R5-1/R6-1/SS-1 all
+correctly shaped, the byte-identity property holding in every reachable
+scenario it walked, its own re-derived self-sweep enumeration matching
+the fix cell's, and clauses (b)/(d)/(e) honored. Zero findings of any
+severity.
+
+**Convergence.** Round 7 was the last round the orchestrator authorized
+("No R8" above) and it returned a clean verdict on the first try. Nothing
+fixed post-round (there was nothing to fix). The rider is at the A-gate's
+terminus; Reviewer B on this final tree is the orchestrator's next step.
