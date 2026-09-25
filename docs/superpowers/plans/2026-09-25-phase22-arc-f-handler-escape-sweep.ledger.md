@@ -296,3 +296,12 @@ Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator. Tex
 > (3c) The cell's "no OPERATOR-RECORD write" is ADOPTED as the statement of record, replacing my "no durable write". My phrase was imprecise: a close-after-commit failure never loses data on ANY root (the commit is already durable); what differs is what the operator DOES with the error. After a read or audit/cache commit, a spurious failure report costs a retried read. After an operator-record write, the same report tells the operator the write failed and invites a retry against a durable row -- the D68 class. That is the line between DECLARED and CONVERTED, and the cell drew it where I meant to. 17 read roots DECLARED stands.
 >
 > R3 authorized as you wrote. Nothing else from this seat.
+
+## Round 2 fixes -- APPLIED by the continuation cell (before R3)
+
+| item | discharged at |
+|---|---|
+| R2-01 (T-D0 input outside the checkout) | T-D0 "Input, pinned": the absolute path of `triage.json` and sha256 `b18eb936b1ffe4bb81595aa16768351449915295ecc7f7f78c9158fde955cb13`; the executing cell hashes the file's bytes first and STOPS on a mismatch; the derived roster and `UNREACHED` map are committed into the test module |
+| R2-02 | REJECT accepted; no change |
+| R2-03 | plan section 1.2 row 7: `routes/trades.py:2404` |
+| CHARC's (3c) statement of record | plan map row R21 and T-G3's discriminator now carry CHARC's adopted text (no OPERATOR-RECORD write; the DECLARED/CONVERTED line drawn at what the operator does with the error; the D68 class), replacing his R1-gate "no durable write" and the cell's flagged-for-dissent paragraph |
