@@ -79,6 +79,7 @@ from swing.integrations.schwab.client import (
     SchwabAuthError,
     SchwabConfigMissingError,
     SchwabRateLimitError,
+    SchwabSchemaParityError,
 )
 from swing.trades.execution_dates import (
     execution_precedes_order,
@@ -756,7 +757,8 @@ def resolve_exit_auto_fill(
             status=None,
             max_results=None,
         )
-    except (SchwabAuthError, SchwabRateLimitError, SchwabApiError) as exc:
+    except (SchwabAuthError, SchwabRateLimitError, SchwabApiError,
+            SchwabSchemaParityError) as exc:
         log.warning(
             "schwab exit auto-fill: get_account_orders failed for %s: %s",
             ticker, type(exc).__name__,
