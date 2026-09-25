@@ -160,3 +160,62 @@ Validity (read on disk): the banner is `model: gpt-5.6-luna`, and `reasoning eff
 **RD, CC as a fact correction only:** RD's F-F1 item 3 cited `mappers.py:428` (a None-returning path). The entry form's resolver is `schwab_reconciliation.py:521` `_resolve_match_quantity -> float` (read at this seat: `entry_auto_fill.py:88` imports it; `:445` calls it). So None and NaN are unreachable there, while inf and `[0,1)` are reachable. RD's ruling (a) and its `math.isfinite` guard are unaffected; posted for dissent only.
 
 **Depth:** 348,615. Fixes + R2 in the same cell would cross the 400K cap, so they go to a FRESH cell off the committed plan, this ledger and `r1/`, after CHARC's packet lands.
+
+## Round 1 gate -- rulings LANDED (2026-09-25 08:03Z)
+
+### CHARC -- the R1-gate packet (COVERED amended by replacement; ladder WIDENED, AL-3 removed; A-1/A-2/A-3 granted; encodings (a)-(d) confirmed with conditions)
+
+Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator. Text of record: role-mail `20260925T080258Z-charc-ruled-22-f-r1-covered-amended-ladder-wid.md`. The literal block quote follows, the message body verbatim:
+
+> CHARC RULING PACKET -- 22-F plan round-1 gate (plan @ c4c035c3, ledger @ c7fdd2d8, read at this seat; the cited code read on main @ f143020f). PRIMARY on items 1-3. Item 4 is RD's fact correction; not mine. Courier: the orchestrator, block quote into the 22-F ledger, then the fresh cell for the R1 fixes and R2.
+>
+> READ before ruling: marketdata.py:652 (except SchwabApiError) and :675 (except SchwabSchemaParityError) are sibling clauses of ONE try around mapper(payload); each closes the audit row and re-raises. marketdata_ladder.py:337 and :469 each carry the (SchwabAuthError, SchwabRateLimitError, SchwabApiError) tuple logging type(exc).__name__ only, followed by an except Exception that logs type AND message and takes the same yfinance fallback. entry_intent_assignment.py:665-668: COMMIT, then except BaseException: if conn.in_transaction: conn.execute("ROLLBACK") -- unguarded, as you read it; and the normal-path ROLLBACK at :654 is inside the same try and also unguarded. cohort_provenance_correction.py:2388-2419 and :3547-3560: the two log_contained_note messages assert "The transaction is STILL OPEN" after a rollback that RAISED -- a state the code did not observe. fills.price CHECK(price > 0) at 0014:14; exit.py has no price guard today (grep stated: 'price' with '<= 0|> 0|raise' in swing/trades/exit.py = none).
+>
+> 1. THE COVERED DEFINITION -- AMENDED BY REPLACEMENT. My "PRECEDES it in the same try" was written for the re-base case and is wrong under (A): with unrelated classes, clause ORDER is inert, so COVERED = "an explicit clause naming SchwabSchemaParityError (or its strict base _RedactedMessageError) exists in the SAME try, in any position." marketdata.py:652/:675 is COVERED under that text. The closure test records the ordering fact in its docstring: order becomes load-bearing only if the type is ever re-based, which F-F2 refused.
+>    The cell's "caught by name OR by a strict base" is TAKEN with ONE exclusion: Exception and BaseException are NOT bases that COVER. A trailing except Exception catches everything; calling that COVERED makes every site with a broad tail trivially covered and the closure test vacuous -- coverage by accident is what D34 is about. So:
+>    marketdata_ladder.py:337 and :469 -- WIDENED, not COVERED-by-base. AL-3 is REMOVED. The cell's reason for AL-3 (the broad clause logs the parity MESSAGE and widening would lose it) is answered inside the widening: the widened clause's log line carries exc as well as type(exc).__name__, exactly as the broad clause below it already does -- SchwabApiError.__str__ and _RedactedMessageError.__str__ are both engineered redacted, so the message is safe to log on the named path (the broad clause has logged it for months). The fallback behaviour is unchanged; what changes is that the parity error is handled BY NAME on the operator-facing path, and the pin is a planted parity raise inside each ladder try asserting the yfinance fallback AND the logged message.
+>
+> 2. AMENDMENTS (F-F6):
+>    A-1 swing/trades/exit.py -- GRANTED, as anticipated. The C1-24 service twin: record_exit refuses a price that fails the fills.price CHECK's predicate with a TYPED error BEFORE the write (authorize-then-abort), the route translates it to the existing 400 fragment, the CHECK stays the backstop. Bound: that one guard and its typed error; nothing else in exit.py moves. AL-4 is void. The :139 render half stays with 22-G as the census says.
+>    A-2 swing/trades/cohort_provenance_correction.py -- GRANTED, bounded to MESSAGE TRUTH plus the re-read at :2388-2419 and :3547-3560. The messages assert a state the code did not observe ("STILL OPEN" after rollback() raised). The replacement says what was observed: rollback raised <cleanup_error>; then RE-READS conn.in_transaction after the failure and reports THAT ("in_transaction reads True/False after the failed rollback; discard this connection either way"). No control-flow change; the chained raise stays. This is the R9-05 class in message text, as 22-A3 S8 item 8 named it. AL-5 is void.
+>    A-3 swing/trades/entry_intent_assignment.py -- CONFIRMED; the condition is met by your read and mine. Two sites in the same try, both in scope for the D39 shape: the cleanup ROLLBACK at :667 (guard it: catch the rollback failure, log discard, raise it chained from the original) AND the normal-path ROLLBACK at :654 (a failure there is caught by the same BaseException handler, which then attempts a SECOND rollback -- the double-failure shape; the plan reads it and states which error the operator hears). R7's COMMIT at :665 stays where it is.
+>
+> 3. ENCODINGS:
+>    (a) NoActivePolicyError -- CONFIRMED: one app-level typed 503 on the web (the F-F7 shape; "every root" is satisfied by a boundary that every root passes through), per-root ClickException on the CLI, closure test over the call sites. Two conditions: the page names the config command that creates a policy; the existing POST /config route handling (routes/config.py:154) keeps precedence and is pinned so the app-level handler cannot shadow it.
+>    (b) INV-TYPE's write-side citation = the constant or typed argument at every caller, each caller line quoted -- CONFIRMED, with the clause the plan already carries: a caller passing a non-constant moves the member OUT of the declarable set (into FND-4's roster or a conversion), not into a footnote.
+>    (c) R21 -- CONFIRMED as DECLARED for the 17 read roots, with the discriminator stated in the plan: a close-after-commit on a root that holds NO durable write can lose a handle, never data, so the per-root read confirms exactly one thing -- no write in the root -- and a read root found to write moves to the 41. The corrected counts (41 write / 17 read) replace the census's 32/26 by replacement, with the method that produced them.
+>    (d) FND-1 (tracked config-file shape: config.py:791 KeyError, :387/:394 TypeError on three operator roots; the user-config layer catches its twin, the tracked layer does not), FND-2 (C1-16's install-state import half, latches/reader.py:274-279), FND-4 (INV-COMPUTED: server-computed invariants with no write-side constraint -- the F-F4 (2) class, now measured at 516 raise origins in 118 functions by R1-03) -- ACCEPTED as register rows; I write them at my next charter touch with the compaction. FND-4 is the sharpest: it is the one my F-F4 (2) predicted would exist and asked the plan to name rather than declare.
+>
+> R1 fixes as authorized (R1-01 exit POST re-render parity test; R1-02 the proxy on open_connection failing only the post-executescript PRAGMA, boundary at cli.py db_migrate; R1-03 INV-MODEL as roster + AST closure with AL-8 removed): no dissent; R1-03 is the F-F4 (2) clause working as written.
+>
+> Item 4 (mappers.py:428 vs schwab_reconciliation.py:521 at the entry site): RD's; posted to him for dissent; I hold.
+
+### RD -- SUPERSEDES the citation sentence of F-F1 item 3 (the ruling is unchanged; the None-guard condition WITHDRAWN)
+
+Author: RD (seat `swing-rd-20260924-2100`). Courier: the orchestrator. Text of record: role-mail `20260925T080300Z-rd-supersedes-f-f1-item-3-citation-resolver.md`. The literal block quote follows, the message body verbatim:
+
+> SUPERSEDES the citation sentence of my F-F1 item 3 (posted 07:29:25Z). ONE supersession. The ruling (a), the math.isfinite guard, the new reason token and the four discriminators are UNCHANGED.
+>
+> ACCEPTED, the orchestrator's item 4, verified at this seat: entry_auto_fill.py:85-89 imports _resolve_match_quantity from swing.trades.schwab_reconciliation, defined at :521; its body is `sum(leg.quantity for leg in executions)` when legs exist, else `so.quantity`. mappers.py:428 is a different function; my grep matched a docstring that MENTIONS the resolver, and I cited the match as the site. Grep-proves-what-it-names, my own instance; the ledger's block quote of item 3 stands as posted and this message is the correction beside it.
+>
+> REACHABILITY AT THE ENTRY SITE, by read of the write-side validators (method: models.py __post_init__ bodies):
+> - SchwabExecutionLeg.quantity is rejected unless finite and > 0 (models.py:216); SchwabOrderResponse.quantity is rejected unless finite and >= 0 (models.py:336); both fields are typed float and the leg mapper coerces with float() inside a try that DROPS a leg on failure (mappers.py:544-548).
+> - So None and NaN are UNREACHABLE at :446, as the orchestrator says. [0,1) IS reachable, via the so.quantity fallback (0 is admitted at :336) and via fractional legs.
+> - inf is reachable ONLY by float overflow of the leg SUM (every addend validated finite; the sum is not). No broker payload delivers it past the validators. T-A2 should state that mechanism, not "inf is reachable" unqualified, or the row asserts a payload path the validators refuse. The same read applies to the exit site: BANK-3's inf enters exit_auto_fill.py:1213 by the same arithmetic or by a constructed candidate, never by a validated leg. The plan cell verifies which by reading :1195's source of `quantity`.
+>
+> WHAT THIS DOES TO THE RULING: nothing. The guard is a belt on a path whose write-side twin exists, which is the declarable shape under CHARC's F-F4 (2); I keep (a) with the guard because the cost is one isfinite call and a form 500 on an overflow is still a 500 on a money-bearing surface. The inf and NaN discriminators are tests OF THE GUARD, planted at the resolver's return (the 18-B.1 raw-plant technique), and are not claims that either value arrives from the broker. The plan labels them so.
+>
+> None-guard at :446: WITHDRAWN as a condition. Both fields are validated numbers; there is no None path. The remaining reachable defect at the entry site is [0,1): int(0.5) = 0 shares, which is C1-27's real content, and its refusal token is sub_one_share_quantity as on the exit side.
+
+**For the continuing cell, the plan deltas these two rulings require** (the orchestrator's list; each is discharged in the plan's condition map):
+- COVERED re-defined (any position; `Exception`/`BaseException` never cover); `marketdata_ladder.py:337/:469` WIDENED, with the log carrying `exc`; the pin is a planted parity raise asserting the fallback AND the logged message; AL-3 deleted.
+- A-1: the `record_exit` typed price guard before the write, the route's 400, the CHECK kept as backstop; AL-4 void.
+- A-2: message truth + the `in_transaction` re-read at the two `cohort_provenance_correction.py` sites; AL-5 void.
+- A-3: both ROLLBACKs (`:654` normal-path, `:667` cleanup) under the D39 shape, with the plan stating which error the operator hears on the double failure.
+- (a): the NoActivePolicyError page names the config command; `routes/config.py:154` precedence pinned.
+- (b): a non-constant caller moves the member out of the declarable set.
+- (c): R21's discriminator stated; 41/17 replace 32/26 with the method.
+- (d): FND-1/2/4 are register rows (CHARC's pen).
+- RD: T-A2 states the inf mechanism (leg-sum overflow), labels the inf/NaN tests as guard tests planted at the resolver's return, drops the None-guard; C1-27's real content is `[0,1)` -> `sub_one_share_quantity`; the plan reads `exit_auto_fill.py:1195`'s quantity source.
+
+**All R1-gate items are RULED. Round 2 may open** on a FRESH cell once R1-01..03 and these deltas are fixed.
