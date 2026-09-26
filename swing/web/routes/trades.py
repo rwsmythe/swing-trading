@@ -28,6 +28,7 @@ from swing.trades.entry import (
     SoftWarnError,
     ascii_safe,
     log_contained,
+    log_contained_note,
     record_entry,
     safe_text,
 )
@@ -41,6 +42,7 @@ from swing.trades.stop_adjust import (
     StopRegressionError,
     adjust_stop,
 )
+from swing.web.routes import append_close_notice, close_after_commit
 from swing.web.trade_charts import render_trade_window_position_svg
 from swing.web.view_models.dashboard import build_dashboard
 from swing.web.view_models.open_positions_row import (
@@ -308,6 +310,32 @@ def _post_commit_warnings(result, close_error_text,
             f"({close_log_error_text}). Some sinks may have received "
             f"the record and some may not; the ledger is unaffected.",)
     return warnings
+
+
+def _exit_recorded_degraded_html(trade_id: int, failure_text: str, *,
+                                 log_error_text: str | None) -> str:
+    """22-F C1-26: the exit POST's degraded-success response.
+
+    **THIS FUNCTION MAY NOT RAISE** -- it runs after a durable exit, and a
+    guard that rendered a template to build its fallback would re-introduce
+    the exposure one layer in. So: a literal, every interpolated value ASCII
+    (`safe_text`) and escaped. It replaces the form's own row (the form
+    targets `closest tr`), so the operator reads it where he submitted.
+    """
+    parts = [
+        f'<tr id="open-position-{int(trade_id)}"><td colspan="99">'
+        f'<div class="banner banner-degraded" role="alert">'
+        f'<strong>Trade #{int(trade_id)}: the exit IS recorded.</strong> '
+        f'The page could not be refreshed ({html.escape(failure_text)}). '
+        f'Do NOT record this exit again. Reload the page.'
+    ]
+    if log_error_text is not None:
+        parts.append(
+            f' The ERROR log for this failure could not be emitted cleanly '
+            f'-- a logging handler RAISED ({html.escape(log_error_text)}); '
+            f'the ledger is unaffected.')
+    parts.append('</div></td></tr>')
+    return "".join(parts)
 
 
 def _entry_notice_html(templates, request, *, trade_id: int,
@@ -3130,67 +3158,158 @@ async def exit_post(
         auto_fill_audit_at=resolved_auto_fill_audit_at,
     )
 
+    # 22-F C1-26 (D68) + the F4 close: THE 22-A3 OUTER-GUARD SHAPE. Once
+    # `record_exit` RETURNS the exit is DURABLE, and every step after it (the
+    # connection close, the dashboard rebuild, the renders) is a PAGE
+    # REFRESH. Before this guard a failure there reached the app-wide 500,
+    # telling the operator a durable exit had failed -- the double-exit
+    # direction. `result is None` RE-RAISES, so every pre-bind path (the
+    # `ValueError` 400 re-render included) is byte-unchanged.
+    #
+    # 22-F R3-04 (CHARC's Round 3 ruling, item 3; the STOP-6 shape): both
+    # guards contain `Exception` exactly as before; an INTERRUPT (a
+    # BaseException that is not an Exception) after the bind gets the record
+    # -- the durable fact stated -- and is RE-RAISED, never answered with a
+    # success or degraded-success body.  Bare: with `result` bound nothing
+    # else can be in flight at either guard (the close runs after a completed
+    # `try` body; the outer handler's own error IS the in-flight one), so there
+    # is no `from` branch to add.
+    #
+    # 22-F STOP-7 (CHARC, (a); R3-01's shape): at both `except Exception`
+    # branches, an interrupt RETURNED by `log_contained` (the record's SINK
+    # raised it) is raised `from` the error being recorded -- never retyped,
+    # never rendered as text into a degraded-success body.
+    result = None
+    close_interrupt: BaseException | None = None
     conn = connect(cfg.paths.db_path)
     try:
         try:
-            result = record_exit(conn, req)
-        except ValueError as exc:
-            # R: spec §5.1 case 2 — re-render form with authoritative remaining shares.
-            vm = build_exit_form_vm(trade_id=trade_id, cfg=cfg, cache=cache, executor=executor)
-            if vm is not None:
+            try:
+                result = record_exit(conn, req)
+            except ValueError as exc:
+                # R: spec §5.1 case 2 — re-render form with authoritative remaining shares.
+                vm = build_exit_form_vm(trade_id=trade_id, cfg=cfg, cache=cache, executor=executor)
+                if vm is not None:
+                    return templates.TemplateResponse(
+                        request, "partials/trade_exit_form.html.j2",
+                        {"vm": vm, "error_message": str(exc)},
+                        status_code=400,
+                    )
+                # Fallback: trade closed/gone — use banner-only fragment.
                 return templates.TemplateResponse(
-                    request, "partials/trade_exit_form.html.j2",
-                    {"vm": vm, "error_message": str(exc)},
+                    request, "partials/trade_form_error.html.j2",
+                    {"error_message": str(exc)},
                     status_code=400,
                 )
-            # Fallback: trade closed/gone — use banner-only fragment.
-            return templates.TemplateResponse(
-                request, "partials/trade_form_error.html.j2",
-                {"error_message": str(exc)},
-                status_code=400,
+        finally:
+            try:
+                conn.close()
+            except Exception as exc:  # noqa: BLE001 -- the CLASS
+                if result is None:
+                    raise
+                # Rendered ONCE, before logging; the logger gets the string.
+                close_error_text = safe_text(exc)
+                close_log_error = log_contained(
+                    log,
+                    "22-F: trade %s exit IS RECORDED and CLOSING the database "
+                    "connection afterwards RAISED (%s); the ledger is "
+                    "unaffected.",
+                    trade_id, close_error_text)
+                if close_log_error is not None:
+                    if not isinstance(close_log_error, Exception):
+                        # STOP-7: the sink returned the operator's interrupt.
+                        raise close_log_error from exc
+                    # The log could not record it: surface it instead of
+                    # trading one invisible failure for another.
+                    raise RuntimeError(
+                        f"the connection close failed ({close_error_text}) "
+                        f"and its ERROR log could not be emitted "
+                        f"({safe_text(close_log_error)})"
+                    ) from exc
+            except BaseException as interrupt:  # noqa: BLE001 -- R3-04
+                if result is None:
+                    raise
+                close_interrupt = interrupt
+                log_contained_note(
+                    log, interrupt,
+                    "22-F: trade %s exit IS RECORDED and an INTERRUPT arrived "
+                    "while CLOSING the database connection afterwards (%s); "
+                    "the ledger is unaffected; the interrupt is re-raised.",
+                    trade_id, safe_text(interrupt))
+                raise
+
+        # Two-call rebuild.
+        dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor,
+                                       ohlcv_cache=request.app.state.ohlcv_cache)
+        status_strip_html = templates.get_template("partials/status_strip.html.j2").render(
+            request=request, vm=dashboard_vm,
+        )
+
+        if result.fully_closed:
+            # Primary target: empty/hidden stub so the row disappears.
+            soft_warn_html = templates.get_template(
+                "partials/review_soft_warn_close.html.j2"
+            ).render(
+                request=request,
+                trade_id=trade_id,
+                window_days=cfg.review.review_window_days,
             )
-    finally:
-        conn.close()
+            return HTMLResponse(Markup(
+                f'<tr id="open-position-{trade_id}" style="display:none"></tr>'
+                f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
+                f'<div id="trade-close-soft-warn" hx-swap-oob="true">{soft_warn_html}</div>'
+            ))
 
-    # Two-call rebuild.
-    dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor,
-                                   ohlcv_cache=request.app.state.ohlcv_cache)
-    status_strip_html = templates.get_template("partials/status_strip.html.j2").render(
-        request=request, vm=dashboard_vm,
-    )
-
-    if result.fully_closed:
-        # Primary target: empty/hidden stub so the row disappears.
-        soft_warn_html = templates.get_template(
-            "partials/review_soft_warn_close.html.j2"
-        ).render(
-            request=request,
-            trade_id=trade_id,
-            window_days=cfg.review.review_window_days,
+        # Partial: re-render the row.
+        conn2 = connect(cfg.paths.db_path)
+        try:
+            updated = get_trade(conn2, trade_id)
+        finally:
+            conn2.close()
+        row_vm = build_open_positions_row(
+            trade=updated, cfg=cfg, cache=cache,
+            ohlcv_cache=request.app.state.ohlcv_cache, executor=executor,
+        )
+        row_html = templates.get_template("partials/open_positions_row.html.j2").render(
+            request=request, row=row_vm,
         )
         return HTMLResponse(Markup(
-            f'<tr id="open-position-{trade_id}" style="display:none"></tr>'
+            f'{row_html}'
             f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
-            f'<div id="trade-close-soft-warn" hx-swap-oob="true">{soft_warn_html}</div>'
         ))
-
-    # Partial: re-render the row.
-    conn2 = connect(cfg.paths.db_path)
-    try:
-        updated = get_trade(conn2, trade_id)
-    finally:
-        conn2.close()
-    row_vm = build_open_positions_row(
-        trade=updated, cfg=cfg, cache=cache,
-        ohlcv_cache=request.app.state.ohlcv_cache, executor=executor,
-    )
-    row_html = templates.get_template("partials/open_positions_row.html.j2").render(
-        request=request, row=row_vm,
-    )
-    return HTMLResponse(Markup(
-        f'{row_html}'
-        f'<div id="status-strip" hx-swap-oob="true">{status_strip_html}</div>'
-    ))
+    # THE SINGLE OUTER HANDLER: the close, the rebuild, the renders and the
+    # response construction, with no gap between them.
+    except Exception as post_bind_error:  # noqa: BLE001 -- the CLASS
+        if result is None:
+            raise
+        post_bind_error_text = safe_text(post_bind_error)
+        log_error = log_contained(
+            log,
+            "22-F: trade %s exit IS RECORDED and a step AFTER it failed (%s). "
+            "A degraded-success response is returned naming the trade; "
+            "reporting a durable exit as a failure is what causes a double "
+            "exit.",
+            trade_id, post_bind_error_text)
+        if log_error is not None and not isinstance(log_error, Exception):
+            # STOP-7: the sink returned the operator's interrupt.
+            raise log_error from post_bind_error
+        return HTMLResponse(_exit_recorded_degraded_html(
+            trade_id, post_bind_error_text,
+            log_error_text=(None if log_error is None
+                            else safe_text(log_error))))
+    except BaseException as interrupt:  # noqa: BLE001 -- R3-04
+        # The operator's stop signal after the exit is durable: recorded
+        # (unless the close guard above already recorded this same
+        # interrupt) and re-raised BARE.
+        if result is None or interrupt is close_interrupt:
+            raise
+        log_contained_note(
+            log, interrupt,
+            "22-F: trade %s exit IS RECORDED and a step AFTER it was "
+            "INTERRUPTED (%s); the ledger is unaffected; the interrupt is "
+            "re-raised.",
+            trade_id, safe_text(interrupt))
+        raise
 
 
 @router.get("/trades/{trade_id}/stop/form", response_class=HTMLResponse)
@@ -3270,6 +3389,11 @@ def stop_post(
         event_ts=datetime.now().isoformat(timespec="seconds"),
         force=force_flag,
     )
+    # 22-F T-G2 (F4): `durable` is bound at `adjust_stop`'s OWN return;
+    # every close after it (the write connection's and the re-read's) is
+    # contained, never a 500 over a durable stop change.
+    durable = False
+    close_notice = None
     conn = connect(cfg.paths.db_path)
     try:
         # Guard: trade must exist and be open before attempting stop adjust.
@@ -3281,7 +3405,7 @@ def stop_post(
                 detail=f"Trade #{trade_id} not found or not open",
             )
         try:
-            adjust_stop(conn, req)
+            wrote = adjust_stop(conn, req)
         except ValueError as exc:
             # Trade not found or already closed — surface as 404 so the
             # HTMX-aware handler renders trade_form_error.html.j2 (§5.2).
@@ -3299,15 +3423,28 @@ def stop_post(
                 notes=notes,
                 error_message=error_message,
             )
+        # 22-F R1-05 (CHARC): bound from what the writer REPORTS -- the
+        # equal-stop no-op wrote nothing, so its closes stay bare.
+        durable = wrote
     finally:
-        conn.close()
+        if durable:
+            close_notice = close_after_commit(
+                conn, log, what=f"The stop change on trade #{trade_id}")
+        else:
+            conn.close()
 
     # Row-only render (no OOB).
     conn = connect(cfg.paths.db_path)
     try:
         updated = get_trade(conn, trade_id)
     finally:
-        conn.close()
+        if durable:
+            # Post-durable (the stop change committed above): contained too.
+            close_notice = close_after_commit(
+                conn, log, what=f"The stop change on trade #{trade_id}",
+            ) or close_notice
+        else:
+            conn.close()
     row_vm = build_open_positions_row(
         trade=updated, cfg=cfg, cache=cache,
         ohlcv_cache=request.app.state.ohlcv_cache, executor=executor,
@@ -3315,7 +3452,7 @@ def stop_post(
     row_html = templates.get_template("partials/open_positions_row.html.j2").render(
         request=request, row=row_vm,
     )
-    return HTMLResponse(Markup(row_html))
+    return append_close_notice(HTMLResponse(Markup(row_html)), close_notice)
 
 
 # Tier-2 #3 — open-positions row click-to-expand (chart-display fragment).
@@ -3579,6 +3716,10 @@ async def review_post(
             request, "partials/review_form.html.j2",
             {"vm": vm, "error_message": ei_err}, status_code=400)
 
+    # 22-F T-G2 (F4): `durable` is bound at `complete_trade_review`'s OWN
+    # return; a close failure after it is contained (logged), never a 500
+    # over a durable review.
+    durable = False
     conn = connect(cfg.paths.db_path)
     try:
         trade = get_trade(conn, trade_id)
@@ -3661,6 +3802,8 @@ async def review_post(
             event_ts=review_ts,
             rationale=None,
         )
+        # 22-F T-G2 (F4): bound at `complete_trade_review`'s OWN return.
+        durable = True
         # Task 4: persist the (optional) entry_intent correction via the
         # dedicated writer in its OWN transaction. entry_intent is independent
         # of review state, so it is NOT folded into complete_trade_review (L2/L5
@@ -3685,7 +3828,11 @@ async def review_post(
             except AttestedIntentError as exc:
                 return _attested_refusal(exc, review_committed=True)
     finally:
-        conn.close()
+        if durable:
+            close_after_commit(
+                conn, log, what=f"The review of trade #{trade_id}")
+        else:
+            conn.close()
     # code-review I3 (operator-witnessed S5): /trades is unrouted — htmx.js
     # honors the HX-Redirect header but the browser then 404s. Land on
     # /reviews/pending instead: workflow-natural ("after reviewing, see
@@ -4018,6 +4165,9 @@ async def daily_management_event_post(request: Request, trade_id: int):
             status_code=422,
         )
 
+    # 22-F T-G2 (F4): `durable` is bound at `record_event_log`'s OWN
+    # return; a close failure after it is contained, never a 500.
+    durable = False
     conn = connect(cfg.paths.db_path)
     try:
         try:
@@ -4043,8 +4193,14 @@ async def daily_management_event_post(request: Request, trade_id: int):
         except ValueError as exc:
             # Trade not found / Phase 7 service rejection (terminal state).
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        durable = True
     finally:
-        conn.close()
+        if durable:
+            close_after_commit(
+                conn, log,
+                what=f"The daily-management event on trade #{trade_id}")
+        else:
+            conn.close()
 
     # Success: 204 + HX-Redirect. Target route ``/`` (dashboard) IS
     # registered (Phase 6 R5 I3 lesson — verified by route-table + GET-

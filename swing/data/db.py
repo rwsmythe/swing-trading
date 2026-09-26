@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # pipeline_pattern_classifications + trade chart_pattern columns (migrations 0009 + 0010)
 # chart_targets source taxonomy expansion (migration 0011)
@@ -569,20 +572,80 @@ def _apply_migration(conn: sqlite3.Connection, sql_path: Path) -> None:
     # the `finally` -- restore-prior, never a hard OFF.
     prior_legacy = conn.execute("PRAGMA legacy_alter_table").fetchone()[0]
     conn.execute("PRAGMA foreign_keys=OFF")
+    # 22-F R1-06: the exception propagating out of the try, if any -- the
+    # script's error, or the rollback's cleanup error raised from it.
+    in_flight: BaseException | None = None
     try:
         conn.executescript(sql)
         conn.commit()
-    except Exception:
-        conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F T-F10 (C2-21, S-D39)
+        # 22-F T-F10 (C2-21, S-D39): an interrupt mid-script rolls back too,
+        # and a rollback that ALSO fails is raised CHAINED from the script's
+        # error with one MUST BE DISCARDED record -- never in its place.
+        in_flight = exc
+        if conn.in_transaction:
+            try:
+                conn.rollback()
+            except BaseException as cleanup_error:  # noqa: BLE001
+                from swing.trades.entry import log_contained_note
+                still = conn.in_transaction
+                log_contained_note(
+                    log, cleanup_error,
+                    "22-F: migration %s failed (%s) AND the rollback of its "
+                    "transaction failed (%s); in_transaction reads %s after "
+                    "the failed rollback; this connection MUST BE DISCARDED "
+                    "either way.", sql_path.name, exc, cleanup_error, still)
+                in_flight = cleanup_error
+                raise cleanup_error from exc
         raise
     finally:
-        conn.execute(
+        fk_restore = (
             "PRAGMA foreign_keys=ON" if prior_fk else "PRAGMA foreign_keys=OFF"
         )
-        conn.execute(
+        legacy_restore = (
             "PRAGMA legacy_alter_table=ON" if prior_legacy
             else "PRAGMA legacy_alter_table=OFF"
         )
+        if in_flight is None:
+            # Nothing in flight: a failing restore raises, unchanged (the
+            # migration is already COMMITTED; `swing db-migrate`'s B-04
+            # re-read depends on this raise).
+            conn.execute(fk_restore)
+            conn.execute(legacy_restore)
+        else:
+            # 22-F R1-06: an error is already in flight -- each restore is
+            # attempted independently, and a failing one is logged against
+            # the in-flight error, never raised in its place.
+            # 22-F R2-03 (CHARC's Round 2 class ruling): an INTERRUPT from a
+            # restore is logged the same way, the remaining (independent)
+            # restore is still attempted, and the interrupt is then re-raised
+            # CHAINED from the in-flight error -- never swallowed, never
+            # retyped.
+            restore_interrupt: BaseException | None = None
+            for restore in (fk_restore, legacy_restore):
+                try:
+                    conn.execute(restore)
+                except Exception as restore_error:  # noqa: BLE001
+                    from swing.trades.entry import log_contained_note
+                    log_contained_note(
+                        log, in_flight,
+                        "22-F R1-06: migration %s failed (%s); restoring "
+                        "`%s` afterwards ALSO failed (%s); the original "
+                        "error propagates.", sql_path.name, in_flight,
+                        restore, restore_error)
+                except BaseException as interrupt:  # noqa: BLE001 -- R2-03
+                    from swing.trades.entry import log_contained_note
+                    log_contained_note(
+                        log, interrupt,
+                        "22-F R1-06: migration %s failed (%s); restoring "
+                        "`%s` afterwards was INTERRUPTED (%s); the interrupt "
+                        "propagates, chained from the original error.",
+                        sql_path.name, in_flight, restore,
+                        type(interrupt).__name__)
+                    if restore_interrupt is None:
+                        restore_interrupt = interrupt
+            if restore_interrupt is not None:
+                raise restore_interrupt from in_flight
 
 
 def _preflight_migration_0004(conn: sqlite3.Connection) -> None:
@@ -1068,8 +1131,34 @@ def ensure_schema(
         run_migrations(
             conn, target_version=EXPECTED_SCHEMA_VERSION, backup_dir=backup_dir,
         )
-    except Exception:
-        conn.close()
+    except BaseException as migration_error:  # noqa: BLE001 -- 22-F R3-06
+        # 22-F R2-08(b) (CHARC, census C2-21 "the close"): nothing durable is
+        # claimed here; the MIGRATION's error propagates.  A failing close is
+        # logged against it (the S-D39 cleanup shape), never raised in its
+        # place; an interrupt from the close is logged and re-raised CHAINED
+        # from it (the R2 class ruling: never swallowed, never retyped).
+        # 22-F R3-06 (CHARC-ruled (a)): BaseException, because
+        # `_apply_migration` propagates an interrupt (R2-03), and one that
+        # arrives here -- after an interrupted rollback, still holding the
+        # migration's open transaction -- must reach the close too.
+        try:
+            conn.close()
+        except Exception as close_error:  # noqa: BLE001 -- contained
+            from swing.trades.entry import log_contained_note
+            log_contained_note(
+                log, migration_error,
+                "22-F R2-08(b): the migration failed (%s); closing its "
+                "connection afterwards ALSO failed (%s); the migration's "
+                "error propagates.", migration_error, close_error)
+        except BaseException as close_interrupt:
+            from swing.trades.entry import log_contained_note
+            log_contained_note(
+                log, close_interrupt,
+                "22-F R2-08(b): the migration failed (%s); closing its "
+                "connection was interrupted (%s); the interrupt propagates, "
+                "chained from the migration's error.",
+                migration_error, type(close_interrupt).__name__)
+            raise close_interrupt from migration_error
         raise
     return conn
 

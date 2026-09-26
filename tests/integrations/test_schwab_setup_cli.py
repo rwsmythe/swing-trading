@@ -794,13 +794,15 @@ def test_setup_d3_schema_mismatch_exits_before_prompting_credentials(
     assert "Schwab app client_secret" not in result.output, (
         f"client_secret prompt rendered before schema check:\n{result.output}"
     )
-    # The exception should be SchemaVersionMismatchError (uncaught in the
-    # handler — bubbles up through CliRunner).
-    from swing.data.db import SchemaVersionMismatchError
-    assert isinstance(result.exception, SchemaVersionMismatchError), (
-        f"expected SchemaVersionMismatchError; got "
+    # The refusal is SchemaVersionMismatchError, uncaught in the handler;
+    # since 22-F T-C2 (F-F7, S-GROUP) the root group delivers it as a typed
+    # `Error: ...` (exit 1) rather than letting it bubble as a traceback.
+    assert isinstance(result.exception, SystemExit), (
+        f"expected the typed exit; got "
         f"{type(result.exception).__name__}: {result.exception}"
     )
+    assert result.exit_code == 1
+    assert "Run: swing db-migrate" in result.output, result.output
 
 
 # ============================================================================

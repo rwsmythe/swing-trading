@@ -136,7 +136,10 @@ async def config_save(request: Request):
             NoActivePolicyError,
             get_active_policy,
         )
-        from swing.trades.risk_policy import supersede_active_policy
+        from swing.trades.risk_policy import (
+            NO_ACTIVE_POLICY_REFUSAL,
+            supersede_active_policy,
+        )
 
         cascade_conn = open_connection(
             base_cfg.paths.db_path,
@@ -173,6 +176,14 @@ async def config_save(request: Request):
                 field_updates=cascade_updates,
                 source="cfg_cascade",
             )
+        except NoActivePolicyError:
+            # 22-F T-D5 (CHARC STOP-3): the cause-specific record, in the
+            # order observed; the response stays the save redirect (D5-k).
+            log.error(
+                "Phase 9 T-A.5: override written; the risk_policy cascade "
+                "did NOT fire because no policy row is active. %s",
+                NO_ACTIVE_POLICY_REFUSAL,
+            )
         except Exception:
             log.exception(
                 "Phase 9 T-A.5: cfg-cascade to risk_policy failed; "
@@ -183,7 +194,11 @@ async def config_save(request: Request):
             # Don't propagate — overrides are durable; surface via stderr
             # log + next-startup divergence advisory rather than 500.
         finally:
-            cascade_conn.close()
+            # 22-F T-G2 (F4): the override is written BEFORE this connection
+            # opens, so the connection's whole life is post-durable; every
+            # cascade failure above is already contained. Its close is too.
+            from swing.web.routes import close_after_commit
+            close_after_commit(cascade_conn, log, what="The configuration change")
 
     return _save_redirect_response(request)
 
@@ -208,7 +223,10 @@ async def config_reset(request: Request, field_path: str):
             NoActivePolicyError,
             get_active_policy,
         )
-        from swing.trades.risk_policy import supersede_active_policy
+        from swing.trades.risk_policy import (
+            NO_ACTIVE_POLICY_REFUSAL,
+            supersede_active_policy,
+        )
 
         cfg_path = request.app.state.cfg_path
         if cfg_path is None:
@@ -253,6 +271,13 @@ async def config_reset(request: Request, field_path: str):
                     f"POST /config/reset/{field_path}"
                 ),
             )
+        except NoActivePolicyError:
+            # 22-F T-D5 (CHARC STOP-3): see `config_save`.
+            log.error(
+                "Phase 9 Codex R2 M#1: override deleted; the risk_policy "
+                "cascade did NOT fire because no policy row is active. %s",
+                NO_ACTIVE_POLICY_REFUSAL,
+            )
         except Exception:
             log.exception(
                 "Phase 9 Codex R2 M#1: reset-cascade to risk_policy "
@@ -262,5 +287,9 @@ async def config_reset(request: Request, field_path: str):
                 policy_field,
             )
         finally:
-            cascade_conn.close()
+            # 22-F T-G2 (F4): the override is deleted BEFORE this connection
+            # opens, so the connection's whole life is post-durable; every
+            # cascade failure above is already contained. Its close is too.
+            from swing.web.routes import close_after_commit
+            close_after_commit(cascade_conn, log, what="The configuration reset")
     return _save_redirect_response(request)

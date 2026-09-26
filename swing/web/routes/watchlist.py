@@ -262,14 +262,26 @@ def watchlist_pin(
     conn = open_connection(
         str(cfg.paths.db_path), busy_timeout_ms=cfg.web.db_busy_timeout_ms,
     )
+    # 22-F T-G2 (F4): `durable` is bound once `set_watchlist_pin`'s
+    # `with conn:` has committed; a close failure after it is contained.
+    durable = False
+    close_notice = None
     try:
         with conn:
             set_watchlist_pin(
                 conn, ticker.upper(),
                 pinned=is_pinned, pin_note=note, pinned_at=pinned_at,
             )
+        durable = True
     except WatchlistEntryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"ticker {ticker} not on watchlist") from exc
     finally:
-        conn.close()
-    return _render_expanded_row(request, cfg, ticker.upper())
+        if durable:
+            from swing.web.routes import close_after_commit
+            close_notice = close_after_commit(
+                conn, logger, what=f"The pin decision on {ticker.upper()}")
+        else:
+            conn.close()
+    from swing.web.routes import append_close_notice
+    return append_close_notice(
+        _render_expanded_row(request, cfg, ticker.upper()), close_notice)

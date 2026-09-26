@@ -32,7 +32,7 @@ fns NEVER call ``conn.commit()`` / ``conn.rollback()``.
 """
 from __future__ import annotations
 
-import contextlib
+import dataclasses as _dataclasses
 import functools
 import json
 import logging
@@ -56,6 +56,30 @@ from swing.trades.reconciliation_classifier import ClassificationResult
 from swing.trades.reconciliation_validators import default_validator_chain
 
 logger = logging.getLogger(__name__)
+
+
+def _rollback_or_raise_discard(conn: sqlite3.Connection, original: BaseException,
+                               where: str) -> None:
+    """22-F S-D39 (the 22-A template, `cohort_provenance_correction.py`):
+    roll back THIS function's transaction after ``original``; a rollback that
+    ALSO fails is never suppressed -- it is raised CHAINED from ``original``
+    with one ERROR record saying the connection must be discarded.  Returns
+    normally when there is nothing to roll back or the rollback works (the
+    caller then re-raises ``original``)."""
+    if not conn.in_transaction:
+        return
+    try:
+        conn.rollback()
+    except BaseException as cleanup_error:  # noqa: BLE001 -- the CLASS
+        from swing.trades.entry import log_contained_note
+        still = conn.in_transaction
+        log_contained_note(
+            logger, cleanup_error,
+            "22-F: %s failed (%s) AND the rollback of its transaction failed "
+            "(%s); in_transaction reads %s after the failed rollback; this "
+            "connection MUST BE DISCARDED either way.",
+            where, original, cleanup_error, still)
+        raise cleanup_error from original
 
 
 # ---------------------------------------------------------------------------
@@ -657,6 +681,13 @@ class CorrectionResult:
     applied_value_json: str | None
     correction_action: str | None
     notes: str | None = None
+    # 22-F R2-04 (CHARC, option (b)): the writer's own report of whether
+    # THIS call wrote.  Set by `_apply_tier2_resolution_inner` inside the
+    # service's transaction -- True on the handler write path, False at
+    # step 2's terminal-state idempotent return -- and the two callers of
+    # `apply_tier2_resolution` bind their close's `durable` from it.  The
+    # other constructors leave the default; no caller reads it there.
+    wrote: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -749,8 +780,8 @@ def apply_tier1_correction(
             "compose via _apply_tier1_correction_inner inside an existing tx"
         )
 
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         result = _apply_tier1_correction_inner(
             conn,
             discrepancy_id=discrepancy_id,
@@ -762,9 +793,8 @@ def apply_tier1_correction(
         )
         conn.commit()
         return result
-    except Exception:
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F S-D39 (F2)
+        _rollback_or_raise_discard(conn, exc, "apply_tier1_correction")
         raise
 
 
@@ -886,8 +916,8 @@ def apply_tier2_resolution(
             "compose via _apply_tier2_resolution_inner inside an existing tx"
         )
 
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         result = _apply_tier2_resolution_inner(
             conn,
             discrepancy_id=discrepancy_id,
@@ -903,9 +933,8 @@ def apply_tier2_resolution(
         )
         conn.commit()
         return result
-    except Exception:
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F S-D39 (F2)
+        _rollback_or_raise_discard(conn, exc, "apply_tier2_resolution")
         raise
 
 
@@ -962,8 +991,8 @@ def apply_source_direction_resolution(
             "caller MUST NOT hold an open transaction."
         )
 
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         disc = get_discrepancy(conn, discrepancy_id=discrepancy_id)
         if disc is None:
             raise SourceResolutionRejected(
@@ -1078,9 +1107,8 @@ def apply_source_direction_resolution(
                 f"unknown source-direction choice {choice_code!r}")
 
         conn.commit()
-    except Exception:
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F S-D39 (F2)
+        _rollback_or_raise_discard(conn, exc, "apply_source_direction_resolution")
         raise
 
 
@@ -1103,8 +1131,8 @@ def apply_tier3_override(
             "compose via _apply_tier3_override_inner inside an existing tx"
         )
 
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         result = _apply_tier3_override_inner(
             conn,
             correction_id=correction_id,
@@ -1114,9 +1142,8 @@ def apply_tier3_override(
         )
         conn.commit()
         return result
-    except Exception:
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F S-D39 (F2)
+        _rollback_or_raise_discard(conn, exc, "apply_tier3_override")
         raise
 
 
@@ -1139,8 +1166,8 @@ def stamp_pending_ambiguity(
             "compose via _stamp_pending_ambiguity_inner inside an existing tx"
         )
 
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         _stamp_pending_ambiguity_inner(
             conn,
             discrepancy_id=discrepancy_id,
@@ -1149,9 +1176,8 @@ def stamp_pending_ambiguity(
             allow_pending_update=allow_pending_update,
         )
         conn.commit()
-    except Exception:
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F S-D39 (F2)
+        _rollback_or_raise_discard(conn, exc, "stamp_pending_ambiguity")
         raise
 
 
@@ -1709,7 +1735,9 @@ def _apply_tier2_resolution_inner(
                     f"operator decision); cannot re-resolve via "
                     f"auto-redirect override"
                 )
-        return _idempotent_result_for(conn, discrepancy_id)
+        # 22-F R2-04: step 2 writes nothing -- reported, not inferred.
+        return _dataclasses.replace(
+            _idempotent_result_for(conn, discrepancy_id), wrote=False)
 
     # Step 2.6 (NEW T-1.6) — sandbox short-circuit per spec §7.6.1 LOCK.
     # Gated on the auto-redirect path (``applied_by_override == 'auto'``):
@@ -1768,7 +1796,7 @@ def _apply_tier2_resolution_inner(
             affected_table=_t2_table, affected_row_id=_t2_row,
         )
 
-    return handler(
+    result = handler(
         conn,
         disc=disc,
         choice_code=choice_code,
@@ -1780,6 +1808,9 @@ def _apply_tier2_resolution_inner(
         correction_action_override=correction_action_override,
         resolved_by_override=resolved_by_override,
     )
+    # 22-F R2-04: every tier-2 handler writes its audit row and flips the
+    # discrepancy on this path (a handler that cannot write RAISES).
+    return _dataclasses.replace(result, wrote=True)
 
 
 def _apply_tier3_override_inner(
@@ -2182,15 +2213,15 @@ def _idempotent_result_for(
 def _resolve_affected_target(
     disc: _DiscrepancyInfo,
 ) -> tuple[str, int]:
-    """Map a discrepancy row to (affected_table, affected_row_id) per
-    spec §5.4 step 2.
+    """Map a discrepancy row to (affected_table, affected_row_id).
 
-    Precedence (Codex R1 lock from C.B context):
+    Precedence (the first non-NULL FK wins):
       - fill_id present → fills
       - cash_movement_id present → cash_movements
-      - discrepancy_type == 'equity_delta' or 'snapshot_mismatch' → account_equity_snapshots
-        (resolution needs the snapshot id; V1 returns the most recent matching row)
       - trade_id present → trades
+
+    Raises ``ValueError`` when fill_id, cash_movement_id and trade_id are
+    all NULL.
     """
     if disc.fill_id is not None:
         return (_AFFECTED_TABLE_FILLS, int(disc.fill_id))

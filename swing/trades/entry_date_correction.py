@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import math
 import sqlite3
 from dataclasses import dataclass, field
@@ -1362,8 +1363,8 @@ def correct_entry_date(
             "correct_entry_date must be called with no open transaction; "
             "compose via _correct_entry_date_inner inside an existing tx"
         )
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         result = _correct_entry_date_inner(
             conn,
             trade_id=trade_id,
@@ -1375,9 +1376,23 @@ def correct_entry_date(
         )
         conn.commit()
         return result
-    except Exception:
-        with contextlib.suppress(sqlite3.Error):
-            conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F T-F4 (C2-07, S-D39)
+        # The 22-A template: roll back only an open transaction; a rollback
+        # that ALSO fails is raised CHAINED from the original with one ERROR
+        # record -- never suppressed.
+        if conn.in_transaction:
+            try:
+                conn.rollback()
+            except BaseException as cleanup_error:  # noqa: BLE001
+                from swing.trades.entry import log_contained_note
+                still = conn.in_transaction
+                log_contained_note(
+                    logging.getLogger(__name__), cleanup_error,
+                    "22-F: correct_entry_date failed (%s) AND the rollback of "
+                    "its transaction failed (%s); in_transaction reads %s "
+                    "after the failed rollback; this connection MUST BE "
+                    "DISCARDED either way.", exc, cleanup_error, still)
+                raise cleanup_error from exc
         raise
 
 

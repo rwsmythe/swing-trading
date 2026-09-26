@@ -78,6 +78,38 @@ class CallerHeldTransactionError(RuntimeError):
     """
 
 
+#: 22-F T-D5 (CHARC STOP-2 item 1, verbatim): the operator-facing refusal for
+#: a DB with NO active risk_policy row.  It names the recovery that EXISTS and
+#: no command that does not (D35): no `swing` command creates a policy.
+NO_ACTIVE_POLICY_REFUSAL = (
+    "No active risk_policy row: the policy table is corrupted or unseeded. "
+    "Recover by restoring ~/swing-data/swing.db from a gate image in "
+    "~/swing-data/backups/ (see the migration ledger), or by a hand repair "
+    "under the operator's own sitting. No swing command creates a policy."
+)
+
+
+def _rollback_or_raise(conn: sqlite3.Connection, op: str,
+                       original: BaseException) -> None:
+    """22-F T-F7 (C2-14, S-D39, the 22-A template): roll back only an open
+    transaction; a rollback that ALSO fails is raised CHAINED from
+    ``original`` with one ERROR record."""
+    if not conn.in_transaction:
+        return
+    try:
+        conn.rollback()
+    except BaseException as cleanup_error:  # noqa: BLE001
+        from swing.trades.entry import log_contained_note
+        still = conn.in_transaction
+        log_contained_note(
+            logger, cleanup_error,
+            "22-F: %s failed (%s) AND the rollback of its transaction failed "
+            "(%s); in_transaction reads %s after the failed rollback; this "
+            "connection MUST BE DISCARDED either way.",
+            op, original, cleanup_error, still)
+        raise cleanup_error from original
+
+
 def supersede_active_policy(
     conn: sqlite3.Connection,
     *,
@@ -108,8 +140,9 @@ def supersede_active_policy(
         ValueError: ``field_updates`` contains a non-whitelisted column,
             OR the constructed ``RiskPolicy.__post_init__`` validator
             rejects the merged values.
-        RuntimeError: no active policy row found (schema corrupted or seed
-            missing — the migration normally guarantees seed presence).
+        NoActivePolicyError: (a ``RuntimeError``) no active policy row found
+            (schema corrupted or seed missing — the migration normally
+            guarantees seed presence).
     """
     if conn.in_transaction:
         raise CallerHeldTransactionError(
@@ -137,8 +170,11 @@ def supersede_active_policy(
         )
         row = cur.fetchone()
         if row is None:
-            raise RuntimeError(
-                "No active risk_policy row — schema corrupted or seed missing"
+            # 22-F T-D5 (CHARC STOP-2 item 4): TYPED, and ASCII.  A
+            # `RuntimeError` subclass, so every existing catcher still catches
+            # it; the type is what lets the operator roots name the cause.
+            raise repo.NoActivePolicyError(
+                "No active risk_policy row -- schema corrupted or seed missing"
             )
         predecessor_id = row[0]
         predecessor = repo.get_policy_by_id(conn, policy_id=predecessor_id)
@@ -208,8 +244,8 @@ def supersede_active_policy(
         # Step 6: COMMIT.
         conn.commit()
         return successor_id
-    except Exception:
-        conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F T-F7
+        _rollback_or_raise(conn, "supersede_active_policy", exc)
         raise
 
 

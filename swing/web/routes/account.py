@@ -43,6 +43,7 @@ from swing.metrics.discrepancies import (
     fetch_first_pending_ambiguity_resolve_link_path,
 )
 from swing.trades.account_equity_snapshots import record_snapshot
+from swing.web.routes import close_after_commit
 from swing.web.view_models.account import AccountSnapshotFormVM
 
 log = logging.getLogger(__name__)
@@ -146,6 +147,10 @@ async def account_snapshot_post(request: Request) -> Response:
     # REJECTS caller-held transactions. We MUST NOT wrap the call in our
     # own ``with conn:`` block (Phase 8 R3→R4 lesson + CLAUDE.md "Service-
     # layer with conn:" gotcha + Phase 9 reject-caller-held-tx contract).
+    # 22-F T-G2 (F4): `durable` is bound at `record_snapshot`'s OWN return;
+    # a close failure after it is contained (logged), never a 500 over a
+    # durable snapshot. Nothing durable -> the bare close, byte-unchanged.
+    durable = False
     conn = open_connection(db_path, busy_timeout_ms=request.app.state.cfg.web.db_busy_timeout_ms)
     try:
         record_snapshot(
@@ -155,6 +160,7 @@ async def account_snapshot_post(request: Request) -> Response:
             notes=note_raw,
             basis="net_liq",  # operator account-value reading (migration 0029).
         )
+        durable = True
     except ValueError as exc:
         return _render_form(
             request,
@@ -168,7 +174,10 @@ async def account_snapshot_post(request: Request) -> Response:
             status_code=400,
         )
     finally:
-        conn.close()
+        if durable:
+            close_after_commit(conn, log, what="The snapshot")
+        else:
+            conn.close()
 
     # Success path: 204 + HX-Redirect for htmx.js; standard 303 for plain
     # form submits / curl. Target /metrics/capital-friction was shipped

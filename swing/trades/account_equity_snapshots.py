@@ -25,6 +25,7 @@ Back-recorded flag (spec §3.5 + plan §B file map):
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import date, datetime
 
@@ -32,6 +33,8 @@ from swing.data.datetime_helpers import now_ms
 from swing.data.models import AccountEquitySnapshot
 from swing.data.repos import account_equity_snapshots as repo
 from swing.evaluation.dates import last_completed_session
+
+log = logging.getLogger(__name__)
 
 BACK_RECORD_THRESHOLD_DAYS: int = 7
 
@@ -61,6 +64,27 @@ def is_back_recorded(
     sd = date.fromisoformat(snapshot_date)
     rd = date.fromisoformat(recorded_at[:10])
     return (rd - sd).days > threshold_days
+
+
+def _rollback_or_raise(conn: sqlite3.Connection, op: str,
+                       original: BaseException) -> None:
+    """22-F T-F7 (C2-11, S-D39, the 22-A template): roll back only an open
+    transaction; a rollback that ALSO fails is raised CHAINED from
+    ``original`` with one ERROR record."""
+    if not conn.in_transaction:
+        return
+    try:
+        conn.rollback()
+    except BaseException as cleanup_error:  # noqa: BLE001
+        from swing.trades.entry import log_contained_note
+        still = conn.in_transaction
+        log_contained_note(
+            log, cleanup_error,
+            "22-F: %s failed (%s) AND the rollback of its transaction failed "
+            "(%s); in_transaction reads %s after the failed rollback; this "
+            "connection MUST BE DISCARDED either way.",
+            op, original, cleanup_error, still)
+        raise cleanup_error from original
 
 
 def record_snapshot(
@@ -130,8 +154,8 @@ def record_snapshot(
     )
 
     # Single transaction: BEGIN IMMEDIATE / upsert / COMMIT.
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         sid = repo.upsert_snapshot(
             conn,
             snapshot_date=candidate.snapshot_date,
@@ -144,8 +168,8 @@ def record_snapshot(
             basis=candidate.basis,
         )
         conn.commit()
-    except Exception:
-        conn.rollback()
+    except BaseException as exc:  # noqa: BLE001 -- 22-F T-F7
+        _rollback_or_raise(conn, "record_snapshot", exc)
         raise
 
     # Return the persisted dataclass with PK populated.

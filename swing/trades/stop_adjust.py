@@ -121,7 +121,10 @@ def update_stop_with_event(
             )
 
 
-def adjust_stop(conn: sqlite3.Connection, req: StopAdjustRequest) -> None:
+def adjust_stop(conn: sqlite3.Connection, req: StopAdjustRequest) -> bool:
+    """Returns True when the stop change was WRITTEN (``update_stop_with_event``
+    ran), False on the equal-stop no-op (22-F R1-05, CHARC-granted: callers
+    bind their close-after-durable flag from this return)."""
     trade = get_trade(conn, req.trade_id)
     if trade is None:
         raise ValueError(f"trade {req.trade_id} not found")
@@ -139,7 +142,7 @@ def adjust_stop(conn: sqlite3.Connection, req: StopAdjustRequest) -> None:
             f"new stop ${req.new_stop:.2f} < current ${trade.current_stop:.2f}; use force=True"
         )
     if req.new_stop == trade.current_stop:
-        return
+        return False
     # Delegate to the state-aware service: opens its own ``with conn:`` block
     # for atomic stop-write + entered→managing transition.
     update_stop_with_event(
@@ -150,3 +153,4 @@ def adjust_stop(conn: sqlite3.Connection, req: StopAdjustRequest) -> None:
         rationale=req.rationale,
         notes=req.notes,
     )
+    return True

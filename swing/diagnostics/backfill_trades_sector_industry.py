@@ -31,6 +31,7 @@ Concurrency discipline (Codex round 1 Major #1):
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -42,6 +43,8 @@ from swing.data.repos.candidates import (
     CandidateSectorIndustryRecord,
     get_latest_sector_industry_per_ticker,
 )
+
+log = logging.getLogger(__name__)
 
 _DEFAULT_ACTIVE_STATES: tuple[str, ...] = (
     "entered", "managing", "partial_exited",
@@ -80,6 +83,27 @@ class BackfillSummary:
     applied: bool
 
 
+def _rollback_or_raise(conn: sqlite3.Connection, op: str,
+                       original: BaseException) -> None:
+    """22-F T-F8 (C2-17, S-D39, the 22-A template): ROLLBACK only an open
+    transaction; a ROLLBACK that ALSO fails is raised CHAINED from
+    ``original`` with one ERROR record."""
+    if not conn.in_transaction:
+        return
+    try:
+        conn.execute("ROLLBACK")
+    except BaseException as cleanup_error:  # noqa: BLE001
+        from swing.trades.entry import log_contained_note
+        still = conn.in_transaction
+        log_contained_note(
+            log, cleanup_error,
+            "22-F: %s failed (%s) AND the ROLLBACK of its transaction failed "
+            "(%s); in_transaction reads %s after the failed rollback; this "
+            "connection MUST BE DISCARDED either way.",
+            op, original, cleanup_error, still)
+        raise cleanup_error from original
+
+
 def run_backfill(
     *,
     db_path: Path,
@@ -112,8 +136,8 @@ def run_backfill(
             # clobber the concurrent writer's valid data. Re-selecting
             # under the write lock ensures the restore artifact and the
             # actual UPDATE set are the same row set.
-            conn.execute("BEGIN IMMEDIATE")
             try:
+                conn.execute("BEGIN IMMEDIATE")
                 rows = _gather_backfill_rows(
                     conn,
                     include_closed=include_closed,
@@ -126,8 +150,8 @@ def run_backfill(
                 _emit_restore_sql(restore_path, update_rows)
                 _apply_updates(conn, update_rows)
                 conn.execute("COMMIT")
-            except Exception:
-                conn.execute("ROLLBACK")
+            except BaseException as exc:  # noqa: BLE001 -- 22-F T-F8
+                _rollback_or_raise(conn, "backfill --apply", exc)
                 raise
             applied_flag = True
         else:

@@ -19,6 +19,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from swing.config import Config
 from swing.config_overrides import apply_overrides
+from swing.data.db import SchemaVersionMismatchError
+from swing.data.repos.risk_policy import NoActivePolicyError
 from swing.integrations.schwab.auth import (
     construct_authenticated_client,
     resolve_credentials_env_or_prompt,
@@ -154,28 +156,66 @@ def _register_exception_handlers(app: FastAPI) -> None:
             return await http_exception_handler(request, exc)
         rid = getattr(request.state, "request_id", "-")
         log.exception("unhandled error (request_id=%s)", rid)
-        tpls = _build_templates(app.state.templates_dir)
-        is_htmx = request.headers.get("HX-Request", "").lower() == "true"
-        # Bug 2 follow-up (defense-in-depth): row-target HTMX requests get
-        # a <tr> fragment so the HTML parser does not hoist a bare <div>
-        # out of <tbody>, leaving an empty row position. Mirrors
-        # `_handle_http_exc`'s row-target awareness for the unhandled-
-        # exception path.
-        if is_htmx and _is_row_swap_target(request):
-            return tpls.TemplateResponse(
-                request, "partials/trade_form_error.html.j2",
-                {
-                    "error_message": str(exc),
-                    "colspan": _row_error_colspan(request),
-                },
-                status_code=500,
-            )
-        template = "partials/error_fragment.html.j2" if is_htmx else "error.html.j2"
+        return _render_error_response(app, request, exc, rid, status_code=500)
+
+    # 22-F F-F7 (C1-14): a stale / missing schema is an OPERATOR-ACTIONABLE
+    # state ("Run: swing db-migrate"), not an internal error. Starlette
+    # resolves the most specific registered class, so this handler owns the
+    # type and the `Exception` handler above keeps everything else. Same
+    # three-way template branch, at 503; one ERROR record, no traceback.
+    @app.exception_handler(SchemaVersionMismatchError)
+    async def _handle_schema_mismatch(
+        request: Request, exc: SchemaVersionMismatchError,
+    ) -> HTMLResponse:
+        rid = getattr(request.state, "request_id", "-")
+        log.error("schema version mismatch (request_id=%s): %s", rid, exc)
+        return _render_error_response(app, request, exc, rid, status_code=503)
+
+    # 22-F T-D5 (CHARC F-F4 (3); STOP-2 item 1): no active risk_policy row is
+    # an OPERATOR state, not an internal error.  Same three-way branch at 503;
+    # the message is the ruled refusal (it names the recovery that exists and
+    # no command).  A route that handles the type itself (e.g. `POST /config`'s
+    # cascade, R45) keeps precedence -- this only sees what escapes a route.
+    @app.exception_handler(NoActivePolicyError)
+    async def _handle_no_active_policy(
+        request: Request, exc: NoActivePolicyError,
+    ) -> HTMLResponse:
+        from swing.trades.risk_policy import NO_ACTIVE_POLICY_REFUSAL
+        rid = getattr(request.state, "request_id", "-")
+        log.error("no active risk_policy row (request_id=%s): %s", rid, exc)
+        return _render_error_response(app, request, exc, rid, status_code=503,
+                                      message=NO_ACTIVE_POLICY_REFUSAL)
+
+
+def _render_error_response(app: FastAPI, request: Request, exc: Exception,
+                           rid: str, *, status_code: int,
+                           message: str | None = None) -> HTMLResponse:
+    """The error render shared by the generic and the typed 503 handlers
+    (moved verbatim out of `_handle_any`; the status varies, and a typed
+    handler may supply the operator message in place of ``str(exc)``)."""
+    error_message = str(exc) if message is None else message
+    tpls = _build_templates(app.state.templates_dir)
+    is_htmx = request.headers.get("HX-Request", "").lower() == "true"
+    # Bug 2 follow-up (defense-in-depth): row-target HTMX requests get
+    # a <tr> fragment so the HTML parser does not hoist a bare <div>
+    # out of <tbody>, leaving an empty row position. Mirrors
+    # `_handle_http_exc`'s row-target awareness for the unhandled-
+    # exception path.
+    if is_htmx and _is_row_swap_target(request):
         return tpls.TemplateResponse(
-            request, template,
-            {"request_id": rid, "error_message": str(exc)},
-            status_code=500,
+            request, "partials/trade_form_error.html.j2",
+            {
+                "error_message": error_message,
+                "colspan": _row_error_colspan(request),
+            },
+            status_code=status_code,
         )
+    template = "partials/error_fragment.html.j2" if is_htmx else "error.html.j2"
+    return tpls.TemplateResponse(
+        request, template,
+        {"request_id": rid, "error_message": error_message},
+        status_code=status_code,
+    )
 
 
 # ---- A-3 web market-data ladder install (mirrors pipeline runner) ----

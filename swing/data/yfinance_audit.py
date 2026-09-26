@@ -95,6 +95,27 @@ def _sanitize_error(exc: BaseException) -> str:
     return text[:_ERROR_MESSAGE_MAX]
 
 
+def _rollback_or_raise(conn: sqlite3.Connection, op: str,
+                       original: BaseException) -> None:
+    """22-F T-F7 (C2-10, S-D39, the 22-A template): roll back only an open
+    transaction; a rollback that ALSO fails is raised CHAINED from
+    ``original`` with one ERROR record."""
+    if not conn.in_transaction:
+        return
+    try:
+        conn.rollback()
+    except BaseException as cleanup_error:  # noqa: BLE001
+        from swing.trades.entry import log_contained_note
+        still = conn.in_transaction
+        log_contained_note(
+            log, cleanup_error,
+            "22-F: yfinance audit %s failed (%s) AND the rollback of its "
+            "transaction failed (%s); in_transaction reads %s after the failed "
+            "rollback; this connection MUST BE DISCARDED either way.",
+            op, original, cleanup_error, still)
+        raise cleanup_error from original
+
+
 def record_call_start(
     conn: sqlite3.Connection,
     *,
@@ -115,16 +136,16 @@ def record_call_start(
                 "record_call_start owns its own transaction; caller MUST NOT "
                 "hold an open transaction."
             )
-        conn.execute("BEGIN IMMEDIATE")
         try:
+            conn.execute("BEGIN IMMEDIATE")
             call_id = repo.insert_in_flight(
                 conn, ts=ts, call_type=call_type, ticker=ticker,
                 ticker_count=ticker_count, pipeline_run_id=pipeline_run_id,
                 surface=surface,
             )
             conn.commit()
-        except Exception:
-            conn.rollback()
+        except BaseException as exc:  # noqa: BLE001 -- 22-F T-F7
+            _rollback_or_raise(conn, "record_call_start", exc)
             raise
     return call_id
 
@@ -155,16 +176,16 @@ def record_call_finish(
                 "record_call_finish owns its own transaction; caller MUST NOT "
                 "hold an open transaction."
             )
-        conn.execute("BEGIN IMMEDIATE")
         try:
+            conn.execute("BEGIN IMMEDIATE")
             repo.update_call_outcome(
                 conn, call_id=call_id, response_time_ms=response_time_ms,
                 status=status, rows_returned=rows_returned,
                 error_message=error_message,
             )
             conn.commit()
-        except Exception:
-            conn.rollback()
+        except BaseException as exc:  # noqa: BLE001 -- 22-F T-F7
+            _rollback_or_raise(conn, "record_call_finish", exc)
             raise
 
 

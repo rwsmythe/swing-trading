@@ -1098,6 +1098,8 @@ async def latches_intent(request: Request):
         prior_intent_id=prior_intent_id)
 
     cfg = apply_overrides(request.app.state.cfg)
+    durable = False
+    close_notice = None
     conn = connect(cfg.paths.db_path)
     try:
         # --- step 4: REPLAY. Returns BEFORE every freshness gate. ---------
@@ -1311,10 +1313,20 @@ async def latches_intent(request: Request):
             )
             with conn:
                 stored = record_intent(conn, intent=intent)
+            # 22-F T-G2 (F4): bound once `record_intent`'s `with conn:` has
+            # committed (a replay above writes nothing new).
+            durable = True
         except (sqlite3.IntegrityError, ValueError) as exc:
             log.warning("latch intent rejected by the ledger: %s", exc)
             return _reject_intent(
                 "intent", f"was rejected by the ledger contract: {exc}")
     finally:
-        conn.close()
-    return _intent_fragment(request, stored, replayed=False)
+        if durable:
+            from swing.web.routes import close_after_commit
+            close_notice = close_after_commit(
+                conn, log, what="The order intent")
+        else:
+            conn.close()
+    from swing.web.routes import append_close_notice
+    return append_close_notice(
+        _intent_fragment(request, stored, replayed=False), close_notice)

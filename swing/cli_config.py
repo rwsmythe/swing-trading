@@ -140,7 +140,10 @@ def config_set(ctx: click.Context, field_path: str, raw_value: str, force: bool)
             NoActivePolicyError,
             get_active_policy,
         )
-        from swing.trades.risk_policy import supersede_active_policy
+        from swing.trades.risk_policy import (
+            NO_ACTIVE_POLICY_REFUSAL,
+            supersede_active_policy,
+        )
 
         cfg = ctx.obj["config"]
         policy_field = _CONFIG_SET_RISK_POLICY_CASCADE_MAP[field_path]
@@ -181,6 +184,16 @@ def config_set(ctx: click.Context, field_path: str, raw_value: str, force: bool)
                 f"Cascaded to risk_policy: new policy_id={new_id} with "
                 f"{policy_field}={coerced}"
             )
+        except NoActivePolicyError:
+            # 22-F T-D5 (CHARC STOP-3): the cause-specific text, in the order
+            # observed -- the override IS written, the cascade did not fire,
+            # and the recovery that exists (no command creates a policy).
+            click.echo(
+                "WARNING: override written; the risk_policy cascade did NOT "
+                "fire because no policy row is active. "
+                f"{NO_ACTIVE_POLICY_REFUSAL}",
+                err=True,
+            )
         except Exception as exc:
             click.echo(
                 f"WARNING: risk_policy cascade failed ({exc}); override "
@@ -189,8 +202,16 @@ def config_set(ctx: click.Context, field_path: str, raw_value: str, force: bool)
                 f"to reconcile.",
                 err=True,
             )
+        # 22-F T-G1 (F4, S-B02): the operator record -- the user-config
+        # override -- was written BEFORE this connection opened, so it is
+        # durable for the connection's whole life (and the cascade's
+        # `supersede_active_policy` adds a second durable row); every cascade
+        # failure above is contained as a WARNING, so no refusal is ever in
+        # flight here. A close failure is therefore WARNED, exit 0.
         finally:
-            cascade_conn.close()
+            from swing.cli import _close_after_writes
+            _close_after_writes(cascade_conn, durable=True,
+                                pending_refusal=None)
 
 
 @config_group.command("reset")
@@ -212,7 +233,10 @@ def config_reset(ctx: click.Context, field_path: str) -> None:
             NoActivePolicyError,
             get_active_policy,
         )
-        from swing.trades.risk_policy import supersede_active_policy
+        from swing.trades.risk_policy import (
+            NO_ACTIVE_POLICY_REFUSAL,
+            supersede_active_policy,
+        )
 
         # Re-load + apply remaining overrides to get the post-reset value
         # (the override we just deleted is gone; the rest still apply).
@@ -263,6 +287,14 @@ def config_reset(ctx: click.Context, field_path: str) -> None:
                 f"Cascaded reset to risk_policy: new policy_id={new_id} "
                 f"with {policy_field}={post_reset_value}"
             )
+        except NoActivePolicyError:
+            # 22-F T-D5 (CHARC STOP-3): see `config set`.
+            click.echo(
+                "WARNING: override deleted; the risk_policy cascade did NOT "
+                "fire because no policy row is active. "
+                f"{NO_ACTIVE_POLICY_REFUSAL}",
+                err=True,
+            )
         except Exception as exc:
             click.echo(
                 f"WARNING: risk_policy reset cascade failed ({exc}); "
@@ -271,8 +303,16 @@ def config_reset(ctx: click.Context, field_path: str) -> None:
                 f"{policy_field}` to reconcile.",
                 err=True,
             )
+        # 22-F T-G1 (F4, S-B02): the operator record -- the user-config
+        # override -- was deleted BEFORE this connection opened, so it is
+        # durable for the connection's whole life (and the cascade's
+        # `supersede_active_policy` adds a second durable row); every cascade
+        # failure above is contained as a WARNING, so no refusal is ever in
+        # flight here. A close failure is therefore WARNED, exit 0.
         finally:
-            cascade_conn.close()
+            from swing.cli import _close_after_writes
+            _close_after_writes(cascade_conn, durable=True,
+                                pending_refusal=None)
 
 
 # ============================================================================
@@ -337,6 +377,7 @@ _TOML_MIRROR_MAP: dict[str, tuple[str, str, type]] = {
 
 def _coerce_policy_value(field: str, raw: str):
     """Coerce a `policy set --value` raw string per the field's type."""
+    from swing.trades.entry import ascii_safe, safe_text
     coercer = _POLICY_FIELD_COERCERS[field]
     try:
         if coercer is int:
@@ -351,7 +392,8 @@ def _coerce_policy_value(field: str, raw: str):
         return raw
     except (TypeError, ValueError) as exc:
         raise click.ClickException(
-            f"cannot coerce --value {raw!r} for field {field}: {exc}"
+            f"cannot coerce --value {safe_text(raw)} for field {field}: "
+            f"{ascii_safe(str(exc))}"
         ) from exc
 
 
@@ -369,12 +411,18 @@ def policy_group() -> None:
 def policy_show(ctx: click.Context) -> None:
     """Print the active risk_policy row."""
     from swing.data.db import connect
-    from swing.trades.risk_policy import read_active_policy
+    from swing.data.repos.risk_policy import NoActivePolicyError
+    from swing.trades.risk_policy import (
+        NO_ACTIVE_POLICY_REFUSAL,
+        read_active_policy,
+    )
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
     try:
         active = read_active_policy(conn)
+    except NoActivePolicyError as exc:  # 22-F T-D5 (S-CLICK)
+        raise click.ClickException(NO_ACTIVE_POLICY_REFUSAL) from exc
     finally:
         conn.close()
 
@@ -458,7 +506,10 @@ def policy_set(
     Idempotency: V1 has no short-circuit; every set creates a row.
     """
     from swing.data.db import connect
+    from swing.data.repos.risk_policy import NoActivePolicyError
+    from swing.trades.entry import ascii_safe
     from swing.trades.risk_policy import (
+        NO_ACTIVE_POLICY_REFUSAL,
         CallerHeldTransactionError,
         supersede_active_policy,
     )
@@ -467,19 +518,33 @@ def policy_set(
     coerced = _coerce_policy_value(field, raw_value)
 
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at
+    # `supersede_active_policy`'s OWN return; `pending_refusal` is
+    # whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
-        new_id = supersede_active_policy(
-            conn,
-            field_updates={field: coerced},
-            notes=notes,
-            source="cli",
-        )
-    except CallerHeldTransactionError as exc:
-        raise click.ClickException(str(exc)) from exc
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        try:
+            new_id = supersede_active_policy(
+                conn,
+                field_updates={field: coerced},
+                notes=notes,
+                source="cli",
+            )
+        except NoActivePolicyError as exc:  # 22-F T-D5 (S-CLICK)
+            raise click.ClickException(NO_ACTIVE_POLICY_REFUSAL) from exc
+        except CallerHeldTransactionError as exc:
+            raise click.ClickException(ascii_safe(str(exc))) from exc
+        except ValueError as exc:
+            raise click.ClickException(ascii_safe(str(exc))) from exc
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        from swing.cli import _close_after_writes
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(f"new policy_id={new_id}; field {field} = {coerced}")
 
 
@@ -509,7 +574,10 @@ def policy_import_from_toml(
     (operator edits via `swing config policy set` or this command).
     """
     from swing.data.db import connect
+    from swing.data.repos.risk_policy import NoActivePolicyError
+    from swing.trades.entry import ascii_safe
     from swing.trades.risk_policy import (
+        NO_ACTIVE_POLICY_REFUSAL,
         CallerHeldTransactionError,
         supersede_active_policy,
     )
@@ -536,23 +604,37 @@ def policy_import_from_toml(
         cfg_value = cfg_value * 100.0
 
     conn = connect(raw_cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at
+    # `supersede_active_policy`'s OWN return; `pending_refusal` is
+    # whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
-        new_id = supersede_active_policy(
-            conn,
-            field_updates={field: cfg_value},
-            notes=notes or (
-                f"import-from-toml: cfg.{section}.{attr}"
-                f"{' × 100' if field == 'max_account_risk_per_trade_pct' else ''}"
-                f" → risk_policy.{field}={cfg_value}"
-            ),
-            source="import_from_toml",
-        )
-    except CallerHeldTransactionError as exc:
-        raise click.ClickException(str(exc)) from exc
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        try:
+            new_id = supersede_active_policy(
+                conn,
+                field_updates={field: cfg_value},
+                notes=notes or (
+                    f"import-from-toml: cfg.{section}.{attr}"
+                    f"{' × 100' if field == 'max_account_risk_per_trade_pct' else ''}"
+                    f" → risk_policy.{field}={cfg_value}"
+                ),
+                source="import_from_toml",
+            )
+        except NoActivePolicyError as exc:  # 22-F T-D5 (S-CLICK)
+            raise click.ClickException(NO_ACTIVE_POLICY_REFUSAL) from exc
+        except CallerHeldTransactionError as exc:
+            raise click.ClickException(ascii_safe(str(exc))) from exc
+        except ValueError as exc:
+            raise click.ClickException(ascii_safe(str(exc))) from exc
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        from swing.cli import _close_after_writes
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(f"new policy_id={new_id}; imported {field} = {cfg_value}")
 
 

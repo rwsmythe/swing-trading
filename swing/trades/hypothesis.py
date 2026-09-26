@@ -50,6 +50,7 @@ to INFO.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import date
 from typing import Literal
@@ -59,6 +60,8 @@ from swing.data.repos.hypothesis_status_history import (
     insert_history,
     update_close_open_interval,
 )
+
+log = logging.getLogger(__name__)
 
 # Codex R2 Minor #2 — promoted from inline literal so operators + future
 # code paths can filter synthesized predecessors via exact-string match.
@@ -142,6 +145,27 @@ def _normalize_to_ms_day_start(value: str, *, fallback: str | None = None) -> st
     return "1970-01-01T00:00:00.000"
 
 
+def _rollback_or_raise(conn: sqlite3.Connection, op: str,
+                       original: BaseException) -> None:
+    """22-F T-F7 (C2-13, S-D39, the 22-A template): roll back only an open
+    transaction; a rollback that ALSO fails is raised CHAINED from
+    ``original`` with one ERROR record."""
+    if not conn.in_transaction:
+        return
+    try:
+        conn.rollback()
+    except BaseException as cleanup_error:  # noqa: BLE001
+        from swing.trades.entry import log_contained_note
+        still = conn.in_transaction
+        log_contained_note(
+            log, cleanup_error,
+            "22-F: %s failed (%s) AND the rollback of its transaction failed "
+            "(%s); in_transaction reads %s after the failed rollback; this "
+            "connection MUST BE DISCARDED either way.",
+            op, original, cleanup_error, still)
+        raise cleanup_error from original
+
+
 def update_hypothesis_status_with_audit(
     conn: sqlite3.Connection,
     *,
@@ -184,8 +208,8 @@ def update_hypothesis_status_with_audit(
         raise ValueError("change_reason is required and must be non-empty")
 
     # Step 2: BEGIN IMMEDIATE (acquires the write lock first).
-    conn.execute("BEGIN IMMEDIATE")
     try:
+        conn.execute("BEGIN IMMEDIATE")
         # Step 3: SELECT current status under the lock. We additionally
         # pull created_at to support the post-migration-seed synthesis
         # path below (Codex R1 Major #3 fix).
@@ -276,12 +300,15 @@ def update_hypothesis_status_with_audit(
         # Step 8: COMMIT.
         conn.commit()
         return "transition"
-    except Exception:
+    except BaseException as exc:  # noqa: BLE001 -- 22-F T-F7
         # Any non-noop / non-rollback path that raises after BEGIN IMMEDIATE
         # must roll back to release the write lock + leave the DB in the
-        # pre-call state. Re-raise so the caller sees the error.
-        if conn.in_transaction:
-            conn.rollback()
+        # pre-call state. Re-raise so the caller sees the error.  22-F
+        # (S-D39): the trigger is BaseException; a failed in-try refusal
+        # ROLLBACK (:199/:205/:211 above) arrives here as ``exc`` and the
+        # cleanup is attempted again; a cleanup that also fails is raised
+        # chained from ``exc`` with one MUST BE DISCARDED record.
+        _rollback_or_raise(conn, "update_hypothesis_status_with_audit", exc)
         raise
 
 

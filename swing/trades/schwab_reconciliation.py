@@ -1036,6 +1036,95 @@ def _resolve_affected_row_id(disc: Any) -> int | None:
     return None
 
 
+class _SavepointRollbackError(sqlite3.OperationalError):
+    """22-F T-F5 (C2-08, S-D39): a per-discrepancy ``ROLLBACK TO SAVEPOINT``
+    FAILED, so that discrepancy's partial writes may still sit inside the
+    run's transaction.  Raised CHAINED from the per-discrepancy error; the
+    pivot's own handlers let it pass, and ``run_schwab_reconciliation`` rolls
+    the WHOLE run back instead of preserving a 'failed' run row (the
+    preserve path would COMMIT the partial writes)."""
+
+
+def _rollback_to_savepoint_or_raise(
+    conn: sqlite3.Connection, sp_name: str, original: BaseException,
+) -> None:
+    """``ROLLBACK TO`` + ``RELEASE`` the savepoint ``sp_name``.
+
+    A failed ``ROLLBACK TO`` is raised as :class:`_SavepointRollbackError`
+    chained from ``original`` with one ERROR record (it was suppressed before
+    22-F).  A failed ``RELEASE`` after a successful ``ROLLBACK TO`` stays
+    suppressed: the partial writes are already undone, and a savepoint left
+    on the stack is committed or rolled back with the run."""
+    try:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+    except sqlite3.Error as cleanup_error:
+        from swing.trades.entry import log_contained_note
+        err = _SavepointRollbackError(
+            f"ROLLBACK TO SAVEPOINT {sp_name} failed ({cleanup_error}) "
+            f"after {type(original).__name__}: {original}")
+        log_contained_note(
+            log, err,
+            "22-F: ROLLBACK TO SAVEPOINT %s failed (%s) after the "
+            "per-discrepancy error (%s); the partial writes may still be in "
+            "the run's transaction, so the WHOLE run is rolled back.",
+            sp_name, cleanup_error, original)
+        raise err from original
+    except BaseException as interrupt:  # noqa: BLE001 -- 22-F R1-09
+        # 22-F R1-09: an INTERRUPT (not a `sqlite3.Error`) raised by the
+        # ROLLBACK TO itself.  It is NOT retyped -- an interrupt stays an
+        # interrupt -- but it is recorded and chained from the
+        # per-discrepancy error; the run's BaseException handler then rolls
+        # the WHOLE run back.
+        from swing.trades.entry import log_contained_note
+        log_contained_note(
+            log, interrupt,
+            "22-F: ROLLBACK TO SAVEPOINT %s was interrupted (%s) after the "
+            "per-discrepancy error (%s); the savepoint's state is unknown, "
+            "the interrupt propagates to the run, which rolls the WHOLE run "
+            "back; this connection MUST BE DISCARDED after the run.",
+            sp_name, type(interrupt).__name__, original)
+        raise interrupt from original
+    try:
+        with contextlib.suppress(sqlite3.Error):
+            conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+    except BaseException as interrupt:  # noqa: BLE001 -- 22-F SS (R2 class)
+        # 22-F self-sweep (CHARC's Round 2 class rule): an INTERRUPT at the
+        # RELEASE that completes this cleanup (the ROLLBACK TO succeeded, so
+        # the partial writes are undone) is recorded and re-raised CHAINED
+        # from the per-discrepancy error -- never swallowed, never retyped.
+        from swing.trades.entry import log_contained_note
+        log_contained_note(
+            log, interrupt,
+            "22-F: RELEASE SAVEPOINT %s was interrupted (%s) after a "
+            "successful ROLLBACK TO and the per-discrepancy error (%s); the "
+            "interrupt propagates to the run, which rolls the WHOLE run back; "
+            "this connection MUST BE DISCARDED after the run.",
+            sp_name, type(interrupt).__name__, original)
+        raise interrupt from original
+
+
+def _rollback_run_or_raise(
+    conn: sqlite3.Connection, original: BaseException,
+) -> None:
+    """Roll back the run's transaction (22-F T-F5, the 22-A template): only
+    an open transaction; a rollback that ALSO fails is raised CHAINED from
+    ``original`` with one ERROR record -- never suppressed."""
+    if not conn.in_transaction:
+        return
+    try:
+        conn.rollback()
+    except BaseException as cleanup_error:  # noqa: BLE001
+        from swing.trades.entry import log_contained_note
+        still = conn.in_transaction
+        log_contained_note(
+            log, cleanup_error,
+            "22-F: run_schwab_reconciliation failed (%s) AND the rollback of "
+            "its transaction failed (%s); in_transaction reads %s after the "
+            "failed rollback; this connection MUST BE DISCARDED either way.",
+            original, cleanup_error, still)
+        raise cleanup_error from original
+
+
 def _pivot_classify_and_dispatch_for_run(
     conn: sqlite3.Connection,
     *,
@@ -1102,6 +1191,9 @@ def _pivot_classify_and_dispatch_for_run(
 
         sp_name = f"correction_sp_{disc.discrepancy_id}"
         conn.execute(f"SAVEPOINT {sp_name}")
+        # 22-F T-F5: the per-discrepancy handlers below roll back ONLY a
+        # savepoint still on the stack (a released one has nothing to undo).
+        sp_released = False
         try:
             source_payload = _extract_source_payload(disc, schwab_orders)
             journal_row = _fetch_journal_row(conn, disc)
@@ -1134,6 +1226,7 @@ def _pivot_classify_and_dispatch_for_run(
                         environment=environment,
                     )
                     conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    sp_released = True
                     # Plan §D.5 step 1 LOCK: increment counter ONLY when
                     # the inner returned a real correction_id. Sandbox
                     # short-circuit returns id=None → counter stays at 0
@@ -1150,8 +1243,47 @@ def _pivot_classify_and_dispatch_for_run(
                     # block) routes to the SAME material tier-2 fresh-savepoint
                     # stamp as a validator rejection — a distinct ambiguity_
                     # kind so the audit names the contradiction.
-                    conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
-                    conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    try:
+                        conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+                    except sqlite3.Error:
+                        # Unchanged: the per-discrepancy handler below
+                        # retries the ROLLBACK TO through the helper.
+                        raise
+                    except BaseException as interrupt:  # noqa: BLE001
+                        # 22-F R2-05 (CHARC's Round 2 class ruling): an
+                        # INTERRUPT at this ROLLBACK TO is recorded and
+                        # re-raised CHAINED from the rejection -- never
+                        # swallowed, never retyped; the run's BaseException
+                        # handler rolls the WHOLE run back.
+                        from swing.trades.entry import log_contained_note
+                        log_contained_note(
+                            log, interrupt,
+                            "22-F: ROLLBACK TO SAVEPOINT %s was interrupted "
+                            "(%s) after the tier-1 rejection (%s); the "
+                            "interrupt propagates to the run, which rolls the "
+                            "WHOLE run back; this connection MUST BE "
+                            "DISCARDED after the run.",
+                            sp_name, type(interrupt).__name__, e)
+                        raise interrupt from e
+                    try:
+                        conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    except sqlite3.Error:
+                        raise  # unchanged
+                    except BaseException as interrupt:  # noqa: BLE001
+                        # 22-F self-sweep (the R2 class rule): an INTERRUPT
+                        # at the RELEASE completing this cleanup, recorded
+                        # and re-raised CHAINED from the rejection.
+                        from swing.trades.entry import log_contained_note
+                        log_contained_note(
+                            log, interrupt,
+                            "22-F: RELEASE SAVEPOINT %s was interrupted (%s) "
+                            "after a successful ROLLBACK TO and the tier-1 "
+                            "rejection (%s); the interrupt propagates to the "
+                            "run, which rolls the WHOLE run back; this "
+                            "connection MUST BE DISCARDED after the run.",
+                            sp_name, type(interrupt).__name__, e)
+                        raise interrupt from e
+                    sp_released = True
                     kind = (
                         "multi_match_within_window"
                         if isinstance(e, ReCorrectionContradictionError)
@@ -1172,11 +1304,7 @@ def _pivot_classify_and_dispatch_for_run(
                         conn.execute(f"RELEASE SAVEPOINT {fb_sp}")
                         counters["tier2_pending_count"] += 1
                     except Exception as fb_exc:  # noqa: BLE001
-                        with contextlib.suppress(sqlite3.Error):
-                            conn.execute(
-                                f"ROLLBACK TO SAVEPOINT {fb_sp}"
-                            )
-                            conn.execute(f"RELEASE SAVEPOINT {fb_sp}")
+                        _rollback_to_savepoint_or_raise(conn, fb_sp, fb_exc)
                         log.warning(
                             "tier-2 fallback stamp failed for discrepancy "
                             "%d: %s", disc.discrepancy_id, fb_exc,
@@ -1238,31 +1366,31 @@ def _pivot_classify_and_dispatch_for_run(
                         environment=environment or "production",
                     )
                     conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    sp_released = True
                     counters["tier1_multi_leg_auto_redirected_count"] += 1
-                except _SandboxAutoRedirectShortCircuit:
+                except _SandboxAutoRedirectShortCircuit as sandbox_exc:
                     # T-1.6 sandbox short-circuit. ROLLBACK TO unwinds
                     # the immediately-preceding stamp + RELEASE clears
                     # the savepoint. Discrepancy state returns to
                     # 'unresolved'.
-                    with contextlib.suppress(sqlite3.Error):
-                        conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
-                        conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    _rollback_to_savepoint_or_raise(
+                        conn, sp_name, sandbox_exc)
+                    sp_released = True
                     counters["sandbox_auto_redirect_skipped_count"] += 1
                     log.warning(
                         "auto-redirect short-circuited under sandbox "
                         "for discrepancy %d",
                         disc.discrepancy_id,
                     )
-                except InvalidOverrideComboError:
+                except InvalidOverrideComboError as combo_exc:
                     # Developer-bug per F21 + spec §7.4 R4 M2 LOCK:
                     # clean savepoint + re-raise out of the per-disc
                     # try-block so the outer catch ladder propagates
                     # (the outer ``except InvalidOverrideComboError``
                     # added below MUST come BEFORE the generic
                     # ``except Exception``).
-                    with contextlib.suppress(sqlite3.Error):
-                        conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
-                        conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    _rollback_to_savepoint_or_raise(conn, sp_name, combo_exc)
+                    sp_released = True
                     raise
                 except (ValidatorRejectedError, ValueError) as e:
                     # Spec §7.5 fallback: roll back the auto-redirect
@@ -1272,9 +1400,8 @@ def _pivot_classify_and_dispatch_for_run(
                     # ValueError subclass — the earlier
                     # ``except InvalidOverrideComboError`` catch above
                     # guarantees it never reaches this catch.
-                    with contextlib.suppress(sqlite3.Error):
-                        conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
-                        conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    _rollback_to_savepoint_or_raise(conn, sp_name, e)
+                    sp_released = True
                     fb_sp = (
                         f"correction_fallback_sp_{disc.discrepancy_id}"
                     )
@@ -1292,11 +1419,7 @@ def _pivot_classify_and_dispatch_for_run(
                         conn.execute(f"RELEASE SAVEPOINT {fb_sp}")
                         counters["tier2_pending_count"] += 1
                     except Exception as fb_exc:  # noqa: BLE001
-                        with contextlib.suppress(sqlite3.Error):
-                            conn.execute(
-                                f"ROLLBACK TO SAVEPOINT {fb_sp}"
-                            )
-                            conn.execute(f"RELEASE SAVEPOINT {fb_sp}")
+                        _rollback_to_savepoint_or_raise(conn, fb_sp, fb_exc)
                         log.warning(
                             "auto-redirect §7.5 fallback stamp failed "
                             "for discrepancy %d: %s",
@@ -1314,22 +1437,26 @@ def _pivot_classify_and_dispatch_for_run(
                     resolution_reason=classification.correction_reason,
                 )
                 conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                sp_released = True
                 counters["tier2_pending_count"] += 1
-        except InvalidOverrideComboError:
+        except _SavepointRollbackError:
+            # 22-F T-F5: a savepoint's ROLLBACK TO already failed; the run's
+            # transaction state is unknown, so no per-discrepancy handler
+            # degrades it -- it reaches the run, which rolls back WHOLE.
+            raise
+        except InvalidOverrideComboError as combo_exc:
             # Phase 12.5 #1 spec §7.4 R4 M2 LOCK + F21 — developer-bug
             # propagates out of the pivot loop. SAVEPOINT cleanup was
             # already performed by the per-disc auto-redirect catch
             # above before re-raise; defense-in-depth here in case the
             # exception was raised outside that try-block (e.g., from
             # _validate_override_combo at the dispatcher seam).
-            with contextlib.suppress(sqlite3.Error):
-                conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
-                conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+            if not sp_released:
+                _rollback_to_savepoint_or_raise(conn, sp_name, combo_exc)
             raise
         except Exception as e:  # noqa: BLE001 — graceful degradation
-            with contextlib.suppress(sqlite3.Error):
-                conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
-                conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+            if not sp_released:
+                _rollback_to_savepoint_or_raise(conn, sp_name, e)
             log.warning(
                 "classifier or apply exception for discrepancy %d: %s",
                 disc.discrepancy_id, e,
@@ -2762,25 +2889,36 @@ def run_schwab_reconciliation(
         conn.commit()
     except CallerHeldTransactionError:
         raise
-    except Exception as exc:
+    except BaseException as exc:  # noqa: BLE001 -- 22-F T-F5 (C2-08, S-D39)
         # Codex R1 M#5 — failure-path PRESERVES the run row + partial
         # discrepancies inside the SAME outer transaction per spec §3.3.3.
         # Mirrors run_tos_reconciliation: UPDATE state='failed', COMMIT.
         # If run_id is None (failure BEFORE the run-row INSERT landed),
         # rollback semantics apply (outer-layer failure; nothing to preserve).
-        if run_id is None:
-            with contextlib.suppress(sqlite3.Error):
-                conn.rollback()
+        # 22-F T-F5: so do a non-Exception (an interrupt) and a failed
+        # per-discrepancy ROLLBACK TO (`_SavepointRollbackError`) -- the
+        # preserve path would COMMIT that discrepancy's partial writes. The
+        # rollback follows the 22-A template: a rollback that ALSO fails is
+        # raised chained from the original with one ERROR record.
+        if (run_id is None or not isinstance(exc, Exception)
+                or isinstance(exc, _SavepointRollbackError)):
+            _rollback_run_or_raise(conn, exc)
             raise
         try:
             failed_finished_ts = now_ms()
             if failed_finished_ts < started_ts:
                 failed_finished_ts = started_ts
-            # Best-effort UPDATE in the same outer transaction. If the BEGIN
-            # IMMEDIATE write-lock was lost (concurrent force_clear), the
-            # update may fail; suppress + commit-or-rollback to avoid
-            # masking the original exception. Either way the original
-            # exception propagates to the caller.
+            # Best-effort UPDATE in the same outer transaction (the BEGIN
+            # IMMEDIATE write-lock may have been lost to a concurrent
+            # force_clear). What propagates when the preserve write fails:
+            # - sqlite3.Error: rolled back; the run's `exc` propagates.
+            # - an ordinary non-sqlite Exception: rolled back; the preserve
+            #   error propagates IN PLACE OF `exc` (pre-arc behaviour, banked
+            #   as a D39 facet at the bare `raise` below).
+            # - an interrupt (non-Exception): rolled back; one record names
+            #   `exc`, and the interrupt is raised from it.
+            # In every case, if the rollback itself fails, the rollback error
+            # propagates chained from the preserve error (S-D39; AL-13).
             try:
                 repo.update_run_failed(
                     conn,
@@ -2789,9 +2927,27 @@ def run_schwab_reconciliation(
                     error_message=f"{type(exc).__name__}: {exc!s}"[:200],
                 )
                 conn.commit()
-            except sqlite3.Error:
-                with contextlib.suppress(sqlite3.Error):
-                    conn.rollback()
+            except BaseException as preserve_error:  # noqa: BLE001
+                # 22-F R4-01 (ii): the S-D39 `original` is the exception in
+                # flight WHEN THE CLEANUP RUNS -- here `preserve_error`.
+                _rollback_run_or_raise(conn, preserve_error)
+                if not isinstance(preserve_error, sqlite3.Error):
+                    if not isinstance(preserve_error, Exception):
+                        # 22-F R4-01 (i): an interrupt at the preserve write
+                        # gets ONE record naming the run's error and is
+                        # raised FROM it -- implicit context is not a record.
+                        from swing.trades.entry import log_contained_note
+                        log_contained_note(
+                            log, preserve_error,
+                            "22-F: run_schwab_reconciliation failed (%s) and "
+                            "its failed-run PRESERVE write was interrupted "
+                            "(%s: %s); a transaction still open was rolled "
+                            "back, and the interrupt propagates chained from "
+                            "the run's error.",
+                            exc, type(preserve_error).__name__,
+                            preserve_error)
+                        raise preserve_error from exc
+                    raise
         finally:
             # Always propagate the original exception.
             pass

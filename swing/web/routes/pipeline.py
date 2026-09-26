@@ -267,6 +267,10 @@ def force_clear_post(request: Request, run_id: int):
     templates = request.app.state.templates
     iso_ts = datetime.now().isoformat(timespec="seconds")
 
+    # 22-F T-G2 (F4): `durable` is bound once `force_clear`'s `with conn:`
+    # has committed; the 404 refusal above it writes nothing.
+    durable = False
+    close_notice = None
     conn = connect(cfg.paths.db_path)
     try:
         run = find_run(conn, run_id)
@@ -281,10 +285,16 @@ def force_clear_post(request: Request, run_id: int):
                 run_id=run_id,
                 error_message=f"dashboard force clear at {iso_ts}",
             )
+        durable = True
         # Re-read to confirm the state transition landed.
         updated = find_run(conn, run_id)
     finally:
-        conn.close()
+        if durable:
+            from swing.web.routes import close_after_commit
+            close_notice = close_after_commit(
+                conn, log, what=f"The force-clear of run #{run_id}")
+        else:
+            conn.close()
 
     if updated is None or updated.state != "force_cleared":
         # Concurrent writer raced us — state changed before our UPDATE but
@@ -301,10 +311,11 @@ def force_clear_post(request: Request, run_id: int):
             status_code=409,
         )
 
-    return templates.TemplateResponse(
+    from swing.web.routes import append_close_notice
+    return append_close_notice(templates.TemplateResponse(
         request, "partials/force_clear_success.html.j2",
         {"run_id": run_id},
-    )
+    ), close_notice)
 
 
 @router.post("/prices/refresh", response_class=HTMLResponse)

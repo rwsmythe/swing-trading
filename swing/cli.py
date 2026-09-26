@@ -35,6 +35,7 @@ from swing.cli_schwab import schwab_group
 from swing.config import load as load_config
 from swing.data.db import (
     EXPECTED_SCHEMA_VERSION,
+    SchemaVersionMismatchError,
     backup_gate_for_pre_version,
     connect,
     ensure_schema,
@@ -215,7 +216,25 @@ def install_yfinance_cli_audit_context(cfg) -> None:
     )
 
 
-@click.group()
+class _SchemaGuardGroup(click.Group):
+    """22-F F-F7 (C1-14): the root group turns `SchemaVersionMismatchError`
+    -- an operator-actionable state ("Run: swing db-migrate") -- into a typed
+    `Error: ...` instead of a traceback. Catches ONLY that type. Every
+    nested group's command runs inside this `invoke`, so one class covers
+    them all. `db-migrate` still migrates a STALE DB (it reaches
+    `ensure_schema`, not the guarded `connect`); its one refusal of this
+    type -- a DB NEWER than the code ("Update the swing package") -- is
+    typed here like every other."""
+
+    def invoke(self, ctx: click.Context):
+        try:
+            return super().invoke(ctx)
+        except SchemaVersionMismatchError as exc:
+            from swing.trades.entry import ascii_safe
+            raise click.ClickException(ascii_safe(str(exc))) from exc
+
+
+@click.group(cls=_SchemaGuardGroup)
 @click.option("--config", "config_path", default="swing.config.toml",
               help="Path to swing.config.toml")
 @click.pass_context
@@ -255,6 +274,8 @@ main.add_command(schwab_group)
 def db_migrate(ctx: click.Context) -> None:
     """Apply DB migrations. Safe to run multiple times. Backs up DB before migrating."""
     import sqlite3 as _sqlite3
+
+    from swing.trades.entry import ascii_safe, safe_text
 
     cfg = ctx.obj["config"]
     db_path = cfg.paths.db_path
@@ -351,7 +372,96 @@ def db_migrate(ctx: click.Context) -> None:
             err=True,
         )
 
-    conn = ensure_schema(db_path, backup_dir=backups_dir)
+    try:
+        conn = ensure_schema(db_path, backup_dir=backups_dir)
+    except BaseException as exc:
+        # 22-F T-F10 B-04 (R1-02, R51): `_apply_migration` restores two
+        # connection PRAGMAs in a `finally` AFTER each script's COMMIT, so a
+        # failure there escapes a migration that is already DURABLE.  Ask the
+        # FILE, on a fresh read-only connection (never swing's `connect`):
+        # at target -> say so, reopen, and run the tail below (the
+        # gate-image check, the single-fire v17 ratification, the final
+        # echo); below target, or if the re-read itself fails -> re-raise.
+        # An INTERRUPT (not an `Exception`) at target gets the witness and
+        # the WARN, then is re-raised BARE with the tail skipped (R3-02).
+        # The read-only open routes through `open_connection` (busy_timeout;
+        # the live-opens invariant, tests/web/test_live_opens_routed.py) with
+        # a `mode=ro` URI -- a plain sqlite3 connection underneath, never
+        # swing's schema-guarded `connect`.
+        # R1-03: `applied` is bound from the QUERY alone.  The witness's
+        # close runs after the read and its failure is CONTAINED (an ERROR
+        # record + a WARN line) -- it cannot void a completed read and so
+        # cannot skip the tail over an applied migration.
+        from swing.trades.entry import log_contained, log_contained_note
+        applied: int | None = None
+        _ro = None
+        _ro_close_error: Exception | None = None
+        try:
+            _ro = open_connection(
+                f"file:{db_path}?mode=ro", uri=True,
+                busy_timeout_ms=cfg.web.db_busy_timeout_ms)
+            _row = _ro.execute("SELECT version FROM schema_version").fetchone()
+            applied = int(_row[0]) if _row else None
+        except Exception:  # noqa: BLE001 -- the re-read failed: re-raise exc
+            applied = None
+        if _ro is not None:
+            try:
+                _ro.close()
+            except Exception as _close_exc:  # noqa: BLE001 -- contained
+                _ro_close_error = _close_exc
+            except BaseException as _close_interrupt:  # noqa: BLE001
+                # 22-F R2-02 (CHARC's Round 2 class ruling): an INTERRUPT
+                # at the witness close is recorded and re-raised CHAINED
+                # from the post-commit error -- never swallowed, never
+                # retyped.  It skips the tail, as any interrupt between the
+                # COMMIT and the ratification does pre-arc (plan AL-11).
+                log_contained_note(
+                    _pe_backfill_logging.getLogger(__name__),
+                    _close_interrupt,
+                    "22-F R2-02: db-migrate's read-only schema re-read "
+                    "(version %s) was INTERRUPTED at its close (%s) after "
+                    "the post-commit failure (%s); the interrupt propagates, "
+                    "chained from that failure.", applied,
+                    type(_close_interrupt).__name__, safe_text(exc))
+                raise _close_interrupt from exc
+        if applied != EXPECTED_SCHEMA_VERSION:
+            if _ro_close_error is not None:
+                log_contained_note(
+                    _pe_backfill_logging.getLogger(__name__), exc,
+                    "22-F R1-03: db-migrate's read-only schema re-read "
+                    "closed with an error (%s); the original failure "
+                    "propagates.", safe_text(_ro_close_error))
+            raise
+        _echo_either_sink(ascii_safe(
+            f"WARN: the migration IS applied (schema version {applied}); a "
+            f"post-commit step failed: {safe_text(exc)}"), prefer_err=True)
+        if _ro_close_error is not None:
+            _ro_close_log_error = log_contained(
+                _pe_backfill_logging.getLogger(__name__),
+                "22-F R1-03: db-migrate's read-only schema re-read read "
+                "version %s, then closing it failed (%s); the read stands.",
+                applied, safe_text(_ro_close_error))
+            _echo_either_sink(ascii_safe(
+                "WARN: closing the read-only schema re-read also failed: "
+                f"{safe_text(_ro_close_error)}; the read completed and "
+                "stands."), prefer_err=True)
+            if (_ro_close_log_error is not None
+                    and not isinstance(_ro_close_log_error, Exception)):
+                # 22-F STOP-7 (CHARC, (a); R3-01's shape): the record's
+                # SINK returned the operator's interrupt.  The WARN lines
+                # above have printed; it is raised, chained from the
+                # witness-close error, and the tail is skipped (AL-11).
+                raise _ro_close_log_error from _ro_close_error
+        if not isinstance(exc, Exception):
+            # 22-F R3-02 (CHARC, option (a)): an INTERRUPT after the COMMIT
+            # (e.g. from a PRAGMA restore, re-raised by R2-03) is the
+            # operator's stop signal.  The witness has run and the durable
+            # WARN is printed; the interrupt is re-raised BARE and the tail
+            # is skipped -- plan AL-11's declaration for any interrupt
+            # between the COMMIT and the ratification.
+            raise
+        conn = open_connection(
+            db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     gate_alarm: str | None = None
     if gate is not None:
         new_images = sorted(set(backups_dir.glob(gate.filename_glob)) - gate_images_before)
@@ -370,6 +480,10 @@ def db_migrate(ctx: click.Context) -> None:
                 "before relying on this migration."
             )
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+    # 22-F R2-01: durable iff THIS invocation moved the version (a fresh DB
+    # reads pre_version 0).  Bound from the file's own report, never from
+    # reaching the tail.
+    migrated = version > pre_version
     if pre_version <= 16 and version >= 17:
         # First-time v17 landing: ratify the migration's hard-coded seed
         # against cfg.{risk.max_risk_pct, position_limits.hard_cap_open,
@@ -401,9 +515,11 @@ def db_migrate(ctx: click.Context) -> None:
                     f"policy_id={ratified_id}."
                 )
         except Exception as exc:
-            conn.close()
-            raise click.ClickException(
-                f"Phase 9 seed ratification failed: {exc}. The DB is at "
+            # 22-F R2-01 (CHARC, census C2-21): the refusal is constructed
+            # FIRST and held as the pending refusal, so a close failure is
+            # named in it and CHAINED (S-R8) -- it can never replace it.
+            ratify_refusal = click.ClickException(
+                f"Phase 9 seed ratification failed: {ascii_safe(str(exc))}. The DB is at "
                 f"v17 but the active policy seed may not match your "
                 f"effective swing.config.toml + user-config.toml values. "
                 f"Investigate the cfg field that failed validation, fix it, "
@@ -415,8 +531,16 @@ def db_migrate(ctx: click.Context) -> None:
                 f"capital_floor_constant_dollars, max_concurrent_positions, "
                 f"review_lag_threshold_days, max_account_risk_per_trade_pct."
                 + (f" ALSO: {gate_alarm}" if gate_alarm else "")
-            ) from exc
-    conn.close()
+            )
+            _close_after_writes(conn, durable=migrated,
+                                pending_refusal=ratify_refusal)
+            raise ratify_refusal from exc
+    # 22-F R2-01 (CHARC, census C2-21 "the close ... runner-wide"): the final
+    # close after a migration this invocation APPLIED is the durable branch
+    # (a close failure -> the WARN, the echo below, exit 0).  `migrated` is
+    # the version read above against the pre-snoop -- nothing migrated (already
+    # at HEAD) keeps the pre-arc bare close (the nothing-durable branch, R1-05).
+    _close_after_writes(conn, durable=migrated, pending_refusal=None)
     click.echo(f"DB at {db_path} - schema version {version}")
     if gate_alarm is not None:
         raise click.ClickException(gate_alarm)
@@ -465,6 +589,7 @@ def db_backup(ctx: click.Context, force: bool) -> None:
 @click.pass_context
 def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> None:
     """Evaluate tickers from a Finviz-style CSV."""
+    from swing.trades.entry import ascii_safe
     cfg = ctx.obj["config"]
     csv_file = Path(csv_path)
     as_of_date = _date.fromisoformat(as_of_date_str) if as_of_date_str else None
@@ -512,12 +637,23 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
     # Persist seam: a plain single-transaction insert (no lease).
     def _persist(run, candidates) -> int:
         conn = connect(cfg.paths.db_path)
+        # 22-F T-G1 (F4, S-B02; CHARC STOP-5): `durable` is bound once the
+        # `with conn:` holding BOTH inserts has committed -- the durable
+        # point this connection's close follows (the orchestration returns
+        # directly after `persist`). No refusal is raised while it is open.
+        # A retry would append a SECOND immutable evaluation run, so the
+        # close-failure notice names the run this one recorded.
+        durable = False
+        run_id = None
         try:
             with conn:  # commits on success, rolls back on exception
                 run_id = insert_evaluation_run(conn, run)
                 insert_candidates(conn, run_id, candidates)
+            durable = True
         finally:
-            conn.close()
+            _close_after_writes(
+                conn, durable=durable, pending_refusal=None,
+                recorded=(f"evaluation run {run_id}" if durable else None))
         return run_id
 
     try:
@@ -534,7 +670,7 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
             behavior=EvaluationBehaviorPolicy(spy_failure_mode="warn_and_zero"),
         )
     except ValueError as exc:  # e.g. malformed CSV (missing Ticker column)
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
 
     run = result.run
     click.echo(
@@ -952,17 +1088,51 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                     f"Missing required pre-trade fields: {', '.join(flags)}"
                 ) from exc
             except (SoftWarnError, HardCapError, DuplicateOpenPositionError) as exc:
-                raise click.ClickException(str(exc)) from exc
+                raise click.ClickException(ascii_safe(str(exc))) from exc
         finally:
             # THE DURABILITY BOUNDARY IS THE BINDING OF `result`. Before the
             # durable fact exists an error is the honest answer, so
-            # `result is None` RE-RAISES and every pre-existing refusal path
-            # is byte-unchanged. After it exists, an error is a wrong answer
-            # in the expensive direction.
+            # `result is None` RE-RAISES (a typed refusal in flight is kept
+            # and the close failure chained to it, 22-F T-F11 below). After
+            # it exists, an error is a wrong answer in the expensive
+            # direction.
+            #
+            # 22-F T-F11 (C2-22, S-R8 = RULING R8): the exception IN FLIGHT
+            # (if any) is read BEFORE the close, so what `close()` does
+            # internally cannot change which refusal is named below.
+            _in_flight = _sys.exc_info()[1]
             try:
                 conn.close()
             except BaseException as exc:  # noqa: BLE001 -- the CLASS
                 if result is None:
+                    # A TYPED REFUSAL SURVIVES A CLOSE FAILURE: raise it with
+                    # the close error NAMED and CHAINED, never let the close
+                    # exception mask it (RULING R8's shape, as `trade
+                    # assign-intent` does).  Nothing is durable on this
+                    # branch.  Any other in-flight error keeps today's
+                    # behaviour (the close error, the original as context).
+                    if isinstance(_in_flight, click.ClickException):
+                        if not isinstance(exc, Exception):
+                            # 22-F B-2 (CHARC): an INTERRUPT at the close is
+                            # the operator's stop signal -- never retyped.
+                            # ONE record names both, and the interrupt is
+                            # raised `from` the refusal (its text survives
+                            # in the chain).
+                            from swing.trades.entry import log_contained_note
+                            log_contained_note(
+                                _pe_backfill_logging.getLogger(__name__), exc,
+                                "22-F: a refusal is pending (%s) and an "
+                                "INTERRUPT arrived while CLOSING the database "
+                                "connection (%s); the interrupt is re-raised, "
+                                "chained from the refusal.",
+                                ascii_safe(_in_flight.format_message()),
+                                safe_text(exc))
+                            raise exc from _in_flight
+                        raise click.ClickException(
+                            f"{ascii_safe(_in_flight.format_message())}; "
+                            f"the connection close also failed: "
+                            f"{safe_text(exc)}"
+                        ) from exc
                     raise
                 # AND IT IS RECORDED DURABLY, NOT ONLY PRINTED (Codex
                 # A3-AR-05): CLI output is not retained, so without this the
@@ -1134,6 +1304,155 @@ def _echo_contained(text: str, *, err: bool = False) -> bool:
     return True
 
 
+def _close_after_writes(
+    conn, *, durable: bool, pending_refusal: click.ClickException | None,
+    recorded: str | None = None,
+) -> None:
+    """22-F T-G0 (F4): close a root's connection after its writes -- S-B02
+    exactly (RULING B item 2, the `trade review` shape).
+
+    * NOTHING durable and NO refusal -> a bare ``conn.close()``: a close
+      failure propagates as it always has (the one interrupt case is below).
+    * A REFUSAL in flight -> S-R8 (RULING R8): the refusal text SURVIVES a
+      close failure, named and CHAINED from the close error, never replaced
+      by it.  A named refusal wins even when an earlier write was durable.
+    * DURABLE and no refusal -> the close failure is contained: one ERROR
+      record, a ``WARN: the write IS recorded; ...`` line through the
+      contained sinks, and a NORMAL return (the root exits 0 -- the ledger
+      has the row, and a failure exit would invite a retry against it, D68).
+      If the ERROR record's logging SINK raised an interrupt
+      (``log_contained`` returns it), the WARN lines still print and the
+      interrupt is then raised ``from`` the close error (R3-01, CHARC).
+
+    An INTERRUPT at the close (a BaseException that is not an Exception:
+    KeyboardInterrupt, SystemExit, GeneratorExit) is the operator's STOP
+    SIGNAL -- never swallowed, never retyped (STOP-6, CHARC).  The three
+    branches above are for an ``Exception``; for an interrupt:
+
+    * A REFUSAL in flight -> one contained record naming the refusal text and
+      the interrupt, then the interrupt itself is raised ``from`` the refusal.
+    * DURABLE and no refusal -> the ERROR record and the ``WARN: the write IS
+      recorded; ...`` line (the durable fact is still stated), then the
+      interrupt is re-raised BARE (click turns it into its own ``Aborted!``)
+      -- or, when a non-refusal error was already IN FLIGHT at entry (the
+      helper called from a ``finally``; ``sys.exc_info()`` read once), the
+      ONE record names both and the interrupt is raised ``from`` that error
+      (item 4, CHARC).
+    * NOTHING durable and NO refusal -> the bare close: it propagates -- or,
+      when a non-refusal error was already IN FLIGHT at entry, the ONE
+      record names both and the interrupt is raised ``from`` that error
+      (B-1, CHARC).  An ordinary close ``Exception`` on this branch keeps
+      the bare propagation.
+
+    ``durable`` is bound by the CALLER at each writer's OWN return, never
+    cached earlier.  ``recorded`` (optional) names the durable write in the
+    WARN line and the ERROR record, for a root whose retry would append a
+    second row the operator must be able to find (``swing eval``, STOP-5).
+    ``cli_schwab.py``/``cli_config.py`` import this at function scope (no
+    module-level cycle).
+    """
+    # 22-F item 4 (CHARC, Round 3): the exception IN FLIGHT, read ONCE at
+    # entry (inside a caller's `finally` during propagation this is the
+    # propagating error; `None` otherwise), before `close()` can change it.
+    in_flight = _sys.exc_info()[1]
+    if pending_refusal is None and not durable:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001 -- the bare propagation, unchanged
+            raise
+        except BaseException as interrupt:
+            # 22-F B-1 (CHARC): an interrupt with a non-refusal error IN
+            # FLIGHT is recorded (ONE record naming both) and raised `from`
+            # that error -- implicit `__context__` is not a record.  Nothing
+            # in flight -> the bare re-raise, unchanged.
+            if in_flight is None:
+                raise
+            from swing.trades.entry import log_contained_note, safe_text
+            log_contained_note(
+                _pe_backfill_logging.getLogger(__name__), interrupt,
+                "22-F: an INTERRUPT arrived while CLOSING the database "
+                "connection (%s) while an error was already in flight (%s); "
+                "the interrupt is re-raised, chained from the in-flight "
+                "error.",
+                safe_text(interrupt), safe_text(in_flight))
+            raise interrupt from in_flight
+        return
+    try:
+        conn.close()
+    except Exception as close_exc:  # noqa: BLE001 -- the CLASS
+        from swing.trades.entry import ascii_safe, log_contained, safe_text
+        if pending_refusal is not None:
+            raise click.ClickException(
+                f"{ascii_safe(pending_refusal.format_message())}; the "
+                f"connection close also failed: {safe_text(close_exc)}"
+            ) from close_exc
+        close_error_text = safe_text(close_exc)
+        recorded_text = (
+            "" if recorded is None else f" -- the recorded write: {recorded}")
+        _log_error = log_contained(
+            _pe_backfill_logging.getLogger(__name__),
+            "22-F: a write IS recorded and CLOSING the database connection "
+            "afterwards RAISED (%s); the ledger is unaffected.%s",
+            close_error_text, recorded_text)
+        _echo_either_sink(ascii_safe(
+            "WARN: the write IS recorded; the connection close failed: "
+            + close_error_text + recorded_text), prefer_err=True)
+        if _log_error is not None:
+            _echo_either_sink(ascii_safe(
+                "WARN: the ERROR log for the close failure above could not be "
+                "emitted cleanly -- a logging handler RAISED ("
+                + safe_text(_log_error) + "); the ledger is unaffected."),
+                prefer_err=True)
+            if not isinstance(_log_error, Exception):
+                # 22-F R3-01 (CHARC): the SINK returned the operator's
+                # interrupt -- the stop signal one layer down.  The WARN
+                # work above has run; it is raised, chained from the close
+                # error, never left as WARN text and a normal return.
+                raise _log_error from close_exc
+    except BaseException as interrupt:
+        # 22-F STOP-6 (CHARC): the non-Exception remainder is the operator's
+        # stop signal -- contain Exception, re-raise the rest.  A sink
+        # failure travels as a NOTE on the interrupt (`log_contained_note`).
+        from swing.trades.entry import ascii_safe, log_contained_note, safe_text
+        interrupt_text = safe_text(interrupt)
+        if pending_refusal is not None:
+            log_contained_note(
+                _pe_backfill_logging.getLogger(__name__), interrupt,
+                "22-F: a refusal is pending (%s) and an INTERRUPT arrived "
+                "while CLOSING the database connection (%s); the interrupt is "
+                "re-raised, chained from the refusal.",
+                ascii_safe(pending_refusal.format_message()), interrupt_text)
+            raise interrupt from pending_refusal
+        recorded_text = (
+            "" if recorded is None else f" -- the recorded write: {recorded}")
+        if in_flight is not None:
+            # 22-F item 4 (CHARC): a non-refusal error was already
+            # propagating.  ONE record names BOTH, and the interrupt is
+            # raised `from` it -- the in-flight error's record is never
+            # replaced (implicit `__context__` is not logged).
+            log_contained_note(
+                _pe_backfill_logging.getLogger(__name__), interrupt,
+                "22-F: a write IS recorded and an INTERRUPT arrived while "
+                "CLOSING the database connection afterwards (%s) while an "
+                "error was already in flight (%s); the ledger is unaffected; "
+                "the interrupt is re-raised, chained from the in-flight "
+                "error.%s",
+                interrupt_text, safe_text(in_flight), recorded_text)
+        else:
+            log_contained_note(
+                _pe_backfill_logging.getLogger(__name__), interrupt,
+                "22-F: a write IS recorded and an INTERRUPT arrived while "
+                "CLOSING the database connection afterwards (%s); the ledger "
+                "is unaffected; the interrupt is re-raised.%s",
+                interrupt_text, recorded_text)
+        _echo_either_sink(ascii_safe(
+            "WARN: the write IS recorded; the connection close was "
+            "interrupted: " + interrupt_text + recorded_text), prefer_err=True)
+        if in_flight is not None:
+            raise interrupt from in_flight
+        raise
+
+
 @trade_group.command("exit")
 @click.option("--trade-id", type=int, required=True)
 @click.option("--exit-date", required=True)
@@ -1153,10 +1472,17 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
     from datetime import datetime as _dt
 
     from swing.data.db import connect
+    from swing.trades.entry import ascii_safe
     from swing.trades.exit import ExitReason, ExitRequest, record_exit
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `record_exit`'s OWN
+    # return (its transaction has committed by then); `pending_refusal` is
+    # whichever typed refusal (`ClickException`) is in flight, so a close
+    # failure cannot replace it.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         reason_enum = ExitReason(reason)
         req = ExitRequest(
@@ -1165,9 +1491,19 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
             notes=notes, rationale=reason_enum.value,
             event_ts=_dt.now().isoformat(timespec="seconds"),
         )
-        result = record_exit(conn, req)
+        try:
+            result = record_exit(conn, req)
+        except ValueError as exc:
+            # 22-F C1-02: a service refusal (`InvalidStateTransition` is a
+            # `ValueError`) is the operator's typed error, not a traceback.
+            raise click.ClickException(ascii_safe(str(exc))) from exc
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     closed = " (FULL CLOSE)" if result.fully_closed else ""
     click.echo(
         f"Exit {result.exit_id}: ${result.realized_pnl:+.2f} "
@@ -1240,6 +1576,7 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
     from datetime import datetime as _dt
 
     from swing.data.db import connect
+    from swing.trades.entry import ascii_safe
     from swing.trades.stop_adjust import StopAdjustRequest, StopRegressionError, adjust_stop
 
     # T5: --notes required when --rationale=other (parity with web form).
@@ -1248,17 +1585,33 @@ def trade_stop_adjust_cmd(ctx, trade_id, new_stop, rationale, notes, force):
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `adjust_stop`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         try:
-            adjust_stop(conn, StopAdjustRequest(
+            wrote = adjust_stop(conn, StopAdjustRequest(
                 trade_id=trade_id, new_stop=new_stop, rationale=rationale,
                 notes=notes,
                 event_ts=_dt.now().isoformat(timespec="seconds"), force=force,
             ))
         except StopRegressionError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
+        except ValueError as exc:
+            # 22-F C1-03: `adjust_stop`'s not-found / not-active refusals.
+            # `StopRegressionError` is an `Exception`, not a `ValueError`, so
+            # the two clauses are disjoint.
+            raise click.ClickException(ascii_safe(str(exc))) from exc
+        # 22-F R1-05 (CHARC): bound from what the writer REPORTS -- the
+        # equal-stop no-op wrote nothing.
+        durable = wrote
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(f"Trade {trade_id} stop -> ${new_stop:.2f}")
 
 
@@ -1342,6 +1695,7 @@ def trade_analyze_cmd(ctx, trade_id):
     """
     from swing.data.db import connect
     from swing.journal.analyze import analyze_trade
+    from swing.trades.entry import ascii_safe
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
@@ -1358,7 +1712,7 @@ def trade_analyze_cmd(ctx, trade_id):
         try:
             a = analyze_trade(conn, trade_id)
         except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
     finally:
         conn.close()
 
@@ -1709,7 +2063,7 @@ def trade_review_cmd(
         try:
             validate_mistake_tags(canonical_tags)
         except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
 
         from swing.data.models import FAILURE_MODES
         # L5 parity with the web POST (`... or None`): an explicit empty
@@ -1735,7 +2089,7 @@ def trade_review_cmd(
                 assert_entry_intent_change_allowed(
                     conn, trade_id=trade_id, entry_intent=entry_intent)
             except ValueError as exc:
-                pending_refusal = click.ClickException(str(exc))
+                pending_refusal = click.ClickException(ascii_safe(str(exc)))
                 raise pending_refusal from exc
 
         # B.7: route through `complete_trade_review` service so the review
@@ -1766,7 +2120,7 @@ def trade_review_cmd(
             # Defense-in-depth: the repo-layer pre-v24 / membership ValueError
             # surfaces as a clean ClickException, not a traceback. Production is
             # v24 so this is the belt to the membership check's suspenders.
-            pending_refusal = click.ClickException(str(exc))
+            pending_refusal = click.ClickException(ascii_safe(str(exc)))
             raise pending_refusal from exc
         # RULING B item 2: bound at the writer's OWN return, never cached
         # earlier -- `complete_trade_review` opened and closed its own
@@ -1805,7 +2159,7 @@ def trade_review_cmd(
                     )
             except ValueError as exc:
                 pending_refusal = click.ClickException(
-                    f"Intent change REFUSED: {exc}")
+                    f"Intent change REFUSED: {ascii_safe(str(exc))}")
                 raise pending_refusal from exc
             # RULING B item 2: bound at the writer's OWN return, never cached
             # earlier -- `update_entry_intent`'s `with conn:` above has
@@ -1834,7 +2188,7 @@ def trade_review_cmd(
                     # `pending_refusal`'s own message, named here second;
                     # the close failure is named third.
                     raise click.ClickException(
-                        f"{pending_refusal.message}; the connection close "
+                        f"{ascii_safe(str(pending_refusal.message))}; the connection close "
                         f"also failed: {safe_text(close_exc)}"
                     ) from close_exc
                 # (ii) NOTHING REFUSED and every write that ran IS durable
@@ -1933,7 +2287,7 @@ def trade_assign_intent(ctx: click.Context, trade_id: int, value: str, cite: str
                                 reason=reason, applied_by=ASSIGNMENT_APPLIED_BY,
                                 dry_run=dry_run)
             except ValueError as exc:
-                raise click.ClickException(str(exc)) from exc
+                raise click.ClickException(ascii_safe(str(exc))) from exc
         finally:
             try:
                 conn.close()
@@ -1948,7 +2302,7 @@ def trade_assign_intent(ctx: click.Context, trade_id: int, value: str, cite: str
                 # dry run routes here too, not there.
                 if result is not None and not result.admitted:
                     raise click.ClickException(
-                        f"REFUSED ({result.refusal_code}): {result.message}; "
+                        f"REFUSED ({result.refusal_code}): {ascii_safe(str(result.message))}; "
                         f"the connection close also failed: "
                         f"{safe_text(exc)}"
                     ) from exc
@@ -1969,7 +2323,7 @@ def trade_assign_intent(ctx: click.Context, trade_id: int, value: str, cite: str
                     close_log_error_text = safe_text(_close_log_error)
         if not result.admitted:
             raise click.ClickException(
-                f"REFUSED ({result.refusal_code}): {result.message}")
+                f"REFUSED ({result.refusal_code}): {ascii_safe(str(result.message))}")
         # Codex R7-1: on the write path `assign` has COMMITTED by now, so an
         # output failure must not turn the durable assignment into a nonzero
         # exit. Every line goes through the 22-A3 post-durability idiom --
@@ -2417,6 +2771,7 @@ def journal_review_cmd(ctx, period, today):
         period_filter,
         render_hypothesis_progress,
     )
+    from swing.trades.entry import ascii_safe
 
     cfg = ctx.obj["config"]
     today = today or _date.today().isoformat()
@@ -2445,7 +2800,7 @@ def journal_review_cmd(ctx, period, today):
                 conn, starting_equity=cfg.account.starting_equity,
             )
         except CohortReadRacedError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
     finally:
         conn.close()
 
@@ -2580,13 +2935,23 @@ def journal_cash_cmd(ctx, deposit, withdraw, interest, dividend, fee, date_str, 
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound once `insert_cash`'s
+    # `with conn:` has committed; `pending_refusal` is whichever typed
+    # refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         with conn:
             cid = insert_cash(conn, CashMovement(
                 id=None, date=date_str, kind=kind, amount=amount, ref=ref, note=note,
             ))
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(f"Cash {kind} #{cid}: ${amount:.2f}{f' ref={ref}' if ref else ''}")
 
 
@@ -2638,6 +3003,7 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str, force):
     from swing.data.db import connect
     from swing.data.models import CashMovement
     from swing.data.repos.cash import find_by_ref, insert_cash
+    from swing.trades.entry import ascii_safe
     from swing.trades.schwab_reconciliation import _build_oof_ref, _oof_ref_with_seq
 
     # Control-flow ORDER (plan §1): apply_overrides -> registry guard -> ISO-date
@@ -2697,7 +3063,7 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str, force):
     try:
         canonical_ref = _build_oof_ref(ticker, date_str)
     except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     note = f"out-of-framework buy: {ticker} (swing cash transfer-out)"
 
     def _collision_error(existing, *, attempted_ref: str) -> click.ClickException:
@@ -2736,6 +3102,10 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str, force):
         )
 
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `_insert`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         # 4. Resolve the target ref + the idempotency policy (FAIL LOUD, amended
         #    brief §4). The partial unique index ux_cash_ref makes the ref unique;
@@ -2804,8 +3174,13 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str, force):
                 if raced is None:
                     raise
                 raise _collision_error(raced, attempted_ref=ref) from None
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(
         f"OOF transfer-out #{cid}: {ticker} ${cost:.2f} on {date_str} "
         f"(ref={ref}). Swing ledger reduced by ${cost:.2f}."
@@ -2852,6 +3227,7 @@ def journal_cash_void_cmd(ctx, cash_movement_id, reason, date_str):
     from swing.data.db import connect
     from swing.data.models import CashMovement
     from swing.data.repos.cash import find_by_id, find_by_ref, insert_cash
+    from swing.trades.entry import ascii_safe
     from swing.trades.equity import _CASH_ADD_KINDS
     from swing.trades.schwab_reconciliation import (
         _build_void_ref,
@@ -2894,6 +3270,11 @@ def journal_cash_void_cmd(ctx, cash_movement_id, reason, date_str):
             )
 
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound once `insert_cash`'s
+    # `with conn:` has committed; `pending_refusal` is whichever typed
+    # refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         # 4. Fetch the original; reject not-found + void-of-a-void -- ALWAYS.
         original = find_by_id(conn, cash_movement_id)
@@ -2948,7 +3329,7 @@ def journal_cash_void_cmd(ctx, cash_movement_id, reason, date_str):
         try:
             void_ref = _build_void_ref(cash_movement_id)
         except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
         note = f"VOID #{cash_movement_id}: {reason_clean}"
 
         def _collision_error(existing) -> click.ClickException:
@@ -2998,8 +3379,13 @@ def journal_cash_void_cmd(ctx, cash_movement_id, reason, date_str):
             if raced is None:
                 raise
             raise _collision_error(raced) from None
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(
         f"Voided cash_movement #{cash_movement_id} ({original.kind} "
         f"${float(original.amount):.2f}) via {reversing_kind} #{vid} "
@@ -3075,6 +3461,7 @@ def journal_correct_entry_date_cmd(
     """
     from swing.config_overrides import apply_overrides
     from swing.data.db import connect
+    from swing.trades.entry import ascii_safe
     from swing.trades.entry_date_correction import (
         EntryDateCorrectionError,
         correct_entry_date,
@@ -3083,6 +3470,10 @@ def journal_correct_entry_date_cmd(
 
     cfg = apply_overrides(ctx.obj["config"])
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `correct_entry_date`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         if dry_run:
             try:
@@ -3092,7 +3483,7 @@ def journal_correct_entry_date_cmd(
                     allow_active=allow_active,
                 )
             except EntryDateCorrectionError as exc:
-                raise click.ClickException(str(exc)) from exc
+                raise click.ClickException(ascii_safe(str(exc))) from exc
             click.echo(
                 f"DRY RUN -- nothing written. trade {preview.trade_id} "
                 f"({preview.ticker}, state={preview.state}), discrepancy "
@@ -3136,9 +3527,14 @@ def journal_correct_entry_date_cmd(
                 allow_active=allow_active,
             )
         except EntryDateCorrectionError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     click.echo(
         f"correction {result.correction_id} applied to trade "
@@ -3317,9 +3713,14 @@ def journal_correct_cohort_provenance_cmd(
         correct_cohort_provenance,
         preview_cohort_provenance_correction,
     )
+    from swing.trades.entry import ascii_safe
 
     cfg = apply_overrides(ctx.obj["config"])
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `correct_cohort_provenance`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         if dry_run:
             try:
@@ -3336,7 +3737,7 @@ def journal_correct_cohort_provenance_cmd(
                     frozen_value_evidence=frozen_value_evidence,
                 )
             except CohortProvenanceCorrectionError as exc:
-                raise click.ClickException(str(exc)) from exc
+                raise click.ClickException(ascii_safe(str(exc))) from exc
             if preview.already_applied_correction_id is not None:
                 click.echo(
                     f"DRY RUN -- trade {preview.trade_id} ALREADY has "
@@ -3418,9 +3819,16 @@ def journal_correct_cohort_provenance_cmd(
                 frozen_value_evidence=frozen_value_evidence,
             )
         except CohortProvenanceCorrectionError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
+        # 22-F R1-05 (CHARC): an already-applied correction is a no-op
+        # the service REPORTS; nothing was written.
+        durable = not result.already_applied
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     if result.already_applied:
         click.echo(
@@ -3584,21 +3992,43 @@ def journal_reconcile_tos_cmd(
     from pathlib import Path as _Path
 
     from swing.data.db import connect
-    from swing.trades.reconciliation import run_tos_reconciliation
+    from swing.trades.entry import ascii_safe, safe_text
+    from swing.trades.reconciliation import (
+        TosReconciliationFailedError,
+        run_tos_reconciliation,
+    )
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `run_tos_reconciliation`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
-        run = run_tos_reconciliation(
-            conn,
-            csv_path=_Path(csv_path),
-            period_end=period_end,
-            period_start=period_start,
-            notes=notes,
-            price_tolerance=price_tolerance,
-        )
+        try:
+            run = run_tos_reconciliation(
+                conn,
+                csv_path=_Path(csv_path),
+                period_end=period_end,
+                period_start=period_start,
+                notes=notes,
+                price_tolerance=price_tolerance,
+            )
+        except TosReconciliationFailedError as failed:
+            # 22-F R2-07 (CHARC): the service COMMITTED the failed run row;
+            # NAME it and the cause, held as the pending refusal so a close
+            # failure is named in it and chained (S-R8), never in its place.
+            cause = failed.__cause__ if failed.__cause__ is not None else failed
+            raise click.ClickException(ascii_safe(
+                f"reconciliation run {failed.run_id} IS recorded as failed; "
+                f"cause: {safe_text(cause)}")) from failed
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     click.echo(
         f"Reconciliation run #{run.run_id}: state={run.state} "
@@ -3706,6 +4136,7 @@ def journal_reconcile_backfill_cmd(
     The two flags are mutually exclusive.
     """
     from swing.data.db import connect
+    from swing.trades.entry import ascii_safe
     from swing.trades.reconciliation_backfill import (
         BackfillPipelineActiveError,
         format_projection_row,
@@ -3832,7 +4263,7 @@ def journal_reconcile_backfill_cmd(
                         # wrap raw SchwabConfigMissingError for parity.
                         if isinstance(exc, click.ClickException):
                             raise
-                        raise click.ClickException(str(exc)) from exc
+                        raise click.ClickException(ascii_safe(str(exc))) from exc
                     # Dry-run soft-fail (operator may not have shell
                     # env vars set for a non-destructive preview).
                     click.echo(
@@ -3851,7 +4282,7 @@ def journal_reconcile_backfill_cmd(
                     except SchwabAuthError as exc:
                         if not dry_run:
                             raise click.ClickException(
-                                f"Authentication failed: {exc}",
+                                f"Authentication failed: {ascii_safe(str(exc))}",
                             ) from exc
                         click.echo(
                             f"(advisory) Schwab authentication failed: "
@@ -3860,7 +4291,7 @@ def journal_reconcile_backfill_cmd(
                         )
                     except SchwabConfigMissingError as exc:
                         if not dry_run:
-                            raise click.ClickException(str(exc)) from exc
+                            raise click.ClickException(ascii_safe(str(exc))) from exc
                         click.echo(
                             f"(advisory) Schwab config missing: {exc}. "
                             "Pass-2 dispatch will fail.",
@@ -3895,7 +4326,7 @@ def journal_reconcile_backfill_cmd(
                 for outcome in partial.per_discrepancy_outcomes:
                     click.echo(format_projection_row(outcome))
                 click.echo(format_summary_block(partial))
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
     finally:
         conn.close()
 
@@ -4350,20 +4781,34 @@ def discrepancy_resolve_ambiguity_cmd(
 
     from swing.data.db import connect
     from swing.data.repos.reconciliation import get_discrepancy
+    from swing.data.repos.risk_policy import NoActivePolicyError
+    from swing.trades.entry import ascii_safe
     from swing.trades.reconciliation_ambiguity_choices import (
         choice_menu_for_discrepancy,
     )
     from swing.trades.reconciliation_auto_correct import (
         AlreadySupersededError,
         CallerHeldTransactionError,
+        MultiRowCorrectionOverrideError,
+        ReservedJournalFieldError,
         ValidatorRejectedError,
         apply_source_direction_resolution,
         apply_tier2_resolution,
     )
-    from swing.trades.risk_policy import read_active_policy
+    from swing.trades.risk_policy import (
+        NO_ACTIVE_POLICY_REFUSAL,
+        read_active_policy,
+    )
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at each writer's OWN return
+    # -- the orphan branch's `resolve_discrepancy`, or the tier-2 /
+    # source-direction resolver (BEFORE the best-effort back-link, which is
+    # a separate transaction); `pending_refusal` is whichever typed refusal
+    # is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         d = get_discrepancy(conn, discrepancy_id)
         if d is None:
@@ -4412,9 +4857,10 @@ def discrepancy_resolve_ambiguity_cmd(
                     require_current_resolution=d.resolution,
                 )
             except DiscrepancyResolutionStateError as e:
-                raise click.ClickException(str(e)) from None
+                raise click.ClickException(ascii_safe(str(e))) from None
             except ValueError as e:
-                raise click.UsageError(str(e)) from None
+                raise click.UsageError(ascii_safe(str(e))) from None
+            durable = True
             click.echo(
                 f"resolved orphan discrepancy {discrepancy_id} (referenced "
                 f"{table} id={rid} no longer exists) to acknowledged_immaterial"
@@ -4545,7 +4991,10 @@ def discrepancy_resolve_ambiguity_cmd(
                 ) from None
 
         # Resolve active risk policy id (Phase 9 Sub-bundle A surface).
-        active_policy = read_active_policy(conn)
+        try:
+            active_policy = read_active_policy(conn)
+        except NoActivePolicyError as exc:  # 22-F T-D5 (S-CLICK)
+            raise click.ClickException(NO_ACTIVE_POLICY_REFUSAL) from exc
 
         try:
             if d.field_name == "missing_journal_row":
@@ -4559,6 +5008,9 @@ def discrepancy_resolve_ambiguity_cmd(
                     operator_custom_payload=parsed_payload,
                 )
                 result = None
+                # The source-direction resolver REFUSES a non-pending row
+                # (SourceResolutionRejected), so a normal return wrote.
+                durable = True
             else:
                 result = apply_tier2_resolution(
                     conn,
@@ -4569,6 +5021,11 @@ def discrepancy_resolve_ambiguity_cmd(
                     risk_policy_id=active_policy.policy_id,
                     schwab_api_call_id=schwab_api_call_id,
                 )
+                # 22-F R1-05 + R2-04 (CHARC, option (b)): bound from the
+                # WRITER's report -- `wrote` is set inside the service's
+                # transaction (False at its step-2 terminal-state idempotent
+                # return, which writes nothing).
+                durable = result.wrote
             # The C.C tier-2 handlers stamp the forward FK
             # (reconciliation_corrections.schwab_api_call_id) but only
             # the tier-1 path invokes `_back_link_schwab_api_call`. To
@@ -4585,37 +5042,77 @@ def discrepancy_resolve_ambiguity_cmd(
                 from swing.data.repos.schwab_api_calls import (
                     update_call_linked_correction,
                 )
-                conn.execute("BEGIN IMMEDIATE")
+                # 22-F T-F2 (C2-05, S-D39): BEGIN inside the try, the
+                # rollback trigger is the CLASS, and a rollback that also
+                # fails is raised CHAINED from the write error with one
+                # MUST BE DISCARDED record (never instead of it, unguarded).
                 try:
+                    conn.execute("BEGIN IMMEDIATE")
                     update_call_linked_correction(
                         conn,
                         call_id=schwab_api_call_id,
                         correction_id=result.correction_id,
                     )
                     conn.commit()
-                except Exception:
-                    conn.rollback()
-                    raise
+                except BaseException as link_error:  # noqa: BLE001
+                    if conn.in_transaction:
+                        try:
+                            conn.rollback()
+                        except BaseException as cleanup_error:  # noqa: BLE001
+                            from swing.trades.entry import log_contained_note
+                            log_contained_note(
+                                _pe_backfill_logging.getLogger(__name__),
+                                cleanup_error,
+                                "22-F: the schwab_api_calls back-link of "
+                                "correction %s failed (%s) AND its rollback "
+                                "failed (%s); in_transaction reads %s after "
+                                "the failed rollback; this connection MUST BE "
+                                "DISCARDED either way. The tier-2 correction "
+                                "itself is already committed.",
+                                result.correction_id, link_error,
+                                cleanup_error, conn.in_transaction)
+                            raise cleanup_error from link_error
+                    if not isinstance(link_error, Exception):
+                        # An interrupt stays an interrupt.
+                        raise
+                    # 22-F R1-01 (CHARC-ruled): the tier-2 correction is
+                    # already COMMITTED -- the refusal names it (exit 1
+                    # stays: the back-link is a real failure).
+                    raise click.ClickException(ascii_safe(
+                        f"correction {result.correction_id} IS recorded; "
+                        f"the schwab_api_calls back-link to call "
+                        f"{schwab_api_call_id} failed: {link_error}"
+                    )) from link_error
         except CallerHeldTransactionError as e:
             # Should not happen in the CLI path (connection is fresh) —
             # surface as a friendly error rather than a stack trace.
             raise click.ClickException(
-                f"transactional discipline violation: {e}"
+                f"transactional discipline violation: {ascii_safe(str(e))}"
             ) from None
         except AlreadySupersededError as e:
-            raise click.ClickException(str(e)) from None
+            raise click.ClickException(ascii_safe(str(e))) from None
         except ValidatorRejectedError as e:
             raise click.ClickException(
-                f"validator rejected the operator choice: {e}"
+                f"validator rejected the operator choice: {ascii_safe(str(e))}"
             ) from None
+        except (ReservedJournalFieldError,
+                MultiRowCorrectionOverrideError) as exc:
+            # 22-F C1-05/C1-06: bare-`Exception` refusals (deliberately NOT
+            # `ValueError`s -- CHARC F-F2 RJFE, no re-base); nothing was
+            # written. Typed, not a traceback.
+            raise click.ClickException(ascii_safe(str(exc))) from exc
         except ValueError as e:
             # Service-layer ValueError covers: incompatible (kind,
             # choice); missing required payload on the handler; malformed
             # payload at handler-level shape validation. Map to
             # UsageError (exit 2) per plan §E.3 acceptance criterion #9.
-            raise click.UsageError(str(e)) from None
+            raise click.UsageError(ascii_safe(str(e))) from None
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     if result is not None:
         click.echo(
@@ -4778,13 +5275,20 @@ def discrepancy_override_correction_cmd(
         get_correction,
         list_corrections_by_discrepancy,
     )
+    from swing.data.repos.risk_policy import NoActivePolicyError
+    from swing.trades.entry import ascii_safe
     from swing.trades.reconciliation_auto_correct import (
         AlreadySupersededError,
         CallerHeldTransactionError,
+        MultiRowCorrectionOverrideError,
+        ReservedJournalFieldError,
         ValidatorRejectedError,
         apply_tier3_override,
     )
-    from swing.trades.risk_policy import read_active_policy
+    from swing.trades.risk_policy import (
+        NO_ACTIVE_POLICY_REFUSAL,
+        read_active_policy,
+    )
 
     # Parse --truth-value as JSON BEFORE opening the DB (cheap rejection
     # of malformed payloads; exit 2 via UsageError). Per plan §E.4
@@ -4805,6 +5309,10 @@ def discrepancy_override_correction_cmd(
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `apply_tier3_override`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         # Surface the current correction row before prompting so the
         # operator sees what they're overriding (per plan §E.4 acceptance
@@ -4895,7 +5403,10 @@ def discrepancy_override_correction_cmd(
 
         # Resolve active risk policy id (Phase 9 Sub-bundle A surface)
         # for the audit-row stamp.
-        active_policy = read_active_policy(conn)
+        try:
+            active_policy = read_active_policy(conn)
+        except NoActivePolicyError as exc:  # 22-F T-D5 (S-CLICK)
+            raise click.ClickException(NO_ACTIVE_POLICY_REFUSAL) from exc
 
         try:
             result = apply_tier3_override(
@@ -4907,7 +5418,7 @@ def discrepancy_override_correction_cmd(
             )
         except CallerHeldTransactionError as e:
             raise click.ClickException(
-                f"transactional discipline violation: {e}"
+                f"transactional discipline violation: {ascii_safe(str(e))}"
             ) from None
         except AlreadySupersededError:
             # Friendly message naming the chain-head correction_id per
@@ -4927,15 +5438,26 @@ def discrepancy_override_correction_cmd(
             ) from None
         except ValidatorRejectedError as e:
             raise click.ClickException(
-                f"validator rejected the operator-truth value: {e}"
+                f"validator rejected the operator-truth value: {ascii_safe(str(e))}"
             ) from None
+        except (ReservedJournalFieldError,
+                MultiRowCorrectionOverrideError) as exc:
+            # 22-F C1-05/C1-06: bare-`Exception` refusals (deliberately NOT
+            # `ValueError`s -- CHARC F-F2 RJFE, no re-base); nothing was
+            # written. Typed, not a traceback.
+            raise click.ClickException(ascii_safe(str(exc))) from exc
         except ValueError as e:
             # Service-layer ValueError covers per-shape rejection /
             # missing fields. Map to UsageError (exit 2) per plan §E.4
             # acceptance criterion #6.
-            raise click.UsageError(str(e)) from None
+            raise click.UsageError(ascii_safe(str(e))) from None
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     click.echo(
         f"override applied: prior correction_id={correction_id}; "
@@ -5009,6 +5531,7 @@ def discrepancy_resolve_cmd(
     """Resolve a discrepancy with an operator-supplied resolution + reason."""
     from swing.data.db import connect
     from swing.data.repos.reconciliation import get_discrepancy
+    from swing.trades.entry import ascii_safe
     from swing.trades.reconciliation import (
         DiscrepancyResolutionStateError,
         resolve_discrepancy,
@@ -5017,6 +5540,10 @@ def discrepancy_resolve_cmd(
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `resolve_discrepancy`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         # Arc 20-B (D22 gate). The general `discrepancy resolve` must NOT
         # silently bypass the operator choice menu for a
@@ -5105,11 +5632,16 @@ def discrepancy_resolve_cmd(
                 require_current_resolution=require_current,
             )
         except DiscrepancyResolutionStateError as e:
-            raise click.ClickException(str(e)) from None
+            raise click.ClickException(ascii_safe(str(e))) from None
         except ValueError as e:
-            raise click.ClickException(str(e)) from None
+            raise click.ClickException(ascii_safe(str(e))) from None
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(
         f"Discrepancy {discrepancy_id} resolved: resolution={resolution}"
     )
@@ -5246,12 +5778,17 @@ def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm, verbose):
     if report.new_cash_movements and (auto_confirm or click.confirm(
             f"Commit {len(report.new_cash_movements)} new cash movements?", default=True)):
         conn = connect(cfg.paths.db_path)
+        # 22-F T-G1 (F4, S-B02): `durable` is bound once the `with conn:`
+        # batch of `insert_cash` has committed; no refusal is raised while
+        # this connection is open.
+        durable = False
         try:
             with conn:
                 for c in report.new_cash_movements:
                     insert_cash(conn, c)
+            durable = True
         finally:
-            conn.close()
+            _close_after_writes(conn, durable=durable, pending_refusal=None)
         click.echo("Cash movements committed.")
 
     if report.unmatched_open_fills and not auto_confirm:
@@ -5374,6 +5911,12 @@ def pipeline_force_clear_cmd(ctx, run_id, reason, bypass_staleness_check):
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound once `force_clear`'s
+    # `with conn:` has committed; `pending_refusal` is whichever typed
+    # refusal is in flight (a declined confirm is `click.Abort`, which is
+    # not a refusal and writes nothing -- the bare close).
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         run = find_run(conn, run_id)
         if run is None:
@@ -5415,8 +5958,13 @@ def pipeline_force_clear_cmd(ctx, run_id, reason, bypass_staleness_check):
         with conn:
             force_clear(conn, run_id=run_id,
                         error_message=f"{reason} at {now.isoformat(timespec='seconds')}")
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     click.echo(f"Run {run_id} force-cleared.")
 
 
@@ -5488,6 +6036,7 @@ def hypothesis_list_cmd(ctx: click.Context) -> None:
     from swing.data.repos.hypothesis import list_hypotheses
     from swing.metrics.cohort_intent import intent_exclusion_lines
     from swing.recommendations.hypothesis import compute_tripwire_status
+    from swing.trades.entry import ascii_safe
     from swing.trades.frozen_value_evidence import tier2_cohort_lines
 
     cfg = ctx.obj["config"]
@@ -5508,7 +6057,7 @@ def hypothesis_list_cmd(ctx: click.Context) -> None:
                 for h in rows
             ]
         except CohortReadRacedError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
         click.echo("ID  STATUS              N/TARGET  TRIPWIRE  NAME")
         for h, tw in statuses:
             tw_label = "FIRED" if tw.any_tripwire_fired else "ok"
@@ -5537,6 +6086,7 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
     from swing.data.repos.hypothesis import get_hypothesis
     from swing.metrics.cohort_intent import intent_exclusion_lines
     from swing.recommendations.hypothesis import compute_tripwire_status
+    from swing.trades.entry import ascii_safe
     from swing.trades.frozen_value_evidence import tier2_cohort_lines
 
     cfg = ctx.obj["config"]
@@ -5554,7 +6104,7 @@ def hypothesis_status_cmd(ctx: click.Context, hypothesis_id: int) -> None:
                 starting_equity=cfg.account.starting_equity,
             )
         except CohortReadRacedError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
     finally:
         conn.close()
 
@@ -5628,6 +6178,7 @@ def hypothesis_update_cmd(ctx: click.Context, hypothesis_id: int,
     §3.4.1 R3 Minor #1.
     """
     from swing.data.db import connect
+    from swing.trades.entry import ascii_safe
     from swing.trades.hypothesis import (
         HypothesisStatusTransitionError,
         update_hypothesis_status_with_audit,
@@ -5635,6 +6186,10 @@ def hypothesis_update_cmd(ctx: click.Context, hypothesis_id: int,
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `update_hypothesis_status_with_audit`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         try:
             result = update_hypothesis_status_with_audit(
@@ -5644,11 +6199,17 @@ def hypothesis_update_cmd(ctx: click.Context, hypothesis_id: int,
                 change_reason=reason,
             )
         except HypothesisStatusTransitionError as exc:
-            raise click.ClickException(f"transition not allowed: {exc}") from exc
+            raise click.ClickException(f"transition not allowed: {ascii_safe(str(exc))}") from exc
         except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
+        # An identity transition writes nothing (the INFO no-op below).
+        durable = result != "noop_identity"
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
     if result == "noop_identity":
         click.echo(
             f"info: hypothesis #{hypothesis_id} already {new_status}; "
@@ -5679,6 +6240,7 @@ def finviz_fetch_cmd(ctx: click.Context) -> None:
     from swing.data.repos.finviz_api_calls import list_recent_calls
     from swing.integrations.finviz_api import FinvizPipelineActiveError
     from swing.pipeline.runner import _perform_finviz_fetch_no_lease
+    from swing.trades.entry import ascii_safe
 
     cfg = apply_overrides(ctx.obj["config"])
     conn = connect(cfg.paths.db_path)
@@ -5691,7 +6253,7 @@ def finviz_fetch_cmd(ctx: click.Context) -> None:
             # exception (preserves the operator-facing token-missing message).
             _perform_finviz_fetch_no_lease(cfg=cfg, conn=conn)
         except FinvizPipelineActiveError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
         # code-review I1 (2026-05-06): commit the audit row from the CLI body.
         # insert_call no longer commits internally (broke lease.fenced_write
         # transaction-control contract on the pipeline path); CLI raw-conn
@@ -5809,9 +6371,14 @@ def account_snapshot_cmd(
         is_back_recorded,
         record_snapshot,
     )
+    from swing.trades.entry import ascii_safe
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02): `durable` is bound at `record_snapshot`'s OWN
+    # return; `pending_refusal` is whichever typed refusal is in flight.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         try:
             snap = record_snapshot(
@@ -5822,9 +6389,14 @@ def account_snapshot_cmd(
                 basis="net_liq",  # operator account-value reading (migration 0029).
             )
         except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.ClickException(ascii_safe(str(exc))) from exc
+        durable = True
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     click.echo(
         f"snapshot #{snap.snapshot_id}: {snap.snapshot_date}  "
@@ -5891,6 +6463,7 @@ def _load_bars_for_labeling_emit(
     from swing.patterns.labeling_bars import (
         autofetch_bars_for_labeling as _autofetch,
     )
+    from swing.trades.entry import ascii_safe
 
     if window_bars_file is not None:
         # Codex R2 Minor #2 closure: catch malformed JSON at the file
@@ -5902,7 +6475,7 @@ def _load_bars_for_labeling_emit(
             )
         except _json.JSONDecodeError as exc:
             raise click.ClickException(
-                f"--window-bars-file content is not valid JSON: {exc}."
+                f"--window-bars-file content is not valid JSON: {ascii_safe(str(exc))}."
             ) from exc
         if not isinstance(raw, list):
             raise click.ClickException(
@@ -6045,6 +6618,7 @@ def label_exemplars_cmd(
     from swing.patterns.spec_static import (
         get_structural_evidence_schema as _get_evidence_schema,
     )
+    from swing.trades.entry import ascii_safe
 
     if pattern_class not in _DPC:
         raise click.BadParameter(
@@ -6111,7 +6685,7 @@ def label_exemplars_cmd(
         )
     except _json.JSONDecodeError as exc:
         raise click.ClickException(
-            f"--silver-response-file content is not valid JSON: {exc}."
+            f"--silver-response-file content is not valid JSON: {ascii_safe(str(exc))}."
         ) from exc
     # Codex R4 Minor #1 closure: top-level JSON must be an object (dict).
     # A top-level JSON string / array / scalar would otherwise raise raw
@@ -6156,7 +6730,7 @@ def label_exemplars_cmd(
             raise click.ClickException(
                 "silver-response-file shape invalid: "
                 "structural_evidence_json string is not valid JSON: "
-                f"{exc}."
+                f"{ascii_safe(str(exc))}."
             ) from exc
         if not isinstance(decoded, dict):
             raise click.ClickException(
@@ -6187,7 +6761,7 @@ def label_exemplars_cmd(
         # Codex R2 M#1 closure: ValueError added so __post_init__
         # validation failures surface as ClickException (vs raw traceback).
         raise click.ClickException(
-            f"silver-response-file shape invalid: {exc}; expected keys "
+            f"silver-response-file shape invalid: {ascii_safe(str(exc))}; expected keys "
             "'evaluation', 'confidence', 'structural_evidence_json', "
             "'geometric_evidence_narrative' per .claude/agents/"
             "pattern-labeler.md output contract."
@@ -6199,6 +6773,12 @@ def label_exemplars_cmd(
     def _dispatch_from_file(**_kwargs: object) -> _SilverLabelResponse:
         return response
 
+    # 22-F T-G1 (F4, S-B02; CHARC STOP-5): `durable` is bound at
+    # `fire_claude_silver_label`'s OWN return (it commits its INSERT inside
+    # its own `with conn:`); `pending_refusal` is whichever typed refusal is
+    # in flight (the shape-invalid refusal is raised before the INSERT).
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         try:
             exemplar_id = _fire_claude_silver_label(
@@ -6215,6 +6795,7 @@ def label_exemplars_cmd(
                 dispatch_subagent=_dispatch_from_file,
                 now_fn=lambda: _datetime.now(_UTC).isoformat(),
             )
+            durable = True
         except ValueError as exc:
             # Codex R4 M#1 closure: service-layer ValueErrors (most notably
             # _map_silver_evaluation_to_decision rejecting
@@ -6226,10 +6807,14 @@ def label_exemplars_cmd(
             # owns that check.
             raise click.ClickException(
                 "silver-response-file shape invalid: "
-                f"{exc}"
+                f"{ascii_safe(str(exc))}"
             ) from exc
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
     click.echo(
         f"silver exemplar persisted: id={exemplar_id} ticker={ticker} "
@@ -6318,6 +6903,7 @@ def label_corpus_all_cmd(
     from swing.patterns.spec_static import (
         get_structural_evidence_schema as _get_evidence_schema,
     )
+    from swing.trades.entry import ascii_safe
 
     cfg = ctx.obj["config"]
     conn = _connect(cfg.paths.db_path)
@@ -6332,7 +6918,7 @@ def label_corpus_all_cmd(
             )
         except Exception as exc:  # noqa: BLE001
             raise click.ClickException(
-                f"failed to enumerate claude_silver corpus rows: {exc}"
+                f"failed to enumerate claude_silver corpus rows: {ascii_safe(str(exc))}"
             ) from exc
         codex_rows = _ex_repo.list_exemplars(
             conn, label_source="codex_silver",
@@ -6516,9 +7102,19 @@ def review_silver_with_codex_cmd(
     from swing.patterns.spec_static import (
         get_structural_evidence_schema as _get_evidence_schema,
     )
+    from swing.trades.entry import ascii_safe
 
     cfg = ctx.obj["config"]
     conn = _connect(cfg.paths.db_path)
+    # 22-F T-G1 (F4, S-B02; CHARC STOP-5): `durable` is bound at
+    # `fire_codex_review_for_silver_row`'s OWN return (it commits the parent
+    # UPDATE and any codex_silver INSERT inside its own `with conn:`; the
+    # forced RNG below makes the review fire, so its return is always after
+    # a commit); `pending_refusal` is whichever typed refusal is in flight
+    # (every refusal here is raised before that commit). Emit mode writes
+    # nothing and keeps the bare close.
+    durable = False
+    pending_refusal: click.ClickException | None = None
     try:
         parent = _exemplars_repo.get_exemplar_by_id(conn, exemplar_id)
         if parent is None:
@@ -6558,7 +7154,7 @@ def review_silver_with_codex_cmd(
             )
         except _json.JSONDecodeError as exc:
             raise click.ClickException(
-                f"--codex-response-file content is not valid JSON: {exc}."
+                f"--codex-response-file content is not valid JSON: {ascii_safe(str(exc))}."
             ) from exc
         if not isinstance(response_raw, dict):
             raise click.ClickException(
@@ -6606,7 +7202,7 @@ def review_silver_with_codex_cmd(
             )
         except (TypeError, ValueError) as exc:
             raise click.ClickException(
-                f"codex-response-file shape invalid: {exc}"
+                f"codex-response-file shape invalid: {ascii_safe(str(exc))}"
             ) from exc
 
         def _dispatch_from_file(
@@ -6650,12 +7246,13 @@ def review_silver_with_codex_cmd(
                 codex_dispatch=_dispatch_from_file,
                 rng=forced_rng,
             )
+            durable = True
         except ValueError as exc:
             # Service-layer ValueError (e.g., CodexReviewResponse.agreed=
             # False but missing alternative_evaluation) -> clean
             # ClickException per T-A.1.5b R4 M#1 forward-binding lesson.
             raise click.ClickException(
-                f"codex-response-file shape invalid: {exc}"
+                f"codex-response-file shape invalid: {ascii_safe(str(exc))}"
             ) from exc
 
         if codex_response.agreed:
@@ -6669,8 +7266,12 @@ def review_silver_with_codex_cmd(
                 f"parent_exemplar_id={exemplar_id} final_decision="
                 f"{codex_response.alternative_evaluation}"
             )
+    except click.ClickException as exc:
+        pending_refusal = exc
+        raise
     finally:
-        conn.close()
+        _close_after_writes(conn, durable=durable,
+                            pending_refusal=pending_refusal)
 
 
 def _emit_or_skip_payload(
@@ -6967,6 +7568,7 @@ def diagnose_aplus_sensitivity(
     """
     # Codex R1 m#2: pre-validate --db existence so a typo surfaces as a
     # friendly error before the harness opens any sqlite3 connection.
+    from swing.trades.entry import ascii_safe
     _validate_diagnose_db_path(db_path)
     try:
         _ensure_research_importable()
@@ -6978,12 +7580,12 @@ def diagnose_aplus_sensitivity(
     except ValueError as exc:
         # Wrap service-layer ValueErrors at the CLI boundary per cumulative
         # gotcha (Phase 13 T-A.1.5b Codex R4 M#1).
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     except sqlite3.OperationalError as exc:
         # Codex R1 m#2: wrap raw OperationalError so the operator sees a
         # friendly message instead of a traceback.
         raise click.ClickException(
-            f"Database error reading {db_path}: {exc}"
+            f"Database error reading {db_path}: {ascii_safe(str(exc))}"
         ) from exc
     click.echo(f"Markdown: {md_path}")
     click.echo(f"CSV:      {csv_path}")
@@ -7030,6 +7632,7 @@ def diagnose_aplus_sensitivity_v2(
     """
     # Codex R1 m#2 precedent: pre-validate --db existence so a typo surfaces
     # as a friendly error before the harness opens any sqlite3 connection.
+    from swing.trades.entry import ascii_safe
     _validate_diagnose_db_path(db_path)
     _ensure_research_importable()
     from research.harness.aplus_v2_ohlcv_evaluator.run import run_harness
@@ -7052,10 +7655,10 @@ def diagnose_aplus_sensitivity_v2(
     except ValueError as exc:
         # Wrap service-layer ValueErrors at the CLI boundary per cumulative
         # gotcha (Phase 13 T-A.1.5b Codex R4 M#1).
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     except sqlite3.OperationalError as exc:
         raise click.ClickException(
-            f"Database error reading {db_path}: {exc}"
+            f"Database error reading {db_path}: {ascii_safe(str(exc))}"
         ) from exc
     click.echo(f"Markdown: {md_path}")
     click.echo(f"CSV:      {csv_path}")
@@ -7080,6 +7683,7 @@ def diagnose_minervini_recall(exemplars_csv, tiingo_dir, output_dir, window_back
     """Minervini correct-entry exemplar-recall harness (H1 screen + H2 detector recall).
 
     No --db: H1 is pure, equity is the $7500 floor surrogate, stage is synthetic."""
+    from swing.trades.entry import ascii_safe
     _ensure_research_importable()
     from research.harness.minervini_exemplar_recall.run import run_harness  # deferred import
 
@@ -7091,7 +7695,7 @@ def diagnose_minervini_recall(exemplars_csv, tiingo_dir, output_dir, window_back
             bootstrap_b=bootstrap_b, h2_all_windows=h2_all_windows, only=only_tuple,
         )
     except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     click.echo(f"results.csv:     {results}")
     click.echo(f"summary.md:      {summary}")
     click.echo(f"manifest.json:   {manifest}")
@@ -7114,6 +7718,7 @@ def diagnose_primary_base_recall(exemplars_csv, tiingo_dir, output_dir, window_b
     """Minervini Ch.11 primary-base (young-name) screen recall/precision harness.
 
     No DB flag: the screen is pure on bars (no equity, no stage)."""
+    from swing.trades.entry import ascii_safe
     _ensure_research_importable()
     from research.harness.minervini_primary_base_recall.run import run_harness  # deferred import
 
@@ -7125,7 +7730,7 @@ def diagnose_primary_base_recall(exemplars_csv, tiingo_dir, output_dir, window_b
             bootstrap_b=bootstrap_b, only=only_tuple,
         )
     except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     click.echo(f"results.csv:     {results}")
     click.echo(f"per_session.csv: {per_session}")
     click.echo(f"summary.md:      {summary}")
@@ -7178,6 +7783,7 @@ def diagnose_pattern_cohort_detect(
     Designed to answer gotcha #27's silent-skip research question for
     loosened-A+ cohorts. See research/method-records/pattern-cohort-detection.md.
     """
+    from swing.trades.entry import ascii_safe
     _validate_diagnose_db_path(db_path)
     _ensure_research_importable()
     from research.harness.pattern_cohort_evaluator.exceptions import (
@@ -7207,10 +7813,10 @@ def diagnose_pattern_cohort_detect(
         BothCohortModesSuppliedError,
         NeitherCohortModeSuppliedError,
     ) as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     except sqlite3.OperationalError as exc:
         raise click.ClickException(
-            f"Database error reading {db_path}: {exc}",
+            f"Database error reading {db_path}: {ascii_safe(str(exc))}",
         ) from exc
     click.echo(f"Results CSV: {results_csv}")
     click.echo(f"Summary MD:  {summary_md}")
@@ -7235,6 +7841,7 @@ def diagnose_shadow_expectancy(db_path, output_dir, source, partial_session_n,
     realized R-multiple, accumulating per-hypothesis expectancy evidence. Writes a
     per-run artifact (funnel + four-scenario scorecard + ledger + manifest). NOT an
     operator trading surface; never co-mingled with live hand-traded counts."""
+    from swing.trades.entry import ascii_safe
     _validate_diagnose_db_path(db_path)
     _ensure_research_importable()
     from research.harness.shadow_expectancy.run import run_harness  # deferred import
@@ -7246,9 +7853,10 @@ def diagnose_shadow_expectancy(db_path, output_dir, source, partial_session_n,
             partial_session_n=partial_session_n, breakeven_r=breakeven_r,
             horizon_sessions=horizon_sessions, only=only_tuple)
     except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     except sqlite3.OperationalError as exc:
-        raise click.ClickException(f"Database error reading {db_path}: {exc}") from exc
+        raise click.ClickException(
+            f"Database error reading {db_path}: {ascii_safe(str(exc))}") from exc
     click.echo(f"results.csv:     {results}")
     click.echo(f"per_session.csv: {per_session}")
     click.echo(f"summary.md:      {summary}")
@@ -7431,6 +8039,7 @@ def diagnose_metrics_wiring(db_path: Path, output_path: Path) -> None:
     from swing.diagnostics.metrics_wiring_audit import (
         write_metrics_wiring_audit_markdown,
     )
+    from swing.trades.entry import ascii_safe
 
     # Codex R1 m#2: pre-validate --db existence so a typo surfaces as a
     # friendly error before sqlite3.connect auto-creates an empty file.
@@ -7442,10 +8051,10 @@ def diagnose_metrics_wiring(db_path: Path, output_path: Path) -> None:
         finally:
             conn.close()
     except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     except _sqlite3.OperationalError as exc:
         raise click.ClickException(
-            f"Database error reading {db_path}: {exc}"
+            f"Database error reading {db_path}: {ascii_safe(str(exc))}"
         ) from exc
     click.echo(f"Audit:    {output_path}")
 
@@ -7472,6 +8081,7 @@ def diagnose_prune_chart_cache(db_path: Path, older_than_days: int) -> None:
     from swing.diagnostics.prune_chart_cache import (
         prune_chart_renders_older_than,
     )
+    from swing.trades.entry import ascii_safe
 
     # Codex R1 m#2: pre-validate --db existence so a typo surfaces as a
     # friendly error before sqlite3.connect auto-creates an empty file.
@@ -7488,13 +8098,13 @@ def diagnose_prune_chart_cache(db_path: Path, older_than_days: int) -> None:
     except ValueError as exc:
         # Wrap service-layer ValueErrors at the CLI boundary per cumulative
         # gotcha (Phase 13 T-A.1.5b Codex R4 M#1).
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     except _sqlite3.OperationalError as exc:
         # Codex R1 m#2: wrap raw OperationalError so the operator sees a
         # friendly message instead of a traceback (e.g., DB missing
         # chart_renders table on a legacy schema).
         raise click.ClickException(
-            f"Database error reading {db_path}: {exc}"
+            f"Database error reading {db_path}: {ascii_safe(str(exc))}"
         ) from exc
     click.echo(f"Deleted {deleted} chart_renders rows older than "
                f"{older_than_days} days.")
@@ -7543,6 +8153,7 @@ def diagnose_backfill_trades_sector_industry(
     re-emits the restore-SQL artifact BEFORE issuing UPDATEs (defense-
     in-depth against crash post-UPDATE; per spec section 4.3 R1.M3 LOCK).
     """
+    from swing.trades.entry import ascii_safe
     _validate_diagnose_db_path(db_path)
     try:
         from swing.diagnostics.backfill_trades_sector_industry import (
@@ -7556,17 +8167,17 @@ def diagnose_backfill_trades_sector_industry(
             include_closed=include_closed,
         )
     except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
     except sqlite3.OperationalError as exc:
         raise click.ClickException(
-            f"Database error reading {db_path}: {exc}"
+            f"Database error reading {db_path}: {ascii_safe(str(exc))}"
         ) from exc
     except OSError as exc:
         # C-3: an artifact-write failure (restore-SQL emit / output-dir mkdir)
         # surfaces as a clean ClickException, not a raw traceback. Wrapped at
         # the CLI boundary (preserve the service/CLI boundary discipline).
         raise click.ClickException(
-            f"failed to write backfill restore artifact: {exc}"
+            f"failed to write backfill restore artifact: {ascii_safe(str(exc))}"
         ) from exc
     for line in summary.report_lines:
         click.echo(line)
@@ -7590,6 +8201,8 @@ def _refuse_if_pipeline_running(cfg) -> None:
     opened/queried (R4-minor-1). Mirrors the existing CLI concurrency-exclusion
     discipline (SchwabPipelineActiveError / FinvizPipelineActiveError family)."""
     import sqlite3
+
+    from swing.trades.entry import ascii_safe
     db_path = cfg.paths.db_path
     if not db_path.exists() or db_path.is_dir():
         raise click.ClickException(
@@ -7610,7 +8223,7 @@ def _refuse_if_pipeline_running(cfg) -> None:
             conn.close()
     except sqlite3.Error as exc:
         raise click.ClickException(
-            f"Cannot query pipeline state ({exc}); refusing."
+            f"Cannot query pipeline state ({ascii_safe(str(exc))}); refusing."
         ) from exc
     if row:
         raise click.ClickException(
@@ -7644,6 +8257,7 @@ def logs_cleanup_cmd(ctx, yes, include_current, web_stopped) -> None:
         select_legacy_dated_logs,
         select_oversized_current_logs,
     )
+    from swing.trades.entry import ascii_safe
 
     cfg = ctx.obj["config"]
     logs_dir = cfg.paths.logs_dir
@@ -7656,7 +8270,7 @@ def logs_cleanup_cmd(ctx, yes, include_current, web_stopped) -> None:
     try:
         lock = acquire_single_instance_lock(logs_dir)
     except LogsCleanupLockHeldError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise click.ClickException(ascii_safe(str(exc))) from exc
 
     try:
         candidates = select_legacy_dated_logs(logs_dir)
