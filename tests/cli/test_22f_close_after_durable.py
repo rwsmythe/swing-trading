@@ -20,6 +20,12 @@ Per root, three tests over the ROOT TABLE below (each row carries its opener
 
 Did-it-fire (R3-01): every case asserts the proxies recorded >= 1 `close()`;
 every G1-c asserts its writer wrapper was called once.
+
+The three Schwab roots (setup / refresh / logout) write their operator record
+OUTSIDE the swing DB -- the tokens DB -- so their probe reads THAT
+(`_token_marker`), and a stub that commits only a `schwab_api_calls` audit
+row does NOT earn the WARN (B-3, CHARC; the control
+`test_B3_an_audit_row_alone_does_not_earn_the_warn`).
 """
 from __future__ import annotations
 
@@ -444,6 +450,21 @@ def _schwab_calls(w: World) -> int:
     return _scalar(w.db, "SELECT COUNT(*) FROM schwab_api_calls")
 
 
+# B-3 (CHARC's Reviewer B ruling, option (a)): the three Schwab roots'
+# OPERATOR RECORD is OUTSIDE the swing DB -- the tokens DB (and
+# user-config.toml), written by a raise-on-failure service that verifies
+# post-state.  So G1-a's fresh read binds to THAT effect, never to the
+# `schwab_api_calls` audit row, which alone does NOT earn the WARN (the
+# control `test_B3_an_audit_row_alone_does_not_earn_the_warn`).
+_TOKENS = "schwab-tokens.production.db"
+
+
+def _token_marker(w: World) -> tuple:
+    """A FRESH read of the tokens-DB files in `swing-data` (name, content)."""
+    return tuple(sorted((p.name, p.read_text(encoding="utf-8"))
+                        for p in w.db.parent.glob("schwab-tokens.*")))
+
+
 def _schwab_world(tmp_path: Path, mp: Any) -> World:
     """Credentials come from the env tier (no prompt); USERPROFILE and HOME
     point into tmp_path (these roots read and write user-config)."""
@@ -453,11 +474,17 @@ def _schwab_world(tmp_path: Path, mp: Any) -> World:
     return w
 
 
-def _stub_service(mp: Any, name: str, result: dict) -> Any:
+def _stub_service(mp: Any, name: str, result: dict,
+                  effect: Callable[[], None]) -> Any:
+    """The service's normal return, with its REAL effect planted: the audit
+    row the real service commits on the root's connection (a CONTROL that
+    alone does not earn the WARN) AND the operator record outside the swing
+    DB (`effect`: the tokens-DB write, rotation or rename -- B-3)."""
     from tests._22f_proxies import CountingWrapper
 
     def _fn(**kw: Any) -> dict:
         _audit_row(kw["conn"])
+        effect()
         return result
     stub = CountingWrapper(_fn)
     mp.setattr(f"swing.cli_schwab.{name}", stub)
@@ -468,11 +495,16 @@ def _refusing_service(mp: Any, name: str, exc: BaseException) -> None:
     mp.setattr(f"swing.cli_schwab.{name}", raising(exc))
 
 
+def _plant_tokens(w: World, text: str) -> None:
+    (w.db.parent / _TOKENS).write_text(text, encoding="utf-8")
+
+
 def _setup_world(tmp_path: Path, mp: Any) -> World:
     w = _schwab_world(tmp_path, mp)
     _stub_service(mp, "setup_paste_flow", {
         "account_hash": "ABCDEF1234567890", "num_accounts": 1,
-        "tokens_path": "tokens.db"})
+        "tokens_path": "tokens.db"},
+        effect=lambda: _plant_tokens(w, "tokens written by setup"))
     return w
 
 
@@ -485,7 +517,9 @@ def _setup_refusal_world(tmp_path: Path, mp: Any) -> World:
 
 def _refresh_world(tmp_path: Path, mp: Any) -> World:
     w = _schwab_world(tmp_path, mp)
-    _stub_service(mp, "force_refresh", {"tokens_path": "tokens.db"})
+    _plant_tokens(w, "tokens before refresh")
+    _stub_service(mp, "force_refresh", {"tokens_path": "tokens.db"},
+                  effect=lambda: _plant_tokens(w, "tokens rotated by refresh"))
     return w
 
 
@@ -498,8 +532,11 @@ def _refresh_refusal_world(tmp_path: Path, mp: Any) -> World:
 
 def _logout_world(tmp_path: Path, mp: Any) -> World:
     w = _schwab_world(tmp_path, mp)
+    _plant_tokens(w, "tokens before logout")
+    tokens = w.db.parent / _TOKENS
     _stub_service(mp, "revoke_and_delete", {
-        "revoke_status": "success", "deleted_path": "tokens.db.deleted"})
+        "revoke_status": "success", "deleted_path": "tokens.db.deleted"},
+        effect=lambda: tokens.rename(tokens.with_name(_TOKENS + ".deleted")))
     return w
 
 
@@ -824,7 +861,7 @@ ROOTS: list[Root] = [
     Root(
         id="schwab-setup", target=_CLI_SCHWAB_CONNECT, world=_setup_world,
         argv=lambda w: ["--config", str(w.cfg), "schwab", "setup"],
-        probe=_schwab_calls, writer="swing.cli_schwab.setup_paste_flow",
+        probe=_token_marker, writer="swing.cli_schwab.setup_paste_flow",
         refusal_world=_setup_refusal_world,
         refusal_argv=lambda w: ["--config", str(w.cfg), "schwab", "setup"],
         refusal_text="Authentication failed: ",
@@ -832,7 +869,7 @@ ROOTS: list[Root] = [
     Root(
         id="schwab-refresh", target=_CLI_SCHWAB_CONNECT, world=_refresh_world,
         argv=lambda w: ["--config", str(w.cfg), "schwab", "refresh"],
-        probe=_schwab_calls, writer="swing.cli_schwab.force_refresh",
+        probe=_token_marker, writer="swing.cli_schwab.force_refresh",
         refusal_world=_refresh_refusal_world,
         refusal_argv=lambda w: ["--config", str(w.cfg), "schwab", "refresh"],
         refusal_text="Authentication failed during refresh",
@@ -840,7 +877,7 @@ ROOTS: list[Root] = [
     Root(
         id="schwab-logout", target=_CLI_SCHWAB_CONNECT, world=_logout_world,
         argv=lambda w: ["--config", str(w.cfg), "schwab", "logout"],
-        probe=_schwab_calls, writer="swing.cli_schwab.revoke_and_delete",
+        probe=_token_marker, writer="swing.cli_schwab.revoke_and_delete",
         refusal_world=_logout_refusal_world,
         refusal_argv=lambda w: ["--config", str(w.cfg), "schwab", "logout"],
         refusal_text="could not rename the tokens DB",
@@ -947,6 +984,46 @@ def test_G1c_control_nothing_durable_close_error_replaces_as_before(
     assert _PLANTED in str(result.exception)
     assert _WARN not in result.output
     assert root.probe(w) == before
+
+
+_TOKEN_BOUND = [r for r in ROOTS if r.probe is _token_marker]
+
+
+def test_B3_the_token_bound_roster_is_the_three_schwab_roots():
+    """The control below is not vacuous: it runs over exactly these roots."""
+    assert sorted(r.id for r in _TOKEN_BOUND) == [
+        "schwab-logout", "schwab-refresh", "schwab-setup"]
+
+
+@pytest.mark.parametrize("root", _TOKEN_BOUND,
+                         ids=[r.id for r in _TOKEN_BOUND])
+def test_B3_an_audit_row_alone_does_not_earn_the_warn(
+        root: Root, tmp_path, monkeypatch):
+    """B-3 (CHARC, option (a)): the service commits ONLY the audit row on the
+    root's connection and then RAISES (no tokens-DB effect).  The audit row
+    IS durable, yet nothing the operator is accountable for was written, so
+    no `WARN: the write IS recorded` -- the close error replaces the planted
+    error exactly as G1-c's does."""
+    from tests._22f_proxies import CountingWrapper
+    w = root.world(tmp_path, monkeypatch)
+    audit_before = _schwab_calls(w)
+    tokens_before = _token_marker(w)
+
+    def _audit_then_fail(**kw: Any) -> dict:
+        _audit_row(kw["conn"])
+        raise _PlantedWriterFailure("planted after the audit row")
+    wrapper = CountingWrapper(_audit_then_fail)
+    monkeypatch.setattr(root.writer, wrapper)
+    built = _failing_close(monkeypatch, root.target, root.nth)
+    result = w.runner.invoke(main, root.argv(w), input=root.input)
+    assert wrapper.calls == 1  # did-it-fire
+    assert _closes(built, root.nth) >= 1
+    assert _schwab_calls(w) == audit_before + 1  # the audit row IS durable
+    assert _token_marker(w) == tokens_before  # no operator record
+    assert _WARN not in result.output
+    assert isinstance(result.exception, sqlite3.OperationalError), (
+        result.output, repr(result.exception))
+    assert _PLANTED in str(result.exception)
 
 
 def test_G1a_eval_notice_names_the_run_id(tmp_path, monkeypatch):
