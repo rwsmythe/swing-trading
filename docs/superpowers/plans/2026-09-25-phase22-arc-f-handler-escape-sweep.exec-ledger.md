@@ -1157,3 +1157,13 @@ Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator. Tex
 - the census pin RE-MEASURED on the MERGED `cli.py`;
 - the trailers;
 - the merged-head line with its SHA.
+
+### R3-06 fix (fix cell 14, off `f9a5ea76`; RED evidence under `review-transcripts\22-f-exec\red\R3-06*.txt`)
+
+| item | commit | what landed | RED on the unmodified code | suite after the fix |
+|---|---|---|---|---|
+| 1, R3-06 (CHARC-ruled (a), no fourth counted round) | `a67d13e6` | `swing/data/db.py:1134`: `except Exception as migration_error:` -> `except BaseException as migration_error:`, with a comment naming R3-06 (the split close guard beneath it is unchanged). Two did-it-fire tests in `tests/data/test_22f_r2_08b_ensure_schema_close.py`: `test_r3_06_interrupt_in_the_migration_closes_the_connection` (`executescript` opens a transaction and raises `KeyboardInterrupt`; the rollback works) and `test_r3_06_interrupted_rollback_closes_the_connection` (the reviewer's posture: `executescript` opens a transaction and fails with `OperationalError`, then `rollback()` raises `KeyboardInterrupt` without rolling back). Each asserts the script, the rollback and the close each fired once, that the real connection is closed (`ProgrammingError` on a read), and that the version is unchanged. The second also asserts that the interrupt's `__cause__` is the script's `OperationalError`, that the close found the transaction still OPEN (`open_tx_at_close` 1: the posture held), and the `MUST BE DISCARDED` record | 2 failed, 3 passed (`-n 0`): both `assert built[0].calls["close"] == 1` / `E assert 0 == 1` | tests/data + tests/cli + tests/web: `7151 passed, 1 skipped in 266.01s` (0 failed); ruff `swing/`: `All checks passed!` |
+
+**Deviation, recorded:** after the fix, `tests/data/test_22f_d39_apply_migration.py::test_c2_21_b_f2_twin_interrupt_rolls_back` failed with `sqlite3.ProgrammingError: Cannot operate on a closed database.`. It read `in_transaction` on the migration's connection AFTER the raise, and `ensure_schema` now closes that connection. It now reads the transaction state AT the close through a local `_TxAtClose` proxy and asserts one rollback, one close, and no open transaction at the close (its docstring bullet was amended by replacement). The T-F10 discriminator is kept: on the pre-T-F10 shape no rollback runs, so `calls["rollback"]` is 0 and the transaction is open at the close. Same commit.
+
+**Census line pin:** NOT re-measured. `git diff --stat f9a5ea76..a67d13e6 -- swing/cli.py` is empty, so the four `cli.py` lines have not moved.
