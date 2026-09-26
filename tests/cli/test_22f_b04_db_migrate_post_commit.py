@@ -23,6 +23,7 @@ The config fixture keeps every path under `tmp_path` and patches both
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -283,3 +284,57 @@ def test_r3_02_restore_interrupt_at_target_warns_then_aborts_skipping_tail(
     assert "KeyboardInterrupt" in r.output.split(_WARN)[1]
     assert calls == []  # the tail (the v17 ratification) was skipped
     assert f"DB at {world['db']} - schema version" not in r.output
+
+
+# -- STOP-7 (CHARC's STOP-7 ruling, (a)): the R1-03 witness-close record's
+# `log_contained` RETURN.  The sink's failure is RETURNED ("each caller
+# decides how to surface it"); PRE-FIX this site discarded it, so a sink
+# INTERRUPT on the witness-close record was swallowed and the command ran the
+# tail and exited 0.  POST-FIX (R3-01's shape) the durable WARN and the
+# witness-close WARN still print, then the returned interrupt is raised
+# `from` the witness-close error -- the tail skipped (plan AL-11).
+_R1_03_RECORD = "22-F R1-03: db-migrate's read-only schema re-read read"
+
+
+class _InterruptOnR103Record(logging.Handler):
+    """A `swing.cli` handler whose emit raises the operator's interrupt on
+    the R1-03 witness-close record only (every other record passes)."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.calls = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if _R1_03_RECORD in record.getMessage():
+            self.calls += 1
+            raise KeyboardInterrupt("planted interrupt in the log sink")
+
+
+def test_stop7_witness_close_record_sink_interrupt_is_raised_from_the_close_error(
+        world, monkeypatch):
+    import click
+    _build(world["db"], EXPECTED_SCHEMA_VERSION - 1)
+    built = _fail_restore_after(monkeypatch, 1)
+    witnesses = _fail_witness_close(monkeypatch)
+    log = logging.getLogger("swing.cli")  # the logger the site resolves
+    sink = _InterruptOnR103Record()
+    log.addHandler(sink)
+    try:
+        r = CliRunner().invoke(main, ["--config", str(world["cfg"]),
+                                      "db-migrate"], standalone_mode=False)
+    finally:
+        log.removeHandler(sink)
+    assert _fired(built, "failed_after_executescript") == 1
+    assert len(witnesses) == 1 and witnesses[0].calls["close"] == 1
+    assert sink.calls == 1  # did-it-fire
+    assert isinstance(r.exception, click.exceptions.Abort), (r.output,
+                                                             r.exception)
+    interrupt = r.exception.__cause__
+    assert isinstance(interrupt, KeyboardInterrupt), repr(interrupt)
+    assert "planted interrupt in the log sink" in str(interrupt)
+    assert isinstance(interrupt.__cause__, sqlite3.OperationalError)
+    assert "planted on close" in str(interrupt.__cause__)
+    assert f"{_WARN} {EXPECTED_SCHEMA_VERSION})" in r.output
+    assert "WARN: closing the read-only schema re-read also failed" in r.output
+    assert f"DB at {world['db']} - schema version" not in r.output  # no tail
+    assert _version(world["db"]) == EXPECTED_SCHEMA_VERSION

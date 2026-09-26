@@ -436,7 +436,7 @@ def db_migrate(ctx: click.Context) -> None:
             f"WARN: the migration IS applied (schema version {applied}); a "
             f"post-commit step failed: {safe_text(exc)}"), prefer_err=True)
         if _ro_close_error is not None:
-            log_contained(
+            _ro_close_log_error = log_contained(
                 _pe_backfill_logging.getLogger(__name__),
                 "22-F R1-03: db-migrate's read-only schema re-read read "
                 "version %s, then closing it failed (%s); the read stands.",
@@ -445,6 +445,13 @@ def db_migrate(ctx: click.Context) -> None:
                 "WARN: closing the read-only schema re-read also failed: "
                 f"{safe_text(_ro_close_error)}; the read completed and "
                 "stands."), prefer_err=True)
+            if (_ro_close_log_error is not None
+                    and not isinstance(_ro_close_log_error, Exception)):
+                # 22-F STOP-7 (CHARC, (a); R3-01's shape): the record's
+                # SINK returned the operator's interrupt.  The WARN lines
+                # above have printed; it is raised, chained from the
+                # witness-close error, and the tail is skipped (AL-11).
+                raise _ro_close_log_error from _ro_close_error
         if not isinstance(exc, Exception):
             # 22-F R3-02 (CHARC, option (a)): an INTERRUPT after the COMMIT
             # (e.g. from a PRAGMA restore, re-raised by R2-03) is the
