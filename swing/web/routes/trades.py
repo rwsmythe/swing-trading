@@ -3172,7 +3172,13 @@ async def exit_post(
     # -- the durable fact stated -- and is RE-RAISED, never answered with a
     # success or degraded-success body.  Bare: with `result` bound nothing
     # else can be in flight at either guard (the close runs after a completed
-    # `try` body; the outer handler's own error IS the in-flight one).
+    # `try` body; the outer handler's own error IS the in-flight one), so there
+    # is no `from` branch to add.
+    #
+    # 22-F STOP-7 (CHARC, (a); R3-01's shape): at both `except Exception`
+    # branches, an interrupt RETURNED by `log_contained` (the record's SINK
+    # raised it) is raised `from` the error being recorded -- never retyped,
+    # never rendered as text into a degraded-success body.
     result = None
     close_interrupt: BaseException | None = None
     conn = connect(cfg.paths.db_path)
@@ -3210,6 +3216,9 @@ async def exit_post(
                     "unaffected.",
                     trade_id, close_error_text)
                 if close_log_error is not None:
+                    if not isinstance(close_log_error, Exception):
+                        # STOP-7: the sink returned the operator's interrupt.
+                        raise close_log_error from exc
                     # The log could not record it: surface it instead of
                     # trading one invisible failure for another.
                     raise RuntimeError(
@@ -3281,6 +3290,9 @@ async def exit_post(
             "reporting a durable exit as a failure is what causes a double "
             "exit.",
             trade_id, post_bind_error_text)
+        if log_error is not None and not isinstance(log_error, Exception):
+            # STOP-7: the sink returned the operator's interrupt.
+            raise log_error from post_bind_error
         return HTMLResponse(_exit_recorded_degraded_html(
             trade_id, post_bind_error_text,
             log_error_text=(None if log_error is None

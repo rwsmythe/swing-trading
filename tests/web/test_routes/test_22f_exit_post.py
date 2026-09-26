@@ -10,6 +10,7 @@ fetch short-circuits) plus an open trade with an entry fill.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -278,3 +279,121 @@ def test_r3_04_an_interrupt_in_the_refresh_after_a_durable_exit_propagates(
     assert len(records) == 1, [r.getMessage() for r in caplog.records]
     assert "KeyboardInterrupt" in records[0].getMessage()
     assert _fresh(cfg.paths.db_path, tid)[1] == 0
+
+
+# ---------------------------------------------------------------------------
+# STOP-7 (CHARC's STOP-7 ruling, (a)): the exit POST's two `log_contained`
+# RETURNS.  `log_contained` catches a logging sink's BaseException and
+# RETURNS it.  PRE-FIX the close guard RETYPED a returned interrupt into a
+# `RuntimeError` (which the outer guard answered with the degraded-success
+# body) and the outer guard RENDERED it as text in that body: the stop signal
+# was swallowed at both.  POST-FIX (R3-01's shape) a returned error that is
+# not an `Exception` is raised `from` the error being recorded.  "The record
+# still produced" is read as the ERROR record reaching the logger's WORKING
+# handler, installed BEFORE the interrupting one (logging calls a logger's
+# handlers in order).  Driven directly, for the portal reason above.
+# ---------------------------------------------------------------------------
+
+class _Capture(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+class _InterruptOn(logging.Handler):
+    """Raises the operator's interrupt on records containing `needle`."""
+
+    def __init__(self, needle: str) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.needle = needle
+        self.calls = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if self.needle in record.getMessage():
+            self.calls += 1
+            raise KeyboardInterrupt("planted interrupt in the log sink")
+
+
+def _drive_with_sinks(cfg: Config, tid: int, needle: str):
+    """Install the working handler, then the interrupting one, on the
+    route's logger; drive the route; return (outcome, capture, sink)."""
+    log = logging.getLogger("swing.web.routes.trades")  # the route's `log`
+    capture, sink = _Capture(), _InterruptOn(needle)
+    log.addHandler(capture)
+    log.addHandler(sink)
+    try:
+        try:
+            return ("returned", _direct_exit_post(cfg, tid)), capture, sink
+        except BaseException as exc:  # noqa: BLE001 -- the test reads it
+            return ("raised", exc), capture, sink
+    finally:
+        log.removeHandler(capture)
+        log.removeHandler(sink)
+
+
+def test_stop7_close_record_sink_interrupt_is_raised_from_the_close_error(
+        seeded_db: tuple[Config, Path], monkeypatch):
+    """The close guard's `except Exception` branch (trades.py `exit_post`):
+    an ORDINARY close failure after a durable exit, and the sink interrupts
+    on its record.  PRE-FIX the returned interrupt was retyped into a
+    `RuntimeError` and the route returned the degraded-success body.
+    POST-FIX it propagates, `__cause__` the close error; nothing after the
+    close runs; the close record reached the working handler; the exit is
+    durable (fresh read)."""
+    from tests._22f_proxies import (
+        CountingWrapper,
+        FailingVerbsConn,
+        patch_conn_opener,
+    )
+    cfg, _cfg_path = seeded_db
+    tid = _open_trade(cfg)
+    built = patch_conn_opener(
+        monkeypatch, "swing.web.routes.trades.connect",
+        lambda real: FailingVerbsConn(real, fail_close=True))
+    rebuild = CountingWrapper(lambda *_a, **_k: None)
+    monkeypatch.setattr("swing.web.routes.trades.build_dashboard", rebuild)
+    needle = "CLOSING the database connection afterwards RAISED"
+    (kind, value), capture, sink = _drive_with_sinks(cfg, tid, needle)
+    assert len(built) == 1 and built[0].calls["close"] == 1  # did-it-fire
+    assert sink.calls == 1  # did-it-fire
+    assert kind == "raised", value
+    assert isinstance(value, KeyboardInterrupt), repr(value)
+    assert "planted interrupt in the log sink" in str(value)
+    assert isinstance(value.__cause__, sqlite3.OperationalError)
+    assert "planted on close" in str(value.__cause__)
+    assert rebuild.calls == 0  # nothing after the close ran
+    closes = [r for r in capture.records if needle in r.getMessage()]
+    assert len(closes) == 1, [r.getMessage() for r in capture.records]
+    assert f"trade {tid} exit IS RECORDED" in closes[0].getMessage()
+    assert _fresh(cfg.paths.db_path, tid)[1] == 0  # durable (fresh read)
+
+
+def test_stop7_post_bind_record_sink_interrupt_is_raised_from_the_refresh_error(
+        seeded_db: tuple[Config, Path], monkeypatch):
+    """The outer guard's `except Exception` branch: an ORDINARY refresh
+    failure (`build_dashboard`) after a durable exit, and the sink
+    interrupts on its record.  PRE-FIX the returned interrupt was rendered
+    as text into the degraded-success body.  POST-FIX it propagates,
+    `__cause__` the refresh error; the record reached the working handler;
+    the exit is durable (fresh read)."""
+    from tests._22f_proxies import raising
+    cfg, _cfg_path = seeded_db
+    tid = _open_trade(cfg)
+    planted = raising(RuntimeError("planted non-race"))
+    monkeypatch.setattr("swing.web.routes.trades.build_dashboard", planted)
+    needle = "a step AFTER it failed"
+    (kind, value), capture, sink = _drive_with_sinks(cfg, tid, needle)
+    assert planted.calls == 1  # did-it-fire
+    assert sink.calls == 1  # did-it-fire
+    assert kind == "raised", value
+    assert isinstance(value, KeyboardInterrupt), repr(value)
+    assert "planted interrupt in the log sink" in str(value)
+    assert isinstance(value.__cause__, RuntimeError)
+    assert "planted non-race" in str(value.__cause__)
+    records = [r for r in capture.records if needle in r.getMessage()]
+    assert len(records) == 1, [r.getMessage() for r in capture.records]
+    assert f"trade {tid} exit IS RECORDED" in records[0].getMessage()
+    assert _fresh(cfg.paths.db_path, tid)[1] == 0  # durable (fresh read)
