@@ -28,6 +28,7 @@ from swing.trades.entry import (
     SoftWarnError,
     ascii_safe,
     log_contained,
+    log_contained_note,
     record_entry,
     safe_text,
 )
@@ -3163,10 +3164,17 @@ async def exit_post(
     # REFRESH. Before this guard a failure there reached the app-wide 500,
     # telling the operator a durable exit had failed -- the double-exit
     # direction. `result is None` RE-RAISES, so every pre-bind path (the
-    # `ValueError` 400 re-render included) is byte-unchanged. `BaseException`,
-    # not `Exception`, for the 22-A3 reason: a durable row reported as a
-    # failure is the expensive error whatever class caused it.
+    # `ValueError` 400 re-render included) is byte-unchanged.
+    #
+    # 22-F R3-04 (CHARC's Round 3 ruling, item 3; the STOP-6 shape): both
+    # guards contain `Exception` exactly as before; an INTERRUPT (a
+    # BaseException that is not an Exception) after the bind gets the record
+    # -- the durable fact stated -- and is RE-RAISED, never answered with a
+    # success or degraded-success body.  Bare: with `result` bound nothing
+    # else can be in flight at either guard (the close runs after a completed
+    # `try` body; the outer handler's own error IS the in-flight one).
     result = None
+    close_interrupt: BaseException | None = None
     conn = connect(cfg.paths.db_path)
     try:
         try:
@@ -3190,7 +3198,7 @@ async def exit_post(
         finally:
             try:
                 conn.close()
-            except BaseException as exc:  # noqa: BLE001 -- the CLASS
+            except Exception as exc:  # noqa: BLE001 -- the CLASS
                 if result is None:
                     raise
                 # Rendered ONCE, before logging; the logger gets the string.
@@ -3209,6 +3217,17 @@ async def exit_post(
                         f"and its ERROR log could not be emitted "
                         f"({safe_text(close_log_error)})"
                     ) from exc
+            except BaseException as interrupt:  # noqa: BLE001 -- R3-04
+                if result is None:
+                    raise
+                close_interrupt = interrupt
+                log_contained_note(
+                    log, interrupt,
+                    "22-F: trade %s exit IS RECORDED and an INTERRUPT arrived "
+                    "while CLOSING the database connection afterwards (%s); "
+                    "the ledger is unaffected; the interrupt is re-raised.",
+                    trade_id, safe_text(interrupt))
+                raise
 
         # Two-call rebuild.
         dashboard_vm = build_dashboard(cfg=cfg, cache=cache, executor=executor,
@@ -3251,7 +3270,7 @@ async def exit_post(
         ))
     # THE SINGLE OUTER HANDLER: the close, the rebuild, the renders and the
     # response construction, with no gap between them.
-    except BaseException as post_bind_error:  # noqa: BLE001 -- the CLASS
+    except Exception as post_bind_error:  # noqa: BLE001 -- the CLASS
         if result is None:
             raise
         post_bind_error_text = safe_text(post_bind_error)
@@ -3266,6 +3285,19 @@ async def exit_post(
             trade_id, post_bind_error_text,
             log_error_text=(None if log_error is None
                             else safe_text(log_error))))
+    except BaseException as interrupt:  # noqa: BLE001 -- R3-04
+        # The operator's stop signal after the exit is durable: recorded
+        # (unless the close guard above already recorded this same
+        # interrupt) and re-raised BARE.
+        if result is None or interrupt is close_interrupt:
+            raise
+        log_contained_note(
+            log, interrupt,
+            "22-F: trade %s exit IS RECORDED and a step AFTER it was "
+            "INTERRUPTED (%s); the ledger is unaffected; the interrupt is "
+            "re-raised.",
+            trade_id, safe_text(interrupt))
+        raise
 
 
 @router.get("/trades/{trade_id}/stop/form", response_class=HTMLResponse)
