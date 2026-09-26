@@ -983,3 +983,36 @@ Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator. Tex
 **Cell's read: (a).** CHARC's own principle in item 3 is "default to introduced", and his item-1 banking reason ("all pre-arc") does not hold for these three sites. Round 3 would very likely find them: attempt 2's R3-01 finding named the class, and a reviewer checking the fix will grep the other call sites. No fourth counted round is authorized.
 
 **Observed, pre-arc, for the register (not a fork of this arc):** `swing/cli.py::_echo_contained` (`except BaseException: return False`, 22-A3 `40a298d8`, an ancestor of `704ac133`) swallows an interrupt raised while ECHOING. It is reached from this arc's helpers and B-04 through `_echo_either_sink`. It is the same "contained sink eats the stop signal" property one layer further down; it returns only a bool, so the interrupt is lost entirely.
+
+### STOP-7 gate -- ORCHESTRATOR dispositions (2026-09-26)
+
+**QA on disk:**
+- `22-f-exec` @ `a4ede8bb`: commits `55209af6`, `fc18f9b6`, `921b1ee6`, `f8957326`, `184e49e7`, `480fdb2b` and `a4ede8bb`. The tree is clean and `%(trailers)` is empty over `704ac133..HEAD`.
+- **Depth:** cell 12 measured `cell_depth --agent` 225,869.
+- **Pre-R3 suite** at `480fdb2b`: 15314 / 13 / 0, as the cell recorded.
+- **Round 3:** not run in cell 12. The written Round 3 authorization stays UNSPENT.
+
+**Provenance sweep, done independently at this seat.** Method: `grep -rn "log_contained(" swing/` gives 19 lines at `a4ede8bb`. The cell counted 17 before its own R3-01 edits. For every line I ran `git blame -L n,n` plus `merge-base --is-ancestor 704ac133`.
+- **THIS ARC (5):**
+  - the two helpers themselves: `cli.py:1346` (`89fec915`) and `web/routes/__init__.py:35` (`55209af6`); R3-01 already covers both;
+  - `cli.py:439` (`d0261ab6`, db-migrate's R1-03 witness-close record);
+  - `web/routes/trades.py:3206` and `:3277` (`b3226b51`, T-A7, the exit POST).
+- **PRE-ARC (14):** `cli.py:1124/:2157/:2269/:2521/:2598`, `data/repos/trades.py:42/:364`, `trades/entry.py:236/:327/:730/:740` and `web/routes/trades.py:412/:2256/:2392`.
+
+**The cell's fact HOLDS.** CHARC's item-1 register text, "all pre-arc", reads against the code for three sites.
+
+| item | orchestrator disposition |
+|---|---|
+| STOP-7 (`cli.py:439`, `trades.py:3206`, `trades.py:3277`: this arc's `log_contained` returns discarded or rendered, so a returned interrupt is swallowed or retyped) | **ROUTED to CHARC.** Orchestrator view: **(a) FIX in 22-F**, in R3-01's shape, one RED test each. Two reasons. First, CHARC's own item-3 rule, "DEFAULT TO INTRODUCED; the arc's own code is held to the arc's own rule". Second, `:3206/:3277` are the SAME exit-POST guards item 3 already ordered to the STOP-6 shape. The rest of the register row stands, corrected to the 14 pre-arc sites above. |
+| `_echo_contained` (`cli.py`, pre-arc 22-A3 `40a298d8`: `except BaseException: return False`, so an interrupt while echoing is lost; this arc's helpers reach it through `_echo_either_sink`) | **For CHARC's register**, information only. It is pre-arc. It is not a fork of this arc unless CHARC says otherwise. |
+| The cell's three readings (the R3-01 web notice as the ERROR record reaching the working handler; a bare re-raise at both exit-POST guards because nothing can be in flight once `result` is bound; the direct-call drive with `send(None)`, reason in the docstring) | **ACCEPTED at this gate** as encodings of the ruling. They are listed to CHARC so a dissent can land before Round 3. |
+| Stopping before Round 3 | **ACCEPTED.** The one authorized confirming round should run on the settled artifact. |
+
+**Next:** one packet to CHARC. On the ruling, a FRESH cell 13. Cell 12 is at 225,869, and cell 11 grew about 270K over a fix set plus three Round 3 attempts, so continuing cell 12 would cross the cap. Cell 13 does five things:
+1. applies the ruling (the three fixes, RED-first, or nothing);
+2. re-measures the census pin if the `cli.py` lines move;
+3. runs the pre-R3 suite;
+4. runs ONE Round 3 under the standing written authorization, extended to name STOP-7 as ruled, with at most two attempts;
+5. returns at the gate.
+
+No fourth counted round is authorized.
