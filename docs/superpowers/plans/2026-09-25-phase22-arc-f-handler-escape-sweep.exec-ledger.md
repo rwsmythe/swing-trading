@@ -462,8 +462,9 @@ runner.py:3294 in: def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data
 |---|---|---|---|---|---|---|---|
 | R1 | `NEW_CRITICAL_MAJOR_FOUND` | 0 | 9 | 2 | 11 new / 0 reopened | 721,619 | **365,075** (`cell_depth --agent`, cell 8, read at the R1 gate); the cell does NOT resume -- fixes + R2 go to a FRESH cell |
 | R2 | `NEW_CRITICAL_MAJOR_FOUND` | 0 | 9 | 1 | 10 new (4 residuals of R1 fixes) / 0 reopened | 649,427 | **383,720** (`cell_depth --agent`, cell 9, read at the R2 gate); the cell does NOT resume |
+| R3 | NOT COUNTED -- three attempts, none passed all five assertions (attempt 2: a complete review, `^NEW_CRITICAL_MAJOR_FOUND`, but `^ERROR` = 2 transport reconnects) | (attempt 2: 0) | (attempt 2: 5) | (attempt 2: 0) | (attempt 2: 4 new / 1 reopening R2-03) | not counted (attempts 2+3 spent 636,719 + 637,767) | |
 
-**Summed Codex `tokens used`:** 721,619 (R1) + 649,427 (R2) = 1,371,046.
+**Summed Codex `tokens used`:** 721,619 (R1) + 649,427 (R2) = 1,371,046. Round 3 (not counted): attempts 2 + 3 spent 1,274,486 more (attempt 1 printed no footer).
 
 ### Round 1 (head `dce99893`, diff `704ac133..dce99893 -- swing/ tests/`, -U8, 705,385 bytes)
 
@@ -787,3 +788,74 @@ No fourth counted round is authorized.
 - **Both interrupt branches record through `log_contained_note`**, not `log_contained`: a failing sink travels as a NOTE on the escaping interrupt (the R1-09 / R2-02 pattern) instead of the durable branch's second WARN line.
 - **Caller read (42 call sites, by an AST walk of `swing/cli*.py` and `swing/web/routes/*.py` for calls named `_close_after_writes` / `close_after_commit`, listing every enclosing `try` and its position):** NO call sits in a `try` body or `else`, so no enclosing handler can catch and retype the re-raised interrupt. 40 of the 42 sit in a `finally` (db-migrate's two sit at the top level of the command and in an `except Exception` handler). Consequence, by the ruling's design: when a NON-refusal exception is already propagating through such a `finally` and the helper runs with `durable=True`, an interrupt at the close now REPLACES that exception (it survives only as the interrupt's implicit `__context__`); before STOP-6 the helper contained the interrupt and the in-flight exception propagated. Recorded, not changed (outside the ruling's text; the ruling's words for the durable branch are "re-raised bare").
 - **Not changed:** the plan's section 8 T-G0 bullet for the web helper still reads "never raises" (the authorization named the DOCSTRING sentence only); proposed as a one-line replacement for the orchestrator's authorization.
+
+### Round 3 (head `e53ef9b3`, diff `704ac133..e53ef9b3 -- swing/ tests/`, -U8, 820,211 bytes; prompt 18,566 bytes) -- NO ATTEMPT PASSED ALL FIVE ASSERTIONS
+
+**Evidence (durable path):** `C:\Users\rwsmy\swing-data\review-transcripts\22-f-exec\r3\` -- `codex-prompt-r3.md` (names the c7 bundle deviations, the Round 1 fixes, R2-01..R2-07 + R2-08(b), the SS rows and the STOP-6 amendment), `codex-review-r3-attempt{1,2,3}-DISQUALIFIED.txt` (840,346 / 2,352,824 / 2,177,073 bytes), `exit-r3-attempt{1,2,3}-DISQUALIFIED.txt`, `run_r3.sh`, `copowers-findings.md`.
+
+#### Assertions per attempt (strong profile: `~/.codex/strong.config.toml` model = "gpt-5.6-sol", effort high; every banner matched)
+| attempt | bytes | `^ERROR` | footer (`^tokens used`) | tokens | `^NO_NEW_CRITICAL_MAJOR` | `^NEW_CRITICAL_MAJOR_FOUND` | exit | status |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 840,346 | 11 (WebSocket reconnects 1-5/5 twice, then `401 Unauthorized: Incorrect API key`) | 0 | -- | 0 | 0 | 1 | DISQUALIFIED (transport/auth; died ~2 min in, before any review). A tiny `-p strong` probe right after answered OK (2,135 tokens) |
+| 2 | 2,352,824 | 2 (`Reconnecting... 2/5`, `3/5` at transcript line 18866-18867, immediately after the stdin echo; the session then completed) | 1 | 636,719 | 0 | 2 (0.156.1 prints the final message twice) | 0 | DISQUALIFIED on `^ERROR` != 0; a COMPLETE review with a verdict -- its findings below INFORM, they do not count |
+| 3 | 2,177,073 | 2 (`Selected model is at capacity` x2) | 1 | 637,767 | 0 | 0 | 1 | DISQUALIFIED (capacity abort; footer with ZERO verdict tokens -- the 2026-09-06 falsification case) |
+
+No codex process live after attempt 3 (`ps -eo pid,etime,args | grep "[c]odex exec -p"` in WSL: none). No attempt read a prior-round transcript or findings file (the grep hits for `review-transcripts` / `codex-review-r` are the exec ledger's Round 1/2 evidence lines, which the prompt permits).
+
+#### Codex response (attempt 2, verbatim final message)
+> R3-01 — major — [swing/trades/entry.py:253](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/trades/entry.py:253), [swing/cli.py:1325](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/cli.py:1325), [swing/web/routes/__init__.py:27](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/web/routes/__init__.py:27)
+>
+> Defect: STOP-6 remains incomplete when an ordinary close failure is followed by an interrupt from the logging cleanup. `log_contained` catches `BaseException`; `_close_after_writes` treats the returned interrupt as diagnostic text, while `close_after_commit` ignores it. Both helpers then return normally.
+>
+> Concrete trigger: after a durable write, make `conn.close()` raise `RuntimeError` and install a logging handler whose `emit()` raises `KeyboardInterrupt`. The CLI exits successfully with warnings; the web helper returns its success notice. The operator’s stop signal is swallowed.
+>
+> Fix: after attempting the remaining independent warning work, distinguish returned `Exception` failures from non-`Exception` interrupts and `raise log_interrupt from close_exc`. Add this double-failure case to both helper test modules.
+>
+> R3-02 — major — [swing/cli.py:377](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/cli.py:377), [swing/data/db.py:609](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/data/db.py:609)
+>
+> REOPENS R2-03. The B-04 boundary catches every `BaseException`, including an interrupt raised by a post-commit PRAGMA restore. When the witness sees the target schema version, it converts that interrupt into the normal warning path, continues ratification and the rest of the tail, and exits zero. The local R2-03 bare re-raise is therefore neutralized one frame outward.
+>
+> Concrete trigger: migrate from `EXPECTED_SCHEMA_VERSION - 1`, commit the migration, then have the first restore at line 613 raise `KeyboardInterrupt`. The target-version witness succeeds, and `db-migrate` continues rather than stopping.
+>
+> Fix: reserve the existing recovery path for `Exception`. For a non-`Exception`, optionally perform the read-only durability witness and emit the durable warning, but re-raise the original interrupt before ratification or any remaining tail work. Add a CLI-level restore-interrupt discriminator.
+>
+> R3-03 — major — [swing/cli.py:1089](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/cli.py:1089), [swing/cli.py:2089](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/cli.py:2089), [swing/cli.py:2205](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/cli.py:2205)
+>
+> The bespoke close handlers for `trade entry`, `trade review`, and `trade assign-intent` still catch `BaseException` using the pre-STOP-6 behavior. On a durable result they log and continue to exit zero; with a pending refusal they replace the interrupt with a `ClickException`. The outer durable-result guards at [swing/cli.py:1196](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/cli.py:1196) and [swing/cli.py:2290](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/cli.py:2290) would also contain a re-raised interrupt.
+>
+> Concrete trigger: make `close()` raise `KeyboardInterrupt` after a successful entry, review, or admitted assignment; the command completes normally. On a duplicate-entry or refused-assignment path, the interrupt becomes an exit-1 ClickException.
+>
+> Fix: split ordinary close exceptions from non-`Exception` interrupts in all three handlers, and ensure the outer guards re-raise cleanup interrupts instead of applying post-durability containment. With a pending refusal, raise the interrupt from that refusal. Add direct close-interrupt tests for the durable and refusal states of each bespoke handler.
+>
+> R3-04 — major — [swing/web/routes/trades.py:2238](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/web/routes/trades.py:2238), [swing/web/routes/trades.py:2386](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/web/routes/trades.py:2386), [swing/web/routes/trades.py:3193](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/web/routes/trades.py:3193), [swing/web/routes/trades.py:3254](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/web/routes/trades.py:3254)
+>
+> The entry and exit POST routes retain the old S-CONTAIN treatment for every `BaseException`. A close-time `KeyboardInterrupt` after the write commits is logged and swallowed, after which a success response is rendered. Even if the inner close handler re-raised it, the outer `except BaseException` would convert it into a degraded-success response.
+>
+> Concrete trigger: successfully record an entry or exit using a connection whose real close completes and then raises `KeyboardInterrupt`. The route proceeds to its render path and returns HTTP 200 instead of propagating the stop signal.
+>
+> Fix: separate ordinary post-commit failures from non-`Exception` interrupts in both the close and outer guards. Record the durable fact, then re-raise the interrupt bare. Add direct-route tests with the first renderer after the close wrapped by a counter, mirroring the watchlist STOP-6 test.
+>
+> R3-05 — major — [OUT-OF-ENVELOPE] — [swing/cli.py:2531](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/cli.py:2531)
+>
+> The D69 `trade backfill-intent` close guard also preserves the old behavior. With no error in flight, a close interrupt is converted into warnings and a normal return. With an error in flight, it logs the interrupt against that error but then lets the original error resume, swallowing the interrupt rather than raising it chained from the original.
+>
+> Concrete trigger: write at least one row, then have `close()` raise `KeyboardInterrupt`, either normally or while a later prompt/refusal is already propagating.
+>
+> Fix: contain only ordinary close exceptions. For an interrupt, attempt the independent record/warning work and then raise it bare, or `from _exc_in_flight` when one exists.
+>
+> Summary: The typed translations, writer-reported durability bindings, and rollback/savepoint fixes inspected appear intact, but STOP-6 is not complete. Five major interrupt-hygiene defects remain: secondary logging interrupts are swallowed, `db-migrate` catches a re-raised restore interrupt, four in-envelope bespoke CLI/web close shapes retain the old containment semantics, and the explicitly out-of-envelope D69 root has the same defect. This was a read-only review; no tests were run.
+>
+> NEW_CRITICAL_MAJOR_FOUND
+>
+#### Proposed dispositions (cell 11; NOTHING fixed -- the orchestrator's reply decides)
+Every finding's load-bearing fact was READ on disk at `e53ef9b3`; provenance by `git blame -L n,n` + `git merge-base --is-ancestor <sha> 704ac133`.
+
+| id | sev | fact read | provenance | proposed disposition |
+|---|---|---|---|---|
+| R3-01 | major | `log_contained` (`swing/trades/entry.py:236-257`) catches `BaseException` from the sink and RETURNS it; `_close_after_writes`'s `except Exception` branch turns a returned interrupt into WARN text and returns; `close_after_commit`'s `except Exception` branch ignores the return and returns the notice. So an ordinary close failure + a sink that raises `KeyboardInterrupt` swallows the stop signal | the helpers are this arc's (T-G0 + STOP-6); `log_contained` is pre-arc 22-A (`entry.py` is NOT in the envelope) | **FIX, narrowly in the two helpers, under the STOP-6 ruling** (a residual of STOP-6 itself: "contain Exception, re-raise the rest", one layer down): in each helper's `except Exception` branch, after the WARN / record work, if the returned sink error is not an `Exception`, `raise <it> from close_exc`. Tests: a close `RuntimeError` + a sink raising `KeyboardInterrupt`, per helper (RED: normal return). The same property of `log_contained` at its OTHER call sites is ROUTED to CHARC as a register item (22-A template, out of envelope), not fixed |
+| R3-02 | major, REOPENS R2-03 | `db_migrate` wraps `ensure_schema` in `except BaseException as exc` (`swing/cli.py:377`); an interrupt from a post-COMMIT restore (re-raised by R2-03 at `db.py`) reaches it, the witness reads target, and the command WARNs, runs the tail and exits 0 | this arc's B-04 (T-F10), encoded as the plan specified (`except BaseException as exc:`) | **ROUTE to CHARC** -- it changes a plan-specified encoding. Branches: (a) the witness still runs for an interrupt, the durable WARN is printed, then the interrupt is re-raised BARE (it IS the in-flight error) and the tail is SKIPPED -- consistent with AL-11 (an interrupt between the COMMIT and the ratification skips the tail, pre-arc) and the class rule; test: a restore interrupt at target -> exit != 0 / Aborted, the WARN, the ratification spy NOT called; (b) DECLARE the continuation (B-04's reason: the tail is operator-useful) -- reads against STOP-6's "never swallowed". Cell's read: (a) |
+| R3-03 | major | `trade entry` (`cli.py:1089`), `trade review` (`:2089`), `trade assign-intent` (`:2205`) close handlers catch `BaseException` with the pre-STOP-6 semantics; the outer durable-result guards (`:1196`, `:2290`) would also contain a re-raised interrupt | ALL PRE-ARC: `4fccc543` (22-A3 Task 7, 2026-09-02), `175ae613` (22-B Reviewer B B-02, 2026-09-24), `f79c9e40` (22-B R7, 2026-09-24) -- ancestors of `704ac133`; T-F11 edited only the `result is None` branch of the entry handler | **ROUTE to CHARC, grouped with R3-04/R3-05**: does the STOP-6 class rule reach the pre-arc bespoke S-B02 / S-CONTAIN shapes? (a) yes, in 22-F (a behaviour change on pre-arc code beyond the census rows -> needs a scope ruling); (b) BANK them to CHARC's STOP-6 register facet ("a helper that contains BaseException to protect a durable fact swallows the operator's stop signal") for a later arc. Cell's read: (b) for the pre-arc shapes |
+| R3-04 | major | web entry POST (`routes/trades.py:2238` close, `:2386` outer guard) and exit POST (`:3193` close, `:3254` outer guard) contain `BaseException` after the commit and render success | entry POST PRE-ARC (`13bf3daf`, 22-A3 Task 6); exit POST THIS ARC (`b3226b51`, T-A7 -- "the 22-A3 outer guard on exit_post (S-CONTAIN)", a faithful copy of the pre-arc shape as the plan named it) | **ROUTE to CHARC with R3-03**. If (b): the entry POST banks; the exit POST is this arc's COPY of the shape -- either fixed here under STOP-6 (split `except Exception` / `except BaseException` in the close and the outer guard, re-raise bare; a direct-route test like the watchlist one) or banked beside the entry POST so the two stay one shape. Cell's read: bank beside the entry POST (one shape, one later fix) |
+| R3-05 | major, [OUT-OF-ENVELOPE] | `trade backfill-intent` close guard (`cli.py:2531`): no error in flight -> an interrupt becomes warnings and a normal return; an error in flight -> the interrupt is logged and the original error resumes | PRE-ARC, the D69 rider `d87cda41` (2026-09-24); census row 13 "Owned by the D67/D69 rider" | **BANK** to D69's lane / the STOP-6 register facet (out of envelope by the prompt's own list) |
+
+Spend: no counted Round 3. Attempts 2 + 3 spent 636,719 + 637,767 = 1,274,486 tokens (attempt 1 printed no footer); the probe 2,135.
