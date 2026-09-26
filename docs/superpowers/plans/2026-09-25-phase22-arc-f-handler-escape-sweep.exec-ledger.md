@@ -1167,3 +1167,77 @@ Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator. Tex
 **Deviation, recorded:** after the fix, `tests/data/test_22f_d39_apply_migration.py::test_c2_21_b_f2_twin_interrupt_rolls_back` failed with `sqlite3.ProgrammingError: Cannot operate on a closed database.`. It read `in_transaction` on the migration's connection AFTER the raise, and `ensure_schema` now closes that connection. It now reads the transaction state AT the close through a local `_TxAtClose` proxy and asserts one rollback, one close, and no open transaction at the close (its docstring bullet was amended by replacement). The T-F10 discriminator is kept: on the pre-T-F10 shape no rollback runs, so `calls["rollback"]` is 0 and the transaction is open at the close. Same commit.
 
 **Census line pin:** NOT re-measured. `git diff --stat f9a5ea76..a67d13e6 -- swing/cli.py` is empty, so the four `cli.py` lines have not moved.
+
+### Reviewer B (the orchestrator's cold audit) -- head `f8b21b44`, diff `704ac133..f8b21b44 -- swing/ tests/` (738,640 bytes; prompt 8,689 bytes)
+
+Evidence: `~/swing-data/review-transcripts/22-f-exec/reviewer-b/` (`b-prompt.md`, `b-diff.txt`, `run_b.sh`, `b-review.txt`, `b-exit.txt`, `b-codex-version.txt`). **Assertions, read at this seat:** codex-cli 0.157.0; banner `gpt-5.6-sol` / `high`; `^ERROR` 0; footer `tokens used` 699,735 at :35389-35390; anchored verdict `NEW_CRITICAL_MAJOR_FOUND` at :35388 (the CLI's duplicate echo at :35448); `exit=0`. **VALID.** The reviewer's final message, block-quoted verbatim from `b-review.txt:35391-35447` (the verdict line is excluded, so no ledger line starts with a verdict token):
+
+> ## Claim disposition
+>
+> | Claim | Result |
+> |---|---|
+> | C1 | No defect found in the typed CLI/web translations reviewed. |
+> | C2 | Pass. All Part-F `BEGIN` sites have the required `BaseException`/conditional-rollback/chained-cleanup shape. |
+> | C3 | Fail: the three Schwab auth roots and their tests treat an audit-only commit as sufficient durability evidence. |
+> | C4 | Fail: two CLI cleanup paths mishandle interrupts. |
+> | C5 | Pass. The interrupted migration rollback escaped with its cause, and `ensure_schema` closed exactly once in the in-memory execution. |
+> | C6 | No defect found in the bounded amendments or new types. |
+> | C7 | Fail: the Schwab refusal stubs lack the required did-it-fire assertion; their wrappers are discarded. |
+> | C8 | Pass against the supplied diff: no schema, dependency, new `swing/` module, or carve-out violation found. |
+>
+> ## Findings
+>
+> 1. **Major — INTRODUCED — demonstrated by execution:** the CLI helper bypasses its interrupt handler on the nothing-durable/no-refusal branch.
+>
+>    At [swing/cli.py:1338](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/cli.py:1338), `conn.close()` executes before the helper’s `try`. When a writer’s unexpected `RuntimeError` is propagating with `durable=False`, and `close()` raises `KeyboardInterrupt`, the interrupt is neither recorded nor explicitly chained from the writer error.
+>
+>    I executed the exact helper definition with an in-memory connection proxy. The result was:
+>
+>    ```text
+>    KeyboardInterrupt cause=None context=RuntimeError('writer failed') close_calls=1
+>    ```
+>
+>    This contradicts C4’s requirement that an interrupt during cleanup be recorded and raised `from` the in-flight error. The item-4 test misses the branch by forcing `durable=True` at [test_22f_close_after_writes_helper.py:256](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/tests/cli/test_22f_close_after_writes_helper.py:256).
+>
+> 2. **Major — INTRODUCED — demonstrated by reading:** the new trade-entry refusal branch retypes a close interrupt as `ClickException`.
+>
+>    At [swing/cli.py:1106](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/cli.py:1106), the handler catches all `BaseException`; added lines 1114–1119 then construct a new `ClickException` whenever a typed refusal is in flight, regardless of whether the close error is an ordinary `Exception` or `KeyboardInterrupt`.
+>
+>    Concrete scenario: a duplicate-position refusal is propagating and `conn.close()` raises `KeyboardInterrupt`. Instead of propagating the interrupt `from` the pending refusal, the command raises a `ClickException` from the interrupt. The stop signal is retyped, and the chain direction is reversed.
+>
+>    This challenges the “pre-arc bespoke close handler” banking: the broad handler is pre-arc, but the defective interrupt-routing branch is newly added by this arc, so the default-to-introduced rule applies.
+>
+> 3. **Major — INTRODUCED — demonstrated by reading:** the Schwab setup, refresh, and logout roots do not bind durability from an operator-record report, and their acceptance test explicitly uses only an audit row.
+>
+>    The roots assign `durable = True` merely after reaching the line at [cli_schwab.py:218](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/cli_schwab.py:218), [cli_schwab.py:330](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/cli_schwab.py:330), and [cli_schwab.py:410](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/cli_schwab.py:410).
+>
+>    Worse, the G1 test stub commits only a `schwab_api_calls` row at [test_22f_close_after_durable.py:432](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/tests/cli/test_22f_close_after_durable.py:432), and its probe counts only that audit table. The parametrized test then requires the “write IS recorded” warning and exit 0. This is the exact state C3/STOP-4 says is not durable: an audit row is not an operator record.
+>
+>    The real services currently perform external token/config actions on successful returns, but this implementation and test do not establish that fact from the writer’s report and would bless an audit-only normal return.
+>
+> 4. **Minor — INTRODUCED — demonstrated by reading:** the Schwab refusal tests violate the did-it-fire rule.
+>
+>    `_refusing_service` creates a counting `raising(...)` wrapper but discards it at [test_22f_close_after_durable.py:467](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/tests/cli/test_22f_close_after_durable.py:467). The G1-b test at [test_22f_close_after_durable.py:916](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/tests/cli/test_22f_close_after_durable.py:916) asserts the close proxy fired but never asserts the planted writer fired. A missed writer patch could therefore fall into a real Schwab authentication failure with similar operator text without failing on the required seam assertion.
+>
+> ## Execution evidence
+>
+> Using only `sqlite3.connect(":memory:")`:
+>
+> - Exercised all five `reconciliation_auto_correct` outer transaction wrappers with both the statement and rollback failing. Each raised the rollback error from the statement error, with one `BEGIN` and one rollback attempt.
+> - Exercised `_apply_migration` through `ensure_schema` with `executescript` failing and rollback raising `KeyboardInterrupt`. The interrupt escaped with the script error as its cause, and the connection was closed exactly once while the interrupted transaction remained open.
+> - Exercised the CLI close helper’s missing cross-product described in finding 1.
+>
+> No live database, prohibited document, filesystem write, or git command was used.
+
+**Orchestrator dispositions at the Reviewer B gate (2026-09-26).** Every fact below was checked on disk at this seat.
+
+| id | fact checked | disposition |
+|---|---|---|
+| B-1 (major) | `cli.py:1338`: `if pending_refusal is None and not durable: conn.close(); return` sits BEFORE the helper's `try`. With an error in flight and an interrupt at the close, the interrupt escapes with `__cause__` None and no record. This is CONFIRMED by B's execution. The branch was kept "byte-unchanged" by S-B02 and by CHARC's STOP-6 text ("nothing durable and no refusal is the byte-unchanged bare close already"). But CHARC's item-4 text reads "when an interrupt arrives at the close with a non-refusal exception in flight ... re-raised `from` the in-flight error", with no durable qualifier, and "implicit `__context__` is not a record". | **ROUTED to CHARC.** Two of his rulings meet at one branch. Orchestrator view: FIX NARROWLY. On the nothing-durable branch an ordinary close `Exception` keeps today's bare behaviour. A non-`Exception` with `in_flight` not None is recorded and raised `from in_flight`. With nothing in flight, the bare re-raise is unchanged. RED test: `durable=False`, a propagating `RuntimeError`, and an interrupt at the close. |
+| B-2 (major) | `cli.py:1106` `except BaseException as exc` is PRE-ARC (`4fccc543`), but the refusal branch at `:1114-1119` is THIS ARC (`c3ad8e40`, T-F11 / C2-22). With a typed refusal in flight, a close `KeyboardInterrupt` becomes `ClickException(...) from <interrupt>`. That RETYPES the interrupt and reverses the chain. The Round 3 banking ("trade entry ... closes, pre-arc") did not see that the refusal branch inside the pre-arc handler is this arc's. | **ROUTED to CHARC** as a correction to the Round 3 banking premise. Orchestrator view: FIX in the STOP-6 shape at the arc's branch only. A non-`Exception` with a refusal in flight is recorded and raised `from` the refusal. The rest of the pre-arc handler stays banked. |
+| B-3 (major) | `cli_schwab.py:218/:330/:410` (setup/refresh/logout) set `durable = True` after the service returns normally. The only row committed on the root's connection is a `schwab_api_calls` AUDIT row. The G1 stub `_audit_row` (`test_22f_close_after_durable.py:425-434`) plants exactly that and requires "the write IS recorded" and exit 0. Under STOP-4, an audit row is not an operator record. | **ROUTED to CHARC.** The operator-record effect of these roots is OUTSIDE the swing DB: the tokens DB and `user-config.toml`, written by a service that raises on failure and verifies post-state (the CLAUDE.md schwabdev gotcha). Two readings. (a) A normal return of a raise-on-failure service IS the writer's report, so the binding stands. But the G1 test must plant that effect (a token/config write marker) and assert it, not an audit row. (b) The DB-side commit is audit-only, so the roots are DECLARED under STOP-4, and the WARN text "the write IS recorded" is false about the DB. Orchestrator view: (a), with the test corrected. |
+| B-4 (minor) | `_refusing_service` (`test_22f_close_after_durable.py:467-468`) discards the `raising(...)` wrapper. The G1-b refusal tests assert the close proxy fired but never the writer stub. That breaks the plan's binding did-it-fire rule (R3-01, R4-01: "No exceptions"). | **FIX AUTHORIZED** (orchestrator; test-only; the plan's own binding rule): return the wrapper and assert it was called in every G1-b test that uses it. |
+
+**Per CHARC's counted-Round-3 ruling, an unbanked INTRODUCED major from B REOPENS Reviewer A for ONE counted round, and that comes back to CHARC.** B-1 and B-2 are INTRODUCED, and B-3 is INTRODUCED unless CHARC rules (b). The packet goes to CHARC. The Round 4 WRITTEN AUTHORIZATION is below, conditioned on his ruling.
+
+**WRITTEN AUTHORIZATION, ROUND 4 (orchestrator, 2026-09-26; takes effect ONLY on CHARC's ruling of B-1/B-2/B-3):** ONE counted Reviewer A Round 4 at `strong` on `704ac133..HEAD -- swing/ tests/`, with repo access. It runs after the fixes as ruled plus B-4 and a green pre-R4 full suite. **It names the task-bearing findings:** B-1, B-2, B-3 (as ruled) and B-4. At most two attempts, and every validity assertion binds. It returns at the gate with proposed dispositions only. No fifth round is authorized. The ROUND-5 check-in binds.
