@@ -1392,3 +1392,44 @@ Each finding's load-bearing fact was READ on disk at `fbb99041`. Provenance was 
 3. **Reviewer B AGAIN**, the orchestrator's pass and the transcript CHARC's merge gate reads. No Reviewer A Round 5.
 
 **Operator check-in (the ROUND-5 rule):** four counted rounds plus one Reviewer B pass. That is 3,166,815 + 699,735 Codex tokens, before cell 11's disqualified 1,274,486. Every round since R2 has found new facets of ONE class, the interrupt at cleanup. This is reported to the operator at this gate.
+
+### Round 4 gate -- CHARC's RULING: R4-01 (ii) the site's argument fixed and the template banked; R4-03 declined (c); CC R4-01 (i) and R4-02 no dissent (2026-09-26 03:19Z)
+
+Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator. Text of record: role-mail `comms/orchestrator/read/20260926T031930Z-charc-ruled-22-f-r4-gate-r4-01-ii-site-arg-fix.md`. The literal block quote follows, the message body verbatim:
+
+> CHARC RULING PACKET -- 22-F round-4 gate (mail 20260926T031736Z). PRIMARY on R4-01(ii) and R4-03; CC on R4-01(i) and R4-02, one premise correction on (ii)'s declare. Courier: the orchestrator, block quote into the exec ledger.
+>
+> READ at this seat on 22-f-exec @ ee6942d9: `_rollback_run_or_raise(conn, original)` -- on a rollback failure it records `original` and `cleanup_error` and does `raise cleanup_error from original`; the preserve site :2920-2923 calls it as `_rollback_run_or_raise(conn, exc)` -- with `exc`, the RUN's original error, while the exception actually in flight at that cleanup is `preserve_error` (the interrupt) -- then re-raises `preserve_error` bare if it is not a sqlite3.Error. routes/latches.py:1314-1316 `with conn: stored = record_intent(conn, intent=intent); durable = True`; repos/latch_order_intents.py:104 record_intent's docstring: step 2 is `INSERT ... WHERE NOT EXISTS ... ON CONFLICT DO NOTHING`, step 3 re-SELECTs by key and returns THAT row, "the loser returns the winner's row". R4 transcript (r4/codex-review-r4-attempt1.txt): banner gpt-5.6-sol / high; `^ERROR` 0; anchored NEW_CRITICAL_MAJOR_FOUND at :43153 immediately before the footer 1,071,577 at :43154; exit 0. Valid, counted.
+>
+> R4-01(i) -- CC, no dissent: the arc's lines (e874a7b4); one record against exc, then `raise preserve_error from exc`, RED-first.
+>
+> R4-01(ii) -- RULED: FIX THE SITE'S ARGUMENT, DECLARE THE TEMPLATE WITH A TRUE STATEMENT, BANK THE TEMPLATE QUESTION. Your declare rested on "the interrupt is __cause__ and logged, so it is not lost" -- FALSE at this site as written: the site hands the helper `exc`, so on a double failure the helper raises the rollback error `from exc` and the interrupt is neither __cause__ nor in the record; it survives only as implicit __context__, which `from` SUPPRESSES from the display -- the very "implicit __context__ is not a record" my item 4 named. The S-D39 contract is that `original` is the exception in flight WHEN THE CLEANUP RUNS; at this site that is `preserve_error`. Fix (the arc's lines, one token): `_rollback_run_or_raise(conn, preserve_error)`, so on a double failure the rollback error propagates `from` the interrupt, the interrupt IS __cause__ and IS in the record, and `exc` rides as the interrupt's own __context__ (R4-01(i) makes it the explicit cause). RED test: preserve write raises KeyboardInterrupt, rollback raises sqlite3.Error -> the propagating error's `__cause__` is the interrupt and the record names it. With that, the DECLARATION becomes true and is taken: "on a double failure with an interrupt in flight, the S-D39 template lets the ROLLBACK failure propagate, chained from the interrupt, both recorded" -- one AL line, challenge invited. The TEMPLATE QUESTION -- whether an interrupt should take precedence over a cleanup failure as the propagating exception (my class rule) or the cleanup failure should (AL-15: the more dangerous condition surfaces loudly) -- is a design decision across every S-D39 copy in Parts F and G and the 22-A original; it is BANKED to my register as its own row, not decided at round-4 depth. Your instinct not to change the template arc-wide here is right; your reason for declaring was not, and the site fix is what makes the declaration honest.
+>
+> R4-02 -- CC, no dissent: pre-arc lines (794e6935), a second site for the R3-07 register facet.
+>
+> R4-03 -- RULED: (c) DECLINE, with the reason recorded. The writer's return IS its report: record_intent returns the row that is now of record -- the winner's, on the lost race -- so the ledger HOLDS the intent, "IS recorded" is TRUE, and a retry is a no-op replay. My R1-05 harm was a false "IS recorded" over a no-op that recorded NOTHING; this is the opposite case, and (a)'s total_changes delta would make the route contradict the repository's own contract (a row of record exists whether this request or the other wrote it). The principle "bind durable from what the writer REPORTS" is satisfied exactly as written.
+>
+> THE ROUND-5 CHECK-IN, for the operator, my view: no Reviewer A round 5. B runs again on the tree after cell 16, as ruled; that is my merge-gate transcript. If B pass 2 returns an unbanked INTRODUCED major, the canon's dispositioned-verdict reading applies (fix without a counted round; B again), and I would recommend exactly that -- the interrupt-at-cleanup class is now enumerated site by site, each fix is one-site and RED-first, and a fifth strong round buys a search over a class whose remaining members are found faster by the sweep than by the reviewer. A NEW class is a different question and goes to the operator.
+>
+> Then: cell 16 lands R4-01(i)+(ii) RED-first (pin re-measured if cli.py moved -- it does not, these are schwab_reconciliation.py lines); G3 on the final head; Reviewer B pass 2; the return; my merge gate.
+
+**Consolidated authorization for the FRESH cell 16 (orchestrator, 2026-09-26). It is my R4 gate plus CHARC's ruling above, and nothing new. Every fix is RED-first on the unmodified code.**
+
+1. **R4-01 (i)**, at `swing/trades/schwab_reconciliation.py:2924-2927` (T-F5, `e874a7b4`). A non-`Exception` `preserve_error` gets ONE record against `exc` and is raised `from exc`, not bare.
+   - RED test: the preserve write raises `KeyboardInterrupt` and the rollback works.
+   - Assert that the interrupt propagates, that its `__cause__` is `exc`, and that one record names both.
+2. **R4-01 (ii)**, at the same site: `_rollback_run_or_raise(conn, exc)` becomes `_rollback_run_or_raise(conn, preserve_error)`. This is a one-token change, because the S-D39 `original` is the exception in flight WHEN THE CLEANUP RUNS.
+   - RED test: the preserve write raises `KeyboardInterrupt` and the rollback raises `sqlite3.Error`.
+   - Assert that the propagating error's `__cause__` is the interrupt, and that the record names it.
+   - Then add ONE AL line with CHARC's text: "on a double failure with an interrupt in flight, the S-D39 template lets the ROLLBACK failure propagate, chained from the interrupt, both recorded". The TEMPLATE question is BANKED to CHARC's register and is NOT changed here.
+3. **R4-02:** DECLINED (CHARC CC, no dissent). It is a second site for the R3-07 register facet.
+4. **R4-03:** DECLINED (CHARC, option (c)). Record the reason in the ledger: `record_intent`'s return is the row of record, so "IS recorded" is TRUE.
+5. **The census line pin:** re-measure only if `cli.py` moved. It should not; the fixes are in `schwab_reconciliation.py`.
+6. **G3**, the full fast suite on the FINAL head:
+   - print the RESOLVER line;
+   - run ruff;
+   - reproduce the phase8 test and the banked pair with `-n 0` FIRST;
+   - row it in the Suite gates section.
+7. **RETURN after G3.** Cell 16 runs NO Reviewer A round and NO Reviewer B.
+
+**NO Reviewer A Round 5** (CHARC; the operator's round-5 check-in has been reported). **Next after cell 16: Reviewer B pass 2**, the orchestrator's, on the resulting tree. It is CHARC's merge-gate transcript. If B pass 2 returns an unbanked INTRODUCED major, it is fixed without a counted round and B runs again (the canon's dispositioned-verdict reading). A NEW class goes to the operator.
