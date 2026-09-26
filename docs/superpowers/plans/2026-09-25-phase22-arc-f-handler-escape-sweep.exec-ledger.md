@@ -1360,3 +1360,35 @@ Each finding's load-bearing fact was READ on disk at `fbb99041`. Provenance was 
 | R4-03 | major, INTRODUCED | `swing/web/routes/latches.py:1314-1318`: `with conn: stored = record_intent(conn, intent=intent)`, then `durable = True`. `record_intent` (`swing/data/repos/latch_order_intents.py:104-154`, pre-arc, OUT of envelope) has two normal-return no-write paths: the step-1 replay (the key found) and the step-2 lost race (`INSERT ... WHERE NOT EXISTS` inserts zero rows, and step 3 returns the WINNER's row). The route's own replay pre-check runs earlier, so only the LOST RACE reaches `durable = True` without a write by this call. With a close failure, that request answers with success plus the "IS recorded" notice | `:1316-1318` (the binding) are THIS ARC's (`86bc327e`, T-G2). `:1314-1315` are pre-arc (`da54d2a1`). The writer file is pre-arc and outside the section 0.3 envelope | **Route to the orchestrator; three branches.** **(a) FIX in envelope, route-side:** bind `durable` from the connection's own report of what the writer's statement did, `before = conn.total_changes` around the `with conn:` block, then `durable = conn.total_changes > before`. There is no repo contract change. A zero-row `INSERT ... WHERE NOT EXISTS` adds 0, and no trigger fires on it. RED: a lost-race drive (`get_intent_by_key` returns None at step 1 while the row exists) plus a close failure, asserting the bare-close failure and no notice. This is R2-04's principle (`CorrectionResult.wrote`: `durable` from what THIS call wrote) without a writer change. **(b)** The reviewer's shape: `record_intent` reports `wrote`. That needs an AMENDMENT GRANT for `swing/data/repos/latch_order_intents.py` (a STOP item, never self-granted). **(c) DECLINE:** on the lost-race path the notice "IS recorded" is TRUE of the ledger (the same idempotency key, so the same intent, is committed by the winner), and a retry is a no-op replay. So neither answer invites a duplicate, and the trigger needs two concurrent identical POSTs plus a close failure. Cell's view: **(a)**. It is in envelope, keeps the arc's claim "durable from the writer's report" literally true, and matches R2-04's precedent; (c) is defensible if the orchestrator prefers not to touch a root for a race-only path |
 
 **Spend:** Round 4 (counted) 1,071,577 tokens used (one attempt; no disqualified attempt this cell). **Summed Codex `tokens used` over the counted Reviewer A rounds:** 721,619 (R1) + 649,427 (R2) + 724,192 (R3) + 1,071,577 (R4) = 3,166,815. Reviewer B (the orchestrator's) 699,735 is not in that sum.
+
+### Round 4 gate -- ORCHESTRATOR dispositions (2026-09-26)
+
+**QA on disk:**
+- `22-f-exec` @ `da1fbfd5`: commits `44e35f62` (B-1), `07b083cd` (B-2), `d3aa7dbe` (B-3), `636882ff` (B-4), `65e243b8` (census pin), then ledger `03513fe5`, `fbb99041` and `da1fbfd5`. The tree is clean and `%(trailers)` is empty over `704ac133..HEAD`.
+- **Depth:** cell 15 measured `cell_depth --agent` 301,577. **This fills the DEPTH column for Round 4.**
+- **Pre-R4 suite** at `03513fe5`: 15326 / 13 / 0, RESOLVER the worktree, ruff clean.
+- **Round 4 validity, read at this seat** on `r4\codex-review-r4-attempt1.txt`:
+  - banner `gpt-5.6-sol` / `high`;
+  - `^ERROR` 0;
+  - footer 1,071,577 at :43154;
+  - anchored `NEW_CRITICAL_MAJOR_FOUND` at :43153, with the CLI's duplicate at :43188;
+  - `exit=0`.
+- **Round 4 COUNTS.** Counted Reviewer A spend: **3,166,815**.
+- **Per-line provenance, verified at this seat:**
+  - `schwab_reconciliation.py:2917/:2922` PRE (`e61d7356`/`b0befe0a`); `:2924-2927` ARC (`e874a7b4`, T-F5);
+  - `reconciliation.py:474-481` PRE (`794e6935`); `:631` ARC (`3e9e26bb`);
+  - `routes/latches.py:1316-1318` ARC (`86bc327e`, T-G2).
+- **No fifth round is authorized.** Per CHARC's B-gate ruling, the next review step is Reviewer B AGAIN on the resulting tree.
+
+| id | fact checked | disposition |
+|---|---|---|
+| R4-01 (major) | The preserve handler (`except BaseException as preserve_error:` then `_rollback_run_or_raise(conn, exc)` then a bare `raise` for a non-`sqlite3.Error`) is THIS arc's T-F5. It has two modes. **(i)** An interrupt at the preserve write, with the rollback working, is re-raised BARE: no record, and the original `exc` survives only as implicit `__context__`. That is the Round 2 class rule at an arc-written cleanup handler, and "implicit `__context__` is not a record" (CHARC, item 4). **(ii)** If the rollback ALSO fails, `_rollback_run_or_raise` raises the ROLLBACK error `from exc`, so the interrupt is REPLACED as the propagating exception. | **(i) FIX AUTHORIZED** (orchestrator): this is CHARC's Round 2 class rule applied at the arc's OWN lines, which CHARC's R3-07 reasoning expressly distinguishes (R3-07 was declined BECAUSE its trigger lines were pre-arc). A non-`Exception` preserve error gets one record against `exc` and is raised `from exc`. RED-first. **(ii) ROUTED to CHARC:** it is the S-D39 template itself (`raise cleanup_error from original`) meeting an interrupt at the rollback. Is the rule "never replacing" meant to bind the S-D39 helper when the PRESERVE error is an interrupt? If yes, that is a helper-level change (the interrupt raised `from` the cleanup error, both recorded). If no, it is declared. |
+| R4-02 (major) | The inner `except Exception as e:` and its `update_run_failed` + `commit` (`:481-493`) are PRE-ARC. An interrupt there escapes to the arc's outer `except BaseException` (`:631`), which rolls back and re-raises. It is not swallowed and not retyped (it is retyped only if the rollback also fails; see R4-01 (ii)). | **DECLINED at this gate**, as R3-07's exact facet ("a recovery-path commit under `except Exception`, with the original in flight, loses the interrupt's record"), a second pre-arc site. CC to CHARC for dissent and for his register row. |
+| R4-03 (major) | `durable = True` is bound after `record_intent` returns `stored`. On the lost-race path, the INSERT writes zero rows and the WINNER's identical row is returned. So the ledger DOES hold the intent, the WARN "IS recorded" is TRUE, and a retry is a no-op replay. CHARC's R1-05 harm was a FALSE "IS recorded" over a no-op that recorded NOTHING. Here the writer's return (`stored`, a persisted row) IS its report. | **Orchestrator view: (c) DECLINE**, with the reason recorded (a true statement over a durable row; the writer's return is the report). ROUTED to CHARC because it touches his R1-05 binding principle. The alternative is (a), a `total_changes` delta in the route. |
+
+**Next, on CHARC's ruling:**
+1. A FRESH cell 16 lands R4-01 (i), plus whatever CHARC rules on R4-01 (ii) and R4-03. Each is RED-first. The census pin is re-measured if needed.
+2. **G3** on the final head.
+3. **Reviewer B AGAIN**, the orchestrator's pass and the transcript CHARC's merge gate reads. No Reviewer A Round 5.
+
+**Operator check-in (the ROUND-5 rule):** four counted rounds plus one Reviewer B pass. That is 3,166,815 + 699,735 Codex tokens, before cell 11's disqualified 1,274,486. Every round since R2 has found new facets of ONE class, the interrupt at cleanup. This is reported to the operator at this gate.
