@@ -193,3 +193,45 @@ def test_interrupt_at_close_nothing_durable_no_refusal_propagates_bare(
     assert info.value.__cause__ is None
     assert caplog.records == []
     assert capsys.readouterr().err == ""
+
+
+# ---- R3-01 (CHARC's Round 3 ruling, item 1): a SINK interrupt ---------------
+# `log_contained` catches the sink's BaseException and RETURNS it ("each
+# caller decides how to surface it").  On an ORDINARY close failure after a
+# durable write, a returned interrupt is the operator's stop signal one layer
+# down: the WARN work still runs, then the interrupt is raised `from` the
+# close error -- never turned into WARN text and a normal return.
+
+class _InterruptingSink(logging.Handler):
+    """A logging handler whose emit raises the operator's interrupt."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.calls = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.calls += 1
+        raise KeyboardInterrupt("planted interrupt in the log sink")
+
+
+def test_r3_01_a_sink_interrupt_on_an_ordinary_close_failure_is_re_raised(
+        capsys):
+    log = logging.getLogger("swing.cli")  # the logger the helper resolves
+    sink = _InterruptingSink()
+    log.addHandler(sink)
+    try:
+        proxy = _proxy(True)
+        with pytest.raises(KeyboardInterrupt,
+                           match="planted interrupt in the log sink") as info:
+            _helper()(proxy, durable=True, pending_refusal=None)
+    finally:
+        log.removeHandler(sink)
+    assert proxy.calls["close"] == 1
+    assert sink.calls == 1  # did-it-fire
+    assert isinstance(info.value.__cause__, sqlite3.OperationalError)
+    assert "planted on close" in str(info.value.__cause__)
+    err = capsys.readouterr().err
+    assert ("WARN: the write IS recorded; the connection close failed: "
+            in err)
+    assert "a logging handler RAISED" in err
+    assert "KeyboardInterrupt" in err

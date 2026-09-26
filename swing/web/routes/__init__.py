@@ -15,7 +15,10 @@ def close_after_commit(conn, log: logging.Logger, *, what: str) -> str | None:
     Closes; on an ``Exception`` from the close logs ONE contained ERROR
     record and returns the one-line notice ``"<what> IS recorded; the
     database connection could not be closed cleanly (see the log)."``;
-    returns None on a clean close.  An INTERRUPT at the close (a
+    returns None on a clean close.  If that record's logging SINK raised an
+    interrupt (``log_contained`` returns it), the interrupt is raised
+    ``from`` the close error instead of the notice (R3-01, CHARC).  An
+    INTERRUPT at the close (a
     BaseException that is not an Exception) is the operator's stop signal:
     it is logged with the same record, the interrupt named, and re-raised
     BARE -- the server's own interrupt handling owns it (STOP-6, CHARC).
@@ -24,11 +27,16 @@ def close_after_commit(conn, log: logging.Logger, *, what: str) -> str | None:
         conn.close()
     except Exception as exc:  # noqa: BLE001 -- the CLASS
         from swing.trades.entry import log_contained, safe_text
-        log_contained(
+        log_error = log_contained(
             log,
             "22-F: %s IS recorded and CLOSING the database connection "
             "afterwards RAISED (%s); the write is unaffected.",
             what, safe_text(exc))
+        if log_error is not None and not isinstance(log_error, Exception):
+            # 22-F R3-01 (CHARC): the SINK returned the operator's interrupt
+            # -- the stop signal one layer down: raised, chained from the
+            # close error, never swallowed into the notice.
+            raise log_error from exc
         return (f"{what} IS recorded; the database connection could not be "
                 "closed cleanly (see the log).")
     except BaseException as interrupt:

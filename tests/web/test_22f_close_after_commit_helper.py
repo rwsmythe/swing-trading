@@ -87,3 +87,45 @@ def test_a_raising_log_sink_does_not_make_the_helper_raise():
         log.removeHandler(handler)
     assert proxy.calls["close"] == 1
     assert notice is not None and notice.startswith("The pin IS recorded")
+
+
+def test_r3_01_a_sink_interrupt_on_an_ordinary_close_failure_is_re_raised():
+    """R3-01 (CHARC's Round 3 ruling, item 1): `log_contained` RETURNS a
+    sink's interrupt; the helper raises it `from` the close error instead of
+    returning the notice.  The notice is a RETURN VALUE a raise cannot carry,
+    so "still produced" is read here as the ERROR record reaching the
+    logger's working handler (installed BEFORE the interrupting one)."""
+    captured: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            captured.append(record)
+
+    class _Interrupting(logging.Handler):
+        calls = 0
+
+        def emit(self, record):
+            type(self).calls += 1
+            raise KeyboardInterrupt("planted interrupt in the log sink")
+
+    log = logging.getLogger("tests.22f.close_after_commit.r3_01")
+    log.propagate = False
+    capture, interrupting = _Capture(), _Interrupting()
+    log.addHandler(capture)
+    log.addHandler(interrupting)
+    try:
+        proxy = FailingVerbsConn(sqlite3.connect(":memory:"), fail_close=True)
+        with pytest.raises(KeyboardInterrupt,
+                           match="planted interrupt in the log sink") as info:
+            _helper()(proxy, log, what="The pin")
+    finally:
+        log.removeHandler(capture)
+        log.removeHandler(interrupting)
+    assert proxy.calls["close"] == 1
+    assert _Interrupting.calls == 1  # did-it-fire
+    assert isinstance(info.value.__cause__, sqlite3.OperationalError)
+    assert "planted on close" in str(info.value.__cause__)
+    assert len(captured) == 1
+    msg = captured[0].getMessage()
+    assert "The pin IS recorded and CLOSING the database connection" in msg
+    assert "planted on close" in msg

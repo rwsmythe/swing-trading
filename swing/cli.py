@@ -1287,6 +1287,9 @@ def _close_after_writes(
       record, a ``WARN: the write IS recorded; ...`` line through the
       contained sinks, and a NORMAL return (the root exits 0 -- the ledger
       has the row, and a failure exit would invite a retry against it, D68).
+      If the ERROR record's logging SINK raised an interrupt
+      (``log_contained`` returns it), the WARN lines still print and the
+      interrupt is then raised ``from`` the close error (R3-01, CHARC).
 
     An INTERRUPT at the close (a BaseException that is not an Exception:
     KeyboardInterrupt, SystemExit, GeneratorExit) is the operator's STOP
@@ -1336,6 +1339,12 @@ def _close_after_writes(
                 "emitted cleanly -- a logging handler RAISED ("
                 + safe_text(_log_error) + "); the ledger is unaffected."),
                 prefer_err=True)
+            if not isinstance(_log_error, Exception):
+                # 22-F R3-01 (CHARC): the SINK returned the operator's
+                # interrupt -- the stop signal one layer down.  The WARN
+                # work above has run; it is raised, chained from the close
+                # error, never left as WARN text and a normal return.
+                raise _log_error from close_exc
     except BaseException as interrupt:
         # 22-F STOP-6 (CHARC): the non-Exception remainder is the operator's
         # stop signal -- contain Exception, re-raise the rest.  A sink
