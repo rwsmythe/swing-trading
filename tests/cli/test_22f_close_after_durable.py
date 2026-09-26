@@ -19,7 +19,9 @@ Per root, three tests over the ROOT TABLE below (each row carries its opener
   as it always has (the byte-unchanged bare-close branch).
 
 Did-it-fire (R3-01): every case asserts the proxies recorded >= 1 `close()`;
-every G1-c asserts its writer wrapper was called once.
+every G1-c asserts its writer wrapper was called once, and every G1-b whose
+refusal world plants its writer (`_refusing_service`) asserts that wrapper
+was called once (B-4).
 
 The three Schwab roots (setup / refresh / logout) write their operator record
 OUTSIDE the swing DB -- the tokens DB -- so their probe reads THAT
@@ -491,8 +493,15 @@ def _stub_service(mp: Any, name: str, result: dict,
     return stub
 
 
-def _refusing_service(mp: Any, name: str, exc: BaseException) -> None:
-    mp.setattr(f"swing.cli_schwab.{name}", raising(exc))
+def _refusing_service(mp: Any, w: World, name: str,
+                      exc: BaseException) -> Any:
+    """Plant a refusing writer and RETURN its counting wrapper, kept on the
+    world as `refusing_writer` so G1-b asserts it fired (B-4: did-it-fire,
+    no exceptions)."""
+    wrapper = raising(exc)
+    mp.setattr(f"swing.cli_schwab.{name}", wrapper)
+    w.extra["refusing_writer"] = wrapper
+    return wrapper
 
 
 def _plant_tokens(w: World, text: str) -> None:
@@ -511,7 +520,8 @@ def _setup_world(tmp_path: Path, mp: Any) -> World:
 def _setup_refusal_world(tmp_path: Path, mp: Any) -> World:
     from swing.integrations.schwab.client import SchwabAuthError
     w = _schwab_world(tmp_path, mp)
-    _refusing_service(mp, "setup_paste_flow", SchwabAuthError(401, "bad grant"))
+    _refusing_service(mp, w, "setup_paste_flow",
+                      SchwabAuthError(401, "bad grant"))
     return w
 
 
@@ -526,7 +536,8 @@ def _refresh_world(tmp_path: Path, mp: Any) -> World:
 def _refresh_refusal_world(tmp_path: Path, mp: Any) -> World:
     from swing.integrations.schwab.client import SchwabAuthError
     w = _schwab_world(tmp_path, mp)
-    _refusing_service(mp, "force_refresh", SchwabAuthError(401, "bad grant"))
+    _refusing_service(mp, w, "force_refresh",
+                      SchwabAuthError(401, "bad grant"))
     return w
 
 
@@ -542,7 +553,7 @@ def _logout_world(tmp_path: Path, mp: Any) -> World:
 
 def _logout_refusal_world(tmp_path: Path, mp: Any) -> World:
     w = _schwab_world(tmp_path, mp)
-    _refusing_service(mp, "revoke_and_delete",
+    _refusing_service(mp, w, "revoke_and_delete",
                       RuntimeError("could not rename the tokens DB"))
     return w
 
@@ -913,6 +924,8 @@ ROOTS: list[Root] = [
 ]
 
 _REFUSING = [r for r in ROOTS if r.refusal_argv is not None]
+# the roots whose refusal world plants its writer via `_refusing_service`
+_PLANTED_REFUSAL = {"schwab-setup", "schwab-refresh", "schwab-logout"}
 _CONTROLLED = [r for r in ROOTS if r.control]
 
 
@@ -958,6 +971,13 @@ def test_G1b_refusal_with_close_failure_keeps_the_refusal(
     built = _failing_close(monkeypatch, root.target, root.nth)
     result = w.runner.invoke(main, root.refusal_argv(w), input=root.input)
     assert _closes(built, root.nth) >= 1
+    # B-4 (did-it-fire): a PLANTED refusing writer must have fired, or a
+    # missed patch could fall into a real failure with similar text.
+    # The roster below is closure-checked here, per root, both directions.
+    planted = w.extra.get("refusing_writer")
+    assert (planted is not None) == (root.id in _PLANTED_REFUSAL), root.id
+    if planted is not None:
+        assert planted.calls == 1, planted.calls
     assert result.exit_code == 1, (result.output, repr(result.exception))
     assert isinstance(result.exception, SystemExit)
     assert root.refusal_text in result.output
