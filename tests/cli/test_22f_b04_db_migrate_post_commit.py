@@ -248,3 +248,38 @@ def test_r2_02_witness_close_interrupt_is_chained_from_the_post_commit_error(
                and "planted on PRAGMA foreign_keys=" in rec.getMessage()
                for rec in caplog.records)
     assert _version(world["db"]) == EXPECTED_SCHEMA_VERSION
+
+
+# -- R3-02 (CHARC's Round 3 ruling, item 2, option (a)): an INTERRUPT from a
+# post-COMMIT restore at target.  R2-03 re-raises it out of
+# `_apply_migration`; PRE-FIX the B-04 `except BaseException` then turned it
+# into the WARN path, ran the tail (the single-fire v17 ratification
+# included) and exited 0 -- the Ctrl-C swallowed one frame outward.
+# POST-FIX the witness still runs and the durable WARN still prints (the
+# operator who interrupted learns the version is durable), then the
+# interrupt is re-raised BARE and the tail is skipped (plan AL-11).
+def test_r3_02_restore_interrupt_at_target_warns_then_aborts_skipping_tail(
+        world, monkeypatch):
+    import swing.trades.risk_policy as rp
+    _build(world["db"], 16)
+    n = EXPECTED_SCHEMA_VERSION - 16
+    calls: list[int] = []
+    real_ratify = rp.ratify_seed_from_cfg_on_v17_landing
+
+    def spy(conn, cfg):
+        calls.append(1)
+        return real_ratify(conn, cfg)
+
+    monkeypatch.setattr(rp, "ratify_seed_from_cfg_on_v17_landing", spy)
+    built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
+        real, fail_after_executescript=("PRAGMA foreign_keys=", n),
+        raise_on_sql=KeyboardInterrupt))
+    r = _migrate(world)
+    assert _fired(built, "failed_after_executescript") == 1  # did-it-fire
+    assert _version(world["db"]) == EXPECTED_SCHEMA_VERSION
+    assert r.exit_code != 0, (r.output, r.exception)
+    assert "Aborted!" in r.output
+    assert f"{_WARN} {EXPECTED_SCHEMA_VERSION})" in r.output
+    assert "KeyboardInterrupt" in r.output.split(_WARN)[1]
+    assert calls == []  # the tail (the v17 ratification) was skipped
+    assert f"DB at {world['db']} - schema version" not in r.output

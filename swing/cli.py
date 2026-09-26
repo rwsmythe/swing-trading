@@ -382,6 +382,8 @@ def db_migrate(ctx: click.Context) -> None:
         # at target -> say so, reopen, and run the tail below (the
         # gate-image check, the single-fire v17 ratification, the final
         # echo); below target, or if the re-read itself fails -> re-raise.
+        # An INTERRUPT (not an `Exception`) at target gets the witness and
+        # the WARN, then is re-raised BARE with the tail skipped (R3-02).
         # The read-only open routes through `open_connection` (busy_timeout;
         # the live-opens invariant, tests/web/test_live_opens_routed.py) with
         # a `mode=ro` URI -- a plain sqlite3 connection underneath, never
@@ -443,6 +445,14 @@ def db_migrate(ctx: click.Context) -> None:
                 "WARN: closing the read-only schema re-read also failed: "
                 f"{safe_text(_ro_close_error)}; the read completed and "
                 "stands."), prefer_err=True)
+        if not isinstance(exc, Exception):
+            # 22-F R3-02 (CHARC, option (a)): an INTERRUPT after the COMMIT
+            # (e.g. from a PRAGMA restore, re-raised by R2-03) is the
+            # operator's stop signal.  The witness has run and the durable
+            # WARN is printed; the interrupt is re-raised BARE and the tail
+            # is skipped -- plan AL-11's declaration for any interrupt
+            # between the COMMIT and the ratification.
+            raise
         conn = open_connection(
             db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     gate_alarm: str | None = None
