@@ -2922,7 +2922,9 @@ def run_schwab_reconciliation(
                 )
                 conn.commit()
             except BaseException as preserve_error:  # noqa: BLE001
-                _rollback_run_or_raise(conn, exc)
+                # 22-F R4-01 (ii): the S-D39 `original` is the exception in
+                # flight WHEN THE CLEANUP RUNS -- here `preserve_error`.
+                _rollback_run_or_raise(conn, preserve_error)
                 if not isinstance(preserve_error, sqlite3.Error):
                     if not isinstance(preserve_error, Exception):
                         # 22-F R4-01 (i): an interrupt at the preserve write

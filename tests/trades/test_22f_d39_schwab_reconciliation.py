@@ -668,3 +668,32 @@ def test_r4_01_i_interrupted_preserve_write_is_recorded_and_chained(
     assert "planted interrupt on the preserve write" in msg
     assert _records(caplog, "MUST BE DISCARDED") == []
     assert _fresh(db)["runs"] == []
+
+
+def test_r4_01_ii_interrupted_preserve_with_failed_rollback_chains_from_it(
+        db, caplog):
+    proxy = _PreserveInterruptConn(sqlite3.connect(str(db)),
+                                   fail_sql_prefix=_DISC_INSERT,
+                                   fail_sql_times=1, fail_rollback=True)
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(sqlite3.OperationalError) as info:
+                _run(proxy)
+        assert proxy.calls["failed_sql"] == 1  # did-it-fire: `exc`
+        assert proxy.calls["interrupted_preserve"] == 1  # did-it-fire
+        assert proxy.calls["rollback"] == 1  # did-it-fire: the failed one
+    finally:
+        proxy._real.close()
+    assert "cannot rollback" in str(info.value)
+    cause = info.value.__cause__
+    assert type(cause) is KeyboardInterrupt
+    assert "planted interrupt on the preserve write" in str(cause)
+    # `exc` rides as the interrupt's own implicit context.
+    assert isinstance(cause.__context__, sqlite3.OperationalError)
+    assert "planted on" in str(cause.__context__)
+    recs = _records(caplog, "MUST BE DISCARDED")
+    assert len(recs) == 1
+    msg = recs[0].getMessage()
+    assert "planted interrupt on the preserve write" in msg
+    assert "cannot rollback" in msg
+    assert _records(caplog, "PRESERVE write was interrupted") == []
