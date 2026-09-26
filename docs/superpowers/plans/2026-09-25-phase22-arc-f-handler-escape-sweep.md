@@ -409,7 +409,7 @@ Wrap each tainted leaf: `ascii_safe(str(exc))` / `ascii_safe(result.message)` (i
 
 ### T-G0 -- two helpers, in EXISTING modules
 - CLI: `swing/cli.py::_close_after_writes(conn, *, durable: bool, pending_refusal: click.ClickException | None) -> None` -- S-B02 exactly: nothing durable and no refusal -> bare `conn.close()` (byte-unchanged); refusal in flight -> S-R8; durable and no refusal -> `log_contained` + `_echo_either_sink("WARN: the write IS recorded; the connection close failed: " + safe_text(exc), prefer_err=True)`, return normally (exit 0). `cli_schwab.py`/`cli_config.py` import it at function scope (no module-level cycle).
-- Web: `swing/web/routes/__init__.py::close_after_commit(conn, log, *, what: str) -> str | None` -- closes; on failure `log_contained` (ERROR) and returns the one-line notice text `"<what> IS recorded; the database connection could not be closed cleanly (see the log)."`; never raises.
+- Web: `swing/web/routes/__init__.py::close_after_commit(conn, log, *, what: str) -> str | None` -- closes; on an `Exception` `log_contained` (ERROR) and returns the one-line notice text `"<what> IS recorded; the database connection could not be closed cleanly (see the log)."`; an INTERRUPT (a BaseException that is not an Exception) at the close is logged and re-raised BARE, or `from` the error in flight when one is (STOP-6 and Round 3 item 4, CHARC), and a sink interrupt returned by `log_contained` is raised `from` the close error (R3-01).
 - Unit tests for both helpers: each branch, with the closing proxy.
 
 ### T-G1 -- the 27 CLI roots (one commit per group; the `durable` flag bound at each writer's OWN return, never cached)
