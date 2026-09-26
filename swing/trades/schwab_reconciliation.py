@@ -2908,11 +2908,17 @@ def run_schwab_reconciliation(
             failed_finished_ts = now_ms()
             if failed_finished_ts < started_ts:
                 failed_finished_ts = started_ts
-            # Best-effort UPDATE in the same outer transaction. If the BEGIN
-            # IMMEDIATE write-lock was lost (concurrent force_clear), the
-            # update may fail; suppress + commit-or-rollback to avoid
-            # masking the original exception. Either way the original
-            # exception propagates to the caller.
+            # Best-effort UPDATE in the same outer transaction (the BEGIN
+            # IMMEDIATE write-lock may have been lost to a concurrent
+            # force_clear). What propagates when the preserve write fails:
+            # - sqlite3.Error: rolled back; the run's `exc` propagates.
+            # - an ordinary non-sqlite Exception: rolled back; the preserve
+            #   error propagates IN PLACE OF `exc` (pre-arc behaviour, banked
+            #   as a D39 facet at the bare `raise` below).
+            # - an interrupt (non-Exception): rolled back; one record names
+            #   `exc`, and the interrupt is raised from it.
+            # In every case, if the rollback itself fails, the rollback error
+            # propagates chained from the preserve error (S-D39; AL-13).
             try:
                 repo.update_run_failed(
                     conn,
