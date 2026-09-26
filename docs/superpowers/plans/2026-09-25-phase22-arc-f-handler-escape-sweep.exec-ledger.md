@@ -1092,3 +1092,34 @@ Each finding's load-bearing fact was READ on disk at `edd61c20`. Provenance was 
 | R3-07 | minor, REOPENS R2-05 | `schwab_reconciliation.py:1406-1428`, the auto-redirect §7.5 fallback: inside `except (ValidatorRejectedError, ValueError) as e:`, after this arc's `_rollback_to_savepoint_or_raise(conn, sp_name, e)`, a FRESH savepoint `fb_sp` is opened; the stamp and then the SUCCESS-path `RELEASE SAVEPOINT {fb_sp}` (`:1419`) run under `try: ... except Exception as fb_exc:`. An interrupt at that RELEASE escapes with `e` only as implicit `__context__`, unrecorded; the run-level handler (this arc's T-F5 S-D39) rolls back the run and re-raises it unchanged | `:1405-1421` (the fallback savepoint, the RELEASE, the `except Exception`) blame to `c2a950ef`, PRE-ARC. Only `:1422` (the handler's `_rollback_to_savepoint_or_raise(conn, fb_sp, fb_exc)`) is this arc's (`e874a7b4`, T-F5). At the base the handler did a bare `ROLLBACK TO` + `RELEASE` | **Cell's read: DECLINE (reject-with-reason), no fix.** This RELEASE is the SUCCESS-path commit of the fallback stamp into the run transaction, not a cleanup after a ROLLBACK TO. That distinguishes it from SS-3/SS-4, whose RELEASE completed a ROLLBACK TO + RELEASE cleanup pair. An interrupt there is the SS-5 shape: an interrupt in a non-cleanup statement escapes unrecorded, and nothing is swallowed or retyped. The run-level handler rolls the run back and re-raises it, so the data is safe (Codex agrees). The trigger lines are pre-arc. The alternative, if the orchestrator prefers, is to FIX it in the SS-3/SS-4 shape as a post-verdict MINOR without a round: guard that one RELEASE so that a `sqlite3.Error` is unchanged and an interrupt is recorded and raised `from e`, with a did-it-fire test |
 
 **Spend:** Round 3 (counted) 724,192 tokens used. **Summed Codex `tokens used` over the counted rounds:** 721,619 (R1) + 649,427 (R2) + 724,192 (R3) = 2,095,238. Not counted: cell 11's attempts 2 + 3, 1,274,486, plus the 2,135 probe.
+
+### Round 3 (counted) gate -- ORCHESTRATOR dispositions (2026-09-26)
+
+**QA on disk:**
+- `22-f-exec` @ `8098ebf7`: commits `64db075d`, `defce439`, `6baa16ad`, `f9b0ea69`, `edd61c20` and `8098ebf7`. The tree is clean and `%(trailers)` is empty over `704ac133..HEAD`.
+- **Depth:** cell 13 measured `cell_depth --agent` 238,522. **This fills the DEPTH column for Round 3.**
+- **Pre-R3 suite** at `f9b0ea69`: 15317 / 13 / 0.
+- **Round 3 validity, read at this seat** on `r3\codex-review-r3-c13-attempt1.txt`:
+  - banner `gpt-5.6-sol` / `high`;
+  - `^ERROR` 0;
+  - footer 724,192;
+  - anchored `^NEW_CRITICAL_MAJOR_FOUND` at :34497, with the CLI's duplicate at :34506;
+  - `exit=0`.
+- **Round 3 COUNTS.** Counted spend: 721,619 + 649,427 + 724,192 = **2,095,238**.
+- **R3-06 fact verified:** `swing/data/db.py:1134` is `except Exception as migration_error:` around `run_migrations`. So a `BaseException` that is not an `Exception` skips `conn.close()`.
+- **This is the third counted round, and no fourth is authorized.**
+
+| item | orchestrator disposition |
+|---|---|
+| R3-06 (major, reopens R2-08(b): `ensure_schema`'s migration-error handler is `except Exception`, so an interrupt skips the close, and if the rollback was interrupted too, the connection holds an open write transaction) | **ROUTED to CHARC.** It changes CHARC's R2-08(b) encoding. The branches: (a) widen to `except BaseException`, one token, with did-it-fire close tests; (b) reject under SS-5's reason. Orchestrator view: **(a)**. Unlike SS-5's read-only witness, this leaves a WRITE transaction on an unclosed connection. The line is this arc's rewrite (`f336e4db`), even though the `except Exception` trigger is pre-arc. **Proposed landing, for CHARC to rule: fix WITHOUT a fourth counted round.** It is one token plus RED tests. The verdict is then read as the canon reads a dispositioned verdict (CHARC's Round 2 ruling text). The fix is verified by G3 on the final head and by Reviewer B, my cold audit, which is told to check this site. |
+| R3-07 (minor, reopens R2-05: the success-path `RELEASE SAVEPOINT {fb_sp}` at `schwab_reconciliation.py:1419` sits under `except Exception`) | **DECLINED at this gate (minor).** That RELEASE COMMITS the fallback stamp on the SUCCESS path. It is not cleanup after a ROLLBACK TO the way SS-3/SS-4 were. An interrupt there escapes unrecorded, nothing is swallowed or retyped, and the run-level handler rolls back and re-raises. This is the SS-5 shape CHARC accepted. The trigger lines are pre-arc (`c2a950ef`). CC to CHARC for dissent. |
+| The cell's three encoding readings (`cli.py:439` with both errors interrupts; the exit-POST close-guard interrupt recorded by the outer guard; `cli.py:439`'s returned `Exception` still discarded, which is pre-arc) | **ACCEPTED**, and listed to CHARC. The third is pre-arc behaviour and goes on CHARC's `log_contained` register row, not into this arc. |
+
+**Next, on CHARC's ruling:**
+- If (a) with no fourth round:
+  1. A fresh cell 14 lands R3-06 RED-first.
+  2. **G3**, the full fast suite on the final head.
+  3. **Reviewer B**, my cold audit: CLAIMS_FIRST, DEFAULT TO INTRODUCED, checking every proxy test's patch target against the name the code resolves at call time, plus R3-06.
+  4. The return report.
+  5. CHARC's code-only merge gate.
+- If (b): G3 on this head, then Reviewer B, and the rest as above.
