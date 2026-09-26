@@ -98,6 +98,98 @@ def test_r2_08b_interrupt_on_close_is_chained_from_the_migration_error(
     assert _version(prior) == _V_BEFORE
 
 
+class _TxAtClose(FailingVerbsConn):
+    """Counts, in ``calls["open_tx_at_close"]``, a close of the REAL
+    connection while it still held an open transaction."""
+
+    def close(self) -> None:
+        self.calls["open_tx_at_close"] += int(self._real.in_transaction)
+        return super().close()
+
+
+class _InterruptOnRollback(_TxAtClose):
+    """``rollback()`` is INTERRUPTED: it raises ``KeyboardInterrupt`` WITHOUT
+    rolling back, so the migration's transaction stays OPEN (R3-06)."""
+
+    def rollback(self) -> None:
+        self.calls["rollback"] += 1
+        raise KeyboardInterrupt("planted interrupt on rollback")
+
+
+def _first_script_fails(monkeypatch, cls, exc) -> list:
+    """As ``_first_fails``, with the script's exception chosen by the test."""
+    count = {"n": 0}
+
+    def _factory(real):
+        count["n"] += 1
+        if count["n"] == 1:
+            return cls(real, fail_executescript=exc)
+        return FailingVerbsConn(real)
+    return open_connection_returning(monkeypatch, _factory)
+
+
+def _assert_real_closed(proxy) -> None:
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        proxy._real.execute("SELECT 1")
+
+
+def test_r3_06_interrupt_in_the_migration_closes_the_connection(
+        prior, tmp_path, monkeypatch):
+    """22-F R3-06 (CHARC-ruled (a)): an interrupt ORIGINATING in the
+    migration -- ``executescript`` opens a transaction and raises
+    ``KeyboardInterrupt``; the rollback works -- still reaches the close, and
+    the interrupt propagates unchanged.  PRE (``except Exception as
+    migration_error``): the handler does not run for an interrupt, so the
+    close count is 0 and the connection is left open."""
+    built = _first_script_fails(monkeypatch, _TxAtClose, KeyboardInterrupt)
+    try:
+        with pytest.raises(KeyboardInterrupt,
+                           match="planted on executescript") as info:
+            _ensure(prior, tmp_path)
+        assert built[0].calls["executescript"] == 1  # did-it-fire (script)
+        assert built[0].calls["rollback"] == 1  # did-it-fire (rollback)
+        assert built[0].calls["close"] == 1  # did-it-fire (the close)
+        assert built[0].calls["open_tx_at_close"] == 0  # rolled back first
+        _assert_real_closed(built[0])
+        assert info.value.__cause__ is None
+    finally:
+        for p in built:
+            p._real.close()
+    assert _version(prior) == _V_BEFORE
+
+
+def test_r3_06_interrupted_rollback_closes_the_connection(
+        prior, tmp_path, monkeypatch, caplog):
+    """22-F R3-06, the INTERRUPTED-ROLLBACK posture the reviewer named:
+    ``executescript`` opens a transaction and fails; ``rollback()`` raises
+    ``KeyboardInterrupt``, so the migration's transaction is still OPEN.  The
+    interrupt escapes with its cause (the script's error, set by
+    ``_apply_migration``'s ``raise cleanup_error from exc``) AND the close
+    count is 1: the open transaction dies with the closed connection.  PRE:
+    close count 0 -- the connection, transaction open, is reachable only
+    through the traceback."""
+    built = _first_script_fails(monkeypatch, _InterruptOnRollback,
+                                sqlite3.OperationalError)
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(KeyboardInterrupt,
+                               match="planted interrupt on rollback") as info:
+                _ensure(prior, tmp_path)
+        assert built[0].calls["executescript"] == 1  # did-it-fire (script)
+        assert built[0].calls["rollback"] == 1  # did-it-fire (interrupt)
+        assert isinstance(info.value.__cause__, sqlite3.OperationalError)
+        assert "planted on executescript" in str(info.value.__cause__)
+        assert built[0].calls["close"] == 1  # did-it-fire (the close)
+        assert built[0].calls["open_tx_at_close"] == 1  # the posture held
+        _assert_real_closed(built[0])
+        assert [r for r in caplog.records
+                if "MUST BE DISCARDED" in r.getMessage()]
+    finally:
+        for p in built:
+            p._real.close()
+    assert _version(prior) == _V_BEFORE
+
+
 def test_r2_08b_control_working_close_reraises_the_migration_error(
         prior, tmp_path, monkeypatch):
     """CONTROL (both trees): the close works -> the migration's error, no

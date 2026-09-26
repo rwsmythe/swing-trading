@@ -14,9 +14,12 @@ one runs, >= 1 `rollback()`): the did-it-fire rule.
   escapes from inside the `except` with `__cause__` None, no record; post: E2,
   `__cause__ is E1`, exactly one `MUST BE DISCARDED` record.
 * C2-21-b F2 twin: `executescript` raises `KeyboardInterrupt` after the
-  BEGIN, rollback works -> pre: `except Exception` does not run, so the
-  proxy's `in_transaction` is True after the raise; post: False, and the
-  `KeyboardInterrupt` re-raised.
+  BEGIN, rollback works -> pre: `except Exception` does not run, so no
+  rollback and the transaction is still open; post: one rollback, the
+  transaction is closed, and the `KeyboardInterrupt` re-raised.  Since R3-06
+  `ensure_schema` CLOSES the connection on an interrupt too, so the open
+  transaction is read at the moment of the close (`_TxAtClose`), not after
+  the raise (a closed connection cannot be read).
 * C2-21-c single failure (E1, rollback works) -> E1 re-raised, fresh read
   `schema_version` 40, on both trees (a PIN).
 * C2-21-d CONTROL: pass-through proxy -> migrated to 41, on both trees.
@@ -90,13 +93,24 @@ def test_c2_21_a_both_fail_raises_cleanup_chained(v40, tmp_path, monkeypatch,
     assert _version(v40) == _V_BEFORE
 
 
+class _TxAtClose(FailingVerbsConn):
+    """Counts, in ``calls["open_tx_at_close"]``, a close of the REAL
+    connection while it still held an open transaction."""
+
+    def close(self) -> None:
+        self.calls["open_tx_at_close"] += int(self._real.in_transaction)
+        return super().close()
+
+
 def test_c2_21_b_f2_twin_interrupt_rolls_back(v40, tmp_path, monkeypatch):
-    built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
+    built = open_connection_returning(monkeypatch, lambda real: _TxAtClose(
         real, fail_executescript=KeyboardInterrupt))
     try:
         with pytest.raises(KeyboardInterrupt):
             _ensure(v40, tmp_path)
-        assert _mig(built).in_transaction is False
+        assert _mig(built).calls["rollback"] == 1  # did-it-fire
+        assert _mig(built).calls["close"] == 1  # R3-06: the close ran
+        assert _mig(built).calls["open_tx_at_close"] == 0  # rolled back
     finally:
         for p in built:
             p._real.close()
