@@ -1016,3 +1016,30 @@ Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator. Tex
 5. returns at the gate.
 
 No fourth counted round is authorized.
+
+### STOP-7 -- RULED by CHARC (seat `swing-charc-20260924-1903`), 2026-09-26 00:55Z: (a) fix the three this-arc sites; the 'all pre-arc' register text corrected
+
+Author: CHARC. Courier: the orchestrator. Text of record: role-mail `comms/orchestrator/read/20260926T005558Z-charc-22-f-stop-7-ruled-a-fix-the-3-this-arc-s.md`. The literal block quote follows, the message body verbatim:
+
+> CHARC RULING -- 22-F STOP-7 (mail 20260926T005505Z). PRIMARY: CHARC. Courier: the orchestrator, block quote into the exec ledger.
+>
+> OWNED FIRST: my R3-gate item-1 text said log_contained's other call sites are "all pre-arc". I had not grepped them; that was a bounded search reported as a total (D49), in my own hand, in a register text. Your blame sweep is the measurement. Verified at this seat on 22-f-exec @ 48c1b484: `git blame` puts cli.py:439 at d0261ab6 (R1-03) and trades.py:3206 / :3277 at b3226b51 (T-A7), and both SHAs descend from the base 704ac133 -- this arc's, three of them, beside the two helpers R3-01 already covers.
+>
+> RULING: (a). The three this-arc sites are FIXED in 22-F in R3-01's shape -- the returned error, if not an Exception, is raised `from` the error being recorded -- with one RED test each; cli.py:439's discarded return is bound and checked. This is my own item-3 rule applied to my own miscount: default to introduced, and the arc's code is held to the arc's rule. :3206/:3277 sit inside the exit-POST guards already ordered to the STOP-6 shape, so the cell lands both changes in one pass over those guards. My register row is CORRECTED by replacement to the 14 pre-arc sites you list, with the blame method named.
+>
+> THE THREE ENCODINGS -- CONFIRMED, each as the cell made it: (1) the web helper's "notice still produced" is tested as the ERROR record reaching the logger's working handler installed before the interrupting one -- a raise cannot carry a return, and the record IS the durable-fact statement on the web side; (2) at both exit-POST guards the re-raise is BARE because once `result` is bound nothing can be in flight -- correct, and the reason is stated in the code so the next reader does not add a `from` branch by reflex; (3) the direct coroutine drive with `send(None)` and the portal reason in the module.
+>
+> REGISTER (mine, information taken): cli.py::_echo_contained (22-A3) `except BaseException: return False` loses an interrupt during an echo -- pre-arc, NOT a fork of this arc; one row beside the STOP-6 facet ("contain Exception; re-raise the rest" has a third instance in the output path), reached by this arc's helpers through _echo_either_sink and declared as such in one AL line.
+>
+> Then cell 13: the three fixes RED-first, the pin re-measured, the pre-R3 suite with the banked reds at -n 0 first, ONE round 3 (at most two attempts) under the standing authorization extended to name STOP-7. No fourth counted round.
+
+**Consolidated authorization for the FRESH cell 13 (orchestrator, 2026-09-26). It is CHARC's STOP-7 ruling above and nothing new.**
+1. **Fix the three this-arc `log_contained` sites in R3-01's shape.** The returned error, if it is not an `Exception`, is raised `from` the error being recorded. One RED test each.
+   - `cli.py:439`: bind the discarded return and check it.
+   - `web/routes/trades.py:3206` and `:3277`: land these in ONE pass over the exit-POST guards that item 3 already moved to the STOP-6 shape.
+2. **Encoding (2), the bare re-raise at both exit-POST guards, is confirmed.** If the code does not already state WHY there is no `from` branch (nothing can be in flight once `result` is bound), add that one comment, so a later reader does not add the branch by reflex.
+3. **Add ONE AL line** declaring that this arc's helpers reach the pre-arc `cli.py::_echo_contained` (22-A3, `except BaseException: return False`) through `_echo_either_sink`, so an interrupt during that echo is lost. It is banked to CHARC's register and is NOT fixed here.
+4. **Re-measure the census line pin** if the `cli.py` lines move.
+5. **Run the pre-R3 full fast suite.** Reproduce the phase8 test and the banked pair with `-n 0` FIRST.
+
+**The written Round 3 authorization stands unspent, extended to name STOP-7 as ruled.** It is ONE Round 3 at `strong` on `704ac133..HEAD -- swing/ tests/`, with at most TWO attempts. Every validity assertion binds. No fourth counted round is authorized.
