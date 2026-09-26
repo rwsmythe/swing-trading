@@ -1123,3 +1123,37 @@ Each finding's load-bearing fact was READ on disk at `edd61c20`. Provenance was 
   4. The return report.
   5. CHARC's code-only merge gate.
 - If (b): G3 on this head, then Reviewer B, and the rest as above.
+
+### Round 3 (counted) gate -- CHARC's RULING: R3-06 (a), land without a fourth counted round; CC R3-07 no dissent (2026-09-26 01:39Z)
+
+Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator. Text of record: role-mail `comms/orchestrator/read/20260926T013909Z-charc-ruled-22-f-r3-counted-r3-06-a-baseexcept.md`. The literal block quote follows, the message body verbatim:
+
+> CHARC RULING -- 22-F counted round-3 gate (mail 20260926T013752Z). PRIMARY on R3-06 and the landing; CC on R3-07, no dissent. Courier: the orchestrator, block quote into the exec ledger.
+>
+> READ at this seat: 22-f-exec @ 9171adb3, db.py:1134 `except Exception as migration_error:` around run_migrations with the split close handlers beneath it (this arc's rewrite at f336e4db; the base had `except Exception: conn.close(); raise`); schwab_reconciliation.py:1419 the RELEASE of the fallback savepoint inside the rejection handler, under `except Exception as fb_exc`. Counted round 3 (codex-review-r3-c13-attempt1.txt): banner gpt-5.6-sol / high; `^ERROR` 0; anchored NEW_CRITICAL_MAJOR_FOUND at :34497 immediately before the footer 724,192 at :34498 (the :34506 token is the CLI echo); exit 0. One major, one minor, both reopens.
+>
+> R3-06 -- RULED: (a), widen to `except BaseException as migration_error`, with did-it-fire close tests for an interrupt originating in the migration, INCLUDING the interrupted-rollback posture the reviewer specifies (executescript opens a transaction and fails; rollback raises KeyboardInterrupt; the interrupt escapes with its cause AND the close count is 1). Reason: this is the STOP-6 rule at the one site the arc rewrote and left narrow -- the arc widened `_apply_migration` to propagate interrupts (R2-03) and the caller it propagates INTO still catches only Exception, so the arc's own two changes compose into an owned connection holding a write lock that nothing closes. SS-5's reason does not reach it: SS-5 was a read-only witness query; this is the migration write transaction. (b) REFUSED.
+>
+> LANDING -- RULED: FIX WITHOUT A FOURTH COUNTED ROUND. The canon reads a dispositioned not-clean verdict at a gate when every critical and major is decided (my round-2 text, RD's 09-23 ruling); R3-06 is decided here, it is one token plus RED tests, and the verification that covers it is stronger than a fourth fast pass would be: G3 on the final head, then Reviewer B told to examine this site and the interrupted-rollback posture specifically. No fourth-round authorization is requested. If B returns an unbanked introduced major, that re-opens A for one counted round under the standing rule and comes back to me.
+>
+> R3-07 -- CC, NO DISSENT with the decline, and the reasoning stated so it does not drift: the class rule I wrote is for an interrupt at a CLEANUP statement; this RELEASE COMMITS the recovery stamp on the fallback path -- it is the recovery's own write, not cleanup after a ROLLBACK TO -- and its trigger lines are pre-arc (c2a950ef). The reviewer's point is real (`e` IS in flight there, and an interrupt at that RELEASE escapes with no record and no chain), which is why it is a register facet and not nothing: "a recovery-path commit under `except Exception`, with the original in flight, loses the interrupt's record" -- pre-arc, one row, the site named. Data is protected by the run-level rollback, which is what keeps it minor.
+>
+> Register note taken: cli.py:439's discarded Exception return is pre-arc behaviour, recorded in the log_contained row.
+>
+> Then: cell 14 lands R3-06 RED-first; G3 with the resolver line; Reviewer B (the orchestrator's, the standing prompt plus the R3-06 site named); the return report; my code-only merge gate -- T-Z1 verbatim, the census pin RE-MEASURED on the MERGED cli.py, trailers, the merged-head line with SHA.
+
+**Consolidated authorization for the FRESH cell 14 (orchestrator, 2026-09-26). It is CHARC's ruling above and nothing new.**
+1. **R3-06, option (a).** At `swing/data/db.py:1134`, change `except Exception as migration_error:` to `except BaseException as migration_error:`. Add did-it-fire close tests, RED-first on the unmodified code, for an interrupt that originates in the migration. They MUST include the interrupted-rollback posture: `executescript` opens a transaction and fails, the rollback raises `KeyboardInterrupt`, and then the interrupt escapes with its cause AND the close count is 1. Run `tests/data` + tests/cli + tests/web in full after the fix and read the result.
+2. **G3, the full fast suite on the FINAL head,** with the RESOLVER line. Reproduce the phase8 test and the banked pair with `-n 0` FIRST. Run ruff on `swing/`. Row it in the Suite gates section.
+3. **The census line pin:** re-measure it only if `cli.py` lines move (R3-06 is in `db.py`).
+4. **RETURN after G3.** Reviewer B is the ORCHESTRATOR's cold audit, and cell 14 does NOT run it.
+
+**No fourth counted round.** Per CHARC's ruling, if Reviewer B returns an unbanked INTRODUCED major, Reviewer A re-opens for ONE counted round under the standing rule, and that comes back to CHARC.
+
+**R3-07:** DECLINED. CHARC is CC with no dissent. It becomes a register facet in CHARC's lane: "a recovery-path commit under `except Exception`, with the original in flight, loses the interrupt's record". It is pre-arc, `schwab_reconciliation.py:1419`.
+
+**CHARC's merge gate:**
+- T-Z1, verbatim;
+- the census pin RE-MEASURED on the MERGED `cli.py`;
+- the trailers;
+- the merged-head line with its SHA.
