@@ -2924,6 +2924,21 @@ def run_schwab_reconciliation(
             except BaseException as preserve_error:  # noqa: BLE001
                 _rollback_run_or_raise(conn, exc)
                 if not isinstance(preserve_error, sqlite3.Error):
+                    if not isinstance(preserve_error, Exception):
+                        # 22-F R4-01 (i): an interrupt at the preserve write
+                        # gets ONE record naming the run's error and is
+                        # raised FROM it -- implicit context is not a record.
+                        from swing.trades.entry import log_contained_note
+                        log_contained_note(
+                            log, preserve_error,
+                            "22-F: run_schwab_reconciliation failed (%s) and "
+                            "its failed-run PRESERVE write was interrupted "
+                            "(%s: %s); a transaction still open was rolled "
+                            "back, and the interrupt propagates chained from "
+                            "the run's error.",
+                            exc, type(preserve_error).__name__,
+                            preserve_error)
+                        raise preserve_error from exc
                     raise
         finally:
             # Always propagate the original exception.

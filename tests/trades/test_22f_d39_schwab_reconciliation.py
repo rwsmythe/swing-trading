@@ -613,3 +613,58 @@ def test_ss_rejection_release_interrupt_is_chained(db, monkeypatch, caplog):
     recs = _records(caplog, "MUST BE DISCARDED")
     assert len(recs) == 1 and "RELEASE" in recs[0].getMessage()
     assert _fresh(db) == {"runs": [], "discs": 0, "stop": 4.0}
+
+
+# -- R4-01 (Reviewer A round 4; CHARC's round-4 ruling) ----------------------
+# The failed-run PRESERVE block (`update_run_failed` + `commit`, pre-arc lines)
+# under THIS arc's `except BaseException as preserve_error:` (T-F5).  The run's
+# `exc` (a discrepancy INSERT failure, `run_id` set) is in flight; the
+# preserve write is INTERRUPTED.  (i) The rollback works: PRE-FIX the
+# interrupt was re-raised BARE -- `__cause__` None, no record naming `exc`.
+# POST-FIX one record names both and the interrupt is raised `from exc`.
+# (ii) The rollback ALSO fails: PRE-FIX the S-D39 helper was handed `exc`, so
+# the rollback error propagated `from exc` and the interrupt was neither the
+# cause nor in the record.  POST-FIX the helper is handed `preserve_error`
+# (the exception in flight when the cleanup runs): the rollback error
+# propagates chained FROM the interrupt, and the record names it.
+_PRESERVE_UPDATE = "UPDATE reconciliation_runs SET state = 'failed'"
+
+
+class _PreserveInterruptConn(FailingVerbsConn):
+    """The failed-run preserve UPDATE raises KeyboardInterrupt."""
+
+    def _check_sql(self, sql: str) -> None:
+        if sql.strip().upper().startswith(_PRESERVE_UPDATE.upper()):
+            self.calls["interrupted_preserve"] += 1
+            self.sql_log.append(sql)
+            raise KeyboardInterrupt("planted interrupt on the preserve write")
+        super()._check_sql(sql)
+
+
+def test_r4_01_i_interrupted_preserve_write_is_recorded_and_chained(
+        db, caplog):
+    proxy = _PreserveInterruptConn(sqlite3.connect(str(db)),
+                                   fail_sql_prefix=_DISC_INSERT,
+                                   fail_sql_times=1)
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(KeyboardInterrupt) as info:
+                _run(proxy)
+        assert proxy.calls["failed_sql"] == 1  # did-it-fire: `exc`
+        assert proxy.calls["interrupted_preserve"] == 1  # did-it-fire
+        assert proxy.calls["rollback"] == 1
+        assert proxy.in_transaction is False
+    finally:
+        proxy._real.close()
+    assert type(info.value) is KeyboardInterrupt
+    assert "planted interrupt on the preserve write" in str(info.value)
+    cause = info.value.__cause__
+    assert isinstance(cause, sqlite3.OperationalError)
+    assert "planted on" in str(cause)
+    recs = _records(caplog, "PRESERVE write was interrupted")
+    assert len(recs) == 1
+    msg = recs[0].getMessage()
+    assert "planted on" in msg
+    assert "planted interrupt on the preserve write" in msg
+    assert _records(caplog, "MUST BE DISCARDED") == []
+    assert _fresh(db)["runs"] == []
