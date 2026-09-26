@@ -1457,3 +1457,43 @@ Per-line blame of `swing/trades/schwab_reconciliation.py:2880-2940` on `77df1bd9
 - **AL-13:** the plan's row carries CHARC's declaration text byte-identical to the Round 4 ruling quoted above (ledger `:1407`).
 - **G3 read:** `g3b-suite.txt` reads `15328 passed, 13 skipped, 1322 warnings in 553.35s (0:09:13)`, `exit=0`. The resolver is the worktree's `swing\__init__.py`. Ruff reports `All checks passed!`. For `-n 0`: `test_phase8_pipeline_second_same_day_run_upserts` and `test_a2_94_*` pass. `test_setup_auth_failure_audit_status_and_sentinel_redaction` fails alone and passes in its whole file (27 passed). This is the same order-dependent red recorded at every gate on this branch and on base `704ac133`. It did not go red in the full run.
 - **Verdict:** QA PASS. The next step is Reviewer B pass 2 (the orchestrator's) on head `9db9c154`, code head `cda482a6`.
+
+### Reviewer B pass 2 (the orchestrator's cold audit) -- head `9f8b1e6b` (code head `cda482a6`), diff `704ac133..9f8b1e6b -- swing/ tests/` (755,834 bytes; prompt 12,655 bytes)
+
+**This is the transcript CHARC's merge gate reads.** Evidence is in `review-transcripts\22-f-exec\reviewer-b-2\`. The prompt is pass 1's with measured edits, and the original is kept beside it as `b-prompt-pass1-base.md`. The edits: the head moved; claims C9-C13 added (B-1, B-2, B-3, B-4 and R4-01 audited AS FIXES); AL-1..AL-13; and the banked list extended with the R3-07/R4-02 facet (both fallback RELEASE sites `:1304`/`:1419`, and `reconciliation.py:481-493`), the S-D39 template question, the R4-03 decline and `cli.py:439`.
+
+#### Validity (read at this seat)
+
+- **Banner:** `gpt-5.6-sol`, reasoning effort `high`, sandbox `read-only`, codex-cli 0.157.0.
+- `^ERROR` count 0.
+- **Verdict:** the anchored `NEW_CRITICAL_MAJOR_FOUND` is at `b-review.txt:40500`, immediately before the footer `tokens used` / `906,380` at `:40501-40502`. The token at `:40514` is the CLI's echo.
+- `b-exit.txt`: `exit=0`.
+- **VALID.**
+
+#### Codex response (verbatim final message, `b-review.txt:40489-40500`)
+
+> ## Finding
+>
+> - **Major — INTRODUCED — [swing/trades/schwab_reconciliation.py:2944](/mnt/c/Users/rwsmy/swing-trading/.worktrees/22-f-exec/swing/trades/schwab_reconciliation.py:2944)**  
+>   The R4-01 preserve handler masks the original run failure when `update_run_failed()` or `commit()` raises an ordinary non-`sqlite3.Error` `Exception`. After rollback succeeds, the bare `raise` at line 2944 executes inside the nested handler and re-raises `preserve_error`, instead of falling through to line 2948 where the original `exc` would propagate. This contradicts C13 and the adjacent “original exception propagates” comment.
+>
+>   Demonstrated against a fully migrated in-memory v41 database: a `ValueError("original run failure")` was planted after the run row, and `update_run_failed` raised `RuntimeError("ordinary preserve failure")`. Rollback completed and `in_transaction` became false, but the `RuntimeError` escaped with neither cause nor context; the original `ValueError` was completely lost. The existing R4-01 tests cover interrupts and interrupted rollback, but not this claimed ordinary-Exception preservation case.
+>
+>   The ordinary-Exception branch should fall through like the `sqlite3.Error` branch; only a non-`Exception` interrupt should be explicitly re-raised from `exc`.
+>
+> I found no other new critical or major issue. The helper fixes C9/C10, interrupted `ensure_schema` rollback, explicit-BEGIN sites, sampled CLI/web durable roots, and changed monkeypatch/proxy targets were consistent with their claims under reading and targeted in-memory execution.
+>
+> NEW_CRITICAL_MAJOR_FOUND
+
+#### Orchestrator reading of B2-01 (on disk; NOTHING fixed -- this goes to CHARC)
+
+- **The code is as stated.** At `swing/trades/schwab_reconciliation.py:2944`, the bare `raise` sits inside `except BaseException as preserve_error:`. An ordinary non-`sqlite3.Error` `Exception` at the preserve write is rolled back (`:2927`) and then propagates IN PLACE OF the run's `exc`.
+- **Per-line blame:** `:2944` is `e874a7b4` (T-F5, this arc). R4-01 did not touch it: cell 16's lines are `:2925-2927` and `:2929-2943`.
+- **Behaviour vs the base `704ac133` (`:2785-2795` there).** The base caught only `except sqlite3.Error:`, so the SAME ordinary `Exception` escaped the handler and replaced `exc`. It did so WITHOUT any rollback, leaving the outer transaction open. T-F5 kept which exception propagates and ADDED the S-D39 rollback. So this is an arc-owned line carrying pre-arc behaviour, and it is not a regression.
+- **Reachability.** The inner try holds exactly two statements. `repo.update_run_failed` (`swing/data/repos/reconciliation.py:219-239`) is ONE `conn.execute`, and `conn.commit()` follows it. Both raise only `sqlite3.Error` in the declared envelope. An ordinary `Exception` needs a planted writer, as in the reviewer's harness, or something out of envelope: `MemoryError`, or an `exc` whose `__str__` raises, which would be evaluated in the error-message f-string.
+- **Demonstration caveat.** The reviewer's "neither cause nor context" came from raising through `(_ for _ in ()).throw(...)`. A generator frame starts with no handled exception, so the planted error's `__context__` is not set by the handler it escapes. Implicit context is not a record in any case (CHARC's item 4), so this does not change the substance. My plain-`raise` rerun reached a different, earlier failure on a bare `:memory:` DB and is not evidence either way.
+- **Class.** This is D39 F3-shaped ("a cleanup failure that REPLACES the original error"), at the preserve WRITE rather than the rollback. It is NOT the interrupt-at-cleanup class; the interrupt branch is `:2929-2943` and is fixed. CHARC's Round 4 ruling routes a NEW class to the operator, so the class call is CHARC's to make first.
+- **Proposed disposition (the orchestrator's; CHARC rules):**
+  - **(a) DECLINE for this arc** as pre-arc behaviour on an arc-rewritten line, unreachable in the envelope. Bank ONE register facet: "the preserve-write handler lets an ordinary non-sqlite `Exception` replace the run's error", site `:2944`. Pass 2 then stands, dispositioned, as the merge-gate transcript.
+  - **(b) Fix without a counted round:** let an ordinary `Exception` fall through so `exc` propagates, with one `log_contained_note` record naming the preserve error, RED-first. Then Reviewer B pass 3. The cost is one fix cell plus about 900K tokens for B again, to change a pre-arc behaviour the writer cannot currently reach.
+  - I recommend **(a)**.
