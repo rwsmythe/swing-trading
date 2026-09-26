@@ -6,7 +6,8 @@ Branches, each driven with the closing proxy (`FailingVerbsConn`; its
 `close()` releases the real handle and then raises when `fail_close=True`):
 
 * nothing durable, no refusal -> a bare `conn.close()`: a close failure
-  propagates UNCHANGED (byte-unchanged branch);
+  propagates UNCHANGED (an interrupt with an error in flight is chained
+  from it, B-1);
 * a refusal in flight -> S-R8: the refusal text survives with the close
   failure named, CHAINED from the close error;
 * durable, no refusal -> contained: one ERROR record, a
@@ -268,3 +269,62 @@ def test_item4_interrupt_at_close_with_an_error_in_flight_is_chained_from_it(
     assert "KeyboardInterrupt" in msg
     assert "IS recorded" in msg
     assert "WARN: the write IS recorded; " in capsys.readouterr().err
+
+
+# ---- B-1 (CHARC's Reviewer B ruling): the NOTHING-DURABLE branch ------------
+# The bare close ran BEFORE the helper's `try`, so an interrupt at the close
+# with a non-refusal error in flight escaped with `__cause__` None and no
+# record (the item-4 test above forces durable=True and could not see it).
+# Now: an ordinary close Exception keeps the bare propagation; a
+# non-Exception with an error in flight is recorded (ONE record naming both)
+# and raised `from` the in-flight error; nothing in flight -> bare (above).
+
+def test_b1_interrupt_at_close_nothing_durable_error_in_flight_is_chained(
+        capsys, caplog):
+    proxy = _interrupt_proxy()
+    in_flight = RuntimeError("planted in-flight error")
+
+    def _root() -> None:
+        try:
+            raise in_flight
+        finally:
+            _helper()(proxy, durable=False, pending_refusal=None)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(KeyboardInterrupt,
+                           match="planted interrupt on close") as info:
+            _root()
+    assert proxy.calls["close"] == 1
+    assert info.value.__cause__ is in_flight
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    msg = errors[0].getMessage()
+    assert "planted in-flight error" in msg
+    assert "KeyboardInterrupt" in msg
+    assert "IS recorded" not in msg  # nothing durable: no durable claim
+    assert "WARN" not in capsys.readouterr().err
+
+
+def test_b1_ordinary_close_failure_nothing_durable_error_in_flight_is_bare(
+        capsys, caplog):
+    """The control (a PIN on both trees): an ordinary close Exception on the
+    nothing-durable branch keeps today's bare propagation, even with an
+    error in flight -- no record, no explicit chain."""
+    proxy = _proxy(True)
+    in_flight = RuntimeError("planted in-flight error")
+
+    def _root() -> None:
+        try:
+            raise in_flight
+        finally:
+            _helper()(proxy, durable=False, pending_refusal=None)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(sqlite3.OperationalError,
+                           match="planted on close") as info:
+            _root()
+    assert proxy.calls["close"] == 1
+    assert info.value.__cause__ is None
+    assert info.value.__context__ is in_flight  # the implicit chain only
+    assert caplog.records == []
+    assert capsys.readouterr().err == ""

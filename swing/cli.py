@@ -1295,8 +1295,8 @@ def _close_after_writes(
     """22-F T-G0 (F4): close a root's connection after its writes -- S-B02
     exactly (RULING B item 2, the `trade review` shape).
 
-    * NOTHING durable and NO refusal -> a bare ``conn.close()``, byte-
-      unchanged: a close failure propagates as it always has.
+    * NOTHING durable and NO refusal -> a bare ``conn.close()``: a close
+      failure propagates as it always has (the one interrupt case is below).
     * A REFUSAL in flight -> S-R8 (RULING R8): the refusal text SURVIVES a
       close failure, named and CHAINED from the close error, never replaced
       by it.  A named refusal wins even when an earlier write was durable.
@@ -1322,7 +1322,11 @@ def _close_after_writes(
       helper called from a ``finally``; ``sys.exc_info()`` read once), the
       ONE record names both and the interrupt is raised ``from`` that error
       (item 4, CHARC).
-    * NOTHING durable and NO refusal -> the bare close above: it propagates.
+    * NOTHING durable and NO refusal -> the bare close: it propagates -- or,
+      when a non-refusal error was already IN FLIGHT at entry, the ONE
+      record names both and the interrupt is raised ``from`` that error
+      (B-1, CHARC).  An ordinary close ``Exception`` on this branch keeps
+      the bare propagation.
 
     ``durable`` is bound by the CALLER at each writer's OWN return, never
     cached earlier.  ``recorded`` (optional) names the durable write in the
@@ -1336,7 +1340,26 @@ def _close_after_writes(
     # propagating error; `None` otherwise), before `close()` can change it.
     in_flight = _sys.exc_info()[1]
     if pending_refusal is None and not durable:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001 -- the bare propagation, unchanged
+            raise
+        except BaseException as interrupt:
+            # 22-F B-1 (CHARC): an interrupt with a non-refusal error IN
+            # FLIGHT is recorded (ONE record naming both) and raised `from`
+            # that error -- implicit `__context__` is not a record.  Nothing
+            # in flight -> the bare re-raise, unchanged.
+            if in_flight is None:
+                raise
+            from swing.trades.entry import log_contained_note, safe_text
+            log_contained_note(
+                _pe_backfill_logging.getLogger(__name__), interrupt,
+                "22-F: an INTERRUPT arrived while CLOSING the database "
+                "connection (%s) while an error was already in flight (%s); "
+                "the interrupt is re-raised, chained from the in-flight "
+                "error.",
+                safe_text(interrupt), safe_text(in_flight))
+            raise interrupt from in_flight
         return
     try:
         conn.close()
