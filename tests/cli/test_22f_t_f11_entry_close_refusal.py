@@ -84,3 +84,50 @@ def test_refusal_with_working_close_control(tmp_path, monkeypatch):
     assert _REFUSAL in r.output
     assert _CLOSE not in r.output
     assert len(_trade_rows(cfg)) == 1
+
+
+# ---- B-2 (CHARC's Reviewer B ruling): an INTERRUPT at the close -------------
+# T-F11's refusal branch (this arc's lines inside the pre-arc 22-A3 handler)
+# turned a close `KeyboardInterrupt` into `ClickException(...) from
+# <interrupt>` -- retyping the operator's stop signal and reversing the chain.
+# Now: with a typed refusal in flight and a non-Exception at the close, ONE
+# record names both and the INTERRUPT is raised `from` the refusal.  The
+# ordinary-Exception path (the three tests above) keeps its S-R8
+# ClickException.
+
+class _InterruptOnClose(FailingVerbsConn):
+    """The real close runs (the handle is released), then the interrupt."""
+
+    def close(self) -> None:
+        self.calls["close"] += 1
+        self._real.close()
+        raise KeyboardInterrupt("planted interrupt on close")
+
+
+def test_b2_refusal_with_interrupt_at_close_raises_the_interrupt_from_it(
+        tmp_path, monkeypatch, caplog):
+    """`standalone_mode=False`: click turns an escaping KeyboardInterrupt
+    into `Abort() from <interrupt>`, so the chain is read through it.
+    PRE-FIX: `r.exception` is the retyped ClickException."""
+    import logging
+
+    import click
+    runner, cfg = _duplicate_world(tmp_path)
+    built = patch_conn_opener(monkeypatch, "swing.data.db.connect",
+                              lambda real: _InterruptOnClose(real))
+    with caplog.at_level(logging.ERROR, logger="swing.cli"):
+        r = runner.invoke(main, _entry_argv(cfg), standalone_mode=False)
+    assert sum(p.calls["close"] for p in built) >= 1  # did-it-fire
+    assert isinstance(r.exception, click.exceptions.Abort), repr(r.exception)
+    interrupt = r.exception.__cause__
+    assert isinstance(interrupt, KeyboardInterrupt), repr(interrupt)
+    assert "planted interrupt on close" in str(interrupt)
+    refusal = interrupt.__cause__
+    assert isinstance(refusal, click.ClickException), repr(refusal)
+    assert _REFUSAL in refusal.format_message()
+    errors = [rec for rec in caplog.records if rec.levelno == logging.ERROR]
+    assert len(errors) == 1, [rec.getMessage() for rec in errors]
+    msg = errors[0].getMessage()
+    assert _REFUSAL in msg
+    assert "KeyboardInterrupt" in msg
+    assert len(_trade_rows(cfg)) == 1

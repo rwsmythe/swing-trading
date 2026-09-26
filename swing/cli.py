@@ -1112,6 +1112,22 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                     # branch.  Any other in-flight error keeps today's
                     # behaviour (the close error, the original as context).
                     if isinstance(_in_flight, click.ClickException):
+                        if not isinstance(exc, Exception):
+                            # 22-F B-2 (CHARC): an INTERRUPT at the close is
+                            # the operator's stop signal -- never retyped.
+                            # ONE record names both, and the interrupt is
+                            # raised `from` the refusal (its text survives
+                            # in the chain).
+                            from swing.trades.entry import log_contained_note
+                            log_contained_note(
+                                _pe_backfill_logging.getLogger(__name__), exc,
+                                "22-F: a refusal is pending (%s) and an "
+                                "INTERRUPT arrived while CLOSING the database "
+                                "connection (%s); the interrupt is re-raised, "
+                                "chained from the refusal.",
+                                ascii_safe(_in_flight.format_message()),
+                                safe_text(exc))
+                            raise exc from _in_flight
                         raise click.ClickException(
                             f"{ascii_safe(_in_flight.format_message())}; "
                             f"the connection close also failed: "
