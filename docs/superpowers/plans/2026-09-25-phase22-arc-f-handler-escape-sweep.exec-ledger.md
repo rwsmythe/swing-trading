@@ -893,3 +893,51 @@ Spend: no counted Round 3. Attempts 2 + 3 spent 636,719 + 637,767 = 1,274,486 to
 5. RUNS ROUND 3 under the standing written authorization, extended to name the R3 items as ruled.
 
 No fourth counted round is authorized.
+
+### Round 3 gate -- CHARC's RULING on items 1-4 (R3-01; R3-02; R3-03/04/05; the in-flight fact) and the not-counted disposition (2026-09-26 00:13Z)
+
+Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator. Text of record: role-mail `comms/orchestrator/read/20260926T001336Z-charc-ruled-22-f-r3-gate-not-counted-concurred.md`. The literal block quote follows, the message body verbatim:
+
+> CHARC RULING PACKET -- 22-F round-3 gate (mail 20260926T001201Z). PRIMARY on items 1-4; the not-counted disposition concurred. Courier: the orchestrator, block quote into the exec ledger; then cell 12, the pre-R3 suite, ONE round 3 under the extended authorization.
+>
+> READ at this seat on 22-f-exec @ b741e548: entry.py:236-257 log_contained catches the sink's BaseException and RETURNS it (by design, R10-04; "each caller decides how to surface it"); cli.py:375-377 the B-04 `except BaseException as exc` around ensure_schema; cli.py:1085-1100 the trade-entry bespoke close (contains BaseException, reads `_in_flight = sys.exc_info()[1]`); trades.py:3190-3200 and :3254 the exit POST's close and post-bind guards (THIS arc's, T-A7, contain BaseException); trades.py:2236-2244 the entry POST's (pre-arc, same shape). Round 3 attempts on disk: attempt 1 has 11 `^ERROR` lines, attempt 2 has 2 (transport reconnects before the reviewer's first turn), attempt 3 has 2 (capacity abort, footer with no verdict).
+>
+> NOT COUNTED -- CONCURRED, on the standing assertion and not on precedent: `^ERROR` = 0 is a validity assertion of every round (harness 5.1's three silent-failure shapes; the capacity abort is the shape that FALSIFIED "footer proves it finished" on 2026-09-06). Attempt 2 fails it by two lines, so it is not a round; there is no "count by ruling" and the cell was right to be refused. The authorization stays unspent; attempt 2's findings are inputs, which is what a disqualified transcript is good for.
+>
+> ITEM 1 (R3-01) -- RULED: FIX, per helper, as the cell proposes. After the record/WARN work, if `log_contained` returned an error that is not an `Exception`, `raise it from close_exc`. My STOP-6 "EXACTLY" bound the three-branch behaviour for EXCEPTIONS; a returned interrupt from the sink is the same signal STOP-6 refused to swallow, one layer down, and log_contained's own contract ("each caller decides how to surface it") puts the decision on the helper. One test per helper: a sink whose emit raises KeyboardInterrupt on an ordinary close failure -> the interrupt propagates, `__cause__` is the close error, the WARN/notice was still produced. REGISTER (mine): the same property at log_contained's OTHER call sites -- all pre-arc; one row, "a contained sink that returns an interrupt must be re-raised by its caller", with the call-site list from a grep.
+>
+> ITEM 2 (R3-02) -- RULED: (a). The B-04 outer catch keeps its two obligations for an Exception (the witness re-read; the durable WARN at target) and, for a BaseException that is not an Exception: the witness still runs and the durable WARN still prints (the operator who interrupted still learns the version is durable), then the interrupt is re-raised BARE and the tail is skipped. AL-11 already declares the tail skip for any interrupt after the COMMIT; this is the same declaration reached honestly. Test as the cell wrote it: a restore interrupt at target -> Aborted, the WARN present, the ratification spy NOT called, exit non-zero. (b) is REFUSED: declaring a swallowed Ctrl-C on the migration command is the STOP-6 defect with a label on it.
+>
+> ITEM 3 (R3-03/04/05) -- RULED: SPLIT by provenance, DEFAULT TO INTRODUCED. The web EXIT POST's two guards (trades.py:3193 close, :3254 post-bind) are THIS ARC's code (b3226b51, T-A7) and are FIXED to the STOP-6 shape: contain `Exception` exactly as today; a BaseException that is not an Exception gets the record (the durable fact stated) and is re-raised, bare when nothing is in flight, `from` the in-flight error when one is. "One shape with the entry POST" does not outweigh it: shipping a copy we KNOW is wrong because its twin is wrong is the known-benign-exception erosion, and the arc's own code is held to the arc's own rule. The PRE-ARC sites -- the CLI trade entry / review / assign-intent closes and their outer guards (cli.py:1089/:2089/:2205/:1196/:2290), the web entry POST (trades.py:2238/:2386), the D69 backfill-intent guard (cli.py:2531) -- are BANKED as ONE register row, mine, with the fixed exit POST named as the reference shape for the follow-on; severity does not pull them in (harness 5.1). Tests for the exit POST: an interrupt at the close after a durable exit -> propagates with the record present; the route driven by calling the function directly, as the cell did for the pin route, WITH the reason recorded in the test's docstring (an interrupt escaping into TestClient's portal hangs it; measured at 300 s) -- that fact goes to the recipe as harness content, the orchestrator's.
+>
+> ITEM 4 -- RULED: NOT enough; FIX the helpers, no AL line. The helper CAN see what is in flight: inside a `finally` during propagation, `sys.exc_info()[1]` is the propagating exception -- the trade-entry close at cli.py:1085 reads exactly that, on main today. So both helpers read it once at entry; when an interrupt arrives at the close with a non-refusal exception in flight, the record names BOTH and the interrupt is re-raised `from` the in-flight error (chained, logged), never replacing its record. Implicit `__context__` is not a record: it is not logged, and any later `raise ... from` discards it. Test per helper: a propagating RuntimeError + an interrupt at close -> the interrupt propagates, `__cause__` is the RuntimeError, one record names both. This closes the class rule's last open edge in the arc's own code; the 40-of-42 `finally` count is the reason it matters.
+>
+> Text-only plan edit (the T-G0 "never raises" bullet replaced) -- accepted as landed.
+>
+> Then cell 12: the four fixes RED-first, the pre-R3 suite with the banked reds reproduced at -n 0 first, ONE round 3 under the standing authorization extended to name R3-01..05 as ruled. No fourth counted round.
+
+**Consolidated authorization for the FRESH cell 12 (orchestrator, 2026-09-26). This is CHARC's Round 3 ruling above and nothing new. Every fix is RED-first on the unmodified code.**
+
+1. **R3-01:** in each helper, after the record/WARN work, if `log_contained` returned a non-`Exception`, `raise it from close_exc`.
+   - One test per helper: a sink whose emit raises `KeyboardInterrupt` on an ordinary close failure.
+   - Assert that the interrupt propagates, that `__cause__` is the close error, and that the WARN/notice was still produced.
+2. **R3-02: option (a).** The B-04 outer catch keeps its two Exception obligations. For a non-`Exception`:
+   - the witness still runs and the durable WARN prints;
+   - then the interrupt is re-raised BARE and the tail is skipped.
+   - Test: a restore interrupt at target gives Aborted, exit != 0, the WARN present, and the ratification spy NOT called.
+3. **R3-04, the web EXIT POST only (`trades.py:3193` close, `:3254` post-bind; this arc's T-A7):** move to the STOP-6 shape.
+   - `Exception` is contained exactly as today.
+   - A non-`Exception` gets the record, then a re-raise: bare when nothing is in flight, `from` the in-flight error when there is one.
+   - Test: an interrupt at the close after a durable exit propagates, with the record present. The route is called DIRECTLY, and the reason goes in the test's docstring (an interrupt escaping into TestClient's portal hangs it; measured at 300 s).
+   - The pre-arc sites are NOT touched. They are BANKED to CHARC's register: CLI `cli.py:1089/:2089/:2205/:1196/:2290`, the web entry POST `trades.py:2238/:2386`, and D69 `cli.py:2531`.
+4. **Item 4:** both helpers read `sys.exc_info()[1]` once at entry. When an interrupt arrives at the close with a non-refusal exception in flight:
+   - one record names BOTH;
+   - the interrupt is re-raised `from` the in-flight error.
+   - Test per helper: a propagating `RuntimeError` plus an interrupt at close. Assert that the interrupt propagates, that `__cause__` is the `RuntimeError`, and that one record names both.
+5. **The plan's section-8 T-G0 bullet** (`...routes/__init__.py::close_after_commit`, plan line ~412): replace it BY REPLACEMENT with one line encoding the landed STOP-6 ruling. **Correction for the record:** CHARC's reply calls this edit "accepted as landed". At `b741e548` it is AUTHORIZED but NOT yet applied, because the plan line is unchanged. Cell 12 lands it.
+6. **The census line pin:** re-measure if the `cli.py` lines move.
+7. **The pre-R3 full fast suite:** reproduce the phase8 test and the banked pair with `-n 0` FIRST.
+
+**WRITTEN ROUND 3 AUTHORIZATION: STANDS UNSPENT, EXTENDED** to name R3-01..R3-05 as ruled, and item 4. It is ONE Round 3 at `strong`, on `704ac133..HEAD -- swing/ tests/`. **The validity assertions are all binding:** the banner, `^ERROR` = 0, one anchored verdict, the footer, and exit 0. A disqualified attempt may be re-run, up to TWO further attempts. After that, the cell returns without a counted round. No fourth counted round is authorized.
+
+**Orchestrator queue (harness content, mine):** the TestClient-portal hang (an interrupt escaping into TestClient hangs it; measured at 300 s) goes to `docs/implementer-dispatch-recipe.md`.
