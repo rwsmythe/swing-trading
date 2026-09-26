@@ -1241,3 +1241,44 @@ Evidence: `~/swing-data/review-transcripts/22-f-exec/reviewer-b/` (`b-prompt.md`
 **Per CHARC's counted-Round-3 ruling, an unbanked INTRODUCED major from B REOPENS Reviewer A for ONE counted round, and that comes back to CHARC.** B-1 and B-2 are INTRODUCED, and B-3 is INTRODUCED unless CHARC rules (b). The packet goes to CHARC. The Round 4 WRITTEN AUTHORIZATION is below, conditioned on his ruling.
 
 **WRITTEN AUTHORIZATION, ROUND 4 (orchestrator, 2026-09-26; takes effect ONLY on CHARC's ruling of B-1/B-2/B-3):** ONE counted Reviewer A Round 4 at `strong` on `704ac133..HEAD -- swing/ tests/`, with repo access. It runs after the fixes as ruled plus B-4 and a green pre-R4 full suite. **It names the task-bearing findings:** B-1, B-2, B-3 (as ruled) and B-4. At most two attempts, and every validity assertion binds. It returns at the gate with proposed dispositions only. No fifth round is authorized. The ROUND-5 check-in binds.
+
+### Reviewer B gate -- CHARC's RULING: B-1 narrow fix; B-2 the arc's branch only; B-3 (a), test corrected; Round 4 concurred (2026-09-26 02:17Z)
+
+Author: CHARC (seat `swing-charc-20260924-1903`). Courier: the orchestrator. Text of record: role-mail `comms/orchestrator/read/20260926T021719Z-charc-ruled-22-f-b-gate-b-1-narrow-fix-b-2-arc.md`. The literal block quote follows, the message body verbatim:
+
+> CHARC RULING PACKET -- 22-F Reviewer B gate (mail 20260926T021559Z). PRIMARY on B-1, B-2, B-3; CC on B-4, no dissent; the conditioned round-4 authorization CONCURRED. Courier: the orchestrator, block quote into the exec ledger.
+>
+> READ at this seat on 22-f-exec @ 3d0459d6: cli.py:1334-1338 -- `in_flight = sys.exc_info()[1]` is read, then `if pending_refusal is None and not durable: conn.close(); return` runs BEFORE the try, so on that branch a non-Exception from close() propagates with `in_flight` read and unused; cli.py:1104-1124 by per-line blame -- the handler frame is 4fccc543 (22-A3, pre-arc) and the refusal branch :1108-1119 is c3ad8e40 (T-F11, THIS arc), retyping an interrupt at close into a ClickException `from exc`; cli_schwab.py:218/:330/:410 bind `durable = True` on the service's normal return; the G1 stub `_audit_row` (:432) plants a schwab_api_calls row as "the write". B transcript (reviewer-b/b-review.txt): banner gpt-5.6-sol / high; `^ERROR` 0; anchored NEW_CRITICAL_MAJOR_FOUND at :35388 immediately before the footer 699,735 at :35389; exit 0. Valid.
+>
+> B-1 -- RULED: FIX NARROWLY, as you propose; INTRODUCED, owned. My STOP-6 "byte-unchanged bare close" and my item-4 "re-raised from the in-flight error, implicit __context__ is not a record" met at this branch, and the item-4 discriminator I ordered forced durable=True, so it could not see it -- an under-specified discriminator in my own text. On the nothing-durable / no-refusal branch: an ordinary close Exception keeps today's bare propagation; a non-Exception with `in_flight` not None is recorded and raised `from in_flight`; with nothing in flight the bare re-raise is unchanged. RED test exactly as you state: durable=False, a propagating RuntimeError, an interrupt at close -> the interrupt propagates with `__cause__` the RuntimeError and one record naming both.
+>
+> B-2 -- RULED: FIX AT THE ARC'S BRANCH ONLY; INTRODUCED, and my round-3 banking is CORRECTED: I banked "trade entry closes" on the HANDLER's provenance; provenance is per LINE, and the refusal branch inside a pre-arc handler is this arc's (c3ad8e40). Method note for my register beside D49: `git blame` the LINES a finding names, never the enclosing block. Fix: with a typed refusal in flight and a non-Exception at close, record it and raise the interrupt `from` the refusal (the refusal's text survives in the chain); the ordinary-Exception path keeps its S-R8 ClickException; the rest of the 22-A3 handler stays banked as ruled.
+>
+> B-3 -- RULED: (a), with the TEST corrected; the binding STANDS. The three Schwab roots' operator record is OUTSIDE the swing DB -- the tokens DB and user-config.toml -- written by a service that raises on failure and VERIFIES POST-STATE (the schwabdev update_tokens gotcha, CLAUDE.md), so its normal return IS the writer's report, and the STOP-5 test points the same way: a retry after a false "failed" re-runs an OAuth paste-back, re-ROTATES a refresh token, or re-attempts a rename -- durable state altered, the operator accountable. (b) would make the WARN say nothing about the write the operator cares about. The G1 stub is the defect: it planted an audit row as "the write" and asserted the WARN over it -- the fixture-routes-around-the-branch class (harness 5.1). Fix: the stub plants the real effect (a token-DB / user-config write marker the test can read back) and the assertion binds to THAT; the audit row may stay planted as a control that alone does NOT earn the WARN.
+>
+> B-4 -- CC, no dissent: test-only, the did-it-fire rule with no exceptions.
+>
+> ROUND 4 -- CONCURRED on the standing rule from my counted-R3 text: B-1 and B-2 are unbanked INTRODUCED majors, so A re-opens for ONE counted round 4 at strong naming B-1..B-4 as ruled; at most two attempts; NO fifth round; the ROUND-5 check-in binds. After a clean or dispositioned round 4, Reviewer B runs AGAIN on the resulting tree (a fix re-opens A for one round, then B again -- the 22-I sequence); that second B pass is the transcript my merge gate reads. The on-disk half of my gate (envelope, no added module, no migrations/pyproject, trailers, the composition read: main +1 docs commit since the base, a conflict-free dry merge, the census pin's anchors matching the branch's measured lines) is DONE against 9fb32bd6 and re-checked mechanically on the final head.
+>
+> Register (mine): three owned facets from this packet -- the under-specified discriminator; provenance-per-line; a fixture that plants the wrong durable thing.
+
+**Consolidated authorization for the FRESH cell 15 (orchestrator, 2026-09-26). It is CHARC's B-gate ruling above plus my B-4 disposition, and nothing new. Every fix is RED-first on the unmodified code.**
+
+1. **B-1**, in `swing/cli.py:_close_after_writes`, on the nothing-durable / no-refusal branch:
+   - an ordinary close `Exception` keeps today's bare propagation;
+   - a non-`Exception` with `in_flight` not None is recorded and raised `from in_flight`;
+   - with nothing in flight, the bare re-raise is unchanged.
+   - RED test: `durable=False`, a propagating `RuntimeError`, and an interrupt at the close. Assert that the interrupt propagates, that `__cause__` is the `RuntimeError`, and that one record names both.
+2. **B-2**, at `swing/cli.py:1108-1119` (T-F11's refusal branch inside the pre-arc 22-A3 handler) ONLY:
+   - with a typed refusal in flight and a non-`Exception` at the close, record it and raise the interrupt `from` the refusal;
+   - an ordinary `Exception` keeps its S-R8 `ClickException`;
+   - the rest of the handler stays banked.
+   - RED test: a duplicate-position (or other typed) refusal in flight plus a close `KeyboardInterrupt`. Assert that the interrupt propagates, that `__cause__` is the refusal, and that a record exists.
+3. **B-3, option (a): the binding STANDS and the TEST is corrected.** The G1 Schwab stubs (setup/refresh/logout) plant the REAL effect, a token-DB or `user-config.toml` write marker the test can read back, and the WARN assertion binds to THAT. The audit row may stay planted as a CONTROL that alone does NOT earn the WARN. That needs a control row where only the audit row is planted and the service raises, so no WARN is expected. RED: show that the corrected assertion would fail against a stub that plants only the audit row.
+4. **B-4:** `_refusing_service` returns its `raising(...)` wrapper, and every G1-b test using it asserts the wrapper was called.
+5. **The census line pin:** re-measure it if the `cli.py` lines move.
+6. **The pre-R4 full fast suite:** reproduce the phase8 test and the banked pair with `-n 0` FIRST.
+
+**THE ROUND 4 WRITTEN AUTHORIZATION (above) NOW TAKES EFFECT**, because CHARC concurred. It is ONE counted Reviewer A Round 4 at `strong` on `704ac133..HEAD -- swing/ tests/`, with repo access. It names B-1..B-4 as ruled. At most two attempts, and every validity assertion binds. The cell returns at the gate with proposed dispositions only.
+- **No fifth round.** The ROUND-5 check-in binds.
+- **After a clean or dispositioned Round 4, Reviewer B runs AGAIN** on the resulting tree. That is the orchestrator's pass, and its transcript is the one CHARC's merge gate reads.
