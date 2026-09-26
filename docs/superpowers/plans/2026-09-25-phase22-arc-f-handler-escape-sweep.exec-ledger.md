@@ -859,3 +859,37 @@ Every finding's load-bearing fact was READ on disk at `e53ef9b3`; provenance by 
 | R3-05 | major, [OUT-OF-ENVELOPE] | `trade backfill-intent` close guard (`cli.py:2531`): no error in flight -> an interrupt becomes warnings and a normal return; an error in flight -> the interrupt is logged and the original error resumes | PRE-ARC, the D69 rider `d87cda41` (2026-09-24); census row 13 "Owned by the D67/D69 rider" | **BANK** to D69's lane / the STOP-6 register facet (out of envelope by the prompt's own list) |
 
 Spend: no counted Round 3. Attempts 2 + 3 spent 636,719 + 637,767 = 1,274,486 tokens (attempt 1 printed no footer); the probe 2,135.
+
+### Round 3 gate -- ORCHESTRATOR dispositions (2026-09-25)
+
+**QA on disk:**
+- `22-f-exec` @ `1860329a`: commits `3ca67151`, `e5d93e57`, `e53ef9b3` and `1860329a`. The tree is clean and `%(trailers)` is empty over `704ac133..HEAD`.
+- **Depth:** cell 11 measured `cell_depth --agent` 267,440.
+- **Pre-R3 suite** at `e5d93e57`: 15307 / 13 / 0, as the cell recorded.
+- **Attempt 2, read at this seat:**
+  - banner `gpt-5.6-sol` / `high`;
+  - `^ERROR` = 2: `Reconnecting... 2/5` and `3/5` at transcript lines 18866-18867, straight after the stdin echo and before the reviewer's first turn;
+  - footer 636,719;
+  - anchored `NEW_CRITICAL_MAJOR_FOUND` at :32861, with the CLI's duplicate echo at :32906;
+  - exit 0.
+- **Provenance, verified with `merge-base --is-ancestor 704ac133`:**
+  - PRE-ARC: `4fccc543`, `175ae613`, `f79c9e40`, `13bf3daf` and `d87cda41`.
+  - THIS ARC: `b3226b51` (T-A7, the exit POST).
+
+| item | orchestrator disposition |
+|---|---|
+| Round 3 validity | **NOT COUNTED, and no exception sought.** The canon is that only an anchored verdict with `^ERROR` = 0 proves a round finished, and attempt 2 has 2. The cell's "count it by ruling, as with the D67/D69 precedent" was CHECKED and NOT FOUND. `docs/d67-d69-riders.exec-ledger.md`, the recipe and `harness-architecture.md` record no round counted with `^ERROR` != 0, so the precedent is unsourced. Counting it would not save a round anyway: attempt 2 returned five majors, so a confirming round would still be needed. **The written Round 3 authorization therefore STANDS UNSPENT.** Round 3 re-runs as the confirming round on the artifact settled by the ruling below. Attempt 2's findings INFORM, and are handled like self-sweep input. Spend on the three attempts is 1,274,486 plus a 2,135-token probe. The counted total is unchanged at 1,371,046. |
+| R3-01 (`log_contained` returns a sink's `BaseException`; both helpers' `except Exception` branches swallow it) | **ROUTED to CHARC.** Orchestrator view: FIX narrowly in the two helpers, as the cell proposes. It is CHARC's own register phrase, "contain Exception, re-raise the rest", one layer down. It is routed rather than authorized because the STOP-6 ruling says the `except Exception` branch "keeps today's three-branch behaviour EXACTLY". `log_contained` at its other call sites goes to CHARC's register (22-A template, out of envelope). |
+| R3-02 (the `db-migrate` B-04 `except BaseException` turns a post-COMMIT restore interrupt into WARN + tail + exit 0) | **ROUTED to CHARC.** It changes a plan-specified encoding (T-F10). The cell reads it as (a): run the witness, print the WARN, re-raise the interrupt BARE, skip the tail (AL-11). The other branch is (b): declare it. |
+| R3-03 / R3-04 / R3-05 (the old BaseException containment in bespoke close handlers) | **ROUTED to CHARC as ONE question: does STOP-6's class rule reach them?** The cell reads it as BANK to the STOP-6 register facet. **The orchestrator notes one asymmetry the cell's "all pre-arc" framing blurs:** R3-04's exit POST (`trades.py:3193/:3254`) is THIS ARC's `b3226b51` (T-A7), a copy of the pre-arc 22-A3 entry-POST shape. Banking it banks a shape this arc WROTE. The cell asks to bank it beside the entry POST so the two stay one shape; that is a reason, and it is CHARC's to weigh. |
+| Caller-read fact (40 of 42 helper calls sit in a `finally`: with a non-refusal exception propagating and `durable=True`, an interrupt at the close REPLACES that exception, which survives only as `__context__` and is not logged) | **ROUTED to CHARC for confirmation.** It follows from "re-raised BARE" where the helper cannot see the in-flight error. The Round 2 class rule says "never replacing the in-flight error's record". Is implicit `__context__` enough, or should it be declared? |
+| Plan section-8 T-G0 bullet ("never raises") | **AUTHORIZED**: a one-line replacement in the plan, encoding the LANDED STOP-6 ruling. It is text only. |
+
+**Next:** one packet to CHARC. On the ruling, a FRESH cell 12 (cell 11 is at 267,440, and the fixes plus a ~640K Round 3 would put it past the cap) does five things:
+1. applies the ruling;
+2. replaces the plan line;
+3. re-runs the census pin if `cli.py` lines move;
+4. runs the pre-R3 suite;
+5. RUNS ROUND 3 under the standing written authorization, extended to name the R3 items as ruled.
+
+No fourth counted round is authorized.
