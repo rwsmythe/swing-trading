@@ -21,8 +21,13 @@ def close_after_commit(conn, log: logging.Logger, *, what: str) -> str | None:
     INTERRUPT at the close (a
     BaseException that is not an Exception) is the operator's stop signal:
     it is logged with the same record, the interrupt named, and re-raised
-    BARE -- the server's own interrupt handling owns it (STOP-6, CHARC).
+    BARE -- the server's own interrupt handling owns it (STOP-6, CHARC) --
+    or, when an error was already IN FLIGHT at entry (the helper called
+    from a ``finally``; ``sys.exc_info()`` read once), the ONE record names
+    both and the interrupt is raised ``from`` that error (item 4, CHARC).
     """
+    import sys
+    in_flight = sys.exc_info()[1]
     try:
         conn.close()
     except Exception as exc:  # noqa: BLE001 -- the CLASS
@@ -43,6 +48,17 @@ def close_after_commit(conn, log: logging.Logger, *, what: str) -> str | None:
         # 22-F STOP-6 (CHARC): contain Exception, re-raise the rest.  A sink
         # failure travels as a NOTE on the interrupt (`log_contained_note`).
         from swing.trades.entry import log_contained_note, safe_text
+        if in_flight is not None:
+            # 22-F item 4 (CHARC): ONE record names both; the interrupt is
+            # raised `from` the in-flight error, never replacing its record.
+            log_contained_note(
+                log, interrupt,
+                "22-F: %s IS recorded and CLOSING the database connection "
+                "afterwards RAISED (%s) while an error was already in flight "
+                "(%s); the write is unaffected; the INTERRUPT is re-raised, "
+                "chained from the in-flight error.",
+                what, safe_text(interrupt), safe_text(in_flight))
+            raise interrupt from in_flight
         log_contained_note(
             log, interrupt,
             "22-F: %s IS recorded and CLOSING the database connection "

@@ -235,3 +235,36 @@ def test_r3_01_a_sink_interrupt_on_an_ordinary_close_failure_is_re_raised(
             in err)
     assert "a logging handler RAISED" in err
     assert "KeyboardInterrupt" in err
+
+
+# ---- Item 4 (CHARC's Round 3 ruling): an error IN FLIGHT at the close -------
+# 40 of the 42 helper calls sit in a `finally`.  The helper reads
+# `sys.exc_info()[1]` once at entry; when an interrupt arrives at the close
+# while a non-refusal exception is propagating, ONE record names both and the
+# interrupt is raised `from` the in-flight error -- implicit `__context__`
+# alone is not logged and a later `raise ... from` discards it.
+
+def test_item4_interrupt_at_close_with_an_error_in_flight_is_chained_from_it(
+        capsys, caplog):
+    proxy = _interrupt_proxy()
+    in_flight = RuntimeError("planted in-flight error")
+
+    def _root() -> None:
+        try:
+            raise in_flight
+        finally:
+            _helper()(proxy, durable=True, pending_refusal=None)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(KeyboardInterrupt,
+                           match="planted interrupt on close") as info:
+            _root()
+    assert proxy.calls["close"] == 1
+    assert info.value.__cause__ is in_flight
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    msg = errors[0].getMessage()
+    assert "planted in-flight error" in msg
+    assert "KeyboardInterrupt" in msg
+    assert "IS recorded" in msg
+    assert "WARN: the write IS recorded; " in capsys.readouterr().err

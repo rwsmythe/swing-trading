@@ -129,3 +129,38 @@ def test_r3_01_a_sink_interrupt_on_an_ordinary_close_failure_is_re_raised():
     msg = captured[0].getMessage()
     assert "The pin IS recorded and CLOSING the database connection" in msg
     assert "planted on close" in msg
+
+
+def test_item4_interrupt_at_close_with_an_error_in_flight_is_chained_from_it(
+        caplog):
+    """Item 4 (CHARC's Round 3 ruling): the helper reads `sys.exc_info()[1]`
+    once at entry; an interrupt at the close while a non-refusal exception
+    is propagating (the helper called from a `finally`) gets ONE record
+    naming both and is raised `from` the in-flight error."""
+    class _InterruptOnClose(FailingVerbsConn):
+        def close(self) -> None:
+            self.calls["close"] += 1
+            self._real.close()
+            raise KeyboardInterrupt("planted interrupt on close")
+
+    proxy = _InterruptOnClose(sqlite3.connect(":memory:"))
+    in_flight = RuntimeError("planted in-flight error")
+
+    def _root() -> None:
+        try:
+            raise in_flight
+        finally:
+            _helper()(proxy, _LOG, what="The snapshot")
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(KeyboardInterrupt,
+                           match="planted interrupt on close") as info:
+            _root()
+    assert proxy.calls["close"] == 1
+    assert info.value.__cause__ is in_flight
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    msg = errors[0].getMessage()
+    assert "planted in-flight error" in msg
+    assert "KeyboardInterrupt" in msg
+    assert "The snapshot IS recorded" in msg

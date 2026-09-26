@@ -1300,7 +1300,11 @@ def _close_after_writes(
       the interrupt, then the interrupt itself is raised ``from`` the refusal.
     * DURABLE and no refusal -> the ERROR record and the ``WARN: the write IS
       recorded; ...`` line (the durable fact is still stated), then the
-      interrupt is re-raised BARE (click turns it into its own ``Aborted!``).
+      interrupt is re-raised BARE (click turns it into its own ``Aborted!``)
+      -- or, when a non-refusal error was already IN FLIGHT at entry (the
+      helper called from a ``finally``; ``sys.exc_info()`` read once), the
+      ONE record names both and the interrupt is raised ``from`` that error
+      (item 4, CHARC).
     * NOTHING durable and NO refusal -> the bare close above: it propagates.
 
     ``durable`` is bound by the CALLER at each writer's OWN return, never
@@ -1310,6 +1314,10 @@ def _close_after_writes(
     ``cli_schwab.py``/``cli_config.py`` import this at function scope (no
     module-level cycle).
     """
+    # 22-F item 4 (CHARC, Round 3): the exception IN FLIGHT, read ONCE at
+    # entry (inside a caller's `finally` during propagation this is the
+    # propagating error; `None` otherwise), before `close()` can change it.
+    in_flight = _sys.exc_info()[1]
     if pending_refusal is None and not durable:
         conn.close()
         return
@@ -1361,15 +1369,31 @@ def _close_after_writes(
             raise interrupt from pending_refusal
         recorded_text = (
             "" if recorded is None else f" -- the recorded write: {recorded}")
-        log_contained_note(
-            _pe_backfill_logging.getLogger(__name__), interrupt,
-            "22-F: a write IS recorded and an INTERRUPT arrived while CLOSING "
-            "the database connection afterwards (%s); the ledger is "
-            "unaffected; the interrupt is re-raised.%s",
-            interrupt_text, recorded_text)
+        if in_flight is not None:
+            # 22-F item 4 (CHARC): a non-refusal error was already
+            # propagating.  ONE record names BOTH, and the interrupt is
+            # raised `from` it -- the in-flight error's record is never
+            # replaced (implicit `__context__` is not logged).
+            log_contained_note(
+                _pe_backfill_logging.getLogger(__name__), interrupt,
+                "22-F: a write IS recorded and an INTERRUPT arrived while "
+                "CLOSING the database connection afterwards (%s) while an "
+                "error was already in flight (%s); the ledger is unaffected; "
+                "the interrupt is re-raised, chained from the in-flight "
+                "error.%s",
+                interrupt_text, safe_text(in_flight), recorded_text)
+        else:
+            log_contained_note(
+                _pe_backfill_logging.getLogger(__name__), interrupt,
+                "22-F: a write IS recorded and an INTERRUPT arrived while "
+                "CLOSING the database connection afterwards (%s); the ledger "
+                "is unaffected; the interrupt is re-raised.%s",
+                interrupt_text, recorded_text)
         _echo_either_sink(ascii_safe(
             "WARN: the write IS recorded; the connection close was "
             "interrupted: " + interrupt_text + recorded_text), prefer_err=True)
+        if in_flight is not None:
+            raise interrupt from in_flight
         raise
 
 
