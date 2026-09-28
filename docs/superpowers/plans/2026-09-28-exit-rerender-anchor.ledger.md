@@ -82,3 +82,22 @@ Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\exit-rerender-anchor\r1\
 | 1 | `ec0929c3` | gpt-5.6-sol / high | 0 | present | clean | 0 | 0 | 1 | 178,835 | |
 
 R1-minor (live clock in the new tests): accepted, fixed in `7311a0af` without a round. The loop ended at round 1.
+
+## Orchestrator QA of the executing cell (2026-09-28, read on disk at `b8dde1eb`)
+
+- **Depth:** `cell_depth --agent` measured 307,264 (the Agent usage figure was 310,648). This fills the round table's DEPTH column for R1.
+- **Scope:** `git diff --stat 75de0ac8..HEAD` shows `swing/web/routes/trades.py`, `swing/web/view_models/trades.py`, `swing/web/templates/partials/trade_exit_form.html.j2`, the new `tests/web/test_routes/test_exit_rerender_anchor.py`, and this ledger. There is nothing in `swing/trades/` or `swing/data/`, and no schema change.
+- **R1 validity, read at this seat:**
+  - banner `gpt-5.6-sol`, reasoning effort `high`;
+  - `^ERROR` count 0;
+  - the anchored `NO_NEW_CRITICAL_MAJOR` at `codex-review.txt:6985`, directly above the footer `tokens used` / `178,835` at `:6986-6987`; `:6992` is the CLI's echo;
+  - `exit.txt` reads `0`.
+  - **VALID. Converged in one counted round.**
+- **Suite, final head `b8dde1eb`:** the rerun reads `15341 passed, 13 skipped` with the worktree as resolver. The first post-Codex run had ONE failure, `tests/data/test_migration_0039_provenance_corrections_tier2.py::test_uncovered_barrier_absent_terminal_is_accepted_both_shapes[2026-08-10T12:41:34Z-before_barrier-4]`. It passed isolated with `-n 0` and under xdist over `tests/data`. Its mechanism is NOT established, and its traceback was lost. **It must be reproduced `-n 0` FIRST at the merged head. It is not a known banked red.**
+- **Trailers:** zero `Co-Authored-By`. `ccc4bd83` and `ec0929c3` each carry a parsed `GREEN: ...` trailer: the `Word:` final-paragraph hazard. Both sit below the tip, and this ledger cites branch SHAs, so they are RECORDED here and NOT rewritten. **The merge form is `git merge --no-ff`, never a rebase.**
+- **Flags carried:**
+  - The d2 gate compares `candidates_map` only, as ruled. A tampered envelope with an equal map echoes its top-level fields on restore; the POST's rejection ladder still governs the resubmit. This goes to CHARC/RD as information.
+  - The `TradeExitFormVM` comment ("always 'schwab_auto' on populated") is stale under a restore of a tampered claim. It is minor and NOT changed.
+- **Verdict:** QA PASS. **REMAINING before merge:**
+  1. the OPERATOR-WITNESSED browser check, step by step, against the worktree (`PYTHONPATH=. python -m swing.cli web` from this worktree, on a port other than any running `swing web`);
+  2. then `git merge --no-ff`, the merged-head fast suite read, and the 0039 test reproduced `-n 0` if it reds.
