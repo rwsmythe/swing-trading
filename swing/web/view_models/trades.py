@@ -980,6 +980,10 @@ class TradeExitFormVM:
     # browser submits the FIRST option, ``stop-hit``, which ``record_exit``
     # records as ``action='stop'``.
     selected_reason: str | None = None
+    # Ruling (d): set when a refused POST's claimed anchor could NOT be
+    # restored (the fresh fetch was not populated, or its candidate map
+    # differs from the submitted one), so the FRESH anchor is rendered.
+    auto_fill_refresh_notice: str | None = None
 
 
 def build_exit_form_vm(

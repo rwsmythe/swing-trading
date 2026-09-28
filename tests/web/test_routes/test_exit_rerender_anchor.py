@@ -273,3 +273,198 @@ def test_reject_anchor_preserves_typed_values_and_still_clears_the_anchor(
     assert _hidden(r.text, "auto_fill_audit_at") is not None
     assert _NOTICE not in r.text
     assert _exit_fills(world.cfg) == []
+
+
+# ================================================= (d) the d2-strict restore
+def _refused(tc, tid, **over) -> tuple[dict, object]:
+    """GET the form, then submit it as a browser would with ``over`` applied
+    and shares=50 (> the 10 remaining), so ``record_exit`` refuses it."""
+    fd = _browser_form(tc.get(f"/trades/{tid}/exit/form").text)
+    assert fd.get("fill_origin_at_form_render") == "schwab_auto"  # populated
+    fd.update({"shares": "50", "reason": "manual",
+               "auto_fill_audit_at": _SUBMITTED_AUDIT_AT})
+    fd.update(over)
+    return fd, _post(tc, tid, fd)
+
+
+def test_unchanged_list_restores_the_submitted_anchor_triple(world):
+    """(d)+(b) World unchanged between GET and the refused POST: the fresh
+    re-fetch still RUNS, its ``candidates_map`` equals the submitted one, so
+    the SUBMITTED triple is restored -- the envelope byte-for-byte, the
+    GET-time ``auto_fill_audit_at``, and the claim STRIPPED -- with kind
+    ``populated`` and no refresh notice.
+
+    PRE-FIX: the hidden ``auto_fill_audit_at`` is the fresh fetch's stamp."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd, r = _refused(tc, world.tid,
+                         fill_origin_at_form_render="  schwab_auto ")
+    assert r.status_code == 400, r.text[:500]
+    assert "exceeds" in r.text
+    assert len(world.calls) == 2  # GET + the re-render's fetch (d2 keeps it)
+    assert _hidden(r.text, "schwab_source_value_json") == (
+        fd["schwab_source_value_json"])
+    assert _hidden(r.text, "auto_fill_audit_at") == _SUBMITTED_AUDIT_AT
+    assert _hidden(r.text, "fill_origin_at_form_render") == "schwab_auto"
+    assert "Auto-fill source:" in r.text  # the populated-kind block
+    assert _NOTICE not in r.text
+    # The fresh list is the one offered: both orders, by hash.
+    env = json.loads(fd["schwab_source_value_json"])
+    offered = {v for k, v in _browser_form(r.text).items()
+               if k.startswith("candidate_signature_hash_")}
+    assert offered == set(env["candidates_map"])
+    assert _exit_fills(world.cfg) == []
+
+
+def test_restored_blank_audit_at_stays_blank_not_the_string_none(world):
+    """(d) The triple is restored VERBATIM: a submitted blank
+    ``auto_fill_audit_at`` re-renders blank.  An ``or None`` restore would
+    render the literal ``None`` into the hidden input, and the retry would
+    persist the string 'None' as the audit stamp.
+
+    PRE-FIX: the hidden value is the fresh stamp (not blank)."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        _fd, r = _refused(tc, world.tid, auto_fill_audit_at="")
+    assert r.status_code == 400
+    assert _hidden(r.text, "auto_fill_audit_at") == ""
+
+
+def test_two_tab_record_meanwhile_keeps_the_fresh_anchor_control(world):
+    """(d) CONTROL -- E2E-2, two tabs.  Tab 1 records the default order o2.
+    Tab 2 replays the SAME rendered form with 9 shares (> the 7 now
+    remaining) and is refused.  The fresh list no longer carries o2 (the
+    ``existing_fill_order_ids`` exclusion), so the maps differ: the FRESH
+    anchor stands, the typed values stay, and the refresh notice shows.
+    THIS TEST MUST FAIL a d3 port (restore unconditionally, the literal
+    entry precedent): that port re-offers o2 through the restored envelope.
+
+    Asserts only what the RE-RENDER offers; the separate double-record
+    defect of an unedited replay is out of scope here.
+
+    PRE-FIX: passes the anchor assertions (the fresh anchor was always
+    rendered) and FAILS on the refresh notice."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _browser_form(tc.get(f"/trades/{world.tid}/exit/form").text)
+        fd["reason"] = "manual"
+        r1 = _post(tc, world.tid, fd)
+        assert r1.status_code == 200, r1.text[:500]
+        r2 = _post(tc, world.tid, dict(fd, shares="9", notes="tab two"))
+    assert r2.status_code == 400, r2.text[:500]
+    assert "exceeds" in r2.text
+    fresh_env = _hidden(r2.text, "schwab_source_value_json")
+    assert fresh_env is not None
+    assert fresh_env != fd["schwab_source_value_json"]
+    fresh = json.loads(fresh_env)
+    assert [v["order_id"] for v in fresh["candidates_map"].values()] == ["o1"]
+    assert fresh["schwab_order_id"] == "o1"
+    submitted_map = json.loads(fd["schwab_source_value_json"])["candidates_map"]
+    o2_hash = next(k for k, v in submitted_map.items() if v["order_id"] == "o2")
+    assert o2_hash not in r2.text
+    assert "o2" not in _hidden(r2.text, "schwab_source_value_json")
+    assert _hidden(r2.text, "auto_fill_audit_at") != fd["auto_fill_audit_at"]
+    assert _NOTICE in r2.text
+    assert _input_attr(r2.text, "shares", "value") == "9"
+    assert _notes(r2.text) == "tab two"
+
+
+def test_restore_keeps_the_fresh_possible_duplicate_advisory_control(world):
+    """(b) CONTROL -- b2 keeps the FRESH advisory.  An operator-typed exit
+    matching o1 is recorded first (no broker id, so it is ANONYMOUS), which
+    makes the resolver flag o1 as a POSSIBLE DUPLICATE on every render.
+    The refused POST's map equals the fresh one, so the anchor is restored
+    AND the possible-duplicate advisory still shows.  THIS TEST MUST FAIL a
+    b1 port (clear the advisory on restore, as the entry precedent does).
+
+    PRE-FIX: passes the advisory assertion (the fresh VM always carried it)
+    and FAILS on the restored ``auto_fill_audit_at``."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        seed = _post(tc, world.tid, {
+            "exit_date": "2026-05-20", "exit_price": "130.00", "shares": "4",
+            "reason": "manual", "notes": ""})
+        assert seed.status_code == 200, seed.text[:500]
+        fd, r = _refused(tc, world.tid)
+    assert r.status_code == 400, r.text[:500]
+    assert _hidden(r.text, "schwab_source_value_json") == (
+        fd["schwab_source_value_json"])
+    assert _hidden(r.text, "auto_fill_audit_at") == _SUBMITTED_AUDIT_AT
+    assert "Schwab auto-fill:</strong> POSSIBLE DUPLICATE" in r.text
+    assert _NOTICE not in r.text
+
+
+def test_parity_refetch_restores_nothing_and_the_retry_records_operator_typed(
+        world):
+    """(d) Degraded / parity re-fetch.  The GET was populated; the refused
+    POST's re-render fetch raises ``SchwabSchemaParityError`` (kind
+    ``error``).  NOTHING is restored -- no hidden anchor at all -- the fresh
+    parity advisory shows, the refresh notice shows, the typed values stay,
+    and the corrected retry records ``operator_typed`` with NULL audit
+    columns.  The asymmetry with entry's A1-e (which restores under parity)
+    is deliberate: entry has no already-recorded-order exclusion to protect.
+
+    PRE-FIX: FAILS on the refresh notice."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _browser_form(tc.get(f"/trades/{world.tid}/exit/form").text)
+        world.box["raise"] = SchwabSchemaParityError("<orders: missing 'x'>")
+        r = _post(tc, world.tid, dict(
+            fd, shares="50", reason="weather", notes="parity note"))
+        assert r.status_code == 400, r.text[:500]
+        assert "exceeds" in r.text
+        assert "SchwabSchemaParityError" in r.text
+        assert _hidden(r.text, "schwab_source_value_json") is None
+        assert _hidden(r.text, "auto_fill_audit_at") is None
+        assert _hidden(r.text, "fill_origin_at_form_render") is None
+        assert _NOTICE in r.text
+        assert _selected_reasons(r.text) == ["weather"]
+        retry = _browser_form(r.text)
+        assert "schwab_source_value_json" not in retry
+        retry["shares"] = "3"
+        r2 = _post(tc, world.tid, retry)
+    assert r2.status_code == 200, r2.text[:500]
+    [(_fid, action, qty, origin, env, audit_at)] = _exit_fills(world.cfg)
+    assert (origin, env, audit_at) == ("operator_typed", None, None)
+    assert (action, qty) == ("trim", 3.0)
+
+
+@pytest.mark.parametrize("claim", ["", "operator_typed"])
+def test_unclaimed_anchor_is_never_restored_control(world, claim):
+    """(c) CONTROL -- c2.  The submitted envelope parses to a dict and the
+    world is unchanged (the maps are EQUAL), but the form made no auto-fill
+    claim.  An unclaimed anchor is never restored: the fresh stamp stands and
+    no notice shows.  THIS TEST MUST FAIL a restore-unclaimed port (a gate
+    that checks only the map equality).
+
+    PRE-FIX: passes (the fresh anchor was always rendered)."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        _fd, r = _refused(tc, world.tid, fill_origin_at_form_render=claim)
+    assert r.status_code == 400, r.text[:500]
+    assert _hidden(r.text, "auto_fill_audit_at") != _SUBMITTED_AUDIT_AT
+    assert _hidden(r.text, "fill_origin_at_form_render") == "schwab_auto"
+    assert _NOTICE not in r.text
+
+
+def test_restored_form_round_trips_to_a_schwab_auto_record_with_the_typed_reason(
+        world):
+    """(d)+(e) The whole round trip, browser-emulated.  GET; a refused POST
+    (shares 50, reason ``manual``); the operator corrects ONLY the shares on
+    the re-rendered form (to the default candidate's 3) and resubmits
+    whatever else the browser sends.  The record is ``schwab_auto`` against
+    the RESTORED anchor: the GET-time audit stamp, order o2, the price
+    compared at the template's 2 decimals -- and action ``trim`` because the
+    reason round-tripped as ``manual``.
+
+    PRE-FIX (75de0ac8): the browser submits the first reason option,
+    ``stop-hit``, so the record is ``action='stop'``; and the audit stamp is
+    the re-render's.  After ruling (e) alone, only the stamp still fails."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        _fd, r = _refused(tc, world.tid, notes="round trip")
+        assert r.status_code == 400, r.text[:500]
+        retry = _browser_form(r.text)
+        assert retry["exit_price"] == "131.00"  # rendered at 2 decimals
+        retry["shares"] = "3"
+        r2 = _post(tc, world.tid, retry)
+    assert r2.status_code == 200, r2.text[:500]
+    [(_fid, action, qty, origin, env, audit_at)] = _exit_fills(world.cfg)
+    assert action == "trim"
+    assert qty == 3.0
+    assert origin == "schwab_auto"
+    assert audit_at == _SUBMITTED_AUDIT_AT
+    assert json.loads(env)["schwab_order_id"] == "o2"

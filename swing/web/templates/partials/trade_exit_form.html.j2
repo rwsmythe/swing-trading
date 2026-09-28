@@ -10,6 +10,12 @@
 <tr id="exit-form-{{ vm.trade.id }}">
   <td colspan="8">
     {% if error_message %}<div class="banner banner-degraded" role="alert">{{ error_message }}</div>{% endif %}
+    {#- Exit re-render ruling (d): a refused POST whose auto-fill anchor could
+        not be restored (the Schwab fill list changed or could not be re-read)
+        says so; the hidden anchor below is then the FRESH one. -#}
+    {% if vm.auto_fill_refresh_notice %}
+    <div class="banner banner-info" role="status">{{ vm.auto_fill_refresh_notice }}</div>
+    {% endif %}
     {#- Phase 13 T3.SB2 — Schwab exit auto-fill advisory + display-only
         audit metadata (spec §6.2 + plan §G.5 T-B.2.2). Banner renders
         when auto_fill_advisory_text is set (sandbox / degraded / error /
