@@ -83,8 +83,19 @@ def full_phase7_entry_payload(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+@pytest.fixture
+def _wrapped_insert_trade_calls() -> list[dict]:
+    """R-2 (2026-09-28, the D67 L1 follow-on): a list the autouse wrapper
+    below appends one ``{"via_record_entry": bool}`` dict to on EVERY
+    invocation. A test asserting this list is non-empty with
+    ``via_record_entry=True`` is asserting the WRAPPER -- not the real
+    ``insert_trade_with_event`` -- is what ``record_entry`` actually
+    reached; see ``tests/web/test_r2_d67_entry_module_binding.py``."""
+    return []
+
+
 @pytest.fixture(autouse=True)
-def _auto_entry_fill_after_insert_trade(monkeypatch):
+def _auto_entry_fill_after_insert_trade(monkeypatch, _wrapped_insert_trade_calls):
     """Phase 7 Sub-C C.13d: web tests using ``insert_trade_with_event`` directly
     (not via ``swing.trades.entry.record_entry``) leave ``trades.current_size``
     at 0, which the exit service's ``current_size - shares < 0`` guard rejects.
@@ -144,6 +155,19 @@ def _auto_entry_fill_after_insert_trade(monkeypatch):
     reference, and it stays captured for the rest of that process. Fix:
     take ``**kwargs`` and forward — never hand-copy the production
     keyword roster a second time.
+
+    R-2 (2026-09-28, CHARC-ruled 2026-09-24, the D67 L1 follow-on): the fix
+    above (``**kwargs``) closed the crash, but the masking mechanism itself
+    was still standing -- patching ``trades_repo`` (and the route module,
+    below) never touches ``entry.py``'s OWN ``insert_trade_with_event``
+    name, bound at its first import and living in ITS OWN module
+    namespace. In a full run, where ``tests/trades/`` imports
+    ``swing.trades.entry`` before any web fixture has run, that name stays
+    bound to the REAL function for the whole worker process and
+    ``record_entry`` never reaches this wrapper at all. The fix below
+    patches the name at its LOOKUP SITE (``swing.trades.entry.
+    insert_trade_with_event``) directly, every test, regardless of import
+    order -- never an ``entry.py`` edit for a test's sake.
     """
     from swing.data.models import Fill
     from swing.data.repos import fills as fills_repo
@@ -187,6 +211,12 @@ def _auto_entry_fill_after_insert_trade(monkeypatch):
         # a trade directly" (key absent). Skip the auto-fill only in
         # the former case.
         called_via_record_entry = "attempt_id" in kwargs
+        # R-2 sentinel: every invocation of THIS wrapper is recorded here,
+        # regardless of skip/write outcome below -- proof the wrapper (not
+        # the real insert_trade_with_event) is what the caller reached.
+        _wrapped_insert_trade_calls.append(
+            {"via_record_entry": called_via_record_entry}
+        )
         # Only auto-write the entry-fill when the trade is in an active
         # state (entered/managing/partial_exited). Closed/reviewed seeds
         # in some tests intentionally skip the fill flow.
@@ -213,6 +243,21 @@ def _auto_entry_fill_after_insert_trade(monkeypatch):
         if hasattr(web_trades_routes, "insert_trade_with_event"):
             monkeypatch.setattr(
                 web_trades_routes, "insert_trade_with_event", wrapped,
+            )
+    except ImportError:
+        pass
+    # R-2 (2026-09-28, CHARC-ruled 2026-09-24, the D67 L1 follow-on):
+    # ``swing.trades.entry`` binds ``insert_trade_with_event`` BY NAME at
+    # its own first import -- a reference living in ITS OWN module
+    # namespace, never retargeted by the ``trades_repo`` patch above.
+    # ``record_entry``'s bare-name call resolves through ``entry.py``'s own
+    # module globals at CALL time, so patching the name at THIS lookup site
+    # reaches it regardless of import order -- never an ``entry.py`` edit.
+    try:
+        import swing.trades.entry as entry_module
+        if hasattr(entry_module, "insert_trade_with_event"):
+            monkeypatch.setattr(
+                entry_module, "insert_trade_with_event", wrapped,
             )
     except ImportError:
         pass
