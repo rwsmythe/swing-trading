@@ -38,6 +38,7 @@ import html
 import json
 import re
 import sqlite3
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -56,6 +57,11 @@ _HX = {"HX-Request": "true"}
 # A GET-time stamp distinct from any stamp a fresh fetch can produce, so
 # "restored" and "re-derived" are told apart deterministically.
 _SUBMITTED_AUDIT_AT = "2026-05-22T14:30:00.000000+00:00"
+# The resolver's clock is FROZEN in the `world` fixture, so every fresh
+# fetch stamps exactly this; "re-derived" is asserted, not inferred from
+# "differs from the submitted stamp" (Codex R1 minor).
+_FROZEN_NOW = datetime(2026, 5, 25, 12, 0, tzinfo=UTC)
+_FRESH_AUDIT_AT = "2026-05-25T12:00:00.000000+00:00"
 # The (d) notice, matched on a fragment so its wording can be tuned without
 # every test moving.
 _NOTICE = "auto-fill selection was refreshed"
@@ -102,6 +108,14 @@ def world(seeded_db, monkeypatch):
     cfg = dataclasses.replace(
         cfg, integrations=dataclasses.replace(cfg.integrations, schwab=schwab))
     m = "swing.trades.exit_auto_fill"
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _FROZEN_NOW if tz is not None else _FROZEN_NOW.replace(
+                tzinfo=None)
+
+    monkeypatch.setattr(f"{m}.datetime", _FrozenDatetime)
     monkeypatch.setattr(f"{m}._compute_degraded_state",
                         lambda conn, *, env, tokens_path, now: ("LIVE", None))
     monkeypatch.setattr(f"{m}.resolve_credentials_env_or_prompt",
@@ -269,8 +283,7 @@ def test_reject_anchor_preserves_typed_values_and_still_clears_the_anchor(
     assert _notes(r.text) == "reject path note"
     # The anchor is the FRESH one, never the submitted one.
     assert "not a json envelope" not in r.text
-    assert _hidden(r.text, "auto_fill_audit_at") != _SUBMITTED_AUDIT_AT
-    assert _hidden(r.text, "auto_fill_audit_at") is not None
+    assert _hidden(r.text, "auto_fill_audit_at") == _FRESH_AUDIT_AT
     assert _NOTICE not in r.text
     assert _exit_fills(world.cfg) == []
 
@@ -346,7 +359,7 @@ def test_non_default_pick_is_not_carried_when_the_list_changed(world):
                                       auto_fill_audit_at=_SUBMITTED_AUDIT_AT))
     assert r.status_code == 400, r.text[:500]
     assert _NOTICE in r.text
-    assert _hidden(r.text, "auto_fill_audit_at") != _SUBMITTED_AUDIT_AT
+    assert _hidden(r.text, "auto_fill_audit_at") == _FRESH_AUDIT_AT
     assert _checked_radios(r.text) == ["2"]
 
 
@@ -379,7 +392,8 @@ def test_two_tab_record_meanwhile_keeps_the_fresh_anchor_control(world):
     rendered) and FAILS on the refresh notice."""
     with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
         fd = _browser_form(tc.get(f"/trades/{world.tid}/exit/form").text)
-        fd["reason"] = "manual"
+        fd.update({"reason": "manual",
+                   "auto_fill_audit_at": _SUBMITTED_AUDIT_AT})
         r1 = _post(tc, world.tid, fd)
         assert r1.status_code == 200, r1.text[:500]
         r2 = _post(tc, world.tid, dict(fd, shares="9", notes="tab two"))
@@ -395,7 +409,7 @@ def test_two_tab_record_meanwhile_keeps_the_fresh_anchor_control(world):
     o2_hash = next(k for k, v in submitted_map.items() if v["order_id"] == "o2")
     assert o2_hash not in r2.text
     assert "o2" not in _hidden(r2.text, "schwab_source_value_json")
-    assert _hidden(r2.text, "auto_fill_audit_at") != fd["auto_fill_audit_at"]
+    assert _hidden(r2.text, "auto_fill_audit_at") == _FRESH_AUDIT_AT
     assert _NOTICE in r2.text
     assert _input_attr(r2.text, "shares", "value") == "9"
     assert _notes(r2.text) == "tab two"
@@ -471,7 +485,7 @@ def test_unclaimed_anchor_is_never_restored_control(world, claim):
     with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
         _fd, r = _refused(tc, world.tid, fill_origin_at_form_render=claim)
     assert r.status_code == 400, r.text[:500]
-    assert _hidden(r.text, "auto_fill_audit_at") != _SUBMITTED_AUDIT_AT
+    assert _hidden(r.text, "auto_fill_audit_at") == _FRESH_AUDIT_AT
     assert _hidden(r.text, "fill_origin_at_form_render") == "schwab_auto"
     assert _NOTICE not in r.text
 
