@@ -173,6 +173,28 @@ def _auto_entry_fill_after_insert_trade(monkeypatch, _wrapped_insert_trade_calls
     from swing.data.repos import fills as fills_repo
     from swing.data.repos import trades as trades_repo
 
+    # Codex R1 minor (2026-09-28): import (or touch the already-imported)
+    # swing.trades.entry BEFORE trades_repo is patched below -- a
+    # first-ever import of entry.py in this process must capture the REAL
+    # function, never an already-wrapped one. Importing it AFTER the
+    # trades_repo patch (as this block originally did) would, on whichever
+    # test is first to trigger that import, make entry.py's own name bind
+    # to THIS TEST'S wrapped closure as a side effect of the import
+    # statement itself -- and monkeypatch.setattr(entry_module, ...) below
+    # would then read THAT as the "original" value to restore at teardown,
+    # permanently pinning entry_module.insert_trade_with_event to a dead
+    # test's closure between tests (never observed by record_entry, which
+    # always passes attempt_id and so always takes the wrapper's delegate-
+    # to-real-insert branch regardless of which closure answers -- but a
+    # real leak nonetheless, and needless). Importing first, before any
+    # patch this test makes, keeps entry_module.insert_trade_with_event at
+    # the REAL function at the moment monkeypatch.setattr captures it
+    # below, on every test.
+    try:
+        import swing.trades.entry as entry_module
+    except ImportError:
+        entry_module = None
+
     real_insert = trades_repo.insert_trade_with_event
 
     def wrapped(conn, trade, *, event_ts, **kwargs):
@@ -253,14 +275,12 @@ def _auto_entry_fill_after_insert_trade(monkeypatch, _wrapped_insert_trade_calls
     # ``record_entry``'s bare-name call resolves through ``entry.py``'s own
     # module globals at CALL time, so patching the name at THIS lookup site
     # reaches it regardless of import order -- never an ``entry.py`` edit.
-    try:
-        import swing.trades.entry as entry_module
-        if hasattr(entry_module, "insert_trade_with_event"):
-            monkeypatch.setattr(
-                entry_module, "insert_trade_with_event", wrapped,
-            )
-    except ImportError:
-        pass
+    # (``entry_module`` was imported EARLY, above, before the trades_repo
+    # patch -- see the comment there for why the ORDER is load-bearing.)
+    if entry_module is not None and hasattr(entry_module, "insert_trade_with_event"):
+        monkeypatch.setattr(
+            entry_module, "insert_trade_with_event", wrapped,
+        )
 
 
 @pytest.fixture

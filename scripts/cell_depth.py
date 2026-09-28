@@ -249,12 +249,18 @@ def session_transcript_path(cell_path: Path) -> Path:
 def session_transcript_age_hours(cell_path: Path, *, now: float | None = None) -> float | None:
     """The parent session transcript's age in hours, or ``None`` if it does
     not exist (a missing parent transcript is not a crash -- it simply
-    means the cell has no live parent to be found through)."""
+    means the cell has no live parent to be found through). Codex R1 minor
+    (2026-09-28): the earlier ``is_file()`` THEN separate ``stat()`` form
+    had a check-then-use race -- a transcript removed between the two
+    calls raised ``FileNotFoundError`` instead of degrading gracefully.
+    ONE ``stat()`` call, guarded, closes it."""
     session_path = session_transcript_path(cell_path)
-    if not session_path.is_file():
+    try:
+        mtime = session_path.stat().st_mtime
+    except FileNotFoundError:
         return None
     stamp = now if now is not None else time.time()
-    return max(0.0, (stamp - session_path.stat().st_mtime) / 3600.0)
+    return max(0.0, (stamp - mtime) / 3600.0)
 
 
 def select_live(cells: list[CellDepth], live_hours: float, *,

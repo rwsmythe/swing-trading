@@ -400,6 +400,36 @@ def test_r3_a_missing_parent_transcript_does_not_crash(projects, capsys):
     assert "agent-aorphan" not in out
 
 
+def test_r3_toctou_deletion_between_check_and_stat_does_not_crash(
+    projects, monkeypatch,
+):
+    """Codex R1 minor (2026-09-28, this dispatch's round-1 review): the
+    original ``is_file()`` THEN separate ``stat()`` form raised
+    ``FileNotFoundError`` if the transcript vanished between the two calls
+    -- a real check-then-use race, distinct from the "never existed" case
+    above. Reproduced by monkeypatching ``Path.stat`` to raise on ONLY the
+    session-transcript path, simulating a deletion that happens strictly
+    AFTER any existence check the implementation might still perform."""
+    projects_dir, repo, sub = projects
+    now = time.time()
+    _write_cell(sub, "raced", [_record(0, 50_000, 0)], mtime=now - 5 * 3600)
+    session_path = _write_session(sub, mtime=now - 60)
+
+    real_stat = Path.stat
+
+    def _stat_raises_for_session_path(self, *args, **kwargs):
+        if self == session_path:
+            raise FileNotFoundError(self)
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _stat_raises_for_session_path)
+    # must not raise -- degrades to None, the same as "never existed"
+    age = cell_depth.session_transcript_age_hours(
+        sub / "agent-araced.jsonl", now=now,
+    )
+    assert age is None
+
+
 def test_r3_session_transcript_path_never_crosses_project_dirs(tmp_path):
     # every parked lookup is derived from the CELL's own path, so it always
     # names a session transcript under the SAME project dir the cell came

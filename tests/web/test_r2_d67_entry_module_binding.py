@@ -29,6 +29,10 @@ setup, so the wrapper is reached regardless of import order.
 """
 from __future__ import annotations
 
+import types
+
+import pytest
+
 # MODULE-TOP import -- forces swing.trades.entry's own by-name binding
 # (`from swing.data.repos.trades import insert_trade_with_event`) to be
 # captured at THIS file's collection time, before ANY per-test autouse
@@ -118,3 +122,68 @@ def test_record_entry_reaches_the_wrapper_under_full_run_import_order(
         assert current_size == 100
     finally:
         conn.close()
+
+
+def test_import_order_determines_whether_a_by_name_binding_leaks_after_teardown() -> None:
+    """Codex R1 minor (2026-09-28, this dispatch's round-1 review): fixture-
+    scoped ``monkeypatch.setattr(entry_module, "insert_trade_with_event",
+    wrapped)`` only correctly restores the REAL function at teardown if
+    ``entry_module``'s binding was NOT itself captured -- via a first-ever
+    ``import swing.trades.entry`` -- AFTER ``trades_repo`` was already
+    patched in that SAME test. If it were, the import's OWN execution
+    (``from swing.data.repos.trades import insert_trade_with_event``) binds
+    the module's name to THAT TEST'S wrapped closure as a side effect,
+    ``monkeypatch.setattr`` then records that already-wrapped value as
+    "original", and teardown restores it right back to the dead closure --
+    pinned there until the next test's own patch overwrites it (never
+    observed by ``record_entry``, which always passes ``attempt_id`` and so
+    always takes the wrapper's delegate-to-real branch regardless of which
+    closure answers -- but a real, needless leak).
+
+    This reproduces the mechanism on a THROWAWAY synthetic module (never
+    the real ``swing.trades.entry``, to avoid an xdist-fragile
+    ``sys.modules`` del/re-import -- CLAUDE.md's raw-del gotcha), proving
+    BOTH halves in one test: the OLD (buggy) order -- patch-source-first,
+    bind-name-second -- leaks; the FIXED order the conftest fixture now
+    uses -- bind-name-first, patch-source-second -- does not.
+    """
+    def real_fn(x: int) -> int:
+        return x
+
+    # OLD (buggy) order: patch the "trades_repo" stand-in FIRST, then
+    # "import" (bind the module's own name to whatever the source
+    # currently holds) SECOND -- reproduces entry.py's first-ever import
+    # happening AFTER a test already patched what it imports from.
+    stand_in_repo_buggy = types.SimpleNamespace(insert_trade_with_event=real_fn)
+    mod_buggy = types.ModuleType("throwaway_entry_buggy_order")
+    with pytest.MonkeyPatch().context() as mp:
+        def wrapped_buggy(x: int) -> int:
+            return real_fn(x)
+        mp.setattr(stand_in_repo_buggy, "insert_trade_with_event", wrapped_buggy)
+        # the "import" happens NOW, after the patch -- captures wrapped_buggy
+        mod_buggy.insert_trade_with_event = stand_in_repo_buggy.insert_trade_with_event
+        mp.setattr(mod_buggy, "insert_trade_with_event", wrapped_buggy)
+        assert mod_buggy.insert_trade_with_event is wrapped_buggy
+    # RED shape: teardown left the buggy-order module PINNED to the dead
+    # closure, not restored to the real function.
+    assert mod_buggy.insert_trade_with_event is wrapped_buggy, (
+        "reproduces the leak the pre-fix conftest ordering had"
+    )
+
+    # FIXED order: "import" (bind) FIRST, patch the source SECOND -- the
+    # conftest fixture's ordering after this rider's fix.
+    stand_in_repo_fixed = types.SimpleNamespace(insert_trade_with_event=real_fn)
+    mod_fixed = types.ModuleType("throwaway_entry_fixed_order")
+    mod_fixed.insert_trade_with_event = stand_in_repo_fixed.insert_trade_with_event
+    with pytest.MonkeyPatch().context() as mp:
+        def wrapped_fixed(x: int) -> int:
+            return real_fn(x)
+        mp.setattr(stand_in_repo_fixed, "insert_trade_with_event", wrapped_fixed)
+        mp.setattr(mod_fixed, "insert_trade_with_event", wrapped_fixed)
+        assert mod_fixed.insert_trade_with_event is wrapped_fixed
+    # GREEN shape: teardown correctly restored the fixed-order module to
+    # the real function -- no leak.
+    assert mod_fixed.insert_trade_with_event is real_fn, (
+        "the fix: import-before-patch lets monkeypatch correctly restore "
+        "the real function at teardown"
+    )
