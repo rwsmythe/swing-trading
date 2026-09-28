@@ -58,6 +58,18 @@ wrong cell's depth with nothing saying one is missing. (That mechanism is
 INFERRED FROM THE CODE, not measured from an incident -- CHARC ruling (a),
 2026-09-24.) ``--live`` stays the rollover / in-flight census.
 
+R-3 (2026-09-28) fixes the CENSUS half of that same defect (``--agent`` had
+already fixed the round-gate READ). A sub-agent dies WITH its parent session,
+so a cell is resumable only while its parent session's own transcript
+(``<project-slug>/<session-id>.jsonl``, one directory above the cell's
+``subagents/``) is still live. ``--live H`` now lists every cell written
+within ``H`` hours (unchanged) PLUS every OLDER cell whose parent session
+transcript was written within ``H`` hours -- a cell parked at a round gate,
+found via its still-live parent rather than its own silent transcript. The
+second group is marked ``parked`` in the ``flag`` column (``OVER,parked`` /
+``ok,parked``); it counts toward the ``--cap`` exit-status check exactly like
+any other listed cell.
+
 Exit status: 0 = every listed cell is at or under --cap (default 400000);
 1 = at least one listed cell exceeds it; 2 = no transcripts found for the repo,
 or a named ``--agent`` cell was not found (the searched glob is printed).
@@ -221,11 +233,60 @@ def find_agents(projects_dir: Path, repo_root: Path, agent_ids: list[str], *,
     return cells, missing
 
 
-def format_rows(cells: list[CellDepth], cap: int) -> list[str]:
+def session_transcript_path(cell_path: Path) -> Path:
+    """The parent MAIN session's own transcript for a cell path
+    (``<pdir>/<session-id>/subagents/agent-<id>.jsonl``): the sibling file
+    ``<pdir>/<session-id>.jsonl``, one directory above the cell's
+    ``subagents/`` dir. Never crosses project dirs -- it is always derived
+    from the cell's OWN path, so it can never name a different slug's
+    session."""
+    subagents_dir = cell_path.parent          # .../  <session-id>/subagents
+    session_dir = subagents_dir.parent         # .../  <session-id>
+    pdir = session_dir.parent                  # .../  <project-slug>
+    return pdir / f"{session_dir.name}.jsonl"
+
+
+def session_transcript_age_hours(cell_path: Path, *, now: float | None = None) -> float | None:
+    """The parent session transcript's age in hours, or ``None`` if it does
+    not exist (a missing parent transcript is not a crash -- it simply
+    means the cell has no live parent to be found through)."""
+    session_path = session_transcript_path(cell_path)
+    if not session_path.is_file():
+        return None
+    stamp = now if now is not None else time.time()
+    return max(0.0, (stamp - session_path.stat().st_mtime) / 3600.0)
+
+
+def select_live(cells: list[CellDepth], live_hours: float, *,
+                now: float | None = None) -> tuple[list[CellDepth], set[Path]]:
+    """R-3: the ``--live`` selection. Every cell written within
+    ``live_hours`` (unchanged), PLUS every OLDER cell whose PARENT session
+    transcript was written within ``live_hours`` -- a cell parked at a
+    review-round gate, found through its still-live parent rather than its
+    own silent transcript. Returns (selected cells, the subset that is
+    parked, by ``CellDepth.path``)."""
+    kept: list[CellDepth] = []
+    parked: set[Path] = set()
+    for c in cells:
+        if c.age_hours <= live_hours:
+            kept.append(c)
+            continue
+        session_age = session_transcript_age_hours(c.path, now=now)
+        if session_age is not None and session_age <= live_hours:
+            kept.append(c)
+            parked.add(c.path)
+    return kept, parked
+
+
+def format_rows(cells: list[CellDepth], cap: int, *,
+                parked: set[Path] | None = None) -> list[str]:
+    parked = parked or set()
     rows = [f"{'peak':>9}  {'current':>9}  {'turns':>5}  {'age':>7}  flag  "
             f"{'build':<9}  {'model':<16}  cell / dispatch prompt"]
     for c in cells:
         flag = "OVER" if c.peak > cap else "  ok"
+        if c.path in parked:
+            flag = f"{flag},parked"
         # never truncate build/model: a clipped model id would read as a DIFFERENT
         # model, so a mixed value that overflows its column shifts the rest of the
         # row -- that is correct
@@ -274,13 +335,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no {kind} transcripts found under {projects_dir} for slug "
               f"{project_slug(repo_root)!r}")
         return 2
+    parked: set[Path] = set()
     if args.live is not None:
-        cells = [c for c in cells if c.age_hours <= args.live]
+        if args.sessions:
+            # a session IS the top-level transcript; there is no parent to
+            # find a parked one through, so --sessions --live stays a plain
+            # mtime filter.
+            cells = [c for c in cells if c.age_hours <= args.live]
+        else:
+            cells, parked = select_live(cells, args.live)
         if not cells:
             print(f"no {kind}s written in the last {args.live:g}h (cap {args.cap:,}); "
                   "nothing to check")
             return 0
-    for row in format_rows(cells, args.cap):
+    for row in format_rows(cells, args.cap, parked=parked):
         print(row)
     over = [c for c in cells if c.peak > args.cap]
     print(f"{len(cells)} {kind}(s); {len(over)} over the {args.cap:,} cap")

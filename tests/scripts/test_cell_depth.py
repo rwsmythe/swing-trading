@@ -323,3 +323,119 @@ def test_agent_with_live_is_a_usage_error(projects, capsys):
         cell_depth.main(["--projects-dir", str(projects_dir), "--repo-root", str(repo),
                          "--agent", "ax", "--live", "1"])
     assert exc.value.code == 2
+
+
+# --- R-3 (2026-09-28): --live also lists PARKED cells of live sessions -----
+#
+# --agent (above) fixed the round-GATE read; this fixes the CENSUS. A cell
+# parked at a review-round gate writes nothing, so it drops out of a plain
+# mtime filter after the window -- even though its parent session (which it
+# can only be resumed from) is still live.
+
+def _write_session(sub: Path, *, mtime: float) -> Path:
+    """The MAIN session transcript sibling to a cell's <session-id> dir --
+    <pdir>/<session-id>.jsonl, one directory above <session-id>/subagents/."""
+    session_dir = sub.parent          # .../<session-id>
+    pdir = session_dir.parent         # .../<project-slug>
+    p = pdir / f"{session_dir.name}.jsonl"
+    p.write_text(_record(0, 0, 0, text="a live session") + "\n", encoding="utf-8")
+    os.utime(p, (mtime, mtime))
+    return p
+
+
+def test_r3_a_old_cell_with_a_fresh_parent_is_listed_and_flagged_parked(
+    projects, capsys,
+):
+    projects_dir, repo, sub = projects
+    now = time.time()
+    _write_cell(sub, "parked", [_record(0, 50_000, 0)], mtime=now - 5 * 3600)
+    _write_session(sub, mtime=now - 60)          # the parent is still live
+    rc, out = _run(projects_dir, repo, "--live", "1", capsys=capsys)
+    assert rc == 0
+    assert "agent-aparked" in out
+    row = next(line for line in out.splitlines() if "agent-aparked" in line)
+    assert "parked" in row
+
+
+def test_r3_b_old_cell_with_an_old_parent_is_not_listed(projects, capsys):
+    projects_dir, repo, sub = projects
+    now = time.time()
+    _write_cell(sub, "gone", [_record(0, 50_000, 0)], mtime=now - 5 * 3600)
+    _write_session(sub, mtime=now - 5 * 3600)     # the parent is ALSO old
+    rc, out = _run(projects_dir, repo, "--live", "1", capsys=capsys)
+    assert rc == 0
+    assert "agent-agone" not in out
+    assert "no cells written in the last" in out
+
+
+def test_r3_c_a_fresh_cell_is_listed_not_flagged_parked(projects, capsys):
+    projects_dir, repo, sub = projects
+    now = time.time()
+    _write_cell(sub, "fresh", [_record(0, 50_000, 0)], mtime=now - 60)
+    rc, out = _run(projects_dir, repo, "--live", "1", capsys=capsys)
+    assert rc == 0
+    assert "agent-afresh" in out
+    row = next(line for line in out.splitlines() if "agent-afresh" in line)
+    assert "parked" not in row
+
+
+def test_r3_d_a_parked_cell_over_the_cap_exits_1(projects, capsys):
+    projects_dir, repo, sub = projects
+    now = time.time()
+    _write_cell(sub, "deep", [_record(0, 500_000, 0)], mtime=now - 5 * 3600)
+    _write_session(sub, mtime=now - 60)
+    rc, out = _run(projects_dir, repo, "--live", "1", "--cap", "400000", capsys=capsys)
+    assert rc == 1
+    assert "OVER" in out and "parked" in out
+    assert "1 over the 400,000 cap" in out
+
+
+def test_r3_a_missing_parent_transcript_does_not_crash(projects, capsys):
+    # no session transcript file at all -- an old cell with nothing above it
+    projects_dir, repo, sub = projects
+    now = time.time()
+    _write_cell(sub, "orphan", [_record(0, 50_000, 0)], mtime=now - 5 * 3600)
+    rc, out = _run(projects_dir, repo, "--live", "1", capsys=capsys)
+    assert rc == 0
+    assert "agent-aorphan" not in out
+
+
+def test_r3_session_transcript_path_never_crosses_project_dirs(tmp_path):
+    # every parked lookup is derived from the CELL's own path, so it always
+    # names a session transcript under the SAME project dir the cell came
+    # from -- it cannot resolve to a different slug's session file.
+    cell_path = (
+        tmp_path / "projects" / "some-slug" / "sess-9" / "subagents" / "agent-ax.jsonl"
+    )
+    session_path = cell_depth.session_transcript_path(cell_path)
+    assert session_path == tmp_path / "projects" / "some-slug" / "sess-9.jsonl"
+
+
+def test_r3_sessions_mode_with_live_is_unaffected_by_parked_logic(
+    projects, capsys,
+):
+    # --sessions --live stays a plain mtime filter -- a session has no
+    # "parent" to be parked through.
+    projects_dir, repo, sub = projects
+    now = time.time()
+    main = sub.parent.parent / "sess-1.jsonl"
+    main.parent.mkdir(parents=True, exist_ok=True)
+    main.write_text(_record(0, 100_000, 0, text="a director session") + "\n",
+                    encoding="utf-8")
+    os.utime(main, (now - 5 * 3600, now - 5 * 3600))
+    rc, out = _run(projects_dir, repo, "--sessions", "--live", "1", capsys=capsys)
+    assert rc == 0
+    assert "sess-1.jsonl" not in out
+    assert "no sessions written in the last" in out
+
+
+def test_r3_over_cap_and_parked_flag_form_is_OVER_comma_parked(projects, capsys):
+    # the documented combined-flag form.
+    projects_dir, repo, sub = projects
+    now = time.time()
+    _write_cell(sub, "deep", [_record(0, 500_000, 0)], mtime=now - 5 * 3600)
+    _write_session(sub, mtime=now - 60)
+    rc, out = _run(projects_dir, repo, "--live", "1", "--cap", "400000", capsys=capsys)
+    row = next(line for line in out.splitlines() if "agent-adeep" in line)
+    assert "OVER,parked" in row
+    out.encode("ascii")
