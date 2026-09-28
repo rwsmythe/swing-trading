@@ -57,3 +57,28 @@ The cell routed d1 and d2-lenient to RD, and ruled everything else rulable at th
 **Tests:** the cell's list of nine, with the pre- and post-fix arithmetic it gave, is adopted as the minimum. Test 4 (E2E-2) and tests 5 and 7 are controls that must FAIL a d3, b1 or restore-unclaimed port; state that in their docstrings.
 
 **Envelope:** `swing/web/routes/trades.py`, `swing/web/view_models/trades.py`, `swing/web/templates/partials/trade_exit_form.html.j2`, and tests. `swing/trades/` and `swing/data/` are read-only. There is no schema change.
+
+## Execution (executing cell; TDD, then Reviewer A at `strong`)
+
+Commits on `exit-rerender-anchor` (base `75de0ac8`), each with its RED in the body:
+
+| commit | ruling | tests added |
+|---|---|---|
+| `4bcda3a2` | (e) typed values kept on the `ValueError` branch and `_reject_anchor` (`_rerender_exit_form_with_error`) | typed values x1, `_reject_anchor` x2 (malformed; valid dict + bad index) |
+| `ccc4bd83` | (b)(c)(d) the d2-strict restore + the refresh notice | unchanged-list restore, blank stamp verbatim, E2E-2 two-tab control, advisory control, parity re-fetch, unclaimed control x2, round trip |
+| `ec0929c3` | (a) candidate pick by hash, under the gate only | pick restored, pick-not-carried control |
+| `7311a0af` | Codex R1 minor: frozen resolver clock in the tests | -- |
+
+Against the base code (`75de0ac8` `swing/web`) the 13 tests fail 11 and pass the 2 unclaimed controls; the round trip fails `assert 'stop' == 'trim'` there (the live mis-recording path). Controls mutation-checked on `ccc4bd83`: a d3 port (gate always true) fails the two-tab and parity tests; a b1 port (advisory cleared on restore) fails the advisory test; a restore-unclaimed port fails both unclaimed tests.
+
+Suite before review (`ec0929c3`): `15341 passed, 13 skipped` (`suite-pre-codex.txt`).
+
+### Reviewer A rounds
+
+Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\exit-rerender-anchor\r1\` (`codex-review.txt` 730,669 bytes, `prompt.md`, `diff.txt`, `run.sh`, `.copowers-findings.md`).
+
+| round | reviewed head | model / effort | `^ERROR` | footer | verdict | crit | major | minor | tokens used | depth (orchestrator) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | `ec0929c3` | gpt-5.6-sol / high | 0 | present | clean | 0 | 0 | 1 | 178,835 | |
+
+R1-minor (live clock in the new tests): accepted, fixed in `7311a0af` without a round. The loop ended at round 1.
