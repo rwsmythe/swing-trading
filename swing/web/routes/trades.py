@@ -2410,6 +2410,49 @@ def entry_post(
             render_failure=post_bind_error_text)))
 
 
+def _rerender_exit_form_with_error(
+    *, request: Request, templates, cfg, cache, executor, trade_id: int,
+    exit_date: str, exit_price: float, shares: int, reason: str,
+    notes: str | None, error_message: str,
+) -> HTMLResponse:
+    """Re-render the exit form at 400 after a refused POST, KEEPING what the
+    operator typed (RD 1(iii) / 22-F AL-6; ruling (e) in
+    ``docs/superpowers/plans/2026-09-28-exit-rerender-anchor.ledger.md``).
+    The exit twin of ``_rerender_entry_form_with_error``.
+
+    The VM is rebuilt by ``build_exit_form_vm``, which FETCHES: the fresh
+    candidate list, anchor and advisory are the ones rendered. The typed
+    date, price, shares, notes and reason are laid over it. Typed shares are
+    kept even after an "exceeds remaining" refusal; the template still
+    renders the DB's ``remaining_shares`` as ``max=``, so the browser blocks
+    the resubmit until they are corrected.
+    """
+    from dataclasses import replace as dc_replace
+    vm = build_exit_form_vm(
+        trade_id=trade_id, cfg=cfg, cache=cache, executor=executor,
+    )
+    if vm is None:
+        # The trade is closed or gone: banner-only fragment.
+        return templates.TemplateResponse(
+            request, "partials/trade_form_error.html.j2",
+            {"error_message": error_message},
+            status_code=400,
+        )
+    vm = dc_replace(
+        vm,
+        exit_date=exit_date,
+        exit_price=exit_price,
+        input_shares=shares,
+        notes=notes or "",
+        selected_reason=reason,
+    )
+    return templates.TemplateResponse(
+        request, "partials/trade_exit_form.html.j2",
+        {"vm": vm, "error_message": error_message},
+        status_code=400,
+    )
+
+
 @router.get("/trades/{trade_id}/exit/form", response_class=HTMLResponse)
 def exit_form(request: Request, trade_id: int):
     cfg = apply_overrides(request.app.state.cfg)
@@ -2521,21 +2564,14 @@ async def exit_post(
     # build_exit_form_vm which re-runs the Schwab fetch (or fallbacks to
     # operator_typed); the bad submitted anchor is NOT echoed back so the
     # operator's next retry sees a fresh anchor instead of replaying the
-    # tampered one.
+    # tampered one. The operator's TYPED values are kept (ruling (e), exit
+    # re-render anchor ledger); none of them is part of the anchor.
     def _reject_anchor(error_message: str) -> HTMLResponse:
-        vm_local = build_exit_form_vm(
-            trade_id=trade_id, cfg=cfg, cache=cache, executor=executor,
-        )
-        if vm_local is not None:
-            return templates.TemplateResponse(
-                request, "partials/trade_exit_form.html.j2",
-                {"vm": vm_local, "error_message": error_message},
-                status_code=400,
-            )
-        return templates.TemplateResponse(
-            request, "partials/trade_form_error.html.j2",
-            {"error_message": error_message},
-            status_code=400,
+        return _rerender_exit_form_with_error(
+            request=request, templates=templates, cfg=cfg, cache=cache,
+            executor=executor, trade_id=trade_id, exit_date=exit_date,
+            exit_price=exit_price, shares=shares, reason=reason_enum.value,
+            notes=notes, error_message=error_message,
         )
 
     # 4-tier rejection ladder (mirrors entry_post pattern):
@@ -3187,19 +3223,16 @@ async def exit_post(
             try:
                 result = record_exit(conn, req)
             except ValueError as exc:
-                # R: spec §5.1 case 2 — re-render form with authoritative remaining shares.
-                vm = build_exit_form_vm(trade_id=trade_id, cfg=cfg, cache=cache, executor=executor)
-                if vm is not None:
-                    return templates.TemplateResponse(
-                        request, "partials/trade_exit_form.html.j2",
-                        {"vm": vm, "error_message": str(exc)},
-                        status_code=400,
-                    )
-                # Fallback: trade closed/gone — use banner-only fragment.
-                return templates.TemplateResponse(
-                    request, "partials/trade_form_error.html.j2",
-                    {"error_message": str(exc)},
-                    status_code=400,
+                # R: spec §5.1 case 2 — re-render form with authoritative
+                # remaining shares (``max=``), keeping the typed values. The
+                # helper falls back to the banner-only fragment when the
+                # trade is closed/gone.
+                return _rerender_exit_form_with_error(
+                    request=request, templates=templates, cfg=cfg,
+                    cache=cache, executor=executor, trade_id=trade_id,
+                    exit_date=exit_date, exit_price=exit_price,
+                    shares=shares, reason=reason_enum.value, notes=notes,
+                    error_message=str(exc),
                 )
         finally:
             try:
