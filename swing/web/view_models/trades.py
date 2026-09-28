@@ -984,6 +984,11 @@ class TradeExitFormVM:
     # restored (the fresh fetch was not populated, or its candidate map
     # differs from the submitted one), so the FRESH anchor is rendered.
     auto_fill_refresh_notice: str | None = None
+    # Ruling (a): the index, in ``auto_fill_candidates``, of the candidate the
+    # operator had selected, matched BY SIGNATURE HASH against the fresh list
+    # and set only when ruling (d) restored his anchor. None renders the
+    # default (the last candidate) checked.
+    selected_candidate_index: int | None = None
 
 
 def build_exit_form_vm(

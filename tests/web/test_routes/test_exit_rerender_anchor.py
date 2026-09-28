@@ -315,6 +315,41 @@ def test_unchanged_list_restores_the_submitted_anchor_triple(world):
     assert _exit_fills(world.cfg) == []
 
 
+def test_unchanged_list_restores_the_non_default_candidate_pick_by_hash(world):
+    """(a) Under the (d) gate the operator's candidate pick is restored BY
+    SIGNATURE HASH against the FRESH list: he picked index 0 (o1) where the
+    default is the last (o2).
+
+    PRE-FIX: ``checked`` is unconditional on ``loop.last`` -> ['1']."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd, r = _refused(tc, world.tid, candidate_index="0")
+    assert r.status_code == 400, r.text[:500]
+    assert _hidden(r.text, "auto_fill_audit_at") == _SUBMITTED_AUDIT_AT
+    assert _checked_radios(r.text) == ["0"]
+    picked = fd["candidate_signature_hash_0"]
+    assert _browser_form(r.text)["candidate_signature_hash_0"] == picked
+
+
+def test_non_default_pick_is_not_carried_when_the_list_changed(world):
+    """(a) The pick is restored ONLY under the (d) gate.  When the list
+    changed (a third order arrived between GET and POST) the fresh default
+    -- the last candidate -- is checked and the notice shows.  CONTROL: the
+    picked o1 is STILL in the fresh list, so a port that restored the pick by
+    hash outside the gate would check index 0 and fail here.
+
+    PRE-FIX (75de0ac8): FAILS on the notice (the radio is the default either
+    way)."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _browser_form(tc.get(f"/trades/{world.tid}/exit/form").text)
+        world.box["orders"].append(_order("o3", "2026-05-22", 132.0, 2))
+        r = _post(tc, world.tid, dict(fd, shares="50", candidate_index="0",
+                                      auto_fill_audit_at=_SUBMITTED_AUDIT_AT))
+    assert r.status_code == 400, r.text[:500]
+    assert _NOTICE in r.text
+    assert _hidden(r.text, "auto_fill_audit_at") != _SUBMITTED_AUDIT_AT
+    assert _checked_radios(r.text) == ["2"]
+
+
 def test_restored_blank_audit_at_stays_blank_not_the_string_none(world):
     """(d) The triple is restored VERBATIM: a submitted blank
     ``auto_fill_audit_at`` re-renders blank.  An ``or None`` restore would

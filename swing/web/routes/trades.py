@@ -2468,6 +2468,7 @@ def _rerender_exit_form_with_error(
     submitted_envelope: dict | None = None,
     submitted_auto_fill_audit_at: str | None = None,
     submitted_fill_origin_at_form_render: str | None = None,
+    submitted_selected_signature_hash: str | None = None,
 ) -> HTMLResponse:
     """Re-render the exit form at 400 after a refused POST, KEEPING what the
     operator typed and, when it is safe, the anchor he submitted (RD 1(iii) /
@@ -2520,6 +2521,17 @@ def _rerender_exit_form_with_error(
         and submitted_fill_origin_at_form_render in _EXIT_AUTO_FILL_CLAIMS
     ):
         if _exit_candidates_maps_equal(vm, submitted_envelope):
+            # Ruling (a): re-check the operator's pick BY HASH in the FRESH
+            # list. Under the gate the hashes are the submitted ones by
+            # construction; a hash not in the list leaves the default.
+            selected_index = next(
+                (
+                    i for i, cand in enumerate(vm.auto_fill_candidates or ())
+                    if submitted_selected_signature_hash is not None
+                    and cand.signature_hash == submitted_selected_signature_hash
+                ),
+                None,
+            )
             vm = dc_replace(
                 vm,
                 auto_fill_schwab_source_value_json=(
@@ -2531,6 +2543,7 @@ def _rerender_exit_form_with_error(
                 auto_fill_audit_at=submitted_auto_fill_audit_at or "",
                 auto_fill_fill_origin=submitted_fill_origin_at_form_render,
                 auto_fill_kind="populated",
+                selected_candidate_index=selected_index,
             )
         else:
             vm = dc_replace(
@@ -2648,8 +2661,10 @@ async def exit_post(
     claimed_auto_fill = fill_origin_at_form_render in _EXIT_AUTO_FILL_CLAIMS
     # Bound here, not only inside the anchor block below, because the
     # ``record_exit`` refusal re-render reads it to decide whether the
-    # submitted anchor is restorable (ruling (c): a claim AND a dict).
+    # submitted anchor is restorable (ruling (c): a claim AND a dict) and
+    # which candidate the operator had picked (ruling (a)).
     anchor_envelope: object = None
+    selected_index: int | None = None
 
     # Helper: 400 + recovery-form re-render with anchor CLEARED (T3.SB1 R3
     # M#2 anchor-clear discipline BINDING). Recovery form is rebuilt from
@@ -2828,7 +2843,7 @@ async def exit_post(
         # Single-fill case: candidate_index omitted
         # → treat as 0 (the template emits no radio at length 1; the form
         # may or may not emit candidate_signature_hash_0; both shapes OK).
-        selected_index: int | None = None
+        # (``selected_index`` is bound with ``anchor_envelope`` above.)
         if isinstance(anchor_envelope, dict) and claimed_auto_fill:
             if candidate_index_raw is not None and str(
                 candidate_index_raw,
@@ -3342,6 +3357,11 @@ async def exit_post(
                     ),
                     submitted_fill_origin_at_form_render=(
                         fill_origin_at_form_render if restorable else None
+                    ),
+                    submitted_selected_signature_hash=(
+                        candidate_sigs.get(selected_index)
+                        if restorable and selected_index is not None
+                        else None
                     ),
                 )
         finally:

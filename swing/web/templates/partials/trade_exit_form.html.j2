@@ -115,7 +115,7 @@
         <div class="auto-fill-candidate">
           <label>
             <input type="radio" name="candidate_index" value="{{ loop.index0 }}"
-                   {% if loop.last %}checked{% endif %}>
+                   {% if (vm.selected_candidate_index is none and loop.last) or loop.index0 == vm.selected_candidate_index %}checked{% endif %}>
             {{ cand.date }} &mdash; {{ '%.2f' | format(cand.price) }} &times; {{ cand.quantity }} sh
             {% if cand.order_id %}<span class="muted">(order {{ cand.order_id }})</span>{% endif %}
             {#- D31 per-row markers. The banner above states these for the
