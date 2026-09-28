@@ -114,6 +114,20 @@ class Probe:
         assert c.execute("PRAGMA recursive_triggers").fetchone()[0] == 0
         return c
 
+    def info_row(self, section: str, table: str, tut: str | None, pid: str,
+                message: str) -> None:
+        """The ONE place a direct (non-``run``-routed) INFO row is emitted --
+        couples the row write to the counter so they cannot diverge again
+        (R-4, 2026-09-28: ``exposure()``'s empty-table INFO write was
+        missing its ``n_info += 1``, undercounting ``#SUMMARY`` INFO by one
+        per empty exposure table). Column shape matches ``run()``'s own
+        write exactly: section, table, tut-or-dash, pid, the literal
+        ``info`` expectation, the message, the literal ``INFO`` verdict."""
+        self.out.write(
+            "\t".join([section, table, tut or "-", pid, "info", message, "INFO"]) + "\n"
+        )
+        self.n_info += 1
+
     def classify(self, exc: Exception | None) -> str:
         if exc is None:
             return "OK"
@@ -709,7 +723,7 @@ def exposure(p: Probe):
     for t in EXPOSURE:
         n = p.conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
         if n == 0:
-            p.out.write(f"E-exposure\t{t}\t-\tempty\tinfo\tno rows to probe\tINFO\n")
+            p.info_row("E-exposure", t, None, "empty", "no rows to probe")
             continue
         r = p.conn.execute(f"SELECT rowid, * FROM {t} LIMIT 1")
         names = [d[0] for d in r.description]
@@ -864,8 +878,7 @@ def g0041(p: Probe):
         order = ", ".join(s.pk)
         first = p.row(table, f"1=1 ORDER BY {order} ASC LIMIT 1")
         if first is None:
-            p.out.write(f"{sec}\t{table}\t-\tno-row\tinfo\tno rows to probe\tINFO\n")
-            p.n_info += 1
+            p.info_row(sec, table, None, "no-row", "no rows to probe")
             continue
         last = p.row(table, f"1=1 ORDER BY {order} DESC LIMIT 1")
         rows = [first] if [first[k] for k in s.pk] == [last[k] for k in s.pk] \
@@ -883,9 +896,8 @@ def g0041(p: Probe):
         if s.special_conflict:
             srow = p.row(table, f"{_SPECIAL_ROW[table]} ORDER BY {order} LIMIT 1")
             if srow is None:
-                p.out.write(f"{sec}\t{table}[partial]\t{nr}\tA2-partial\tinfo\t"
-                            f"no row satisfies {_SPECIAL_ROW[table]}\tINFO\n")
-                p.n_info += 1
+                p.info_row(sec, f"{table}[partial]", nr, "A2-partial",
+                          f"no row satisfies {_SPECIAL_ROW[table]}")
             else:
                 srow.pop(s.pk[0])
                 p.run(sec, f"{table}[partial]", nr, "A2-REPLACE-partial-key",
@@ -947,9 +959,8 @@ def g0041(p: Probe):
                         "STATE-pointer-set-on-an-active-row")
             for f in s.F:
                 if r[f.col] is None:
-                    p.out.write(f"{sec}\t{tag}\t{ut}\tF-{f.col}-parent-present\tinfo\t"
-                                f"fk is NULL on this row\tINFO\n")
-                    p.n_info += 1
+                    p.info_row(sec, tag, ut, f"F-{f.col}-parent-present",
+                              "fk is NULL on this row")
                     continue
                 frozen = table != "review_log" or completed
                 upd(f.col, None, fires if frozen else not_ut,
