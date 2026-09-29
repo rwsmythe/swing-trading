@@ -78,7 +78,8 @@ generation at ~400K context (read it yourself: python scripts/cell_depth.py
 --sessions --live 1 -- the row whose prompt names your role) or at a
 clean boundary the operator names -- never at the window's edge. PRECONDITION:
 no dispatched cell in flight (python scripts/cell_depth.py --live 2 -- a cell
-still being written to is in flight; a subagent DIES with the session that
+still being written to is in flight, and so is one flagged `parked` -- its
+resumable state dies the same way; a subagent DIES with the session that
 spawned it, and an early executing cell has committed nothing). With a cell
 running: HOLD -- dispatch nothing new, await the return, QA, commit, then roll;
 if context cannot survive the wait, stop the cell and WIP-commit its worktree
