@@ -101,3 +101,34 @@ R1-minor (live clock in the new tests): accepted, fixed in `7311a0af` without a 
 - **Verdict:** QA PASS. **REMAINING before merge:**
   1. the OPERATOR-WITNESSED browser check, step by step, against the worktree (`PYTHONPATH=. python -m swing.cli web` from this worktree, on a port other than any running `swing web`);
   2. then `git merge --no-ff`, the merged-head fast suite read, and the 0039 test reproduced `-n 0` if it reds.
+
+## Operator-witnessed browser check (2026-09-28, run by the orchestrator step by step)
+
+**Setup.** The worktree's code at `551fa05a` was served with `PYTHONPATH=. python -m swing.cli --config <scratch config> web --port 8091`, run from this worktree. `swing.web.routes.trades` was checked to resolve to the worktree. The scratch config points every `[paths]` entry at a scratchpad directory. Its DB is a `sqlite3` backup-API copy of the live v41 DB, read `mode=ro`. The live DB was re-read after every seed and held 28 trades, `max(id)` 28. Seeds went through the production `swing trade entry` CLI against the scratch config:
+- #29 PBF, 2 sh;
+- #30 CADL, 18 sh (two real Schwab SELL orders since entry);
+- #31 NRIX, 12 sh (one).
+
+**Schwab.** The first render read `refresh_token expired`, which is the live token state too. As CHARC's fyi `20260929T030133Z` noted, that would have left the d2-strict RESTORE branch unwitnessable. The operator re-authenticated, and the branch server then rendered CADL #30 `populated` with 2 candidates. The PBF-only degraded step was dropped. The no-restore branch was driven by the two-tab step instead.
+
+| step | surface | operator saw | disk / log |
+|---|---|---|---|
+| 1 | RESTORE: CADL #30, the NON-default candidate (08-19) picked, price 0, reason `target`, note typed, submit | "result is as expected": the error shown; 08-19 still selected; typed values kept; reason `target`; no refresh notice | `POST /trades/30/exit 400` at 18:05:21 |
+| 2 | corrected resubmit from the refused form | accepted, 9 sh remaining | fill 62: `trim`, reason `target`, `schwab_auto_then_operator_corrected`, `selected_candidate_order_id` 1007645251993. PASS on reason and pick. |
+| 3 | NO-RESTORE, two tabs: tab B records the NRIX #31 candidate unedited; tab A's stale form submits price 0, reason `manual` | pasted verbatim: `exit price must be > 0; got 0.0`; the refresh notice ("the Schwab fill list changed since this form was rendered, or could not be re-read ..."); "No matching Schwab SELL fills for NRIX since 2026-08-19"; date 09/17/2026, price 0.00, shares 6, reason `manual`, note kept | tab B's fill 65: `schwab_auto`, `schwab_order_id` 1007966117935, 6 sh remaining. Tab A's POST 400 at 18:14:49. |
+
+**Step 2's date, investigated, and NOT a defect of this arc.** Fill 62 recorded `2026-09-11`, the DEFAULT candidate's date. `operator_corrected_value_json` is built from the submitted form field, and it reads `exit_date` `2026-09-11`, so the browser sent 09-11. The form has no script, and choosing a radio does not refill the date and price inputs. The operator had confirmed the 08-19 RADIO before submitting, not the date box, and the orchestrator's step-1 wording ("leave the date as it is") set that up.
+
+An HTTP replay on PBF #29 isolated the arc's own behaviour:
+- typed date 2026-09-16, price 0: 400, and the re-render's date input reads 2026-09-16;
+- resubmit at 77.72: 200, and the fill is recorded `2026-09-16`, reason `target`.
+
+The typed date survives a refusal and is recorded as sent.
+
+**Two pre-arc findings, carried out of this arc:**
+- (F1) choosing a non-default candidate leaves the date and price inputs holding the default candidate's values. A live exit can therefore be recorded against the chosen order with the default order's date.
+- (F2) after step 2, order 1007645251993 was offered again on CADL #30 with an EMPTY `possible_duplicates`. Its envelope carries only `selected_candidate_order_id`, which D31 makes anonymous, and the corrected values match neither candidate. This is a concrete instance for the exit double-record arc, which the operator ruled 2026-09-28 is "after the pause".
+
+**Teardown.** The server was stopped, and port 8091 was verified free with no witness `python` process left. The scratch DB and logs stay in the scratchpad.
+
+**Verdict:** WITNESS PASSED on both d2-strict branches (restore, and no-restore on a world change), on ruling (e) (typed values plus the reason `<select>`), and on ruling (a) (the pick by hash on restore). **Not witnessed separately:** the fetch-FAILURE no-restore. It goes through the same `_exit_candidates_maps_equal` false branch as step 3. **Next:** `git merge --no-ff`.
