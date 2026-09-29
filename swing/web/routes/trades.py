@@ -2410,6 +2410,152 @@ def entry_post(
             render_failure=post_bind_error_text)))
 
 
+# The claims ``exit_post`` treats as an auto-fill claim (its
+# ``claimed_auto_fill``). A restore requires one (ruling (c)).
+_EXIT_AUTO_FILL_CLAIMS = ("schwab_auto", "schwab_auto_then_operator_corrected")
+
+_EXIT_AUTO_FILL_REFRESH_NOTICE = (
+    "Schwab auto-fill: the Schwab fill list changed since this form was "
+    "rendered, or could not be re-read, so the auto-fill selection was "
+    "refreshed. Check the date, price, shares and selected fill before "
+    "re-submitting."
+)
+
+
+def _exit_candidates_maps_equal(vm, submitted_envelope: dict) -> bool:
+    """Ruling (d), d2-strict: may a refused exit POST's SUBMITTED anchor be
+    restored over the fresh re-render?  True ONLY when the fresh fetch is
+    ``populated`` AND its ``candidates_map`` equals the submitted
+    ``candidates_map`` as parsed JSON.
+
+    The two maps are compared as their canonical serializations
+    (``json.dumps(..., sort_keys=True)``) of the PARSED values: key order and
+    whitespace do not count, and JSON types do -- a bare Python ``==`` over
+    the parsed maps would call ``3``, ``3.0`` and ``true`` equal. The fresh
+    map is built by ``resolve_exit_auto_fill`` from the fresh fetch, which
+    excludes every order already recorded on this trade, so equality means
+    the restored envelope offers exactly the fresh list.
+    """
+    import json as _json
+
+    if vm.auto_fill_kind != "populated":
+        return False
+    if "candidates_map" not in submitted_envelope:
+        return False
+    try:
+        fresh_envelope = _json.loads(vm.auto_fill_schwab_source_value_json or "")
+    except Exception:  # noqa: BLE001 -- any unparseable fresh anchor: no restore
+        return False
+    if not isinstance(fresh_envelope, dict):
+        return False
+    fresh_map = fresh_envelope.get("candidates_map")
+    if not isinstance(fresh_map, dict) or not fresh_map:
+        return False
+    try:
+        return (
+            _json.dumps(fresh_map, sort_keys=True)
+            == _json.dumps(submitted_envelope["candidates_map"], sort_keys=True)
+        )
+    except Exception:  # noqa: BLE001 -- e.g. RecursionError: no restore
+        return False
+
+
+def _rerender_exit_form_with_error(
+    *, request: Request, templates, cfg, cache, executor, trade_id: int,
+    exit_date: str, exit_price: float, shares: int, reason: str,
+    notes: str | None, error_message: str,
+    submitted_schwab_source_value_json: str | None = None,
+    submitted_envelope: dict | None = None,
+    submitted_auto_fill_audit_at: str | None = None,
+    submitted_fill_origin_at_form_render: str | None = None,
+    submitted_selected_signature_hash: str | None = None,
+) -> HTMLResponse:
+    """Re-render the exit form at 400 after a refused POST, KEEPING what the
+    operator typed and, when it is safe, the anchor he submitted (RD 1(iii) /
+    22-F AL-6; the rulings are in
+    ``docs/superpowers/plans/2026-09-28-exit-rerender-anchor.ledger.md``).
+    The exit twin of ``_rerender_entry_form_with_error``, and deliberately
+    NOT a copy of it.
+
+    The VM is rebuilt by ``build_exit_form_vm``, which FETCHES: the fresh
+    candidate list, anchor and advisory are the baseline. The typed date,
+    price, shares, notes and reason are laid over it (ruling (e)). Typed
+    shares are kept even after an "exceeds remaining" refusal; the template
+    still renders the DB's ``remaining_shares`` as ``max=``, so the browser
+    blocks the resubmit until they are corrected.
+
+    The ``submitted_*`` arguments are passed ONLY for a CLAIMED anchor whose
+    envelope parsed to a dict (ruling (c), the same gate as the POST's
+    stamping branch); ``_reject_anchor`` never passes them, so a rejected
+    anchor is never echoed. Given them, the SUBMITTED triple is restored only
+    under ruling (d)'s gate (``_exit_candidates_maps_equal``): kind
+    ``populated``, the submitted claim, and the FRESH advisory, which keeps
+    the D31 possible-duplicate notices (ruling (b)). Otherwise the fresh
+    anchor stands -- under a degraded or parity re-fetch that is no anchor at
+    all, so the retry records ``operator_typed`` -- and the refresh notice
+    says so. Unlike entry, exit does NOT restore under parity: the fresh
+    list is what enforces the already-recorded-order exclusion.
+    """
+    from dataclasses import replace as dc_replace
+    vm = build_exit_form_vm(
+        trade_id=trade_id, cfg=cfg, cache=cache, executor=executor,
+    )
+    if vm is None:
+        # The trade is closed or gone: banner-only fragment.
+        return templates.TemplateResponse(
+            request, "partials/trade_form_error.html.j2",
+            {"error_message": error_message},
+            status_code=400,
+        )
+    vm = dc_replace(
+        vm,
+        exit_date=exit_date,
+        exit_price=exit_price,
+        input_shares=shares,
+        notes=notes or "",
+        selected_reason=reason,
+    )
+    if (
+        submitted_schwab_source_value_json is not None
+        and isinstance(submitted_envelope, dict)
+        and submitted_fill_origin_at_form_render in _EXIT_AUTO_FILL_CLAIMS
+    ):
+        if _exit_candidates_maps_equal(vm, submitted_envelope):
+            # Ruling (a): re-check the operator's pick BY HASH in the FRESH
+            # list. Under the gate the hashes are the submitted ones by
+            # construction; a hash not in the list leaves the default.
+            selected_index = next(
+                (
+                    i for i, cand in enumerate(vm.auto_fill_candidates or ())
+                    if submitted_selected_signature_hash is not None
+                    and cand.signature_hash == submitted_selected_signature_hash
+                ),
+                None,
+            )
+            vm = dc_replace(
+                vm,
+                auto_fill_schwab_source_value_json=(
+                    submitted_schwab_source_value_json
+                ),
+                # VERBATIM, not ``or None``: the template renders the value
+                # into a hidden input, and a None would render as the text
+                # "None" and be persisted as the audit stamp on the retry.
+                auto_fill_audit_at=submitted_auto_fill_audit_at or "",
+                auto_fill_fill_origin=submitted_fill_origin_at_form_render,
+                auto_fill_kind="populated",
+                selected_candidate_index=selected_index,
+            )
+        else:
+            vm = dc_replace(
+                vm, auto_fill_refresh_notice=_EXIT_AUTO_FILL_REFRESH_NOTICE,
+            )
+    return templates.TemplateResponse(
+        request, "partials/trade_exit_form.html.j2",
+        {"vm": vm, "error_message": error_message},
+        status_code=400,
+    )
+
+
 @router.get("/trades/{trade_id}/exit/form", response_class=HTMLResponse)
 def exit_form(request: Request, trade_id: int):
     cfg = apply_overrides(request.app.state.cfg)
@@ -2512,30 +2658,27 @@ async def exit_post(
     # any re-render path consult the same canonical value (mirrors entry_post
     # Codex R3 Minor #1 fix).
     fill_origin_at_form_render = fill_origin_at_form_render.strip()
-    claimed_auto_fill = fill_origin_at_form_render in (
-        "schwab_auto", "schwab_auto_then_operator_corrected",
-    )
+    claimed_auto_fill = fill_origin_at_form_render in _EXIT_AUTO_FILL_CLAIMS
+    # Bound here, not only inside the anchor block below, because the
+    # ``record_exit`` refusal re-render reads it to decide whether the
+    # submitted anchor is restorable (ruling (c): a claim AND a dict) and
+    # which candidate the operator had picked (ruling (a)).
+    anchor_envelope: object = None
+    selected_index: int | None = None
 
     # Helper: 400 + recovery-form re-render with anchor CLEARED (T3.SB1 R3
     # M#2 anchor-clear discipline BINDING). Recovery form is rebuilt from
     # build_exit_form_vm which re-runs the Schwab fetch (or fallbacks to
     # operator_typed); the bad submitted anchor is NOT echoed back so the
     # operator's next retry sees a fresh anchor instead of replaying the
-    # tampered one.
+    # tampered one. The operator's TYPED values are kept (ruling (e), exit
+    # re-render anchor ledger); none of them is part of the anchor.
     def _reject_anchor(error_message: str) -> HTMLResponse:
-        vm_local = build_exit_form_vm(
-            trade_id=trade_id, cfg=cfg, cache=cache, executor=executor,
-        )
-        if vm_local is not None:
-            return templates.TemplateResponse(
-                request, "partials/trade_exit_form.html.j2",
-                {"vm": vm_local, "error_message": error_message},
-                status_code=400,
-            )
-        return templates.TemplateResponse(
-            request, "partials/trade_form_error.html.j2",
-            {"error_message": error_message},
-            status_code=400,
+        return _rerender_exit_form_with_error(
+            request=request, templates=templates, cfg=cfg, cache=cache,
+            executor=executor, trade_id=trade_id, exit_date=exit_date,
+            exit_price=exit_price, shares=shares, reason=reason_enum.value,
+            notes=notes, error_message=error_message,
         )
 
     # 4-tier rejection ladder (mirrors entry_post pattern):
@@ -2700,7 +2843,7 @@ async def exit_post(
         # Single-fill case: candidate_index omitted
         # → treat as 0 (the template emits no radio at length 1; the form
         # may or may not emit candidate_signature_hash_0; both shapes OK).
-        selected_index: int | None = None
+        # (``selected_index`` is bound with ``anchor_envelope`` above.)
         if isinstance(anchor_envelope, dict) and claimed_auto_fill:
             if candidate_index_raw is not None and str(
                 candidate_index_raw,
@@ -3187,19 +3330,39 @@ async def exit_post(
             try:
                 result = record_exit(conn, req)
             except ValueError as exc:
-                # R: spec §5.1 case 2 — re-render form with authoritative remaining shares.
-                vm = build_exit_form_vm(trade_id=trade_id, cfg=cfg, cache=cache, executor=executor)
-                if vm is not None:
-                    return templates.TemplateResponse(
-                        request, "partials/trade_exit_form.html.j2",
-                        {"vm": vm, "error_message": str(exc)},
-                        status_code=400,
-                    )
-                # Fallback: trade closed/gone — use banner-only fragment.
-                return templates.TemplateResponse(
-                    request, "partials/trade_form_error.html.j2",
-                    {"error_message": str(exc)},
-                    status_code=400,
+                # R: spec §5.1 case 2 — re-render form with authoritative
+                # remaining shares (``max=``), keeping the typed values. The
+                # helper falls back to the banner-only fragment when the
+                # trade is closed/gone. The submitted anchor is offered for
+                # restore only when it passed the ladder as a CLAIMED dict
+                # envelope (ruling (c)); the helper restores it only under
+                # ruling (d)'s gate.
+                restorable = (
+                    claimed_auto_fill and isinstance(anchor_envelope, dict)
+                )
+                return _rerender_exit_form_with_error(
+                    request=request, templates=templates, cfg=cfg,
+                    cache=cache, executor=executor, trade_id=trade_id,
+                    exit_date=exit_date, exit_price=exit_price,
+                    shares=shares, reason=reason_enum.value, notes=notes,
+                    error_message=str(exc),
+                    submitted_schwab_source_value_json=(
+                        schwab_source_value_json if restorable else None
+                    ),
+                    submitted_envelope=(
+                        anchor_envelope if restorable else None
+                    ),
+                    submitted_auto_fill_audit_at=(
+                        auto_fill_audit_at if restorable else None
+                    ),
+                    submitted_fill_origin_at_form_render=(
+                        fill_origin_at_form_render if restorable else None
+                    ),
+                    submitted_selected_signature_hash=(
+                        candidate_sigs.get(selected_index)
+                        if restorable and selected_index is not None
+                        else None
+                    ),
                 )
         finally:
             try:

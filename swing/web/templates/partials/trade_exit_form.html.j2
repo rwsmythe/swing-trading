@@ -10,6 +10,12 @@
 <tr id="exit-form-{{ vm.trade.id }}">
   <td colspan="8">
     {% if error_message %}<div class="banner banner-degraded" role="alert">{{ error_message }}</div>{% endif %}
+    {#- Exit re-render ruling (d): a refused POST whose auto-fill anchor could
+        not be restored (the Schwab fill list changed or could not be re-read)
+        says so; the hidden anchor below is then the FRESH one. -#}
+    {% if vm.auto_fill_refresh_notice %}
+    <div class="banner banner-info" role="status">{{ vm.auto_fill_refresh_notice }}</div>
+    {% endif %}
     {#- Phase 13 T3.SB2 — Schwab exit auto-fill advisory + display-only
         audit metadata (spec §6.2 + plan §G.5 T-B.2.2). Banner renders
         when auto_fill_advisory_text is set (sandbox / degraded / error /
@@ -109,7 +115,7 @@
         <div class="auto-fill-candidate">
           <label>
             <input type="radio" name="candidate_index" value="{{ loop.index0 }}"
-                   {% if loop.last %}checked{% endif %}>
+                   {% if (vm.selected_candidate_index is none and loop.last) or loop.index0 == vm.selected_candidate_index %}checked{% endif %}>
             {{ cand.date }} &mdash; {{ '%.2f' | format(cand.price) }} &times; {{ cand.quantity }} sh
             {% if cand.order_id %}<span class="muted">(order {{ cand.order_id }})</span>{% endif %}
             {#- D31 per-row markers. The banner above states these for the
@@ -142,16 +148,19 @@
       <div><label>Shares</label>
         <input type="number" step="1" min="1" max="{{ vm.remaining_shares }}"
                name="shares"
-               value="{{ vm.auto_fill_closed_shares if vm.auto_fill_kind == 'populated' and vm.auto_fill_closed_shares else vm.remaining_shares }}" required></div>
+               value="{{ vm.input_shares if vm.input_shares is not none else (vm.auto_fill_closed_shares if vm.auto_fill_kind == 'populated' and vm.auto_fill_closed_shares else vm.remaining_shares) }}" required></div>
+      {#- A refusal re-render carries the operator's typed reason in
+          ``vm.selected_reason``; without ``selected`` the browser submits the
+          FIRST option (stop-hit), which records action='stop'. -#}
       <div><label>Reason &#9733;</label>
         <select name="reason" required>
           {% for reason in vm.reasons %}
-            <option value="{{ reason }}">{{ reason }}</option>
+            <option value="{{ reason }}"{% if reason == vm.selected_reason %} selected{% endif %}>{{ reason }}</option>
           {% endfor %}
         </select></div>
       {#- Tranche B-ops T6: rationale input removed — trade_events.rationale
           is derived server-side from the Reason selection per spec §3. -#}
-      <div><label>Notes</label><textarea name="notes"></textarea></div>
+      <div><label>Notes</label><textarea name="notes">{{ vm.notes }}</textarea></div>
       <div>
         <button type="submit">Submit</button>
         <button type="button"
