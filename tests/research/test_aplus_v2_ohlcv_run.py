@@ -455,7 +455,8 @@ def test_subprocess_aplus_sensitivity_v2_help_cp1252_safe(
     #   on this box) plus a 16-process CPU saturator, with intermittent
     #   foreign pytest load on the box:
     #     2026-10-19, base 9845b799 (pre-fix): 55.58 s -> 5x = 277.9 s;
-    #     2026-10-19, head 64b621af: 87.97 s -> 5x = 439.85 s.
+    #     2026-10-19, head 64b621af: 87.97 s -> 5x = 439.85 s;
+    #     2026-10-19, head f33df595: 57.26 s -> 5x = 286.3 s.
     # Budget 450 s, so a hung child now surfaces after 7.5 min.
     # Re-open condition: any later harness measurement above budget/5 (90 s)
     # re-opens this budget, by the next arc that reads it, not by a flake

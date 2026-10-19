@@ -232,7 +232,8 @@ def test_diagnose_aplus_sensitivity_stdout_is_ascii_safe(
     #   on this box) plus a 16-process CPU saturator, with intermittent
     #   foreign pytest load on the box:
     #     2026-10-19, base 9845b799 (pre-fix): 52.24 s -> 5x = 261.2 s;
-    #     2026-10-19, head 64b621af: 85.88 s -> 5x = 429.4 s.
+    #     2026-10-19, head 64b621af: 85.88 s -> 5x = 429.4 s;
+    #     2026-10-19, head f33df595: 69.75 s -> 5x = 348.75 s.
     # Budget 450 s, so a hung child now surfaces after 7.5 min.
     # Re-open condition: any later harness measurement above budget/5 (90 s)
     # re-opens this budget, by the next arc that reads it, not by a flake

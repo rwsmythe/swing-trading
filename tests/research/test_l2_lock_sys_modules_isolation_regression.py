@@ -58,7 +58,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 #   this box) plus a 16-process CPU saturator, with intermittent foreign
 #   pytest load on the box:
 #     2026-10-19, base 9845b799 (pre-fix): 157.65 s -> 5x = 788.25 s;
-#     2026-10-19, head 64b621af: 182.03 s -> 5x = 910.15 s.
+#     2026-10-19, head 64b621af: 182.03 s -> 5x = 910.15 s;
+#     2026-10-19, head f33df595: 79.86 s -> 5x = 399.3 s.
 # Budget 1000 s, so a hung child now surfaces after about 16.7 min.
 # Re-open condition: any later harness measurement above budget/5 (200 s)
 # re-opens this constant, by the next arc that reads it, not by a flake
