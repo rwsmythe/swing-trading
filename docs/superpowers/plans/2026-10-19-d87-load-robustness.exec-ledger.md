@@ -468,6 +468,22 @@ that the underscores defeat it.
 - The saturator was killed by PID and verified: `remaining: 0`, no python
   process matching `saturator|multiprocessing`.
 
+### 4D.6 Gates on the reviewed head (`200d836d`)
+
+- Full fast suite WITHOUT the saturator, `-m "not slow" -q -n auto -p
+  no:cacheprovider`: **15498 passed, 13 skipped, 0 failed in 820.69 s**
+  (`scratchpad/d87/load/full-200d836d-nosat.txt`). The code is unchanged
+  from `f33df595` except `d4d3d430`'s comment lines.
+- `ruff check` on every touched test file (7 files): clean.
+- `git diff --stat 9845b799..HEAD -- swing/ scripts/ research/ pyproject.toml`:
+  empty.
+- `%(trailers)` empty on every commit `9845b799..HEAD`; zero
+  `Co-Authored-By`; no final paragraph begins with `Word:`.
+- Observed, not touched: an untracked `Microsoft/Windows/PowerShell/ModuleAnalysisCache`
+  directory appeared at the worktree root at 13:09 during the saturated full
+  suite (some test's PowerShell child wrote its module-analysis cache
+  relative to its cwd). It is not in the diff; flagged to the orchestrator.
+
 ## 5. Review rounds
 
 Reviewer A, `strong` tier, repo read access (cold-audit form, cwd = the
@@ -477,6 +493,7 @@ on stdin. Transcripts: `C:/Users/rwsmy/swing-data/review-transcripts/d87-load/`.
 | Round | Model / effort | Footer | Verdict | Crit / Major / Minor | New / Reopened | Depth (orchestrator) |
 |---|---|---|---|---|---|---|
 | R1 (head `08e83e62`, diff `tests/` vs `9845b799`) | gpt-5.6-sol / high (= `strong.config.toml`) | 146,268; `^ERROR` 0 | NEW_CRITICAL_MAJOR_FOUND (x2, the duplicated final message; the other token 0) | 0 / 3 / 1 | 4 new / 0 reopened | |
+| R2 (head `200d836d`, diff `tests/` vs `9845b799`; cell 2) | gpt-5.6-sol / high (= `strong.config.toml`) | 187,459; `^ERROR` 0 | NO_NEW_CRITICAL_MAJOR (x2, the duplicated final message; the other token 0) | 0 / 0 / 3 | 3 new / 0 reopened | |
 
 R1 findings and dispositions (full text + adjudication: `C:/Users/rwsmy/swing-data/review-transcripts/d87-load/copowers-findings.md`; transcript `review-r1.txt`, 613,189 bytes; prompt `prompt-r1.md`, 44,004 bytes):
 
@@ -486,3 +503,28 @@ R1 findings and dispositions (full text + adjudication: `C:/Users/rwsmy/swing-da
 - R1-04 minor: the holder neither closes its connection in `finally` nor surfaces thread exceptions. VALID, fix in scope.
 
 All four were ruled (section 4C) and fixed in cell 2 (section 4D).
+
+R2 (cell 2): transcript `review-r2.txt`, 667,269 bytes; prompt
+`prompt-r2.md`, 61,592 bytes (the verdict tokens described, never written:
+0 line-initial and 0 anywhere, by grep); diff `diff-r2.txt`, 36,987 bytes;
+findings appended to `copowers-findings.md`. The process had exited before
+the transcript was read. No command read a round-1 file: the six hits of the
+prior-findings grep are the prompt echo, docs prose and this ledger. No
+content-filter event. Findings, with proposed dispositions (NOT applied: the
+continuation brief stops at this gate):
+
+- R2-01 minor: the module docstring at `test_schwab_setup_cli.py:11-13`
+  (pre-D87 text) credits `client.py:_redact_message` as the sentinel tests'
+  defense-in-depth; it is on neither the audit-row nor the stdout path.
+  VALID; proposed docstring-only fix in scope, no new round.
+- R2-02 minor: `_assert_holder_clean` sits after each outer `try/finally`,
+  so a holder exception that coincides with a failing test body goes
+  unreported. Cannot produce a false green, leak or hang. VALID; proposed:
+  accept, or attach the holder errors to the propagating exception
+  (`add_note`) in the outer `finally`. Orchestrator's call.
+- R2-03 minor: the ledger had no unsaturated full-suite result on the
+  final head when Codex read it. The gate had been run (15498 passed, 4D.6);
+  recorded now. No code change.
+
+Round 2 is the first clean verdict, so the A-loop ends here. Spend, A
+rounds: 146,268 + 187,459 = 333,727 tokens.
