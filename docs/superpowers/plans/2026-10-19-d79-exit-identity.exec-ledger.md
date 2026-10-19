@@ -185,6 +185,7 @@ Author of this section: cell 3. Tier `strong`, cold-audit form with repo access:
 | Round | Head reviewed | Model / effort (asserted) | `^ERROR` | Footer (`tokens used`) | Verdict token | Crit | Major | Minor | New / reopened | Reverts | Depth (orchestrator) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 1 | `c55b55b8` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (403,744) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 1 | 3 new / 0 reopened | 0 | 378,356 (cell 3 at return; retired) |
+| 2 | `cb452050` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (954,070) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 3 | 5 | 8 new / 0 reopened | 0 | |
 
 Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\review-r1.txt` (1,547,419 bytes), `prompt-r1.md` (367,520 bytes), `copowers-findings.md`. Exit file 0; the process exited before the transcript was read. Prior-findings reach: none (round 1).
 
@@ -216,3 +217,67 @@ The correction landed at `67c4573e`.
 > **Orchestrator ruling, D79 executing Fork A2 (2026-10-19).** **Branch B: scope the identity to the order the question is about.** The possible-partial identity becomes `possible_partial|<selected order id, or the selected candidate signature hash when the entry has no usable id>|<fill_id>`. The unreadable identity becomes `unreadable_envelope|<linked order id>|<fill_id>`. The change is in `exit_record_flags` only. The F1 identity (selected id plus typed tuple) and the (c) value-tuple identity (matched fill ids) are unchanged: the (c) question is about the typed exit against an anonymous fill, which a radio switch does not change. This supersedes, by replacement, the partial and unreadable subjects in the plan-intake encoding I accepted (plan ledger, "Plan intake": "the partial's fill id") and the plan's "Naming used below" line. Reason: K5 binds a confirmation to the question that was ASKED. The finding shows an acknowledgement given to o1's question discharging o2's, on a path d2 cannot see because the map is unchanged; that is the "force as a blanket waiver" null implementation in a narrower costume. The on-screen per-candidate marker (template :139-143) is information, not an acknowledgement, so Branch A's accepted limitation would have recorded a hole that is closable in one function. Required RED test: the browser shape. First, a two-candidate form where both candidates list fill #F as a possible partial; o1 is picked, and its flag is rendered. The operator then switches the radio and values to o2 and presses Confirm with o1's acknowledgements. The expected result is 400, re-asked, no fill. Pre-fix arithmetic: the identity `possible_partial|F` is equal for both orders, so the confirm records o2 (red). Post-fix: the identity carries o1 and so does not satisfy o2's question (green). T7-h/i's asserted identity strings are updated by replacement and named.
 
 Author of the sections above: orchestrator.
+
+## Cell 4 (implementer-opus-high, dispatched off `ac9467a7`)
+
+Author of this section and of the round-2 records below: cell 4.
+
+| Commit | Item | Note |
+|---|---|---|
+| `3b850877` | D79-A1 | one `_quantities_equal` (`math.isclose`, rel and abs 1e-9), called by `derives_from`, `_differing_fields` and the resolver's `_undecidable_duplicates`; RED: a stored 5.9-share fill no longer matches a typed 5, a 5.9 map entry is asked F1 naming quantity; nothing superseded |
+| `f3923680` | D79-A2 | Fork A2 branch B in `exit_record_flags` only: `possible_partial\|<order key>\|<fill_id>`, `unreadable_envelope\|<order key>\|<fill_id>`; RED: the browser shape (o1 flagged, radio and values switched to o2, Confirm with o1's acks) went 200 pre-fix, now 400 and re-asked; 3 tests superseded by replacement (named in the body); the plan's "Naming used below" line replaced |
+| `cb452050` | D79-A3 | docstrings rewritten by replacement (`PossibleDuplicateFill`, `resolve_exit_auto_fill`'s evidence states and two argument docs) plus one more site the class re-grep found (`build_exit_form_vm`'s comparison comment) |
+
+- Full fast suite on `cb452050`, read off the saved output: **15460 passed, 13 skipped, 0 failed** (589.28 s). That is 15455 + the 5 new tests. `ruff check swing/` is clean, `%(trailers)` is empty across `618d7b04..HEAD`, and no file was added under `swing/` (`git diff --diff-filter=A`, empty).
+
+### Round 2
+
+Run with the cold-audit form and repo access: `codex exec -p strong -s read-only --skip-git-repo-check -`, from the worktree. The runner is `~/d79r2/run_r2.sh` in WSL (literal paths, LF, checked with `file`); output went to WSL `$HOME/d79r2/`. The prompt was rebuilt on `cb452050` and carries:
+- the envelope, with the 22-F roster test added;
+- AL-1..AL-9, each with its reason;
+- the five rulings and CHARC's 22-F roster ratification, as excerpts (exec ledger lines 1-179 and 204-218);
+- choices 1-4 and 6-16, with challenge invited;
+- the `618d7b04..HEAD` diff with this ledger EXCLUDED.
+
+It forbids opening this ledger on disk and any prior-round file. It carries no round-1 finding text. The only round-1 traces are code comments in the diff naming the fixes (`D79-A1`, `D79-A2`).
+
+- **Assertions** (literal-path greps of `review-r2.txt`):
+  - banner `model: gpt-5.6-sol`, `reasoning effort: high`, equal to `~/.codex/strong.config.toml`;
+  - `^ERROR` 0; `^tokens used` 1 (954,070);
+  - `^NEW_CRITICAL_MAJOR_FOUND` 2 (the CLI's double emission) and `^NO_NEW_CRITICAL_MAJOR` 0;
+  - exit file `0`, written by the runner after codex returned, so the process had exited before the transcript was read.
+  - **Round 2 COUNTS.**
+- **Prior-findings reach: none.** The hits for `d79r/`, `review-transcripts`, `copowers-findings`, `exec-ledger.md`, `review-r1` and `prompt-r1` are all prose: the prompt echo, a plan line naming the round-0 probe path, one diff line, and docs text Codex read. The response says no prior review or exec-ledger file was opened.
+- **Content-filter events:** none reported.
+- **Evidence:** `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\` holds `review-r2.txt` (1,590,650 bytes), `prompt-r2.md` (365,026 bytes) and `exit-r2.txt`, copied once the assertions passed.
+- **Spend:** round 1 403,744 + round 2 954,070 = **1,357,814** tokens.
+
+### Round 2 adjudication
+
+Every premise below was re-checked against the code at `cb452050` before it was classified.
+
+- **RA-01 (major): ACCEPTED, to fix. It is NOT schema-prevented (verified by execution).**
+  - The defect: `recorded_exit_identities` (`swing/trades/exit.py:264`) builds `RecordedExitFill(price=float(price), quantity=float(quantity))` BEFORE it reads the envelope, with no guard.
+  - Why the schema allows it: `fills.price` and `fills.quantity` are `REAL NOT NULL CHECK (> 0)` (migration 0014:13-14). An in-memory probe inserted `'abc'` and `'xyz'` into a table with those constraints, and they were stored with `typeof` `text`. Migration 0037 (`:1053-1103`) already branches on `typeof(f.quantity) = 'text'`, so the project's own SQL treats this shape as possible.
+  - The blast radius: the reader is GLOBAL and runs on every exit-form GET, every exit POST and every confirm. So one such row on any trade raises `ValueError` there. Before the arc, the view model's per-trade read converted inside a `try` (`view_models/trades.py`, the anonymous loop).
+  - Live incidence: NOT measured. A data read is outside this cell's authorization (`mode=ro` schema reads only). The orchestrator can count it read-only with `SELECT typeof(price), typeof(quantity), COUNT(*) FROM fills WHERE action != 'entry' GROUP BY 1, 2`.
+  - The fix stays inside the K1 (2) carve-out. Read the identity first; keep a malformed linked row in `by_order_id`, so it still triggers the (a) refusal; carry values that will not convert as raw or `None`, which `derives_from` already treats as not deriving.
+- **RA-02 (major): ROUTED AS A FORK, not fixed. It meets Fork 2's literal scope.**
+  - The scenario, read in code: a map-less (legacy) claimed envelope with top-level o2, plus an explicit `candidate_index=0` and the inputs `candidate_signature_hash_0` and `candidate_order_id_0=o1`, with the typed values left at o2's.
+  - What the route does: `authoritative_selected` is `None` (the map is empty, `:3047`). The entry is synthesized from top-level o2 (`:3085-3093`), so F1 does not fire. `selected_candidate_order_id` takes the client's `o1` through the legacy fallback (`:3157-3160`). The retention rule keeps top-level o2. The POST then records on the first try.
+  - This is PRE-ARC behaviour, unchanged by the arc (`618d7b04:2875` and `:3033-3042` read the same). It is reachable only through an envelope with no `candidates_map`. The resolver has emitted a map for every populated render since Codex R1 Critical #1, so in practice that means a tampered envelope or a stale pre-map tab.
+  - **Branch A (the reviewer's fix):** an explicit selection (`selected_index is not None`) on a claim whose envelope carries no `candidates_map` cannot be resolved, so it does NOT take the Fork 2 synthesis. It gets the Fork 3 G1 response: 400, the refresh notice, the fresh map-bearing anchor, the typed values kept, nothing recorded. This holds even when the typed values derive from the top-level quartet. Synthesis remains for the no-selection shape only. RED test: the scenario above; before the fix it returns 200 with `selected_candidate_order_id` o1 and top-level o2, after it 400 with no fill. Cost: any existing test that records from a map-less envelope carrying candidate inputs becomes SUPERSEDED and must be found by a run.
+  - **Branch B (accept as a limitation, AL-10):** the reason is that this shape is pre-arc, is not produced by the current form, and records no correction. Its top-level link is backed by values that derive from the top-level quartet. `selected_candidate_order_id` is an audit trail, not an identity (CLAUDE.md, "`selected_X_audit_id` is an AUDIT TRAIL"). Optional rider within B: drop the `candidate_orders` fallback (`:3157-3160`), so the audit field records `None` rather than a pick the server cannot resolve. That is a one-line change and red-first testable.
+  - The cell does not choose.
+- **RA-03 (major): ACCEPTED, to fix. It is consistent with Fork 2. It is not a fork, but it touches the same code as RA-02.**
+  - The defect: `selected_index = 0 if 0 in candidate_sigs` (`:2967-2972`) predates the arc (`618d7b04:2875`). Since T6 item 1 rewrites the top level to the selected entry, omitting only the radio now relinks the row to candidate 0 rather than to the visible default (the last candidate). It is silent when two orders share (date, price, qty); otherwise F1 asks about candidate 0.
+  - Browser reachability: none found. The template always checks one radio (`trade_exit_form.html.j2:117-118`: the last one, or the restored index), so only a non-browser client omits it.
+  - The fix: infer index 0 only for a one-entry map (or a map-less legacy single). A multi-entry map with no `candidate_index` stays unselected and takes Fork 2's synthesis. That is Fork 2's own rationale ("with no selection sent the top-level quartet is the default candidate"). RED test: remove only `candidate_index` from a two-candidate form and expect the default's (o2's) link.
+  - If RA-02 is ruled Branch A, both edits land in the same block.
+- **RA-04 (minor): ACCEPTED, to fix without a round.** `_rerender_exit_form_with_error` (`:2579`) rebuilds the VM when `fresh_vm is None`, so a VOID confirm whose prefetch returned `None` (choice 13) builds a second time. The fix is a sentinel that tells "not prefetched" apart from "prefetched `None`".
+- **RA-05 (minor): ACCEPTED, test to add.** No route test carries two flags at once, so an "any acknowledgement" null implementation passes them. Add a two-flag POST, for example (c) plus unreadable: acknowledge one and get 400 with no fill, acknowledge both and it records.
+- **RA-06 (minor): ACCEPTED, test to add.** T8-b plants one match. Plant two: confirming one id refuses, confirming both records.
+- **RA-07 (minor, [OUT-OF-ENVELOPE]): NOT fixed. Proposed disposition BANKED.** The module docstring of `swing/data/repos/fills.py:6` prescribes `with conn:`, and `record_exit` now owns `BEGIN IMMEDIATE`. The envelope forbids any edit under `swing/data/`. Proposed owner: the orchestrator. Proposed trigger: the next arc with a `swing/data/repos/fills.py` carve-out, or a docs rider.
+- **RA-08 (minor, [OUT-OF-ENVELOPE] as tagged; it is plan text in this arc): ACCEPTED, to fix without a round, by replacement in the plan.** The census-4 SQL at plan `:454-461` still aliases `oid`; cell 3's correction lives only in this ledger. The fix renames the alias to `linked_id`. Plan `:526` says "the six superseded route tests" where cell 3's record is nine; the fix names the nine.
+
+Round 2 has 3 majors (RA-01, RA-02, RA-03), all new, none reopened, no reverts. The loop has not converged.
