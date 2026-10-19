@@ -185,7 +185,7 @@ Author of this section: cell 3. Tier `strong`, cold-audit form with repo access:
 | Round | Head reviewed | Model / effort (asserted) | `^ERROR` | Footer (`tokens used`) | Verdict token | Crit | Major | Minor | New / reopened | Reverts | Depth (orchestrator) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 1 | `c55b55b8` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (403,744) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 1 | 3 new / 0 reopened | 0 | 378,356 (cell 3 at return; retired) |
-| 2 | `cb452050` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (954,070) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 3 | 5 | 8 new / 0 reopened | 0 | |
+| 2 | `cb452050` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (954,070) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 3 | 5 | 8 new / 0 reopened | 0 | 301,169 (cell 4 at return; resumed) |
 
 Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\review-r1.txt` (1,547,419 bytes), `prompt-r1.md` (367,520 bytes), `copowers-findings.md`. Exit file 0; the process exited before the transcript was read. Prior-findings reach: none (round 1).
 
@@ -281,3 +281,18 @@ Every premise below was re-checked against the code at `cb452050` before it was 
 - **RA-08 (minor, [OUT-OF-ENVELOPE] as tagged; it is plan text in this arc): ACCEPTED, to fix without a round, by replacement in the plan.** The census-4 SQL at plan `:454-461` still aliases `oid`; cell 3's correction lives only in this ledger. The fix renames the alias to `linked_id`. Plan `:526` says "the six superseded route tests" where cell 3's record is nine; the fix names the nine.
 
 Round 2 has 3 majors (RA-01, RA-02, RA-03), all new, none reopened, no reverts. The loop has not converged.
+
+### Orchestrator QA of round 2 (against disk, `8130a16b`)
+
+- I re-read the assertions from `review-r2.txt`: banner `model: gpt-5.6-sol`, `reasoning effort: high`; `^ERROR` 0; `^tokens used` present, 954,070; anchored verdict tokens `NEW_CRITICAL_MAJOR_FOUND` x2, the other token 0. **Round 2 COUNTS.** Spend to date: 1,357,814.
+- Trailers empty across `618d7b04..HEAD`; no added file under `swing/`; nothing under `swing/data/`; tree clean; the stash stack holds only the pre-existing entry.
+- **RA-01, live incidence (orchestrator, `mode=ro`, 2026-10-19):** `SELECT typeof(price), typeof(quantity), COUNT(*) FROM fills ... GROUP BY 1,2` returns `[('real','real',31)]` for non-entry fills and `[('real','real',59)]` for all fills. The failure is LATENT on live, not present. The fix stands on the reader's new GLOBAL reach: one text-typed row anywhere would break every exit form.
+- **RA-07: BANKED.** Owner: orchestrator. Trigger: the next arc with a `swing/data/repos/fills.py` carve-out, or a docs rider. Ground: the envelope forbids `swing/data/`, and the docstring is guidance, not behaviour.
+
+### FORK RA-02 -- an explicit selection on a claim whose envelope has no map (RULED: orchestrator, branch A)
+
+> **Orchestrator ruling, D79 executing Fork RA-02 (2026-10-19).** **Branch A.** A claimed envelope with NO `candidates_map` that carries an explicit selection (`candidate_index` with any per-candidate input) is not given the Fork 2 synthesis. It gets the Fork 3 G1 response: 400, the refresh notice, the fresh map-bearing anchor, the typed values kept, nothing recorded, even when the typed values derive from the top-level quartet. The Fork 2 synthesis remains for the NO-selection shape only, and the code comment at the one synthesis site says so. This narrows my Fork 2 ruling by replacement: its "map or no map" covered the absence of a selection, never a selection the server cannot resolve. Reason: the request names an order (o1) the server cannot verify against any list. Recording it links the top-level order (o2) while the audit trail claims o1, which is the arc's own defect: a recorded link that is not the operator's pick. Branch B would keep that record and document it, and its rider would only blank the audit field while still recording an o2 link the operator did not pick. A selection the server cannot resolve is a question the operator must re-answer on a list the server can see, which is exactly G1. Required RED test: the reviewer's case (map-less claim, top-level o2, `candidate_index=0` naming o1, typed values at o2's). Before the fix: 200 and one fill. After: 400, the refresh notice, no fill. Any existing test that records from a map-less envelope carrying candidate inputs is found by a run and classified SUPERSEDED (named) or REGRESSION.
+
+RA-03 (accepted by the cell) lands in the same block: index 0 is inferred only for a ONE-entry map; a multi-entry map with no radio takes the Fork 2 synthesis.
+
+Author of the sections above: orchestrator.
