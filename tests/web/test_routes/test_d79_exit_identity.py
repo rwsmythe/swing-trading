@@ -12,6 +12,7 @@ import json
 import re
 import sqlite3
 
+import pytest
 from fastapi.testclient import TestClient
 
 import swing.web.routes.trades as routes_mod
@@ -119,6 +120,53 @@ def test_t5c_single_candidate_two_tab_replay_is_refused_once(world):
     assert rb.status_code == 400, rb.text[:500]
     assert "already recorded" in rb.text
     assert len(_exit_fills(world.cfg)) == 1
+
+
+@pytest.mark.parametrize("with_candidate_inputs", [True, False],
+                         ids=["index0_inputs", "bare"])
+def test_b05_one_entry_map_sole_entry_is_the_selection_al13_width(
+        world, with_candidate_inputs):
+    """Reviewer B B-05: pins AL-13's accepted WIDTH as a fact. RD K3
+    precondition (4): on a ONE-entry ``candidates_map`` the sole entry IS the
+    selection, and the Fork D79-A-01 unique-match resolver is not consulted.
+    A client that edits the envelope so the sole entry names ``o9`` while the
+    top level still names ``o2`` (different values), omits the radio, and
+    types ``o9``'s values, records ``o9`` at the top level. The two provisos
+    (the retention rule pops an id whose entry the typed values do not derive
+    from; the K7.1 global refusal refuses an id already recorded) are pinned
+    elsewhere and are not re-pinned here.
+
+    GREEN ON ARRIVAL, BY DESIGN: it pins accepted behaviour, so the
+    signed-envelope arc (the AL-6 bank) turns it RED. Both submission shapes
+    run: ``index0_inputs`` (the template's index-0 inputs, which take the
+    inferred-index-0 branch) and ``bare`` (no per-candidate inputs, which take
+    the bare one-entry branch that stamps ``selected_index = 0``)."""
+    _single(world)
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        [sig] = env["candidates_map"]
+        entry = env["candidates_map"][sig]
+        # The sole entry carries o1's values under a new id; the top level
+        # stays o2 with o2's (different) values.
+        entry.update(order_id="o9", date="2026-05-20", price=130.0,
+                     quantity=4)
+        assert env["schwab_order_id"] == "o2"
+        assert (env["exit_date"], env["exit_price"], env["closed_shares"]) != (
+            entry["date"], entry["price"], entry["quantity"])
+        fd["schwab_source_value_json"] = json.dumps(env, sort_keys=True)
+        fd.update(exit_date="2026-05-20", exit_price="130.00", shares="4")
+        if with_candidate_inputs:
+            fd["candidate_order_id_0"] = "o9"
+        else:
+            fd = _without_candidate_inputs(fd)
+        assert "candidate_index" not in fd
+        r = _post(tc, world.tid, fd)
+    assert r.status_code == 200, r.text[:500]
+    [env_row] = _persisted_envelopes(world.cfg)
+    assert len(_exit_fills(world.cfg)) == 1
+    assert env_row["schwab_order_id"] == "o9"
+    assert env_row["selected_candidate_order_id"] == "o9"
 
 
 # ------------------------------------------------------------------- T6
