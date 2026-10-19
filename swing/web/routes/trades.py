@@ -2432,9 +2432,11 @@ def _exit_candidates_maps_equal(vm, submitted_envelope: dict) -> bool:
     (``json.dumps(..., sort_keys=True)``) of the PARSED values: key order and
     whitespace do not count, and JSON types do -- a bare Python ``==`` over
     the parsed maps would call ``3``, ``3.0`` and ``true`` equal. The fresh
-    map is built by ``resolve_exit_auto_fill`` from the fresh fetch, which
-    excludes every order already recorded on this trade, so equality means
-    the restored envelope offers exactly the fresh list.
+    map is built by ``resolve_exit_auto_fill`` from a fetch that excludes
+    every broker order id the authority (``canonical_envelope_identity``,
+    through ``swing.trades.exit.recorded_exit_identities``) reads from ANY
+    recorded non-entry fill, on any trade, so equality means the restored
+    envelope offers exactly the fresh list.
     """
     import json as _json
 

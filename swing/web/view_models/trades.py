@@ -24,7 +24,7 @@ from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.recommendations.sizing import compute_shares
 from swing.trades.entry import entry_rationale_options
 from swing.trades.equity import current_equity
-from swing.trades.exit import ExitReason
+from swing.trades.exit import ExitReason, recorded_exit_identities
 from swing.trades.exit_auto_fill import PossibleDuplicateFill
 from swing.trades.intent import (
     entry_intent_display_choices,
@@ -1034,61 +1034,51 @@ def build_exit_form_vm(
         # "in_transaction auto-detect" + "Service-layer with conn:"
         # gotchas).
         #
-        # Codex R1 Major #4 fix — collect schwab_order_id from any
-        # already-recorded non-entry fills on this trade so the resolver
-        # excludes already-persisted Schwab fills from the candidate
-        # list (prevents operator double-recording the same Schwab
-        # fill on a partial_exited trade with multiple sells).
+        # THE EXCLUSION SET IS GLOBAL AND COMES FROM THE ONE READER (D79; RD
+        # K7.1; orchestrator K7.4). ``recorded_exit_identities`` runs the
+        # authority (``canonical_envelope_identity``) over the RAW envelope of
+        # EVERY non-entry fill on EVERY trade, so the resolver excludes every
+        # broker order id already recorded ANYWHERE -- an order id is global at
+        # the broker, and the same-day close-and-re-enter case puts the old
+        # trade's recorded SELL inside the new trade's lookback. The ids are
+        # the authority's reading, which for a canonical envelope IS the
+        # stored value verbatim, so exclusion compares the broker-emitted
+        # ``order_id`` against exactly what was recorded and invents no match.
         #
-        # ``schwab_order_id`` is NOT a first-class column on fills; it
-        # lives inside ``schwab_source_value_json`` (the audit envelope
-        # written by exit_post when fill_origin in {'schwab_auto',
-        # 'schwab_auto_then_operator_corrected'}). Parse it here.
+        # ``schwab_order_id`` is NOT a first-class column on fills; it lives
+        # inside ``schwab_source_value_json``, and its top-level value is the
+        # only id the authority reads. ``selected_candidate_order_id`` is an
+        # audit field naming what the operator PICKED at form render, not
+        # which order's values were persisted, so it never excludes (RD FORK
+        # 1, option A).
         #
-        # Codex R2 Major #3 fix — dedupe ONLY on ``schwab_order_id``
-        # (envelope's pre-existing field that reflects which Schwab
-        # order's values were ACTUALLY persisted), NOT on
-        # ``selected_candidate_order_id`` (envelope's audit field for
-        # "which candidate the operator picked at form-render"). The
-        # non-default-radio-no-edit case persists the DEFAULT candidate's
-        # values (envelope.schwab_order_id = default), while
-        # envelope.selected_candidate_order_id = the picked candidate's
-        # order — but only the DEFAULT was actually recorded as a fill.
-        # Excluding both would over-dedupe the picked-but-unrecorded
-        # candidate from future fetches.
+        # THE ANONYMOUS (c) ROWS STAY PER-TRADE (RD K7.1: an identical manual
+        # exit on a different trade is the legal case). A non-entry fill on
+        # THIS trade is anonymous when the one reader linked no id to it --
+        # no envelope, an envelope naming no order, OR an envelope the
+        # authority REFUSED (CHARC FORK 2: a refused row is never an
+        # exclusion; a padded `" 123"` is anonymous and FLAGS, it is never
+        # stripped into a match). Each travels as a NAMED row (fill_id +
+        # stored date/price/quantity) that can only FLAG a candidate, never
+        # exclude one: value-tuple equality is never proof of identity (RD,
+        # 2026-08-11). On the live ledger these rows are additionally all
+        # ``operator_typed`` (hand-typed dates whose grain is unknowable in
+        # principle), which is the fact that ruling rests on and NOT this
+        # channel's definition.
         #
-        # Codex R2 Major #4, AS SUPERSEDED — every non-entry fill lacking a
-        # usable ``schwab_order_id`` (pre-v20 / tos_import / imported_legacy /
-        # operator_typed fills with no envelope, envelopes missing the key,
-        # and envelopes whose only id is ``selected_candidate_order_id``)
-        # travels as a NAMED anonymous row. It once travelled as a bare tuple
-        # that DEDUPED; it now FLAGS and can exclude nothing.
-        #
-        # The comparison grain, stated here because this is where the values
-        # are built and rounded (Codex R2 minor — this paragraph still said
-        # "quantity int-exact", which the arc's own fix retired): date is
-        # string-exact against EITHER of the candidate's two dates, price is
-        # compared at ``round(_, 2)``, and quantity is compared as a FLOAT
-        # within a RELATIVE AND absolute 1e-9 (``math.isclose`` with both
-        # tolerances at 1e-9 — B review round 4 MAJOR 3; an absolute tolerance
-        # alone does not bound a summation error that scales with the total)
-        # — see ``_undecidable_duplicates`` in
-        # ``swing/trades/exit_auto_fill.py``, which owns the comparison.
-        #
-        # D31 — anonymous rows are collected WITH their identity and CANNOT
-        # exclude anything (RD, 2026-08-11). The bare-tuple set that used to
-        # be built alongside this list, and which silently filtered matching
-        # candidates, is gone: value-tuple equality is never proof of identity.
-        # These rows are anonymous BY DEFINITION -- no usable order id bound to
-        # their values, per the enumeration above. On the live ledger today they
-        # are additionally all `operator_typed` (hand-typed dates whose grain is
-        # unknowable in principle), which is the fact the ruling rests on and
-        # NOT this channel's definition.
-        existing_fill_order_ids: set[str] = set()
+        # The comparison grain is owned by ``_undecidable_duplicates`` in
+        # ``swing/trades/exit_auto_fill.py``: date string-exact against EITHER
+        # of the candidate's two dates, price at ``round(_, 2)``, quantity as
+        # a FLOAT within ``math.isclose`` (relative AND absolute 1e-9).
+        identities = recorded_exit_identities(conn)
+        existing_fill_order_ids: set[str] = set(identities.by_order_id)
+        linked_fill_ids = {
+            hit.fill_id
+            for hits in identities.by_order_id.values() for hit in hits
+        }
         existing_anonymous_fills: list[PossibleDuplicateFill] = []
         existing_envelopes_cur = conn.execute(
-            "SELECT schwab_source_value_json, fill_datetime, price, "
-            "quantity, fill_id FROM fills "
+            "SELECT fill_datetime, price, quantity, fill_id FROM fills "
             "WHERE trade_id = ? AND action != 'entry' "
             # ORDER BY so `possible_duplicates` has a STABLE order in the
             # candidate, the advisory, the template and the persisted
@@ -1099,47 +1089,35 @@ def build_exit_form_vm(
             "ORDER BY fill_id ASC",
             (trade_id,),
         )
-        for env_json, fill_dt, fill_price, fill_qty, fill_id in (
+        for fill_dt, fill_price, fill_qty, fill_id in (
             existing_envelopes_cur.fetchall()
         ):
-            try:
-                env = json.loads(env_json) if env_json else None
-            except Exception:  # noqa: BLE001 -- the TYPE ROSTER is the failure
-                # 22A-R10-04's class, fourth and last instance in the declared
-                # envelope.  This reads PERSISTED exit envelopes to build the
-                # duplicate-detection advisory; an escape here 500s a PAGE
-                # RENDER over a blob that is only ever advisory, and the
-                # degrade-to-None path immediately below is what the render
-                # already expects for an unreadable envelope.
-                env = None
             # WHAT THIS READ DOES NOT DO, AND MUST NOT BE "FIXED" TO DO
             # (RD, 2026-08-11, correcting his own earlier wording; the
-            # orchestrator's B review round 2 MAJOR A).
+            # orchestrator's B review round 2 MAJOR A; reaffirmed by RD K3).
             #
             # A top-level `schwab_order_id` asserts a HISTORICAL FACT: at
             # recording time the operator linked this row to that broker order.
-            # Value-derivation was the EVIDENCE that established the link at
-            # POST; it is NOT a property the row must go on preserving. A later
-            # correction moves the row toward being a MORE accurate record of
-            # THE SAME order -- it does not unmake the link. The id names WHICH
-            # order; the values describe HOW it executed. Drift between them is
-            # a data-quality question, never an identity question.
+            # The evidence that established the link was taken at POST; it is
+            # NOT a property the row must go on preserving. A later correction
+            # moves the row toward being a MORE accurate record of THE SAME
+            # order -- it does not unmake the link. The id names WHICH order;
+            # the values describe HOW it executed. Drift between them is a
+            # data-quality question, never an identity question.
             #
             # So this read deliberately does NOT re-derive the link against the
             # fill's CURRENT date/price/quantity, and adding that re-derivation
             # is the failure it is written to prevent. THE CONCRETE ROW IS FILL
-            # 40. Eleven non-entry fills on the live ledger carry an envelope
-            # and all eleven carry a top-level id; exactly one has drifted from
-            # its named candidate -- fill 40, order 1007444179553, stored
-            # 2026-08-04 against a candidate dated 2026-08-03 (price and
-            # quantity identical). That is FTRE's exit, the row this whole D31
-            # programme was built around, and its id is CORRECT: the operator
-            # hand-corrected the exit date TOWARD the truth, because the
-            # form defaulted to the order-entered date. A re-derivation would
-            # read that correction as evidence AGAINST the link, demote the
-            # best-evidenced row on the ledger to anonymous, and re-offer its
-            # order as a fresh candidate -- the double-record the ruling exists
-            # to prevent, produced by the mechanism built to prevent it.
+            # 40, order 1007444179553, stored 2026-08-04 against a candidate
+            # dated 2026-08-03 (price and quantity identical). That is FTRE's
+            # exit, the row the D31 programme was built around, and its id is
+            # CORRECT: the operator hand-corrected the exit date TOWARD the
+            # truth, because the form defaulted to the order-entered date. A
+            # re-derivation would read that correction as evidence AGAINST the
+            # link, demote the best-evidenced row on the ledger to anonymous,
+            # and re-offer its order as a fresh candidate -- the double-record
+            # this exclusion exists to prevent, produced by the mechanism built
+            # to prevent it.
             #
             # Values CAN move after the id is affirmed and nothing here assumes
             # otherwise. `reconciliation_auto_correct.py` applies corrections
@@ -1150,78 +1128,54 @@ def build_exit_form_vm(
             # move while its envelope stands still. Under the rule above that is
             # exactly what a correction should do, and it is why this read must
             # not treat the resulting difference as evidence about identity.
-            order_id_found = False
-            if isinstance(env, dict):
-                v = env.get("schwab_order_id")
-                # `.strip()`, not bare truthiness (orchestrator B review
-                # MAJOR 2). `" "` is truthy, so a whitespace-only id used to
-                # set `order_id_found` and lift the row OUT of the anonymous
-                # channel: a matching candidate reached the operator unflagged
-                # and a candidate carrying the same blank id was suppressed.
-                # The 2026-08-11 rule reduces to "silent exclusion requires
-                # PROOF", and a whitespace token is not proof of anything --
-                # this is that rule's own boundary condition, not a case
-                # adjacent to it. The id is added VERBATIM when it is usable:
-                # exclusion compares it against a broker-emitted `order_id`,
-                # so stripping the stored value here would invent a match.
-                if isinstance(v, str) and v.strip():
-                    existing_fill_order_ids.add(v)
-                    order_id_found = True
-            # The NAMED anonymous row — built for ALL non-entry fills whose
-            # envelope did not surface a usable order_id. It flags; it does
-            # not dedupe (the word this comment used to use). This covers
-            # pre-v20 fills (no schwab_source_value_json), operator_typed
-            # fills (no envelope), tos_import / imported_legacy fills
-            # (no envelope), AND envelopes carrying only
-            # selected_candidate_order_id (per M3 — the actually-persisted
-            # values are the visible-input values, NOT a Schwab order's).
-            if not order_id_found:
-                try:
-                    # `[:10]`, not `split("T")` — production carries BOTH a
-                    # literal-`T` form and Schwab's offset form, and a `T`-split
-                    # returned the WHOLE timestamp for any space-separated value
-                    # while the surrounding code claimed `[:10]`. The flag's
-                    # accuracy depends on this parse, so it matches the project's
-                    # other readers (`_fill_execution_session_distance` reads
-                    # `[:10]` too).
-                    #
-                    # NOTHING GUARANTEES THOSE TEN CHARACTERS ARE A DATE, and an
-                    # earlier version of this comment said `assert_canonical_
-                    # fill_datetime` did (orchestrator B review MINOR 1). That
-                    # helper is wired into `update_fill_datetime` and the
-                    # split-partial correction path ONLY; the general insert path
-                    # `insert_fill_with_event` never calls it and the column is a
-                    # bare `TEXT NOT NULL`, so a schema-legal `2026-08-04garbage`
-                    # reaches here and slices to `2026-08-04`. The consequence is
-                    # bounded and points the safe way: this channel can only ADD
-                    # a possible-duplicate flag, never exclude a candidate, so a
-                    # malformed stored value costs a spurious alarm the operator
-                    # adjudicates — not a silent omission. Wiring the assertion
-                    # into the insert path is a `swing/data` carve-out and is
-                    # cited, not done here.
-                    fill_date = (
-                        str(fill_dt)[:10] if fill_dt is not None else None
-                    )
-                    if fill_date and fill_price is not None and fill_qty is not None:
-                        existing_anonymous_fills.append(
-                            PossibleDuplicateFill(
-                                fill_id=int(fill_id),
-                                date=fill_date,
-                                price=round(float(fill_price), 2),
-                                # float(), NOT int() (Codex R17 major).
-                                # `fills.quantity` is REAL; truncating 10.9 to
-                                # 10 here would falsely flag a 10-share
-                                # candidate. The dataclass and the comparison
-                                # were corrected a round earlier and THIS
-                                # construction was missed, so the unit test
-                                # passed while the production path -- the only
-                                # one that reads the DB -- still truncated.
-                                quantity=float(fill_qty),
-                            )
+            if int(fill_id) in linked_fill_ids:
+                continue
+            try:
+                # `[:10]`, not `split("T")` — production carries BOTH a
+                # literal-`T` form and Schwab's offset form, and a `T`-split
+                # returned the WHOLE timestamp for any space-separated value
+                # while the surrounding code claimed `[:10]`. The flag's
+                # accuracy depends on this parse, so it matches the project's
+                # other readers (`_fill_execution_session_distance` reads
+                # `[:10]` too).
+                #
+                # NOTHING GUARANTEES THOSE TEN CHARACTERS ARE A DATE, and an
+                # earlier version of this comment said `assert_canonical_
+                # fill_datetime` did (orchestrator B review MINOR 1). That
+                # helper is wired into `update_fill_datetime` and the
+                # split-partial correction path ONLY; the general insert path
+                # `insert_fill_with_event` never calls it and the column is a
+                # bare `TEXT NOT NULL`, so a schema-legal `2026-08-04garbage`
+                # reaches here and slices to `2026-08-04`. The consequence is
+                # bounded and points the safe way: this channel can only ADD
+                # a possible-duplicate flag, never exclude a candidate, so a
+                # malformed stored value costs a spurious alarm the operator
+                # adjudicates — not a silent omission. Wiring the assertion
+                # into the insert path is a `swing/data` carve-out and is
+                # cited, not done here.
+                fill_date = (
+                    str(fill_dt)[:10] if fill_dt is not None else None
+                )
+                if fill_date and fill_price is not None and fill_qty is not None:
+                    existing_anonymous_fills.append(
+                        PossibleDuplicateFill(
+                            fill_id=int(fill_id),
+                            date=fill_date,
+                            price=round(float(fill_price), 2),
+                            # float(), NOT int() (Codex R17 major).
+                            # `fills.quantity` is REAL; truncating 10.9 to
+                            # 10 here would falsely flag a 10-share
+                            # candidate. The dataclass and the comparison
+                            # were corrected a round earlier and THIS
+                            # construction was missed, so the unit test
+                            # passed while the production path -- the only
+                            # one that reads the DB -- still truncated.
+                            quantity=float(fill_qty),
                         )
-                except (TypeError, ValueError):
-                    # Defensive: skip fills with non-parseable values.
-                    continue
+                    )
+            except (TypeError, ValueError):
+                # Defensive: skip fills with non-parseable values.
+                continue
 
         from swing.trades.exit_auto_fill import resolve_exit_auto_fill
         auto_fill = resolve_exit_auto_fill(
