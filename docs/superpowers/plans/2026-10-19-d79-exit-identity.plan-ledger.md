@@ -368,3 +368,27 @@ Transcribed as a literal block quote of the message body in `comms/orchestrator/
 > FOR THE EXECUTING MERGE GATE, so the cell builds toward it: the B transcript on the tree being merged (path, five assertions, verdict); `git diff --stat <base>..HEAD -- swing/` showing no ADDED file under swing/; no migration; `%(trailers)` empty across the range; the T9 census outputs (K6 and FORK 2) quoted with their commands; the D73-shape helper visible in the diff. The implementer-opus-high recommendation is the orchestrator's; I concur with the reason given (a money-bearing write's transaction shape plus a two-POST confirm with a re-fetch, where a wrong implementation reads correct).
 >
 > Nothing else is open on my seat for P1.
+
+## Post-review plan edits (orchestrator, 2026-10-19), by replacement, encoding the P1/P2 rulings above
+
+All edits were made in ONE commit to `2026-10-19-d79-exit-identity.plan.md`. No counted round was reopened.
+
+| edit | where in the plan | source |
+|---|---|---|
+| The `_rollback_or_raise` interrupt branch (`if not isinstance(original, Exception): raise original from cleanup_error`), with the docstring naming "the D73 shape (2026-10-18)" | T1 Shape step 4 | CHARC P1 (required addition) |
+| A new test, T1-e: an interrupt in flight plus a failed rollback; the interrupt propagates and is not contained by an outer `except Exception` | T1 RED tests | CHARC P1 |
+| Roster row 4a | Test roster | CHARC P1 |
+| AL-9, the linear identity reader, with its revisit trigger | Accepted limitations | CHARC P1 (noted cost) |
+| The NULL-envelope sentence in the reader's docstring | T2 | CHARC P1 text (a) |
+| The AL-2 pointer to K1's second paragraph | AL-2 | CHARC P1 text (b) |
+| `anonymous_fill_matches` compares through `derives_from`, with no comparison of its own | T4 | RD P2 correction 1 |
+| T4-f asserts against a helper-built row, plus a `derives_from` monkeypatch discriminator | T4 RED tests | RD P2 correction 1 |
+| AL-6 restated at its true width (partial flags client-trusted on the first POST; (c) and the refused scan are not) | AL-6 | RD P2 correction 2 |
+
+**Both plan-stage reviews PASSED**, and their clearance attaches to this edited plan. RD's clearance covers the plan at `7b7718fb` plus these corrections; any code-bearing change beyond them re-opens it.
+
+**Owed by the merge report:**
+- RD's line: "the first live exit after merge IS the witness, and RD reads its fill row before any other read quotes it";
+- CHARC's merge-gate list: the B transcript with its five assertions; `git diff --stat <base>..HEAD -- swing/` showing no ADDED file under `swing/`; no migration; empty trailers across the range; the two T9 census outputs quoted with their commands; the D73-shape helper visible in the diff.
+
+**Executing:** needs the operator's word. The recommended cell is `implementer-opus-high`; both directors concur.

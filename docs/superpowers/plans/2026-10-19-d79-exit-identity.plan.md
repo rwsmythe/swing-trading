@@ -33,16 +33,20 @@
 ### Accepted limitations (each WITH its reason; challenge invited)
 
 - **AL-1, no schema backstop.** There is no `schwab_order_id` column. An expression index would use `json_extract`, which is a different reader from the authority. Split partials legitimately share an id (CHARC K6 (1)-(3)).
-- **AL-2, F1 is checked in the route, not the service.** The service never sees what the form showed (CHARC K1).
+- **AL-2, F1 is checked in the route, not the service.** The service never sees what the form showed (CHARC K1, second paragraph: "the F1 value-contradiction check stays in the ROUTE").
 - **AL-3, no client-side refill on radio change.** There is no JS harness, and the server check is the barrier (orchestrator K4).
 - **AL-4, 13 of the 19 exit fills have no stored 22-A reading.** The guard reads the RAW envelope through `canonical_envelope_identity` and never reads the stored table (RD K2; round 0 item 5).
 - **AL-5, the identity read is the authority's TOP-LEVEL id only.** A pre-arc row whose only id is `selected_candidate_order_id` is anonymous: it reaches the (c) / K7.2 flag channel, not the (a) refusal. RD's FORK 1 ruling covers this. Live incidence is 0 of 19, and after K7.3 nothing produces the shape.
-- **AL-6, flags carried INSIDE the submitted `candidates_map` are trusted from the submitted envelope on the FIRST POST.** Those flags are the per-candidate `possible_duplicates` with their reason labels. The first POST does NOT re-fetch Schwab; `test_d_post_does_not_emit_new_schwab_api_call_audit_row` (`tests/web/test_routes/test_exit_post_audit_columns.py:313`) pins this.
-  - A client that deletes those flags from the map gets no ask.
+- **AL-6, the K7.2 POSSIBLE-PARTIAL flags are client-trusted on the FIRST POST. The (c) value-tuple flags and the refused-envelope scan are NOT** (RD P2, correction 2).
+  - **Why the partial flags are trusted:** a possible partial needs the order's entered date, which lives only in the submitted map entry. The first POST does NOT re-fetch Schwab; `test_d_post_does_not_emit_new_schwab_api_call_audit_row` (`tests/web/test_routes/test_exit_post_audit_columns.py:313`) pins this. So a client that deletes a map entry's `possible_partial` items gets no partial ask.
+  - **Why (c) is not trusted:** the DB-side check runs on the TYPED tuple at every POST (T7 step 2), and an unedited submission's typed tuple IS the candidate's values. A client that strips the map's `value_tuple_match` flags still gets the ask.
+  - **Why the refused scan is not trusted:** it is re-run from the DB at every POST.
   - The envelope is client-editable by design. It is unsigned, and that is banked at `exit_auto_fill.py:937-945`.
-  - The DB-side (c) check on the TYPED tuple, and the refused-envelope scan, are re-run from the DB at every POST, so neither of those is trusted from the client.
   - The confirm POST re-fetches (K5).
 - **AL-7, the (c) and K7.2 confirm channels are not serialized under a lock.** Two identical anonymous exits are legal (RD K5c). Only the (a) id guard is a lock-held barrier (CHARC K1).
+- **AL-9, the identity reader is linear in fills, with no cache and no index** (CHARC P1, the noted cost). `recorded_exit_identities` runs the authority over EVERY non-entry envelope on every exit POST, every form GET (T3) and every confirm (T7).
+  - At 59 fills the cost is nothing. By K6's own reasoning there is no index to lean on.
+  - Trigger to revisit: non-entry fills reaching the low thousands. Until then, do NOT build a cache or an index reflexively.
 - **AL-8, the CLI carries no Schwab envelope.** So CHARC's K1 test (v) ("CLI with a replayed id") is driven by planting the typed refusal at the service seam. The CLI cannot submit an id at all, which is also why only (c) applies there (RD K5c).
 
 ### Executing posture
@@ -87,7 +91,10 @@ Order matters: T1-T2 build the service barrier that T6-T7 rely on, and T4 builds
 3. `try: conn.execute("BEGIN IMMEDIATE")`, then `get_trade` and the state and size checks. They move INSIDE the lock, which also closes the size-check-outside-the-transaction race. Then the T2 lookup, the insert, the note and the state transitions, then `conn.commit()`.
 4. `except BaseException as exc: _rollback_or_raise(conn, "record_exit", exc); raise`.
    - A rollback failure is logged via `log_contained_note`. The message reads: "this connection MUST BE DISCARDED".
-   - It is RAISED CHAINED (`raise cleanup_error from original`) and never swallowed.
+   - **The D73 shape (2026-10-18; CHARC P1).** Inside the helper's `except BaseException as cleanup_error`:
+     - `if not isinstance(original, Exception): raise original from cleanup_error`, so the INTERRUPT propagates and the cleanup failure is its explicit cause;
+     - otherwise `raise cleanup_error from original`, unchanged.
+     - Neither error is ever swallowed. The helper's docstring names "the D73 shape (2026-10-18)".
 5. A `ValueError` raised inside the lock (not found, not active, exceeds) still propagates as a `ValueError` after a clean rollback, so both callers' `except ValueError` delivery is unchanged.
 
 **RED tests** (`tests/trades/test_d79_record_exit_txn.py`)
@@ -100,6 +107,11 @@ Order matters: T1-T2 build the service barrier that T6-T7 rely on, and T4 builds
   - Assert `caplog` has one ERROR record containing "MUST BE DISCARDED".
   - Pre-fix: `with conn:` swallows nothing, but the error raised is the INSERT error with no chaining and no log, so the test fails on both type and log.
   - Null implementations killed: a bare `conn.rollback()` with no try (which loses the original), and a try/except that swallows the rollback error.
+- **T1-e (D73; CHARC P1):** `KeyboardInterrupt` is raised at the insert seam, and the rollback raises `sqlite3.OperationalError`.
+  - Expected: the raised object IS the `KeyboardInterrupt`, and its `__cause__` is the `OperationalError`. `caplog` has ONE ERROR record naming both errors and "MUST BE DISCARDED".
+  - Expected: the same call wrapped in an outer `try: ... except Exception: pass` is NOT caught, so `pytest.raises(KeyboardInterrupt)` surrounds that wrapper.
+  - Pre-fix, with the copied pre-D73 template: the `OperationalError` propagates, and the outer `except Exception` swallows it. That is RED on both assertions.
+  - Null implementation killed: the pre-D73 template, the 13-copy shape.
 - **T1-c (the precondition both callers satisfy):** two tests, each spying on `record_exit` AT THE CALLER'S BOUND NAME and recording `conn.in_transaction` at entry before delegating to the real function.
   - Route: monkeypatch `swing.web.routes.trades.record_exit`, then a real `world` POST of the default, unedited.
   - CLI: monkeypatch `swing.trades.exit.record_exit`, since `cli.py:1476` imports it locally at call time, then `CliRunner` `trade exit`.
@@ -124,6 +136,7 @@ Order matters: T1-T2 build the service barrier that T6-T7 rely on, and T4 builds
   - each envelope goes through the authority;
   - `state == refused` -> `unreadable`; a canonical id -> `by_order_id[id]`; a canonical no-id row -> neither.
   - It is THE ONE reader. T3 (the VM) and T7 (the route's refused-envelope flag) import it; nothing re-reads the envelope id anywhere else.
+  - **Its docstring states the NULL case** (CHARC P1, text correction (a)). A NULL-envelope row is neither linked nor unreadable, so the `IS NOT NULL` filter excludes it. T4's `anonymous_fill_matches` treats the same NULL as anonymous. The two readers agree: a NULL envelope names no order.
 - `class ExitOrderAlreadyRecordedError(ValueError)` and `class ExitEnvelopeUnreadableError(ValueError)`, both beside `ExitPriceRefusedError` (`exit.py:136`).
 
 **In `record_exit`**
@@ -212,7 +225,7 @@ Order matters: T1-T2 build the service barrier that T6-T7 rely on, and T4 builds
   - Typed and selected values are rendered `{date}, {price:.2f} x {qty}`. This is K4's "the selected order's own date, price and quantity beside the typed values".
 - **`def anonymous_fill_matches(conn, *, trade_id, exit_date, exit_price, shares) -> tuple[PossibleDuplicateFill, ...]`:**
   - a read-only query of that trade's non-entry fills; a row is anonymous when the authority reads no id from it (`None` envelope included);
-  - match: `str(fill_datetime)[:10] == exit_date` and `round(price, 2) == round(exit_price, 2)` and `math.isclose(quantity, shares, rel_tol=1e-9, abs_tol=1e-9)`;
+  - match: through `derives_from` (below), ONE grain in both places (RD K5c; RD P2, correction 1). The row's (`str(fill_datetime)[:10]`, `price`, `quantity`) is presented as an entry, and `derives_from(entry, exit_date=..., exit_price=..., shares=...)` decides. The function carries NO comparison of its own;
   - reason `value_tuple_match`; `ORDER BY fill_id`.
   - Shared by the route (T7) and the CLI (T8) (ledger "Plan intake": shared helpers).
 - **`def exit_record_flags(*, typed: tuple[str, float, int], selected_entry: dict | None, selected_order_id: str | None, candidates_map: Mapping[str, Any] | None, anonymous_matches, unreadable_fills: tuple[RecordedExitFill, ...], linked: bool) -> tuple[ExitRecordFlag, ...]`:**
@@ -249,6 +262,8 @@ Order matters: T1-T2 build the service barrier that T6-T7 rely on, and T4 builds
   - The template renders `'%.2f' % 120.505`, which the test also asserts equals `"120.50"`, so the unedited render is the no-flag case.
   - Null implementation killed: comparing raw floats (120.505 != 120.5 would flag the unedited render).
 - **T4-f:** `anonymous_fill_matches` excludes a row whose envelope carries a canonical id; includes a `None`-envelope row and a padded-id row; and excludes another trade's equal row (per-trade).
+  - The expected match is computed by `derives_from` on a row built from the same helper, NOT asserted from a literal comparison (RD P2, correction 1).
+  - A monkeypatched `derives_from` that returns False makes `anonymous_fill_matches` return nothing. That proves there is no second spelling of the grain.
 - **T4-g:** `exit_record_flags(linked=False, unreadable_fills=(RecordedExitFill(9, 1, "2026-05-01", 10.0, 1.0),))` -> no unreadable flag; with `linked=True` -> one.
 - **Existing tests** constructing `PossibleDuplicateFill` positionally stay green (the new field is last and defaulted). Those asserting the exact `candidates_map` JSON or the advisory string are updated in this commit, each named in the commit body. The executing cell finds them by running `tests/trades/test_exit_auto_fill*.py tests/web/test_routes/test_exit_form_auto_fill.py` after the change and reading every red.
 
@@ -457,6 +472,7 @@ No production code. The executing cell PREPARES and the operator DRIVES, step by
 | 2 | T1-b both verbs fail: chained + discard log | T1 | CHARC K1 (iv) |
 | 3 | T1-c route + CLI enter with no open tx | T1 | CHARC K1 (1) precondition |
 | 4 | T1-d concurrent size check under the lock | T1 | K1 (1) (transaction shape) |
+| 4a | T1-e interrupt in flight + rollback fails -> the interrupt propagates, not contained by `except Exception` | T1 | CHARC P1 (D73 shape) |
 | 5 | T2-a same id, two connections -> one fill, typed refusal | T2 | CHARC K1 (i); cell 2 |
 | 6 | T2-b split-partial trade refused, names all N | T2 | CHARC K1 (ii); RD K2 multiplicity |
 | 7 | T2-c cross-trade refusal names the other trade | T2 | cell 12; RD K7.1 |
