@@ -18,7 +18,7 @@
 | K5c | RD | RULED, 2026-10-19 (below) |
 | K7.1 | RD | RULED, 2026-10-19 (below) |
 | K7.2 | RD | RULED, 2026-10-19 (below) |
-| K4, K5, K7.3, K7.4, K7.5 | orchestrator | OPEN; the directors' rulings have landed |
+| K4, K5, K7.3, K7.4, K7.5 | orchestrator | RULED, 2026-10-19 (below) |
 
 ## RD rulings -- author: RD; courier: orchestrator
 
@@ -92,3 +92,44 @@ Transcribed as a literal block quote of the message body in `comms/orchestrator/
 > READ AFTER RD's PACKET LANDED (20261019T011549Z), so this is consistent with it, not a crossing: K2 = id alone -> the K1 lookup key is the order id through `canonical_envelope_identity`; K7.1 = GLOBAL for the id -> the lookup's WHERE clause drops `trade_id` for the id match and the refusal names the OTHER trade when it hits one. RD's forwarded K1 item (the split handler bypass) is SETTLED BY GREP, not by provenance plumbing: `record_exit(` has exactly TWO callers in `swing/` (`cli.py:1495`, `routes/trades.py:3331`); `_handle_split_into_partials` writes through `insert_fill_with_event` directly (`reconciliation_auto_correct.py` block :3218-3330, call at its line 108) and never enters `record_exit`, so the service refusal cannot fire inside the correction path and NO correction_set_id bypass is built. The arc pins this with a test that the split handler still succeeds on a trade whose exit carries a linked id (the cell's test 11) -- and the pin is what keeps it true if a future refactor routes the handler through the service.
 >
 > Nothing else is open on my seat for round 0. Both items ruled in this one packet.
+
+## Orchestrator rulings -- author: orchestrator (generation of 2026-10-19)
+
+These were ruled after both directors' packets landed, and each is consistent with them. Evidence: the round-0 record, sections "Item 2" and "Forks"; ruling (e) of the exit re-render anchor ledger (`2026-09-28-exit-rerender-anchor.ledger.md`:52, typed values are never silently overwritten).
+
+**K4 -- THE F1 SURFACE: a SERVER check only.**
+- **The barrier.** At POST, the route compares the submitted date, price and quantity against the SELECTED candidate's own map entry, at the `_derives_from` grain (date; price at 2dp; quantity), in Python. The comparison site exists (`routes/trades.py:2953-2956`); today it feeds only `fill_origin`. This arc makes a mismatch a FLAG (K5) instead of a silent label. The check runs for whichever candidate is selected, the default included.
+- **On a flag,** the re-render SHOWS the selected order's own date, price and quantity beside the typed values, so the operator can retype or confirm.
+- **NOT built: a client-side JS refill on radio change.** There is no JS harness, its behaviour is browser-only, and once the server check is the barrier the refill is convenience, not correctness.
+- **NOT built: an HTMX `hx-get` re-render on radio change.** It re-fetches Schwab on every click, and a refill on change overwrites typed values without an explicit act, which is ruling (e)'s class.
+- **NOT built: an explicit "use this order's values" button.** It would be compatible with (e), since it is explicit, but it is banked as a follow-up and is not this arc.
+
+**K5 -- THE CONFIRM FLOW: reuse the entry `SoftWarnError` + `force` shape, through `_rerender_exit_form_with_error`. It is ONE confirm shape for the F1 contradiction and the anonymous (c) match (RD K5c).**
+- **The anchor round-trip.** Every anchor key round-trips through the confirm `form_values`: `candidate_index`, the per-candidate hashes and ids, the selected id and hash, the typed values, the reason and the notes. Dropping `candidate_index` silently re-targets the default; a test pins it.
+- **The confirm is bound to the flags it acknowledges.** The confirm POST carries the set of flag kinds (and, for (c), the matched fill ids) that the operator saw. At the confirm POST every check is re-run against a FRESH map under d2-strict (`c6640faf`). If the map changed, there is no restore: the confirmation is void, and the form re-asks. If any flag is present that was not acknowledged, it re-asks. `force` is never a blanket waiver.
+- **`force` never reaches the service as a bypass.** `record_exit` takes no override parameter, so an (a) refusal (CHARC K1) cannot be confirmed past (RD K3 precondition 3).
+- **The CLI** follows RD K5c: it prints the matching fill(s), and it requires an explicit confirm flag whose name the plan cell chooses.
+
+**K7.3 -- THE FALSE "operator corrected" LABEL, and the WRONG ORDER LINK beside it.**
+- **The label.** It is closed by K4 + K5 + RD K3, with no separate change: an unconfirmed contradiction now writes NOTHING, and a confirmed one is an operator assertion, so `schwab_auto_then_operator_corrected` becomes TRUE (RD K3: fill 40's shape). Test: a non-default pick with the default's values left in, unconfirmed, writes no fill.
+- **The link.** Round 0 measured that a non-default pick KEEPS the DEFAULT's id as the top-level `schwab_order_id`, while `selected_candidate_order_id` names the order actually picked (Item 2). The top-level id would therefore assert a link to an order the operator did not pick. Ruling: the top-level `schwab_order_id`, and `schwab_source_value_json`'s values, are the SELECTED candidate's, never the default's. This is in scope, and it is a precondition of RD K3 (the id names WHICH order). Test: non-default pick, confirmed, gives a top-level id equal to the selected id; the default's id is absent from the envelope's top level.
+
+**K7.4 -- THE FALSE `_exit_candidates_maps_equal` DOCSTRING** ("excludes every order already recorded on this trade"). It is rewritten BY REPLACEMENT, in the commit that changes the exclusion to RD K7.1's global-by-id scope, so that it states what the code then does. Re-verify every claim against the symbols, and quote nothing from the old text. This follows the same discharged-deferral rule RD applied to the retention-rule rationale block.
+
+**K7.5 -- THE FLAG TEXT, done as ONE change with RD K7.2's reason labels on `possible_duplicates`.**
+- **Each flag names its reason and the recovery.**
+  - F1, values equal ANOTHER offered order: name that order, e.g. "these values match order N, not the selected order M".
+  - F1, values match NO candidate: "these values differ from order M's (date / price / quantity); confirm to record them as a correction of order M".
+  - (c) value-tuple match: name the matching fill(s).
+  - K7.2 possible partial: "possible partial of this order: fill F".
+- **The text is ASCII-only** (the cp1252 gotcha: it reaches CLI stdout on the (c) path), asserted by `text.encode("ascii")` over the flag-text constants.
+
+**Banked, not this arc:**
+- the explicit "use this order's values" button (K4);
+- a standing duplicate-id monitor (CHARC K6, the D44 family);
+- the 13 exit fills with no 22-A reading (round 0, flagged out of scope).
+
+## Next
+
+- **Plan dispatch:** needs the OPERATOR'S word (no standing grant). Proposed cell: `implementer-opus-high` (the writing-plans default). It runs off a FRESH worktree cut from `main` at or above this ledger's commit; `.worktrees/d79-exit-identity` (@ `072c5844`) is removed and the worktree re-cut. The plan corrects the brief's `trader.py` citation.
+- **Executing:** a separate operator word. It needs the CHARC-authorized `swing/trades/exit.py` carve-out exactly as scoped in K1, and the operator's browser witness.
