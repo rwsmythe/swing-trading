@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 
 from swing.data.models import Fill
 from swing.data.repos.fills import insert_fill_with_event
@@ -37,6 +39,10 @@ from swing.trades.derived_metrics import (
 )
 from swing.trades.derived_metrics import (
     realized_pnl as compute_realized_pnl,
+)
+from swing.trades.latched_origin import (
+    ENVELOPE_REFUSED,
+    canonical_envelope_identity,
 )
 from swing.trades.state import state_transition
 
@@ -154,6 +160,147 @@ class ExitPriceRefusedError(ValueError):
     """
 
 
+class ExitOrderAlreadyRecordedError(ValueError):
+    """D79 (CHARC K1 (3); RD K2): the submitted broker order id is already
+    recorded on a non-entry fill -- on ANY trade (RD K7.1, the id is global
+    at the broker).
+
+    Raised by ``record_exit`` UNDER its write lock, so two concurrent
+    submissions of one order cannot both pass. A ``ValueError`` subclass, so
+    the existing ``except ValueError`` delivery at the web exit POST and the
+    CLI ``trade exit`` reaches it with no new clause. There is NO override:
+    no confirmation reaches past it (RD K3 precondition 3; orchestrator K5).
+    """
+
+
+class ExitEnvelopeUnreadableError(ValueError):
+    """D79 (CHARC FORK 2, F2-(iii)): the SUBMITTED Schwab envelope is one the
+    authority (``canonical_envelope_identity``) REFUSES -- undecodable, a
+    padded or blank order id, a duplicated key.
+
+    Raised BEFORE ``BEGIN``: the request's own claim cannot be read, so
+    nothing is written (the NO branch of the ENTRY-vs-LABEL test). The
+    message names the recovery. A ``ValueError`` subclass, like its
+    siblings.
+    """
+
+
+#: The refusal texts, ASCII by construction (they reach CLI stdout).
+_ALREADY_RECORDED_TEXT = (
+    "Order {order} is already recorded as fill(s) {fills} on trade {trades}; "
+    "it cannot be recorded again."
+)
+_ANOMALY_TEXT = (
+    " The submitted values differ from that record -- correct fill {fills} "
+    "instead of recording again."
+)
+_ENVELOPE_UNREADABLE_TEXT = (
+    "The Schwab auto-fill envelope submitted with this exit cannot be read "
+    "(its order id is malformed, padded or duplicated), so it cannot be "
+    "recorded; re-open the exit form to get a fresh Schwab auto-fill."
+)
+
+
+@dataclass(frozen=True)
+class RecordedExitFill:
+    """One recorded non-entry fill, as the identity reader returns it: the
+    row's id, its trade, and the STORED values (``date`` is
+    ``str(fill_datetime)[:10]``) the anomaly comparison needs, so nothing
+    issues a second query."""
+
+    fill_id: int
+    trade_id: int
+    date: str
+    price: float
+    quantity: float
+
+
+@dataclass(frozen=True)
+class RecordedExitIdentities:
+    """What ``recorded_exit_identities`` read: the linked rows grouped by the
+    authority's broker order id, and the rows whose envelope it REFUSED."""
+
+    by_order_id: Mapping[str, tuple[RecordedExitFill, ...]]
+    unreadable: tuple[RecordedExitFill, ...]
+
+
+def recorded_exit_identities(conn: sqlite3.Connection) -> RecordedExitIdentities:
+    """THE ONE READER of recorded exit identities (D79; RD K2, K7.1; CHARC
+    K1 (2)). The service guard, the exit form's offer list and the route's
+    unreadable-envelope flag all import it; nothing re-reads an exit
+    envelope's id anywhere else.
+
+    GLOBAL: every non-entry fill on every trade (no ``trade_id`` predicate),
+    because a broker order id is global. Each RAW envelope is read through
+    ``canonical_envelope_identity`` -- never the stored 22-A reading (13 of 19
+    exit fills have none) and never SQL ``json_extract`` (a different reader).
+    A ``refused`` reading goes to ``unreadable``; a canonical id groups under
+    ``by_order_id`` (a SET per id: the split handler legitimately writes one
+    id onto N rows); a canonical document naming no order goes to neither.
+
+    THE NULL CASE (CHARC P1, text correction (a)): a row whose envelope is
+    NULL is neither linked nor unreadable, and the ``IS NOT NULL`` filter
+    excludes it. ``exit_auto_fill.anonymous_fill_matches`` treats the same
+    NULL as ANONYMOUS. The two readers agree: a NULL envelope names no order.
+
+    Linear in non-entry fills with no cache and no index (AL-9, CHARC P1's
+    noted cost; revisit when they reach the low thousands).
+
+    Read-only. Inside ``record_exit`` it runs AFTER ``BEGIN IMMEDIATE`` on the
+    writer's own connection, which is admissible only because the write lock
+    is already held.
+    """
+    rows = conn.execute(
+        "SELECT fill_id, trade_id, fill_datetime, price, quantity, "
+        "schwab_source_value_json FROM fills "
+        "WHERE action != 'entry' AND schwab_source_value_json IS NOT NULL "
+        "ORDER BY fill_id"
+    ).fetchall()
+    by_order_id: dict[str, list[RecordedExitFill]] = {}
+    unreadable: list[RecordedExitFill] = []
+    for fill_id, trade_id, fill_datetime, price, quantity, raw in rows:
+        recorded = RecordedExitFill(
+            fill_id=int(fill_id), trade_id=int(trade_id),
+            date=str(fill_datetime)[:10], price=float(price),
+            quantity=float(quantity),
+        )
+        identity = canonical_envelope_identity(raw)
+        if identity.state == ENVELOPE_REFUSED:
+            unreadable.append(recorded)
+        elif identity.broker_order_id is not None:
+            by_order_id.setdefault(identity.broker_order_id, []).append(
+                recorded)
+    return RecordedExitIdentities(
+        by_order_id=MappingProxyType(
+            {k: tuple(v) for k, v in by_order_id.items()}),
+        unreadable=tuple(unreadable),
+    )
+
+
+def _already_recorded_message(order_id: str,
+                              hits: tuple[RecordedExitFill, ...], *,
+                              exit_date: str, exit_price: float,
+                              shares: int) -> str:
+    """The (a) refusal, naming ALL N rows and their trade(s), plus RD K2's
+    instrument-anomaly sentence when the request's values derive from NONE
+    of them (compared at the ONE grain, ``exit_auto_fill.derives_from``)."""
+    from swing.trades.exit_auto_fill import derives_from
+
+    fills = ", ".join(f"#{h.fill_id}" for h in hits)
+    trades = ", ".join(f"#{t}" for t in sorted({h.trade_id for h in hits}))
+    message = _ALREADY_RECORDED_TEXT.format(
+        order=order_id, fills=fills, trades=trades)
+    if not any(
+        derives_from(
+            {"date": h.date, "price": h.price, "quantity": h.quantity},
+            exit_date=exit_date, exit_price=exit_price, shares=shares,
+        )
+        for h in hits
+    ):
+        message += _ANOMALY_TEXT.format(fills=fills)
+    return message
+
+
 class CallerHeldTransactionError(RuntimeError):
     """D79 (CHARC K1 (1)): ``record_exit`` was called while the caller holds
     an open transaction.
@@ -250,6 +397,17 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     fill_datetime = _normalize_trade_event_date_to_iso(
         req.exit_date, field_name="exit_date",
     )
+    # D79 (CHARC FORK 2, F2-(iii)): the SUBMITTED envelope is read through the
+    # ONE authority BEFORE BEGIN. A reading it REFUSES is the request's own
+    # claim being unreadable, so nothing is written. A canonical reading
+    # yields the broker order id (the authority's TOP-LEVEL id only -- RD
+    # FORK 1) that the identity guard below keys on.
+    submitted_order_id: str | None = None
+    if req.schwab_source_value_json is not None:
+        submitted = canonical_envelope_identity(req.schwab_source_value_json)
+        if submitted.state == ENVELOPE_REFUSED:
+            raise ExitEnvelopeUnreadableError(_ENVELOPE_UNREADABLE_TEXT)
+        submitted_order_id = submitted.broker_order_id
     # D79 (CHARC K1 (1)): ONE owned transaction. BEGIN is INSIDE the try so a
     # BEGIN that fails (busy) is handled like any other failure; every read
     # the write depends on -- the trade's state and size -- is taken AFTER the
@@ -272,6 +430,22 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
                 f"exit shares {req.shares} exceeds remaining current_size "
                 f"{trade.current_size}"
             )
+
+        # D79 (CHARC K1 (2); RD K2, K7.1): the identity guard, AFTER the
+        # write lock is held and BEFORE the insert, so no concurrent writer
+        # can commit the same order between this read and the write. GLOBAL
+        # and multiplicity-aware: ANY recorded row carrying the id refuses
+        # (the split handler writes N rows with one id; it never enters this
+        # function, so the guard cannot fire inside that correction path).
+        if submitted_order_id is not None:
+            hits = recorded_exit_identities(conn).by_order_id.get(
+                submitted_order_id, ())
+            if hits:
+                raise ExitOrderAlreadyRecordedError(_already_recorded_message(
+                    submitted_order_id, hits,
+                    exit_date=fill_datetime[:10], exit_price=req.exit_price,
+                    shares=req.shares,
+                ))
 
         # Action computation. STOP_HIT always wins; otherwise size-driven.
         if req.reason == ExitReason.STOP_HIT:

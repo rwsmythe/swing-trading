@@ -1691,6 +1691,36 @@ def _compute_signature_hash(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def derives_from(entry: object, *, exit_date: str, exit_price: float,
+                 shares: int) -> bool:
+    """Do the typed exit values DERIVE FROM ``entry``? THE ONE GRAIN (D79).
+
+    Date string-exact, price at the exit form's 2 decimals (the template
+    renders ``'%.2f'``, so an execution-grain VWAP like 120.505 compares as
+    rendered), quantity as an int. Lifted out of the exit POST so every
+    "derives from" question -- the route's id-retention rule, the F1
+    contradiction flag, the anonymous (c) value-tuple match and the service's
+    instrument-anomaly sentence -- is answered by ONE comparison; a second
+    spelling of the same grain could correct a row by one measure and link
+    it by another (RD K5c, "one grain in both places"; RD P2 correction 1).
+
+    ``entry`` is a mapping with ``date`` / ``price`` / ``quantity``; anything
+    else, or values that do not coerce, never derives.
+    """
+    if not isinstance(entry, dict):
+        return False
+    try:
+        entry_price = float(entry.get("price"))
+        entry_shares = int(entry.get("quantity"))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return (
+        entry.get("date") == exit_date
+        and round(entry_price, 2) == round(exit_price, 2)
+        and entry_shares == shares
+    )
+
+
 def _parse_entry_date_to_utc(entry_date: str) -> datetime:
     """Parse ISO ``YYYY-MM-DD`` to a UTC datetime at start-of-day.
 
