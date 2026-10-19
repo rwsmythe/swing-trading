@@ -761,3 +761,66 @@ Under the bounded rule's branch 2, confirmed by CHARC. This is never "converged"
 - AL-11 and AL-12 are added to the plan by the orchestrator, in this commit, from CHARC's text.
 
 Author of the frame and the outcome: orchestrator. Author of the block quote: CHARC.
+
+## Reviewer B (the orchestrator's cold audit, charter section 2.9)
+
+The orchestrator ran it over the final tree `a6519295` (the code tree of `783ec4f9`).
+- **Form:** the cold-audit form, `codex exec -p strong -s read-only --skip-git-repo-check -`, run from the worktree.
+- **Input on stdin:** the prompt, plus the `618d7b04..a6519295` diff of `swing/` and `tests/` (375,030 bytes).
+- **The prompt was the orchestrator's own:** claims C1-C9 first, then the interaction with unchanged code. Each finding is classified INTRODUCED or PRE-EXISTING. The exec and plan ledgers and every prior transcript were forbidden.
+- **Evidence:** `C:/Users/rwsmy/swing-data/review-transcripts/d79-exit-identity/exec/reviewer-b/` (`b-prompt.md`, `b-diff.txt`, `b-review.txt`, `b-exit.txt`, `run_b.sh`).
+
+**Assertions:**
+- banner `model: gpt-5.6-sol`, `reasoning effort: high`, equal to `strong.config.toml`; codex-cli 0.162.1;
+- `^ERROR` 0;
+- `^tokens used` present, 424,379;
+- `b-exit.txt` reads `exit=0`, and no d79 codex process was alive at read.
+
+**The verdict token, with an instrument caveat (the orchestrator's slip):**
+- The prompt listed both tokens alone on lines, so the transcript's prompt echo (lines 64-65) also matches the anchored grep.
+- The model's output region (lines 20613 and 20656, the CLI's double emission) carries only `NEW_CRITICAL_MAJOR_FOUND`. The verdict is read from the model's region.
+- RD concurs, and asks that the recipe record it: the anchored verdict grep is scoped to the model's output region, and no prompt may list the tokens at line start.
+
+**Findings and dispositions, under the introduced-vs-banked rule (harness-architecture section 5.1):**
+
+| Id | Severity | B's class | Disposition | Ruler |
+|---|---|---|---|---|
+| B-01 | major | introduced (tamper-only) | ACCEPTED as AL-13 at its true width, with the B-05 pin | RD |
+| B-02 | major | pre-existing, [AGAINST-AL-5] | AL-5 stands, its reason restated by replacement. Execution-level identity is BANKED (owner RD; trigger: the first live split-execution exit, or the signed-envelope arc). | RD |
+| B-03 | minor | introduced | NOT A DEFECT. The confirm's subset check IS plan T7 step 3; the orchestrator's B prompt misstated it as "equal exactly". An extra acknowledgement discharges nothing. | orchestrator |
+| B-04 | minor | pre-existing | BANKED, audit-only. Verified: `other_candidate_signature_hashes` is written at `routes/trades.py:3304` and `:3335` and read nowhere in `swing/` (the other hits are a comment and a docstring). Owner: orchestrator. Trigger: the signed-envelope arc, or the next exit-route arc. | orchestrator |
+| B-05 | minor | introduced (test) | FIX: one test pinning AL-13's width. A one-entry map whose sole entry names o9 under a top level naming o2, with the typed values o9's, records o9 at the top level. | RD |
+| B-06 | minor | introduced (test) | FIX: `test_t4f_no_second_spelling_of_the_grain` asserts that its patched `derives_from` fired | orchestrator |
+
+No B finding requires a production-code change, so the stopped loop takes no confirming round (RD concurs).
+
+### RD's rulings on Reviewer B items B-01 and B-02 (2026-10-19T11:54:00Z; RD author, orchestrator courier)
+
+Transcribed as a literal block quote of the message body in `comms/orchestrator/inbox/20261019T115400Z-rd-d79-reviewer-b-rd-rules-b-01-accepted-as.md`, copied mechanically.
+
+> RD RULING, D79 Reviewer B items B-01 and B-02 (orchestrator query 20261019T115057Z). PRIMARY: RD on both; each turns on a ruling of mine (K3 (4); FORK 1 / AL-5). Read at a6519295 before ruling: the one-entry shortcut, both branches (routes/trades.py:3038-3074: the inferred index-0 branch requires `len(inferred_map) == 1`; the bare branch stamps `selected_index = 0` and `candidate_sigs[0]` from the sole entry); the unconditional top-level rewrite from the selected entry (:3337-3364); the retention rule's `named` filter and its `len(named) == 1` condition (:3440-3469); `resolve_exit_auto_fill`'s `chosen = candidates[-1]` (exit_auto_fill.py:974); AL-5 and AL-6 (plan :39-41); the signed-envelope bank (plan :541). Both of B's facts hold at the code.
+>
+> B-01 -- ACCEPTED AT ITS TRUE WIDTH, as proposed, with the width stated one clause wider than the proposal. AL-13 reads:
+>
+> "AL-13, on a one-entry map the sole entry IS the selection (RD K3 precondition (4)), and the D79-A-01 unique-match resolver is not consulted. Untampered, the shortcut and the resolver agree by construction: the top-level quartet is written from `candidates[-1]`, which on a one-entry map is the sole entry. A client that edits the envelope so the sole entry names an order the top level does not records the sole entry's id, PROVIDED the typed values derive from that entry (otherwise the retention rule pops it) and no recorded fill already carries it (otherwise the K7.1 global refusal, DB-rechecked, refuses it). Same reason and same bank as AL-6: the signed envelope."
+>
+> Reasons:
+> 1. The exposure is the one already accepted. An edited envelope that moves the sole entry and the top level TOGETHER is accepted at AL-6's bank; moving the sole entry ALONE reaches the same record through the shortcut. Nothing a tamperer gains here is beyond what the accepted exposure already grants; the two guards that survive tampering (derivation, global refusal) are the same two.
+> 2. Deleting the shortcut would not close the bank; it would route the same edited envelope to a re-confirm that the same client can answer. Behaviour the stopped loop examined is not re-opened for a tamper-only path with no live producer.
+> 3. The two provisos are not decoration: they are what a reader of the limitation needs to know is NOT lost. A limitation declared without its surviving guards reads wider than it is, the mirror of the fault I corrected in AL-6.
+>
+> B-05 (the pin): ONE test, pinning the width as a fact so the signed-envelope arc has a red to turn green: a one-entry map whose sole entry names o9 with the top level naming o2 and the typed values o9's -> the row records o9 top-level. That is the fact; the two provisos are already pinned elsewhere (the pop by the T6 retention tests; the global refusal by T2-c) and are not re-pinned here.
+>
+> B-02 -- AL-5 STANDS; its reason is RESTATED BY REPLACEMENT to its true width. The clause "after K7.3 nothing produces the shape" is false and goes. AL-5's last sentence reads:
+>
+> "Live incidence is 0 of 19. The retention rule produces the shape by design whenever two map entries share an order id (a split-execution order): the `named` filter finds two, the top-level id is popped, and both executions record anonymously with `selected_candidate_order_id` as audit. That is correct, not a gap: an order-id identity cannot distinguish two executions of one order, and asserting it on the second would falsely refuse a legitimate fill under K7.1. A re-record of the SAME execution is caught by the (c) value-tuple recheck on the typed tuple, which alarms and never asserts."
+>
+> BANKED: execution-level identity for split-execution orders (Schwab's per-execution leg ids as the candidate mechanism; not verified here, a lead not evidence). OWNER: RD, the identity doctrine; registered in CHARC's register as a D-item. TRIGGER: the first live exit whose map carries two entries sharing an order id, OR the signed-envelope arc, whichever first. Until then the row shape under a split execution is the anonymous one, and the first such row is read by me against this restatement before any other read quotes it (the same witness discipline as the first live exit).
+>
+> B-03, B-04, B-06: yours; no objection. B-04's bank is correctly audit-only (no runtime reader, verified: `other_candidate_signature_hashes` is written at :3335 and read nowhere in `swing/`; grep it before the merge report quotes the claim).
+>
+> Reviewer B instrument caveat: concur. The anchored verdict grep must be scoped to the model's output region, never the prompt echo; a prompt that lists the tokens at line start manufactures a match. Record it in the recipe where the five per-round checks live.
+>
+> TRANSCRIPTION: block-quote both rulings into the D79 exec ledger with RD as author; landed when the path is posted back. The small cell (AL-5 restatement, AL-13, the B-05 pin, the B-06 fix) is doc-only plus test-only; no confirming round under the stop rule. The suite on the final head, T9, the census and CHARC's gate follow as you stated.
+
+Author of the Reviewer B section and table: orchestrator. Author of the block quote: RD.
