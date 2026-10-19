@@ -619,3 +619,42 @@ def test_a01_two_map_entries_matching_the_top_level_are_reconfirmed(world):
             {k: v for k, v in fd.items() if not k.startswith("candidate_")},
             schwab_source_value_json=json.dumps(env, sort_keys=True)))
     _assert_reconfirmed(r, world.cfg)
+
+
+# ------------------------------------------- R5-01 (RD's ruling, branch B)
+@pytest.mark.parametrize("case", ["possible_partial", "entered_date_value_tuple"])
+def test_al6_first_post_client_trust_width(world, case):
+    """AL-6 at its TRUE width, pinned as a FACT (RD, Fork R5-01 ruling,
+    branch B, the test condition). One order o1, entered 2026-05-19 and
+    executed 2026-05-20, sells 3 at 130.00 (4 for the partial case), and the
+    form is submitted UNEDITED (typed 2026-05-20). Anonymous fill F sits on
+    the order's ENTERED date: a K7.2 possible partial (129.00 x 2), or a
+    value-tuple match at the entered-date grain (130.00 x 3). Neither is a
+    DB-side match, because the DB recheck runs on the typed tuple, dated the
+    execution date. Leg 1: F's item stripped from the map's
+    ``possible_duplicates`` -> the first POST records (one new row): the
+    width is client-trusted. Leg 2: the same POST with the item present ->
+    400 and F asked, under o1's order-scoped identity. The arc that closes
+    this width (the signed envelope, banked) turns leg 1 red."""
+    qty, f_price, f_qty, reason = (
+        (4, 129.0, 2, "possible_partial") if case == "possible_partial"
+        else (3, 130.0, 3, "value_tuple_match"))
+    world.box["orders"] = [
+        _entered_then_executed("o1", "2026-05-19", "2026-05-20", 130.0, qty)]
+    fid = _plant_fill(world.cfg, world.tid, day="2026-05-19", price=f_price,
+                      qty=f_qty)
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        [entry] = env["candidates_map"].values()
+        assert [(d["fill_id"], d["reason"])
+                for d in entry["possible_duplicates"]] == [(fid, reason)]
+        r_present = _post(tc, world.tid, fd)
+        assert r_present.status_code == 400, r_present.text[:500]
+        assert _acks(r_present.text) == [f"{reason}|o1|{fid}"]
+        assert len(_exit_rows(world.cfg)) == 1  # the planted F alone
+        entry["possible_duplicates"] = []
+        r_stripped = _post(tc, world.tid, dict(
+            fd, schwab_source_value_json=json.dumps(env, sort_keys=True)))
+    assert r_stripped.status_code == 200, r_stripped.text[:500]
+    assert len(_exit_rows(world.cfg)) == 2  # F plus the one new row

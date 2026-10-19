@@ -2072,7 +2072,11 @@ def exit_record_flags(
     * **(c)** (RD K5c): every ``anonymous_matches`` row (DB-derived), plus
       the selected entry's map ``possible_duplicates`` items labelled
       value-tuple (map-derived); a fill both sources name is asked once,
-      under the DB-derived identity (Fork R5-02).
+      under the DB-derived identity (Fork R5-02). A map item matching on the
+      order's ENTERED date is CLIENT-TRUSTED on the first POST (AL-6, as RD
+      restated it in the Fork R5-01 ruling): the entered date lives only in
+      the map entry the GET built, and the DB-side recheck runs on the typed
+      tuple, whose date is the execution date.
     * **Possible partial** (RD K7.2): the selected entry's map items labelled
       ``possible_partial``. CLIENT-TRUSTED on the first POST (AL-6): an item
       is used only when it is a dict with an int ``fill_id`` and a known
