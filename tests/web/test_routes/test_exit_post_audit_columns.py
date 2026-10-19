@@ -425,7 +425,10 @@ def test_d_post_does_not_emit_new_schwab_api_call_audit_row(
 def test_e_malformed_anchor_with_claim_rejects_with_400_and_clears_anchor(
     seeded_db, monkeypatch,
 ):
-    """4-tier rejection (a): malformed JSON + claim -> 400.
+    """Malformed JSON + claim -> 400. Since D79 executing Fork R6-01 this is
+    answered by the RAW RUNG (the authority refuses a document it cannot
+    decode) before tier (a) is reached; tier (a) is pinned by
+    ``test_e_json_null_anchor_with_claim_is_rejected_at_tier_a``.
 
     Recovery form anchor-clear discipline (T3.SB1 R3 M#2 BINDING): the
     rejected anchor must NOT be echoed back into the recovery form, so
@@ -453,6 +456,39 @@ def test_e_malformed_anchor_with_claim_rejects_with_400_and_clears_anchor(
         "(T3.SB1 R3 M#2 anchor-clear discipline)"
     )
     # No exit fill should have been written.
+    conn = connect(cfg.paths.db_path)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE action != 'entry'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 0
+
+
+def test_e_json_null_anchor_with_claim_is_rejected_at_tier_a(
+    seeded_db, monkeypatch,
+):
+    """4-tier rejection (a), the one document it still answers after the raw
+    rung (self-sweep SS-2): a JSON ``null`` decodes, the authority reads it
+    as naming no order (canonical), and ``json.loads`` yields ``None``. With
+    a claim -> 400 with tier (a)'s text, the anchor cleared, no fill. A PIN:
+    the malformed-JSON test above no longer reaches tier (a), so without this
+    nothing does. NULL killed: deleting tier (a) as "covered by the raw
+    rung" (measured: the POST then records)."""
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            schwab_source_value_json="null",
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+    assert resp.status_code == 400, resp.text
+    assert "is malformed, unparseable, or not a JSON object" in resp.text
     conn = connect(cfg.paths.db_path)
     try:
         n = conn.execute(
