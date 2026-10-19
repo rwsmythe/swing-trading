@@ -16,14 +16,34 @@ Note vs the plan draft: the external holder grabs the write lock with a bare
 ``BEGIN IMMEDIATE`` (no INSERT) -- a RESERVED lock blocks another BEGIN IMMEDIATE
 regardless, and avoids both the schwab_api_calls.endpoint CHECK constraint and
 contaminating the ``marketdata.pricehistory`` row count.
+
+D87 (load robustness): the holder is SYNCHRONISED, never slept on. It sets
+``held`` only after its ``BEGIN IMMEDIATE`` has returned, and each test waits
+on that event before the contended audit write runs. The old shape slept a
+fixed 50 / 100 ms and hoped the holder had the lock by then; under xdist load
+the holder thread had not reached RESERVED yet, the 1 ms audit write found no
+contention, and ``pytest.raises`` reported DID NOT RAISE. For the same reason
+the pre-fix holders hold until the test releases them (``_PRE_FIX_HOLD_BOUND``
+is a hang guard, not a duration): a holder that times out on its own while a
+loaded main thread is still on its way to the audit write is the same race
+from the other side. The 1 ms ``busy_timeout`` is the tests' design (the
+pre-fix shape) and is unchanged.
 """
 import sqlite3
 import threading
-import time
-import pytest
 from pathlib import Path
+
+import pytest
+
 from swing.data.db import ensure_schema, open_connection
 from swing.integrations.schwab import marketdata
+
+# The holder's own wait for the test's release signal in the two pre-fix tests.
+# Every test releases its holder in ``finally``; this bound only stops a broken
+# test from leaving a thread holding the write lock forever.
+_PRE_FIX_HOLD_BOUND = 30.0
+# How long a test waits for the holder to report that it holds RESERVED.
+_HELD_WAIT = 60.0
 
 
 def _db(tmp_path: Path) -> Path:
@@ -63,26 +83,39 @@ class _StubClient:
         return dict(_VALID_PAYLOAD, symbol=symbol)
 
 
-def _external_lock_holder(db: Path, hold_seconds: float, release_evt: threading.Event):
-    """Hold the SQLite write lock for `hold_seconds` (simulating a candidates/
-    archive/evaluate writer) so an audit BEGIN IMMEDIATE must wait."""
+def _external_lock_holder(db: Path, hold_seconds: float, release_evt: threading.Event,
+                          held_evt: threading.Event):
+    """Hold the SQLite write lock (simulating a candidates/archive/evaluate
+    writer) until `release_evt` is set or `hold_seconds` pass, so an audit
+    BEGIN IMMEDIATE must wait. `held_evt` is set only once BEGIN IMMEDIATE has
+    RETURNED, i.e. once this connection owns RESERVED."""
     conn = open_connection(db, busy_timeout_ms=30000)
     conn.execute("BEGIN IMMEDIATE")  # RESERVED write lock; blocks other writers
+    held_evt.set()
     release_evt.wait(timeout=hold_seconds)
     conn.commit()
     conn.close()
+
+
+def _wait_held(held: threading.Event) -> None:
+    assert held.wait(timeout=_HELD_WAIT), (
+        f"the external holder did not report RESERVED within {_HELD_WAIT}s"
+    )
 
 
 def test_forced_start_lock_leaves_no_audit_row(tmp_path):
     # PRE-FIX shape: tiny busy_timeout + external holder during start ->
     # record_call_start's BEGIN IMMEDIATE times out BEFORE the insert commits.
     db = _db(tmp_path)
-    audit_conn = open_connection(db, busy_timeout_ms=1)  # 1ms -> times out
     release = threading.Event()
-    holder = threading.Thread(target=_external_lock_holder, args=(db, 2.0, release))
+    held = threading.Event()
+    holder = threading.Thread(
+        target=_external_lock_holder, args=(db, _PRE_FIX_HOLD_BOUND, release, held))
     holder.start()
-    time.sleep(0.05)  # ensure the holder owns the lock first
+    audit_conn = None
     try:
+        _wait_held(held)  # the holder owns RESERVED before the 1 ms connection opens
+        audit_conn = open_connection(db, busy_timeout_ms=1)  # 1ms -> times out
         with pytest.raises(sqlite3.OperationalError):
             marketdata.get_price_history(
                 _StubClient(), audit_conn, "AAPL",
@@ -98,7 +131,8 @@ def test_forced_start_lock_leaves_no_audit_row(tmp_path):
     finally:
         release.set()
         holder.join()
-        audit_conn.close()
+        if audit_conn is not None:
+            audit_conn.close()
 
 
 def test_forced_finish_lock_leaves_in_flight_row(tmp_path):
@@ -108,13 +142,17 @@ def test_forced_finish_lock_leaves_in_flight_row(tmp_path):
     db = _db(tmp_path)
     audit_conn = open_connection(db, busy_timeout_ms=1)
     release = threading.Event()
+    held = threading.Event()
+    holders: list[threading.Thread] = []
 
     def _on_http():
-        # spawn the lock holder mid-HTTP, then let finish contend
-        holder = threading.Thread(target=_external_lock_holder, args=(db, 2.0, release))
+        # spawn the lock holder mid-HTTP (record_call_start has committed), and
+        # return only once it owns RESERVED, so finish contends
+        holder = threading.Thread(
+            target=_external_lock_holder, args=(db, _PRE_FIX_HOLD_BOUND, release, held))
+        holders.append(holder)
         holder.start()
-        time.sleep(0.1)
-        return holder
+        _wait_held(held)
 
     client = _StubClient(on_http=_on_http)
     try:
@@ -127,13 +165,16 @@ def test_forced_finish_lock_leaves_in_flight_row(tmp_path):
             )
         # start committed -> exactly one in_flight row, terminal fields NULL
         rows = audit_conn.execute(
-            "SELECT status, http_status FROM schwab_api_calls WHERE endpoint='marketdata.pricehistory'"
+            "SELECT status, http_status FROM schwab_api_calls "
+            "WHERE endpoint='marketdata.pricehistory'"
         ).fetchall()
         assert len(rows) == 1
         assert rows[0][0] == "in_flight"
         assert rows[0][1] is None
     finally:
         release.set()
+        for holder in holders:
+            holder.join()
         audit_conn.close()
 
 
@@ -143,10 +184,11 @@ def test_post_fix_30s_all_attempts_complete(tmp_path):
     db = _db(tmp_path)
     audit_conn = open_connection(db, busy_timeout_ms=30000, check_same_thread=False)
     release = threading.Event()
-    holder = threading.Thread(target=_external_lock_holder, args=(db, 0.5, release))
+    held = threading.Event()
+    holder = threading.Thread(target=_external_lock_holder, args=(db, 0.5, release, held))
     holder.start()
-    time.sleep(0.05)
     try:
+        _wait_held(held)  # the holder owns RESERVED before the audit write starts
         # Should NOT raise -- waits up to 30s, holder releases at 0.5s.
         result = marketdata.get_price_history(
             _StubClient(), audit_conn, "NVDA",
