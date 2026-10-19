@@ -247,14 +247,43 @@ def test_setup_happy_path_multi_account_picks_via_prompt(
     assert overrides["integrations"]["schwab"]["account_hash"] == "SECONDHASH"
 
 
+@pytest.fixture
+def sentinel_registered() -> Any:
+    """Register the access-token sentinel with the Schwab redactor for ONE test.
+
+    D87: the sentinel is not hex- or base64-shaped (its underscores break both
+    Layer-1 heuristics), so ONLY the Layer-0 registry can redact it. Before
+    this fixture, the auth-failure test relied on a sibling happy-path test
+    having run earlier on the same worker: the stub's ``_FakeTokens`` carries
+    the sentinel as ``access_token``, and the success path registers it. Run
+    alone, or first on an xdist worker, the test red deterministically (the
+    Phase-12 bundle-B report's item 2). Registering it here makes the
+    precondition the test's own. The registry is process-global and
+    never-narrowed in production, so the prior contents are restored in place
+    at teardown (the snapshot/restore shape of the ladder-integration tests).
+    """
+    from swing.integrations.schwab import client as schwab_client_module
+    from swing.integrations.schwab.client import register_schwab_secrets
+
+    registry = schwab_client_module._GLOBAL_KNOWN_SECRETS
+    saved = set(registry)
+    register_schwab_secrets([_SENTINEL_ACCESS_TOKEN])
+    yield _SENTINEL_ACCESS_TOKEN
+    registry.clear()
+    registry.update(saved)
+
+
 def test_setup_auth_failure_audit_status_and_sentinel_redaction(
     home: Path, cfg_path: Path, monkeypatch: pytest.MonkeyPatch,
+    sentinel_registered: str,
 ) -> None:
     """Test 3 — schwabdev.Client raises → exit non-zero, audit status=
     auth_failed, sentinel bytes never appear in stdout OR audit row error.
 
     DISCRIMINATING per plan: an unredacted implementation that interpolates
-    the exception arg verbatim would fail this test.
+    the exception arg verbatim would fail this test. The sentinel is a
+    secret the process has already seen (``sentinel_registered``), which is
+    the state production's Layer-0 redaction depends on.
     """
     sentinel = _SENTINEL_ACCESS_TOKEN  # would-be leaked bytes
     _patch_schwabdev(
