@@ -565,3 +565,18 @@ def test_a02_a_huge_int_selected_entry_price_is_not_well_formed(world):
     assert r.status_code == 400, r.text[:500]
     assert "the selected auto-fill candidate carries invalid values" in r.text
     assert _exit_rows(world.cfg) == []
+
+
+# ------------------------------------------------- D79-A-03 (Reviewer A R3)
+def test_a03_a_huge_integer_share_count_is_refused_as_exceeds(world):
+    """D79-A-03, the caller: a POST whose ``shares`` is a 401-digit integer
+    reaches the route's precheck and gets the existing "exceeds" refusal
+    re-render (400), never a 500, and records nothing. PRE-FIX: the
+    helper's ``float(req.shares)`` raised ``OverflowError`` out of the
+    route -- a 500."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        r = _post(tc, world.tid, dict(fd, shares=str(_HUGE_INT)))
+    assert r.status_code == 400, r.text[:500]
+    assert "exceeds remaining current_size" in r.text
+    assert _exit_rows(world.cfg) == []

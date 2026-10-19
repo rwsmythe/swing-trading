@@ -103,3 +103,16 @@ def test_t7a_iv_the_refusals_run_in_the_ruled_order():
         "trade 7 not active (state='closed')",
         "exit shares 3 exceeds remaining current_size 0.0",
     ]
+
+
+def test_a03_a_huge_integer_share_count_raises_exceeds():
+    """D79-A-03 (Reviewer A round 3): the sixth refusal is raised for an
+    integer ``shares`` too large for a float, with the existing text. The
+    contract is "exactly the six refusals", and ``float(req.shares)``
+    overflowing raised ``OverflowError`` -- not a ``ValueError``, so neither
+    caller's ``except ValueError`` delivered it. PRE-FIX: OverflowError."""
+    huge = 10 ** 400
+    with pytest.raises(ValueError) as info:
+        check_exit_preconditions(_trade(), _req(shares=huge))
+    assert str(info.value) == (
+        f"exit shares {huge} exceeds remaining current_size 10.0")

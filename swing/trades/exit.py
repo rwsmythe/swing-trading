@@ -404,7 +404,12 @@ def check_exit_preconditions(trade: Trade | None, req: ExitRequest) -> None:
             f"trade {req.trade_id} not active (state={trade.state!r}); "
             f"exits only permitted from {sorted(_ACTIVE_STATES)}"
         )
-    if float(trade.current_size) - float(req.shares) < 0:
+    # Compared directly, never through ``float(req.shares)``: Python compares
+    # an int with a float exactly, while ``float()`` of an int too large for
+    # a float raises ``OverflowError`` -- which is not one of the six
+    # refusals (D79-A-03). Equivalent to the pre-arc ``current_size - shares
+    # < 0`` for every share count a float holds exactly.
+    if req.shares > trade.current_size:
         raise ValueError(
             f"exit shares {req.shares} exceeds remaining current_size "
             f"{trade.current_size}"
