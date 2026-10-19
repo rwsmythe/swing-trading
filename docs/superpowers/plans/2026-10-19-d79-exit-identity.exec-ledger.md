@@ -190,6 +190,7 @@ Author of this section: cell 3. Tier `strong`, cold-audit form with repo access:
 | 4 | `33a3bfa2` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (440,564) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 1 | 3 | 4 new / 0 reopened | 0 | 345,780 (cell 5 at return; retired) |
 | 5 | `f70ebdc8` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (475,309) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 4 | 5 new / 1 reopened (R5-06, RA-07's site) | 0 || 282,116 (cell 6 at return; resumed) |
 | 6 | `d539d273` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (430,882) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 0 | 2 new / 0 reopened | 0 || 374,140 (cell 6 at return; retired) |
+| 7 | `c5cb5850` (code `783ec4f9`) | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (459,279) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 0 | 2 new / 0 reopened | 0 | |
 
 Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\review-r1.txt` (1,547,419 bytes), `prompt-r1.md` (367,520 bytes), `copowers-findings.md`. Exit file 0; the process exited before the transcript was read. Prior-findings reach: none (round 1).
 
@@ -658,3 +659,42 @@ Ordered by the orchestrator as gate-holder, CHARC concurring (2026-10-19T10:12:4
 Checked with no finding: the order-scoped identity strings agree across `exit_record_flags` (its docstring and its code), `ExitRecordFlag`'s docstring and the plan's naming line (`possible_partial|`, `unreadable_envelope|` and map-derived `value_tuple_match|` carry `<order key>|<fill_id>`; DB-derived `value_tuple_match|<fill_id>`); the CLI prints `_VALUE_TUPLE_TEXT` for DB-derived matches only, where it is true; the 22-F route guard's comment ("once `record_exit` RETURNS the exit is DURABLE") is still true under R6-02. No critical or major finding. Round 7's prompt carries no SS finding; the sweep's changes appear in the diff, and SS-6's text rule is stated in claim 4 and SS-2's tier-(a) pin in claim 9.
 
 **Full fast suite on the final pre-round head `783ec4f9`, read off the saved output: 15496 passed, 13 skipped, 0 failed** (1049.06 s) = 15486 + R6-01's 4 + R6-02's 4 + SS-6's 1 + SS-2's 1. Box load at launch: no `codex exec` process in WSL. The five subprocess-timeout reds of the `a0b895e0` run did not recur. `ruff check swing/` clean; `%(trailers)` empty across `618d7b04..HEAD` (checked after each commit); no added file under `swing/`; nothing under `swing/data/`.
+
+### Round 7 (the bounded confirming round)
+
+Same form as rounds 4-6: `codex exec -p strong -s read-only --skip-git-repo-check -` from the worktree, runner `~/d79r7/run_r7.sh` (literal paths; `file` reports ASCII; the output and exit files pre-created). The prompt is round 6's frame rebuilt on `c5cb5850` (code head `783ec4f9`) by a self-contained builder:
+- claim 1 restated at the R6-02 width; claim 4 extended with SS-6's text rule; a new claim 9 (the raw rung, and tier (a) answering only a claimed JSON `null`);
+- AL-1..AL-10 with their reasons (AL-10 new);
+- the TWELVE rulings: round 6's ten, plus CHARC's R6-01 and R6-02 ruling bodies quoted verbatim from this ledger (the read-list preamble omitted); CHARC's A-F01 addition as in round 6; encodings 1-4 and 6-23 (22 and 23 new), challenge invited;
+- the `618d7b04..HEAD` diff with this ledger excluded; no prior finding text and no SS finding. Prompt 497,279 bytes.
+
+- **Assertions** (script file, read from the transcript):
+  - banner `model: gpt-5.6-sol`, `reasoning effort: high`, equal to `~/.codex/strong.config.toml`;
+  - `^ERROR` 0; `^tokens used` 1 (459,279);
+  - `^NEW_CRITICAL_MAJOR_FOUND` 2 (the CLI's double emission), `^NO_NEW_CRITICAL_MAJOR` 0;
+  - exit file 0, written after codex returned; no `d79r7` process alive at read time.
+  - **Round 7 COUNTS.** One attempt; no capacity abort.
+- **Prior-findings reach: none.** None of the 39 commands touches the ledger, a review transcript or a findings file; the name hits are the prompt echo and `docs/orchestrator-context.md` prose. **Content-filter events:** none ("The prompt was not rewritten or refused").
+- **Evidence:** `review-r7.txt` (1,558,024 bytes), `prompt-r7.md` (497,279 bytes) and `exit-r7.txt` in `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\`, copied once the assertions passed; `copowers-findings.md` there carries round 7's verbatim final message.
+- **Spend:** counted rounds 403,744 + 954,070 + 629,503 + 440,564 + 475,309 + 430,882 + 459,279 = **3,793,351**. Disqualified attempts: 434,965 (rounds 3 and 4); none this round.
+
+### Round 7 adjudication (premises re-checked at `c5cb5850`, by execution)
+
+Both majors are PRE-ARC and both are routed. Round 8 is the gate-holder's written decision; no round 8 is started.
+
+- **R7-01 (major): ACCEPTED as real; PRE-ARC; ROUTED as a fork, because the fix crosses the declared envelope.**
+  - The defect, verified by execution: `date.fromisoformat` accepts `"20261019"` (-> 2026-10-19) and `"2026-W01-1"` (-> 2025-12-29). `_normalize_trade_event_date_to_iso("20261019")` returns `"20261019T16:00:00"`, and `"2026-W01-1"` returns `"2026-W01-1T16:00:00"`, whose first ten characters are not a calendar date. The route's tier (d) and selected-entry check (`_exit_values_well_formed`) use the same `fromisoformat`, so a claimed envelope whose top-level date, selected entry and typed date are all `"20261019"` passes and records.
+  - Pre-arc: the helper is `618d7b04:swing/trades/exit.py:84` and tier (d)'s `fromisoformat` is `618d7b04:swing/web/routes/trades.py:2748`. The arc carried both and wrote a docstring ("an ISO `YYYY-MM-DD` string") the check does not enforce.
+  - Why a fork: `_normalize_trade_event_date_to_iso` is SHARED with the ENTRY path (`swing/trades/entry.py:1172-1180`), which is OUT of the declared envelope, and the entry route's tier (d) has the same `fromisoformat` (`routes/trades.py`, the `v_entry_date` check).
+  - **Branch A (exit sites only, in envelope):** one strict canonical-date predicate (date-only: `date.fromisoformat(v).isoformat() == v`; a datetime: its first ten characters pass the same test), used by `_exit_values_well_formed` and by `record_exit` before it normalises (a `ValueError` with the existing text family, so both callers' delivery reaches it). RED: route and service tests for `"20261019"` and `"2026-W01-1"` -> 400 / `ValueError`, no fill. The entry half is BANKED (owner and trigger to be named).
+  - **Branch B (fix the shared helper):** entry and exit at once; it crosses the envelope into the ENTRY path, so it needs CHARC's envelope widening.
+  - **Branch C (accepted limitation, AL-11):** pre-arc, and reachable only by a non-browser client or a CLI typo (the form's date input renders `YYYY-MM-DD`). Its live incidence is a `mode=ro` read for the orchestrator: `SELECT COUNT(*) FROM fills WHERE substr(fill_datetime, 5, 1) != '-' OR substr(fill_datetime, 8, 1) != '-'`.
+  - The cell does not choose. Its lean, for the record: A, with the entry half banked.
+- **R7-02 (major, tagged [AGAINST-RULING] against FORK 1's "the six refusals, with the EXISTING texts"): ACCEPTED as real; PRE-ARC; ROUTED as a fork, because the ruling's text is CHARC's.**
+  - The defect, verified by execution: `fills.price REAL NOT NULL CHECK (price > 0)` stores `float('inf')` (`typeof` real). The third refusal is `not (req.exit_price > 0)` (`check_exit_preconditions`, `exit.py:397`), which `inf` passes, so an infinite price, realized P&L and R-multiple commit. `ExitPriceRefusedError`'s docstring names the column's refusal set as its reason, and the column does not refuse `inf`. Codex reports that click turns `--exit-price inf` and `1e400` into `inf`; the cell did not re-run that leg, and the web form's float parsing was not checked.
+  - Pre-arc: `618d7b04:swing/trades/exit.py:168` is the same comparison.
+  - **Branch A (widen the third refusal, its position unchanged):** `not (math.isfinite(req.exit_price) and req.exit_price > 0)`, with its text updated; one spelling, so the route precheck and the in-lock barrier both refuse. RED: service, route and real-CLI tests for `inf` and `1e400`, no fill. It changes one of the "existing texts" FORK 1 named.
+  - **Branch B (accepted limitation):** pre-arc operator-typed input. The live incidence read: `SELECT COUNT(*) FROM fills WHERE price > 1e308`, `mode=ro`.
+  - The cell does not choose. Its lean, for the record: A. The refusal's own docstring states its reason as the column's refusal set, and that reason is false for `inf`.
+
+Round 7: 2 majors (R7-01 and R7-02, both routed), 0 minors, 2 new, 0 reopened, no reverts. Not converged. Every finding of rounds 6 and 7 is pre-arc in class (R6-02, R7-01, R7-02) or a ladder input rung (R6-01); none is a residual of the loop's own fixes.
