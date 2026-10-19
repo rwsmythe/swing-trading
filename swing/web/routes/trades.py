@@ -2459,6 +2459,49 @@ _EXIT_CONFIRM_VOID_TEXT = (
 #: distinct from a prefetched ``None`` (RA-04).
 _EXIT_VM_NOT_PREFETCHED = object()
 
+# D79 executing Fork R6-01 (CHARC, branch A): the raw rung's refusal text.
+_EXIT_RAW_ANCHOR_UNREADABLE_TEXT = (
+    "Trade exit rejected: the order identity in the submitted auto-fill "
+    "anchor is unreadable (a padded, blank, non-text or repeated order or "
+    "symbol key, or a document that cannot be decoded), so nothing was "
+    "recorded. The form has been regenerated with a fresh anchor; re-open the "
+    "form to recover."
+)
+
+
+def _exit_raw_anchor_is_refused(raw: str) -> bool:
+    """THE RAW RUNG, the FIRST rung of the exit anchor ladder (D79 executing
+    Fork R6-01, CHARC branch A): does the ONE authority,
+    ``canonical_envelope_identity``, REFUSE the browser's raw anchor string?
+
+    WHY IT IS FIRST, before ``json.loads``. Every later rung reads the
+    anchor through ``json.loads``, which keeps the LAST of duplicate keys --
+    a third reading of identity beside the authority's, the reason the plan
+    stage named for having ONE authority. And the selected map entry's order
+    id later REPLACES the top-level one, so a document the authority refuses
+    would be REPAIRED on input instead of refused: normalisation on input,
+    the thing CHARC's FORK 2 forbade on write. The authority's refusal set is
+    this codebase's definition of an unreadable identity document, and a
+    refused raw anchor says something about the CLIENT, which is what the
+    ladder exists to act on. A canonical reading, including one that names
+    no order, passes to the existing tiers unchanged. A document that cannot
+    be decoded is refused here (the authority fails closed on it), so tier
+    (a) below now answers only the one decodable non-object it still sees,
+    a JSON ``null``.
+
+    WHAT FORK 2'S PRODUCER RUNG STILL OWNS. This rung reads the ROOT keys of
+    the INPUT (RD's FORK 1 width, the authority's top-level id). The
+    producer check over the envelope ABOUT TO BE PERSISTED guards the
+    PERSISTED identity: a padded id inside the SELECTED MAP ENTRY is nested,
+    so it passes this rung, becomes the produced envelope's top-level id,
+    and is refused there. The two rungs are not redundant.
+
+    NOT GATED ON THE CLAIM (encoding 22, cell 7). The browser never sends an
+    anchor without its claim, so only a non-browser client reaches the
+    unclaimed case; the refusal is a statement about that client either way.
+    """
+    return canonical_envelope_identity(raw).state == ENVELOPE_REFUSED
+
 
 def _exit_values_well_formed(date_value: object, price_value: object,
                              shares_value: object) -> bool:
@@ -2812,13 +2855,17 @@ async def exit_post(
             notes=notes, error_message=error_message,
         )
 
-    # 4-tier rejection ladder (mirrors entry_post pattern):
+    # 4-tier rejection ladder (mirrors entry_post pattern), behind the raw
+    # rung (D79 executing Fork R6-01):
+    #   (raw) the authority REFUSES the raw anchor → 400 + clear (any claim)
     #   (a) malformed JSON → 400 + clear
     #   (b) non-dict JSON → 400 + clear
     #   (c) dict missing required keys → 400 + clear
     #   (d) dict with invalid value shapes → 400 + clear
     #   plus claim-vs-anchor consistency.
     if schwab_source_value_json.strip():
+        if _exit_raw_anchor_is_refused(schwab_source_value_json):
+            return _reject_anchor(_EXIT_RAW_ANCHOR_UNREADABLE_TEXT)
         try:
             anchor_envelope = _json.loads(schwab_source_value_json)
         except Exception:  # noqa: BLE001 -- the TYPE ROSTER is the failure

@@ -163,12 +163,18 @@ def test_t6a_unconfirmed_contradiction_writes_nothing(world):
 
 
 def test_t6d_padded_order_id_is_refused_before_record_exit(world, monkeypatch):
-    """CHARC F2-(iv), the writer half: an envelope whose top-level id and
-    map entry carry " o2" (padded, a hand-built CONSISTENT anchor) is
-    refused by the authority read before ``record_exit`` is reached; the
-    same POST with "o2" records. PRE-FIX: " o2" is persisted (the
-    ``usable`` check passes). NULL killed: the check in the service only
-    (it fails the zero-calls assertion)."""
+    """CHARC F2-(iv): an envelope whose top-level id and map entry carry
+    " o2" (padded, a hand-built CONSISTENT anchor) is refused by an
+    authority read before ``record_exit`` is reached; the same POST with
+    "o2" records. PRE-FIX: " o2" is persisted (the ``usable`` check passes).
+    NULL killed: the check in the service only (it fails the zero-calls
+    assertion).
+
+    SUPERSEDED BY REPLACEMENT (D79 executing Fork R6-01, CHARC branch A):
+    the padded ROOT id is now refused by the RAW RUNG at the top of the
+    ladder, so the asserted text is the raw rung's. The producer half of
+    this test -- a padded id in the selected MAP entry under a CANONICAL
+    root -- is pinned by ``test_r601_ii_...``."""
     calls: list[int] = []
     real = exit_mod.record_exit
 
@@ -188,7 +194,7 @@ def test_t6d_padded_order_id_is_refused_before_record_exit(world, monkeypatch):
             env, sort_keys=True), candidate_order_id_1=" o2")
         r = _post(tc, world.tid, padded)
         assert r.status_code == 400, r.text[:500]
-        assert "malformed (padded or blank)" in _text(r)
+        assert _RAW_RUNG_TEXT in _text(r)
         assert calls == []
         assert _exit_fills(world.cfg) == []
         ok = _post(tc, world.tid, fd)
@@ -623,3 +629,151 @@ def test_a03_a_huge_integer_share_count_is_refused_as_exceeds(world):
     assert r.status_code == 400, r.text[:500]
     assert "exceeds remaining current_size" in r.text
     assert _exit_rows(world.cfg) == []
+
+
+# ------------------------------------- R6-01 (Reviewer A R6; CHARC, branch A)
+# THE RAW RUNG: the authority reads the browser's RAW anchor before
+# ``json.loads`` does. Two readings of one identity (``json.loads`` keeps the
+# LAST duplicate key; the route then REPLACES a refused top-level id with the
+# selected entry's) is the normalisation-on-input CHARC's FORK 2 forbade on
+# write. Typed values distinct from any fresh-fetch value would trip other
+# rungs pre-fix, so each case submits the form's own values plus a note.
+_RAW_RUNG_TEXT = "order identity in the submitted auto-fill anchor is unreadable"
+
+
+def _record_exit_calls(monkeypatch) -> list[int]:
+    calls: list[int] = []
+    real = exit_mod.record_exit
+
+    def spy(conn, req):
+        calls.append(1)
+        return real(conn, req)
+
+    monkeypatch.setattr(routes_mod, "record_exit", spy)
+    return calls
+
+
+def _assert_raw_rung_refusal(r, raw: str, *, world, calls) -> None:
+    """400, the raw rung's text, ZERO ``record_exit`` calls, no fill, the
+    anchor CLEARED (the fresh one, never the submitted one) and the typed
+    values kept."""
+    from tests.web.test_routes.test_exit_rerender_anchor import (
+        _FRESH_AUDIT_AT,
+        _hidden,
+        _input_attr,
+        _notes,
+    )
+    assert r.status_code == 400, r.text[:500]
+    assert _RAW_RUNG_TEXT in _text(r)
+    assert "re-open the form" in _text(r)
+    assert calls == []
+    assert _exit_fills(world.cfg) == []
+    fresh = _hidden(r.text, "schwab_source_value_json")
+    assert fresh is not None and fresh != raw
+    assert json.loads(fresh)["schwab_order_id"] == "o2"
+    assert _hidden(r.text, "auto_fill_audit_at") == _FRESH_AUDIT_AT
+    assert _input_attr(r.text, "exit_price", "value") == "131.00"
+    assert _input_attr(r.text, "shares", "value") == "3"
+    assert _notes(r.text) == "raw rung note"
+
+
+def test_r601_i_padded_top_level_id_with_a_canonical_selected_entry(
+        world, monkeypatch):
+    """R6-01 discriminator (i), the reviewer's first case. The single-
+    candidate form (index 0 inferred from the one-entry map); the raw
+    anchor's TOP-LEVEL id is padded (" o2") while the selected map entry is
+    canonical. PRE-FIX: the selected entry's "o2" overwrote the top level,
+    the produced envelope was canonical, and the POST RECORDED (200, one
+    fill). NULL killed: the raw rung absent, or placed after the selected
+    entry's overwrite."""
+    from tests.web.test_routes.test_exit_rerender_anchor import (
+        _SUBMITTED_AUDIT_AT,
+    )
+    _single(world)
+    calls = _record_exit_calls(monkeypatch)
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        assert env["schwab_order_id"] == "o2"
+        env["schwab_order_id"] = " o2"
+        raw = json.dumps(env, sort_keys=True)
+        r = _post(tc, world.tid, dict(
+            fd, schwab_source_value_json=raw,
+            auto_fill_audit_at=_SUBMITTED_AUDIT_AT, notes="raw rung note"))
+    _assert_raw_rung_refusal(r, raw, world=world, calls=calls)
+
+
+def test_r601_i_duplicate_root_identity_keys(world, monkeypatch):
+    """R6-01 discriminator (i), the reviewer's second case. The multi-
+    candidate form with its default radio (o2); the raw anchor carries TWO
+    root ``schwab_order_id`` keys ("o9" first, the form's "o2" last).
+    ``json.loads`` keeps the LAST, SQLite's ``json_extract`` the FIRST, so
+    the authority REFUSES the document. PRE-FIX: the route read "o2" and
+    RECORDED (200, one fill). NULL killed: the rung run over the PARSED
+    dict (the duplicate is gone by then)."""
+    from tests.web.test_routes.test_exit_rerender_anchor import (
+        _SUBMITTED_AUDIT_AT,
+    )
+    calls = _record_exit_calls(monkeypatch)
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        clean = fd["schwab_source_value_json"]
+        assert clean.startswith("{")
+        raw = '{"schwab_order_id": "o9", ' + clean[1:]
+        assert json.loads(raw)["schwab_order_id"] == "o2"
+        r = _post(tc, world.tid, dict(
+            fd, schwab_source_value_json=raw,
+            auto_fill_audit_at=_SUBMITTED_AUDIT_AT, notes="raw rung note"))
+    _assert_raw_rung_refusal(r, raw, world=world, calls=calls)
+
+
+def test_r601_ii_a_padded_selected_entry_passes_the_raw_rung_and_is_refused_by_the_producer(
+        world, monkeypatch):
+    """R6-01 discriminator (ii), the NON-REDUNDANCY control (a PIN: green
+    before and after). The raw anchor is CANONICAL -- its root names "o2"
+    -- but the SELECTED map entry (the default radio, o2) carries " o2".
+    The raw rung passes it (asserted); the selected entry's id becomes the
+    produced envelope's top level, and the PRODUCER check (CHARC FORK 2,
+    T6 item 4) refuses it with ZERO ``record_exit`` calls. NULL killed:
+    deleting the producer check as "covered by the raw rung"."""
+    from swing.trades.latched_origin import (
+        ENVELOPE_CANONICAL,
+        canonical_envelope_identity,
+    )
+    calls = _record_exit_calls(monkeypatch)
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        assert env["schwab_order_id"] == "o2"
+        for entry in env["candidates_map"].values():
+            if entry["order_id"] == "o2":
+                entry["order_id"] = " o2"
+        raw = json.dumps(env, sort_keys=True)
+        assert canonical_envelope_identity(raw).state == ENVELOPE_CANONICAL
+        r = _post(tc, world.tid, dict(fd, schwab_source_value_json=raw))
+    assert r.status_code == 400, r.text[:500]
+    assert "malformed (padded or blank)" in _text(r)
+    assert _RAW_RUNG_TEXT not in _text(r)
+    assert calls == []
+    assert _exit_fills(world.cfg) == []
+
+
+def test_r601_unclaimed_refused_raw_anchor_is_refused_too(world, monkeypatch):
+    """Encoding 22 (cell 7): the raw rung is NOT gated on the claim. CHARC's
+    ruling refuses a REFUSED raw reading as a statement about the CLIENT; an
+    unclaimed submission's anchor is otherwise discarded unread, but the
+    browser form never sends an anchor without its claim, so only a
+    non-browser client reaches this. PRE-FIX: the anchor was ignored and the
+    POST recorded ``operator_typed`` (200)."""
+    calls = _record_exit_calls(monkeypatch)
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        env["schwab_order_id"] = " o2"
+        raw = json.dumps(env, sort_keys=True)
+        r = _post(tc, world.tid, dict(
+            fd, schwab_source_value_json=raw, fill_origin_at_form_render=""))
+    assert r.status_code == 400, r.text[:500]
+    assert _RAW_RUNG_TEXT in _text(r)
+    assert calls == []
+    assert _exit_fills(world.cfg) == []
