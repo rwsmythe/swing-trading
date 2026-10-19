@@ -24,7 +24,7 @@
 |---|---|---|
 | D79 post-merge: merged-head suite read, merge report (four carriage items), worktree removal, push | orchestrator · operator (push) | merge landed `38c1d97d` |
 | First live exit's fill row read against the ruled shape (witness) | RD | awaits a live exit |
-| **D87 tests-only rider** (suite load-robustness; operator word at `docs/orchestrator-context.md:93`; CHARC form per mechanism in `comms/orchestrator/read/20261019T171941Z-*`; `test_run_stub_skip_exits_zero` joins on one more operator word) | orchestrator, FIRST | approved, not started |
+| **D87 tests-only rider** (suite load-robustness; operator word at `docs/orchestrator-context.md:93`; CHARC form per mechanism in `comms/orchestrator/read/20261019T171941Z-*`; `test_run_stub_skip_exits_zero` JOINED, operator word in the brief @ `9845b799`:6) | orchestrator, FIRST | DISPATCHED on `d87-load` off `0b6cc895`; forks outside the three mechanisms route to CHARC |
 | Charter second compaction (116,850 B; target under 100K) | CHARC | owed at next touch |
 | Maintenance rider (D82/D83 + shadow 900) | orchestrator | approved, not started; CHARC plan-stage read of the six D83 conditions |
 | Soft-stop arc + widening rider (D84) | orchestrator, after the rider | approved, not planned; plan-stage director review binds |
