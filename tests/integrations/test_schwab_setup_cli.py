@@ -9,8 +9,9 @@ Test discipline:
   - schwabdev.Client stubbed BEFORE the call site references it; tests
     never trigger real OAuth / network I/O.
   - Token sentinel discriminating tests assert that tokens never leak to
-    stdout / stderr / audit-row error_message (plan §H.5 discipline +
-    `swing/integrations/schwab/client.py:_redact_message` defense-in-depth).
+    stdout / stderr / audit-row error_message (plan §H.5 discipline). The
+    redactor the audit row goes through, and why the sentinel must be
+    registered, are stated at `_SENTINEL_ACCESS_TOKEN` below.
   - Audit-row row shape pinned post-call by querying the SQLite DB
     directly (validates service-layer wiring + reject-caller-held-tx
     discipline).
