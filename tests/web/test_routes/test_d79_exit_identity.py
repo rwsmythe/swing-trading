@@ -507,3 +507,23 @@ def test_ra02_an_explicit_selection_on_a_map_less_claim_is_reconfirmed(world):
         _hidden(r.text, "schwab_source_value_json"))
     assert _input_attr(r.text, "exit_price", "value") == "131.00"
     assert _exit_rows(world.cfg) == []
+
+
+# ------------------------------------------------- RA-03 (Reviewer A R2)
+def test_ra03_an_omitted_radio_on_a_multi_entry_map_is_no_selection(world):
+    """RA-03 (the Fork RA-02 ruling's note): index 0 is inferred only for a
+    ONE-entry map. A two-candidate form with ONLY ``candidate_index``
+    removed (every per-candidate hidden input kept) is a no-selection
+    submission and takes Fork 2's synthesis of the visible default (o2).
+    PRE-FIX: index 0 is inferred, so o1 is the selected entry and the
+    unedited o2 values are asked F1 (400, no fill)."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        assert "candidate_signature_hash_0" in fd
+        assert "candidate_signature_hash_1" in fd
+        fd.pop("candidate_index")
+        r = _post(tc, world.tid, fd)
+    assert r.status_code == 200, r.text[:500]
+    [(_fid, origin, env, _c, _p, _q)] = _exit_rows(world.cfg)
+    assert origin == "schwab_auto"
+    assert json.loads(env)["schwab_order_id"] == "o2"

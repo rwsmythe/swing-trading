@@ -2966,10 +2966,23 @@ async def exit_post(
                     )
             elif candidate_sigs:
                 # candidate_index omitted but per-candidate hidden inputs
-                # ARE present (single-fill case): default to index 0 IF
-                # present, otherwise treat as "no selection" (single-fill
-                # without per-candidate hidden inputs is also legal).
-                selected_index = 0 if 0 in candidate_sigs else None
+                # ARE present. Index 0 is inferred ONLY when the submitted
+                # ``candidates_map`` has exactly ONE entry (the single-fill
+                # case, where index 0 is the only candidate there is). For a
+                # multi-entry map, or a map-less envelope, an omitted radio is
+                # NO SELECTION and takes the Fork 2 synthesis of the visible
+                # default (Reviewer A R2, RA-03): inferring index 0 there
+                # would link candidate 0, which is not the default the form
+                # showed checked (the last), and on a map-less envelope it
+                # would invent a selection the Fork RA-02 re-confirm then
+                # refuses.
+                inferred_map = anchor_envelope.get("candidates_map")
+                selected_index = (
+                    0 if 0 in candidate_sigs
+                    and isinstance(inferred_map, dict)
+                    and len(inferred_map) == 1
+                    else None
+                )
             else:
                 # D79 (RD K3 precondition (4)): THE SINGLE-CANDIDATE SHAPE
                 # STAMPS ``selected_*`` TOO. A one-entry ``candidates_map`` with
