@@ -5,7 +5,9 @@ Brief: `docs/d87-load-robustness-dispatch-brief.md` (main `9845b799`). Worktree
 
 Status: the fork packet (section 4) was ruled by CHARC and the orchestrator
 (section 4A, verbatim) and executed (section 4B). All roster items are
-dispositioned; Reviewer A rounds are in section 5.
+dispositioned; Reviewer A rounds are in section 5. Round 1's findings were
+ruled (section 4C, verbatim) and fixed by a second cell (section 4D,
+brief `docs/d87-exec-continuation-brief-cell2.md`, main `555e4e45`).
 
 ## 1. Load harness (as run)
 
@@ -329,6 +331,143 @@ rc 0 and exactly one log line containing `SKIP exit=75`.
 - `git diff --stat 9845b799..HEAD -- swing/ scripts/ research/`: empty.
 - `%(trailers)` empty on every commit.
 
+## 4C. Rulings on Reviewer A round 1
+
+### CHARC (ruling of record: `comms/orchestrator/read/20261019T221138Z-charc-d87-r1-ruled-r1-01-and-r1-02-upheld-max.md`, main repo)
+
+Author: CHARC.
+
+> CHARC RULINGS, D87 Reviewer A round 1 (R1-01, R1-02; R1-03's bank accepted). PRIMARY: CHARC on all three (the form is mine; both findings contradict my sentences and both are right). Read at this seat: the L2 constant and its comment on d87-load (:50-58); the post-fix test (:181-206); `auth.py:1147` (the token registry write follows the successful construction -- Codex's premise holds on disk); `client.py:116-128`. And one fact ESTABLISHED BY EXECUTION here, because R1-02's fix rests on it: `sqlite3.Connection.set_trace_callback` fires for `BEGIN IMMEDIATE` BEFORE the busy handler gives up -- a connection with `timeout=0.001` against a held RESERVED lock traced `['BEGIN IMMEDIATE']` and then raised `database is locked`, the trace stamp earlier than the raise. Transcribe as block quotes with CHARC as author.
+>
+> R1-01 -- UPHELD. The orchestrator's recommendation ADOPTED: the basis is the MAX over every harness run measured, each run quoted at the constant with its date and box state; 5x that, rounded UP to a round figure. L2 1000 s; diagnose 450 s; v2-help 450 s. The 15 minutes in my ruling was a stated consequence of one sample, not a cap; a cap would make the rule and the number conflict at exactly the test the rule exists for, so there is no cap, and the comment says what the latency now is (about 16.7 min for L2) in those words. Two additions to the form, both because a constant measured once DECAYS (D21): (i) the comment carries the re-open condition -- any later harness measurement above budget/5 re-opens the constant, by the next arc that reads it, not by a flake wave-through; (ii) the figures are written as measured (788.25, 10.4), rounded only at the budget. One run that is 16% higher than the run before it is the reason a single sample was the wrong input; the reviewer measured my rule against its own basis and found the input short. Correct.
+>
+> R1-02 -- UPHELD; Codex's fix ADOPTED as mechanism (2) applied to the second half of the handshake. My sentence "non-vacuous because it waits on `held` first" closed the holder's side of the race and left the main thread's side open: the 0.5 s timer starts at `held`, and a main thread descheduled past 0.5 s between `_wait_held` and the audit `BEGIN IMMEDIATE` meets no lock and passes for nothing -- the very window this arc closes. The fix: a `set_trace_callback` on the audit connection (test-side; the test passes that connection in; nothing under `swing/`), filtered to a statement beginning `BEGIN`, sets `begun`; the holder waits on `begun` (bounded) and only THEN starts its 0.5 s. Contention is structural: the trace fires when the statement starts, before the busy wait (verified above). The 0.5 s release stays as the test's premise. FORM, three points: (a) a DID-IT-FIRE assertion after the call -- the test asserts `begun.is_set()`, so a handshake that never fired cannot pass as a green (the B-06 class); (b) the holder's wait on `begun` is bounded (60 s, the `_HELD_WAIT` figure) and on expiry it still releases and records the failure into the per-test holder-exception collection R1-04 adds, so the test fails on an assertion, never hangs; (c) the callback body only sets the event -- no SQL, no assertion, no logging inside the trace. Mutation to show RED first: a holder that starts its 0.5 s at `held` as today, with the main thread delayed 0.6 s before the call, must fail the fixed test's `begun`-gated path and pass the old one vacuously; quote both.
+>
+> R1-03 (pre-existing half) -- BANKED ON MY REGISTER as D88, accepted: production registers the live tokens at `auth.py:1147` AFTER the successful construction, so a token carried inside a construction-time exception (the auth-failure path) is redacted by the Layer-1 heuristics ALONE (`[a-fA-F0-9]{32,}`, the base64 run), and NO test pins that path with a realistic token shape; the sentinel test cannot, because its sentinel's underscores defeat Layer 1 by design. Owner CHARC for placement (the redaction-by-construction architecture is form); trigger the next `swing/integrations/schwab/` touch or the D39 sweep. Discriminator when it runs: a construction-time exception carrying a Schwab-shaped token (the dotted base64 segments of a real access token, not hex) -> absent from stdout and from the audit row's error text, with NO registration. A test that exposes a `swing/` defect there is a `swing/` arc, outside D87, as you said. The in-scope half (the module comment at :30-33 claiming both regexes "target" the sentinel) is a false comment in normative position; fixed in round 2 under your gate.
+>
+> ROUND COUNT: round 1 counted; round 2 is the confirming round on the fixed tree from a fresh cell (the cell is over the cap; the continuation brief commits to main first). This is a tests-only rider at round 1 of a fresh loop; no check-in question arises yet.
+>
+> Nothing else open on my seat for D87 round 1.
+
+### Orchestrator (brief owner; continuation brief section 2)
+
+> - **R1-03, in-scope half:** the module comment at `tests/integrations/test_schwab_setup_cli.py:30-33` says both Layer-1 regexes "target" the sentinel. That is false: the sentinel's underscores defeat both. Rewrite the comment to say what is true. The sentinel is redacted only through the Layer-0 registry, which is why the `sentinel_registered` fixture exists.
+> - **R1-04 (minor, in scope):** in `_external_lock_holder`: close the connection in a `finally`; collect any holder exception in a per-test list; assert the list is empty after each `join()`, in all three tests. R1-02's bounded-wait expiry records into the same list.
+
+## 4D. Cell-2 execution (head `41a16471` onward)
+
+Commits, in order: `41a088de` (R1-04), `6fba8627` (R1-02), `51fbc04d`
+(R1-01 budgets), `f33df595` (R1-03 comment), `d4d3d430` (R1-01: this cell's
+harness run quoted at the constants), then this ledger commit. Mutation
+plugin: `scratchpad/d87/mut/d87_mut_r102.py` (loaded with `-p`, no tracked
+file edited); it also records `record_call_start`'s wall time, which is the
+audit `BEGIN IMMEDIATE`'s wait and so the contention evidence. Outputs:
+`mut/r102-old.txt`, `mut/r104-new.txt`, `mut/r102-new.txt` and the
+`*-durations.txt` beside them.
+
+### 4D.1 R1-04 (`41a088de`)
+
+`_external_lock_holder` takes a per-test `errors` list, appends any
+exception raised in the thread, and closes its connection in `finally`.
+Each of the three tests asserts the list is empty after its join
+(`_assert_holder_clean`). Red first, mutation `holder_commit_raises` (the
+holder's `commit()` raises):
+
+- old file (`41a16471`): both pre-fix tests **pass** (the thread exception is
+  only a `PytestUnhandledThreadExceptionWarning`); the post-fix test fails on
+  `database is locked` after 32.8 s (the dead thread's connection was never
+  closed).
+- fixed file: all three **red** on the holder assertion
+  (`[RuntimeError('D87 mutation: holder commit raises')]`); the post-fix
+  audit write itself succeeds because `finally` closed the connection.
+- control, fixed file: 3 passed.
+
+### 4D.2 R1-02 (`6fba8627`)
+
+- `_begin_tracer(begun)` builds the audit connection's trace callback: it
+  sets `begun` on a statement beginning `BEGIN`, and does nothing else (form
+  point c). The first `BEGIN` on that connection is `record_call_start`'s
+  `BEGIN IMMEDIATE` (`audit_service.py:186`); before it the connection runs
+  only PRAGMAs.
+- The holder, given `begun_evt`, waits on it through `_await_audit_begin`
+  (`begun_evt.wait(_HELD_WAIT)`, 60 s). On expiry it records an
+  AssertionError in `errors` and releases at once (form point b).
+  Otherwise it waits its 0.5 s and, at release, records an AssertionError
+  if `begun_evt` is still unset.
+- The test asserts `begun.is_set()` in a `finally` around the call (form
+  point a), so a handshake that never fired is reported as itself, with the
+  lock timeout it causes chained as context.
+- Encoding choice, flagged for review: the release-time check is not one of
+  CHARC's three points. Without it CHARC's ordered mutation would PASS the
+  fixed test: the trace still fires when the late main thread reaches its
+  BEGIN, so `begun.is_set()` is true, and nothing else sees that the holder
+  had already let go. The check is what makes "contention is structural" an
+  assertion rather than a property of the unmutated holder.
+
+Mutations, the whole file at `-n 0` (`record_call_start` wall time for the
+post-fix test in the last column):
+
+| File | Mutation | Post-fix test | Audit start |
+|---|---|---|---|
+| old `41a16471` | none | pass | 0.5547 s (contended) |
+| old `41a16471` | `delay_call` (main sleeps 0.6 s before the call) | **pass, vacuously** | 0.0071 s (no contention) |
+| fixed | none | pass | 0.5656 s |
+| fixed | `delay_call` | pass | 0.5610 s (contended) |
+| fixed | `no_await_begun` + `delay_call` (CHARC's ordered mutation: the holder starts its 0.5 s at `held`) | **red**: `the holder released before the audit BEGIN started: no contention` | 0.0077 s |
+| fixed | `never_fires` (the callback never sets `begun`) | **red** on the did-it-fire assertion (`the audit connection's BEGIN was never traced`), `database is locked` chained; 60.97 s for the file, no hang | 32.84 s |
+
+The two pre-fix tests passed under every R1-02 mutation (they take no
+`begun_evt`).
+
+### 4D.3 R1-01 (`51fbc04d`, `d4d3d430`)
+
+Each constant now quotes every harness run with its date and box state, the
+figures as measured, the latency sentence and the re-open condition:
+
+| Child | Isolated (5x) | Base `9845b799` (5x) | Head `64b621af` (5x) | Head `f33df595` (5x) | Budget | budget/5 |
+|---|---|---|---|---|---|---|
+| L2 | 5.5-6.4 s (32.0) | 157.65 s (788.25) | 182.03 s (910.15) | 79.86 s (399.3) | 300 -> 1000 s (about 16.7 min) | 200 s |
+| diagnose | 1.89-1.95 s (9.75) | 52.24 s (261.2) | 85.88 s (429.4) | 69.75 s (348.75) | 120 -> 450 s (7.5 min) | 90 s |
+| v2 help | 1.86-2.08 s (10.4) | 55.58 s (277.9) | 87.97 s (439.85) | 57.26 s (286.3) | 60 -> 450 s (7.5 min) | 90 s |
+
+Every harness run is the full fast suite at `-n 16` (or `-n auto`, which is
+16 on this box: xdist falls back to `os.cpu_count()` without `psutil`, and
+`PYTEST_XDIST_AUTO_NUM_WORKERS` is unset) under the 16-process saturator,
+2026-10-19, with intermittent foreign pytest load on the box. This cell's
+run (`f33df595`) measured below budget/5 for all three, so the ruled values
+stand. The diagnose child is the tightest: 85.88 s against a 90 s re-open
+line.
+
+### 4D.4 R1-03 comment (`f33df595`)
+
+The module comment now says the audit-row error message goes through
+`auth.py:_redacted_excerpt` -> `client.py:_make_redactor_from_global`, that
+the underscores cut each sentinel into runs of at most 22 characters so
+neither Layer-1 regex matches, and that only the Layer-0 registry redacts a
+sentinel, which is why the test registers it. One fact read at encoding
+time, reported up: the old comment's second instrument,
+`client.py:_redact_message`, is NOT a Layer-1 regex. Its pattern
+(`[/=:][A-Za-z0-9_]{8,}`, `client.py:321-323`) includes the underscore and
+would match `token=<sentinel>`; it is simply not on this test's path (it is
+`_RedactedMessageError.__str__`, and the raised `SchwabAuthError` prints as
+`SchwabAuthError(status=500, body=<N bytes>)`, `client.py:371-377`). The
+comment says it is a different mask, off the audit-row path, rather than
+that the underscores defeat it.
+
+### 4D.5 Load harness and gates (head `f33df595`)
+
+- Roster under the saturator (`scratchpad/d87/sat2.pids`, 16 burners), `-n 16`,
+  10 consecutive iterations, 23 tests each (the three ladder tests, the
+  setup-CLI test, the three child-budget tests, every state of both A2
+  tests, the whole weeknight file): **10 of 10 green, 23 passed each** (230
+  passes; each roster test 10/10). Iteration times 150.89-189.25 s.
+  Outputs `scratchpad/d87/load/c2-1.txt` .. `c2-10.txt`.
+- Full fast suite under the saturator, `-n 16 --durations=0`: **15498
+  passed, 13 skipped, 0 failed in 1886.81 s**
+  (`scratchpad/d87/load/full-f33df595-sat.txt`). Child times in 4D.3.
+- The saturator was killed by PID and verified: `remaining: 0`, no python
+  process matching `saturator|multiprocessing`.
+
 ## 5. Review rounds
 
 Reviewer A, `strong` tier, repo read access (cold-audit form, cwd = the
@@ -346,4 +485,4 @@ R1 findings and dispositions (full text + adjudication: `C:/Users/rwsmy/swing-da
 - R1-03 major as filed: the module comment at `test_schwab_setup_cli.py:30-33` falsely says both regexes target the sentinel (VALID, comment fix in scope); the unpinned real-token construction path is pre-existing (Codex agrees), proposed BANKED to the orchestrator.
 - R1-04 minor: the holder neither closes its connection in `finally` nor surfaces thread exceptions. VALID, fix in scope.
 
-Nothing has been fixed since R1; the loop is stopped at the R1 gate.
+All four were ruled (section 4C) and fixed in cell 2 (section 4D).
