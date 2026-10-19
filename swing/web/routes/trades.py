@@ -2870,15 +2870,17 @@ async def exit_post(
             anchor_envelope = _json.loads(schwab_source_value_json)
         except Exception:  # noqa: BLE001 -- the TYPE ROSTER is the failure
             # THE SAME CLASS, THE SAME FILE, THE OTHER ROUTE (22A-R10-04's
-            # whole-envelope re-grep).  The exit form carries the identical
-            # hidden anchor and the identical four-tier rejection ladder, so a
-            # deeply nested envelope 500s the exit POST for the same reason it
-            # 500ed the entry POST.  Found by re-grepping the class across the
-            # WHOLE declared envelope instead of stopping at the instance the
-            # reviewer named -- which is how the entry site survived SS-2.
+            # whole-envelope re-grep): a deeply nested envelope used to 500
+            # the exit POST for the same reason it 500ed the entry POST.
+            # Since D79 executing Fork R6-01 the raw rung above refuses every
+            # document the authority cannot decode (it decodes with the same
+            # ``json.loads``), so this branch is a BELT: kept so the parse can
+            # never escape as a 500 if the two readers ever diverge.
             anchor_envelope = None
 
-        # (a) malformed JSON + claim → 400
+        # (a) a claimed anchor that parsed to no value → 400. Malformed JSON
+        # no longer reaches here (the raw rung refused it); the one document
+        # this tier still answers is a JSON ``null``.
         if anchor_envelope is None and claimed_auto_fill:
             return _reject_anchor(
                 "Trade exit rejected: fill_origin_at_form_render="
@@ -3419,9 +3421,11 @@ async def exit_post(
             # linked by the other.
             #
             # EVERY PRESENT VALUE IS JUDGED, not only the string-shaped ones
-            # (Codex R2 minor): a numeric / list / object id -- reachable only
-            # through the client-editable envelope -- asserts no link and is
-            # dropped without further inquiry.
+            # (Codex R2 minor): a numeric / list / object id asserts no link
+            # and is dropped without further inquiry. A BELT since D79: a
+            # non-string ROOT id is refused by the raw rung (Fork R6-01), and a
+            # non-string SELECTED-entry id is popped where the top level is
+            # rewritten above, so no id reaching this point is non-string.
             if "schwab_order_id" in extended:
                 top_order_id = extended["schwab_order_id"]
                 usable = (
@@ -3472,8 +3476,12 @@ async def exit_post(
             # ``usable`` test above admits a PADDED id (" 123" strips
             # non-blank) that ``canonical_envelope_identity`` REFUSES; the
             # authority read here, over the envelope ABOUT TO BE PERSISTED,
-            # dominates it. No normalisation on write -- stripping a value the
-            # authority refuses would be a second spelling of the id.
+            # dominates it. Since Fork R6-01 a padded ROOT id is refused by
+            # the raw rung at the top of the ladder, so what this rung owns is
+            # the PERSISTED identity: a padded id carried in the SELECTED MAP
+            # ENTRY, which becomes the top-level id above. No normalisation on
+            # write -- stripping a value the authority refuses would be a
+            # second spelling of the id.
             if canonical_envelope_identity(
                     resolved_schwab_source_value_json,
             ).state == ENVELOPE_REFUSED:

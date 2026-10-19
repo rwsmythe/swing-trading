@@ -198,8 +198,9 @@ _ANOMALY_TEXT = (
 )
 _ENVELOPE_UNREADABLE_TEXT = (
     "The Schwab auto-fill envelope submitted with this exit cannot be read "
-    "(its order id is malformed, padded or duplicated), so it cannot be "
-    "recorded; re-open the exit form to get a fresh Schwab auto-fill."
+    "(it cannot be decoded, or its order id or symbol is padded, blank, not "
+    "text or repeated), so it cannot be recorded; re-open the exit form to "
+    "get a fresh Schwab auto-fill."
 )
 
 
@@ -450,8 +451,8 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     path the original propagates unchanged after ONE ERROR record naming
     the trade and the order (plan AL-10). Only the ``ExitResult``
     construction follows the ``COMMIT``. ACCEPTED COST (CHARC's ruling): a
-    request refused on its
-    arguments alone now takes one ``BEGIN IMMEDIATE`` / ``ROLLBACK`` first --
+    request refused on its arguments alone now takes one ``BEGIN IMMEDIATE``
+    / ``ROLLBACK`` first --
     nothing on a single-operator DB, where a second spelling of the checks
     is not. A consequence of the same order: a request with BOTH a bad
     argument and an unreadable envelope is refused for the envelope.

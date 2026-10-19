@@ -329,9 +329,10 @@ def test_t1d_concurrent_size_check_runs_under_the_lock(tmp_path, monkeypatch):
 def test_af01_metric_failure_rolls_the_exit_back(tmp_path):
     """D79 executing Fork A-F01 (branch A). The realized P&L, risk-per-share
     and R-multiple are computed INSIDE the owned transaction, before COMMIT,
-    so a failure there rolls the exit back: a raise from ``record_exit``
-    means nothing was recorded (the contract the route's 22-F guard and the
-    CLI both read). ``trades.entry_price`` is planted as TEXT by raw UPDATE
+    so a failure there rolls the exit back: a raise BEFORE the commit
+    statement means nothing was recorded (the contract the route's 22-F
+    guard and the CLI both read; a raise FROM the commit is the one
+    indeterminate path, Fork R6-02, pinned by the R6-02 tests below). ``trades.entry_price`` is planted as TEXT by raw UPDATE
     (the column is ``REAL NOT NULL`` with no type CHECK, so SQLite stores an
     unconvertible string as TEXT). PRE-FIX: the metrics ran after
     ``conn.commit()``, so the call raised ``TypeError`` with ONE exit fill
