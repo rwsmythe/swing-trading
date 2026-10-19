@@ -2782,6 +2782,13 @@ async def exit_post(
     flag_selected_entry: dict | None = None
     flag_selected_order_id: str | None = None
     flag_candidates_map: dict | None = None
+    # The ``candidates_map`` key of the selected entry: the picked
+    # candidate's submitted hash, or the key Fork D79-A-01 resolves for a
+    # map-bearing claim with no selection. Stamped as
+    # ``selected_candidate_signature_hash`` and handed to a re-render so the
+    # restored form checks that entry's radio. ``None`` for a synthesized
+    # (map-less) entry.
+    flag_selected_signature_hash: str | None = None
 
     # Helper: 400 + recovery-form re-render with anchor CLEARED (T3.SB1 R3
     # M#2 anchor-clear discipline BINDING). Recovery form is rebuilt from
@@ -3094,6 +3101,47 @@ async def exit_post(
                     refresh_notice=True,
                 )
 
+            # D79 executing Fork D79-A-01 (orchestrator, branch B): A
+            # MAP-BEARING CLAIM WITH NO SELECTION IS RESOLVED, NEVER
+            # SYNTHESIZED. Its selected entry IS the unique map entry whose
+            # ``order_id`` equals the top-level ``schwab_order_id`` and whose
+            # values the top-level quartet derives from (``derives_from``,
+            # the one grain; no second comparator). From here it is treated
+            # exactly as a picked candidate: its map-side flags are asked,
+            # its order id scopes the flag identities, and its key is
+            # stamped as the selected hash. One source -- the map entry --
+            # never values from the top level beside flags from the map.
+            # Zero or several such entries name no single order the server
+            # can show the operator, so the POST takes the Fork 3 (G1)
+            # re-confirm, exactly as Fork RA-02's unresolvable selection
+            # does. Presence of the key decides, as at the retention rule: an
+            # envelope that carries an EMPTY map resolves to nothing.
+            if selected_index is None and "candidates_map" in anchor_envelope:
+                top_order_id = anchor_envelope.get("schwab_order_id")
+                resolved = [
+                    (sig, entry) for sig, entry in candidates_map.items()
+                    if isinstance(entry, dict)
+                    and entry.get("order_id") == top_order_id
+                    and derives_from(
+                        entry,
+                        exit_date=anchor_envelope["exit_date"],
+                        exit_price=anchor_envelope["exit_price"],
+                        shares=anchor_envelope["closed_shares"])
+                ]
+                if len(resolved) != 1:
+                    return _rerender_exit_form_with_error(
+                        request=request, templates=templates, cfg=cfg,
+                        cache=cache, executor=executor, trade_id=trade_id,
+                        exit_date=exit_date, exit_price=exit_price,
+                        shares=shares, reason=reason_enum.value, notes=notes,
+                        error_message=_EXIT_FLAGS_RECONFIRM_TEXT,
+                        refresh_notice=True,
+                    )
+                [(submitted_sig_hash, authoritative_selected)] = resolved
+            flag_selected_signature_hash = (
+                submitted_sig_hash if authoritative_selected is not None
+                else None)
+
             # D79 T6 (orchestrator K7.3): the selected entry's values are
             # about to become the persisted envelope's TOP-LEVEL values, so
             # they are held to the same shape tier (d) holds the top level to
@@ -3115,22 +3163,21 @@ async def exit_post(
                 )
 
             # D79 T6 item 2 + executing FORK 2 (orchestrator, as narrowed by
-            # Fork RA-02): THE SELECTED ENTRY the F1 question is asked
-            # against, and THE ONE SYNTHESIS SITE. With a selection whose hash
-            # its own map carries, it is that map entry. With NO selection
-            # sent -- a legacy envelope carrying no ``candidates_map`` and no
-            # selection, or a multi-entry map submitted with no
-            # ``candidate_index`` -- it is SYNTHESIZED from the envelope's
-            # top-level quartet, which is the candidate the form rendered as
-            # the default (``resolve_exit_auto_fill`` writes the quartet from
-            # the last candidate, and the default radio is the last). THE
-            # SYNTHESIS IS FOR THE NO-SELECTION SHAPE ONLY: an explicit
+            # Fork RA-02 and then by Fork D79-A-01): THE SELECTED ENTRY the F1
+            # question is asked against, and THE ONE SYNTHESIS SITE. Whenever
+            # the envelope carries a ``candidates_map`` the selected entry is
+            # a MAP ENTRY: the picked candidate's, or the unique entry Fork
+            # D79-A-01 resolves when no selection was sent (above). THE
+            # SYNTHESIS IS FOR THE MAP-LESS, NO-SELECTION SHAPE ONLY -- a
+            # legacy envelope with no ``candidates_map`` and no selection --
+            # where the entry is built from the envelope's top-level quartet,
+            # the one candidate that envelope describes. An explicit
             # selection on a map-less envelope never reaches this point (the
-            # Fork RA-02 re-confirm above). So every
-            # claimed shape reaches F1, and no shape reaches the corrected
-            # branch without an acknowledged F1 (orchestrator K5). For the
-            # legacy shape F1 can only be NO_CANDIDATE (there is no other
-            # entry); for the multi-entry shape OTHER_ORDER is reachable.
+            # Fork RA-02 re-confirm above). So every claimed shape reaches
+            # F1, and no shape reaches the corrected branch without an
+            # acknowledged F1 (orchestrator K5). For the synthesized shape F1
+            # can only be NO_CANDIDATE (there is no other entry); for a
+            # multi-entry map OTHER_ORDER is reachable.
             if authoritative_selected is not None:
                 flag_selected_entry = authoritative_selected
             else:
@@ -3182,7 +3229,22 @@ async def exit_post(
             # consumers reading e.g. ``schwab_order_id`` from the legacy
             # single-fill shape continue to work.
             extended = dict(anchor_envelope)
-            if selected_index is not None and selected_index in candidate_sigs:
+            if selected_index is None and flag_selected_signature_hash:
+                # Fork D79-A-01: the RESOLVED entry (no selection was sent,
+                # so there are no submitted indices to read): its key, its
+                # order id, and every other key of the map it came from.
+                extended["selected_candidate_signature_hash"] = (
+                    flag_selected_signature_hash)
+                resolved_order_id = authoritative_selected.get("order_id")
+                extended["selected_candidate_order_id"] = (
+                    resolved_order_id if isinstance(resolved_order_id, str)
+                    and resolved_order_id else None
+                )
+                extended["other_candidate_signature_hashes"] = sorted(
+                    sig for sig in candidates_map
+                    if sig != flag_selected_signature_hash
+                )
+            elif selected_index is not None and selected_index in candidate_sigs:
                 extended["selected_candidate_signature_hash"] = (
                     candidate_sigs[selected_index]
                 )
@@ -3439,9 +3501,7 @@ async def exit_post(
                 fill_origin_at_form_render if restorable else None
             ),
             submitted_selected_signature_hash=(
-                candidate_sigs.get(selected_index)
-                if restorable and selected_index is not None
-                else None
+                flag_selected_signature_hash if restorable else None
             ),
             flags=flags,
             flags_void_error_message=(

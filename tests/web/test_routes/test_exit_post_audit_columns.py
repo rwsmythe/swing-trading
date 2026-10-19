@@ -1769,28 +1769,31 @@ def test_b_review_major1_non_default_radio_plus_edits_confirmed_keeps_the_select
     }, f"a linked fill is not anonymous; got {anon!r}"
 
 
-def test_b_review_major1_present_but_empty_candidates_map_drops_the_order_id(
+def test_b_review_major1_present_but_empty_candidates_map_is_reconfirmed(
     seeded_db, monkeypatch,
 ):
     """Codex R1 major on the MAJOR 1 fix -- absent map != present empty map.
 
-    The retention gate's legacy fallback is justified by what
-    ``resolve_exit_auto_fill`` emits: the top-level date/price/shares/order_id
-    quartet all come from ONE chosen candidate, so on an envelope with NO
-    ``candidates_map`` key the top-level values ARE the id's own candidate's
-    values. That justification does not extend to an envelope that CARRIES the
-    key and declares it EMPTY: a populated resolver never emits an empty map,
-    so such an envelope asserts a candidate manifest containing nothing, and an
-    id naming no candidate in it evidences no link at all.
+    The legacy path is justified by what ``resolve_exit_auto_fill`` emits:
+    the top-level date/price/shares/order_id quartet all come from ONE chosen
+    candidate, so on an envelope with NO ``candidates_map`` key the top-level
+    values ARE the id's own candidate's values. That justification does not
+    extend to an envelope that CARRIES the key and declares it EMPTY: a
+    populated resolver never emits an empty map, so such an envelope asserts
+    a candidate manifest containing nothing.
 
-    A first version of the gate tested ``if candidates_map:``, which conflates
-    the two and would keep the id here -- suppressing that order silently on
-    the next render. The gate now branches on KEY PRESENCE, so the map governs
-    whenever it is present and the legacy path is reachable only by absence.
+    D79 executing Fork D79-A-01 (orchestrator, branch B) SUPERSEDES, by
+    replacement, this test's earlier expectation (recorded ``schwab_auto``
+    with the id dropped). A claim that carries a ``candidates_map`` and no
+    selection is resolved to the unique map entry naming the top-level id
+    and quartet; an EMPTY map holds zero such entries, so the POST takes the
+    Fork 3 (G1) re-confirm and records NOTHING. The synthesis of the
+    top-level quartet is for the MAP-LESS shape only.
 
-    Discriminating: the submitted values equal the top-level quartet exactly,
-    so the falsy-test version keeps 'ord-9'; the presence-test version drops
-    it.
+    Discriminating: the submitted values equal the top-level quartet
+    exactly, so a gate that tested ``if candidates_map:`` (conflating the
+    empty map with an absent one) would synthesize the entry and record;
+    the presence-test version re-confirms.
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
@@ -1817,22 +1820,16 @@ def test_b_review_major1_present_but_empty_candidates_map_drops_the_order_id(
             auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
             fill_origin_at_form_render="schwab_auto",
         )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 400, resp.text
+    assert "must be re-confirmed" in resp.text
     conn = connect(cfg.paths.db_path)
     try:
-        row = conn.execute(
-            "SELECT fill_origin, schwab_source_value_json "
-            "FROM fills WHERE action != 'entry' "
-            "ORDER BY fill_id DESC LIMIT 1"
-        ).fetchone()
+        rows = conn.execute(
+            "SELECT fill_id FROM fills WHERE action != 'entry'"
+        ).fetchall()
     finally:
         conn.close()
-    assert row[0] == "schwab_auto", "no edit vs the top-level values"
-    persisted = json.loads(row[1])
-    assert persisted.get("schwab_order_id") is None, (
-        "an envelope declaring an EMPTY candidate manifest names no candidate "
-        f"for its top-level id; got {persisted.get('schwab_order_id')!r}"
-    )
+    assert rows == [], "an empty candidate manifest records nothing"
 
 
 def test_b_review_major1_legacy_envelope_without_a_map_keeps_a_matching_id(

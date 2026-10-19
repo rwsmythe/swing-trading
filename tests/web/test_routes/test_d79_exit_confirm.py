@@ -430,3 +430,125 @@ def test_ra05_every_identity_must_be_acknowledged_not_any(world):
         r2 = _confirm(tc, world.tid, r1.text, acks=both)
     assert r2.status_code == 200, r2.text[:500]
     assert len(_exit_rows(world.cfg)) == 3
+
+
+# ---------------------------------------- D79-A-01 (Reviewer A round 3)
+def _o2_carries_a_partial(world) -> int:
+    """o1 = 2026-05-20 130.00 x 4 as in ``world``; o2 ENTERED 2026-05-19 and
+    EXECUTED 2026-05-21 at 131.00 x 3, so its K7.2 window is [05-19, 05-21].
+    The planted anonymous fill F (2026-05-19 at 129.00 x 2) sits inside o2's
+    window only, so the DEFAULT (o2) map entry lists F as a possible
+    partial and o1's does not."""
+    world.box["orders"] = [
+        _order("o1", "2026-05-20", 130.0, 4),
+        _entered_then_executed("o2", "2026-05-19", "2026-05-21", 131.0, 3),
+    ]
+    return _plant_fill(world.cfg, world.tid, day="2026-05-19", price=129.0,
+                       qty=2)
+
+
+def test_a01_an_omitted_radio_asks_the_default_candidates_partial(world):
+    """Fork D79-A-01, branch B (orchestrator), the ruled RED: a default o2
+    carrying a possible partial, submitted with the radio omitted (every
+    per-candidate input kept, and again with none). The selected entry IS
+    o2's map entry, so its partial is asked: 400, the partial text naming
+    o2, its order-scoped identity, o2's radio checked, no fill. The confirm
+    then records o2 with the selected/other hashes stamped. PRE-FIX: the
+    synthesized entry carries no ``possible_duplicates``, so nothing is
+    asked and the first POST records (200)."""
+    fid = _o2_carries_a_partial(world)
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        o1_hash, o2_hash = _hash_of(env, "o1"), _hash_of(env, "o2")
+        assert [d["fill_id"] for d in env["candidates_map"][o2_hash][
+            "possible_duplicates"]] == [fid]
+        assert env["candidates_map"][o1_hash]["possible_duplicates"] == []
+        no_radio = {k: v for k, v in fd.items() if k != "candidate_index"}
+        bare = {k: v for k, v in fd.items() if not k.startswith("candidate_")}
+        for shape in (no_radio, bare):
+            r1 = _post(tc, world.tid, shape)
+            assert r1.status_code == 400, r1.text[:500]
+            assert f"Possible partial of this order: fill #{fid}" in _text(r1)
+            assert "is not part of order o2" in _text(r1)
+            assert _acks(r1.text) == [f"possible_partial|o2|{fid}"]
+            assert _checked_radios(r1.text) == ["1"]
+            assert len(_exit_rows(world.cfg)) == 1  # the planted F alone
+        r2 = _confirm(tc, world.tid, r1.text)
+    assert r2.status_code == 200, r2.text[:500]
+    [_f, (_fid, origin, env_json, _c, _p, _q)] = _exit_rows(world.cfg)
+    persisted = json.loads(env_json)
+    assert origin == "schwab_auto"
+    assert persisted["schwab_order_id"] == "o2"
+    assert persisted["selected_candidate_signature_hash"] == o2_hash
+    assert persisted["selected_candidate_order_id"] == "o2"
+    assert persisted["other_candidate_signature_hashes"] == [o1_hash]
+
+
+def test_a01_an_unedited_omitted_radio_stamps_the_resolved_entry(world):
+    """Branch B's stamping half, with no flag in play: the radio omitted,
+    the values unedited, so the POST records at once -- and the persisted
+    envelope names the resolved entry (selected hash o2's, selected order
+    o2, the other key o1's). PRE-FIX: recorded with NO ``selected_*`` keys
+    (the synthesized entry has no map key), an anonymous confirmation."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        o1_hash, o2_hash = _hash_of(env, "o1"), _hash_of(env, "o2")
+        r = _post(tc, world.tid,
+                  {k: v for k, v in fd.items() if k != "candidate_index"})
+    assert r.status_code == 200, r.text[:500]
+    [(_fid, origin, env_json, _c, _p, _q)] = _exit_rows(world.cfg)
+    persisted = json.loads(env_json)
+    assert origin == "schwab_auto"
+    assert persisted["schwab_order_id"] == "o2"
+    assert persisted["selected_candidate_signature_hash"] == o2_hash
+    assert persisted["selected_candidate_order_id"] == "o2"
+    assert persisted["other_candidate_signature_hashes"] == [o1_hash]
+
+
+def _assert_reconfirmed(r, cfg) -> None:
+    """The Fork 3 (G1) response: 400, the re-confirm text, the refresh
+    notice, no flag, the FRESH map-bearing anchor, nothing recorded."""
+    assert r.status_code == 400, r.text[:500]
+    body = _text(r)
+    assert "must be re-confirmed" in body
+    assert _NOTICE in body
+    assert _acks(r.text) == []
+    fresh = json.loads(_hidden(r.text, "schwab_source_value_json"))
+    assert fresh["schwab_order_id"] == "o2" and "candidates_map" in fresh
+    assert _exit_rows(cfg) == []
+
+
+def test_a01_a_top_level_id_no_map_entry_carries_is_reconfirmed(world):
+    """Branch B, zero matches: a map-bearing claim with no selection whose
+    top-level ``schwab_order_id`` (o9) no map entry carries resolves to no
+    entry -> the G1 re-confirm, the typed values kept. PRE-FIX: the
+    synthesized o9 entry derives, the retention rule pops o9, and an
+    anonymous exit records (200)."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        env["schwab_order_id"] = "o9"
+        r = _post(tc, world.tid, dict(
+            {k: v for k, v in fd.items() if not k.startswith("candidate_")},
+            schwab_source_value_json=json.dumps(env, sort_keys=True)))
+    _assert_reconfirmed(r, world.cfg)
+    assert _input_attr(r.text, "exit_price", "value") == "131.00"
+
+
+def test_a01_two_map_entries_matching_the_top_level_are_reconfirmed(world):
+    """Branch B, several matches. The map is keyed by signature hash and the
+    POST never recomputes a key from its entry, so a client-edited envelope
+    CAN carry two keys whose entries are o2's identical order id and
+    quartet. Neither is THE unique entry -> the G1 re-confirm. PRE-FIX: the
+    synthesized entry derives and the exit records (200)."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        o2_hash = _hash_of(env, "o2")
+        env["candidates_map"]["f" * 16] = dict(env["candidates_map"][o2_hash])
+        r = _post(tc, world.tid, dict(
+            {k: v for k, v in fd.items() if not k.startswith("candidate_")},
+            schwab_source_value_json=json.dumps(env, sort_keys=True)))
+    _assert_reconfirmed(r, world.cfg)
