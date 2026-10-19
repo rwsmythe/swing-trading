@@ -190,7 +190,7 @@ Author of this section: cell 3. Tier `strong`, cold-audit form with repo access:
 | 4 | `33a3bfa2` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (440,564) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 1 | 3 | 4 new / 0 reopened | 0 | 345,780 (cell 5 at return; retired) |
 | 5 | `f70ebdc8` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (475,309) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 4 | 5 new / 1 reopened (R5-06, RA-07's site) | 0 || 282,116 (cell 6 at return; resumed) |
 | 6 | `d539d273` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (430,882) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 0 | 2 new / 0 reopened | 0 || 374,140 (cell 6 at return; retired) |
-| 7 | `c5cb5850` (code `783ec4f9`) | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (459,279) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 0 | 2 new / 0 reopened | 0 | |
+| 7 | `c5cb5850` (code `783ec4f9`) | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (459,279) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 0 | 2 new / 0 reopened | 0 | 396,198 (cell 7 at return; retired) |
 
 Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\review-r1.txt` (1,547,419 bytes), `prompt-r1.md` (367,520 bytes), `copowers-findings.md`. Exit file 0; the process exited before the transcript was read. Prior-findings reach: none (round 1).
 
@@ -698,3 +698,39 @@ Both majors are PRE-ARC and both are routed. Round 8 is the gate-holder's writte
   - The cell does not choose. Its lean, for the record: A. The refusal's own docstring states its reason as the column's refusal set, and that reason is false for `inf`.
 
 Round 7: 2 majors (R7-01 and R7-02, both routed), 0 minors, 2 new, 0 reopened, no reverts. Not converged. Every finding of rounds 6 and 7 is pre-arc in class (R6-02, R7-01, R7-02) or a ladder input rung (R6-01); none is a residual of the loop's own fixes.
+
+### Orchestrator self-correction: the round-5 check-in (2026-10-19)
+
+My round-5 approval above ("the trend is 3, 3, 3, then 1 major") applied a COUNT. The rule (recipe section 3, "ROUND LEDGER + ROUND-5 CHECK-IN") says a count cannot make that distinction and the ledger's COMPOSITION can. Read by composition, round 4's one major (A-F01) was tagged out-of-envelope by the reviewer and was pre-arc, and round 3's late items were already residuals of the loop's own fixes. That is stop-and-route, or the gate-holder's self-sweep clause, not "continue". The operator caught it.
+
+I then bounded round 7 with a three-branch stop rule. CHARC concurred, with two amendments (2026-10-19T10:12:49Z): the uncounted self-sweep runs in every branch, and any counted round past the check-in needs a written per-round authorization naming the finding. The stop rule:
+1. `NO_NEW_CRITICAL_MAJOR`: the loop ends normally.
+2. Every critical or major is out-of-envelope, pre-arc, tamper-only within the banked signed-envelope class, reopened, or a residual of the loop's own fixes: STOP. Each goes to its ruler to accept or bank. If an accepted fix changes behaviour the loop examined, a self-sweep runs, then ONE confirming round. The outcome is reported as stopped-and-routed.
+3. A NEW, in-scope, non-reopened critical or major on behaviour this arc introduced: continue only on a written per-round authorization naming it.
+
+Retro-check of the #39 citation valve: RA-01 (a stored fill price) and A-F01 (a stored `entry_price`) were premised on a malformed value in a typed column. Both columns are REAL with no type CHECK, and SQLite's REAL affinity stores a non-numeric string as TEXT, so neither was dismissible. The rulings stand.
+
+### CHARC on encodings 22 and 23 (2026-10-19; CHARC author, orchestrator courier)
+
+> encodings 22 and 23: NO OBJECTION. (23) is the contract's own definition and corrects my (iii), which keyed on connection state instead of the statement; (22) matches the ladder, which already runs on any present anchor regardless of claim. Round 7 may close on them.
+
+### Orchestrator QA of round 7 and of the self-sweep (against disk, `b360ade9`)
+
+- I re-read the assertions from `review-r7.txt`: banner `model: gpt-5.6-sol`, `reasoning effort: high`, equal to `strong.config.toml`; `^ERROR` 0; `^tokens used` present, 459,279; anchored verdict tokens `NEW_CRITICAL_MAJOR_FOUND` x2, the other token 0; `exit-r7.txt` reads 0. **Round 7 COUNTS.** Counted spend to date: 3,793,351.
+- Six commits `7a2ea886`..`b360ade9`. `%(trailers)` is empty across `618d7b04..HEAD`.
+- The R6-02 commit is `7b9b355a`. The orchestrator reworded it from `a0b895e0` with an identical tree, because its final paragraph had parsed as a `Tests:` trailer. The branch was never pushed.
+- No file was added under `swing/`, and nothing under `swing/data/` changed. The tree is clean, and the stash stack holds only the pre-existing entry.
+- Suite on `783ec4f9` (the pre-round head): 15496 passed, 13 skipped, 0 failed. The five subprocess-timeout reds of the `a0b895e0` run did not recur.
+- **Live incidence (orchestrator, `mode=ro`, 2026-10-19):**
+  - `fills` rows whose `fill_datetime` is not dash-delimited ISO: 0 of 59;
+  - `fills.price > 1e308`: 0;
+  - `trades.entry_date` not dash-delimited: 0.
+
+  Both round-7 failures are LATENT on live.
+- **Stop-rule classification (gate-holder): BRANCH 2, the loop STOPS.**
+  - Both of round 7's majors are PRE-ARC in class: R7-01 at `618d7b04` `exit.py:84` and `routes/trades.py:2748`; R7-02 at `618d7b04` `exit.py:168`.
+  - Neither is a residual of the loop's own fixes, and neither is a defect in behaviour this arc introduced. No counted round 8 is authorized.
+  - Both go to their ruler, CHARC. R7-02 is against CHARC's FORK 1 texts. R7-01's in-envelope branch would fork the date grammar away from the shared entry path, and its full fix needs CHARC's envelope.
+  - If CHARC rules a fix that changes behaviour the loop examined, a self-sweep and ONE confirming round follow. Otherwise the outcome is **stopped-and-routed**, and the merge report says so.
+
+Author of the sections above: orchestrator, except the block quote (CHARC).
