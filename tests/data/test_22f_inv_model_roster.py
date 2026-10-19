@@ -181,7 +181,8 @@ ROSTER: dict[str, str] = {
 LATER_ARC_ROSTER: dict[str, str] = {
     # D79 T4: built only by `exit_auto_fill.exit_record_flags` from the exit
     # POST's typed values and the submitted map (computed, never from a DB
-    # row); reached from the web exit POST and the CLI `trade exit`.
+    # row); reached from the web exit POST only (the CLI `trade exit` formats
+    # the value-tuple text directly and never constructs the flag).
     "trades.exit_auto_fill.ExitRecordFlag.__post_init__": "computed",
 }
 
