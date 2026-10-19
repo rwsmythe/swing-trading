@@ -451,15 +451,16 @@ No production code. The executing cell PREPARES and the operator DRIVES, step by
    - HTMX specifics to watch: the Confirm button's `name="force"` reaches the POST (htmx includes the submitter's name/value); the 400 flag fragment SWAPS (the `responseHandling` 4xx override in `base.html.j2`); `hx-headers` HX-Request on the form.
 4. **Census, CHARC K6** (on the COPY, `mode=ro`): linked exit fills grouped by extracted id with count > 1, excluding split-partial provenance. Expected: only known partial sets.
    ```sql
-   SELECT json_extract(schwab_source_value_json,'$.schwab_order_id') AS oid,
+   SELECT json_extract(schwab_source_value_json,'$.schwab_order_id') AS linked_id,
           COUNT(*), group_concat(fill_id)
    FROM fills
    WHERE action != 'entry' AND json_valid(schwab_source_value_json)
      AND fill_id NOT IN (SELECT affected_row_id FROM reconciliation_corrections
                          WHERE affected_table = 'fills' AND field_name = '__insert__')
-     AND oid IS NOT NULL
-   GROUP BY oid HAVING COUNT(*) > 1;
+     AND linked_id IS NOT NULL
+   GROUP BY linked_id HAVING COUNT(*) > 1;
    ```
+   The alias is `linked_id`, never `oid`: SQLite resolves `oid` to the rowid, so a query aliasing the extracted id `oid` groups by `fill_id` and can never return a group above one (measured by execution; exec ledger, "T9 census commands").
    The executing cell verifies the column names against the live DDL before the witness. They come from `reconciliation_auto_correct.py:3255-3360` (`affected_table=_AFFECTED_TABLE_FILLS`, `field_name="__insert__"`).
 5. **Census, CHARC FORK 2:** the authority over every non-entry envelope on the copy. Expected: 0 `refused` (measured 0 of 33 at intake). A non-zero count is a finding, not a check to silence.
 
@@ -523,7 +524,7 @@ No production code. The executing cell PREPARES and the operator DRIVES, step by
 - the `view_models/trades.py:1037-1177` exclusion comment blocks and the `_exit_candidates_maps_equal` docstring (T3, K7.4);
 - the retention-rule rationale block `routes/trades.py:3147-3208`, with `:3184-3194` deleted, and the `:2881-2916` and `:3052-3089` comparator/rewrite comments (T6, RD K3);
 - the template's `:102-113` "does NOT update" instruction, which becomes an instruction that a mismatch will be flagged for confirmation (T7);
-- the six superseded route tests (T6).
+- the nine superseded route tests (T6-T7): eight in `test_exit_post_audit_columns.py` and one in `test_exit_form_auto_fill.py`, each named in the exec ledger's "T6 supersession classification".
 
 **Follow-ons, each disposed:**
 - the "use these values" button: BANKED (orchestrator K4; owner: orchestrator; trigger: an operator request after the T9 witness);
