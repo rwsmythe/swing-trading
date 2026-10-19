@@ -187,7 +187,7 @@ Author of this section: cell 3. Tier `strong`, cold-audit form with repo access:
 | 1 | `c55b55b8` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (403,744) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 1 | 3 new / 0 reopened | 0 | 378,356 (cell 3 at return; retired) |
 | 2 | `cb452050` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (954,070) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 3 | 5 | 8 new / 0 reopened | 0 | 301,169 (cell 4 at return; resumed) |
 | 3 | `084c9a3a` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (629,503) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 3 | 2 | 5 new / 0 reopened | 0 | 371,037 (cell 4 at return; retired) |
-| 4 | `33a3bfa2` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (440,564) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 1 | 3 | 4 new / 0 reopened | 0 |  |
+| 4 | `33a3bfa2` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (440,564) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 1 | 3 | 4 new / 0 reopened | 0 | 345,780 (cell 5 at return; retired) |
 
 Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\review-r1.txt` (1,547,419 bytes), `prompt-r1.md` (367,520 bytes), `copowers-findings.md`. Exit file 0; the process exited before the transcript was read. Prior-findings reach: none (round 1).
 
@@ -407,3 +407,26 @@ Same form: `codex exec -p strong -s read-only --skip-git-repo-check -` from the 
 - **A-F04 (minor): ACCEPTED, test to add.** Verified: T1-a (`tests/trades/test_d79_record_exit_txn.py:170`) spies only `get_trade` and passes no envelope. A caller-held check moved after `_normalize_trade_event_date_to_iso` and `canonical_envelope_identity` (`exit.py:464-475`) but before `get_trade` would still pass it. Add a caller-held call carrying an envelope, with the authority spied, asserting `CallerHeldTransactionError` and zero authority calls.
 
 Round 4: 1 major (A-F01, routed), 3 minors, all new, none reopened, no reverts. Not converged. Per the brief this is the last round before the round-5 check-in, so no round 5 is started.
+
+### Orchestrator QA of round 4 (against disk, `9d1bb48c`)
+
+- I re-read the assertions from `review-r4.txt`: banner `model: gpt-5.6-sol`, `reasoning effort: high`, equal to `strong.config.toml`; `^ERROR` 0; `^tokens used` present, 440,564; anchored verdict tokens `NEW_CRITICAL_MAJOR_FOUND` x2, the other token 0; `exit-r4.txt` reads 0. **Round 4 COUNTS.** The capacity-aborted attempt 1 does not count, and its transcript is preserved. Counted spend to date: 2,427,881.
+- Six commits `38dfca51`..`9d1bb48c`. Trailers are empty across `618d7b04..HEAD`. No file was added under `swing/`, and nothing under `swing/data/` changed. The tree is clean, and the stash stack holds only the pre-existing entry.
+- **A-F01, live incidence (orchestrator, `mode=ro`, 2026-10-19):** `SELECT typeof(entry_price), typeof(initial_stop), COUNT(*) FROM trades GROUP BY 1,2` returns `[('real','real',28)]`, and `typeof(current_size)` returns `[('real',28)]`. The failure is LATENT on live, not present.
+- I verified the premise at `swing/trades/exit.py`: `conn.commit()` closes the `try`, and the P&L, risk-per-share and R-multiple are computed after it.
+
+### Operator confirmation of the executing go (2026-10-19)
+
+> "I did mean for a go"
+
+Operator author, orchestrator courier. Said in the orchestrator session after the round-3 status, it closes the open question on CHARC's relayed "dispatch D79" (`20261019T022435Z`).
+
+### FORK A-F01 -- the exit metrics are computed after the commit (RULED: orchestrator, branch A)
+
+> **Orchestrator ruling, D79 executing Fork A-F01 (2026-10-19).** **Branch A.** The realized P&L, risk-per-share and R-multiple computations move inside `record_exit`'s `try`, before `conn.commit()`, so a failure there rolls the exit back through `_rollback_or_raise`. Only the `ExitResult` construction stays after the commit. The "post-commit; pure math" comment is rewritten by replacement, and the docstring's transaction paragraph names the change. Reason: this arc's route guard (22-F) and the CLI both read a raise from `record_exit` as "nothing was recorded". Today, a durable exit can be reported as failed, which invites the second exit this arc exists to prevent. The fix is about ten moved lines in a function the arc already owns, adds no read, and costs no extra round, because round 5 runs either way. The live incidence is zero, so this is a latent hazard closed, not a live defect repaired. Banking it (branch B) would leave the arc's own contract ("a refusal records nothing") false on a path it has just rewritten. Required RED test, the cell's: `trades.entry_price` set to TEXT by raw UPDATE, then `record_exit` raises with zero exit fills written (one before the fix). Also required: the existing `record_exit` tests stay green, and any red is classified SUPERSEDED (named) or REGRESSION.
+
+**Encoding 18 confirmed** (orchestrator): an empty `candidates_map` is a map that names no entry, so a no-selection claim carrying one has zero matches and takes the G1 re-confirm under the D79-A-01 ruling. The superseded `..._drops_the_order_id` test, rewritten as `..._is_reconfirmed`, is the ruling's intended effect.
+
+**Round-5 check-in: APPROVED to continue** (orchestrator, per the recipe's round-5 rule and the suspended round cap). The trend is 3, 3, 3, then 1 major. Round 5 runs on the head carrying A-F01 to A-F04.
+
+Author of the sections above: orchestrator.
