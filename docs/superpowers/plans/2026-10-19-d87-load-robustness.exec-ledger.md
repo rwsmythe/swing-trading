@@ -544,3 +544,7 @@ rounds: 146,268 + 187,459 = 333,727 tokens.
 - Noted, banked to the orchestrator: a PowerShell child in the suite wrote
   `Microsoft/Windows/PowerShell/ModuleAnalysisCache` relative to its cwd
   (the worktree root, untracked, not in any commit).
+
+## 7. Evidence location (durable)
+
+Every relative `scratchpad/d87/...` path cited above was copied byte-for-byte (cmp-verified) to `C:/Users/rwsmy/swing-data/review-transcripts/d87-load/evidence/`, keeping the same layout: `load/`, `mut/`, `item9-n600-sat.json`, `saturator.py` and the rest, 104 files. The merged-head suite output is at `review-transcripts/d87-load/merged-head/merged-head-suite.txt`.
