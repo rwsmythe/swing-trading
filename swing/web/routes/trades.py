@@ -3206,7 +3206,9 @@ async def exit_post(
             # THE COMPARATOR (T6 item 2): ``derives_from``, the one grain --
             # date exact, price at the template's 2 decimals (an
             # execution-grain VWAP like 120.505 renders, and so compares, as
-            # 120.50 -- Codex R4 Major #2), quantity as an int. The typed
+            # 120.50 -- Codex R4 Major #2), quantity as a float at
+            # ``_quantities_equal``'s ``math.isclose`` grain, never truncated
+            # (D79-A1: a 5.9 is not a 5). The typed
             # values either derive from the selected entry (``schwab_auto``)
             # or they do not, and then the row is a correction of that order
             # -- reachable ONLY through an acknowledged F1 flag.
