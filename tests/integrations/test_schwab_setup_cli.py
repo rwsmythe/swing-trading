@@ -9,8 +9,9 @@ Test discipline:
   - schwabdev.Client stubbed BEFORE the call site references it; tests
     never trigger real OAuth / network I/O.
   - Token sentinel discriminating tests assert that tokens never leak to
-    stdout / stderr / audit-row error_message (plan §H.5 discipline +
-    `swing/integrations/schwab/client.py:_redact_message` defense-in-depth).
+    stdout / stderr / audit-row error_message (plan §H.5 discipline). The
+    redactor the audit row goes through, and why the sentinel must be
+    registered, are stated at `_SENTINEL_ACCESS_TOKEN` below.
   - Audit-row row shape pinned post-call by querying the SQLite DB
     directly (validates service-layer wiring + reject-caller-held-tx
     discipline).
@@ -28,9 +29,14 @@ from click.testing import CliRunner
 from swing.cli import main
 
 # Sentinel token bytes — if these leak into stdout / audit-row error_message
-# the discriminating tests below catch it. Choose a long alphanumeric run that
-# the `_redacted_excerpt` substitution + the schwabdev wrapper's
-# `_redact_message` regex both target.
+# the discriminating tests below catch it. The audit-row error_message goes
+# through `auth.py:_redacted_excerpt` -> `client.py:_make_redactor_from_global`.
+# The underscores in each sentinel cut it into runs of at most 22 characters,
+# so neither Layer-1 regex there (`[a-fA-F0-9]{32,}`, `[A-Za-z0-9+/=]{24,}`)
+# matches it: a sentinel is redacted only if it is in the Layer-0 registry,
+# which is why the auth-failure test registers it (`sentinel_registered`).
+# (`client.py:_redact_message` is a different mask, applied to
+# `_RedactedMessageError` messages; it is not on the audit-row path.)
 _SENTINEL_ACCESS_TOKEN = "AUTH_BYTES_DO_NOT_LEAK_ABCDEF0123456789012345"
 _SENTINEL_REFRESH_TOKEN = "REFRESH_BYTES_DO_NOT_LEAK_ZYXWVU09876543210987"
 
@@ -247,14 +253,44 @@ def test_setup_happy_path_multi_account_picks_via_prompt(
     assert overrides["integrations"]["schwab"]["account_hash"] == "SECONDHASH"
 
 
+@pytest.fixture
+def sentinel_registered() -> Any:
+    """Register the access-token sentinel with the Schwab redactor for ONE test.
+
+    D87: the sentinel is not hex- or base64-shaped (its underscores break both
+    Layer-1 heuristics), so ONLY the Layer-0 registry can redact it. Before
+    this fixture, the auth-failure test relied on a sibling happy-path test
+    having run earlier on the same worker: the stub's ``_FakeTokens`` carries
+    the sentinel as ``access_token``, and the success path registers it. Run
+    alone, or first on an xdist worker, the test red deterministically (the
+    Phase-12 bundle-B report's item 2). Registering it here makes the
+    precondition the test's own. The registry is a process-global set
+    (``client.py:80``), so the prior contents are restored in place at
+    teardown (the snapshot/restore shape of the ladder-integration tests).
+    """
+    from swing.integrations.schwab import client as schwab_client_module
+    from swing.integrations.schwab.client import register_schwab_secrets
+
+    registry = schwab_client_module._GLOBAL_KNOWN_SECRETS
+    saved = set(registry)
+    register_schwab_secrets([_SENTINEL_ACCESS_TOKEN])
+    yield _SENTINEL_ACCESS_TOKEN
+    registry.clear()
+    registry.update(saved)
+
+
 def test_setup_auth_failure_audit_status_and_sentinel_redaction(
     home: Path, cfg_path: Path, monkeypatch: pytest.MonkeyPatch,
+    sentinel_registered: str,
 ) -> None:
     """Test 3 — schwabdev.Client raises → exit non-zero, audit status=
     auth_failed, sentinel bytes never appear in stdout OR audit row error.
 
     DISCRIMINATING per plan: an unredacted implementation that interpolates
-    the exception arg verbatim would fail this test.
+    the exception arg verbatim would fail this test. The sentinel's
+    underscores defeat both Layer-1 regexes (``client.py:116-128``), so only
+    a registered secret is redacted, and this test registers it
+    (``sentinel_registered``).
     """
     sentinel = _SENTINEL_ACCESS_TOKEN  # would-be leaked bytes
     _patch_schwabdev(

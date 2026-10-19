@@ -445,10 +445,26 @@ def test_subprocess_aplus_sensitivity_v2_help_cp1252_safe(
     """
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Child budget (D87). CHARC's rule: the budget is max(5x isolated, 5x
+    # under the load harness), where the harness figure is the MAX over every
+    # harness run measured, rounded UP to a round figure only at the budget.
+    # As measured:
+    #   isolated (quiet box, warm bytecode, 3 runs, 2026-10-19): 1.86-2.08 s
+    #     -> 5x = 10.4 s;
+    #   the harness is the full fast suite at -n 16 (or -n auto, which is 16
+    #   on this box) plus a 16-process CPU saturator, with intermittent
+    #   foreign pytest load on the box:
+    #     2026-10-19, base 9845b799 (pre-fix): 55.58 s -> 5x = 277.9 s;
+    #     2026-10-19, head 64b621af: 87.97 s -> 5x = 439.85 s;
+    #     2026-10-19, head f33df595: 57.26 s -> 5x = 286.3 s.
+    # Budget 450 s, so a hung child now surfaces after 7.5 min.
+    # Re-open condition: any later harness measurement above budget/5 (90 s)
+    # re-opens this budget, by the next arc that reads it, not by a flake
+    # wave-through. A TimeoutExpired is still a failure.
     proc = subprocess.run(
         [sys.executable, "-m", "swing.cli",
          "diagnose", "aplus-sensitivity-v2", "--help"],
-        capture_output=True, text=True, check=False, timeout=60,
+        capture_output=True, text=True, check=False, timeout=450,
         env={**os.environ, "USERPROFILE": str(tmp_path), "HOME": str(tmp_path)},
     )
     assert proc.returncode == 0, (proc.stdout + proc.stderr)

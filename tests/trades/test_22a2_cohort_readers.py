@@ -5,9 +5,9 @@ NOT count, and it is NAMED in the read's output -- never silently uncounted.
 CHARC G-T7FE-A+C item C: ``tier2_cohort_exclusions`` returns the named
 ``Tier2CohortRead(exclusions, observations, replayed_row_ids)`` (the third a
 required field, CHARC ruling A-R3 item 3); each reader COUNTS from
-``exclusions`` only and RENDERS ``exclusions`` and ``observations``.  CHARC G-T10-1: the four P35 readers are
-the ONLY callers (one invocation per reader invocation; the breakdown threads
-its read into every per-hypothesis tripwire status; the web callers pass
+``exclusions`` only and RENDERS ``exclusions`` and ``observations``.  CHARC G-T10-1: the four P35
+readers are the ONLY callers (one invocation per reader invocation; the breakdown
+threads its read into every per-hypothesis tripwire status; the web callers pass
 ``WEB_REPLAY_BUDGET_SECONDS``, the CLI none).  RD G-T10-2: every surface that
 SHOWS a cohort N from an excluding read renders the compact marker beside it
 (count + the canonical surface; ``unverifiable`` never merged with
@@ -34,8 +34,13 @@ from swing.config import load
 from swing.trades import frozen_value_evidence as fve
 from tests._tier2_world_22a2 import T25_TRADE_ID, build_pre_barrier_world
 from tests.cli.test_cli_eval import _minimal_config
-from tests.trades.test_22a2_correction_service import ticking_clock  # noqa: F401
+from tests.trades import test_22a2_correction_service as _correction_service
 from tests.trades.test_22a2_replay import _GitCounter, _tier2_world
+
+# The shared clock fixture, bound at module level so pytest discovers it here.
+# An assignment rather than a bare import: test parameters named after an
+# imported fixture read to ruff as redefinitions of an unused import (F811).
+ticking_clock = _correction_service.ticking_clock
 
 H1_ID = 1
 H1 = "A+ baseline"
@@ -383,6 +388,37 @@ def test_card_vm_counts_from_exclusions_and_names_both(  # A2-94's reader
 _PAGE_STATES = ("rewritten", "moved", "unverifiable", "admit", "zero")
 
 
+class _FrozenReplayClock:
+    """Stands in for the ``time`` module inside ``frozen_value_evidence`` only.
+
+    D87 (CHARC's F2 ruling): these page tests assert what renders per state,
+    and the web replay budget (``WEB_REPLAY_BUDGET_SECONDS``) is their one
+    non-hermetic input. Under suite load the git calls ran past it and the
+    page rendered ``tier2_unverifiable (web_budget_exhausted)`` in a state
+    that asserts otherwise. ``monotonic`` returns a constant, so the
+    deadline can never pass; every other attribute forwards to the real
+    module, so a later ``time.`` use there still works. The budget constant
+    and code path are untouched; the budget's own behaviour is pinned by
+    ``test_a2_97b`` / ``test_a2_97c`` (wall clock) and
+    ``test_charc_g_t10_1_web_invocations_per_route_each_under_the_web_budget``
+    (the value every web route passes), none of which this stand-in touches.
+    ``calls`` proves the stand-in was consulted, so the freeze cannot pass
+    vacuously if the module stops reading its clock through ``time``.
+    """
+
+    def __init__(self, real) -> None:
+        self._real = real
+        self._frozen = real.monotonic()
+        self.calls = 0
+
+    def monotonic(self) -> float:
+        self.calls += 1
+        return self._frozen
+
+    def __getattr__(self, name: str):
+        return getattr(self._real, name)
+
+
 def _named_page(tmp_path: Path, monkeypatch, state: str, path: str) -> None:
     """One named page in one state.  ``zero`` is the zero-data state: neither
     line renders, the GET is 200, and NO subprocess starts."""
@@ -393,7 +429,10 @@ def _named_page(tmp_path: Path, monkeypatch, state: str, path: str) -> None:
     finally:
         conn.close()
     counter = _GitCounter(monkeypatch) if state == "zero" else None
+    clock = _FrozenReplayClock(fve.time)
+    monkeypatch.setattr(fve, "time", clock)
     html = _get(cfg, cfg_path, path)
+    assert clock.calls > 0, "the replay never read its clock through fve.time"
     if state == "rewritten":
         assert STALE_LINE in html
         assert "tier-2 counted with observation" not in html
@@ -422,7 +461,7 @@ def test_a2_95_the_tier_page_renders_the_line_and_zero_data_renders_none(
     _named_page(tmp_path, monkeypatch, state, "/metrics/tier-comparison")
 
 
-# --------------------------------------------------------------------------- A2-96 + hypothesis status
+# ------------------------------------------------------------------- A2-96 + hypothesis status
 
 @pytest.mark.parametrize("state", STATES)
 def test_a2_96_hypothesis_list_prints_the_line_once_under_its_row(
@@ -488,7 +527,7 @@ def test_hypothesis_status_renders_the_named_lines_and_no_marker(
         assert "tier-2" not in out
 
 
-# --------------------------------------------------------------------------- RD G-T10-2 markers (web)
+# ------------------------------------------------------------------- RD G-T10-2 markers (web)
 
 _MARKER_PAGES = (
     ("/", "hypothesis list"),
@@ -614,7 +653,7 @@ def test_a2_97c_the_cli_reader_on_the_same_slow_git_waits_and_admits(
     assert sample.split(":", 1)[1].strip() == "2"
 
 
-# --------------------------------------------------------------------------- CHARC G-T10-1 (1)(2): invocations
+# ------------------------------------------------------- CHARC G-T10-1 (1)(2): invocations
 
 def _count_invocations(monkeypatch) -> list[float | None]:
     budgets: list[float | None] = []

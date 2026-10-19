@@ -1,6 +1,7 @@
 """Shared pytest fixtures."""
 from __future__ import annotations
 
+import contextlib
 import re
 import sqlite3
 from pathlib import Path
@@ -171,9 +172,10 @@ def _isolate_root_logging_state():
       would desync the factory from schwab.client's module-level install-once
       guard, breaking test_refresh_rewraps_factory_when_third_party_replaced_it.
     - the Schwab `_GLOBAL_KNOWN_SECRETS` set: install_logging registers NO
-      secrets, so the cli.log install never mutates it; clearing it would wipe a
-      sentinel a sibling success-path test registered and a later same-file
-      redaction test relies on (test_setup_auth_failure_..._sentinel_redaction).
+      secrets, so the cli.log install never mutates it. (Until D87 the
+      auth-failure redaction test, test_setup_auth_failure_..._sentinel_redaction,
+      relied on a sibling success-path test having registered its sentinel; it
+      now registers the sentinel itself via its `sentinel_registered` fixture.)
     Tests that genuinely need factory/secret isolation own their own
     snapshot/restore (e.g. clean_root_and_secrets, the pipeline_logging fixture)."""
     import logging
@@ -331,14 +333,12 @@ def _sanitize_schwab_request(request):
     sanitized = _HEX_PATH_PATTERN.sub("<hex-token>", sanitized)
     sanitized = _BASE64_PATH_PATTERN.sub("<base64-token>", sanitized)
     if sanitized != uri:
-        try:
+        # vcrpy Request is a mutable object on supported versions; in the
+        # unlikely event we're called with a read-only request shape just
+        # return the unmutated original (cassette will surface the leak
+        # via the post-record sentinel-leak audit).
+        with contextlib.suppress(AttributeError):
             request.uri = sanitized
-        except AttributeError:
-            # vcrpy Request is a mutable object on supported versions; in the
-            # unlikely event we're called with a read-only request shape just
-            # return the unmutated original (cassette will surface the leak
-            # via the post-record sentinel-leak audit).
-            pass
     return request
 
 
