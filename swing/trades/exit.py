@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
 
-from swing.data.models import Fill
+from swing.data.models import Fill, Trade
 from swing.data.repos.fills import insert_fill_with_event
 from swing.data.repos.trades import add_note_event, get_trade
 from swing.trades.derived_metrics import (
@@ -151,7 +151,9 @@ def _normalize_trade_event_date_to_iso(raw: str, *, field_name: str = "date") ->
 class ExitPriceRefusedError(ValueError):
     """22-F C1-24: an exit price the ``fills.price`` column would refuse.
 
-    Raised by ``record_exit`` BEFORE any statement, for exactly the column's
+    Raised by ``check_exit_preconditions`` BEFORE the INSERT (inside
+    ``record_exit`` that is under its write lock, after ``BEGIN IMMEDIATE``
+    and the trade read -- D79 executing FORK 1), for exactly the column's
     refusal set -- ``<= 0`` (the CHECK) and NaN (the NOT NULL) -- so the
     operator gets a typed refusal instead of an ``IntegrityError`` at the
     INSERT. A ``ValueError`` subclass, so the existing ``except ValueError``
@@ -347,6 +349,45 @@ def _rollback_or_raise(conn: sqlite3.Connection, op: str,
         raise cleanup_error from original
 
 
+def check_exit_preconditions(trade: Trade | None, req: ExitRequest) -> None:
+    """The six refusals of an exit request, PURE (D79 executing FORK 1,
+    CHARC: A1, the helper pure).
+
+    Raises, in this order and with these texts: an invalid reason; shares
+    ``<= 0``; ``ExitPriceRefusedError`` (``<= 0`` or NaN -- the ``fills.price``
+    column's refusal set); the trade not found; the trade not active; the
+    shares exceeding its remaining ``current_size``. Each is a ``ValueError``,
+    so both callers' existing ``except ValueError`` delivery reaches it.
+
+    It takes the trade ROW and the request and performs NO read: it cannot
+    be the barrier and cannot drift from it. ``record_exit`` calls it on the
+    row it reads UNDER its write lock -- that call is the barrier. The web
+    exit POST calls it earlier, on a row read outside any lock, only to ORDER
+    a refusal that does not depend on the operator's answer BEFORE the F1
+    question (a refusal precedes the question it would make moot).
+    """
+    if not isinstance(req.reason, ExitReason):
+        raise ValueError(f"invalid exit reason: {req.reason}")
+    if req.shares <= 0:
+        raise ValueError(f"shares must be > 0; got {req.shares}")
+    if not (req.exit_price > 0):
+        raise ExitPriceRefusedError(
+            f"exit price must be > 0; got {req.exit_price!r}"
+        )
+    if trade is None:
+        raise ValueError(f"trade {req.trade_id} not found")
+    if trade.state not in _ACTIVE_STATES:
+        raise ValueError(
+            f"trade {req.trade_id} not active (state={trade.state!r}); "
+            f"exits only permitted from {sorted(_ACTIVE_STATES)}"
+        )
+    if float(trade.current_size) - float(req.shares) < 0:
+        raise ValueError(
+            f"exit shares {req.shares} exceeds remaining current_size "
+            f"{trade.current_size}"
+        )
+
+
 def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     """Write an exit/trim/stop fill and drive the state machine.
 
@@ -363,27 +404,25 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
       * partial_exited + new_size == 0 → closed
       * partial_exited + new_size > 0  → (no transition; stays partial_exited)
 
-    Transaction (D79, CHARC K1 (1)): a caller-held transaction is REJECTED
-    as the first statement, before any read. The pure argument checks run
-    next and read nothing. Then ONE ``BEGIN IMMEDIATE`` is taken, and the
-    trade read, the state and size checks, the writes and the ``COMMIT`` all
-    run under it; a refusal raised there (not found / not active / exceeds)
-    still propagates as the same ``ValueError`` after a clean rollback.
+    Transaction (D79, CHARC K1 (1); executing FORK 1): a caller-held
+    transaction is REJECTED as the first statement, before any read. The
+    exit date is normalised and the SUBMITTED envelope is read through the
+    authority before ``BEGIN`` (an unreadable one is refused there, CHARC
+    FORK 2 F2-(iii)). Then ONE ``BEGIN IMMEDIATE`` is taken, and the trade
+    read, ``check_exit_preconditions`` (all six refusals, one spelling), the
+    identity guard, the writes and the ``COMMIT`` all run under it; a refusal
+    raised there propagates as the same ``ValueError`` after a clean
+    rollback. ACCEPTED COST (CHARC's ruling): a request refused on its
+    arguments alone now takes one ``BEGIN IMMEDIATE`` / ``ROLLBACK`` first --
+    nothing on a single-operator DB, where a second spelling of the checks
+    is not. A consequence of the same order: a request with BOTH a bad
+    argument and an unreadable envelope is refused for the envelope.
     """
     if conn.in_transaction:
         raise CallerHeldTransactionError(
             "record_exit owns its transaction; it was called while the "
             "caller holds an open transaction (commit or roll it back first)"
         )
-    if not isinstance(req.reason, ExitReason):
-        raise ValueError(f"invalid exit reason: {req.reason}")
-    if req.shares <= 0:
-        raise ValueError(f"shares must be > 0; got {req.shares}")
-    if not (req.exit_price > 0):
-        raise ExitPriceRefusedError(
-            f"exit price must be > 0; got {req.exit_price!r}"
-        )
-
     # Codex R1 Major 1: fill_datetime must reflect when the EXIT happened
     # (req.exit_date), not when the operator typed the command (req.event_ts).
     # CLI sends event_ts=now, so an exit recorded for a past session would
@@ -416,20 +455,9 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     try:
         conn.execute("BEGIN IMMEDIATE")
         trade = get_trade(conn, req.trade_id)
-        if trade is None:
-            raise ValueError(f"trade {req.trade_id} not found")
-        if trade.state not in _ACTIVE_STATES:
-            raise ValueError(
-                f"trade {req.trade_id} not active (state={trade.state!r}); "
-                f"exits only permitted from {sorted(_ACTIVE_STATES)}"
-            )
-
+        # THE BARRIER: the six refusals on the row read UNDER the lock.
+        check_exit_preconditions(trade, req)
         new_size = float(trade.current_size) - float(req.shares)
-        if new_size < 0:
-            raise ValueError(
-                f"exit shares {req.shares} exceeds remaining current_size "
-                f"{trade.current_size}"
-            )
 
         # D79 (CHARC K1 (2); RD K2, K7.1): the identity guard, AFTER the
         # write lock is held and BEFORE the insert, so no concurrent writer
