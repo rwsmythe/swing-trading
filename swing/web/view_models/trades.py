@@ -1070,10 +1070,14 @@ def build_exit_form_vm(
         # principle), which is the fact that ruling rests on and NOT this
         # channel's definition.
         #
-        # The comparison grain is owned by ``_undecidable_duplicates`` in
-        # ``swing/trades/exit_auto_fill.py``: date string-exact against EITHER
-        # of the candidate's two dates, price at ``round(_, 2)``, quantity as
-        # a FLOAT within ``math.isclose`` (relative AND absolute 1e-9).
+        # The comparison is owned by ``_undecidable_duplicates`` in
+        # ``swing/trades/exit_auto_fill.py``, and it names a row for one of
+        # two labelled reasons: a VALUE-TUPLE match (date string-exact against
+        # EITHER of the candidate's two dates, price at ``round(_, 2)``,
+        # quantity as a FLOAT within ``math.isclose``, relative AND absolute
+        # 1e-9) or a POSSIBLE PARTIAL (D79, RD K7.2: dated inside the order's
+        # entered-through-executed window, quantity no larger, price not
+        # compared).
         identities = recorded_exit_identities(conn)
         existing_fill_order_ids: set[str] = set(identities.by_order_id)
         linked_fill_ids = {

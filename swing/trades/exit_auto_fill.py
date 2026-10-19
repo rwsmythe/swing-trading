@@ -286,12 +286,23 @@ _DUP_REASON_VALUES: frozenset[str] = frozenset({
 class PossibleDuplicateFill:
     """An ALREADY-RECORDED fill a candidate MIGHT duplicate, named in full.
 
-    Emitted when identity is UNDECIDABLE: a recorded fill carrying no
-    ``schwab_order_id`` whose stored date matches EITHER of the two dates in
-    play for a candidate -- the date the candidate carries, or the date this
-    module would have recorded for the same order before the D31 grain
-    cutover -- with the same price and quantity. The rows may be one broker
-    fill or two different ones, and nothing available can tell them apart:
+    Emitted when identity is UNDECIDABLE, for a recorded fill carrying no
+    ``schwab_order_id`` the authority reads, for one of TWO reasons, each
+    carried in ``reason`` (D79, RD K7.2; never one shared label):
+
+      - ``DUP_REASON_VALUE_TUPLE``: the stored date matches EITHER of the two
+        dates in play for a candidate -- the date the candidate carries, or
+        the date this module would have recorded for the same order before
+        the D31 grain cutover -- with the same price and quantity;
+      - ``DUP_REASON_POSSIBLE_PARTIAL``: the stored date lies inside the
+        order's own execution window (entered date through executed date,
+        inclusive) with a quantity NO LARGER than the candidate's. PRICE IS
+        NOT COMPARED -- a partial's price is a leg price, not the order's
+        VWAP. A row that is already a value-tuple match keeps that label
+        alone.
+
+    The rows may be one broker fill or two different ones, and nothing
+    available can tell them apart:
     BY DEFINITION these rows carry no usable ``schwab_order_id`` bound to their
     recorded values, and that id is the only proof of identity this system has.
     On the live ledger today they are additionally ALL ``operator_typed`` --
@@ -565,13 +576,18 @@ def resolve_exit_auto_fill(
     suppresses a candidate:
 
       1. ``schwab_order_id`` present on BOTH sides -> identity is PROVEN or
-         REFUTED. Exclusion by id is exact; ``existing_fill_order_ids`` does
-         exactly that and is UNCHANGED.
-      2. ANONYMOUS recorded fill (no ``schwab_order_id``), value-tuple match at
-         EITHER grain -- its stored date equals the candidate's EXECUTION date,
-         OR the candidate's ORDER-ENTERED date, same price and quantity ->
-         the candidate is OFFERED carrying ``possible_duplicates`` naming
-         EVERY such row. NEVER silently excluded. NEVER offered clean.
+         REFUTED. Exclusion by id is exact: a candidate whose ``order_id`` is
+         in ``existing_fill_order_ids`` is excluded, and since D79 (RD K7.1)
+         that set holds every id recorded on ANY trade.
+      2. ANONYMOUS recorded fill on THIS trade (no ``schwab_order_id`` the
+         authority reads) that is EITHER a value-tuple match at either grain
+         -- its stored date equals the candidate's EXECUTION date, OR the
+         candidate's ORDER-ENTERED date, same price and quantity -- OR a
+         possible partial of the candidate's order (D79, RD K7.2: dated
+         inside the order's entered-through-executed window, quantity no
+         larger than the candidate's, price not compared) -> the candidate is
+         OFFERED carrying ``possible_duplicates`` naming EVERY such row, each
+         with its ``reason``. NEVER silently excluded. NEVER offered clean.
 
     THE LINE IS PROVENANCE, NOT GRAIN, and the fact that moved it is this: all
     ten anonymous non-entry fills on the live ledger are ``operator_typed`` --
@@ -611,21 +627,25 @@ def resolve_exit_auto_fill(
             accepts it back (Codex R12). Tests that assert anything derived
             from it MUST pass a fixed value or freeze this module's clock.
         existing_fill_order_ids: optional set of Schwab order_ids that
-            have ALREADY been persisted as fills for this trade (for
-            partial_exited trades with one or more recorded SELL fills).
-            Codex R1 Major #4 fix — without this exclusion, a partial-
-            exited trade's auto-fill resolver would re-surface
-            already-recorded SELL fills as candidates, letting the
+            have ALREADY been persisted as non-entry fills on ANY trade --
+            the one reader's set (``swing.trades.exit.recorded_exit_
+            identities``, D79 RD K7.1: an order id is global at the broker,
+            and the same-day close-and-re-enter case puts the old trade's
+            recorded SELL inside the new trade's lookback). Codex R1 Major
+            #4 fix — without this exclusion, the auto-fill resolver would
+            re-surface already-recorded SELL fills as candidates, letting the
             operator inadvertently double-record a fill. When supplied,
             candidates whose ``order_id`` is in the set are filtered out
             BEFORE the candidates list is built. Default ``None`` =
             no exclusion (backwards-compat for entry-side parity tests
             + the empty-set degenerate case).
         existing_anonymous_fills: the already-recorded non-entry fills for
-            this trade that carry NO usable ``schwab_order_id`` — pre-v20
-            fills, ``operator_typed`` fills, ``tos_import`` and
-            ``imported_legacy`` fills, and envelopes whose only order-id key
-            is ``selected_candidate_order_id``. Each is carried WITH its
+            THIS trade (per-trade, RD K7.1: an identical manual exit on a
+            different trade is the legal case) to which the one reader linked
+            no broker order id — pre-v20 fills, ``operator_typed`` fills,
+            ``tos_import`` and ``imported_legacy`` fills, envelopes whose only
+            order-id key is ``selected_candidate_order_id``, and envelopes the
+            authority REFUSED (CHARC FORK 2). Each is carried WITH its
             identity (``fill_id`` + stored date/price/quantity) so a match can
             NAME the row rather than merely suppress a candidate.
 
