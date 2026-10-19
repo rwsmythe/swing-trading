@@ -369,3 +369,40 @@ def test_af01_metric_failure_rolls_the_exit_back(tmp_path):
                          (tid,)).fetchone() == ("managing", 10.0)
     finally:
         c.close()
+
+
+# ----------------------------------------------------------------- A-F04
+def test_af04_caller_held_check_precedes_the_envelope_authority(
+        tmp_path, monkeypatch):
+    """A-F04 (Reviewer A R4). T1-a passes no envelope and spies only
+    ``get_trade``, so a caller-held check moved AFTER the date normalisation
+    and the envelope read (``canonical_envelope_identity``) but before
+    ``get_trade`` would still pass it. This call CARRIES an envelope with the
+    authority spied: ``CallerHeldTransactionError`` and ZERO authority calls,
+    the caller's transaction untouched, no fill. A PIN (green before and
+    after): discrimination measured by mutation -- the check placed after
+    the envelope read fails the zero-calls assertion. NULL killed: the
+    caller-held check anywhere after the authority call."""
+    db = make_db(tmp_path)
+    tid = seed_trade(db)
+    calls: list = []
+    real_authority = exit_mod.canonical_envelope_identity
+    monkeypatch.setattr(
+        exit_mod, "canonical_envelope_identity",
+        lambda *a, **k: calls.append(1) or real_authority(*a, **k))
+    envelope = ('{"closed_shares": 10, "exit_date": "2026-05-21", '
+                '"exit_price": 131.0, "schwab_order_id": "o1"}')
+    conn = connect(db)
+    try:
+        conn.execute("BEGIN")
+        conn.execute("SELECT COUNT(*) FROM trades").fetchone()
+        assert conn.in_transaction
+        with pytest.raises(exit_mod.CallerHeldTransactionError):
+            exit_mod.record_exit(conn, exit_req(
+                tid, envelope=envelope, fill_origin="schwab_auto"))
+        assert calls == []
+        assert conn.in_transaction
+        conn.rollback()
+    finally:
+        conn.close()
+    assert count_exit_fills(db) == 0
