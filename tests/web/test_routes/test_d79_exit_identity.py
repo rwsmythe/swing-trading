@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import html
 import json
+import re
+import sqlite3
 
 from fastapi.testclient import TestClient
 
@@ -17,6 +19,7 @@ from swing.trades import exit as exit_mod
 from swing.web.app import create_app
 from tests.web.test_routes.test_exit_rerender_anchor import (  # noqa: F401
     _browser_form,
+    _checked_radios,
     _exit_fills,
     _post,
     world,
@@ -245,3 +248,222 @@ def test_t6h_multi_entry_map_with_no_selection_synthesizes_the_default(world):
     [(_fid, _action, _qty, origin, env, _at)] = _exit_fills(world.cfg)
     assert origin == "schwab_auto"
     assert json.loads(env)["schwab_order_id"] == "o2"
+
+
+# ---------------------------------------------- the T7 confirm protocol
+def _acks(body: str) -> list[str]:
+    """The flag identities the flagged re-render emitted, in order."""
+    return [html.unescape(v) for v in re.findall(
+        r'name="acknowledged_flag" value="([^"]*)"', body)]
+
+
+def _confirm(tc, tid, body: str, *, acks=None, **over):
+    """Press Confirm on the re-rendered form ``body``: what a browser
+    submits (``_browser_form``, which keeps ONE value per name, so the
+    acknowledgements are re-read as a list) plus ``force=true``."""
+    fd = _browser_form(body)
+    fd.pop("acknowledged_flag", None)
+    fd.update(over)
+    data: dict = dict(fd, force="true")
+    data["acknowledged_flag"] = _acks(body) if acks is None else list(acks)
+    return _post(tc, tid, data)
+
+
+def _exit_rows(cfg) -> list[tuple]:
+    c = sqlite3.connect(str(cfg.paths.db_path))
+    try:
+        return c.execute(
+            "SELECT fill_id, fill_origin, schwab_source_value_json, "
+            "operator_corrected_value_json, price, quantity FROM fills "
+            "WHERE action != 'entry' ORDER BY fill_id").fetchall()
+    finally:
+        c.close()
+
+
+def _offered_order_ids(body: str) -> set[str]:
+    return {v for k, v in _browser_form(body).items()
+            if k.startswith("candidate_order_id_")}
+
+
+def test_t6b_confirmed_non_default_pick_links_the_selected_order(world):
+    """Orchestrator K7.3, the link; RD K3 (iv). o1 picked, the inputs left
+    at o2's values, CONFIRMED. The top level names o1 with o1's own values,
+    the typed o2 values ride in ``operator_corrected_value_json``, and the
+    next form offers only o2. PRE-FIX: no confirm exists; the first POST
+    writes top-level o2 with o2's values."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        fd["candidate_index"] = "0"
+        r1 = _post(tc, world.tid, fd)
+        assert r1.status_code == 400, r1.text[:500]
+        assert _exit_rows(world.cfg) == []
+        r2 = _confirm(tc, world.tid, r1.text)
+        assert r2.status_code == 200, r2.text[:500]
+        nxt = tc.get(f"/trades/{world.tid}/exit/form").text
+    [(_fid, origin, env, corrected, price, qty)] = _exit_rows(world.cfg)
+    persisted = json.loads(env)
+    assert origin == "schwab_auto_then_operator_corrected"
+    assert persisted["schwab_order_id"] == "o1"
+    assert persisted["selected_candidate_order_id"] == "o1"
+    assert (persisted["exit_date"], persisted["exit_price"],
+            persisted["closed_shares"]) == ("2026-05-20", 130.0, 4)
+    assert json.loads(corrected) == {
+        "exit_date": "2026-05-21", "exit_price": 131.0, "closed_shares": 3}
+    assert (price, qty) == (131.0, 3.0)
+    assert _offered_order_ids(nxt) == {"o2"}
+
+
+def test_t6c_confirmed_correction_keeps_the_id_and_a_stale_replay_is_refused(
+        world):
+    """Cell list 3, F2-B closed. o1 picked, typed 2026-05-21 / 129.50 / 4,
+    confirmed: the id o1 is KEPT and the next form does not offer o1. Then
+    the FIRST GET's form, o1 picked and o1's exact values retyped, posted
+    with NO force: no flag fires and ``record_exit`` refuses it. PRE-FIX:
+    the id is dropped, o1 re-offered unflagged, and the re-record succeeds
+    (round-0 ``probe_f2b.json``)."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        first = _form(tc, world.tid)
+        fd = dict(first, candidate_index="0", exit_date="2026-05-21",
+                  exit_price="129.50", shares="4")
+        r1 = _post(tc, world.tid, fd)
+        assert r1.status_code == 400, r1.text[:500]
+        r2 = _confirm(tc, world.tid, r1.text)
+        assert r2.status_code == 200, r2.text[:500]
+        [(_fid, _o, env, _c, _p, _q)] = _exit_rows(world.cfg)
+        assert json.loads(env)["schwab_order_id"] == "o1"
+        assert "o1" not in _offered_order_ids(
+            tc.get(f"/trades/{world.tid}/exit/form").text)
+        replay = dict(first, candidate_index="0", exit_date="2026-05-20",
+                      exit_price="130.00", shares="4")
+        r3 = _post(tc, world.tid, replay)
+    assert r3.status_code == 400, r3.text[:500]
+    assert "already recorded" in r3.text
+    assert len(_exit_rows(world.cfg)) == 1
+
+
+def test_t6g_legacy_no_map_edit_is_reconfirmed_and_its_confirm_is_void(world):
+    """Codex R3-01, as amended by executing FORK 3 (G1). A claimed envelope
+    carrying only o2's top-level quartet (no ``candidates_map``), price
+    edited. FIRST POST: 400, no fill, the refresh notice, NO flag text, the
+    FRESH map-bearing anchor, the typed values kept, and a message saying
+    nothing was recorded because the list must be re-confirmed. A plain
+    resubmit on that fresh anchor is then asked F1 against the fresh
+    selection. CONFIRM LEG: the ORIGINAL legacy submission re-posted with
+    ``force`` and a test-built identity is VOID under d2. PRE-FIX: recorded
+    corrected on the first POST. NULL killed: F1 gated on a map entry.
+
+    SUPERSEDES, by replacement, the plan's first-leg text (a 400 carrying
+    the F1 flag): FORK 3 drops a flag about a selection the form no longer
+    carries."""
+    from tests.web.test_routes.test_exit_rerender_anchor import (
+        _NOTICE,
+        _hidden,
+        _input_attr,
+    )
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _without_candidate_inputs(_form(tc, world.tid))
+        env = _env(fd)
+        del env["candidates_map"]
+        legacy = dict(fd, schwab_source_value_json=json.dumps(
+            env, sort_keys=True), exit_price="131.40")
+        r1 = _post(tc, world.tid, legacy)
+        assert r1.status_code == 400, r1.text[:500]
+        body1 = _text(r1)
+        assert "must be re-confirmed" in body1
+        assert _NOTICE in body1
+        assert "differ from order" not in body1
+        assert "Confirm or retype" not in body1
+        assert _acks(r1.text) == []
+        assert "candidates_map" in json.loads(
+            _hidden(r1.text, "schwab_source_value_json"))
+        assert _input_attr(r1.text, "exit_price", "value") == "131.40"
+        assert _exit_rows(world.cfg) == []
+        r2 = _post(tc, world.tid, _browser_form(r1.text))
+        assert r2.status_code == 400, r2.text[:500]
+        assert ("differ from order o2's (2026-05-21, 131.00 x 3) in price."
+                in _text(r2))
+        r3 = _post(tc, world.tid, dict(
+            legacy, force="true",
+            acknowledged_flag="f1_matches_no_candidate|o2|2026-05-21|131.40|3"))
+    assert r3.status_code == 400, r3.text[:500]
+    assert _NOTICE in _text(r3)
+    assert "the confirmation is void" in _text(r3)
+    assert _exit_rows(world.cfg) == []
+
+
+def test_t6h_confirm_leg_the_synthesized_default_is_the_checked_radio(world):
+    """Fork 2 addendum (RD's suggestion, adopted as REQUIRED): T6-h (i)'s
+    flagged re-render checks o2's radio, and after the confirm the persisted
+    selected hash is o2's and the top-level id is o2. Makes the coupling of
+    the default radio and the top-level quartet a fact the suite holds."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        o2_hash = _hash_of(_env(fd), "o2")
+        bare = _without_candidate_inputs(fd)
+        r1 = _post(tc, world.tid, dict(bare, exit_price="131.40"))
+        assert r1.status_code == 400, r1.text[:500]
+        assert _checked_radios(r1.text) == ["1"]
+        r2 = _confirm(tc, world.tid, r1.text)
+    assert r2.status_code == 200, r2.text[:500]
+    [(_fid, origin, env, _c, _p, _q)] = _exit_rows(world.cfg)
+    persisted = json.loads(env)
+    assert origin == "schwab_auto_then_operator_corrected"
+    assert persisted["selected_candidate_signature_hash"] == o2_hash
+    assert persisted["schwab_order_id"] == "o2"
+
+
+# ------------------------------------------- executing FORK 1 (CHARC A1)
+def test_fork1_ii_oversize_and_edited_is_refused_before_the_question(world):
+    """Discriminator (ii): a claimed POST with shares over ``current_size``
+    AND a price edited away from the selected entry -- an F1 trigger and a
+    refusal at once. 400, "exceeds", NO confirm text and NO acknowledged-flag
+    input, no fill. PRE-FIX (flags first): the confirm prompt renders and
+    "exceeds" is absent."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        r = _post(tc, world.tid, dict(fd, shares="50", exit_price="131.40"))
+    assert r.status_code == 400, r.text[:500]
+    assert "exceeds" in r.text
+    assert "Confirm or retype" not in r.text
+    assert "differ from order" not in _text(r)
+    assert _acks(r.text) == []
+    assert 'name="force"' not in r.text
+    assert _exit_rows(world.cfg) == []
+
+
+def test_fork1_iii_one_spelling_called_from_both_sites(world, monkeypatch):
+    """Discriminator (iii), the one-spelling pin: ``check_exit_preconditions``
+    is called from BOTH sites on an accepted POST (route, then
+    ``record_exit`` under its lock) and from the ROUTE ONLY on a refused one
+    (``record_exit`` never entered). Patched where each site resolves the
+    name. NULL killed: A2 (a route-side copy) and any later inline
+    comparison against ``current_size``."""
+    sites: list[str] = []
+    real = exit_mod.check_exit_preconditions
+
+    def at(site):
+        def spy(trade, req):
+            sites.append(site)
+            return real(trade, req)
+        return spy
+
+    monkeypatch.setattr(routes_mod, "check_exit_preconditions", at("route"),
+                        raising=False)
+    monkeypatch.setattr(exit_mod, "check_exit_preconditions", at("service"))
+    entered: list[int] = []
+    real_record = exit_mod.record_exit
+
+    def record_spy(conn, req):
+        entered.append(1)
+        return real_record(conn, req)
+
+    monkeypatch.setattr(routes_mod, "record_exit", record_spy)
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        refused = _post(tc, world.tid, dict(_form(tc, world.tid), shares="50"))
+        assert refused.status_code == 400, refused.text[:500]
+        assert "exceeds" in refused.text
+        assert sites == ["route"] and entered == []
+        sites.clear()
+        ok = _post(tc, world.tid, _form(tc, world.tid))
+    assert ok.status_code == 200, ok.text[:500]
+    assert sites == ["route", "service"] and entered == [1]

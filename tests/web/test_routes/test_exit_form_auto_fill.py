@@ -1481,9 +1481,11 @@ def test_r2_minor1_operator_instruction_text_present_in_multi_partial_fieldset(
     assert "auto-fill-candidates" in body, (
         "fieldset class auto-fill-candidates must render when N>=2"
     )
-    assert "manually edit the inputs" in body, (
-        "Codex R2 Minor #1: operator-instruction text missing from "
-        "multi-partial radio fieldset"
+    # D79 T7 (supersession by replacement): the instruction now says a
+    # mismatch with the selected fill is ASKED about before recording.
+    assert "asked to confirm before anything is recorded" in body, (
+        "D79: operator-instruction text missing from multi-partial radio "
+        "fieldset"
     )
     # Defensive: also assert phrase about radio not updating inputs.
     assert "does NOT update" in body, (
@@ -1523,7 +1525,7 @@ def test_r2_minor1_no_instruction_text_on_single_fill_case(
     assert resp.status_code == 200, resp.text
     body = resp.text
     assert "auto-fill-candidates" not in body
-    assert "manually edit the inputs" not in body
+    assert "asked to confirm before anything is recorded" not in body
 
 
 # ============================================================================

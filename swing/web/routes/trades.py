@@ -33,10 +33,17 @@ from swing.trades.entry import (
     safe_text,
 )
 from swing.trades.equity import current_equity
-from swing.trades.exit import ExitReason, ExitRequest, record_exit
+from swing.trades.exit import (
+    ExitReason,
+    ExitRequest,
+    check_exit_preconditions,
+    record_exit,
+    recorded_exit_identities,
+)
 from swing.trades.exit_auto_fill import (
     _EXIT_DATE_SOURCE_VALUES,
     ExitRecordFlag,
+    anonymous_fill_matches,
     derives_from,
     exit_record_flags,
 )
@@ -2430,6 +2437,23 @@ _EXIT_AUTO_FILL_REFRESH_NOTICE = (
     "re-submitting."
 )
 
+# D79 (orchestrator K5): the exit POST's three confirm-protocol messages.
+# ASKED: the flags render with their texts and a Confirm button. RE-CONFIRM:
+# a claimed anchor's flags were dropped because the form can no longer carry
+# the selection they ask about (FORK 3, G1). VOID: a Confirm whose Schwab
+# list changed (or could not be re-read) since the question was asked.
+_EXIT_FLAGS_ASKED_TEXT = "Confirm or retype before recording."
+_EXIT_FLAGS_RECONFIRM_TEXT = (
+    "Nothing was recorded: the Schwab order list must be re-confirmed before "
+    "this exit can be recorded. Check the selected fill and the values below, "
+    "then submit again."
+)
+_EXIT_CONFIRM_VOID_TEXT = (
+    "Nothing was recorded: the Schwab order list changed since the question "
+    "was asked, or could not be re-read, so the confirmation is void. Check "
+    "the selected fill and the values below, then submit again."
+)
+
 
 def _exit_values_well_formed(date_value: object, price_value: object,
                              shares_value: object) -> bool:
@@ -2509,6 +2533,9 @@ def _rerender_exit_form_with_error(
     submitted_fill_origin_at_form_render: str | None = None,
     submitted_selected_signature_hash: str | None = None,
     flags: tuple = (),
+    flags_void_error_message: str | None = None,
+    fresh_vm=None,
+    refresh_notice: bool = False,
 ) -> HTMLResponse:
     """Re-render the exit form at 400 after a refused POST, KEEPING what the
     operator typed and, when it is safe, the anchor he submitted (RD 1(iii) /
@@ -2535,9 +2562,21 @@ def _rerender_exit_form_with_error(
     all, so the retry records ``operator_typed`` -- and the refresh notice
     says so. Unlike entry, exit does NOT restore under parity: the fresh
     list is what enforces the already-recorded-order exclusion.
+
+    D79 (orchestrator K5; executing FORK 3, G1): ``flags`` are the questions
+    a POST must ask before it records. For a CLAIMED anchor they render ONLY
+    when the anchor is restored: a flag is about a selection, and when the
+    form can no longer carry that selection (a map-less legacy envelope, a
+    fresh fetch that is not ``populated``, or a fresh list that differs) the
+    question cannot be answered truthfully, so the flags are DROPPED, the
+    refresh notice shows, and ``flags_void_error_message`` replaces the
+    error. An unclaimed submission's flags always render. ``fresh_vm`` is a
+    VM the caller already fetched (the d2 check of a confirm), so the
+    re-render does not fetch Schwab a second time; ``refresh_notice`` shows
+    the notice when no submitted anchor is offered (a VOID confirmation).
     """
     from dataclasses import replace as dc_replace
-    vm = build_exit_form_vm(
+    vm = fresh_vm if fresh_vm is not None else build_exit_form_vm(
         trade_id=trade_id, cfg=cfg, cache=cache, executor=executor,
     )
     if vm is None:
@@ -2555,12 +2594,15 @@ def _rerender_exit_form_with_error(
         notes=notes or "",
         selected_reason=reason,
     )
-    if (
+    claimed_anchor = (
         submitted_schwab_source_value_json is not None
         and isinstance(submitted_envelope, dict)
         and submitted_fill_origin_at_form_render in _EXIT_AUTO_FILL_CLAIMS
-    ):
+    )
+    restored = False
+    if claimed_anchor:
         if _exit_candidates_maps_equal(vm, submitted_envelope):
+            restored = True
             # Ruling (a): re-check the operator's pick BY HASH in the FRESH
             # list. Under the gate the hashes are the submitted ones by
             # construction; a hash not in the list leaves the default.
@@ -2589,6 +2631,16 @@ def _rerender_exit_form_with_error(
             vm = dc_replace(
                 vm, auto_fill_refresh_notice=_EXIT_AUTO_FILL_REFRESH_NOTICE,
             )
+    if refresh_notice:
+        vm = dc_replace(
+            vm, auto_fill_refresh_notice=_EXIT_AUTO_FILL_REFRESH_NOTICE,
+        )
+    if flags and claimed_anchor and not restored:
+        # FORK 3 (G1): a question about a selection the form no longer
+        # carries is void; the operator re-confirms on the fresh list.
+        flags = ()
+        if flags_void_error_message is not None:
+            error_message = flags_void_error_message
     vm = dc_replace(vm, exit_flags=tuple(flags))
     return templates.TemplateResponse(
         request, "partials/trade_exit_form.html.j2",
@@ -2658,6 +2710,18 @@ async def exit_post(
     # ------------------------------------------------------------------
     form_data = await request.form()
     candidate_index_raw = form_data.get("candidate_index")
+    # D79 (orchestrator K5): the ONE confirm shape. ``force`` is the Confirm
+    # button's name/value; the acknowledgements are the flag IDENTITIES the
+    # flagged re-render emitted, honoured ONLY with ``force`` -- a plain
+    # Submit re-checks from scratch. ``getlist`` is read through ``getattr``
+    # because a direct-drive test (22-F) stubs the form as a plain dict,
+    # which carries no acknowledgements.
+    force = form_data.get("force") == "true"
+    getlist = getattr(form_data, "getlist", None)
+    acknowledged: set[str] = (
+        {str(v) for v in getlist("acknowledged_flag")}
+        if force and getlist is not None else set()
+    )
 
     # Collect all candidate_signature_hash_<i> / candidate_order_id_<i>
     # pairs the form sent. Indices are 0-based; gaps OK (template emits
@@ -3304,6 +3368,7 @@ async def exit_post(
     # refusal and a D79 flag re-render take the same restore path.
     def _refusal_rerender(
         error_message: str, *, flags: tuple[ExitRecordFlag, ...] = (),
+        prefetched_vm=None,
     ) -> HTMLResponse:
         restorable = claimed_auto_fill and isinstance(anchor_envelope, dict)
         return _rerender_exit_form_with_error(
@@ -3330,33 +3395,96 @@ async def exit_post(
                 else None
             ),
             flags=flags,
+            flags_void_error_message=(
+                _EXIT_FLAGS_RECONFIRM_TEXT if flags else None),
+            fresh_vm=prefetched_vm,
         )
 
-    # D79 (orchestrator K4, K5): the POST ASKS before it records. Every flag
-    # is computed by ``exit_record_flags`` (pure); any flag stops the POST
-    # here with nothing written.
-    flags = exit_record_flags(
-        typed=(exit_date, exit_price, shares),
-        selected_entry=flag_selected_entry,
-        selected_order_id=flag_selected_order_id,
-        candidates_map=flag_candidates_map,
-        anonymous_matches=(),
-        unreadable_fills=(),
-        linked=False,
+    # D79 T7 step 1 (orchestrator K5; RD K3 (2)): a CONFIRMATION of a claimed
+    # auto-fill is honoured only against the list the operator was asked
+    # about. The fresh list is fetched ONCE; if it is not the submitted one
+    # (d2-strict, ``_exit_candidates_maps_equal``) the confirmation is VOID:
+    # no restore, no flags, the refresh notice, nothing recorded. The same
+    # fetch serves any later re-render of this POST, so there is no second
+    # Schwab fetch. It runs before the database connection opens; it is a
+    # fetch, not one of the advisory reads below.
+    confirm_vm = None
+    if force and claimed_auto_fill and isinstance(anchor_envelope, dict):
+        confirm_vm = build_exit_form_vm(
+            trade_id=trade_id, cfg=cfg, cache=cache, executor=executor,
+        )
+        if confirm_vm is None or not _exit_candidates_maps_equal(
+                confirm_vm, anchor_envelope):
+            return _rerender_exit_form_with_error(
+                request=request, templates=templates, cfg=cfg, cache=cache,
+                executor=executor, trade_id=trade_id, exit_date=exit_date,
+                exit_price=exit_price, shares=shares,
+                reason=reason_enum.value, notes=notes,
+                error_message=_EXIT_CONFIRM_VOID_TEXT,
+                fresh_vm=confirm_vm, refresh_notice=True,
+            )
+
+    # Whether the exit about to be recorded is LINKED -- its persisted
+    # envelope carries an order id the authority reads. Only a linked exit
+    # is asked the unreadable-envelope question (CHARC FORK 2).
+    linked = (
+        resolved_schwab_source_value_json is not None
+        and canonical_envelope_identity(
+            resolved_schwab_source_value_json).broker_order_id is not None
     )
-    if flags:
-        return _refusal_rerender(
-            "Confirm or retype before recording.", flags=flags)
 
     result = None
+    unacked: list[ExitRecordFlag] = []
+    flags: tuple[ExitRecordFlag, ...] = ()
     close_interrupt: BaseException | None = None
     conn = connect(cfg.paths.db_path)
     try:
         try:
             try:
-                result = record_exit(conn, req)
+                # D79 executing FORK 1 (CHARC, A1) and the T7 read-connection
+                # ruling: THE REFUSALS BEFORE THE QUESTION, on this ONE
+                # connection. The trade row is read here OUTSIDE any lock, so
+                # this precheck is NOT the barrier: ``record_exit`` re-runs
+                # ``check_exit_preconditions`` on the row it reads under its
+                # own ``BEGIN IMMEDIATE``. This call only ORDERS a refusal
+                # that does not depend on the operator's answer before the
+                # flags ask him a question it would make moot. A refusal takes
+                # the same re-render a service refusal takes.
+                check_exit_preconditions(get_trade(conn, trade_id), req)
+                # D79 T7 step 2: the flags, from the SAME connection, with no
+                # transaction open (a SELECT in the default isolation mode
+                # leaves ``in_transaction`` False, so ``record_exit``'s
+                # caller-held check is satisfied). ADVISORY reads: the (a)
+                # identity guard is ``record_exit``'s, under its lock.
+                anonymous = anonymous_fill_matches(
+                    conn, trade_id=trade_id, exit_date=exit_date,
+                    exit_price=exit_price, shares=shares)
+                unreadable = (recorded_exit_identities(conn).unreadable
+                              if linked else ())
+                flags = exit_record_flags(
+                    typed=(exit_date, exit_price, shares),
+                    selected_entry=flag_selected_entry,
+                    selected_order_id=flag_selected_order_id,
+                    candidates_map=flag_candidates_map,
+                    anonymous_matches=anonymous,
+                    unreadable_fills=unreadable,
+                    linked=linked,
+                )
+                # D79 T7 step 3 (orchestrator K5): every flag must be
+                # acknowledged BY IDENTITY on a ``force`` resubmit; an
+                # identity binds the typed values, so a retype re-asks.
+                unacked = [f for f in flags if f.identity not in acknowledged]
+                if not unacked:
+                    # T7 step 4: ``force`` never reaches the service; an (a)
+                    # refusal arrives as ``ExitOrderAlreadyRecordedError``
+                    # through the ``except ValueError`` below.
+                    result = record_exit(conn, req)
             except ValueError as exc:
-                return _refusal_rerender(str(exc))
+                return _refusal_rerender(str(exc), prefetched_vm=confirm_vm)
+            if unacked:
+                return _refusal_rerender(
+                    _EXIT_FLAGS_ASKED_TEXT, flags=flags,
+                    prefetched_vm=confirm_vm)
         finally:
             try:
                 conn.close()
