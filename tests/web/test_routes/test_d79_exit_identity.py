@@ -224,10 +224,12 @@ def test_t6f_default_unedited_control(world):
     assert json.loads(env)["schwab_order_id"] == "o2"
 
 
-def test_t6h_multi_entry_map_with_no_selection_synthesizes_the_default(world):
-    """Fork 2 (orchestrator): a claimed multi-entry envelope, top-level o2,
-    NO candidate inputs. The route synthesizes the selected entry from the
-    top-level quartet. (i) price edited -> F1 NO_CANDIDATE naming price;
+def test_t6h_multi_entry_map_with_no_selection_resolves_the_default(world):
+    """Fork 2 (orchestrator), as narrowed by Fork D79-A-01 (branch B): a
+    claimed multi-entry envelope, top-level o2, NO candidate inputs. The
+    selected entry is the unique map entry naming the top-level order (o2)
+    whose values the top-level quartet derives from. (i) price edited ->
+    F1 NO_CANDIDATE naming price;
     (ii) typed values equal to o1's entry -> F1 OTHER_ORDER naming o1;
     (iii) unedited -> recorded, the control. PRE-FIX (legacy-only
     synthesis): (i) records ``schwab_auto_then_operator_corrected`` on the
@@ -391,7 +393,7 @@ def test_t6g_legacy_no_map_edit_is_reconfirmed_and_its_confirm_is_void(world):
     assert _exit_rows(world.cfg) == []
 
 
-def test_t6h_confirm_leg_the_synthesized_default_is_the_checked_radio(world):
+def test_t6h_confirm_leg_the_resolved_default_is_the_checked_radio(world):
     """Fork 2 addendum (RD's suggestion, adopted as REQUIRED): T6-h (i)'s
     flagged re-render checks o2's radio, and after the confirm the persisted
     selected hash is o2's and the top-level id is o2. Makes the coupling of
@@ -514,7 +516,8 @@ def test_ra03_an_omitted_radio_on_a_multi_entry_map_is_no_selection(world):
     """RA-03 (the Fork RA-02 ruling's note): index 0 is inferred only for a
     ONE-entry map. A two-candidate form with ONLY ``candidate_index``
     removed (every per-candidate hidden input kept) is a no-selection
-    submission and takes Fork 2's synthesis of the visible default (o2).
+    submission and takes the Fork D79-A-01 resolution: the selected entry
+    is the visible default's map entry (o2).
     PRE-FIX: index 0 is inferred, so o1 is the selected entry and the
     unedited o2 values are asked F1 (400, no fill)."""
     with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
