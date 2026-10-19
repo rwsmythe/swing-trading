@@ -2455,6 +2455,11 @@ _EXIT_CONFIRM_VOID_TEXT = (
 )
 
 
+#: ``_rerender_exit_form_with_error``'s "no VM was prefetched" default,
+#: distinct from a prefetched ``None`` (RA-04).
+_EXIT_VM_NOT_PREFETCHED = object()
+
+
 def _exit_values_well_formed(date_value: object, price_value: object,
                              shares_value: object) -> bool:
     """Tier (d)'s value-shape predicate, ONE spelling for every place an
@@ -2534,7 +2539,7 @@ def _rerender_exit_form_with_error(
     submitted_selected_signature_hash: str | None = None,
     flags: tuple = (),
     flags_void_error_message: str | None = None,
-    fresh_vm=None,
+    fresh_vm=_EXIT_VM_NOT_PREFETCHED,
     refresh_notice: bool = False,
 ) -> HTMLResponse:
     """Re-render the exit form at 400 after a refused POST, KEEPING what the
@@ -2576,9 +2581,12 @@ def _rerender_exit_form_with_error(
     the notice when no submitted anchor is offered (a VOID confirmation).
     """
     from dataclasses import replace as dc_replace
-    vm = fresh_vm if fresh_vm is not None else build_exit_form_vm(
+    # A PREFETCHED ``None`` (the trade is gone or closed) is a result, not
+    # an absence: it renders the banner-only fragment without a second
+    # build (Reviewer A R2, RA-04). Only the sentinel means "not fetched".
+    vm = build_exit_form_vm(
         trade_id=trade_id, cfg=cfg, cache=cache, executor=executor,
-    )
+    ) if fresh_vm is _EXIT_VM_NOT_PREFETCHED else fresh_vm
     if vm is None:
         # The trade is closed or gone: banner-only fragment.
         return templates.TemplateResponse(
@@ -3438,7 +3446,11 @@ async def exit_post(
             flags=flags,
             flags_void_error_message=(
                 _EXIT_FLAGS_RECONFIRM_TEXT if flags else None),
-            fresh_vm=prefetched_vm,
+            # At these call sites a ``None`` means no confirm fetch ran: a
+            # confirm fetch that returned ``None`` is VOID and returns
+            # before any of them (RA-04).
+            fresh_vm=(prefetched_vm if prefetched_vm is not None
+                      else _EXIT_VM_NOT_PREFETCHED),
         )
 
     # D79 T7 step 1 (orchestrator K5; RD K3 (2)): a CONFIRMATION of a claimed

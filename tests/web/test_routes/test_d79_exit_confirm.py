@@ -377,3 +377,28 @@ def test_a2_an_acknowledged_partial_of_one_order_does_not_discharge_another(
     assert f"is not part of order o2" in _text(r2)
     assert _acks(r2.text) == [f"possible_partial|o2|{fid}"]
     assert len(_exit_rows(world.cfg)) == 1  # the planted F alone
+
+
+# ------------------------------------------- RA-04 (Reviewer A round 2)
+def test_ra04_a_void_confirm_whose_prefetch_is_none_builds_once(
+        world, monkeypatch):
+    """RA-04 (choice 13): a ``force`` confirm whose fresh VM is ``None``
+    (the trade is gone or closed) is VOID, and the void re-render reuses
+    that prefetched ``None`` -- the banner-only fragment -- instead of
+    building the VM a second time. PRE-FIX: ``fresh_vm=None`` reads as
+    "not prefetched", so the builder runs twice."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        calls: list[int] = []
+
+        def gone(**kw):
+            calls.append(1)
+            return None
+
+        monkeypatch.setattr(routes_mod, "build_exit_form_vm", gone)
+        r = _post(tc, world.tid, dict(
+            fd, force="true", acknowledged_flag="value_tuple_match|1"))
+    assert r.status_code == 400, r.text[:500]
+    assert "the confirmation is void" in r.text
+    assert calls == [1]
+    assert _exit_rows(world.cfg) == []
