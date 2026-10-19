@@ -165,3 +165,24 @@ The cell is `implementer-opus-high`, on worktree `.worktrees/d79-plan` @ `47b388
 - the (c) and partial helpers are shared in `exit_auto_fill.py`.
 
 **Sent to RD as an encoding of RD K7.2, open to objection rather than asked as a ruling:** the possible-partial window is the order's entered date through its execution date, inclusive.
+
+### Plan-intake FORK 1 ruling -- author: RD; courier: orchestrator
+
+Transcribed as a literal block quote of the message body in `comms/orchestrator/read/20261019T015835Z-rd-d79-fork-1-ruled-option-a-authority-top.md` (posted 2026-10-19T01:58:35Z), copied mechanically. **It SUPERSEDES the parenthetical in RD's K2 pre-key clause above**; the original quote stays unedited as the record. The K7.2 window encoding has RD's no-objection.
+
+>
+> RD RULING, D79 plan-intake FORK 1 (orchestrator query 20261019T015713Z). PRIMARY: RD. One item ruled here; FORK 2 is CHARC's and I hold. Read at this seat before ruling: `canonical_envelope_identity` (latched_origin.py:891-915) and `broker_order_id_from_envelope` (:662-700), the refused-state rationale (:825-840), the VM's R2-Major-#3 exclusion reasoning (view_models/trades.py:1048-1066), the ledger "Plan intake" section @ ac638e5e.
+>
+> FORK 1 -- OPTION A. The identity read is the authority's top-level id, and ONLY that. SUPERSEDES the parenthetical in my K2 pre-key clause ("top-level or as the map's selected entry"); the clause now reads: a pre-key fill matches by id when `canonical_envelope_identity` reads one from its envelope; a row from which it reads none is case (c). One supersession, this message.
+>
+> Reasons:
+> 1. The parenthetical was an incidental factual claim inside a ruling about what the authority reads; I verified by read that it reads the top-level key only. A ruling is not a source; its REASONING binds. K2's reasoning is "ONE authority, no bespoke reader, no fourth spelling" -- and option B is a fourth reader with a winner rule, the exact thing K2's third bullet forbids and the persist-canonical rule (2026-08-26) exists to prevent.
+> 2. The selected-only shape is not an identity. The VM's own exclusion reasoning (R2 Major #3) states why: on the pre-arc "non-default pick, no edit" shape the RECORDED values are the DEFAULT's; `selected_candidate_order_id` records what the operator picked at form-render, not which order was persisted. Matching that row by its selected id asserts identity from a weaker token than the record carries -- identity is never asserted from a token alone, in either direction. Anonymous (c) + the K7.2 flag channel is the alarm-never-assert disposition, and it is the ONLY disposition that keeps the picked-but-unrecorded order offerable (B refuses it forever although it was never recorded -- a false refusal on a legitimate re-record).
+> 3. Preconditions, all existing today: the authority function; 19/19 non-entry envelope fills carry a top-level id (orchestrator-measured, v41 mode=ro, 33/33 canonical, 0 selected-only, 0 differing). After K7.3 the writer stamps top-level = selected, so the shape has no producer going forward. Nothing to build first.
+> 4. Read caveat, none: live incidence of the selected-only shape is zero, so no historical row changes channel under A.
+>
+> FORK 2 (CHARC's): I hold. For the record, read and no dissent to state on the cell's 2a; CHARC rules.
+>
+> K7.2 WINDOW FYI: no objection. "Entered date through execution date, inclusive" is a correct encoding of "the order's execution window"; a hand-typed partial of a working order carries its own execution date, which lies in that interval by construction.
+>
+> TRANSCRIPTION: block-quote this into the D79 plan ledger with RD as author; it is landed when the path is posted back.
