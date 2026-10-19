@@ -79,7 +79,22 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
 
 > **Archive companion (2026-05-18 Phase 12.5 #3 T-3.3 split — zero-yield):** This section inspected for pre-2026-05-13 entries during the Phase 12.5 #3 archive-split pass; ZERO entries qualified (all "Prior state" snapshots are dated 2026-05-17 or later). No content moved from this section; pointer retained for symmetry with the "Lessons captured" pointer below + audit-trail integrity. See [`docs/orchestrator-context-archive.md`](docs/orchestrator-context-archive.md) for archive companion structure.
 
-### Currently in-flight: PHASE 22 ACTIVE — **22-F MERGED 2026-09-26 at `58368c86` (code-only, schema v41 unchanged); the `d4f2cbed` grant is SPENT; the next arc is the operator's to commission**
+### Currently in-flight (2026-10-19): **D79 MERGED at `38c1d97d`** (no migration). Next, in order: a tests-only load-flake rider, then the maintenance rider, then the soft-stop arc.
+
+- **D79, the exit identity arc.**
+  - Merged `--no-ff` at `38c1d97d` (tree `500f69c9`), cleared by both CHARC and RD at `b6d4b82b`.
+  - Review outcome: **STOPPED-AND-ROUTED at round 7** under the bounded rule's branch 2. Seven counted A rounds; the uncounted self-sweep SS-1..SS-8; Reviewer B dispositioned (AL-13, AL-5 restated).
+  - Record: `docs/superpowers/plans/2026-10-19-d79-exit-identity.exec-ledger.md`, with a correction appended at `f7dd0794`. Evidence: `~/swing-data/review-transcripts/d79-exit-identity/`.
+  - Merged-head suite: 15497 passed, 1 failed. The failure is a timing flake under load, classified by mechanism; it is not green.
+  - The worktrees are removed; the branches `d79-exec` and `d79-plan` are KEPT because the ledgers cite them. Main is NOT pushed (the operator pushes).
+  - **Owed, RD's witness:** the first live exit after merge IS the witness. RD reads its fill row first. The operator's `swing web` must be restarted to serve D79.
+  - **Banked:** D85 and D86 (CHARC); execution-level identity (RD); RA-07, R5-06 and B-04 (orchestrator; trigger: the next `fills.py`/`state.py` carve-out, the signed-envelope arc, or a docs rider).
+- **Operator-approved, sequenced by the orchestrator:**
+  1. A tests-only rider making the load-flaky tests robust (operator: "I also concur with fixing those tests"; CHARC to register it).
+  2. The maintenance rider: D82/D83, the shadow-expectancy timeout to 900 s, and the observe warm cohort under CHARC's six conditions. RD reads the rate constants before it merges.
+  3. The soft-stop arc (D84), with plan-stage director review.
+
+### Prior state: PHASE 22 ACTIVE — **22-F MERGED 2026-09-26 at `58368c86` (code-only, schema v41 unchanged); the `d4f2cbed` grant is SPENT; the next arc is the operator's to commission**
 
 **Re-derive every fact here before relying on it; this section decays by default.** The newest `docs/orchestrator-handoff-*.md` and the arc ledgers are the detailed record; this is the pointer.
 
