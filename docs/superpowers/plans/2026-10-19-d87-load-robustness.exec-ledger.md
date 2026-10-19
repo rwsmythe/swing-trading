@@ -3,9 +3,9 @@
 Brief: `docs/d87-load-robustness-dispatch-brief.md` (main `9845b799`). Worktree
 `.worktrees/d87-load`, branch `d87-load`, base `9845b799`. Tests only.
 
-Status at this commit: mechanisms 2 and 3 fixed and committed. Items 1, 5, 6,
-7, 8 and 9 are STOPPED as forks (section 4); Reviewer A has not run (no
-counted rounds yet), because the review must cover the final tree.
+Status: the fork packet (section 4) was ruled by CHARC and the orchestrator
+(section 4A, verbatim) and executed (section 4B). All roster items are
+dispositioned; Reviewer A rounds are in section 5.
 
 ## 1. Load harness (as run)
 
@@ -178,10 +178,162 @@ seen red.
   the budget in these page tests.
 - Out of envelope, not offered as in-scope: changing the production budget.
 
+## 4A. Rulings on the fork packet
+
+### CHARC (ruling of record: `comms/orchestrator/read/20261019T200436Z-charc-d87-fork-ruled-mech-2-ext-ok-f1-shape-a.md`; transcribed verbatim as relayed by the orchestrator)
+
+Author: CHARC.
+
+> MECHANISM-(2) EXTENSION -- ACCEPTED. A holder that lets go on its own timer while the main thread is still on its way to the write is the same race from the other side; the fix is release-on-signal, and every test releases in `finally` (verified at all three). The 30 s is a hang guard, not a budget, and the file says so at :42-44. One addition, small: `_external_lock_holder` sets `held` only after `BEGIN IMMEDIATE` returns, so a holder whose BEGIN raises leaves the test to `_HELD_WAIT`'s 60 s assertion. Acceptable (it is a broken-fixture path, and the assertion names it); do not widen the wait. The post-fix test keeps its 0.5 s self-release because that release IS its premise, and it is now non-vacuous because it waits on `held` first. Good catch on the vacuous pass.
+>
+> MECHANISM (3) -- form accepted (register in the test's own setup, in-place restore). ONE TEXT CORRECTION, by replacement: the fixture docstring claims a production fact the test does not pin ("a secret the process has already seen ..., the state production's Layer-0 redaction depends on"). That is the #31 class: a comment asserting behaviour elsewhere. It says instead what the fixture does and why: the sentinel's underscores defeat both Layer-1 regexes (`client.py:116-128`), so only a registered secret is redacted, and the test registers it. Your challenge to Reviewer A on the real-token path stands as content.
+>
+> FORK F1, items 1, 5, 8 -- SHAPE A, with the measurement basis corrected in my form. My "5x isolated" named the wrong basis: the budget covers interpreter start, import and collection, which the isolated number does not measure and which load inflates 25-50x (the D79 L2 run: ~275 of 300 s before the child's own clock started). The rule becomes: budget = max(5x isolated, 5x under-the-harness), BOTH numbers quoted in a comment at the constant, with the harness named (full suite at -n 16 plus the saturator, the box state). Values as you measured: L2 300 -> 900 s; diagnose 120 -> 300 s; v2-help 60 -> 300 s. The assertion stays on the child's exit status and output; `TimeoutExpired` stays a failure, never a skip. Shape B rejected: a fourth form, machinery in every subprocess test, and a reference child timed under the same load is itself the noisy quantity. The hang latency is accepted and stated: a true hang surfaces within 15 min inside a run that already takes 13-24.
+>
+> FORK F1, item 9 -- CONCUR: NO CHANGE under D87, no 1 s stub. The budget mechanism is RULED OUT (308x; 0 of 256 under load). The handle hypothesis is UNCONFIRMED and I doubt it: `$null = $p.Handle` is the standard cache idiom and a `-PassThru` object comes from `Process.Start`, which owns its handle; but a doubt is not a reading, so the loop decides. ORDERED as an execution step in D87's return, not a code change: a tight loop of the wrapper plus the millisecond stub, N >= 500, under the saturator, counts quoted. If it reproduces, it is registered on my seat as a confirmed `scripts/` defect, owner orchestrator, fixed outside D87 with the mechanism read from the reproduction. If it does not, the CLAUDE.md line (yours, after merge) says: budget ruled out, not reproduced in N under load, the handle hypothesis open, and "xdist LOAD flake" is no longer the recorded classification. Either way the line stops saying a thing nobody has measured.
+>
+> FORK F2, items 6 and 7 -- SHAPE B, applied to the whole parametrization of both tests. These tests assert what renders per state; the production budget is the one non-hermetic input, and freezing the clock removes it while leaving the constant, the code path and the three budget tests (:585, :608, :659 -- two wall-clock, one counts the budget value) untouched. Safe by read: the module reads `time.monotonic` at exactly three sites, all deadline arithmetic; no sleep, no clock-driven loop; the `unverifiable` state is produced by the git-timeout stub, not the clock, so it renders unchanged under a frozen one. FORM OF THE FREEZE: delegate, do not stub -- `monkeypatch.setattr(fve, "time", <object whose monotonic returns a constant and whose every other attribute forwards to the real module>)`, so a later `time.` use in the module cannot fail into an AttributeError that reads as a test defect. Shape A rejected: two bindings of one constant is the mirror family (#11); a value patched at two sites is a third spelling.
+
+### Orchestrator (brief owner; relayed in the resume message)
+
+> - Fix the pre-existing SIM105 at tests/conftest.py:335. The gate is "ruff clean on the files you touched", and conftest.py is touched. Give it its own commit.
+> - The cp1252 decode-and-re-encode weakness is banked to me. Do not touch it in D87.
+
+Two facts read at encoding time, reported up: the "0 of 256" in CHARC's
+item-9 paragraph is the sum of my two targeted runs (64 + 192); and the
+three budget tests' lines (`:585`, `:608`, `:659`) are on the base file and
+shift by 34 lines after the F2 commit (defs `test_a2_97b` 569 -> 603,
+`test_a2_97c` 595 -> 629,
+`test_charc_g_t10_1_web_invocations_per_route_each_under_the_web_budget`
+644 -> 678). Their bodies are unchanged: the F2 diff touches only the new
+`_FrozenReplayClock` class and `_named_page`.
+
+## 4B. Post-ruling execution
+
+Commits after the ruling, in order: `a81d188c` (mechanism-3 docstring
+correction), `df0d95c8` (F1 shape A), `4447ec29` (F2 shape B), `4ff43a9d`
+(SIM105), `64b621af` (pre-existing lint in the A2 file).
+
+### 4B.1 Mechanism 3 text correction (`a81d188c`)
+
+The test docstring now says what the fixture does and why: the sentinel's
+underscores defeat both Layer-1 regexes (`client.py:116-128`), so only a
+registered secret is redacted, and the test registers it. The fixture
+docstring's "never-narrowed in production" clause is narrowed to the cited
+fact that the registry is a process-global set (`client.py:80`).
+
+### 4B.2 F1 shape A, items 1, 5, 8 (`df0d95c8`)
+
+| Item | Isolated (5x) | Harness (5x) | Budget | Comment at |
+|---|---|---|---|---|
+| 1 L2 child | 5.5-6.4 s (32 s) | 157.65 s (788 s) | 300 -> 900 s, `_CHILD_BUDGET_SECONDS` | module constant |
+| 5 diagnose | 1.89-1.95 s (10 s) | 52.24 s (261 s) | 120 -> 300 s | at the `subprocess.run` |
+| 8 v2 help | 1.86-2.08 s (10 s) | 55.58 s (278 s) | 60 -> 300 s | at the `subprocess.run` |
+
+Harness named in each comment: the full fast suite at `-n 16` plus a
+16-process CPU saturator, base `9845b799`, with intermittent foreign pytest
+load on the box. Assertions unchanged (exit status and output);
+`TimeoutExpired` is still a failure. The L2 timeout message now prints the
+constant.
+
+Mutation discriminators (the guarded behaviour, never the budget):
+
+- Item 1, `l2_norestore` (plugin `d87_mut_l2.py`, injected into the CHILD via
+  `PYTEST_ADDOPTS=-p d87_mut_l2`): the tests/research conftest's
+  `_restore_swing_modules` becomes a no-op in the child. The test **reds**
+  with its own 17-D.4 message (child victim returns 500). Control (no
+  mutation, same injection): passes.
+- Items 5 and 8, `cli_exit_nonzero` (a `sitecustomize.py` on PYTHONPATH,
+  active only in a process whose `__main__` spec is `swing.cli` and which
+  has not imported pytest): the CLI child exits 3. Both tests **red** on
+  `assert proc.returncode == 0` (`assert 3 == 0`). Controls pass.
+- Items 5 and 8, `cli_glyph` (every `click.echo` appends U+2192): both
+  tests **PASS**. Measured on the diagnose child: rc 0, stdout carries the
+  UTF-8 bytes `e2 86 92`, which the parent decodes as cp1252 mojibake and
+  then re-encodes without error. This is the decode-and-re-encode weakness
+  the orchestrator banked; demonstrated here by execution, not touched.
+
+### 4B.3 F2 shape B, items 6 and 7 (`4447ec29`)
+
+`_FrozenReplayClock` stands in for `fve.time` in `_named_page`, so every
+state of both tests: `monotonic` returns a constant captured at
+construction, every other attribute forwards to the real module
+(`__getattr__`), and `calls` counts reads. `_named_page` asserts
+`clock.calls > 0` after the GET, so the freeze cannot pass vacuously if the
+module stops reading its clock through `time`. The budget constant, the code
+path and the three budget tests are untouched (one-hunk diff).
+
+Mutations (plugin `d87_mut_f2.py`, wrapping `fve.tier2_cohort_exclusions`,
+10 tests per run, `-n 8`):
+
+| Mutation | Reds | Passes |
+|---|---|---|
+| none (control) | 0 | 10 |
+| `drop_exclusions` | `rewritten`, `unverifiable` x2 pages = 4 | 6 |
+| `drop_observations` | `moved` x2 = 2 | 8 |
+| `budget_exhausted` (zero budget: the D79 production outcome) | `admit`, `moved`, `rewritten` x2 = 6 | 4 |
+| `zero_spawns_git` (a git call with zero rows) | `zero` x2, plus `unverifiable` x2 (its git-timeout stub raises on the extra call) = 4 | 6 |
+| `unfreeze_slow_git` (stand-in ticks in real time, git slowed to 0.6 s) | `admit`, `moved`, `rewritten` x2 = 6 | 4 |
+| `slow_git_frozen` (same slow git, freeze intact) | 0 | 10 |
+
+Every state reds under at least one mutation. The last two rows are the fix
+itself: the same slow git reds three states with a ticking clock and none
+with the frozen one. The whole file passes (83), and with
+`tests/metrics/test_22b_cohort_read_race.py` 95.
+
+### 4B.4 Item 9: the ordered loop (no code change)
+
+`scratchpad/d87/item9_loop.py`: exactly the test's invocation (powershell
+`-File run-weeknight-pipeline.ps1`, a `stub.cmd` that does `exit /b 75`),
+no timeout, 8 concurrent attempts, under the 16-process saturator. GOOD =
+rc 0 and exactly one log line containing `SKIP exit=75`.
+
+- **N = 600: 600 good, 0 bad.** Wall per attempt: min 1.463 s, median
+  2.641 s, max 5.208 s. Saved: `scratchpad/d87/item9-n600-sat.json`.
+- Not reproduced. Per CHARC's ruling, no `scripts/` registration; the
+  CLAUDE.md line (orchestrator's, after merge) records: budget ruled out,
+  not reproduced in 600 under load (plus the earlier 256), the handle
+  hypothesis open.
+
+### 4B.5 Lint (`4ff43a9d`, `64b621af`)
+
+- `tests/conftest.py:335` SIM105: `try/except AttributeError/pass` ->
+  `contextlib.suppress(AttributeError)`, own commit, as ruled.
+- `tests/trades/test_22a2_cohort_readers.py` became a touched file with F2
+  and carried 22 pre-existing findings (18 F811, 4 E501). The F811s came
+  from test parameters named after the imported `ticking_clock` fixture;
+  the fixture is now bound by a module-level assignment from
+  `test_22a2_correction_service`, which pytest discovers identically (83
+  tests collect and pass, as before). The E501s were one docstring line and
+  three comment rulers. Own commit. Flagged: not covered by an explicit
+  ruling, and `tests/metrics/test_22b_cohort_read_race.py` keeps the same
+  import idiom.
+
+### 4B.6 Load harness and gates on the final code head (`64b621af`)
+
+- Roster under the saturator, `-n 16`, 10 iterations, 23 tests each (all
+  five states of both A2 tests, the whole weeknight file): **10 of 10
+  green** (each roster test 10/10). Iteration times 139-288 s.
+- Full fast suite under the saturator, `-n auto --durations=0`:
+  **15498 passed, 13 skipped, 0 failed in 2060.89 s**
+  (`scratchpad/d87/load/full-64b621af-sat.txt`). Child durations in that
+  run: L2 182.03 s, v2 help **87.97 s**, diagnose **85.88 s**. The v2-help
+  child would have red at its OLD 60 s budget; diagnose would have held its
+  old 120 s by 34 s. Under the new 300 s both pass with 3.4-3.5x margin, and
+  L2 has 4.9x under 900 s. These are above the 55.58 / 52.24 s basis, which
+  is why a single pre-fix harness run is a floor, not a ceiling.
+- Full fast suite without the saturator, `-n auto -p no:cacheprovider`:
+  **15498 passed, 13 skipped, 0 failed in 888.24 s**
+  (`scratchpad/d87/load/full-64b621af-nosat.txt`).
+- Ruff on every touched test file: clean (5 files).
+- `git diff --stat 9845b799..HEAD -- swing/ scripts/ research/`: empty.
+- `%(trailers)` empty on every commit.
+
 ## 5. Review rounds
 
-None yet. Reviewer A (`strong`) runs on the final tree after F1 and F2 are
-ruled.
+Reviewer A, `strong` tier, repo read access (cold-audit form, cwd = the
+worktree, `-s read-only`), prompt plus `git diff -U8 9845b799..<head> -- tests/`
+on stdin. Transcripts: `C:/Users/rwsmy/swing-data/review-transcripts/d87-load/`.
 
 | Round | Model / effort | Footer | Verdict | Crit / Major / Minor | New / Reopened | Depth (orchestrator) |
 |---|---|---|---|---|---|---|
