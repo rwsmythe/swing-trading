@@ -228,7 +228,8 @@ The plan is `docs/superpowers/plans/2026-10-19-d79-exit-identity.plan.md`. It is
 
 | round | model (asserted = profile) | effort (asserted = profile) | `^ERROR` | `^tokens used` footer | verdict (anchored) | findings: reviewer severity / cell class | new / reopened | tokens used | transcript | context depth |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2: codex-cli emits the final message twice); the other token 0 | 2 major / 2 task-bearing; 0 instrument | 2 / 0 | 90,269 | `.codex-review-r1.txt`, 497,877 B; prompt `.codex-prompt-r1.md`, 4,820 B | (orchestrator fills) |
+| 1 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2: codex-cli emits the final message twice); the other token 0 | 2 major / 2 task-bearing; 0 instrument | 2 / 0 | 90,269 | `.codex-review-r1.txt`, 497,877 B; prompt `.codex-prompt-r1.md`, 4,820 B | 317,138 (orchestrator, `cell_depth --agent`, at the round-1 gate) |
+| 2 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2); the other token 0 | 2 major / 2 task-bearing (R2-02 contested-class rule: it changes a test's specification); 0 instrument | 2 / 0 | 57,131 | `.codex-review-r2.txt`, 248,967 B; prompt `.codex-prompt-r2.md`, 4,820 B | (orchestrator fills) |
 
 **Round 1, process checks.**
 - The codex process exited: the runner's exit file reads `rc=0`, and it is written only after `codex exec` returns.
@@ -254,4 +255,20 @@ The plan is `docs/superpowers/plans/2026-10-19-d79-exit-identity.plan.md`. It is
   - **T2-a now starts the trade in `partial_exited`, exiting 3 of 10 shares.** No state transition fires (`exit.py:279`), so only the identity guard can refuse.
   - **Class re-grep:** a grep of the whole plan for `sleep` returns no other site, and neither does a grep for "T1-d hook" beyond the T2-a reuse.
 
-**Next:** round 2 at `fast`, run fresh. Round 2 is counted round 2 of 3.
+**Round 2, process checks.**
+- The codex process exited (`rc=0`).
+- Stdin carried the ledger with this "Plan review" section STRIPPED, so the round could not receive round-1 findings through its input.
+- A grep of the transcript for `R1-0` returns 0.
+
+**Round 2 adjudications**
+
+- **R2-01, major. TASK-BEARING. ACCEPTED, fixed.** T2-d's anomaly text compares the request against the stored row's values. T2's lookup returned only `(fill_id, trade_id)`, so a literal implementation would need an unspecified second query.
+  - **Fix:** the lookup now returns `RecordedExitFill(fill_id, trade_id, date, price, quantity)`. The one `SELECT` adds `fill_datetime, price, quantity`.
+  - **The envelope is still read only through the authority;** the stored values are plain columns.
+  - **Residual class re-grep:** a grep for the old pair shape found `exit_record_flags`'s `unreadable_fills` type and T4-g's literal. Both were updated, and no other site remains.
+- **R2-02, major. TASK-BEARING by the contested-class rule. ACCEPTED, clarified.** T6-c said "a stale-form attempt is refused by the service", while T7's d2 check voids a stale CONFIRM before the service is reached.
+  - **The finding is right about confirms.** Not every stale POST is a confirm, though: an unflagged stale POST carries no `force`, so it triggers no fresh fetch and reaches `record_exit`.
+  - **T6-c now specifies that shape:** the first GET's form, o1 picked, o1's exact values retyped, no `force`. The service refuses it, and one o1 row remains.
+  - **The d2 void path is assigned explicitly** to T7-c and T7-f. The fix changes a test's specification and no mechanism.
+
+**Next:** round 3 at `fast` (counted 3 of 3), then the uncounted self-sweep. Per the orchestrator's budget note, round 3 may run in a fresh cell off this committed ledger and the plan file on disk.
