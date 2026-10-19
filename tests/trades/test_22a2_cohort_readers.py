@@ -383,6 +383,37 @@ def test_card_vm_counts_from_exclusions_and_names_both(  # A2-94's reader
 _PAGE_STATES = ("rewritten", "moved", "unverifiable", "admit", "zero")
 
 
+class _FrozenReplayClock:
+    """Stands in for the ``time`` module inside ``frozen_value_evidence`` only.
+
+    D87 (CHARC's F2 ruling): these page tests assert what renders per state,
+    and the web replay budget (``WEB_REPLAY_BUDGET_SECONDS``) is their one
+    non-hermetic input. Under suite load the git calls ran past it and the
+    page rendered ``tier2_unverifiable (web_budget_exhausted)`` in a state
+    that asserts otherwise. ``monotonic`` returns a constant, so the
+    deadline can never pass; every other attribute forwards to the real
+    module, so a later ``time.`` use there still works. The budget constant
+    and code path are untouched; the budget's own behaviour is pinned by
+    ``test_a2_97b`` / ``test_a2_97c`` (wall clock) and
+    ``test_charc_g_t10_1_web_invocations_per_route_each_under_the_web_budget``
+    (the value every web route passes), none of which this stand-in touches.
+    ``calls`` proves the stand-in was consulted, so the freeze cannot pass
+    vacuously if the module stops reading its clock through ``time``.
+    """
+
+    def __init__(self, real) -> None:
+        self._real = real
+        self._frozen = real.monotonic()
+        self.calls = 0
+
+    def monotonic(self) -> float:
+        self.calls += 1
+        return self._frozen
+
+    def __getattr__(self, name: str):
+        return getattr(self._real, name)
+
+
 def _named_page(tmp_path: Path, monkeypatch, state: str, path: str) -> None:
     """One named page in one state.  ``zero`` is the zero-data state: neither
     line renders, the GET is 200, and NO subprocess starts."""
@@ -393,7 +424,10 @@ def _named_page(tmp_path: Path, monkeypatch, state: str, path: str) -> None:
     finally:
         conn.close()
     counter = _GitCounter(monkeypatch) if state == "zero" else None
+    clock = _FrozenReplayClock(fve.time)
+    monkeypatch.setattr(fve, "time", clock)
     html = _get(cfg, cfg_path, path)
+    assert clock.calls > 0, "the replay never read its clock through fve.time"
     if state == "rewritten":
         assert STALE_LINE in html
         assert "tier-2 counted with observation" not in html
