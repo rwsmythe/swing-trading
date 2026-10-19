@@ -10,11 +10,18 @@ CLI, web). Exit-flow execution now goes through:
   + aggregate recompute (current_size denorm) + audit row.
 * ``swing.trades.state.state_transition`` — atomic state UPDATE + audit row.
 
-Both are wrapped in the SAME ``with conn:`` so a fill never lands without
-its accompanying state movement (and vice versa).
+D79 (CHARC K1 (1)): ``record_exit`` OWNS its transaction. It REJECTS a
+caller-held transaction (``CallerHeldTransactionError``; never auto-detects
+and joins one), then opens ONE ``BEGIN IMMEDIATE`` inside which the trade is
+read, the state and size are checked, and the fill, the note and the state
+movement are written before a single ``COMMIT`` -- so a fill never lands
+without its accompanying state movement (and vice versa), and every read the
+write depends on is taken under the write lock. Any failure rolls back
+through ``_rollback_or_raise`` (the S-D39 template in the D73 shape).
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from enum import StrEnum
@@ -32,6 +39,8 @@ from swing.trades.derived_metrics import (
     realized_pnl as compute_realized_pnl,
 )
 from swing.trades.state import state_transition
+
+log = logging.getLogger(__name__)
 
 
 class ExitReason(StrEnum):
@@ -145,6 +154,52 @@ class ExitPriceRefusedError(ValueError):
     """
 
 
+class CallerHeldTransactionError(RuntimeError):
+    """D79 (CHARC K1 (1)): ``record_exit`` was called while the caller holds
+    an open transaction.
+
+    The single-transaction contract REJECTS a caller-held transaction rather
+    than auto-detecting and joining it (CLAUDE.md: the auto-detect guard
+    re-introduces the race the explicit lock closed). A ``RuntimeError``, NOT
+    a ``ValueError``: it is a programming error, not an operator refusal, so
+    neither caller's ``except ValueError`` re-render reaches it. Both
+    production callers enter with no open transaction, which a test pins.
+    """
+
+
+def _rollback_or_raise(conn: sqlite3.Connection, op: str,
+                       original: BaseException) -> None:
+    """Roll back only an open transaction; a rollback that ALSO fails is
+    raised CHAINED, with ONE ERROR record naming both errors and the discard.
+
+    The S-D39 template (``account_equity_snapshots._rollback_or_raise``, the
+    22-A template) in **the D73 shape (2026-10-18)**: with an INTERRUPT in
+    flight (``original`` is not an ``Exception``) THE INTERRUPT PROPAGATES and
+    the cleanup failure rides as its explicit cause, so an outer ``except
+    Exception`` can never contain the operator's stop signal wearing an
+    ``OperationalError``. With an ordinary error in flight the cleanup error
+    propagates, chained from the original, as before. Neither is ever
+    swallowed; the ERROR record is what makes the double failure loud.
+    """
+    if not conn.in_transaction:
+        return
+    try:
+        conn.rollback()
+    except BaseException as cleanup_error:  # noqa: BLE001 -- the CLASS
+        from swing.trades.entry import log_contained_note
+        interrupted = not isinstance(original, Exception)
+        still = conn.in_transaction
+        log_contained_note(
+            log, original if interrupted else cleanup_error,
+            "D79: %s failed (%s) AND the rollback of its transaction failed "
+            "(%s); in_transaction reads %s after the failed rollback; this "
+            "connection MUST BE DISCARDED either way.",
+            op, original, cleanup_error, still)
+        if interrupted:
+            raise original from cleanup_error
+        raise cleanup_error from original
+
+
 def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     """Write an exit/trim/stop fill and drive the state machine.
 
@@ -160,7 +215,19 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
       * managing + new_size > 0  → partial_exited
       * partial_exited + new_size == 0 → closed
       * partial_exited + new_size > 0  → (no transition; stays partial_exited)
+
+    Transaction (D79, CHARC K1 (1)): a caller-held transaction is REJECTED
+    as the first statement, before any read. The pure argument checks run
+    next and read nothing. Then ONE ``BEGIN IMMEDIATE`` is taken, and the
+    trade read, the state and size checks, the writes and the ``COMMIT`` all
+    run under it; a refusal raised there (not found / not active / exceeds)
+    still propagates as the same ``ValueError`` after a clean rollback.
     """
+    if conn.in_transaction:
+        raise CallerHeldTransactionError(
+            "record_exit owns its transaction; it was called while the "
+            "caller holds an open transaction (commit or roll it back first)"
+        )
     if not isinstance(req.reason, ExitReason):
         raise ValueError(f"invalid exit reason: {req.reason}")
     if req.shares <= 0:
@@ -169,30 +236,6 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
         raise ExitPriceRefusedError(
             f"exit price must be > 0; got {req.exit_price!r}"
         )
-
-    trade = get_trade(conn, req.trade_id)
-    if trade is None:
-        raise ValueError(f"trade {req.trade_id} not found")
-    if trade.state not in _ACTIVE_STATES:
-        raise ValueError(
-            f"trade {req.trade_id} not active (state={trade.state!r}); "
-            f"exits only permitted from {sorted(_ACTIVE_STATES)}"
-        )
-
-    new_size = float(trade.current_size) - float(req.shares)
-    if new_size < 0:
-        raise ValueError(
-            f"exit shares {req.shares} exceeds remaining current_size "
-            f"{trade.current_size}"
-        )
-
-    # Action computation. STOP_HIT always wins; otherwise size-driven.
-    if req.reason == ExitReason.STOP_HIT:
-        action = "stop"
-    elif new_size > 0:
-        action = "trim"
-    else:
-        action = "exit"
 
     # Codex R1 Major 1: fill_datetime must reflect when the EXIT happened
     # (req.exit_date), not when the operator typed the command (req.event_ts).
@@ -207,25 +250,55 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     fill_datetime = _normalize_trade_event_date_to_iso(
         req.exit_date, field_name="exit_date",
     )
-    fill = Fill(
-        fill_id=None,
-        trade_id=req.trade_id,
-        fill_datetime=fill_datetime,
-        action=action,
-        quantity=float(req.shares),
-        price=float(req.exit_price),
-        reason=req.reason.value,
-        # Phase 13 T3.SB2 T-B.2.3 — exit auto-fill provenance audit columns.
-        # ExitRequest defaults preserve legacy operator_typed / NULL behavior
-        # for CLI / bare-cURL callers; web POST handler populates these from
-        # the form-render hidden anchor + operator-selection round-trip.
-        fill_origin=req.fill_origin,
-        schwab_source_value_json=req.schwab_source_value_json,
-        operator_corrected_value_json=req.operator_corrected_value_json,
-        auto_fill_audit_at=req.auto_fill_audit_at,
-    )
+    # D79 (CHARC K1 (1)): ONE owned transaction. BEGIN is INSIDE the try so a
+    # BEGIN that fails (busy) is handled like any other failure; every read
+    # the write depends on -- the trade's state and size -- is taken AFTER the
+    # write lock is held, so no concurrent writer can commit between the read
+    # and the INSERT (the VISIBILITY precondition of CHARC's K1 packet).
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        trade = get_trade(conn, req.trade_id)
+        if trade is None:
+            raise ValueError(f"trade {req.trade_id} not found")
+        if trade.state not in _ACTIVE_STATES:
+            raise ValueError(
+                f"trade {req.trade_id} not active (state={trade.state!r}); "
+                f"exits only permitted from {sorted(_ACTIVE_STATES)}"
+            )
 
-    with conn:
+        new_size = float(trade.current_size) - float(req.shares)
+        if new_size < 0:
+            raise ValueError(
+                f"exit shares {req.shares} exceeds remaining current_size "
+                f"{trade.current_size}"
+            )
+
+        # Action computation. STOP_HIT always wins; otherwise size-driven.
+        if req.reason == ExitReason.STOP_HIT:
+            action = "stop"
+        elif new_size > 0:
+            action = "trim"
+        else:
+            action = "exit"
+
+        fill = Fill(
+            fill_id=None,
+            trade_id=req.trade_id,
+            fill_datetime=fill_datetime,
+            action=action,
+            quantity=float(req.shares),
+            price=float(req.exit_price),
+            reason=req.reason.value,
+            # Phase 13 T3.SB2 T-B.2.3 — exit auto-fill provenance audit columns.
+            # ExitRequest defaults preserve legacy operator_typed / NULL behavior
+            # for CLI / bare-cURL callers; web POST handler populates these from
+            # the form-render hidden anchor + operator-selection round-trip.
+            fill_origin=req.fill_origin,
+            schwab_source_value_json=req.schwab_source_value_json,
+            operator_corrected_value_json=req.operator_corrected_value_json,
+            auto_fill_audit_at=req.auto_fill_audit_at,
+        )
+
         fill_id = insert_fill_with_event(
             conn, fill, event_ts=req.event_ts, rationale=req.rationale,
         )
@@ -277,6 +350,10 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
                 event_ts=req.event_ts, rationale=req.rationale,
             )
         # partial_exited + new_size > 0: stays partial_exited (no transition).
+        conn.commit()
+    except BaseException as exc:  # noqa: BLE001 -- the CLASS (S-D39 / D73)
+        _rollback_or_raise(conn, "record_exit", exc)
+        raise
 
     # Compute derived metrics for the return value (post-commit; pure math).
     pnl = compute_realized_pnl(
