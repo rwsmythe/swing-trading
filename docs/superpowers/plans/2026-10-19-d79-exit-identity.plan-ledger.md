@@ -216,3 +216,42 @@ Transcribed as a literal block quote of the message body in `comms/orchestrator/
 > INTAKE CORRECTIONS: accepted as the code has them (split handler :3097/:3325; retention block :3147-3270; the CLI wrap exists at cli.py:1496-1499 so test (v) of my K1 packet PINS it rather than builds it).
 >
 > Fork 1: CC, holding; nothing to add to RD's item.
+
+## Plan review
+
+The plan is `docs/superpowers/plans/2026-10-19-d79-exit-identity.plan.md`. It is uncommitted until it converges, and is committed ONCE then. It is written on the ruled shape: FORK 1 option A, and FORK 2 as CHARC ruled.
+- **Rounds run at the `fast` profile:** `~/.codex/fast.config.toml` sets `model = "gpt-5.6-luna"` and `model_reasoning_effort = "medium"`. codex-cli is 0.162.1 (WSL).
+- **Transport:** stdin carries the prompt, the plan and this ledger. Codex's cwd is the worktree with `-s read-only`, so it can read the code to check anchors.
+- **Isolation:** the review scratch lives in the session scratchpad, not the worktree.
+- **The prompt prohibits** reading `.codex-*`, `.copowers-findings.md`, this section, and git.
+- **Evidence path:** `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\plan\`.
+
+| round | model (asserted = profile) | effort (asserted = profile) | `^ERROR` | `^tokens used` footer | verdict (anchored) | findings: reviewer severity / cell class | new / reopened | tokens used | transcript | context depth |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2: codex-cli emits the final message twice); the other token 0 | 2 major / 2 task-bearing; 0 instrument | 2 / 0 | 90,269 | `.codex-review-r1.txt`, 497,877 B; prompt `.codex-prompt-r1.md`, 4,820 B | (orchestrator fills) |
+
+**Round 1, process checks.**
+- The codex process exited: the runner's exit file reads `rc=0`, and it is written only after `codex exec` returns.
+- The transcript is non-empty.
+- A grep for `.codex-`, `.copowers-findings` and "Plan review" hits only the prompt's own echo, plus a project doc Codex read (`orchestrator-context.md`). The round read no prior findings, and none existed.
+
+**Round 1 adjudications**
+
+- **R1-01, major. TASK-BEARING. ACCEPTED, fixed.** The plan encoded K7.2's quantity bound as `<`. RD K7.2 reads "whose quantity <= the candidate's" (ledger, "RD rulings"). An equal-quantity row with a different date or price is not a value-tuple match, so `<` silently dropped it from the partial channel.
+  - **Fix:** T4 now encodes `row.quantity <= match_quantity`, still excluding a row that is already a value-tuple match.
+  - **T4-a's table:** r6 (equal quantity, a different date and price) now expects `possible_partial`, which kills the `<` implementation. A new row r7 (quantity 7, above 6) expects absent, which kills a missing quantity bound. r3 (the exact tuple) keeps `value_tuple_match` alone.
+  - **The cell's own error:** it had narrowed a ruled bound on its own reasoning, and that is the plan's fault, not the ruling's.
+
+- **R1-02, major. TASK-BEARING. ACCEPTED, fixed.** T1-d and T2-a ordered the race with "start the second call on a thread and sleep 0.3 s". If call 2 arrived after call 1's commit, the pre-fix code would refuse in the ordinary way, and the test would pass both before and after the fix. That makes it a vacuous discriminator.
+  - **The barrier harness, now a shared fixture:**
+    - call 1's hook runs the REAL insert, so it holds the write lock under both shapes;
+    - the hook starts call 2 and waits on an Event, with a 2.0 s timeout;
+    - call 2's first `get_trade` or `recorded_exit_identities` call records "read" and sets that Event;
+    - call 1's commit records "commit1".
+  - **Pre-fix:** "read" comes before "commit1".
+  - **Post-fix:** call 2 blocks at `BEGIN IMMEDIATE`, the wait times out, and "commit1" comes before "read".
+  - **The tests assert the event ORDER as well as the outcome.** The order is load-bearing for T1-d, where a stale-state transition refusal could otherwise make the pre-fix outcome 1 fill.
+  - **T2-a now starts the trade in `partial_exited`, exiting 3 of 10 shares.** No state transition fires (`exit.py:279`), so only the identity guard can refuse.
+  - **Class re-grep:** a grep of the whole plan for `sleep` returns no other site, and neither does a grep for "T1-d hook" beyond the T2-a reuse.
+
+**Next:** round 2 at `fast`, run fresh. Round 2 is counted round 2 of 3.
