@@ -333,8 +333,8 @@ Order matters: T1-T2 build the service barrier that T6-T7 rely on, and T4 builds
   - Pre-fix: corrected and recorded.
 - **T6-f (control):** default unedited -> `schwab_auto`, top-level o2, one fill, 200 (`test_a_unchanged_auto_fill_persists_schwab_auto` stays green).
 - **T6-g (legacy no-map envelope; Codex R3-01):** a claimed envelope carrying only the top-level quartet for o2, with no `candidates_map`, and the price edited 131.00 -> 131.40.
-  - First POST -> 400 with `FLAG_F1_NO_CANDIDATE` naming "price", and no fill.
-  - Confirm -> VOID. `_exit_candidates_maps_equal` returns False for an envelope with no `candidates_map` (`routes/trades.py:2443-2444`), so d2 cannot prove the list is unchanged.
+  - First POST -> 400 and no fill, under executing Fork 3 (G1). The claimed anchor is not restorable, so the flags are DROPPED: the response shows the refresh notice and NO flag text, carries the FRESH map-bearing anchor and keeps the typed values. Its message says nothing was recorded because the order list must be re-confirmed. A plain resubmit on that fresh anchor is then asked F1 against the fresh selection.
+  - Confirm (the ORIGINAL legacy submission re-posted with `force` and a test-built identity) -> VOID. `_exit_candidates_maps_equal` returns False for an envelope with no `candidates_map` (`routes/trades.py:2443-2444`), so d2 cannot prove the list is unchanged.
     - The re-render shows the refresh notice and a FRESH anchor, with no fill written.
     - The fresh anchor carries a map, because the resolver always emits one (`exit_auto_fill.py:964-999`), so the operator re-picks on the current shape.
     - A legacy envelope therefore never records a correction. That is the safe direction for a shape the current resolver does not produce.

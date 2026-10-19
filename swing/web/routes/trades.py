@@ -2990,14 +2990,18 @@ async def exit_post(
                 # candidate_index omitted but per-candidate hidden inputs
                 # ARE present. Index 0 is inferred ONLY when the submitted
                 # ``candidates_map`` has exactly ONE entry (the single-fill
-                # case, where index 0 is the only candidate there is). For a
-                # multi-entry map, or a map-less envelope, an omitted radio is
-                # NO SELECTION and takes the Fork 2 synthesis of the visible
-                # default (Reviewer A R2, RA-03): inferring index 0 there
-                # would link candidate 0, which is not the default the form
-                # showed checked (the last), and on a map-less envelope it
-                # would invent a selection the Fork RA-02 re-confirm then
-                # refuses.
+                # case, where index 0 is the only candidate there is). Anywhere
+                # else an omitted radio is NO SELECTION (Reviewer A R2, RA-03).
+                # On a map-bearing claim that takes the Fork D79-A-01
+                # resolution: the selected entry is the UNIQUE map entry naming
+                # the top-level order whose values the top-level quartet
+                # derives from (the default the form showed checked), and zero
+                # or several such entries take the G1 re-confirm. On a
+                # map-less envelope it takes the Fork 2 synthesis of the
+                # visible default. Inferring index 0 instead would link
+                # candidate 0, which is not the default the form showed
+                # checked (the last), and on a map-less envelope it would
+                # invent a selection the Fork RA-02 re-confirm then refuses.
                 inferred_map = anchor_envelope.get("candidates_map")
                 selected_index = (
                     0 if 0 in candidate_sigs
